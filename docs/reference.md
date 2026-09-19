@@ -7390,6 +7390,24 @@ EDGAR / SEC-filings suite (governed by `docs/edgar_design.md`, with
 - `examples/adventure/adventure.bas` is a small text adventure using current input, print, modifiers, arrays, functions, `if`/`else`, `while`, and `break`.
 - `examples/adventure/NOTES.md` records design-friction notes from that example.
 
+## Platforms
+
+gBASIC is developed and tested on **Linux** (CI builds on Ubuntu 24.04 and
+latest, with every optional module and with none).
+
+**macOS and Windows are untested**, and the word is exact — nobody has built it
+there, so "it does not work" would be as much a guess as "it does". The
+Linux-specific surface is small and enumerable: three mechanisms in two files —
+`SOCK_SEQPACKET` actor mailboxes (AF_UNIX has no `SEQPACKET` on macOS;
+`SOCK_DGRAM` keeps the message boundaries the code relies on), `/proc/self/exe`
+for the re-exec path (`_NSGetExecutablePath` on macOS), and `PR_SET_PDEATHSIG`
+for "nothing this interpreter started outlives it", which has no macOS
+equivalent and would need `kqueue`'s `NOTE_EXIT`. The event loop already uses
+`poll()` rather than `epoll`, so the usual blocker is absent.
+
+`.github/workflows/ci.yml` carries an on-demand macOS job to turn that list into
+a measurement. On Windows, WSL2 runs the Linux build unchanged.
+
 ## The Prompt
 
 `gbasic` with no arguments (or `gbasic --repl`) opens an interactive prompt.
@@ -7495,7 +7513,8 @@ A previous session ended without saving. `recover` brings it back, `discard` for
 recovered; `list` to see it, `run` to run it
 ```
 
-`recover` restores the **program**; it does not run it. `run` is still what
+`recover` restores the **program** — as the entries it was, so `list` numbers
+them and `delete` can name one — and it does not run it. `run` is still what
 makes a program live, exactly as for one you typed — a prompt that executed
 yesterday's half-finished work on your behalf would be a surprise, and could be
 a destructive one.
@@ -7575,7 +7594,7 @@ how you edit it.
 | `new` | forget the resident program and the session |
 | `vars` | show the names this session holds |
 | `cls` | clear the screen |
-| `save "file"` | write the resident program to a file, exactly as typed |
+| `save "file"` | write the resident program to a file, exactly as typed; says how many lines |
 | `load "file"` | read a file into the prompt and run it |
 | `help` | the command list |
 | `quit`, `bye` | leave (so does end-of-input, and `exit(n)`) |

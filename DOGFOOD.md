@@ -213,6 +213,13 @@ and the stale-looking ones carry a Status line saying what overtook them.
     from the documentation index, and a stale datetime status row. Listed in
     full in the 2026-09-18 book-planning entry.
 
+18. **Three in the new prompt, found by replanning Chapter 1 against it:**
+    `? x = 5` prints nothing at all (neither `true` nor a diagnostic);
+    `recover` restores a whole program as ONE numbered entry, so
+    `delete 1` wipes it; and a typo at the prompt reports `<prompt>:0:0`
+    where the same typo in a file reports `file:1:1`. See the 2026-09-19
+    entry.
+
 ### Open — accepted as documented limitations (no action planned)
 
 **Every live bullet below is EXECUTABLE.** `tests/run_limitations.sh` runs one
@@ -4850,3 +4857,62 @@ Volume 1's condensed reference appendix has to be extracted from it with
 fragile rules and an anchor gate. A generated inventory of builtins and their
 signatures would replace all of that, and would also give the docs gate
 something to check status claims against.
+
+
+## 2026-09-19 — CC — while: replanning Chapter 1 of *Learning Programming* against the new prompt
+
+The REPL shipped this morning, so Chapter 1 was replanned around it — the
+chapter now opens at the prompt and reaches for a file only when the program
+outgrows one line at a time. Driving it as a beginner would, through a pty,
+turned up three things.
+
+- **Type:** bug | language-surprise
+- **Severity:** medium (the first), low
+
+### 1. `? x = 5` prints nothing at all
+
+```
+> x = 5
+> ? x = 5
+> (x = 5)
+true
+```
+
+No answer, no diagnostic, no error. The parenthesised form answers correctly,
+so the expression is fine; `?` with a comparison is swallowed — presumably
+read as an assignment rather than a question. This is the worst shape a prompt
+can have: the reader asked something and the machine said nothing, which
+teaches them that they typed something meaningless when they did not.
+
+**Cost:** Chapter 3 teaches comparisons, and `?` is the natural way to try one
+at the prompt (`? age > 12`). The chapter cannot use it until this answers.
+
+### 2. `recover` restores the program as ONE numbered entry
+
+After a killed session, `recover` brings the program back — but `list` shows
+it as a single entry, so `delete 1` deletes the lot. A beginner who recovers
+and then removes one line loses everything they recovered, with no warning.
+
+### 3. A typo at the prompt loses its position
+
+`prnit("hi")` reports `<prompt>:0:0`; the same typo in a file reports
+`file:1:1`. Chapter 1 makes "break it on purpose, read the error" its second
+beat, and column 0 of line 0 is the one part of that message a reader cannot
+learn to use.
+
+### Smaller, for the reference
+
+- `save PATH` unquoted is a parse error; the quoted form is required.
+- `save` is silent on success. Worth one line in the reference, since a
+  beginner will wonder whether it worked.
+
+**Workaround in the book:** Chapter 3 uses the parenthesised form or a full
+`print`; Chapter 1 says `save "name.bas"` with the quotes from the first
+sighting, and notes that silence means success.
+
+**What the prompt got right**, since a friction log should say so: `save`
+writes exactly what was typed and the file runs unchanged under `gbasic FILE`,
+which is what lets Chapter 1 move from prompt to file without the reader
+learning anything new. Ctrl-C on a runaway `while true` ends the line and keeps
+the session, with the counter still holding how far it got — a beginner's first
+infinite loop is now a lesson rather than a lost program.

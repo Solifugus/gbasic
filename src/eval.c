@@ -37277,6 +37277,14 @@ int gb_session_run(AstStmtList chunk) {
     if (!program_block && chunk.count == 1 &&
         chunk.items[0]->kind == AST_STMT_EXPR &&
         !runtime_stopped && !raise_in_flight) {
+        /* The position FIRST. eval_stmt is what normally stamps
+         * current_line/current_column from the statement, and this path skips
+         * it -- so every error from an echoed expression reported 0:0 while the
+         * SAME line in a file reported 1:1. Harmless for a one-line entry, and
+         * wrong the moment a block is typed. Found by the book's Chapter 1
+         * plan, reading the diagnostics a beginner meets on page three. */
+        current_line = chunk.items[0]->line;
+        current_column = chunk.items[0]->column;
         Value value = eval_expr(chunk.items[0]->as.expr_stmt);
         if (!runtime_stopped && !raise_in_flight && value.kind != VALUE_NULL) {
             value_print_to(stdout, value);

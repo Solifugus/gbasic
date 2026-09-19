@@ -370,10 +370,24 @@ if [ -f "$CI" ] && [ -f README.md ]; then
             plat_ok=0; status=1
         fi
     done
+    # A runner in a job marked `continue-on-error` is an EXPLORATION and makes
+    # no claim: it cannot fail the build, so "CI builds on it" is exactly what
+    # it does not say. Counting one would force the README to announce a
+    # platform on the strength of a job whose whole purpose is to find out --
+    # and the only way to satisfy it would be to overstate what is known.
+    # Checked PER JOB, so a real gating macOS job still trips this.
     for other in macos windows; do
-        if grep -qE "runs-on:.*$other|$other-[0-9a-z]+" "$CI" \
+        gating=$(awk -v want="$other" '
+            /^  [a-zA-Z0-9_-]+:[ \t]*$/ { job=$0; has=0; soft=0 }
+            $0 ~ ("runs-on:.*" want) || $0 ~ (want "-[0-9a-z]+") { has=1 }
+            /continue-on-error:[ \t]*true/ { soft=1 }
+            /^  [a-zA-Z0-9_-]+:[ \t]*$/ && prev_has && !prev_soft { print "gating" }
+            { if (job != "") { prev_has=has; prev_soft=soft } }
+            END { if (has && !soft) print "gating" }
+        ' "$CI" | head -1)
+        if [ -n "$gating" ] \
            && printf '%s' "$plat" | grep -qiE "$other.*not|not.*$other"; then
-            echo "FAIL platform       $CI has a $other runner but README.md says $other is not tested"
+            echo "FAIL platform       $CI has a gating $other runner but README.md says $other is not tested"
             plat_ok=0; status=1
         fi
     done

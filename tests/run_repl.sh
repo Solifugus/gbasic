@@ -303,6 +303,21 @@ quit
 # missing `)`; what was typed is at 1:7. Asserting only "unexpected STRING"
 # would pass on either, since both say it -- measured, and the first draft of
 # this tier did exactly that.
+# AN ECHOED EXPRESSION REPORTS WHERE IT WAS, and the oracle is a FILE: the same
+# line run from a file must name the same position. The echo path evaluates the
+# expression directly and so skipped the stamp `eval_stmt` normally does, which
+# reported every such error at 0:0 -- harmless for a one-line entry and wrong
+# the moment a block is typed. Found by the book's Chapter 1 plan, reading the
+# diagnostics a beginner meets on page three. Asserted as AGREEMENT, not as a
+# literal, so it cannot be satisfied by both paths being wrong in the same way.
+printf 'prnit("hello")\n' > "$work/pos.bas"
+file_pos="$(printf '%s' "$("$GB" "$work/pos.bas" 2>&1)" | sed 's/.*pos\.bas//;s/: invalid.*//')"
+prompt_pos="$(printf '%s' "$(repl_err 'prnit("hello")
+quit
+')" | sed 's/.*<prompt>//;s/: invalid.*//')"
+check "an echoed expression names its position as a file does" "$file_pos" "$prompt_pos"
+check "and that position is not 0:0" "0" "$(printf '%s' "$prompt_pos" | grep -c '^:0:0$')"
+
 err="$(repl_err 'pritn "typo"
 quit
 ')"
@@ -313,6 +328,7 @@ lacks "nor as a malformed print" "expecting RPAREN" "$err"
 echo
 echo "== SAVE / LOAD =="
 check "a saved program reloads and runs" "4
+saved 5 lines to saved.bas
 4" "$(cd "$work" && repl 'x = 2
 function dbl(n)
 return n * 2
@@ -497,6 +513,17 @@ list
 quit
 ')"
 contains "recover brings the program back" "print dbl(x)" "$rec"
+# AS THE ENTRIES IT WAS, not as one blob. Recorded whole, a recovered ten-line
+# program came back as ONE numbered entry, so `delete 1` removed all of it and
+# `list` numbered only the first line -- reported by the book's Chapter 1 plan,
+# which had to warn readers off `delete` after `recover`. The load-bearing half
+# is the DELETE: a listing that merely looks right is satisfied by numbering
+# that lies, and only removing one entry proves the boundaries are real.
+made="$(printf '%s\n' "$rec" | grep -cE '^ *[0-9]+  ')"
+check "restored as the entries it was, not one blob" "3" "$made"
+# and a multi-line declaration stays ONE entry, or the split has gone the other
+# way and cut a function into its lines.
+contains "a block is still one entry" "  2  function dbl(n)" "$rec"
 # Asserted against the OUTPUT LINES. A `lacks` on the raw text missed it: with
 # recovery made to run the program the `4` lands as the FIRST thing printed, so
 # a needle written with a leading newline never matched. Third time in this file

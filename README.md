@@ -26,7 +26,11 @@ business-automation-reasoning libraries (`reasoning`, `insight`, `decision`,
 
 **Platform: Linux.** CI builds and runs the full suite on Ubuntu 24.04 LTS and
 current Ubuntu on x86-64, and riscv64 is a supported target. macOS and Windows
-are **not** tested and no support for them is claimed.
+are **not** tested and no support for them is claimed. On Windows, WSL2 runs the
+Linux build unchanged. An on-demand `macos-exploration` job exists in CI to find
+out what a Mac build would take; it never gates, and until it has run and been
+read, "untested" is the honest word — the Linux-specific surface is three
+mechanisms in two files, listed in the reference under *Platforms*.
 
 **New here?** [Tutorial](docs/tutorial.md) to learn the language ·
 [Reference](docs/reference.md) for every construct and builtin ·

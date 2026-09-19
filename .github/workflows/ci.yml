@@ -155,3 +155,80 @@ jobs:
           ! test -e "$HOME/.local/bin/gbasic"
           ! test -e "$HOME/.local/share/gbasic"
           ! test -e "$HOME/.local/share/doc/gbasic"
+
+  # ---------------------------------------------------------------------------
+  # macOS: AN EXPLORATION, NOT A GATE.
+  #
+  # gBASIC has never been built on a Mac. docs and README say Linux only, and
+  # that claim has never been MEASURED -- nobody here owns a Mac. A hosted
+  # runner is how it becomes a fact instead of a caveat, and the answer decides
+  # something real for the book: if a Mac reader can have a NATIVE BINARY, the
+  # whole VM-appliance question goes away for Volume 1.
+  #
+  # `continue-on-error` so the steps fail HONESTLY while master stays green.
+  # This job's output is a report, and a report that cannot fail says nothing.
+  #
+  # MEASURED FROM THE SOURCE before writing it, so the log can be read against a
+  # known list -- the Linux-specific surface is THREE mechanisms in two files:
+  #   SOCK_SEQPACKET      actor mailboxes; AF_UNIX has no SEQPACKET on macOS,
+  #                       and SOCK_DGRAM is the candidate (it keeps message
+  #                       boundaries, which is the property relied on)
+  #   /proc/self/exe      re-exec path; macOS is _NSGetExecutablePath()
+  #   PR_SET_PDEATHSIG    "nothing this interpreter started outlives it", which
+  #                       docs/reference.md states in bold and
+  #                       run_process_lifetime.sh tests. macOS has no
+  #                       equivalent; it needs kqueue NOTE_EXIT, and this is the
+  #                       one with a design decision in it rather than a
+  #                       mechanical substitution.
+  # The event loop already uses poll(), not epoll -- which is usually the thing
+  # that blocks a port, and it is already portable.
+  #
+  # ON DEMAND ONLY. macOS runner minutes bill at 10x the Linux rate against the
+  # included quota for a PRIVATE repository (they are free for a public one). To
+  # run it on every push to master, add `push:` back to `on:` below -- a
+  # deliberate edit, not a default that surprises somebody with a bill.
+  macos-exploration:
+    name: macOS (exploration -- never gates)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What machine is this
+        run: |
+          uname -a
+          sw_vers || true
+          cc --version | head -3
+
+      - name: Install dependencies
+        run: |
+          # macOS ships bison 2.3 (2006, GPLv2) and the grammar needs 3.x, so
+          # the brew one has to come FIRST on PATH -- a build that silently used
+          # /usr/bin/bison would fail with a grammar error that names the
+          # grammar and not the tool.
+          brew install bison pkg-config sqlite libxml2 openssl@3 zlib || true
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      - name: Which bison
+        run: |
+          which bison
+          bison --version | head -1
+
+      - name: What does the build think it has
+        run: ./tools/check-deps.sh || true
+
+      - name: Build
+        run: make
+
+      - name: Does it run at all
+        run: |
+          ./gbasic --version
+          printf 'print "hello from macOS"\n' > /tmp/hello.bas
+          ./gbasic /tmp/hello.bas
+
+      - name: The prompt
+        run: printf 'x = 2\nprint x * 21\nquit\n' | ./gbasic --repl
+
+      - name: Every suite
+        run: ./tests/run_all.sh

@@ -441,6 +441,8 @@ static void orphan_discard(void) {
     }
 }
 
+static void buffer_add_source(ReplBuffer *b, const char *src);
+
 /* ---- input --------------------------------------------------------------- */
 
 static char *read_line(FILE *in) {
@@ -592,7 +594,12 @@ static void run_chunk(ReplState *st, const char *text, int record) {
          * belongs in the program. Recording the first would also put a
          * discarded result into `run`, which warns about exactly that. */
         if (record && !gb_session_echoed()) {
-            buffer_add(st->buffer, text, kind, name);
+            /* ONE recording path. A typed chunk is by construction the smallest
+             * text that parses, so this adds exactly one entry and costs a
+             * re-parse; a file read by `load` splits into the entries it is
+             * made of, which is what `list` and `delete` need it to be. */
+            (void)kind; (void)name;
+            buffer_add_source(st->buffer, text);
             program_saved = 0;
             cache_write(st->buffer);
         }
@@ -626,6 +633,60 @@ static void run_chunk(ReplState *st, const char *text, int record) {
     drain(&diags, st->json);
     gb_diagnostics_free(&diags);
     st->failed = 1;
+}
+
+/* Add a whole source file to the resident program AS THE ENTRIES IT WAS, by
+ * re-chunking it the way the prompt chunks typed input: accumulate lines until
+ * they parse, and that is one entry. Recorded as a single blob instead, a
+ * recovered ten-line program came back as ONE numbered entry, so `delete 1`
+ * removed all of it and `list` numbered only the first line -- reported by the
+ * book's Chapter 1 plan, which had to warn readers not to use `delete` after
+ * `recover`. A book working around a defect is the defect asking to be fixed.
+ *
+ * The same rule that decides a typed line is finished decides this, so what
+ * comes back is what was typed. A trailing fragment that never parses is kept
+ * as one entry rather than dropped: it is still the author's text. */
+static void buffer_add_source(ReplBuffer *b, const char *src) {
+    size_t start = 0, len = strlen(src);
+    size_t pos = 0;
+    char *acc = NULL;
+    size_t acc_len = 0;
+    while (pos <= len) {
+        const char *nl = strchr(src + pos, '\n');
+        size_t line_end = nl ? (size_t)(nl - src) + 1 : len;
+        if (pos >= len) {
+            break;
+        }
+        acc_len = line_end - start;
+        acc = realloc(acc, acc_len + 1);
+        if (!acc) {
+            abort();
+        }
+        memcpy(acc, src + start, acc_len);
+        acc[acc_len] = '\0';
+        pos = line_end;
+
+        gb_diagnostics d;
+        gb_diagnostics_init(&d);
+        AstStmtList parsed = ast_stmt_list_empty();
+        int ok = gb_parse(acc, REPL_SOURCE_NAME, &parsed, &d) == 0;
+        int incomplete = !ok && diagnostics_say_incomplete(&d);
+        if (ok || !incomplete) {
+            int kind = -1;
+            const char *name = NULL;
+            if (ok) {
+                chunk_declaration(parsed, &kind, &name);
+            }
+            buffer_add(b, acc, kind, name);
+            start = pos;
+        }
+        ast_free_program(parsed);
+        gb_diagnostics_free(&d);
+    }
+    if (start < len) {
+        buffer_add(b, src + start, -1, NULL);
+    }
+    free(acc);
 }
 
 /* ---- commands ------------------------------------------------------------ */
@@ -921,7 +982,7 @@ int repl_main(int json_diagnostics) {
                          * on your behalf would be a surprise, and could be a
                          * destructive one. Recorded as ONE entry, as typed. */
                         if (*src) {
-                            buffer_add(&buffer, src, -1, NULL);
+                            buffer_add_source(&buffer, src);
                             cache_write(&buffer);
                         }
                         free(src);
@@ -1006,10 +1067,23 @@ int repl_main(int json_diagnostics) {
                     status = 1;
                 } else {
                     char *src = buffer_source(&buffer);
+                    size_t lines = 0;
+                    for (const char *c = src; *c; c++) {
+                        if (*c == '\n') {
+                            lines++;
+                        }
+                    }
                     fputs(src, f);
                     free(src);
                     fclose(f);
                     program_saved = 1;
+                    /* CONFIRMED, not silent. Unix convention is silence on
+                     * success, and this is a beginner's prompt rather than a
+                     * Unix tool -- `recover` and `delete` already talk back,
+                     * and a reader who cannot tell whether `save` worked will
+                     * find out by quitting and losing it. */
+                    printf("saved %zu line%s to %s\n", lines,
+                           lines == 1 ? "" : "s", path);
                 }
                 free(path);
                 free(line);
