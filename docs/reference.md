@@ -7415,6 +7415,37 @@ whole program without needing a call site.
   reads the wrong columns**. It is computed without an answer key, from whether
   the family's column structure is the same in every source.
 
+- `ari_advisor` — **Phase 4: the optional LLM advisor** (design §11). A
+  *separate* library, because `llm` needs libcurl and a program that discovers a
+  specification should not carry an HTTP client it never calls.
+
+  `evidence(proposal [, options])` builds the bounded package that leaves the
+  machine. It is built from the **proposal**, never the report, so a value the
+  engine did not conclude cannot travel; the row family goes as its signature
+  and count rather than whole, since the record carries every line number its
+  members were found on. `mask(text)` is the redaction — digits to `9`, letters
+  to `X`/`x` — and it is **structural rather than removal**, because the shape
+  is the evidence a name is inferred from and `[redacted]` would be private and
+  useless. `modes()` lists them: `off`, `local`, `redacted` (the default) and `full`.
+
+  `advise_names(proposal, model [, options])` returns the proposal with an
+  `advice` record beside any field the advisor spoke about, plus `advisor`
+  provenance. **The field's own name is not touched.** `adopt(proposal, name)`
+  applies one suggestion, one at a time; there is deliberately no `adopt_all`.
+
+  **This corrects the design's §11**, which says every suggestion is "translated
+  into a deterministic candidate, executed by ARI, and scored". That holds for a
+  *rule* — coverage and collisions judge it. It does not hold for a *name*:
+  `posted` and `posted_date` parse the same corpus to the same rows with the
+  same coverage and the same collisions, so nothing can prefer either. A name is
+  therefore proposed and never adopted, and a person decides.
+
+  Advice is refused for a proposal the engine **refused** (`ok: false`) — the
+  rule `decision.evaluate` follows for a quantity a Finding declined to
+  establish. A model asked to name the columns of a rejected specification will
+  name them fluently, and those names would be the most convincing part of a
+  result already thrown out.
+
   **Measured over 8 sources carrying 230 planted rows**: an anchor-relative
   field recovers **230/230**; a positional one recovers **147/230** and is
   silent about the rest. That is the design's "relative structure before

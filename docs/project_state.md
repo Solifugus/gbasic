@@ -257,6 +257,14 @@ document list, with a status column, is `docs/README.md`.
   and perturbing the library shows it produces a REFUSAL instead, because
   framing is decided once and recognition and reading go through that one
   decision.
+- **an optional LLM advisor for report discovery** — `ari_advisor`
+  (`ari_discover` Phase 4). Proposes better field names from a bounded,
+  masked evidence package built from the PROPOSAL rather than the report, and
+  **never adopts one**: a field called posted and the same field called
+  posted_date parse a corpus identically, so nothing can score a name and a
+  person decides. Separate from
+  `ari_discover` so that library keeps no HTTP dependency. Refuses to advise a
+  proposal the engine refused.
 - **an ARI limitations register, deliberately NOT a set of fixes** —
   `docs/ari_limitations.md` plus executable probes in `tests/run_ari.sh`.
   Matthew's call, and it is a methodology decision rather than a feature.

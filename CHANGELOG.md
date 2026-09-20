@@ -9,6 +9,43 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `ari_advisor`: the optional LLM advisor, which never adopts a name
+
+`ari_discover` Phase 4 (design §11). Proposes better field names from a bounded,
+masked evidence package; a person adopts them.
+
+**This corrects §11.** That section says every LLM suggestion is *"translated
+into a deterministic candidate, executed by ARI, and scored"*. True of a **rule**
+— coverage and collisions judge it. **False of a name**: `posted` and
+`posted_date` parse the same corpus to the same rows with the same coverage and
+the same collisions, so running ARI cannot prefer either. A uniform "everything
+is validated" promise has a hole exactly where the advisor is most useful, since
+naming is the one thing Phases 0–3 cannot do without a heading to read.
+
+So a name is **proposed and never adopted** — it sits beside the field carrying
+who suggested it, and `adopt(proposal, name)` takes one at a time. There is
+deliberately no `adopt_all`.
+
+**A separate library**, because `llm` needs libcurl and a program that discovers
+a report specification should not carry an HTTP client it never calls.
+
+**The advisor never sees the report.** The package is built from the *proposal*,
+so a value the engine did not conclude cannot travel; the row family goes as its
+signature and count rather than whole, since the record carries every line
+number its members were found on. Masking is structural — `1,250.00` →
+`9,999.99` — because the shape is the evidence and `[redacted]` would be private
+and useless.
+
+**Advice is refused for a proposal the engine refused.** The engine already
+answers `ok: false` over the null corpus, so today an advisor would be handed no
+fields — but that is an accident, not a rule, and it stops holding the moment
+the engine reports low confidence instead of refusing. A model asked to name the
+columns of a rejected specification will name them fluently, and those names
+would be the most convincing part of a result already thrown out.
+
+26 checks on recorded replay — no network, no key.
+
+
 ### Changed — `finio_camt` locations carry a line and a byte range
 
 The adapter that reported the missing XML position now uses it. A camt location
