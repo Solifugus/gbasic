@@ -9,6 +9,13 @@ language surface may still change between releases.
 
 ## Unreleased
 
+---
+
+## 0.2.2 — 2026-09-20
+
+A published artifact is immutable, so the `load` warning fix below gets its own
+version rather than new bytes under 0.2.1's name and checksum.
+
 ### Fixed — `load` warned that the library it had just used was not used
 
 A library found *below* the loading file is reported as passed over — right when

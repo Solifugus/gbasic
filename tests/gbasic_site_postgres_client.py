@@ -84,7 +84,7 @@ def main():
     status, _, body = get(port, "/download")
     print(status)
     print("glibc 2.34" in body)
-    print('<a href="/download/gbasic-0.2.1-linux-x86_64.tar.gz"' in body)
+    print('<a href="/download/gbasic-0.2.2-linux-x86_64.tar.gz"' in body)
     # AND IT MUST BE REACHABLE from an ordinary page. A route nobody links to is
     # invisible, and every page still answers 200 either way.
     status, _, body = get(port, "/about")
