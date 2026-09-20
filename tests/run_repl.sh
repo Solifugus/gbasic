@@ -323,6 +323,79 @@ quit
 ')"
 contains "a typo is reported where it was typed" "<prompt>:1:7" "$err"
 lacks "and not where the prompt moved it to" "<prompt>:2:7" "$err"
+
+# A QUESTION THAT IS NOT A STATEMENT IS RUN BY WRAPPING IT, and until the
+# wrapper was given a LINE ORIGIN every diagnostic from one named a line the
+# author never typed. `age > 12` is not a statement, so it runs as
+# `print (\n age > 12\n)` and reported `<prompt>:2:5` -- line 2 of a buffer the
+# author typed ONE line of. The echo path above was fixed in 27dd275; this
+# path was not, and the two are different code.
+#
+# NO WRAPPER CAN FIX IT, which is why the fix is in the parser: `print (` is
+# seven characters against the author's one, so keeping the text on line 1
+# merely trades a wrong line for a column six to the right (MEASURED: 13 where
+# the author typed 7). `gb_parse_at` numbers the opener line 0 instead.
+#
+# THE LINE IS THE LOAD-BEARING HALF, because it is the half that names
+# something that does not exist. Asserted across several error shapes, since
+# the first attempt at this fix was right for ONE of them -- `1/0` carries its
+# own position on the operator node, so it read correctly while seven other
+# shapes still said line 0.
+for q in 'age > 12' 'undefined_fn()' '[1, 2][99]' 'sqrt("x")' 'len()'; do
+    line="$(printf '%s' "$(repl_err "$q
+quit
+")" | sed -n '1s/.*<prompt>:\([0-9]*\):.*/\1/p')"
+    check "a question reports the line it was typed on ($q)" "1" "$line"
+done
+
+# AND THE SAME FOR `?`, which takes a different path into the wrapper.
+for q in '? age' '? sqrt("x")' '? {a: 1}.b'; do
+    line="$(printf '%s' "$(repl_err "$q
+quit
+")" | sed -n '1s/.*<prompt>:\([0-9]*\):.*/\1/p')"
+    check "and so does a ? question ($q)" "1" "$line"
+done
+
+# THE COLUMN IS A SEPARATE, SMALLER FAULT and needed its own fix: `?` used to
+# be STRIPPED, which shifted every column one to the left -- and a column that
+# is nearly right still reads as right, so nothing would ever have reported it.
+# It is BLANKED now, so what the parser sees is the same width as what was
+# typed. Asserted as AGREEMENT between the two spellings of one question,
+# which is what the blanking buys and what no single-form check can see.
+bare="$(printf '%s' "$(repl_err 'age > 12
+quit
+')" | sed -n '1s/.*<prompt>:\([0-9]*:[0-9]*\).*/\1/p')"
+asked="$(printf '%s' "$(repl_err '? age > 12
+quit
+')" | sed -n '1s/.*<prompt>:\([0-9]*:[0-9]*\).*/\1/p')"
+check "a ? question is located two columns right of the bare one" \
+    "$(printf '%s:%s' "${bare%%:*}" "$(( ${bare##*:} + 2 ))")" "$asked"
+# THE CONTROL on that: indenting must move it further still, or "two to the
+# right" is satisfied by a constant nobody derived from the text.
+indented="$(printf '%s' "$(repl_err '   ? age > 12
+quit
+')" | sed -n '1s/.*<prompt>:\([0-9]*:[0-9]*\).*/\1/p')"
+check "and indenting it moves the column with it" \
+    "$(printf '%s:%s' "${bare%%:*}" "$(( ${bare##*:} + 5 ))")" "$indented"
+
+# THE ORACLE IS A FILE, for the shapes a file locates the same way. A binary
+# operator carries its own position, so `print (age > 12)` in a file names the
+# operator and the prompt must name it too, offset only by the 7 characters of
+# `print (` the prompt does not make the author type. This is the check that
+# cannot pass by both paths being wrong together.
+printf 'print (age > 12)
+' > "$work/qpos.bas"
+fcol="$(printf '%s' "$("$GB" "$work/qpos.bas" 2>&1)" | sed -n '1s/.*qpos\.bas:1:\([0-9]*\).*/\1/p')"
+check "and it agrees with the same expression in a file" \
+    "$(( fcol - 7 ))" "${bare##*:}"
+
+# WHAT THIS DOES *NOT* CLAIM, stated so nobody reads more into the tier than it
+# proves: for an error a file blames on the whole STATEMENT (an undefined
+# function, a bad builtin argument), a file says column 1 and the prompt names
+# the failing construct instead -- the prompt is MORE precise, because the
+# wrapper's synthetic `print` is located at its own expression. That is a
+# deliberate difference, not agreement, and the coarser file behaviour is
+# pre-existing and untouched here.
 lacks "nor as a malformed print" "expecting RPAREN" "$err"
 
 echo

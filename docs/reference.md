@@ -7488,6 +7488,28 @@ answered something, and printing the word would be noise:
 >
 ```
 
+`?` asks the same thing explicitly, and it is a **question**, not shorthand for
+`print`. The difference shows when a name has been taken by a command: `? list`
+reads back a variable called `list`, where a bare `list` shows the program.
+Because `?` declares the line a question, a comparison after it is read as one:
+
+```text
+> x = 1
+> ? x = 5
+false
+```
+
+Without the `?`, `x = 5` is an ordinary assignment and the prompt performs it.
+
+**A question reports its errors where you typed them.** A question that is not
+a statement cannot be run as written, so the prompt wraps it; that wrapping is
+invisible in diagnostics, which name the line and column of your own text:
+
+```text
+> age > 12
+runtime error at <prompt>:1:5: undefined variable: age
+```
+
 ### Unfinished lines
 
 A block or an open bracket asks for the rest of itself. The decision is the

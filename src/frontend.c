@@ -8,6 +8,9 @@
  * stack-allocated per-parse context, touching no file-scope parser state — so
  * concurrent gb_parse calls in one process share nothing. Declared here rather
  * than in a header because it is not yet part of a public interface. */
+extern int parse_source_reentrant_at(const char *source, const char *path,
+                                     int first_line,
+                                     gb_diagnostics *diags, AstStmtList *out_program);
 extern int parse_source_reentrant(const char *source, const char *path,
                                   gb_diagnostics *diags, AstStmtList *out_program);
 
@@ -648,7 +651,13 @@ static int server_blocks_validate(const AstStmtList *program, const char *path,
 
 int gb_parse(const char *source, const char *path,
              AstStmtList *out_program, gb_diagnostics *diags) {
-    int status = parse_source_reentrant(source, path, diags, out_program);
+    return gb_parse_at(source, path, 1, out_program, diags);
+}
+
+int gb_parse_at(const char *source, const char *path, int first_line,
+                AstStmtList *out_program, gb_diagnostics *diags) {
+    int status = parse_source_reentrant_at(source, path, first_line,
+                                           diags, out_program);
     if (status == 0) {
         if (server_blocks_validate(out_program, path, diags) != 0) {
             status = 1;

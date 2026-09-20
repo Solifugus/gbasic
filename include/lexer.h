@@ -122,6 +122,10 @@ typedef struct {
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);
+
+/* Initialise for a buffer whose first character is at line `first_line` of some
+ * larger text -- see the comment on the definition. lexer_init is this with 1. */
+void lexer_init_at(Lexer *lexer, const char *source, int first_line);
 void lexer_begin_lens_content(Lexer *lexer);
 Token lexer_next(Lexer *lexer);
 const char *token_type_name(TokenType type);

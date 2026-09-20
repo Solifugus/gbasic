@@ -19,4 +19,18 @@
 int gb_parse(const char *source, const char *path,
              AstStmtList *out_program, gb_diagnostics *diags);
 
+/* As gb_parse, for a buffer that is an EXCERPT of something larger: `first_line`
+ * is the line number its first character really has, and every position in the
+ * resulting AST and in `diags` is numbered from there. gb_parse is this with 1.
+ *
+ * It exists because a host that WRAPS the author's text -- the prompt runs a
+ * question as `print (\n<text>\n)` -- otherwise reports every diagnostic
+ * against a line the author never typed, and no wrapper can avoid it: a shorter
+ * opener on the same line fixes the line and breaks the column instead. The
+ * offsets are stamped onto AST nodes as they are built and both parse-time and
+ * run-time diagnostics read them from there, so this is the only place the
+ * question can be answered once. */
+int gb_parse_at(const char *source, const char *path, int first_line,
+                AstStmtList *out_program, gb_diagnostics *diags);
+
 #endif

@@ -5035,10 +5035,39 @@ learn to use.
   is what keeps the column exact and lets a trailing comment stay a comment,
   and every shorter opener (`print (` on the same line, a bare `(...)`, which
   is not a legal statement at all) trades the wrong line for a wrong column.
-  The honest fix is a LINE ORIGIN on `gb_parse` — "this buffer is an excerpt
-  that starts at line L" — which is a front-end API change the LSP also shares,
-  and is a bigger decision than a prompt cosmetic. Left for whoever takes that
-  up.
+  **RESOLVED 2026-09-19**, by exactly that: `gb_parse_at(source, path,
+  first_line, out, diags)`, with `gb_parse` a one-line wrapper passing 1 — so
+  none of the eleven existing callers changed. The prompt parses its wrapper at
+  origin 0, which numbers the opener line 0 and hands the author's text back
+  line 1.
+
+  TWO THINGS THE MEASUREMENT CHANGED. (1) The column was NOT exact after all,
+  as this entry claimed: `?` was STRIPPED rather than blanked, shifting every
+  column one to the left — true for the `?` form only, which is why the bare
+  form looked fine. It is blanked now, so the parser sees text the same width
+  as what was typed, and indenting the `?` moves the column with it. (2) THE
+  FIRST FIX MOVED THE DEFECT INSTEAD OF REMOVING IT: most runtime errors report
+  the ENCLOSING STATEMENT's position, and the wrapper's `print` is that
+  statement — so `? age` went from `<prompt>:2:5` to `<prompt>:0:1`, the same
+  line-that-does-not-exist shape in a new place. MEASURED across eight error
+  shapes, seven of eight named line 0; only `1/0` read correctly, because a
+  binary operator carries its own position. The synthetic statement is located
+  at its own expression now.
+
+  That second one is the lesson: I verified the fix on `age > 12`, which is a
+  binary operator, and it was the ONE shape that could not show the defect.
+  A single example is not a measurement.
+
+  Five perturbations proven red across `tests/run_repl.sh` and the new
+  `tests/frontend/test_parse_at.c` — and one of my own assertions could not
+  bite: the column checks all sat on a line-3 diagnostic, and the lexer resets
+  the column at every newline, so a perturbation shifting the starting column
+  left them all green. They test a FIRST-LINE error now.
+
+  NOT CLAIMED: for an error a file blames on the whole statement, the prompt is
+  now MORE precise than a file (it names the failing construct where a file
+  says column 1). That is a deliberate difference, asserted as one; the coarser
+  file behaviour is pre-existing and untouched.
 
 ### Smaller, for the reference
 

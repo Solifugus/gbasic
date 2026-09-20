@@ -3,6 +3,7 @@
 #
 #   test_diagnostics_sink   sink API unit test             -> must PASS
 #   test_parse_diagnostics  3 errors -> 3 diagnostics       -> must PASS (Phase 1)
+#   test_parse_at           gb_parse_at line origin         -> must PASS
 #   test_two_contexts       concurrent parse (reentrancy)   -> must PASS (Phase 2)
 #
 # Skips cleanly when no C compiler is available. Exit status is nonzero only if a
@@ -69,6 +70,14 @@ if build_and_run test_parse_diagnostics; then
     echo "OK   test_parse_diagnostics"
 else
     echo "FAIL test_parse_diagnostics  <-- Phase 1 sink wiring regression"
+    status=1
+fi
+
+echo "=== test_parse_at (must PASS) ==="
+if build_and_run test_parse_at; then
+    echo "OK   test_parse_at"
+else
+    echo "FAIL test_parse_at  <-- gb_parse_at line-origin regression"
     status=1
 fi
 

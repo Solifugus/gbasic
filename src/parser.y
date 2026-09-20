@@ -1615,8 +1615,20 @@ optional_newlines
  * gb_parse_ctx, so concurrent parses in one process share nothing. `path` labels
  * diagnostic locations (may be NULL) and `diags` is the sink (NULL => immediate
  * stderr via gb_report_to). This is the entry point gb_parse (frontend.c) uses. */
+int parse_source_reentrant_at(const char *source, const char *path,
+                              int first_line,
+                              gb_diagnostics *diags, AstStmtList *out_program);
+
 int parse_source_reentrant(const char *source, const char *path,
                            gb_diagnostics *diags, AstStmtList *out_program) {
+    return parse_source_reentrant_at(source, path, 1, diags, out_program);
+}
+
+/* As above, for a buffer that is an excerpt: `first_line` is the line its first
+ * character really has (see lexer_init_at). */
+int parse_source_reentrant_at(const char *source, const char *path,
+                              int first_line,
+                              gb_diagnostics *diags, AstStmtList *out_program) {
     gb_parse_ctx ctx;
     ctx.active_lexer = NULL;
     ctx.lexer_error_reported = 0;
@@ -1629,7 +1641,7 @@ int parse_source_reentrant(const char *source, const char *path,
     ctx.la_end_column = 0;
 
     Lexer lexer;
-    lexer_init(&lexer, source);
+    lexer_init_at(&lexer, source, first_line);
     ctx.active_lexer = &lexer;
 
     int result = yyparse(&ctx);

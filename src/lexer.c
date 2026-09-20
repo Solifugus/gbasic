@@ -390,10 +390,26 @@ static Token identifier_token(Lexer *lexer, const char *start, int line, int col
 }
 
 void lexer_init(Lexer *lexer, const char *source) {
+    lexer_init_at(lexer, source, 1);
+}
+
+/* Same, for a buffer that is an EXCERPT of something larger: `first_line` is
+ * the line number its first character really has. The prompt needs it because
+ * a question with no statement reading is run by WRAPPING it -- `print (`, the
+ * text, `)` -- which puts the author's one typed line on line 2 of a buffer
+ * they typed one line of, and every diagnostic then named a line that does not
+ * exist. Numbering the wrapper's opener line 0 makes the text line 1 again.
+ *
+ * Nothing about this is prompt-specific: any host parsing a fragment of a
+ * document (the LSP, a doc-example extractor) has the same question to answer,
+ * and answering it here is the only place it can be answered -- the offsets are
+ * stamped onto every AST node as it is built, and BOTH parse and runtime
+ * diagnostics read them from there. */
+void lexer_init_at(Lexer *lexer, const char *source, int first_line) {
     lexer->source = source;
     lexer->current = source;
     lexer->error_message[0] = '\0';
-    lexer->line = 1;
+    lexer->line = first_line;
     lexer->column = 1;
     lexer->lens_content_mode = 0;
     lexer->consider_depth = 0;

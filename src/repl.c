@@ -520,7 +520,38 @@ static void drain(gb_diagnostics *diags, int json) {
 
 /* Wrap typed text as an expression to print. The parentheses sit on their own
  * lines so a trailing comment on the text stays a comment -- a newline inside
- * brackets continues the statement, which is the whole of PLAT-CONT. */
+ * brackets continues the statement, which is the whole of PLAT-CONT.
+ *
+ * THE WRAPPER MUST BE INVISIBLE IN A DIAGNOSTIC, and putting the opener on its
+ * own line is exactly what made it visible: the author's one typed line became
+ * line 2 of a buffer they typed one line of, so `age > 12` reported
+ * `<prompt>:2:5` -- a line that does not exist, which is the one part of an
+ * error message a reader cannot learn to use. No wrapper can fix that: `print (`
+ * is seven characters against the author's one, so keeping the text on line 1
+ * merely trades the wrong line for a column six to the right (measured: 13
+ * where the author typed 7). The buffer is parsed with WRAP_FIRST_LINE instead,
+ * which numbers the opener 0 and hands the text back its own line number. */
+#define WRAP_FIRST_LINE 0
+
+/* The wrapper's `print` is a statement the author never typed, and MOST RUNTIME
+ * ERRORS REPORT THE ENCLOSING STATEMENT'S POSITION rather than the failing
+ * sub-expression's -- so numbering the opener line 0 moved the defect instead of
+ * removing it: `? age` reported `<prompt>:0:1`, which is the same
+ * line-that-does-not-exist shape 27dd275 took out of the echo path. Measured
+ * across eight error shapes, seven of eight named line 0; only `1/0` reported a
+ * real position, because a binary operator carries its own.
+ *
+ * So the synthetic statement is LOCATED AT ITS OWN EXPRESSION, which the parser
+ * already placed correctly inside the author's text. */
+static void locate_wrapper(AstStmtList chunk) {
+    for (size_t i = 0; i < chunk.count; i++) {
+        AstStmt *stmt = chunk.items[i];
+        if (stmt->kind == AST_STMT_PRINT && stmt->as.print.expr) {
+            stmt->line = stmt->as.print.expr->line;
+            stmt->column = stmt->as.print.expr->column;
+        }
+    }
+}
 static char *wrap_as_print(const char *text) {
     size_t n = strlen(text);
     char *out = malloc(n + 16);
@@ -595,11 +626,13 @@ static void run_chunk(ReplState *st, const char *text, int record, int asked) {
         gb_diagnostics question_diags;
         gb_diagnostics_init(&question_diags);
         AstStmtList question = ast_stmt_list_empty();
-        if (gb_parse(wrapped, REPL_SOURCE_NAME, &question, &question_diags) == 0) {
+        if (gb_parse_at(wrapped, REPL_SOURCE_NAME, WRAP_FIRST_LINE,
+                        &question, &question_diags) == 0) {
             ast_free_program(program);
             free(wrapped);
             gb_diagnostics_free(&question_diags);
             gb_diagnostics_free(&diags);
+            locate_wrapper(question);
             repl_running = 1;
             st->failed |= gb_session_run(question) != 0;
             repl_running = 0;
@@ -645,7 +678,8 @@ static void run_chunk(ReplState *st, const char *text, int record, int asked) {
     gb_diagnostics echo_diags;
     gb_diagnostics_init(&echo_diags);
     AstStmtList echo = ast_stmt_list_empty();
-    if (gb_parse(wrapped, REPL_SOURCE_NAME, &echo, &echo_diags) == 0) {
+    if (gb_parse_at(wrapped, REPL_SOURCE_NAME, WRAP_FIRST_LINE,
+                    &echo, &echo_diags) == 0) {
         free(wrapped);
         gb_diagnostics_free(&echo_diags);
         gb_diagnostics_free(&diags);
@@ -653,6 +687,7 @@ static void run_chunk(ReplState *st, const char *text, int record, int asked) {
          * the prompt wrapped it as a question -- so putting it in the resident
          * program would make `run` and `save` produce source that does not
          * parse. A question is not part of the program. */
+        locate_wrapper(echo);
         repl_running = 1;
         st->failed |= gb_session_run(echo) != 0;
         repl_running = 0;
@@ -1143,11 +1178,21 @@ int repl_main(int json_diagnostics) {
             {
                 const char *q = skip_space(line);
                 if (*q == '?' && !blank_line(q + 1)) {
-                    char *asked = malloc(strlen(q + 1) + 2);
+                    /* THE `?` IS BLANKED, NOT STRIPPED. Removing it shifts
+                     * every column left by one, so a diagnostic pointed one
+                     * character to the left of what the reader is looking at
+                     * -- the smaller half of the same defect as the wrapper's
+                     * line, and invisible in exactly the same way, since a
+                     * column that is nearly right still reads as right. The
+                     * whitespace before it is blanked too, so `  ? x` lines up
+                     * as well. */
+                    size_t prefix = (size_t)(q - line) + 1;
+                    char *asked = malloc(prefix + strlen(q + 1) + 2);
                     if (!asked) {
                         abort();
                     }
-                    sprintf(asked, "%s\n", q + 1);
+                    memset(asked, ' ', prefix);
+                    sprintf(asked + prefix, "%s\n", q + 1);
                     run_chunk(&st, asked, 0, 1);
                     free(asked);
                     free(line);
