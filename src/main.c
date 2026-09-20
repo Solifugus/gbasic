@@ -425,6 +425,17 @@ static void scan_gbasic_path_for_provider(AddUsesContext *ctx,
         start = end + 1;
     }
 
+    /* The stdlib this binary shipped with, so --add-loads works in a relocated
+     * tree exactly as the loader does. Same order as the loader's, and for the
+     * same reason: a tool that suggests a `load` the interpreter would then fail
+     * to resolve is worse than one that suggests nothing. */
+    {
+        const char *relative = gb_exe_relative_stdlib();
+        if (relative) {
+            scan_dir_for_provider(ctx, relative, name, context, is_modifier, require_provider_filename);
+        }
+    }
+
 #ifdef GBASIC_DEFAULT_STDLIB
     /* Fallback so --add-loads suggests stdlib providers without GBASIC_PATH set. */
     if (GBASIC_DEFAULT_STDLIB[0] != '\0') {
@@ -966,7 +977,7 @@ int main(int argc, char **argv) {
         print_help(argv[0]);
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        printf("gBASIC 0.1.0\n");
+        printf("gBASIC 0.2.0\n");
         return 0;
     } else if (argc == 3 && strcmp(argv[1], "--ast") == 0) {
         ast_only = 1;

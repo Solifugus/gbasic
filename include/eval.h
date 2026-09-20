@@ -66,4 +66,15 @@ void gb_session_close(void);
  * `vars`. Rendered in display mode, so it cannot raise. */
 void gb_session_list_vars(FILE *out);
 
+/* The stdlib directory that shipped with THIS binary, derived from
+ * /proc/self/exe against the install layout (<prefix>/bin/gbasic beside
+ * <prefix>/share/gbasic/stdlib), or NULL when there is none.
+ *
+ * Exists so an extracted tarball can be run where it was unpacked: the
+ * compiled-in GBASIC_DEFAULT_STDLIB is an ABSOLUTE path, so without this a
+ * relocated tree resolves no library at all. Consulted AFTER GBASIC_PATH and
+ * BEFORE the compiled-in default -- a relocated copy must prefer the stdlib it
+ * shipped with over a system install of a different version. */
+const char *gb_exe_relative_stdlib(void);
+
 #endif

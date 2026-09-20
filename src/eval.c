@@ -8208,6 +8208,66 @@ static void search_directory_for_library(const char *dir_path,
     closedir(dir);
 }
 
+/* THE STDLIB THAT SHIPPED WITH THIS BINARY.
+ *
+ * Derived from /proc/self/exe against the layout `make install` produces:
+ * <prefix>/bin/gbasic and <prefix>/share/gbasic/stdlib. So an extracted tarball
+ * and an installed tree are the same shape, and this is ONE RULE rather than a
+ * list of places to look -- a guess list is how a loader starts resolving a
+ * library from somewhere nobody chose.
+ *
+ * Answers NULL rather than a path that does not exist, so a caller cannot tell
+ * "no exe-relative stdlib" from "one that happens to be empty" by accident, and
+ * a DEVELOPMENT build (./gbasic at the repo root, where there is no ../share)
+ * simply contributes nothing.
+ *
+ * Computed once. The answer cannot change during a run: /proc/self/exe is
+ * fixed at exec, and a spawned actor re-execs and computes its own. */
+const char *gb_exe_relative_stdlib(void) {
+    static char resolved[PATH_MAX];
+    static int computed = 0;
+    if (computed) {
+        return resolved[0] ? resolved : NULL;
+    }
+    computed = 1;
+    resolved[0] = '\0';
+
+    char exe[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n <= 0) {
+        return NULL;
+    }
+    exe[(size_t)n] = '\0';
+
+    /* <prefix>/bin/gbasic -> <prefix>. Two separators back: strip the binary's
+     * name, then the directory holding it, whatever they are called. A binary
+     * NOT inside a directory (no separator at all) has no prefix to speak of. */
+    char *slash = strrchr(exe, '/');
+    if (!slash) {
+        return NULL;
+    }
+    *slash = '\0';
+    slash = strrchr(exe, '/');
+    if (!slash) {
+        return NULL;
+    }
+    *slash = '\0';
+
+    char candidate[PATH_MAX];
+    int written = snprintf(candidate, sizeof candidate,
+                           "%s/share/gbasic/stdlib", exe);
+    if (written < 0 || (size_t)written >= sizeof candidate) {
+        return NULL;
+    }
+
+    struct stat st;
+    if (stat(candidate, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return NULL;
+    }
+    memcpy(resolved, candidate, (size_t)written + 1);
+    return resolved;
+}
+
 static void search_gbasic_path_for_library(const char *name,
                                            int exact_filename,
                                            LibraryMatch **matches,
@@ -8235,6 +8295,31 @@ static void search_gbasic_path_for_library(const char *name,
             break;
         }
         start = end + 1;
+    }
+
+    /* RELOCATABLE FALLBACK, consulted before the compiled-in one.
+     *
+     * GBASIC_DEFAULT_STDLIB is baked in at compile time as an ABSOLUTE path, so
+     * a copy of the tree unpacked anywhere else finds no stdlib at all and every
+     * `load` fails. That is what makes a downloadable tarball an installer
+     * rather than something you can extract and run.
+     *
+     * Resolved from /proc/self/exe against the INSTALL LAYOUT the Makefile
+     * defines -- <prefix>/bin/gbasic alongside <prefix>/share/gbasic/stdlib --
+     * so an extracted tree and an installed one are the same shape and there is
+     * one rule rather than a list of guesses.
+     *
+     * ORDER MATTERS AND IS DELIBERATE: GBASIC_PATH still wins (the dev override,
+     * and the whole tree's test invocation), then the binary's OWN stdlib, then
+     * the compiled-in path. A relocated copy must prefer the libraries it
+     * shipped with over a system install that may be a different version --
+     * otherwise extracting 0.2.0 beside an installed 0.1.0 silently runs the
+     * older stdlib. */
+    if (*match_count == before_path) {
+        const char *relative = gb_exe_relative_stdlib();
+        if (relative) {
+            search_directory_for_library(relative, name, 1, exact_filename, matches, match_count);
+        }
     }
 
 #ifdef GBASIC_DEFAULT_STDLIB

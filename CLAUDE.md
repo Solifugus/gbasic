@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 gBASIC is a modern BASIC-family language implemented as a tree-walking
 interpreter in C11. The single binary `gbasic` lexes, parses, and evaluates
 `.bas`/`.gb` source files (both extensions are used interchangeably). Version is
-`0.1.0`. See `README.md` for the language feature surface and `docs/` for
+`0.2.0`. See `README.md` for the language feature surface and `docs/` for
 design/reference documents.
 
 ## Build & run

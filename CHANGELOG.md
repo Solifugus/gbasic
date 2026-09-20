@@ -9,6 +9,213 @@ language surface may still change between releases.
 
 ## Unreleased
 
+---
+
+## 0.2.0 — 2026-09-19
+
+**The minor version moves because the language surface did.** Semantic
+versioning puts a breaking change below 1.0.0 in the minor position, and this
+release carries five of them. A patch number would have renamed the rules under
+anyone already writing gBASIC.
+
+**What changed under existing programs** — each of these moves behaviour rather
+than extending it, and each has its entry below:
+
+- **A function from another library must now be qualified.** An unqualified name
+  reaches exactly two things: the library whose code is running, and the root
+  program's own functions. Measured first — of 177 distinct `library.function`
+  pairs that root programs reached, exactly one name was defined by more than
+  one library, so the old backward scan was almost never *choosing* between
+  candidates; it was resolving a unique name by a rule that could have chosen
+  wrongly by load order. Migration was ~400 call sites in this tree, and the
+  error names the library and spells the qualified call.
+- **Defining the same function twice in one scope is refused.** It used to be
+  silent: the second registration overwrote the first, so the program ran the
+  definition the author is less likely to be looking at. Nothing in this tree
+  had a duplicate — the gate was green before any fixture changed.
+- **`not` binds looser than comparison.** `not a = b` meant `(not a) = b` and
+  answered `false`. Measured: 3,760 uses of `not` in this tree, **zero** in the
+  affected shape. `- not x` is now a parse error.
+- **A string is never equal to a number, and ordering across kinds refuses.**
+  `0 = "stop"` was `true`, `1 > "stop"` answered, and two `file` values compared
+  equal to each other and to `0`. A missing case in a uniform chain, not a
+  coercion anyone designed. One real defect in this tree's own tests was found
+  by it, and `0 = false` — 1,472 measured uses — is deliberately kept.
+- **`load` is a declaration.** Written at the top level or inside the `program`
+  block, it registers before anything runs, by one pass the parent and a spawned
+  actor share.
+
+**What is new.** An AI stack that runs end to end — `llm` with a canonical
+part-based transcript and keyed replay, `tools`, `agent`, `mcp` in both
+directions, `retrieval` over pgvector, and `with principal` for the identity a
+body acts on behalf of. Non-blocking `http` and a `timer`, both delivered by the
+event loop. `discovery` and `estate` — what a database estate says about itself,
+including column lineage across hops. `finio`, the financial adapter framework,
+verified against real files from a real institution. `nlq`, scored against an
+independently computed answer key. Plus `notation`, `otp`, and `credit`,
+`scoring`, `deposits` and `lending` in the finance stack.
+
+**What is experimental within it** — these carry the word; the release as a
+whole does not:
+
+- **`reasoning` / `insight` / `decision` / `automation`** — a design laboratory.
+  The architecture is closed end to end, and the default significance threshold
+  is **measurably anti-conservative** (0.09–0.14 against a requested 0.05 on
+  lognormal data). Family-wise correction covers one search; a monthly process
+  runs twelve families and pays for one, measured at 0.725 that an ordinary year
+  raises a finding, 0.175 once `repetitions: 12` is declared — neither is 0.05.
+  Every measurement behind it is on generated data.
+- **`gui`** (GTK 3) — a proof of concept, superseded by `gi` and the GTK 4
+  libraries built on it.
+- **GUI testing is manual.** It needs a display, so the display-gated tiers do
+  not run in CI.
+
+**What is not here.** WebSockets and chunked request bodies in the WebServer.
+Optimisation (`MAXIMIZE … SUBJECT TO`). A `business.bas` facade over the
+reasoning layers, deferred until their boundaries have been tested. Reject
+inference, monotonic binning and adverse-action reason codes in `scoring`.
+`xml.parse` gives a node no position, so a schema error cannot be located —
+known, and deliberately left for the next release rather than rushed into this
+one.
+
+**Platform.** Linux. CI builds and runs the suite on Ubuntu 24.04 LTS and
+current Ubuntu, on x86-64. **riscv64** is a supported target and the suite runs
+there on Ubuntu 24.04, with the valgrind tiers skipping because valgrind has no
+riscv64 port. No macOS or Windows support is claimed — neither is tested.
+
+**The gate.** 144 suites, discovered by glob rather than listed.
+
+---
+
+### Added — a binary finds the stdlib that shipped with it
+
+`GBASIC_DEFAULT_STDLIB` is baked in at compile time as an **absolute** path, so
+a copy of the tree unpacked anywhere else resolved no library at all and every
+`load` failed. That is what made a downloadable build an *installer* rather than
+something a reader can extract and run — found while scoping the release
+tarball, not reported by anyone, because nobody had yet tried to move one.
+
+`gb_exe_relative_stdlib()` derives `<prefix>/share/gbasic/stdlib` from
+`/proc/self/exe`, matching the layout `make install` already produces, so an
+extracted tree and an installed one are the same shape and this is **one rule**
+rather than a list of places to look.
+
+**The order is deliberate:** `GBASIC_PATH` still wins — it is the development
+override and how this whole tree invokes its own tests — then the binary's own
+stdlib, then the compiled-in path. A relocated copy must prefer the libraries it
+shipped with, or extracting 0.2.0 beside an installed 0.1.0 silently runs the
+older stdlib.
+
+Asserted in `tests/run_relocatable.sh`, whose load-bearing tier is a
+**difference**: the planted library exists nowhere else, and the *original*
+binary must fail on the same program. One answer without the other proves
+nothing — and that is not hypothetical, since gBASIC is installed at the
+compiled-in prefix on the machine this was written on.
+
+
+### Changed — `not` binds looser than comparison
+
+`not a = b` meant `(not a) = b` and answered `false`. Nothing said so, and
+nothing could: **both readings produce an ordinary boolean**, so the wrong one
+is a value rather than an error. Every BASIC in the family puts `not` below
+comparison; gBASIC had it at the unary level beside `-x`.
+
+One new grammar level (`not_expression`, between comparison and `and`); bison
+still reports zero conflicts.
+
+**Measured before changing it:** 3,760 uses of `not` across `stdlib`,
+`examples` and `tests`, and **zero** are `not X = Y` in code position. Nothing
+depended on the old reading, which is why it survived — the shape that would
+have exposed it is the shape nobody wrote, because anyone who tried it got a
+wrong answer and rearranged the expression.
+
+**A documented consequence:** `- not x` is now a parse error. It was legal;
+nothing in the tree writes it, and it is asserted so the removal stays
+deliberate.
+
+`docs/reference.md`'s precedence table moves with the grammar and is now read
+back by a tripwire — it was *accurate* before this change and would otherwise
+have become wrong in the other direction.
+
+### Fixed — a refused condition was reported and then ignored
+
+Six value kinds refuse to be a condition — `unknown`, whose whole meaning is
+that we do not know, and the five live connection handles. Refusing is right:
+reading an absent value as `false` makes a missing answer indistinguishable
+from a negative one.
+
+**It raised and returned 0, and nobody looked.** Every caller checked for a
+raise *before* calling `value_truthy` and never after, so the refusal was
+reported and then discarded. All four properties were wrong together:
+
+| | before |
+|---|---|
+| `if unknown then` | reported the error, **ran the else branch**, carried on past `end if` |
+| `while unknown` | reported it and continued past the loop |
+| `do until unknown` | **hung** — a condition that can never become true is an infinite loop (5.18 million iterations in three seconds) |
+| all three | uncatchable; `on error goto next` never saw any of it |
+
+The fix is structural rather than three more checks: `raised` is an
+out-parameter, so the compiler asks — which immediately found **two more sites**
+in `src/modules/xml.c` that reading had not.
+
+### Fixed — four defects a beginner meets in the first hour
+
+Three of the four were **worse than the report that raised them**, because each
+was filed from the symptom.
+
+**`? x = 5` at the prompt silently assigned.** Reported as "prints nothing".
+Measured, it set `x` to 5 — `x = 5` is a perfectly good *assignment*, so the
+ordinary path took it, acted, and answered nothing. A question is never
+recorded, so the session and the resident program then **disagree** and `run`
+rebuilds a different `x`. `?` now *declares* the line a question: the question
+reading is tried first and falls through to the statement reading only where
+there is no expression form, so `? print "hi"` still prints and `?` never costs
+a line that would otherwise have worked.
+
+**`--add-loads` had silently become a no-op.** Reported as "did not add
+`load sqlite`; it may handle only `.bas` libraries". Measured, it added
+**nothing at all** — not for `sqlite`, not for a `.bas` library either. It only
+ever looked at *unqualified* calls, and the language moved underneath it: the
+scope rules made a call into another library qualified **by requirement**, so
+the shape the tool understands is the shape a correct program can no longer
+contain. It did not fail — it returned the source unchanged, which reads
+exactly like *"you already have every load you need"*. A tool that is silently
+a no-op is worse than one that is missing.
+
+**`round(x)` refused one argument** — the form every other BASIC has and the
+first thing a reader tries. `floor`, `ceil`, `abs` and `sqrt` all take one
+argument beside it; nothing chose to make the commonest call of the family the
+one that fails. `places` defaults to 0; zero and three arguments are still
+refused.
+
+Plus nine documentation gaps, re-measured against the binary first — **two were
+not what the report said**. The real `llm.local` defect was genuine and is fixed
+in three places: `base_url` is an *origin* and `_endpoint` appends the path, so
+the documented `localhost:11434/v1` really would have produced `/v1/v1/…`.
+
+### Fixed — a question reports its errors where you typed them
+
+New front-end entry point **`gb_parse_at(source, path, first_line, …)`**;
+`gb_parse` wraps it passing 1, so none of the eleven existing callers changed.
+
+A question with no statement reading is run by wrapping it as
+`print (\n<text>\n)`, which reported **one line low** — `age > 12` said
+`<prompt>:2:5` for a one-line entry, naming a line that does not exist. The
+parser is the only place this can be answered: the offsets are stamped onto AST
+nodes as they are built, and *both* parse-time and runtime diagnostics read them
+from there. No wrapper can fix it either, since `print (` is seven characters
+against the author's one.
+
+Two things this found that reading had not. The claim that **"the column is
+exact" was wrong** — `?` was *stripped*, shifting every column one left; it is
+blanked now. And the first fix **moved the defect rather than removing it**:
+most runtime errors report the *enclosing statement's* position and the
+wrapper's `print` is that statement, so `? age` went `2:5` → `0:1`. Measured
+across eight error shapes, **seven of eight named line 0**; the one that read
+correctly was `1/0`, because a binary operator carries its own position — and
+that was the example the fix had been verified on.
+
 ### Added — `nlq`: a question, over an estate nobody can hold in their head
 
 First increment: **retrieval and grounding, with no model and no SQL**, plus the
