@@ -77,3 +77,30 @@ xml.close(rd)
 print "elements" + names
 print "lines   " + lines
 print "distinct lines " + string(len(distinct))
+
+print "--- byte ranges extract the element's own source ---"
+' THE ORACLE IS THE DOCUMENT, not our own numbers: each range is sliced out of
+' the source and must reproduce the element verbatim. A pair of plausible
+' integers proves nothing; the text they cut does.
+rr = xml.parse(text, { positions: true })
+for each c in rr.children
+  if type(c) = "record" then
+    print "  " + c.name + " [" + byte_slice(text, c.byte_start, c.byte_end - c.byte_start) + "]"
+  end if
+end for
+
+print "--- the range is BYTES, and `mid` is codepoints ---"
+' NAMED byte_start/byte_end FOR THIS REASON. gBASIC indexes strings by
+' CODEPOINT, so on a document with non-ASCII in it the two disagree and `mid`
+' returns a plausible slice of the WRONG TEXT -- right on every ASCII file and
+' silently wrong on the first accented one, which is the defect ari_discover
+' records finio Phase 0 shipping. Asserted as a DIFFERENCE: if these two ever
+' agree, this fixture has lost the non-ASCII content that makes it meaningful.
+u = xml.find(rr, "utf8")
+print "  codepoints " + string(len(text)) + " bytes " + string(byte_count(text))
+print "  byte_slice [" + byte_slice(text, u.byte_start, u.byte_end - u.byte_start) + "]"
+print "  mid        [" + mid(text, u.byte_start, u.byte_end - u.byte_start) + "]"
+
+print "--- ranges are absent unless asked for ---"
+plain = xml.parse(text)
+print "  has byte_start: " + string(has(plain, "byte_start"))

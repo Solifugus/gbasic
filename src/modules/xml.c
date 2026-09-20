@@ -21,6 +21,7 @@
 #include <libxml/tree.h>
 #include <libxml/xmlerror.h>
 #include <libxml/HTMLparser.h>
+#include <libxml/parserInternals.h>
 
 #define XML_ERROR_CODE 5001
 #define XML_MAX_DEPTH 256
@@ -149,15 +150,194 @@ static int xml_parse_options(Value *opts, int *keep_space, int *want_pos) {
     return 1;
 }
 
+/* ---------------------------------------------------------------------------
+ * BYTE RANGES, COLLECTED BY A SECOND PASS.
+ *
+ * WHY TWO PASSES RATHER THAN ONE. The obvious implementation is to abandon the
+ * DOM and build records straight from SAX callbacks -- measured 4x faster, and
+ * it was the first plan. What stopped it is that the conversion's TEXT handling
+ * is the subtle part, not the positions: adjacent text and CDATA runs are
+ * merged, a whitespace-only run is dropped unless keep_space, and comments and
+ * PIs are skipped. Every way of getting that wrong in a callback builder yields
+ * a PLAUSIBLE DOCUMENT that the existing goldens still accept.
+ *
+ * So the tested tree walk is left exactly as it is and a SAX pass runs beside
+ * it purely to collect offsets. Both visit elements in DOCUMENT ORDER --
+ * verified, not assumed, against a fixture carrying namespaces, mixed content
+ * and repeated names -- so the Nth range belongs to the Nth element the walk
+ * builds, and the two are zipped by index.
+ *
+ * THE COST IS A SECOND PARSE, and it is paid only by callers who asked for
+ * positions. That is the same trade `positions` itself makes.
+ *
+ * THE START OFFSET IS FOUND BY SCANNING BACK. At startElementNs libxml2's
+ * cursor sits just past the start tag's '>', and there is no API for where the
+ * '<' was. Scanning back to the nearest '<' is exact rather than a heuristic:
+ * a raw '<' is forbidden inside an attribute value, so the first one found
+ * going backwards is always the tag's own. Verified by extracting [start,end)
+ * and comparing it to the element's source text. */
+typedef struct {
+    long start;
+    long end;
+} XmlRange;
+
+typedef struct {
+    XmlRange *items;
+    size_t count, cap;
+    size_t *open;          /* slot indices of elements not yet closed */
+    size_t open_count, open_cap;
+    const char *buf;
+    size_t buflen;
+    xmlParserCtxtPtr ctxt;
+    int overflow;          /* an allocation failed; ranges are abandoned */
+} XmlPosCollect;
+
+/* THE COLLECTOR RIDES IN `_private`, NOT IN `userData`.
+ *
+ * xmlSAX2InitDefaultSAXHandler installs libxml2's own handlers for everything
+ * this pass does not override, and those CAST userData TO THE PARSER CONTEXT.
+ * Putting the collector there segfaults the moment any default handler runs --
+ * which a standalone probe does not reveal, because a probe that keeps its
+ * state in a global never touches userData and works perfectly. */
+static XmlPosCollect *xml_pos_of(void *ud) {
+    xmlParserCtxtPtr c = (xmlParserCtxtPtr)ud;
+    return c ? (XmlPosCollect *)c->_private : NULL;
+}
+
+static long xml_pos_cursor(XmlPosCollect *pc) {
+    xmlParserInputPtr in = pc->ctxt->input;
+    if (!in) {
+        return -1;
+    }
+    return (long)(in->consumed + (size_t)(in->cur - in->base));
+}
+
+static void xml_pos_start(void *ud, const xmlChar *localname, const xmlChar *prefix,
+                          const xmlChar *uri, int nns, const xmlChar **ns,
+                          int natt, int ndef, const xmlChar **atts) {
+    (void)localname; (void)prefix; (void)uri; (void)nns; (void)ns;
+    (void)natt; (void)ndef; (void)atts;
+    XmlPosCollect *pc = xml_pos_of(ud);
+    if (!pc || pc->overflow) {
+        return;
+    }
+    long cur = xml_pos_cursor(pc);
+    long begin = cur;
+    if (begin > (long)pc->buflen) {
+        begin = (long)pc->buflen;
+    }
+    while (begin > 0 && pc->buf[begin] != '<') {
+        begin--;
+    }
+
+    if (pc->count == pc->cap) {
+        size_t ncap = pc->cap ? pc->cap * 2 : 64;
+        XmlRange *grown = realloc(pc->items, ncap * sizeof(*grown));
+        if (!grown) { pc->overflow = 1; return; }
+        pc->items = grown; pc->cap = ncap;
+    }
+    if (pc->open_count == pc->open_cap) {
+        size_t ncap = pc->open_cap ? pc->open_cap * 2 : 64;
+        size_t *grown = realloc(pc->open, ncap * sizeof(*grown));
+        if (!grown) { pc->overflow = 1; return; }
+        pc->open = grown; pc->open_cap = ncap;
+    }
+    pc->items[pc->count].start = begin;
+    pc->items[pc->count].end = -1;
+    pc->open[pc->open_count++] = pc->count;
+    pc->count++;
+}
+
+static void xml_pos_end(void *ud, const xmlChar *localname, const xmlChar *prefix,
+                        const xmlChar *uri) {
+    (void)localname; (void)prefix; (void)uri;
+    XmlPosCollect *pc = xml_pos_of(ud);
+    if (!pc || pc->overflow || pc->open_count == 0) {
+        return;
+    }
+    size_t slot = pc->open[--pc->open_count];
+    pc->items[slot].end = xml_pos_cursor(pc);
+}
+
+/* Collect one range per element, in document order. Returns 1 on success; 0
+ * leaves the caller to carry on WITHOUT positions rather than fail the parse --
+ * the document has already parsed once by then, so a failure here is ours and
+ * must not cost the caller their data. */
+static int xml_collect_ranges(const char *text, size_t len, XmlPosCollect *pc) {
+    memset(pc, 0, sizeof(*pc));
+    pc->buf = text;
+    pc->buflen = len;
+
+    xmlSAXHandler sax;
+    memset(&sax, 0, sizeof(sax));
+    xmlSAX2InitDefaultSAXHandler(&sax, 0);
+    sax.initialized = XML_SAX2_MAGIC;
+    sax.startElementNs = xml_pos_start;
+    sax.endElementNs = xml_pos_end;
+
+    xmlParserCtxtPtr ctxt = xmlCreateMemoryParserCtxt(text, (int)len);
+    if (!ctxt) {
+        return 0;
+    }
+    pc->ctxt = ctxt;
+    /* THE CONTEXT'S OWN SAX HANDLER IS RESTORED BEFORE FREEING, not nulled.
+     * xmlCreateMemoryParserCtxt ALLOCATES one, and overwriting the pointer with
+     * this stack handler and then setting it to NULL orphans libxml2's --
+     * 256 bytes definitely lost per parse, which valgrind found and every
+     * functional test passed straight over. Putting the original back lets
+     * xmlFreeParserCtxt free what it allocated, and keeps the stack handler
+     * from being freed, which is the reason nulling looked right. */
+    xmlSAXHandlerPtr saved = ctxt->sax;
+    ctxt->sax = &sax;
+    ctxt->_private = pc;
+    xmlParseDocument(ctxt);
+    ctxt->sax = saved;
+    ctxt->_private = NULL;
+    /* THE DEFAULT HANDLERS BUILD A TREE. xmlSAX2StartDocument calls xmlNewDoc,
+     * so this pass -- which wants nothing but offsets -- silently constructs a
+     * whole second document that xmlFreeParserCtxt does not own. Also found by
+     * valgrind, after the first leak here was fixed and hid it. Freeing it is
+     * correct rather than suppressing only the symptom: the tree is genuinely
+     * built and genuinely unwanted, and the cost of building it is the price of
+     * reusing libxml2's own handlers instead of reimplementing entity and
+     * namespace resolution to avoid them. */
+    if (ctxt->myDoc) {
+        xmlFreeDoc(ctxt->myDoc);
+        ctxt->myDoc = NULL;
+    }
+    xmlFreeParserCtxt(ctxt);
+    pc->ctxt = NULL;
+    return !pc->overflow;
+}
+
+static void xml_pos_free(XmlPosCollect *pc) {
+    free(pc->items);
+    free(pc->open);
+    pc->items = NULL;
+    pc->open = NULL;
+}
+
 /* Convert a libxml2 element node into a §2 node record. Returns 1 on success,
  * 0 on error (a structured error has been raised and *out is untouched). */
 static int xml_element_to_record(xmlNode *elem, int depth, int keep_space,
-                                 int want_pos, Value *out) {
+                                 int want_pos, XmlPosCollect *pos, size_t *pidx,
+                                 Value *out) {
     if (depth > XML_MAX_DEPTH) {
         char m[128];
         snprintf(m, sizeof(m), "xml: maximum nesting depth (%d) exceeded", XML_MAX_DEPTH);
         runtime_error_raise(m, XML_ERROR_CODE, "xml");
         return 0;
+    }
+
+    /* THE INDEX IS CLAIMED ON ENTRY, before any child recurses. The SAX pass
+     * emits a start event for an element BEFORE its children, so the walk has
+     * to claim its slot in the same order -- taking it after the children were
+     * built would give every parent one of its descendants' ranges, which is a
+     * plausible range on the wrong element and exactly the class of defect
+     * nothing downstream can detect. */
+    size_t my_idx = 0;
+    if (want_pos && pidx) {
+        my_idx = (*pidx)++;
     }
 
     Value rec = value_record(NULL, 0);
@@ -225,7 +405,8 @@ static int xml_element_to_record(xmlNode *elem, int depth, int keep_space,
                 textlen = 0;
             }
             Value child;
-            if (!xml_element_to_record(c, depth + 1, keep_space, want_pos, &child)) {
+            if (!xml_element_to_record(c, depth + 1, keep_space, want_pos,
+                                       pos, pidx, &child)) {
                 free(textbuf);
                 for (size_t i = 0; i < count; i++) {
                     value_free(items[i]);
@@ -268,6 +449,27 @@ static int xml_element_to_record(xmlNode *elem, int depth, int keep_space,
      * byte-identical. */
     if (want_pos) {
         record_set(&rec, "line", value_number((double)xmlGetLineNo(elem)));
+
+        /* ZIPPED BY INDEX, using the slot claimed on entry.
+         *
+         * NAMED `byte_start`/`byte_end` AND NOT `start`/`end`, because the unit
+         * is the whole danger here. gBASIC's `mid` and `len` are CODEPOINT
+         * indexed and these are BYTES, so a caller who reaches for the obvious
+         * `mid(text, node.start, ...)` gets the right answer on every ASCII
+         * document and silently drifting garbage on the first accented one --
+         * measured on this module's own fixture, where 540 codepoints are 549
+         * bytes and an element near the end came back straddling its
+         * neighbour. That is the defect ari_discover's design records finio
+         * Phase 0 shipping, and a name carrying its unit is what stops it:
+         * `byte_slice(text, node.byte_start, ...)` reads as obviously matched,
+         * and `mid` next to `byte_start` reads as obviously wrong. */
+        if (pos && pidx && my_idx < pos->count) {
+            XmlRange r = pos->items[my_idx];
+            if (r.start >= 0 && r.end > r.start) {
+                record_set(&rec, "byte_start", value_number((double)r.start));
+                record_set(&rec, "byte_end", value_number((double)r.end));
+            }
+        }
     }
 
     *out = rec;
@@ -292,12 +494,23 @@ static Value xml_parse_memory(const char *text, size_t len, int keep_space,
     }
     xmlNode *root = xmlDocGetRootElement(doc);
     Value result;
+    XmlPosCollect pos;
+    memset(&pos, 0, sizeof(pos));
+    size_t pidx = 0;
+    /* The second pass runs only when asked, and a failure in it costs the
+     * caller their POSITIONS, never their DOCUMENT -- the parse has already
+     * succeeded by this point, so a fault here is ours to absorb. */
+    if (want_pos) {
+        (void)xml_collect_ranges(text, len, &pos);
+    }
     if (!root) {
         runtime_error_raise("xml: document has no root element", XML_ERROR_CODE, "xml");
         result = value_null();
-    } else if (!xml_element_to_record(root, 1, keep_space, want_pos, &result)) {
+    } else if (!xml_element_to_record(root, 1, keep_space, want_pos,
+                                      want_pos ? &pos : NULL, &pidx, &result)) {
         result = value_null();
     }
+    xml_pos_free(&pos);
     xmlFreeDoc(doc);
     xmlFreeParserCtxt(ctxt);
     return result;
@@ -320,12 +533,44 @@ static Value xml_parse_path(const char *path, int keep_space, int want_pos) {
     }
     xmlNode *root = xmlDocGetRootElement(doc);
     Value result;
+    XmlPosCollect pos;
+    memset(&pos, 0, sizeof(pos));
+    size_t pidx = 0;
+    char *srcbuf = NULL;
+
+    /* THE BYTES HAVE TO BE IN MEMORY for the backscan that finds each start
+     * tag's '<', so the file is read a second time -- only when positions were
+     * asked for, and a failure to read it costs the ranges and nothing else.
+     * Reading it always, to save this, would make every parse_file pay for a
+     * feature most callers do not use. */
+    if (want_pos) {
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            if (fseek(f, 0, SEEK_END) == 0) {
+                long sz = ftell(f);
+                if (sz > 0 && fseek(f, 0, SEEK_SET) == 0) {
+                    srcbuf = malloc((size_t)sz);
+                    if (srcbuf && fread(srcbuf, 1, (size_t)sz, f) == (size_t)sz) {
+                        (void)xml_collect_ranges(srcbuf, (size_t)sz, &pos);
+                    } else {
+                        free(srcbuf);
+                        srcbuf = NULL;
+                    }
+                }
+            }
+            fclose(f);
+        }
+    }
+
     if (!root) {
         runtime_error_raise("xml: document has no root element", XML_ERROR_CODE, "xml");
         result = value_null();
-    } else if (!xml_element_to_record(root, 1, keep_space, want_pos, &result)) {
+    } else if (!xml_element_to_record(root, 1, keep_space, want_pos,
+                                      want_pos ? &pos : NULL, &pidx, &result)) {
         result = value_null();
     }
+    xml_pos_free(&pos);
+    free(srcbuf);
     xmlFreeDoc(doc);
     xmlFreeParserCtxt(ctxt);
     return result;
@@ -349,7 +594,7 @@ static Value xml_parse_html_memory(const char *text, size_t len) {
         runtime_error_raise("xml: HTML document has no root element",
                             XML_ERROR_CODE, "xml");
         result = value_null();
-    } else if (!xml_element_to_record(root, 1, 0, 0, &result)) {
+    } else if (!xml_element_to_record(root, 1, 0, 0, NULL, NULL, &result)) {
         result = value_null();
     }
     xmlFreeDoc(doc);
@@ -1033,7 +1278,7 @@ static Value xml_eval_subtree(AstExpr *expr) {
         return value_null();
     }
     Value out;
-    if (!xml_element_to_record(node, 0, 0, 0, &out)) {
+    if (!xml_element_to_record(node, 0, 0, 0, NULL, NULL, &out)) {
         /* xml_element_to_record already raised a structured error (e.g. depth) */
         value_free(rvv);
         return value_null();

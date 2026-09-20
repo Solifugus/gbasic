@@ -491,15 +491,18 @@ fi
 # checking it. One probe per live entry, going RED when the gap closes, so the
 # entry gets struck rather than left standing.
 printf 'TIER open_worth_fixing\n'
+# ENTRY -3 IS STRUCK, so this is now a control proving the limitation is GONE
+# rather than a negative control proving it holds. The inversion matters: the
+# naive probe (parse, look for a `line`) reports the same thing before and after
+# the fix, because positions are OPT-IN -- so it would have kept the entry open
+# for ever while the capability shipped.
 probe="$(timeout 60 ./gbasic tests/limitations/xml_no_position.bas 2>&1)"
-if printf '%s' "$probe" | grep -q '^HOLDS:'; then
-    ok "DOGFOOD -3 still holds: ${probe#HOLDS: }"
-elif printf '%s' "$probe" | grep -q '^FIXED:'; then
-    fail "DOGFOOD entry -3 (xml.parse carries no position) IS NOW FIXED -- ${probe#FIXED: }"
-    printf '       Strike it from the ranked open list, add a RESOLVED note at the\n'
-    printf '       chronological entry, and give finio_camt its byte ranges.\n'
+if printf '%s' "$probe" | grep -q '^FIXED:'; then
+    ok "DOGFOOD -3 is struck and stays fixed: ${probe#FIXED: }"
+elif printf '%s' "$probe" | grep -q '^REGRESSED:'; then
+    fail "DOGFOOD entry -3 (xml node positions) HAS REGRESSED -- ${probe#REGRESSED: }"
 else
-    fail "the -3 probe did not run: $probe"
+    fail "the -3 control did not run: $probe"
 fi
 
 printf '\nrun_limitations: PASS=%d SKIP=%d\n' "$pass" "$skip"

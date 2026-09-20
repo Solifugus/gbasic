@@ -35,27 +35,25 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
--3. **`xml.parse` gives a node no POSITION, so a value read from XML cannot
-   say where in the document it came from.** A node is `name`, `qname`, `ns`,
-   `attrs`, `children` — and nothing else. Only the streaming reader reports a
-   position, and what it reports is a LINE
-   (`xmlTextReaderGetParserLineNumber`), not a byte offset.
-   **Cost, twice, in one week.** `finio_camt` interprets ISO 20022 statements
-   and its provenance locations therefore carry a path and an occurrence and
-   **no byte range** — shipped as a documented limitation, and the reason §4's
-   location model had to make a byte range optional for the `xml` kind at all.
-   Then `finio_ofx` needed positions into the ORIGINAL bytes (so that reading
-   an OFX 1.x file could not be done by converting it to XML first, which would
-   put every location into text the bank never sent) and had to carry its own
-   tag scanner rather than reuse anything.
-   **libxml2 already has what is missing and we do not expose it:**
-   `xmlGetLineNo(node)` for a DOM node, `xmlTextReaderByteConsumed()` for the
-   reader. So this is a module change rather than a new capability.
-   **Not to be confused with wanting an SGML library**, which was the first
-   instinct and is the wrong target: what OFX 1.x needs is omitted end tags,
-   whether an end tag may be omitted depends on the DTD's content model, and a
-   library called `sgml` that implemented OMITTAG alone would overclaim a
-   standard in the direction that mis-parses silently.
+-3. ~~**`xml.parse` gives a node no POSITION.**~~ **CLOSED 2026-09-20.** A node
+   now carries an exact `line` and a `byte_start`/`byte_end` range under
+   `xml.parse(text, { positions: true })`, and the streaming reader's `line` --
+   which was **wrong**, not missing, reporting the parser's input cursor rather
+   than the node -- reports the node's own line.
+   **Three measurements decided the design, none of them guessable by reading.**
+   libxml2 clamps a node's line at 65535 without `XML_PARSE_BIG_LINES`, failing
+   by returning a plausible number. The reader's shipped `line` gave the same
+   value for every event of a small document. And the DOM has no byte offset at
+   all, so ranges come from a SAX pass running beside the tree walk rather than
+   replacing it -- the walk's text handling (merged runs, conditionally dropped
+   whitespace, skipped comments) is the subtle part, and every way of getting it
+   wrong yields a plausible document.
+   Ranges are **bytes** and named so: `mid` is codepoint-indexed and silently
+   wrong on the first non-ASCII character, which is the defect this tree already
+   records `finio` Phase 0 shipping.
+   Consumers that wanted this -- `finio_camt`'s missing byte ranges,
+   `finio_ofx`'s private tag scanner -- are **not yet migrated**; the capability
+   they were blocked on now exists.
 
 -2. ~~**No sub-second clock a program can read.**~~ **NOT A GAP — RULED
    2026-09-12, the same day it was filed.** Second resolution is DELIBERATE:

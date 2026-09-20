@@ -9,6 +9,41 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — an XML node can say which bytes it came from
+
+`positions: true` now also gives every element a **`byte_start`/`byte_end`**
+half-open range spanning the element's whole source, opening tag to closing tag:
+
+```basic
+t = xml.find(doc, "total")
+print byte_slice(text, t.byte_start, t.byte_end - t.byte_start)
+' <total ccy="EUR">1250.00</total>
+```
+
+**Collected by a second pass, not by replacing the tree walk.** Building records
+straight from SAX callbacks measured 4× faster and was the first plan; what
+stopped it is that the conversion's *text* handling is the subtle part — merged
+text and CDATA runs, conditionally dropped whitespace, skipped comments — and
+every way of getting that wrong yields a plausible document the goldens accept.
+So the tested walk is untouched and a SAX pass runs beside it purely for
+offsets. Both visit elements in document order (verified, not assumed), so the
+Nth range belongs to the Nth element. The cost is another parse, paid only when
+positions are asked for.
+
+**They are bytes, and the names say so.** `mid` and `len` are codepoint-indexed:
+on this module's own fixture 540 codepoints are 549 bytes, and `mid` returns a
+slice straddling the next element. `byte_slice` is the matching tool, and a name
+carrying its unit is what makes the mismatch visible — the defect
+`ari_discover`'s design records `finio` Phase 0 shipping.
+
+Two leaks found by valgrind that every functional test passed over, both in this
+new code: libxml2's own SAX handler orphaned by replacing the pointer and
+nulling it (256 bytes a parse), and the tree the default handlers build and
+nobody frees (465 bytes). The second was hidden by the first.
+
+With this, `DOGFOOD.md`'s "Open — worth fixing" list is **empty**.
+
+
 ### Fixed — the streaming reader's `line` was the parser's cursor, not the node's
 
 `xml.read` events carry a `line`. It reported

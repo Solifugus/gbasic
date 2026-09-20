@@ -516,12 +516,11 @@ points at, so it doubles as an integration suite for this repository.
   mutation; the `gi`/GTK 4 path does not share that limit
 - there is no dedicated map type; a record serves as one (hash-indexed since
   PLAT-RECIDX, so lookup is not linear, but the ergonomics are a record's)
-- `xml.parse` gives a node **no position**, so a value interpreted out of an
-  XML document cannot say where it came from; libxml2 tracks it and the module
-  does not expose it. Cost `finio_camt` its byte ranges and `finio_ofx` a
-  private tag scanner — `DOGFOOD.md` entry -3
-- `DOGFOOD.md`'s "Open — worth fixing" list holds **one** entry as of
-  0.1.0-rc9 (the one above). It held five more until 2026-09-19 — a condition
+- `finio_camt` still reports no byte ranges and `finio_ofx` still carries a
+  private tag scanner. The platform gap that forced both — `xml.parse` giving a
+  node no position — was closed 2026-09-20 (`positions: true` yields `line`,
+  `byte_start`, `byte_end`); neither adapter has been migrated to it yet
+- `DOGFOOD.md`'s "Open — worth fixing" list is **empty** as of 2026-09-20. It held five more until 2026-09-19 — a condition
   that could not be judged raised and then stepped into the `else`, `not` bound
   tighter than `=`, `round(x)` refused one argument, `--add-loads` had silently
   become a no-op, and `? x = 5` at the prompt silently ASSIGNED — all closed

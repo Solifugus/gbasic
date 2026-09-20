@@ -3363,9 +3363,25 @@ always-on per-value provenance cost **294×** the source and answered *more*
 slowly, so a position every caller pays for and few read is the wrong default.
 
 A `line` is exact per element — two elements on one line report the same line,
-and a comment between them does not shift it. There is **no byte offset**: the
-DOM has none to give, and obtaining one means parsing by callback rather than by
-tree.
+and a comment between them does not shift it.
+
+Each element also carries **`byte_start` and `byte_end`**, a half-open range
+over the source that spans the element's whole text, opening tag to closing tag:
+
+```basic
+doc = xml.parse(text, { positions: true })
+t = xml.find(doc, "total")
+print byte_slice(text, t.byte_start, t.byte_end - t.byte_start)
+' <total ccy="EUR">1250.00</total>
+```
+
+**They are byte offsets, and `mid` is codepoint-indexed** — which is why the
+names carry the unit. Use `byte_slice`. On an ASCII document the two agree and
+`mid` appears to work; on the first accented character they part company and
+`mid` returns a plausible slice of the wrong text, with nothing raised.
+
+Ranges are collected by a second pass over the source, so they cost another
+parse — paid only when `positions` is asked for.
 - `xml.parse_html(text)` — lenient HTML parse for real-world markup.
 
 Navigation (a *path* is a `/`-separated chain of child element names):

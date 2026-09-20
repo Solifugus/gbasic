@@ -1,5 +1,5 @@
 default keys:   ["name","qname","ns","attrs","children"]
-with positions: ["name","qname","ns","attrs","children","line"]
+with positions: ["name","qname","ns","attrs","children","line","byte_start","byte_end"]
 root line 3
 empty line 8
 dup lines 13 13
@@ -16,3 +16,21 @@ refused: xml.parse: unknown option 'positionz' (known: keep_space, positions)
 elements root mixed b i entities cdata empty spaced qualified nested a b c utf8 dup dup
 lines    3 4 4 4 5 6 8 9 10 11 11 11 11 12 13 13
 distinct lines 10
+--- byte ranges extract the element's own source ---
+  mixed [<mixed>text <b>bold</b> tail <i>ital</i> end</mixed>]
+  entities [<entities>&amp; &lt; &gt; &quot; &#233; &#x41;</entities>]
+  cdata [<cdata><![CDATA[raw <not> parsed & kept]]></cdata>]
+  empty [<empty/>]
+  spaced [<spaced>   leading and trailing   </spaced>]
+  qualified [<ns:qualified>in a namespace</ns:qualified>]
+  nested [<nested><a><b><c>deep</c></b></a></nested>]
+  utf8 [<utf8>héllo — 日本語</utf8>]
+  dup [<dup>one</dup>]
+  dup [<dup>two</dup>]
+--- the range is BYTES, and `mid` is codepoints ---
+  codepoints 540 bytes 549
+  byte_slice [<utf8>héllo — 日本語</utf8>]
+  mid        [<utf8>héllo — 日本語</utf8>
+  <dup>o]
+--- ranges are absent unless asked for ---
+  has byte_start: false
