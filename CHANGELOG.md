@@ -9,6 +9,28 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — `load` warned that the library it had just used was not used
+
+A library found *below* the loading file is reported as passed over — right when
+a stray copy really is being shadowed, and **false** for anyone running an
+extracted release, where the file the directory scan finds below the working
+directory is the very file exe-relative resolution used.
+
+The dedup compared path **strings**: one route spells it
+`./share/gbasic/stdlib/dates.bas` and the other absolutely, so `strcmp` called
+one file two. It fired on **every `load`**, including from inside the extracted
+directory — the ordinary case — and told the reader the library they had just
+used was not used.
+
+**A regression from the relocatable-stdlib change**: before it, that directory
+was never a resolution source, so the two routes could not collide. Paths are
+now compared canonically, falling back to `strcmp` when one will not resolve.
+
+The control is what makes this a fix and not a deletion: a stray copy genuinely
+passed over is still reported, and so is the shadowing case where one sits
+beside the loader and another below.
+
+
 ---
 
 ## 0.2.1 — 2026-09-20

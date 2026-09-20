@@ -158,5 +158,49 @@ got="$( unset GBASIC_PATH; cd "$P" && timeout 30 "$R/bin/gbasic" a.bas 2>&1 | ta
 want "a spawned actor resolves it too" "shipped-with-the-binary" "$got"
 
 echo
+echo "== QUIET: the ordinary case says nothing =="
+# THE WARNING WAS FALSE, AND IT FIRED ON EVERY LOAD. `load` reports a library
+# found BELOW the loading file as "was NOT used" -- correct when a stray copy is
+# genuinely being shadowed, and wrong here, because the file the directory scan
+# found below the working directory is THE VERY FILE exe-relative resolution
+# used. The dedup compared path STRINGS: one route spells it
+# "./share/gbasic/stdlib/dates.bas" and the other absolutely, so strcmp called
+# one file two. Anyone extracting a release and running it from inside the
+# extracted directory -- the ordinary case -- was told the library they had just
+# used was not used.
+#
+# A REGRESSION FROM THE RELOCATABLE CHANGE ITSELF: before it, that directory was
+# never a resolution source, so the two routes could not collide.
+q="$work/quiet"; mkdir -p "$q"
+cp -r "$R/bin" "$R/share" "$q/"
+printf 'load dates\nprint "ok"\n' > "$q/t.bas"
+err="$( cd "$q" && env -u GBASIC_PATH ./bin/gbasic t.bas 2>&1 >/dev/null )"
+if [ -z "$err" ]; then
+    pass "running from inside a relocated tree warns about nothing"
+else
+    fail "running from inside a relocated tree warns about nothing"
+    printf '       stderr: %s\n' "$err"
+fi
+
+# THE CONTROL, and without it the tier above is satisfied by deleting the
+# warning outright. A stray copy that really is being passed over must still be
+# reported -- that is the case the message was written for.
+stray="$work/stray"; mkdir -p "$stray/sub"
+cat > "$stray/sub/mylib.bas" <<'LIB'
+library mylib
+  function who()
+    return "deep"
+  end function
+end library
+LIB
+printf 'load mylib\nprint mylib.who()\n' > "$stray/t.bas"
+err="$( cd "$stray" && env -u GBASIC_PATH "$R/bin/gbasic" t.bas 2>&1 >/dev/null )"
+case "$err" in
+    *"was NOT used"*) pass "but a library genuinely passed over is still reported" ;;
+    *) fail "but a library genuinely passed over is still reported"
+       printf '       stderr: %s\n' "$err" ;;
+esac
+
+echo
 if [ "$status" = "0" ]; then echo "run_relocatable: all checks passed"; fi
 exit "$status"

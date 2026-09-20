@@ -8272,6 +8272,31 @@ const char *gb_exe_relative_stdlib(void) {
     return resolved;
 }
 
+/* ARE THESE TWO PATHS THE SAME FILE? Not the same STRING -- one route to a
+ * library spells it relative to the loading file ("./share/gbasic/stdlib/x.bas")
+ * and another absolutely, and a plain strcmp calls those different.
+ *
+ * That is not hypothetical: it made `load` warn that the library it had just
+ * used "was NOT used", on every load, for anyone running an extracted release
+ * from inside the extracted directory -- the ordinary case. Comparing the
+ * canonical paths is the fix; falling back to strcmp keeps the old answer when
+ * a path cannot be resolved (it was deleted, or permissions deny the walk),
+ * where reporting a spurious difference is better than claiming a match. */
+static int same_file_path(const char *a, const char *b) {
+    if (!a || !b) {
+        return 0;
+    }
+    if (strcmp(a, b) == 0) {
+        return 1;
+    }
+    char ra[PATH_MAX];
+    char rb[PATH_MAX];
+    if (!realpath(a, ra) || !realpath(b, rb)) {
+        return 0;
+    }
+    return strcmp(ra, rb) == 0;
+}
+
 static void search_gbasic_path_for_library(const char *name,
                                            int exact_filename,
                                            LibraryMatch **matches,
@@ -8793,7 +8818,7 @@ static void library_import(const char *name, const char *path, const char *alias
     for (size_t i = 0; i < deep_count; i++) {
         int already = 0;
         for (size_t j = 0; j < match_count; j++) {
-            if (strcmp(matches[j].path, deep[i].path) == 0) { already = 1; break; }
+            if (same_file_path(matches[j].path, deep[i].path)) { already = 1; break; }
         }
         if (already) { continue; }
         warn_fmt(2103, "library-match",
