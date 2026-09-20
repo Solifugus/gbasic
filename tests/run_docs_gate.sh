@@ -446,6 +446,35 @@ if [ -f README.md ]; then
         done
     fi
 
+    #     THE WEBSITE'S OWN VERSION AND SUITE COUNT, which had rotted exactly
+    #     the way the README's numbers do and with nothing watching: the site
+    #     served `version: "0.1.0", suites: "127"` while the tree was at 0.2.1
+    #     with 145 suites -- two releases and eighteen suites behind, on the page
+    #     a visitor reads FIRST. The README is guarded above; the site was not,
+    #     so the same claim was checked in one place and free in another.
+    #
+    #     Both apps are read. site.bas is the prototype and site_postgres.bas is
+    #     what the deployment actually runs, so checking only one leaves the
+    #     LIVE page free to drift -- which is the half that matters.
+    site_version_ok=1
+    want_version=$(sed -n 's/.*printf("gBASIC \([0-9][^\\]*\)\\n").*/\1/p' src/main.c | head -1)
+    for f in examples/gbasic_site/site.bas examples/gbasic_site/site_postgres.bas; do
+        said=$(grep -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+[^"]*"' "$f" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^"]*')
+        if [ -z "$said" ]; then
+            echo "FAIL site version  $f states no version; the download page names one"
+            site_version_ok=0; status=1
+        elif [ "$said" != "$want_version" ]; then
+            echo "FAIL site version  $f says $said; the interpreter is $want_version"
+            site_version_ok=0; status=1
+        fi
+    done
+    said_site_suites=$(grep -oE 'suites: "[0-9]+"' examples/gbasic_site/site.bas | grep -oE '[0-9]+')
+    if [ -n "$said_site_suites" ] && [ "$said_site_suites" != "$want_suites" ]; then
+        echo "FAIL site suites   site.bas says $said_site_suites suites; tests/ holds $want_suites"
+        site_version_ok=0; status=1
+    fi
+    [ "$site_version_ok" = "1" ] && echo "PASS site claims    the site's version ($want_version) and suite count match the tree"
+
     #     BOTH spellings of the library count, for the same reason. The roster
     #     tier above reads only the standard-library section; the opening
     #     paragraph states the number again, where nothing was looking. Scoped

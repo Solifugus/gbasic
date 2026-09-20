@@ -78,6 +78,19 @@ def main():
     print(status)
     print("tree-walking interpreter in C11" in body)
 
+    # The download page is a ROUTE, not a pages row, because page_body escapes
+    # its body -- so the assertion is that real markup survived, not just that
+    # the words are present.
+    status, _, body = get(port, "/download")
+    print(status)
+    print("glibc 2.34" in body)
+    print('<a href="/download/gbasic-0.2.1-linux-x86_64.tar.gz"' in body)
+    # AND IT MUST BE REACHABLE from an ordinary page. A route nobody links to is
+    # invisible, and every page still answers 200 either way.
+    status, _, body = get(port, "/about")
+    print(status)
+    print('href="/download"' in body)
+
     status, _, body = get(port, "/forum")
     print(status)
     print("Questions, ideas, and project discussion." in body)

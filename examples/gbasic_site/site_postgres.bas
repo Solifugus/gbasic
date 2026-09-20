@@ -16,9 +16,9 @@ end function
 function page_body(page, include_nav)
     body = "<main class=\"shell\"><section class=\"hero\"><p class=\"eyebrow\">gBASIC sample app</p><h1>" + html_escape(page.title) + "</h1><p>" + html_escape(page.body) + "</p>"
     if include_nav then
-        body = body + "<nav><a href=\"/docs\">Docs</a><a href=\"/examples\">Examples</a><a href=\"/about\">About</a><a href=\"/forum\">Forum</a></nav>"
+        body = body + "<nav><a href=\"/docs\">Docs</a><a href=\"/examples\">Examples</a><a href=\"/download\">Download</a><a href=\"/about\">About</a><a href=\"/forum\">Forum</a></nav>"
     else
-        body = body + "<nav><a href=\"/\">Home</a><a href=\"/docs\">Docs</a><a href=\"/examples\">Examples</a><a href=\"/about\">About</a><a href=\"/forum\">Forum</a></nav>"
+        body = body + "<nav><a href=\"/\">Home</a><a href=\"/docs\">Docs</a><a href=\"/examples\">Examples</a><a href=\"/download\">Download</a><a href=\"/about\">About</a><a href=\"/forum\">Forum</a></nav>"
     end if
     return body + "</section></main>"
 end function
@@ -757,6 +757,41 @@ server site( port: 0 )
         return page_response(G.db, req, "about", false)
     end get
 
+    ' THE DOWNLOAD, and it is NOT a row in the pages table: page_body runs
+    ' html_escape over a page body -- correctly, since that text is edited
+    ' through the site -- so a link, a <pre> block and a checksum would all
+    ' render as visible markup. It is a route with its own HTML, like /forum.
+    get "/download"( req )
+        v = G.version
+        body = ("<h1>Download</h1>" +
+                "<p>gBASIC " + v + " for Linux, x86-64. Extract it anywhere " +
+                "and run it &mdash; there is no install step and nothing to set.</p>" +
+                "<pre><code>tar xzf gbasic-" + v + "-linux-x86_64.tar.gz\n" +
+                "gbasic-" + v + "-linux-x86_64/bin/gbasic</code></pre>" +
+                "<p><a href=\"/download/gbasic-" + v + "-linux-x86_64.tar.gz\">" +
+                "gbasic-" + v + "-linux-x86_64.tar.gz</a> " +
+                "(<a href=\"/download/gbasic-" + v + "-linux-x86_64.tar.gz.sha256\">" +
+                "sha256</a>)</p>" +
+                "<h2>What it runs on</h2>" +
+                "<p>Built against glibc 2.34, so it covers RHEL, Rocky and " +
+                "Alma 9, Ubuntu 22.04 LTS and later, Debian 12 and later, and " +
+                "anything newer. It is built in a container on the oldest " +
+                "supported toolchain for that reason, and the build refuses to " +
+                "publish an artifact whose floor has risen.</p>" +
+                "<h2>What is in it</h2>" +
+                "<p>The language, and 42 of the 62 standard libraries &mdash; " +
+                "everything that is pure gBASIC: dates, money, finance, " +
+                "accounting, lending, statistics, charts, frames and the rest.</p>" +
+                "<p>The other 20 talk to something outside the process &mdash; " +
+                "databases, HTTP, XML, GTK &mdash; so they need those libraries " +
+                "installed and are not in this build. For those, build from " +
+                "source.</p>" +
+                "<nav><a href=\"/\">Home</a><a href=\"/docs\">Docs</a>" +
+                "<a href=\"/examples\">Examples</a><a href=\"/about\">About</a>" +
+                "<a href=\"/forum\">Forum</a></nav>")
+        return shell_response(req, 200, "Download gBASIC", body)
+    end get
+
     get "/forum"( req )
         return forum_categories_page(G.db, req)
     end get
@@ -843,7 +878,7 @@ server site( port: 0 )
 end server
 
 program main( args )
-    G = { db: nothing }
+    G = { db: nothing, version: "0.2.1" }
 
     port_file{file}= "examples/gbasic_site/tmp_port.txt"
     if exists(port_file) then delete(port_file)

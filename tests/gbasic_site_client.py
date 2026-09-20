@@ -36,6 +36,15 @@ def main():
     show(port, "/docs", "cookbooks")
     show(port, "/examples", "fails the build")
     show(port, "/about", "tree-walking interpreter")
+
+    # The download page states a glibc floor that tools/build-release-tarball.sh
+    # asserts on the artifact. Two representations of one fact, so the needle is
+    # the FLOOR rather than a word of prose.
+    show(port, "/download", "glibc 2.34")
+    # AND IT MUST BE REACHABLE. A route nobody links to is invisible, which is a
+    # different failure from a route that 404s -- and the one a page-by-page
+    # check cannot see, since every page still answers 200.
+    show(port, "/", 'href="/download"')
     show(port, "/static/site.css", ":root")
     show(port, "/static/site.js", "dataset.js")
 

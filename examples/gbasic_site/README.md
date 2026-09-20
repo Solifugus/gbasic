@@ -222,3 +222,22 @@ Deployment templates live in `examples/gbasic_site/deploy/`:
 - `gbasic-site.nginx.conf`
 - `gbasic-site.service`
 - `site.env.example`
+
+### Release downloads
+
+`/download` is a route in the app; the FILES it links to are served by nginx
+from `/srv/gbasic-downloads/`, which is **outside the deployed tree on purpose**
+— `deploy.sh` runs `rsync --delete` against `/srv/gbasic`, so an artifact placed
+inside it would be removed by the next deploy. A download that disappears when
+the site is updated is worse than one that was never offered.
+
+Publishing a release is therefore two independent steps:
+
+```sh
+./tools/build-release-tarball.sh          # writes dist/, asserts the glibc floor
+scp dist/gbasic-*.tar.gz*  host:/srv/gbasic-downloads/
+```
+
+The page names the version it offers, so the artifact must be in place **before**
+the site is deployed with a new version number — otherwise the link 404s for as
+long as the gap lasts.
