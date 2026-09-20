@@ -9,6 +9,31 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — an XML node can say which line it came from
+
+`xml.parse(text, { positions: true })` and `xml.parse_file(path, { … })` give
+every element record a `line`. **Opt-in**, so an existing parse is unchanged and
+`keys(node)` does not grow — the reason is measured rather than stylistic:
+`finio` Phase 0 found always-on per-value provenance cost **294×** the source
+*and* answered more slowly, so a position every caller pays for and few read is
+the wrong default.
+
+**`XML_PARSE_BIG_LINES` is not optional.** libxml2 stores a node's line in a
+16-bit field without it, so `xmlGetLineNo` clamps at 65535 — measured: element
+#70000 reports line 65535 by default and 70002 with the flag. It fails by
+returning a *plausible number*, which is the worst way a position can fail, and
+70,000-line XML is ordinary. The fixture generates a document past the boundary
+for that reason; a smaller one passes on a build with the flag removed.
+
+The second argument dispatches on kind. It has always been a `keep_space`
+boolean, and **a record is truthy** — so reading an options record with
+`value_truthy` would have silently meant `keep_space`, returning no positions
+and no complaint. A record is options; anything else keeps the old meaning.
+An unknown option is refused by name.
+
+There is **no byte offset**: the DOM has none to give.
+
+
 ### Fixed — the release tarball was not reproducible
 
 Two builds of the same commit in the same container produced different bytes,

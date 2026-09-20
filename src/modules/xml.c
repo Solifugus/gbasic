@@ -32,7 +32,13 @@
  * and character references are expanded, while DTD-declared (custom) entities are
  * left unexpanded — closing the billion-laughs / XXE vectors. DTD loading is off
  * by default (DTDLOAD not set). The DOCTYPE is skipped, never processed. */
-#define XML_SECURE_OPTS (XML_PARSE_NONET | XML_PARSE_NOCDATA)
+/* XML_PARSE_BIG_LINES IS NOT OPTIONAL. libxml2 stores a node's line in a
+ * 16-BIT field unless this is set, so xmlGetLineNo CLAMPS AT 65535 -- measured:
+ * element #70000 of a generated document reports line 65535 by default and
+ * 70002 with the flag. It fails by returning a PLAUSIBLE NUMBER rather than by
+ * erroring, which is the worst available failure for a position, and an XML
+ * document past 65535 lines is ordinary (an ISO 20022 statement passes it). */
+#define XML_SECURE_OPTS (XML_PARSE_NONET | XML_PARSE_NOCDATA | XML_PARSE_BIG_LINES)
 
 /* §6 lenient HTML options. The HTML parser repairs rather than rejects, so it
  * always yields a tree. NONET keeps the same no-network guarantee as the XML
@@ -115,9 +121,38 @@ static int xml_all_whitespace(const char *s) {
     return 1;
 }
 
+/* Read `{ keep_space:, positions: }`. Returns 1 on success, 0 having raised.
+ *
+ * AN UNKNOWN FIELD IS REFUSED BY NAME, which is the rule `webserver.listen` and
+ * `chart` already follow: a misspelled option that is silently ignored leaves
+ * the author believing they asked for something they did not get, and here that
+ * means a node with no `line` and no explanation. */
+static int xml_parse_options(Value *opts, int *keep_space, int *want_pos) {
+    for (size_t i = 0; i < opts->as.record.count; i++) {
+        const char *k = opts->as.record.fields[i].name;
+        int refused = 0;
+        if (strcmp(k, "keep_space") == 0) {
+            *keep_space = value_truthy(*opts->as.record.fields[i].value, &refused);
+        } else if (strcmp(k, "positions") == 0) {
+            *want_pos = value_truthy(*opts->as.record.fields[i].value, &refused);
+        } else {
+            char m[192];
+            snprintf(m, sizeof(m),
+                     "xml.parse: unknown option '%s' (known: keep_space, positions)", k);
+            runtime_error_raise(m, XML_ERROR_CODE, "xml");
+            return 0;
+        }
+        if (refused) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* Convert a libxml2 element node into a §2 node record. Returns 1 on success,
  * 0 on error (a structured error has been raised and *out is untouched). */
-static int xml_element_to_record(xmlNode *elem, int depth, int keep_space, Value *out) {
+static int xml_element_to_record(xmlNode *elem, int depth, int keep_space,
+                                 int want_pos, Value *out) {
     if (depth > XML_MAX_DEPTH) {
         char m[128];
         snprintf(m, sizeof(m), "xml: maximum nesting depth (%d) exceeded", XML_MAX_DEPTH);
@@ -190,7 +225,7 @@ static int xml_element_to_record(xmlNode *elem, int depth, int keep_space, Value
                 textlen = 0;
             }
             Value child;
-            if (!xml_element_to_record(c, depth + 1, keep_space, &child)) {
+            if (!xml_element_to_record(c, depth + 1, keep_space, want_pos, &child)) {
                 free(textbuf);
                 for (size_t i = 0; i < count; i++) {
                     value_free(items[i]);
@@ -223,12 +258,25 @@ static int xml_element_to_record(xmlNode *elem, int depth, int keep_space, Value
     }
 
     record_set(&rec, "children", value_array(items, count));
+
+    /* OPT-IN, and that is the lesson finio Phase 0 paid for: it MEASURED
+     * always-on per-value provenance at 294x the source and also the slowest to
+     * answer, so provenance is reconstructed on demand rather than carried by
+     * every value. A line on every node of a 200,000-element document is the
+     * same trade in miniature -- cheap per node, never free, and wanted by a
+     * minority of callers. Absent unless asked for, so an existing parse is
+     * byte-identical. */
+    if (want_pos) {
+        record_set(&rec, "line", value_number((double)xmlGetLineNo(elem)));
+    }
+
     *out = rec;
     return 1;
 }
 
 /* Parse an in-memory document; returns the root element record or raises. */
-static Value xml_parse_memory(const char *text, size_t len, int keep_space) {
+static Value xml_parse_memory(const char *text, size_t len, int keep_space,
+                              int want_pos) {
     xml_install_silent_errors();
     xmlParserCtxtPtr ctxt = xmlNewParserCtxt();
     if (!ctxt) {
@@ -247,7 +295,7 @@ static Value xml_parse_memory(const char *text, size_t len, int keep_space) {
     if (!root) {
         runtime_error_raise("xml: document has no root element", XML_ERROR_CODE, "xml");
         result = value_null();
-    } else if (!xml_element_to_record(root, 1, keep_space, &result)) {
+    } else if (!xml_element_to_record(root, 1, keep_space, want_pos, &result)) {
         result = value_null();
     }
     xmlFreeDoc(doc);
@@ -256,7 +304,7 @@ static Value xml_parse_memory(const char *text, size_t len, int keep_space) {
 }
 
 /* Parse a file by path; libxml2 reads it (NONET still forbids network). */
-static Value xml_parse_path(const char *path, int keep_space) {
+static Value xml_parse_path(const char *path, int keep_space, int want_pos) {
     xml_install_silent_errors();
     xmlParserCtxtPtr ctxt = xmlNewParserCtxt();
     if (!ctxt) {
@@ -275,7 +323,7 @@ static Value xml_parse_path(const char *path, int keep_space) {
     if (!root) {
         runtime_error_raise("xml: document has no root element", XML_ERROR_CODE, "xml");
         result = value_null();
-    } else if (!xml_element_to_record(root, 1, keep_space, &result)) {
+    } else if (!xml_element_to_record(root, 1, keep_space, want_pos, &result)) {
         result = value_null();
     }
     xmlFreeDoc(doc);
@@ -301,7 +349,7 @@ static Value xml_parse_html_memory(const char *text, size_t len) {
         runtime_error_raise("xml: HTML document has no root element",
                             XML_ERROR_CODE, "xml");
         result = value_null();
-    } else if (!xml_element_to_record(root, 1, 0, &result)) {
+    } else if (!xml_element_to_record(root, 1, 0, 0, &result)) {
         result = value_null();
     }
     xmlFreeDoc(doc);
@@ -966,7 +1014,7 @@ static Value xml_eval_subtree(AstExpr *expr) {
         return value_null();
     }
     Value out;
-    if (!xml_element_to_record(node, 0, 0, &out)) {
+    if (!xml_element_to_record(node, 0, 0, 0, &out)) {
         /* xml_element_to_record already raised a structured error (e.g. depth) */
         value_free(rvv);
         return value_null();
@@ -1004,22 +1052,39 @@ static Value xml_eval_call(AstExpr *expr) {
             return value_null();
         }
         int keep_space = 0;
+        int want_pos = 0;
         if (argc == 2) {
-            Value ks = eval_expr(expr->as.call.args.items[1]);
+            Value opt = eval_expr(expr->as.call.args.items[1]);
             if (error_action_pending()) {
                 value_free(text);
-                value_free(ks);
+                value_free(opt);
                 return value_null();
             }
-            int refused = 0;
-            keep_space = value_truthy(ks, &refused);
-            value_free(ks);
-            if (refused) {
-                value_free(text);
-                return value_null();
+            /* TWO SHAPES, DISPATCHED ON KIND. The second argument has always
+             * been a bare `keep_space` boolean, and a RECORD IS TRUTHY -- so
+             * reading an options record with value_truthy would silently mean
+             * keep_space, which is the wrong answer arrived at without a word.
+             * A record is therefore read as options and anything else keeps the
+             * boolean meaning, so every existing call is untouched. */
+            if (opt.kind == VALUE_RECORD) {
+                if (!xml_parse_options(&opt, &keep_space, &want_pos)) {
+                    value_free(opt);
+                    value_free(text);
+                    return value_null();
+                }
+            } else {
+                int refused = 0;
+                keep_space = value_truthy(opt, &refused);
+                if (refused) {
+                    value_free(opt);
+                    value_free(text);
+                    return value_null();
+                }
             }
+            value_free(opt);
         }
-        Value result = xml_parse_memory(text.as.string, strlen(text.as.string), keep_space);
+        Value result = xml_parse_memory(text.as.string, strlen(text.as.string),
+                                        keep_space, want_pos);
         value_free(text);
         return result;
     }
@@ -1046,8 +1111,8 @@ static Value xml_eval_call(AstExpr *expr) {
     }
 
     if (strcmp(name, "parse_file") == 0) {
-        if (argc != 1) {
-            runtime_error_raise("xml.parse_file expects one argument",
+        if (argc != 1 && argc != 2) {
+            runtime_error_raise("xml.parse_file expects a path and optionally an options record",
                                 XML_ERROR_CODE, "xml");
             return value_null();
         }
@@ -1067,7 +1132,28 @@ static Value xml_eval_call(AstExpr *expr) {
                                 XML_ERROR_CODE, "xml");
             return value_null();
         }
-        Value result = xml_parse_path(path, 0);
+        /* The SAME options as xml.parse. A file is where a long document comes
+         * from, so it is the likelier caller to want positions -- offering them
+         * on the string form only would send an author to read the whole file
+         * into memory to get a line number. */
+        int fkeep = 0, fpos = 0;
+        if (argc == 2) {
+            Value opt = eval_expr(expr->as.call.args.items[1]);
+            if (error_action_pending()) {
+                value_free(opt); value_free(pathv); return value_null();
+            }
+            if (opt.kind == VALUE_RECORD) {
+                if (!xml_parse_options(&opt, &fkeep, &fpos)) {
+                    value_free(opt); value_free(pathv); return value_null();
+                }
+            } else {
+                int refused = 0;
+                fkeep = value_truthy(opt, &refused);
+                if (refused) { value_free(opt); value_free(pathv); return value_null(); }
+            }
+            value_free(opt);
+        }
+        Value result = xml_parse_path(path, fkeep, fpos);
         value_free(pathv);
         return result;
     }

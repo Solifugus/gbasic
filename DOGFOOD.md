@@ -220,6 +220,13 @@ and the stale-looking ones carry a Status line saying what overtook them.
     where the same typo in a file reports `file:1:1`. See the 2026-09-19
     entry.
 
+19. **`gi` cannot call a class's static methods**, only namespace-level
+    functions. `gi.invoke("Gtk.init")` works; `Gdk.Display.get_default`
+    and `Gtk.StyleContext.add_provider_for_display` both answer
+    "unknown function". That is what forces Studio to attach a CSS
+    provider per widget, and it is the main thing standing between
+    Studio and looking designed. See the 2026-09-20 entry.
+
 ### Open — accepted as documented limitations (no action planned)
 
 **Every live bullet below is EXECUTABLE.** `tests/run_limitations.sh` runs one
@@ -5088,3 +5095,49 @@ which is what lets Chapter 1 move from prompt to file without the reader
 learning anything new. Ctrl-C on a runaway `while true` ends the line and keeps
 the session, with the counter still holding how far it got — a beginner's first
 infinite loop is now a lesson rather than a lost program.
+
+
+## 2026-09-20 — CC — while: reviewing gBASIC Studio's appearance
+
+Studio was launched and screenshotted so its look could be assessed rather than
+guessed at. The visual problems are almost all Studio's own (no margins are set
+anywhere, no type scale, state carried entirely as text), but one is the
+language's, and it is the one that blocks the cheapest fix.
+
+- **Type:** missing-feature
+- **Severity:** medium
+
+### `gi` reaches namespace functions but not class statics
+
+```basic
+gi.invoke("Gtk.init")                                   ' works
+gi.invoke("Gdk.Display.get_default")                    ' unknown function
+gi.invoke("Gtk.StyleContext.add_provider_for_display", d, p, 800)
+                                                        ' unknown function
+```
+
+The GI namespace has both shapes — a function on the namespace, and a static
+method on a class — and the bridge resolves only the first. Anything spelled
+`Namespace.Class.method` with no instance is out of reach, which is a large
+slice of GTK: display and monitor lookup, `StyleContext.add_provider_for_display`,
+the various `*.new_*` alternate constructors, and `GLib`/`Gio` statics.
+
+**Cost, concretely.** GTK 4 styles an application by installing ONE
+`GtkCssProvider` for the display; every widget then matches against it. Studio
+cannot do that, so `lib/studio_shell.bas:925-938` installs a provider **per
+widget**, on sixteen widgets chosen by hand, and its entire stylesheet is the
+two teaching outlines in `lib/studio_teaching.bas:176-188`. A type scale, state
+colours, panel headers and a dark-mode palette all want the display-wide form;
+done per widget they need a provider attached to every widget an application
+builds, which is the sort of thing that is fine until someone adds a widget and
+forgets.
+
+**Workaround:** funnel widget creation through helpers that attach the shared
+provider (Studio already funnels through `_left`/`_wrapped`/`_mono`/`gtk.button`,
+so this is mechanical) — and accept that a widget built any other way is
+unstyled.
+
+**Suggestion:** resolve `Namespace.Class.method` as a static invocation when the
+name has three parts and the middle one is a type. The instance path
+(`obj.method(...)`) already works, so this is the same lookup with the receiver
+supplied from the name rather than the value.

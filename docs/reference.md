@@ -3340,9 +3340,32 @@ print(xml.text(xml.find(doc, "item")))  ' Widget
 
 Parsing:
 
-- `xml.parse(text[, keep_whitespace])` — parse an XML string; pass `true` to keep
-  inter-element whitespace text nodes (default drops them).
-- `xml.parse_file(path)` — parse from a file path.
+- `xml.parse(text[, keep_whitespace | options])` — parse an XML string. The
+  second argument is either the historical `keep_whitespace` boolean (`true`
+  keeps inter-element whitespace text nodes; the default drops them) or an
+  **options record** `{ keep_space:, positions: }`. An unknown option is refused
+  by name.
+- `xml.parse_file(path[, keep_whitespace | options])` — parse from a file path,
+  with the same options.
+
+**Positions are opt-in** (*since 0.2.2*). With `positions: true` every element
+record carries a `line` — the 1-based line its start tag begins on:
+
+```basic
+doc = xml.parse(text, { positions: true })
+print doc.line                        ' 3
+print xml.find(doc, "total").line     ' 27
+```
+
+Absent unless asked for, so an existing parse is unchanged and `keys(node)` does
+not grow. The reason is measured rather than stylistic: `finio`'s Phase 0 found
+always-on per-value provenance cost **294×** the source and answered *more*
+slowly, so a position every caller pays for and few read is the wrong default.
+
+A `line` is exact per element — two elements on one line report the same line,
+and a comment between them does not shift it. There is **no byte offset**: the
+DOM has none to give, and obtaining one means parsing by callback rather than by
+tree.
 - `xml.parse_html(text)` — lenient HTML parse for real-world markup.
 
 Navigation (a *path* is a `/`-separated chain of child element names):

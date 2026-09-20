@@ -1,0 +1,14 @@
+default keys:   ["name","qname","ns","attrs","children"]
+with positions: ["name","qname","ns","attrs","children","line"]
+root line 3
+empty line 8
+dup lines 13 13
+--- keep_space, both spellings ---
+boolean 3
+record  3
+default 1
+--- past the 16-bit clamp ---
+elements 70000
+last line 70003 (clamped would be 65535)
+--- an unknown option is refused by name ---
+refused: xml.parse: unknown option 'positionz' (known: keep_space, positions)

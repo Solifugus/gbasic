@@ -72,6 +72,7 @@ cases=(
     negative_xml_find_arity
     negative_xml_find_path_type
     negative_xml_attr_arity
+    negative_xml_parse_option
     negative_xml_encode_arity
     negative_xml_encode_malformed
     negative_xml_read_type
