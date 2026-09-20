@@ -77,6 +77,74 @@ jobs:
           timeout 600 bash tests/lsp/run_lsp.sh || status=1
           exit "$status"
 
+  # TOOLCHAIN AGE, which is a DIFFERENT AXIS from everything above and was not
+  # covered by any of it.
+  #
+  # On 2026-09-20 gBASIC did not compile on Ubuntu 22.04 at all: src/eval.c uses
+  # va_list/va_start/va_end nine times and never included <stdarg.h>. On a recent
+  # toolchain that header arrives transitively; on gcc 11 it does not, so
+  # va_start became an implicit function call and the build failed at LINK. The
+  # defect predated 0.1.0.
+  #
+  # NOTHING IN THE PROJECT COULD SEE IT. A 145-suite gate, the three jobs above
+  # and the lean-build packaging suite all passed, because every one of them
+  # varies which LIBRARIES are present and none varies how OLD THE COMPILER IS --
+  # and the oldest leg here is Ubuntu 24.04 (gcc 13), still new enough to mask
+  # it. Found by building a release tarball in a container, not by any test.
+  #
+  # Deliberately MINIMAL: the defect is in eval.o, which is compiled in every
+  # configuration, so no optional dependency is needed to expose it and adding
+  # them would only couple this job to 22.04's different package names.
+  #
+  # IT ALSO ASSERTS THE GLIBC FLOOR, because that is the claim the download
+  # rests on: a lean binary built here must run on RHEL/Rocky/Alma 9 (2.34),
+  # Ubuntu 22.04 LTS (2.35) and Debian 12 (2.36). A base image that raises the
+  # floor should fail HERE rather than ship a tarball that stops starting on the
+  # machines it was built for.
+  oldest-toolchain:
+    name: oldest supported toolchain (Ubuntu 22.04, gcc 11)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What toolchain is this
+        run: |
+          gcc --version | head -1
+          ldd --version | head -1
+
+      - name: Install only what is required
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential bison
+
+      - name: Build
+        run: make
+
+      - name: The interpreter must work
+        run: |
+          ./gbasic --version
+          printf 'program main()\n    print "hello from gcc 11"\nend program\n' > /tmp/smoke.bas
+          timeout 60 ./gbasic /tmp/smoke.bas
+
+      # The download tier promises this floor. Asserted, not assumed.
+      - name: glibc floor must stay at or below 2.35
+        run: |
+          floor=$(objdump -T gbasic | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1 | sed 's/GLIBC_//')
+          echo "glibc floor: $floor"
+          if [ "$(printf '%s\n2.35\n' "$floor" | sort -V | head -1)" != "$floor" ]; then
+            echo "::error::glibc floor $floor is above the 2.35 the release tarball promises"
+            exit 1
+          fi
+
+      # A relocated tree must find its own stdlib -- the property the download
+      # rests on, exercised here on the oldest toolchain as well as the newest.
+      - name: An installed tree runs from where it was put
+        run: |
+          make install PREFIX="$HOME/.local"
+          mkdir -p /tmp/elsewhere && cd /tmp/elsewhere
+          printf 'load dates\nprint "stdlib resolved"\n' > t.bas
+          env -u GBASIC_PATH "$HOME/.local/bin/gbasic" t.bas
+
   minimal:
     name: no optional modules
     runs-on: ubuntu-24.04

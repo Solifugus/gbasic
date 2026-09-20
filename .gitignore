@@ -33,3 +33,8 @@ examples/tmp_*.xml
 # line of the file, and never a fixture derived from one without rewriting
 # every figure and identifier in it.
 examples/statements/
+
+# Release artifacts built by tools/build-release-tarball.sh. Binaries do not
+# belong in the repository: they are reproducible from a tag and the script,
+# and committing them would grow history by a megabyte per release.
+dist/
