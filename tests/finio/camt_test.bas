@@ -144,8 +144,11 @@ check("and WHICH occurrence, without which the path names 5 elements",
 check("a later entry has the same path", a3.location.path, a0.location.path)
 check("and a different occurrence, which is the whole point",
       a3.location.occurrence, 3)
-check("and it renders", finio.describe_location(a3.location),
-      "BkToCstmrStmt/Stmt/Ntry/Amt[3]")
+' THE RENDERING NOW CARRIES THE LINE, because the location does. Until
+' 2026-09-20 `xml.parse` gave a node no position and this adapter's header said
+' so; the renderer showed a path and an occurrence and nothing else.
+check("and it renders, now naming the line", finio.describe_location(a3.location),
+      "BkToCstmrStmt/Stmt/Ntry/Amt[3] (line 71)")
 ' THE RECORD CARRIES ITS OWN PATH AND OCCURRENCE TOO, and this is asserted
 ' because a perturbation that dropped it went UNCAUGHT: every check above reads
 ' a FIELD's location, and the record's is a second place the same fact lives.
@@ -164,8 +167,24 @@ nloc = finio.source_value(ndoc.source, nlay, 2, "amount").location
 check("CONTROL: a NACHA location's kind is fixed_width", nloc.kind, "fixed_width")
 check("and it renders as a byte range",
       contains(finio.describe_location(nloc), "bytes "), true)
-check("and the camt one names no bytes at all",
-      has(a0.location, "byte_offset"), false)
+' THIS CHECK USED TO ASSERT THE LIMITATION -- "and the camt one names no bytes
+' at all", `has(byte_offset) = false` -- which was true when written and is the
+' gap the platform closed. A test that pins a gap keeps passing after the gap is
+' shut, so it is inverted rather than deleted.
+check("and the camt one NOW names bytes too", has(a0.location, "byte_offset"), true)
+check("and a line", has(a0.location, "line"), true)
+' THE RANGE MUST CUT THE ELEMENT OUT OF THE SOURCE. A pair of plausible integers
+' proves nothing -- an off-by-one, or a parent's range on a child, is still two
+' numbers. Only the text they cut says which element they belong to.
+raw = slurp(cdir + "statement.xml")
+check("and the range cuts that very element",
+      byte_slice(raw, a0.location.byte_offset, a0.location.byte_length),
+      "<Amt Ccy=\"USD\">1250.00</Amt>")
+' AND THE DISTINCTION THE NACHA CONTROL EXISTS FOR SURVIVES: both kinds now
+' carry bytes, so what separates them is that an XML location ALSO names a path
+' and an occurrence -- because a byte range does not survive the document being
+' reformatted, where a path does.
+check("CONTROL: the fixed_width one names no path", has(nloc, "path"), false)
 
 ' ===========================================================================
 print ""

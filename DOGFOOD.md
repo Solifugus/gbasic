@@ -51,9 +51,18 @@ and the stale-looking ones carry a Status line saying what overtook them.
    Ranges are **bytes** and named so: `mid` is codepoint-indexed and silently
    wrong on the first non-ASCII character, which is the defect this tree already
    records `finio` Phase 0 shipping.
-   Consumers that wanted this -- `finio_camt`'s missing byte ranges,
-   `finio_ofx`'s private tag scanner -- are **not yet migrated**; the capability
-   they were blocked on now exists.
+   **`finio_camt` is migrated** and its locations now carry a line and a byte
+   range beside the path and occurrence. The path did not become redundant: a
+   byte range does not survive the document being reformatted and an XML
+   document is reformatted by everything that touches it, so the two answer
+   different questions and the location carries both.
+   **AND THIS ENTRY WAS WRONG ABOUT `finio_ofx`.** It listed that adapter's
+   private tag scanner as a cost of the missing position; reading its rationale,
+   the scanner exists because OFX 1.x omits closing tags, so handing it to
+   `xml.parse` would mean INVENTING TEXT and *"a byte offset into a document
+   this library invented is not provenance"*. That argument is untouched by any
+   of this. The scanner stays, and it walks the original bytes already, so
+   offsets there are its own work rather than something it was blocked on.
 
 -2. ~~**No sub-second clock a program can read.**~~ **NOT A GAP — RULED
    2026-09-12, the same day it was filed.** Second resolution is DELIBERATE:

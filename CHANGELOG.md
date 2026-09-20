@@ -9,6 +9,34 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Changed — `finio_camt` locations carry a line and a byte range
+
+The adapter that reported the missing XML position now uses it. A camt location
+was a path and an occurrence; it is a path, an occurrence, a line and a byte
+range, and the range cuts the element out of the source:
+
+```
+BkToCstmrStmt/Stmt/Ntry/Amt[3] (line 71)
+  → <Amt Ccy="USD">1250.00</Amt>
+```
+
+**The path did not become redundant.** A byte range does not survive the
+document being reformatted, and an XML document is reformatted by everything
+that touches it; a path and occurrence survive any structure-preserving change.
+They answer different questions — *which* element, and *where it sat in the
+bytes we were given* — so the location carries both.
+
+An absent field still gets no position: inventing a range for an element that
+is not there would point a reader at whatever bytes happen to be nearby.
+
+**A correction to `DOGFOOD` entry −3's own claim.** It listed `finio_ofx`'s
+private tag scanner as a cost of the missing position. It is not: OFX 1.x omits
+closing tags, so handing it to `xml.parse` would mean *inventing text*, and a
+byte offset into a document this library invented is not provenance. That
+argument is untouched — the scanner stays, and it walks the original bytes
+already.
+
+
 ### Added — an XML node can say which bytes it came from
 
 `positions: true` now also gives every element a **`byte_start`/`byte_end`**

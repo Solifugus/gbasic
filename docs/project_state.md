@@ -516,10 +516,10 @@ points at, so it doubles as an integration suite for this repository.
   mutation; the `gi`/GTK 4 path does not share that limit
 - there is no dedicated map type; a record serves as one (hash-indexed since
   PLAT-RECIDX, so lookup is not linear, but the ergonomics are a record's)
-- `finio_camt` still reports no byte ranges and `finio_ofx` still carries a
-  private tag scanner. The platform gap that forced both — `xml.parse` giving a
-  node no position — was closed 2026-09-20 (`positions: true` yields `line`,
-  `byte_start`, `byte_end`); neither adapter has been migrated to it yet
+- `finio_ofx` carries a private tag scanner, and **deliberately**: OFX 1.x omits
+  closing tags, so converting it for `xml.parse` would invent text and a byte
+  offset into an invented document is not provenance. Unrelated to the
+  position gap closed 2026-09-20, which `finio_camt` now uses
 - `DOGFOOD.md`'s "Open — worth fixing" list is **empty** as of 2026-09-20. It held five more until 2026-09-19 — a condition
   that could not be judged raised and then stepped into the `else`, `not` bound
   tighter than `=`, `round(x)` refused one argument, `--add-loads` had silently

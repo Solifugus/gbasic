@@ -13,15 +13,25 @@
 ' nothing. camt is the one that pushes back.
 '
 ' AND IT PUSHED BACK IMMEDIATELY, in the one place that matters: A HIERARCHICAL
-' SOURCE HAS NO BYTE RANGE. `xml.parse` builds nodes carrying a name, a
-' namespace, attributes and children and NO POSITION; the streaming reader
-' carries a LINE, not an offset. So `finio.source_value`'s
-' `{ record, byte_offset, byte_length }` cannot serve this adapter, and §4's
+' SOURCE IS NOT LOCATED BY A BYTE RANGE ALONE. `finio.source_value`'s
+' `{ record, byte_offset, byte_length }` could not serve this adapter, and §4's
 ' "a universal byte-offset model is too representation-specific" stopped being
 ' a sentence and became `finio.location(kind, detail)`. What this adapter
 ' supplies is an XML location: a PATH and WHICH OCCURRENCE of it, because a
 ' statement with four hundred entries has four hundred elements at the same
 ' path and "it came from Ntry/Amt" identifies none of them.
+'
+' WHEN THIS WAS WRITTEN IT HAD NO CHOICE: `xml.parse` gave a node no position at
+' all, so the path and occurrence were the whole location. That platform gap was
+' closed 2026-09-20 and this adapter now asks for positions, so a location
+' carries a line and a byte range TOO.
+'
+' THE PATH DID NOT BECOME REDUNDANT, which is the part worth stating. A byte
+' range does not survive the document being reformatted, and an XML document is
+' reformatted by every tool that touches it; a path and an occurrence survive
+' anything that preserves the structure. They answer different questions --
+' WHICH element, and WHERE it sat in the bytes we were given -- so the location
+' carries both and the renderer shows both.
 '
 ' THE SECOND CONTRAST WITH NACHA IS THE REVISION, and it is the opposite
 ' answer. A NACHA file does not say which rule book produced it, so that
@@ -142,7 +152,11 @@ end function
 ' record is representation-shaped, which is true and was worth discovering.
 
 function read_source(src, revision)
-    doc = xml.parse(src.text)
+    ' POSITIONS ASKED FOR. This adapter's whole complaint (see the header) was
+    ' that a hierarchical source could not say where a value came from.
+    ' `xml.parse` gained positions 2026-09-20: a path and an occurrence still
+    ' identify WHICH element, and the byte range now says where it sits.
+    doc = xml.parse(src.text, { positions: true })
     records = []
     loss = []
     stmts = []
@@ -231,9 +245,39 @@ end function
 ' defect -- while a PRESENT element whose content cannot be what it claims is
 ' `invalid`. §18's rule that the token as written travels beside any mapped
 ' meaning is why `raw` is kept even where a typed value was produced.
+' AN XML LOCATION CARRYING THE ELEMENT'S POSITION, when there is one.
+'
+' The path and occurrence identify WHICH element; the byte range says where it
+' sits. Both, not either -- a byte range alone does not survive the document
+' being reformatted, and a path alone sends a reader counting four hundred
+' `Ntry` elements by hand.
+'
+' AN ABSENT FIELD GETS NO POSITION, deliberately. `n` is unknown when the
+' element is not there, and inventing a range for something that does not exist
+' would point a reader at whatever bytes happen to be nearby. The location still
+' names the path it looked for, which is the half that helps.
+'
+' THE FIELD NAMES ARE `finio.location`'s, NOT `xml.parse`'s: byte_offset and
+' byte_length, matching the fixed_width kind, rather than byte_start/byte_end.
+' One vocabulary per layer, and the conversion happens here where both are in
+' view rather than leaking the parser's spelling into every consumer.
+function _xml_loc(full_path, occurrence, n)
+    d = { path: full_path, occurrence: occurrence }
+    if not is_unknown(n) then
+        if has(n, "line") then
+            d.line = n.line
+        end if
+        if has(n, "byte_start") and has(n, "byte_end") then
+            d.byte_offset = n.byte_start
+            d.byte_length = n.byte_end - n.byte_start
+        end if
+    end if
+    return finio.location("xml", d)
+end function
+
 function _text_field(node, path, full_path, occurrence)
     n = xml.find(node, path)
-    loc = finio.location("xml", { path: full_path, occurrence: occurrence })
+    loc = _xml_loc(full_path, occurrence, n)
     if is_unknown(n) then
         return { status: "unknown", value: unknown, raw: unknown, location: loc }
     end if
@@ -262,7 +306,7 @@ end function
 ' attribute yields a perfectly ordinary figure in no particular currency.
 function _amount_field(node, path, full_path, occurrence)
     n = xml.find(node, path)
-    loc = finio.location("xml", { path: full_path, occurrence: occurrence })
+    loc = _xml_loc(full_path, occurrence, n)
     if is_unknown(n) then
         return { status: "unknown", value: unknown, raw: unknown, location: loc, currency: unknown }
     end if
@@ -301,7 +345,7 @@ end function
 ' denominate a foreign amount in the account's currency, which is worse.
 function _sum_field(node, path, full_path, occurrence, ccy)
     n = xml.find(node, path)
-    loc = finio.location("xml", { path: full_path, occurrence: occurrence })
+    loc = _xml_loc(full_path, occurrence, n)
     if is_unknown(n) then
         return { status: "unknown", value: unknown, raw: unknown, location: loc, currency: unknown }
     end if
