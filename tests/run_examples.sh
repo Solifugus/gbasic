@@ -182,6 +182,7 @@ examples=(
     forensics_events_test.bas
     edgar/monitor_harness_test.bas
     edgar/scorecard.bas
+    xml_hard_cases_test.bas
     xml_parse_test.bas
     xml_form4_test.bas
     xml_encode_test.bas

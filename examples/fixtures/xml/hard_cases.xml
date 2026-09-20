@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- a leading comment -->
+<root xmlns:ns="urn:example" attr="plain" ns:qattr="qualified">
+  <mixed>text <b>bold</b> tail <i>ital</i> end</mixed>
+  <entities>&amp; &lt; &gt; &quot; &#233; &#x41;</entities>
+  <cdata><![CDATA[raw <not> parsed & kept]]></cdata>
+  <!-- interior comment -->
+  <empty/>
+  <spaced>   leading and trailing   </spaced>
+  <ns:qualified>in a namespace</ns:qualified>
+  <nested><a><b><c>deep</c></b></a></nested>
+  <utf8>héllo — 日本語</utf8>
+  <dup>one</dup><dup>two</dup>
+</root>
