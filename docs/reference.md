@@ -59,6 +59,26 @@ function add(a,
 end function
 ```
 
+**A trailing operator does not continue a line.** Only an open bracket does, so
+this is a parse error reported as `unexpected NEWLINE`:
+
+<!--fragment: deliberately does not parse -- it is the mistake being described-->
+```basic
+message = "total: " + string(n) +
+          " items"                    ' parse error
+```
+
+Parenthesise the expression instead — the open `(` is what carries it over:
+
+```basic
+message = ("total: " + string(n) +
+           " items")
+```
+
+This is the commonest way to meet the rule, because a long string
+concatenation is exactly where a continuation is wanted and a trailing `+` is
+what most authors reach for first.
+
 Blank lines and end-of-line comments inside the brackets are ignored the same
 way, so a long argument list can be annotated per line. Continuation is purely
 lexical: the token stream a continued statement produces is identical to the

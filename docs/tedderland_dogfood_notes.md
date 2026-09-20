@@ -225,3 +225,66 @@ the block first.
   `normpath` collapsed the `..` before the join). gBASIC's is the better answer
   and it is documented; noting it only because a byte-comparison of the two
   servers shows a difference that is not a bug.
+
+---
+
+## 2026-09-20 — the download page
+
+Written while giving the gBASIC project page a real download: a top-of-page
+button, per-file platform/size, and a surfaced checksum. Four things cost a
+parse error or a wrong answer; none is a bug, and three are documented
+behaviour I had to be reminded of by the error rather than by the docs.
+
+### A type modifier does not apply to an expression
+
+`read({file}path)` and `file_size({file}path)` are both parse errors
+(`unexpected RBRACE, expecting OP_EQ or COLON`). The modifier belongs on the
+**left of an assignment** — `src{file} = path` — so reaching a typed value
+inside a call needs a temporary, and a one-line expression becomes two lines
+plus a name nobody wanted.
+
+`build.bas` already had a `read_text(path)` helper doing exactly this dance,
+with a comment explaining it, and I still wrote the inline form twice. That is
+the signal: the wrapper is the idiom, and needing one for so ordinary a thing
+is friction even though the rule is consistent.
+
+**Not a request to change the modifier.** The lexer claims the brace position
+and `{date}=` reads well. But `file_size(path)` on a path *string* raising
+rather than coercing is the sharp edge — `list_files` happens to return file
+values, so the inline form was unnecessary in the first place and nothing said
+so until it failed.
+
+### A trailing operator does not continue a line
+
+```gbasic
+items = items + "<li>" + x +
+        "<span>" + y + "</span>"        ' parse error: unexpected NEWLINE
+```
+
+PLAT-CONT continues a line inside an unclosed `(`, `[` or `{`, which is a good
+rule and needs no trailing marker — but a long string concatenation is exactly
+where a continuation is wanted, and `+` at end of line is what every author
+reaches for first. The fix is to wrap the whole expression in parentheses, which
+works and reads fine once known.
+
+Worth a line in the reference beside the continuation rule: *a trailing operator
+does not continue a line; parenthesise the expression instead.* The error says
+`unexpected NEWLINE`, which is true and does not suggest the remedy.
+
+### `exists()` takes a typed value too
+
+`exists({dir}path)` — same modifier problem. `file_type(path) = "folder"` is the
+answer and `build.bas` already had a helper for it (`dir_has`) whose comment
+records the same discovery. Two helpers in one file, each written because a
+typed value could not be reached inline, is a pattern rather than an accident.
+
+### What went right, and is worth recording
+
+`list_files` returning **file values** rather than strings is what made the
+copy/read/size loop work at all once I stopped fighting it — the values carry
+their type and the builtins take them directly. The friction was entirely my
+assumption that a path is a string.
+
+And `round(n / 1024)` for a human-readable size needed no second argument,
+because `round(x)` now takes one — DOGFOOD 16, fixed the day before this was
+written. It would have been a two-argument call with a `0` nobody reads.
