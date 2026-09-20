@@ -33,6 +33,8 @@
 # GBASIC_PATH and no install step. Asserted below by running the binary from a
 # DIFFERENT directory with the environment cleared -- the property the whole
 # tarball rests on, and one that was NOT true before 0.2.0.
+#
+# REPRO_CHECK=1 builds twice and requires byte-identical output.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -72,7 +74,23 @@ make install PREFIX='$PREFIX_IN_TARBALL' DESTDIR=/work/stage >/dev/null
 stage=/work/stage$PREFIX_IN_TARBALL
 strip \"\$stage/bin/gbasic\"
 cp /work/gbasic/README.md \"\$stage/\"
-tar -C /work/stage$PREFIX_IN_TARBALL -czf /out/${name}.tar.gz --owner=0 --group=0 --transform 's,^\\.,${name},' .
+# REPRODUCIBLE, because a checksum nobody can reproduce cannot be checked
+# against anything. Measured before this: two builds of the SAME COMMIT in the
+# SAME IMAGE produced d0154895... and 1182af4c... -- so the hash on the download
+# page attested to one particular run of this script and not to v\$version, and
+# no one could confirm the bytes they fetched came from the tag they name.
+#
+# Three sources of drift, all of them clocks or orderings rather than content:
+#   --mtime      every file carries the moment `cp -r` touched it
+#   --sort=name  tar walks the directory in whatever order the filesystem gives
+#   gzip -n      gzip stamps the compression time into its own header
+# SOURCE_DATE_EPOCH is the convention for the first, so it is honoured when set
+# and pinned otherwise. This is the same reasoning the xlsx writer already
+# applies to ZIP mod-times, where a clock makes byte comparison useless.
+SOURCE_EPOCH=\${SOURCE_DATE_EPOCH:-1000000000}
+tar -C /work/stage$PREFIX_IN_TARBALL --owner=0 --group=0 --numeric-owner \\
+    --mtime="@\$SOURCE_EPOCH" --sort=name \\
+    --transform 's,^\\.,${name},' -cf - . | gzip -n -9 > /out/${name}.tar.gz
 echo 'built' \$(du -h /out/${name}.tar.gz | cut -f1)
 "
 
@@ -119,6 +137,24 @@ got="$( cd /tmp && env -u GBASIC_PATH "$moved/bin/gbasic" "$work/d.bas" 2>&1 | t
 [ "$got" = "stdlib resolved" ] \
     && ok "it finds its own stdlib after being moved (no GBASIC_PATH, no install)" \
     || bad "it did not find its stdlib after being moved: $got"
+
+# THE REPRODUCIBILITY CLAIM, CHECKABLE. Opt-in because it doubles the build, and
+# a claim nobody can run is the kind that quietly stops being true -- this one
+# WAS false until 2026-09-20, and nothing said so.
+if [ "${REPRO_CHECK:-0}" = "1" ] && [ "$status" = 0 ]; then
+    first="$(sha256sum "$OUT/${name}.tar.gz" | awk '{print $1}')"
+    echo
+    echo "== REPRO: building a second time and comparing =="
+    keep="$(mktemp -d)"; mv "$OUT/${name}.tar.gz" "$keep/"
+    REPRO_CHECK=0 "$0" >/dev/null 2>&1 || { echo "FAIL repro (second build failed)"; status=1; }
+    second="$(sha256sum "$OUT/${name}.tar.gz" 2>/dev/null | awk '{print $1}')"
+    if [ "$first" = "$second" ]; then
+        ok "two builds of this commit are byte-identical"
+    else
+        bad "two builds differ: $first vs $second"
+    fi
+    rm -rf "$keep"
+fi
 
 echo
 if [ "$status" = 0 ]; then

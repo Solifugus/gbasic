@@ -9,6 +9,24 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — the release tarball was not reproducible
+
+Two builds of the same commit in the same container produced different bytes,
+so the checksum on the download page attested to **one particular run of the
+build script** rather than to a tag — and nobody could confirm the archive they
+fetched came from the version it names.
+
+Three sources of drift, all of them clocks or orderings rather than content:
+file mtimes from the copy into the container, the order `tar` walks a directory,
+and the timestamp `gzip` stamps into its own header. Fixed with `--mtime`
+(honouring `SOURCE_DATE_EPOCH`), `--sort=name` and `gzip -n` — the same
+reasoning the `xlsx` writer already applies to ZIP mod-times, where a clock
+makes byte comparison useless.
+
+`REPRO_CHECK=1` builds twice and requires byte-identical output. Opt-in, because
+it doubles the build; proven red by removing `--mtime`.
+
+
 ---
 
 ## 0.2.2 — 2026-09-20
