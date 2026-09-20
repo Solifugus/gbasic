@@ -11,6 +11,41 @@ language surface may still change between releases.
 
 ---
 
+## 0.2.1 — 2026-09-20
+
+**gBASIC now builds on Ubuntu 22.04 LTS.** It did not, and had not since before
+0.1.0 — nobody had tried.
+
+### Fixed — `src/eval.c` never included `<stdarg.h>`
+
+It uses `va_list`, `va_start` and `va_end` nine times. On a recent toolchain the
+header arrives transitively and the build is clean; on **gcc 11** it does not,
+so `va_start` became an implicit function call and the build failed at *link*:
+
+```
+/usr/bin/ld: libgbasic.a(eval.o): in function `warn_fmt':
+  src/eval.c:3462: undefined reference to `va_start'
+```
+
+Audited across the tree — `eval.c` is the only file affected; `frontend.c`
+already included it.
+
+**Why nothing caught it.** A 145-suite gate, a three-configuration CI matrix and
+a lean-build packaging suite all missed it, because **none of them varies
+toolchain age**. The matrix varies which optional libraries are present, which
+is a different axis entirely, and its oldest leg is Ubuntu 24.04 (gcc 13) —
+still new enough to mask this. The defect is invisible from any machine in that
+set, which is exactly the shape of the 2026-08-15 failure that caused CI to
+exist in the first place.
+
+**What it buys.** Built on 22.04, the binary's glibc floor is **2.34** rather
+than 2.38 — so one artifact covers RHEL/Rocky/Alma 9 (2.34), Ubuntu 22.04 LTS
+(2.35), Debian 12 (2.36) and everything newer. The binary built on this
+development machine reached none of the first three.
+
+
+---
+
 ## 0.2.0 — 2026-09-19
 
 **The minor version moves because the language surface did.** Semantic

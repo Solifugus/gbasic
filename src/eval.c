@@ -16,6 +16,10 @@
 #include <poll.h>
 #include <regex.h>
 #include <signal.h>
+#include <stdarg.h>  /* va_list/va_start: used by warn_fmt and friends. Arrived
+                      * transitively on newer toolchains; gcc 11 (Ubuntu 22.04)
+                      * does not, and the build failed at LINK with an undefined
+                      * reference to va_start. */
 #if HAVE_ZLIB
 #include <zlib.h>
 #endif
