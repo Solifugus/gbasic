@@ -52,3 +52,28 @@ if error then
   print "refused: " + error.message
   error.clear()
 end if
+
+print "--- the streaming reader reports the NODE's line, not the buffer's ---"
+' THE LOAD-BEARING SHAPE IS A DIFFERENCE. This field shipped reporting the
+' parser's input CURSOR, which on a small document is the SAME NUMBER for every
+' event -- so "a line was reported" is satisfied by the defect. What separates
+' the two is that the lines must VARY and must match the elements, which is why
+' this prints them rather than counting them.
+rsrc {file}= "examples/fixtures/xml/hard_cases.xml"
+rd = xml.reader(rsrc)
+names = ""
+lines = ""
+distinct = []
+while true
+  ev = xml.read(rd)
+  if is_nothing(ev) then break
+  if ev.kind = "element" then
+    names = names + " " + ev.name
+    lines = lines + " " + string(ev.line)
+    if not contains(distinct, ev.line) then distinct = append(distinct, ev.line)
+  end if
+end while
+xml.close(rd)
+print "elements" + names
+print "lines   " + lines
+print "distinct lines " + string(len(distinct))

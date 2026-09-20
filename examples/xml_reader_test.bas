@@ -1,7 +1,17 @@
 ' WP-XML-4 — streaming reader: xml.reader / xml.read / xml.close. Event stream
-' (kinds, names, depths, lines), idempotent close, use-after-close guard. `line`
-' is libxml2's parser read-position (buffered small docs report the last line;
-' large streamed docs advance) — depths/kinds/names are the per-element signal.
+' (kinds, names, depths, lines), idempotent close, use-after-close guard.
+'
+' `line` WAS libxml2's parser read-position and this comment used to say so --
+' which is a golden DOCUMENTING A DEFECT as expected behaviour. Measured, that
+' number is where the parser's input BUFFER has reached and not where the node
+' is: every event here reported line 9 for an 8-line document, because the whole
+' file is buffered before the first node is handed back. Fixed 2026-09-20 to
+' read the node's own line, so the values below are the real ones.
+'
+' NOTE WHAT AN `end` EVENT REPORTS: the line the ELEMENT STARTED on, not the
+' line its closing tag is on -- `end book` says 2 while `</book>` is on line 4.
+' That is the node's line, it identifies the element rather than the token, and
+' it is stated here because the difference is invisible in a one-line element.
 program main(args)
     load xml
 

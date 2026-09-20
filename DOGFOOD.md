@@ -227,6 +227,14 @@ and the stale-looking ones carry a Status line saying what overtook them.
     provider per widget, and it is the main thing standing between
     Studio and looking designed. See the 2026-09-20 entry.
 
+20. **A gBASIC program that has ever taken a `lock` can no longer be seen
+    to die by signal.** The lock cleanup handler ends the process with
+    `_exit(128 + signo)`, so a supervisor reads `exit_code=143 signal=0`
+    where `docs/reference.md` promises `-1` and `15`, and cannot tell a
+    child that was killed from one that chose to exit 143. The handler is
+    installed for the life of the process, so releasing the lock does not
+    restore it. See the 2026-09-20 entry.
+
 ### Open — accepted as documented limitations (no action planned)
 
 **Every live bullet below is EXECUTABLE.** `tests/run_limitations.sh` runs one
@@ -5141,3 +5149,82 @@ unstyled.
 name has three parts and the middle one is a type. The instance path
 (`obj.method(...)`) already works, so this is the same lookup with the receiver
 supplied from the name rather than the value.
+
+
+## 2026-09-20 — CC — while: fixing gBASIC Studio's suite against the current interpreter
+
+Studio's `sessions_signal` and `results_signal` cases assert that a child killed
+by SIGTERM comes back `exit_code=-1 signal=15`. They were reported as failing
+with `exit_code=143 signal=0`, so the reporting path was measured rather than
+rebaselined — and the ordinary path is fine. The hole is elsewhere, and it is
+wider than the case that raised it.
+
+- **Type:** bug
+- **Severity:** medium
+
+### A process that has ever taken a `lock` stops dying by signal
+
+```basic
+function kill_after(script)
+    h = process.start({ command: env("GB"), args: [script] })
+    sleep(0.5)
+    s = process.stop(h, { force_after: 5 })
+    process.release(h)
+    return s
+end function
+```
+
+Three children, each a gBASIC interpreter running a `while true` sleep loop,
+each sent SIGTERM by `process.stop`. The only difference is what they did first:
+
+```
+no lock:                  exit_code=-1  signal=15
+holding a lock:           exit_code=143 signal=0
+lock long since released: exit_code=143 signal=0
+```
+
+`docs/reference.md` (§ process result record) promises `exit_code` is "`-1` if
+it was terminated by a signal" and `signal` is "the terminating signal number,
+or `0` if none". gBASIC's own goldens assert exactly that —
+`tests/native_platform/plat_proc_stop.out` says `signal=15`, `exit_code=-1`, and
+`plat_stream_signal.out` says `signal=15`. The first line above is that promise
+being kept. The other two break it, and break it *silently*: nothing in the
+record says a signal was involved, so a supervisor cannot distinguish "SIGTERM
+killed it" from "the program chose to exit 143". 143 is the shell's way of
+*displaying* a SIGTERM death; it is not a value a process should exit with,
+because a real exit status and a rendered one then occupy the same field.
+
+**Cause.** `src/eval.c:4846` — `lock_cleanup_on_signal` closes the lock fds and
+calls `_exit(128 + signal_number)`. It is installed by `lock_install_cleanup`
+(`src/eval.c:4861`) for SIGINT, SIGTERM and SIGHUP the first time the process
+takes a lock. `lock_cleanup_registered` means it is never removed, which is why
+the third line above is the same as the second: the lock is long gone and the
+process still exits 143. So this is not "while holding a lock" — it is "ever
+touched `with lock`", for the rest of the process's life.
+
+**The fix is the POSIX idiom, not a different number.** Clean up, restore the
+default disposition, and re-raise, so the process really does die of the signal
+and `waitpid` reports `WIFSIGNALED`:
+
+```c
+signal(signal_number, SIG_DFL);
+raise(signal_number);
+```
+
+Picking `-1` in the parent instead would be worse — it would invent a signal
+death the kernel never reported.
+
+**Why it matters here.** Studio ends a run by signalling the child interpreter,
+and `lib/studio_ui.bas:1717` decides what to tell the user on `signal != 0`: a
+run it stopped reads "killed by signal 15". Any section that takes a file lock —
+which is the idiom gBASIC documents for coordinating writers — reports "exit
+143" instead, i.e. Studio tells the user their program failed with a strange
+status when in fact Studio killed it. The same reasoning applies to anything
+supervising gBASIC children, `process.poll`'s `success` included.
+
+**Workaround:** none in Studio, and none available to a gBASIC program: the
+information is destroyed in the child before the parent can read it. A
+supervisor that must be sure would have to treat 143 as ambiguous, which is the
+distinction this field exists to make. Studio's goldens are therefore left
+asserting `-1`/`15` — the documented, and for a lock-free child the actual,
+behaviour — rather than being rebaselined onto the defect.

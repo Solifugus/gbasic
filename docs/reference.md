@@ -3387,6 +3387,17 @@ forward without materializing the whole document:
 - `xml.subtree(reader)` — materialize the reader's current element as a node tree.
 - `xml.close(reader)` — release the reader.
 
+Each event carries a `line` — the line its element **starts** on. An `end` event
+therefore reports where the element *opened*, not where its closing tag sits, so
+`end book` says 2 for a `<book>` on line 2 whose `</book>` is on line 4: it names
+the element rather than the token.
+
+Until 0.2.2 this field was libxml2's **parser read position** rather than the
+node's line — on a small document every event reported the same number, because
+the whole file is buffered before the first node is handed back, and on a large
+one it ran several lines ahead. It was a plausible wrong number with no way for
+a caller to tell.
+
 Parse failures and misuse (bad argument types, a closed reader, a non-element
 subtree) raise structured errors. See `docs/xml_design.md` and the `examples/xml_*`
 programs for the full surface and worked SEC-filing examples.
@@ -6630,7 +6641,8 @@ whole program without needing a call site.
   kind**, because a location whose shape depends on who built it is one a
   consumer has to guess at. An `xml` location requires a `path` **and an
   `occurrence`**: the path alone names every element at it. A `line` is optional
-  there, since the streaming reader has one and the DOM parser does not, and an
+  there — the streaming reader always carries one, and the DOM parser does when
+  asked (`positions: true`, *since 0.2.2*; before that it could not) — and an
   adapter without one is not made to invent it. `finio.describe_location(loc)`
   renders any of them, so a report mixing representations reads consistently
   rather than each adapter inventing a phrasing.

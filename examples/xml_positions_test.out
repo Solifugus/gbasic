@@ -12,3 +12,7 @@ elements 70000
 last line 70003 (clamped would be 65535)
 --- an unknown option is refused by name ---
 refused: xml.parse: unknown option 'positionz' (known: keep_space, positions)
+--- the streaming reader reports the NODE's line, not the buffer's ---
+elements root mixed b i entities cdata empty spaced qualified nested a b c utf8 dup dup
+lines    3 4 4 4 5 6 8 9 10 11 11 11 11 12 13 13
+distinct lines 10

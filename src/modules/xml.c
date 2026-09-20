@@ -728,7 +728,26 @@ static Value xml_reader_event(xmlTextReaderPtr r, const char *kind) {
     Value ev = value_record(NULL, 0);
     record_set(&ev, "kind", value_string(kind));
     int depth = xmlTextReaderDepth(r);
-    int line = xmlTextReaderGetParserLineNumber(r);
+
+    /* THE NODE'S LINE, NOT THE PARSER'S CURSOR.
+     *
+     * This field shipped reporting xmlTextReaderGetParserLineNumber, which is
+     * where the PARSER'S INPUT BUFFER has reached -- not where the node is.
+     * Measured: on a small document every event reports EOF, because the whole
+     * file is buffered before the first node is handed back; on a 6.3 MB file
+     * element #2 reports line 22 when it is on line 3, and #100000 reports
+     * 100008 when it is on 100002. So it was approximately right on large input,
+     * meaningless on small, and never exact -- a PLAUSIBLE WRONG NUMBER, which
+     * is the failure mode this module can least afford, since a caller reading
+     * `event.line` has no way to tell.
+     *
+     * The reader builds real nodes internally, so the current node carries its
+     * own line and xmlGetLineNo answers exactly. (XML_SECURE_OPTS supplies
+     * XML_PARSE_BIG_LINES, without which this clamps at 65535 the same way the
+     * tree path does.) A node is absent for some event kinds, and 0 is the
+     * honest answer there rather than a number from somewhere else. */
+    xmlNodePtr cur = xmlTextReaderCurrentNode(r);
+    int line = cur ? (int)xmlGetLineNo(cur) : 0;
     record_set(&ev, "depth", value_number((double)depth));
     record_set(&ev, "line", value_number((double)line));
 

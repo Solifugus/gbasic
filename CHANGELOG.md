@@ -9,6 +9,35 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — the streaming reader's `line` was the parser's cursor, not the node's
+
+`xml.read` events carry a `line`. It reported
+`xmlTextReaderGetParserLineNumber` — where libxml2's **input buffer** has
+reached, not where the node is. On a small document that is the same number for
+every event (the whole file is buffered before the first node is handed back:
+all twelve events of an 8-line fixture said `line=9`), and on a 6.3 MB file it
+ran ahead — element #2 reported line 22 when it was on line 3.
+
+So it was meaningless on small input, approximate on large, and never exact — a
+**plausible wrong number**, with nothing to tell a caller. It now reads the
+current node's own line, which is exact.
+
+**The golden was defending it.** `examples/xml_reader_test.bas` carried a
+comment explaining the behaviour as expected and steering readers off the field:
+*"buffered small docs report the last line… depths/kinds/names are the
+per-element signal."* Somebody met this, understood it, and wrote it down as a
+property of XML.
+
+**What an `end` event reports** is now stated rather than left to be discovered:
+the line the element *started* on, not where its closing tag sits — `end book`
+says 2 for a `<book>` on line 2 whose `</book>` is on line 4. It names the
+element, not the token, and the difference is invisible on a one-line element.
+
+Also corrects a reference claim this falsified — an `xml` location's `line` was
+documented as optional *"since the streaming reader has one and the DOM parser
+does not"*, which stopped being true two commits earlier.
+
+
 ### Added — an XML node can say which line it came from
 
 `xml.parse(text, { positions: true })` and `xml.parse_file(path, { … })` give
