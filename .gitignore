@@ -34,6 +34,15 @@ examples/tmp_*.xml
 # every figure and identifier in it.
 examples/statements/
 
+# Photographs and scans of real documents, for measuring OCR against paper
+# rather than against rendered text. SAME RULE AS ABOVE: these are real
+# documents belonging to a real person, so nothing in here is committed, no
+# line of one is quoted, and a fixture derived from one has every figure,
+# name and account number rewritten first. The MEASUREMENTS may leave -- a
+# skew angle, whether a row survived -- because a number about a photograph
+# tells you nothing about what the photograph says.
+examples/scans/
+
 # Release artifacts built by tools/build-release-tarball.sh. Binaries do not
 # belong in the repository: they are reproducible from a tag and the script,
 # and committing them would grow history by a megabyte per release.
