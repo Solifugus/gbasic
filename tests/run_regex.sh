@@ -233,4 +233,51 @@ else
     printf 'SKIP valgrind (not installed)\n'
 fi
 
+# --- THE FALLBACK PATH, WHICH THIS MACHINE NEVER COMPILES ---------------------
+#
+# Subjects are matched with REG_STARTEND so that gBASIC's counted strings work:
+# an interior NUL is CONTENT (PLAT-NUL), and a NUL-terminated regexec would stop
+# at it. glibc defines REG_STARTEND; MUSL DOES NOT, so a musl build takes the
+# `#else` branch -- which no build on a glibc machine ever compiles, so a defect
+# there is invisible to every other tier in this file.
+#
+# It was not hypothetical. A static musl build answered
+# `contains(from_bytes([65,0,66]), regex("B"))` as FALSE where it must be TRUE:
+# one wrong boolean, in the one area a whole phase was spent closing, on a build
+# that otherwise passed 19 suites. It was found by building for another libc,
+# not by any test.
+#
+# So the path is compiled HERE by force and required to agree with the primary
+# one. ONE LIBC, TWO CODE PATHS -- which isolates the code from the libc, where
+# comparing a musl binary to a glibc binary confounds the two and could pass on
+# a fallback that is wrong in the same way musl is.
+printf '\n'
+if [ -z "${CC:-}" ] || command -v "${CC:-cc}" >/dev/null 2>&1; then
+    fb="$(mktemp -d)"
+    cp -r src include Makefile stdlib tests "$fb"/ 2>/dev/null
+    python3 - "$fb/src/eval.c" <<'FORCE'
+import sys
+p=sys.argv[1]; s=open(p).read()
+i=s.index("static int regex_exec_at(")
+open(p,"w").write(s[:i]+"#undef REG_STARTEND   /* forced by run_regex.sh */\n"+s[i:])
+FORCE
+    if ( cd "$fb" && make >/dev/null 2>&1 ); then
+        if ( cd "$fb" && GBASIC_PATH=stdlib ./gbasic tests/regex_test.bas 2>&1 ) \
+             | diff -q - tests/regex_test.out >/dev/null; then
+            printf 'PASS fallback (no REG_STARTEND: the two paths agree byte for byte)\n'
+        else
+            printf 'FAIL fallback -- the no-REG_STARTEND path disagrees with the primary one:\n'
+            ( cd "$fb" && GBASIC_PATH=stdlib ./gbasic tests/regex_test.bas 2>&1 ) \
+                | diff - tests/regex_test.out | head -8
+            status=1
+        fi
+    else
+        printf 'FAIL fallback -- the no-REG_STARTEND path does not BUILD\n'
+        status=1
+    fi
+    rm -rf "$fb"
+else
+    printf 'SKIP fallback (no compiler)\n'
+fi
+
 exit "$status"

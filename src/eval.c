@@ -2549,18 +2549,84 @@ static int regex_exec_at(const RegexValue *regex,
     }
     return 0;
 #else
-    (void)subject_len;
-    int rc = regexec(&regex->compiled, subject + from, group_slots, groups, eflags);
-    if (rc != 0) {
-        return 0;
-    }
-    for (size_t i = 0; i < group_slots; i++) {
-        if (groups[i].rm_so >= 0) {
-            groups[i].rm_so += (regoff_t)from;
-            groups[i].rm_eo += (regoff_t)from;
+    /* NO REG_STARTEND -- musl does not define it, and a NUL-terminated regexec
+     * stops at the first interior NUL. Left as a plain call, that BREAKS
+     * PLAT-NUL's guarantee that a gBASIC string is a counted sequence of bytes
+     * in which NUL is content: `contains(from_bytes([65,0,66]), regex("B"))`
+     * answers false where it must answer true. Measured, not predicted -- it is
+     * the one semantic difference a musl build showed across 30 suites.
+     *
+     * So the subject is matched SEGMENT BY SEGMENT between its NULs, and that
+     * is EXACT rather than an approximation. MEASURED against glibc with
+     * REG_STARTEND over the subject "A\0BC":
+     *
+     *     B       matches at [2,3)   -- a literal past the NUL is found
+     *     A.B     NO match           -- `.` does not match a NUL
+     *     A.*B    NO match           -- and `.*` does not cross one
+     *     ^A      matches at [0,1)
+     *     C$      matches at [3,4)   -- `$` is the BUFFER end, not the NUL
+     *
+     * Since no pattern can SPAN a NUL, matching each NUL-free run on its own
+     * reaches the same answer. What the rows above show needs care is the
+     * ANCHORS: `^` must not match at a segment start that is not the buffer
+     * start, and `$` must not match at a segment end that is not the buffer
+     * end -- hence REG_NOTBOL/REG_NOTEOL per segment rather than only at
+     * `from`. Without them `C$` would match at the NUL and `^` would match
+     * after every one, which is the failure mode the REG_NOTBOL comment above
+     * already describes for scanning.
+     *
+     * A subject with no interior NUL takes the single-segment path and is
+     * byte-for-byte the call this used to make. */
+    size_t seg = from;
+    while (seg <= subject_len) {
+        size_t end = seg;
+        while (end < subject_len && subject[end] != '\0') {
+            end++;
         }
+
+        /* A segment must be NUL-terminated for the plain regexec, and the
+         * subject is const, so the run is copied when it is not already
+         * terminated at `end`. The common case -- no interior NUL -- needs no
+         * copy, since the buffer's own terminator sits at subject_len. */
+        const char *run = subject + seg;
+        char *owned = NULL;
+        if (end < subject_len) {
+            owned = malloc(end - seg + 1);
+            if (!owned) {
+                abort();
+            }
+            memcpy(owned, subject + seg, end - seg);
+            owned[end - seg] = '\0';
+            run = owned;
+        }
+
+        int seg_flags = eflags;
+        if (seg > 0) {
+            seg_flags |= REG_NOTBOL;
+        }
+        if (end < subject_len) {
+            seg_flags |= REG_NOTEOL;
+        }
+
+        int rc = regexec(&regex->compiled, run, group_slots, groups, seg_flags);
+        free(owned);
+
+        if (rc == 0) {
+            for (size_t i = 0; i < group_slots; i++) {
+                if (groups[i].rm_so >= 0) {
+                    groups[i].rm_so += (regoff_t)seg;
+                    groups[i].rm_eo += (regoff_t)seg;
+                }
+            }
+            return 1;
+        }
+
+        if (end >= subject_len) {
+            break;
+        }
+        seg = end + 1;   /* step over the NUL; it can never be part of a match */
     }
-    return 1;
+    return 0;
 #endif
 }
 
