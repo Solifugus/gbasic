@@ -101,6 +101,99 @@ jobs:
   # Ubuntu 22.04 LTS (2.35) and Debian 12 (2.36). A base image that raises the
   # floor should fail HERE rather than ship a tarball that stops starting on the
   # machines it was built for.
+  # A DIFFERENT LIBC, which is a THIRD axis and the one that had a defect in it.
+  #
+  # The `full`/`minimal` jobs vary which LIBRARIES are present; `oldest-toolchain`
+  # varies how old the COMPILER is. Neither varies WHICH C LIBRARY, and on
+  # 2026-09-20 that axis turned out to be hiding a real one: musl does not define
+  # REG_STARTEND, so the regex fallback ran a NUL-terminated regexec and stopped
+  # at an interior NUL -- `contains(from_bytes([65,0,66]), regex("B"))` answered
+  # FALSE, breaking PLAT-NUL's guarantee that a gBASIC string is counted bytes in
+  # which NUL is content. Found by building for musl, by no test.
+  #
+  # THIS IS A PORTABILITY CHECK, NOT A RELEASE BUILD. The download is built in a
+  # container against an older glibc (floor 2.34, which reaches RHEL 9, Ubuntu
+  # 22.04 and Debian 12), and that stays. What this job buys is the axis, not an
+  # artifact: it compiles the paths a glibc machine never compiles and runs the
+  # suites that do not need a dynamic loader.
+  #
+  # DELIBERATELY LEAN, and that is not only to match the release tier: musl's
+  # -nostdinc collides with the glibc include paths pkg-config hands back, so a
+  # FULL build cannot go through musl at all. Nothing optional is installed.
+  #
+  # VALGRIND TIERS ARE EXPECTED TO FAIL HERE and the suite list reflects it --
+  # valgrind intercepts malloc through the dynamic linker and a static binary has
+  # none, so nine suites lose their memory tier. Those tiers are covered by every
+  # other job; what is covered ONLY here is the libc.
+  musl-static:
+    name: a different libc (musl, static)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl and nothing optional
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential bison musl-tools
+
+      - name: Build against musl, statically
+        run: |
+          # LEANNESS IS FORCED, not hoped for. musl's -nostdinc collides with the
+          # glibc include paths pkg-config hands back, so ONE optional dev
+          # library happening to be on the runner turns this job red for a
+          # reason that is not a gBASIC defect. A pkg-config that always fails
+          # makes every HAVE_* zero regardless of what is installed.
+          mkdir -p "$RUNNER_TEMP/shim"
+          printf '#!/bin/sh\nexit 1\n' > "$RUNNER_TEMP/shim/pkg-config"
+          chmod +x "$RUNNER_TEMP/shim/pkg-config"
+
+          # `CC := cc` in the Makefile BEATS the environment, so the override has
+          # to be on the COMMAND LINE. `export CC=musl-gcc` silently does not
+          # work and produces a convincing glibc binary -- which cost an evening
+          # once already, and is why the next step asserts musl rather than
+          # "statically linked".
+          PATH="$RUNNER_TEMP/shim:$PATH" make CC=musl-gcc LDLIBS="-lm -static"
+
+      - name: It must really be musl, not merely static
+        run: |
+          # ASSERTED, because "statically linked" is true of a glibc static build
+          # too and is the check that was passed while the wrong thing was being
+          # measured. glibc's static binary still carries _dl_init_paths.
+          file gbasic
+          readelf -h gbasic | grep -q 'UNIX - System V' \
+            || { echo '::error::not a musl binary (OS/ABI is not System V)'; exit 1; }
+          n=$(nm -a gbasic | grep -cE '_dl_init_paths|fillin_rpath' || true)
+          [ "$n" = "0" ] \
+            || { echo "::error::glibc internals present ($n symbols) -- this is a glibc static build"; exit 1; }
+          ldd gbasic 2>&1 | grep -q 'not a dynamic executable' \
+            || { echo '::error::not statically linked'; exit 1; }
+          ./gbasic --version
+
+      - name: The NUL guarantee, which is what this job exists for
+        run: |
+          printf 'print "finds B =" + string(contains(from_bytes([65,0,66]), regex("B")))\n' > /tmp/nul.bas
+          out=$(GBASIC_PATH=stdlib ./gbasic /tmp/nul.bas)
+          echo "$out"
+          [ "$out" = "finds B =true" ] \
+            || { echo '::error::PLAT-NUL broken on this libc: a regex stopped at an interior NUL'; exit 1; }
+
+      - name: Suites that do not need a dynamic loader
+        run: |
+          status=0
+          for s in run_negative run_regex run_core run_stridx run_recidx run_equality \
+                   run_string_nul run_precedence run_relocatable run_arridx \
+                   run_error_model run_warning_model run_continuation run_optparams \
+                   run_for_each_index run_credit run_try_decode run_outline run_repl \
+                   run_silent_traps; do
+            [ -f "tests/$s.sh" ] || continue
+            printf '\n===== %s =====\n' "$s"
+            if ! timeout 1800 bash "tests/$s.sh"; then
+              printf '::error::%s failed under musl\n' "$s"
+              status=1
+            fi
+          done
+          exit "$status"
+
   oldest-toolchain:
     name: oldest supported toolchain (Ubuntu 22.04, gcc 11)
     runs-on: ubuntu-22.04
