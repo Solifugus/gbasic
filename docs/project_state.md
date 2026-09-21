@@ -257,6 +257,13 @@ document list, with a status column, is `docs/README.md`.
   and perturbing the library shows it produces a REFUSAL instead, because
   framing is decided once and recognition and reading go through that one
   decision.
+- **text out of an image** — `ocr`, pure gBASIC over the tesseract CLI (a
+  native module would be absent from the lean download). Words with boxes and
+  confidence, never a bare string; orientation settled first and how
+  confidently reported; a missing language refused BY NAME, because reading a
+  script with the wrong data returns words at 30-45% confidence rather than an
+  error. `ocr.grid` output is a print-image report, so `ari` and `ari_discover`
+  consume it unchanged.
 - **an optional LLM advisor for report discovery** — `ari_advisor`
   (`ari_discover` Phase 4). Proposes better field names from a bounded,
   masked evidence package built from the PROPOSAL rather than the report, and

@@ -1,6 +1,8 @@
 # OCR — reading text out of an image
 
-Status: **design proposal.** Nothing here is built. The measurements in §1 were
+Status: **SHIPPED** as `stdlib/ocr.bas` (2026-09-21), over the tesseract CLI
+per §4. `read`, `grid`, orientation, script and skew all exist; §3's `mode:` for
+the image-organising job does not, and §8's remaining questions are still open. The measurements in §1 were
 taken on 2026-09-20 with Tesseract 5.5.0 and are reproducible with the probe in
 §9.
 

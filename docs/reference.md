@@ -7415,6 +7415,49 @@ whole program without needing a call site.
   reads the wrong columns**. It is computed without an answer key, from whether
   the family's column structure is the same in every source.
 
+- `ocr` — **reading text out of an image** (`docs/ocr_design.md`). Pure gBASIC
+  over the `tesseract` CLI, so it works anywhere that is installed rather than
+  needing a build dependency the lean release tarball would not carry.
+
+  `ocr.available()` and `ocr.languages()` say what this machine can do.
+  `ocr.read_page(path [, options])` returns a **page**, not a string: `words`
+  (each with `text`, `confidence` and a box), plus `rotation`,
+  `rotation_confidence`, `script`, `script_confidence` and `skew`. Options are
+  `{ languages:, psm:, min_confidence: }` and an unknown one is refused by name.
+  `ocr.grid(page)` lays the page out as text; `ocr.skew_of(words)` and
+  `ocr.max_skew()` are the measure and the threshold it refuses past.
+
+  **It never returns a bare string, never silently drops a low-confidence word,
+  and corrects nothing.** Each is a refusal with a measurement behind it. Plain
+  OCR of a columnar report recognises every word at 90–96% confidence and
+  *reorders* them into separate blocks, so an account number and its amount end
+  up twelve lines apart — nothing missing, the association destroyed, and the
+  text still reading like a document. A dropped word is indistinguishable from
+  a word that was not there. And every plausible correction — “0 looks like O in
+  a numeric column” — turns a *visible* misread into an *invisible* one.
+
+  **A language that is not installed is refused by name**, because that failure
+  says nothing otherwise: reading Korean with English data returns 39–82 words
+  at 30–45% confidence rather than an error or an empty page. Measured —
+  installing the language took the same pages from 3 to 117 high-confidence
+  words. Languages **combine** (`"kor+eng"`); the wrong language alone is worse
+  than none.
+
+  **Orientation is settled before anything else**, because it is the dominant
+  real failure: of seven hand-held photographs, five were a quarter turn or more
+  out, and a 90° error reads as *87° of skew at 30% confidence* rather than as a
+  rotation. EXIF is not enough — a page can be sideways inside a correctly
+  oriented photograph. How confidently it was settled travels with the page.
+
+  **`grid` refuses past `max_skew()`.** Beyond about 3° the layout does not
+  break, it **misattributes** — a well-formed row carrying another row's money,
+  at the same confidence as a clean page. `read_page` is unaffected; what may
+  not be claimed is that a row belongs together.
+
+  What `grid` produces is a **print-image report**, which is what `ari` parses
+  and `ari_discover` infers a specification from — so this is a front door to
+  machinery that already exists rather than a new pipeline.
+
 - `ari_advisor` — **Phase 4: the optional LLM advisor** (design §11). A
   *separate* library, because `llm` needs libcurl and a program that discovers a
   specification should not carry an HTTP client it never calls.

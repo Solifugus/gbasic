@@ -9,6 +9,42 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `ocr`: reading text out of an image
+
+Pure gBASIC over the `tesseract` CLI. A native module would need libtesseract at
+build time and the lean release tarball carries no optional modules, so it would
+be **absent from the download a reader gets**; this works anywhere tesseract is
+installed. Every measurement behind the design came out of the CLI's own TSV.
+
+**It does not return a string.** `read_page` answers words, each with a box and
+a confidence. Plain OCR of a columnar report recognises every word at 90–96%
+and *reorders* them into separate blocks, so an account number and its amount
+end up twelve lines apart — nothing missing, the association destroyed, the text
+still reading like a document. `ocr.grid` puts the rows back together, and what
+comes out is a **print-image report**, which `ari` parses and `ari_discover`
+infers a specification from. Asserted: a page that began as a PNG profiles as
+`3 row(s) <IDENTIFIER> <TEXT> <TEXT> <NUMBER> <NUMBER> <MONEY>`.
+
+**Orientation is settled first**, because it is the dominant real failure — of
+seven hand-held photographs five were a quarter turn or more out, and a 90°
+error reads as *87° of skew at 30% confidence*. `--psm 1` applies the rotation
+itself, but the boxes come back in the original frame, so the library transforms
+them; without that, `grid` lays out a sideways page and manufactures the very
+defect it exists to prevent.
+
+**A missing language is refused by name**, because that failure says nothing:
+reading Korean with English data returns 39–82 words at 30–45% confidence rather
+than an error or an empty page. Installing it took the same pages from 3 to 117
+high-confidence words.
+
+**`grid` refuses past 3° of skew.** Beyond it the layout does not break, it
+*misattributes* — a well-formed row carrying another row's money at the same
+confidence as a clean page.
+
+Nothing is corrected: every plausible correction turns a visible misread into an
+invisible one.
+
+
 ### Added — `ari_advisor`: the optional LLM advisor, which never adopts a name
 
 `ari_discover` Phase 4 (design §11). Proposes better field names from a bounded,
