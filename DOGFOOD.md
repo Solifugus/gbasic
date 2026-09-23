@@ -259,24 +259,56 @@ and the stale-looking ones carry a Status line saying what overtook them.
     `143` in `$?` for both cases, so nothing at shell level could see it.
     `tests/run_lock_signal.sh` uses `waitpid` directly.
     **AND THE CLEANUP TURNS OUT TO BE REDUNDANT** — see the entry below.
-21. **A multi-line string literal is legal in a file and unreachable at the
-    prompt.** `rules = "Think of an animal,` then Enter answers
-    `unterminated string` and throws the line away; the same two lines in a
-    `.bas` file are one string, as `tutorial.md` "Variables" documents. The
-    prompt continues an unclosed BRACKET with `...` and does not extend the
-    same courtesy to an unclosed QUOTE, so the one construct a beginner is
-    most likely to try out before committing it to a file is the one the
-    bench cannot hold. See the 2026-09-22 book-drafting entry.
+21. ~~**A multi-line string literal is legal in a file and unreachable at the
+    prompt.**~~ **RESOLVED 2026-09-23** (struck). A quote is the third
+    unfinished shape and the prompt waits for it, so the bench and the file now
+    agree — asserted as that DIFFERENCE, the same two lines through both
+    routes giving the same string. The reason it was missing is the reason the
+    two bracket tiers could never have found it: the refusal comes from the
+    LEXER, one stage before the parser would have asked for more input, and
+    `diagnostics_say_incomplete` had only the parser's two messages in it. It
+    is sound to read `unterminated string` as "give me the rest" because the
+    lexer emits it at exactly one place, having run off the end of its buffer
+    with a string still open. THE COST IS STATED RATHER THAN HIDDEN: the
+    blank-line escape that gets a forgotten quote out is the one blocks and
+    brackets already have, so a blank line INSIDE a multi-line string submits
+    the chunk instead of becoming a paragraph break. The control that keeps the
+    whole thing from being "the lexer stopped refusing" is a dangling
+    backslash, which is not running out of input — the input continues, the
+    escape is simply not one gBASIC has — and is still an error.
+    **This also makes the book's Chapter 1 callout true**: `...` really does
+    mean an opening quote or an opening bracket with no partner now, where it
+    had been written against the parser's behaviour rather than the lexer's.
 
-22. **A mutating builtin that returns a value is a QUESTION at the prompt,
-    so the mutation happens and the line is not kept.** `append(nodes, x)`
-    and `write(f, "hello")` both act *and* answer, and the resident
-    program's act/answer rule reads only the answer: the array is appended
-    to, the file is written, and neither line appears in `list`, in `save`,
-    or in what `run` replays. A session that typed `nodes = []` and three
-    `append`s saves **one** line and says so ("saved 1 line"), and `run`
-    answers `count(nodes)` = 0. See the 2026-09-22 plan re-verification
-    entry.
+22. ~~**A mutating builtin that returns a value is a QUESTION at the prompt,
+    so the mutation happens and the line is not kept.**~~ **RESOLVED
+    2026-09-23** (struck). **MERELY** was the load-bearing word in the
+    documented rule and the implementation never asked it: the discriminator
+    was "did this line produce a value", which reads the answer half alone.
+    The runtime raises the other half now (`gb_session_acted`), so a chunk that
+    acted is kept whether or not it also answered.
+    **THE DECISION THAT MATTERED WAS WHERE TO PUT THE QUESTION, not what to
+    add.** A name table would have worked and would have rotted invisibly;
+    following the EVALUATION costs nothing to maintain and buys the two cases a
+    syntactic rule gets wrong in opposite directions — a function of yours that
+    writes a file is kept even though it answers, and one that builds its
+    answer in a local `out = []`, which is most of this stdlib, is NOT kept
+    even though it called `append` to do it. The discriminator there is not
+    call depth but WHOSE FRAME THE NAME LIVES IN, because gBASIC has no
+    closures yet `append(g, x)` still resolves `g` through the parent chain and
+    mutates the global in place (measured) — and that one is an act.
+    **TWO PLACES TAKE A COARSER ANSWER AND EACH DEFAULTS THE VISIBLE WAY.** In
+    the FILE family an unnamed verb is taken to ACT (the exceptions are `read`,
+    `exists`, `file_size` and their neighbours), and a call into a BUILT-IN
+    MODULE is an act whether it read or wrote, because nothing at the call site
+    tells `sqlite.exec` from `sqlite.query` and a per-verb table of every
+    module would rot in exactly the way that produced this bug. A question kept
+    is a line the author can see in `list` and `delete`; an act dropped is work
+    that vanishes with nothing said. `?` is the spelling for the other answer.
+    **THE REFERENCE WAS WRONG TWICE OVER** and both are corrected: its worked
+    example of a KEPT call was `write(f, "hello")`, the exact case that
+    vanished, and it also used that call to illustrate a call answering
+    `nothing` — `write` has always answered `true`.
 
 23. **`UNLEARN.md` still says a record literal accepts only identifier
     keys.** "Record-literal keys must be identifiers. `{ "a": 1 }` is a
@@ -294,12 +326,19 @@ and the stale-looking ones carry a Status line saying what overtook them.
     namespace the writer never asked for and does not say the other one
     exists. See the 2026-09-22 Chapter 3 entry.
 
-25. **The prompt echoes type-ahead and then throws it away.** A line typed
-    while a command is still running is echoed by the terminal, so it is on
-    the screen and looks accepted, and then `raw_on()`'s `TCSAFLUSH`
-    discards it when the next prompt is drawn. It never runs, nothing is
-    said, and the prompt comes back clean. See the 2026-09-22 capture-harness
-    entry.
+25. ~~**The prompt echoes type-ahead and then throws it away.**~~ **RESOLVED
+    2026-09-23** (struck). `TCSADRAIN` rather than `TCSAFLUSH` in `raw_on`, so
+    the queued bytes survive and the editor reads them as the next line, which
+    is what a shell and every other prompt do. `raw_off` keeps `TCSAFLUSH`
+    deliberately: bytes typed at the EDITOR reaching a program about to read in
+    cooked mode is a different question, and it loses nothing the user watched
+    being accepted. Tested through a pty with the driver's wait-for-the-prompt
+    discipline turned OFF — that wait exists to keep every other tier out of
+    this window, and this is the one tier whose subject is the window. The
+    check that keeps it from being vacuous is a COUNT: the line appears twice
+    on a working prompt (the cooked-mode echo while the command runs, then the
+    editor's own redraw) and once on a broken one, so a driver that quietly
+    waited would report 1 and fail.
 
 26. **`reference.md`'s "Interrupting" says the SESSION survives Ctrl-C and
     never says the interrupted LOOP's variables survive with it** --- which is
@@ -7541,3 +7580,153 @@ book-session note flagged that row as stale; it can be considered closed.
   a NULL receiver), the which-half distinction removed, and `gi_find_static`
   neutered outright (caught by `run_limitations`' new control). Valgrind is
   clean on the success path and on all four refusal paths.
+
+## 2026-09-23 — CC — while: closing the prompt cluster (ledger 21, 22, 25) for the book session
+- **Type:** bug
+- **Severity:** high (22), medium (21, 25)
+- **What:** Three defects in the one surface the book is written on, fixed
+  together because they are one claim: *you can try a line at the bench before
+  you commit it to a file.* Each of the three breaks that claim somewhere a
+  beginner reaches in the first hour — a multi-line string cannot be typed
+  (21), what you typed is not kept (22), what you typed while something ran is
+  thrown away (25).
+
+### 22 is the one worth reading, and the work was deciding WHERE to ask
+
+`reference.md` has said since the prompt shipped that a line which **acts** is
+kept and one which **merely answers** is not. *Merely* is the whole rule and it
+had never been asked: the test implemented was `gb_session_echoed()`, "did this
+line produce a value", which reads the answer half alone. `append` and `write`
+act *and* answer, so a session that built a list kept the `nodes = []` and none
+of the appends, reported `saved 1 line`, and gave an empty array back from its
+own `run`.
+
+**The obvious fix is a table of mutating builtins, and it is the wrong one.**
+Such a table rots silently, and its rot is indistinguishable from the defect it
+was written to close — a new builtin that acts and is not in the list is
+dropped exactly as `append` was. So the question is asked of the **evaluation**
+instead: a flag the runtime raises when something happens that the session can
+still see afterwards.
+
+That turned out to buy two cases no syntactic rule gets right, and they point
+in opposite directions:
+
+- a function of yours that writes a file is **kept** even though it answers,
+  because the effect is noticed wherever it happens; and
+- a function that builds its answer in a local `out = []` — which is most of
+  this stdlib — is **not** kept, even though it called `append` to do it.
+
+The second needed more than call depth. gBASIC has no closures, so one expects
+a function's `append` to be about a local; measured, it is not always —
+`append(g, x)` resolves `g` through the parent chain and mutates the global in
+place. So the discriminator is **whose frame the name lives in**, which the
+environment answers directly. The perturbation that counts every in-place
+mutation is caught by that control and by nothing else.
+
+**Two places take a deliberately coarser answer**, and the choice there is
+which default fails visibly:
+
+- In the **file** family an unnamed verb is taken to **act**; the exceptions
+  are the nine that plainly ask (`read`, `exists`, `file_size`, …). Among
+  `len` and `sqrt` an unnamed builtin is a question; among `write` and
+  `remove_dir` it is an act, so the two families default opposite ways on
+  purpose.
+- A call into a **built-in module** is an act whether it read or wrote.
+  Nothing at the call site tells `sqlite.exec` from `sqlite.query`, and this
+  is exactly where a per-verb table would have to live. **Measured before
+  taking it**, because "a module is a door to the outside" is only an argument
+  if it is true of the list: `money` registers FX rates and retires currencies,
+  `xml`'s streaming reader advances and closes, `xlsx` saves. `reflect` is the
+  one genuine exception, being inspection and nothing else, and it is left in
+  rather than excepted — one name's worth of noise the author can see and
+  `delete` is cheaper than a second table.
+
+A question kept is a line in `list` with a number beside it. An act dropped is
+work that vanishes with nothing said. `?` declares a line a question and is the
+spelling for the other answer.
+
+**Every note is guarded on a session being open**, because the three sites sit
+on hot paths and a script never asks the question: without it `append` in a
+loop would walk the environment chain per iteration and a qualified call would
+run the native-qualifier list on top of the eighteen strcmps module dispatch
+already does. Measured on a 300,000-iteration library-call loop, guarded is
+indistinguishable from the binary before the change; unguarded it was about
+15% slower, which is small and is also free to remove.
+
+**The reference was wrong twice in the same sentence** and both are corrected:
+its worked example of a *kept* call was `write(f, "hello")`, the exact case
+that vanished, and it also used that call to illustrate a call whose answer is
+`nothing` — `write` has always answered `true`.
+
+### 21: the prompt was line-oriented for one token and not the other
+
+`print("hello"` put up `...` and waited; `m = "hello` answered `unterminated
+string` and threw the line away. The asymmetry is not a policy, it is a stage:
+the bracket message comes from the parser and the quote message from the
+**lexer**, one step earlier, and `diagnostics_say_incomplete` held only the
+parser's two. Reading the lexer's message as "give me the rest" is sound
+because it is emitted at exactly one place — having run off the end of the
+buffer with a string still open.
+
+**The cost is stated rather than hidden.** The blank-line escape that gets a
+forgotten quote out is the one blocks and brackets already have, so a blank
+line *inside* a multi-line string submits the chunk instead of becoming a
+paragraph break. One rule for three shapes is easier to learn than two rules,
+and the alternative is a forgotten quote holding the prompt open with nothing
+to type that ends it.
+
+The control that keeps the whole tier from meaning "the lexer stopped
+refusing": a dangling backslash is **not** running out of input — the input
+continues, the escape is simply not one gBASIC has — and is still an error.
+
+### 25: the echo was the whole problem
+
+Between the Enter that ends one line and the prompt that begins the next,
+gBASIC is in cooked mode and the terminal is echoing, so a line typed while a
+command ran appeared on the screen exactly as a line that had been taken —
+and `raw_on`'s `TCSAFLUSH` then destroyed it. A prompt that ignored type-ahead
+in silence would be merely unhelpful; this one showed the user their command
+and did not run it. `TCSADRAIN` is a one-word fix. `raw_off` keeps `TCSAFLUSH`
+on purpose: bytes typed at the *editor* arriving at a program about to read in
+cooked mode is a different question, and it loses nothing the user watched
+being accepted.
+
+**The tier for it had to enter the window every other pty tier exists to stay
+out of**, so `tests/repl_pty.py` grew `GBASIC_PTY_TYPEAHEAD=1`, which nothing
+else turns on. Its non-vacuity check is a **count**, not a presence: on a
+working prompt the typed line appears twice — once from the line discipline
+while the command runs, once from the editor's own redraw — and once on a
+broken one. Without that, "42 appeared" is equally satisfied by a driver that
+quietly waited like all the others.
+
+### Found while here: an assertion that had never been able to fail
+
+`tests/run_repl.sh`'s QUESTION_NOT_PROGRAM tier looked for `"\nsq(3)"` to prove
+a question stays out of the listing. `list` renders every entry as `  N  text`,
+so that needle could never match and the check passed on any binary at all.
+Found by perturbing `gb_session_acted` to claim every line acted: `sq(3)` went
+into the listing and the tier that exists to catch that stayed green, while the
+session-cache tier three hundred lines below caught it. The needles are pinned
+**with their numbers** now, which is strictly stronger — a question recorded
+does not merely add a line, it renumbers the one after it — and the same shape
+was repaired in three checks I had just written with the same mistake.
+
+### Also fixed: the suite was filling the developer's own session cache
+
+The prompt writes a cache file per session and **keeps it when the session
+quits with unsaved work** — which is the feature, and which these tiers assert.
+Pointed at the developer's real state directory they accumulate there, and
+**5,721** of them had built up in `~/.local/state/gbasic` by the time this was
+measured. The consequence is not disk: the next time a person opens a
+prompt on that machine it greets them with *"5721 previous sessions ended
+without saving"*, which is a true statement the product should never have been
+put in a position to make. `run_repl.sh` exports its own `GBASIC_SESSION_DIR`
+now (the cache tier still sets its own, on purpose, because it looks inside
+it). The existing files are the developer's to clear — `discard` at a prompt,
+or remove the directory.
+
+- **Effect it had:** the book's Chapter 2 spends a callout saying the prompt
+  will not take a multi-line string, Chapters 5 and 8 keep their listings in
+  files and use the prompt only for questions, and the transcript harness
+  waits for the prompt to be drawn before typing. All three workarounds can go.
+- **Workaround:** none needed now.

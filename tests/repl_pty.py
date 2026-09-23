@@ -32,6 +32,13 @@ QUIET_AFTER_LINE = float(os.environ.get("GBASIC_PTY_QUIET", "0.5"))
 # the editor rather than driving it sets it low, or the driver's own pacing is
 # what gets measured.
 KEY_DELAY = float(os.environ.get("GBASIC_PTY_DELAY", "0.01"))
+# TYPE-AHEAD MODE: do NOT wait for the prompt after a newline, but type straight
+# on into a terminal whose program is still running. That is exactly the window
+# every other tier in this file exists to stay out of, and it is the window one
+# tier has to enter: a person typing while a command runs is ordinary, and what
+# the prompt does with those bytes is the thing under test. Off by default, and
+# nothing but the TYPEAHEAD tier turns it on.
+TYPEAHEAD = os.environ.get("GBASIC_PTY_TYPEAHEAD", "") == "1"
 
 
 def main():
@@ -133,7 +140,7 @@ def main():
             os.write(fd, keys[i:i + 1])
         except OSError:
             break
-        if keys[i:i + 1] == b"\n":
+        if keys[i:i + 1] == b"\n" and not TYPEAHEAD:
             mark = len(out)
             quiet_since = time.time()
             while alive[0]:

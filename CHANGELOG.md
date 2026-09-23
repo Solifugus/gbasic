@@ -9,6 +9,59 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — the prompt kept only half of what you did (DOGFOOD 22)
+
+`reference.md` has always said a line that **acts** is kept in the resident
+program and a line that **merely answers** is not, and the discriminator
+implemented read only the answer half. `append(nodes, x)` and `write(f, text)`
+act *and* answer, so the array grew, the file was written, and neither line was
+in `list`, in `save`, or in what `run` replayed. A session that typed
+`nodes = []` and three `append`s saved **one** line, said `saved 1 line`, and
+`run` gave back an empty array. Nothing warned at any point; the reference's
+own worked example of a kept call, `write(f, "hello")`, was exactly the case
+that vanished — and that example was also wrong about `write` returning
+`nothing`, which it never did.
+
+"Merely" is now a question the **evaluator** answers rather than one the shape
+of the line is asked, because nothing in `name(args)` tells `sq(3)` from
+`append(xs, 3)`. Following the run rather than the text buys the two cases a
+call-depth rule would get wrong: a function of yours that writes a file is kept
+even though it answers, and one that builds its answer in a local `out = []` —
+which is most of this stdlib — is **not** kept, even though it called `append`
+to do it. Only mutation of a name the session still holds afterwards counts;
+`append(g, x)` reaching past a function's own frame does.
+
+Two places take a coarser answer, each defaulting the way whose mistake is
+visible. Anything in the **file** family that is not plainly a question is kept
+(`read`, `exists`, `file_size` and their neighbours are the exceptions), and a
+call into a **built-in module** is kept whether it read or wrote, since nothing
+at the call site says which and a per-verb table would rot silently. `?`
+declares a line a question and is the spelling for the other answer.
+
+### Fixed — a multi-line string was legal in a file and unreachable at the prompt (DOGFOOD 21)
+
+A string literal may run across several lines, and the prompt refused to wait
+for the rest of one: `rules = "Think of an animal,` answered `unterminated
+string` and threw the line away, while `print("hello"` put up `...` and waited.
+The prompt was line-oriented for one token and not the other, because the
+refusal comes from the **lexer**, one stage before the parser would have asked
+for more input. It waits now. The blank-line escape is the same one blocks and
+brackets have, and the cost is stated: a blank line inside a multi-line string
+submits the chunk rather than becoming a paragraph break.
+
+### Fixed — the prompt echoed type-ahead and then threw it away (DOGFOOD 25)
+
+Between the Enter that ends one line and the prompt that begins the next,
+gBASIC is in cooked mode and the terminal is echoing — so a line typed while a
+command was still running appeared on the screen exactly as a line that had
+been taken, and `raw_on`'s `TCSAFLUSH` discarded it as the next prompt was
+drawn. It never ran, nothing was said, and the prompt came back clean. The echo
+is the whole problem: a prompt that ignored type-ahead in silence would be
+merely unhelpful. `TCSADRAIN` keeps the bytes, which is what a shell and every
+other prompt do. `raw_off` keeps `TCSAFLUSH` deliberately — bytes typed at the
+**editor** reaching a program that is about to read in cooked mode is a
+different question, and it loses nothing the user watched being accepted.
+
 ### Added — `gi` can call a class's static functions
 
 `gi.invoke("Namespace.Type.function", ...)` resolves a static on an object,

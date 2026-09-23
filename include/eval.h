@@ -59,6 +59,11 @@ int  gb_session_run(AstStmtList chunk);
  * through the ordinary raise path so locks are released and frames unwound. */
 void gb_session_interrupt(void);
 int  gb_session_echoed(void);
+/* Whether the chunk just run ACTED: did something the session can still see
+ * afterwards. A chunk that both acted and answered is part of the program --
+ * `merely` is the load-bearing word in the resident program's rule, and only
+ * the runtime can answer it. */
+int  gb_session_acted(void);
 int  gb_session_exit_code(void);
 void gb_session_close(void);
 

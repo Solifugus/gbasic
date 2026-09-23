@@ -41,6 +41,16 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 GB="$root/gbasic"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+# EVERY SESSION THIS SUITE STARTS WRITES A CACHE FILE, and one that quits with
+# unsaved work KEEPS it -- which is the feature, and which the tiers below
+# assert. Pointed at the developer's own state directory they accumulate there:
+# measured 2026-09-23, 5,721 of them, and the next time a person opened a prompt
+# on this machine it greeted them with "5721 previous sessions ended without
+# saving". A suite must not leave its droppings where the product
+# will report them to a user. The cache tier still sets its own directory, on
+# purpose, because it looks INSIDE it.
+export GBASIC_SESSION_DIR="$work/sessions"
+mkdir -p "$GBASIC_SESSION_DIR"
 
 pass=0; fail=0
 check() {
@@ -168,6 +178,62 @@ print "after"
 quit
 ')"
 
+# A STRING IS THE THIRD UNFINISHED SHAPE, and until 2026-09-23 it was the one
+# the prompt would not wait for. A file has always accepted a literal running
+# across lines and `tutorial.md` teaches it, so the bench and the file
+# disagreed on the one construct a beginner is most likely to try before
+# committing it -- and it disagreed in the direction that reads as "you typed
+# it wrong". The refusal comes from the LEXER, one stage before the parser
+# would have asked for more, which is why the two bracket cases above never
+# revealed it.
+check "a quote waits for its partner" "Think of an animal,
+and I will guess." "$(repl 'rules = "Think of an animal,
+and I will guess."
+print rules
+quit
+')"
+# THE VALUE, not just the printing: the two lines are ONE string with a newline
+# in it, which is what a reader building a prompt for a game needs.
+check "and the newline is in the string" "true" "$(repl 'm = "a
+b"
+print len(m) = 3
+quit
+')"
+# ASSERTED AS A DIFFERENCE against the file, because that is the claim -- the
+# bench and the file now agree. Same two lines, same answer, neither route
+# special-cased.
+printf 'm = "a\nb"\nprint len(m)\n' > "$work/mls.bas"
+check "the file and the prompt give the same string" "$("$GB" "$work/mls.bas" 2>&1)" "$(repl 'm = "a
+b"
+print len(m)
+quit
+')"
+# THE ESCAPE, and it is the same one every other continuation has: a quote the
+# author FORGOT rather than meant must not hold the prompt open with nothing to
+# type that ends it. The cost is stated in src/repl.c and here -- a blank line
+# inside a multi-line string submits the chunk instead of becoming a paragraph
+# break -- and it is the rule brackets already follow.
+out="$(repl_err 'print "oops
+
+print "after"
+quit
+')"
+contains "a blank line forces a forgotten quote out" "unterminated string" "$out"
+check "and the prompt carries on after one" "after" "$(repl 'print "oops
+
+print "after"
+quit
+')"
+# THE CONTROL that keeps the whole tier from being satisfied by a lexer that
+# never refuses anything: a backslash at the end of a line is NOT running out
+# of input -- the input continues, the escape is simply not one gBASIC has --
+# so it is still an error and must NOT put up `...`.
+out="$(repl_err 'm = "abc\
+print "after"
+quit
+')"
+contains "a dangling escape is still refused" "unterminated escape sequence" "$out"
+
 echo
 echo "== CONTINUE_MESSAGES: the tripwire under that decision =="
 # src/repl.c decides a chunk is unfinished by matching these two texts. Asserted
@@ -179,6 +245,14 @@ contains "an unfinished block still says 'unexpected end of file'" \
 printf 'print (1 +\n' > "$work/bracket.bas"
 contains "an unfinished bracket still says \"unclosed '\"" \
     "unclosed '" "$("$GB" "$work/bracket.bas" 2>&1)"
+# The third, and the one that comes from a DIFFERENT STAGE: the lexer, not the
+# grammar. It is sound to read it as "give me the rest" because the lexer emits
+# it at exactly one place -- having run off the end of its buffer with a string
+# still open -- so a rewording here costs the prompt multi-line strings as
+# silently as the other two cost it blocks and brackets.
+printf 'print "oops\n' > "$work/quote.bas"
+contains "an unfinished string still says 'unterminated string'" \
+    "unterminated string" "$("$GB" "$work/quote.bas" 2>&1)"
 
 echo
 echo "== RUN / NEW =="
@@ -229,11 +303,17 @@ list
 quit
 ')"
 contains "a question was answered" "9" "$prog"
-lacks "the question is not in the listing" "
-sq(3)" "$prog"
+# PINNED WITH ITS NUMBER, and that is a correction: this check used to look for
+# a bare "\nsq(3)" and `list` renders every entry as "  N  text", so the needle
+# could never match and the check passed on ANY binary. Found 2026-09-23 by
+# perturbing `gb_session_acted` to say every line acted -- `sq(3)` went into
+# the listing and this tier stayed green, while the session-cache tier three
+# hundred lines below caught it. The number is what makes it bite: a question
+# recorded here does not merely add a line, it RENUMBERS the one after it.
+lacks "the question is not in the listing" "  2  sq(3)" "$prog"
 # THE CONTROL: a line that ACTS is recorded. Without it, recording nothing at
 # all would satisfy the assertion above.
-contains "a statement is in the listing" "print sq(4)" "$prog"
+contains "a statement is in the listing" "  2  print sq(4)" "$prog"
 # And the consequence the recording rule exists for: replaying the program must
 # not produce a discarded-result warning about a question the user asked.
 lacks "run does not warn about a recorded question" "is discarded" \
@@ -244,6 +324,113 @@ sq(3)
 run
 quit
 ')"
+
+echo
+echo "== ACT_AND_ANSWER: MERELY is the load-bearing word =="
+# The rule is that a line which ACTS is kept and one which MERELY ANSWERS is
+# not, and the discriminator implemented read only the answer half:
+# `append` and `write` act AND answer, so the array grew, the file was written,
+# and NEITHER LINE was in `list`, in `save` or in what `run` replayed. The
+# reference's own worked example of a KEPT call was `write(f, "hello")` -- the
+# exact case that vanished.
+#
+# EVERY CHECK HERE IS A DIFFERENCE BETWEEN TWO LINES THAT BOTH ECHO, because a
+# check on the acting line alone passes on a prompt that records everything and
+# a check on the asking line alone passes on one that records nothing.
+prog="$(repl 'nodes = []
+append(nodes, 1)
+append(nodes, 2)
+count(nodes)
+list
+quit
+')"
+contains "a mutator that answers is in the listing" "  2  append(nodes, 1)" "$prog"
+lacks "and the question beside it is not" "count(nodes)" "$prog"
+# THE END-TO-END ONE, which is the shape the defect was reported as: a session
+# that built a list and then ran its own program got an EMPTY list back, with
+# nothing said at any point.
+check "run rebuilds what the session built" "2" "$(repl 'nodes = []
+append(nodes, 1)
+append(nodes, 2)
+run
+print count(nodes)
+quit
+' | tail -1)"
+# `save` is the sharp end: the count it reports is what the author is told they
+# kept, and it said `saved 1 line` for a four-line session.
+contains "save counts the acting lines" "saved 3 lines" "$(repl "nodes = []
+append(nodes, 1)
+append(nodes, 2)
+save \"$work/saved.bas\"
+quit
+")"
+
+# THE FILE FAMILY, and the reference's own example.
+fprog="$(repl "f{file}= \"$work/act.txt\"
+write(f, \"hello\")
+read(f)
+list
+quit
+")"
+contains "write is in the listing" "  2  write(f," "$fprog"
+lacks "and the read beside it is not" "read(f)" "$fprog"
+
+# THE CONTROL THAT COSTS THE MOST TO GET WRONG, and the reason the flag is
+# raised by the EVALUATOR rather than inferred from the shape of the text:
+# almost every function in this stdlib builds its answer in a local `out = []`
+# and appends to it. Counting those appends would make `stats.mean(xs)` a line
+# of your program. What separates them is whose frame the name lives in.
+lprog="$(repl 'function evens(xs)
+out = []
+for each x in xs
+if mod(x, 2) = 0 then append(out, x)
+end for
+return out
+end function
+ys = [1, 2, 3, 4]
+evens(ys)
+list
+quit
+')"
+contains "the function answered" "[2,4]" "$lprog"
+lacks "a function appending to its OWN local is still a question" "evens(ys)" "$lprog"
+# ... AND ITS OPPOSITE, which a call-depth rule would have missed: gBASIC has
+# no closures, so assignment inside a function shadows -- but `append` resolves
+# through the parent chain and mutates the global in place (measured). That one
+# IS an act, and the answer it also gives does not make it a question.
+gprog="$(repl 'g = [1]
+function touch()
+append(g, 2)
+return "done"
+end function
+touch()
+list
+quit
+')"
+contains "the function answered too" "done" "$gprog"
+contains "but reaching past its own frame is an act" "
+  3  touch()" "$gprog"
+
+# A NATIVE MODULE CALL IS AN ACT, deliberately coarser than the truth: nothing
+# at the call site tells `sqlite.exec` from `sqlite.query`, and deciding per
+# verb would need a table of every verb of every module -- one that rots
+# silently, and whose rot looks exactly like the defect this closes. `?` is the
+# author's spelling for the other answer, so the two are asserted TOGETHER or
+# "modules are acts" would be satisfied by recording every line there is.
+mprog="$(repl 'money.currency({USD}"1.00")
+? money.currency({EUR}"1.00")
+list
+quit
+')"
+contains "both were answered" "EUR" "$mprog"
+contains "a module call is kept" "  1  money.currency({USD}" "$mprog"
+# COUNTED, not looked for: `?` takes a path through run_chunk that returns
+# before the recording decision is reached at all, so "the `?` line is absent"
+# is true of any binary and says nothing. What the pair is for is that EXACTLY
+# ONE of two module calls was kept, which is false in both directions -- a
+# prompt recording neither, and one recording both.
+check "and exactly one of the two was kept" "1" \
+    "$(printf '%s\n' "$mprog" | grep -c '^  [0-9]')"
 
 echo
 echo "== REDEFINE: at a prompt, typing it again is an edit =="
@@ -885,6 +1072,36 @@ if command -v python3 >/dev/null 2>&1; then
     else
         printf 'ok   SKIP (valgrind unavailable)\n'; pass=$((pass+1))
     fi
+
+    echo
+    echo "== TYPEAHEAD: a line typed while a command runs is not thrown away =="
+    # THE ECHO IS THE WHOLE PROBLEM. Between the Enter that ends one line and
+    # the prompt that begins the next, the prompt is in COOKED mode and the
+    # line discipline echoes -- so a line typed while a command is still
+    # running appears on the screen exactly as a line that was taken, and
+    # `raw_on`'s TCSAFLUSH then DESTROYED it as the next prompt was drawn. No
+    # output, no diagnostic, no history entry. A prompt that ignored type-ahead
+    # in silence would be merely unhelpful; this one showed the user their
+    # command and then did not run it.
+    #
+    # ONLY A PTY CAN SEE IT, and only with the driver's ordinary wait-for-the-
+    # prompt discipline TURNED OFF -- that wait exists to keep every other tier
+    # out of this window, and this is the one tier whose subject is the window.
+    ahead="$(printf 'sleep(1)\nprint 6*7\nquit\n' \
+        | GBASIC_HISTORY= GBASIC_PTY_TYPEAHEAD=1 GBASIC_PTY_TOTAL=40 \
+          python3 "$root/tests/repl_pty.py" "$GB" --repl 2>/dev/null \
+        | tr -d '\r' | sed $'s/\033\\[[0-9]*[A-Za-z]//g')"
+    contains "the line typed ahead ran" "42" "$ahead"
+    # AND THE CHECK THAT KEEPS THAT FROM BEING VACUOUS, because "42 appeared"
+    # is equally satisfied by a driver that quietly waited for the prompt like
+    # every other tier and typed into an idle terminal. The proof that the
+    # bytes really arrived DURING the run is the cooked-mode echo: a bare copy
+    # of the line with no `> ` in front of it and no per-keystroke redraw,
+    # which only the line discipline produces and only while the editor is not
+    # reading. The editor then echoes the same text again as it redraws, so the
+    # line appears TWICE and the count is what separates the two runs.
+    check "and it really was typed while the command was running" "2" \
+        "$(printf '%s\n' "$ahead" | grep -c 'print 6\*7')"
 else
     echo "SKIP editing tier (no python3 for the pty)"
 fi

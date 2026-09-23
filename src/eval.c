@@ -804,6 +804,15 @@ typedef struct {
 
 static Env global_env = {0};
 static Env *current_env = &global_env;
+
+/* Non-zero only while a PROMPT SESSION is open. Every effect note below is
+ * guarded by it, so a script -- which is every other way gBASIC runs -- pays
+ * one load and nothing else. Without the guard the notes sit on hot paths:
+ * `append` in a loop would walk the environment chain per iteration, and a
+ * qualified call would run the native-qualifier list on top of the eighteen
+ * strcmps the module dispatch already does. Declared here rather than beside
+ * the session struct, which is 37,000 lines further down, so the reads inline. */
+static int repl_effect_watch = 0;
 static FunctionDef *functions = NULL;
 static size_t function_count = 0;
 static ModifierDef *modifiers = NULL;
@@ -7467,6 +7476,54 @@ static int expr_is_lvalue_path(AstExpr *expr) {
         expr->kind == AST_EXPR_INDEX;
 }
 
+static void repl_note_effect(void);
+
+/* Is this lvalue path rooted at a name the SESSION still holds once the
+ * chunk ends? Only then is mutating it something the prompt should keep.
+ *
+ * THE DISTINCTION IS NOT CALL DEPTH AND THAT MATTERS, because the shape it
+ * has to tell apart is the commonest one in this stdlib: a function building
+ * a result in a local `out = []` and appending to it is a PURE function from
+ * the caller's side, and counting its appends would make `stats.mean(xs)` a
+ * line of your program. A function CAN reach past its own frame -- gBASIC has
+ * no closures, so assignment shadows, but `append(g, x)` resolves `g` through
+ * the parent chain and mutates the global in place (measured) -- and that one
+ * IS an act. What separates them is whose frame the name lives in, which is a
+ * question the environment answers directly. */
+static int lvalue_outlives_chunk(AstExpr *target) {
+    while (target) {
+        switch (target->kind) {
+        case AST_EXPR_IDENT:
+            for (Env *env = current_env; env; env = env->parent) {
+                if (env_find_in_frame(env, target->as.ident)) {
+                    return env == &global_env;
+                }
+            }
+            return 0;
+        case AST_EXPR_FIELD:
+            target = target->as.field.object;
+            break;
+        case AST_EXPR_INDEX:
+            target = target->as.index.array;
+            break;
+        default:
+            return 0;
+        }
+    }
+    return 0;
+}
+
+/* An in-place mutator ran against `target`. Sited at the eight builtins that
+ * write through a reference rather than inside the `*_ref` helpers, because
+ * those are also used by the event loop to append to `http.events` and
+ * `inbox.messages`, which is the interpreter's own bookkeeping and not a line
+ * anybody typed. */
+static void repl_note_lvalue_effect(AstExpr *target) {
+    if (repl_effect_watch && lvalue_outlives_chunk(target)) {
+        repl_note_effect();
+    }
+}
+
 static FunctionDef *function_find_local(const char *name) {
     for (size_t i = 0; i < function_count; i++) {
         if (!functions[i].imported && strcmp(functions[i].name, name) == 0) {
@@ -9517,8 +9574,37 @@ static int make_dir_parents(const char *path, char *why, size_t why_size) {
     return failed ? -1 : 0;
 }
 
+/* The file family's verbs that only ASK. THE DEFAULT HERE IS THE OTHER WAY
+ * ROUND from the general builtins -- a verb of this family that is not named
+ * below is taken to ACT -- and the two defaults are chosen by which mistake is
+ * worse in each place. Among `len`, `count` and `sqrt` an unnamed verb is
+ * almost certainly a question, and calling one an act would put arithmetic in
+ * the resident program. Among `write`, `copy` and `remove_dir` an unnamed verb
+ * is almost certainly an act, and calling one a question drops work with
+ * nothing said -- so a file verb added here and forgotten fails in the
+ * direction the author can SEE, as a line in `list` they can `delete`. */
+static int file_call_only_asks(const char *name) {
+    static const char *asks[] = {
+        "exists", "read", "read_lines", "bytes", "lines", "chars",
+        "file_size", "file_mtime", "list_files", NULL
+    };
+    for (size_t i = 0; asks[i]; i++) {
+        if (strcmp(name, asks[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static Value eval_file_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
+
+    /* Noted BEFORE the work, not after: a `write` that raises half way through
+     * has still created or truncated the file, and the line that did it is
+     * part of the program whether or not it finished. */
+    if (repl_effect_watch && !file_call_only_asks(name)) {
+        repl_note_effect();
+    }
 
     if (strcmp(name, "exists") == 0 ||
         strcmp(name, "read") == 0 ||
@@ -28720,6 +28806,37 @@ static Value eval_call(AstExpr *expr) {
 #endif
         }
 
+        /* A CALL INTO A NATIVE MODULE IS AN ACT, for the prompt's purposes, and
+         * this is the one place in the three where the rule is coarser than
+         * the truth. `sqlite.exec` writes and `sqlite.query` reads, and NOTHING
+         * AT THE CALL SITE SAYS WHICH -- deciding per verb would need a table
+         * of every verb of every module, which is a table that rots silently
+         * and whose rot looks exactly like the defect this closes. So the
+         * question is not asked: a module is the door to a database, a socket,
+         * a window or another process, and a line that went through one is
+         * kept. The cost is visible and the author has a spelling for it --
+         * `? xlsx.cells(wb, "Sheet1")` DECLARES a line a question and is not
+         * recorded -- where the opposite mistake is a silent loss.
+         *
+         * MEASURED RATHER THAN ASSUMED, because "a module is a door" is only
+         * an argument if it is true of the list: `money` registers FX rates
+         * and retires currencies, `xml`'s streaming reader ADVANCES and closes,
+         * `xlsx` saves -- the ones that look like pure value libraries each
+         * carry acting verbs. `reflect` is the single exception, being runtime
+         * inspection and nothing else, and it is left in rather than excepted:
+         * one name's worth of noise, which the author can see in `list` and
+         * `delete`, is cheaper than a second table whose rot would look
+         * exactly like the defect this closes.
+         *
+         * `this` is in that list and is not a module; it is resolved above as
+         * a method receiver, and a `this.` call that gets this far has no
+         * receiver to reach and is about to fail anyway. */
+        if (repl_effect_watch &&
+            library_is_native_qualifier(expr->as.call.library) &&
+            strcmp(expr->as.call.library, "this") != 0) {
+            repl_note_effect();
+        }
+
         /* NAP-6: process.* is an unconditional built-in module (no `load`), like a
          * core library namespace. A `process` variable bound to a record/native
          * value is handled above, so this only fires for the module itself. */
@@ -31791,6 +31908,7 @@ static Value eval_call(AstExpr *expr) {
     }
 
     if (strcmp(expr->as.call.name, "send") == 0) {
+        repl_note_effect();   /* a message that has left is not a question */
         size_t sc = expr->as.call.args.count;
         if (sc != 2 && sc != 3) {
             runtime_error_raise("send expects an actor handle, a message, and an "
@@ -32186,6 +32304,9 @@ static Value eval_call(AstExpr *expr) {
 
     /* seed(n) — set the PRNG seed for reproducible draws; returns the seed. */
     if (strcmp(expr->as.call.name, "seed") == 0) {
+        /* The RNG stream is session state, and a program that does not reseed
+         * replays differently. */
+        repl_note_effect();
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("seed expects one argument", 1003, "invalid function call");
             return value_null();
@@ -32669,6 +32790,7 @@ static Value eval_call(AstExpr *expr) {
                 return value_null();
             }
             int changed = 0;
+            repl_note_lvalue_effect(array_expr);
             Value result = remove_value_from_array_ref(array, target, &changed);
             if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
                 return result;
@@ -33057,6 +33179,7 @@ static Value eval_call(AstExpr *expr) {
                 value_free(item);
                 return value_null();
             }
+            repl_note_lvalue_effect(array_expr);
             Value result = append_to_array_ref(array, item, prepend);
             if (!error_action_pending()) {
                 if (!notify_lvalue_mutation(array_expr)) {
@@ -33098,6 +33221,7 @@ static Value eval_call(AstExpr *expr) {
                 value_free(item);
                 return value_null();
             }
+            repl_note_lvalue_effect(array_expr);
             Value result = insert_into_array_ref(array, index, item);
             if (!error_action_pending() && !notify_lvalue_mutation(array_expr)) {
                 return result;
@@ -33131,6 +33255,7 @@ static Value eval_call(AstExpr *expr) {
             if (!array) {
                 return value_null();
             }
+            repl_note_lvalue_effect(array_expr);
             Value result = remove_from_array_ref(array, index);
             if (!error_action_pending() && !notify_lvalue_mutation(array_expr)) {
                 return result;
@@ -33162,6 +33287,7 @@ static Value eval_call(AstExpr *expr) {
             if (!array) {
                 return value_null();
             }
+            repl_note_lvalue_effect(array_expr);
             Value result = take_from_array_ref(array, take_last);
             if (!error_action_pending()) {
                 if (!notify_lvalue_mutation(array_expr)) {
@@ -33197,6 +33323,7 @@ static Value eval_call(AstExpr *expr) {
                                             string_length(array->as.string));
             }
             int changed = 0;
+            repl_note_lvalue_effect(array_expr);
             Value result = reverse_array_ref(array, &changed);
             if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
                 return result;
@@ -33231,6 +33358,7 @@ static Value eval_call(AstExpr *expr) {
                 return value_null();
             }
             int changed = 0;
+            repl_note_lvalue_effect(array_expr);
             Value result = unique_array_ref(array, &changed);
             if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
                 return result;
@@ -33259,6 +33387,7 @@ static Value eval_call(AstExpr *expr) {
                 return value_null();
             }
             int changed = 0;
+            repl_note_lvalue_effect(array_expr);
             Value result = sort_array_ref(array, &changed);
             if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
                 return result;
@@ -35286,6 +35415,11 @@ static Value eval_expr(AstExpr *expr) {
     case AST_EXPR_CALL:
         return eval_call(expr);
     case AST_EXPR_SPAWN:
+        /* A spawned actor is a process that outlives the line that started
+         * it, which is as plain an act as this language has. */
+        if (repl_effect_watch) {
+            repl_note_effect();
+        }
         return eval_spawn(expr);
     case AST_EXPR_BINARY:
         return eval_binary(expr);
@@ -37857,9 +37991,32 @@ static ReplSession repl_session = {0};
  * question is not part of your program. */
 static int repl_last_echoed = 0;
 
+/* DID IT ALSO ACT? `reference.md` has always said the rule is that a line
+ * which ACTS is kept and one which MERELY ANSWERS is not, and from the day
+ * the prompt shipped (2026-09-19) until the book found it four days later the
+ * discriminator implemented read only the answer half -- so `append(nodes, x)`
+ * and `write(f, text)`, which act AND answer, were dropped: the array was
+ * appended to, the file was written, and neither line was in `list`, in `save`
+ * or in what `run` replayed. The reference's own worked example of a KEPT call
+ * was `write(f, "hello")`, the exact case that vanished.
+ *
+ * This is the missing half, and it is raised by the RUNTIME rather than
+ * inferred from the shape of the text, because nothing in `name(args)`
+ * distinguishes `sq(3)` from `append(xs, 3)`. It follows the evaluation, so a
+ * user function that writes a file is kept even though it answers, and one
+ * that only computes is not even though it calls `append` on a local of its
+ * own. */
+static int repl_last_acted = 0;
+
+/* Something happened that the session can still see once this chunk ends. */
+static void repl_note_effect(void) {
+    repl_last_acted = 1;
+}
+
 void gb_session_open(void) {
     memset(&repl_session, 0, sizeof(repl_session));
     repl_session.open = 1;
+    repl_effect_watch = 1;
     session_redefines_allowed = 1;
 }
 
@@ -37913,6 +38070,7 @@ int gb_session_run(AstStmtList chunk) {
 
     AstStmt *program_block = program_block_prepare(chunk);
     repl_last_echoed = 0;
+    repl_last_acted = 0;
     /* A Ctrl-C that arrived while the prompt was WAITING for input must not
      * kill the next line the author types. */
     interrupt_requested = 0;
@@ -38005,6 +38163,10 @@ void gb_session_interrupt(void) {
     interrupt_requested = 1;
 }
 
+int gb_session_acted(void) {
+    return repl_last_acted;
+}
+
 int gb_session_echoed(void) {
     return repl_last_echoed;
 }
@@ -38019,6 +38181,7 @@ void gb_session_close(void) {
     if (!repl_session.open) {
         return;
     }
+    repl_effect_watch = 0;
     runtime_teardown();
     for (size_t i = 0; i < repl_session.chunk_count; i++) {
         ast_free_program(repl_session.chunks[i]);

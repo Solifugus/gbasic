@@ -153,7 +153,20 @@ static int raw_on(void) {
     raw.c_iflag &= (tcflag_t)~(IXON | ICRNL | BRKINT | INPCK | ISTRIP);
     raw.c_cc[VMIN] = 1;
     raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) {
+    /* TCSADRAIN, NOT TCSAFLUSH, AND THE DIFFERENCE IS WORK THE USER HAS ALREADY
+     * SEEN ACCEPTED. Between the Enter that ends one line and the prompt that
+     * begins the next, gBASIC is in COOKED mode and the line discipline is
+     * echoing -- so a line typed while a command is still running appears on
+     * the screen exactly as a line that was taken. TCSAFLUSH then DISCARDS the
+     * queue as the next prompt is drawn: the text is on the screen, it never
+     * ran, and nothing is said. TCSADRAIN keeps it, and the editor reads it as
+     * the next line, which is what a shell and every other prompt do.
+     *
+     * `raw_off`'s TCSAFLUSH is deliberately left alone: handing bytes typed at
+     * the EDITOR to a program that is about to read in cooked mode is a
+     * different question, and it does not lose anything the user watched being
+     * accepted. */
+    if (tcsetattr(STDIN_FILENO, TCSADRAIN, &raw) == -1) {
         return 0;
     }
     if (!raw_active) {

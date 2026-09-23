@@ -484,12 +484,31 @@ static int blank_line(const char *s) {
 
 /* ---- diagnostics --------------------------------------------------------- */
 
-/* The parser ran out of input rather than meeting something it refuses. Two
- * shapes, and ONLY two: the grammar's own end-of-file message for an unfinished
- * block, and PLAT-CONT's unclosed-bracket message for an unfinished expression.
- * Pinned by tests/run_repl.sh (tier CONTINUE_MESSAGES) -- if either wording
- * moves, the prompt stops asking for the rest of a `for` loop and starts
- * reporting it as an error, which is a silent loss of the feature. */
+/* The parser ran out of input rather than meeting something it refuses. Three
+ * shapes, and ONLY three: the grammar's own end-of-file message for an
+ * unfinished block, PLAT-CONT's unclosed-bracket message for an unfinished
+ * expression, and the LEXER's unterminated-string message for an unfinished
+ * literal. Pinned by tests/run_repl.sh (tier CONTINUE_MESSAGES) -- if any
+ * wording moves, the prompt stops asking for the rest of a `for` loop and
+ * starts reporting it as an error, which is a silent loss of the feature.
+ *
+ * THE THIRD ONE COMES FROM A DIFFERENT STAGE AND THAT IS THE WHOLE STORY OF
+ * WHY IT WAS MISSING. A string literal may run across several lines -- a file
+ * has always allowed it and `tutorial.md` teaches it -- but the LEXER reaches
+ * the end of its input inside the quotes and refuses there, one stage before
+ * the parser would have asked for more. So the prompt was line-oriented for
+ * one token and not the other: `print("hello"` put up `...` and waited, and
+ * `m = "hello` answered `unterminated string` and threw the line away. It is
+ * sound to read that message as "give me the rest": the lexer emits it at
+ * exactly one place, having run off the end of the buffer with a string still
+ * open, so it cannot mean anything else.
+ *
+ * THE ESCAPE IS THE BLANK LINE, the same one every other continuation has: a
+ * quote the author forgot rather than meant would otherwise hold the prompt
+ * open with nothing to type that ends it. The cost is stated rather than
+ * hidden -- a blank line INSIDE a multi-line string submits the chunk instead
+ * of becoming a paragraph break, which is the price of having a way out at
+ * all, and it is the rule brackets already follow. */
 static int diagnostics_say_incomplete(const gb_diagnostics *diags) {
     for (size_t i = 0; i < gb_diagnostics_count(diags); i++) {
         const gb_diag *d = gb_diagnostics_at(diags, i);
@@ -497,7 +516,8 @@ static int diagnostics_say_incomplete(const gb_diagnostics *diags) {
             continue;
         }
         if (strstr(d->message, "unexpected end of file") ||
-            strstr(d->message, "unclosed '")) {
+            strstr(d->message, "unclosed '") ||
+            strstr(d->message, "unterminated string")) {
             return 1;
         }
     }
@@ -658,8 +678,19 @@ static void run_chunk(ReplState *st, const char *text, int record, int asked) {
          * known once it has been answered: `sq(3)` at a prompt shows 9 and is
          * an enquiry, while `setup()` returning nothing did something and
          * belongs in the program. Recording the first would also put a
-         * discarded result into `run`, which warns about exactly that. */
-        if (record && !gb_session_echoed()) {
+         * discarded result into `run`, which warns about exactly that.
+         *
+         * BOTH HALVES OF THE RULE ARE ASKED, and from the day the prompt shipped
+         * until the book found it four days later only one was. The
+         * reference says a line that ACTS is kept and one that MERELY answers
+         * is not, and the implemented test read the answer alone -- so
+         * `append(nodes, x)` and `write(f, text)`, which act AND answer, were
+         * dropped: the array grew, the file was written, and `list`, `save`
+         * and `run` had never heard of either line. `gb_session_acted` is the
+         * missing half, raised by the evaluator rather than guessed from the
+         * shape of the text, because nothing in `name(args)` tells `sq(3)`
+         * from `append(xs, 3)`. */
+        if (record && (!gb_session_echoed() || gb_session_acted())) {
             /* ONE recording path. A typed chunk is by construction the smallest
              * text that parses, so this adds exactly one entry and costs a
              * re-parse; a file read by `load` splits into the entries it is

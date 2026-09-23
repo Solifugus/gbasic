@@ -7731,9 +7731,13 @@ A call whose answer is `nothing` shows nothing — it did something rather than
 answered something, and printing the word would be noise:
 
 ```text
-> write(f, "hello")
+> setup()
 >
 ```
+
+(`write(f, "hello")` was the example here until 2026-09-23 and it was wrong:
+`write` answers `true`. It is in the section on the resident program now,
+where the point is that it acts as well.)
 
 `?` asks the same thing explicitly, and it is a **question**, not shorthand for
 `print`. The difference shows when a name has been taken by a command: `? list`
@@ -7759,9 +7763,9 @@ runtime error at <prompt>:1:5: undefined variable: age
 
 ### Unfinished lines
 
-A block or an open bracket asks for the rest of itself. The decision is the
-parser's, not a list of keywords, so it is right for every block form the
-language has:
+A block, an open bracket or an open quote asks for the rest of itself. The
+decision is the parser's, not a list of keywords, so it is right for every
+block form the language has:
 
 ```text
 > for i = 1 to 3
@@ -7772,8 +7776,22 @@ language has:
 3
 ```
 
+A string literal may run across several lines in a file, and it may at the
+prompt for the same reason:
+
+```text
+> rules = "Think of an animal,
+... and I will try to guess what it is."
+> print rules
+Think of an animal,
+and I will try to guess what it is.
+```
+
 A blank line submits what you have anyway, which is how you get the diagnostic
-out of a line that merely *looks* unfinished.
+out of a line that merely *looks* unfinished — a quote you forgot rather than
+meant. The cost of having that way out is that a blank line inside a multi-line
+string ends the line instead of becoming a paragraph break; write the blank
+line as `\n` inside the string, or put the text in a file.
 
 ### Editing and history
 
@@ -7874,13 +7892,45 @@ you fix a function and try again without line numbers to manage:
 > sq(3)
 27
 > list
-function sq(n)
-return n * n * n
-end function
+  1  function sq(n)
+     return n * n * n
+     end function
 ```
 
 Note that `sq(3)` is not in the listing: it was a question. `print sq(3)` would
 be, because printing is something the program does.
+
+**Merely** is the load-bearing word. A call that acts *and* answers is kept,
+and the answer is still shown:
+
+```text
+> nodes = []
+> append(nodes, "a dog")
+["a dog"]
+> count(nodes)
+1
+> list
+  1  nodes = []
+  2  append(nodes, "a dog")
+```
+
+`append` changed something and is in the program; `count` only reported and is
+not. The question is asked of the run, not of the shape of the line — nothing
+in `name(args)` tells one from the other — so a function of your own that
+writes a file is kept even though it answers, and one that merely builds an
+array of its own to return is not, even though it called `append` to build it.
+
+Two rules follow from not being able to see inside:
+
+* Anything in the **file** family that is not plainly a question — `write`,
+  `copy`, `delete`, `make_dir`, `lock` — is kept. `read`, `exists`,
+  `file_size` and their neighbours are not.
+* A call into a **built-in module** (`sqlite`, `pg`, `http`, `xlsx`, `gi`, …)
+  is kept, whether it read or wrote, because nothing at the call site says
+  which. Write `? sqlite.query(db, sql)` when you only want to look: `?`
+  declares a line a question.
+
+If a line you did not want turns up in `list`, `delete` its number.
 
 Redefining a function is refused in a *file* — the first of two definitions
 becomes unreachable and you cannot see which one runs — and accepted at the
