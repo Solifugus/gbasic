@@ -343,8 +343,25 @@ what proves the live probes are running anything at all.
   compound and sentinel values; measured 2026-09-01, both hit on both
   `nothing` and `unknown`. The hand-written helpers that check both are now
   redundant rather than required.
-- `exists` rejects a dir reference; `make_dir` is not idempotent — the
-  `ensure_dir` ceremony stands.
+- ~~`exists` rejects a dir reference; `make_dir` is not idempotent — the
+  `ensure_dir` ceremony stands.~~ **RESOLVED 2026-09-22** (struck). `exists`
+  takes a directory reference now, because it is the one verb in its group
+  asking about a PATH rather than about a file's contents — reading or locking
+  a folder stays refused. It also answers by `stat` rather than by `fopen`,
+  which was answering a different question and agreeing with the right one only
+  by accident of glibc: a file that exists and is not readable was reported
+  ABSENT.
+  **`make_dir` was deliberately NOT made idempotent.** A bare `mkdir` is
+  ATOMIC, so "did I create it" is how a program takes a lock across processes
+  without one, and an existing directory has to stay an error for that to keep
+  working — the argument `accounting` already made for refusing a second close.
+  What was missing is the OTHER question, and it has its own spelling:
+  `make_dir(path, { parents: true })` creates missing parents, treats an
+  existing directory as success, and refuses a component taken by a
+  non-directory BY NAME rather than reporting a success whose next write fails
+  somewhere else. `stdlib/persist.bas`'s `ensure_dir` — a 24-line segment walk
+  that guarded each level through a FILE reference to a path that is not a file
+  — is one call now, and its `_last` helper went with it.
 - `atomic_replace` gives dest the temp's inode (perms reset, symlinks
   replaced); no `chmod`/`lstat` to compose the safe form — Studio writes
   source files in place because of this.

@@ -9,6 +9,36 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `make_dir(path, { parents: true })`, and `exists` on a directory
+
+`stdlib/persist.bas` carried a 24-line `ensure_dir` that split a path and
+walked it segment by segment. The walk was not a matter of taste: `make_dir`
+had no parents mode, and `exists` would not take a directory reference, so each
+level had to be guarded through a **file** reference to a path that is not a
+file. It is one call now.
+
+```basic
+make_dir("/var/lib/app/cache", { parents: true })
+d {dir}= "/var/lib/app/cache"
+print exists(d)
+```
+
+A component of the path taken by something that is **not** a directory is
+refused, naming it, rather than reported as a success whose next write fails
+somewhere else. An unknown option is refused by name.
+
+**`make_dir` was deliberately not made idempotent**, which is the obvious
+repair and the wrong one: `mkdir` is atomic, so "did I create it" is how a
+program takes a lock across processes without one. An existing directory stays
+an error, and a tier races two processes for the same name to prove exactly one
+may win. Same argument `accounting` made for refusing a second close rather
+than making closing idempotent.
+
+`exists` also answers by **`stat`** rather than by `fopen`, which was answering
+a different question — *can I open this* — and agreeing with the right one only
+by accident of glibc. A file that exists and is not readable was reported
+**absent**. `tests/run_dir_builtins.sh`.
+
 ### Added — inline type modifiers: `read({file}path)`
 
 A **one-word** assignment modifier may now be written as a prefix on an

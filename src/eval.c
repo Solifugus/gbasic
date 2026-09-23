@@ -9406,6 +9406,62 @@ static int file_value_compare(const void *left, const void *right) {
     return strcmp(a->as.file_path, b->as.file_path);
 }
 
+/* `mkdir -p`, with the two failures a caller cannot see from a bare return
+ * value reported BY NAME. Writes through a private copy of the path, so the
+ * caller's string is untouched. Returns 0 on success; on failure `why` holds a
+ * message and the path it is about. */
+static int make_dir_parents(const char *path, char *why, size_t why_size) {
+    size_t len = strlen(path);
+    if (len == 0) {
+        snprintf(why, why_size, "make_dir: the path is empty");
+        return -1;
+    }
+    char *work = malloc(len + 1);
+    if (!work) {
+        abort();
+    }
+    memcpy(work, path, len + 1);
+    /* Trailing slashes name the same directory, so trim them rather than
+     * making an empty final segment that mkdir would refuse. */
+    while (len > 1 && work[len - 1] == '/') {
+        work[--len] = '\0';
+    }
+
+    int failed = 0;
+    for (size_t i = 1; i <= len && !failed; i++) {
+        if (work[i] != '/' && work[i] != '\0') {
+            continue;
+        }
+        char saved = work[i];
+        work[i] = '\0';
+        if (work[0] != '\0' && mkdir(work, 0777) != 0) {
+            if (errno == EEXIST) {
+                /* THE CASE THAT MUST NOT PASS SILENTLY: the name is taken by
+                 * something that is not a directory. Reporting success there
+                 * hands the caller a path whose next write fails somewhere
+                 * else entirely. */
+                struct stat info;
+                if (stat(work, &info) != 0 || !S_ISDIR(info.st_mode)) {
+                    snprintf(why, why_size,
+                             "could not create directory: %s exists and is not a directory",
+                             work);
+                    failed = 1;
+                }
+            } else {
+                snprintf(why, why_size, "could not create directory: %s (%s)",
+                         work, strerror(errno));
+                failed = 1;
+            }
+        }
+        work[i] = saved;
+        if (saved == '\0') {
+            break;
+        }
+    }
+    free(work);
+    return failed ? -1 : 0;
+}
+
 static Value eval_file_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
 
@@ -9428,20 +9484,33 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(file_value);
             return value_null();
         }
-        if (file_value.kind != VALUE_FILE) {
+        /* `exists` is the one verb in this group that asks about a PATH
+         * rather than about a file's contents, so it is the one that takes a
+         * DIRECTORY reference too. Reading, locking and counting the lines of
+         * a directory are meaningless and stay refused; "is it there" is a
+         * question a program has every reason to ask about a folder, and
+         * until now the only way to ask it was to lie about the type -- which
+         * is what the `ensure_dir` ceremony in stdlib/persist.bas did. */
+        int dir_ok = strcmp(name, "exists") == 0;
+        if (file_value.kind != VALUE_FILE &&
+            !(dir_ok && file_value.kind == VALUE_DIR)) {
             char message[256];
-            snprintf(message, sizeof(message), "%s expects a file reference", name);
+            snprintf(message, sizeof(message), "%s expects a %s", name,
+                     dir_ok ? "file or directory reference" : "file reference");
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             return value_null();
         }
 
         if (strcmp(name, "exists") == 0) {
-            FILE *file = fopen(file_value.as.file_path, "rb");
-            int exists = file != NULL;
-            if (file) {
-                fclose(file);
-            }
+            /* By `stat`, not by opening. The old implementation was
+             * `fopen(path, "rb") != NULL`, which answers a DIFFERENT question
+             * -- can I open this -- and agreed with the right one only by
+             * accident of glibc: fopen succeeds on a directory here, so
+             * `exists({file}"/etc")` was already true, and a file that exists
+             * but is not readable was reported ABSENT. */
+            struct stat info;
+            int exists = stat(directory_path(file_value), &info) == 0;
             value_free(file_value);
             return value_bool(exists);
         }
@@ -9803,9 +9872,17 @@ static Value eval_file_call(AstExpr *expr) {
     }
 
     if (strcmp(name, "make_dir") == 0 || strcmp(name, "remove_dir") == 0) {
-        if (expr->as.call.args.count != 1) {
+        int is_make = strcmp(name, "make_dir") == 0;
+        /* `make_dir` takes an options record; `remove_dir` does not, because
+         * the option it would be offered -- remove what is inside -- is a
+         * recursive delete and belongs to a decision nobody should make by
+         * passing a flag. */
+        size_t max_args = is_make ? 2u : 1u;
+        if (expr->as.call.args.count < 1 || expr->as.call.args.count > max_args) {
             char message[256];
-            snprintf(message, sizeof(message), "%s expects one path argument", name);
+            snprintf(message, sizeof(message),
+                     is_make ? "make_dir expects a path and an optional options record"
+                             : "%s expects one path argument", name);
             runtime_error_raise(message, 1004, "file operation");
             return value_null();
         }
@@ -9826,7 +9903,74 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
 
-        int ok = strcmp(name, "make_dir") == 0
+        /* PARENTS IS OPT-IN, AND THAT IS THE DESIGN RATHER THAN CAUTION.
+         * Making `make_dir` plainly idempotent would be the obvious repair and
+         * it destroys the one thing a bare mkdir is uniquely good for: it is
+         * ATOMIC, so "did I create it" is how a program takes a lock across
+         * processes without one. An existing directory has to stay an error
+         * for that to keep working. What was missing is the OTHER question --
+         * "make sure this path exists" -- and it now has its own spelling,
+         * the same argument accounting made for refusing a second close
+         * rather than making closing idempotent. */
+        int parents = 0;
+        if (is_make && expr->as.call.args.count == 2) {
+            Value options = eval_expr(expr->as.call.args.items[1]);
+            if (error_action_pending()) {
+                value_free(options);
+                value_free(path_value);
+                return value_null();
+            }
+            if (options.kind != VALUE_RECORD) {
+                runtime_error_raise("make_dir options must be a record", 1004,
+                                    "file operation");
+                value_free(options);
+                value_free(path_value);
+                return value_null();
+            }
+            /* An unknown field is refused BY NAME, the rule webserver.listen
+             * already follows: a misspelled option that was ignored would
+             * leave the caller believing it had asked for something. */
+            for (size_t i = 0; i < options.as.record.count; i++) {
+                const char *field = options.as.record.fields[i].name;
+                if (strcmp(field, "parents") != 0) {
+                    char message[256];
+                    snprintf(message, sizeof(message),
+                             "make_dir: unknown option '%s' (the only option is 'parents')",
+                             field);
+                    runtime_error_raise(message, 1004, "file operation");
+                    value_free(options);
+                    value_free(path_value);
+                    return value_null();
+                }
+            }
+            RecordField *found = record_find(&options, "parents");
+            if (found && found->value) {
+                Value flag = *found->value;
+                if (flag.kind != VALUE_BOOL) {
+                    runtime_error_raise("make_dir: 'parents' must be true or false",
+                                        1004, "file operation");
+                    value_free(options);
+                    value_free(path_value);
+                    return value_null();
+                }
+                parents = flag.as.boolean;
+            }
+            value_free(options);
+        }
+
+        if (parents) {
+            char why[512];
+            why[0] = '\0';
+            if (make_dir_parents(path, why, sizeof(why)) != 0) {
+                runtime_error_raise(why, 1004, "file operation");
+                value_free(path_value);
+                return value_null();
+            }
+            value_free(path_value);
+            return value_bool(1);
+        }
+
+        int ok = is_make
                      ? mkdir(path, 0777) == 0
                      : rmdir(path) == 0;
         if (!ok) {

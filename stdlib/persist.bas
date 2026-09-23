@@ -31,44 +31,18 @@
 ' unconditional builtins.
 library persist
 
-    ' Last char of a string ("" when empty). Bound out to avoid the
-    ' `call(...) = x` modifier-lexer collision on inline comparisons.
-    function _last(s)
-        n = len(s)
-        if n = 0 then
-            return ""
-        end if
-        return mid(s, n - 1, 1)
-    end function
-
-    ' Create `path` and any missing parent directories. Idempotent: existing
-    ' directories are left alone (make_dir raises on an existing directory, so
-    ' each segment is guarded by an existence check via a file reference — the
-    ' `exists` builtin wants a file reference even for a directory path).
+    ' Create `path` and any missing parent directories. Idempotent: an existing
+    ' directory is left alone.
+    '
+    ' This used to be a hand-rolled segment walk, and the walk was not a matter
+    ' of taste -- `make_dir` had no parents mode, and `exists` would not take a
+    ' directory reference, so each segment had to be guarded through a FILE
+    ' reference to a path that is not a file. Both were fixed on 2026-09-22 and
+    ' the whole ceremony collapses to one call, which is why this function now
+    ' exists only so that callers need not know that.
     function ensure_dir(path)
-        acc = ""
-        for each seg in split(path, "/")
-            if seg = "" then
-                acc = acc + "/"
-            else
-                if acc = "" then
-                    acc = seg
-                else
-                    tail = persist._last(acc)
-                    if tail = "/" then
-                        acc = acc + seg
-                    else
-                        acc = acc + "/" + seg
-                    end if
-                end if
-                probe{file} = acc
-                present = exists(probe)
-                if not present then
-                    target{dir} = acc
-                    make_dir(target)
-                end if
-            end if
-        end for
+        make_dir(path, { parents: true })
+        return nothing
     end function
 
     ' Atomically persist `record` to `path` as strict JSON. Pre-validates that the

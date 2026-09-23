@@ -5495,6 +5495,21 @@ File functions (see also the file/directory value types):
   `abcdefghij` gives `abcXYZghij`.
 - `delete(f)` — remove a file. `remove_dir(d)` — remove a directory;
   `make_dir(d)` creates one.
+- `make_dir(d, { parents: true })` *(since 0.2.3)* — create `d` **and any
+  missing parents**, treating a directory that already exists as success. A
+  component of the path that is taken by something that is **not** a directory
+  is refused, naming it; an unknown option is refused by name.
+
+  Bare `make_dir(d)` is deliberately **not** idempotent and will not become so:
+  `mkdir` is atomic, so "did I create it" is how a program takes a lock across
+  processes without one, and an existing directory has to stay an error for
+  that to keep working. The two spellings answer two different questions —
+  *create this* and *make sure this exists*.
+- `exists(ref)` accepts a **directory** reference as well as a file one
+  *(since 0.2.3)*, because it asks about a **path** rather than about a file's
+  contents. `read`, `lock` and the rest of that family still take a file
+  reference only. It answers by `stat`, so a file that exists but is not
+  readable reports as **present**.
 - `lock(f)` / `unlock(f)` — advisory locks (see `with lock`).
 
 **Taking a path apart.** These work on a file or directory reference and on a
@@ -7288,8 +7303,9 @@ whole program without needing a call site.
   raising (`docs/ai/COOKBOOK.md`). Also `persist.write_text_atomic(path, text)`
   for raw text through the same temp-then-rename dance (source files rather than
   records), and `persist.ensure_dir(path)`, which creates a path and its missing
-  parents and is **idempotent** — bare `make_dir` raises on a directory that
-  already exists.
+  parents and is **idempotent**. Since 0.2.3 that is one call to
+  `make_dir(path, { parents: true })` rather than a hand-rolled segment walk;
+  bare `make_dir` still raises on a directory that already exists, deliberately.
 - `filetree` — a directory as a value tree, with expand/collapse state carried
   in the nodes. `filetree.visible_count(nodes)` counts currently-visible rows,
   and `filetree.dump(nodes)` renders the visible tree as deterministic,

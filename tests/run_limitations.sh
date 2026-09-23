@@ -88,7 +88,6 @@ run() { GBASIC_PATH=stdlib ./gbasic "$1" 2>&1; }
 PROBES="
 inline_modifier_args|has no inline form
 exponent_literal|No exponent literal
-dir_ref_and_make_dir|\`exists\` rejects a dir reference
 atomic_replace_inode|gives dest the temp's inode
 callresult_method_stmt|method call on a call-result receiver
 unnormalized_load_path|print the load path unnormalized
@@ -167,26 +166,6 @@ probe_exponent_literal() {
         ok "1e20 still lexes as a duration (no exponent literal)"
     else
         fixed "1e20 no longer lexes as a duration"
-    fi
-}
-
-probe_dir_ref_and_make_dir() {
-    # Two halves of one bullet; both must still hold.
-    printf 'd {dir}= "%s"\nprint exists(d)\n' "$WORK" > "$WORK/p.bas"
-    local a=1 b=1
-    run "$WORK/p.bas" | grep -q 'exists expects a file reference' && a=0
-
-    printf 'print make_dir("%s/fresh")\nprint make_dir("%s/fresh")\n' "$WORK" "$WORK" > "$WORK/p.bas"
-    run "$WORK/p.bas" | grep -q 'could not create directory' && b=0
-
-    if [ $a = 0 ] && [ $b = 0 ]; then
-        ok "exists still rejects a dir reference, make_dir still not idempotent"
-    elif [ $a != 0 ] && [ $b != 0 ]; then
-        fixed "exists accepts a dir reference AND make_dir is idempotent"
-    elif [ $a != 0 ]; then
-        fixed "exists now accepts a dir reference (make_dir half still stands)"
-    else
-        fixed "make_dir is now idempotent (exists half still stands)"
     fi
 }
 
@@ -270,6 +249,7 @@ keyword_after_dot|not after a dot
 sentinel_find|misses with \`nothing\`
 line_continuation|No line continuation
 inline_modifier|do not work postfix in expression position
+dir_ref_and_make_dir|rejects a dir reference
 "
 
 # Red here means a fix REGRESSED, or this suite stopped actually running
@@ -375,6 +355,32 @@ control_line_continuation() {
         ok "CONTROL: a line break inside brackets continues the statement (PLAT-CONT)"
     else
         regressed "CONTROL: line continuation is gone (got: $out)"
+    fi
+}
+
+control_dir_ref_and_make_dir() {
+    # BOTH halves of the struck bullet, and a THIRD check that is the reason
+    # the second half was fixed the way it was: `make_dir` is still NOT
+    # idempotent on its own. A bare mkdir is atomic, so an existing directory
+    # must stay an error or a program loses the only cross-process lock
+    # primitive it has. Without that line, "the ceremony is gone" would be
+    # equally satisfied by having made plain make_dir succeed on anything.
+    printf 'd {dir}= "%s"\nprint exists(d)\n' "$WORK" > "$WORK/c.bas"
+    a=$(run "$WORK/c.bas")
+
+    printf 'print make_dir("%s/deep/er/still", { parents: true })\nprint make_dir("%s/deep/er/still", { parents: true })\nprint file_type("%s/deep/er/still")\n' \
+        "$WORK" "$WORK" "$WORK" > "$WORK/c.bas"
+    b=$(run "$WORK/c.bas")
+
+    printf 'print make_dir("%s/deep")\n' "$WORK" > "$WORK/c.bas"
+    c=$(run "$WORK/c.bas")
+
+    if [ "$a" = "true" ] \
+       && [ "$b" = "$(printf 'true\ntrue\nfolder')" ] \
+       && printf '%s' "$c" | grep -q 'could not create directory'; then
+        ok "CONTROL: exists takes a dir reference, make_dir parents is idempotent, plain make_dir is not"
+    else
+        regressed "CONTROL: the ensure_dir ceremony is back (exists: $a / parents: $b / plain: $c)"
     fi
 }
 
