@@ -335,8 +335,21 @@ what proves the live probes are running anything at all.
   testing; Studio's display tiers run on it.
 - gi cannot call STATIC class functions (`Gtk.StyleContext.add_provider_for_display`)
   — per-instance routes exist (2026-08-22).
-- No exponent literal — `1e20` lexes as a duration with a misleading message;
-  `number("1e20")` is the idiom.
+- ~~No exponent literal — `1e20` lexes as a duration with a misleading message;
+  `number("1e20")` is the idiom.~~ **RESOLVED 2026-09-23** (struck). `1e20`,
+  `6.02e23`, `1.5e-3` and `2E10` are number literals. At least one digit must
+  follow the `e` and its optional sign, so `1e` is still the number 1 beside an
+  identifier and nothing that parsed before stops parsing.
+  **THE BULLET UNDERSTATED IT, AND THE UNDERSTATEMENT WAS THE INTERESTING
+  PART.** "A misleading message" was measured and is wrong twice over: the
+  message was UNLOCATED and went straight to stderr, bypassing the diagnostics
+  sink — so `--json-diagnostics` emitted a non-JSON line into a JSON stream —
+  and the program then **answered `0 seconds` and exited 0**. `1 fortnight` was
+  a duration of zero that nothing downstream could detect. That is the
+  bare-line/plausible-value/exit-0 signature `tests/run_silent_traps.sh` was
+  built for, in a third place it had not reached. An unknown unit is a LOCATED
+  parse error now, so nothing runs, and the message names the seven units that
+  exist. `tests/run_exponent_literal.sh`.
 - ~~`find` misses with `nothing`, `match` with `unknown` — changing `find` is
   breaking; helpers check both.~~ **RESOLVED by PLAT-EQ** (struck 2026-09-01).
   `find`/`contains` route through `values_equal`, which PLAT-EQ repaired for

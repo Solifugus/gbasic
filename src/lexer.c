@@ -185,6 +185,34 @@ static Token number_token(Lexer *lexer, const char *start, int line, int column)
         }
     }
 
+    /* Scientific notation: `1e20`, `6.02e23`, `1.5E-3`. Written here rather
+     * than left to a helper because until now `1e20` lexed as the NUMBER 1
+     * followed by the identifier `e20`, which the grammar reads as a DURATION
+     * -- and an unknown unit did not refuse, it printed an unlocated line and
+     * answered `0 seconds` with exit 0. So the absence of this literal was not
+     * merely an inconvenience; it put a plausible wrong value where a large
+     * number was written.
+     *
+     * AT LEAST ONE DIGIT IS REQUIRED after the optional sign, and that is what
+     * keeps this conservative: `1e` is still the number 1 beside an identifier
+     * `e`, so nothing that parsed before stops parsing. The hex branch above
+     * has already returned, so `0x1e` is untouched. */
+    if (peek(lexer) == 'e' || peek(lexer) == 'E') {
+        const char *rest = lexer->current + 1;
+        if (*rest == '+' || *rest == '-') {
+            rest++;
+        }
+        if (isdigit((unsigned char)*rest)) {
+            advance(lexer);                       /* e / E */
+            if (peek(lexer) == '+' || peek(lexer) == '-') {
+                advance(lexer);
+            }
+            while (isdigit((unsigned char)peek(lexer))) {
+                advance(lexer);
+            }
+        }
+    }
+
     return make_token(lexer, TOKEN_NUMBER, start, line, column);
 }
 

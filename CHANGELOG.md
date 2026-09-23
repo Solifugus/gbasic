@@ -9,6 +9,28 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — scientific notation, and the silent trap behind its absence
+
+`1e20`, `6.02e23`, `1.5e-3` and `2E10` are number literals. At least one digit
+must follow the `e` and its optional sign, so `1e` is still the number 1 beside
+an identifier and nothing that parsed before stops parsing.
+
+**The absence was not merely a missing feature.** `1e20` lexed as the number 1
+beside the identifier `e20`, which the grammar reads as a **duration** — and an
+unknown duration unit did not refuse. It printed an **unlocated** line straight
+to stderr, **bypassing the diagnostics sink** (so `--json-diagnostics` emitted a
+non-JSON line into a JSON stream), then answered **`0 seconds`** and **exited
+0**. `1 fortnight` was a duration of zero that nothing downstream could detect.
+
+That is the bare-line / plausible-value / successful-exit signature
+`tests/run_silent_traps.sh` was built for, in a third place it had never
+reached. An unknown duration unit is a **located parse error** now, so nothing
+runs, and the message names the seven units that exist.
+
+`tests/run_exponent_literal.sh`. `number("1e20")` still works; the extremes in
+`tests/numfmt_test.bas` deliberately stay on that route so the text path stays
+exercised.
+
 ### Added — `make_dir(path, { parents: true })`, and `exists` on a directory
 
 `stdlib/persist.bas` carried a 24-line `ensure_dir` that split a path and

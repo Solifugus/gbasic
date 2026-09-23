@@ -87,7 +87,6 @@ run() { GBASIC_PATH=stdlib ./gbasic "$1" 2>&1; }
 
 PROBES="
 inline_modifier_args|has no inline form
-exponent_literal|No exponent literal
 atomic_replace_inode|gives dest the temp's inode
 callresult_method_stmt|method call on a call-result receiver
 unnormalized_load_path|print the load path unnormalized
@@ -157,15 +156,6 @@ probe_spawn_bare_name() {
         ok "spawn still takes a bare function name (not a qualified one, not a value)"
     else
         fixed "spawn now accepts a qualified name or a function value"
-    fi
-}
-
-probe_exponent_literal() {
-    printf 'print 1e20\n' > "$WORK/p.bas"
-    if run "$WORK/p.bas" | grep -q 'unknown duration unit'; then
-        ok "1e20 still lexes as a duration (no exponent literal)"
-    else
-        fixed "1e20 no longer lexes as a duration"
     fi
 }
 
@@ -250,6 +240,7 @@ sentinel_find|misses with \`nothing\`
 line_continuation|No line continuation
 inline_modifier|do not work postfix in expression position
 dir_ref_and_make_dir|rejects a dir reference
+exponent_literal|No exponent literal
 "
 
 # Red here means a fix REGRESSED, or this suite stopped actually running
@@ -355,6 +346,28 @@ control_line_continuation() {
         ok "CONTROL: a line break inside brackets continues the statement (PLAT-CONT)"
     else
         regressed "CONTROL: line continuation is gone (got: $out)"
+    fi
+}
+
+control_exponent_literal() {
+    # BOTH halves of the struck bullet. The literal itself, and the thing the
+    # bullet called "a misleading message" and which was in fact a SILENT TRAP:
+    # an unknown unit printed an unlocated line, answered `0 seconds` and
+    # exited 0. It must now be a located parse error that stops the program,
+    # or `1 fortnight` goes back to being a duration of zero nobody can see.
+    printf 'print 1e20\nprint 1.5e-3\nprint 2E10\n' > "$WORK/c.bas"
+    a=$(run "$WORK/c.bas")
+
+    printf 'print 1 fortnight\nprint "ran anyway"\n' > "$WORK/c.bas"
+    b=$(run "$WORK/c.bas")
+
+    if [ "$a" = "$(printf '1e+20\n0.0015\n20000000000')" ] \
+       && printf '%s' "$b" | grep -q "parse error" \
+       && printf '%s' "$b" | grep -q "unknown duration unit 'fortnight'" \
+       && ! printf '%s' "$b" | grep -q "ran anyway"; then
+        ok "CONTROL: scientific notation is a literal, and an unknown unit is a located parse error"
+    else
+        regressed "CONTROL: the exponent literal or the unit refusal is gone (numbers: $a / unit: $b)"
     fi
 }
 

@@ -67,8 +67,7 @@ missing dependency rather than skipping, that is itself a bug worth reporting.
 **Read [`docs/ai/START-HERE.md`](docs/ai/START-HERE.md) first**, and
 [`UNLEARN.md`](docs/ai/UNLEARN.md) before that. gBASIC diverges from QBasic and
 VB intuition in ways that fail *silently* — `!=` not `<>`, `find` returns
-`nothing` on a miss rather than `-1`, there are no exponent literals, `load` is
-an executable statement. These documents exist because each of those cost
+`nothing` on a miss rather than `-1`, `load` is an executable statement. These documents exist because each of those cost
 somebody real time.
 
 ## House rules

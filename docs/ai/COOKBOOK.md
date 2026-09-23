@@ -50,8 +50,8 @@ for error handling, `ERRORS.md`.
   holds. That makes floating-point error visible (`0.1 + 0.2` shows
   `0.30000000000000004`): round for display with `round(x, 2)`, or use a money
   value (`t{USD}= 265550.75`) for figures that must read exactly. Integers below
-  2^53 print plainly; there is no exponent *literal*, so build extremes with
-  `number("1e20")`. → `tests/numfmt_test.bas`
+  2^53 print plainly, and scientific notation is a literal since 0.2.3
+  (`1e20`, `6.02e23`, `1.5e-3`); `number("1e20")` still builds one from text. → `tests/numfmt_test.bas`
 - **Functions** — definition, params, `return`. → `examples/function_test.gb`
 - **Function values** — a bare function name is a value you can store, pass, and
   call; equality is same-reference. → `examples/first_class_function_test.bas`

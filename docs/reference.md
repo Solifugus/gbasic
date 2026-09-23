@@ -5317,6 +5317,17 @@ or out-of-range input:
 
 ### Numbers and Comparison
 
+**Number literals.** Decimal (`42`, `3.14`), hexadecimal (`0xFF`), and
+**scientific notation** *(since 0.2.3)* — `1e20`, `6.02e23`, `1.5e-3`, `2E10`,
+with an optional sign on the exponent. At least one digit must follow the `e`,
+so `1e` is the number 1 beside an identifier `e` and not an exponent.
+
+Before 0.2.3 there was no exponent literal, and the failure was worse than a
+missing feature: `1e20` lexed as the number 1 beside the *duration unit* `e20`,
+and an unknown unit printed an unlocated line, answered `0 seconds` and exited
+0. An unknown duration unit is a located parse error now, naming the seven
+units that exist. `number("1e20")` still builds a value from text.
+
 - `mod(a, b)` — the remainder, **floored**: the result takes the sign of the
   DIVISOR, so `mod(-7, 3)` is `2` and `mod(7, -3)` is `-2`. This differs from
   QBasic's `MOD`, which truncates toward zero, and the divergence is

@@ -352,11 +352,35 @@ static AstModifierUse parse_modifier_use(char *text) {
     return modifier;
 }
 
+/* The message NAMES the units that exist, because the commonest cause is a
+ * unit this language does not have (`fortnight`, `ms`) and the second
+ * commonest is a plural nobody is sure about. It also names the one shape a
+ * reader is most likely to have meant instead: before 2026-09-23 `1e20` came
+ * down this path as the number 1 beside the "unit" e20. */
+static void duration_unit_error(gb_parse_ctx *ctx, char *unit,
+                                int line, int column, int end_line, int end_column) {
+    char message[256];
+    snprintf(message, sizeof(message),
+             "unknown duration unit '%s' -- the units are year, month, week, day, "
+             "hour, minute and second, singular or plural", unit);
+    free(unit);
+    report_syntax_error(ctx, line, column, end_line, end_column, message);
+}
+
 static int unit_is(const char *text, const char *unit) {
     return strcmp(text, unit) == 0;
 }
 
-static AstDuration duration_add_unit(AstDuration duration, double amount, char *unit) {
+/* An unknown unit is REPORTED BACK rather than printed. It used to
+ * `fprintf` an unlocated line to stderr, answer `0 seconds` and carry on with
+ * EXIT 0 -- the exact signature run_silent_traps.sh was built for: a bare
+ * line, a plausible value and a successful exit. It bypassed the diagnostics
+ * sink too, so `--json-diagnostics` emitted a non-JSON line into a JSON
+ * stream, which is the defect run_parse_exit.sh exists for. `1 fortnight` was
+ * a duration of zero that nothing downstream could detect. It is a LOCATED
+ * parse error now, so nothing runs. */
+static AstDuration duration_add_unit(AstDuration duration, double amount, char *unit,
+                                     char **bad_unit) {
     int value = (int)amount;
     if (unit_is(unit, "year") || unit_is(unit, "years")) {
         duration.years += value;
@@ -373,7 +397,10 @@ static AstDuration duration_add_unit(AstDuration duration, double amount, char *
     } else if (unit_is(unit, "second") || unit_is(unit, "seconds")) {
         duration.seconds += value;
     } else {
-        fprintf(stderr, "unknown duration unit: %s\n", unit);
+        if (bad_unit && !*bad_unit) {
+            *bad_unit = unit;   /* ownership moves to the caller, which frees it */
+            return duration;
+        }
     }
     free(unit);
     return duration;
@@ -1427,10 +1454,22 @@ ident_dot_suffix
 duration_terms
     : NUMBER IDENT {
         AstDuration duration = {0};
-        $$ = duration_add_unit(duration, $1, $2);
+        char *bad = NULL;
+        $$ = duration_add_unit(duration, $1, $2, &bad);
+        if (bad) {
+            duration_unit_error(ctx, bad, @2.first_line, @2.first_column,
+                                @2.last_line, @2.last_column);
+            YYERROR;
+        }
       }
     | duration_terms NUMBER IDENT {
-        $$ = duration_add_unit($1, $2, $3);
+        char *bad = NULL;
+        $$ = duration_add_unit($1, $2, $3, &bad);
+        if (bad) {
+            duration_unit_error(ctx, bad, @3.first_line, @3.first_column,
+                                @3.last_line, @3.last_column);
+            YYERROR;
+        }
       }
     ;
 

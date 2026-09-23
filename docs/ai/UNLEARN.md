@@ -293,9 +293,16 @@ the standing ones.
   appears (`1e+20`), because past that point the digits a full form would print
   are not all real.
 
-- **There is no exponent literal.** `1e20` is not a number — `e20` lexes as a
-  **duration unit** and raises `unknown duration unit: e20`. Build such values
-  from text: `number("1e20")`.
+- **Scientific notation is a literal** *(since 0.2.3)* — `1e20`, `6.02e23`,
+  `1.5e-3`, `2E10`. Before that it was not, and the failure was worse than a
+  missing feature: `1e20` lexed as the number 1 beside the "duration unit"
+  `e20`, and an unknown unit **printed an unlocated line and answered
+  `0 seconds` with exit 0**. `number("1e20")` still works and is still the way
+  to build a value from text you were given.
+
+  At least one digit must follow the `e` (and its optional sign), so `1e` is
+  still the number 1 beside an identifier `e` — nothing that parsed before
+  stops parsing.
 
 Pinned by `tests/run_numfmt.sh`.
 
