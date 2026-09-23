@@ -34630,6 +34630,8 @@ static Value derive_record(Value proto) {
     return value_record(fields, out);
 }
 
+static Value apply_assignment_modifier(AstModifierUse modifier, Value value);
+
 static Value eval_expr(AstExpr *expr) {
     switch (expr->kind) {
     case AST_EXPR_NUMBER:
@@ -34966,6 +34968,30 @@ static Value eval_expr(AstExpr *expr) {
         return eval_spawn(expr);
     case AST_EXPR_BINARY:
         return eval_binary(expr);
+    case AST_EXPR_MODIFIER_APPLY: {
+        /* The inline form of the assignment clause, and DELIBERATELY the same
+         * function: `{USD}x` and `x {USD}= ...` must not be able to disagree
+         * about what {USD} means, so there is one implementation and this is
+         * a second caller of it, not a second copy. */
+        int before_error = error_generation;
+        Value value = eval_expr(expr->as.modifier_apply.value);
+        if (error_generation != before_error) {
+            /* The subject already failed. Applying the modifier on top of that
+             * would report the SECOND cause over the first -- the class this
+             * tree has produced three times. */
+            return value;
+        }
+        int previous_line = current_line;
+        int previous_column = current_column;
+        if (expr->line > 0) {
+            current_line = expr->line;
+            current_column = expr->column > 0 ? expr->column : previous_column;
+        }
+        value = apply_assignment_modifier(expr->as.modifier_apply.modifier, value);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value;
+    }
     case AST_EXPR_UNARY: {
         Value value = eval_expr(expr->as.unary.expr);
         if (strcmp(expr->as.unary.op, "not") == 0) {
@@ -36142,6 +36168,7 @@ static void dead_scan_expr(const AstExpr *e, DeadScan *s) {
         dead_scan_expr(e->as.binary.right, s);
         break;
     case AST_EXPR_UNARY:   dead_scan_expr(e->as.unary.expr, s); break;
+    case AST_EXPR_MODIFIER_APPLY: dead_scan_expr(e->as.modifier_apply.value, s); break;
     case AST_EXPR_NEW:
         dead_scan_expr(e->as.derive.proto, s);
         dead_scan_expr(e->as.derive.with, s);

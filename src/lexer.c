@@ -523,7 +523,59 @@ Token lexer_next(Lexer *lexer) {
     case ')': bracket_close(lexer); return make_token(lexer, TOKEN_RPAREN, start, line, column);
     case '[': bracket_open(lexer, '[', line); return make_token(lexer, TOKEN_LBRACKET, start, line, column);
     case ']': bracket_close(lexer); return make_token(lexer, TOKEN_RBRACKET, start, line, column);
-    case '{': bracket_open(lexer, '{', line); return make_token(lexer, TOKEN_LBRACE, start, line, column);
+    case '{': {
+        /* `{ IDENT }` EXACTLY -- an inline type modifier, recognised HERE
+         * rather than in the grammar. `{a}` and `{a: 1}` differ only at their
+         * THIRD token, which LALR(1) cannot see from the brace: adding the
+         * rule to the grammar costs a shift/reduce conflict, and this project
+         * rejected `IDENT expression` as a statement form over four of them.
+         * The lexer may look as far ahead as it likes, so it costs zero.
+         * Measured both ways, 2026-09-22.
+         *
+         * SAFE BECAUSE `{IDENT}` MEANT NOTHING BEFORE: `r = {x}` is a parse
+         * error (`unexpected RBRACE, expecting OP_EQ or COLON`), so no
+         * existing program contains this shape and nothing changes meaning.
+         *
+         * IT ALSO CLAIMS THE COMMONEST ASSIGNMENT CLAUSE -- `x {date}= s` is
+         * this exact shape -- so `comparison_lens` accepts this token as well
+         * as the LBRACE/lens-mode spelling a clause WITH ARGUMENTS still
+         * takes. A MULTI-WORD name (`{end of month}`) still falls through to
+         * the old path untouched; a qualified one (`{mylib.upper}`) is one
+         * word and is recognised here. */
+        const char *probe = lexer->current;
+        while (*probe == ' ' || *probe == '\t') probe++;
+        if (isalpha((unsigned char)*probe) || *probe == '_') {
+            const char *name_start = probe;
+            while (isalnum((unsigned char)*probe) || *probe == '_') probe++;
+            /* A LIBRARY-qualified name is one word too: `{money.usd}`. The dot
+             * must be followed by another word, so a trailing `{a.}` falls
+             * through to the old path rather than arriving here as a modifier
+             * whose name half is empty. */
+            while (*probe == '.' &&
+                   (isalpha((unsigned char)probe[1]) || probe[1] == '_')) {
+                probe++;
+                while (isalnum((unsigned char)*probe) || *probe == '_') probe++;
+            }
+            size_t name_len = (size_t)(probe - name_start);
+            const char *after = probe;
+            while (*after == ' ' || *after == '\t') after++;
+            if (*after == '}' && name_len > 0) {
+                Token t;
+                t.type = TOKEN_MODIFIER_PREFIX;
+                /* The span is the NAME, not the braces: it is what the parser
+                 * copies and what a diagnostic has to point at. */
+                t.start = name_start;
+                t.length = (int)name_len;
+                t.line = line;
+                t.column = column;
+                lexer->column += (int)((after + 1) - start);
+                lexer->current = after + 1;
+                return t;
+            }
+        }
+        bracket_open(lexer, '{', line);
+        return make_token(lexer, TOKEN_LBRACE, start, line, column);
+    }
     case '}': bracket_close(lexer); return make_token(lexer, TOKEN_RBRACE, start, line, column);
     case ',': return make_token(lexer, TOKEN_COMMA, start, line, column);
     case '.': return make_token(lexer, TOKEN_DOT, start, line, column);
@@ -619,6 +671,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_RPAREN: return "RPAREN";
     case TOKEN_LBRACKET: return "LBRACKET";
     case TOKEN_RBRACKET: return "RBRACKET";
+    case TOKEN_MODIFIER_PREFIX: return "MODIFIER_PREFIX";
     case TOKEN_LBRACE: return "LBRACE";
     case TOKEN_RBRACE: return "RBRACE";
     case TOKEN_COMMA: return "COMMA";

@@ -640,6 +640,10 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
     case AST_EXPR_UNARY:
         analyze_expr(ctx, expr->as.unary.expr);
         break;
+    case AST_EXPR_MODIFIER_APPLY:
+        analyze_expr(ctx, expr->as.modifier_apply.value);
+        analyze_modifier(ctx, expr->as.modifier_apply.modifier, "assign");
+        break;
     case AST_EXPR_NEW:
         analyze_expr(ctx, expr->as.derive.proto);
         analyze_expr(ctx, expr->as.derive.with);

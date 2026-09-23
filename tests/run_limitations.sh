@@ -86,7 +86,7 @@ run() { GBASIC_PATH=stdlib ./gbasic "$1" 2>&1; }
 # The probe function is probe_<KEY>.
 
 PROBES="
-postfix_modifier|do not work postfix in expression position
+inline_modifier_args|has no inline form
 exponent_literal|No exponent literal
 dir_ref_and_make_dir|\`exists\` rejects a dir reference
 atomic_replace_inode|gives dest the temp's inode
@@ -127,12 +127,21 @@ probe_nul_string_literal() {
     fi
 }
 
-probe_postfix_modifier() {
-    printf 'd = "2026-01-01"{date}\nprint d.year\n' > "$WORK/p.bas"
-    if run "$WORK/p.bas" | grep -q 'parse error'; then
-        ok "postfix .date in expression position is still a parse error"
+probe_inline_modifier_args() {
+    # BOTH halves, because they fail for the same reason and fixing one without
+    # the other would mean the grammar had changed and the conflict count is
+    # the thing to re-measure: the LEXER recognises `{ IDENT }` and nothing
+    # else, so a clause with arguments and a multi-word one both fall back to
+    # the LBRACE path, where an expression position expects a record literal.
+    printf 'print ({split ","}"a,b")[0]\n' > "$WORK/p.bas"
+    args_out=$(run "$WORK/p.bas")
+    printf 'load dates\nprint ({end of month}{date}"2026-02-10").day\n' > "$WORK/p2.bas"
+    words_out=$(run "$WORK/p2.bas")
+    if printf '%s' "$args_out" | grep -q 'parse error' &&
+       printf '%s' "$words_out" | grep -q 'parse error'; then
+        ok "an argument-bearing and a multi-word modifier are still parse errors inline"
     else
-        fixed "postfix .date in expression position now parses"
+        fixed "a modifier with arguments or a multi-word name now works inline"
     fi
 }
 
@@ -260,6 +269,7 @@ call_result_compare|misparses as a modifier clause
 keyword_after_dot|not after a dot
 sentinel_find|misses with \`nothing\`
 line_continuation|No line continuation
+inline_modifier|do not work postfix in expression position
 "
 
 # Red here means a fix REGRESSED, or this suite stopped actually running
@@ -365,6 +375,23 @@ control_line_continuation() {
         ok "CONTROL: a line break inside brackets continues the statement (PLAT-CONT)"
     else
         regressed "CONTROL: line continuation is gone (got: $out)"
+    fi
+}
+
+control_inline_modifier() {
+    # The inline type modifier: a value may be given a type WHERE IT IS USED,
+    # not only where it is stored. Asserted in an ARGUMENT position, which is
+    # the shape the bullet's own workaround existed for, and on the TYPE rather
+    # than the rendering -- `string(a datetime)` and the text it was parsed
+    # from are the same characters, so a rendering check passes on a build
+    # where the modifier was never applied (measured).
+    printf 'p = "/etc/hostname"\nprint type({file}p)\nprint bytes({file}p) > 0\n' > "$WORK/c.bas"
+    out=$(run "$WORK/c.bas")
+    if [ "$(printf '%s' "$out" | head -1)" = "file" ] \
+       && [ "$(printf '%s' "$out" | tail -1)" = "true" ]; then
+        ok "CONTROL: a modifier applies inline in expression position"
+    else
+        regressed "CONTROL: the inline type modifier is gone (got: $out)"
     fi
 }
 

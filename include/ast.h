@@ -63,7 +63,12 @@ typedef enum {
     AST_EXPR_BINARY,
     AST_EXPR_UNARY,
     AST_EXPR_NEW,
-    AST_EXPR_SPAWN
+    AST_EXPR_SPAWN,
+    /* An inline type modifier: `{file}path`, `{date}s`, `{USD}amount`. The
+     * SAME AstModifierUse an assignment clause carries and the same
+     * value->value semantics -- what differs is only that there is no target,
+     * so it may appear wherever an expression may. */
+    AST_EXPR_MODIFIER_APPLY
 } AstExprKind;
 
 typedef struct AstExpr AstExpr;
@@ -224,6 +229,10 @@ struct AstExpr {
             AstExpr *proto;   /* prototype to derive from */
             AstExpr *with;    /* optional override record literal, or NULL */
         } derive;
+        struct {
+            AstModifierUse modifier;
+            AstExpr *value;
+        } modifier_apply;
     } as;
 };
 
@@ -431,6 +440,7 @@ AstModifierUse ast_modifier_none(void);
 AstModifierUse ast_modifier_use(char *name, AstExprList args);
 AstModifierSignature ast_modifier_signature(char *name, AstNameList params);
 AstExpr *ast_binary(char *op, AstModifierUse modifier, AstExpr *left, AstExpr *right);
+AstExpr *ast_modifier_apply(AstModifierUse modifier, AstExpr *value);
 AstExpr *ast_unary(char *op, AstExpr *expr);
 AstExpr *ast_new(AstExpr *proto, AstExpr *with);
 AstExpr *ast_spawn(char *name, AstExprList args);

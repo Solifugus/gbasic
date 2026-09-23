@@ -9,6 +9,45 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — inline type modifiers: `read({file}path)`
+
+A **one-word** assignment modifier may now be written as a prefix on an
+expression, wherever an expression is allowed:
+
+```basic
+print bytes({file}"/etc/hostname")
+total = {USD}19.99
+due = { when: {date}"2026-01-31" }
+```
+
+Until now a modifier could only be applied by an **assignment**, so a value
+wanted once had to be given a name and a line to be given it on. Measured
+across `stdlib`, `examples` and `tests`: 1,034 one-word assignment clauses, of
+which **510 bind a name that is read exactly once** — a value named only so
+that it could be passed.
+
+It is the **same modifier and the same implementation** as the clause form, so
+`{USD}x` and `x {USD}= ...` cannot disagree about what `{USD}` means. The
+clause form is unchanged and stays the right spelling when a value is being
+*stored*.
+
+It binds like unary minus, tighter than any binary operator:
+`{number}"12" + 1` is 13, not 121.
+
+**Recognised in the lexer, not the grammar**, which is why it costs nothing:
+`{a}` and `{a: 1}` differ at their *third* token and LALR(1) cannot see that
+far from the brace, so a grammar rule costs a shift/reduce conflict against a
+project standard of zero. The lexer may look as far ahead as it likes.
+
+The price is stated rather than hidden: a modifier that takes **arguments**
+(`{split ","}`) or has a **multi-word** name (`{end of month}`) has no inline
+form and still needs the assignment clause — admitting those in expression
+position costs 19 shift/reduce conflicts, measured. A library-qualified name
+is one word and does work inline.
+
+Nothing changes meaning: `{IDENT}` in expression position was a parse error
+before this. `tests/run_inline_modifier.sh`.
+
 ### Added — `finio_rates`: benchmark rates from the institutions that publish them
 
 SOFR, EFFR and OBFR from the New York Fed; US Treasury average interest rates

@@ -82,6 +82,11 @@ typedef enum {
     TOKEN_RPAREN,
     TOKEN_LBRACKET,
     TOKEN_RBRACKET,
+    /* `{ IDENT }` EXACTLY, decided by the LEXER, which is why the inline
+     * type modifier costs zero grammar conflicts -- `{a}` and `{a: 1}` differ
+     * at their THIRD token and LALR(1) cannot see that far from the brace.
+     * The token's span is the NAME. */
+    TOKEN_MODIFIER_PREFIX,
     TOKEN_LBRACE,
     TOKEN_RBRACE,
     TOKEN_COMMA,

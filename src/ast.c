@@ -239,6 +239,13 @@ AstExpr *ast_unary(char *op, AstExpr *child) {
     return expr;
 }
 
+AstExpr *ast_modifier_apply(AstModifierUse modifier, AstExpr *value) {
+    AstExpr *expr = ast_expr_new(AST_EXPR_MODIFIER_APPLY);
+    expr->as.modifier_apply.modifier = modifier;
+    expr->as.modifier_apply.value = value;
+    return expr;
+}
+
 AstExpr *ast_new(AstExpr *proto, AstExpr *with) {
     AstExpr *expr = ast_expr_new(AST_EXPR_NEW);
     expr->as.derive.proto = proto;
@@ -761,6 +768,10 @@ static void dump_expr(AstExpr *expr, int indent) {
         printf("Unary %s\n", expr->as.unary.op);
         dump_expr(expr->as.unary.expr, indent + 1);
         break;
+    case AST_EXPR_MODIFIER_APPLY:
+        printf("ModifierApply %s\n", expr->as.modifier_apply.modifier.name);
+        dump_expr(expr->as.modifier_apply.value, indent + 1);
+        break;
     case AST_EXPR_NEW:
         printf("New\n");
         dump_indent(indent + 1);
@@ -1180,6 +1191,10 @@ static void free_expr(AstExpr *expr) {
     case AST_EXPR_UNARY:
         free(expr->as.unary.op);
         free_expr(expr->as.unary.expr);
+        break;
+    case AST_EXPR_MODIFIER_APPLY:
+        ast_free_modifier_use(expr->as.modifier_apply.modifier);
+        free_expr(expr->as.modifier_apply.value);
         break;
     case AST_EXPR_NEW:
         free_expr(expr->as.derive.proto);

@@ -428,7 +428,7 @@ typedef struct {
 }
 
 %token <number> NUMBER
-%token <text> IDENT STRING LENS_CONTENT QUALIFIED_IDENT
+%token <text> IDENT STRING LENS_CONTENT QUALIFIED_IDENT MODIFIER_PREFIX
 /* `as` reaches the parser ONLY as a field name; everywhere else it is consumed
  * by the lexer's modifier/lens modes. Declared so it can join field_name --
  * before this it fell through to the token mapper's default arm and was
@@ -646,6 +646,12 @@ comparison_lens
     : LBRACE { lexer_begin_lens_content(ctx->active_lexer); } LENS_CONTENT RBRACE {
         $$ = parse_modifier_use($3);
       }
+    /* A bare one-word clause never reaches the lens mode above, because the
+     * LEXER recognises `{ IDENT }` and hands over one token carrying the name
+     * (see src/lexer.c). That is what buys the INLINE form below at zero
+     * grammar conflicts, and it means the clause spelling every program
+     * already uses -- `x {date}= s`, `p {USD}= 19.99` -- arrives here. */
+    | MODIFIER_PREFIX { $$ = parse_modifier_use($1); }
     ;
 
 modifier_name
@@ -1283,6 +1289,16 @@ multiplicative_expression
 unary_expression
     : postfix_expression { $$ = $1; }
     | MINUS unary_expression { $$ = expr_at(ast_unary(copy_const("-"), $2), @1.first_line, @1.first_column); }
+    /* The inline type modifier: `read({file}path)`, `{date}row.opened`. The
+     * assignment clause could always do this and needed a NAME and a LINE to
+     * do it in -- measured 2026-09-22, 510 of the tree's 1,034 one-word
+     * clauses bind a name that is then read exactly once. Binds like unary
+     * minus, tighter than any binary operator, so `{USD}a + b` parses as
+     * `({USD}a) + b`. */
+    | MODIFIER_PREFIX unary_expression {
+        $$ = expr_at(ast_modifier_apply(parse_modifier_use($1), $2),
+                     @1.first_line, @1.first_column);
+      }
     | NEW postfix_expression { $$ = expr_at(ast_new($2, NULL), @1.first_line, @1.first_column); }
     | NEW postfix_expression WITH record_literal { $$ = expr_at(ast_new($2, $4), @1.first_line, @1.first_column); }
     | SPAWN IDENT LPAREN argument_list_opt RPAREN { $$ = expr_at(ast_spawn($2, $4), @1.first_line, @1.first_column); }
@@ -1834,6 +1850,9 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_LBRACKET: return LBRACKET;
     case TOKEN_RBRACKET: return RBRACKET;
     case TOKEN_COMMA: return COMMA;
+    case TOKEN_MODIFIER_PREFIX:
+        lvalp->text = copy_text(token.start, token.length);
+        return MODIFIER_PREFIX;
     case TOKEN_LBRACE: return LBRACE;
     case TOKEN_RBRACE: return RBRACE;
     case TOKEN_DOT: return DOT;

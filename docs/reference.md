@@ -1161,13 +1161,41 @@ implement comparisons. Both are written in **braces**; the parenthesized spellin
 was removed in 0.1.0-rc6 and is now a parse error (see the CHANGELOG for the
 migration).
 
-Modifiers apply only in assignment and comparison contexts. An assignment
-modifier's target may be a variable, a record field, or an array element:
+An assignment modifier's target may be a variable, a record field, or an array
+element:
 
 ```basic
 r.when {date}= "2026-01-01"
 a[0] {USD}= 5
 ```
+
+### Inline type modifiers
+
+*(since 0.2.3)* A **one-word** assignment modifier may also be written as a
+**prefix on an expression**, wherever an expression is allowed:
+
+```basic
+print bytes({file}"/etc/hostname")
+total = {USD}19.99
+due = { when: {date}"2026-01-31" }
+```
+
+That is the same modifier and the same implementation as the clause form —
+`{USD}x` and `x {USD}= ...` cannot disagree about what `{USD}` means. Use the
+clause when the value is being **stored** and the inline form when it is being
+**used**; before this, a value wanted once had to be given a name and a line to
+be given it on.
+
+It binds like unary minus, tighter than any binary operator, so
+`{number}"12" + 1` is `({number}"12") + 1` — 13, not 121.
+
+Two shapes have **no** inline form and still need the assignment clause: a
+modifier that takes **arguments** (`{split ","}`) and one with a **multi-word**
+name (`{end of month}`). A **library-qualified** name is one word and does work
+inline (`{housestyle.shout}s`). The reason is the grammar: the lexer recognises
+the exact shape `{ IDENT }`, which costs no parsing ambiguity, where admitting
+the general lens form in expression position costs 19 shift/reduce conflicts
+(measured) against a project standard of zero.
 
 A comparison lens applies to any operand, including a call result:
 

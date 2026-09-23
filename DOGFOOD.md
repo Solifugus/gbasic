@@ -315,8 +315,22 @@ what proves the live probes are running anything at all.
   tried resolve after a dot. NOTE this also half-obsoletes the `kind`-not-`as`
   justification recorded for `stdlib/consolidate.bas`; `kind` stays because it
   says more, not because `as` cannot be written.
-- `.file`/`.date` modifiers do not work postfix in expression position — use
-  the assignment form.
+- ~~`.file`/`.date` modifiers do not work postfix in expression position — use
+  the assignment form.~~ **RESOLVED 2026-09-22 by the inline type modifier**
+  (struck). Not in the postfix spelling, which was never gBASIC's syntax, but
+  as a PREFIX: `read({file}path)`, `bytes({file}p)`, `{USD}19.99`,
+  `{date}row.opened` — the same `AstModifierUse` the assignment clause carries,
+  applied by the same function, so the two cannot disagree about what a
+  modifier means. Decided in the LEXER, which is the whole reason it is
+  affordable: `{a}` and `{a: 1}` differ at their THIRD token and LALR(1) cannot
+  see that far from the brace, so the grammar route costs a shift/reduce
+  conflict against a standard of zero. `tests/run_inline_modifier.sh`.
+- A modifier taking ARGUMENTS or having a MULTI-WORD name has no inline form —
+  `{split ","}s` and `{end of month}d` in expression position are parse errors,
+  and the assignment clause stays the only spelling for those. Measured
+  2026-09-22: admitting them inline means putting the lens production into
+  `unary_expression`, which costs **19** shift/reduce conflicts, where the
+  one-word shape the lexer recognises costs none.
 - No `gi.emit` — the per-widget signal-synthesis catalogue (2026-07-31) covers
   testing; Studio's display tiers run on it.
 - gi cannot call STATIC class functions (`Gtk.StyleContext.add_provider_for_display`)
