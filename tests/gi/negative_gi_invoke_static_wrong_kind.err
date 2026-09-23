@@ -1,0 +1,1 @@
+runtime error at tests/gi/negative_gi_invoke_static_wrong_kind.bas:12:1: gi.invoke: GLib.PRIORITY_DEFAULT is not a type that carries functions

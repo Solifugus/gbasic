@@ -234,12 +234,18 @@ and the stale-looking ones carry a Status line saying what overtook them.
     `<prompt>:0:0` where the same typo in a file reports `file:1:1`. See
     the 2026-09-19 entry.
 
-19. **`gi` cannot call a class's static methods**, only namespace-level
-    functions. `gi.invoke("Gtk.init")` works; `Gdk.Display.get_default`
-    and `Gtk.StyleContext.add_provider_for_display` both answer
-    "unknown function". That is what forces Studio to attach a CSS
-    provider per widget, and it is the main thing standing between
-    Studio and looking designed. See the 2026-09-20 entry.
+19. ~~**`gi` cannot call a class's static methods**, only namespace-level
+    functions.~~ **RESOLVED 2026-09-23** (struck). A three-part name is a
+    static: `gi.invoke("Gdk.Display.get_default")`,
+    `gi.invoke("Gtk.StyleContext.add_provider_for_display", d, p, 800)`. The
+    type may be an object, interface, struct, union or enum. Ancestors are
+    deliberately NOT searched — a static belongs to the class that declares it.
+    A method is refused with a pointer to `gi.call` and a constructor with a
+    pointer to `gi.new`, the second because a constructor's returned reference
+    (a `GtkWidget`'s is floating) is an ownership question this path has never
+    had to answer and guessing is a leak or a double free rather than a wrong
+    value. Studio can install one display-wide `GtkCssProvider` now instead of
+    one per widget. See the 2026-09-20 and 2026-09-23 entries.
 
 20. ~~**A gBASIC program that has ever taken a `lock` can no longer be seen
     to die by signal.**~~ **RESOLVED 2026-09-23** (struck). The handler
@@ -516,8 +522,13 @@ what proves the live probes are running anything at all.
   one-word shape the lexer recognises costs none.
 - No `gi.emit` — the per-widget signal-synthesis catalogue (2026-07-31) covers
   testing; Studio's display tiers run on it.
-- gi cannot call STATIC class functions (`Gtk.StyleContext.add_provider_for_display`)
-  — per-instance routes exist (2026-08-22).
+- ~~gi cannot call STATIC class functions (`Gtk.StyleContext.add_provider_for_display`)
+  — per-instance routes exist (2026-08-22).~~ **RESOLVED 2026-09-23** (struck).
+  `gi.invoke("Namespace.Type.function", ...)` resolves a static on an object,
+  interface, struct, union or enum. A method is still refused (it needs an
+  instance; `gi.call`), and so is a constructor (`gi.new`), because a
+  constructor hands back a reference whose ownership this path has never had to
+  answer for.
 - ~~No exponent literal — `1e20` lexes as a duration with a misleading message;
   `number("1e20")` is the idiom.~~ **RESOLVED 2026-09-23** (struck). `1e20`,
   `6.02e23`, `1.5e-3` and `2E10` are number literals. At least one digit must
@@ -7464,3 +7475,69 @@ book-session note flagged that row as stale; it can be considered closed.
   Verified end to end: built on 22.04, extracted on Ubuntu 26.04 with the
   environment cleared, `sqlite.connect` → `exec` → `query` returns its row.
   824 KB against lean's 796 KB.
+
+## 2026-09-23 — CC — while: closing ledger item 19 (`gi` and class statics)
+
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** resolved. `gi.invoke` now accepts `Namespace.Type.function` and
+  calls a static on an object, interface, struct, union or enum.
+
+  The cause was one line's worth of shape mismatch:
+  `gi_repository_find_by_name` takes a namespace and **one** name, and
+  `Display.get_default` is two, so the whole class-static half of every typelib
+  was out of reach. The instance path already worked; this is the same lookup
+  with the receiver supplied from the name rather than from a value, which is
+  what the 2026-09-20 entry suggested.
+
+  **Ancestors are deliberately not searched**, unlike the instance path, which
+  climbs parents. An instance really does inherit its methods; a static belongs
+  to the class that declares it, so resolving `Gtk.Button.something` to a
+  function declared on `Gtk.Widget` would answer a question nobody asked under
+  a name that says otherwise.
+
+  **Two shapes are refused rather than marshalled.** A method needs an
+  instance (`gi.call`). A constructor is refused too (`gi.new`) — and that one
+  is a deferral rather than a rule: a constructor hands back a full reference
+  and a `GtkWidget`'s is *floating*, so who sinks it is a question this path
+  has never had to answer, and getting it wrong is a leak or a double free
+  rather than a wrong value. Alternate constructors (`Gtk.Button.new_with_label`)
+  therefore still have no route; that is its own piece of work with its own
+  ownership measurement.
+
+- **Tested on Gio/GLib rather than GTK, and the difference is the machine not
+  the mechanism.** Resolution is identical, and Gio/GLib need no display, so
+  `tests/gi/gi_static_test.bas` runs in the ordinary headless gate rather than
+  behind a display gate where nobody would see it fail. It covers all four
+  lookup paths — struct (`GLib.Checksum.type_get_length`), enum
+  (`GLib.UnicodeScript.to_iso15924`), interface (`Gio.File.parse_name`) and
+  object (`Gio.Application.get_default`, which is `Gdk.Display.get_default`
+  with no display attached) — plus the control that a two-part namespace
+  function still resolves, without which "statics work" is satisfied by a
+  change that broke the case that already did.
+
+  **The expected values are facts about GLib rather than about us:** SHA-256 is
+  32 bytes, MD5 is 16, and ISO 15924 for Latin is the four bytes `Latn`, which
+  is `0x4C61746E` = 1281455214. A golden would have recorded whatever number
+  came back.
+
+- **A defect found by perturbation, not by reading.** With the enum branch
+  disabled, `GLib.UnicodeScript.to_iso15924` reported **"unknown type:
+  GLib.UnicodeScript"** — about a type that plainly exists. The same wrong
+  answer was reachable with no perturbation at all, through any name that
+  resolves to something which cannot carry functions: a constant, a callback.
+  It says `is not a type that carries functions` now, and
+  `negative_gi_invoke_static_wrong_kind` pins it. That is the
+  reports-the-wrong-cause class again, and it would have sent an author to
+  check a spelling that was correct.
+
+  For the same reason the two ordinary misses are kept apart: over a three-part
+  name "unknown" is ambiguous, and a misspelled type and a misspelled function
+  want different fixes.
+
+- **Five perturbations proven red**, each caught by the tier written for it:
+  the enum branch removed, the interface branch removed, the is-a-method
+  refusal removed (caught by its negative, which otherwise calls a method with
+  a NULL receiver), the which-half distinction removed, and `gi_find_static`
+  neutered outright (caught by `run_limitations`' new control). Valgrind is
+  clean on the success path and on all four refusal paths.

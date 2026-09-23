@@ -1,0 +1,1 @@
+runtime error at tests/gi/negative_gi_invoke_static_method.bas:6:1: gi.invoke: Gio.File.get_path is a method; use gi.call

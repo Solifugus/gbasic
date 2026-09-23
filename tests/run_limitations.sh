@@ -104,7 +104,6 @@ nul_string_literal|is refused in a string literal
 # typing its own valgrind flags. The tripwire is right to be strict; this file
 # is the one that has to accommodate it.
 NOT_MECHANICAL="
-gi_static|gi cannot call STATIC class functions|needs a live typelib and a display; tests/run_gi.sh owns this surface
 vg_riscv|valgrind does not exist for riscv64|a fact about another architecture, unobservable from this one
 "
 
@@ -241,6 +240,7 @@ line_continuation|No line continuation
 inline_modifier|do not work postfix in expression position
 dir_ref_and_make_dir|rejects a dir reference
 exponent_literal|No exponent literal
+gi_static|cannot call STATIC class functions
 "
 
 # Red here means a fix REGRESSED, or this suite stopped actually running
@@ -411,6 +411,31 @@ control_inline_modifier() {
         ok "CONTROL: a modifier applies inline in expression position"
     else
         regressed "CONTROL: the inline type modifier is gone (got: $out)"
+    fi
+}
+
+control_gi_static() {
+    # THE ONE CONTROL HERE THAT CAN LEGITIMATELY NOT RUN, and it says so rather
+    # than passing: without libgirepository in the build there is no typelib to
+    # resolve anything against, and a green line would claim a fix nobody
+    # exercised.
+    printf 'load gi\nprint 1\n' > "$WORK/c.bas"
+    if ! run "$WORK/c.bas" | grep -q '^1$'; then
+        skipped "CONTROL: gi statics (gi not in this build)"
+        return
+    fi
+    # BOTH HALVES. The static must resolve AND an instance method must still be
+    # refused -- "Type.function works" alone is satisfied by a change that
+    # invokes anything spelled with three parts, receiver or no receiver, which
+    # would call a method with a NULL instance.
+    printf 'load gi\ngi.require("GLib", "2.0")\nprint gi.invoke("GLib.Checksum.type_get_length", 2)\n' > "$WORK/c.bas"
+    a=$(run "$WORK/c.bas")
+    printf 'load gi\ngi.require("Gio", "2.0")\non error goto next\nx = gi.invoke("Gio.File.get_path")\nif error then\n  print "refused"\n  error.clear()\nelse\n  print "INVOKED A METHOD"\nend if\n' > "$WORK/c.bas"
+    b=$(run "$WORK/c.bas")
+    if [ "$a" = "32" ] && printf '%s' "$b" | grep -q '^refused$'; then
+        ok "CONTROL: a class static resolves, and an instance method is still refused"
+    else
+        regressed "CONTROL: gi statics are gone or reach instance methods (static: $a / method: $b)"
     fi
 }
 

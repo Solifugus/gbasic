@@ -24538,9 +24538,75 @@ static Value gi_do_call(AstExpr *expr) {
     return out;
 }
 
-/* gi.invoke("Namespace.function", args...) — call a namespace-level free function
- * that has no receiver (e.g. Gtk.init, GLib.markup_escape_text). Methods (which
- * need an instance) are rejected; use gi.call for those. */
+/* Find `Type.method` inside a namespace: a STATIC class function, which is the
+ * shape `gi_repository_find_by_name` cannot see because the name it takes is a
+ * single entry in the namespace and `Display.get_default` is two.
+ *
+ * A GI namespace has both shapes and the bridge used to resolve only the first,
+ * which put a large slice of GTK out of reach entirely -- display and monitor
+ * lookup, Gtk.StyleContext.add_provider_for_display, the GLib/Gio statics
+ * (DOGFOOD 19). The instance path already worked; this is the same lookup with
+ * the receiver supplied from the NAME rather than from a value.
+ *
+ * ANCESTORS ARE DELIBERATELY NOT SEARCHED. gi_invoke_method_on climbs parents,
+ * because an instance really does inherit its methods, but a static belongs to
+ * the class that declares it -- resolving `Gtk.Button.something` to a function
+ * declared on `Gtk.Widget` would answer a question nobody asked, under a name
+ * that says otherwise. An exact miss is reported as one.
+ *
+ * Returns NULL if the type or the function is unknown; `*why` names which,
+ * because "unknown" over a three-part name is ambiguous and the author's next
+ * question is which half they got wrong. */
+static GIFunctionInfo *gi_find_static(const char *ns, const char *type_name,
+                                      const char *method, const char **why) {
+    *why = NULL;
+    GIBaseInfo *tinfo = gi_repository_find_by_name(gi_repo(), ns, type_name);
+    if (!tinfo) {
+        *why = "type";
+        return NULL;
+    }
+    GIFunctionInfo *finfo = NULL;
+    if (GI_IS_OBJECT_INFO(tinfo)) {
+        finfo = gi_object_info_find_method((GIObjectInfo *)tinfo, method);
+    } else if (GI_IS_STRUCT_INFO(tinfo)) {
+        finfo = gi_struct_info_find_method((GIStructInfo *)tinfo, method);
+    } else if (GI_IS_INTERFACE_INFO(tinfo)) {
+        finfo = gi_interface_info_find_method((GIInterfaceInfo *)tinfo, method);
+    } else if (GI_IS_UNION_INFO(tinfo)) {
+        finfo = gi_union_info_find_method((GIUnionInfo *)tinfo, method);
+    } else if (GI_IS_ENUM_INFO(tinfo)) {
+        GIEnumInfo *einfo = (GIEnumInfo *)tinfo;
+        unsigned int n = gi_enum_info_get_n_methods(einfo);
+        for (unsigned int i = 0; i < n && !finfo; i++) {
+            GIFunctionInfo *cand = gi_enum_info_get_method(einfo, i);
+            const char *cname = gi_base_info_get_name((GIBaseInfo *)cand);
+            if (cname && strcmp(cname, method) == 0) {
+                finfo = cand;
+            } else {
+                gi_base_info_unref(cand);
+            }
+        }
+    } else {
+        /* The name resolves to something real that cannot carry functions -- a
+         * constant, a callback. Saying "unknown type" here would be FALSE and
+         * would point the author at a spelling that is correct; this is the
+         * reports-the-wrong-cause class, and it surfaced from a perturbation
+         * rather than from reading. */
+        gi_base_info_unref(tinfo);
+        *why = "kind";
+        return NULL;
+    }
+    gi_base_info_unref(tinfo);
+    if (!finfo) {
+        *why = "function";
+    }
+    return finfo;
+}
+
+/* gi.invoke("Namespace.function", args...) — call a function that needs no
+ * receiver: a namespace-level free function (Gtk.init, GLib.markup_escape_text)
+ * or a class STATIC (Gdk.Display.get_default). Methods, which need an instance,
+ * are rejected; use gi.call for those. */
 static Value gi_do_invoke(AstExpr *expr) {
     size_t argc = expr->as.call.args.count;
     if (argc < 1) {
@@ -24559,20 +24625,76 @@ static Value gi_do_invoke(AstExpr *expr) {
         value_free(qv);
         return r;
     }
-    GIBaseInfo *info = gi_repository_find_by_name(gi_repo(), ns, fn);
+    /* Two shapes, decided by whether what follows the namespace has a dot in it:
+     * `Ns.function` is a namespace entry, `Ns.Type.method` is a class static. */
+    GIBaseInfo *info = NULL;
+    const char *disp = fn;
+    const char *inner_dot = strchr(fn, '.');
+    if (inner_dot) {
+        char type_name[128];
+        size_t tn = (size_t)(inner_dot - fn);
+        if (tn == 0 || tn >= sizeof(type_name) || inner_dot[1] == '\0' ||
+            strchr(inner_dot + 1, '.') != NULL) {
+            Value r = gi_raisef("gi.invoke: expected Namespace.function or "
+                                "Namespace.Type.function, got: %s", qv.as.string);
+            value_free(qv);
+            return r;
+        }
+        memcpy(type_name, fn, tn);
+        type_name[tn] = '\0';
+        const char *why = NULL;
+        GIFunctionInfo *sfn = gi_find_static(ns, type_name, inner_dot + 1, &why);
+        if (!sfn) {
+            /* NAME WHICH HALF IS WRONG. Over a three-part name "unknown" is
+             * ambiguous, and a misspelled type and a misspelled function want
+             * different fixes. */
+            char detail[320];
+            if (why && strcmp(why, "type") == 0) {
+                snprintf(detail, sizeof(detail), "gi.invoke: unknown type: %s.%s",
+                         ns, type_name);
+            } else if (why && strcmp(why, "kind") == 0) {
+                snprintf(detail, sizeof(detail),
+                         "gi.invoke: %s.%s is not a type that carries functions",
+                         ns, type_name);
+            } else {
+                snprintf(detail, sizeof(detail),
+                         "gi.invoke: %s.%s has no function %s",
+                         ns, type_name, inner_dot + 1);
+            }
+            value_free(qv);
+            return gi_raise(detail);
+        }
+        info = (GIBaseInfo *)sfn;
+        disp = inner_dot + 1;
+    } else {
+        info = gi_repository_find_by_name(gi_repo(), ns, fn);
+    }
     if (!info || !GI_IS_FUNCTION_INFO(info)) {
         if (info) gi_base_info_unref(info);
         Value r = gi_raisef("gi.invoke: unknown function: %s", qv.as.string);
         value_free(qv);
         return r;
     }
-    if (gi_function_info_get_flags((GIFunctionInfo *)info) & GI_FUNCTION_IS_METHOD) {
+    GIFunctionInfoFlags flags = gi_function_info_get_flags((GIFunctionInfo *)info);
+    if (flags & GI_FUNCTION_IS_METHOD) {
         gi_base_info_unref(info);
         Value r = gi_raisef("gi.invoke: %s is a method; use gi.call", qv.as.string);
         value_free(qv);
         return r;
     }
-    Value out = gi_invoke_callable((GIFunctionInfo *)info, NULL, expr, 1, "gi.invoke", fn);
+    if (flags & GI_FUNCTION_IS_CONSTRUCTOR) {
+        /* REFUSED RATHER THAN MARSHALLED. A constructor hands back a full
+         * reference, and a GtkWidget's is FLOATING -- who sinks it is a
+         * question this path has never had to answer, and getting it wrong is
+         * a leak or a double free rather than a wrong value. gi.new owns
+         * construction; alternate constructors are a separate piece of work
+         * with its own ownership measurement. */
+        gi_base_info_unref(info);
+        Value r = gi_raisef("gi.invoke: %s is a constructor; use gi.new", qv.as.string);
+        value_free(qv);
+        return r;
+    }
+    Value out = gi_invoke_callable((GIFunctionInfo *)info, NULL, expr, 1, "gi.invoke", disp);
     gi_base_info_unref(info);
     value_free(qv);
     return out;

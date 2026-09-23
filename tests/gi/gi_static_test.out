@@ -1,0 +1,9 @@
+  ok   struct static: sha256 digest is 32 bytes
+  ok   struct static: md5 digest is 16 bytes
+  ok   enum static: LATIN is the four bytes Latn
+  ok   enum static: Latn comes back as LATIN
+  ok   struct static returns a boxed value
+  ok   interface static returns an object
+  ok   object static answers (no default application is set)
+  ok   control: a namespace function still resolves
+failed: 0

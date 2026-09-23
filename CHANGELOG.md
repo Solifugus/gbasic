@@ -9,6 +9,29 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `gi` can call a class's static functions
+
+`gi.invoke("Namespace.Type.function", ...)` resolves a static on an object,
+interface, struct, union or enum: `Gdk.Display.get_default`,
+`Gtk.StyleContext.add_provider_for_display`, the `GLib`/`Gio` statics. The
+bridge resolved only namespace-level entries before, because
+`gi_repository_find_by_name` takes one name and `Display.get_default` is two —
+so a large slice of GTK was unreachable, and gBASIC Studio installs a CSS
+provider **per widget** for want of the display-wide call (DOGFOOD 19).
+
+Ancestors are deliberately not searched: a static belongs to the class that
+declares it, and resolving `Gtk.Button.something` to a function on `Gtk.Widget`
+would answer a question nobody asked. A **method** is refused with a pointer to
+`gi.call`, and a **constructor** with a pointer to `gi.new` — a constructor
+hands back a reference whose ownership this path has never had to answer for,
+and guessing there is a leak or a double free rather than a wrong value.
+
+The refusals name which half of a three-part name is wrong, because a misspelled
+type and a misspelled function want different fixes. A name that resolves to
+something real which cannot carry functions — a constant, a callback — says so
+rather than reporting a type that plainly exists as unknown; that case was found
+by a perturbation, not by reading.
+
 ### Added — a second release tarball, for readers who need a database or a network
 
 `tools/build-release-tarball.sh` now takes `TIER`. `lean` is the default and is

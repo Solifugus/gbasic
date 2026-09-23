@@ -1,0 +1,1 @@
+runtime error at tests/gi/negative_gi_invoke_static_constructor.bas:7:1: gi.invoke: GLib.DateTime.new_now_utc is a constructor; use gi.new

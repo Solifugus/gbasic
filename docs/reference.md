@@ -3521,9 +3521,22 @@ The module provides:
 - `gi.call(object, method[, args...])` — call an instance method, resolved by
   walking the class hierarchy and implemented interfaces. Array/list parameters
   accept `nothing` for a NULL pointer (for example `gi.call(app, "run", 0, nothing)`).
-- `gi.invoke("Namespace.function"[, args...])` — call a namespace-level free
-  function that has no receiver, such as `gi.invoke("Gtk.init")` or
+- `gi.invoke("Namespace.function"[, args...])` — call a function that needs no
+  receiver, such as `gi.invoke("Gtk.init")` or
   `gi.invoke("GLib.markup_escape_text", "<a>", -1)`.
+
+  A three-part name calls a **static on a class**:
+  `gi.invoke("Gdk.Display.get_default")`,
+  `gi.invoke("Gtk.StyleContext.add_provider_for_display", display, provider, 800)`.
+  The type may be an object, an interface, a struct, a union or an enum. The
+  static must be declared on the type named — ancestors are not searched, since
+  a static belongs to the class that declares it.
+
+  Two shapes are refused rather than guessed at. A **method** needs an
+  instance, so it is refused with a pointer to `gi.call`; a **constructor** is
+  refused with a pointer to `gi.new`, because a constructor hands back a
+  reference (a `GtkWidget`'s is floating) and who owns it is a question this
+  path does not answer.
 - `gi.connect(object, signal, function)` — connect a gBASIC function to a
   signal; returns a numeric handler id. The handler is called with the signal's
   arguments (the emitter, then any signal parameters).

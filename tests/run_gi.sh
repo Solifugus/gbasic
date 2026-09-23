@@ -33,6 +33,7 @@ positive_cases=(
     gi_construct_props_test
     gi_construct_object_prop_test
     gi_invoke_test
+    gi_static_test
     gi_handler_survives_scope_test
 )
 
@@ -68,6 +69,11 @@ negative_cases=(
     negative_gi_new_unpaired
     negative_gi_invoke_unknown
     negative_gi_invoke_not_function
+    negative_gi_invoke_static_method
+    negative_gi_invoke_static_constructor
+    negative_gi_invoke_static_unknown_type
+    negative_gi_invoke_static_unknown_function
+    negative_gi_invoke_static_wrong_kind
 )
 
 for name in "${negative_cases[@]}"; do
