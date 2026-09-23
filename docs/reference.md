@@ -7415,6 +7415,33 @@ whole program without needing a call site.
   reads the wrong columns**. It is computed without an answer key, from whether
   the family's column structure is the same in every source.
 
+- `finio_rates` — **reference and benchmark rates**, from the institutions that
+  publish them. `sources()` lists what is known and `source_ids()` just their ids; `fetch(id [, options])` returns
+  an observation series; `on_date(series, d)` gives the rate **effective** on a
+  date — the latest on or before it, the rule `money.rate_on` follows for FX,
+  because a report run for March must see March's rate rather than today's.
+  `latest` and `revisions` read a series.
+
+  Four keyless sources: SOFR, EFFR and OBFR from the New York Fed, and US
+  Treasury average interest rates from FiscalData. **Keyless is a promise, not a
+  coincidence** — a source needing an account stops working when somebody's key
+  expires, in a library whose point is that a number can be reproduced years
+  later. FRED's 800,000 series need a key and are deliberately absent.
+
+  **A rate is kept as the publisher's own decimal text**, with the number beside
+  it. Measured: Treasury sends `"3.788"` as a *string* and the NY Fed sends
+  `3.85` as a *float*, and one recording carries `3.490` — which a double
+  renders as `3.49`. A basis point is 0.0001; on a hundred million of notional
+  that is ten thousand dollars. Use `value` for arithmetic and `rate` to
+  reproduce what was published.
+
+  **`revised` is three-valued.** `true` and `false` where the publisher reports
+  revisions, and `unknown` where it does not — because *"this publisher does not
+  say"* and *"this value was not revised"* are different claims, and a consumer
+  pricing off the second deserves to know which it has.
+
+  Every observation carries a `finio.location` naming the element it came from.
+
 - `ocr` — **reading text out of an image** (`docs/ocr_design.md`). Pure gBASIC
   over the `tesseract` CLI, so it works anywhere that is installed rather than
   needing a build dependency the lean release tarball would not carry.

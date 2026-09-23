@@ -9,6 +9,40 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `finio_rates`: benchmark rates from the institutions that publish them
+
+SOFR, EFFR and OBFR from the New York Fed; US Treasury average interest rates
+from FiscalData. Four sources, **no API key**.
+
+In the `finio` family because provenance is the subject rather than parsing: a
+bank that priced a loan off SOFR on a Tuesday must be able to say, years later,
+which published value it used and where it came from. Every observation carries
+a `finio.location` naming the element it was read from.
+
+**A rate is kept as the publisher's own decimal text**, with the number beside
+it. The feeds disagree, measured: Treasury sends `"3.788"` as a *string*, the NY
+Fed sends `3.85` as a *float*, and one recorded Treasury value is `3.490` —
+which a double renders `3.49`. A basis point is 0.0001; on a hundred million of
+notional that is ten thousand dollars. `value` is for arithmetic, `rate` is for
+reproducing what was published.
+
+**The revision field is three-valued.** `true`/`false` where the publisher
+reports revisions, `unknown` where it does not — *"this publisher does not say"*
+and *"this value was not revised"* are different claims.
+
+`on_date` gives the rate **effective** on a date: the latest on or before it,
+never the oldest the series happens to hold. The rule `money.rate_on` already
+follows for FX, and for the same reason — a report run for March must see
+March's rate.
+
+**Keyless is a promise with a tripwire.** FRED's 800,000 series are excellent
+and need a key, so they are deliberately absent: a source needing an account
+stops working when somebody's key expires, in a library whose point is that a
+number can be reproduced years later.
+
+Replayed from committed recordings, so the gate never reaches a central bank.
+
+
 ### Added — `ocr`: reading text out of an image
 
 Pure gBASIC over the `tesseract` CLI. A native module would need libtesseract at

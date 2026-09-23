@@ -5235,3 +5235,30 @@ supervisor that must be sure would have to treat 143 as ambiguous, which is the
 distinction this field exists to make. Studio's goldens are therefore left
 asserting `-1`/`15` — the documented, and for a lock-free child the actual,
 behaviour — rather than being rebaselined onto the defect.
+
+## 2026-09-22 — CC — while: making gBASIC Studio show the full text of a run error
+- **Type:** doc-gap
+- **Severity:** low
+- **What:** The shadowing warning points at the SHADOWED definition, not at the
+  shadowing one. `app/studio.bas` defined a top-level `tool_call` and also loads
+  `llm`, which exports `llm.tool_call`; the interpreter correctly warned, but
+  worded and located it as
+
+  ```
+  warning: local function 'tool_call' shadows 'tool_call' from library 'llm';
+    unqualified calls use the local, and 'llm.tool_call' reaches the library one
+    at ../gbasic/stdlib/llm.bas:408:5
+  ```
+
+  The only file:line in the message is `stdlib/llm.bas:408`, which is the
+  library's own definition and the one place that is *not* at fault. Read
+  literally it says llm.bas shadows itself, and `load "llm"` alone reproduces
+  nothing — so the first hour went into the stdlib. The offending definition
+  (`app/studio.bas:428`) is not named at all. A shadowing diagnostic wants the
+  shadowing site's position; the shadowed one is the supporting detail.
+- **Effect it had:** the warning goes to stderr on EVERY launch, and Studio's
+  goldens capture `2>&1`, so eleven cases failed on a line nobody had written
+  and `tests/run_studio.sh` stopped at case 1.
+- **Workaround:** none needed once located — Studio's wrapper is renamed to
+  `dispatch_tool` and the warning is gone. The diagnostic was right; only its
+  position was unhelpful.

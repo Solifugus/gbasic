@@ -257,6 +257,14 @@ document list, with a status column, is `docs/README.md`.
   and perturbing the library shows it produces a REFUSAL instead, because
   framing is decided once and recognition and reading go through that one
   decision.
+- **benchmark and reference rates** — `finio_rates`, in the finio family
+  because provenance is the subject: a bank that priced a loan off SOFR must be
+  able to say years later which published value it used. Four KEYLESS sources
+  (NY Fed SOFR/EFFR/OBFR, Treasury FiscalData). A rate is the publisher's own
+  decimal TEXT with the number beside it -- measured, Treasury sends a string
+  and the NY Fed sends a float, and one recorded value is 3.490 which a double
+  renders 3.49. the the revision field field is three-valued. Replayed from committed recordings,
+  so the gate never reaches a central bank.
 - **text out of an image** — `ocr`, pure gBASIC over the tesseract CLI (a
   native module would be absent from the lean download). Words with boxes and
   confidence, never a bare string; orientation settled first and how
