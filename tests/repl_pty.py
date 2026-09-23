@@ -19,6 +19,15 @@ import time
 
 TOTAL_TIMEOUT = float(os.environ.get("GBASIC_PTY_TOTAL", "20.0"))
 IDLE_TIMEOUT = 1.0       # quiet for this long with the child still alive = done
+# The prompt the editor prints when it is ready for a line, and the one it
+# prints while a statement is still open. Waiting for one of these is a
+# POSITIVE SIGNAL; waiting for silence is a guess about how fast the machine
+# is, and on a shared host that guess is wrong -- see the comment on the
+# newline branch below.
+PROMPTS = (b"> ", b"... ")
+# The fallback when no prompt comes back (after `quit`, or a line that ends the
+# session): how long the output must stay quiet before the driver types on.
+QUIET_AFTER_LINE = float(os.environ.get("GBASIC_PTY_QUIET", "0.5"))
 # Seconds to wait after each key. The default models a person; a tier MEASURING
 # the editor rather than driving it sets it low, or the driver's own pacing is
 # what gets measured.
@@ -66,13 +75,34 @@ def main():
             out.extend(chunk)
         return True
 
+    def saw_prompt(since):
+        """Has a prompt been printed since byte offset `since`?
+
+        Strictly from `since`, with no backward overlap. A prompt split across
+        two reads is still found, because everything after the newline stays in
+        the slice -- and overlapping backwards would match the prompt printed
+        BEFORE the line was typed, which for an EMPTY line is the last thing in
+        the buffer. That would skip the wait entirely on exactly the line that
+        needs it most.
+        """
+        tail = bytes(out[since:])
+        return any(p in tail for p in PROMPTS)
+
     # WAIT FOR THE PROMPT BEFORE TYPING. The editor puts the terminal in raw
     # mode when it starts reading; a byte that arrives first is echoed by the
     # line discipline and then read in cooked mode, so the whole session races.
     # A person cannot type before the prompt appears and neither may this.
-    deadline = time.time() + 5.0
-    while b"> " not in bytes(out) and time.time() < deadline:
+    #
+    # BOUNDED BY TOTAL_TIMEOUT RATHER THAN BY A SEPARATE FIVE SECONDS. That
+    # five was a second, smaller, hidden bound, and it is the one a busy host
+    # breaks first: under valgrind on a machine with other work on it the
+    # prompt can take longer than that to appear, and the driver then types
+    # into a terminal that is still in cooked mode and loses its escape
+    # sequences. The tier reports a puzzle about an unedited line.
+    while not saw_prompt(0):
         if not drain(0.1):
+            break
+        if time.time() - started > TOTAL_TIMEOUT:
             break
 
     # ONE BYTE AT A TIME, draining as we go -- the editor reads a byte at a
@@ -86,6 +116,16 @@ def main():
     # type into that window faster than the program leaves it -- under valgrind
     # it is wide enough that a driver typing blind loses its escape sequences
     # and the tier reports a puzzle about undefined variables.
+    #
+    # WAITING FOR THE PROMPT, NOT FOR SILENCE. This used to wait for 0.2s of
+    # quiet, which is a guess about how fast the machine is: a scheduling stall
+    # longer than that reads as "the chunk finished" and the driver types into
+    # the window it exists to avoid. Measured on a host carrying other work
+    # (load average 45) that is exactly what happened, and the editing tier
+    # reported an unedited line against a binary that edits correctly. The
+    # prompt reappearing is a POSITIVE SIGNAL and says the same thing without
+    # asking anything about the machine; the quiet window survives only as the
+    # fallback for a line that ends the session and prints no prompt at all.
     for i in range(len(keys)):
         if not alive[0]:
             break
@@ -94,13 +134,18 @@ def main():
         except OSError:
             break
         if keys[i:i + 1] == b"\n":
+            mark = len(out)
             quiet_since = time.time()
-            while alive[0] and time.time() - quiet_since < 0.2:
+            while alive[0]:
                 before = len(out)
                 if not drain(0.05):
                     break
+                if saw_prompt(mark):
+                    break
                 if len(out) > before:
                     quiet_since = time.time()
+                elif time.time() - quiet_since > QUIET_AFTER_LINE:
+                    break
                 if time.time() - started > TOTAL_TIMEOUT:
                     break
         else:

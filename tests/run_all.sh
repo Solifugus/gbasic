@@ -32,7 +32,14 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 filter="${1:-}"
-timeout_s="${SUITE_TIMEOUT:-1800}"
+# THE PER-SUITE CAP IS A HANG-GUARD AND ITS OLD 1800 WAS AN IDLE-MACHINE
+# NUMBER. This host runs several gBASIC sessions at once; measured 2026-09-23 at
+# load average 45, run_ari_discover takes 35 minutes and passes -- five minutes
+# past the old cap, so a DEFAULT invocation of this gate reported a suite that
+# had not failed. A gate that goes red because a colleague is building is a gate
+# people learn to turn off, which is the failure this file exists to prevent.
+# 3600 still bounds a genuinely hung suite; override for a slower host.
+timeout_s="${SUITE_TIMEOUT:-3600}"
 logdir="$(mktemp -d)"
 
 # Excluded unless RUN_MANUAL=1, and NAMED when excluded rather than quietly

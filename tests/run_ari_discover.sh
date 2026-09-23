@@ -160,7 +160,13 @@ trap 'rm -rf "$scratch"' EXIT
 # --- SEMANTICS -------------------------------------------------------------
 printf 'TIER semantics (furniture, families, index spaces, dates, null, PHASE 1)\n'
 out="$scratch/sem.out"
-if timeout 180 ./gbasic tests/ari_discover/discover_test.bas >"$out" 2>&1; then
+# THE BOUND IS A HANG-GUARD, NOT A SPEED MEASUREMENT, and it was calibrated to
+# an idle machine. This fixture was MEASURED at 356s on a host carrying other
+# work (load average 45) while reporting 192 checks and 0 mismatches -- correct,
+# and 176s past a 180s bound, so the suite went red for a reason that has
+# nothing to do with ari. What the tier asserts is the check count and the
+# mismatch count; the timeout only has to be shorter than waiting forever.
+if timeout 900 ./gbasic tests/ari_discover/discover_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
     if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 185 ]; then
