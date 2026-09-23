@@ -123,21 +123,47 @@ server site( port: 0 )
                 "gbasic-" + G.version + "-linux-x86_64.tar.gz</a> " +
                 "(<a href=\"/download/gbasic-" + G.version +
                 "-linux-x86_64.tar.gz.sha256\">sha256</a>)</p>" +
+                "<h2>Or the one that talks to things</h2>" +
+                "<p>The download above needs nothing at all, which is why it " +
+                "is the one to take first. It also cannot open a database or " +
+                "fetch a URL. If you want those, take this one instead &mdash; " +
+                "same language, same libraries, and SQLite, HTTP, the web " +
+                "client, email and the crypto builtins all working.</p>" +
+                "<p><a href=\"/download/gbasic-" + G.version + "-linux-x86_64-full.tar.gz\">" +
+                "gbasic-" + G.version + "-linux-x86_64-full.tar.gz</a> " +
+                "(<a href=\"/download/gbasic-" + G.version +
+                "-linux-x86_64-full.tar.gz.sha256\">sha256</a>)</p>" +
+                "<p>It expects SQLite, libcurl, OpenSSL and zlib to be on the " +
+                "machine &mdash; present by default on ordinary desktop and " +
+                "server installs, and the sonames are the same across every " +
+                "distribution listed below, which is measured rather than " +
+                "assumed. If one is missing the binary will not start, so if " +
+                "you are on something minimal, take the first download.</p>" +
+                "<p>Spreadsheets (<code>xlsx</code>), XML and " +
+                "<code>password_hash</code> are deliberately not in either " +
+                "one: libxml2 and libxcrypt are the two libraries whose " +
+                "soname is spelled differently on different distributions, so " +
+                "a download linking them would fail to start somewhere. Those " +
+                "need a build from source, which is a <code>make</code> " +
+                "away.</p>" +
                 "<h2>What it runs on</h2>" +
                 "<p>Built against glibc 2.34, so it covers RHEL, Rocky and Alma 9, " +
                 "Ubuntu 22.04 LTS and later, Debian 12 and later, and anything " +
                 "newer. It is built in a container on the oldest supported " +
                 "toolchain for that reason, and the build refuses to publish an " +
                 "artifact whose floor has risen.</p>" +
-                "<h2>What is in it</h2>" +
-                "<p>The language, and 42 of the 62 standard libraries &mdash; " +
-                "everything that is pure gBASIC. Dates, money, finance, " +
-                "accounting, lending, statistics, charts, frames and the rest " +
-                "need nothing but the interpreter.</p>" +
-                "<p>The other 20 talk to something outside the process &mdash; " +
-                "databases, HTTP, XML, GTK &mdash; so they need those libraries " +
-                "present and are not in this build. For those, build from " +
-                "source; it is a <code>make</code> away.</p>" +
+                "<h2>What is in both</h2>" +
+                "<p>The language, and every standard library that is pure " +
+                "gBASIC &mdash; dates, money, finance, accounting, lending, " +
+                "statistics, charts, frames and the rest need nothing but the " +
+                "interpreter, so they work in either download.</p>" +
+                "<p>The libraries that talk to something outside the process " +
+                "are the difference between the two. PostgreSQL, ODBC, LDAP " +
+                "and the GTK desktop libraries are in neither: they are the " +
+                "ones whose versions really do differ from one distribution " +
+                "to the next, which is what a download cannot paper over. " +
+                "Build from source for those; it is a <code>make</code> " +
+                "away.</p>" +
                 nav() + "</section></main>")
         return html("Download gBASIC", body)
     end get
@@ -161,7 +187,7 @@ server site( port: 0 )
 end server
 
 program main( args )
-    G = { version: "0.2.2", suites: "151" }
+    G = { version: "0.2.2", suites: "153" }
 
     port_file{file}= "examples/gbasic_site/tmp_port.txt"
     if exists(port_file) then delete(port_file)

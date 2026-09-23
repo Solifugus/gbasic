@@ -368,7 +368,7 @@ static Value smtp_eval_send(AstExpr *expr) {
     char error_buffer[CURL_ERROR_SIZE] = {0};
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "smtp,smtps");
+    GB_CURL_PROTOCOLS(curl, "smtp,smtps", CURLPROTO_SMTP | CURLPROTO_SMTPS);
     curl_easy_setopt(curl, CURLOPT_MAIL_FROM, mail_from);
     curl_easy_setopt(curl, CURLOPT_MAIL_RCPT, recipients);
     curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);

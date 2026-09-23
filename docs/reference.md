@@ -5521,7 +5521,14 @@ File functions (see also the file/directory value types):
   contents. `read`, `lock` and the rest of that family still take a file
   reference only. It answers by `stat`, so a file that exists but is not
   readable reports as **present**.
-- `lock(f)` / `unlock(f)` — advisory locks (see `with lock`).
+- `lock(f)` / `unlock(f)` — advisory locks (see `with lock`). Taking a lock
+  installs a cleanup handler for `SIGINT`, `SIGTERM` and `SIGHUP`, and
+  **that does not change how the process dies**: after releasing, it re-raises
+  the signal with the default disposition, so a supervisor still sees a death
+  by signal rather than an exit code that resembles one. Before 0.2.3 it ended
+  the process with `_exit(128 + signo)`, so a program that had ever taken a
+  lock reported `exit 143` where an unlocked one reports `signal 15` — and a
+  supervisor could not tell it from a program that chose to exit 143.
 
 **Taking a path apart.** These work on a file or directory reference and on a
 plain string alike, so a value straight out of a listing needs no conversion:

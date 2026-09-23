@@ -66,6 +66,31 @@
 
 #if HAVE_LIBCURL
 #include <curl/curl.h>
+/* CURLOPT_PROTOCOLS_STR arrived in libcurl 7.85.0 (2022-08-31), and the three
+ * call sites below used it unconditionally. Ubuntu 22.04 ships 7.81.0 -- and
+ * 22.04 is not an arbitrary old distribution, it is THE BASE IMAGE the release
+ * tarball is built in, chosen for its glibc floor. So on the exact platform the
+ * download targets, a libcurl that is PRESENT took the whole binary down,
+ * where a missing one degrades to a runtime error by design. Nothing here
+ * could see it: this machine has 8.18.0.
+ *
+ * THE RESTRICTION IS A SECURITY SETTING, NOT A PREFERENCE -- without it a
+ * redirect can move a request onto file:// or scp:// -- so the fallback is the
+ * older bitmask form, which says the same thing, rather than dropping the
+ * option on the floor where the build would go green and the guard would be
+ * gone.
+ */
+#if LIBCURL_VERSION_NUM >= 0x075500
+#define GB_CURL_PROTOCOLS(h, names, mask) \
+    curl_easy_setopt((h), CURLOPT_PROTOCOLS_STR, (names))
+#define GB_CURL_REDIR_PROTOCOLS(h, names, mask) \
+    curl_easy_setopt((h), CURLOPT_REDIR_PROTOCOLS_STR, (names))
+#else
+#define GB_CURL_PROTOCOLS(h, names, mask) \
+    curl_easy_setopt((h), CURLOPT_PROTOCOLS, (long)(mask))
+#define GB_CURL_REDIR_PROTOCOLS(h, names, mask) \
+    curl_easy_setopt((h), CURLOPT_REDIR_PROTOCOLS, (long)(mask))
+#endif
 #endif
 
 #if HAVE_LIBXCRYPT
@@ -4909,9 +4934,39 @@ static void lock_cleanup_on_exit(void) {
     lock_clear();
 }
 
+/* RELEASE THE LOCKS AND THEN DIE BY THE SIGNAL, rather than exiting with a
+ * number that looks like it.
+ *
+ * This used to end the process with `_exit(128 + signo)`, which is the shell's
+ * RENDERING of death by a signal and not the thing itself: a supervisor reading
+ * the real wait status saw `WIFSIGNALED=false, exit_code=143` where a program
+ * that had never taken a lock gives `WIFSIGNALED=true, signal=15`. So a
+ * `lock` anywhere in a program's history made it permanently indistinguishable
+ * from one that CHOSE to exit 143 -- and the handler is installed for the life
+ * of the process, so releasing the lock did not restore it. Measured both ways
+ * before and after; the shell cannot see the difference (it reports 143 either
+ * way), which is why it went unnoticed and why the test uses waitpid directly.
+ *
+ * UNBLOCKING BEFORE RAISING IS THE LOAD-BEARING LINE. A signal is blocked while
+ * its own handler runs, so `raise` alone would merely mark it pending and the
+ * `_exit` below would run first -- the fix would look right and change nothing.
+ *
+ * Every call here is async-signal-safe. */
+static void lock_die_by(int signal_number) {
+    sigset_t only_this;
+    signal(signal_number, SIG_DFL);
+    sigemptyset(&only_this);
+    sigaddset(&only_this, signal_number);
+    sigprocmask(SIG_UNBLOCK, &only_this, NULL);
+    raise(signal_number);
+    /* Reached only if something outside this process is holding the signal
+     * off -- then the old rendering is still better than returning. */
+    _exit(128 + signal_number);
+}
+
 static void lock_cleanup_on_signal(int signal_number) {
     if (lock_signal_cleanup_started) {
-        _exit(128 + signal_number);
+        lock_die_by(signal_number);
     }
     lock_signal_cleanup_started = 1;
 
@@ -4921,7 +4976,7 @@ static void lock_cleanup_on_signal(int signal_number) {
             locks[i].fd = -1;
         }
     }
-    _exit(128 + signal_number);
+    lock_die_by(signal_number);
 }
 
 static void lock_install_cleanup(void) {
@@ -14868,8 +14923,8 @@ static Value webclient_perform(WebclientRequest *request) {
     char error_buffer[CURL_ERROR_SIZE] = {0};
 
     curl_easy_setopt(curl, CURLOPT_URL, request->url);
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
-    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+    GB_CURL_PROTOCOLS(curl, "http,https", CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    GB_CURL_REDIR_PROTOCOLS(curl, "http,https", CURLPROTO_HTTP | CURLPROTO_HTTPS);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, request->follow ? 1L : 0L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
     long timeout_ms = (long)ceil(request->timeout * 1000.0);
@@ -15651,8 +15706,8 @@ static Value http_do_start(AstExpr *expr) {
 
     curl_easy_setopt(easy, CURLOPT_URL, request.url);
     curl_easy_setopt(easy, CURLOPT_PRIVATE, h);
-    curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https");
-    curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+    GB_CURL_PROTOCOLS(easy, "http,https", CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    GB_CURL_REDIR_PROTOCOLS(easy, "http,https", CURLPROTO_HTTP | CURLPROTO_HTTPS);
     curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, request.follow ? 1L : 0L);
     curl_easy_setopt(easy, CURLOPT_MAXREDIRS, 10L);
     if (request.timeout_ms > 0) {

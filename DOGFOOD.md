@@ -200,15 +200,21 @@ and the stale-looking ones carry a Status line saying what overtook them.
     library. Four defects were reported and nine were fixed — each phase made
     the next one reachable, which is the pattern worth remembering.
 
-14. **`if unknown then` raises, then runs the `else` anyway, exits 1, and
-    cannot be caught.** The truthiness switch raises and returns 0, so the
-    branch is taken after the error, the program ends with status 1, and
-    `on error goto next` does not see it. Undocumented. See the 2026-09-18
-    book-planning entry.
+14. ~~**`if unknown then` raises, then runs the `else` anyway, exits 1, and
+    cannot be caught.**~~ **RESOLVED, confirmed on 0.2.2 while drafting
+    Chapter 7 of the beginner book.** It now raises `unknown cannot be used
+    as a condition` and STOPS -- the `else` does not run -- and
+    `on error goto next` catches it, with that sentence as
+    `error.message`, resuming after the whole `if`. The silent step-over is
+    gone. Struck here rather than left to look open, because a stale open
+    line is what this ledger exists to prevent.
 
-15. **`not` binds tighter than `=`.** `not a = b` evaluates `(not a) = b`
+15. ~~**`not` binds tighter than `=`.** `not a = b` evaluates `(not a) = b`
     and prints `false` with no complaint. `reference.md` has no precedence
-    table for anyone to check against.
+    table for anyone to check against.~~ **RESOLVED in 0.2.2** — `not` now
+    binds looser than the comparisons, and `reference.md` publishes a
+    precedence table that a tripwire reads back. Re-measured in the
+    2026-09-22 Chapter 3 entry.
 
 16. **Two smaller surprises:** `round(x)` with one argument raises (two are
     required), and `--add-loads` did not add `load sqlite` to a program that
@@ -221,11 +227,12 @@ and the stale-looking ones carry a Status line saying what overtook them.
     full in the 2026-09-18 book-planning entry.
 
 18. **Three in the new prompt, found by replanning Chapter 1 against it:**
-    `? x = 5` prints nothing at all (neither `true` nor a diagnostic);
-    `recover` restores a whole program as ONE numbered entry, so
-    `delete 1` wipes it; and a typo at the prompt reports `<prompt>:0:0`
-    where the same typo in a file reports `file:1:1`. See the 2026-09-19
-    entry.
+    ~~`? x = 5` prints nothing at all (neither `true` nor a diagnostic)~~
+    (**RESOLVED in 0.2.2** — it answers; re-measured in the 2026-09-22
+    Chapter 3 entry); `recover` restores a whole program as ONE numbered
+    entry, so `delete 1` wipes it; and a typo at the prompt reports
+    `<prompt>:0:0` where the same typo in a file reports `file:1:1`. See
+    the 2026-09-19 entry.
 
 19. **`gi` cannot call a class's static methods**, only namespace-level
     functions. `gi.invoke("Gtk.init")` works; `Gdk.Display.get_default`
@@ -234,13 +241,189 @@ and the stale-looking ones carry a Status line saying what overtook them.
     provider per widget, and it is the main thing standing between
     Studio and looking designed. See the 2026-09-20 entry.
 
-20. **A gBASIC program that has ever taken a `lock` can no longer be seen
-    to die by signal.** The lock cleanup handler ends the process with
-    `_exit(128 + signo)`, so a supervisor reads `exit_code=143 signal=0`
-    where `docs/reference.md` promises `-1` and `15`, and cannot tell a
-    child that was killed from one that chose to exit 143. The handler is
-    installed for the life of the process, so releasing the lock does not
-    restore it. See the 2026-09-20 entry.
+20. ~~**A gBASIC program that has ever taken a `lock` can no longer be seen
+    to die by signal.**~~ **RESOLVED 2026-09-23** (struck). The handler
+    restores the default disposition and re-raises, so the process really dies
+    by the signal: measured, a locked child and an unlocked one both report
+    `WIFSIGNALED=true, signal=15`, and a program that genuinely exits 143 still
+    reports an exit. **The obvious version of the fix silently does nothing** —
+    a signal is BLOCKED while its own handler runs, so `SIG_DFL` plus `raise`
+    only marks it pending and the following `_exit` still wins; it must be
+    UNBLOCKED first, proven by perturbation. Why it survived: bash reports
+    `143` in `$?` for both cases, so nothing at shell level could see it.
+    `tests/run_lock_signal.sh` uses `waitpid` directly.
+    **AND THE CLEANUP TURNS OUT TO BE REDUNDANT** — see the entry below.
+21. **A multi-line string literal is legal in a file and unreachable at the
+    prompt.** `rules = "Think of an animal,` then Enter answers
+    `unterminated string` and throws the line away; the same two lines in a
+    `.bas` file are one string, as `tutorial.md` "Variables" documents. The
+    prompt continues an unclosed BRACKET with `...` and does not extend the
+    same courtesy to an unclosed QUOTE, so the one construct a beginner is
+    most likely to try out before committing it to a file is the one the
+    bench cannot hold. See the 2026-09-22 book-drafting entry.
+
+22. **A mutating builtin that returns a value is a QUESTION at the prompt,
+    so the mutation happens and the line is not kept.** `append(nodes, x)`
+    and `write(f, "hello")` both act *and* answer, and the resident
+    program's act/answer rule reads only the answer: the array is appended
+    to, the file is written, and neither line appears in `list`, in `save`,
+    or in what `run` replays. A session that typed `nodes = []` and three
+    `append`s saves **one** line and says so ("saved 1 line"), and `run`
+    answers `count(nodes)` = 0. See the 2026-09-22 plan re-verification
+    entry.
+
+23. **`UNLEARN.md` still says a record literal accepts only identifier
+    keys.** "Record-literal keys must be identifiers. `{ "a": 1 }` is a
+    parse error" — false since the `field_name` work of 2026-08-12, and
+    `{ "Rate (%)": 1 }` parses too. The 2026-09-18 doc-gap cluster reported
+    this and the 2026-09-19 sweep closed it as **NOT PRESENT** by grepping
+    `docs/ai/` for the word *quoted*, which the passage does not use. See
+    the 2026-09-22 plan re-verification entry.
+
+24. **A comparison lens on a variable, alone on a line, is silently an
+    assignment.** `answer{caseless}= "yes"` as a statement is read as an
+    assignment and fails `assign modifier not found: caseless`; the same
+    text inside brackets or inside an `if` is the comparison the
+    documentation shows on the adjacent line. The diagnostic names a
+    namespace the writer never asked for and does not say the other one
+    exists. See the 2026-09-22 Chapter 3 entry.
+
+25. **The prompt echoes type-ahead and then throws it away.** A line typed
+    while a command is still running is echoed by the terminal, so it is on
+    the screen and looks accepted, and then `raw_on()`'s `TCSAFLUSH`
+    discards it when the next prompt is drawn. It never runs, nothing is
+    said, and the prompt comes back clean. See the 2026-09-22 capture-harness
+    entry.
+
+26. **`reference.md`'s "Interrupting" says the SESSION survives Ctrl-C and
+    never says the interrupted LOOP's variables survive with it** --- which is
+    the reassuring half, and the half a beginner needs. See the 2026-09-23
+    Chapter 4 entry.
+
+27. **A runtime error's column points at an enclosing expression, and WHICH
+    one varies.** `print(a[5])` reports column 1, `print("x " + string(a[5]))`
+    reports the `+`, and the same index at the prompt reports the bracket.
+
+28. **`ERRORS.md`'s warning table stops at 2104**, and warning 2107 prints no
+    code at all.
+
+29. **`reference.md` says declarations inside a `program` block hoist.** They
+    do not.
+
+30. **An array reached BY NAME from an enclosing scope is mutated by
+    `append`** --- the same escape hatch records have, undocumented in the
+    scope section. The book's `learn` depends on it.
+
+31. **`sub` at the prompt swallows the next line.**
+
+32. **`nothing` and `unknown` used as an index both report `indexing expects
+    array[number] or record[string]`**, naming neither the value nor the
+    absence, two lines below the mistake --- from the likeliest absence bug a
+    reader writes.
+
+33. **`reference.md` calls top-level `on warning stop` "`-Werror`"** one
+    paragraph after the lookup rule that makes it not one: an intermediate
+    frame silently defeats it.
+
+34. **A raise from a builtin inside another builtin's argument is discarded
+    and replaced.** `decode(read(f))` on a missing file reports `decode
+    expects a string`, losing the real cause. Every read-then-decode in the
+    book had to become two statements.
+
+35. **`could not write file:` never says which of its three causes applied.**
+
+36. **`rows_affected` is not about the statement that returned it.** It is
+    `sqlite3_changes()`, so a `create table` run after an update that touched
+    three rows answers `{"command":"CREATE","rows_affected":3}`.
+
+37. **`sqlite.exec` refuses a multi-statement string in `sqlite.query`'s
+    name:** `SQLite query expects exactly one statement`.
+
+38. **`webclient_design.md` specifies three Phase 1 behaviours 0.2.2 does not
+    have:** `get(url, headers)`, `post(url, body, headers)`, and automatic JSON
+    encoding of record bodies. `reference.md` is right about all three, so the
+    document carrying the reasoning is the one that is wrong.
+
+39. **The WebClient reference says use `json_encode`, not `encode`**, and then
+    uses `encode` in its own `webclient.request` example fifteen lines later --
+    and again in the WebServer section, under an explicit JSON content type.
+
+40. **`llm.chat` hashes the whole request in gBASIC on every call**, to build a
+    replay key, whether or not anything replays. `_fnv1a` runs `_xor32` per
+    character and that is a 32-iteration interpreted loop, so the cost is
+    roughly 2ms per character of the canonical request. Measured on 0.2.2 with
+    an injected transport and no network: 0.12s for an empty request, 0.74s for
+    a 350-character system prompt. `llm.with_volatile(m, ["system",
+    "messages"])` cuts a 20-call run from 15.0s to 1.3s, which localizes it.
+
+41. **A SQLite error never names the statement that failed.**
+    `SQLite prepare failed: no such column: player` carries the line and column
+    of the `sqlite.query` call, which in any program with a one-row-count helper
+    is the helper and not the query. Five call sites, one message, no SQL in it.
+    Appending the statement (or its first 60 characters) would make the message
+    self-locating.
+
+42. **`load NAME` scans the working directory and blames an unrelated
+    unparsable file** instead of saying the library was not found.
+
+43. **A reserved word used as a name does not say which word it was**
+    (`on = 0`), and `invalid money operation` says no more than that.
+
+44. ~~**The published download is a MINIMAL build, so a reader who installs
+    gBASIC the documented way cannot use SQLite, HTTP, PostgreSQL, ODBC or
+    LDAP.**~~ **RESOLVED 2026-09-23** (struck). `tools/build-release-tarball.sh`
+    now builds two tiers. `TIER=lean` is unchanged — libc and libm, extract and
+    run, no dependency a reader has to satisfy — and `TIER=full` publishes
+    `…-linux-x86_64-full.tar.gz` beside it with `sqlite`, `webclient`, `http`,
+    `smtp` and the libcrypto builtins working, which is the database, internet
+    and AI chapters. 824 KB against lean's 796 KB.
+    **The library set is narrow because it was MEASURED, not chosen:** of the
+    nine a full build wants, seven have the same soname on every distribution
+    in the supported range and two do not — `libxcrypt` (`.so.1` Debian family,
+    `.so.2` RHEL family) and `libxml2` (`.so.2`, but `.so.16` from 2.14, already
+    on Ubuntu 26.04) — and a wrong soname means the binary does not start at
+    all. Both are disabled explicitly, so `xml`, `xlsx` and `password_hash`
+    still need a source build. The link set is now ASSERTED BY NAME in the
+    build script; the count that was there passed a binary carrying an
+    unrequested `libcrypt`. See the two 2026-09-23 entries, including the first
+    measurement, which was taken over the older half of the range and was
+    wrong.
+
+45. **`LICENSING.md` counts 26 standard libraries; there are 65.** The
+    ten-AGPL list is exact; only the total is stale.
+
+46. **`docs/README.md` uses two status words (`Design`, `Done`) that its own
+    four-value legend does not define** --- in the page whose whole purpose
+    is that the status column can be trusted.
+
+47. **The lock signal handler's cleanup is redundant, and was pure cost.**
+    Found while fixing item 20, by perturbation rather than by reading:
+    deleting the three `signal()` installs outright leaves
+    `tests/run_lock_signal.sh` **green**, because `flock` is released by the
+    KERNEL when the process dies and nothing in `lock_clear` unlinks a file.
+    So the handler does nothing the kernel does not already do, and its only
+    observable effect — until it was repaired — was to corrupt the wait status
+    so a supervisor could not tell a killed child from one that exited 143.
+    The repaired handler is harmless, so this is a simplification rather than a
+    defect: ~25 lines, one `volatile sig_atomic_t`, and one hazard class that
+    can only ever come back. Not acted on, because removing a signal handler is
+    a bigger claim than repairing one and nothing forced the choice today.
+
+48. ~~**gBASIC did not compile against the libcurl of the platform its own
+    download is built for.**~~ **RESOLVED 2026-09-23** (struck). Three call
+    sites used `CURLOPT_PROTOCOLS_STR` / `CURLOPT_REDIR_PROTOCOLS_STR`, which
+    arrived in libcurl **7.85.0**; `ubuntu:22.04` ships **7.81.0**, and that
+    image is not an arbitrary old distribution — it is the base
+    `tools/build-release-tarball.sh` builds in, chosen for its glibc floor. So
+    `make` failed with five errors on the one platform the release targets.
+    **The shape is worse than the instance:** an optional dependency that is
+    MISSING degrades to a clean runtime error, which is the whole `HAVE_*`
+    convention — one that is PRESENT BUT OLDER took the entire binary down,
+    every unrelated feature with it. It survived because the tarball ships
+    LEAN and never links libcurl, so the only configuration nobody could build
+    was also the one nobody was building. Found by measuring for item 44, not
+    by reading. Fixed with a version shim whose fallback keeps the restriction
+    rather than dropping it; guarded by `tests/run_libcurl_floor.sh`.
 
 ### Open — accepted as documented limitations (no action planned)
 
@@ -5306,3 +5489,1978 @@ behaviour — rather than being rebaselined onto the defect.
 - **Workaround:** none needed once located — Studio's wrapper is renamed to
   `dispatch_tool` and the warning is gone. The diagnostic was right; only its
   position was unhelpful.
+
+## 2026-09-22 — CC — while: drafting Volume 1 Chapter 2 ("Remembering Things") against 0.2.2
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** A string literal may run across several lines — `tutorial.md`
+  "Variables" says so, and in a file it is true:
+
+  ```basic
+  rules = "Think of an animal, and I will try to guess what it is.
+  I am not very good at this yet."
+  ```
+
+  At the prompt the same thing is impossible. The reader gets one error per
+  physical line and no value:
+
+  ```
+  > m = "line one
+  runtime error at <prompt>:1:5: unterminated string
+  > line two"
+  runtime error at <prompt>:1:9: unterminated string
+  ```
+
+  The prompt does have a continuation and does use it — an unclosed bracket
+  puts up `...` and waits:
+
+  ```
+  > print("hello"
+  ... )
+  hello
+  ```
+
+  So this is not "the prompt is line-oriented". It is line-oriented for one
+  token and not the other. The lexer reaches end-of-input inside a string and
+  raises where the parser, one token later, would have asked for more input.
+- **Why it matters beyond one page:** the prompt's whole argument is that a
+  beginner can try a line before committing it to a file, and the book is built
+  on that argument. This is the first construct where the bench and the file
+  disagree, and it disagrees silently in the direction that makes the reader
+  think they typed it wrong. It also makes the book's own Chapter 1 callout
+  wrong — that page tells the reader `...` means "an opening quote or an
+  opening bracket with no partner", which was written against the parser's
+  behaviour rather than the lexer's.
+- **Workaround:** Chapter 2 teaches multi-line strings in the file only and
+  spends a callout saying the prompt will not take one. The chapter's game
+  program uses one; nothing at the bench does.
+
+- **Also observed, and good news:** ledger item 16's first half is FIXED in
+  0.2.2. `round(2.5)` now answers `3` rather than raising `round expects two
+  arguments`; `round(x, n)` is unchanged. The Chapter 2 plan had a pitfall
+  paragraph built on the old behaviour and it has been removed. Item 16's
+  `--add-loads` half was not retested.
+
+- **A third thing, low and possibly deliberate:** the message for a refused
+  arithmetic operation is 85 columns wide —
+  `runtime error at <prompt>:1:5: arithmetic operator '-' expected number but got string`
+  — which is the first diagnostic in the book that will not fit an 80-column
+  page without wrapping. Chapter 1's errors all fit. Not filed in the ledger;
+  noted because a printed book wraps it and a wrapped error is harder to read
+  than the one the reader will see on their own screen.
+
+
+## 2026-09-22 — CC — while: re-verifying the Volume 1 Chapter 5–8 plans against 0.2.2
+
+The four plans were written against 0.1.0 and every feature claim in them was
+re-run against the 0.2.2 binary rather than re-read. **Most of them held**, which
+is the useful part of the result: arrays, records, links, value semantics,
+`unused-result`, the absence values, the error model and the serializers all
+behave as the plans recorded. Three things did not, and the first two are new.
+
+### 22. A mutating builtin that returns a value is dropped from the resident program (bug, high)
+
+```text
+> nodes = []
+> append(nodes, { kind: "answer", text: "a dog" })
+[{"kind":"answer","text":"a dog"}]
+> count(nodes)
+1
+> list
+  1  nodes = []
+> run
+> count(nodes)
+0
+```
+
+- **Type:** bug
+- **Severity:** high
+- **What:** `reference.md` "The resident program" says every line that **acts**
+  is kept and every line that merely **answers** is not. The discriminator
+  actually implemented is *did this line produce a value*, and `append` and
+  `write` produce one while acting. So the append happens, the file is written,
+  and the line is not in `list`, not in `save`, and not in what `run` replays.
+  `save` is the sharp end: a session that typed
+
+  ```text
+  > f{file}= "p.txt"
+  > write(f, "hello")
+  > read(f)
+  hello
+  ```
+
+  writes a file, reads it back, and then answers `saved 1 line to
+  fromprompt.bas` — the only line kept is the one that made the reference.
+  MEASURED: `write` returns `true` and is dropped; the reference's own example
+  of a kept call, `write(f, "hello")`, is exactly this case and is **wrong in
+  the documentation as well as in the binary**.
+- **Why it matters beyond one page:** the prompt's argument, and Volume 1's, is
+  that a beginner builds a thing at the bench and then keeps it. Chapter 5 is
+  *build a list and look at it*; Chapter 8 is *write the file*. Both are the
+  shape that silently does not survive `save`, and the failure is invisible
+  until the reader runs the file and finds an empty array. The `nothing`-returning
+  mutators are safe, so the rule the reader would have to learn is "a builtin
+  whose answer you can see is not part of your program", which no beginner will
+  derive and no page states.
+- **Workaround:** the plans now tell the reader to write the mutation into
+  something the prompt keeps — `nodes = append(nodes, x)` is not available, so
+  it is `print append(...)`, or the file. Chapters 5 and 8 keep their listings
+  in files and use the prompt only for questions.
+
+### 23. `UNLEARN.md` still refuses quoted record-literal keys, and a previous sweep closed it by grepping the wrong word (doc-gap, medium)
+
+- **Type:** doc-gap
+- **Severity:** medium
+- **What:** `docs/ai/UNLEARN.md` § "Variables, records, arrays" says
+  "**Record-literal keys must be identifiers.** `{ "a": 1 }` is a parse error.
+  Use `{ a: 1 }`, or bracket-assign for non-identifier keys". Both halves are
+  false on 0.2.2: `{ "a": 1 }`, `{ "content-type": "text/html" }` and
+  `{ "Rate (%)": 1 }` all parse and work. The entry contradicts
+  `reference.md` § Types, and it is the file an agent reads first.
+- **The part worth keeping:** this was already reported, as item 4 of the
+  2026-09-18 doc-gap cluster, and the 2026-09-19 sweep closed it **NOT
+  PRESENT** on the grounds that "the word 'quoted' does not appear anywhere in
+  `docs/ai/`". The passage never uses the word. A documentation claim was
+  verified by searching for the vocabulary of the bug report rather than for
+  the behaviour, and the answer that came back was confident and wrong — the
+  same failure shape the resolution of cluster item 9 had just caught in
+  itself. Re-measured here by running, which is the only method that would
+  have found it either time.
+- **Workaround:** the Chapter 5 plan now quotes the passage verbatim so the
+  next reader can match on the text, and cites `reference.md` and the binary.
+
+### Ledger item 14 is fixed and the ledger still lists it as open (doc-gap, low)
+
+`if unknown then` was item 14's "raises, runs the `else` anyway, exits 1, not
+catchable". Re-measured on 0.2.2, with the three cases the fix's own test
+names:
+
+```text
+$ gbasic u1.bas        # no handler
+runtime error at u1.bas:2:1: unknown cannot be used as a condition
+exit 1                 # and NO else branch, and nothing after the if
+```
+
+```text
+$ gbasic u2.bas        # on error goto next + if error then
+caught: unknown cannot be used as a condition
+after
+exit 0
+```
+
+with the control — `x = false` still takes its `else` — intact. So the raise
+**stops**, it **is catchable**, the `else` does **not** run, and the fix landed
+exactly as the 2026-09-19 status update said it did. The open ledger's item 14
+was never struck, so a reader consulting the section the file says *is the part
+you act on* is told a fixed high-severity bug is open. Costs a re-verification
+each time; found because Chapter 7's plan is built on it. Not given a number of
+its own — striking 14 is the maintenance rule's job, not a new entry's.
+
+---
+
+## 2026-09-22 — CC — while: drafting Volume 1 Chapter 3 ("Making Decisions") against 0.2.2
+
+Three findings: one open, two closures the ledger has not recorded. The chapter
+is the one that teaches comparisons, so every ledger item touching them was
+re-measured rather than trusted.
+
+### 24. A comparison lens on a variable, alone on a line, is silently an assignment (language-surprise, medium)
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** `reference.md` § Modifiers shows both spellings on adjacent lines —
+  `name {caseless}= "joe"` under "Modifier use", and
+  `if getname(){caseless}= "joe" then` under "A comparison lens applies to any
+  operand". What it does not say is that the *same text* is read as an
+  assignment or as a comparison depending on where it sits, and the assignment
+  reading is what a bare statement gets:
+
+  ```
+  > answer = "YES"
+  > answer{caseless}= "yes"
+  runtime error at <prompt>:1:1: assign modifier not found: caseless
+  > (answer{caseless}= "yes")
+  true
+  > if answer{caseless}= "yes" then
+  ... print("matched")
+  ... end if
+  matched
+  ```
+
+  The bracketed form and the `if` form are both the comparison. Only the bare
+  statement is not, and it fails by naming a category — "assign modifier" — that the writer never
+  asked for and may not know exists.
+- **Why it matters:** `{caseless}` has no assignment meaning at all, so this is
+  a name that exists in exactly one of the two namespaces the brace syntax
+  spans, and the diagnostic does not say which one it looked in or that there
+  was another. A writer who has just read the tutorial's
+  `if "Joe Barnes"{caseless}= "joe barnes" then` and tries it at the bench gets
+  told the modifier does not exist. Cheapest fix is the message: *`caseless` is
+  a comparison lens; a bare `x {caseless}= y` is an assignment. Did you mean
+  `if x {caseless}= y`?*
+- **Workaround:** the chapter shows the lens only inside brackets and inside an
+  `if`, which are the two positions that mean what the page says they mean.
+- **A related fact worth writing down somewhere:** `{caseless}` folds case and
+  does nothing else, so `("  Yes  "{caseless}= "yes")` is `false`. That is
+  correct and documented by implication, but the lens is reached for by people
+  who have a *sloppy input* problem rather than a *case* problem, and it solves
+  half of it.
+
+### Ledger item 15 is fixed, and the ledger still lists it as open (doc-gap, low)
+
+Item 15 is "`not` binds tighter than `=`. `not a = b` evaluates `(not a) = b`
+and prints `false` with no complaint." On 0.2.2:
+
+```text
+a = 1 : b = 2 : print(not a = b)     ' true
+a = 1 : b = 1 : print(not a = b)     ' false
+```
+
+which is `not (a = b)` in both directions. 0.2.2's own CHANGELOG carries the
+change ("Changed — `not` binds looser than comparison"), including the
+precedence table `reference.md` now publishes and the tripwire that reads it
+back — which is the second half of the item, since it complained that there was
+no table to check against. Both halves are done; only the ledger line is stale.
+Not given a number of its own — striking 15 is the maintenance rule's job.
+
+### Ledger item 18's first limb is fixed, same story (doc-gap, low)
+
+Item 18 opens with "`? x = 5` prints nothing at all (neither `true` nor a
+diagnostic)". On 0.2.2 it answers:
+
+```text
+> x = 5
+> (x = 5)
+true
+> ? x = 5
+true
+```
+
+The other two limbs of item 18 were not re-measured here and are not claimed.
+This matters to the book because the Chapter 3 plan carried an instruction —
+*do not reach for `? x = 5`* — written against the broken behaviour, and a plan
+that routes around a fixed bug teaches the workaround forever.
+
+## 2026-09-22 — CC — while: fixing the book's capture harness against a startup race
+
+### 25. The prompt echoes type-ahead and then throws it away (bug, medium)
+
+- **Type:** bug
+- **Severity:** medium
+- **What:** `line_edit` enters raw mode with
+  `tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw)` (`src/lineedit.c:156`), and
+  TCSAFLUSH *discards* whatever is already queued on the terminal. Between the
+  Enter that ends one line and the prompt that begins the next, gBASIC is out
+  of raw mode and the line discipline is echoing; so a line typed while a
+  command runs appears on the screen, and is then destroyed by the next
+  `raw_on()`. Driven through a pty, `sleep(2)` followed a third of a second
+  later by `print("typed ahead")`:
+
+  ```text
+  > sleep(2)
+  print("typed ahead")
+  2
+  >
+  ```
+
+  The typed-ahead line is on the screen and never ran. No output, no
+  diagnostic, no history entry; the prompt returns as though nothing was
+  typed.
+- **Why it matters:** the echo is the whole problem. A prompt that ignored
+  type-ahead silently would be merely unhelpful; this one shows the user their
+  command, sitting under the command that was still running, and then does not
+  run it. Every other line-editing prompt a beginner has used — a shell, a
+  Python REPL — keeps what was typed ahead and runs it in order, so the
+  expectation is already formed before they get here. It is worst exactly where
+  gBASIC is weakest: a `run` that asks questions, where the user is *supposed*
+  to be typing while a program is running, and where the line that vanishes is
+  the one after the last answer.
+- **Fix:** `TCSADRAIN` rather than `TCSAFLUSH` in `raw_on` keeps the queued
+  bytes and lets the editor read them as the next line, which is the behaviour
+  everything else has. `raw_off`'s TCSAFLUSH is the one that deserves to stay
+  arguable, since a program about to read in cooked mode may or may not want
+  what was typed at the editor — but it is the `raw_on` side that loses work
+  the user has already seen accepted.
+- **Workaround (and how this was found):** the book's transcript harness,
+  `tools/session.py` in the gbasic-books tree, types into a pty and had a
+  flake that produced banner-only transcripts under load. This was the cause:
+  it waited a fixed five seconds for the prompt and then typed, and when the
+  prompt was not yet up the whole script was flushed away. The harness now
+  waits for the prompt to be *drawn* before it types — `raw_on()` runs before
+  `le_refresh()` writes the `> `, so a prompt on the screen is proof that the
+  flush is behind it. That is a sound workaround for a machine, and no help at
+  all to a person, who cannot see raw mode.
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 4 ("Doing Things More Than Once") against 0.2.2
+
+Loops, from a beginner's side. The whole of the Chapter 4 plan's feature table
+was re-run and **every row still holds** on 0.2.2 — `while`, `break`,
+`continue`, a named `continue x` reaching an outer `for`, `do … until` as a
+post-test stop condition, inclusive `to`, bounds read once, the counter keeping
+its last value, the three spellings of the closing line, `step 0` raising, a
+passed limit simply not running, `+=`/`-=` as counters, and `while true` with
+`break`. That is the first Volume 1 plan whose language claims needed no
+correction at all, and it is worth recording as a measurement rather than a
+silence.
+
+Three further things were measured because the chapter leans on them, and all
+three behaved: `next y` on an `x` loop is refused **at parse time** and names
+the loop it does iterate; `break zzz` is a runtime error that says there is no
+enclosing loop of that name; and `for i = 1 to 3 step 0` raises
+`for step cannot be zero` at the `for`'s own line and column, in a file as well
+as at the prompt.
+
+One thing is missing from the documentation, and it is missing exactly where a
+beginner meets it.
+
+### 26. `reference.md` "Interrupting" does not say the interrupted block stays in the resident program (doc-gap, medium)
+
+- **Type:** doc-gap
+- **Severity:** medium
+- **What:** the "Interrupting" section is reassurance and nothing else — *Ctrl-C
+  ends the line that is running and gives the prompt back; it does not end the
+  session, and the resident program and every variable survive.* What it does
+  not say is that the block you just interrupted **is** the resident program
+  now, so `run` sets it going again. Measured on 0.2.2:
+
+  ```text
+  > i = 0
+  > while true
+  ...   i += 1
+  ... end while
+  ^Cruntime error at <prompt>:1:1: interrupted
+  > list
+    1  i = 0
+    2  while true
+         i += 1
+       end while
+  ```
+
+  The behaviour is correct and follows from "every line that **acts** is kept"
+  two sections further down — but nothing joins the two up, and the section
+  that a person reads while their loop is running away is the first one.
+- **Why it matters:** the first runaway loop is a rite of passage, and the
+  prompt handles it beautifully — nothing is lost, and the counter is still
+  there to be interrogated, which is the best diagnostic moment in the whole
+  book. Then the reader types `run` to try their fixed program and it runs away
+  again, for a reason the reference told them not to worry about. It is the one
+  place where "your program survived" is the bad news.
+- **Fix:** two sentences at the end of "Interrupting": the interrupted block is
+  kept like any other line that acts, `list` shows it under one number with the
+  body indented as typed, and `delete n` removes the whole block. A cross-
+  reference to "The resident program" would do, but the example above costs
+  five lines and answers the question where it is asked.
+- **Workaround:** `list`, then `delete` the number, or `new`. Volume 1
+  Chapter 4 says this on the page for the same reason.
+
+### What the book could not capture, which is a books-repo problem and not a gBASIC one
+
+The chapter's strongest beat is the runaway at the prompt, and it is the one
+transcript in the book that is **described rather than printed**.
+`tools/session.py` in the gbasic-books tree waits for a prompt before it types
+the next line — correctly, because of ledger item 25 — and a runaway never
+gives one back, so the capture is declared stuck after twenty seconds and
+retried three times. There is no directive for *wait n seconds, then send
+`\x03`*, and `i` differs on every run in any case, so a golden would need
+masking as well. Recorded here because it is a consequence of item 25's fix and
+someone will wonder why that one page has no transcript on it: the requirement
+is an interrupt a fixture can schedule, with a hard timeout behind it.
+
+Nothing in gBASIC needs to change for that.
+
+---
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 5 ("Organizing Information") against 0.2.2
+
+Arrays and records, from a beginner's side, and the chapter where the animal
+game's knowledge stops being `if` statements and becomes data. The whole of the
+Chapter 5 plan's feature table was re-run and **every row still holds** on
+0.2.2: array literals and 0-based indexing, `append`, `count` agreeing with
+`len`, an out-of-range index raising, record literals including quoted keys
+(`{ "content-type": ... }`, `{ "Rate (%)": 1 }`), `rec.field` read and assigned,
+`rec["missing"]` reading `unknown` while `rec.missing` raises, `keys`,
+`for each x in a` and `for each x, i in a`, `nothing` stored in a field and
+printed as `nothing`, `find_by` hitting with an index and missing with
+`nothing`, array and record value semantics one and two levels deep, `print`
+and `string` rendering compound values, and warning `2107` on a discarded write
+to a `for each` copy. That is the second Volume 1 plan in a row whose language
+claims needed no correction. Two diagnostics did not survive contact.
+
+### 27. A runtime error's COLUMN points at an enclosing expression, and which one varies (bug, medium)
+
+- **Type:** bug
+- **Severity:** medium
+- **What:** the same fault, spelled four ways, reports four different columns
+  and only one of them is the failing site. Measured on 0.2.2:
+
+  ```text
+  ' in a file, a = [1, 2]
+  x = a[5]                      → c1.bas:2:1   col 1 is `x`
+  print(a[5])                   → c2.bas:2:1   col 1 is `print`
+  print("x " + string(a[5]))    → c4.bas:2:12  col 12 is the `+`
+  ```
+
+  ```text
+  ' at the prompt
+  > a[5]
+  runtime error at <prompt>:1:8: array index out of range
+  ```
+
+  Column 8 is the `[`, which is right. Nothing in a file gets that. The same
+  spread appears for records: `x = r.b` and `print(r.b)` both report `2:1`,
+  while `> node.wingspan` at the prompt reports `1:5`, the dot.
+- **Why it matters:** this is the first error a beginner is *told to cause on
+  purpose*. Chapter 5 has them run `print(animals[4])` on a four-element array,
+  precisely so the message is a familiar face later, and then the page has to
+  spend a callout saying **the column is a hint, not an arrow** — because a
+  reader who has been taught that `:5:1` means line 5 column 1 will look at
+  column 1, find `print`, and conclude that `print` is broken. A `:1` reads as a
+  caret and is not one. The one place the column is correct is the prompt,
+  where the whole line happens to be the expression; so the reader learns the
+  right lesson at the prompt and has to unlearn it in a file, which is the
+  worst of the available orderings.
+- **Fix:** carry the failing subexpression's own position into the raise — the
+  index expression for `array index out of range`, the field access for
+  `unknown record field`. The parser has both; the prompt proves the value is
+  reachable when the subexpression happens to be the whole statement. Failing
+  that, report the line alone rather than a column that points somewhere else:
+  a missing column costs a reader nothing and a wrong one costs them the
+  afternoon.
+- **Workaround:** the chapter prints the callout. The line number is always
+  right, and the message names the fault, so the two of them together are
+  enough — which is why this is medium rather than high.
+
+### 28. `ERRORS.md`'s warning-code table stops at 2104, and a printed warning carries no code at all (doc-gap, medium)
+
+- **Type:** doc-gap
+- **Severity:** medium
+- **What:** `docs/ai/ERRORS.md` § "Warning codes" lists 2100 to 2104. At least
+  `2106` (dead code) and `2107` (a discarded write to a `for each` copy) exist
+  and are documented — but only in `docs/reference.md`, at § "For each" and
+  § the dead-code paragraph, nowhere near the table that claims to be the
+  catalogue. `2105` is not in either file.
+
+  Compounding it, the warning as printed does not carry its code:
+
+  ```text
+  warning: this writes to `node`, which is a COPY of the element, and nothing
+  reads it afterwards -- the write is discarded when the iteration ends. To
+  change the array, take the index (`for each node, i in ...`) and write back
+  with `list[i] = node`. at 10_discarded.bas:9:3
+  ```
+
+  (One line as emitted; wrapped here.) So a reader who wants to look it up, or
+  to suppress it, or to make it fatal, has no handle to search for. The number
+  exists, the documentation uses it, and the diagnostic never says it.
+- **Why it matters:** the whole point of a code is that it is a stable name you
+  can grep, cite in a bug report, and put in `on warning ignore`. Two of the
+  three routes to it are shut: the catalogue does not list the code, and the
+  message does not print it. The only route left is knowing in advance which
+  section of an 8000-line reference to read. Chapter 5 prints this warning on
+  the page and had to cite `reference.md` for it, against the grain of every
+  other error in the book.
+- **Fix:** add 2105, 2106 and 2107 to the `ERRORS.md` table with their `source`
+  strings, and print the code in the warning the way the error channel already
+  carries it. If the table is generated, the generator is missing the newer
+  codes and that is the real defect.
+- **Workaround:** cite `docs/reference.md` § "For each". The plan for Chapter 5
+  already said to; this records why that instruction had to exist.
+
+### What held, and is worth recording as a measurement
+
+Ledger item **22** (a mutating builtin that returns a value is treated as a
+question at the prompt and is not kept) is still exactly as filed, and it now
+has a page in the book. Chapter 5 shows it on purpose — `append` at the prompt,
+then `list`, then `run`, then a `count` of 0 — and draws the standing
+conclusion from it: the game's data lives in a file, and the prompt is the
+bench. That is a workaround becoming doctrine, which is worth noticing before
+it becomes invisible.
+
+Ledger item **23** (`UNLEARN.md` still calling a quoted record-literal key a
+parse error) is unchanged on 0.2.2. The book follows `reference.md` and the
+binary, and the chapter does not cite `UNLEARN.md` for records at all.
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 6 ("Reusing Work") against 0.2.2
+
+Chapter 6 is where the book stops writing plain scripts and adopts
+`program main(args)`, and where a function first changes the game's data. Both
+of those went in against `reference.md`, and one of them went in against what
+`reference.md` says.
+
+### 29. `reference.md` says declarations inside a `program` block are hoisted. They are not. (doc-gap, medium)
+
+- **Type:** doc-gap
+- **Severity:** medium
+- **What:** the hoisting paragraph in `docs/reference.md` — the one that opens
+  "**Hoisting is what a `program` block buys, and a file without one does not
+  get it**" — shows the script-mode failure and then says:
+
+  > The same two declarations inside a `program` block work in either order,
+  > since the block's declarations are registered before its body runs.
+
+  "inside a `program` block" is the natural reading and it is false:
+
+  ```basic
+  program main(args)
+    print(sq(3))
+    function sq(n)
+      return n * n
+    end function
+  end program
+  ```
+  ```text
+  runtime error at d1.bas:2:3: invalid function call: sq
+  ```
+
+  Move the declaration above the call, still inside the block, and it runs.
+  Move it below `end program` and it runs in either order. So what is hoisted
+  is the **file's top level**, which is what the surrounding prose is about and
+  what the "What may be written below `end program`" paragraph lists — and that
+  paragraph is correct. It is the one sentence that generalizes wrongly.
+- **Why it matters:** this is the sentence a reader lands on when they hit
+  `invalid function call` for a function they can see. Taking its advice —
+  wrap it in `program`, keep the function where it is — reproduces the failure
+  with one more layer of syntax in the way, and the diagnostic still names the
+  call rather than the ordering, so there is nothing to connect the two. The
+  chapter had to state the restriction on the page (beat 11) with no document
+  to cite.
+- **Fix:** change "inside a `program` block" to "at the top level of a file
+  with a `program` block", and add the negative case: a function declared
+  inside the block is an ordinary statement and must precede its callers. One
+  sentence, and it is the sentence that was wanted.
+- **Workaround:** the book puts every function below `end program` and says so
+  as a rule rather than as a preference.
+
+### 30. The by-name escape hatch is documented for records, and arrays have it too (doc-gap, low)
+
+- **Type:** doc-gap
+- **Severity:** low
+- **What:** § First-Class Functions states the scope rule and then gives the
+  one way round it: "To share mutable state with a function or a handler, keep
+  it in a **record** and mutate its fields". Arrays are not mentioned, and an
+  array reached by name from an enclosing scope is mutated by a mutating
+  builtin just as a record's field is:
+
+  ```basic
+  nodes = []
+  function grow()
+    append(nodes, 1)
+    return nothing
+  end function
+  grow()
+  print(count(nodes))      ' 1
+  ```
+
+  The pieces are both in the reference — § Array value semantics says
+  `append` "mutate[s] a stored array in place when given an assignable path" —
+  but they are 4000 lines apart and only the record form is in the section
+  about scope, which is where a reader goes with this question.
+- **Why it matters:** the two halves of the rule that the reference *does*
+  state well (a record by **name** persists, a record by **argument** is a
+  copy) are exactly the pair that catches people, and the chapter had to teach
+  them side by side. The array case is the same distinction wearing different
+  clothes, and it is the one the game runs into: `append(nodes, x)` inside
+  `learn` does nothing the caller can see, while the identical line inside a
+  function that reached `nodes` by name does. A reader who has learned "records
+  reach out, arrays are values" has learned something false.
+- **Fix:** one clause in § First-Class Functions — "keep it in a record and
+  mutate its fields, or in an array and mutate it with `append` and friends;
+  either way it is the **name** that persists, not the kind of value" — and a
+  cross-reference to § Array value semantics.
+- **Workaround:** the book teaches the name-versus-argument distinction as the
+  rule and never uses the reach-out form, in either shape.
+
+### 31. `sub` at the prompt swallows the next line; in a file it gets the good message (language-surprise, low)
+
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** a file containing `sub foo()` is refused with a message that
+  answers the actual question:
+
+  ```text
+  parse error at t13.bas:1:1: unknown declarative block 'sub' (only 'server' exists)
+  ```
+
+  At the prompt the same line starts a multi-line entry, eats the line after
+  it, and blames that one:
+
+  ```text
+  > sub greet()
+  ...   print("still here")
+  parse error at <prompt>:2:1: syntax error, unexpected PRINT, expecting IDENT or END or ON or NEWLINE
+  ```
+- **Why it matters:** `sub` is the single most likely thing for a reader
+  arriving from QBasic or VB to type, and the prompt is where they will type
+  it. The one place gBASIC has a message that would teach them something is
+  the place they are not. Minor, but it cost this chapter a captured example:
+  the book states "there is no `sub`" in prose because the bench capture was
+  not worth printing.
+- **Fix:** recognise `sub` as a declarative-block keyword in the prompt's
+  continuation test too, so the first line is refused where it is typed.
+- **Workaround:** the chapter says it in words.
+
+### What held
+
+Ledger item **22** (a mutating builtin returns a value, so the prompt treats it
+as a question and does not keep the line) turned out to have a second face here,
+and this time it is a teaching problem rather than a bench problem. A bare call
+that discards a gBASIC function's result warns in a file — and the whole of
+Chapter 6 turns on that warning — but at the prompt the same call is a question,
+so the result is *printed* and no warning fires:
+
+```text
+> learn(nodes)
+[1]
+```
+
+The reader sees the new tree and concludes the call worked. So the chapter's
+keystone stays a file and the page says out loud that the bench will mislead you
+here. That is the second standing "the prompt and the file disagree" note in the
+book, after Chapter 5's, and both trace to the same act/answer rule. Worth
+recording that the rule now has a cost in two chapters rather than one.
+
+And the plan's worry about `reference.md` § First-Class Functions saying
+"records are reached by reference" is **resolved**: the section now states the
+name-versus-argument distinction correctly and at length, and re-running it on
+0.2.2 matches the text in both directions. Entry 30 above is what is left of it.
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 7 ("Handling Things That Go Wrong") against 0.2.2
+
+The chapter that quotes more diagnostics than any other in the book. Every
+message in it is pinned by a golden transcript, so all of these were measured
+rather than recalled. The big one — ledger item **14**, `if unknown then` — is
+**confirmed fixed** on 0.2.2 for the third time: it raises, it **stops**, the
+`else` does not run, and `on error goto next` catches it. That finding is
+already on file (the 2026-09-23 Chapter 5 entry, "Ledger item 14 is fixed and
+the ledger still lists it as open"), and item 14 is **still listed as open**
+in the ledger above. Not re-filed; restated here because a fourth chapter has
+now paid for the same re-verification.
+
+### 32. `nothing` and `unknown` used where a number belongs get a message that names neither (bug, medium)
+
+- **Type:** bug
+- **Severity:** medium
+- **What:** the two absences are told apart everywhere in the arithmetic family
+  and nowhere in the indexing family. Measured on 0.2.2:
+
+  ```text
+  unknown + 1   → unknown cannot be used in arithmetic
+  nothing + 1   → arithmetic operator '+' expected number but got nothing
+  unknown > 5   → unknown and nothing support only = and !=
+  ```
+
+  ```text
+  a = [1, 2, 3]
+  i = nothing      ' or unknown -- makes no difference
+  print(a[i])
+  → runtime error at idx.bas:3:1: indexing expects array[number] or record[string]
+  ```
+
+  The same sentence for both values, and it does not contain the words
+  `nothing` or `unknown` at all. It reports what indexing *wants* and never
+  what it *got*.
+- **Why it matters:** this is the message you get from **the single most likely
+  absence bug in the language** — using `is_unknown` on something that misses
+  with `nothing`, or the reverse. `find_by` misses with `nothing`,
+  `is_unknown(nothing)` is `false`, so the guard silently does not fire and the
+  `nothing` travels two lines to an index. The complaint then names indexing,
+  names a line that is not where the mistake is, and gives the reader no hint
+  that absence was involved. Chapter 7 prints exactly this run to teach "match
+  the test to the producer", and has to spend a paragraph saying what the
+  message declines to say. Contrast the arithmetic pair, which is so specific
+  that the chapter can tell readers *which refusal you get is itself a clue
+  about which value you are holding* — the language clearly knows the
+  difference; only this message does not use it.
+- **Fix:** name the offending value in the message the way arithmetic does —
+  `indexing expects array[number] or record[string], but the index is nothing`
+  — and, better, say it differently for the two absences, since the fix for
+  each is a different guard. The value is in hand at the raise site.
+- **Workaround:** the chapter prints the run and explains the gap between the
+  mistake and the symptom in prose, and gives the reader the producer table to
+  check guards against instead.
+
+### 33. `on warning stop` in `main` is not `-Werror`; any intermediate frame silently defeats it (doc-gap, medium)
+
+- **Type:** doc-gap
+- **Severity:** medium
+- **What:** `reference.md` § Warnings states both of these, one paragraph
+  apart: mode lookup is "outward to the nearest frame with an explicit
+  setting", and "`on warning stop` in `main` makes the whole program's warnings
+  fatal — the `-Werror` of a language with no build step". The second does not
+  follow from the first, and measurement says the first wins:
+
+  ```basic
+  program main(args)
+    on warning stop
+    print(mid())
+  end program
+
+  function mid()
+    on warning goto next      ' <- this wins
+    v = deep()
+    return v
+  end function
+
+  function deep()
+    warning("advice nobody will act on")
+    return 1
+  end function
+  ```
+
+  runs to the end and exits **0**. Delete `mid`'s line and the same program
+  dies with `runtime error at …:13:3: advice nobody will act on`, exit 1.
+- **Why it matters:** `-Werror` is a promise about a whole build, and this is
+  not one — it is a default that any frame between the setting and the warning
+  can turn off, including a frame in somebody else's library. The design is
+  defensible and is arguably the right one (the reference's own rule, *the
+  noise budget is the caller's*, cuts both ways once there are two callers),
+  but the `-Werror` sentence tells a reader they have a guarantee they do not
+  have, and the failure mode is silence: you set `stop`, nothing changes, and
+  there is no diagnostic saying your setting was overridden. It cost this
+  chapter's exercise 3 its expected answer — the exercise now *is* the
+  surprise, which is a better exercise and was not the plan's.
+- **Fix:** strike the `-Werror` comparison or qualify it — "fatal for every
+  warning that reaches `main` without passing a frame that set its own mode" —
+  and say plainly that an intermediate setting shadows an outer one, which is
+  the consequence of dynamic lookup that the paragraph leaves the reader to
+  derive.
+- **Workaround:** the chapter's exercise answer explains the lookup rule and
+  has the reader remove the intermediate `on warning goto next` to see the
+  escalation actually happen.
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 8 ("Files and Data") against 0.2.2
+
+The chapter where the game stops forgetting. Everything in the plan's feature
+table held on 0.2.2 and is now pinned by golden transcripts: `{file}`
+references, `write`/`append`/`read`/`read_lines`/`exists`/`delete`,
+`encode`/`decode` against `json_encode`, `json_encodable`, `try_decode`'s
+record, `atomic_replace`, and `persist.read_status`/`write_atomic`/`ensure_dir`.
+The plan's three quoted diagnostics came back verbatim. The two findings below
+are new, and the first one is the reason two listings in the chapter are two
+statements where they read better as one.
+
+**Also confirmed fixed, and not re-filed:** the `try_decode` section of
+`reference.md` no longer claims a raise cannot be caught. Measured: `decode`'s
+raise is caught by an ordinary `on error goto next` and `error.message` reads
+`decode error: unterminated string at byte 42`, while `try_decode` on the same
+text answers `{ok:false, message:"unterminated string at byte 42", offset:42,
+line:1, column:43}` — the same sentence without the `decode error:` prefix.
+
+### 34. A raise from inside a builtin's argument is DISCARDED and replaced when the enclosing call is also a builtin (bug, high)
+
+- **Type:** bug
+- **Severity:** high
+- **What:** `decode(read(f))` on a missing file does not report the missing
+  file. The read's raise is destroyed, `decode` is called with something that is
+  not a string, and the program stops on a complaint about `decode`:
+
+  ```text
+  runtime error at nest.bas:4:3: decode expects a string
+  ```
+
+  Split into two statements and the same program reports the truth:
+
+  ```text
+  runtime error at nest2.bas:3:3: could not read file: definitely_missing.json
+  ```
+
+  Measured on 0.2.2, with the missing-file read in four argument positions:
+
+  ```text
+  decode(read(f))        → decode expects a string          WRONG
+  try_decode(read(f))    → try_decode expects a string      WRONG
+  len(read(f))           → len expects string or array      WRONG
+  1 + read(f)            → could not read file: …           right
+  mine(read(f))          → could not read file: …           right
+  ```
+
+  So arithmetic propagates and a user-defined function propagates; a **builtin**
+  called with a failing **builtin** as its argument does not. It is not specific
+  to file errors either — a user's own `error "I blew up"` inside a function
+  called as `decode(boom())` is likewise replaced by `decode expects a string`.
+  With `on error goto next` armed, `error.message` is the replacement, so the
+  original failure is not merely mis-printed; it is gone.
+- **Why it matters:** `decode(read(f))` is the obvious spelling and the one
+  every reader will write. Chapter 8 teaches "read the message, believe the line
+  number" three chapters after Chapter 7 built a whole chapter on it, and here
+  the message names the wrong call and blames a value the program never
+  produced. Worse, this is the swallowing failure mode Chapter 7 says gBASIC
+  does not have: its closing argument is that gBASIC makes absence and failure
+  **loud**, never silent, unlike languages where `null + 1` is `null` and the
+  wrongness travels. This travels. A reader who follows the message will look at
+  their JSON and find nothing wrong with it, because the JSON was never read.
+- **Fix:** propagate the inner raise out of a builtin's argument evaluation the
+  way the arithmetic and user-call paths already do, rather than converting a
+  failed argument into an absent value and letting the outer builtin's arity or
+  type check report it.
+- **Workaround:** the chapter writes every one of these as two statements —
+  `text = read(brain)` then `try_decode(text)` — and the answer key tells the
+  reader to do the same, on the honest grounds that a read that fails and a
+  decode that fails are two problems with two fixes. That is better code and it
+  is not why it is there.
+
+### 35. `could not write file:` names the path and never the reason, and three different causes share it (bug, medium)
+
+- **Type:** bug
+- **Severity:** medium
+- **What:** a missing parent directory, a parent that is an ordinary file, and a
+  directory the process may not write to produce **the same sentence**, with
+  only the path to tell them apart. Measured on 0.2.2:
+
+  ```text
+  write(f, …) where f is "saves/brain.json", no saves/
+      → could not write file: saves/brain.json
+  write(f, …) where f is "note.md/brain.json", note.md being a file
+      → could not write file: note.md/brain.json
+  write(f, …) into a directory with mode 500
+      → could not write file: ro/brain.json
+  ```
+
+  `make_dir` is the same shape: `could not create directory: saves/2026` covers
+  both "no `saves`" and "`saves/2026` already exists", and the second of those
+  is not a failure the caller necessarily wanted reported.
+- **Why it matters:** the errno is in hand at the raise site and would settle it
+  in one word — ENOENT, ENOTDIR and EACCES are three different mistakes with
+  three different fixes, and the one message sends the reader to check all
+  three. This is the same defect as ledger item 32 in a different family: the
+  runtime knows more than it says. Chapter 8 has to spend a paragraph telling
+  the reader **not** to read the message and to go and look at the path instead,
+  which is the opposite of what the book teaches everywhere else.
+- **Fix:** append the reason — `could not write file: saves/brain.json (no such
+  directory)` — and distinguish `make_dir`'s "already exists" from its "parent
+  missing", since the reference leans on the first being reportable (bare
+  `make_dir` is deliberately not idempotent so that it can be used as a lock).
+- **Workaround:** the chapter prints all three runs side by side, states that
+  the message does not narrow it down, and gives the reader the three causes to
+  check by hand.
+
+### Smaller, for the reference
+
+**`make_dir(d, { parents: true })` and `exists(<dir reference>)` are documented
+as "since 0.2.3" and both work on the 0.2.2 binary.** `stdlib/persist.bas`'s own
+comment dates the fix to 2026-09-22 and says the hand-rolled segment walk it
+used to need "collapses to one call". Measured on 0.2.2: `make_dir("d1",
+{ parents: true })` answers `true` twice in a row, and `exists(d)` through a
+`{dir}` reference answers `true`. Either the version label is a release ahead of
+the binary or the binary is a release ahead of its own version string; a reader
+on 0.2.2 who believes the label will write the walk `persist` just deleted.
+Not filed as a numbered item because nothing is broken — but the two "since"
+lines should say 0.2.2, or `--version` should say 0.2.3.
+
+### What held
+
+Worth recording because a chapter's worth of measurement found nothing wrong
+with any of it: `decode(encode(nodes)) = nodes` and `decode(json_encode(nodes))
+= nodes` both `true` on the game's node array, with the `nothing` links reading
+back as `nothing` through **both** routes; `json_encode` writing `null` where
+`encode` writes `nothing`; `json_encodable` answering without raising;
+`atomic_replace` leaving the destination whole at every instant and removing the
+scratch file; and `persist.read_status` returning `missing`, `corrupt` (with the
+parser's message, line and column) and `loaded` as values, never raising, on a
+file put into each state in turn.
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 9 ("Talking to Databases") against 0.2.2
+
+The chapter where the game's knowledge stops being a file and becomes a table.
+The whole `sqlite` surface held: `load sqlite` as a bare native load,
+`connect`/`close`/`exec`/`query`/`begin`/`commit`/`rollback`/
+`last_insert_rowid`, `?` binding, `NULL` → `nothing`, `error.source = "sqlite"`
+with code `2002`, and results as arrays of records that Chapter 5's `count` and
+`rows[0].field` read without a new idea. The plan listed three error texts as
+**unverified**; all three came back exactly as guessed, and are now pinned by a
+golden:
+
+```text
+create table notes (…) twice
+    → SQLite prepare failed: table notes already exists
+insert into players (name) values (?)   with [nothing]
+    → SQLite exec failed: NOT NULL constraint failed: players.name
+insert into games (player_id) values (?)   with [99]
+    → SQLite exec failed: FOREIGN KEY constraint failed
+```
+
+**`alter table` works through `sqlite.exec`** (`{"command":"ALTER",
+"rows_affected":0}`), and `delete from` — which nothing in the gBASIC corpus
+used — behaves exactly as SQLite documents it. Neither is a finding; both were
+open questions in the plan and both are now closed by measurement.
+
+The two findings below are new.
+
+### 36. `rows_affected` is not about the statement that returned it (bug, medium)
+
+- **Type:** bug
+- **Severity:** medium
+- **What:** `sqlite.exec` answers with `{command, rows_affected}`, which reads
+  as a description of the statement just run. It is not. `rows_affected` is
+  `sqlite3_changes()`, which SQLite defines as *the number of rows changed by
+  the most recent statement that changed any rows* — so a statement that
+  changes none reports the previous one's answer. Measured on 0.2.2, one
+  connection, statements in this order:
+
+  ```text
+  insert into t (a) values (1)   → {"command":"INSERT","rows_affected":1}
+  create table u (b integer)     → {"command":"CREATE","rows_affected":1}
+  update t set a = a + 1         → {"command":"UPDATE","rows_affected":2}
+  drop table u                   → {"command":"DROP","rows_affected":2}
+  pragma foreign_keys = on       → {"command":"PRAGMA","rows_affected":1}
+  ```
+
+  The `CREATE` created a table and changed no rows. The `DROP` dropped one and
+  changed no rows. Both report a number that belongs to a different statement,
+  and the record they are sitting in names the statement they do **not**
+  describe.
+- **Why it matters:** the field is a two-word promise and the value does not
+  keep it. It is also the field a program uses to decide whether anything
+  happened — *did my `update` find the row?* — so the failure mode is a
+  conditional that reads correctly and is wrong when the statement before it
+  happened to change rows. `docs/sqlite_design.md` is technically accurate
+  (it says `sqlite3_changes()`), `reference.md` does not document the record's
+  fields at all, and neither says the consequence. A reader who has not read
+  sqlite3's own documentation has no way to know, and this is a module whose
+  point is to let people who have not read sqlite3's documentation use SQLite.
+- **Fix:** report `0` for a statement with no DML in it, or — better, and it is
+  what the design doc's own Future Work bullet reaches for — take a
+  `sqlite3_changes()` reading before and after the step and report the
+  difference, so the number is about this statement or is absent. Failing
+  either, rename the field to `changes` and document that it is the
+  connection's last change count rather than this statement's.
+- **Workaround:** the chapter prints the `CREATE`-after-`UPDATE` run in the
+  section that teaches `rows_affected`, and gives the reader the rule that
+  covers it: read `rows_affected` after an `insert`, `update` or `delete`, and
+  ignore it everywhere else. A paragraph spent on a wart, in a chapter for
+  people who have never seen a table.
+
+### 37. The multi-statement refusal names a function the program did not call (bug, low)
+
+- **Type:** bug
+- **Severity:** low
+- **What:** both verbs reject SQL containing more than one statement, and both
+  say it in `sqlite.query`'s name. Measured on 0.2.2:
+
+  ```text
+  sqlite.exec(db, "create table v (a integer); create table w (b integer)")
+      → SQLite query expects exactly one statement
+  ```
+
+  The reader never called `query`. `sqlite_prepare_statement` is shared and the
+  message is hard-coded there; the sibling messages in the same function are
+  spelled generically (`SQLite SQL must contain a statement`,
+  `SQLite query parameters must be an array` — which has the same defect), so
+  the fix is one word.
+- **Why it matters:** it is small and it is the wrong kind of small. gBASIC's
+  case for itself is that diagnostics are trustworthy, and the very next thing
+  this book teaches about databases is `sqlite.exec cannot discard row results;
+  use sqlite.query`, which is a message that names both verbs *correctly* and
+  is the best sentence in the module. A reader who has just learned to believe
+  the message then gets one that blames a call they did not make. Multi-statement
+  SQL is exactly what somebody pastes in from a schema file, so this is a
+  first-hour message, not an edge case.
+- **Fix:** say `SQLite statements` or the calling verb's own name; the
+  dispatcher knows which one it is.
+- **Workaround:** none needed — the chapter never shows two statements in one
+  string, and `make_tables` issues one `sqlite.exec` per `create table`, which
+  is what `stdlib/dbframe.bas` already does for the same reason.
+
+### Smaller, for the reference
+
+**`sqlite.connect` CREATES the database it cannot find, and no document says
+so.** `reference.md`, `tutorial.md` and `sqlite_design.md` all show
+`sqlite.connect("app.db")` and none of them mentions that a path pointing at
+nothing produces a new empty database rather than a complaint (the open flags
+are `SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE`, unconditionally, with no way
+to ask for the other behaviour). It is the right default and it is the
+mechanism behind the commonest beginner's lost afternoon: run the program from
+a different directory and it opens a *different*, brand-new, empty database,
+connects happily, and fails one line later with `SQLite prepare failed: no such
+table: nodes`. Chapter 9 spends a section on it. One sentence in the reference
+would carry it.
+
+**Booleans are documented going in and not coming out.** `reference.md` says
+"Booleans bind as integer `1` or `0` because SQLite has no separate boolean
+storage class", which is the half nobody is surprised by. The surprise is the
+return trip: a column written from `true` reads back as the **number** `1`,
+`type(row.won)` is `"number"`, and `print(row.won)` shows `1` — while
+`row.won = true` is still `true`, so the round trip is lossy in a way that
+passes the obvious test. The result-mapping table has an `INTEGER` row that
+could say it in six words.
+
+**`":memory:"` is used by every sqlite example and test in the tree and appears
+in none of the three documents.** `examples/sqlite_module_test.bas`,
+`tests/sqlite_integration.bas` and all six live-connection negative tests open
+it; `reference.md`, `tutorial.md` and `sqlite_design.md` only ever show a file
+path. The one thing a reader most wants for experimenting is the one thing the
+docs do not mention.
+
+### What held
+
+Worth recording because a chapter's worth of measurement found nothing wrong
+with any of it. `sqlite.begin`/`commit`/`rollback` do what they say, including
+a rollback that leaves a row count where it started and a commit that moves it.
+`last_insert_rowid` after each of three inserts in one transaction gives three
+different ids, which is the whole basis of the chapter's migration. `NULL`
+columns arrive as `nothing` and `is_nothing` says `true`, so Chapter 7's
+distinction survives an array, a JSON file and a table without a single
+conversion being written. An aggregate over zero rows answers with one row —
+and `sum` of nothing is `nothing` while `count` of nothing is `0`, which is
+correct and is a trap worth a reader's sentence. A `?` count mismatch is a hard
+error in both directions. And `error.source` is `"sqlite"` for every one of the
+module's refusals, including the ones raised before sqlite3 is reached, which is
+what makes it usable as a test.
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 10 ("Talking to the Internet") against 0.2.2
+
+The chapter where the game asks somebody else's computer a question. The
+WebClient surface held wherever the **reference** describes it: `load webclient`
+as a bare native load, `webclient.request({method, url, headers, timeout})`,
+the response record's `status` / `reason` / `headers` / `body`, `json` present
+only when the body parses, `is_unknown(response["json"])` as the test for it,
+lowercased response header names, a `404` arriving as an ordinary record rather
+than a raise, and `error.source = "webclient"` with code `3001` for every
+transport failure. Two diagnostics the plan copied from 0.1.0 came back verbatim
+on 0.2.2 and are now pinned by the book's own goldens:
+
+```text
+webclient.request({url: …, headers: {"X-Tries": 3}})
+    → webclient request header values must be strings
+webclient.get("http://")
+    → webclient URL is malformed
+```
+
+The chapter is also the first one whose examples cannot be tested by running
+them, so it is built the way `stdlib/market.bas` and `stdlib/llm.bas` already
+build for this: one program in `examples/ch10/live/` makes eight real calls and
+records them, and every committed capture reads the recordings. The whole
+chapter's build was verified with the network namespace unshared — no DNS, no
+route out, loopback only — and is clean.
+
+Two findings, both in the documents rather than the code.
+
+### 38. `webclient_design.md` specifies three Phase 1 behaviours that do not exist (doc-gap, medium)
+
+- **Type:** doc-gap
+- **Severity:** medium
+- **What:** the design document's status line reads "**Implemented and shipped.**
+  This document is the design record; the status line below it said 'no webclient
+  runtime implementation exists yet' long after one did, which is the failure
+  this note replaces." It then specifies three things 0.2.2 does not do.
+  Measured:
+
+  ```text
+  webclient.get("http://127.0.0.1:1/x", headers)
+      → webclient.get expects one argument
+  webclient.post("http://127.0.0.1:1/", "body", headers)
+      → webclient.post expects two arguments
+  webclient.request({method:"POST", url: …, body: {a: 1}})
+      → webclient request body must be a string
+  ```
+
+  Against §"Recommended Phase 1 API", which lists
+  `webclient.get(url, headers)` and `webclient.post(url, body, headers)` as
+  accepted forms, and §"`webclient.post`", which says "A record or array is
+  encoded as JSON", "the module adds `Content-Type: application/json` unless the
+  caller supplied a content type", and "The module should encode records and
+  arrays automatically. This keeps ordinary API calls concise and preserves the
+  language's record/array emphasis."
+- **Why it matters:** `reference.md` is right about all three — it documents only
+  `get(url)`, says "Use `webclient.request` for custom headers", and states
+  plainly that "Records and arrays are not automatically converted to JSON
+  request bodies." So the two documents disagree, and the one that is wrong is
+  the one carrying the *reasoning*, which is what a reader consults when
+  deciding how to structure a client. The optional-headers paragraph is
+  particularly costly to believe: its argument is that "requiring callers to
+  construct a full request record for a bearer token or an `Accept` header would
+  make the common helper unnecessarily awkward", which is exactly the decision a
+  reader is making when they read it, and the awkward path is the only one that
+  exists.
+- **Fix:** either implement the two-argument `get` and three-argument `post`
+  (the rationale for them is sound and the arity checks are already there to
+  relax), or mark those three subsections as deferred with the same "implemented
+  and shipped" honesty the status line now claims. A design record that
+  describes an API the build does not have is the failure the status line was
+  rewritten to prevent, one heading further down.
+- **Workaround:** the book teaches `webclient.request` from the first line and
+  says out loud that `get` takes a URL and nothing else, so a reader who wants a
+  header never meets the refusal. The honest side effect is that the chapter
+  opens with the heavier form; the honest defence is that the endpoint it opens
+  against asks for a `User-Agent`, so the lighter form was never going to be
+  enough.
+
+### 39. The WebClient reference tells you not to use `encode`, then uses it (doc-gap, low)
+
+- **Type:** doc-gap
+- **Severity:** low
+- **What:** `reference.md` §"WebClient Module" says, in bold:
+
+  > Use `json_encode`, **not** `encode`, for anything leaving gBASIC: `encode`
+  > emits a gBASIC dialect (`nothing`/`unknown` instead of `null`) that other
+  > JSON parsers reject.
+
+  Fifteen lines later, in the section's own worked example of
+  `webclient.request` with custom headers:
+
+  ```basic
+  response = webclient.request({
+      method:"POST",
+      url:"https://api.example.com/events",
+      headers:headers,
+      body:encode({name:"launch"})
+  })
+  ```
+
+  The difference is real and measurable — `json_encode({a:1, b:nothing})` is
+  `{"a":1,"b":null}` and `encode` of the same record is `{"a":1,"b":nothing}` —
+  and the second one is what the example sends.
+
+  The same call is in the **WebServer** section, in the example of appending a
+  response record — `body:encode({saved:true})`, under a hand-set
+  `content-type: application/json`. Same defect, outgoing in the other
+  direction, and that section carries no rule at all.
+- **Why it matters:** it is the example people copy. The rule is stated well and
+  then contradicted by the only code in the section that sends a body, and the
+  contradiction is invisible at the call site: `encode` returns a string, so the
+  argument check passes, the request goes out, and the program that finds the
+  problem is somebody else's on the far end of the wire. That is the worst
+  available failure distance for a one-word mistake.
+- **Fix:** `json_encode` in both examples. One word each.
+- **Workaround:** the book states the rule with both outputs printed side by
+  side from a real run, so the reader sees `null` against `nothing` rather than
+  being asked to take it on trust.
+
+### Smaller, for the reference
+
+**There is no percent-encoder, and three places in the tree work around it.**
+`stdlib/otp.bas` carries a sixteen-line `_percent` because a TOTP URI needs one;
+`stdlib/market.bas` and `stdlib/edgar.bas` build query strings by concatenation
+and are safe only because their inputs are ticker symbols and CIKs. Any program
+that puts user-supplied text in a URL needs percent-encoding and has nowhere to
+get it. This is the same shape as SQL injection — a value that stops being a
+value and becomes part of the sentence — and gBASIC has a first-class answer for
+that one (`?` binding) and none for this one. `url_encode(text)` and
+`url_decode(text)` would close it; WebClient is where a reader would look for
+them.
+
+**The response record's `reason` is empty for every HTTP/2 call and nothing
+warns you.** `webclient_design.md` explains the decision fully and correctly —
+reason phrases do not exist in HTTP/2 or HTTP/3, so the field is `""` rather
+than invented from a status table — but `reference.md`, which is where a caller
+reads the field list, says only "`reason`: reason text, or an empty string when
+unavailable". Measured against `en.wikipedia.org`, which is HTTP/2: `""`, every
+time. Given that essentially every large modern host negotiates HTTP/2, "when
+unavailable" is in practice "usually", and one clause saying so would stop
+people writing `print(r.reason)` in an error path and getting a blank line.
+
+**`print` is block-buffered when redirected and `print to error` is not**, so
+the two channels interleave correctly on a terminal and can come out in the
+wrong order through a pipe. Chapter 7's reference text already warns about the
+reverse direction (an error line landing above output that came first), and this
+is the same mechanism seen from the program's side: a progress message written
+before a result can arrive after it once `> file` is involved. It is ordinary C
+stdio behaviour and not a gBASIC decision, but the tutorial's §"Running
+programs" is where somebody learning the two channels will be, and it is one
+sentence.
+
+### What held
+
+Worth recording, because a chapter of measurement found nothing wrong with any
+of it. A `404` is a normal response record with a normal body, and the body's
+being valid JSON means `is_unknown(r["json"])` is `false` on a failed call —
+correct, documented, and the single most useful thing the chapter has to teach,
+because it rules out "did it parse" as a success test. `r["json"]` on a response
+with no `json` reads `unknown` while `r.json` raises `unknown record field:
+json`, which is exactly the asymmetry the reference describes and is what makes
+the dynamic-access idiom worth the extra characters. `default(r.json["x"],
+nothing)` flattens a missing field in one expression. `error.source` and
+`error.code` are stable (`webclient`, `3001`) across a refused connection, a
+failed name resolution and a malformed URL, while `error.message` is libcurl's
+and varies by cause and machine — so the two are usable as a program's test and
+the third is usable as a person's explanation, which is the split the error
+model promises. `sleep` takes sub-second values. `env(name)` answers `unknown`
+for an unset variable, which makes an offline switch six lines. And
+`try_decode`, `decode`, `json_encode`, records, arrays and `nothing` crossed the
+wire from Chapter 8 to Chapter 10 without a single conversion being written.
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 11 ("Programming with AI") against 0.2.2
+
+Every program in the chapter calls a model through `stdlib/llm.bas` with an
+injected transport, so the whole chapter runs with no key and no network. The
+fixtures are real replies recorded from `llama3.2:3b` under Ollama on
+127.0.0.1, and the chapter's build was verified inside a bwrap network
+namespace (loopback only, no route out) with a plausible `ANTHROPIC_API_KEY`
+in the environment: 206 checks, all green, which is the proof that nothing in
+the chapter reaches for it.
+
+### 40 (perf, medium): every `llm.chat` pays for a replay key nobody asked for
+
+- **Type:** perf
+- **Severity:** medium
+- **What:** `chat()` computes `canon = canonical_request(m, request)` and
+  `_fnv1a(canon)` unconditionally, on every call, to produce `req.fingerprint`
+  and `req.canonical` for the keyed-replay seam. `_fnv1a` is pure gBASIC and
+  calls `_xor32` once per character; `_xor32` is a 32-iteration `while` loop.
+  So the fingerprint costs roughly thirty interpreted loop turns per character
+  of the request, and it is paid whether `llm.replay` is in use, `llm.offline`
+  is in use, a `with_transport` stub is in use, or nothing is.
+
+  Measured on this machine, 0.2.2, 20 `ask_json` calls through a
+  `with_transport` stub that reads a file (so the only work is the library's):
+
+  ```
+  system ""        prompt "x"      2.51s   0.12s/call
+  system 40 chars  prompt 35 chars 5.75s   0.28s/call
+  system 142 chars prompt 35 chars 7.26s   0.36s/call
+  system 352 chars prompt 35 chars 14.90s  0.74s/call   <- the chapter's prompt
+  ```
+
+  And the same 20 calls with the long prompt, under
+  `llm.with_volatile(m, ["system", "messages"])`, which removes those two
+  fields from the canonical before hashing: **1.30s**. So it is the hash, not
+  the JSON encoding, the record walk or the file read.
+
+- **Why it matters beyond a benchmark.** Two things, and the second is the one
+  that cost time.
+
+  A call whose transport is a local function still pauses for most of a second,
+  so an *interactive* program built on `llm` goes silent before every prompt.
+  In the chapter's animal game that is a dead half-second between "What was
+  it, Sam?" and the model's suggestion, on a call that never leaves the
+  machine.
+
+  And a test harness that watches for a program going quiet cannot tell that
+  pause from a program waiting for input. The book's capture tool treats
+  0.25s of silence on a written row as "a program is asking a question" and
+  types the next line; with the hash in the way it typed into the gap, and the
+  terminal echoed the answers ahead of the prompts they belonged to. It also
+  truncated four non-interactive captures, because the same tool treats 0.2s
+  of silence after the last output as "the program has finished" and closes the
+  pty, which SIGHUPs the child (exit 129). Both went away entirely under
+  `with_volatile`.
+
+- **Workaround:** every Chapter 11 example carries
+  `m = llm.with_volatile(m, ["system", "messages"])` on the third line, with a
+  comment naming this entry. That is a semantic lie used for a timing effect --
+  `with_volatile` means "these fields are not part of the replay key", and the
+  chapter does not replay by key -- and it is in the book only because there is
+  no other lever. It comes out the day this is fixed.
+
+- **Fix:** compute the fingerprint lazily. Nothing needs it unless
+  `m.replay_dir` is set or the caller reads `req.fingerprint`, and the second
+  is rare enough to be worth a field the caller opts into. Failing that, a
+  native `fnv1a(s)` or `hash(s)` builtin: the algorithm is a hot per-byte loop
+  and is exactly the shape that does not belong in the interpreter.
+
+### Smaller, for the reference
+
+**`docs/llm_design.md` §4 promises `source llm` on a transport failure and no
+such source exists.** The document says, in bold, "Transport / provider
+failures raise (structured error, source `llm`)". Measured on 0.2.2, through
+`llm.ask`:
+
+```
+connection refused (127.0.0.1:1)   source "webclient",       code 3001
+name will not resolve              source "webclient",       code 3001
+HTTP 500 after the retry budget    source "explicit error",  code 2000
+no API key                         source "explicit error",  code 2000
+```
+
+The first two are `webclient`'s, correctly, because they *are* webclient
+failures one layer down. The second two come from `error "llm: ..."` inside the
+library and get the generic explicit-error source. So a program cannot ask
+"was this the model layer?" at all: `error.source` says `webclient` or
+`explicit error`, and the only thing distinguishing an `llm` failure from any
+other explicit error is the `llm:` prefix on the message -- which the error
+model elsewhere says is for people, not programs. Either the document should
+stop promising `source llm` or `error` should learn to carry one. Chapter 11
+teaches what 0.2.2 does and says the message prefix is the only handle.
+
+**`docs/ai/COOKBOOK.md`'s LLM entry closed the gap with a wrong API.** The
+2026-09-23 Chapter 10 note filed "COOKBOOK has no LLM entry at all"; there is
+one now, and four of its claims do not match `stdlib/llm.bas`:
+
+- it writes `llm.ask(m, prompt)`; the signature is `llm.ask(m, system, prompt)`;
+- it says `ask` returns `{ok, text, message}` and that "failure is a VALUE, not
+  a raise, because a rate limit and a bad key are ordinary outcomes". `ask`
+  returns a **string or `unknown`**, and transport failures **raise** -- the
+  opposite policy, and the one `llm.bas`'s own header and `llm_design.md` §4
+  both describe. This is the most damaging line in the entry, because a reader
+  who believes it writes no error handler at all;
+- it writes `llm.ask_json(m, prompt, shape)`; there is no `shape` parameter and
+  the signature is `(m, system, prompt)`;
+- it writes `llm.offline(m, file)`; it takes a **directory**, and reads
+  `{dir}/{format}_response.json` from it.
+
+The market entry two bullets above it is correct about `market.daily` returning
+`{ok, ...}`, so the shape looks as though it was carried across from there.
+
+**`ask_json` only strips a fence that starts the reply.** `_strip_fences` tests
+`find(s, "```") = 0`, so "```json\n{...}\n```" is recovered and "Here is a
+JSON object that meets your request:\n```\n{...}\n```" is not -- it goes to the
+corrective retry, and to `unknown` if the model says the same thing twice. That
+is a recording of what a real small model does, not a hypothetical. The
+behaviour is defensible (hunting for something brace-shaped inside a paragraph
+is guessing, and guessing is what the checks exist to avoid), but §3 says
+`ask_json` "owns the sloppiness handling" without qualification, and this is
+the commonest sloppiness there is. One clause naming the limit would stop
+people concluding the library is broken.
+
+**`examples/edgar/panel_transcript.md` still carries the doubled `/v1`.**
+`llm.local("http://localhost:11434/v1", ...)` appears twice there. The same
+form was corrected in `llm_design.md` and `examples/llm/smoke_ask.bas` on
+2026-09-19, and `llm.bas` now carries a comment saying so; the transcript was
+missed.
+
+**`load llm` from the source-tree binary resolves to the INSTALLED stdlib.**
+Running `~/development/gbasic/gbasic` with no `GBASIC_PATH`, `load llm` finds
+`/usr/local/share/gbasic/stdlib/llm.bas`, because the exe-relative candidate
+`<prefix>/share/gbasic/stdlib` does not exist in a source tree and the
+compiled-in default does. The two files are byte-identical today. The day they
+are not, a developer testing the binary they just built is running somebody
+else's library and nothing says so. A one-line note on stderr when the
+compiled-in fallback is used, or a `--where` that prints what a `load`
+resolved to, would close it.
+
+### What held
+
+**The injection seams are the whole reason this chapter exists.**
+`with_transport`, `with_sleep` and the `req.attempt` counter made it possible
+to demonstrate a retry with a 500, a 503 carrying `Retry-After: 5`, and a
+success, in a program that touches no network and waits for nothing. The
+corrective retry inside `ask_json` is detectable from the transport without any
+state, because the second request carries the words "not valid JSON" in its
+body -- which is what let the chapter show the retry happening rather than
+assert it.
+
+**The `unused-result` warning on a discarded `with_transport` is the best
+diagnostic in the language.** It names the function, says why a gBASIC function
+cannot change its caller, and tells you both ways to fix it. It is also the one
+warning that, unheeded, spends somebody's money, and it fires every time.
+
+**A library function shadowing a program's own is reported, clearly.** The
+game has had an `ask()` since Chapter 6; `load llm` brings its own, and gBASIC
+said `local function 'ask' shadows 'ask' from library 'llm'; unqualified calls
+use the local, and 'llm.ask' reaches the library one`, naming both. The game
+renamed its own to `ask_yes_no`. Exactly the right behaviour: the program still
+worked, and it was told.
+
+**`llm.local` is keyless by construction and `_resolve_key` short-circuits on
+it**, never touching `env`. That is what let the chapter promise a reader that
+no example can spend money, rather than merely asking them to be careful -- and
+it is why `llm.local` and not `llm.anthropic` is the constructor in every
+listing.
+
+**A literal key argument beats the environment.** `_resolve_key` prefers
+`m.key` when it is a non-empty string, so a program that passes one is immune
+to whatever is in `ANTHROPIC_API_KEY`. Measured both ways on a machine that has
+one.
+
+**And `base_url` is an ordinary record field**, so a handle can be pointed at
+`http://127.0.0.1:1` after it is built. That is how the chapter's key example
+and its `with_transport` trap can be run by a reader with a real key in their
+environment and still be unable to call anybody.
+
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 12 ("How to Build a Solution") against 0.2.2
+
+The chapter is a build log rather than an essay: a fifty-line report over
+Chapter 9's database, built in eleven numbered steps with every real run and
+every real mistake kept as a file. So its subject is largely **diagnostics**,
+and ten of them are quoted from programs in `examples/ch12/errors/`, each with
+its own captured transcript. Nothing in the chapter was typed from memory. The
+whole book's suite is green on 0.2.2: 239 checks.
+
+### 41 (missing-feature, low): a SQLite error never names the statement
+
+- **Type:** missing-feature
+- **Severity:** low
+- **What:** step 4 of the chapter's log mistypes a column and gets
+
+  ```
+  runtime error at step04a_the_numbers.bas:35:3: SQLite prepare failed: no such column: player
+  ```
+
+  Line 35 is inside a four-line helper that unwraps a one-row count:
+
+  ```basic
+  function one(db, sql)
+    rows = sqlite.query(db, sql)
+    return rows[0].total
+  end function
+  ```
+
+  Five queries go through it. The position is honest -- that really is where
+  the call was made -- but it points at where the failure was *noticed*, and
+  the message carries nothing that says which of the five statements SQLite was
+  looking at. The only handle is the word `player`, which has to be grepped for.
+
+  This is the shape every helper produces, and a helper around
+  `sqlite.query` is the first thing anybody writes after their third count.
+
+- **Workaround:** none needed here -- the chapter turned it into a teaching
+  point, because "the line named is where it was noticed, not where it was
+  caused" is worth a beginner knowing. But the chapter had to spend a paragraph
+  on it.
+
+- **Fix:** append the statement, or its first 60 characters, to the message:
+  `SQLite prepare failed: no such column: player -- in "select count(distinct
+  player) as total from games"`. sqlite3 hands the SQL back to the caller
+  already; nothing has to be remembered. `pg` and `odbc` will have the same
+  shape and are worth checking at the same time.
+
+### Smaller, for the reference
+
+**`--add-loads` DOES add `load sqlite` now.** The Chapter 10 and Chapter 12
+plans both carry a risk note saying it did not, from a 0.1.0 measurement. On
+0.2.2 it does, for a program that calls `sqlite.connect` and `sqlite.query`
+with no `load` at all. Both risk notes can be closed.
+
+What it emits is not paste-ready, though. The `load` is placed **inside** the
+`program` block, indented four spaces where the file is indented two, with a
+blank line after it:
+
+```basic
+program main(args)
+    load sqlite
+
+  db = sqlite.connect("x.db")
+```
+
+Legal, and it runs. But every file in `stdlib/`, in `examples/` and in both
+books puts `load` at the top of the file, outside the block, and the emitted
+indentation matches nothing. Emitting it above `program` -- or at least at the
+file's own indent -- would make the output something you can pipe back over the
+source, which is what a `--add-` flag is for.
+
+### What held
+
+**The diagnostics are good enough to be the subject of a chapter**, which is a
+strong claim and the chapter makes it in a table. Ten messages were produced by
+ten real programs, and of those ten:
+
+- one names the function to call instead
+  (`sqlite.exec cannot discard row results; use sqlite.query`);
+- one names both ways to repair it (`assign it, or return nothing`);
+- one names the token the parser wanted (`expecting THEN`);
+- and six name the exact wrong word, so the fix is comparing two spellings.
+
+None of them is a bare code, none of them is a stack trace, and none of them
+required the book to explain what it "really" meant. That is unusual and it is
+worth saying out loud in a log that mostly records friction.
+
+**`parse error` versus `runtime error` is a distinction a beginner can use.**
+The chapter teaches it as "did anything happen" -- a parse error means nothing
+ran and nothing was written -- and the language holds that line exactly:
+`10_parse_error.bas` produces no output at all before its message.
+
+**Errors and ordinary output interleave correctly under a pty.** Step 8's two
+crashes each print the part of the report that had already succeeded above the
+message -- five lines for the first, seven for the second -- in the right
+order, with nothing lost to buffering. The transcripts show it, and a book that
+prints partial output followed by the failure that stopped it depends on that
+being true.
+
+**`round` and `mod` and `floor` are all calls, and `7 mod 2` is duration
+syntax.** The reference says so, the error said so on the first attempt
+(`unknown duration unit 'mod' -- the units are year, month, week, ...`), and
+it cost about ten seconds. Naming the alternative in the message is what made
+it ten seconds rather than a search.
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 13 ("Building a Real Application") against 0.2.2
+
+The capstone: a two-day conference planner built in ten runnable steps, on a
+**different** program from the animal game, because transfer is the test. Its
+real subject is finding a library and reading its contract, so the chapter is
+built around `stdlib/schedule.bas` — and the whole of `layout`'s stated
+contract was re-verified by running it, not by reading the plan. Every claim
+held. Nineteen captured sessions, 50 quoted blocks, all generated.
+
+`dates`, durations, `money` and `persist` all make their first Volume 1
+appearance here, because Chapter 2 deferred every one of them.
+
+### 42 (diagnostic, low): `load NAME` scans the working directory and blames an unrelated file
+
+- **Type:** diagnostic
+- **Severity:** low
+- **What:** `money` is a native namespace, not a `stdlib/*.bas` file, so
+  `load money` should say so. In an empty directory it does:
+
+  ```
+  runtime error at m.bas:2:3: library not found: money
+  ```
+
+  Put **any** unparsable `.bas` file next to the program and the same line
+  says something else entirely:
+
+  ```sh
+  printf 'a = [1, 2]\na[5]\n' > broken.bas
+  ```
+
+  ```
+  parse error at ./broken.bas:2:5: syntax error, unexpected NEWLINE
+  runtime error at m.bas:2:3: could not parse library file: ./broken.bas
+  ```
+
+  `broken.bas` has nothing to do with `money`. The resolver evidently walks the
+  directory's `.bas` files looking for a `library` block with that name, and a
+  file it cannot parse aborts the walk and becomes the message — so the real
+  answer ("there is no library called money") is lost, and an innocent file is
+  named instead. Adding a well-formed `library zebra` alongside does not change
+  it; the broken file still wins.
+
+  This was hit for real, in a scratch directory with sixty throwaway `.bas`
+  files in it, and it cost several minutes of looking at the wrong file. The
+  shape it will bite in is exactly a beginner's: a directory of half-written
+  programs and one mistyped `load`.
+
+- **Workaround:** run from a clean directory, or delete the file it names and
+  run again until it tells you the truth.
+
+- **Fix:** a file that fails to parse during a *name search* is not an error —
+  it is a file that does not define the library being looked for. Skip it and
+  keep walking, and if nothing matches, say `library not found: money`. If the
+  parse failure is worth reporting at all it belongs on stderr as a note, not
+  as the failure. (A file named explicitly — `load x from "broken.bas"` —
+  should of course still fail loudly, because there the caller named it.)
+
+### 43 (diagnostic, low): a reserved word used as a variable does not name the word
+
+- **Type:** diagnostic
+- **Severity:** low
+- **What:** the chapter's step 3 wanted a variable for "the day heading
+  already printed" and the obvious name was `on`:
+
+  ```
+  parse error at 03_sessions.bas:18:6: syntax error, unexpected OP_EQ, expecting IDENT or ERROR_VALUE
+  ```
+
+  The position is right and the message is about the `=`, which is the one
+  token on that line that is not the problem. Nothing says `on` is reserved.
+  The same mistake in a parameter list is better, because the token survives
+  into the message — `function money_line(label, sold, each)` gives
+  `unexpected EACH, expecting IDENT` — but the reader still has to know that
+  `EACH` is the spelling of their own word.
+
+  Both were real, both in one afternoon, and both from ordinary English words
+  a beginner reaches for.
+
+- **Workaround:** rename. Ten seconds once you know; a minute the first time.
+
+- **Fix:** when a reserved word appears where an identifier was expected, say
+  so in the words the programmer typed: `'on' is a reserved word and cannot be
+  a variable name`. The parser has the token; it is a message, not an
+  analysis. This is the same class as `expecting THEN` in Chapter 12's table,
+  which is the good case — the message named the missing word and the fix took
+  ten seconds.
+
+### Smaller, for the reference
+
+**`invalid money operation` is the one terse message in an otherwise
+exemplary set.** `0 + room` where `room` is USD gives
+
+```
+runtime error at z.bas:7:9: invalid money operation
+```
+
+while the sibling failures in the same area are models of the form:
+`cannot add money in different currencies (USD and EUR)` names both, and
+`money text has more decimal places than the currency can store (USD stores 6)`
+names the limit. Adding a plain number to money is a beginner's mistake — an
+accumulator initialised to `0` — and the message could say `cannot add a
+number to money; money needs a currency (write 0.00 with a currency modifier)`.
+Chapter 13's answer key has to explain what it means, which is the tell.
+
+**No line continuation is a real cost in a book that holds 80 columns.** The
+clash check's condition needed an outer pair of brackets to survive being
+written on two lines:
+
+```basic
+      if (a.speaker != "" and a.speaker = b.speaker
+          and a.starts < b.ends and b.starts < a.ends) then
+```
+
+Without them: `syntax error, unexpected NEWLINE, expecting THEN`, which names
+the keyword rather than the rule. The rule is documented (reference, §Line
+continuation) and the workaround is fine — but the message could say
+*"a statement continues across lines only inside brackets"* on a NEWLINE that
+arrives mid-condition, and that would be the difference between a lookup and a
+guess.
+
+### What held
+
+**`schedule.layout`'s contract is exactly what its header comment says**, and
+that is the whole chapter. Every one of the four promises was re-verified by
+running it on 0.2.2: order kept; a session that misses day end moved whole;
+an eight-hour talk on a nine-to-five day with lunch reported in `unplaced`
+**without sinking the five sessions behind it**; breaks immovable, with the
+bumped session restarting at exactly 13:00 and the 15-minute gap correctly
+*not* inserted after the break. `day` is a 1-based index into the days array.
+`unplaced` is names, in order. Both entry points error without `hours`.
+
+**A fifteen-line header comment turned out to be a better contract than most
+API documentation**, and the chapter says so on the page. It states what was
+*decided* rather than only what happens — "decided rather than discovered, and
+tested" — which is the sentence that lets a caller trust a rule instead of
+discovering it empirically and hoping.
+
+**`plan.breaks` applying to every day in the call is the right design and the
+right trap.** It forced the chapter's best beat: the naive whole-conference
+call loses ninety minutes a day, silently, with output that looks like a
+schedule. A library that had quietly attached breaks to days would have been
+guessing.
+
+**Datetime fields and arithmetic carried the whole chapter without a
+surprise.** `d.dayname`, `t.hour`, `t.minute`, `starts + f.length`,
+`a.starts < b.ends` between two datetimes, `mins * (1 minute)` to rebuild a
+duration from JSON — all obvious, all right first time.
+
+**`money.currency(amount)` is the right call and easy to miss.** Money prints
+without its code and has no `.currency` field (`field access expects a record`),
+so the discoverable path is the `money` namespace. Once found, the chapter's
+budget lines stopped hard-coding "USD" in six places.
+
+**`persist.read_status` and `persist.write_atomic` are exactly what Chapter 8
+promised they would be**, three chapters later, on a program that is not the
+game. The three states carried straight over with no adaptation.
+
+**Errors and stdout interleave correctly under a pty**, again — the no-hours
+session prints its one true line above the failure, and the bad-conference
+session puts three `print to error` complaints out before `exit(1)`.
+
+
+## 2026-09-23 — CC — while: writing the beginner book's install section against the real download
+
+- **Type:** bug
+- **Severity:** high
+
+The site offers one package, `gbasic-0.2.2-linux-x86_64.tar.gz`, and it is a
+minimal build. Measured against the published archive, not a local one:
+
+```
+$ ldd bin/gbasic
+        libm.so.6 ... libc.so.6 ...          # and nothing else
+
+$ bin/gbasic -e 'load sqlite'
+runtime error: SQLite support is not available in this build
+$ bin/gbasic -e 'load llm'
+runtime error: WebClient support is not available in this build
+```
+
+A locally built interpreter links `libsqlite3`, `libpq`, `libodbc`, `libldap`
+and libcurl, so everything works on this machine and nothing warns that the
+thing people download is different.
+
+**Cost.** The beginner book teaches SQLite in Chapter 9, HTTP in Chapter 10 and
+a model call in Chapter 11. A reader who follows the site's own install
+instructions reaches Chapter 9 and is told the feature does not exist — two
+hundred pages in, with no way to tell whether they have done something wrong.
+That is the worst shape a packaging decision can take: it fails late, silently,
+and looks like the reader's fault.
+
+**Why it presumably is that way:** a build with no external dependencies runs on
+any glibc 2.34+ machine, which is a real virtue for a download. The trade is
+capability, and right now the trade is invisible.
+
+**Suggestions, in the order I would consider them:**
+
+1. Ship a **second archive** that links the optional modules, and say plainly
+   on the page what each one contains. The minimal build stays for people who
+   want a single portable binary.
+2. Or **statically link SQLite and libcurl** into the published build. Both are
+   routinely vendored, and it keeps one download.
+3. Or ship a **`.deb`** with `Depends: libsqlite3-0, libcurl4`, which is the
+   ordinary answer for the Ubuntu machines the project already tests on.
+
+And whichever is chosen: **`--version` should say which modules are in the
+build**, so the answer to "why does `load sqlite` fail" is one command rather
+than a guess.
+
+## 2026-09-23 — CC — while: drafting Volume 1 Chapter 14 ("What Else gBASIC Can Do") against 0.2.2
+
+The closing chapter is a tour of what exists beyond the book, so every line of
+it is a claim about this repository. The rule for the draft was that a claim is
+either **run** or **read out of a document with its status line beside it**.
+Nine programs, all of them run; `money`, `dates` + timezone edges, `chart`,
+`gpdf` (including `table`, `representable`, `text_width` and `svg`), `web`
+routing, `spawn`/`send`/`receive`, the warning channel, first-class functions
+and PBI all behaved as documented.
+
+Two things the documentation says that the tree no longer does. Both are
+paperwork rather than defects, and both are exactly the failure mode
+`docs/README.md`'s own preamble warns about.
+
+Also confirmed, in the good direction: the `datetime` row in `docs/README.md`
+has been corrected and no longer contradicts §9 — it now names `to_zone`,
+`add_business_hours` and `observe:` as shipped, which they are. A previous
+book-session note flagged that row as stale; it can be considered closed.
+
+### 45 (doc-gap, low): `LICENSING.md` counts 26 standard libraries; there are 65
+
+- **Type:** doc-gap
+- **Severity:** low
+- **What:** the short version in `LICENSING.md` reads:
+
+  > covers the language, the `gbasic` binary, every C module compiled into it
+  > — including the whole xlsx engine — and **16 of the 26** standard
+  > libraries.
+
+  ```sh
+  $ ls stdlib/*.bas | wc -l
+  65
+  $ grep -l "AGPL-3.0-or-later" stdlib/*.bas | wc -l
+  10
+  ```
+
+  The **ten AGPL** figure is exact and matches the `### AGPL-3.0-or-later`
+  list below it, verified against the `SPDX-License-Identifier` headers rather
+  than the prose. It is only the total that is stale, by roughly a factor of
+  two and a half — and it is the sentence a reader lands on first, which makes
+  it the one sentence in the file that has to be right.
+
+  A reader doing the subtraction gets "10 of 26 are AGPL", which reads as
+  *nearly half this library is copyleft*. The truth is ten of sixty-five, and
+  the ten are two coherent groups (the spreadsheet-to-database pipeline and
+  the EDGAR suite) that a reader can recognise and avoid or accept. The stale
+  number makes the licence split sound like a minefield instead of a line.
+
+- **Workaround:** count the `### Apache-2.0` and `### AGPL-3.0-or-later`
+  lists, which are both current, or grep the SPDX headers.
+
+- **Fix:** drop the total, or generate it. "Ten standard libraries are AGPL;
+  everything else is Apache-2.0" needs no count and cannot go stale. If a
+  count is wanted, the docs gate already walks `stdlib/` and could assert it
+  the same way it asserts that every document has a row.
+
+### 46 (doc-gap, low): the documentation index uses two status words its own legend does not define
+
+- **Type:** doc-gap
+- **Severity:** low
+- **What:** `docs/README.md` opens with a four-value legend — **Shipped**,
+  **Proposal**, **Partial**, **Record** — and tells the reader to read the
+  status column before relying on anything. Two rows then use a fifth and a
+  sixth word:
+
+  ```
+  | discovery_design.md            | Design | `discovery` — what a database ESTATE says ...
+  | plat-web-lowering-study.md     | Done   | PLAT-WEB-0: both design examples hand-lowered ...
+  ```
+
+  Neither word is in the table, and neither is obvious. Is **Design** a
+  Proposal (a design nobody has built) or a Partial (a design document for
+  something that ships)? Reading `discovery_design.md` suggests the former and
+  reading `nlq_design.md` — marked **Partial**, and which depends on
+  discovery's first increment — suggests the latter. **Done** is presumably
+  Record, but "done" and "shipped" are not the same claim about a *study*.
+
+  This matters more than two rows usually would, because the legend is the
+  thing being taught. The beginner book's last chapter teaches a reader to
+  read the status column and gives the four words; a reader who does that and
+  immediately meets a fifth has been taught that the column is approximate,
+  which is the opposite of the lesson.
+
+- **Workaround:** read the row's description, which in both cases says more
+  than the status word does.
+
+- **Fix:** map both onto the four (`Design` → **Proposal** or **Partial**,
+  whichever is true; `Done` → **Record**), or add them to the legend with a
+  line each. Either is fine; having a legend that the table does not follow is
+  not. `tests/run_docs_gate.sh` already fails on a document missing from the
+  page and could assert the status cell is one of the legal values, which
+  would make this unable to recur.
+
+## 2026-09-23 — CC — while: measuring what a fuller release build would cost (ledger item 44)
+
+- **Type:** bug
+- **Severity:** high
+- **What:** Item 44 says the published download is a minimal build. Deciding
+  what to ship instead needs a measurement rather than an argument, so three
+  candidate configurations were built in `ubuntu:22.04` — the release tarball's
+  own base image. Two of them worked:
+
+  ```
+  lean  (what 0.2.2 ships)                750,256 bytes   libm libc
+  book  (+ sqlite3 zlib libxml2 crypto)   987,920 bytes   + libsqlite3.so.0 libxml2.so.2
+                                                            libz.so.1 libssl.so.3
+                                                            libcrypto.so.3 libcrypt.so.1
+  net   (+ libcurl)                       BUILD FAILED
+  ```
+
+  The third did not compile:
+
+  ```
+  src/eval.c:14901: error: 'CURLOPT_PROTOCOLS_STR' undeclared; did you mean 'CURLOPT_PROTOCOLS'?
+  src/eval.c:14902: error: 'CURLOPT_REDIR_PROTOCOLS_STR' undeclared
+  src/eval.c:15684: error: 'CURLOPT_PROTOCOLS_STR' undeclared
+  src/eval.c:15685: error: 'CURLOPT_REDIR_PROTOCOLS_STR' undeclared
+  src/modules/smtp.c:371: error: 'CURLOPT_PROTOCOLS_STR' undeclared
+  ```
+
+  `CURLOPT_PROTOCOLS_STR` was added in libcurl 7.85.0 (2022-08-31). Ubuntu
+  22.04 has 7.81.0. There is no `-Werror` here, so the warnings above the
+  failure were not the cause — the errors are real, and five of them.
+
+  **This machine has libcurl 8.18.0**, which is why nothing saw it. It is the
+  same axis that produced the 0.2.0 glibc problem: a development box is always
+  the newest thing in the room, and the one machine whose toolchain matters is
+  the oldest one anybody ships to.
+
+  **What makes it worse than an old-header annoyance** is the direction of the
+  failure. The `HAVE_*` convention says an optional dependency that is missing
+  becomes a clean runtime error and the interpreter still builds. A dependency
+  that is *present but older* did the opposite: it failed the whole
+  translation unit, so `gbasic` — the lexer, the parser, `money`, everything —
+  could not be built at all on that machine because of an option on an HTTP
+  request. And it went unnoticed because the tarball deliberately builds lean,
+  so the configuration that cannot be built is exactly the configuration
+  nobody builds.
+
+- **Workaround:** resolved. A version shim in `src/eval.c`:
+
+  ```c
+  #if LIBCURL_VERSION_NUM >= 0x075500
+  #define GB_CURL_PROTOCOLS(h, names, mask) \
+      curl_easy_setopt((h), CURLOPT_PROTOCOLS_STR, (names))
+  #else
+  #define GB_CURL_PROTOCOLS(h, names, mask) \
+      curl_easy_setopt((h), CURLOPT_PROTOCOLS, (long)(mask))
+  #endif
+  ```
+
+  **The fallback keeps the restriction rather than dropping the option**, which
+  is the part worth stating: restricting the protocol set is a security
+  setting, not a preference — without it a redirect can move a request onto
+  `file://` or `scp://` — and the cheapest way to make a compile error go away
+  is to delete the line that caused it, which turns a red build into a missing
+  guard nothing would notice.
+
+- **Guarded by:** `tests/run_libcurl_floor.sh`, and the guard is a symbol
+  comparison rather than a build, deliberately. The real check — compile the
+  full configuration in the floor image — needs podman, a network and about two
+  minutes, which is a tier people run once. Comparing every libcurl identifier
+  our sources use against a **generated list of what exists at the floor**
+  (`tests/libcurl_floor/symbols.txt`, 1,174 names from the 22.04 image, made by
+  `tools/make_libcurl_floor_symbols.sh`) catches the same class in milliseconds
+  with nothing installed, so it can sit in the routine gate. It is general: it
+  catches the *next* post-floor symbol, not the five that were found. The
+  container build is still there under `LIBCURL_FLOOR_BUILD=1`, and the suite
+  prints **NOT RUN** for it rather than staying silent, because a tier that
+  says nothing about being absent reads exactly like one that passed.
+
+- **A measurement that changed what I built, and is the more useful half:**
+  the obvious test for this fix is behavioural — have a server redirect to
+  `file:///etc/passwd` and require gBASIC not to follow it. I wrote it, and
+  **it passed against a binary with the redirect restriction deleted.** Two
+  reasons, both measured rather than reasoned:
+
+  1. `webclient.get` and `http.start` each check the URL scheme in gBASIC
+     before libcurl sees it (`webclient URL must use http:// or https://`),
+     so the initial-URL restriction is unreachable from a gBASIC program.
+  2. libcurl's *default* `CURLOPT_REDIR_PROTOCOLS` has excluded `file` and
+     `scp` since 7.19.4, so the redirect restriction is unreachable too.
+
+  So all three explicit settings are defence in depth that, today, no gBASIC
+  program can distinguish from their absence — and a suite asserting the
+  redirect is refused would have been a green line that measures nothing, in a
+  file whose subject is a security control. The fixtures were deleted rather
+  than shipped. The settings are kept: both reasons they are currently
+  redundant are facts about *other* code (our own scheme check, and a libcurl
+  default), and either can change without anything here noticing. What the
+  suite asserts instead is that they are still *there* — counted, in both
+  branches of the shim — which is the claim that can actually be checked.
+
+## 2026-09-23 — CC — while: deciding the shipping shape for ledger item 44
+
+- **Type:** missing-feature
+- **Severity:** high
+- **What:** `tools/build-release-tarball.sh` ships a **lean** build and gives one
+  reason for it:
+
+  > A full build links ~50 shared objects, and one made on 22.04 expects
+  > 22.04-era libpq, libxml2 and libodbc — sonames that differ on newer
+  > distributions, so a "portable" full tarball would fail at load with a
+  > message about a missing `.so` and nothing a reader could act on.
+
+  That is a sound argument about **~50 libraries**. It was never measured
+  against a smaller set, and the set that covers the beginner book's three
+  broken chapters is **nine**.
+
+  Three configurations built in the tarball's own base image (`ubuntu:22.04`),
+  stripped:
+
+  ```
+  lean  (what 0.2.2 ships)                750,256 B   libm libc
+  book  (+ sqlite3 zlib libxml2 crypto)   987,920 B   + libsqlite3 libxml2 libz
+                                                        libssl libcrypto libcrypt
+  net   (+ libcurl)                     1,037,296 B   + libcurl
+  ```
+
+  At the `net` tier `sqlite`, `xml`, `crypto`, `webclient`, `http` and `smtp`
+  all load. **The whole difference is 287 KB.**
+
+  Then the soname question, asked of each distribution in the stated floor
+  rather than reasoned about — `ldconfig -p` after installing the runtime
+  packages, so an absence means the distribution does not have it rather than
+  the base image being stripped:
+
+  ```
+                    22.04  24.04  Deb12  Deb13  Rocky9   F41    F43   Ubuntu 26.04
+    libsqlite3.so.0   .0     .0     .0     .0     .0     .0     .0        .0
+    libcurl.so.4      .4     .4     .4     .4     .4     .4     .4        .4
+    libssl.so.3       .3     .3     .3     .3     .3     .3     .3        .3
+    libcrypto.so.3    .3     .3     .3     .3     .3     .3     .3        .3
+    libz.so.1         .1     .1     .1     .1     .1     .1     .1        .1
+    libcrypt          .1     .1     .1     .1   **.2**  **.2** **.2**      .1
+    libxml2           .2     .2     .2     .2     .2     .2     .2      **.16**
+  ```
+
+  **Seven of the nine are identical everywhere. Two are not, and both are a
+  hard failure** — a `DT_NEEDED` on a soname the machine spells differently
+  means `bin/gbasic` does not start *at all*, with a message about a `.so` and
+  nothing a reader can act on. `libxcrypt` is `.so.1` on the Debian family and
+  `.so.2` on the RHEL family; `libxml2` moved to `.so.16` in 2.14 (2025), which
+  is already true on Ubuntu 26.04.
+
+  **I got this wrong first, and the way I got it wrong is the part worth
+  keeping.** The first sweep asked Ubuntu 22.04, Debian 12, Rocky 9 and Fedora
+  41 — the *older* half of a range whose promise is "22.04 **and newer**" —
+  concluded that `libxcrypt` was the only split, and built an artifact that
+  **would not start on the machine that built it**:
+
+  ```
+  ok   links exactly the full tier's libraries: … libxml2.so.2 …
+  FAIL it did not run a program: error while loading shared libraries:
+       libxml2.so.2: cannot open shared object file
+  artifact NOT usable; not publishing
+  ```
+
+  The build script's own smoke test caught it and refused to publish. So the
+  "~50 shared objects" argument was right in kind and I was wrong to treat it
+  as merely overstated; what the measurement changes is the *number* — two
+  splits out of nine, both nameable, both avoidable — not the principle.
+
+  Also worth noting how `libcrypt` got into the `book` tier at all: nothing
+  asked for it. Installing `pkg-config` enabled every probe in the Makefile,
+  and `libxcrypt` was simply present. A tarball can link a library it never
+  intended to depend on, and the only thing that would say so is reading
+  `readelf -d` afterwards — which is why the build script now **asserts the
+  link set by name** rather than counting it. `ldd | wc -l < 20`, the check
+  that was there, passes a binary carrying `libcrypt` without a word.
+
+- **Workaround:** none yet — this is the measurement, not the change. The
+  decision it enables is a release-policy one rather than a technical one, so
+  it is recorded here for Matthew rather than acted on:
+
+  **A second artefact rather than a replacement**, decided by Matthew.
+  `…-linux-x86_64.tar.gz` stays exactly as it is — extract and run, no
+  questions, no dependencies — and `…-linux-x86_64-full.tar.gz` sits beside it
+  carrying the seven libraries measured identical across the whole range, which
+  means `libxcrypt` and `libxml2` are **disabled explicitly** rather than
+  merely not installed.
+
+  It costs `password_hash`/`password_verify` and `xml`/`xlsx`. It buys
+  `sqlite`, `webclient`, `http`, `smtp` and the libcrypto builtins — which is
+  exactly the database, internet and AI chapters this item names. The
+  spreadsheet chapter still needs a source build, and the download page says
+  so, because "extract and run" and "extract and run if you have these" are
+  different promises and a reader should be told which one they took.
+
+  Verified end to end: built on 22.04, extracted on Ubuntu 26.04 with the
+  environment cleared, `sqlite.connect` → `exec` → `query` returns its row.
+  824 KB against lean's 796 KB.

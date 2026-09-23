@@ -9,6 +9,87 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — a second release tarball, for readers who need a database or a network
+
+`tools/build-release-tarball.sh` now takes `TIER`. `lean` is the default and is
+**unchanged** — libc, libm, extract and run, no dependency a reader has to
+satisfy or even read about. `TIER=full` publishes
+`gbasic-<v>-linux-x86_64-full.tar.gz` beside it, with `sqlite`, `webclient`,
+`http`, `smtp` and the libcrypto builtins working: the database, internet and AI
+chapters of the beginner book, none of which could be followed with the
+published download (DOGFOOD 44). 824 KB against lean's 796 KB.
+
+**The library set is narrow because it was measured.** Of the nine libraries a
+full build wants, seven carry the same soname on every distribution in the
+supported range and two do not — `libxcrypt` (`.so.1` on the Debian family,
+`.so.2` on the RHEL family) and `libxml2` (`.so.2`, but `.so.16` since 2.14,
+already on Ubuntu 26.04). A `DT_NEEDED` on the wrong spelling means the binary
+does not start *at all*, so both are disabled explicitly rather than merely left
+uninstalled; `xml`, `xlsx` and `password_hash` still need a source build, and
+the download page says so.
+
+The script now **asserts the link set by name** instead of counting it. The old
+`ldd | wc -l < 20` passed a binary that had picked up `libcrypt` without being
+asked — installing `pkg-config` enables every probe in the Makefile, and a
+dependency nobody chose is one nobody thinks to check.
+
+Also fixed there: a backtick inside a comment inside the container script was
+**command substitution the host ran**, so every release build silently executed
+`cp` with no arguments and put its error in the build log, where it read like a
+packaging failure.
+
+### Fixed — gBASIC would not compile against the libcurl of the platform it ships for
+
+Three call sites used `CURLOPT_PROTOCOLS_STR` and `CURLOPT_REDIR_PROTOCOLS_STR`,
+which arrived in **libcurl 7.85.0**. `ubuntu:22.04` ships **7.81.0** — and that
+image is not an arbitrary old distribution, it is the base
+`tools/build-release-tarball.sh` builds in, chosen for its glibc floor. So on
+the one platform the download targets, `make` failed with five errors.
+
+**The direction of the failure is the part that matters.** An optional
+dependency that is *missing* degrades to a clean runtime error — that is the
+whole `HAVE_*` convention. One that is *present but older* took the entire
+binary down, every unrelated feature with it. It went unnoticed because the
+tarball deliberately builds lean and never links libcurl, so the configuration
+that could not be built was also the one nobody was building. This machine has
+8.18.0.
+
+Fixed with a version shim whose **fallback keeps the restriction** rather than
+dropping the option: narrowing the protocol set is a security setting — without
+it a redirect can move a request onto `file://` — and deleting the line is the
+cheapest way to make a compile error go away.
+
+`tests/run_libcurl_floor.sh` guards it by comparing every libcurl identifier the
+sources use against a generated list of what exists at the floor, so it catches
+the *next* post-floor symbol rather than these five. The real container build is
+there too, under `LIBCURL_FLOOR_BUILD=1`.
+
+### Fixed — a `lock` no longer masks death by signal
+
+The lock cleanup handler released the locks and then ended the process with
+`_exit(128 + signo)` — the shell's *rendering* of death by a signal, not the
+thing itself. A supervisor reading the real wait status saw
+`WIFSIGNALED=false, exit_code=143` where an unlocked program gives
+`WIFSIGNALED=true, signal=15`, so it could not tell a child that was **killed**
+from one that **chose** to exit 143. The handler is installed for the life of
+the process, so releasing the lock did not restore it.
+
+It now restores the default disposition and re-raises, so the process really
+dies by the signal.
+
+**The obvious version of that fix silently does nothing**, and a perturbation
+proves it: a signal is blocked while its own handler runs, so `SIG_DFL` plus
+`raise` merely marks it pending and the following `_exit` still wins. It has to
+be **unblocked** first.
+
+Why it survived: bash reports `143` in `$?` for both cases, so no shell-level
+check could see it. `tests/run_lock_signal.sh` uses `waitpid` directly.
+
+Measured while testing it: the handler's cleanup is **redundant** — `flock` is
+released by the kernel when the process dies, and the suite still passes with
+the handler deleted. Its only observable effect had been the wrong exit status.
+Recorded in `DOGFOOD.md` rather than acted on.
+
 ### Added — scientific notation, and the silent trap behind its absence
 
 `1e20`, `6.02e23`, `1.5e-3` and `2E10` are number literals. At least one digit
