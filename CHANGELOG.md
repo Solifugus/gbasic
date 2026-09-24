@@ -9,6 +9,31 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — `rows_affected` described the wrong statement (DOGFOOD 36)
+
+`sqlite3_changes()` is defined for INSERT, UPDATE and DELETE and holds its
+previous value otherwise, so a `create table` run after an update that touched
+three rows answered `{"command":"CREATE","rows_affected":3}`. `sqlite` and
+`odbc` now answer `nothing` where a count means nothing, which is what `pg` has
+always answered — one field, three modules, one answer. A DELETE that matched
+no rows is still a genuine `0`.
+
+### Changed — a file operation says why it failed (DOGFOOD 35)
+
+`could not write file: saves/brain.json` covered a missing parent, a parent
+that is an ordinary file, and a directory the process may not write to. The
+reason from `errno` is appended now — `(No such file or directory)`,
+`(Not a directory)`, `(Permission denied)` — across read, write, delete,
+`list_files` and overwrite, joining `make_dir` and `atomic_replace`, which
+already reported theirs.
+
+### Changed — a SQLite refusal names the function you called (DOGFOOD 37)
+
+`sqlite.exec(db, "a; b")` was refused with `SQLite query expects exactly one
+statement`, naming a function the program had not called. It names the caller
+now, and the remedy: `sqlite.exec expects exactly one statement; run them one
+at a time`.
+
 ### Fixed — five pages that said something false, and four checks so they cannot again (DOGFOOD 23, 29, 45, 46, 28)
 
 `UNLEARN.md` said `{ "a": 1 }` is a parse error (it has worked since

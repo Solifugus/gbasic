@@ -158,3 +158,61 @@ built="$(grep -c -- ' -- in \\"' src/eval.c || true)"
 [ "$built" = "1" ] \
     || sqlbad "the statement note is built in exactly one place" "found $built sites in src/eval.c"
 sqlok "the statement note is built in exactly one place"
+
+# --- rows_affected is about THIS statement (DOGFOOD 36) --------------------
+#
+# `sqlite3_changes()` is defined for INSERT, UPDATE and DELETE and holds its
+# PREVIOUS value for anything else, so a `create table` run after an update
+# that touched three rows answered rows_affected 3. Not a message that reads
+# badly: a NUMBER that is wrong, stale from a statement two lines up, and a
+# program logging it records three rows created.
+#
+# `nothing`, not 0, and that is not a preference: `pg` has always answered
+# `nothing` here and it is the module that was right. A plausible zero is the
+# answer this tree refuses everywhere else it appears.
+rm -f "$work/c.db"
+cat > "$work/rows.bas" <<BAS
+load sqlite
+program main()
+  db = sqlite.connect("$work/c.db")
+  print sqlite.exec(db, "create table t (a integer)").rows_affected
+  print sqlite.exec(db, "insert into t values (1), (2), (3)").rows_affected
+  print sqlite.exec(db, "update t set a = a + 1").rows_affected
+  print sqlite.exec(db, "create table u (b integer)").rows_affected
+  print sqlite.exec(db, "delete from t where a > 99").rows_affected
+end program
+BAS
+rows="$(./gbasic "$work/rows.bas" 2>&1 | tr '\n' ' ')"
+# THE LOAD-BEARING ONE IS THE FOURTH: a CREATE after an UPDATE. The first
+# CREATE would answer 0 on the broken build too (nothing had run yet), so a
+# check on it alone passes on the defect.
+[ "$rows" = "nothing 3 3 nothing 0 " ] \
+    || sqlbad "rows_affected is about this statement" "got [$rows], want [nothing 3 3 nothing 0 ]"
+sqlok "rows_affected is nothing where a count means nothing"
+# AND THE CONTROL: a DELETE that matched no rows is a real zero, not an
+# absence. Without it, "answer nothing for anything uncounted" is satisfied by
+# a build that never reports a count at all -- it is the last field above.
+sqlok "and a genuine zero is still zero"
+
+# --- a refusal names the function that was CALLED (DOGFOOD 37) -------------
+# One prepare serves `sqlite.query` and `sqlite.exec`, and its messages said
+# "SQLite query ..." for both -- so `sqlite.exec(db, "a; b")` was refused in
+# the name of a function the program had not called, sending the author to
+# look at the wrong line. Asserted BOTH WAYS, or "it says exec" is satisfied
+# by a build that now names the wrong one in the other direction.
+out="$(sqlfail multi_exec '  sqlite.exec(db, "create table z (a integer); create table y (b integer)")')"
+case "$out" in
+    *"sqlite.exec expects exactly one statement"*) sqlok "exec is refused in exec's name" ;;
+    *) sqlbad "exec is refused in exec's name" "$out" ;;
+esac
+out="$(sqlfail multi_query '  r = sqlite.query(db, "select 1; select 2")')"
+case "$out" in
+    *"sqlite.query expects exactly one statement"*) sqlok "and query in query's" ;;
+    *) sqlbad "and query in query's" "$out" ;;
+esac
+# The remedy is named as well, because a refusal that only says no leaves the
+# author guessing whether the module can be talked into it.
+case "$out" in
+    *"run them one at a time"*) sqlok "and the refusal names the remedy" ;;
+    *) sqlbad "and the refusal names the remedy" "$out" ;;
+esac

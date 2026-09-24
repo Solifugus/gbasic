@@ -8210,13 +8210,20 @@ static char *read_source_file(const char *path) {
     if (!file) {
         return NULL;
     }
+    /* ERRNO DESCRIBES THE FAILURE ON EVERY PATH OUT OF HERE, which is what
+     * lets a caller say WHY rather than only WHICH FILE (DOGFOOD 35). `fclose`
+     * may set its own, so the real one is carried across it. */
     if (fseek(file, 0, SEEK_END) != 0) {
+        int e = errno;
         fclose(file);
+        errno = e;
         return NULL;
     }
     long size = ftell(file);
     if (size < 0) {
+        int e = errno;
         fclose(file);
+        errno = e;
         return NULL;
     }
     rewind(file);
@@ -9236,13 +9243,20 @@ static char *read_whole_file(const char *path, long *out_size) {
     if (!file) {
         return NULL;
     }
+    /* ERRNO DESCRIBES THE FAILURE ON EVERY PATH OUT OF HERE, which is what
+     * lets a caller say WHY rather than only WHICH FILE (DOGFOOD 35). `fclose`
+     * may set its own, so the real one is carried across it. */
     if (fseek(file, 0, SEEK_END) != 0) {
+        int e = errno;
         fclose(file);
+        errno = e;
         return NULL;
     }
     long size = ftell(file);
     if (size < 0) {
+        int e = errno;
         fclose(file);
+        errno = e;
         return NULL;
     }
     rewind(file);
@@ -9761,7 +9775,15 @@ static Value eval_file_call(AstExpr *expr) {
         char *text = read_whole_file(file_value.as.file_path, &size);
         if (!text) {
             char message[512];
-            snprintf(message, sizeof(message), "could not read file: %s", file_value.as.file_path);
+            /* THE REASON, NOT ONLY THE PATH (DOGFOOD 35). A missing parent, a
+              * parent that is an ordinary file, and a directory the process may
+              * not enter are three different mistakes with three different
+              * fixes, and one sentence sent the reader to check all three --
+              * while the runtime had the answer in `errno` the whole time.
+              * `make_dir` and `atomic_replace` already reported theirs; this is
+              * the rest of the family catching up. */
+            snprintf(message, sizeof(message), "could not read file: %s (%s)",
+                     file_value.as.file_path, strerror(errno));
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             return value_null();
@@ -9823,7 +9845,8 @@ static Value eval_file_call(AstExpr *expr) {
         }
         if (unlink(file_value.as.file_path) != 0) {
             char message[512];
-            snprintf(message, sizeof(message), "could not delete file: %s", file_value.as.file_path);
+            snprintf(message, sizeof(message), "could not delete file: %s (%s)",
+                     file_value.as.file_path, strerror(errno));
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             return value_null();
@@ -10053,7 +10076,8 @@ static Value eval_file_call(AstExpr *expr) {
         DIR *dir = opendir(path);
         if (!dir) {
             char message[512];
-            snprintf(message, sizeof(message), "could not list files: %s", path);
+            snprintf(message, sizeof(message), "could not list files: %s (%s)",
+                     path, strerror(errno));
             runtime_error_raise(message, 1004, "file operation");
             value_free(path_value);
             return value_null();
@@ -10279,8 +10303,8 @@ static Value eval_file_call(AstExpr *expr) {
             char message[512];
             snprintf(message,
                      sizeof(message),
-                     "could not overwrite file: %s",
-                     file_value.as.file_path);
+                     "could not overwrite file: %s (%s)",
+                     file_value.as.file_path, strerror(errno));
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
@@ -10366,7 +10390,8 @@ static Value eval_file_call(AstExpr *expr) {
         FILE *file = fopen(file_value.as.file_path, strcmp(name, "write") == 0 ? "wb" : "ab");
         if (!file) {
             char message[512];
-            snprintf(message, sizeof(message), "could not write file: %s", file_value.as.file_path);
+            snprintf(message, sizeof(message), "could not write file: %s (%s)",
+                     file_value.as.file_path, strerror(errno));
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
@@ -19611,6 +19636,42 @@ typedef struct {
  * parses -- including `--json-diagnostics`, whose consumer is an editor.
  * TRUNCATED at 60 characters, because the job is to IDENTIFY the statement,
  * not to reprint it; the author has the source. */
+/* THE VERB A STATEMENT STARTS WITH, and whether a row count means anything
+ * for it. ONE COPY: `sqlite` and `odbc` each carried a byte-identical
+ * extractor, which is the same "three copies of a thing" that put three
+ * different answers in one field (DOGFOOD 36).
+ *
+ * `pg` does not use this -- libpq hands back its own command tag, which is
+ * better than parsing the text, and it is the module that was already right. */
+static char *sql_command_name(const char *sql) {
+    while (*sql && isspace((unsigned char)*sql)) {
+        sql++;
+    }
+    size_t length = 0;
+    while (sql[length] && (isalpha((unsigned char)sql[length]) || sql[length] == '_')) {
+        length++;
+    }
+    if (length == 0) {
+        return copy_string("SQL");
+    }
+    char *name = malloc(length + 1);
+    if (!name) {
+        abort();
+    }
+    for (size_t i = 0; i < length; i++) {
+        name[i] = (char)toupper((unsigned char)sql[i]);
+    }
+    name[length] = '\0';
+    return name;
+}
+
+/* Only these four change rows. Everything else -- DDL, a pragma, a transaction
+ * command -- has no count, and says so rather than reporting a number. */
+static int sql_command_counts_rows(const char *command) {
+    return strcmp(command, "INSERT") == 0 || strcmp(command, "UPDATE") == 0 ||
+           strcmp(command, "DELETE") == 0 || strcmp(command, "REPLACE") == 0;
+}
+
 static void sql_statement_note(const char *sql, char *note, size_t note_size) {
     note[0] = '\0';
     if (!sql || !*sql) {
@@ -19911,10 +19972,16 @@ static int sqlite_sql_tail_is_empty(const char *tail) {
     return 1;
 }
 
+/* `query_mode` is only ever used to NAME THE CALLER in a refusal (DOGFOOD 37).
+ * One prepare serves `sqlite.query` and `sqlite.exec`, and its messages said
+ * "SQLite query ..." for both -- so `sqlite.exec(db, "insert ...; insert ...")`
+ * was refused in the name of a function the program had not called, which
+ * sends the author to look at the wrong line. */
 static int sqlite_prepare_statement(SqliteConnectionValue *connection,
                                     const char *sql,
                                     Value *params_value,
-                                    SqliteParameterList *out) {
+                                    SqliteParameterList *out,
+                                    int query_mode) {
     const char *tail = NULL;
     int rc = sqlite3_prepare_v2(connection->connection, sql, -1, &out->statement, &tail);
     if (rc != SQLITE_OK) {
@@ -19922,11 +19989,17 @@ static int sqlite_prepare_statement(SqliteConnectionValue *connection,
         return 0;
     }
     if (!out->statement) {
-        sqlite_raise_message("SQLite SQL must contain a statement");
+        sqlite_raise_message(query_mode ? "sqlite.query SQL must contain a statement"
+                                        : "sqlite.exec SQL must contain a statement");
         return 0;
     }
     if (tail && !sqlite_sql_tail_is_empty(tail)) {
-        sqlite_raise_message("SQLite query expects exactly one statement");
+        /* NAMES THE REMEDY TOO: splitting is what the author has to do, and a
+         * refusal that only says no leaves them guessing whether the module
+         * can be made to accept it. */
+        sqlite_raise_message(query_mode
+            ? "sqlite.query expects exactly one statement; run them one at a time"
+            : "sqlite.exec expects exactly one statement; run them one at a time");
         return 0;
     }
 
@@ -20080,27 +20153,6 @@ static Value sqlite_rows_from_statement(sqlite3 *native, sqlite3_stmt *statement
     return value_array(items, count);
 }
 
-static char *sqlite_command_name(const char *sql) {
-    while (*sql && isspace((unsigned char)*sql)) {
-        sql++;
-    }
-    size_t length = 0;
-    while (sql[length] && (isalpha((unsigned char)sql[length]) || sql[length] == '_')) {
-        length++;
-    }
-    if (length == 0) {
-        return copy_string("SQL");
-    }
-    char *name = malloc(length + 1);
-    if (!name) {
-        abort();
-    }
-    for (size_t i = 0; i < length; i++) {
-        name[i] = (char)toupper((unsigned char)sql[i]);
-    }
-    name[length] = '\0';
-    return name;
-}
 
 static Value sqlite_command_result(sqlite3 *native, const char *sql) {
     RecordField *fields = calloc(2, sizeof(RecordField));
@@ -20114,10 +20166,26 @@ static Value sqlite_command_result(sqlite3 *native, const char *sql) {
     if (!fields[0].value || !fields[1].value) {
         abort();
     }
-    char *command = sqlite_command_name(sql);
+    char *command = sql_command_name(sql);
+    /* A ROW COUNT ONLY WHERE ONE MEANS SOMETHING (DOGFOOD 36). `sqlite3_changes`
+     * is defined for INSERT, UPDATE and DELETE and holds its PREVIOUS value for
+     * anything else -- so a `create table` run after an update that touched
+     * three rows answered `{"command":"CREATE","rows_affected":3}`. Not a
+     * message that reads badly: a NUMBER that is wrong, stale from a statement
+     * two lines up, and a program logging it records three rows created.
+     *
+     * `nothing` rather than 0, and that is not a preference -- `pg` has always
+     * answered `nothing` here (PQcmdTuples gives "" for a statement with no
+     * count) and it is the module that was right. A plausible zero is the
+     * answer this tree refuses everywhere else it appears: `lending` returns
+     * `unknown` for a missing input rather than 0, because an absent income
+     * that became zero makes every ratio look perfect. Three modules had three
+     * answers for one field; they have one now. */
+    int counts = sql_command_counts_rows(command);
     *fields[0].value = value_string(command);
     free(command);
-    *fields[1].value = value_number((double)sqlite3_changes(native));
+    *fields[1].value = counts ? value_number((double)sqlite3_changes(native))
+                              : value_null();
     return value_record(fields, 2);
 }
 
@@ -20169,7 +20237,8 @@ static Value sqlite_eval_sql(AstExpr *expr, int query_mode) {
     }
 
     SqliteParameterList params = {0};
-    if (!sqlite_prepare_statement(connection, sql.as.string, params_ptr, &params)) {
+    if (!sqlite_prepare_statement(connection, sql.as.string, params_ptr, &params,
+                                  query_mode)) {
         sqlite_parameter_list_clear(&params);
         value_free(params_value);
         value_free(sql);
@@ -21112,37 +21181,18 @@ fail:
     return value_null();
 }
 
-static char *odbc_command_name(const char *sql) {
-    while (*sql && isspace((unsigned char)*sql)) {
-        sql++;
-    }
-    size_t length = 0;
-    while (sql[length] && (isalpha((unsigned char)sql[length]) || sql[length] == '_')) {
-        length++;
-    }
-    if (length == 0) {
-        return copy_string("SQL");
-    }
-    char *name = malloc(length + 1);
-    if (!name) {
-        abort();
-    }
-    for (size_t i = 0; i < length; i++) {
-        name[i] = (char)toupper((unsigned char)sql[i]);
-    }
-    name[length] = '\0';
-    return name;
-}
 
 static Value odbc_command_result(SQLHSTMT statement, const char *sql) {
     SQLLEN affected = 0;
-    if (!SQL_SUCCEEDED(SQLRowCount(statement, &affected))) {
-        affected = 0;
-    }
-    if (affected < 0) {
-        /* A driver that cannot count says -1; report 0 rather than a negative
-         * count no caller could act on. */
-        affected = 0;
+    int counted = SQL_SUCCEEDED(SQLRowCount(statement, &affected));
+    if (counted && affected < 0) {
+        /* A DRIVER THAT CANNOT COUNT SAYS -1, and this used to report 0 --
+         * which is a plausible number a caller can act on and which means
+         * something different from "there is no count here" (DOGFOOD 36).
+         * `nothing` now, matching `pg`, which has always answered that and is
+         * the module that was right; `sqlite` reported a STALE count for the
+         * same case. One field, three modules, one answer. */
+        counted = 0;
     }
     RecordField *fields = calloc(2, sizeof(RecordField));
     if (!fields) {
@@ -21155,10 +21205,18 @@ static Value odbc_command_result(SQLHSTMT statement, const char *sql) {
     if (!fields[0].value || !fields[1].value) {
         abort();
     }
-    char *command = odbc_command_name(sql);
+    char *command = sql_command_name(sql);
+    /* THE VERB DECIDES TOO, not only the driver's -1. Measured: the SQLite3
+     * ODBC driver answers 0 for a `create table` rather than -1, so the
+     * driver's own signal never fires and the 0 reads as a real count -- and
+     * ODBC leaves SQLRowCount's value driver-defined for anything that is not
+     * an INSERT, UPDATE or DELETE, so there is nothing to trust there. */
+    if (!sql_command_counts_rows(command)) {
+        counted = 0;
+    }
     *fields[0].value = value_string(command);
     free(command);
-    *fields[1].value = value_number((double)affected);
+    *fields[1].value = counted ? value_number((double)affected) : value_null();
     return value_record(fields, 2);
 }
 

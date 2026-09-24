@@ -232,3 +232,51 @@ check "{file}/{dir} idempotent, and still refuse a wrong type" $?
 
 printf 'core suite: %d passed / %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
+
+# --- WHY a file operation failed, not only WHICH file (DOGFOOD 35) ---------
+#
+# A missing parent, a parent that is an ordinary file, and a directory the
+# process may not write to produced the SAME sentence, with only the path to
+# tell them apart -- three different mistakes with three different fixes, and
+# one message sending the reader to check all three. The runtime had the answer
+# in `errno` the whole time; `make_dir` and `atomic_replace` already reported
+# theirs, so this was the rest of the family catching up.
+#
+# HERE RATHER THAN IN A GOLDEN, because what must be true is that the three
+# causes DIFFER -- a golden records whichever sentence came out and would
+# defend one sentence for all three just as happily.
+fw="$(mktemp -d)"
+mkdir -p "$fw/ro" && chmod 500 "$fw/ro"
+printf 'x\n' > "$fw/plain.txt"
+why() {   # path -> the parenthesised reason, or empty
+    printf 'f {file}= "%s"\nwrite(f, "hi")\n' "$1" > "$fw/p.bas"
+    ./gbasic "$fw/p.bas" 2>&1 >/dev/null | sed -n 's/.*(\(.*\))$/\1/p'
+}
+r_missing="$(why "$fw/no_such_dir/brain.json")"
+r_notdir="$(why "$fw/plain.txt/brain.json")"
+r_denied="$(why "$fw/ro/brain.json")"
+core_fail=0
+for pair in "missing:$r_missing" "notdir:$r_notdir" "denied:$r_denied"; do
+    [ -n "${pair#*:}" ] || { printf 'FAIL write failure gives no reason (%s)\n' "${pair%%:*}"; core_fail=1; }
+done
+# THE POINT IS THAT THEY DIFFER. Any one of them alone passes on a build that
+# prints the same reason for everything.
+if [ "$r_missing" = "$r_notdir" ] || [ "$r_notdir" = "$r_denied" ] || [ "$r_missing" = "$r_denied" ]; then
+    printf 'FAIL the three write failures do not differ: [%s] [%s] [%s]\n' "$r_missing" "$r_notdir" "$r_denied"
+    core_fail=1
+fi
+# Running as root defeats the permission case, which is a fact about the
+# machine rather than a failure -- say so instead of passing quietly.
+if [ "$(id -u)" = "0" ]; then
+    printf 'ok   SKIP (running as root: the permission case cannot be created)\n'
+elif [ "$core_fail" = "0" ]; then
+    printf 'ok   a write failure says WHY: %s / %s / %s\n' "$r_missing" "$r_notdir" "$r_denied"
+fi
+# AND READING TOO, since the report named `write` and the family shares the
+# defect -- a fix applied to one verb only is the shape this tree keeps finding.
+printf 'f {file}= "%s/nope.txt"\nprint read(f)\n' "$fw" > "$fw/r.bas"
+read_why="$(./gbasic "$fw/r.bas" 2>&1 >/dev/null | sed -n 's/.*(\(.*\))$/\1/p')"
+[ -n "$read_why" ] || { printf 'FAIL a failed read gives no reason\n'; core_fail=1; }
+[ "$core_fail" = "0" ] && printf 'ok   and a failed read says why: %s\n' "$read_why"
+chmod 700 "$fw/ro"; rm -rf "$fw"
+[ "$core_fail" = "0" ] || exit 1

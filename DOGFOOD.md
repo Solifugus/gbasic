@@ -428,14 +428,50 @@ and the stale-looking ones carry a Status line saying what overtook them.
     before it has anything to put in it and a return value proves nothing
     about the disk.
 
-35. **`could not write file:` never says which of its three causes applied.**
+35. ~~**`could not write file:` never says which of its three causes applied.**~~
+    **RESOLVED 2026-09-24** (struck). The reason is appended from `errno`, so
+    a missing parent, a parent that is an ordinary file and a directory the
+    process may not write to now read `(No such file or directory)`,
+    `(Not a directory)` and `(Permission denied)`. DONE FOR THE FAMILY, not
+    just `write` -- read, delete, list_files and overwrite too -- since a fix
+    applied to the one verb that was reported is the shape this tree keeps
+    finding; `make_dir` and `atomic_replace` already reported theirs, so this
+    was the rest catching up. BOTH FILE READERS now carry `errno` across the
+    `fclose` on their failure paths, which is what makes the caller's reason
+    true rather than whatever `fclose` last set. THE TIER ASSERTS THAT THE
+    THREE CAUSES DIFFER rather than pinning three sentences, because a golden
+    records whichever sentence came out and would defend one sentence for all
+    three just as happily; it SKIPS WITH A REASON under root, where the
+    permission case cannot be created. Three sites are deliberately left
+    alone -- they are reached after frees that may clobber `errno`, so a
+    reason there would be a guess.
 
-36. **`rows_affected` is not about the statement that returned it.** It is
-    `sqlite3_changes()`, so a `create table` run after an update that touched
-    three rows answers `{"command":"CREATE","rows_affected":3}`.
+36. ~~**`rows_affected` is not about the statement that returned it.**~~
+    **RESOLVED 2026-09-24** (struck). Not a message that reads badly: a NUMBER
+    that was wrong, stale from a statement two lines up, so a program logging
+    it recorded three rows created by a `create table`. It answers `nothing`
+    now where a count means nothing -- **and that is not a preference:
+    `pg` has always answered `nothing` here and was the module that was
+    right**, while `odbc` reported a plausible 0. Three modules had three
+    answers for one field. THE SWEEP FOUND A SECOND COPY OF THE CAUSE:
+    `sqlite` and `odbc` each carried a byte-identical command-name extractor,
+    so there is one now. `odbc` needed the verb as well as its driver's `-1`,
+    measured -- the SQLite3 ODBC driver answers 0 for a `create table` rather
+    than -1, and ODBC leaves that value driver-defined for anything but a
+    DML statement, so there is nothing to trust there. The load-bearing check
+    is a CREATE *after* an UPDATE, since the first CREATE in a session answers
+    0 on the broken build too; its control is a DELETE matching no rows, which
+    is a genuine zero and must stay one.
 
-37. **`sqlite.exec` refuses a multi-statement string in `sqlite.query`'s
-    name:** `SQLite query expects exactly one statement`.
+37. ~~**`sqlite.exec` refuses a multi-statement string in `sqlite.query`'s
+    name.**~~ **RESOLVED 2026-09-24** (struck). One prepare serves both, and
+    its messages named `query` for both -- so a program that called `exec` was
+    refused in the name of a function it had not called, which sends the author
+    to the wrong line. It names the function that was called now, asserted
+    BOTH WAYS or "it says exec" is satisfied by a build naming the wrong one in
+    the other direction. The refusal also names the remedy (`run them one at a
+    time`), because one that only says no leaves the author guessing whether
+    the module can be talked into it.
 
 38. **`webclient_design.md` specifies three Phase 1 behaviours 0.2.2 does not
     have:** `get(url, headers)`, `post(url, body, headers)`, and automatic JSON
@@ -8140,4 +8176,82 @@ which survive any format that keeps `warning: ` as the prefix.
 - **Effect it had:** a reader who looked up a warning code found nothing; a
   reader who read the docs index would have concluded that two shipped
   capabilities did not exist.
+- **Workaround:** none needed now.
+
+## 2026-09-24 — CC — while: closing the last of the message cluster (ledger 35, 36, 37)
+- **Type:** bug (36), diagnostic (35, 37)
+- **Severity:** medium (35), low (36, 37)
+- **What:** The tail of the same theme, and **one of the three turned out not
+  to be a message problem at all.**
+
+### 36 is a wrong number, and `pg` was already right
+
+`sqlite3_changes()` is defined for INSERT, UPDATE and DELETE and holds its
+**previous** value for anything else, so a `create table` run after an update
+that touched three rows answered `rows_affected: 3`. A program logging that
+records three rows created by a CREATE.
+
+The interesting part is that **the answer was already in the tree**: `pg` has
+always answered `nothing` here, because `PQcmdTuples` returns "" for a
+statement with no count. `odbc` answered a plausible `0`. One field, three
+modules, three answers — and the one that was right was right by borrowing
+libpq's own judgement rather than parsing anything.
+
+A plausible zero is what this tree refuses everywhere else it appears —
+`lending` returns `unknown` for a missing input rather than 0, because an
+absent income that became zero makes every ratio look perfect.
+
+**The sweep found a second copy of the cause.** `sqlite` and `odbc` each
+carried a byte-identical `*_command_name` extractor; there is one now, next to
+the statement-note formatter that had the same problem yesterday.
+
+**`odbc` needed more than its driver's signal, and that was measured**: the
+SQLite3 ODBC driver answers `0` for a `create table` rather than `-1`, so the
+"driver cannot count" path never fired — and ODBC leaves `SQLRowCount`'s value
+driver-defined for anything that is not INSERT/UPDATE/DELETE, so there is
+nothing to trust there. The verb decides as well.
+
+**The load-bearing check is a CREATE *after* an UPDATE.** The first CREATE in a
+session answers 0 on the broken build too, so a check on it alone passes on the
+defect. Its control is a DELETE that matched no rows, which is a *genuine* zero
+and has to stay one — without it, "answer nothing where there is no count" is
+satisfied by a build that never reports a count at all.
+
+### 35: the runtime knew, and did not say
+
+Three causes shared one sentence with only the path to tell them apart. They
+read `(No such file or directory)`, `(Not a directory)` and
+`(Permission denied)` now.
+
+Done for the **family** rather than the reported verb: read, delete,
+`list_files` and overwrite as well as write. `make_dir` and `atomic_replace`
+already reported theirs, which is what made the rest look like an oversight
+rather than a policy. Both file readers now carry `errno` across the `fclose`
+on their failure paths, so the caller's reason is the real one rather than
+whatever `fclose` last set.
+
+**Three sites are deliberately left alone** — reached after frees that may
+clobber `errno`, where a reason would be a guess.
+
+**The tier asserts that the three causes DIFFER**, not three sentences. A
+golden records whichever sentence came out and would defend one sentence for
+all three just as happily. It skips with a reason under root, where the
+permission case cannot be created.
+
+### 37: refused in the name of a function nobody called
+
+One prepare serves `sqlite.query` and `sqlite.exec` and said "SQLite query" for
+both. Asserted both ways, or "it says exec" is satisfied by a build naming the
+wrong one in the other direction.
+
+### And one of my own perturbations was wrong before it was right
+
+The check that the three failure reasons *differ* did not go red on my first
+attempt — because my perturbation replaced only the first `strerror(errno)` in
+the file, which is the **read** site, while the tier probes **write**. The
+check was fine; the way I tried to break it was not. Aimed at the right site it
+goes red immediately.
+
+- **Effect it had:** Chapter 8 spends a paragraph on what `could not write
+  file:` might mean.
 - **Workaround:** none needed now.
