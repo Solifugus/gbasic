@@ -15,7 +15,7 @@ Copyright 2026 Matthew C. Tedder.
 **If you are writing gBASIC programs, or embedding the interpreter, you are
 under Apache-2.0 and nothing here restricts you.** That covers the language, the
 `gbasic` binary, every C module compiled into it — including the whole xlsx
-engine — and 16 of the 26 standard libraries.
+engine — and 55 of the 65 standard libraries.
 
 **Ten standard libraries are AGPL.** If you build on those and distribute your
 work, or run it as a network service, the AGPL requires you to release your

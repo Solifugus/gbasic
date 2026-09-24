@@ -1573,12 +1573,27 @@ function sq(n)
 end function
 ```
 
-The same two declarations inside a `program` block work in either order, since
-the block's declarations are registered before its body runs. The diagnostic for
-the script-mode case is `invalid function call: sq`, which names the call rather
-than the ordering — if you see it for a function you are certain exists, check
-whether it is declared *below* the line that calls it in a file with no
-`program` block.
+The same two work in either order once the file has a `program` block — but
+what is hoisted is the file's **top level**, not the inside of the block:
+
+```basic
+program main(args)
+    print sq(3)             ' works: sq is declared below `end program`
+end program
+
+function sq(n)
+    return n * n
+end function
+```
+
+Move that `function` *inside* the block, above `end program`, and the call must
+still come after it — a `program` block's body runs in order like any other.
+(This paragraph said "inside a `program` block" until 2026-09-23, which is the
+natural reading and was false.)
+
+The diagnostic for the script-mode case is `invalid function call: sq`, which
+names the call rather than the ordering — if you see it for a function you are
+certain exists, check whether it is declared *below* the line that calls it.
 
 **A library's own dependencies are declared INSIDE its `library` block.**
 Declaring one beside the library rather than inside it is not a scoping error —

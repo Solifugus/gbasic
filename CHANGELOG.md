@@ -9,6 +9,28 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — five pages that said something false, and four checks so they cannot again (DOGFOOD 23, 29, 45, 46, 28)
+
+`UNLEARN.md` said `{ "a": 1 }` is a parse error (it has worked since
+2026-08-12); `reference.md` said declarations *inside* a `program` block hoist
+(what hoists is the file's top level); `LICENSING.md` said "16 of the 26
+standard libraries" (measured from the SPDX headers: **55 Apache, 10 AGPL, 65
+total**); `docs/ai/ERRORS.md`'s warning table stopped at 2104 while 2105–2108
+shipped.
+
+**`docs/README.md` was the worst of them**, and worse than filed: three status
+words its own legend does not define, and two of the three rows contradicted
+their own documents — `plat-web-design-draft.md` was listed `Draft` while its
+first line says "BUILT — every phase shipped", and `discovery_design.md` was
+listed `Design` a fortnight after `stdlib/discovery.bas` shipped with a suite.
+
+`run_docs_gate.sh` gains four tripwires, each comparing a page against the thing
+it summarises rather than against memory: **licensing** (both lists against
+every SPDX header, both directions, counts included, and a file declaring no
+header at all is itself a failure), **doc status** (every status word against
+the legend), and **warning codes** (the table against what `src/eval.c` emits,
+both directions).
+
 ### Changed — a database error names the statement that failed (DOGFOOD 41)
 
 `SQLite prepare failed: no such column: player` said nothing about which of the

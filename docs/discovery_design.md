@@ -1,6 +1,10 @@
 # `discovery`: what a database estate says about itself
 
-**Status:** Design (2026-09-08). First increment not yet built.
+**Status:** Partial (corrected 2026-09-23). The first increment IS built --
+`stdlib/discovery.bas`, asserted by `tests/run_discovery.sh` against four
+databases -- and this line said "not yet built" for a fortnight after it
+shipped. What is still design is everything past declared facts: inference
+arrives with a null model or not at all (§2).
 
 ## 1. The split that governs everything
 

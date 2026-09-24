@@ -310,13 +310,13 @@ and the stale-looking ones carry a Status line saying what overtook them.
     vanished, and it also used that call to illustrate a call answering
     `nothing` — `write` has always answered `true`.
 
-23. **`UNLEARN.md` still says a record literal accepts only identifier
-    keys.** "Record-literal keys must be identifiers. `{ "a": 1 }` is a
-    parse error" — false since the `field_name` work of 2026-08-12, and
-    `{ "Rate (%)": 1 }` parses too. The 2026-09-18 doc-gap cluster reported
-    this and the 2026-09-19 sweep closed it as **NOT PRESENT** by grepping
-    `docs/ai/` for the word *quoted*, which the passage does not use. See
-    the 2026-09-22 plan re-verification entry.
+23. ~~**`UNLEARN.md` still says a record literal accepts only identifier
+    keys.**~~ **RESOLVED 2026-09-23** (struck). The entry says the opposite
+    now and shows `{ "Retry-After": 5, a: 1 }`, measured. It also records how
+    it survived: the 2026-09-19 sweep closed the report as NOT PRESENT by
+    grepping `docs/ai/` for the word *quoted*, which the passage never used --
+    a sweep that searches for the word it expects rather than the claim it is
+    checking will keep finding nothing.
 
 24. **A comparison lens on a variable, alone on a line, is silently an
     assignment.** `answer{caseless}= "yes"` as a statement is read as an
@@ -361,10 +361,26 @@ and the stale-looking ones carry a Status line saying what overtook them.
     SOURCE rather than written down, since a list of four numbers is a
     transcript of whatever the binary said. Five goldens rebaselined.
 
-28. **`ERRORS.md`'s warning table stops at 2104**, and warning 2107 prints no
+28. **PARTLY RESOLVED 2026-09-23.** ~~The table stops at 2104~~ — it covers
+    2100–2108 now, and `run_docs_gate` compares it against the codes
+    `src/eval.c` actually emits, in both directions, so it cannot stop short
+    again. **THE OTHER HALF IS A DECISION, NOT A DEFECT, AND IS LEFT OPEN**:
+    a printed warning still carries no code, so the only way from a message to
+    the table is its wording or its `source` tag. Adding the code changes the
+    diagnostic FORMAT, which is Matthew's call rather than mine, and the cost
+    is measured so the call is cheap: **0 goldens** contain a printed warning,
+    and exactly **2 shell greps** match on the current text
+    (`run_inbox.sh` on `warning: receive() blocks the event loop`,
+    `run_http.sh` on `warning: http.wait blocks the event loop`), so any format
+    that keeps `warning: ` as the prefix costs nothing at all.
+    Originally: `ERRORS.md`'s warning table stops at 2104, and warning 2107 prints no
     code at all.
 
-29. **`reference.md` says declarations inside a `program` block hoist.** They
+29. ~~**`reference.md` says declarations inside a `program` block hoist.**~~
+    **RESOLVED 2026-09-23** (struck). The paragraph now says what is true --
+    what hoists is the file's TOP LEVEL, and a `program` block's body runs in
+    order like any other -- and shows the working shape rather than asserting
+    it. Measured both ways first. Originally: they
     do not.
 
 30. **An array reached BY NAME from an enclosing scope is mutated by
@@ -517,10 +533,29 @@ and the stale-looking ones carry a Status line saying what overtook them.
     measurement, which was taken over the older half of the range and was
     wrong.
 
-45. **`LICENSING.md` counts 26 standard libraries; there are 65.** The
+45. ~~**`LICENSING.md` counts 26 standard libraries; there are 65.**~~
+    **RESOLVED 2026-09-23** (struck). MEASURED FROM THE SPDX HEADERS, which is
+    where the answer actually lives: 55 Apache, 10 AGPL, 65 total. THE LISTS
+    WERE ALREADY RIGHT -- somebody had kept them -- and only the SENTENCE had
+    rotted, which is the half a reader quotes and the half least likely to be
+    checked. So the fix is a TRIPWIRE rather than a number: run_docs_gate now
+    compares both lists against the headers in BOTH directions and requires
+    the prose count to match, because a licence count is not a detail, it is
+    the sentence a company's lawyer reads. Originally: the
     ten-AGPL list is exact; only the total is stale.
 
-46. **`docs/README.md` uses two status words (`Design`, `Done`) that its own
+46. ~~**`docs/README.md` uses two status words (`Design`, `Done`) that its own
+    legend does not define.**~~ **RESOLVED 2026-09-23** (struck), and it was
+    THREE, not two -- `Draft` as well -- which is what measuring rather than
+    reading found. TWO OF THE THREE WERE WORSE THAN AN UNDEFINED WORD: the row
+    for `plat-web-design-draft.md` said `Draft` while the document's own first
+    line says "BUILT -- every phase in §14 shipped", so the index told a reader
+    the declarative `server` block does not exist while run_web_server_block
+    was green; and `discovery_design.md` said `Design` while its own status
+    line said "first increment not yet built", a fortnight after
+    `stdlib/discovery.bas` shipped with a suite against four databases. Both
+    documents and the index are corrected, and a tripwire now requires every
+    status word to be one the legend defines. Originally: the
     four-value legend does not define** --- in the page whose whole purpose
     is that the status column can be trusted.
 
@@ -8029,4 +8064,80 @@ and the message now says so.
   teaching point about "the line named is where it was noticed", Chapter 13's
   answer key explains what `invalid money operation` means, and the `load`
   defect cost several minutes of looking at the wrong file.
+- **Workaround:** none needed now.
+
+## 2026-09-23 — CC — while: closing the doc-truth batch (ledger 23, 29, 45, 46, half of 28)
+- **Type:** doc-gap
+- **Severity:** medium (29), low (the rest)
+- **What:** Five pages that said something false about the tree they describe.
+  Each reads perfectly well on its own, which is why reading never caught any
+  of them, and why **four of the five fixes are tripwires rather than edits**.
+
+### The corrections, and two were worse than filed
+
+- **23** — `UNLEARN.md` said `{ "a": 1 }` is a parse error. It has worked since
+  2026-08-12. The entry now records *how it survived a sweep*: the 2026-09-19
+  pass closed the report as NOT PRESENT by grepping `docs/ai/` for the word
+  *quoted*, which the passage never used. A sweep that searches for the word it
+  expects rather than the claim it is checking will keep finding nothing.
+- **29** — the hoisting paragraph said declarations *inside* a `program` block
+  work in either order. Measured, they do not; what hoists is the file's top
+  level. The page shows the working shape now instead of asserting it.
+- **45** — `LICENSING.md` said "16 of the 26 standard libraries". Measured from
+  the SPDX headers — which is where the answer actually lives — it is **55
+  Apache, 10 AGPL, 65 total**. The *lists* were right; somebody had kept them.
+  Only the sentence rotted, which is the half a reader quotes.
+- **46 — filed as two undefined status words and it was three**, and two of the
+  three were worse than a missing legend entry, because the index contradicted
+  the document:
+  - `plat-web-design-draft.md` was listed `Draft` while its own first line says
+    **"BUILT — every phase in §14 shipped"**. The index was telling a reader the
+    declarative `server` block does not exist while `run_web_server_block` was
+    green.
+  - `discovery_design.md` was listed `Design`, and its own status line still
+    said "first increment not yet built" **a fortnight after
+    `stdlib/discovery.bas` shipped** with a suite running against four
+    databases.
+- **28 (half)** — the warning table stopped at 2104 while 2105–2108 shipped, in
+  the file whose entire job is to be looked things up in.
+
+### The durable part: four new tripwires
+
+Editing a number fixes it once. Each of these is checked against the thing it
+summarises, so it cannot rot again:
+
+| check | compared against |
+| --- | --- |
+| `licensing` | every `stdlib/*.bas` SPDX header, both directions, counts included |
+| `doc status` | `docs/README.md`'s own legend |
+| `warning codes` | the codes `src/eval.c` emits, both directions |
+| (existing `roster`) | the model all four follow |
+
+The licensing one also fails if a stdlib file declares **no** SPDX header at
+all, since such a file would be invisible to both lists and so to both halves
+of the comparison.
+
+### Two of my own checks were wrong before they were right
+
+Both found by running them, neither by reading:
+
+- The warning-code scan looked for `| NNNN |` across the **whole file** and
+  reported the *error*-code table's 2001/2002/2003 as ghost warnings — a check
+  whose first output was a defect in itself. It reads the warning table alone
+  now.
+- It also looked only for `warn_fmt(`, and reported 2101 as a ghost because
+  `unused-result` goes through `runtime_warn` directly. It matches every shape
+  that raises one.
+
+### Left open deliberately
+
+The other half of 28 — printing the warning **code** alongside the message — is
+a change to the diagnostic format, which is Matthew's call and not mine to make
+unsupervised. The cost is measured so the call is cheap: **0 goldens** contain a
+printed warning and exactly **2 shell greps** match the current text, both of
+which survive any format that keeps `warning: ` as the prefix.
+
+- **Effect it had:** a reader who looked up a warning code found nothing; a
+  reader who read the docs index would have concluded that two shipped
+  capabilities did not exist.
 - **Workaround:** none needed now.

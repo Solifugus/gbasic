@@ -144,12 +144,16 @@ the standing ones.
 - **No `dim` / `redim`.** Variables are created by assignment; reading an
   unassigned name raises `undefined variable`. `dim` is reserved for one purpose:
   `dim x` is a located parse error that says to assign instead.
-- **Record-literal keys must be identifiers.** `{ "a": 1 }` is a parse error. Use
-  `{ a: 1 }`, or bracket-assign for non-identifier keys:
+- **A record-literal key may be a quoted string.** `{ "a": 1 }` and
+  `{ "Retry-After": 5 }` both parse, so a key that is not an identifier needs
+  no ceremony. (This entry said the opposite until 2026-09-23; quoted keys have
+  worked since the `field_name` change of 2026-08-12, and a doc sweep closed
+  the report as NOT PRESENT by grepping `docs/ai/` for the word *quoted*, which
+  the passage did not use.)
 
   ```basic
-  r = { }
-  r["Retry-After"] = 5        ' hyphenated key via bracket assignment
+  r = { "Retry-After": 5, a: 1 }
+  print r["Retry-After"]      ' 5 -- bracket assignment also still works
   ```
 
 - **`rec.field` on a missing field raises; `rec["field"]` returns `unknown`.**

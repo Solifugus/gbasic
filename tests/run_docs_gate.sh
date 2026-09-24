@@ -631,4 +631,112 @@ for doc in README.md docs/reference.md docs/project_state.md; do
 done
 [ "$claims_ok" = "1" ] && echo "PASS state claims   no doc denies a capability that has a passing suite"
 
+# 4. LICENSING.md AGAINST THE SPDX HEADERS. Which licence a file is under is
+#    declared IN THE FILE, so the page is a summary of something authoritative
+#    and can be checked against it rather than remembered.
+#
+#    It had rotted in exactly the way this gate exists to catch: "16 of the 26
+#    standard libraries" while the tree held 65, measured 2026-09-23. The LISTS
+#    were right -- somebody had kept them -- and only the sentence was wrong,
+#    which is the half a reader is most likely to quote and least likely to
+#    check. A licence count is not a detail: it is the sentence a company's
+#    lawyer reads.
+#
+#    BOTH DIRECTIONS AND BOTH COUNTS, because the three ways this page can lie
+#    are a library missing from its list, a library on the wrong list, and a
+#    number that no longer matches the list beside it.
+LIC=LICENSING.md
+if [ -f "$LIC" ]; then
+    lic_ok=1
+    lic_apache=$(for f in stdlib/*.bas; do grep -q 'SPDX-License-Identifier:.*Apache' "$f" && basename "$f" .bas; done | sort -u)
+    lic_agpl=$(for f in stdlib/*.bas; do grep -q 'SPDX-License-Identifier:.*AGPL' "$f" && basename "$f" .bas; done | sort -u)
+    n_apache=$(printf '%s\n' "$lic_apache" | grep -c .)
+    n_agpl=$(printf '%s\n' "$lic_agpl" | grep -c .)
+    n_total=$((n_apache + n_agpl))
+    # A library with no SPDX header at all would be invisible to both lists.
+    n_files=$(ls stdlib/*.bas 2>/dev/null | wc -l)
+    if [ "$n_total" != "$n_files" ]; then
+        echo "FAIL licence spdx   $((n_files - n_total)) of $n_files stdlib files declare no SPDX-License-Identifier"
+        lic_ok=0; status=1
+    fi
+    lic_listed_apache=$(awk '/^### Apache-2.0/{f=1} f&&/^### AGPL/{exit} f' "$LIC" \
+                        | grep -o '`[a-z_0-9]*`' | tr -d '`' | grep -v '^stdlib$' | sort -u)
+    lic_listed_agpl=$(awk '/^### AGPL-3.0-or-later/{f=1} f&&/^Which is:/{exit} f' "$LIC" \
+                      | grep -o '`[a-z_0-9]*`' | tr -d '`' | grep -v '^stdlib$' | sort -u)
+    for n in $lic_apache; do
+        printf '%s\n' "$lic_listed_apache" | grep -qx "$n" \
+            || { echo "FAIL licence list   $LIC does not list \`$n\` under Apache-2.0, but stdlib/$n.bas declares it"; lic_ok=0; status=1; }
+    done
+    for n in $lic_agpl; do
+        printf '%s\n' "$lic_listed_agpl" | grep -qx "$n" \
+            || { echo "FAIL licence list   $LIC does not list \`$n\` under AGPL, but stdlib/$n.bas declares it"; lic_ok=0; status=1; }
+    done
+    for n in $lic_listed_apache; do
+        printf '%s\n' "$lic_apache" | grep -qx "$n" \
+            || { echo "FAIL licence ghost  $LIC lists \`$n\` as Apache-2.0, but no stdlib file declares that"; lic_ok=0; status=1; }
+    done
+    for n in $lic_listed_agpl; do
+        printf '%s\n' "$lic_agpl" | grep -qx "$n" \
+            || { echo "FAIL licence ghost  $LIC lists \`$n\` as AGPL, but no stdlib file declares that"; lic_ok=0; status=1; }
+    done
+    grep -qF "$n_apache of the $n_total standard libraries" "$LIC" \
+        || { echo "FAIL licence count  $LIC does not say \"$n_apache of the $n_total standard libraries\" (measured from the SPDX headers)"; lic_ok=0; status=1; }
+    grep -qiE "^\*\*($(printf '%s' "$n_agpl") |Ten |Eleven |Twelve )standard libraries are AGPL" "$LIC" \
+        || grep -qF "standard libraries are AGPL" "$LIC" \
+        || { echo "FAIL licence count  $LIC no longer states how many libraries are AGPL"; lic_ok=0; status=1; }
+    [ "$lic_ok" = "1" ] \
+        && echo "PASS licensing      $LIC matches the SPDX headers ($n_apache Apache, $n_agpl AGPL) both ways, counts included"
+fi
+
+# 5. docs/README.md's STATUS WORDS against its own legend. The page opens with
+#    a four-row table saying what each status means, and then used three words
+#    that table does not define -- `Design`, `Done` and `Draft` -- so a reader
+#    who did the right thing and looked them up found nothing.
+DREADME=docs/README.md
+if [ -f "$DREADME" ]; then
+    legend=$(awk '/^\| Status \| Means \|/{f=1;next} f&&!/^\|/{exit} f' "$DREADME" \
+             | grep -oE '\*\*[A-Za-z]+\*\*' | tr -d '*' | sort -u)
+    used=$(awk -F'|' 'NF>3 {gsub(/^ +| +$|\*/,"",$3); print $3}' "$DREADME" \
+           | grep -E '^[A-Z][a-z]+$' | sort -u)
+    status_ok=1
+    for w in $used; do
+        case "$w" in Status|Means) continue ;; esac
+        printf '%s\n' "$legend" | grep -qx "$w" \
+            || { echo "FAIL doc status     $DREADME uses status '$w', which its own legend does not define"; status_ok=0; status=1; }
+    done
+    [ "$status_ok" = "1" ] \
+        && echo "PASS doc status     every status word in $DREADME is defined by its own legend"
+fi
+
+# 6. THE WARNING-CODE TABLE against the codes the source emits. It stopped at
+#    2104 while 2105-2108 shipped, so a reader who did the right thing and
+#    looked one up found nothing -- the same rot as the roster, in the file
+#    whose entire job is to be looked things up in.
+ERRDOC=docs/ai/ERRORS.md
+if [ -f "$ERRDOC" ] && [ -f src/eval.c ]; then
+    warn_table="$(mktemp)"
+    awk '/^### Warning codes/{f=1} f&&/^## /{exit} f' "$ERRDOC" > "$warn_table"
+    codes_ok=1
+    # EVERY SHAPE THAT RAISES ONE, measured rather than assumed: the first
+    # version of this check looked only for `warn_fmt(` and reported 2101 as a
+    # ghost, because `unused-result` goes through `runtime_warn` directly.
+    emitted=$(grep -oE '(warn_fmt|warn_fmt_at|note_fmt_at|runtime_warn|runtime_warn_at)\([^,]*, *2[0-9]{3},|(warn_fmt|warn_fmt_at|note_fmt_at)\(2[0-9]{3},' src/eval.c \
+              | grep -oE '2[0-9]{3}' | sort -u)
+    for c in $emitted; do
+        grep -qE "^\| $c \|" "$warn_table" \
+            || { echo "FAIL warning codes  $ERRDOC has no row for warning $c, which src/eval.c emits"; codes_ok=0; status=1; }
+    done
+    # THE TABLE ONLY, not the whole file -- the first version scanned every
+    # `| NNNN |` row and reported the ERROR-code table's 2001/2002/2003 as
+    # ghost warnings, which is a check reporting a defect in itself.
+    for c in $(grep -oE '^\| 2[0-9]{3} \|' "$warn_table" | grep -oE '2[0-9]{3}'); do
+        [ "$c" = "2100" ] && continue   # explicit warning(...), raised from gBASIC
+        printf '%s\n' "$emitted" | grep -qx "$c" \
+            || { echo "FAIL warning ghost  $ERRDOC lists warning $c, which src/eval.c does not emit"; codes_ok=0; status=1; }
+    done
+    [ "$codes_ok" = "1" ] \
+        && echo "PASS warning codes  $ERRDOC covers every warning src/eval.c emits, and none it does not"
+    rm -f "$warn_table"
+fi
+
 exit "$status"
