@@ -37,6 +37,8 @@ cases=(
     negative_merge_type
     negative_add_bool
     negative_add_nothing
+    negative_index_nothing
+    negative_index_unknown
     negative_add_array
     negative_add_record
     negative_type_builtin_arity

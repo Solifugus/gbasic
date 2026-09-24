@@ -345,9 +345,21 @@ and the stale-looking ones carry a Status line saying what overtook them.
     the reassuring half, and the half a beginner needs. See the 2026-09-23
     Chapter 4 entry.
 
-27. **A runtime error's column points at an enclosing expression, and WHICH
-    one varies.** `print(a[5])` reports column 1, `print("x " + string(a[5]))`
-    reports the `+`, and the same index at the prompt reports the bracket.
+27. ~~**A runtime error's column points at an enclosing expression, and WHICH
+    one varies.**~~ **RESOLVED 2026-09-23** (struck). The index and field
+    raises carry their own node's position now, so `x = a[5]`, `print(a[5])`,
+    `print("x " + string(a[5]))` and `a[5]` at the prompt all point at the
+    `[` --- four spellings, one column. THE POSITION WAS IN HAND ALL ALONG:
+    `parser.y` puts both nodes at `@2`, the `[` and the `.`, which is why the
+    PROMPT was the one place that got it right (there the subexpression
+    happens to be the whole statement). What was missing was `..._raise_at`
+    instead of `..._raise` at two sites. Operators were already correct and
+    are now a CONTROL rather than an accident --- `1 / 0` points at the `/`,
+    a different character, so the tier cannot pass by hunting for brackets ---
+    beside a second control that a fault which really is about the whole
+    statement still reports column 1. The expected column is COMPUTED FROM THE
+    SOURCE rather than written down, since a list of four numbers is a
+    transcript of whatever the binary said. Five goldens rebaselined.
 
 28. **`ERRORS.md`'s warning table stops at 2104**, and warning 2107 prints no
     code at all.
@@ -361,19 +373,44 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 31. **`sub` at the prompt swallows the next line.**
 
-32. **`nothing` and `unknown` used as an index both report `indexing expects
+32. ~~**`nothing` and `unknown` used as an index both report `indexing expects
     array[number] or record[string]`**, naming neither the value nor the
-    absence, two lines below the mistake --- from the likeliest absence bug a
-    reader writes.
+    absence.~~ **RESOLVED 2026-09-23** (struck). The message names what it
+    GOT, in the ARITHMETIC family's own words, and the two absences are told
+    apart: `indexing an array expected number but got nothing` against
+    `...but got unknown`. Which absence you hold is the clue, because the fix
+    for each is a different guard --- `find_by` misses with `nothing` and a
+    missing record key reads back as `unknown`, and `is_unknown` answers for
+    only one of them. WHICH FORM APPLIES IS DECIDED BY THE SUBJECT rather than
+    restated as a menu, so `nothing[0]` and `a[nothing]` no longer share a
+    sentence, and a reader who wrote `room["north"]` against something that
+    turned out to be an array is told it is an array. One remedy is attached,
+    for the one subject that always has the same answer: a string is not
+    indexable, and the message says to use `mid`. Two negatives pin the
+    absence pair, so collapsing them back into one sentence moves both.
 
 33. **`reference.md` calls top-level `on warning stop` "`-Werror`"** one
     paragraph after the lookup rule that makes it not one: an intermediate
     frame silently defeats it.
 
-34. **A raise from a builtin inside another builtin's argument is discarded
-    and replaced.** `decode(read(f))` on a missing file reports `decode
-    expects a string`, losing the real cause. Every read-then-decode in the
-    book had to become two statements.
+34. ~~**A raise from a builtin inside another builtin's argument is discarded
+    and replaced.**~~ **RESOLVED 2026-09-23** (struck). THE FIRST RAISE WINS
+    while one is unwinding --- PLAT-ERR's third anti-silence rule, beside rule
+    1 (a second raise may not SHADOW a pending one) and rule 2 (a pending one
+    may not vanish with the frame). Fixed in ONE place, `runtime_error_raise`,
+    rather than by adding the missing `error_action_pending` check to each
+    builtin: a rule re-established at two hundred call sites is one a new
+    builtin silently leaves out, which is exactly how these three came to
+    differ from the two beside them. Measured across the five positions the
+    report named, all five now report the missing file, and it survives two
+    enclosing calls. THE LOAD-BEARING CONTROL is that a builtin with nothing
+    in flight still complains in its own words --- without it the rule is
+    satisfied by a build that stopped reporting type errors at all --- and the
+    OVER-CORRECTION (never replacing a raise, even after absorption) is caught
+    by PLAT-ERR's own pre-existing `rule1_escape` fixture. Nothing acts on the
+    bad argument either: asserted on a FILE'S CONTENTS, since `write` truncates
+    before it has anything to put in it and a return value proves nothing
+    about the disk.
 
 35. **`could not write file:` never says which of its three causes applied.**
 
@@ -7729,4 +7766,110 @@ or remove the directory.
   will not take a multi-line string, Chapters 5 and 8 keep their listings in
   files and use the prompt only for questions, and the transcript harness
   waits for the prompt to be drawn before typing. All three workarounds can go.
+- **Workaround:** none needed now.
+
+## 2026-09-23 — CC — while: closing the diagnostics cluster (ledger 34, 32, 27)
+- **Type:** bug
+- **Severity:** high (34), medium (32, 27)
+- **What:** Three defects with one subject: **the message is wrong about what
+  failed, or wrong about where.** All three are read by a beginner on page
+  three, and two of them had already forced a workaround into the book.
+
+### 34: the fix belongs in one place, not two hundred
+
+`decode(read(f))` on a missing file reported `decode expects a string`. The
+read's raise was destroyed, `decode` was handed a `nothing`, and it complained
+about the symptom it had just been given — naming the one call in the line that
+is not at fault. Measured across five argument positions, two were right and
+three were wrong, **and nothing in the source said which you would get**:
+arithmetic and user functions check `error_action_pending` after evaluating an
+operand, and three builtins did not.
+
+The obvious fix is to add the missing check to those three. **It is the wrong
+fix**, because the rule then has to be re-established at every call site that
+evaluates an argument, and a rule like that is one a new builtin silently
+leaves out — which is precisely how these three came to differ from the two
+beside them. So the rule moved to `runtime_error_raise`: **while a raise is
+unwinding, the first one wins.** That is PLAT-ERR's third anti-silence rule,
+and it sits beside the two the design already had — rule 1 (a second raise may
+not *shadow* a pending one) and rule 2 (a pending one may not *vanish* with the
+frame). The builtins still do a little useless work on a value they should not
+have been handed; it is now harmless rather than destructive.
+
+**Deliberate raises after an absorption are untouched**, and that is what the
+over-correction perturbation proves: guarding on "an error exists" rather than
+"one is in flight" is caught immediately by PLAT-ERR's own pre-existing
+`rule1_escape` fixture, which is the existing rule acting as a control on the
+new one.
+
+**The load-bearing control is not the fix, it is the opposite of the fix**: a
+builtin with nothing in flight must still complain in its own words. Without
+it, "the first raise wins" is equally satisfied by a build that stopped
+reporting builtin type errors altogether.
+
+**And the sharpest tier asserts a file's contents.** `write` truncates its file
+before it has anything to put in it, so a failed argument that got through
+would empty a file the program never meant to touch. A return value proves
+nothing about the disk. Measured: nothing acts on the bad argument — the file
+keeps its contents and `append` does not lengthen the array.
+
+### 32: the language knew which absence it was holding; the message did not
+
+The two absences are told apart everywhere in the arithmetic family and were
+told apart nowhere in the indexing family. One sentence served every way of
+getting there and contained neither the word `nothing` nor `unknown` — which is
+what the reader most often has in hand, because `find_by` misses with `nothing`,
+`is_unknown(nothing)` is false, so the guard does not fire and the absence
+travels a line or two to an index.
+
+It says what it **got** now, in arithmetic's own words, and **which form
+applies is decided by the subject** rather than restated as a menu:
+`indexing an array expected number but got nothing` against `...but got
+unknown`. `nothing[0]` and `a[nothing]` are different mistakes and no longer
+share a sentence — and a reader who wrote `room["north"]` against something
+that turned out to be an array is now told it is an array, which the menu form
+never said.
+
+One remedy is attached, for the one subject whose answer is always the same:
+a string is not indexable, and the message says to use `mid`.
+
+### 27: the position was in hand all along
+
+A raise reports `current_line`/`current_column`, which `eval_stmt` stamps from
+the **statement** — so `x = a[5]` and `print(a[5])` both blamed column 1 and
+`print("x " + string(a[5]))` blamed the `+`. A reader taught that `:5:1` means
+line 5 column 1 looks at column 1, finds `print`, and concludes `print` is
+broken. **A `:1` reads as a caret and is not one.**
+
+Nothing had to be computed: `parser.y` already places both nodes at `@2` — the
+`[` and the `.` — which is exactly why the **prompt** was the one place that
+got it right, since there the subexpression happens to be the whole statement.
+The fix is `runtime_error_raise_at` instead of `runtime_error_raise` at two
+sites. The prompt improved too: `a[5]` there used to report column 8, the
+wrapper's offset leaking, and reports column 2 now.
+
+**The expected column is computed from the source, not written down.** Four
+numbers in a file are a transcript of whatever the binary said; asking where
+the `[` actually is makes the tier an oracle, and it fails both on a build that
+reports the statement's column and on one that reports a constant.
+
+### Found while here: two of my own checks could not have failed
+
+- **My first control was wrong, not the binary.** `undefined_name_here` alone
+  is a *parse* error, not a runtime one, so it reported the end of the line and
+  the control failed against a correct build. Replaced by two real controls: a
+  division, whose operator carries its own position (a *different* character,
+  so the tier cannot pass by hunting for brackets), and `print undefined_name`,
+  a fault that really is statement-wide and must still report column 1.
+- **`set -e` plus `pipefail` ended the suite silently.** `got="$(./gbasic … |
+  sed …)"` takes the *pipeline's* status, and the run under test is supposed to
+  fail — so the assignment failed, the script exited, and it printed no FAIL
+  line at all under a green-looking scrollback. `run_http.sh` records this same
+  trap from the other direction (a grep that matches nothing). The run is
+  captured with `|| true` first now.
+
+- **Effect it had:** the book split every read-then-decode into two statements
+  to get a usable message, Chapter 5 spends a callout saying the column is a
+  hint rather than an arrow, and Chapter 7 spends a paragraph saying what the
+  index message declined to say. All three can go.
 - **Workaround:** none needed now.

@@ -1,0 +1,12 @@
+ok   decode(read(f))     reports the read
+ok   try_decode(read(f)) reports the read
+ok   len(read(f))        reports the read
+ok   1 + read(f)         reports the read
+ok   mine(read(f))       reports the read
+ok   and it survives two enclosing calls
+ok   decode(42) still says what decode wants
+ok   len(42) still says what len wants
+ok   try_decode(42) still says what try_decode wants
+ok   and a healthy call after all that still works: 1
+ok   append(xs, read(f)) reports the read
+ok   and the array was not appended to

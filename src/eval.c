@@ -3332,11 +3332,38 @@ static void error_set_state(const char *message, int code, const char *source) {
     error_set_state_full(message, code, source, value_null(), value_null(), 0, 0);
 }
 
-/* PLAT-ERR: a raise RECORDS and starts unwinding; nothing is decided here.
- * Whether it is fatal is only known at the frame that declines it, so the
- * report is deferred to raise_report_fatal -- with the location captured in
- * current_error at raise time, the line is byte-identical. */
+/* THE FIRST RAISE WINS WHILE ONE IS UNWINDING, which is the other half of
+ * PLAT-ERR's anti-silence pair. Rule 1 says a second raise may not SHADOW a
+ * pending one inside a frame; this says it may not REPLACE one that is still
+ * on its way out.
+ *
+ * Without it the reported cause was decided by whether the enclosing caller
+ * happened to check. MEASURED on 0.2.2 with a missing-file read in five
+ * argument positions: `1 + read(f)` and `mine(read(f))` reported the missing
+ * file, while `decode(read(f))`, `try_decode(read(f))` and `len(read(f))`
+ * reported that decode/try_decode/len wanted a string -- a complaint about the
+ * symptom the discarded raise had just caused, naming the one call that is not
+ * at fault. Arithmetic and user functions check `error_action_pending` after
+ * evaluating an operand; a builtin that forgets goes on to type-check the
+ * `nothing` it was handed and raises over the top of the truth.
+ *
+ * Fixed HERE rather than by adding the missing check to each builtin, because
+ * the fix has to hold for the builtin nobody has written yet: a rule that is
+ * re-established at two hundred call sites is a rule that a new one silently
+ * leaves out, which is exactly how these three came to differ from the two
+ * beside them. The builtins still do a little useless work on a value they
+ * should not have been handed -- they type-check it and try to raise -- and
+ * that is now harmless rather than destructive.
+ *
+ * DELIBERATE RAISES AFTER AN ABSORPTION ARE UNAFFECTED: `error_frame_absorb`
+ * clears the flight before a handler runs, rule 2's re-raise sets the flag
+ * directly, and so does the `error e` statement -- so a handler that raises
+ * something new, and a warning escalated under `on warning stop`, all still
+ * say what they mean. */
 static void runtime_error_raise(const char *message, int code, const char *source) {
+    if (raise_in_flight) {
+        return;
+    }
     error_set_state(message, code, source);
     error_generation++;
     raise_in_flight = 1;
@@ -3348,6 +3375,9 @@ static void runtime_error_raise(const char *message, int code, const char *sourc
  * pre-registration pass happens to be on would point at the wrong file. */
 static void runtime_error_raise_at(const char *message, int code,
                                    const char *source, int line, int column) {
+    if (raise_in_flight) {
+        return;              /* the first raise wins -- see above */
+    }
     error_set_state_full(message, code, source, value_null(), value_null(),
                          line, column);
     error_generation++;
@@ -35218,7 +35248,21 @@ static Value eval_expr(AstExpr *expr) {
                  * indistinguishable from a real one and CI saw success. */
                 value_free(array);
                 value_free(index);
-                runtime_error_raise("array index out of range", 1003, "indexing");
+                /* AT THE `[`, NOT AT THE STATEMENT (DOGFOOD 27). A raise
+                 * reports `current_line`/`current_column`, which `eval_stmt`
+                 * stamps from the STATEMENT -- so the same fault spelled four
+                 * ways reported four different columns and only one of them
+                 * was the failing site: `x = a[5]` and `print(a[5])` both
+                 * blamed column 1, and `print("x " + string(a[5]))` blamed the
+                 * `+`. A reader taught that `:5:1` means line 5 column 1 looks
+                 * at column 1, finds `print`, and concludes `print` is broken.
+                 * A `:1` reads as a caret and is not one.
+                 * The parser already put this node at its own `[` (parser.y
+                 * uses @2 for both index and field), so the position was in
+                 * hand all along -- which is why the PROMPT got it right,
+                 * there the subexpression happens to be the whole statement. */
+                runtime_error_raise_at("array index out of range", 1003, "indexing",
+                                       expr->line, expr->column);
                 return value_null();
             }
             Value result = value_copy(array.as.array.store->items[position]);
@@ -35240,9 +35284,56 @@ static Value eval_expr(AstExpr *expr) {
             value_free(index);
             return result;
         }
+        /* NAME WHAT IT GOT, NOT ONLY WHAT IT WANTED (DOGFOOD 32). One sentence
+         * used to serve every way of getting here, and it contained neither
+         * the word `nothing` nor the word `unknown` -- which is what a reader
+         * most often has in hand at this line, because the two absences are
+         * told apart everywhere in the ARITHMETIC family and were told apart
+         * nowhere here. `find_by` misses with `nothing`, `is_unknown(nothing)`
+         * is false, so the guard does not fire and the absence travels a line
+         * or two to an index; the complaint then named indexing, which is not
+         * where the mistake is, and said nothing about absence at all.
+         *
+         * WHICH ABSENCE IS THE CLUE, and it is the whole value here: the fix
+         * for `unknown` and the fix for `nothing` are different guards, and
+         * the arithmetic family is specific enough that which refusal you get
+         * already tells you which value you are holding. The language knew;
+         * only this message declined to use it.
+         *
+         * WHICH FORM APPLIES IS DECIDED BY THE SUBJECT rather than restated as
+         * a menu, because `nothing[0]` and `a[nothing]` are different mistakes
+         * and one sentence covering both points at neither. It also tells the
+         * author something they may not know: a reader writing `room["north"]`
+         * against a value that turned out to be an array learns it is an
+         * array, which the menu form never said.
+         *
+         * The shape follows the ARITHMETIC family's exactly -- "expected X but
+         * got Y" -- so the two read as one language rather than two. */
+        char message[192];
+        if (array.kind == VALUE_ARRAY) {
+            snprintf(message, sizeof(message),
+                     "indexing an array expected number but got %s",
+                     value_kind_name(index.kind));
+        } else if (array.kind == VALUE_RECORD) {
+            snprintf(message, sizeof(message),
+                     "indexing a record expected string but got %s",
+                     value_kind_name(index.kind));
+        } else if (array.kind == VALUE_STRING) {
+            /* The one subject worth a remedy: a string is not indexable, which
+             * is a documented surprise for anyone arriving from a language
+             * where it is (docs/ai/UNLEARN.md says so under Strings), and the
+             * answer is always the same call. */
+            snprintf(message, sizeof(message),
+                     "indexing expected array or record but got string; "
+                     "use mid for part of a string");
+        } else {
+            snprintf(message, sizeof(message),
+                     "indexing expected array or record but got %s",
+                     value_kind_name(array.kind));
+        }
         value_free(array);
         value_free(index);
-        runtime_error_raise("indexing expects array[number] or record[string]", 1003, "indexing");
+        runtime_error_raise_at(message, 1003, "indexing", expr->line, expr->column);
         return value_null();
     }
     case AST_EXPR_FIELD: {
@@ -35404,7 +35495,9 @@ static Value eval_expr(AstExpr *expr) {
             }
             char message[256];
             snprintf(message, sizeof(message), "unknown record field: %s", expr->as.field.field);
-            runtime_error_raise(message, 1003, "field access");
+            /* At the `.`, for the reason the index raise above gives. */
+            runtime_error_raise_at(message, 1003, "field access",
+                                   expr->line, expr->column);
             value_free(object);
             return value_null();
         }

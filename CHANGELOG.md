@@ -9,6 +9,44 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — a raise could be destroyed and replaced by the call it broke (DOGFOOD 34)
+
+`decode(read(f))` on a missing file reported `decode expects a string`. The
+read's raise was thrown away, `decode` was handed a `nothing`, and it complained
+about the symptom it had just been given — naming the only call in the line that
+was not at fault. Measured across five argument positions, two reported the
+missing file and three reported the outer builtin, and **nothing in the source
+said which you would get**.
+
+**The first raise now wins while one is unwinding** — PLAT-ERR's third
+anti-silence rule, beside rule 1 (a second raise may not *shadow* a pending one)
+and rule 2 (a pending one may not *vanish* with the frame). Fixed in
+`runtime_error_raise` rather than by adding the missing check to each builtin: a
+rule re-established at two hundred call sites is one a new builtin silently
+leaves out, which is how these three came to differ from the two beside them.
+Raises after an absorption are untouched, so a handler that raises something new
+still says what it means.
+
+### Changed — the index and field messages name what they got, and point at it (DOGFOOD 32, 27)
+
+`indexing expects array[number] or record[string]` served every way of getting
+there and contained neither the word `nothing` nor `unknown` — the two values a
+reader most often has in hand, since `find_by` misses with `nothing`, a missing
+record key reads back as `unknown`, and `is_unknown` answers for only one of
+them. The message now says what it **got**, in the arithmetic family's own
+words, and which form applies is decided by the subject rather than restated as
+a menu: `indexing an array expected number but got nothing`,
+`indexing a record expected string but got number`,
+`indexing expected array or record but got string; use mid for part of a string`.
+
+**And it points at the failing expression rather than the statement.** `x = a[5]`,
+`print(a[5])` and `print("x " + string(a[5]))` used to report columns 1, 1 and
+the `+`; all three point at the `[` now, and the field family at the `.`.
+Operators were already right and stay so — `1 / 0` points at the `/`. Five
+negative goldens rebaselined, listed: `negative_array_string_key`,
+`negative_index_nothing`, `negative_index_unknown`,
+`negative_noncontainer_dynamic_lookup`, `negative_record_numeric_key`.
+
 ### Fixed — the prompt kept only half of what you did (DOGFOOD 22)
 
 `reference.md` has always said a line that **acts** is kept in the resident

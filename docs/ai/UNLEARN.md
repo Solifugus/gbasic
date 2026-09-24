@@ -121,7 +121,8 @@ the standing ones.
 ## Strings
 
 - **`mid` is 0-based**, and strings are **not indexable**. `s[0]` raises
-  (`indexing expects array[number] or record[string]`); use `mid(s, 0, 1)`.
+  (`indexing expected array or record but got string; use mid for part of a
+  string`); use `mid(s, 0, 1)`.
 
   ```basic
   print(mid("hello", 0, 2))   ' he

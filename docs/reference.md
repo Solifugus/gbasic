@@ -1857,6 +1857,19 @@ Two rules keep deferral honest, and no raise can vanish under them:
 2. **Pending errors do not survive the frame.** Returning (or ending the
    program) with an unacknowledged error re-raises at the call site.
 
+A third rule keeps the *cause* honest: **while a raise is unwinding, the first
+one wins.** Nothing that happens on the way out can replace it, so the failure
+you are shown is the one that started it. Before 0.2.3 this depended on whether
+the enclosing caller happened to check, and the commonest shape got it wrong —
+`decode(read(f))` on a missing file reported that `decode` wanted a string,
+naming the only call in the line that was not at fault.
+
+**Where an error points.** The line and column name the failing *expression*,
+not the statement containing it, so `x = a[5]`, `print(a[5])` and
+`print("x " + string(a[5]))` all point at the `[`. Operators carry their own
+position too: `1 / 0` points at the `/`. A fault that really is about the whole
+statement still reports column 1.
+
 **`on error goto <label>`** jumps instead. Firing **disarms** the frame, so a
 raise inside the handler propagates rather than looping; re-arm by executing
 `on error goto` again. The jump *is* the acknowledgment — inside the handler
