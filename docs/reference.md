@@ -988,7 +988,27 @@ state with a function or a handler, keep it in a record and mutate its fields
 **by name** from the enclosing scope. This is about the *name*, not the record:
 a record passed as an **argument** is a copy, so `function bump(r)` assigning
 `r.count` changes the caller's record not at all. Return the modified record and
-assign it, or reach the record by name. Because the broken form *looks* right and fails silently, the
+assign it, or reach the record by name.
+
+**Arrays work the same way, and `append` is the common case.** Reached by name,
+a mutation reaches the enclosing array; passed as an argument, it does not:
+
+```basic
+function grows()
+    append(g, 3)          ' by NAME -- the enclosing g grows
+    return count(g)
+end function
+
+function takes(xs)
+    append(xs, 99)        ' an ARGUMENT -- a copy; the caller's array is untouched
+    return count(xs)
+end function
+```
+
+The boundary is *mutation versus assignment*, not arrays versus records.
+`append(g, 3)` writes through the name and reaches the outer array; `g = [9]`
+inside the same function creates a function-local and leaves the outer one
+alone, exactly as it would for a number. Because the broken form *looks* right and fails silently, the
 interpreter warns when a function **reads a name from an enclosing scope and
 then assigns it** — the read-compute-store-back shape is almost always an
 attempt to write the outer variable:
@@ -1960,8 +1980,16 @@ for failures; advice that must be acknowledged is not advice.
 setting, deliberately unlike error mode, which is frame-local. *A failure is the
 callee's business; the noise budget is the caller's.* So `on warning ignore` in
 your function silences a warning raised inside anything it calls, and
-`on warning stop` in `main` makes the whole program's warnings fatal — the
-`-Werror` of a language with no build step to put a flag on.
+`on warning stop` in `main` makes the whole program's warnings fatal.
+
+**It is not `-Werror`, and the rule above is why.** A compiler flag cannot be
+overridden from inside the program; this is a *dynamic* lookup, so any frame
+between `main` and the warning that sets a mode of its own wins — a library
+that says `on warning print` silently un-escalates everything it raises, and
+your program ends 0. That is the channel working as designed (the noise budget
+belongs to the caller closest to the noise), but it means a top-level
+`on warning stop` is a default, not a guarantee. If you need a guarantee, check
+`warning` where it matters.
 
 **Escalation** raises at the warning's own site, so `error.line` and
 `error.trace` point at the offending statement; `error.severity` is `"warning"`
@@ -2399,7 +2427,7 @@ response = webclient.request({
     method:"POST",
     url:"https://api.example.com/events",
     headers:headers,
-    body:encode({name:"launch"})
+    body:json_encode({name:"launch"})
 })
 ```
 
@@ -2994,7 +3022,7 @@ append(server.responses, {
     id:req.id,
     status:201,
     headers:headers,
-    body:encode({saved:true})
+    body:json_encode({saved:true})
 })
 ```
 
@@ -7896,6 +7924,22 @@ blocks unwound exactly as a real error unwinds them:
 runtime error at <prompt>:1:1: interrupted
 > print "still here"
 still here
+```
+
+**Everything the loop had done is still there**, which is the reassuring half:
+variables set before it, and the ones it was changing, hold the values they had
+when you interrupted — so you can look at where it got to rather than starting
+again.
+
+```text
+> n = 0
+> while true
+... n = n + 1
+... end while
+^C
+runtime error at <prompt>:1:1: interrupted
+> print n
+343027
 ```
 
 Ctrl-C at an idle prompt does nothing. This is the prompt's behaviour only — for

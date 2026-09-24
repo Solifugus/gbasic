@@ -9,6 +9,27 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — eight documentation gaps, and a check so the `encode` rule is enforced (DOGFOOD 16, 17, 18, 26, 30, 33, 38, 39)
+
+Three needed no change — `round(x)`, `--add-loads`, `recover`'s numbering and
+the prompt's typo position had all been fixed and the ledger had not caught up.
+
+The rest: the prompt's **Interrupting** section now says that everything the
+loop had done is still there (measured — `n` sat at 343027 where the Ctrl-C
+landed); the **array escape hatch** is documented beside the record version it
+mirrors, with the boundary stated as *mutation versus assignment, not arrays
+versus records*; the **`-Werror`** comparison for top-level `on warning stop` is
+withdrawn, because a frame between `main` and the warning that sets its own mode
+wins — it is a default, not a guarantee; and **`webclient_design.md`** no longer
+specifies three behaviours the module does not have (`get(url, headers)`,
+`post(url, body, headers)`, automatic JSON encoding of record bodies).
+
+`reference.md` said in bold "use `json_encode`, **not** `encode`, for anything
+leaving gBASIC" and then used `encode` fifteen lines later — and the reported
+two occurrences were not the family; two more sat in `webserver_design.md` and
+one in `plat-web-lowering-study.md`. `run_docs_gate.sh` now refuses any document
+that builds a response body with `encode`.
+
 ### Fixed — `rows_affected` described the wrong statement (DOGFOOD 36)
 
 `sqlite3_changes()` is defined for INSERT, UPDATE and DELETE and holds its

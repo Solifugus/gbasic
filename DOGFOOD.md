@@ -216,23 +216,30 @@ and the stale-looking ones carry a Status line saying what overtook them.
     precedence table that a tripwire reads back. Re-measured in the
     2026-09-22 Chapter 3 entry.
 
-16. **Two smaller surprises:** `round(x)` with one argument raises (two are
-    required), and `--add-loads` did not add `load sqlite` to a program that
-    needed it — it may cover only `.bas` libraries, not native modules.
+16. ~~**Two smaller surprises:** `round(x)` with one argument raises, and
+    `--add-loads` did not add `load sqlite`.~~ **BOTH RESOLVED, CLOSED BY
+    MEASUREMENT 2026-09-24.** `round(2.5)` answers 3 (noted in the 2026-09-22
+    Chapter 2 entry) and `--add-loads` emits `load sqlite` for a program
+    calling `sqlite.connect`/`sqlite.query` with no `load` at all. Neither
+    needed a change today; the bullet had simply outlived the fixes.
 
-17. **A doc-gap cluster found by reading the documentation as a reader
-    would**, including `reference.md` still saying a raise cannot be caught,
-    two different answers for `file_type` on a missing path, `gpdf` missing
-    from the documentation index, and a stale datetime status row. Listed in
-    full in the 2026-09-18 book-planning entry.
+17. ~~**A doc-gap cluster found by reading the documentation as a reader
+    would.**~~ **RESOLVED 2026-09-19**, all nine, and re-verified 2026-09-24:
+    the raise-cannot-be-caught passage is gone, both `file_type` passages say
+    `unknown` and the binary agrees, the datetime row states the three §9
+    deferrals as shipped, `COOKBOOK.md` has its `llm` entry, and `llm.local`'s
+    base URL is an origin in all three places. TWO OF THE NINE WERE NOT WHAT
+    THE REPORT SAID and are recorded as such in the detailed entry. The bullet
+    here outlived its own resolution by five days, which is the rot this
+    ledger exists to catch, one level up.
 
-18. **Three in the new prompt, found by replanning Chapter 1 against it:**
-    ~~`? x = 5` prints nothing at all (neither `true` nor a diagnostic)~~
-    (**RESOLVED in 0.2.2** — it answers; re-measured in the 2026-09-22
-    Chapter 3 entry); `recover` restores a whole program as ONE numbered
-    entry, so `delete 1` wipes it; and a typo at the prompt reports
-    `<prompt>:0:0` where the same typo in a file reports `file:1:1`. See
-    the 2026-09-19 entry.
+18. ~~**Three in the new prompt, found by replanning Chapter 1 against it.**~~
+    **ALL THREE RESOLVED, THE LAST TWO CLOSED BY MEASUREMENT 2026-09-24.**
+    `? x = 5` answers (already noted); `recover` restores a program as the
+    NUMBERED ENTRIES it was typed as, so `delete 1` removes one line and not
+    the program (measured: a three-line session recovers as 1/2/3 and
+    `delete 1` leaves 2); and a typo at the prompt reports `<prompt>:1:1`,
+    matching what the same typo reports in a file.
 
 19. ~~**`gi` cannot call a class's static methods**, only namespace-level
     functions.~~ **RESOLVED 2026-09-23** (struck). A three-part name is a
@@ -340,10 +347,14 @@ and the stale-looking ones carry a Status line saying what overtook them.
     editor's own redraw) and once on a broken one, so a driver that quietly
     waited would report 1 and fail.
 
-26. **`reference.md`'s "Interrupting" says the SESSION survives Ctrl-C and
-    never says the interrupted LOOP's variables survive with it** --- which is
-    the reassuring half, and the half a beginner needs. See the 2026-09-23
-    Chapter 4 entry.
+26. ~~**`reference.md`'s "Interrupting" says the SESSION survives Ctrl-C and
+    never says the interrupted LOOP's variables survive with it.**~~
+    **RESOLVED 2026-09-24** (struck). MEASURED BEFORE BEING WRITTEN, which
+    matters because the claim is about two different things: a variable set
+    BEFORE the loop survives, and so does one the loop was CHANGING --- a
+    `while true` incrementing `n`, interrupted, leaves `n` at the value it had
+    reached (343027 on this machine). The section says both, so a reader can
+    look at where the work got to rather than starting again.
 
 27. ~~**A runtime error's column points at an enclosing expression, and WHICH
     one varies.**~~ **RESOLVED 2026-09-23** (struck). The index and field
@@ -383,11 +394,18 @@ and the stale-looking ones carry a Status line saying what overtook them.
     it. Measured both ways first. Originally: they
     do not.
 
-30. **An array reached BY NAME from an enclosing scope is mutated by
-    `append`** --- the same escape hatch records have, undocumented in the
-    scope section. The book's `learn` depends on it.
+30. ~~**An array reached BY NAME from an enclosing scope is mutated by
+    `append`.**~~ **RESOLVED 2026-09-24** (struck). Documented beside the
+    record version it mirrors, and the boundary is stated as what it really is:
+    **mutation versus assignment, not arrays versus records.** MEASURED all
+    four ways --- `append(g, 3)` by name reaches the enclosing array (2 -> 3),
+    `append(xs, 99)` on an argument does not (the caller stays at 3), `g = [9]`
+    inside the same function creates a local and leaves the outer array alone,
+    and records behave identically.
 
-31. **`sub` at the prompt swallows the next line.**
+31. **`sub` at the prompt swallows the next line.** *(Matthew's call — see
+    the 2026-09-24 summary; a language-surface decision rather than a doc
+    fix.)*
 
 32. ~~**`nothing` and `unknown` used as an index both report `indexing expects
     array[number] or record[string]`**, naming neither the value nor the
@@ -405,9 +423,16 @@ and the stale-looking ones carry a Status line saying what overtook them.
     indexable, and the message says to use `mid`. Two negatives pin the
     absence pair, so collapsing them back into one sentence moves both.
 
-33. **`reference.md` calls top-level `on warning stop` "`-Werror`"** one
-    paragraph after the lookup rule that makes it not one: an intermediate
-    frame silently defeats it.
+33. ~~**`reference.md` calls top-level `on warning stop` "`-Werror`"**~~
+    **RESOLVED 2026-09-24** (struck). The comparison is withdrawn and the
+    reason given: a compiler flag cannot be overridden from inside the program,
+    while this is a DYNAMIC lookup, so any frame between `main` and the warning
+    that sets a mode of its own wins. MEASURED --- a library setting
+    `on warning print` un-escalates everything it raises and the program ends
+    0, with `on warning stop` in `main`. That is the channel working as
+    designed, since the noise budget belongs to the caller closest to the
+    noise; it means a top-level `on warning stop` is a DEFAULT, not a
+    guarantee, and the page now says so.
 
 34. ~~**A raise from a builtin inside another builtin's argument is discarded
     and replaced.**~~ **RESOLVED 2026-09-23** (struck). THE FIRST RAISE WINS
@@ -473,14 +498,22 @@ and the stale-looking ones carry a Status line saying what overtook them.
     time`), because one that only says no leaves the author guessing whether
     the module can be talked into it.
 
-38. **`webclient_design.md` specifies three Phase 1 behaviours 0.2.2 does not
-    have:** `get(url, headers)`, `post(url, body, headers)`, and automatic JSON
-    encoding of record bodies. `reference.md` is right about all three, so the
-    document carrying the reasoning is the one that is wrong.
+38. ~~**`webclient_design.md` specifies three Phase 1 behaviours 0.2.2 does
+    not have.**~~ **RESOLVED 2026-09-24** (struck). Measured: `webclient.get`
+    takes ONE argument, `webclient.post` takes TWO, and a record body is
+    refused with `webclient.post body must be a string`. The page now says so
+    at the top of the section, points at `webclient.request` --- which is what
+    shipped for headers --- and marks the two- and three-argument forms below
+    as a proposal that was not taken up rather than an API.
 
-39. **The WebClient reference says use `json_encode`, not `encode`**, and then
-    uses `encode` in its own `webclient.request` example fifteen lines later --
-    and again in the WebServer section, under an explicit JSON content type.
+39. ~~**The WebClient reference says use `json_encode`, not `encode`**, and
+    then uses `encode` in its own example fifteen lines later.~~ **RESOLVED
+    2026-09-24** (struck). AND THE REPORTED TWO WERE NOT THE FAMILY: two more
+    sat in `webserver_design.md` and one in `plat-web-lowering-study.md`, all
+    building a response body with `encode`. A rule a page states in bold and
+    then breaks is worse than one it never stated, because the example is what
+    gets copied --- so `run_docs_gate` now refuses any document that builds a
+    body with `encode`, and the rule is enforced rather than asserted.
 
 40. **`llm.chat` hashes the whole request in gBASIC on every call**, to build a
     replay key, whether or not anything replays. `_fnv1a` runs `_xor32` per
@@ -8254,4 +8287,61 @@ goes red immediately.
 
 - **Effect it had:** Chapter 8 spends a paragraph on what `could not write
   file:` might mean.
+- **Workaround:** none needed now.
+
+## 2026-09-24 — CC — while: clearing the doc-gaps (ledger 16, 17, 18, 26, 30, 33, 38, 39)
+- **Type:** doc-gap
+- **Severity:** medium (33, 38), low (the rest)
+- **What:** Eight items. **Three of them needed no change at all** — they had
+  been fixed and the ledger had not caught up, which is the rot this file
+  exists to catch happening to this file.
+
+### Closed by measurement alone
+
+- **16** — `round(2.5)` answers 3, and `--add-loads` emits `load sqlite` for a
+  program that calls `sqlite.connect` with no `load`. Both halves already fixed.
+- **18** — `recover` restores a program as the numbered entries it was typed
+  as, so `delete 1` removes one line (measured: three lines recover as 1/2/3,
+  `delete 1` leaves 2); and a prompt typo reports `<prompt>:1:1`, matching what
+  the same typo reports in a file.
+- **17** — resolved 2026-09-19, all nine, and **the ranked bullet outlived its
+  own detailed resolution by five days.** Re-verified each today rather than
+  trusting the note.
+
+### The real work, and each measured before it was written
+
+- **26** — the claim is about two different things and both were checked: a
+  variable set *before* an interrupted loop survives, and so does one the loop
+  was *changing* — `n` sat at 343027 where the Ctrl-C landed.
+- **30** — the escape hatch is documented beside the record version it mirrors,
+  and the boundary is stated as what it really is: **mutation versus
+  assignment, not arrays versus records.** `append(g, 3)` by name reaches the
+  enclosing array; `append(xs, 99)` on an argument does not; `g = [9]` in the
+  same function creates a local.
+- **33** — the `-Werror` comparison is withdrawn, with the reason. A compiler
+  flag cannot be overridden from inside the program; this is a *dynamic*
+  lookup, so a library setting `on warning print` un-escalates everything it
+  raises and the program ends 0 with `on warning stop` in `main`. Measured.
+  That is the channel working as designed — the noise budget belongs to the
+  caller closest to the noise — so what the page owed was the consequence: a
+  top-level `on warning stop` is a **default, not a guarantee**.
+- **38** — measured: `webclient.get` takes one argument, `webclient.post` takes
+  two, a record body is refused. The design document was the one that had gone
+  wrong, which is the worse way round — `reference.md` was right all along, so
+  the page carrying the *reasoning* was the misleading one.
+
+### 39 was not two occurrences, it was five
+
+The reference says in bold "Use `json_encode`, **not** `encode`, for anything
+leaving gBASIC" and then used `encode` fifteen lines later, and again under an
+explicit JSON content type. **The reported two were not the family**: two more
+sat in `webserver_design.md` and one in `plat-web-lowering-study.md`.
+
+A rule a page states and then breaks is worse than one it never stated, because
+**the example is what gets copied**. So `run_docs_gate` refuses any document
+that builds a response body with `encode`, and the rule is enforced rather than
+asserted. Proven red.
+
+- **Effect it had:** every chapter that touched these pages had to state what
+  it had verified by running rather than cite them.
 - **Workaround:** none needed now.

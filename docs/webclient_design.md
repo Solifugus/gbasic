@@ -45,17 +45,37 @@ standard-module design.
 
 ## Recommended Phase 1 API
 
+**Three things below were recommended and NOT BUILT**, corrected 2026-09-24
+after the book found the page: `get(url, headers)`, `post(url, body, headers)`
+and automatic JSON encoding of a record body. Measured on 0.2.2,
+`webclient.get` takes **one** argument and `webclient.post` takes **two**, and
+a record body is refused with `webclient.post body must be a string`.
+`reference.md` is right about all three — so this document, which carries the
+*reasoning*, was the one that had gone wrong, which is the worse way round.
+
+**Headers go through `webclient.request`**, which is what shipped instead and
+is what the reference shows:
+
+```basic
+response = webclient.request({
+    method: "POST",
+    url: url,
+    headers: { "Content-Type": "application/json" },
+    body: json_encode(payload)
+})
+```
+
+What the module actually has:
+
 ```basic
 response = webclient.get(url)
-response = webclient.get(url, headers)
-
-response = webclient.post(url, body)
-response = webclient.post(url, body, headers)
-
+response = webclient.post(url, body)          ' body must be a string
 response = webclient.request(request_record)
 ```
 
-All Phase 1 operations are synchronous.
+The two-and-three-argument forms are recorded below as the design intended
+them; read them as a proposal that was not taken up, not as an API. All
+Phase 1 operations are synchronous.
 
 ### `webclient.get`
 

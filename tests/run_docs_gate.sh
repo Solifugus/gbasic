@@ -739,4 +739,25 @@ if [ -f "$ERRDOC" ] && [ -f src/eval.c ]; then
     rm -f "$warn_table"
 fi
 
+# 7. NO DOCUMENT MAY BUILD AN HTTP BODY WITH `encode` (DOGFOOD 39).
+#    `reference.md` states the rule in bold -- "Use `json_encode`, NOT `encode`,
+#    for anything leaving gBASIC", because `encode` emits a gBASIC dialect
+#    (`nothing`/`unknown` instead of `null`) that other parsers reject -- and
+#    then used `encode` in its own `webclient.request` example fifteen lines
+#    later, and again in the WebServer section under an explicit JSON content
+#    type. Two more copies sat in webserver_design.md and one in the lowering
+#    study; the reported two were not the whole family.
+#
+#    A rule a page states and then breaks is worse than one it never stated,
+#    because the example is what gets copied.
+body_ok=1
+while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    echo "FAIL json body      ${hit%%:*} builds a response body with \`encode\` -- use json_encode (encode emits a gBASIC dialect other parsers reject)"
+    body_ok=0; status=1
+done <<EOF
+$(grep -rn 'body: *encode(' docs/*.md 2>/dev/null || true)
+EOF
+[ "$body_ok" = "1" ] && echo "PASS json body      no document builds an HTTP body with \`encode\`"
+
 exit "$status"

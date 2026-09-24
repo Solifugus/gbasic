@@ -80,7 +80,7 @@ function handle_post_cart(req)
     if not parsed.ok then
         return { id: req.id, status: 400, body: "bad JSON: " + parsed.message }
     end if
-    return { id: req.id, status: 201, body: encode({ ok: true }) }
+    return { id: req.id, status: 201, body: json_encode({ ok: true }) }
 end function
 
 ' `root "public"` -- APPROXIMATED, see gap B; this version is NOT safe

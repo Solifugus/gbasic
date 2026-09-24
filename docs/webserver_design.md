@@ -179,7 +179,7 @@ append(server.responses, {
     id:req.id,
     status:201,
     headers:headers,
-    body:encode({saved:true})
+    body:json_encode({saved:true})
 })
 ```
 
@@ -360,7 +360,7 @@ watch(server.requests)
                     id:req.id,
                     status:201,
                     headers:headers,
-                    body:encode({
+                    body:json_encode({
                         accepted:true,
                         message:req.json.message
                     })
