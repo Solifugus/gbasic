@@ -9,6 +9,45 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Changed — a database error names the statement that failed (DOGFOOD 41)
+
+`SQLite prepare failed: no such column: player` said nothing about which of the
+five statements going through a `one(db, sql)` helper was running, and the
+position it carried was the helper. The statement is appended now, collapsed to
+one line and truncated: `... -- in "select count(distinct player) as total from
+games"`. Done for `sqlite`, `pg` and `odbc` together, through one formatter, so
+the three cannot drift; a failure that is not *about* a statement — connecting,
+a catalog call — adds nothing.
+
+`pg` also stopped emitting **four lines of stderr for one error**: PostgreSQL's
+text carries its own `LINE n:` context and a caret on separate lines, and only
+the trailing newlines were being trimmed. And its note is added only when libpq
+reports no statement position, since with one PostgreSQL has already echoed the
+line.
+
+### Fixed — `load NAME` blamed an unrelated file (DOGFOOD 42)
+
+The search walks the directory's `.bas` files looking for a `library` block
+with that name, and a file it could not parse aborted the walk and became the
+message — so with any half-written program in the directory, `load money`
+answered `could not parse library file: ./broken.bas`. A file that does not
+parse does not define the library being looked for; it is skipped, quietly, and
+the walk goes on. A file the caller **named** still fails loudly.
+
+### Changed — a syntax error names the reserved word (DOGFOOD 43)
+
+`on = 0` reported `unexpected OP_EQ, expecting IDENT or ERROR_VALUE` — the one
+token on that line that is not the problem. Three shapes are recognised and
+each says the word in the spelling the author typed: `function f(a, each)`,
+`on = 0`, and statement-initial `each = 5` / `to = 1` / `step = 3`. The rules
+are narrow deliberately: a note that fired on every syntax error near a keyword
+would be wrong more often than right. One golden moved —
+`negative_until_as_name`, which exists to say exactly this.
+
+`invalid money operation` also names its operands and a remedy now: `cannot use
+'+' between money and a plain number; money needs a currency -- write
+{EUR}"0.00" rather than 0`, with the author's own currency.
+
 ### Fixed — a raise could be destroyed and replaced by the call it broke (DOGFOOD 34)
 
 `decode(read(f))` on a missing file reported `decode expects a string`. The

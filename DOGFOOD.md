@@ -438,18 +438,64 @@ and the stale-looking ones carry a Status line saying what overtook them.
     a 350-character system prompt. `llm.with_volatile(m, ["system",
     "messages"])` cuts a 20-call run from 15.0s to 1.3s, which localizes it.
 
-41. **A SQLite error never names the statement that failed.**
-    `SQLite prepare failed: no such column: player` carries the line and column
-    of the `sqlite.query` call, which in any program with a one-row-count helper
-    is the helper and not the query. Five call sites, one message, no SQL in it.
-    Appending the statement (or its first 60 characters) would make the message
-    self-locating.
+41. ~~**A SQLite error never names the statement that failed.**~~ **RESOLVED
+    2026-09-23** (struck). The failing statement is appended, whitespace-
+    collapsed and truncated: `SQLite prepare failed: no such column: player --
+    in "select count(distinct player) as total from games"`.
+    **DONE FOR ALL THREE MODULES IN ONE SWEEP**, since `pg` and `odbc` have
+    the identical shape and three copies of a format are three things that
+    drift -- one formatter, with a tripwire asserting it is built in exactly
+    one place. COLLAPSED TO ONE LINE because SQL is written across several and
+    a diagnostic is one line by construction. A failure that is not ABOUT a
+    statement -- connecting, a catalog call -- adds nothing, which is the
+    control. **`pg` GOT MORE THAN IT ASKED FOR**: Postgres carries its own
+    `LINE n:` context and a caret on separate lines, and only the TRAILING
+    newlines were being trimmed, so one runtime error arrived as FOUR lines of
+    stderr -- `odbc` already flattened its driver's text and `pg` was the
+    module that had not. The note is added there only when libpq reports NO
+    statement position, asked of libpq rather than guessed from the text:
+    with a position Postgres has already echoed the line, and repeating it is
+    noise. **A BUG IN MY OWN HELPER, FOUND BY RUNNING IT**: written as "emit
+    the pending space only if it fits", the space was dropped at the
+    truncation edge while the character after it still fitted, so `... from
+    games where` came out as `from gamesw...` -- two words glued into one that
+    looks like a real identifier.
 
-42. **`load NAME` scans the working directory and blames an unrelated
-    unparsable file** instead of saying the library was not found.
+42. ~~**`load NAME` scans the working directory and blames an unrelated
+    unparsable file** instead of saying the library was not found.~~
+    **RESOLVED 2026-09-23** (struck). A file that does not parse does not
+    define the library being looked for, which is all a NAME SEARCH needs to
+    know: it is skipped and the walk goes on, with its parse diagnostics
+    discarded into a sink of their own so the unrelated file is not named on
+    stderr either. Two controls, because "skip what does not parse" must not
+    become either of its neighbours: a real library beside the broken file is
+    still found (the walk continues rather than giving up at the first
+    failure), and a file the caller NAMED -- `load x from "broken.bas"` --
+    still fails loudly, because there the author said which file they meant.
 
-43. **A reserved word used as a name does not say which word it was**
-    (`on = 0`), and `invalid money operation` says no more than that.
+43. ~~**A reserved word used as a name does not say which word it was**
+    (`on = 0`), and `invalid money operation` says no more than that.~~
+    **RESOLVED 2026-09-23** (struck). A syntax error names the word now, in
+    the spelling the AUTHOR typed rather than the one the grammar uses --
+    nobody should have to know that `EACH` is their own word. THREE SHAPES,
+    each needing its own rule and each measured: the reserved word IS the
+    unexpected token and an identifier was wanted (`function f(a, each)`);
+    the unexpected token is the `=` and the word before it is reserved
+    (`on = 0`); and the word is STATEMENT-INITIAL, where bison offers no
+    expected list at all (`each = 5`, `to = 1`, `step = 3`) -- that last one
+    asks the SOURCE whether an `=` follows, read-only and one character, since
+    the `=` has not been lexed yet. **THE CONTROLS OUTNUMBER THE POSITIVES ON
+    PURPOSE**: a note that fired on every syntax error near a keyword would be
+    wrong more often than right, and a diagnostic that is sometimes a lie is
+    worse than a terse one. `for i = 1 to` and `then x = 1` each catch a
+    DIFFERENT over-correction, which was measured rather than assumed -- my
+    first draft credited the wrong one. ONE GOLDEN MOVED and it is the best
+    possible endorsement: `negative_until_as_name`, whose entire subject is
+    that `until` cannot be a variable name, now says so.
+    AND `invalid money operation` names its operands and the remedy --
+    `cannot use '+' between money and a plain number; money needs a currency
+    -- write {EUR}"0.00" rather than 0` -- naming the author's OWN currency,
+    the way its sibling messages already name both currencies in a mismatch.
 
 44. ~~**The published download is a MINIMAL build, so a reader who installs
     gBASIC the documented way cannot use SQLite, HTTP, PostgreSQL, ODBC or
@@ -7872,4 +7918,115 @@ reports the statement's column and on one that reports a constant.
   to get a usable message, Chapter 5 spends a callout saying the column is a
   hint rather than an arrow, and Chapter 7 spends a paragraph saying what the
   index message declined to say. All three can go.
+- **Workaround:** none needed now.
+
+## 2026-09-23 — CC — while: closing the message-quality cluster (ledger 41, 42, 43)
+- **Type:** diagnostic
+- **Severity:** low (all three)
+- **What:** Three messages that did not name their subject: a database error
+  that never said which statement, a `load` that named an innocent file, and a
+  syntax error that named every token except the one that was wrong. None is
+  severe alone; together they are the same failure — **the message describes
+  the machinery rather than the author's mistake.**
+
+### 41: the sweep found more than the report did
+
+The report was about `sqlite`. The fix is in all three database modules,
+because `pg` and `odbc` have the identical shape and three copies of a format
+are three things that drift — so there is **one formatter and a tripwire**
+asserting the suffix is built in exactly one place.
+
+Two things came out of doing `pg` that nobody had filed:
+
+- **A Postgres error was four lines of stderr.** Its text carries its own
+  `LINE n:` context and a caret on separate lines, and only the *trailing*
+  newlines were being trimmed. Three of those four lines do not match the
+  `file:line:col: message` shape every reader and every tool here parses,
+  `--json-diagnostics` included. `odbc` already flattened its driver's text
+  for exactly this reason; `pg` was the module that had not.
+- **Postgres often names the statement itself**, and repeating it would be
+  noise. Whether it did is a question for libpq, not for a string match:
+  a result carrying a statement position has already echoed the line. Without
+  one — a constraint violation on an insert — nothing says which statement was
+  running, which is the whole of the item.
+
+**And a bug in my own helper, found by running it rather than reading it.**
+Written as "emit the pending space only if it fits", the space was dropped at
+the truncation edge while the character after it still fitted, so `... from
+games where ...` came out as **`from gamesw...`** — two words glued into one
+that looks like a real identifier. A pending space and its character now go in
+together or neither does.
+
+**The check for that was vacuous on the first attempt**, and only a
+perturbation showed it: I looked for the two words joined (`masterwhere`) and
+the bug actually produces `masterw`, one character past the lost space. It
+asserts a property now instead of a needle — the excerpt, minus any `...`, is
+an exact **prefix** of the whitespace-collapsed statement, which no glued word,
+dropped character or reordering can satisfy.
+
+### 42: a parse failure means something different during a search
+
+`load money` walks the directory's `.bas` files looking for a `library money`
+block. A file it could not parse **aborted that walk and became the message**,
+so with any half-written program in the directory the answer was
+`could not parse library file: ./broken.bas` — naming a file with nothing to do
+with `money`, and losing the real answer. Hit for real in a scratch directory
+of sixty throwaway files, which is exactly a beginner's directory.
+
+A file that does not parse does not define the library being looked for. That
+is all a name search needs to know. Its diagnostics go into a sink of their own
+so the innocent file is not named on stderr either.
+
+Two controls, because "skip what does not parse" must not become either of its
+neighbours: a real library **beside** the broken file is still found (the walk
+continues rather than giving up at the first failure), and a file the caller
+**named** still fails loudly, because there the author said which file they
+meant.
+
+**And a third the gate found rather than the design.** `run_warning_model`'s
+collision tier writes a library file it deliberately makes unparsable, and my
+first version of this quieted it — so `watchers.bas` failing to parse while
+`load watchers` was what asked went from a parse error naming the file to
+`library not found`, hiding the author's own syntax error behind a sentence
+about something else. **A file named after the library is not an innocent
+bystander**: naming it `<library>.bas` is how you say which file you meant,
+exactly as `from "..."` is, so it fails loudly too. The tier that caught it
+meets this rule by accident; it is asserted now where the rule lives.
+
+### 43: three shapes, and the controls outnumber the positives
+
+`on = 0` reported `unexpected OP_EQ, expecting IDENT or ERROR_VALUE`. The
+position was right and the message was about the `=`, the one token on that
+line that is not the problem.
+
+Naming the word needs three rules, because the reserved word is in a different
+place each time and only one of the three has an expected list to work from:
+
+| what the author wrote | where the word is | how it is found |
+| --- | --- | --- |
+| `function f(a, each)` | the unexpected token | an identifier was expected |
+| `on = 0` | the token *before* | the unexpected token is `=` |
+| `each = 5`, `to = 1` | statement-initial | the source is asked whether `=` follows |
+
+The third asks the source directly — read-only, one character — because the
+`=` has not been lexed yet; the reserved word *is* the lookahead.
+
+**Every rule is narrow on purpose, and the controls are the argument.** A note
+that fired on every syntax error near a keyword would be wrong more often than
+right, and a diagnostic that is sometimes a lie is worse than a terse one.
+`for i = 1 to` catches the generalisation of the assignment rule (`to` is
+perfectly correct there); `then x = 1` catches dropping the `=` requirement
+from the statement-start rule. **Measured, not assumed — my first version of
+that comment credited the wrong control**, and only running the perturbations
+showed which caught which. The pre-existing `negative_do_loop_until` golden
+catches the second one too, which is honest overlap.
+
+**One golden moved, and it is the best endorsement available**:
+`negative_until_as_name` exists to say that `until` cannot be a variable name,
+and the message now says so.
+
+- **Effect it had:** Chapter 9's step 4 turned a database error into a
+  teaching point about "the line named is where it was noticed", Chapter 13's
+  answer key explains what `invalid money operation` means, and the `load`
+  defect cost several minutes of looking at the wrong file.
 - **Workaround:** none needed now.

@@ -45,7 +45,7 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 412 "src/parser.y"
+#line 413 "src/parser.y"
 
 #include "ast.h"
 #include "parse_ctx.h"
@@ -174,7 +174,7 @@ typedef struct {
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 437 "src/parser.y"
+#line 438 "src/parser.y"
 
     double number;
     char *text;

@@ -5,6 +5,7 @@
 #include "lexer.h"
 #include "parse_ctx.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1694,6 +1695,11 @@ int parse_source_reentrant_at(const char *source, const char *path,
     ctx.la_column = 0;
     ctx.la_end_line = 0;
     ctx.la_end_column = 0;
+    ctx.tok_type = TOKEN_EOF;
+    ctx.tok_prev_type = TOKEN_EOF;
+    ctx.tok_word[0] = '\0';
+    ctx.tok_prev_word[0] = '\0';
+    ctx.tok_after = NULL;
 
     Lexer lexer;
     lexer_init_at(&lexer, source, first_line);
@@ -1744,10 +1750,77 @@ void parse_set_source_path(const char *path) {
  * ctx. Both Bison's syntax-error yyerror and the grammar's action-level error
  * reports funnel through here so their output stays byte-identical to the
  * pre-Phase-2 global reporter. */
+/* Is this span a word the grammar has taken? `lexer_identifier_type` is the
+ * authoritative classifier and already exported -- the keyword list lives in
+ * exactly one place and this asks it rather than keeping a copy. */
+static int word_is_reserved(const char *word) {
+    return word && word[0] &&
+           lexer_identifier_type(word, (int)strlen(word)) != TOKEN_IDENT;
+}
+
+/* Name the reserved word, when a reserved word is what went wrong.
+ *
+ * TWO SHAPES AND NO MORE, deliberately narrow: a note that fires on every
+ * syntax error near a keyword would be wrong more often than right, and a
+ * diagnostic that is sometimes a lie is worse than a terse one.
+ *
+ *   `function f(a, each)`  -- the reserved word IS the unexpected token, and
+ *                             an identifier is what the grammar wanted there.
+ *   `on = 0`               -- the unexpected token is the `=`, and the word
+ *                             before it is reserved. An assignment is the one
+ *                             context where that pairing cannot mean anything
+ *                             else.
+ *
+ * The second rule is restricted to `=` on purpose. Taken generally -- "the
+ * previous token was a keyword" -- it fires on `for i = 1 to` with the line
+ * unfinished, where `to` is perfectly correct and the author never tried to
+ * use it as a name. */
+static const char *syntax_error_reserved_word(gb_parse_ctx *ctx, const char *message) {
+    if (!message) {
+        return NULL;
+    }
+    if (word_is_reserved(ctx->tok_word) && strstr(message, "IDENT")) {
+        return ctx->tok_word;
+    }
+    if (ctx->tok_type == TOKEN_OP_EQ && word_is_reserved(ctx->tok_prev_word)) {
+        return ctx->tok_prev_word;
+    }
+    /* THE THIRD SHAPE, and the one the first two miss: a reserved word at the
+     * START of a statement. `each = 5`, `to = 1` and `step = 3` are exactly
+     * the ordinary English words a beginner reaches for, and bison offers no
+     * expected list at all there -- just `unexpected EACH` -- so neither rule
+     * above fires. The `=` has not been lexed yet (the reserved word IS the
+     * lookahead), so this asks the SOURCE whether one follows: read-only, one
+     * character, and it cannot disturb a parse that is already over.
+     *
+     * Requiring the `=` is what keeps it honest. Without it the note would
+     * fire on every misplaced keyword -- `then` with no `if` -- where the
+     * author never tried to use the word as a name and the note would be a
+     * true sentence about the wrong mistake. */
+    if (word_is_reserved(ctx->tok_word) && ctx->tok_after) {
+        const char *p = ctx->tok_after;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (*p == '=') {
+            return ctx->tok_word;
+        }
+    }
+    return NULL;
+}
+
 static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                                 int end_line, int end_column, const char *message) {
     if (ctx->lexer_error_reported) {
         return;
+    }
+    char reworded[512];
+    const char *reserved = syntax_error_reserved_word(ctx, message);
+    if (reserved) {
+        snprintf(reworded, sizeof(reworded),
+                 "%s -- '%s' is a reserved word and cannot be used as a name",
+                 message, reserved);
+        message = reworded;
     }
     if (line <= 0 && ctx->active_lexer) {
         line = ctx->active_lexer->line;
@@ -1780,6 +1853,19 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     ctx->la_column = token.column;
     ctx->la_end_line = token.line;
     ctx->la_end_column = token.column + token.length;
+
+    /* Roll the last-two-tokens window (see gb_parse_ctx). The SPELLING is the
+     * author's own bytes, so a message can quote what they typed. */
+    ctx->tok_prev_type = ctx->tok_type;
+    memcpy(ctx->tok_prev_word, ctx->tok_word, sizeof(ctx->tok_word));
+    ctx->tok_type = token.type;
+    ctx->tok_after = token.start + token.length;
+    ctx->tok_word[0] = '\0';
+    if (token.length > 0 && (size_t)token.length < sizeof(ctx->tok_word) &&
+        (isalpha((unsigned char)token.start[0]) || token.start[0] == '_')) {
+        memcpy(ctx->tok_word, token.start, (size_t)token.length);
+        ctx->tok_word[token.length] = '\0';
+    }
 
     switch (token.type) {
     case TOKEN_EOF: return 0;

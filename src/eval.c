@@ -205,6 +205,8 @@ static uint64_t gbasic_rng_below(uint64_t bound) {
 }
 
 int parse_source(const char *source, AstStmtList *out_program);
+int parse_source_reentrant(const char *source, const char *path,
+                           gb_diagnostics *diags, AstStmtList *out_program);
 void parse_set_source_path(const char *path);
 
 typedef struct PgConnectionValue PgConnectionValue;
@@ -8242,7 +8244,27 @@ static LoadedFile *loaded_file_find(const char *path) {
     return NULL;
 }
 
-static LoadedFile *loaded_file_get(const char *path) {
+/* `quiet` is a NAME SEARCH rather than a named file, and the difference
+ * decides what an unparsable file MEANS (DOGFOOD 42).
+ *
+ * `load money` walks the directory's `.bas` files looking for a `library
+ * money` block. A file it could not parse used to abort that walk and become
+ * the message, so with any half-written program sitting next to the source the
+ * answer was:
+ *
+ *     parse error at ./broken.bas:2:5: syntax error, unexpected NEWLINE
+ *     runtime error at m.bas:2:3: could not parse library file: ./broken.bas
+ *
+ * `broken.bas` has nothing to do with `money`. The real answer -- there is no
+ * library called money -- was lost, and an innocent file was named instead;
+ * hit for real in a scratch directory of sixty throwaway files, which is
+ * exactly a beginner's directory. A FILE THAT DOES NOT PARSE DOES NOT DEFINE
+ * THE LIBRARY BEING LOOKED FOR, which is all the search needs to know, so it
+ * is skipped and the walk goes on.
+ *
+ * A file the caller NAMED -- `load x from "broken.bas"` -- still fails loudly,
+ * because there the author said which file they meant. */
+static LoadedFile *loaded_file_get_opt(const char *path, int quiet) {
     LoadedFile *loaded = loaded_file_find(path);
     if (loaded) {
         return loaded;
@@ -8250,6 +8272,9 @@ static LoadedFile *loaded_file_get(const char *path) {
 
     char *source = read_source_file(path);
     if (!source) {
+        if (quiet) {
+            return NULL;
+        }
         char message[512];
         snprintf(message, sizeof(message), "could not load library file: %s", path);
         runtime_error_raise(message, 1003, "use");
@@ -8257,13 +8282,28 @@ static LoadedFile *loaded_file_get(const char *path) {
     }
 
     AstStmtList program = ast_stmt_list_empty();
-    parse_set_source_path(path);
-    if (parse_source(source, &program) != 0) {
-        free(source);
-        char message[512];
-        snprintf(message, sizeof(message), "could not parse library file: %s", path);
-        runtime_error_raise(message, 1003, "use");
-        return NULL;
+    if (quiet) {
+        /* Its own sink, so the unrelated file's parse errors do not reach
+         * stderr either -- naming the file quietly is the same defect one
+         * line up. */
+        gb_diagnostics scratch;
+        gb_diagnostics_init(&scratch);
+        int failed = parse_source_reentrant(source, path, &scratch, &program) != 0;
+        gb_diagnostics_free(&scratch);
+        if (failed) {
+            free(source);
+            ast_free_program(program);
+            return NULL;
+        }
+    } else {
+        parse_set_source_path(path);
+        if (parse_source(source, &program) != 0) {
+            free(source);
+            char message[512];
+            snprintf(message, sizeof(message), "could not parse library file: %s", path);
+            runtime_error_raise(message, 1003, "use");
+            return NULL;
+        }
     }
     free(source);
 
@@ -8276,6 +8316,10 @@ static LoadedFile *loaded_file_get(const char *path) {
     loaded_files[loaded_file_count].program = program;
     loaded_file_count++;
     return &loaded_files[loaded_file_count - 1];
+}
+
+static LoadedFile *loaded_file_get(const char *path) {
+    return loaded_file_get_opt(path, 0);
 }
 
 static int use_pair_contains(UsePair *pairs, size_t count, const char *path, const char *library) {
@@ -8365,9 +8409,26 @@ static void search_file_for_library(const char *path,
         return;
     }
 
-    LoadedFile *loaded = loaded_file_get(path);
+    /* THE FILE NAMED AFTER THE LIBRARY IS NOT AN INNOCENT BYSTANDER, and the
+     * gate found this the hard way: `watchers.bas` failing to parse while
+     * `load watchers` is what asked went from a parse error naming the file to
+     * `library not found`, which hides the author's own syntax error behind a
+     * sentence about something else. The whole point of DOGFOOD 42 is not to
+     * blame a file that has nothing to do with the request -- and `<name>.bas`
+     * plainly has everything to do with it.
+     *
+     * So the quiet skip is for the OTHER files in the directory. This one
+     * still fails loudly, on the same principle as `load x from "..."`: the
+     * author said which file they meant, here by naming it after the library. */
+    char *expected = library_filename(name);
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    int is_the_named_file = strcmp(base, expected) == 0;
+    free(expected);
+
+    LoadedFile *loaded = loaded_file_get_opt(path, !is_the_named_file);
     if (!loaded) {
-        return;
+        return;      /* not parsable => does not define `name`; keep walking */
     }
 
     AstStmt *library = library_find_in(loaded->program, name);
@@ -19531,11 +19592,109 @@ typedef struct {
     int count;
 } SqliteParameterList;
 
+/* THE STATEMENT THAT FAILED, appended to a database diagnostic (DOGFOOD 41).
+ *
+ * A database's own message names a column or a table and says nothing about
+ * WHICH query was looking at it, and the position gBASIC reports is the call
+ * site -- which in any program with a helper around `query` is the helper and
+ * not the query. `no such column: player` at line 35 of a four-line `one(db,
+ * sql)` helper, with five statements going through it, leaves the word
+ * `player` as the only handle and grep as the only tool. A helper around
+ * `sqlite.query` is the first thing anybody writes after their third count.
+ *
+ * ONE FORMATTER FOR ALL THREE MODULES, because sqlite, pg and odbc have the
+ * same shape and three copies of a format is three things that drift.
+ *
+ * COLLAPSED TO ONE LINE: SQL is written across several and a diagnostic is one
+ * line by construction, so a raw newline here would break the
+ * `file:line:col: message` shape that every reader and every tool in this tree
+ * parses -- including `--json-diagnostics`, whose consumer is an editor.
+ * TRUNCATED at 60 characters, because the job is to IDENTIFY the statement,
+ * not to reprint it; the author has the source. */
+static void sql_statement_note(const char *sql, char *note, size_t note_size) {
+    note[0] = '\0';
+    if (!sql || !*sql) {
+        return;
+    }
+    char excerpt[64];
+    size_t out = 0;
+    int space = 0;          /* a run of whitespace becomes one space */
+    int leading = 1;
+    for (const char *p = sql; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            if (!leading) {
+                space = 1;
+            }
+            continue;
+        }
+        /* A PENDING SPACE AND ITS CHARACTER GO IN TOGETHER OR NEITHER DOES.
+         * Written as "emit the space only if it fits" the space was dropped at
+         * the truncation edge while the character after it still fitted, so
+         * `... from games where ...` came out as `from gamesw...` -- two words
+         * glued into one that looks like a real identifier. Found by running
+         * it on a statement long enough to cut, not by reading it. */
+        size_t need = space ? 2 : 1;
+        if (out + need >= sizeof(excerpt)) {
+            break;
+        }
+        if (space) {
+            excerpt[out++] = ' ';
+        }
+        space = 0;
+        leading = 0;
+        excerpt[out++] = (char)c;
+    }
+    /* Trailing space can only come from a run that was cut mid-way. */
+    while (out > 0 && excerpt[out - 1] == ' ') {
+        out--;
+    }
+    excerpt[out] = '\0';
+    if (out == 0) {
+        return;
+    }
+    /* `...` ONLY WHEN SOMETHING WAS ACTUALLY CUT. On a statement that fitted
+     * it would be a lie about the SQL the author wrote, and this message
+     * exists to be compared against their source. Counted over non-space
+     * characters on both sides, since the excerpt collapsed the whitespace. */
+    size_t kept = 0, total = 0;
+    for (const char *p = excerpt; *p; p++) {
+        if (*p != ' ') {
+            kept++;
+        }
+    }
+    for (const char *p = sql; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            total++;
+        }
+    }
+    const char *more = total > kept ? "..." : "";
+    snprintf(note, note_size, " -- in \"%s%s\"", excerpt, more);
+}
+
+/* The fixed-buffer form, for the callers that build their message with
+ * snprintf. `odbc` builds its own with a StringBuilder and appends the note
+ * directly -- one formatter either way, so the three modules cannot drift. */
+static void sql_append_statement(char *message, size_t size, const char *sql) {
+    char note[96];
+    sql_statement_note(sql, note, sizeof(note));
+    if (!note[0]) {
+        return;
+    }
+    size_t len = strlen(message);
+    if (len + strlen(note) >= size) {
+        return;
+    }
+    snprintf(message + len, size - len, "%s", note);
+}
+
 static void sqlite_raise_message(const char *message) {
     runtime_error_raise(message, SQLITE_ERROR_CODE, "sqlite");
 }
 
-static void sqlite_raise_connection_error(sqlite3 *connection, const char *prefix) {
+static void sqlite_raise_statement_error(sqlite3 *connection, const char *prefix,
+                                         const char *sql) {
     const char *detail = connection ? sqlite3_errmsg(connection) : "";
     char message[1024];
     if (detail && detail[0]) {
@@ -19543,7 +19702,14 @@ static void sqlite_raise_connection_error(sqlite3 *connection, const char *prefi
     } else {
         snprintf(message, sizeof(message), "%s", prefix);
     }
+    sql_append_statement(message, sizeof(message), sql);
     sqlite_raise_message(message);
+}
+
+/* The failures that are not ABOUT a statement -- opening, closing, a bad
+ * handle -- keep their own wording and add nothing. */
+static void sqlite_raise_connection_error(sqlite3 *connection, const char *prefix) {
+    sqlite_raise_statement_error(connection, prefix, NULL);
 }
 
 static SqliteConnectionValue *sqlite_connection_from_value(Value value) {
@@ -19752,7 +19918,7 @@ static int sqlite_prepare_statement(SqliteConnectionValue *connection,
     const char *tail = NULL;
     int rc = sqlite3_prepare_v2(connection->connection, sql, -1, &out->statement, &tail);
     if (rc != SQLITE_OK) {
-        sqlite_raise_connection_error(connection->connection, "SQLite prepare failed");
+        sqlite_raise_statement_error(connection->connection, "SQLite prepare failed", sql);
         return 0;
     }
     if (!out->statement) {
@@ -20022,7 +20188,8 @@ static Value sqlite_eval_sql(AstExpr *expr, int query_mode) {
         if (rc == SQLITE_DONE) {
             converted = sqlite_command_result(connection->connection, sql.as.string);
         } else {
-            sqlite_raise_connection_error(connection->connection, "SQLite exec failed");
+            sqlite_raise_statement_error(connection->connection, "SQLite exec failed",
+                                         sql.as.string);
         }
     }
 
@@ -20158,9 +20325,10 @@ static void odbc_raise_message(const char *message) {
 /* Build "prefix: [STATE] message" from the driver's own diagnostic record.
  * Walking every record rather than only the first matters: drivers routinely
  * put the useful sentence in record 2 behind a generic one in record 1. */
-static void odbc_raise_diag(SQLSMALLINT handle_type,
-                            SQLHANDLE handle,
-                            const char *prefix) {
+static void odbc_raise_diag_sql(SQLSMALLINT handle_type,
+                                SQLHANDLE handle,
+                                const char *prefix,
+                                const char *sql) {
     StringBuilder builder;
     sb_init(&builder);
     sb_append_text(&builder, prefix);
@@ -20215,8 +20383,30 @@ static void odbc_raise_diag(SQLSMALLINT handle_type,
         message = full;
     }
 
+    /* THE STATEMENT LAST, after the driver's own text and after the charset
+     * hint, so the cause leads and the identification follows. */
+    char note[96];
+    sql_statement_note(sql, note, sizeof(note));
+    if (message && note[0]) {
+        StringBuilder with_sql;
+        sb_init(&with_sql);
+        sb_append_text(&with_sql, message);
+        sb_append_text(&with_sql, note);
+        char *full = sb_take(&with_sql);
+        free(message);
+        message = full;
+    }
+
     odbc_raise_message(message ? message : prefix);
     free(message);
+}
+
+/* The failures that are not ABOUT a statement -- connecting, a catalog call,
+ * a bad handle -- add nothing. */
+static void odbc_raise_diag(SQLSMALLINT handle_type,
+                            SQLHANDLE handle,
+                            const char *prefix) {
+    odbc_raise_diag_sql(handle_type, handle, prefix, NULL);
 }
 
 static OdbcConnectionValue *odbc_connection_from_value(Value value) {
@@ -21036,7 +21226,8 @@ static Value odbc_eval_sql(AstExpr *expr, int query_mode) {
 
     rc = SQLPrepare(params.statement, (SQLCHAR *)sql.as.string, SQL_NTS);
     if (!SQL_SUCCEEDED(rc)) {
-        odbc_raise_diag(SQL_HANDLE_STMT, params.statement, "odbc prepare failed");
+        odbc_raise_diag_sql(SQL_HANDLE_STMT, params.statement, "odbc prepare failed",
+                            sql.as.string);
         goto done;
     }
 
@@ -21090,9 +21281,10 @@ static Value odbc_eval_sql(AstExpr *expr, int query_mode) {
 
     rc = SQLExecute(params.statement);
     if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
-        odbc_raise_diag(SQL_HANDLE_STMT,
-                        params.statement,
-                        query_mode ? "odbc query failed" : "odbc exec failed");
+        odbc_raise_diag_sql(SQL_HANDLE_STMT,
+                            params.statement,
+                            query_mode ? "odbc query failed" : "odbc exec failed",
+                            sql.as.string);
         goto done;
     }
 
@@ -21648,7 +21840,8 @@ static void pg_raise_message(const char *message) {
     runtime_error_raise(message, PG_ERROR_CODE, "postgres");
 }
 
-static void pg_raise_connection_error(PGconn *connection, const char *prefix) {
+static void pg_raise_statement_error(PGconn *connection, const char *prefix,
+                                     const char *sql) {
     const char *detail = connection ? PQerrorMessage(connection) : "";
     size_t detail_len = strlen(detail);
     while (detail_len > 0 &&
@@ -21661,13 +21854,20 @@ static void pg_raise_connection_error(PGconn *connection, const char *prefix) {
     } else {
         snprintf(message, sizeof(message), "%s", prefix);
     }
+    sql_append_statement(message, sizeof(message), sql);
     pg_raise_message(message);
 }
 
-static void pg_raise_result_error(PGconn *connection, PGresult *result) {
+/* The failures that are not ABOUT a statement add nothing. */
+static void pg_raise_connection_error(PGconn *connection, const char *prefix) {
+    pg_raise_statement_error(connection, prefix, NULL);
+}
+
+static void pg_raise_result_error_sql(PGconn *connection, PGresult *result,
+                                      const char *sql) {
     const char *detail = result ? PQresultErrorMessage(result) : NULL;
     if (!detail || detail[0] == '\0') {
-        pg_raise_connection_error(connection, "PostgreSQL operation failed");
+        pg_raise_statement_error(connection, "PostgreSQL operation failed", sql);
         return;
     }
 
@@ -21688,7 +21888,34 @@ static void pg_raise_result_error(PGconn *connection, PGresult *result) {
     } else {
         snprintf(message, sizeof(message), "%.*s", (int)detail_len, detail);
     }
+    /* ONE LINE, and until 2026-09-23 this was FOUR. PostgreSQL's error text
+     * carries its own `LINE n:` context and a caret on separate lines, and
+     * only the TRAILING newlines were being trimmed -- so a single runtime
+     * error arrived as four lines of stderr, three of which do not match the
+     * `file:line:col: message` shape that every reader and every tool here
+     * parses. `odbc` already flattens its driver's text for exactly this
+     * reason; `pg` was the module that had not. */
+    for (char *c = message; *c; c++) {
+        if (*c == '\n' || *c == '\r') {
+            *c = ' ';
+        }
+    }
+    /* THE NOTE ONLY WHEN POSTGRES DID NOT ALREADY NAME THE STATEMENT. Asked of
+     * libpq rather than guessed from the text: a result carrying a statement
+     * position has echoed the offending line itself, and repeating it would be
+     * noise. Without a position -- a constraint violation on an insert, say --
+     * nothing in the message says which statement was running, which is the
+     * whole of DOGFOOD 41. */
+    const char *position = PQresultErrorField(result, PG_DIAG_STATEMENT_POSITION);
+    if (!position || !position[0]) {
+        sql_append_statement(message, sizeof(message), sql);
+    }
     pg_raise_message(message);
+}
+
+/* The failures that are not ABOUT a statement add nothing. */
+static void pg_raise_result_error(PGconn *connection, PGresult *result) {
+    pg_raise_result_error_sql(connection, result, NULL);
 }
 
 static PgConnectionValue *pg_connection_from_value(Value value) {
@@ -22134,10 +22361,11 @@ static int pg_describe_parameter_types(PgConnectionValue *connection,
     PGresult *prepared = PQprepare(connection->connection, "", sql, 0, NULL);
     if (!prepared || PQresultStatus(prepared) != PGRES_COMMAND_OK) {
         if (prepared) {
-            pg_raise_result_error(connection->connection, prepared);
+            pg_raise_result_error_sql(connection->connection, prepared, sql);
             PQclear(prepared);
         } else {
-            pg_raise_connection_error(connection->connection, "PostgreSQL prepare failed");
+            pg_raise_statement_error(connection->connection,
+                                     "PostgreSQL prepare failed", sql);
         }
         return 0;
     }
@@ -22744,7 +22972,7 @@ static Value pg_eval_sql(AstExpr *expr, int query_mode) {
     } else if (!query_mode && status == PGRES_TUPLES_OK) {
         pg_raise_message("pg.exec cannot discard row results; use pg.query");
     } else {
-        pg_raise_result_error(connection->connection, result);
+        pg_raise_result_error_sql(connection->connection, result, sql.as.string);
     }
     PQclear(result);
     value_free(connection_value);
@@ -22775,7 +23003,7 @@ static Value pg_eval_transaction(AstExpr *expr, const char *sql, const char *nam
         return value_null();
     }
     if (PQresultStatus(result) != PGRES_COMMAND_OK) {
-        pg_raise_result_error(connection->connection, result);
+        pg_raise_result_error_sql(connection->connection, result, sql);
         PQclear(result);
         value_free(connection_value);
         return value_null();
@@ -34971,9 +35199,43 @@ static Value eval_binary(AstExpr *expr) {
             current_column = previous_column;
             return value_money(result_money);
         }
+        /* NAME THE OPERANDS AND THE REMEDY (DOGFOOD 43). `invalid money
+         * operation` was the one terse message in an otherwise exemplary set:
+         * its siblings say `cannot add money in different currencies (USD and
+         * EUR)` and `money text has more decimal places than the currency can
+         * store (USD stores 6)`, naming both sides and the limit.
+         *
+         * THE COMMON CASE IS AN ACCUMULATOR INITIALISED TO `0`, which is a
+         * beginner's mistake and a reasonable one -- `total = 0` then
+         * `total = total + price` -- and the remedy names the author's OWN
+         * currency rather than a specimen, the way the sibling messages do. */
+        char message[256];
+        const char *alpha = NULL;
+        if (left.kind == VALUE_MONEY) {
+            alpha = currency_alpha_of(left.as.money.currency);
+        } else if (right.kind == VALUE_MONEY) {
+            alpha = currency_alpha_of(right.as.money.currency);
+        }
+        if (!alpha) {
+            alpha = "USD";
+        }
+        if ((left.kind == VALUE_MONEY && right.kind == VALUE_NUMBER) ||
+            (left.kind == VALUE_NUMBER && right.kind == VALUE_MONEY)) {
+            snprintf(message, sizeof(message),
+                     "cannot use '%s' between money and a plain number; money "
+                     "needs a currency -- write {%s}\"0.00\" rather than 0",
+                     op, alpha);
+        } else if (left.kind == VALUE_MONEY && right.kind == VALUE_MONEY) {
+            snprintf(message, sizeof(message),
+                     "cannot use '%s' between two money values", op);
+        } else {
+            snprintf(message, sizeof(message),
+                     "cannot use '%s' between money and %s", op,
+                     value_kind_name(left.kind == VALUE_MONEY ? right.kind : left.kind));
+        }
         value_free(left);
         value_free(right);
-        runtime_error_raise("invalid money operation", 1003, "money");
+        runtime_error_raise(message, 1003, "money");
         current_line = previous_line;
         current_column = previous_column;
         return value_null();

@@ -34,6 +34,24 @@ typedef struct {
     int la_column;
     int la_end_line;
     int la_end_column;
+
+    /* THE LAST TWO TOKENS, so a syntax error can say WHICH WORD was the
+     * problem (DOGFOOD 43). `on = 0` reported `unexpected OP_EQ, expecting
+     * IDENT or ERROR_VALUE` -- the position was right and the message was
+     * about the `=`, the one token on that line that is NOT the problem, while
+     * nothing said `on` is reserved. Bison knows the token; naming it is a
+     * message, not an analysis.
+     *
+     * Two tokens rather than one, because the reserved word is the UNEXPECTED
+     * token in a parameter list (`function f(a, each)`) and the one BEFORE it
+     * in an assignment (`on = 0`). Spelled as the AUTHOR typed it, not as the
+     * grammar names it -- a reader should not have to know that `EACH` is the
+     * spelling of their own word. */
+    TokenType       tok_type;              /* most recent token */
+    TokenType       tok_prev_type;
+    char            tok_word[40];          /* its source spelling, "" if not word-shaped */
+    char            tok_prev_word[40];
+    const char     *tok_after;             /* source just past the token (borrowed) */
 } gb_parse_ctx;
 
 #endif

@@ -485,3 +485,70 @@ for name in "${cases[@]}"; do
 
     rm -f "$stdout_file" "$stderr_file"
 done
+
+# --- A RESERVED WORD USED AS A NAME SAYS WHICH WORD (DOGFOOD 43) -----------
+#
+# `on = 0` reported `unexpected OP_EQ, expecting IDENT or ERROR_VALUE`: the
+# position was right and the message was about the `=`, the one token on that
+# line that is NOT the problem, while nothing said `on` is reserved. Both cases
+# in the report were real and both were ordinary English words a beginner
+# reaches for.
+#
+# THREE SHAPES, and they are deliberately narrow -- a note that fired on every
+# syntax error near a keyword would be wrong more often than right, and a
+# diagnostic that is sometimes a lie is worse than a terse one. The CONTROLS
+# below outnumber the positives for that reason.
+rw_work="$(mktemp -d)"
+rw_fail=0
+rw_says() {   # source line, expected word
+    printf 'program main()\n%s\nend program\n' "$1" > "$rw_work/r.bas"
+    local got; got="$(./gbasic "$rw_work/r.bas" 2>&1 >/dev/null || true)"
+    case "$got" in
+        *"'$2' is a reserved word and cannot be used as a name"*)
+            printf 'PASS reserved word named: %s\n' "$1" ;;
+        *) printf 'FAIL reserved word not named: %s\n       %s\n' "$1" "$got"; rw_fail=1 ;;
+    esac
+}
+rw_silent() {   # source line -- an ordinary syntax error, no note
+    printf 'program main()\n%s\nend program\n' "$1" > "$rw_work/r.bas"
+    local got; got="$(./gbasic "$rw_work/r.bas" 2>&1 >/dev/null || true)"
+    case "$got" in
+        *"is a reserved word"*)
+            printf 'FAIL a note fired on an ordinary error: %s\n       %s\n' "$1" "$got"; rw_fail=1 ;;
+        *) printf 'PASS no note: %s\n' "$1" ;;
+    esac
+}
+# statement-initial (bison offers NO expected list here, which is why this
+# shape needed a rule of its own)
+rw_says 'each = 5'  each
+rw_says 'to = 1'    to
+rw_says 'step = 3'  step
+# the assignment shape, where the unexpected token is the `=` and the reserved
+# word is the one before it
+rw_says 'on = 0'    on
+# and where the reserved word IS the unexpected token and an identifier was
+# what the grammar wanted
+printf 'function f(label, each)\n  return 1\nend function\n' > "$rw_work/r2.bas"
+case "$(./gbasic "$rw_work/r2.bas" 2>&1 >/dev/null || true)" in
+    *"'each' is a reserved word"*) printf 'PASS reserved word named: a parameter list\n' ;;
+    *) printf 'FAIL reserved word not named in a parameter list\n'; rw_fail=1 ;;
+esac
+# THE CONTROLS, and MEASURED rather than assumed -- the first draft of this
+# comment credited the wrong one. Each rule has a different over-correction and
+# a different control catches it:
+#   `for i = 1 to`  -- generalise the ASSIGNMENT rule to "the previous token
+#                      was a keyword" and the note fires here, where `to` is
+#                      perfectly correct and nobody tried to name anything.
+#   `then x = 1`    -- drop the `=` requirement from the STATEMENT-START rule
+#                      and the note fires here, on a misplaced keyword the
+#                      author never tried to use as a name. (Proven red; the
+#                      pre-existing negative_do_loop_until golden catches the
+#                      same perturbation, which is honest overlap.)
+#   `x = = 2`       -- the unexpected token is `=` and so is the one before it.
+#   `next`          -- a keyword statement that is simply incomplete.
+rw_silent 'for i = 1 to'
+rw_silent 'then x = 1'
+rw_silent 'x = = 2'
+rw_silent 'next'
+rm -rf "$rw_work"
+[ "$rw_fail" = 0 ] || exit 1
