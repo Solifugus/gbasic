@@ -85,6 +85,43 @@ static int for_each_index_distinct(gb_parse_ctx *ctx, const char *value_name,
     return 0;
 }
 
+/* THE HEAD IS CHECKED WHERE IT IS WRITTEN (DOGFOOD 31).
+ *
+ * The server block is `IDENT IDENT ( ... )` with ZERO reserved words, which is
+ * the right design -- `server = webserver.listen(...)` appears in
+ * stdlib/web.bas and thirty-odd fixtures, so reserving the word would have
+ * broken all of it -- and it has one consequence nobody had paid for: ANY two
+ * identifiers followed by `()` open a server block. `sub greet()` does.
+ * `def greet()`, `procedure greet()` and `foo bar()` do too; measured, all
+ * four behave identically.
+ *
+ * The parser then demanded a body and an `end`, swallowing following lines
+ * while it looked, and reported wherever that search failed -- one or more
+ * lines BELOW the mistake. At the prompt the head alone reads as "unexpected
+ * end of file", which the continuation logic takes for an unfinished
+ * statement, so it waits and eats whatever is typed next.
+ *
+ * A MID-RULE ACTION, so this runs the moment the parser has committed to the
+ * production and before a single body line is read. The alternative -- naming
+ * the cause from the failure site -- means guessing from bison's expected set,
+ * and a diagnostic that guesses is what this whole cluster was about.
+ *
+ * `sub` IS NOT RESERVED AND MUST NOT BE: it is a variable in `forensics`,
+ * `ari` and `mdna`. The fix is a message, not a keyword. */
+static void server_head_note(gb_parse_ctx *ctx, const char *name,
+                             int line, int column) {
+    ctx->bad_block_word[0] = '\0';
+    if (!name || strcmp(name, "server") == 0) {
+        return;
+    }
+    if (strlen(name) < sizeof(ctx->bad_block_word)) {
+        snprintf(ctx->bad_block_word, sizeof(ctx->bad_block_word), "%s", name);
+        ctx->bad_block_line = line;
+        ctx->bad_block_column = column;
+    }
+}
+
+
 static int warn_channel_ok(gb_parse_ctx *ctx, const char *word,
                            int line, int column) {
     if (word && strcmp(word, "warning") == 0) {
@@ -1050,11 +1087,19 @@ watch_target_list
  * VALUES to literals: that restriction is what makes every §8 load-time check
  * (duplicate host, port collision, worker count) statically decidable. */
 server_statement
-    : IDENT IDENT LPAREN record_field_list RPAREN NEWLINE server_item_list END IDENT NEWLINE {
-        $$ = ast_server($1, $2, $4, $7, $9);
+    : IDENT IDENT LPAREN record_field_list RPAREN NEWLINE
+      { $<stmt>$ = NULL;   /* the mid-rule carries no value; typed so bison stays quiet */
+        server_head_note(ctx, $1, @1.first_line, @1.first_column); }
+      server_item_list END IDENT NEWLINE {
+        ctx->bad_block_word[0] = '\0';
+        $$ = ast_server($1, $2, $4, $8, $10);
       }
-    | IDENT IDENT LPAREN RPAREN NEWLINE server_item_list END IDENT NEWLINE {
-        $$ = ast_server($1, $2, ast_record_field_list_empty(), $6, $8);
+    | IDENT IDENT LPAREN RPAREN NEWLINE
+      { $<stmt>$ = NULL;   /* the mid-rule carries no value; typed so bison stays quiet */
+        server_head_note(ctx, $1, @1.first_line, @1.first_column); }
+      server_item_list END IDENT NEWLINE {
+        ctx->bad_block_word[0] = '\0';
+        $$ = ast_server($1, $2, ast_record_field_list_empty(), $7, $9);
       }
     ;
 
@@ -1700,6 +1745,9 @@ int parse_source_reentrant_at(const char *source, const char *path,
     ctx.tok_word[0] = '\0';
     ctx.tok_prev_word[0] = '\0';
     ctx.tok_after = NULL;
+    ctx.bad_block_word[0] = '\0';
+    ctx.bad_block_line = 0;
+    ctx.bad_block_column = 0;
 
     Lexer lexer;
     lexer_init_at(&lexer, source, first_line);
@@ -1813,6 +1861,19 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                                 int end_line, int end_column, const char *message) {
     if (ctx->lexer_error_reported) {
         return;
+    }
+    /* A BAD BLOCK HEAD OUTRANKS WHATEVER THE BODY TRIPPED ON, because the body
+     * is only being read at all on the strength of that head (DOGFOOD 31). */
+    char block_message[320];
+    if (ctx->bad_block_word[0]) {
+        gb_format_unknown_block(block_message, sizeof(block_message),
+                                ctx->bad_block_word);
+        line = ctx->bad_block_line;
+        column = ctx->bad_block_column;
+        end_line = line;
+        end_column = column + (int)strlen(ctx->bad_block_word);
+        message = block_message;
+        ctx->bad_block_word[0] = '\0';
     }
     char reworded[512];
     const char *reserved = syntax_error_reserved_word(ctx, message);

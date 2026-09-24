@@ -113,7 +113,7 @@ function _fingerprint(text)
         h = h - floor(h / 4294967296) * 4294967296
         h = h + 0
         b = byte_at(text, i)
-        h = _xor32(h, b)
+        h = bxor(h, b)          ' the builtin; see stdlib/llm.bas on DOGFOOD 40
         h = h * 16777619
         h = h - floor(h / 4294967296) * 4294967296
         i = i + 1
@@ -124,21 +124,6 @@ function _fingerprint(text)
                                                      h - floor(h / 256) * 256 ]))
 end function
 
-function _xor32(a, b)
-    out = 0
-    bit = 1
-    i = 0
-    while i < 32
-        ab = floor(a / bit) - floor(a / (bit * 2)) * 2
-        bb = floor(b / bit) - floor(b / (bit * 2)) * 2
-        if ab != bb then
-            out = out + bit
-        end if
-        bit = bit * 2
-        i = i + 1
-    end while
-    return out
-end function
 
 ' --- §9's ObservationLog: what production has seen -------------------------
 '

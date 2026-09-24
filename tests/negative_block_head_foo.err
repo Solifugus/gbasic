@@ -1,0 +1,1 @@
+parse error at tests/negative_block_head_foo.bas:4:1: unknown declarative block 'foo' (only 'server' exists)

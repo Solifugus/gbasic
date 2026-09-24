@@ -52,6 +52,22 @@ typedef struct {
     char            tok_word[40];          /* its source spelling, "" if not word-shaped */
     char            tok_prev_word[40];
     const char     *tok_after;             /* source just past the token (borrowed) */
+
+    /* A declarative block whose head word is not `server`, remembered rather
+     * than refused (DOGFOOD 31). The frontend's load-time pass already
+     * reports this and reports it BETTER -- it is a checker, so it can name
+     * several problems in one file, where the parser stops at the first. But
+     * it only ever sees blocks that PARSED, and `sub greet()` followed by
+     * `print "hi"` does not parse.
+     *
+     * So the head is noted here and the parse CARRIES ON. If the body parses,
+     * the note is dropped at the reduction and the load-time pass does its
+     * job unchanged. If the body fails, this is what gets reported, at the
+     * head's own position, instead of a complaint about a line two below the
+     * mistake. The parser speaks only when it is about to fail anyway. */
+    char            bad_block_word[40];
+    int             bad_block_line;
+    int             bad_block_column;
 } gb_parse_ctx;
 
 #endif

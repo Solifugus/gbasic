@@ -120,5 +120,31 @@ else
     pass "valgrind (SKIP: not installed)"
 fi
 
+# --- NO LIBRARY MAY HAND-ROLL A BITWISE BUILTIN (DOGFOOD 40) ---------------
+#
+# `llm`, `finio_watch` and `nlq` each carried a byte-identical `_xor32`: a
+# 32-iteration interpreted `while` loop doing what `bxor` does in one call.
+# `llm` paid it PER CHARACTER of every request, to build a replay key, whether
+# or not anything replays -- measured 0.085s a call against 0.0039s once the
+# builtin was used, on a 364-character system prompt.
+#
+# THREE COPIES IS HOW IT SPREAD, so the rule is checked rather than remembered:
+# the second library copied the first. The names are the conventional ones for
+# this shape, which is exactly what a fourth copy would be pasted under.
+#
+# A NAME CHECK CAN BE EVADED BY RENAMING and that is accepted: the failure this
+# guards is copy-paste, not ingenuity, and a message naming the builtin is what
+# a reader needs at the moment they are about to write the loop.
+for handrolled in _xor32 _and32 _or32 _not32 _shl32 _shr32; do
+    hits="$(grep -ln "function $handrolled" stdlib/*.bas 2>/dev/null || true)"
+    if [ -n "$hits" ]; then
+        builtin_name="b$(printf '%s' "${handrolled#_}" | sed 's/32$//')"
+        fail "$(printf '%s defines %s by hand; gBASIC has %s as a builtin' \
+                 "$(printf '%s' "$hits" | tr '\n' ' ')" "$handrolled" "$builtin_name")"
+    fi
+done
+[ -z "$(grep -ln 'function _xor32\|function _and32\|function _or32' stdlib/*.bas 2>/dev/null || true)" ] \
+    && pass "no stdlib library hand-rolls a bitwise builtin"
+
 printf '\nrun_namespace: %d checks, %d failed\n' "$checks" "$failures"
 [ "$failures" -eq 0 ] || exit 1

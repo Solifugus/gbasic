@@ -840,28 +840,16 @@ library llm
         while i < n
             h = h + 0
             b = byte_at(s, i)
-            h = _xor32(h, b)
+            ' `bxor` IS A BUILTIN, and this library was doing it by hand:
+            ' a 32-iteration interpreted loop PER CHARACTER of every
+            ' request, paid whether or not anything replays (DOGFOOD 40).
+            h = bxor(h, b)
             h = _mul32(h, 16777619)
             i = i + 1
         end while
         return _hex8(h)
     end function
 
-    function _xor32(a, b)
-        out = 0
-        bit = 1
-        i = 0
-        while i < 32
-            abit = floor(a / bit) - floor(a / (bit * 2)) * 2
-            bbit = floor(b / bit) - floor(b / (bit * 2)) * 2
-            if abit != bbit then
-                out = out + bit
-            end if
-            bit = bit * 2
-            i = i + 1
-        end while
-        return out
-    end function
 
     function _mul32(a, b)
         ' Split so the product never exceeds a double's exact integer range.

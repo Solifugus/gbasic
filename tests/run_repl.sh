@@ -1160,6 +1160,61 @@ contains "the session survived" "SURVIVED" "$int_result"
 # SURVIVED and have forgotten everything.
 contains "with its variables intact" "7" "$int_result"
 
+# AND A `lock` MUST NOT TAKE THE SIGNAL AWAY (DOGFOOD 47). `with lock(f)` used
+# to install its own SIGINT handler with `signal()`, which REPLACES whatever is
+# there -- so one lock anywhere in a session silently disarmed everything
+# above: Ctrl-C then KILLED the prompt (status 130) and took the unsaved
+# resident program with it, where the same keys without a lock report
+# `interrupted` and leave the session intact.
+#
+# The handler was removed rather than reordered, because it was never needed:
+# `flock` is released by the KERNEL when the process dies, and
+# run_lock_signal.sh is green without it. THIS TIER IS THE GUARD ON THAT --
+# anything that installs a signal handler from inside the interpreter has to
+# pass it, and the failure it catches is silent everywhere else.
+lock_fifo="$work/lock.fifo"; rm -f "$lock_fifo"; mkfifo "$lock_fifo"
+lock_out="$work/lock.out"; : > "$lock_out"
+printf 'x\n' > "$work/locked.txt"
+"$GB" --repl < "$lock_fifo" > "$lock_out" 2>&1 &
+lock_pid=$!
+exec 4>"$lock_fifo"
+printf 'kept = 7\nf {file}= "%s"\nwith lock(f)\nprint "LOCKED"\nend with\n' "$work/locked.txt" >&4
+wait_for "$lock_out" LOCKED 15 || true
+printf 'i = 0\nwhile true\ni = i + 1\nif i = 1 then print "LOOPING"\nend while\n' >&4
+if wait_for "$lock_out" LOOPING 15; then
+    kill -INT "$lock_pid" 2>/dev/null
+    wait_for "$lock_out" interrupted 15 || true
+fi
+# ASK WHETHER THE CHILD IS ALIVE BEFORE TYPING AT IT. Writing to a prompt the
+# signal has just killed raises SIGPIPE, which kills this SUITE -- silently,
+# with no FAIL line and a green-looking scrollback above it, which is how the
+# first version of this tier "passed" against a binary carrying the defect.
+# run_http.sh and run_error_model.sh each record the same trap arriving by a
+# different road; this is the third, and the shape is always the same: the
+# check dies instead of failing.
+trap '' PIPE
+if kill -0 "$lock_pid" 2>/dev/null; then
+    printf 'print "SURVIVED"\nprint kept\nquit\n' >&4 2>/dev/null || true
+    lock_alive=1
+else
+    lock_alive=0
+fi
+exec 4>&- 2>/dev/null || true
+trap - PIPE
+( sleep 10; kill -KILL "$lock_pid" 2>/dev/null ) & lguard=$!
+wait "$lock_pid" 2>/dev/null; lock_status=$?
+kill "$lguard" 2>/dev/null; wait "$lguard" 2>/dev/null
+lock_result="$(cat "$lock_out")"
+contains "a lock does not disarm Ctrl-C: the loop ran" "LOOPING" "$lock_result"
+# THE POSITIVE SIGNAL, and the one that does not need a live pipe to report:
+# a killed prompt exits 130 (128 + SIGINT). Checked before anything is typed
+# at it, so the tier states the failure instead of dying of it.
+check "  and the prompt was NOT killed by the signal" "1" "$lock_alive"
+lacks "  and did not exit 130" "exit-status-130" "exit-status-$lock_status"
+contains "  it was interrupted, not killed" "interrupted" "$lock_result"
+contains "  and the session survived a lock + Ctrl-C" "SURVIVED" "$lock_result"
+contains "  with its variables intact" "7" "$lock_result"
+
 # THE CONTROL. Interruption is the PROMPT's behaviour; a script's Ctrl-C still
 # ends the process, which is what it has always meant and what anything running
 # gbasic in a pipeline expects. Without this, "Ctrl-C is handled" would be

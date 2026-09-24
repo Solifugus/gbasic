@@ -1461,3 +1461,24 @@ void ast_free_modifier_signature(AstModifierSignature sig) {
     free(sig.name);
     ast_free_name_list(sig.params);
 }
+
+/* See ast.h. The remedy clause is the half that earns this function: `sub`,
+ * `def`, `procedure` and friends are what somebody arriving from another
+ * language types for "define a subroutine", and every one of them lands here
+ * because the server block's head is a generic `IDENT IDENT ( ... )` with zero
+ * reserved words. Naming `function` is the difference between a refusal and an
+ * answer. `sub` is NOT reserved and must not be -- it is a variable in
+ * `forensics`, `ari` and `mdna`. */
+void gb_format_unknown_block(char *out, size_t size, const char *word) {
+    static const char *means_function[] = { "sub", "def", "procedure",
+                                            "method", "func", NULL };
+    const char *remedy = "";
+    for (size_t i = 0; word && means_function[i]; i++) {
+        if (strcmp(word, means_function[i]) == 0) {
+            remedy = " -- gBASIC has no such statement; a subroutine is a `function`";
+            break;
+        }
+    }
+    snprintf(out, size, "unknown declarative block '%s' (only 'server' exists)%s",
+             word ? word : "?", remedy);
+}

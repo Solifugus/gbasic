@@ -325,13 +325,21 @@ and the stale-looking ones carry a Status line saying what overtook them.
     a sweep that searches for the word it expects rather than the claim it is
     checking will keep finding nothing.
 
-24. **A comparison lens on a variable, alone on a line, is silently an
-    assignment.** `answer{caseless}= "yes"` as a statement is read as an
-    assignment and fails `assign modifier not found: caseless`; the same
-    text inside brackets or inside an `if` is the comparison the
-    documentation shows on the adjacent line. The diagnostic names a
-    namespace the writer never asked for and does not say the other one
-    exists. See the 2026-09-22 Chapter 3 entry.
+24. ~~**A comparison lens on a variable, alone on a line, is silently an
+    assignment.**~~ **RESOLVED 2026-09-24** (struck). The MESSAGE is fixed,
+    not the grammar: the runtime can see that the name is in the other
+    namespace, so it says which one and where it works --- `caseless is a
+    comparison lens, not an assignment modifier; it works where a value is
+    read, as in "if x{caseless}= y then"`. The parse is deliberately
+    unchanged: `x{lens}= v` as a statement has no useful meaning, and
+    deciding otherwise at a statement start needs the lookahead PLAT-BRACE
+    spent its conflicts removing. FOUND BY RUNNING IT: the first version
+    asked `modifier_resolve` alone and did NOT fire on `caseless`, because
+    `caseless` and the datetime precisions are BUILT IN --- recognised by name
+    in the comparison path, never registered in the modifier table --- so it
+    missed exactly the names a reader is most likely to have written. The
+    control is a name that is in neither namespace, which still gets the
+    plain message.
 
 25. ~~**The prompt echoes type-ahead and then throws it away.**~~ **RESOLVED
     2026-09-23** (struck). `TCSADRAIN` rather than `TCSAFLUSH` in `raw_on`, so
@@ -403,9 +411,28 @@ and the stale-looking ones carry a Status line saying what overtook them.
     inside the same function creates a local and leaves the outer array alone,
     and records behave identically.
 
-31. **`sub` at the prompt swallows the next line.** *(Matthew's call — see
-    the 2026-09-24 summary; a language-surface decision rather than a doc
-    fix.)*
+31. ~~**`sub` at the prompt swallows the next line.**~~ **RESOLVED
+    2026-09-24** (struck), **and it was never about `sub`.** `sub` is not a
+    keyword; the SERVER BLOCK is parsed by a generic `IDENT IDENT ( ... )`
+    production with zero reserved words --- rightly, since
+    `server = webserver.listen(...)` appears in stdlib/web.bas and thirty-odd
+    fixtures --- so ANY two identifiers followed by `()` open one. Measured:
+    `sub greet()`, `def greet()`, `procedure greet()` and `foo bar()` behave
+    identically. The parser then demanded a body and an `end`, swallowing
+    lines while it looked, and reported wherever that search failed.
+    **THE CHECK ALREADY EXISTED** --- `unknown declarative block '%s' (only
+    'server' exists)` in `src/frontend.c` --- and only ever ran on blocks that
+    PARSED, which is why nobody had seen it for this case. So the fix is not a
+    second check but the same one, one stage earlier: the parser NOTES a bad
+    head and carries on, and reports it only if the body then fails. A block
+    whose body parses is still left to the load-time pass, which reports
+    better, being a checker that can name several problems in one file.
+    One wording, shared through `gb_format_unknown_block`, so the two moments
+    cannot drift. `sub` is NOT reserved and must not be --- it is a variable in
+    `forensics`, `ari` and `mdna` --- so the remedy (`a subroutine is a
+    function`) is attached to the WORD, with `foo bar()` as the control that
+    it is attached to the word and not to the rule. Zero new grammar
+    conflicts, measured before and after.
 
 32. ~~**`nothing` and `unknown` used as an index both report `indexing expects
     array[number] or record[string]`**, naming neither the value nor the
@@ -515,7 +542,25 @@ and the stale-looking ones carry a Status line saying what overtook them.
     gets copied --- so `run_docs_gate` now refuses any document that builds a
     body with `encode`, and the rule is enforced rather than asserted.
 
-40. **`llm.chat` hashes the whole request in gBASIC on every call**, to build a
+40. ~~**`llm.chat` hashes the whole request in gBASIC on every call.**~~
+    **RESOLVED 2026-09-24** (struck). `bxor` IS A BUILTIN and the library was
+    doing it by hand: `_xor32` is a 32-iteration interpreted loop per
+    character. Replacing it with the builtin is **25.7x** on the hash alone
+    (0.751s -> 0.029s for 20 hashes of a 360-character string) and **22x**
+    end to end on the ledger's own benchmark, measured A/B on this machine:
+    0.085s a call -> 0.0039s, 20 `ask_json` calls through a `with_transport`
+    stub with a 364-character system prompt. (The ledger's 0.74s/call was
+    measured at load 45; this box was idle, which is why my "before" is
+    lower.) THE HASH IS UNCHANGED, which is load-bearing because the committed
+    replay fixtures are NAMED by it: `bxor` was proven bit-identical to the
+    hand-rolled version over 6,048 pairs including every edge, and the
+    published FNV-1a vectors already pinned in `llm_transcript_test` did not
+    move. THREE LIBRARIES CARRIED THE SAME COPY -- `llm`, `finio_watch` and
+    `nlq` -- which is how it spread, so `run_namespace` now refuses a stdlib
+    file that defines `_xor32` and friends and names the builtin instead.
+    The lazy-hash option was not needed: the cost was never the design, it was
+    the primitive.
+    Originally: to build a
     replay key, whether or not anything replays. `_fnv1a` runs `_xor32` per
     character and that is a 32-iteration interpreted loop, so the cost is
     roughly 2ms per character of the canonical request. Measured on 0.2.2 with
@@ -628,7 +673,23 @@ and the stale-looking ones carry a Status line saying what overtook them.
     four-value legend does not define** --- in the page whose whole purpose
     is that the status column can be trusted.
 
-47. **The lock signal handler's cleanup is redundant, and was pure cost.**
+47. ~~**The lock signal handler's cleanup is redundant, and was pure cost.**~~
+    **RESOLVED 2026-09-24** (struck), and **removing it fixed a live defect
+    rather than simplifying anything.** Both its signals already had an owner
+    elsewhere in the interpreter -- the prompt's Ctrl-C (`sigaction(SIGINT)`
+    in `src/repl.c`) and the worker pool's drain (`sigaction(SIGTERM)`) -- and
+    `signal()` REPLACES what is installed, so whichever ran last won.
+    MEASURED AT THE PROMPT: with a `lock` taken, Ctrl-C **killed the session**
+    (status 130) and took the unsaved resident program with it, where the same
+    keys without a lock report `interrupted` and leave everything intact. That
+    is precisely the property `run_repl`'s INTERRUPT tier exists to protect,
+    and one `lock` anywhere in the session silently defeated it. The handler
+    was never needed -- `flock` is released by the KERNEL on death and nothing
+    unlinks a file -- and `run_lock_signal.sh` is green without it, which is
+    what says so. `atexit` stays, for the ordinary exit where releasing and
+    freeing is real work.
+    Originally: found while fixing item 20, by perturbation rather than by
+    reading.
     Found while fixing item 20, by perturbation rather than by reading:
     deleting the three `signal()` installs outright leaves
     `tests/run_lock_signal.sh` **green**, because `flock` is released by the
@@ -8344,4 +8405,162 @@ asserted. Proven red.
 
 - **Effect it had:** every chapter that touched these pages had to state what
   it had verified by running rather than cite them.
+- **Workaround:** none needed now.
+
+## 2026-09-24 — CC — while: closing ledger 40 and 47
+- **Type:** perf (40), bug (47)
+- **Severity:** medium (40), **high in effect** (47 — see below)
+- **What:** Two items filed as "expensive" and "redundant". **Neither
+  description survived the measurement**: one was a builtin the library was
+  reimplementing, and the other was a live defect wearing a safety feature's
+  clothes.
+
+### 40: the cost was never the design, it was the primitive
+
+`llm.chat` hashes the canonical request on every call to build a replay key,
+and `_fnv1a` calls `_xor32` per character — **a 32-iteration interpreted `while`
+loop doing what `bxor` does in one call.** gBASIC has had the bitwise builtins
+all along; the library was doing it by hand.
+
+Measured A/B on this machine:
+
+```
+20 hashes of a 360-char string   0.751s  ->  0.029s   (25.7x)
+20 ask_json calls, 364-char sys  0.085s  ->  0.0039s  per call (22x)
+```
+
+The ledger's 0.74s/call was taken at load 45; this box was idle, which is why
+my "before" is lower. The ratio is the transferable number.
+
+**The hash had to come out bit-identical**, because the committed replay
+fixtures are *named* by it — so `bxor` was checked against the hand-rolled
+version over 6,048 pairs including every edge, and the published FNV-1a vectors
+already pinned in `llm_transcript_test` were the second, independent check.
+Neither moved.
+
+**Three libraries carried the same copy** — `llm`, `finio_watch`, `nlq` — which
+is how it spread: the second pasted the first. `run_namespace` refuses it now
+and names the builtin, because the failure being guarded is copy-paste rather
+than ingenuity.
+
+The lazy-hash option I had offered was not needed and would have been the wrong
+fix: it would have hidden a slow primitive behind a condition.
+
+### 47: "redundant" was the smaller half
+
+The handler released locks on SIGINT/SIGTERM/SIGHUP, and it never needed to —
+`flock` is released by the kernel on death, which is why `run_lock_signal.sh`
+is green with the three `signal()` installs deleted.
+
+**But both of those signals already had an owner**, and `signal()` *replaces*
+what is installed:
+
+| signal | the other owner |
+| --- | --- |
+| SIGINT | the prompt's Ctrl-C (`sigaction`, `src/repl.c`) |
+| SIGTERM | the worker pool's drain (`sigaction`, `src/eval.c`) |
+
+Measured at the prompt, with a lock taken and without:
+
+```
+with `with lock(f)`      Ctrl-C -> child DIED, status 130, program lost
+without                  Ctrl-C -> "interrupted", SURVIVED, variables intact
+```
+
+So **one `lock` anywhere in a session silently disarmed Ctrl-C** and turned a
+beginner's runaway loop into a lost program — the exact thing `run_repl`'s
+INTERRUPT tier exists to protect, defeated by a handler installed for an
+unrelated reason. It is guarded there now.
+
+### The trap I walked into for the third time
+
+My first version of that tier **died instead of failing**: it typed at the
+prompt after the signal had killed it, took SIGPIPE, and the suite ended with
+no FAIL line under a green-looking scrollback — so I read the perturbation as
+passing. `run_http.sh` and `run_error_model.sh` each record the same trap
+arriving by a different road.
+
+It asks `kill -0` whether the child is alive **before** typing at it, and the
+load-bearing assertion is now one that needs no live pipe: a killed prompt
+exits **130**. The tier states the failure instead of dying of it.
+
+- **Effect it had:** every Chapter 11 example carries a `with_volatile` call
+  that is no longer needed for speed, and the book's capture harness misread
+  the hashing pause as a program waiting for input.
+- **Workaround:** none needed now.
+
+## 2026-09-24 — CC — while: closing ledger 24 and 31, the last two
+- **Type:** diagnostic
+- **Severity:** medium
+- **What:** Both were filed as "the message is unhelpful". **24 was exactly
+  that. 31 was not what it said on the tin**, and the check it asked for had
+  been in the tree all along.
+
+### 24: the runtime could see the answer and did not say it
+
+`answer{caseless}= "yes"` alone on a line is an assignment with a modifier; the
+same text in a condition or brackets is the comparison lens the documentation
+shows, which is what the author meant every time. The message named the assign
+namespace and never mentioned that the name sits in the other one.
+
+It says which namespace and where it works now. **The grammar is deliberately
+untouched** — `x{lens}= v` as a statement has no useful meaning, and deciding
+otherwise at a statement start needs the lookahead PLAT-BRACE spent its
+conflicts removing. What was wrong was the diagnostic.
+
+**Found by running it:** the first version asked `modifier_resolve` alone and
+did **not** fire on `caseless` — because `caseless` and the datetime precisions
+are *built in*, recognised by name in the comparison path and never registered
+in the modifier table. It missed precisely the names a reader is most likely to
+have written. The control is a name in neither namespace, which still gets the
+plain message.
+
+### 31 was never about `sub`, and the check already existed
+
+`sub` is not a keyword. The **server block** is `IDENT IDENT ( … )` with zero
+reserved words — rightly, since `server = webserver.listen(...)` is all over
+stdlib — so **any** two identifiers followed by `()` open one. Measured:
+`sub greet()`, `def greet()`, `procedure greet()` and `foo bar()` are
+indistinguishable.
+
+And `src/frontend.c` has had `unknown declarative block '%s' (only 'server'
+exists)` the whole time. It only ever runs on blocks that **parsed**, and the
+reported case does not parse — its body is not server items — so the check
+could never reach it.
+
+**So the fix is not a second check. It is the same one, one stage earlier**:
+the parser *notes* a bad head and carries on. If the body parses, the note is
+dropped and the load-time pass reports it as before — better, because a checker
+can name several problems in one file where the parser stops at the first. If
+the body fails, the note is what gets reported, at the head's own line. One
+wording, shared through `gb_format_unknown_block`, so the two moments cannot
+drift apart. Zero new grammar conflicts, measured before and after.
+
+`sub` is **not** reserved and must not be: it is a variable in `forensics`,
+`ari` and `mdna`. The remedy is attached to the *word*, and `foo bar()` is the
+control proving it is attached to the word and not to the rule.
+
+### A missing control, found because a perturbation would not go red
+
+Removing the line that clears the note **passed every check I had written** —
+so the clear was untested. It guards a case none of my fixtures had: a block
+that parses *fine* leaves the note behind, and it then hijacks the next
+unrelated error. Measured — without the clear, `x = = 2` two lines below a
+parsable `observer` block is reported as *"unknown declarative block
+'observer'"* at line 1.
+
+That is the reports-the-wrong-cause shape this entire cluster has been about,
+reintroduced by the fix for it, and only a perturbation that *failed* to go red
+pointed at it. It is control 4 of 5 now.
+
+### One more of my perturbations aimed at the wrong thing
+
+Twice today I broke the production without options while the fixture used the
+one with options. Both times the suite stayed green and both times the tier was
+fine — the attempt to break it was not. Worth writing down because the
+scoreboard that matters is not how many perturbations went red, it is how many
+were aimed where the fixture actually looks.
+
+- **Effect it had:** Chapter 3 spends a callout on the lens, and `sub` cost an
+  afternoon of looking at the wrong line.
 - **Workaround:** none needed now.

@@ -619,7 +619,7 @@ library nlq
         h = 2166136261
         i = 0
         while i < len(text)
-            h = _xor32(h, byte_at(text, i))
+            h = bxor(h, byte_at(text, i))   ' builtin; see llm.bas, DOGFOOD 40
             h = _mul32(h, 16777619)
             i = i + 1
         end while
@@ -631,21 +631,6 @@ library nlq
     ' for the same hash and the same reason. Copied rather than imported,
     ' because loading `llm` for a hash would give every program that grounds a
     ' question a dependency on an HTTP client.
-    function _xor32(a, b)
-        out = 0
-        bit = 1
-        i = 0
-        while i < 32
-            abit = floor(a / bit) - floor(a / (bit * 2)) * 2
-            bbit = floor(b / bit) - floor(b / (bit * 2)) * 2
-            if abit != bbit then
-                out = out + bit
-            end if
-            bit = bit * 2
-            i = i + 1
-        end while
-        return out
-    end function
 
     function _mul32(a, b)
         lo = a - floor(a / 65536) * 65536

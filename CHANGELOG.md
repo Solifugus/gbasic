@@ -9,6 +9,51 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Changed — two diagnostics that named the wrong thing (DOGFOOD 24, 31)
+
+`answer{caseless}= "yes"` alone on a line reported `assign modifier not found:
+caseless`, naming a namespace the author never asked for. It now says
+`caseless is a comparison lens, not an assignment modifier; it works where a
+value is read, as in "if x{caseless}= y then"`. The grammar is unchanged.
+
+`sub greet()` reported an error on the line *below* it, and at the prompt it
+swallowed whatever you typed next. It was never about `sub`: the **server
+block** is parsed by a generic `IDENT IDENT ( … )` production with zero reserved
+words, so any two identifiers followed by `()` open one — `def`, `procedure`
+and `foo bar()` behave identically. The parser now notes a bad head and reports
+it *at the head* if the body then fails to parse, while a block whose body
+parses is still left to the load-time checker that has always reported this.
+One shared wording; zero new grammar conflicts. `sub` is not reserved (it is a
+variable in three stdlib libraries); the "a subroutine is a `function`" remedy
+is attached to the word.
+
+### Fixed — a `lock` silently disarmed Ctrl-C (DOGFOOD 47)
+
+The lock cleanup installed its own SIGINT/SIGTERM/SIGHUP handlers with
+`signal()`, which *replaces* whatever is there — and both signals already had an
+owner: the prompt's Ctrl-C and the worker pool's drain. Measured at the prompt,
+with a lock taken Ctrl-C **killed the session** (status 130) and took the
+unsaved resident program with it; without one it reports `interrupted` and
+leaves everything intact.
+
+The handler is removed rather than reordered, because it was never needed:
+`flock` is released by the kernel when the process dies, and
+`tests/run_lock_signal.sh` is green without it. `atexit` stays for the ordinary
+exit. `run_repl.sh` now guards the property.
+
+### Changed — `llm` hashes ~25x faster, with the same hash (DOGFOOD 40)
+
+`_fnv1a` called a hand-written `_xor32` per character — a 32-iteration
+interpreted loop doing what the `bxor` builtin does in one call. Measured A/B:
+20 hashes of a 360-character string go 0.751s → 0.029s, and 20 `ask_json` calls
+through a stub transport go 0.085s → 0.0039s each.
+
+The hash is unchanged — the committed replay fixtures are named by it, so `bxor`
+was checked bit-identical over 6,048 pairs and the published FNV-1a vectors
+pinned in the suite did not move. `finio_watch` and `nlq` carried the same
+hand-rolled copy and now use the builtin too; `run_namespace.sh` refuses a
+stdlib file that defines one.
+
 ### Fixed — eight documentation gaps, and a check so the `encode` rule is enforced (DOGFOOD 16, 17, 18, 26, 30, 33, 38, 39)
 
 Three needed no change — `round(x)`, `--add-loads`, `recover`'s numbering and

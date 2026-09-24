@@ -822,7 +822,6 @@ static size_t modifier_count = 0;
 static LockEntry *locks = NULL;
 static size_t lock_count = 0;
 static int lock_cleanup_registered = 0;
-static volatile sig_atomic_t lock_signal_cleanup_started = 0;
 static WatcherDef *watchers = NULL;
 static size_t watcher_count = 0;
 static size_t *watcher_queue = NULL;
@@ -4975,51 +4974,30 @@ static void lock_cleanup_on_exit(void) {
     lock_clear();
 }
 
-/* RELEASE THE LOCKS AND THEN DIE BY THE SIGNAL, rather than exiting with a
- * number that looks like it.
+/* THE LOCK HANDLER IS GONE, and removing it FIXED something rather than
+ * merely simplifying (DOGFOOD 47).
  *
- * This used to end the process with `_exit(128 + signo)`, which is the shell's
- * RENDERING of death by a signal and not the thing itself: a supervisor reading
- * the real wait status saw `WIFSIGNALED=false, exit_code=143` where a program
- * that had never taken a lock gives `WIFSIGNALED=true, signal=15`. So a
- * `lock` anywhere in a program's history made it permanently indistinguishable
- * from one that CHOSE to exit 143 -- and the handler is installed for the life
- * of the process, so releasing the lock did not restore it. Measured both ways
- * before and after; the shell cannot see the difference (it reports 143 either
- * way), which is why it went unnoticed and why the test uses waitpid directly.
+ * It existed to release locks on SIGINT/SIGTERM/SIGHUP, and it never needed
+ * to: `flock` is released by the KERNEL when the process dies, and nothing
+ * here unlinks a file. Measured -- `tests/run_lock_signal.sh` is green with
+ * the three `signal()` installs deleted outright, which is what says the
+ * handler did nothing the kernel does not already do.
  *
- * UNBLOCKING BEFORE RAISING IS THE LOAD-BEARING LINE. A signal is blocked while
- * its own handler runs, so `raise` alone would merely mark it pending and the
- * `_exit` below would run first -- the fix would look right and change nothing.
+ * WHAT IT DID DO WAS TAKE THE SIGNAL AWAY FROM SOMEONE WHO NEEDED IT. Both of
+ * its signals already have an owner elsewhere in this interpreter -- the
+ * prompt's Ctrl-C (`sigaction(SIGINT)` in src/repl.c) and the worker pool's
+ * drain (`sigaction(SIGTERM)` below) -- and `signal()` REPLACES whatever is
+ * installed, so whichever ran last won. MEASURED AT THE PROMPT: with a `lock`
+ * taken, Ctrl-C KILLED the session (status 130) and took the unsaved resident
+ * program with it, where the same keys without a lock report `interrupted`
+ * and leave the session and its variables intact. That is precisely the
+ * property run_repl.sh's INTERRUPT tier exists to protect -- a beginner's
+ * first `while true` must not take the session with it -- and one `lock`
+ * anywhere in the session silently defeated it.
  *
- * Every call here is async-signal-safe. */
-static void lock_die_by(int signal_number) {
-    sigset_t only_this;
-    signal(signal_number, SIG_DFL);
-    sigemptyset(&only_this);
-    sigaddset(&only_this, signal_number);
-    sigprocmask(SIG_UNBLOCK, &only_this, NULL);
-    raise(signal_number);
-    /* Reached only if something outside this process is holding the signal
-     * off -- then the old rendering is still better than returning. */
-    _exit(128 + signal_number);
-}
-
-static void lock_cleanup_on_signal(int signal_number) {
-    if (lock_signal_cleanup_started) {
-        lock_die_by(signal_number);
-    }
-    lock_signal_cleanup_started = 1;
-
-    for (size_t i = 0; i < lock_count; i++) {
-        if (locks[i].fd >= 0) {
-            close(locks[i].fd);
-            locks[i].fd = -1;
-        }
-    }
-    lock_die_by(signal_number);
-}
-
+ * So this is not a simplification with a tidy argument behind it: the handler
+ * was a live defect wearing a safety feature's clothes. `atexit` stays, for
+ * the ordinary exit, where releasing and freeing is real work. */
 static void lock_install_cleanup(void) {
     if (lock_cleanup_registered) {
         return;
@@ -5028,10 +5006,6 @@ static void lock_install_cleanup(void) {
     if (atexit(lock_cleanup_on_exit) != 0) {
         fprintf(stderr, "failed to register lock cleanup\n");
     }
-
-    signal(SIGINT, lock_cleanup_on_signal);
-    signal(SIGTERM, lock_cleanup_on_signal);
-    signal(SIGHUP, lock_cleanup_on_signal);
 
     lock_cleanup_registered = 1;
 }
@@ -34327,15 +34301,52 @@ static void bind_modifier_args(AstStmt *stmt, const char *args_text) {
     }
 }
 
+/* "assign modifier not found: caseless" names a namespace the author never
+ * asked for (DOGFOOD 24). `answer{caseless}= "yes"` ALONE ON A LINE is an
+ * assignment with a modifier; the SAME TEXT inside a condition or brackets is
+ * the comparison LENS the documentation shows, and that is what the author
+ * meant every time. The runtime can tell -- the name is right there in the
+ * other namespace -- so the message says which one it is in and where it
+ * works, instead of sending a reader to look for an assign modifier that will
+ * never exist.
+ *
+ * The parse is not really ambiguous and is deliberately not changed: a
+ * statement `x{lens}= v` has no useful meaning, and deciding otherwise at a
+ * statement start needs the lookahead PLAT-BRACE spent its conflicts getting
+ * rid of. What was wrong here was the diagnostic, not the grammar. */
+static void modifier_raise_assign_not_found(AstModifierUse use) {
+    char label[160];
+    modifier_use_label(use, label, sizeof(label));
+    const char *ignored = NULL;
+    char message[512];
+    /* BOTH KINDS OF LENS. `caseless` and the datetime precisions are BUILT IN
+     * -- recognised by name in the comparison path, not registered in the
+     * modifier table -- so asking `modifier_resolve` alone answers no for
+     * exactly the names a reader is most likely to have written. Found by
+     * running it: the first version of this message did not fire on
+     * `caseless`, which is the case the report was about. */
+    DateTimePrecision precision;
+    int is_lens = modifier_resolve(use, "compare", &ignored) != NULL;
+    if (!is_lens && !use.library && use.name) {
+        is_lens = modifier_is(use.name, "caseless") ||
+                  datetime_lens_precision(use.name, &precision);
+    }
+    if (is_lens) {
+        snprintf(message, sizeof(message),
+                 "%s is a comparison lens, not an assignment modifier; it works "
+                 "where a value is read, as in `if x{%s}= y then`",
+                 label, label);
+    } else {
+        snprintf(message, sizeof(message), "assign modifier not found: %s", label);
+    }
+    runtime_error_raise(message, 1003, "modifier");
+}
+
 static Value eval_assign_modifier(AstModifierUse use, Value value) {
     const char *args_text = "";
     ModifierDef *modifier = modifier_resolve(use, "assign", &args_text);
     if (!modifier) {
-        char message[256];
-        char label[160];
-        modifier_use_label(use, label, sizeof(label));
-        snprintf(message, sizeof(message), "assign modifier not found: %s", label);
-        runtime_error_raise(message, 1003, "modifier");
+        modifier_raise_assign_not_found(use);
         value_free(value);
         return value_null();
     }
@@ -36194,11 +36205,7 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return dir_value;
     }
 
-    char message[256];
-    char label[160];
-    modifier_use_label(modifier, label, sizeof(label));
-    snprintf(message, sizeof(message), "assign modifier not found: %s", label);
-    runtime_error_raise(message, 1003, "modifier");
+    modifier_raise_assign_not_found(modifier);
     value_free(value);
     return value_null();
 }

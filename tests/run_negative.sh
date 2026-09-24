@@ -38,6 +38,8 @@ cases=(
     negative_add_bool
     negative_add_nothing
     negative_index_nothing
+    negative_block_head_sub
+    negative_block_head_foo
     negative_index_unknown
     negative_add_array
     negative_add_record
@@ -551,4 +553,63 @@ rw_silent 'then x = 1'
 rw_silent 'x = = 2'
 rw_silent 'next'
 rm -rf "$rw_work"
-[ "$rw_fail" = 0 ] || exit 1
+
+# --- A BAD BLOCK HEAD IS NAMED WHERE IT IS WRITTEN (DOGFOOD 31) ------------
+# The two goldens above pin the message. These pin the three things a golden
+# cannot: that the head OUTRANKS the body error, that a parsable bad head is
+# still left to the load-time checker (which reports better, being a checker),
+# and that an ordinary syntax error is not hijacked by either.
+bh_work="$(mktemp -d)"
+bh_fail=0
+bh() { printf '%s\n' "$1" > "$bh_work/b.bas"; ./gbasic "$bh_work/b.bas" 2>&1 >/dev/null || true; }
+# 1. the body is what fails, the HEAD is what is reported -- and at line 1.
+got="$(bh 'sub greet()
+  print "hi"
+end sub')"
+case "$got" in
+    *":1:1: unknown declarative block 'sub'"*) printf 'PASS block head named at its own line\n' ;;
+    *) printf 'FAIL block head not named at its own line\n       %s\n' "$got"; bh_fail=1 ;;
+esac
+# 2. THE CONTROL THAT KEEPS THE PARSER OUT OF THE CHECKER'S WAY: a head whose
+#    body PARSES must still be left to the load-time pass, which can name
+#    several problems in one file where the parser stops at the first. Without
+#    this, "report the head early" quietly costs every other head diagnostic.
+got="$(bh 'observer o( port: 1 )
+end observer')"
+case "$got" in
+    *"unknown declarative block 'observer'"*) printf 'PASS a parsable bad head still reaches the checker\n' ;;
+    *) printf 'FAIL a parsable bad head did not reach the checker\n       %s\n' "$got"; bh_fail=1 ;;
+esac
+# 3. AND AN ORDINARY SYNTAX ERROR IS NOT HIJACKED, or "name the head" would be
+#    satisfied by naming it for everything.
+got="$(bh 'x = = 2')"
+case "$got" in
+    *"unknown declarative block"*) printf 'FAIL an ordinary syntax error was hijacked\n       %s\n' "$got"; bh_fail=1 ;;
+    *) printf 'PASS an ordinary syntax error is untouched\n' ;;
+esac
+# 4. THE STALE-NOTE CONTROL, and it was MISSING until a perturbation failed to
+#    go red: the note has to be dropped when the block reduces, or it sits
+#    there and hijacks the NEXT syntax error in the file. Measured -- without
+#    the clear, `x = = 2` two lines below a perfectly parsable `observer`
+#    block is reported as "unknown declarative block 'observer'" at line 1,
+#    which is the reports-the-wrong-cause shape this whole cluster was about,
+#    reintroduced by the fix for it. None of the checks above can see this:
+#    they each have only one defect in the file.
+got="$(bh 'observer o( port: 1 )
+end observer
+x = = 2')"
+case "$got" in
+    *"unknown declarative block"*)
+        printf 'FAIL a stale block note hijacked a later error\n       %s\n' "$got"; bh_fail=1 ;;
+    *) printf 'PASS a later error is not blamed on an earlier block\n' ;;
+esac
+
+# 5. AND A REAL SERVER BLOCK IS UNTOUCHED.
+if ./gbasic tests/web_server_block/block_hoist.bas >/dev/null 2>&1; then
+    printf 'PASS a real server block still parses and runs\n'
+else
+    printf 'FAIL a real server block broke\n'; bh_fail=1
+fi
+rm -rf "$bh_work"
+
+[ "$rw_fail" = 0 ] && [ "$bh_fail" = 0 ] || exit 1

@@ -407,9 +407,12 @@ static void srv_check_server(SrvCheck *chk, const AstStmt *stmt) {
     };
 
     if (strcmp(stmt->as.server.word, "server") != 0) {
-        srv_error(chk, stmt->line, stmt->column,
-                  "unknown declarative block '%s' (only 'server' exists)",
-                  stmt->as.server.word);
+        /* ONE WORDING, shared with the parser's head check -- see ast.h. The
+         * parser catches a block whose BODY does not parse; this catches one
+         * that does. Same rule, two moments. */
+        char unknown[320];
+        gb_format_unknown_block(unknown, sizeof(unknown), stmt->as.server.word);
+        srv_error(chk, stmt->line, stmt->column, "%s", unknown);
         return;
     }
     if (stmt->as.server.close_word &&

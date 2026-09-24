@@ -503,4 +503,14 @@ void ast_free_consider_branch_list(AstConsiderBranchList list);
 void ast_free_modifier_use(AstModifierUse modifier);
 void ast_free_modifier_signature(AstModifierSignature sig);
 
+/* THE ONE WORDING for a declarative block whose head word is not `server`.
+ *
+ * The rule is checked at TWO MOMENTS and that is not a duplication: the
+ * frontend's load-time pass sees only blocks that PARSED, and `sub greet()`
+ * followed by `print "hi"` does not parse -- its body is not server items --
+ * so the parser has to say it too, or the author is told about a line two
+ * below the mistake (DOGFOOD 31). Two moments, one sentence, written here so
+ * they cannot drift apart. */
+void gb_format_unknown_block(char *out, size_t size, const char *word);
+
 #endif
