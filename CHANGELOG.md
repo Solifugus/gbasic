@@ -9,6 +9,21 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — a database parameter lost an interior NUL, silently and in both directions
+
+gBASIC strings are counted, so `"a" + chr(0) + "b"` is three bytes everywhere
+in the language — but binding it stored **one**, measured by asking the database
+rather than our own reader. `sqlite` threw the length away twice: `copy_string`
+plus `sqlite3_bind_text`'s `-1` on the way in, and `value_string` on the way
+back. Both are fixed and each was proven independently.
+
+`pg` now **refuses** rather than truncating: PostgreSQL's `text` cannot hold the
+byte at all, and libpq ignores `paramLengths` for text-format parameters, so
+there is no route by which the value could arrive whole. `odbc` needed no
+change — its bind carries a length indicator and its reader was already counted;
+reading such a value back through the SQLite3 ODBC driver returns one byte, and
+that is the driver, now recorded with the other measured ODBC portability facts.
+
 ### Changed — `sleep` answers nothing, `exit` leaves the prompt, warnings carry their code
 
 `sleep(n)` returned `n`, which is not an answer — the caller already has it —

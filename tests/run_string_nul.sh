@@ -255,5 +255,49 @@ else
     pass "valgrind (SKIP: not installed)"
 fi
 
+# --- THE DATABASE DOORS -----------------------------------------------------
+#
+# THE SWEEP'S OWN STANDING LESSON, APPLIED AGAIN: a truncation found in one
+# place is evidence about every place a string ENTERS OR LEAVES. This file has
+# already had to learn it twice -- the builtins after `read`, and record field
+# NAMES after the builtins. The database parameter is the next door along, and
+# it was never checked.
+#
+# MEASURED BY ASKING THE DATABASE, never our own reader: binding
+# `"a" + chr(0) + "b"` and then reading `length(cast(v as blob))` back. A
+# reader that truncates the same way the writer does agrees with itself
+# perfectly, which is exactly how this class of defect survives.
+#
+# THE THREE MODULES NEEDED THREE DIFFERENT ANSWERS, and the differences are
+# facts about the databases rather than about us.
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sqlite3; then
+    db="$scratch/nul.db"; rm -f "$db"
+    cat > "$scratch/nul_db.bas" <<BAS
+load sqlite
+program main()
+    s = "a" + chr(0) + "b"
+    db = sqlite.connect("$db")
+    sqlite.exec(db, "create table t (v text)")
+    sqlite.exec(db, "insert into t values (?)", [s])
+    stored = sqlite.query(db, "select length(cast(v as blob)) as n from t")
+    back = sqlite.query(db, "select v from t")
+    print "stored=" + string(stored[0].n) + " back=" + string(len(back[0].v))
+end program
+BAS
+    got="$(GBASIC_PATH=stdlib ./gbasic "$scratch/nul_db.bas" 2>&1)"
+    # BOTH HALVES, because they failed independently: the bind threw the length
+    # away (`sqlite3_bind_text` with -1 means NUL-terminated) AND the reader
+    # threw it away again (`value_string` stops at the first NUL). Fixing one
+    # leaves the round trip looking broken in the other direction.
+    if [ "$got" = "stored=3 back=3" ]; then
+        pass "sqlite carries an interior NUL both ways"
+    else
+        fail "sqlite loses an interior NUL (got: $got, want: stored=3 back=3)"
+    fi
+    rm -f "$db"
+else
+    pass "sqlite doors (SKIP: sqlite3 development files not available)"
+fi
+
 printf '\nrun_string_nul: %d checks, %d failed\n' "$checks" "$failures"
 [ "$failures" -eq 0 ] || exit 1

@@ -19900,12 +19900,39 @@ static Value sqlite_eval_close(AstExpr *expr) {
     return value_bool(1);
 }
 
-static char *sqlite_parameter_text(Value value) {
+/* A BOUND STRING IS BYTES, AND ITS LENGTH TRAVELS WITH IT.
+ *
+ * `copy_string` stops at the first NUL and `sqlite3_bind_text`'s -1 means
+ * "NUL-terminated", so a gBASIC string holding an interior NUL -- which the
+ * value model has held since PLAT-NUL, and which `read`, `split`, `replace`
+ * and the actor wire all carry correctly -- arrived at SQLite as its prefix.
+ * MEASURED by asking the database rather than our own reader: binding
+ * `"a" + chr(0) + "b"` and then `select length(cast(v as blob))` answered
+ * ONE. Not a wrong answer on the way out; the other two bytes never left
+ * gBASIC, and nothing raised.
+ *
+ * SQLite stores it happily -- text is bytes there -- so the fix is to stop
+ * throwing the length away. `odbc` already passed an explicit indicator and
+ * was right all along; `pg` cannot store one at all and now says so. */
+static char *sqlite_parameter_text(Value value, size_t *out_length) {
+    *out_length = 0;
     switch (value.kind) {
-    case VALUE_STRING:
-        return copy_string(value.as.string);
-    case VALUE_DATETIME:
-        return sqlite_datetime_text(value.as.datetime);
+    case VALUE_STRING: {
+        size_t n = string_length(value.as.string);
+        char *copy = malloc(n + 1);
+        if (!copy) {
+            abort();
+        }
+        memcpy(copy, value.as.string, n);
+        copy[n] = '\0';
+        *out_length = n;
+        return copy;
+    }
+    case VALUE_DATETIME: {
+        char *text = sqlite_datetime_text(value.as.datetime);
+        *out_length = text ? strlen(text) : 0;
+        return text;
+    }
     default:
         sqlite_raise_message("unsupported SQLite text parameter type");
         return NULL;
@@ -19931,11 +19958,15 @@ static int sqlite_bind_value(sqlite3_stmt *statement, int index, Value value, ch
         break;
     case VALUE_STRING:
     case VALUE_DATETIME:
-        *owned_text = sqlite_parameter_text(value);
-        if (!*owned_text) {
-            return 0;
+        {
+            size_t text_length = 0;
+            *owned_text = sqlite_parameter_text(value, &text_length);
+            if (!*owned_text) {
+                return 0;
+            }
+            rc = sqlite3_bind_text(statement, index, *owned_text,
+                                   (int)text_length, SQLITE_TRANSIENT);
         }
-        rc = sqlite3_bind_text(statement, index, *owned_text, -1, SQLITE_TRANSIENT);
         break;
     default:
         sqlite_raise_message("unsupported SQLite parameter type");
@@ -20049,7 +20080,21 @@ static Value sqlite_column_value(sqlite3_stmt *statement, int column) {
     case SQLITE_FLOAT:
         return value_number(sqlite3_column_double(statement, column));
     case SQLITE_TEXT:
-        return value_string((const char *)sqlite3_column_text(statement, column));
+        /* COUNTED, like every other string that enters the runtime. The bind
+         * one door back threw the length away; so did this, with
+         * `value_string` stopping at the first NUL -- so a value that SQLite
+         * really did hold came back as its prefix. `value_string_n` has been
+         * here since PLAT-NUL; the reader simply never used it.
+         *
+         * `sqlite3_column_bytes` AFTER `sqlite3_column_text`, in that order:
+         * the call that converts is the one that sets the length, and asking
+         * for the length first can return the size of a different
+         * representation. */
+        {
+            const unsigned char *text = sqlite3_column_text(statement, column);
+            int bytes = sqlite3_column_bytes(statement, column);
+            return value_string_n((const char *)text, bytes > 0 ? (size_t)bytes : 0);
+        }
     case SQLITE_BLOB:
         sqlite_raise_message("SQLite blob results are not supported");
         return value_null();
@@ -22298,6 +22343,23 @@ static char *pg_parameter_text(Value value) {
     char buffer[64];
     switch (value.kind) {
     case VALUE_STRING:
+        /* REFUSED, NOT TRUNCATED. libpq's `paramLengths` is documented as
+         * IGNORED for text-format parameters, so a text parameter is
+         * NUL-terminated by definition and an interior NUL silently becomes
+         * a prefix -- measured, `"a" + chr(0) + "b"` stored ONE byte.
+         *
+         * AND THERE IS NOTHING TO FIX ON THE WIRE, which is why this refuses
+         * where `sqlite` was repaired: PostgreSQL's own `text` cannot hold the
+         * byte at all. Asked directly --
+         * `select octet_length(E'a\000b'::text)` answers
+         * `invalid byte sequence for encoding "UTF8": 0x00`. So the value
+         * cannot arrive whole by any route, and saying so is the only honest
+         * answer available. */
+        if (string_length(value.as.string) != strlen(value.as.string)) {
+            pg_raise_message("PostgreSQL text cannot hold an interior NUL; "
+                             "send the value as bytea, or strip the NUL first");
+            return NULL;
+        }
         return copy_string(value.as.string);
     case VALUE_BOOL:
         return copy_string(value.as.boolean ? "true" : "false");

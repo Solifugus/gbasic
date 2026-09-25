@@ -2257,6 +2257,19 @@ honour that. FreeTDS against SQL Server refuses `odbc.columns` with no table:
 So code that builds a qualified name as `schema.table` produces
 `nothing.orders` against MariaDB. Read both, and expect either to be absent.
 
+**An interior NUL survives the bind and not always the read.** gBASIC strings
+are counted, so `"a" + chr(0) + "b"` is three bytes everywhere in the language,
+and `odbc.exec` binds all three — measured 2026-09-24 by asking the database
+(`select hex(v)` answered `610062`). Reading it back through the SQLite3 ODBC
+driver returns **one** byte: `SQL_C_CHAR` data is NUL-terminated by
+construction, and that driver's length indicator agrees with the truncation.
+Nothing in gBASIC can recover what the driver did not hand over.
+
+Native `sqlite` carries such a value both ways; `pg` refuses it, because
+PostgreSQL's `text` cannot hold the byte at all. If you need arbitrary bytes
+through ODBC, encode them (`hex_encode`, `base64_encode`) rather than relying
+on the driver.
+
 **Type codes are the driver's opinion, not the SQL type's.** The same
 `varchar(20)` is `DATA_TYPE = 12` (`SQL_VARCHAR`) on PostgreSQL, SQL Server and
 SQLite, and `-9` (`SQL_WVARCHAR`) on MariaDB — and both PostgreSQL drivers,

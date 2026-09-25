@@ -8669,3 +8669,66 @@ the default rather than the remedy.
   every prompt (that was 40); a reader who looked up a warning code found no
   code to look up.
 - **Workaround:** none needed now.
+
+## 2026-09-24 — CC — while: sweeping theme B, the doors a value passes through
+- **Type:** bug
+- **Severity:** high — silent data loss, in the class PLAT-NUL exists for
+- **What:** Matthew picked the theme: **a type gets richer in the middle and
+  its doors stay narrow.** `\u{0}` in a literal was the known instance; the
+  question was where else. So I pushed `"a" + chr(0) + "b"` through every door
+  the existing sweep does not reach, and **asked the database rather than our
+  own reader** — because a reader that truncates the way its writer does agrees
+  with itself perfectly, which is exactly how this class survives.
+
+### What held, and what did not
+
+| door | result |
+| --- | --- |
+| `encode` / `decode` | carries it |
+| `serialize` / `deserialize` | carries it |
+| `json_encode` | carries it (`\u0000`) |
+| actor `send` / `receive` | carries it |
+| **`sqlite` bind → storage** | **stored 1 byte of 3** |
+| **`sqlite` read back** | **truncated again, independently** |
+| **`pg` bind** | **stored 1 byte of 3** |
+| `odbc` bind | correct — it was right all along |
+| `odbc` read | 1 byte, and it is **the driver**, not us |
+
+### Three modules, three different right answers
+
+- **`sqlite` was repaired, in two places.** `copy_string` stops at the first
+  NUL and `sqlite3_bind_text`'s `-1` means "NUL-terminated", so the bytes never
+  left gBASIC; and `value_string` threw the length away again on the way back.
+  **Each half had to be proven red on its own** — fixing one leaves the round
+  trip looking broken in the other direction, and the tier's two failure
+  messages distinguish them (`stored=1 back=1` against `stored=3 back=1`).
+  `value_string_n` has existed since PLAT-NUL; the reader simply never used it.
+- **`pg` refuses**, because there is nothing to repair. PostgreSQL's `text`
+  cannot hold the byte — `select octet_length(E'a\000b'::text)` answers
+  `invalid byte sequence for encoding "UTF8": 0x00` — and libpq's
+  `paramLengths` is *documented as ignored* for text-format parameters, so
+  there is no wire fix either. When a value cannot arrive whole by any route,
+  saying so is the only honest answer.
+- **`odbc` needed nothing.** Its bind carries an explicit length indicator and
+  its reader already used `value_string_n`. Measured with `select hex(v)`,
+  which has no NUL in it and so survives any truncation: the database held
+  `610062` and the driver handed us one byte. `SQL_C_CHAR` is NUL-terminated by
+  construction. A driver fact, recorded in the reference beside the other
+  measured ODBC portability facts, not a defect to chase.
+
+### Why this is the same story the ledger keeps telling
+
+`odbc` being right is what made the other two legible — exactly as `pg` having
+`rows_affected` right did yesterday. **When one of a set is correct, it is
+showing you the shape of the fix**, and the interesting question becomes why
+the others differ rather than what to invent.
+
+And the sweep's own standing lesson has now been learned four times: `read`,
+then the string builtins, then record field *names*, now the database
+parameter. Each time the fix was applied where the defect was found and the
+question "where else does a string enter or leave?" was answered only as far as
+the report went.
+
+- **Effect it had:** a program storing binary-ish text through `sqlite` lost it
+  silently, in both directions, with nothing raised.
+- **Workaround:** none needed for `sqlite`; through ODBC, encode the bytes.

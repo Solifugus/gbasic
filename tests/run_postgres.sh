@@ -59,3 +59,53 @@ else
     cat "$stderr_file"
     exit "$status"
 fi
+
+# --- AN INTERIOR NUL IS REFUSED, NOT TRUNCATED ------------------------------
+#
+# PLAT-NUL's standing lesson reached the database parameter last: binding
+# `"a" + chr(0) + "b"` used to store ONE byte, measured by asking the server
+# rather than our own reader. `sqlite` was repaired -- it stores the bytes
+# happily -- and `pg` cannot be, because PostgreSQL's `text` cannot hold the
+# byte at all: `select octet_length(E'a\000b'::text)` answers
+# `invalid byte sequence for encoding "UTF8": 0x00`.
+#
+# libpq's own `paramLengths` is documented as IGNORED for text-format
+# parameters, so there is no wire fix either. When a value cannot arrive
+# whole by any route, saying so is the only honest answer -- and it is the
+# difference between a caller who knows and a row that is quietly wrong.
+cat > "$stdout_file.nul.bas" <<'BAS'
+load pg
+program main()
+    on error goto next
+    c = pg.connect({ database: "" })
+    pg.exec(c, "select $1::text", ["a" + chr(0) + "b"])
+    if error then
+        print "refused: " + error.message
+    else
+        print "ACCEPTED -- the NUL was silently lost"
+    end if
+end program
+BAS
+out="$(GBASIC_PATH=stdlib ./gbasic "$stdout_file.nul.bas" 2>&1)"
+case "$out" in
+    *"cannot hold an interior NUL"*)
+        printf 'PASS an interior NUL is refused rather than truncated\n' ;;
+    *)
+        printf 'FAIL an interior NUL is not refused: %s\n' "$out"; exit 1 ;;
+esac
+# THE CONTROL: an ordinary string still binds. Without it, "refuses a NUL" is
+# satisfied by a build that refuses every text parameter there is.
+cat > "$stdout_file.ok.bas" <<'BAS'
+load pg
+program main()
+    c = pg.connect({ database: "" })
+    r = pg.query(c, "select $1::text as v", ["plain"])
+    print "bound: " + r[0].v
+end program
+BAS
+out="$(GBASIC_PATH=stdlib ./gbasic "$stdout_file.ok.bas" 2>&1)"
+case "$out" in
+    *"bound: plain"*) printf 'PASS and an ordinary text parameter still binds\n' ;;
+    *) printf 'FAIL an ordinary text parameter broke: %s\n' "$out"; exit 1 ;;
+esac
+rm -f "$stdout_file.nul.bas" "$stdout_file.ok.bas"
