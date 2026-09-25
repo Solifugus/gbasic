@@ -174,9 +174,19 @@ scope — so it is not a reserved word and `r.warning` still parses.
 **This table stops where the source does**, checked by `tests/run_docs_gate.sh`
 against the codes `src/eval.c` actually emits — it had stopped at 2104 while
 four more shipped, and a reader who did the right thing and looked one up found
-nothing. Note that a *printed* warning carries no code (only `warning.code`
-inside a handler does), so the way to reach this table from a message is by its
-wording or its `source` tag.
+nothing.
+
+**A printed warning carries its code**, in brackets at the end, after the
+location:
+
+```text
+warning: this writes to `r`, which is a COPY of the element … at prog.bas:4:5 [2107]
+```
+
+(It did not until 2026-09-24, so the only route from a message to this table
+was its wording; `warning.code` reaches it from inside a handler, which is not
+where a reader meets one. The code goes at the *end* so that `warning: ` and
+the message text remain the prefix — that is what made the change free.)
 
 The 2102–2104 diagnostics predate the channel and printed straight to stderr
 until 2026-08-23. Routing them through it means they can now be suppressed

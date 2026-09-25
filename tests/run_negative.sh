@@ -39,6 +39,7 @@ cases=(
     negative_add_nothing
     negative_index_nothing
     negative_block_head_sub
+    negative_builtin_as_value
     negative_block_head_foo
     negative_index_unknown
     negative_add_array
@@ -611,5 +612,26 @@ else
     printf 'FAIL a real server block broke\n'; bh_fail=1
 fi
 rm -rf "$bh_work"
+
+# --- A BUILTIN IS NOT AN UNDEFINED VARIABLE --------------------------------
+# The golden above pins the message. This is the CONTROL that keeps it from
+# being "call everything a builtin": a name the language does not know must
+# still get the plain `undefined variable`, and a VARIABLE that shadows a
+# builtin must still resolve -- the message is reached only after the whole
+# environment walk has failed, so nothing about resolution changed.
+bv_work="$(mktemp -d)"
+bv_fail=0
+bv() { printf '%s\n' "$1" > "$bv_work/b.bas"; ./gbasic "$bv_work/b.bas" 2>&1 >/dev/null || true; }
+case "$(bv 'print no_such_name_at_all')" in
+    *"undefined variable: no_such_name_at_all"*) printf 'PASS an unknown name is still undefined\n' ;;
+    *) printf 'FAIL an unknown name lost its message\n'; bv_fail=1 ;;
+esac
+out="$(printf 'len = 5\nprint len\n' > "$bv_work/b.bas"; ./gbasic "$bv_work/b.bas" 2>&1)"
+case "$out" in
+    5*) printf 'PASS a variable shadowing a builtin still resolves\n' ;;
+    *) printf 'FAIL a variable shadowing a builtin broke: %s\n' "$out"; bv_fail=1 ;;
+esac
+rm -rf "$bv_work"
+[ "$bv_fail" = 0 ] || exit 1
 
 [ "$rw_fail" = 0 ] && [ "$bh_fail" = 0 ] || exit 1

@@ -175,7 +175,7 @@ top-level-ran=false'
 # behaviour it describes are pinned by the same golden, and neither can move
 # without the other being looked at. Measured before the warning shipped: of 420
 # files in this tree with a program block, this is the ONLY one it fires on.
-expected_out="warning: this statement is outside the \`program\` block, so it never runs -- the block is what executes, and the top level is read only for declarations. Move it inside \`program\`. (A \`watch\` in particular registers nothing here, and its watcher will never fire.) at tests/native_platform/plat_guard_prereg_child.bas:49:1
+expected_out="warning: this statement is outside the \`program\` block, so it never runs -- the block is what executes, and the top level is read only for declarations. Move it inside \`program\`. (A \`watch\` in particular registers nothing here, and its watcher will never fire.) at tests/native_platform/plat_guard_prereg_child.bas:49:1 [2106]
 $expected_out"
 
 # GBASIC_PATH: registering the fixture's server block imports `web` (the block

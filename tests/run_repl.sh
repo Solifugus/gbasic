@@ -411,6 +411,39 @@ contains "the function answered too" "done" "$gprog"
 contains "but reaching past its own frame is an act" "
   3  touch()" "$gprog"
 
+# `sleep` AND `seed` ARE THE SAME SHAPE AND MUST AGREE. Both act and neither
+# has a meaningful answer, and `sleep` used to return its own ARGUMENT -- not
+# an answer, the caller already has it -- so the act/answer rule read it as a
+# question and left it out of the program, while `seed` beside it was kept.
+# Nothing chose that; one was instrumented and the other was not. `sleep`
+# answers `nothing` now, which fixes both halves at once: the prompt stops
+# printing a number nobody asked for, and the line is kept.
+#
+# ASSERTED AS THE PAIR, because either alone passes on the inconsistency: the
+# point is that two calls of the same kind are treated the same way.
+sprog="$(repl 'x = 1
+seed(7)
+sleep(0)
+list
+quit
+')"
+contains "seed is kept" "  2  seed(7)" "$sprog"
+contains "and sleep beside it is kept too" "  3  sleep(0)" "$sprog"
+# AND NEITHER PRINTS. Both used to answer their own argument, so `seed(7)`
+# printed 7 and `sleep(0)` printed 0 at a prompt -- and it was the ANSWER that
+# made the resident program drop `sleep`. Asserting the listing alone would
+# pass on a build that still echoes them.
+#
+# LINE-EXACT, NOT A SUBSTRING WITH A LEADING NEWLINE. The first draft of these
+# two used `lacks "\n7"`, which cannot match a `7` printed as the FIRST line --
+# and it is the first line here, since `x = 1` prints nothing. Proven by the
+# perturbation that puts the answers back: it reddened the listing checks and
+# left both of these green. This file already records the same trap once (a
+# `4` printed first, missed by a `lacks` on raw text); `grep -x` is the fix
+# both times.
+check "and seed prints nothing" "0" "$(printf '%s\n' "$sprog" | grep -cx '7')"
+check "and sleep prints nothing" "0" "$(printf '%s\n' "$sprog" | grep -cx '0')"
+
 # A NATIVE MODULE CALL IS AN ACT, deliberately coarser than the truth: nothing
 # at the call site tells `sqlite.exec` from `sqlite.query`, and deciding per
 # verb would need a table of every verb of every module -- one that rots

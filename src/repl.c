@@ -897,7 +897,7 @@ static void print_help(FILE *out) {
         "  load \"file\"     read a file into the prompt and run it\n"
         "                  (`load sqlite`, with no quotes, is still the gBASIC statement)\n"
         "  help            this list\n"
-        "  quit            leave (so does `bye`, and end-of-input)\n"
+        "  quit            leave (so do `exit`, `bye`, and end-of-input)\n"
         "\n"
         "A line that is not a statement is treated as a question: `1 + 2` answers 3.\n"
         "An unfinished block or bracket asks for the rest; a blank line submits anyway.\n"
@@ -1033,7 +1033,8 @@ int repl_main(int json_diagnostics) {
             /* Everything but the line that ends the session: pressing Up and
              * finding `quit` waiting under your finger is the one recall
              * nobody wants, and it would be the FIRST one every time. */
-            if (line && !word_is(line, "quit") && !word_is(line, "bye")) {
+            if (line && !word_is(line, "quit") && !word_is(line, "bye") &&
+                !word_is(line, "exit")) {
                 line_history_add(line);
             }
         } else {
@@ -1056,7 +1057,16 @@ int repl_main(int json_diagnostics) {
                 continue;
             }
             const char *arg = NULL;
-            if (command_word(line, "quit", &arg) || command_word(line, "bye", &arg)) {
+            /* `exit` LEAVES, like `quit` and `bye`. It is the word half the
+             * world reaches for, and until 2026-09-24 it answered
+             * `undefined variable: exit` -- which is false, `exit` is a
+             * builtin -- so a reader trying the obvious thing was told
+             * something untrue about it. `exit(0)` still works and still sets
+             * the status; this is the bare word, which had no meaning at all.
+             * Only the BARE word: `exit(1)` has an argument, so `command_word`
+             * does not claim it. */
+            if (command_word(line, "quit", &arg) || command_word(line, "bye", &arg) ||
+                (word_is(line, "exit"))) {
                 free(line);
                 break;
             }

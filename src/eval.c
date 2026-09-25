@@ -3538,9 +3538,20 @@ static void runtime_warn_at(const char *message, int code, const char *source,
     if (!warn_site_first_time(line, column)) {
         return;
     }
-    fprintf(stderr, "warning: %s at %s:%d:%d\n", message,
+    /* THE CODE, AT THE END. A printed warning carried none, so the only route
+     * from a message to `docs/ai/ERRORS.md`'s table was its wording -- and
+     * `warning.code` is reachable only from inside a handler, which is not
+     * where a reader meets one. gcc's placement, for the same reason: it is
+     * the part you look up, not the part you read.
+     *
+     * AT THE END, SPECIFICALLY, because `warning: ` had to stay the prefix.
+     * Measured before choosing the format: 0 goldens contain a printed
+     * warning and exactly 2 shell checks match on its text
+     * (`run_inbox.sh`, `run_http.sh`), both of which grep for
+     * `warning: <the message>` and survive anything appended after it. */
+    fprintf(stderr, "warning: %s at %s:%d:%d [%d]\n", message,
             runtime_error_path() ? runtime_error_path() : "?",
-            line, column);
+            line, column, code);
 }
 
 static void runtime_warn(const char *message, int code, const char *source,
@@ -3566,7 +3577,6 @@ static void runtime_warn(const char *message, int code, const char *source,
  * the diagnostics sink, where it maps to LSP Information. */
 static void runtime_note_at(const char *message, int code, const char *source,
                             int line, int column) {
-    (void)code;
     (void)source;
     if (warn_mode_effective() == WARN_MODE_IGNORE) {
         return;
@@ -3574,9 +3584,9 @@ static void runtime_note_at(const char *message, int code, const char *source,
     if (!warn_site_first_time(line, column)) {
         return;
     }
-    fprintf(stderr, "note: %s at %s:%d:%d\n", message,
+    fprintf(stderr, "note: %s at %s:%d:%d [%d]\n", message,
             runtime_error_path() ? runtime_error_path() : "?",
-            line, column);
+            line, column, code);
 }
 
 static void note_fmt_at(int code, const char *source, int line, int column,
@@ -4910,7 +4920,20 @@ static Value env_get(const char *name) {
             return value_pending_warning();
         }
         char message[256];
-        snprintf(message, sizeof(message), "undefined variable: %s", name);
+        /* A BUILTIN IS NOT AN UNDEFINED VARIABLE, and saying so sent readers
+         * looking for a name they had spelled correctly. `len` on its own is
+         * not a value -- gBASIC has no bare function references -- but
+         * "undefined variable: len" is a false statement about a name the
+         * language plainly knows. Reached only after the whole environment
+         * walk has failed, so a variable of that name still shadows it and
+         * nothing here changes what resolves. */
+        if (gbasic_has_builtin(name)) {
+            snprintf(message, sizeof(message),
+                     "'%s' is a built-in function, not a variable; call it, as in %s(...)",
+                     name, name);
+        } else {
+            snprintf(message, sizeof(message), "undefined variable: %s", name);
+        }
         runtime_error_raise(message, 1001, "undefined variable");
         return value_null();
     }
@@ -29639,7 +29662,26 @@ static Value eval_call(AstExpr *expr) {
         while (nanosleep(&req, &rem) == -1 && errno == EINTR) {
             req = rem;
         }
-        return value_number(secs);
+        /* NOTHING, NOT THE ARGUMENT BACK. `sleep` used to answer `seconds`,
+         * which is not an answer -- the caller already has it -- and it cost
+         * two things. At a prompt it printed a number nobody asked for, and
+         * because the resident program keeps a line that ACTS and drops one
+         * that merely ANSWERS, a `sleep` typed at the bench was read as a
+         * question and left out of the program (DOGFOOD 22's rule meeting a
+         * non-answer). `seed(1)` has the same shape and IS kept, for no
+         * reason but that one was instrumented and the other was not.
+         *
+         * MEASURED, AND MY FIRST MEASUREMENT WAS WRONG. I reported "47 call
+         * sites and not one reads the value"; the grep looked for `= sleep(`
+         * and `print sleep(` and so missed `print(sleep(0) = 0)`, which is
+         * how examples/sleep_test.bas read it THREE TIMES -- with a comment
+         * saying the return was deliberate, "like seed returns its input".
+         * Counted properly: 53 bare-statement uses that discard it, and
+         * exactly one file that reads it, which is the test asserting the
+         * contract being changed here. The conclusion survives the correction
+         * -- answering your own argument is still not an answer -- but the
+         * claim that nothing depended on it did not. */
+        return value_null();
     }
 
     if (strcmp(expr->as.call.name, "principal") == 0) {
@@ -32594,9 +32636,6 @@ static Value eval_call(AstExpr *expr) {
 
     /* seed(n) — set the PRNG seed for reproducible draws; returns the seed. */
     if (strcmp(expr->as.call.name, "seed") == 0) {
-        /* The RNG stream is session state, and a program that does not reseed
-         * replays differently. */
-        repl_note_effect();
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("seed expects one argument", 1003, "invalid function call");
             return value_null();
@@ -32614,7 +32653,20 @@ static Value eval_call(AstExpr *expr) {
         uint64_t bits;
         memcpy(&bits, &n, sizeof(bits));
         gbasic_rng_seed(bits);
-        return value_number(n);
+        /* NOTHING, for `sleep`'s reason and to keep the pair together. These
+         * two were written as a matched pair -- examples/sleep_test.bas said
+         * so in as many words, "like seed returns its input" -- and answering
+         * your own argument is not an answer in either.
+         *
+         * THIS ALSO REMOVED CODE RATHER THAN ADDING IT. `seed` used to need an
+         * explicit effect note so the prompt would keep the line, because it
+         * ANSWERED and the resident program drops a line that merely answers.
+         * A call answering `nothing` is already kept, so the note went with
+         * the return value. Measured with a deliberately wide net this time --
+         * every mention of `seed(` in stdlib, examples, tests and docs, 24 of
+         * them -- and the only two that are not bare statements are refusal
+         * fixtures where it raises before returning anything. */
+        return value_null();
     }
 
     /* random() — uniform double in [0, 1). */

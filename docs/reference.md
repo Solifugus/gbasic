@@ -4642,8 +4642,8 @@ end if
 
 ### Timing
 
-**`sleep(seconds)`** - Blocks the current program for at least `seconds`, then
-returns `seconds`. `seconds` must be a non-negative number; fractional values
+**`sleep(seconds)`** - Blocks the current program for at least `seconds`, and
+answers `nothing`. `seconds` must be a non-negative number; fractional values
 are honored to sub-second resolution (e.g. `sleep(0.25)` pauses a quarter
 second). `sleep(0)` returns immediately. The pause resumes across signal
 interruptions, so the full requested interval always elapses — the property
@@ -5438,7 +5438,8 @@ Randomness — not cryptographic. For anything security-bearing use
   both ends.
 - `seed(n)` — set the generator's seed, making a run repeatable. Two runs
   seeded alike produce the same sequence, which is what makes a test that uses
-  randomness deterministic.
+  randomness deterministic. Answers `nothing`: it acts, and handing `n` back
+  would not be telling you anything you did not just say.
 
 ### Statistics
 

@@ -61,6 +61,28 @@ grep -q "warning:" "$scratch/err" \
     || fail "modes (expected exactly ONE warning on stderr -- ignore and goto-next must not print; got $(grep -c 'warning:' "$scratch/err"))"
 printf 'PASS modes_stderr (print reaches stderr; ignore and goto-next do not)\n'
 
+# --- A PRINTED WARNING CARRIES ITS CODE (DOGFOOD 28, second half) ----------
+#
+# The channel has a numbered table in docs/ai/ERRORS.md and a printed warning
+# carried nothing to look up in it: `warning.code` is reachable only from
+# inside a handler, which is not where a reader meets one. So the only route
+# from a message to the table was its wording.
+#
+# THE CODE GOES AT THE END, after the location, and that placement is the
+# whole reason the change was free: `warning: ` and the message text stay the
+# prefix, so the two suites that grep for a warning's text (run_inbox.sh,
+# run_http.sh) are untouched. Measured before choosing it -- 0 goldens contain
+# a printed warning and exactly 2 shell checks match on one.
+./gbasic tests/warning_model/modes.bas >/dev/null 2>"$scratch/err"
+grep -qE '^warning: .* at .*:[0-9]+:[0-9]+ \[2[0-9]{3}\]$' "$scratch/err" \
+    || fail "code_printed (no code on the printed warning: $(cat "$scratch/err"))"
+printf 'PASS code_printed (the code is at the end, where it can be looked up)\n'
+# THE CONTROL: the message and its `warning: ` prefix are unchanged, which is
+# what the two grepping suites depend on and what makes this cheap.
+grep -q '^warning: [a-z]' "$scratch/err" \
+    || fail "code_printed (the message no longer follows 'warning: ' directly)"
+printf 'PASS code_prefix (the message still follows `warning: ` directly)\n'
+
 # --- the negatives ---------------------------------------------------------
 neg() { # file expected-fragment
     if ./gbasic "tests/warning_model/$1" >/dev/null 2>"$scratch/err"; then

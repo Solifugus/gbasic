@@ -380,7 +380,17 @@ and the stale-looking ones carry a Status line saying what overtook them.
     SOURCE rather than written down, since a list of four numbers is a
     transcript of whatever the binary said. Five goldens rebaselined.
 
-28. **PARTLY RESOLVED 2026-09-23.** ~~The table stops at 2104~~ — it covers
+28. ~~**`ERRORS.md`'s warning table stops at 2104, and a printed warning
+    carries no code.**~~ **FULLY RESOLVED 2026-09-24.** The second half is
+    done: a printed warning ends with its code in brackets, after the
+    location, `... at prog.bas:4:5 [2107]` -- gcc's placement, and for gcc's
+    reason, since the code is the part you look up rather than the part you
+    read. THE PLACEMENT WAS CHOSEN BY MEASUREMENT, not taste: 0 goldens
+    contain a printed warning and exactly 2 shell checks match on one, both
+    grepping `warning: <message>`, so putting the code at the END costs
+    nothing while `warning[2107]: ...` would have broken both -- proven by
+    perturbation, which reddens `run_warning_model` and `run_inbox`. Notes
+    carry theirs the same way. First half, from 2026-09-23: ~~The table stops at 2104~~ — it covers
     2100–2108 now, and `run_docs_gate` compares it against the codes
     `src/eval.c` actually emits, in both directions, so it cannot stop short
     again. **THE OTHER HALF IS A DECISION, NOT A DEFECT, AND IS LEFT OPEN**:
@@ -8563,4 +8573,99 @@ were aimed where the fixture actually looks.
 
 - **Effect it had:** Chapter 3 spends a callout on the lens, and `sub` cost an
   afternoon of looking at the wrong line.
+- **Workaround:** none needed now.
+
+## 2026-09-24 — CC — while: the three decisions Matthew had been holding
+- **Type:** language-surface
+- **Severity:** low each; one of them was a rule disagreeing with itself
+- **What:** Three changes I had deliberately left for Matthew rather than make
+  unsupervised — a documented return value, a prompt command, and a diagnostic
+  format. All three approved, all three measured before the change.
+
+### `sleep` answered its own argument, and that made the prompt drop it
+
+Returning `seconds` is not an answer — the caller already has it — and it cost
+two things at once. The prompt printed a number nobody asked for, and because
+the resident program keeps a line that **acts** and drops one that **merely
+answers**, a `sleep` typed at the bench was read as a question and left out of
+the program.
+
+**`seed(7)` beside it has exactly the same shape and was kept**, for no reason
+except that one had been instrumented and the other had not.
+
+**`seed` ANSWERS NOTHING TOO, as of the same day**, which is what the pair
+actually needed: they were written as a matched pair and the comment in
+`examples/sleep_test.bas` said so — *"like seed returns its input"* — so
+changing one would have broken the symmetry in the other direction.
+
+**And it REMOVED code rather than adding it.** `seed` had needed an explicit
+effect note so the prompt would keep the line, precisely because it ANSWERED
+and the resident program drops a line that merely answers. A call answering
+`nothing` is already kept, so the note went with the return value.
+
+That pair is now the assertion: either check alone passes on the
+inconsistency.
+
+**My first measurement of this was wrong and the correction is the useful
+part.** I reported "47 call sites and not one reads the value"; the grep looked
+for `= sleep(` and `print sleep(`, so it missed `print(sleep(0) = 0)` — which
+is how `examples/sleep_test.bas` read it **three times**, with a comment saying
+the return was deliberate: *"sleep returns the requested seconds (like seed
+returns its input)"*. Counted properly: **53 bare-statement uses that discard
+it, and exactly one file that reads it** — the test asserting the very contract
+being changed.
+
+The conclusion survives the correction; the justification did not. Answering
+your own argument is still not an answer, and the prompt noise and the dropped
+line are still real. But this was a deliberate, documented, tested behaviour,
+not an oversight, and I described it as an oversight on the strength of a grep
+that looked for the shapes I expected. **That is the same disease as the doc
+sweep that closed a report by grepping for the word *quoted*** — see item 23.
+
+### `exit` was true at the prompt and said otherwise
+
+`exit` is the word half the world reaches for, and the prompt answered
+`undefined variable: exit` — false; `exit` is a builtin. It leaves now, like
+`quit` and `bye`. `exit(3)` still sets the status, a variable called `exit`
+still works, and `? exit` reads it back — the escape `list` already needs.
+
+**And the false message was general, not about `exit`.** Any builtin used where
+a value belongs said "undefined variable", about a name the language plainly
+knows. It now says which kind of thing it is and how to call it. Two controls:
+an unknown name still gets the plain message, and a variable shadowing a
+builtin still resolves — this is reached only after the whole environment walk
+has failed, so nothing about resolution changed.
+
+### The warning code, and why the format was free
+
+The channel has a numbered table and a printed warning carried nothing to look
+up in it; `warning.code` reaches it only from inside a handler, which is not
+where a reader meets one.
+
+**The placement was decided by measurement rather than taste** — and that
+measurement was also short. I reported "0 goldens contain a printed warning",
+having grepped `tests/` and `examples/` for FILES beginning `warning:`;
+`run_pre_registration.sh` holds its expected text in a shell heredoc, not a
+golden file, so the search could not see it. One expectation had to move.
+
+The format choice still holds and for the stated reason: the code goes at the
+**end**, after the location, so `warning: <message>` stays the prefix — and
+`warning[2107]: …` breaks both the shell greps *and* that heredoc, which the
+perturbation confirms.
+
+### And a vacuous needle of my own, the same one this file already records
+
+The check that neither call prints was written `lacks "\n0"` and `lacks "\n7"`
+— which cannot match a value printed as the **first** line, and it is the first
+line here because `x = 1` prints nothing. The perturbation that puts the return
+values back reddened the listing checks and left both of these green.
+
+`run_repl.sh` already records this exact trap once (a `4` printed first, missed
+by a `lacks` on raw text). `grep -cx` is the fix both times, and the fact that I
+reached for the broken shape again is the argument for the line-exact form being
+the default rather than the remedy.
+
+- **Effect it had:** an interactive program built on `llm` went silent before
+  every prompt (that was 40); a reader who looked up a warning code found no
+  code to look up.
 - **Workaround:** none needed now.

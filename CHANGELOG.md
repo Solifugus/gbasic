@@ -9,6 +9,30 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Changed — `sleep` answers nothing, `exit` leaves the prompt, warnings carry their code
+
+`sleep(n)` returned `n`, which is not an answer — the caller already has it —
+and it cost two things: the prompt printed a number nobody asked for, and the
+resident program's act/answer rule read the line as a question and left it out.
+`seed(n)` answers `nothing` for the same reason — the two were a matched pair,
+and `seed` no longer needs the explicit "this acts" note that kept its line in
+the resident program, because a call answering `nothing` is already kept.
+Measured: 53 bare-statement uses of `sleep` discard the value and one file read
+it (`examples/sleep_test.bas`, rewritten); every one of the 24 mentions of
+`seed` is a bare statement or a refusal fixture.
+
+**`exit` now leaves the prompt**, like `quit` and `bye`; `exit(3)` still sets
+the status and a variable called `exit` still works. The message it used to get
+was false in general, not just for `exit` — any builtin used where a value
+belongs reported `undefined variable`, about a name the language knows. It now
+says `'len' is a built-in function, not a variable; call it, as in len(...)`.
+
+**A printed warning ends with its code** — `… at prog.bas:4:5 [2107]` — so the
+table in `docs/ai/ERRORS.md` can be reached from a message. At the end
+specifically, so `warning: <message>` stays the prefix: the two shell checks
+that match on a warning's text are untouched, and one expected string in
+`run_pre_registration.sh` moved.
+
 ### Changed — two diagnostics that named the wrong thing (DOGFOOD 24, 31)
 
 `answer{caseless}= "yes"` alone on a line reported `assign modifier not found:
