@@ -9,6 +9,29 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — a spreadsheet cell lost an interior NUL; `xml.parse` blamed the tag
+
+Having asked the databases, the same question went to every other door a string
+leaves gBASIC through. `encode`/`decode`, `serialize`/`deserialize`,
+`json_encode` and the actor wire all carry the byte already. Two did not, and
+both are XML underneath.
+
+`xlsx.set` → `save` → `open` → `cell` gave back **one byte of three**, in
+silence — which is the worst place available for a quiet shortening, since
+nothing downstream can tell a truncated cell from a short one. This is
+PostgreSQL's answer rather than SQLite's, and the difference is a fact about the
+format: xlsx is XML in a zip, XML 1.0's `Char` production excludes `#x0`, so
+there is nowhere for the byte to go and nothing to repair. It is refused at
+`set`, before the file is written, and the message names what to do instead
+(`hex_encode`, or strip it).
+
+`xml.parse` already refused, and blamed the wrong thing: libxml2 stops at the
+byte and reported `Premature end of data in tag r line 1`, which says where it
+stopped rather than what is wrong with the document, and gives the author
+nothing to act on. It now says the document contains an interior NUL, which XML
+forbids. `xml.parse_html` is deliberately untouched — HTML's own rules for the
+byte differ and are unmeasured here.
+
 ### Fixed — a database parameter lost an interior NUL, silently and in both directions
 
 gBASIC strings are counted, so `"a" + chr(0) + "b"` is three bytes everywhere

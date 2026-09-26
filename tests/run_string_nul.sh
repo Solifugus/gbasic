@@ -299,5 +299,131 @@ else
     pass "sqlite doors (SKIP: sqlite3 development files not available)"
 fi
 
+# --- THE FILE-FORMAT DOORS --------------------------------------------------
+#
+# PAST THE DATABASES, THE SAME QUESTION ASKED OF EVERY OTHER DOOR. Measured the
+# same way -- put the three bytes in, ask what comes back -- across `encode`/
+# `decode`, `serialize`/`deserialize`, `json_encode` and the actor wire, every
+# one of which carries the NUL already. TWO DID NOT, and both are XML
+# underneath:
+#
+#   xlsx.set -> save -> open -> cell gave back ONE byte of three, in silence.
+#   xml.parse refused and BLAMED THE WRONG THING ("Premature end of data in
+#   tag r line 1"), which is libxml2 reporting where it stopped rather than
+#   what is wrong with the document.
+#
+# THE ANSWER HERE IS pg's AND NOT sqlite's, and the difference is a fact about
+# the format rather than a preference: XML 1.0's `Char` production EXCLUDES
+# #x0, so there is nowhere for the byte to go and nothing to repair. A refusal
+# is the only honest answer, and it has to arrive BEFORE the file is written
+# rather than after a reader notices the value got shorter.
+#
+# Both modules are detected the way their own suites detect them -- by the
+# build's own refusal text -- so a lean build skips rather than fails.
+printf 'program main()\n  print xlsx.open("examples/fixtures/xlsx/basic.xlsx")\nend program\n' > "$scratch/xlsx_probe.bas"
+xlsx_available=1
+if ! ./gbasic "$scratch/xlsx_probe.bas" >/dev/null 2>"$scratch/xlsx_probe.err"; then
+    if grep -q 'not available in this build' "$scratch/xlsx_probe.err"; then xlsx_available=0; fi
+fi
+if [ "$xlsx_available" = 1 ]; then
+    cp examples/fixtures/xlsx/basic.xlsx "$scratch/nul.xlsx"
+    cat > "$scratch/nul_xlsx.bas" <<BAS
+' THE ATTEMPT IS IN A FUNCTION, not in the program body, and that is not a
+' style choice: a \`program\` block's body is TOP LEVEL as far as jumps are
+' concerned, so \`goto\` there raises "goto is not supported at top level" --
+' which \`on error\` then CATCHES, so a fixture written with a goto reports
+' "refused" on the path where nothing was refused. Frame-scoped \`on error\`
+' returning a fallback is the shape PLAT-ERR exists for anyway.
+function attempt(wb)
+    on error goto bad
+    xlsx.set(wb, "Ledger", "A1", "a" + chr(0) + "b")
+    return "SET WITHOUT COMPLAINT"
+bad:
+    error.clear()
+    return "refused"
+end function
+
+program main()
+    wb = xlsx.open("$scratch/nul.xlsx")
+    print attempt(wb)
+    ' THE CONTROL, AND IT GOES ALL THE WAY THROUGH THE DOOR: without it "a cell
+    ' refuses a NUL" is equally satisfied by an xlsx.set that refuses every
+    ' string there is, and a check that only set the value in memory would not
+    ' notice a save path broken by the same edit.
+    xlsx.set(wb, "Ledger", "A1", "ordinary text")
+    xlsx.save(wb, "$scratch/nul_out.xlsx")
+    wb2 = xlsx.open("$scratch/nul_out.xlsx")
+    print xlsx.cell(wb2, "Ledger", "A1").value
+end program
+BAS
+    got="$(GBASIC_PATH=stdlib ./gbasic "$scratch/nul_xlsx.bas" 2>&1 || true)"
+    want="refused
+ordinary text"
+    if [ "$got" = "$want" ]; then
+        pass "an xlsx cell refuses an interior NUL, and an ordinary string still round-trips"
+    else
+        fail "xlsx NUL door (got: $(printf '%s' "$got" | tr '\n' '|'))"
+    fi
+
+    # AND THE MESSAGE MUST NAME THE BYTE, because the whole reason this is a
+    # refusal rather than a repair is that the AUTHOR has to choose what to do
+    # instead -- encode the value, or strip the byte -- and a sentence about a
+    # tag gives them nothing to choose between.
+    cat > "$scratch/nul_xlsx_msg.bas" <<BAS
+program main()
+    wb = xlsx.open("$scratch/nul.xlsx")
+    xlsx.set(wb, "Ledger", "A1", "a" + chr(0) + "b")
+end program
+BAS
+    msg="$(GBASIC_PATH=stdlib ./gbasic "$scratch/nul_xlsx_msg.bas" 2>&1 >/dev/null || true)"
+    case "$msg" in
+        *"interior NUL"*XML*) pass "the xlsx refusal names the byte and the reason" ;;
+        *) fail "the xlsx refusal names the byte and the reason (got: $msg)" ;;
+    esac
+else
+    pass "xlsx NUL door (SKIP: built without zlib or libxml2)"
+    pass "the xlsx refusal names the byte and the reason (SKIP: built without zlib or libxml2)"
+fi
+
+cat > "$scratch/nul_xml.bas" <<'BAS'
+load xml
+
+' In a function for the same reason the xlsx fixture is: a program body cannot
+' \`goto\`, and the raise for trying is catchable, so a goto-shaped fixture
+' reports a refusal that never happened.
+function attempt()
+    on error goto bad
+    d = xml.parse("<r>a" + chr(0) + "b</r>")
+    return "PARSED WITHOUT COMPLAINT"
+bad:
+    m = error.message
+    error.clear()
+    return "refused: " + m
+end function
+
+program main()
+    print attempt()
+    d2 = xml.parse("<doc><r>ab</r></doc>")
+    print "control: " + xml.text(xml.find(d2, "r"))
+end program
+BAS
+got="$(GBASIC_PATH=stdlib ./gbasic "$scratch/nul_xml.bas" 2>&1 || true)"
+case "$got" in
+    *"not available in this build"*)
+        pass "xml NUL door (SKIP: built without libxml2)" ;;
+    *)
+        # THE MESSAGE IS PART OF THIS ASSERTION rather than a tier of its own,
+        # because xml.parse REFUSED BEFORE THIS CHANGE TOO -- libxml2 stops at
+        # the byte. What moved is only what it SAYS, so a tier asserting "it
+        # refused" would pass on both binaries and measure nothing at all.
+        want="refused: xml: the document contains an interior NUL, which XML forbids
+control: ab"
+        if [ "$got" = "$want" ]; then
+            pass "xml.parse blames the NUL rather than the tag it stopped at"
+        else
+            fail "xml NUL door (got: $(printf '%s' "$got" | tr '\n' '|'))"
+        fi ;;
+esac
+
 printf '\nrun_string_nul: %d checks, %d failed\n' "$checks" "$failures"
 [ "$failures" -eq 0 ] || exit 1

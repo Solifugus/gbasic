@@ -1310,6 +1310,23 @@ static Value xml_eval_call(AstExpr *expr) {
             value_free(text);
             return value_null();
         }
+        /* THE REAL REASON, NOT libxml2's GUESS AT IT. A NUL is illegal in XML
+         * 1.0 -- the `Char` production excludes #x0 -- and libxml2 simply
+         * stops there, so a document carrying one was refused as
+         * "Premature end of data in tag r", which blames the tag and says
+         * nothing about the byte. Refusing is right; the sentence was the
+         * reports-the-wrong-cause class, and the author cannot act on it.
+         *
+         * Checked before the parser sees the text, so the message is about
+         * what is actually wrong. `parse_html` is deliberately left alone:
+         * HTML's own rules for NUL differ and I have not measured them. */
+        if (text.kind == VALUE_STRING &&
+            string_length(text.as.string) != strlen(text.as.string)) {
+            value_free(text);
+            runtime_error_raise("xml: the document contains an interior NUL, "
+                                "which XML forbids", XML_ERROR_CODE, "xml");
+            return value_null();
+        }
         if (text.kind != VALUE_STRING) {
             value_free(text);
             runtime_error_raise("xml.parse expects a string", XML_ERROR_CODE, "xml");

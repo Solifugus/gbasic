@@ -8732,3 +8732,83 @@ the report went.
 - **Effect it had:** a program storing binary-ish text through `sqlite` lost it
   silently, in both directions, with nothing raised.
 - **Workaround:** none needed for `sqlite`; through ODBC, encode the bytes.
+
+## 2026-09-24 — CC — while: finishing theme B's door sweep past the databases
+- **Type:** bug
+- **Severity:** high — silent data loss inside a spreadsheet, plus a diagnostic
+  that named the wrong thing
+- **What:** having asked the three database doors, I asked the rest. The full
+  list this time, measured the same way — three bytes in, ask what comes back:
+
+| door | result |
+| --- | --- |
+| `encode` / `decode` | carries it |
+| `serialize` / `deserialize` | carries it |
+| `json_encode` | carries it (`\u0000`) |
+| actor `send` / `receive` | carries it |
+| **`xlsx.set` → `save` → `open` → `cell`** | **1 byte of 3, in silence** |
+| **`xml.parse`** | refused, and **blamed the tag it stopped at** |
+
+### The answer here is Postgres's, and that is a fact about the format
+
+`sqlite` was repaired because SQLite really can hold the bytes. Here there is
+nothing to repair: **xlsx is XML in a zip, and XML 1.0's `Char` production
+excludes `#x0`.** There is no encoding, no option and no wire format by which
+the byte arrives whole, so the only honest answer is to refuse — at `set`,
+before the file is written, rather than after a reader notices the value got
+shorter. The message names the two things an author can do instead
+(`hex_encode` it, or strip it), because a refusal whose remedy is unstated just
+moves the problem.
+
+**A truncated cell is the worst place available for this.** A short string
+looks exactly like a short string; nothing downstream — not a formula, not
+`xlsx.check`, not a frame built from the sheet — can tell it from a value that
+was always one byte.
+
+### The xml half is the reports-the-wrong-cause class again
+
+`xml.parse` never accepted the document: libxml2 stops at the byte and said
+`Premature end of data in tag r line 1`. Every word of that is about where the
+parser gave up, and none of it is about what is wrong. It is the same shape as
+`decode(read(f))` blaming `decode` (ledger 34) and as `indexing expected array
+or record` not saying `use mid` (ledger 32) — the refusal was right and the
+sentence sent the author somewhere else.
+
+**So what moved is only what it says**, and that decided how the tier is
+written: a check asserting "it refused" passes on both binaries and measures
+nothing, so the message is part of the assertion. `parse_html` is deliberately
+left alone — HTML's rules for the byte differ, and I have not measured them.
+
+### Two things about the tests, both learned the hard way before
+
+- **The xlsx control goes all the way through the door** — set, save, reopen,
+  read — rather than checking the value in memory. An in-memory control would
+  stay green on a save path broken by the same edit.
+- **Both over-corrections are proven red**, each refusal made to fire on every
+  string, and the controls are the only thing that catches either. A refusal
+  tier without one is satisfied by refusing everything, which is the standing
+  rule in this tree and is the reason I wrote them first this time rather than
+  after a perturbation embarrassed me.
+
+### And a surprise the fixtures walked into: a `program` body cannot `goto`
+
+Both fixtures were first written the obvious way — attempt, `goto` past the
+handler, control below — and **a `program` block's body is top level as far as
+jumps are concerned**, so the `goto` raises *"goto is not supported at top
+level; supported inside functions"*. That is documented
+(`docs/gbasic_execution_boundaries.md` §2.3), and what is not documented is the
+consequence when `on error` is armed: **the raise is catchable**, so the
+handler runs and the fixture cheerfully reports `refused` on the path where
+nothing was refused. In the xlsx perturbation the tier still went red, but for
+a second reason on top of the real one, which is luck rather than design.
+
+A `program` body reads exactly like a function body — it has a name, a
+parameter list and an `end` — so this is a real trap and not a technicality.
+Both fixtures put the attempt in a function now, which is the frame-scoped
+`on error` shape PLAT-ERR exists for anyway.
+
+- **Effect it had:** a spreadsheet cell holding anything binary-ish was
+  silently shortened; an XML document with the same content was refused with a
+  sentence the author could not act on.
+- **Workaround:** `hex_encode` the value, or strip the byte, which is now what
+  the refusal says.

@@ -3445,6 +3445,13 @@ Parsing:
 - `xml.parse_file(path[, keep_whitespace | options])` — parse from a file path,
   with the same options.
 
+**An interior NUL is refused, by name** (*since 0.2.2*). XML 1.0's `Char`
+production excludes `#x0`, so a document carrying one cannot be parsed by
+anything; libxml2 stops at the byte and used to report `Premature end of data
+in tag …`, which says where it gave up rather than what is wrong. `xml.parse`
+now names the byte. `xml.parse_html` is deliberately unchanged — HTML's own
+handling of the byte differs and is not measured here.
+
 **Positions are opt-in** (*since 0.2.2*). With `positions: true` every element
 record carries a `line` — the 1-based line its start tag begins on:
 

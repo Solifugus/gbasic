@@ -5558,6 +5558,26 @@ static Value xlsx_eval_call(AstExpr *expr) {
             value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
             return xlsx_raise("xlsx.set expects a workbook, a sheet name and a ref");
         }
+        /* REFUSED, NOT TRUNCATED, for PostgreSQL's reason one format along.
+         * gBASIC strings are counted and carry an interior NUL everywhere in
+         * the language; a spreadsheet cell cannot hold one, because xlsx is
+         * XML in a zip and XML 1.0's `Char` production EXCLUDES #x0. Measured
+         * before this check existed: setting `"a" + chr(0) + "b"`, saving and
+         * reopening gave back ONE byte, with nothing raised -- a value
+         * silently shortened inside a spreadsheet, which is the worst place
+         * for it, since nothing downstream can tell a truncated cell from a
+         * short one.
+         *
+         * `sqlite` was repaired rather than made to refuse because SQLite
+         * really can store the bytes. Here there is nothing to repair: the
+         * file format forbids it. */
+        if (newv.kind == VALUE_STRING &&
+            string_length(newv.as.string) != strlen(newv.as.string)) {
+            value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+            return xlsx_raise("a cell cannot hold an interior NUL: xlsx is XML, "
+                              "and XML forbids that byte; encode it (hex_encode) "
+                              "or strip it first");
+        }
         XlsxWorkbook *wb = wbv.as.workbook;
         XlsxSheet *sheet = xlsx_find_sheet(wb, shv.as.string);
         if (!sheet) {
