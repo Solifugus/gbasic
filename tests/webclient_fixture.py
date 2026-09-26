@@ -12,7 +12,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def send_payload(self, status, body, content_type="text/plain", headers=None):
-        payload = body.encode("utf-8")
+        # `bytes` passes through untouched, so a fixture can serve a body that
+        # is not text -- which is what the binary-response case needs.
+        payload = body if isinstance(body, bytes) else body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
@@ -24,6 +26,10 @@ class Handler(BaseHTTPRequestHandler):
     def read_body(self):
         length = int(self.headers.get("Content-Length", "0"))
         return self.rfile.read(length).decode("utf-8")
+
+    def read_body_bytes(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        return self.rfile.read(length)
 
     def do_GET(self):
         if self.path == "/get":
@@ -42,6 +48,13 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps({"name": "Ada", "active": True, "optional": None}),
                 "application/json",
             )
+        elif self.path == "/nul":
+            # THE READ DIRECTION ALONE. A response body is bytes: an image, a
+            # PDF, a zip. `webclient` used to raise `binary responses are not
+            # supported` on any body containing a NUL, while `http.read` over
+            # the same libcurl handed the bytes back correctly -- so this is the
+            # bytes a caller must now get.
+            self.send_payload(200, b"a\x00b", "application/octet-stream")
         elif self.path == "/invalid-json":
             self.send_payload(200, "{not json", "application/json")
         elif self.path == "/status/404":
@@ -59,6 +72,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_payload(500, "unexpected path")
 
     def do_POST(self):
+        if self.path == "/length":
+            # THE WRITE DIRECTION ALONE, and measured BY THE SERVER rather than
+            # by reading our own bytes back: a client that truncates on the way
+            # out and a reader that truncates on the way in agree with each
+            # other perfectly, which is how this class of defect survives.
+            raw = self.read_body_bytes()
+            self.send_payload(200, "len=%d hex=%s" % (len(raw), raw.hex()))
+            return
         self.send_payload(200, self.read_body(), headers=[("X-Method", "POST")])
 
     def do_PUT(self):

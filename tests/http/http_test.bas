@@ -112,6 +112,28 @@ check("a stopped transfer did not complete", ss.transport_ok, false)
 check("a stopped transfer says so", ss.error, "stopped by http.stop")
 check("stopping a finished transfer is harmless", http.stop(p), true)
 
+' --- a request body is BYTES (PLAT-NUL, 2026-09-25) -------------------------
+'
+' The body was copied with `copy_string` and measured with `strlen`, so
+' `"a" + chr(0) + "b"` went on the wire as one byte and POSTFIELDSIZE said 1.
+' Nothing raised. Asserted against what THE SERVER says it received, because
+' this module's READER was already correct (`value_string_n`) -- so echoing the
+' body back and comparing would have passed while the write side was broken,
+' and would also have passed if both were.
+'
+' 61 00 62 is a, NUL, b.
+nul = http.start({ method: "POST", url: base + "/length",
+                   body: "a" + chr(0) + "b" })
+ignored = http.wait(nul)
+check("a request body carries an interior NUL", http.read(nul).body,
+      "len=3 hex=610062")
+' THE CONTROL: an ordinary body is unchanged, so the fix is a counted length
+' rather than something appended to every request.
+plain = http.start({ method: "POST", url: base + "/length", body: "ab" })
+ignored = http.wait(plain)
+check("and an ordinary body is unchanged", http.read(plain).body,
+      "len=2 hex=6162")
+
 ' --- the handle -------------------------------------------------------------
 check("a handle knows its kind", h.kind, "http")
 check("a handle knows its id", h.id > 0, true)

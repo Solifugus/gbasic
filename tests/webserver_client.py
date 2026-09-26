@@ -22,6 +22,22 @@ def request(port, method, path, body=None, headers=None):
     return result
 
 
+def request_raw(port, method, path, body=None, headers=None):
+    """Like `request`, but the body stays BYTES on both legs.
+
+    The ordinary helper decodes as UTF-8 and prints the text, which is right
+    for every other case here and useless for the one under test: a golden
+    cannot carry a raw NUL, and a shell reading this output would strip it.
+    So the caller prints a length and a hex rendering instead."""
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    connection.request(method, path, body=body, headers=headers or {})
+    response = connection.getresponse()
+    payload = response.read()
+    result = (response.status, response.getheader("Content-Length", ""), payload)
+    connection.close()
+    return result
+
+
 def main():
     port = int(sys.argv[1])
 
@@ -106,6 +122,28 @@ def main():
     status, _, body = request(port, "GET", "/timeout")
     print(status)
     print(body)
+
+    # A response body is bytes. Content-Length is asserted BESIDE the payload,
+    # because the two agreed with each other while both were wrong -- the
+    # server measured the body with strlen and then sent exactly that many
+    # bytes, so a client checking only that they matched saw nothing amiss.
+    status, length, payload = request_raw(port, "GET", "/nul-out")
+    print(status)
+    print(length)
+    print(payload.hex())
+
+    # And the other direction, measured by the SERVER: it reports what it
+    # received, which is the only way to tell a client that sent three bytes
+    # from a server that read one.
+    status, _, echoed = request_raw(
+        port,
+        "POST",
+        "/nul-in",
+        body=b"a\x00b",
+        headers={"Content-Type": "application/octet-stream"},
+    )
+    print(status)
+    print(echoed.decode("utf-8"))
 
     status, _, body = request(port, "GET", "/shutdown")
     print(status)

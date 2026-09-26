@@ -406,7 +406,6 @@ Runtime errors include:
 - invalid argument or request-record shape
 - invalid header names or values
 - unsupported request body value
-- unsupported binary response
 - response-size limit exceeded
 - memory or other system failure
 
@@ -661,7 +660,6 @@ Negative tests should verify:
 - timeout
 - redirect limit
 - oversized response
-- binary response
 
 The normal example and negative runners should include tests that do not depend
 on external networking. A dedicated `tests/run_webclient.sh` should manage the
@@ -708,5 +706,16 @@ Build verification should cover:
   strings.
 - Attempt JSON decoding automatically for every non-empty response body.
 - Omit `response.json` when decoding fails.
-- Keep Phase 1 text-only and reject embedded-NUL binary responses.
+- ~~Keep Phase 1 text-only and reject embedded-NUL binary responses.~~
+  **Retired 2026-09-25.** A response body is bytes, and the refusal meant
+  `webclient.get` could not fetch an image, a PDF or a zip in a language whose
+  strings have carried arbitrary bytes since they were designed. It was also not
+  a fact about HTTP: `http.read`, over the same libcurl and the same buffer,
+  already returned those bytes correctly, so two readers of one transfer
+  disagreed about what a body is. The body is now counted
+  (`value_string_n(data, length)`); `json` is still offered only when the body
+  contains no NUL, because the decoder's "did it reach the end" check is
+  satisfied by one and would otherwise report a valid prefix followed by
+  arbitrary bytes as a whole valid document. Asserted in
+  `tests/webclient_integration.bas`, in both directions separately.
 - Use libcurl's easy interface with strict TLS verification.

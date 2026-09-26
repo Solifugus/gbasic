@@ -255,9 +255,20 @@ A configurable timeout can be added through a future listen-options record.
 
 ## Body And JSON Rules
 
-Request bodies are strings in Phase 1. Embedded-NUL or otherwise unsupported
-binary bodies should receive `415 Unsupported Media Type` or
-`400 Bad Request`, with the exact choice fixed during implementation.
+Request bodies are strings, and a gBASIC string is bytes.
+
+~~Embedded-NUL or otherwise unsupported binary bodies should receive `415
+Unsupported Media Type` or `400 Bad Request`, with the exact choice fixed
+during implementation.~~ **Retired 2026-09-25.** The implementation chose 415,
+which is the less defensible of the two offered: the client's media type is
+not the problem, and changing it -- the only remedy a 415 suggests -- cannot
+help. An uploaded file is bytes and Content-Length already says how many, so
+`req.body` is handed over counted (`value_string_n`). `req.json` is offered
+only when the body contains no NUL, for the reason `webclient` records. A
+RESPONSE body is counted too: a handler returning one used to send
+`Content-Length: 1` and one byte, the count and the bytes agreeing with each
+other so nothing downstream could notice. Both directions are asserted
+separately in `tests/webserver_integration.bas`.
 
 `request.json` is additive, matching `webclient` response behavior:
 

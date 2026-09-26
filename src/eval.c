@@ -14797,10 +14797,38 @@ typedef struct {
     char *reason;
 } WebclientResponseMetadata;
 
+/* A COUNTED COPY OF A REQUEST BODY'S BYTES (PLAT-NUL, 2026-09-25).
+ *
+ * `copy_string` stops at the first NUL and so cannot carry a body. An HTTP
+ * body is A BYTE COUNT, not a C string -- the protocol frames it with
+ * Content-Length and libcurl is told the size through POSTFIELDSIZE -- so
+ * every route that measured it with `strlen` sent one byte of three and said
+ * nothing. Measured against a loopback server that reports what it received:
+ * `webclient.post`, `webclient.request` and `http.start` all reported
+ * `len=1 hex=61`.
+ *
+ * This is SQLite's case and not PostgreSQL's: the byte CAN travel, and
+ * `http.read` already hands one back correctly with `value_string_n`, which is
+ * what says the truncation was ours to fix rather than the protocol's. The
+ * copy stays NUL-terminated as well, so the many places that still read a
+ * body as a C string are unaffected by the length riding beside it. */
+static char *http_body_copy(const char *text, size_t *out_length) {
+    size_t n = string_length(text);
+    char *copy = malloc(n + 1);
+    if (!copy) {
+        abort();
+    }
+    memcpy(copy, text, n);
+    copy[n] = '\0';
+    *out_length = n;
+    return copy;
+}
+
 typedef struct {
     char *method;
     char *url;
     char *body;
+    size_t body_length;
     int has_body;
     double timeout;
     int follow;                    /* follow 3xx redirects; default 1 */
@@ -15083,13 +15111,19 @@ static int webclient_decode_json(const char *body, Value *out) {
     return 0;
 }
 
+/* A RESPONSE BODY IS BYTES (PLAT-NUL, 2026-09-25).
+ *
+ * This used to raise `webclient binary responses are not supported` on any
+ * response containing a NUL -- which meant `webclient.get` could not fetch an
+ * image, a PDF or a zip, in a language whose strings have carried arbitrary
+ * bytes since they were designed. The refusal was not a fact about HTTP:
+ * `http.read`, over the same libcurl and the same buffer, already handed the
+ * bytes back correctly with `value_string_n`, so two readers of one transfer
+ * disagreed about what a body is. That disagreement is the defect; the
+ * counted reader is the one that was right. */
 static Value webclient_response_value(long status,
                                       WebclientResponseMetadata *metadata,
                                       WebclientBuffer *body) {
-    if (memchr(body->data ? body->data : "", '\0', body->length)) {
-        webclient_raise("webclient binary responses are not supported");
-        return value_null();
-    }
 
     Value response = value_record(NULL, 0);
     record_set(&response, "status", value_number((double)status));
@@ -15097,9 +15131,16 @@ static Value webclient_response_value(long status,
                "reason",
                value_string(metadata->reason ? metadata->reason : ""));
     record_set(&response, "headers", value_copy(metadata->headers));
-    record_set(&response, "body", value_string(body->data ? body->data : ""));
+    record_set(&response, "body",
+               value_string_n(body->data ? body->data : "", body->length));
 
-    if (body->length > 0) {
+    /* JSON IS NOT ATTEMPTED OVER A BODY CONTAINING A NUL, and that guard is
+     * load-bearing rather than tidy: the decoder walks a C string and then
+     * checks it reached the end, a test any interior NUL satisfies -- so
+     * `{"a":1}` followed by a NUL and arbitrary bytes would have been reported
+     * as valid JSON, which is a wrong answer where refusing to offer `json` is
+     * merely a true one. A NUL cannot occur in a JSON document anyway. */
+    if (body->length > 0 && !memchr(body->data, '\0', body->length)) {
         Value json;
         if (webclient_decode_json(body->data, &json)) {
             record_set(&response, "json", json);
@@ -15155,7 +15196,7 @@ static Value webclient_perform(WebclientRequest *request) {
         curl_easy_setopt(curl,
                          CURLOPT_POSTFIELDSIZE_LARGE,
                          (curl_off_t)(request->has_body
-                             ? strlen(request->body)
+                             ? request->body_length
                              : 0));
     } else if (strcmp(request->method, "HEAD") == 0) {
         curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
@@ -15166,7 +15207,7 @@ static Value webclient_perform(WebclientRequest *request) {
             curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request->body);
             curl_easy_setopt(curl,
                              CURLOPT_POSTFIELDSIZE_LARGE,
-                             (curl_off_t)strlen(request->body));
+                             (curl_off_t)request->body_length);
         }
     }
 
@@ -15259,7 +15300,8 @@ static int webclient_request_from_record(Value record, WebclientRequest *request
             webclient_raise("webclient request body must be a string");
             return 0;
         }
-        request->body = copy_string(body->value->as.string);
+        request->body = http_body_copy(body->value->as.string,
+                                       &request->body_length);
         request->has_body = 1;
     }
 
@@ -15370,7 +15412,7 @@ static Value webclient_eval_post(AstExpr *expr) {
     WebclientRequest request = {0};
     request.method = copy_string("POST");
     request.url = copy_string(url.as.string);
-    request.body = copy_string(body.as.string);
+    request.body = http_body_copy(body.as.string, &request.body_length);
     request.has_body = 1;
     request.timeout = WEBCLIENT_DEFAULT_TIMEOUT_SECONDS;
     request.follow = 1;
@@ -15549,6 +15591,7 @@ typedef struct {
     char *method;
     char *url;
     char *body;
+    size_t body_length;
     int has_body;
     long timeout_ms;               /* 0 = no total timeout */
     int follow;
@@ -15669,7 +15712,8 @@ static int http_request_from_record(Value record, HttpRequest *request) {
             http_raise("http.start: request body must be a string");
             return 0;
         }
-        request->body = copy_string(body->value->as.string);
+        request->body = http_body_copy(body->value->as.string,
+                                       &request->body_length);
         request->has_body = 1;
     }
 
@@ -15943,7 +15987,7 @@ static Value http_do_start(AstExpr *expr) {
          * a non-blocking start differs from webclient's blocking perform, and
          * getting it wrong reads a freed buffer on the wire. */
         curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE_LARGE,
-                         (curl_off_t)(request.has_body ? strlen(request.body) : 0));
+                         (curl_off_t)(request.has_body ? request.body_length : 0));
         curl_easy_setopt(easy, CURLOPT_COPYPOSTFIELDS,
                          request.has_body ? request.body : "");
     }
@@ -17362,7 +17406,20 @@ static void webserver_array_remove(Value *array, size_t index) {
     s->count--;
 }
 
-static char *webserver_percent_decode(const char *text, size_t length) {
+/* Reports the DECODED LENGTH as well as the bytes (PLAT-NUL, 2026-09-25).
+ *
+ * It always counted its output internally and then returned a bare pointer,
+ * so every caller had to measure the result again with `strlen` -- and `%00`
+ * is the ordinary, RFC-correct way a NUL reaches a form field or a query
+ * parameter, which made this the realistic door rather than a corner of one.
+ * Measured: `a=x%00y` arrived as one byte, `x`.
+ *
+ * That is the worst direction available for a web input. A handler validating
+ * `req.form.name` checked a string the client had not sent, which is the
+ * NUL-injection shape exactly -- and it is the same argument the LDAP report
+ * that started PLAT-NUL made, one layer up. */
+static char *webserver_percent_decode(const char *text, size_t length,
+                                      size_t *out_length) {
     char *decoded = malloc(length + 1);
     if (!decoded) {
         abort();
@@ -17382,6 +17439,9 @@ static char *webserver_percent_decode(const char *text, size_t length) {
         }
     }
     decoded[out] = '\0';
+    if (out_length) {
+        *out_length = out;
+    }
     return decoded;
 }
 
@@ -17414,9 +17474,16 @@ static Value webserver_query_record(const char *query) {
         size_t name_length = eq ? (size_t)(eq - cursor) : length;
         size_t value_length = eq ? length - name_length - 1 : 0;
         if (name_length > 0) {
-            char *name = webserver_percent_decode(cursor, name_length);
-            char *value = webserver_percent_decode(eq ? eq + 1 : "", value_length);
-            record_set(&record, name, value_string(value));
+            size_t name_bytes = 0;
+            size_t value_bytes = 0;
+            char *name = webserver_percent_decode(cursor, name_length, &name_bytes);
+            char *value = webserver_percent_decode(eq ? eq + 1 : "", value_length,
+                                                   &value_bytes);
+            /* A counted NAME as well as a counted value: a `%00` in the name
+             * would otherwise collapse two distinct fields into one, which is
+             * the record-field-name defect this ledger already fixed at the
+             * storage level, reintroduced at this door. */
+            record_set_n(&record, name, name_bytes, value_string_n(value, value_bytes));
             free(name);
             free(value);
         }
@@ -17534,7 +17601,8 @@ static Value webserver_make_request(WebServerClient *client,
                                     const char *path,
                                     const char *query,
                                     Value headers,
-                                    const char *body) {
+                                    const char *body,
+                                    size_t body_length) {
     Value request = value_record(NULL, 0);
     record_set(&request, "id", value_number((double)client->id));
     record_set(&request, "method", value_string(method));
@@ -17542,7 +17610,12 @@ static Value webserver_make_request(WebServerClient *client,
     record_set(&request, "query", webserver_query_record(query));
     record_set(&request, "headers", headers);
     record_set(&request, "cookies", webserver_cookie_record(webserver_field(&request, "headers")));
-    record_set(&request, "body", value_string(body));
+    record_set(&request, "body", value_string_n(body, body_length));
+    /* `form` is still read as a C string, deliberately. A urlencoded body
+     * exists so that bytes like NUL travel as `%00`; a RAW one in it is
+     * malformed by the encoding's own rules, and the prefix is as good a
+     * reading of malformed input as any. `%00` reaches a field value through
+     * the decoder, which is a different path and counted. */
     record_set(&request, "form",
                webserver_form_record(webserver_field(&request, "headers"), body));
     {
@@ -17552,7 +17625,11 @@ static Value webserver_make_request(WebServerClient *client,
 #endif
         record_set(&request, "scheme", value_string(over_tls ? "https" : "http"));
     }
-    if (body[0]) {
+    /* Same guard as the webclient reader, for the same reason: the JSON
+     * decoder's "did it reach the end" check is satisfied by an interior NUL,
+     * so a valid prefix followed by arbitrary bytes would be reported as a
+     * whole valid document. */
+    if (body_length > 0 && !memchr(body, '\0', body_length)) {
         Value json;
         if (webserver_decode_json(body, &json)) {
             record_set(&request, "json", json);
@@ -17693,11 +17770,12 @@ static int webserver_parse_request(WebServer *server, WebServerClient *client) {
         return 0;
     }
     const char *body_start = client->buffer + body_offset;
-    if (memchr(body_start, '\0', content_length)) {
-        value_free(headers);
-        free(text);
-        return -415;
-    }
+    /* A NUL IN THE BODY USED TO BE 415 Unsupported Media Type (PLAT-NUL,
+     * 2026-09-25), which is a refusal naming the one thing that is not the
+     * problem: the client's media type is fine, and changing it -- the only
+     * remedy a 415 suggests -- cannot help. An uploaded file is bytes, the
+     * length is in Content-Length, and `http.read` already proved this
+     * interpreter carries them, so the body is handed over counted. */
     char *body = malloc(content_length + 1);
     if (!body) {
         abort();
@@ -17708,7 +17786,8 @@ static int webserver_parse_request(WebServer *server, WebServerClient *client) {
     client->id = server->next_request_id++;
     client->waiting_response = 1;
     client->deadline = webserver_now() + webserver_effective_timeout(server);
-    Value request = webserver_make_request(client, method, target, query, headers, body);
+    Value request = webserver_make_request(client, method, target, query,
+                                          headers, body, content_length);
     free(body);
     free(text);
 
@@ -17788,11 +17867,19 @@ static void webserver_client_write(WebServerClient *client, const char *data, si
     webserver_write_all(client->fd, data, length);
 }
 
+/* `body_length` is the byte count, not `strlen(body)` (PLAT-NUL, 2026-09-25).
+ * A response body is framed by Content-Length, so a handler returning
+ * `"a" + chr(0) + "b"` used to send `Content-Length: 1` and one byte -- a
+ * silently shortened response, with the count and the bytes agreeing with each
+ * other so nothing downstream could notice. Callers whose body is a C literal
+ * pass `strlen` themselves; the one that hands over a gBASIC value asks the
+ * value how long it is. */
 static void webserver_send(WebServerClient *client,
                            int status,
                            Value *headers,
                            Value *cookies,
-                           const char *body) {
+                           const char *body,
+                           size_t body_length) {
     const char *payload = body ? body : "";
     webserver_set_blocking_mode(client->fd, 1);
     char prefix[256];
@@ -17801,7 +17888,7 @@ static void webserver_send(WebServerClient *client,
                                  "HTTP/1.1 %d %s\r\nContent-Length: %zu\r\nConnection: close\r\n",
                                  status,
                                  webserver_reason(status),
-                                 strlen(payload));
+                                 body_length);
     if (prefix_length > 0) {
         webserver_client_write(client, prefix, (size_t)prefix_length);
     }
@@ -17848,8 +17935,8 @@ static void webserver_send(WebServerClient *client,
         }
     }
     webserver_client_write(client, "\r\n", 2);
-    if (payload[0]) {
-        webserver_client_write(client, payload, strlen(payload));
+    if (body_length > 0) {
+        webserver_client_write(client, payload, body_length);
     }
 }
 
@@ -18002,7 +18089,8 @@ static int webserver_deliver_response(WebServer *server, Value response,
                        status ? (int)status->value->as.number : 200,
                        headers ? headers->value : NULL,
                        cookies ? cookies->value : NULL,
-                       body ? body->value->as.string : "");
+                       body ? body->value->as.string : "",
+                       body ? string_length(body->value->as.string) : 0);
         webserver_client_close(server, client_index);
     }
     return 1;
@@ -18149,7 +18237,8 @@ static void webserver_send_error(WebServer *server,
                                  size_t client_index,
                                  int status,
                                  const char *body) {
-    webserver_send(&server->clients[client_index], status, NULL, NULL, body);
+    webserver_send(&server->clients[client_index], status, NULL, NULL,
+                   body, body ? strlen(body) : 0);
     webserver_client_close(server, client_index);
 }
 

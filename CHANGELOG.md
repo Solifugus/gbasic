@@ -9,6 +9,40 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — every HTTP body door, in both directions
+
+A request or response body containing a NUL was silently shortened on **every**
+write path: `webclient.post`, `webclient.request`, `http.start` and the
+webserver's own responses each measured the body with `strlen` and then sent
+exactly that many bytes, so the count and the payload agreed with each other
+while both were wrong.
+
+The read paths gave three different answers to one question, and one of them was
+already right: `http.read` returned the bytes counted, over the same libcurl and
+the same buffer that `webclient` refused them on. So this is SQLite's case
+rather than PostgreSQL's — the byte can travel, and the disagreement was ours.
+Both refusals are gone:
+
+- **`webclient` can now fetch binary.** It used to raise `binary responses are
+  not supported`, so an image, a PDF or a zip was out of reach.
+- **A request body carrying a NUL is no longer 415.** *Unsupported Media Type*
+  told a client to change its `Content-Type`, which could not help; an upload is
+  bytes, and Content-Length already says how many.
+
+**`%00` in a form field or a query parameter also lost the byte**, which is the
+realistic route: `a=x%00y` reached the handler as one byte, so a handler
+validating `req.form.name` was checking a string the client had not sent. Two
+names differing only after a NUL collapsed into one field, the second
+overwriting the first. Both are fixed, name and value.
+
+`json` is now offered only when a body contains no NUL, on both readers. The
+decoder walks a C string and then checks it reached the end — a test an interior
+NUL satisfies — so a valid prefix followed by arbitrary bytes would have been
+reported as a whole valid document.
+
+Two design documents said these limits were deliberate Phase 1 choices; both are
+marked retired rather than quietly edited.
+
 ### Fixed — a spreadsheet cell lost an interior NUL; `xml.parse` blamed the tag
 
 Having asked the databases, the same question went to every other door a string

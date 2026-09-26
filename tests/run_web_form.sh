@@ -91,6 +91,82 @@ probe "text/plain is not either" "text/plain" 'a=1&b=2' 'fields:'
 probe "a longer type that merely starts the same way is not" \
       "application/x-www-form-urlencoded-ish" 'a=1' 'fields:'
 
+printf 'TIER %%00 is a byte, not a terminator\n'
+# THE REALISTIC NUL DOOR, and the one the sweep reached last (PLAT-NUL,
+# 2026-09-25). `%00` is the RFC-correct way a NUL travels in a form field or a
+# query string, and the decoder -- which counted its own output internally and
+# then handed back a bare pointer for the caller to re-measure with `strlen` --
+# lost it: `a=x%00y` arrived as one byte, `x`.
+#
+# THAT IS THE WORST DIRECTION AVAILABLE FOR A WEB INPUT. A handler validating
+# `req.form.name` was checking a string the client had not sent, which is the
+# NUL-injection shape exactly, and it is the same argument the LDAP report that
+# started PLAT-NUL made one layer up.
+#
+# REPORTED AS HEX, because a NUL cannot survive a shell command substitution --
+# a tier comparing the raw bytes would silently compare the truncations.
+cat >"$scratch/nul.bas" <<'EOF'
+load webserver
+server = webserver.listen(0)
+print "PORT " + string(server.port)
+watch(server.requests)
+    while count(server.requests) > 0
+        req = take_first(server.requests)
+        src = req.form
+        if count(keys(req.form)) = 0 then
+            src = req.query
+        end if
+        out = "fields=" + string(count(keys(src))) + ":"
+        for each k in sort(keys(src))
+            out = out + " " + hex_encode(k) + "=" + hex_encode(src[k])
+        next
+        append(server.responses, { id: req.id, status: 200, body: out })
+    end while
+end watch
+EOF
+GBASIC_PATH=stdlib ./gbasic --line-buffered "$scratch/nul.bas" >"$scratch/nul.log" 2>"$scratch/nul.err" &
+nul_pid=$!
+nul_port=""
+for _ in $(seq 1 100); do
+    nul_port=$(sed -n 's/^PORT //p' "$scratch/nul.log" 2>/dev/null | head -1)
+    [ -n "$nul_port" ] && break
+    sleep 0.05
+done
+if [ -z "$nul_port" ]; then
+    fail "the hex server published a port"
+else
+    nul_probe() { # label method payload expected
+        local got
+        if [ "$2" = "POST" ]; then
+            got=$(curl -s -m 5 -X POST "http://127.0.0.1:$nul_port/x" \
+                        -H "Content-Type: application/x-www-form-urlencoded" \
+                        --data-raw "$3" 2>/dev/null)
+        else
+            got=$(curl -s -m 5 "http://127.0.0.1:$nul_port/x?$3" 2>/dev/null)
+        fi
+        if [ "$got" = "$4" ]; then
+            pass "$1"
+        else
+            fail "$1 (got '$got', want '$4')"
+        fi
+    }
+    # 61 = a, 78 = x, 79 = y. A value of three bytes with the NUL in the middle.
+    nul_probe "a form value keeps an encoded NUL" POST 'a=x%00y' \
+              'fields=1: 61=780079'
+    nul_probe "so does a query value" GET 'a=x%00y' 'fields=1: 61=780079'
+    # THE CONTROL that the decoder did not merely start appending something:
+    # the same field without the escape is two bytes.
+    nul_probe "and a value without one is unchanged" POST 'a=xy' \
+              'fields=1: 61=7879'
+    # THE NAME HALF, which is the collapse rather than the truncation: two
+    # fields differing only AFTER a NUL must stay two fields. This is the
+    # record-field-name defect the record tier already fixed at the storage
+    # level, and it would have been reintroduced here by fixing values alone.
+    nul_probe "two names differing after a NUL stay two fields" POST \
+              'x%00y=1&x%00z=2' 'fields=2: 780079=31 78007a=32'
+    kill "$nul_pid" 2>/dev/null
+fi
+
 printf 'TIER the server survived\n'
 probe "and still serves after all of that" \
       "application/x-www-form-urlencoded" 'z=9' 'fields: z=[9]'

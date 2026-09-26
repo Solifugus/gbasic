@@ -8812,3 +8812,152 @@ Both fixtures put the attempt in a function now, which is the frame-scoped
   sentence the author could not act on.
 - **Workaround:** `hex_encode` the value, or strip the byte, which is now what
   the refusal says.
+
+## 2026-09-25 — CC — while: designing gBASIC Studio's SQL snippet window
+
+- **Type:** bug
+- **Severity:** medium
+- **What:** `gi.new("Gtk.<Widget>")` **segfaults** when GTK has not been
+  initialized, instead of raising. Minimal case, exit 139, core dumped:
+
+  ```basic
+  program main(args)
+    load gi
+    gi.require("Gtk", "4.0")
+    m = gi.new("Gtk.StringList")   ' fine — not a widget
+    d = gi.new("Gtk.DropDown")     ' SEGFAULT
+  end program
+  ```
+
+  `gi.require` succeeds and `Gtk.StringList` constructs happily; the crash is
+  on the first actual widget. The same two lines after `gtk.init()` work, and
+  so does every widget Studio builds, because Studio builds them inside
+  `activate` on a `Gtk.Application`. Two things made this cost more than it
+  should have: the crash takes the process down before stdout is flushed, so a
+  program with `print` tracing produces **no output at all** and the failure
+  looks like it happened at line 1 — `print to error` is what located it — and
+  in a pipeline (`| head`) the exit status is the pipe's, so it reads as a
+  clean exit 0 with no output.
+- **Workaround:** call `gtk.init()` (or build inside a `Gtk.Application`'s
+  `activate`) before any `gi.new` of a widget type. Studio was never exposed;
+  this was a standalone probe. A raise naming the uninitialized toolkit would
+  cost one check in `gi.new` and turn a core dump into a sentence.
+
+## 2026-09-25 — CC — while: filling a form from a `for each` over widget rows
+
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** warning 2107 ("this writes to `e`, which is a COPY of the element,
+  and nothing reads it afterwards -- the write is discarded") fires on a write
+  through a gobject HANDLE held in the element, where the write is not
+  discarded and does reach the object:
+
+  ```basic
+  for each e in w.entries          ' e.entry is a Gtk.Entry handle
+    e.entry.text = "filled in"     ' warns -- but the entry really is filled in
+  next
+  ```
+
+  The rule is right for `e.name = "x"` and wrong here: the assignment target is
+  a property of the object `e.entry` refers to, not a field of `e`. Measured
+  both ways — the widget's text is set, and the warning is printed anyway, once
+  per run, on stderr. That matters beyond tidiness because several of Studio's
+  golden tiers capture stderr.
+- **Workaround:** bind the handle out first (`ent = e.entry` then `ent.text =
+  ...`), which silences it and behaves identically. A narrower check would be
+  to warn only when the assignment target is a DIRECT field of the loop copy,
+  not when it is a property reached through a reference held in one.
+
+
+## 2026-09-25 — CC — while: taking the door sweep to HTTP
+- **Type:** bug
+- **Severity:** high — silent truncation on every write path, and a percent-decode
+  that made it a web-input integrity problem
+- **What:** `xlsx` and `xml` were the file-format doors. HTTP is the other kind:
+  a byte-transparent protocol that frames a body by LENGTH, so unlike XML there
+  is nothing about it that forbids the byte. Measured against a loopback server
+  that reports what it received, plus curl against a gBASIC server:
+
+| door | direction | before |
+| --- | --- | --- |
+| `webclient.post` | out | **1 byte of 3** |
+| `webclient.request` | out | **1 byte of 3** |
+| `http.start` | out | **1 byte of 3** |
+| `webserver` response | out | **1 byte of 3**, `Content-Length: 1` |
+| `http.read` | in | correct — counted all along |
+| `webclient` response | in | **refused**: "binary responses are not supported" |
+| `webserver` request | in | **refused**: 415 Unsupported Media Type |
+| `req.form` / `req.query` (`%00`) | in | **1 byte of 3** |
+
+### `http.read` being right is what makes the rest legible
+
+Three readers of one protocol gave three different answers, and one of them was
+correct — `value_string_n`, counted, over the same libcurl and the same buffer
+as `webclient`. **That is the third time in this sweep that one member of a set
+being right showed the shape of the fix** (`odbc` for the databases, `pg`'s
+`rows_affected` the day before). The question stops being "what should a body
+be?" and becomes "why do these three disagree?", which has an answer.
+
+So this is SQLite's case and not PostgreSQL's: repair, don't refuse. Both
+refusals went, and both were of the kind this ledger keeps finding —
+**a refusal that names the wrong thing**. "Binary responses are not supported"
+was false as stated, since the sibling supported them. And 415 *Unsupported
+Media Type* tells a client to change its `Content-Type`, which cannot help; the
+design doc had offered 415 or 400 and left the choice to implementation, and the
+implementation took the less defensible one.
+
+### The percent-decode is the one that matters
+
+`%00` is the RFC-correct way a NUL reaches a form field or a query parameter, so
+this is the realistic door rather than a corner of one — and
+`webserver_percent_decode` **counted its own output internally and then returned
+a bare pointer**, leaving every caller to re-measure with `strlen`. `a=x%00y`
+arrived as one byte, `x`.
+
+**A handler validating `req.form.name` was therefore checking a string the
+client had not sent.** That is the NUL-injection shape exactly, and it is the
+same argument the LDAP report that started PLAT-NUL made one layer up. The name
+side was worse than truncation: two fields differing only after a NUL
+**collapsed into one**, the second silently overwriting the first — the
+record-field-name defect this ledger already fixed at the storage level,
+reintroduced at this door because that fix stopped at storage.
+
+### Two guards that are load-bearing rather than tidy
+
+JSON is no longer attempted over a body containing a NUL, on **both** readers.
+The decoder walks a C string and then checks it reached the end — a test any
+interior NUL satisfies — so `{"a":1}` followed by a NUL and arbitrary bytes
+would have been reported as a whole valid document. Offering no `json` is a true
+answer; offering that one is a wrong one.
+
+### Where the tiers went, and why not all in one place
+
+Each is sited where its subject already lives, because the door sweep's tiers
+need a socket and `run_string_nul.sh` never skips: `run_web_form.sh` for `%00`
+(it already needs curl and owns `req.form`), `tests/webclient_integration.bas`
+and `tests/webserver_integration.bas` for the two body directions of each, and
+`tests/http/http_test.bas` for `http.start`.
+
+**Every direction is asserted SEPARATELY and against the far end.** A client
+that truncates on the way out and a reader that truncates on the way in agree
+with each other perfectly, which is how all of this survived — so the write side
+is measured by what the SERVER says it received, and the read side against a
+body the FIXTURE chose. Five perturbations proven red, each failing only its own
+assertion, and each positive sits beside a control (an ordinary body, an
+ordinary form value) so none of it is satisfied by something that refuses or
+mangles everything.
+
+### And a trap in my own probing, twice
+
+`pgrep -f <pattern>` and `pkill -f <pattern>` **match the shell command line
+that contains the pattern**, so cleaning up a fixture killed the shell doing the
+cleanup — twice, once as a silent exit 144 with no output at all. The tree has
+this recorded already for a `run_all.sh` monitor; I walked into it anyway.
+Bracket one character (`fixture_serve[r]`) or kill by pid.
+
+- **Effect it had:** any request or response body containing a NUL was silently
+  shortened; `webclient` could not fetch an image, a PDF or a zip at all; and a
+  form field or query parameter carrying `%00` reached the handler shorter than
+  the client sent it.
+- **Workaround:** none needed now. Before this, `hex_encode` the payload by hand
+  on both ends.

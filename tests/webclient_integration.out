@@ -23,3 +23,7 @@ hello
 /get
 session=abc123; Path=/
 200
+3
+610062
+false
+len=3 hex=610062

@@ -84,6 +84,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         data = self.rfile.read(length)
+        if self.path == "/length":
+            # REPORTS what arrived rather than echoing it, so the request body's
+            # journey OUT is measured by the server. A client that truncates on
+            # the way out and a reader that truncates on the way in agree with
+            # each other perfectly, which is how a NUL-truncation defect
+            # survives an echo test.
+            self._plain(("len=%d hex=%s" % (len(data), data.hex())).encode())
+            return
         self._plain(data)
 
 

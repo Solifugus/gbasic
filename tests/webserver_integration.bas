@@ -90,6 +90,32 @@ watch(server.requests)
             continue
         end if
 
+        ' --- a body is BYTES, in both directions (PLAT-NUL, 2026-09-25) ---
+        '
+        ' OUT: a handler returning "a" + chr(0) + "b" used to send
+        ' `Content-Length: 1` and one byte -- the count and the bytes agreeing
+        ' with each other, so nothing downstream could notice the response had
+        ' been shortened.
+        if req.path = "/nul-out" then
+            append(server.responses, {
+                id:req.id,
+                body:"a" + chr(0) + "b"
+            })
+            continue
+        end if
+
+        ' IN: a request body carrying the byte was refused with 415 Unsupported
+        ' Media Type -- a refusal naming the one thing that is NOT the problem,
+        ' since changing the media type is the only remedy a 415 suggests and it
+        ' cannot help. Reported as hex, so the golden holds no raw NUL.
+        if req.path = "/nul-in" then
+            append(server.responses, {
+                id:req.id,
+                body:"len=" + string(len(req.body)) + " hex=" + hex_encode(req.body)
+            })
+            continue
+        end if
+
         if req.path = "/shutdown" then
             append(server.responses, {
                 id:req.id,
