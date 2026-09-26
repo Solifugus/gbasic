@@ -1,0 +1,1 @@
+runtime error at tests/gi/negative_gi_widget_before_init.bas:9:5: gi.new: Gtk.DropDown is a Gtk widget and GTK is not initialized; constructing one now would crash. Call gtk.init() first, or build widgets inside a Gtk.Application's activate handler

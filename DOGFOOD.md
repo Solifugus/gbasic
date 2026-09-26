@@ -8842,6 +8842,19 @@ Both fixtures put the attempt in a function now, which is the frame-scoped
   `activate`) before any `gi.new` of a widget type. Studio was never exposed;
   this was a standalone probe. A raise naming the uninitialized toolkit would
   cost one check in `gi.new` and turn a core dump into a sentence.
+- **Fixed 2026-09-25** (platform session), and the one check was the easy part;
+  what needed measuring was the PREDICATE. Thirteen Gtk types, one process each:
+  `StringList`, `CssProvider`, `TextBuffer`, `ListStore`, `EntryBuffer` and
+  `SizeGroup` all construct happily with no initialization, while `Label`,
+  `Button`, `Box`, `DropDown`, `Entry`, `Window` and `ApplicationWindow` all
+  segfaulted — so the test is **ancestry from `GtkWidget`**, not "the namespace
+  is Gtk", which would have refused six kinds of object that work today (the
+  control pins that, and the perturbation that uses the namespace reports
+  `Gtk.StringList is a Gtk widget`, false on its face). Initialization is asked
+  of GTK through `Gtk.is_initialized` rather than tracked here, because
+  `Gtk.Application` initializes the toolkit inside `activate` where the bridge
+  never sees it — **a flag we set in our own `gtk.init()` would have refused
+  exactly what Studio does on every run**, and that path is now asserted.
 
 ## 2026-09-25 — CC — while: filling a form from a `for each` over widget rows
 
@@ -8867,6 +8880,18 @@ Both fixtures put the attempt in a function now, which is the frame-scoped
   ...`), which silences it and behaves identically. A narrower check would be
   to warn only when the assignment target is a DIRECT field of the loop copy,
   not when it is a property reached through a reference held in one.
+- **Fixed 2026-09-25** (platform session), and your narrower check is the one
+  that shipped: the rule now stops judging **past one hop** from the loop
+  variable. The reason it cannot be cleverer is that what separates your case
+  from `e.inner.x = 1` on a nested record — which really is discarded — is the
+  KIND of the value at the first hop, and that is known only at run time, while
+  this analysis is a source-position scan. One of the two readings makes the
+  message a lie, and the rule's own policy is that a missed dead write costs
+  nothing while a false one costs the channel its credibility. **So the cost is
+  real and is pinned as a test** (`run_for_each_index.sh` asserts that a two-hop
+  write goes unjudged even when it IS discarded, so anyone re-widening this is
+  told what they are trading), and the half that says the silence is CORRECT
+  lives in `run_gi.sh`, where a handle exists to demonstrate it.
 
 
 ## 2026-09-25 — CC — while: taking the door sweep to HTTP
@@ -8961,3 +8986,75 @@ Bracket one character (`fixture_serve[r]`) or kill by pid.
   the client sent it.
 - **Workaround:** none needed now. Before this, `hex_encode` the payload by hand
   on both ends.
+
+## 2026-09-25 — CC — while: answering two reports from the Studio bench, and the last door
+- **Type:** bug
+- **Severity:** high — a core dump where a sentence belonged, and a diagnostic
+  that printed something false
+- **What:** the Studio session filed two entries above; both reproduced here
+  exactly as described, both fixed, and the `gi` string door was measured at the
+  same time because it is the same surface.
+
+### The 2107 false positive is a lesson about what a static rule may claim
+
+The warning's sentence is *"the write is discarded"*. Through a handle held in
+the loop element that sentence is **false** — measured both ways, the object
+changed AND the warning printed. What separates that from `e.inner.x = 1` on a
+nested record, where it is true, is the KIND of the value at the first hop, and
+a source-position scan cannot know it.
+
+**So the fix was not a cleverer rule but a narrower claim:** stop judging past
+one hop. The true positive given up is real, and it is asserted as a COST rather
+than left in a comment, because the next person to widen this needs to be told
+what they are trading. The other half — that the silence is *correct* for a
+handle rather than merely quieter — needs a reference-kinded value, and every
+reference kind sits behind an optional dependency, so it lives in `run_gi.sh`
+while the cost lives with the rule. Three perturbations red: the narrowing
+removed (caught by both suites), and the narrowing taken one hop too far (caught
+by the boundary control, which is the check that stops this from quietly
+retiring the whole warning).
+
+### The widget crash: the predicate was the work, not the check
+
+`gi.new("Gtk.DropDown")` before initialization exited 139. One measurement
+decided the rule — thirteen types, one process each — and the answer was a clean
+split at `GtkWidget` ancestry, six non-widget Gtk types being perfectly happy
+without init. **Refusing by namespace would have cost those six**, and the
+perturbation that does so says `Gtk.StringList is a Gtk widget`, which is how a
+control earns its place.
+
+The part worth remembering is where the answer comes FROM. `Gtk.Application`
+initializes the toolkit inside `activate`, where this bridge never sees it
+happen, so asking `Gtk.is_initialized` through the repository we already hold is
+not a stylistic choice — **a flag set in our own `gtk.init()` would have refused
+the construction Studio performs on every run.** That path is now an assertion,
+not an assumption.
+
+### And the third door answers the way XML did
+
+`gi.invoke("GLib.Uri.escape_string", "a" + chr(0) + "b", ...)` returned one
+byte, silently. A GI `utf8` argument is a NUL-terminated C string by
+construction, so there is no length to pass and nothing to repair: this is
+XML's answer, not SQLite's, and the difference is a fact about the far side.
+
+**The message had to be raised at the conversion rather than returned as a plain
+failure**, because the caller's sentence for a failed conversion is
+`unsupported argument type for method` — false, since the type is supported and
+the value is not. It survives because a raise already in flight wins, which is
+the error-model rule added earlier this same week; the perturbation that returns
+a plain failure is caught by the message assertion and by nothing else.
+
+### Where the sweep now stands
+
+Every door a string leaves gBASIC through has been measured: `encode`/`decode`,
+`serialize`/`deserialize`, `json_encode` and the actor wire carried the byte
+already; `sqlite` and all four HTTP write paths plus the form/query decoder were
+REPAIRED, because the far side takes a byte count; `pg`, `xlsx`, `xml` and now
+`gi` REFUSE, because theirs does not; and `odbc` is a documented driver fact.
+**Which answer a door gets was never a preference — it is a property of what is
+on the other side**, and the only remaining known case is the original one, a
+`\u{0}` in a source literal, which needs `ast.h` to carry a length.
+
+- **Effect it had:** a warning channel printing a false statement about correct
+  code, a core dump instead of a diagnostic, and one more silent truncation.
+- **Workaround:** the Studio session's own, and both are now unnecessary.

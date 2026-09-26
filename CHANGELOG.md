@@ -9,6 +9,36 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — three reported from the gBASIC Studio bench
+
+**Warning 2107 said something false.** Writing through a handle held in a `for
+each` element — `e.entry.text = "filled in"` where `e.entry` is a `Gtk.Entry` —
+printed *"the write is discarded"*, and the entry really was filled in. The
+element is a copy; a handle inside it refers to the same object either way. The
+rule now stops judging past one hop from the loop variable, because what
+separates that case from `e.inner.x = 1` on a nested record is the *kind* of the
+value at the first hop, which a source-position scan cannot know. The true
+positive this gives up is asserted as a cost, so re-widening it is a visible
+trade.
+
+**`gi.new` of a widget before GTK is initialized raised instead of crashing.**
+It used to segfault — exit 139, core dumped, taking buffered stdout with it, so
+a program with `print` tracing produced no output at all and the failure read as
+happening at line 1. The predicate was measured over thirteen types rather than
+guessed: six non-widget Gtk types construct happily, all seven widgets crashed,
+so the test is ancestry from `GtkWidget`. Initialization is asked of GTK itself,
+because `Gtk.Application` initialises the toolkit inside `activate` where the
+bridge never sees it — a flag of our own would have refused what Studio does on
+every run.
+
+**A `gi` string argument containing a NUL is refused rather than truncated.**
+`gi.invoke("GLib.Uri.escape_string", "a" + chr(0) + "b", …)` returned one byte.
+A GObject string argument is a NUL-terminated C string by construction, so there
+is no length to pass and nothing to repair; this is XML's answer rather than
+SQLite's. The message is raised at the conversion so it beats the caller's
+generic *"unsupported argument type for method"*, which was false — the type is
+supported, the value is not.
+
 ### Fixed — every HTTP body door, in both directions
 
 A request or response body containing a NUL was silently shortened on **every**

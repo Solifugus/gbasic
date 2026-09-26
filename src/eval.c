@@ -24135,7 +24135,37 @@ static int gi_giarg_from_value(GITypeInfo *ti, Value v, GIArgument *arg) {
     case GI_TYPE_TAG_DOUBLE: arg->v_double = value_number_or_zero(v); return 1;
     case GI_TYPE_TAG_UTF8:
     case GI_TYPE_TAG_FILENAME:
-        if (v.kind == VALUE_STRING) { arg->v_string = v.as.string; return 1; }
+        if (v.kind == VALUE_STRING) {
+            /* REFUSED, NOT TRUNCATED (PLAT-NUL's door sweep, 2026-09-25). A
+             * GObject string argument is a NUL-TERMINATED C string by
+             * construction, so the bytes after an interior NUL cannot arrive --
+             * measured, `gi.invoke("GLib.Uri.escape_string", "a"+chr(0)+"b",
+             * nothing, false)` answered one byte, `61`, in silence.
+             *
+             * This is XML's answer rather than SQLite's, and for the same
+             * reason: there is no length to pass and nothing to repair. The
+             * databases and the HTTP bodies were fixed because the far side
+             * takes a byte count; this one does not.
+             *
+             * RAISED HERE rather than returned as a plain failure, because the
+             * caller's message for a `0` is "unsupported argument type for
+             * method", which is false -- the type is supported and the VALUE is
+             * not, which is the reports-the-wrong-cause class this ledger keeps
+             * closing. The specific message survives because a raise already in
+             * flight wins (error-model rule 3, added the same week), so the
+             * generic one over the top is dropped. */
+            if (string_length(v.as.string) != strlen(v.as.string)) {
+                runtime_error_raise("a GObject string argument cannot contain an "
+                                    "interior NUL: it is passed as a "
+                                    "NUL-terminated C string, so the bytes after "
+                                    "it would be lost; encode the value "
+                                    "(hex_encode) or strip the byte first",
+                                    6001, "gi");
+                return 0;
+            }
+            arg->v_string = v.as.string;
+            return 1;
+        }
         if (v.kind == VALUE_NULL)   { arg->v_string = NULL; return 1; }
         return 0;
     case GI_TYPE_TAG_INTERFACE: {
@@ -24491,6 +24521,63 @@ static Value gi_do_require(AstExpr *expr) {
     return value_null();
 }
 
+/* A Gtk WIDGET CONSTRUCTED BEFORE THE TOOLKIT IS INITIALIZED CRASHES, and a
+ * core dump is the worst diagnostic there is. Reported from the gBASIC Studio
+ * bench (2026-09-25) and reproduced: `gi.new("Gtk.DropDown")` after a bare
+ * `gi.require("Gtk", "4.0")` exits 139, and it takes buffered stdout with it,
+ * so a program with `print` tracing produces NO OUTPUT AT ALL and the failure
+ * reads as happening at line 1.
+ *
+ * THE PREDICATE WAS MEASURED RATHER THAN GUESSED. Thirteen Gtk types, one
+ * process each: StringList, CssProvider, TextBuffer, ListStore, EntryBuffer and
+ * SizeGroup all construct happily; Label, Button, Box, DropDown, Entry, Window
+ * and ApplicationWindow all segfault. The split is exactly "descends from
+ * GtkWidget", so that is the test -- not "namespace is Gtk", which would refuse
+ * six kinds of object that work today.
+ *
+ * INITIALIZATION IS ASKED OF GTK, not tracked here, and that is the part that
+ * matters: `Gtk.Application` initializes the toolkit itself inside `activate`,
+ * where this bridge never sees it, so a flag we set in our own `gtk.init()`
+ * would refuse the construction Studio does on every run. `Gtk.is_initialized`
+ * is resolved through the repository we already hold -- no new link dependency,
+ * and it answers for both routes.
+ *
+ * IF THE QUESTION CANNOT BE ASKED, NOTHING IS REFUSED. A typelib without
+ * `is_initialized` leaves the old behaviour in place rather than blocking a
+ * program that would have worked: this check exists to turn a crash into a
+ * sentence, and it may not become a new way to fail. */
+static int gi_gtk_widget_before_init(GType gtype) {
+    static GType widget_type = G_TYPE_INVALID;
+    if (widget_type == G_TYPE_INVALID) {
+        /* NOT cached when absent: the first gi.new in a program may be a Gio
+         * type, long before anything registers GtkWidget. */
+        widget_type = g_type_from_name("GtkWidget");
+    }
+    if (widget_type == G_TYPE_INVALID || !g_type_is_a(gtype, widget_type)) {
+        return 0;
+    }
+    GIBaseInfo *info = gi_repository_find_by_name(gi_repo(), "Gtk",
+                                                 "is_initialized");
+    if (!info) {
+        return 0;
+    }
+    int before = 0;
+    if (GI_IS_FUNCTION_INFO(info)) {
+        GIArgument ret;
+        memset(&ret, 0, sizeof(ret));
+        GError *ierr = NULL;
+        if (gi_function_info_invoke((GIFunctionInfo *)info, NULL, 0, NULL, 0,
+                                    &ret, &ierr)) {
+            before = !ret.v_boolean;
+        }
+        if (ierr) {
+            g_error_free(ierr);
+        }
+    }
+    gi_base_info_unref(info);
+    return before;
+}
+
 static Value gi_do_new(AstExpr *expr) {
     /* gi.new(typeName [, propName, propValue]...) — trailing name/value pairs are
      * construct-time properties (the only way to set construct-only props such as
@@ -24516,6 +24603,15 @@ static Value gi_do_new(AstExpr *expr) {
     }
     if (!G_TYPE_IS_OBJECT(gtype)) {
         Value r = gi_raisef("gi.new: not an instantiable object type: %s", type_name.as.string);
+        value_free(type_name);
+        return r;
+    }
+    if (gi_gtk_widget_before_init(gtype)) {
+        Value r = gi_raisef("gi.new: %s is a Gtk widget and GTK is not "
+                           "initialized; constructing one now would crash. Call "
+                           "gtk.init() first, or build widgets inside a "
+                           "Gtk.Application's activate handler",
+                           type_name.as.string);
         value_free(type_name);
         return r;
     }
@@ -37189,6 +37285,47 @@ static const char *lvalue_root_ident(const AstExpr *e) {
     return NULL;
 }
 
+/* HOW FAR PAST THE LOOP VARIABLE A WRITE'S TARGET REACHES: `item` is 0,
+ * `item.n` and `item[0]` are 1, `item.a.b` and `item.a[0]` are 2.
+ *
+ * THE RULE STOPS JUDGING AT ONE HOP, which is a correction reported from the
+ * gBASIC Studio bench (2026-09-25) and reproduced here. Past one hop the path
+ * may pass through a value that REFERS to something outside the copy -- a
+ * gobject, a boxed struct, a workbook, an http transfer -- and then the write
+ * is not discarded at all:
+ *
+ *     for each e in w.entries          ' e.entry is a Gtk.Entry handle
+ *         e.entry.text = "filled in"   ' warned, and the entry WAS filled in
+ *     next
+ *
+ * Measured both ways: the object changed AND the warning printed, so the
+ * diagnostic's own sentence -- "the write is discarded" -- was false.
+ *
+ * A SOURCE-POSITION SCAN CANNOT TELL THAT FROM `e.inner.x = 1` on a nested
+ * RECORD, which genuinely is discarded, because what separates them is the
+ * KIND of the value at the first hop and that is known only at run time. One
+ * of the two readings makes the message a lie, and this rule's stated policy
+ * is that a missed dead write costs nothing while a false one costs the
+ * channel its credibility. So it declines to judge, and the true positive it
+ * gives up is pinned as a test rather than left implied. */
+static int lvalue_hops(const AstExpr *e) {
+    int hops = 0;
+    while (e) {
+        if (e->kind == AST_EXPR_IDENT) {
+            return hops;
+        }
+        if (e->kind == AST_EXPR_FIELD) {
+            e = e->as.field.object;
+        } else if (e->kind == AST_EXPR_INDEX) {
+            e = e->as.index.array;
+        } else {
+            return hops;
+        }
+        hops++;
+    }
+    return hops;
+}
+
 typedef struct {
     const char *name;
     int max_mention_line;  /* the latest line at which the name appears */
@@ -37291,9 +37428,16 @@ static void dead_scan_stmt(const AstStmt *st, DeadScan *s) {
             }
         }
         if (root && strcmp(root, s->name) == 0) {
-            /* A COMPOUND assignment (`item.n += 1`) reads the target too, but
-             * that read happens BEFORE the write and cannot keep it alive. */
-            if (st->line > s->last_write_line) {
+            if (lvalue_hops(st->as.assign.target) > 1) {
+                /* Not judged (see lvalue_hops), and counted as a MENTION: at
+                 * two hops the statement genuinely reads `item` to find what
+                 * to write through, so treating it as a read also suppresses
+                 * any earlier write, which is the conservative direction. */
+                dead_scan_expr(st->as.assign.target, s);
+            } else if (st->line > s->last_write_line) {
+                /* A COMPOUND assignment (`item.n += 1`) reads the target too,
+                 * but that read happens BEFORE the write and cannot keep it
+                 * alive. */
                 s->last_write_line = st->line;
                 s->last_write_column = st->column;
             }

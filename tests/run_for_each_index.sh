@@ -194,6 +194,50 @@ BAS
 [ -z "$(dw "$work/ignored.bas")" ] && pass "CONTROL: on warning ignore suppresses it" \
     || fail "the warning could not be silenced"
 
+# CONTROL 6, AND IT IS A COST RATHER THAN A WIN (2026-09-25). The rule stops
+# judging PAST ONE HOP, so a write two hops from the loop variable is not
+# reported even when it really is discarded -- which is the case below, a
+# nested RECORD, where the outer copy dies at the end of the iteration and
+# nothing sees the 999.
+#
+# WHY IT IS GIVEN UP: past one hop the path may run through a value that REFERS
+# to something outside the copy, and then the write is NOT discarded. Reported
+# from the gBASIC Studio bench and reproduced here -- `e.entry.text = "..."` on
+# a Gtk.Entry handle held in the element warned while the entry really was
+# filled in, so the message was false. A source-position scan cannot separate
+# the two, because what differs is the KIND of the value at the first hop.
+#
+# This rule's policy is that a missed dead write costs nothing while a false one
+# costs the channel its credibility, so the cost is taken -- and ASSERTED here,
+# rather than left as a comment, so that anyone who later makes this warn again
+# is told what they are trading. The other half of the argument, that the
+# silence is CORRECT for a handle, needs a reference-kinded value and is
+# asserted in run_gi.sh.
+cat > "$work/twohop.bas" <<'BAS'
+rows = [ { inner: { n: 1 } } ]
+for each item in rows
+    item.inner.n = 999
+end for
+BAS
+[ -z "$(dw "$work/twohop.bas")" ] \
+    && pass "COST: a two-hop write is not judged, even when it IS discarded" \
+    || fail "a two-hop write was reported; the rule must stop at one hop"
+
+# And the boundary is exactly one hop, not "anything with a dot": the ONE-hop
+# field write must still be reported, or the narrowing has silently retired the
+# whole warning.
+cat > "$work/onehop.bas" <<'BAS'
+rows = [ { inner: { n: 1 } } ]
+for each item in rows
+    item.inner = { n: 999 }
+end for
+BAS
+if dw "$work/onehop.bas" | grep -q "COPY of the element"; then
+    pass "CONTROL: a one-hop field write is still reported"
+else
+    fail "the one-hop write stopped being reported; the narrowing went too far"
+fi
+
 printf 'TIER valgrind\n'
 if vg_available; then
     if vg_run ./gbasic tests/for_each_index_test.bas >/dev/null 2>"$work/vg.err"; then

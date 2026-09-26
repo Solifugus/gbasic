@@ -3592,6 +3592,14 @@ The module provides:
   type name (`"Gtk.Button"`). Trailing name/value pairs set construct-time
   properties, including construct-only ones such as
   `gi.new("Gtk.ApplicationWindow", "application", app)`.
+  **A Gtk widget may not be constructed before the toolkit is initialized**
+  (*since 0.2.2*). It used to crash; it now raises, naming `gtk.init()` and the
+  `Gtk.Application` `activate` handler as the two places initialization happens.
+  Only widgets are affected — measured: `Gtk.StringList`, `Gtk.CssProvider`,
+  `Gtk.TextBuffer`, `Gtk.ListStore`, `Gtk.EntryBuffer` and `Gtk.SizeGroup`
+  construct fine with no initialization, while every `GtkWidget` descendant
+  tried did not. The state is read from GTK, so a toolkit initialized by a
+  `Gtk.Application` counts.
 - `gi.get(object, property)` / `gi.set(object, property, value)` — read and
   write a GObject property.
 - `gi.call(object, method[, args...])` — call an instance method, resolved by
@@ -3600,6 +3608,13 @@ The module provides:
 - `gi.invoke("Namespace.function"[, args...])` — call a function that needs no
   receiver, such as `gi.invoke("Gtk.init")` or
   `gi.invoke("GLib.markup_escape_text", "<a>", -1)`.
+
+  **A string argument containing an interior NUL is refused** (*since 0.2.2*),
+  rather than arriving truncated. A GObject string parameter is a
+  NUL-terminated C string by construction, so there is no length to pass
+  alongside it and no encoding in which the remaining bytes could arrive; this
+  is the same answer `pg`, `xlsx` and `xml` give, and for the same reason. Where
+  the byte matters, `hex_encode` it or strip it.
 
   A three-part name calls a **static on a class**:
   `gi.invoke("Gdk.Display.get_default")`,

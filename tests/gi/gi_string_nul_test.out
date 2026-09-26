@@ -1,0 +1,3 @@
+refused: a GObject string argument cannot contain an interior NUL: it is passed as a NUL-terminated C string, so the bytes after it would be lost; encode the value (hex_encode) or strip the byte first
+escaped: ab
+escaped: 610062
