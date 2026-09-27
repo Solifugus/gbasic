@@ -23,10 +23,16 @@
 #   TIER=lean (default)  libm and libc, nothing else. Extract and run, on any
 #                        machine at or above the glibc floor, with no
 #                        dependency a reader has to satisfy or even read about.
-#   TIER=full            + sqlite3, zlib, libxml2, libcrypto/libssl, libcurl.
+#   TIER=full            + sqlite3, zlib, libcrypto/libssl, libcurl.
 #                        The database, internet and AI chapters of the beginner
 #                        book all need one of those, and with the lean download
 #                        none of them can be followed (DOGFOOD 44).
+#                        NOT libxml2, which this line used to claim while
+#                        TIER_PACKAGES and EXPECTED_NEEDED both excluded it and
+#                        the paragraph 40 lines below said so outright -- one
+#                        file disagreeing with itself about what it ships. The
+#                        exclusion is deliberate and the soname table below is
+#                        the reason: `xml` and `xlsx` are in NEITHER tier.
 #
 # WHY NOT ONE FULLER DOWNLOAD. A container fixes the GLIBC version; it does not
 # fix the other libraries, and a DT_NEEDED on a soname the machine does not have

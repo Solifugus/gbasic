@@ -7,6 +7,26 @@ language surface may still change between releases.
 
 ---
 
+## Unreleased
+
+### Fixed — the release script disagreed with itself about what it ships
+
+`tools/build-release-tarball.sh`'s header listed **libxml2** in the `full` tier
+while `TIER_PACKAGES` and `EXPECTED_NEEDED` both excluded it, and a paragraph
+forty lines below said outright that the tier *loses* `xml` and `xlsx`. One file,
+two answers, about the contents of a published artifact.
+
+The exclusion is the correct one and the soname table in that same file is the
+reason: libxml2 is `.so.2` for most of the supported range and `.so.16` from
+libxml2 2.14, so a tarball linking it would fail to start somewhere. The site's
+download page already said the right thing — spreadsheets, XML and
+`password_hash` are in **neither** tier — so the wrong sentence was the one in
+the script.
+
+Found while verifying 0.3.0's artifacts rather than by reading: the `full`
+tier's own assertion prints the libraries it links, and libxml2 was not among
+them.
+
 ## 0.3.0 — 2026-09-27
 
 **The release the beginner's book is pinned to.** Thirty-two commits of
