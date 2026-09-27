@@ -7,7 +7,32 @@ language surface may still change between releases.
 
 ---
 
-## Unreleased
+## 0.3.0 — 2026-09-27
+
+**The release the beginner's book is pinned to.** Thirty-two commits of
+dogfooding, most of it aimed at the first hour: the prompt, and what a
+diagnostic says when a beginner gets something wrong.
+
+A **minor** bump rather than a patch, because the surface moved. Two pieces of
+new syntax — inline type modifiers (`read({file}path)`) and scientific-notation
+literals — plus `sleep` answering nothing, `exit` leaving the prompt, and one
+licence where there were two.
+
+**Eleven of the entries below change what a message says**, and about seven are
+in a beginner's path: the reserved-word syntax error, the index and field
+messages, first-raise-wins, file-operation failures, `load NAME`, the two
+diagnostics that named the wrong thing, and warnings now carrying their code.
+Anything quoting a diagnostic verbatim against 0.2.2 needs re-capturing — that
+is the dominant cost of moving to this release, and it is a rebaseline rather
+than a rewrite.
+
+**Two things the book was waiting for are in it.** The download now has a
+**second tier** carrying sqlite3, zlib, libxml2, libcrypto/libssl and libcurl,
+so the database and internet chapters can be followed from the tarball instead
+of from a C compiler (DOGFOOD 44). And the prompt keeps what you did — a session
+that typed an array and three `append`s used to report `saved 1 line`, which is
+Chapter 5's territory exactly (DOGFOOD 22).
+
 
 ### Changed — one licence, and the CLA goes with it
 
