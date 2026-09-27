@@ -102,12 +102,23 @@ git add -A && git commit -m "gBASIC X.Y.Z"
 ./deploy.sh                                         # rsync --delete to the live host
 ```
 
-`deploy.sh` runs `./check-gbasic-release.sh`, which **refuses** while the page
-disagrees with this tree about the version, a link into it, the licence it names,
-the artifacts it offers, or the library counts it quotes — the last measured by
-loading every library with the staged binary. That check exists because this
-repo's four doc-truth gates all stop at its boundary, and a licence change once
-left the public page stating rights nobody had.
+`deploy.sh` runs `./check-gbasic-release.sh`, which **refuses** while the page is
+dishonest about the release it names. It checks the page against **the tag**, not
+against this tree — a published page describes a release and is therefore
+*supposed* to lag development. So it requires that the page name exactly one
+version, that the version be **tagged** (nothing advertises a release that does
+not exist), and then asks of that tag: does every link into the repo resolve,
+does every licence the page names appear in the SPDX headers, are the artifacts
+it offers actually staged, and do its library counts match — the last measured by
+loading every library with the staged binary itself.
+
+That check exists because this repo's four doc-truth gates all stop at its
+boundary, and a licence change once left the public page stating rights nobody
+had. Checking against HEAD was the first attempt and was wrong: it refused a page
+that was perfectly correct about 0.3.0 the moment development moved on, and since
+`deploy.sh` rebuilds and rsyncs the **whole site**, that refusal would have
+blocked a deploy of any of the other thirty projects while complaining about
+gBASIC.
 
 Old artifacts are **removed, not kept**: a superseded tarball that stays live is
 precisely the file nobody should still be getting.
