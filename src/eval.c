@@ -4,6 +4,7 @@
 
 #include "eval.h"
 #include "builtins.h"
+#include "platform.h"
 #include "actor.h"
 #include "diagnostics.h"
 
@@ -31,7 +32,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -2980,7 +2980,7 @@ static void proc_orphans_clear(void) {
  * clears it; such a child can outlive us and there is nothing portable to do
  * about it). */
 static void proc_arm_parent_death(pid_t parent_pid) {
-    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    gb_arm_parent_death();
     if (getppid() != parent_pid) {
         _exit(0);
     }
@@ -8510,11 +8510,9 @@ const char *gb_exe_relative_stdlib(void) {
     resolved[0] = '\0';
 
     char exe[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
-    if (n <= 0) {
+    if (!gb_exe_path(exe, sizeof exe)) {
         return NULL;
     }
-    exe[(size_t)n] = '\0';
 
     /* <prefix>/bin/gbasic -> <prefix>. Two separators back: strip the binary's
      * name, then the directory holding it, whatever they are called. A binary
@@ -13741,11 +13739,9 @@ static AstStmt *find_top_level_function(const char *name) {
  * binary at the same program (§3). Caller frees; NULL on failure. */
 static char *actor_self_exe_path(void) {
     char buf[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
-    if (n <= 0) {
+    if (!gb_exe_path(buf, sizeof buf)) {
         return NULL;
     }
-    buf[(size_t)n] = '\0';
     return copy_string(buf);
 }
 
@@ -14080,7 +14076,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
      * approximated is now closed exactly, against a recorded pid, and `== 1`
      * also holds when the interpreter itself is pid 1 -- a container entry point
      * -- where it made every actor exit at startup. */
-    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    gb_arm_parent_death();
 
     /* Register what the program declares so the entry and its helpers resolve --
      * the normal top-level walk does not run for an actor, and the program block
@@ -19694,15 +19690,26 @@ static void webserver_clear(void) {
     webserver_next_id = 1;
 }
 
-#if HAVE_SQLITE3
-#define SQLITE_ERROR_CODE 2002
-
-typedef struct {
-    sqlite3_stmt *statement;
-    char **values;
-    int count;
-} SqliteParameterList;
-
+/* THE SHARED SQL DIAGNOSTIC FORMATTER, outside every module's guard.
+ *
+ * It lived inside `#if HAVE_SQLITE3` and is called by `pg` and `odbc` too, so
+ * MEASURED 2026-09-27: `make SQLITE3_AVAILABLE=0` DID NOT COMPILE -- three
+ * implicit declarations, on a tree whose full build is clean. A machine with
+ * libpq or unixODBC and no SQLite development files could not build gBASIC AT
+ * ALL, and nothing could see it: CI builds with ALL the optional modules or with
+ * NONE, and this bug lives in the MIDDLE -- which is where the normal case is.
+ *
+ * The class is the one the house rules already name: `#if HAVE_*` guards are
+ * blind to configurations nobody builds. It surfaced while extracting the
+ * platform layer for a macOS port, where Homebrew's sqlite is keg-only -- so
+ * that is exactly the machine which would have met it first.
+ *
+ * tests/run_platform.sh now builds with each flag disabled ALONE.
+ *
+ * Guarded by the UNION of the three modules rather than left unguarded, so a
+ * build with no database at all carries no unused functions.
+ */
+#if HAVE_SQLITE3 || HAVE_LIBPQ || HAVE_ODBC
 /* THE STATEMENT THAT FAILED, appended to a database diagnostic (DOGFOOD 41).
  *
  * A database's own message names a column or a table and says nothing about
@@ -19835,6 +19842,17 @@ static void sql_append_statement(char *message, size_t size, const char *sql) {
     }
     snprintf(message + len, size - len, "%s", note);
 }
+#endif  /* shared SQL diagnostic formatter */
+
+#if HAVE_SQLITE3
+#define SQLITE_ERROR_CODE 2002
+
+typedef struct {
+    sqlite3_stmt *statement;
+    char **values;
+    int count;
+} SqliteParameterList;
+
 
 static void sqlite_raise_message(const char *message) {
     runtime_error_raise(message, SQLITE_ERROR_CODE, "sqlite");
@@ -27603,11 +27621,10 @@ static Value process_do_self(AstExpr *expr) {
         return process_raise("process.self expects no arguments");
     }
     char exe[4096];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n <= 0) {
-        return process_raise("process.self: could not read /proc/self/exe");
+    if (!gb_exe_path(exe, sizeof(exe))) {
+        return process_raise("process.self: could not determine the path of the "
+                             "running interpreter");
     }
-    exe[n] = '\0';
     const char *self_source = program_reexec_path();
     if (!self_source) {
         return process_raise("process.self: no script path (embedded evaluation)");

@@ -3,6 +3,7 @@
 #endif
 
 #include "actor.h"
+#include "platform.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -26,7 +27,7 @@ static int set_nonblocking(int fd) {
 
 int mailbox_open(Mailbox *box) {
     int sv[2];
-    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) != 0) {
+    if (!gb_channel_socketpair(sv)) {
         return -1;
     }
     /* sv[0] is the owner's read end (kept blocking so receive() blocks); sv[1]
