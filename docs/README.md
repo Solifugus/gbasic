@@ -229,6 +229,9 @@ Not in this directory but worth knowing:
 - [`/CHANGELOG.md`](../CHANGELOG.md) — what shipped in each release.
 - [`/CONTRIBUTING.md`](../CONTRIBUTING.md) — how to build and test, and the
   house rules. Code contributions are welcome; inbound=outbound, no CLA.
+- [`/RELEASING.md`](../RELEASING.md) — the order a release goes in, each step
+  naming the gate that enforces it. Build from a clean worktree of the tag;
+  publishing is in the tedderland checkout, behind a refusal.
 - [`/LICENSING.md`](../LICENSING.md) — the licence map. One licence,
   Apache-2.0, for all of it, and why the earlier AGPL split was retired.
   Enforced by the docs gate.
