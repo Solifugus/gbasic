@@ -26,6 +26,7 @@
 # an XSD accepts a 200-character creditor name, the SEPA scheme carries 70, and
 # a file that VALIDATES is exactly the one that gets sent and comes back
 # refused.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

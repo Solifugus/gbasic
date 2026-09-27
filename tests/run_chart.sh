@@ -23,6 +23,7 @@
 #   VALGRIND   over the golden program (skips if valgrind absent).
 #
 # Negatives (refusals by name) live in run_negative.sh: negative_chart_*.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 . "$(dirname "$0")/valgrind_tier.sh"

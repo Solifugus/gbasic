@@ -26,6 +26,7 @@
 #   4. NEGATIVE -- a spec matching nothing reports ok=false rather than
 #      returning an empty frame that reads as "no data".
 #   5. VALGRIND.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 . "$(dirname "$0")/valgrind_tier.sh"

@@ -144,6 +144,7 @@
 # extract, and the tier checks BOTH halves rather than trusting the sharing.
 #
 # Headless, no network, never skips (bar valgrind).
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

@@ -17,6 +17,7 @@
 # convenience: gBASIC's own clock is SECOND-RESOLUTION (`epoch(now())` cannot
 # see a 0.25s sleep at all), so a fixture cannot time itself. It is also the
 # stronger oracle -- the standard run_core.sh already holds `sleep` to.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

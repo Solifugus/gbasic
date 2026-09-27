@@ -34,6 +34,7 @@
 #             one message serving both tables is how the old one came to be
 #             wrong for exactly one option.
 #   VALGRIND
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

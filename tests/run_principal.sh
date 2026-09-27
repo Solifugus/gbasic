@@ -26,6 +26,7 @@
 #              `with lock` production is that recognising the opener by
 #              POSITION costs nothing and reserves no word.
 #   VALGRIND   a stack of Values popped across returns, raises and gotos
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

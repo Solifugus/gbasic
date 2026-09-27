@@ -29,6 +29,7 @@
 # Skips cleanly when zlib or libxml2 was unavailable at build time, per the
 # project's optional-dependency convention. Needs no python3: the fixture is
 # committed, and tools/make_xlsx_fixture.py is only how it was authored.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
 cd "$(dirname "$0")/.."

@@ -36,6 +36,7 @@
 #              controls that say the plain forms are untouched.
 #   VALGRIND   a new heap field on every for-each node. PLAT-OPTPARAM's lesson:
 #              a parser field that is not freed turned 22 suites red.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

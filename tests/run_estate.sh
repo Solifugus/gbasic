@@ -32,6 +32,7 @@
 #     so an estate in `trading`/`finance`/`warehouse` came back as 17 `public`
 #     tables WITH NO ERROR -- a complete-looking answer missing most of the
 #     database, which is exactly the failure this library exists not to produce
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

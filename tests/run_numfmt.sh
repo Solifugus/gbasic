@@ -50,6 +50,7 @@
 #   5. VALGRIND   -- the fixture, for the buffer question tier 4 reasons about.
 #
 # Headless, GI-independent, no python3. Never skips (bar valgrind).
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
 cd "$(dirname "$0")/.."

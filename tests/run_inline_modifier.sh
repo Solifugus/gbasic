@@ -45,6 +45,7 @@
 #               reported -- the reports-the-wrong-cause class this tree has
 #               produced repeatedly.
 #   VALGRIND    a new expression node owning a heap name per parse.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

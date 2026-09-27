@@ -5,6 +5,7 @@
 # cross-device (EXDEV) error path. GI-independent, so it never skips wholesale;
 # only the cross-device and opt-in stress cases skip when their environment is
 # unavailable. The always-on structural coverage lives in examples/nap_fs_test.gb.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -67,9 +68,9 @@ fi
 # 4. Cross-device: only meaningful when a second filesystem exists. /dev/shm is
 #    tmpfs on Linux; run the case only if it is genuinely a different device.
 shm_dev=""
-work_dev="$(stat -c %d "$work" 2>/dev/null || echo A)"
+work_dev="$(gb_stat_device "$work" 2>/dev/null || echo A)"
 if [[ -d /dev/shm && -w /dev/shm ]]; then
-    shm_dev="$(stat -c %d /dev/shm 2>/dev/null || echo A)"
+    shm_dev="$(gb_stat_device /dev/shm 2>/dev/null || echo A)"
 fi
 if [[ -n "$shm_dev" && "$shm_dev" != "$work_dev" ]]; then
     xtmp="$(mktemp /dev/shm/nap_fs_xdev.XXXXXX)"

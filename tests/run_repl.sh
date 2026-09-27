@@ -31,6 +31,7 @@
 # texts. A rewording would cost the prompt its continuation SILENTLY -- a `for`
 # loop would be reported as an error instead of waiting for `next` -- so the two
 # wordings are asserted against what the binary actually emits.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
 root="$(cd "$(dirname "$0")/.." && pwd)"

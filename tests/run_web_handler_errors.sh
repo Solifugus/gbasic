@@ -19,6 +19,7 @@
 #   3. the server answers the NEXT request
 #
 # A failure of (3) reports which malformed response killed the listener.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

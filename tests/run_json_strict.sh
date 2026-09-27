@@ -14,6 +14,7 @@
 #     re-validated the same way.
 #
 # Skips cleanly when python3 is unavailable (same policy as the webclient suite).
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

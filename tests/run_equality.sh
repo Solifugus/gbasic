@@ -55,6 +55,7 @@
 #      a use-after-free that a correct answer would not reveal.
 #
 # Headless, GI-independent. Never skips (bar valgrind).
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
 cd "$(dirname "$0")/.."

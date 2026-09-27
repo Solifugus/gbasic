@@ -24,6 +24,7 @@
 # live model can only assert something vague, because the same question twice
 # does not give the same words. tests/ari_advisor/record.bas re-records against
 # a live provider and is run deliberately.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 

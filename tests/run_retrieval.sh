@@ -26,6 +26,7 @@
 #
 # Live tiers need PostgreSQL with pgvector: set GBASIC_POSTGRES_TEST=1 and
 # PGDATABASE, the same switch tests/run_postgres.sh uses.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

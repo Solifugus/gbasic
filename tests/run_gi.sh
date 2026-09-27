@@ -2,6 +2,7 @@
 # GObject-Introspection bridge (gi.*) suite. Exercises headless Gio/GObject types
 # so it never needs a display. Skips cleanly when libgirepository-2.0 is absent
 # (HAVE_GIR=0), mirroring run_sqlite.sh.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

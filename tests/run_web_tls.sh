@@ -4,6 +4,7 @@
 # first handshake, hours later), and the pooled shape where a plain TCP socket
 # is inherited and TLS is terminated in the worker — which is what makes
 # certificate rotation a rolling reload and nothing more.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

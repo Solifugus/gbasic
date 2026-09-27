@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 # PLAT-WEB-1 step 2 -- the route table as data (`stdlib/web.bas`).
@@ -155,7 +156,7 @@ printf 'SIBLING' > "$static_root/pub-secret/x.txt"
 ln -s sub/deep.txt "$static_root/pub/inside"
 ln -s ../secret/key.txt "$static_root/pub/escape"
 
-if [[ "$(stat -c %s "$static_root/pub/img.png")" != "8" ]]; then
+if [[ "$(gb_stat_size "$static_root/pub/img.png")" != "8" ]]; then
     fail 'the png fixture is the 8 bytes the fixture asserts'
 else
     pass 'the png fixture is the 8 bytes the fixture asserts'

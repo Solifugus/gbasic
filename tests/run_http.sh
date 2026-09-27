@@ -25,6 +25,7 @@
 #   BUILD       without libcurl the module raises cleanly rather than failing
 #               to build (asserted by the runner only when that build is made)
 #   VALGRIND    a new refcounted value kind sharing one multi handle
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

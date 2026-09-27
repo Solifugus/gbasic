@@ -13,6 +13,7 @@
 # (e.g. tests/native_platform/helpers/sleep_long.sh), so the child's working
 # directory must be the repo root — hence the cd below and running ./gbasic from
 # there, exactly as run_native_platform.sh does.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -129,7 +130,15 @@ done
 # /proc/<pid>/fd and its zombie children from a child `sh` (for which gbasic is
 # $PPID), as deltas against a baseline so the measuring process.run's own transient
 # fds cancel out.
-if command -v ps >/dev/null 2>&1; then
+# The fixture counts descriptors by reading /proc/<pid>/fd FROM gBASIC, so this
+# tier needs procfs as well as `ps`. It is asked rather than assumed, and SKIPS
+# with the reason -- run_all.sh reports a suite that skipped separately from one
+# that passed, so a tier that quietly measured nothing could not hide. macOS has
+# no procfs and would need proc_pidinfo; a shim returning a plausible count is
+# how a resource-accounting tier starts accounting for nothing.
+if ! gb_have_proc; then
+    printf 'SKIP plat_proc_abandon (no /proc: the fd audit has no portable mechanism yet)\n'
+elif command -v ps >/dev/null 2>&1; then
     : >"$stdout_file"
     : >"$stderr_file"
     if timeout 120 ./gbasic tests/native_platform/plat_proc_abandon.bas \

@@ -29,6 +29,7 @@
 # refusal VANISHED, turning five checks green-to-red in one edit.
 #
 # Headless, no network, never skips (bar valgrind).
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

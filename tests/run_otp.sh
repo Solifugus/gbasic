@@ -28,6 +28,7 @@
 #   REFUSALS  each beside its NEAREST LEGAL NEIGHBOUR, or a refusal suite is
 #             satisfied by refusing everything.
 #   VALGRIND  new C on the crypto path (base32 both ways, hmac_sha1).
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

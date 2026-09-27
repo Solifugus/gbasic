@@ -11,6 +11,7 @@
 # executed, so a read at that instant is provably post-print however slow the host.
 #
 # Headless and GI-independent; nothing here needs a display. Runs everywhere.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
 cd "$(dirname "$0")/.."

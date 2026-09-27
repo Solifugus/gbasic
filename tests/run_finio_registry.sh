@@ -22,6 +22,7 @@
 # touches six families. That gap is reported as a VALUE by `coverage()` and
 # asserted here, because a registry that knows what it does not know is worth
 # something and one that merely looks short is not.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

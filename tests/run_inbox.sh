@@ -19,6 +19,7 @@
 #   WARN       `receive()` inside a watcher warns and still answers; outside it
 #              is silent
 #   VALGRIND
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

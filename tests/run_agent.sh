@@ -30,6 +30,7 @@
 #              that turns the gate off, which is what says the gate is a
 #              decision rather than a hard rule.
 #   VALGRIND
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

@@ -4,6 +4,7 @@
 # timeout exemption (a stream is not a slow response), file responses that
 # stream bytes instead of slurping them into a gBASIC string, a drain that
 # ENDS a parked stream, and the negative that keeps stream and body apart.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

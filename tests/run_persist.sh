@@ -11,6 +11,7 @@
 # realistic worst-case index (115 KB, 240 records) opens in under 5 s. That last
 # one is the reason the library exists in this form -- the pure-gBASIC validator
 # it replaced took 92 s on the same input, because `mid` was quadratic then.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
 cd "$(dirname "$0")/.."

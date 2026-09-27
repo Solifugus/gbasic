@@ -21,6 +21,7 @@
 #   * DISPLAY smoke (with the GTK 4 typelib + a display): a real GtkColumnView
 #     presented briefly under G_DEBUG=fatal-criticals — bounded realized rows for
 #     a 1e6-row source, clean teardown, no GTK criticals.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

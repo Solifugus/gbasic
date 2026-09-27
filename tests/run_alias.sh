@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -uo pipefail
 
 # `load NAME as ALIAS` -- THE NAME A FILE CALLS A LIBRARY BY.

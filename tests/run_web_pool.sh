@@ -12,6 +12,7 @@
 #
 # curl is the client throughout: an HTTP request from outside the interpreter
 # is the point, and webclient would test our stack with our stack.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

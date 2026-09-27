@@ -18,6 +18,7 @@
 #
 # GBASIC_PATH=stdlib is set so `load gtk`/`load sourceeditor` resolve from the dev
 # tree and the language manager finds stdlib/gtksourceview/gbasic.lang.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

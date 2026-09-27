@@ -13,6 +13,7 @@
 #
 # Determinism comes from redirection, from process exit, and from a gate file --
 # never from a clock. Headless and GI-independent; nothing here needs a display.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
 cd "$(dirname "$0")/.."

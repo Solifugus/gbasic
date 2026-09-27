@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 # stdlib/market.bas -- daily price history as a frame.

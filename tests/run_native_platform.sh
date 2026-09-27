@@ -12,6 +12,7 @@
 # footprint is these typelibs; the interpreter builds and runs without them.
 #
 # Future NAP phases extend the positive_cases / negative_cases arrays below.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

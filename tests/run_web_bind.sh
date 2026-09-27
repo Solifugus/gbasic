@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 # PLAT-WEB-1 Gap A -- `webserver.listen` binds where it is told, and by

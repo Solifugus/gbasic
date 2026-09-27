@@ -17,6 +17,7 @@
 # as a statement form over 4 MEASURED shift/reduce conflicts, and adding a
 # precedence level is exactly the kind of change that introduces them. bison
 # must still report ZERO.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 

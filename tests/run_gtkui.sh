@@ -17,6 +17,7 @@
 #   1. libgirepository-2.0 dev files (HAVE_GIR=0)  -> skip all
 #   2. the GTK 4 typelib                            -> skip the display tier
 #   3. no X/Wayland display                         -> skip the display tier
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

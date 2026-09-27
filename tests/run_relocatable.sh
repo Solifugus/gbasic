@@ -25,6 +25,7 @@
 # binary in no recognisable layout still reports the ordinary error rather than
 # resolving from somewhere nobody chose, and a spawned actor -- which re-execs
 # the binary in a fresh process -- resolves the same way its parent did.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 

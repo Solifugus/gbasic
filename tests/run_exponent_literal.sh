@@ -37,6 +37,7 @@
 #               to the duration path. A behavioural check cannot see a second
 #               one added somewhere else in that function.
 #   VALGRIND    the refusal path now frees a unit string it used to print.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

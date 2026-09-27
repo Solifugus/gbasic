@@ -23,6 +23,7 @@
 #              not block. Asserted as an ORDERING (both handlers start before
 #              either answer), not a clock.
 #   VALGRIND
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

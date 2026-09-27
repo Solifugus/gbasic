@@ -44,6 +44,7 @@
 #      real defects found while building this were caught.
 #
 # Headless, GI-independent, no display. Runs everywhere.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
 cd "$(dirname "$0")/.."

@@ -30,6 +30,7 @@
 #             connect time rather than at the first call hours later, with the
 #             control that a declaration the server MEETS connects.
 #   VALGRIND
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

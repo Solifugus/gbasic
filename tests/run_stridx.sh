@@ -30,6 +30,7 @@
 #      populate and re-populate the cache.
 #
 # Headless, GI-independent, no display. Runs everywhere.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
 cd "$(dirname "$0")/.."

@@ -23,6 +23,7 @@
 # answers. The timings themselves are NOT asserted here -- they are a property
 # of the machine, they are recorded in §21, and the suite that needs them is the
 # one a reader runs deliberately (RUN_FINIO_COST=1).
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

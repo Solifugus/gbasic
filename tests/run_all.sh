@@ -28,6 +28,7 @@
 # Exit 0 only if every suite that ran passed. A suite that SKIPPED is reported
 # as such and does NOT count as a pass -- a green line that ran nothing is the
 # other way a gate silently shrinks.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

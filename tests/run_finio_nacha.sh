@@ -26,6 +26,7 @@
 # be one misunderstanding implemented twice -- the fixtures and the adapter
 # were both written here -- and awk is a third implementation that has never
 # seen either.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

@@ -39,6 +39,7 @@
 #              rendering fails every fixture with "no recorded response",
 #              which is true and points at the wrong thing.
 #   VALGRIND
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

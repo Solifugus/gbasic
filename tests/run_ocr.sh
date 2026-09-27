@@ -22,6 +22,7 @@
 # a gate that reports a fact about the machine as a defect teaches people to
 # ignore it. But the skip SAYS SO, since a silent skip is the other way a gate
 # shrinks.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 

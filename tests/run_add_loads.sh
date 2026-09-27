@@ -24,6 +24,7 @@
 # and enough of them and the tool goes unused. So: an alias already in force, a
 # native module that needs no load, a library already loaded, and the ordinary
 # unqualified path all have to stay silent or unchanged.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 

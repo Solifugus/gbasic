@@ -5,6 +5,7 @@
 # the WEB-1..4 runtime (host dispatch, static fallback, streams, the drain
 # hook, the workers pool via process.self), and the §9 no-socket
 # introspection (web.routes / web.dispatch on the declaration, the outline).
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

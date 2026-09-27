@@ -37,6 +37,7 @@
 #               one process in isolation, and the property being protected is
 #               a property between processes.
 #   VALGRIND    a new heap path walk on every parents call.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

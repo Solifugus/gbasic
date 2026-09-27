@@ -23,6 +23,7 @@
 # opening + credited - debited, and that must equal both the balance the file
 # declares and the figure finio reports. The fixtures and the adapter were both
 # written here; ElementTree has seen neither.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

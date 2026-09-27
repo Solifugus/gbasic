@@ -46,6 +46,7 @@
 # Headless, GI-independent. Never skips except the two gi bullets, which need
 # a typelib.
 
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 
@@ -163,13 +164,13 @@ probe_atomic_replace_inode() {
     printf 'old\n' > "$WORK/ar/dest"; chmod 640 "$WORK/ar/dest"
     printf 'new\n' > "$WORK/ar/tmp";  chmod 600 "$WORK/ar/tmp"
     local before_inode before_perm temp_inode after_inode after_perm
-    before_inode=$(stat -c %i "$WORK/ar/dest")
-    before_perm=$(stat -c %a "$WORK/ar/dest")
-    temp_inode=$(stat -c %i "$WORK/ar/tmp")
+    before_inode=$(gb_stat_inode "$WORK/ar/dest")
+    before_perm=$(gb_stat_mode "$WORK/ar/dest")
+    temp_inode=$(gb_stat_inode "$WORK/ar/tmp")
     printf 'print atomic_replace("%s/ar/tmp", "%s/ar/dest")\n' "$WORK" "$WORK" > "$WORK/p.bas"
     run "$WORK/p.bas" >/dev/null
-    after_inode=$(stat -c %i "$WORK/ar/dest")
-    after_perm=$(stat -c %a "$WORK/ar/dest")
+    after_inode=$(gb_stat_inode "$WORK/ar/dest")
+    after_perm=$(gb_stat_mode "$WORK/ar/dest")
 
     # The bullet also claims there is no chmod/lstat to compose the safe form.
     printf 'print has_builtin("chmod")\nprint has_builtin("lstat")\n' > "$WORK/q.bas"

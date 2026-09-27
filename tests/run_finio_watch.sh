@@ -18,6 +18,7 @@
 # is what lets a maintenance process be tested with no network -- a gate that
 # needs the internet goes red when somebody else's site is down and then gets
 # turned off.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

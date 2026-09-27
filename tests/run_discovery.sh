@@ -41,6 +41,7 @@
 # carries the tier that keeps those entries honest in both directions: that
 # they still match the driver, and that they do NOT hide a caller passing
 # uninitialised data in.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

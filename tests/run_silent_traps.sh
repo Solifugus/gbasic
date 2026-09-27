@@ -15,6 +15,7 @@
 #
 # Being raises, they are now located, fatal by default, and CATCHABLE, which a
 # printed line never was.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -17,6 +17,7 @@
 # reached a central bank would go red on a publisher's outage for a reason that
 # is not about gBASIC, and could not assert a VALUE at all, since tomorrow's
 # SOFR is not today's. tests/finio_rates/record.sh re-records deliberately.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 

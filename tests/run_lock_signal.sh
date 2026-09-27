@@ -39,6 +39,7 @@
 #   VALGRIND    not run: the process under test dies by a signal on purpose, so
 #               there is no clean exit for a leak report to be written at. Said
 #               here rather than omitted silently.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

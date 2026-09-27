@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -uo pipefail
 
 # PLAT-NUL -- a gBASIC string is a counted sequence of bytes, and NUL is

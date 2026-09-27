@@ -17,6 +17,7 @@
 #   4. VALGRIND    -- including every malformed path.
 #
 # Headless, GI-independent, no display, no python3. Runs everywhere.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
 cd "$(dirname "$0")/.."

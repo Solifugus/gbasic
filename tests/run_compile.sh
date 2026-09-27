@@ -22,6 +22,7 @@
 #   4. VALGRIND.
 #
 # Needs GBASIC_PATH (grid/dbframe) and sqlite.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 . "$(dirname "$0")/valgrind_tier.sh"

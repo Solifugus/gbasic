@@ -16,6 +16,7 @@
 # All display/GLib runs use G_DEBUG=fatal-criticals: any GLib critical aborts and
 # fails the suite (benign Gtk-WARNING layout noise on stderr is ignored; only
 # stdout is asserted byte-exact).
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

@@ -24,6 +24,7 @@
 # the response is not an ERROR, and that FITIDs are UNIQUE -- the latter being
 # the whole of OFX deduplication, where a duplicate silently drops or doubles a
 # transaction.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

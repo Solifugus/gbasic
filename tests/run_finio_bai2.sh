@@ -22,6 +22,7 @@
 # THE LOAD-BEARING TIER IS `framings`, inside the fixture: the same logical
 # file written three physically different ways must give one answer. Asserting
 # any single form passes on a reader that handles only that form.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

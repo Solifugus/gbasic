@@ -5,6 +5,7 @@
 # REFUSED, never guessed at; two Content-Lengths that disagree are an attack
 # lever, not a formatting quirk). Plus web.trust_proxy, whose golden pins the
 # rightmost-untrusted rule -- the correction to the draft's "first hop".
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

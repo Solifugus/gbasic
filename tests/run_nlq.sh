@@ -21,6 +21,7 @@
 # every table, which is exactly the failure retrieval exists to prevent;
 # precision alone is maximised by selecting nothing. So the suite requires a
 # recall floor AND a ceiling on how much was dragged in with it.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh

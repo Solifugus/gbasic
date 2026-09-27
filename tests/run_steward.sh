@@ -33,6 +33,7 @@
 # No valgrind tier: every library beneath this has one, and what is under test
 # here is the joining rather than any of them. Needs python3 and a replay
 # fixture set; no network.
+. "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
