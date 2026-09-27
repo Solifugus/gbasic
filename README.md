@@ -620,36 +620,32 @@ design proposal as an available feature.
 
 ## Contributing
 
-Issues, bug reports and questions are welcome. **Code contributions are not
-being merged yet** — a Contributor License Agreement is being prepared, and
-merging code before it is in place would permanently remove the option to
-dual-license later. See [CONTRIBUTING.md](CONTRIBUTING.md) for the details, how
-to build and test, and the house rules the codebase is held to.
+Issues, bug reports, questions and **code contributions** are welcome.
+Contributions are inbound=outbound under Apache-2.0 — you offer a change under
+the same license the file already carries, and no separate agreement is needed.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build and test, and the house
+rules the codebase is held to.
 
 ## License
 
-gBASIC is **dual-licensed**, and every file declares which applies in its own
-header. Full map: **[LICENSING.md](LICENSING.md)**.
+gBASIC is **Apache-2.0**, all of it. Every file declares that in its own header;
+the map is **[LICENSING.md](LICENSING.md)**.
 
 | | License |
 |---|---|
-| The language, the interpreter, and most of the standard library | **[Apache-2.0](LICENSE)** |
-| The EDGAR suite and the spreadsheet-to-database layers | **[AGPL-3.0-or-later](LICENSE.AGPL-3.0)** |
+| The language, the interpreter, and the whole standard library | **[Apache-2.0](LICENSE)** |
 
-**If you are writing gBASIC programs or embedding the interpreter, you are under
-Apache-2.0** and nothing here restricts you. That includes the entire xlsx engine
-— reading, writing, evaluating and recalculating spreadsheets — because it is
-compiled into the binary.
+**Write gBASIC programs, embed the interpreter, build a product on any of it and
+ship it closed-source — nothing here restricts you.** That includes the entire
+xlsx engine (reading, writing, evaluating and recalculating spreadsheets), the
+spreadsheet-to-database pipeline, and the EDGAR securities suite.
 
-Ten standard libraries are AGPL: `grid` `consolidate` `dbframe` (the pipeline
-that turns messy sheets into queryable tables) and `edgar` `fundamentals`
-`forensics` `insiders` `ownership` `mdna` `screener` (securities analysis).
-Build on those and distribute, or run them as a network service, and the AGPL
-asks you to release your source too. **A commercial license is available** if
-that does not suit you — contact matthewct@gmail.com.
+Ten libraries were AGPL until 2026-09-27, with a commercial license offered
+beside them. That split is retired, not adjusted: copyleft on a library in an
+interpreted language's standard library reaches into the *caller's* program,
+which is the direction only the caller can see. [LICENSING.md](LICENSING.md)
+records the argument.
 
     Copyright 2026 Matthew C. Tedder
 
-See [NOTICE](NOTICE). Contributions will be accepted under both licenses, plus a
-CLA granting the right to sublicense — which is what keeps the commercial option
-possible.
+See [NOTICE](NOTICE).

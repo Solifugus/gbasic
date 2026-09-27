@@ -227,8 +227,8 @@ Not in this directory but worth knowing:
   document, because it records what went wrong rather than what was intended.
 - [`/CHANGELOG.md`](../CHANGELOG.md) — what shipped in each release.
 - [`/CONTRIBUTING.md`](../CONTRIBUTING.md) — how to build and test, and the
-  house rules. Note code contributions are not being merged yet, pending a CLA.
-- [`/LICENSING.md`](../LICENSING.md) — which files are Apache-2.0 and which are
-  AGPL-3.0, and why the line falls where it does. Enforced by the docs gate.
-- [`/LICENSE`](../LICENSE), [`/LICENSE.AGPL-3.0`](../LICENSE.AGPL-3.0) and
-  [`/NOTICE`](../NOTICE) — the licence texts.
+  house rules. Code contributions are welcome; inbound=outbound, no CLA.
+- [`/LICENSING.md`](../LICENSING.md) — the licence map. One licence,
+  Apache-2.0, for all of it, and why the earlier AGPL split was retired.
+  Enforced by the docs gate.
+- [`/LICENSE`](../LICENSE) and [`/NOTICE`](../NOTICE) — the licence text.

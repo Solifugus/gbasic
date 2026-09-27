@@ -9,6 +9,53 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Changed — one licence, and the CLA goes with it
+
+**gBASIC is Apache-2.0, all of it.** The ten AGPL-3.0-or-later libraries — the
+spreadsheet-to-database pipeline (`grid`, `consolidate`, `dbframe`) and the
+EDGAR securities suite (`edgar`, `fundamentals`, `forensics`, `insiders`,
+`ownership`, `mdna`, `screener`) — are Apache-2.0 now, and the commercial
+licence offered beside them is withdrawn. `LICENSE.AGPL-3.0` is deleted.
+
+**The reason is the direction the obligation ran.** gBASIC libraries *are*
+source, and `load grid` combines that source into the caller's program with no
+LGPL-style linking exception — so a business cleaning a spreadsheet with `grid`
+inside a web application owed its **entire application** under the AGPL, and
+nothing at the `load` site said so. `LICENSING.md`'s old dependency rule (no
+Apache file may depend on an AGPL one) was the easy half and was kept
+correctly; the hazard ran from the user's program *into* the library, which is
+the one direction only the user can see and no gate here could check.
+
+**Code contributions are open, and inbound=outbound.** The CLA existed for
+exactly one purpose — sublicensing the AGPL files commercially — and
+`CONTRIBUTING.md` had blocked every code contribution pending it. With nothing
+left to sublicense the CLA has no job, so a contribution is offered under the
+licence the file already carries, the Rust/Kubernetes/Go convention.
+
+**THE GATE DID NOT SHRINK, WHICH IS THE PART THAT NEEDED THOUGHT.** Two
+`run_docs_gate.sh` tiers enforced the split both ways, and deleting them would
+have traded a checked claim for a sentence on a page. They are converted, and
+the load-bearing half is new: the old reverse check asked whether the AGPL list
+really declared AGPL, and its replacement asks that **nothing declares anything
+but Apache-2.0**, naming the offender. A single-licence tree is a claim that a
+vendored file, a paste or a contribution carrying its own header can silently
+falsify, so it is checked rather than asserted. The map tier keeps both
+directions and its count, which is now measured against the **files** rather
+than against the list, or it would only be the list agreeing with itself.
+
+**Rebaseline, listed:** four `.err` goldens. Removing a 22-line header and
+writing a 2-line one moves every line in those files by **20** — measured, not
+computed, and the arithmetic that looks obvious gives 22.
+`negative_edgar_unset_identify` (170→150), `negative_edgar_document_miss` and
+`negative_edgar_offline_miss` (177→157), `negative_ownership_stake_unstructured`
+(245→225). The messages are unchanged and all four are distinct, so the digits
+identify nothing — which is the argument `stdlib/llm.bas` already answered with
+a `.nolineno` sidecar, and is worth doing here the next time this trap fires.
+
+`LICENSING.md` is rewritten rather than deleted: every source file in the tree
+says "See LICENSE and LICENSING.md", so the page has hundreds of referrers.
+
+
 ### Fixed — three reported from the gBASIC Studio bench
 
 **Warning 2107 said something false.** Writing through a handle held in a `for

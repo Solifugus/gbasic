@@ -1,36 +1,25 @@
 # Contributing to gBASIC
 
-> ## ⚠️ Not accepting code contributions yet
->
-> A Contributor License Agreement is being prepared and reviewed. **Until it is
-> in place, pull requests containing code cannot be merged** — not because they
-> are unwelcome, but because merging code without a signed CLA would permanently
-> remove gBASIC's ability to be dual-licensed later, and that cannot be undone
-> after the fact.
->
-> **Issues, bug reports and questions are very welcome right now.** So are pull
-> requests that are purely typo or documentation fixes, which will be held until
-> the CLA lands and then merged.
->
-> If you have something substantial you want to contribute, please open an issue
-> first so the work is not wasted waiting.
+**Code contributions are welcome.** Issues, bug reports and questions are too.
 
----
+gBASIC is **Apache-2.0**, all of it — the language, the interpreter and every
+one of the 65 standard libraries. Every file declares that with an SPDX
+identifier, and [LICENSING.md](LICENSING.md) is the map.
 
-gBASIC is **dual-licensed** — Apache-2.0 for the language, the interpreter and
-most of the standard library; AGPL-3.0-or-later for the EDGAR suite and the
-spreadsheet-to-database layers. Every file declares its own license with an
-SPDX identifier, and [LICENSING.md](LICENSING.md) is the map.
+Contributions are **inbound=outbound**: you offer a change under Apache-2.0, the
+same license the file already carries, and **no Contributor License Agreement is
+required**. This is the Rust/Kubernetes/Go convention.
 
-Contributions will be accepted under the license of the file you are changing,
-plus a CLA granting the right to sublicense. That CLA is not bureaucracy: the
-AGPL files are also offered under a commercial license, and a contribution
-without a sublicensing grant could never be included in a commercially licensed
-copy. See the notice above.
+> A CLA used to be required, and blocked code contributions entirely. Its only
+> purpose was to keep ten AGPL libraries offerable under a commercial license.
+> That split was retired on 2026-09-27, so the CLA had nothing left to do and is
+> gone with it.
 
-**If you add a file to `stdlib/`,** give it an SPDX header and list it in
-`LICENSING.md` — the docs gate fails otherwise, deliberately, because a file
-whose license is unclear is worse than either choice.
+**If you add a file to `stdlib/`,** give it an `SPDX-License-Identifier:
+Apache-2.0` header and list it in `LICENSING.md` — the docs gate fails
+otherwise, deliberately, in both directions: a library the map does not list,
+and a name the map lists that no file declares.
+
 
 ## Getting set up
 

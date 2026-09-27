@@ -1,86 +1,81 @@
 # Licensing
 
-gBASIC is under **two** licenses. Every file says which one in its own header
-(`SPDX-License-Identifier`), and this page is the map.
+gBASIC is under **one** license: **Apache-2.0**. Every file says so in its own
+header (`SPDX-License-Identifier: Apache-2.0`), and this page is the map.
 
 | | License | Text |
 |---|---|---|
-| The language, the interpreter, and most of the standard library | **Apache-2.0** | [`LICENSE`](LICENSE) |
-| The EDGAR suite and the spreadsheet-to-database layers | **AGPL-3.0-or-later** | [`LICENSE.AGPL-3.0`](LICENSE.AGPL-3.0) |
+| The language, the interpreter, and the whole standard library | **Apache-2.0** | [`LICENSE`](LICENSE) |
 
 Copyright 2026 Matthew C. Tedder.
 
 ## The short version
 
-**If you are writing gBASIC programs, or embedding the interpreter, you are
-under Apache-2.0 and nothing here restricts you.** That covers the language, the
-`gbasic` binary, every C module compiled into it — including the whole xlsx
-engine — and 55 of the 65 standard libraries.
+**Write gBASIC programs, embed the interpreter, build a product on any of it,
+ship it closed-source — nothing here restricts you.** That covers the language,
+the `gbasic` binary, every C module compiled into it — including the whole xlsx
+engine — and all 65 standard libraries.
 
-**Ten standard libraries are AGPL.** If you build on those and distribute your
-work, or run it as a network service, the AGPL requires you to release your
-source under the AGPL too. **A commercial license is available** if that does not
-suit you — contact matthewct@gmail.com.
+There is no copyleft library in this tree, no commercial license to buy, and no
+part of the standard library that reaches into your program's licensing.
 
-## What is under which
+## What is under Apache-2.0
 
-### Apache-2.0
+Everything:
 
 - The interpreter: `src/`, `include/`, `tools/`, `tests/`, `examples/`
-- **Every C module compiled into the binary**, including `src/modules/xlsx.c`
+- Every C module compiled into the binary, including `src/modules/xlsx.c`
   (the ZIP container, formula evaluator and recalculation engine),
-  `src/modules/xml.c`, `src/modules/smtp.c` and `src/modules/rowmodel.c`
-- `stdlib/`: `accounting` `agent` `ari` `ari_advisor` `ari_discover` `automation` `chart` `credit` `crypto` `datagrid` `dates` `decision` `discovery` `deposits` `estate` `fake` `filetree` `finance` `finio` `finio_all` `finio_bai2` `finio_camt` `finio_iso20022` `finio_nacha` `finio_ofx` `finio_pain001` `finio_rates` `finio_registry` `finio_watch` `lending`
-  `frame` `gpdf` `gpdf_metrics` `gtk` `gtkui` `gui` `insight` `llm` `mail` `mcp` `market` `matrix` `notation` `ocr` `persist`
-  `nlq` `otp` `reasoning` `retrieval`
-  `schedule` `scoring` `sourceeditor` `stats` `tools` `web`
+  `src/modules/xml.c`, `src/modules/smtp.c`, `src/modules/ldap.c` and
+  `src/modules/rowmodel.c`
+- All 65 standard libraries in `stdlib/`:
 
-### AGPL-3.0-or-later
+  `accounting` `agent` `ari_advisor` `ari` `ari_discover` `automation`
+  `chart` `consolidate` `credit` `crypto` `datagrid` `dates` `dbframe`
+  `decision` `deposits` `discovery` `edgar` `estate` `fake` `filetree`
+  `finance` `finio_all` `finio_bai2` `finio` `finio_camt` `finio_iso20022`
+  `finio_nacha` `finio_ofx` `finio_pain001` `finio_rates` `finio_registry`
+  `finio_watch` `forensics` `frame` `fundamentals` `gpdf` `gpdf_metrics`
+  `grid` `gtk` `gtkui` `gui` `insiders` `insight` `lending` `llm` `mail`
+  `market` `matrix` `mcp` `mdna` `nlq` `notation` `ocr` `otp` `ownership`
+  `persist` `reasoning` `retrieval` `schedule` `scoring` `screener`
+  `sourceeditor` `stats` `tools` `web`
 
-- `stdlib/`: `consolidate` `dbframe` `edgar` `forensics` `fundamentals` `grid`
-  `insiders` `mdna` `ownership` `screener`
+## Why there is only one license
 
-Which is: the **spreadsheet-to-database pipeline** (`grid`, `consolidate`,
-`dbframe`) and the **EDGAR securities-analysis suite** (the rest).
+Until 2026-09-27 ten libraries were **AGPL-3.0-or-later** with a commercial
+license offered beside them: the spreadsheet-to-database pipeline (`grid`,
+`consolidate`, `dbframe`) and the EDGAR securities suite (`edgar`,
+`fundamentals`, `forensics`, `insiders`, `ownership`, `mdna`, `screener`).
+They are Apache-2.0 now, and the split is retired rather than adjusted.
 
-## Why the line falls where it does
+**Copyleft on a library in an interpreted language's standard library points the
+wrong way.** gBASIC libraries *are* source, and `load grid` combines that source
+into the caller's program with no LGPL-style linking exception. So a business
+that cleaned a spreadsheet with `grid` inside a web application owed its
+**entire application** under the AGPL — and nothing at the `load` site said so.
+The dependency direction the old page checked (no Apache file may depend on an
+AGPL one) was the easy half; the hazard ran from the user's program into the
+library, which is the direction only the user can see.
 
-**The xlsx *engine* is Apache, the xlsx *pipeline* is AGPL.** That is not a
-compromise, it is a structural fact: `src/modules/xlsx.c` is `#include`d into
-`src/eval.c` and compiles into the `gbasic` binary. It cannot carry a different
-license without making the entire interpreter AGPL, which would defeat the point
-of a permissively licensed language. So reading, writing, evaluating and
-recalculating spreadsheets is Apache-2.0 and free for any use. What is AGPL is
-the layer that turns messy sheets into clean, consolidated, queryable tables.
-
-**No Apache-licensed file depends on an AGPL one.** The dependency graph was
-checked before the split, and the AGPL libraries are leaves: nothing outside
-that set loads any of them. The reverse direction is fine and is used — AGPL
-libraries depend on Apache ones (`grid` → `frame`, `insiders` → `dates`/`frame`),
-which Apache-2.0 permits, since Apache-2.0 is one-way compatible with the GPLv3
-family.
-
-**`llm.bas` is Apache**, not AGPL, even though it was built for the EDGAR suite.
-It is a general chat-completion client over `webclient` and has no securities
-logic in it. `mdna.bas` (AGPL) depends on it, which is the permitted direction.
+Two things follow from removing it, and both are the point rather than a side
+effect. Contributions no longer need a CLA — see below. And a reader no longer
+has to work out which half of the standard library they are in.
 
 ## Installing and redistributing
 
-`make install` places both license texts under `$PREFIX/share/doc/gbasic`. The
-AGPL libraries are installed into the same `stdlib` directory as the Apache ones
-— they are separate works distributed together, not a combined work, and each
-carries its own header. Because gBASIC libraries *are* source, the AGPL's
-source-availability requirement is satisfied by the installation itself.
+`make install` places `LICENSE`, `NOTICE` and this page under
+`$PREFIX/share/doc/gbasic`. Apache-2.0 asks you to keep the license and the
+`NOTICE` text with any redistribution, and to state changes you made.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). Code contributions are not being merged
-yet, pending a Contributor License Agreement — which exists precisely so that the
-AGPL files can continue to be offered under a commercial license. Without a CLA,
-a contribution to an AGPL file could not be included in a commercially licensed
-copy.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions are **inbound=outbound**:
+you offer a change under Apache-2.0, the same license the file already carries,
+and no separate agreement is needed. That is the Rust/Kubernetes/Go convention,
+and it is possible here only because there is nothing left to sublicense.
 
 ## This is not legal advice
 
-It is a description of intent by the copyright holder. If the boundary matters
-to your situation, read the license texts and ask a lawyer.
+It is a description of intent by the copyright holder. If it matters to your
+situation, read [`LICENSE`](LICENSE) and ask a lawyer.

@@ -195,14 +195,20 @@ else
     fi
 fi
 
-# --- (4) The licence split must stay unambiguous -------------------------------
+# --- (4) The licence must stay unambiguous -------------------------------------
 #
-# gBASIC is dual-licensed: Apache-2.0 except for ten stdlib libraries that are
-# AGPL, so that they can also be offered commercially. A file whose licence is
-# unclear is worse than either choice -- a user cannot tell what they may do, and
-# the copyright holder cannot tell what they may sell. So: every stdlib library
+# gBASIC is Apache-2.0, all of it. A file whose licence is unclear is worse than
+# either choice -- a user cannot tell what they may do. So: every stdlib library
 # declares an SPDX identifier, LICENSING.md lists every one of them, and the two
-# agree. Adding a library without deciding its licence fails here.
+# agree. Adding a library without a licence header fails here.
+#
+# THE SECOND HALF IS THE ONE THAT MATTERS NOW, and it replaces the old check
+# that the AGPL list really declared AGPL. Until 2026-09-27 ten libraries were
+# AGPL-3.0-or-later; the split is retired, and what must not happen is that a
+# copyleft library arrives back in the tree unannounced -- through a paste, a
+# vendored file or a contribution carrying its own header. A single-licence
+# tree is a claim that has to be CHECKED, or it is just a sentence on a page.
+# So anything that is not Apache-2.0 is named and fails.
 LICMAP=LICENSING.md
 if [ ! -f "$LICMAP" ]; then
     echo "FAIL missing        $LICMAP (the licence map)"
@@ -221,17 +227,13 @@ else
             echo "FAIL unmapped       $f declares $spdx but is not listed in $LICMAP"
             lic_ok=0; status=1
         fi
-    done
-    # And the reverse: a name in the AGPL list must actually declare AGPL.
-    agpl_listed=$(sed -n '/^### AGPL-3.0-or-later/,/^## /p' "$LICMAP" | grep -oE '`[a-z_]+`' | tr -d '`' | sort -u)
-    for n in $agpl_listed; do
-        [ -f "stdlib/$n.bas" ] || continue
-        if ! grep -q 'SPDX-License-Identifier: AGPL-3.0-or-later' "stdlib/$n.bas"; then
-            echo "FAIL licence drift  $LICMAP lists $n as AGPL but stdlib/$n.bas does not declare it"
+        # And the half that keeps this a single-licence tree: nothing else.
+        if [ "$spdx" != "Apache-2.0" ]; then
+            echo "FAIL licence alien  $f declares $spdx -- gBASIC is Apache-2.0 only; see $LICMAP"
             lic_ok=0; status=1
         fi
     done
-    [ "$lic_ok" = "1" ] && echo "PASS licensing      every stdlib library declares a licence and matches $LICMAP"
+    [ "$lic_ok" = "1" ] && echo "PASS licensing      every stdlib library declares Apache-2.0 and matches $LICMAP"
 fi
 
 # --- PLAT-DEBT 2: claims about the STATE of the product ---------------------
@@ -642,50 +644,40 @@ done
 #    check. A licence count is not a detail: it is the sentence a company's
 #    lawyer reads.
 #
-#    BOTH DIRECTIONS AND BOTH COUNTS, because the three ways this page can lie
-#    are a library missing from its list, a library on the wrong list, and a
-#    number that no longer matches the list beside it.
+#    BOTH DIRECTIONS AND THE COUNT, because the three ways this page can lie are
+#    a library missing from the list, a name on the list that no file declares,
+#    and a number that no longer matches the list beside it. The licence split
+#    was retired on 2026-09-27, so there is one list now instead of two -- and
+#    the count is asserted against the FILES rather than against the list, or it
+#    would only be the list agreeing with itself.
 LIC=LICENSING.md
 if [ -f "$LIC" ]; then
     lic_ok=1
     lic_apache=$(for f in stdlib/*.bas; do grep -q 'SPDX-License-Identifier:.*Apache' "$f" && basename "$f" .bas; done | sort -u)
-    lic_agpl=$(for f in stdlib/*.bas; do grep -q 'SPDX-License-Identifier:.*AGPL' "$f" && basename "$f" .bas; done | sort -u)
     n_apache=$(printf '%s\n' "$lic_apache" | grep -c .)
-    n_agpl=$(printf '%s\n' "$lic_agpl" | grep -c .)
-    n_total=$((n_apache + n_agpl))
-    # A library with no SPDX header at all would be invisible to both lists.
+    # A library with no SPDX header at all would be invisible to the list.
     n_files=$(ls stdlib/*.bas 2>/dev/null | wc -l)
-    if [ "$n_total" != "$n_files" ]; then
-        echo "FAIL licence spdx   $((n_files - n_total)) of $n_files stdlib files declare no SPDX-License-Identifier"
+    if [ "$n_apache" != "$n_files" ]; then
+        echo "FAIL licence spdx   $((n_files - n_apache)) of $n_files stdlib files do not declare Apache-2.0"
         lic_ok=0; status=1
     fi
-    lic_listed_apache=$(awk '/^### Apache-2.0/{f=1} f&&/^### AGPL/{exit} f' "$LIC" \
-                        | grep -o '`[a-z_0-9]*`' | tr -d '`' | grep -v '^stdlib$' | sort -u)
-    lic_listed_agpl=$(awk '/^### AGPL-3.0-or-later/{f=1} f&&/^Which is:/{exit} f' "$LIC" \
-                      | grep -o '`[a-z_0-9]*`' | tr -d '`' | grep -v '^stdlib$' | sort -u)
+    lic_listed=$(awk '/^- All [0-9]+ standard libraries/{f=1;next} f&&/^## /{exit} f' "$LIC" \
+                 | grep -o '`[a-z_0-9]*`' | tr -d '`' | sort -u)
     for n in $lic_apache; do
-        printf '%s\n' "$lic_listed_apache" | grep -qx "$n" \
-            || { echo "FAIL licence list   $LIC does not list \`$n\` under Apache-2.0, but stdlib/$n.bas declares it"; lic_ok=0; status=1; }
+        printf '%s\n' "$lic_listed" | grep -qx "$n" \
+            || { echo "FAIL licence list   $LIC does not list \`$n\`, but stdlib/$n.bas declares Apache-2.0"; lic_ok=0; status=1; }
     done
-    for n in $lic_agpl; do
-        printf '%s\n' "$lic_listed_agpl" | grep -qx "$n" \
-            || { echo "FAIL licence list   $LIC does not list \`$n\` under AGPL, but stdlib/$n.bas declares it"; lic_ok=0; status=1; }
-    done
-    for n in $lic_listed_apache; do
+    for n in $lic_listed; do
         printf '%s\n' "$lic_apache" | grep -qx "$n" \
-            || { echo "FAIL licence ghost  $LIC lists \`$n\` as Apache-2.0, but no stdlib file declares that"; lic_ok=0; status=1; }
+            || { echo "FAIL licence ghost  $LIC lists \`$n\`, but there is no stdlib/$n.bas declaring Apache-2.0"; lic_ok=0; status=1; }
     done
-    for n in $lic_listed_agpl; do
-        printf '%s\n' "$lic_agpl" | grep -qx "$n" \
-            || { echo "FAIL licence ghost  $LIC lists \`$n\` as AGPL, but no stdlib file declares that"; lic_ok=0; status=1; }
-    done
-    grep -qF "$n_apache of the $n_total standard libraries" "$LIC" \
-        || { echo "FAIL licence count  $LIC does not say \"$n_apache of the $n_total standard libraries\" (measured from the SPDX headers)"; lic_ok=0; status=1; }
-    grep -qiE "^\*\*($(printf '%s' "$n_agpl") |Ten |Eleven |Twelve )standard libraries are AGPL" "$LIC" \
-        || grep -qF "standard libraries are AGPL" "$LIC" \
-        || { echo "FAIL licence count  $LIC no longer states how many libraries are AGPL"; lic_ok=0; status=1; }
+    grep -qF "all $n_files standard libraries" "$LIC" \
+        || { echo "FAIL licence count  $LIC does not say \"all $n_files standard libraries\" (measured from the SPDX headers)"; lic_ok=0; status=1; }
+    # The page must still SAY it is single-licence, or a reader is left guessing.
+    grep -qF "under **one** license" "$LIC" \
+        || { echo "FAIL licence claim  $LIC no longer states that gBASIC is under one licence"; lic_ok=0; status=1; }
     [ "$lic_ok" = "1" ] \
-        && echo "PASS licensing      $LIC matches the SPDX headers ($n_apache Apache, $n_agpl AGPL) both ways, counts included"
+        && echo "PASS licensing      $LIC matches the SPDX headers (all $n_apache Apache-2.0) both ways, count included"
 fi
 
 # 5. docs/README.md's STATUS WORDS against its own legend. The page opens with
