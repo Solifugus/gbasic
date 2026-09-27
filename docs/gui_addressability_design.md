@@ -11,6 +11,128 @@ it is an argument, not a finding.
 
 ---
 
+## 0. Checked against the tree, and the decision this needs first
+
+*Added 2026-09-27 by the platform session, by measurement rather than by reading.
+Everything below §0 is the original proposal and is unedited.*
+
+### 0.1 The evidence and the subject are two different layers
+
+This document's measurements come from gBASIC Studio, and its thesis is the
+**declarative `gui` module's** record tree. Those are not the same layer:
+
+| | |
+|---|---|
+| Studio's use of `gi` | **158 calls**, 3 loads |
+| Studio's use of `gtk` | **119 calls**, 2 loads |
+| Studio's use of the declarative `gui` | **0 calls, 0 loads** |
+
+And `load gui` appears **nowhere in the gBASIC tree** — not `stdlib/`, not
+`examples/`, not `tests/`. The module is **GTK 3** where Studio is GTK 4, and
+`docs/README.md` marks it *"Partial — an experimental proof of concept. Prefer
+`gi` for new work."*
+
+So implementing §2–§4 as written **would not make Studio addressable**: the one
+application that supplied every measurement here, and the only one with an
+assistant that acts, would be untouched.
+
+### 0.2 The primitive §2 proposes already exists, one layer over
+
+`stdlib/gtkui.bas` opens: *"a dynamic declarative widget-tree reconciler for
+GTK 4. You describe a UI as a tree of plain gBASIC records."* It already ships
+**`gtkui.lookup(handle, key)`**, which returns the real widget for a keyed node,
+and it has 4 consumers. It also states that it provides *"the dynamic tree
+mutation the old GTK 3 `gui` module never had"* — so the layer this document
+builds on cannot rebuild a subtree, which is what §2.3 is about.
+
+### 0.3 THE DECISION THIS DOCUMENT DOES NOT ASK: which layer is the address space?
+
+It is a real tension, not an oversight:
+
+- **Declarative `gui`** — backend-independent *by design*, ids globally unique
+  within a window, so §2's flat path works. But GTK 3, experimental, no
+  consumers, and no dynamic mutation.
+- **`gtkui`** — alive, GTK 4, dynamic, `lookup` already built. But
+  **GTK-specific by construction**: it says outright *"It is NOT a closed widget
+  system... you drop straight to the `gi` bridge."*
+
+This matters more than when the document was written, because a **second backend
+is now foreseeable**: an SVG-based window system is under development for the
+RV-9 operating system and may return to gBASIC as a backend (decided
+2026-09-27 — GTK stays for now; Qt was rejected on measurement). §8 calls
+backend independence "the quiet prize"; with a real second backend in view it
+stops being a nice-to-have, and it is the one thing `gtkui` structurally cannot
+provide.
+
+**Recommended synthesis:** the addressable layer should be a record tree with
+`gui`'s **identity rules** (globally unique, validated ids) driven by `gtkui`'s
+**mechanism**, with the GTK calls behind a seam. That is the only shape that
+survives an SVG backend — and it is the same argument as `include/platform.h`,
+one level up.
+
+### 0.4 What survives unchanged, and what does not
+
+**§5 and §6 are the findings.** They are measured from what Studio actually did,
+they do not depend on which widget layer wins, and §5 records Studio changing its
+mind after building the naive version. Note what §5 says: *"The agent does not
+use it to act. It is only for pointing."* **Studio's own conclusion is that paths
+are not the mechanism**, which undercuts §2–§4 — where most of this document's
+design effort went. Do §5 and §6 first.
+
+**§1 is UNDERSTATED, and about the wrong module.** `gui_validate_widget_tree` in
+`src/eval.c` already requires `id`, refuses an empty one, refuses duplicates
+**by name**, and enforces a rule this document does not claim: an id must be
+**exposable as `win.<id>`** — identifier characters only, not one of 40 gBASIC
+keywords, not colliding with `_window`/`_root`/`_ids`. So a path segment cannot
+contain `/` or `.` and §2's grammar is unambiguous **by construction** rather
+than by convention. All true; all in the module nothing uses.
+
+**§2.1's flat grammar does not transfer.** It rests on ids being globally unique.
+`gtkui`'s key is documented as *"stable identity string within a sibling list"* —
+sibling-scoped — so addressing there is a **key path**. §2.2's rule still holds,
+because a key path is not an index path: keys survive reordering.
+
+**§2.1 also names something that does not exist.** `gui.window(width, height,
+title, ui)` — a window has a **title**, which is presentation, and **no id**. So
+`<window-id>/<widget-id>` has no first segment, and the only candidate is the one
+field §5 spends three measured arguments telling you never to address.
+
+**§3 needs a second door.** Validation runs **once**, at `gui.window(...)`;
+`gui_design.md` §387 says values stay live and mutable afterwards. So
+`gui.set(path, field, value)` is a new door into a tree whose invariants were
+checked at a different one — an `input` whose `value` must be a string could be
+handed a number, and nothing re-checks. Whether it repairs, refuses or
+re-validates is a property of the far side and has to be decided, not inherited.
+
+**§9.2 is cheaper than stated and more urgent for a different reason.** The
+widget validator checks the fields it knows and **ignores unknown ones**, so
+`action: "document.save"` is writable today with no language change. That
+permissiveness is the urgency: `actoin:` is accepted in **silence**, yielding a
+widget with no action that `gui.act` would then refuse for the reason in §4 —
+naming the wrong cause. Every other option-taking surface in this tree
+(`webserver.listen`, `web.configure`, `chart.render`,
+`reasoning.check_context`) refuses an unknown field by name with a near-miss
+hint. The GUI validator is the outlier, and closing it is a prerequisite rather
+than a follow-up.
+
+**§9.4 already has a shipped answer.** `stdlib/mcp.bas` — two transports over one
+dispatcher, `mcp.handle` doing no I/O, tested by `run_mcp.sh`. Publishing a
+toolset over MCP is already a gBASIC program's job, which is the option §9.4
+itself prefers.
+
+**§7 stands and is untouched ground.** AT-SPI appears nowhere in this tree.
+
+### 0.5 Revised order
+
+1. **§6, the testing surface** — pays immediately, no safety model to argue about.
+2. **§5, semantic actions** — what Studio proved, and independent of the layer.
+3. **Decide §0.3**, the layer, before writing any path grammar.
+4. **Close the unknown-field hole** before `action:` ships.
+5. **§2–§4** against whichever layer wins, with the grammar that layer's identity
+   rules allow.
+
+---
+
 ## 1. The thesis
 
 The instinct is to add *pathing* to widgets so an AI or a script can reach
