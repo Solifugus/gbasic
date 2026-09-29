@@ -264,6 +264,7 @@ cases=(
     negative_decode_malformed
     negative_quote_record
     negative_gui_duplicate_id
+    negative_gui_unknown_field
     negative_gui_missing_id
     negative_gui_unknown_component
     negative_gui_invalid_spacing

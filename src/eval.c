@@ -5106,6 +5106,39 @@ static int record_name_is(const RecordField *field, const char *literal) {
     return record_name_equal(field, literal, strlen(literal));
 }
 
+/* THE FIRST FIELD NOT IN `allowed`, or NULL. Shared, because the alternative is
+ * each module carrying its own loop and drifting -- and two of them already
+ * exist for the same reason: `webserver.listen` refuses an unknown option
+ * because ignoring one leaves a server the author asked to publish sitting on
+ * loopback, and `process.run` refuses one because ignoring it leaves a
+ * credential unset while looking exactly like the feature working.
+ *
+ * THE RAISE STAYS WITH THE CALLER. Each module names itself and words the
+ * remedy differently, and a shared message would have to be vague enough to
+ * suit all of them -- which is how a diagnostic stops naming its subject.
+ *
+ * Comparison is by `record_name_is`, never strcmp: a record field name is a
+ * COUNTED byte sequence (PLAT-NUL), so "host\0anything" must not match "host".
+ */
+static const char *record_first_unknown_field(const Value *rec,
+                                              const char *const *allowed,
+                                              size_t nallowed) {
+    if (rec->kind != VALUE_RECORD) {
+        return NULL;
+    }
+    RecordField *fields = rec->as.record.fields;
+    for (size_t i = 0; i < rec->as.record.count; i++) {
+        int ok = 0;
+        for (size_t j = 0; j < nallowed; j++) {
+            if (record_name_is(&fields[i], allowed[j])) { ok = 1; break; }
+        }
+        if (!ok) {
+            return fields[i].name;
+        }
+    }
+    return NULL;
+}
+
 static void record_index_insert(RecordHeader *header, const RecordField *fields, size_t slot) {
     size_t mask = header->bucket_count - 1;
     size_t probe = record_hash_n(fields[slot].name, string_length(fields[slot].name)) & mask;
@@ -5638,6 +5671,44 @@ static int gui_validate_widget_tree(Value *widget, GuiIdSet *ids) {
         runtime_error_raise("gui widget id must not be empty", 1003, "gui");
         return 0;
     }
+    /* UNKNOWN FIELDS ARE REFUSED BY NAME. The validator used to check the fields
+     * it knew and IGNORE the rest, which makes a typo indistinguishable from a
+     * feature: `visble: false` renders a visible widget and says nothing, and
+     * an `action:` misspelled as `actoin:` would give a widget with no action
+     * that a later `gui.act` refuses for the wrong reason.
+     *
+     * This is the rule `webserver.listen`, `process.run`, `web.configure`,
+     * `chart.render` and `reasoning.check_context` already follow; the GUI
+     * validator was the outlier.
+     *
+     * THE SET IS WHAT THE RENDERER ACTUALLY READS, not what this function
+     * happened to check -- and measuring the difference is what made this safe:
+     * `spacing` is implemented (gui_spacing_mode_for_record) and appears seven
+     * times in examples/gui, and was NOT in the list this function validated.
+     * Refusing from the validator's own list would have broken every one of
+     * them. The two had drifted, which is the defect one level up from the one
+     * being fixed.
+     *
+     * FLAT, NOT PER-COMPONENT: `spacing` on a button does nothing, and saying so
+     * needs a table per component kind. That is a bigger decision and a
+     * separate one; this closes the door on names that mean nothing ANYWHERE. */
+    static const char *const known_widget_fields[] = {
+        "id", "component", "contains", "value", "label",
+        "width", "height", "visible", "enabled", "spacing"
+    };
+    const char *unknown = record_first_unknown_field(
+        widget, known_widget_fields,
+        sizeof(known_widget_fields) / sizeof(known_widget_fields[0]));
+    if (unknown) {
+        char message[320];
+        snprintf(message, sizeof(message),
+                 "gui widget '%s': unknown field '%s' (known: id, component, "
+                 "contains, value, label, width, height, visible, enabled, spacing)",
+                 id_field->value->as.string, unknown);
+        runtime_error_raise(message, 1003, "gui");
+        return 0;
+    }
+
     if (gui_id_set_contains(ids, id_field->value->as.string)) {
         char message[256];
         snprintf(message, sizeof(message), "duplicate gui widget id: %s", id_field->value->as.string);
@@ -26343,19 +26414,12 @@ static int process_reject_unknown(Value *opts, const char *label,
     if (opts->kind != VALUE_RECORD) {
         return 1;
     }
-    RecordField *fields = opts->as.record.fields;
-    size_t n = opts->as.record.count;
-    for (size_t i = 0; i < n; i++) {
-        int ok = 0;
-        for (size_t j = 0; j < nallowed; j++) {
-            if (record_name_is(&fields[i], allowed[j])) { ok = 1; break; }
-        }
-        if (!ok) {
-            char msg[220];
-            snprintf(msg, sizeof(msg), "%s: unknown option '%s'", label, fields[i].name);
-            process_raise(msg);
-            return 0;
-        }
+    const char *bad = record_first_unknown_field(opts, allowed, nallowed);
+    if (bad) {
+        char msg[220];
+        snprintf(msg, sizeof(msg), "%s: unknown option '%s'", label, bad);
+        process_raise(msg);
+        return 0;
     }
     return 1;
 }
