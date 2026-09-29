@@ -112,8 +112,22 @@ widget with no action that `gui.act` would then refuse for the reason in §4 —
 naming the wrong cause. Every other option-taking surface in this tree
 (`webserver.listen`, `web.configure`, `chart.render`,
 `reasoning.check_context`) refuses an unknown field by name with a near-miss
-hint. The GUI validator is the outlier, and closing it is a prerequisite rather
-than a follow-up.
+hint. The GUI validator was the outlier.
+
+> **CLOSED 2026-09-29** (`7a7b138`). Unknown widget fields are refused by name,
+> listing the known set. `action:` can now mean something, because a
+> misspelling of it is refused rather than accepted in silence.
+>
+> Measuring first is what made it safe, and the obvious version would have
+> shipped a defect: **`spacing` is implemented and used seven times in
+> `examples/gui`, and was not in the list the validator checked** — the
+> validator and the renderer had drifted. So the set is what the *renderer
+> reads*. It is **flat, not per-component**: `spacing` on a button still does
+> nothing silently, which needs a table per component kind and is a separate
+> decision.
+>
+> Building its control also confirmed §0.4's claim live: `win.row.cancel`
+> fails, `win.cancel` works. Lookup really is flat.
 
 **§9.4 already has a shipped answer.** `stdlib/mcp.bas` — two transports over one
 dispatcher, `mcp.handle` doing no I/O, tested by `run_mcp.sh`. Publishing a
@@ -127,7 +141,8 @@ itself prefers.
 1. **§6, the testing surface** — pays immediately, no safety model to argue about.
 2. **§5, semantic actions** — what Studio proved, and independent of the layer.
 3. **Decide §0.3**, the layer, before writing any path grammar.
-4. **Close the unknown-field hole** before `action:` ships.
+4. ~~**Close the unknown-field hole** before `action:` ships.~~ **Done**
+   2026-09-29 — see §0.4.
 5. **§2–§4** against whichever layer wins, with the grammar that layer's identity
    rules allow.
 
