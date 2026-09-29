@@ -45,7 +45,7 @@ and it has 4 consumers. It also states that it provides *"the dynamic tree
 mutation the old GTK 3 `gui` module never had"* — so the layer this document
 builds on cannot rebuild a subtree, which is what §2.3 is about.
 
-### 0.3 THE DECISION THIS DOCUMENT DOES NOT ASK: which layer is the address space?
+### 0.3 THE DECISION THIS DOCUMENT DID NOT ASK: which layer is the address space? — DECIDED
 
 It is a real tension, not an oversight:
 
@@ -69,6 +69,40 @@ provide.
 **mechanism**, with the GTK calls behind a seam. That is the only shape that
 survives an SVG backend — and it is the same argument as `include/platform.h`,
 one level up.
+
+> **DECIDED 2026-09-29.** The synthesis above, ratified — and the thing that
+> settled it is that the second backend stopped being hypothetical.
+>
+> **An SVG `id` is document-unique by the XML specification.** So is a
+> declarative `gui` widget id: globally unique within a window, validated, and
+> flat — `win.cancel` resolves, `win.row.cancel` does not, measured while
+> building `examples/gui_fields_test.bas`. **They are the same rule.** So
+> choosing `gui`'s identity rules is not a bet against `gtkui`'s convenience;
+> it is choosing the rule the eventual backend already enforces, and `#id` is a
+> path grammar that exists and is standardised rather than one §2.1 has to
+> invent.
+>
+> That collapses the tension this section was written to state. `gtkui`'s
+> sibling-scoped keys are the thing that would have had to be translated at the
+> boundary; globally-unique ids pass straight through.
+>
+> **Measured while deciding, and it is the reason this is affordable:** the
+> whole GTK contact surface across the four `gi`-using libraries (`gtk`,
+> `gtkui`, `sourceeditor`, `datagrid`) is **21 distinct GTK types constructed
+> and 70 `gi.*` call sites**. A renderer seam behind the reconciler is a small
+> job, not a port — which is what makes "GTK behind a seam" a decision rather
+> than an aspiration.
+>
+> **The SVG backend has a home, and it is not this repository.** `whisker`
+> (`~/development/whisker`, created 2026-09-29) is the widget layer above
+> RV-9's `/w0`. The renderer it would sit on **already exists**: `raster.c` is
+> 306 lines with no ESP dependencies, `font.c` draws text, band clipping is in,
+> and a tap costs 30 ms on the board against 59 ms for a full redraw. Its own
+> `docs/design.md` §6 sets the bar it must clear before gBASIC adopts anything,
+> and if it does not clear it, **gBASIC keeps GTK and has lost nothing** — which
+> is the point of it being a separate project.
+>
+> So item 5 below is unblocked: the grammar is `gui`'s, flat, `win.<id>`.
 
 ### 0.4 What survives unchanged, and what does not
 
@@ -140,11 +174,14 @@ itself prefers.
 
 1. **§6, the testing surface** — pays immediately, no safety model to argue about.
 2. **§5, semantic actions** — what Studio proved, and independent of the layer.
-3. **Decide §0.3**, the layer, before writing any path grammar.
+3. ~~**Decide §0.3**, the layer, before writing any path grammar.~~ **Done**
+   2026-09-29 — `gui`'s identity rules, `gtkui`'s mechanism, GTK behind a seam;
+   see §0.3.
 4. ~~**Close the unknown-field hole** before `action:` ships.~~ **Done**
    2026-09-29 — see §0.4.
-5. **§2–§4** against whichever layer wins, with the grammar that layer's identity
-   rules allow.
+5. **§2–§4** against the decided layer, with the flat `win.<id>` grammar its
+   identity rules allow — and the renderer seam, which is the part an SVG
+   backend needs and which §0.3 measured at 21 GTK types / 70 `gi.*` sites.
 
 ---
 
