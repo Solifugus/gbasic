@@ -28,13 +28,44 @@ end function
 
 function nav()
     return ("<nav><a href=\"/\">Home</a><a href=\"/docs\">Docs</a>" +
-            "<a href=\"/examples\">Examples</a><a href=\"/download\">Download</a>" +
+            "<a href=\"/examples\">Examples</a><a href=\"/book\">Book</a>" +
+            "<a href=\"/download\">Download</a>" +
             "<a href=\"/about\">About</a></nav>")
 end function
 
 function html(title, body)
     return { headers: { "content-type": "text/html; charset=utf-8" },
              body: page(title, body) }
+end function
+
+' ---------------------------------------------------------- the book
+' The paperback prints two promises about this site: that the examples are
+' downloadable from the page for the book, and that the same page carries
+' the errata. A printed promise cannot be moved afterwards, so the page has
+' to exist and stay reachable.
+
+function book_version()
+    return "0.3.0"
+end function
+
+function book_errata()
+    return []
+end function
+
+function book_errata_html()
+    items = book_errata()
+    if count(items) = 0 then
+        return ("<p>None reported yet. That is not a claim that there are " +
+                "none &mdash; it is a claim that nobody has told us. If you " +
+                "find something, the note below says how.</p>")
+    end if
+    out = "<dl class=\"errata\">"
+    for each item in items
+        out = (out + "<dt>" + item.where + "</dt><dd>" + item.says +
+               " <strong>" + item.truth + "</strong> " +
+               "<span class=\"when\">(" + item.found + ")</span></dd>")
+    next item
+    return out + "</dl>"
 end function
 
 server site( port: 0 )
@@ -166,6 +197,51 @@ server site( port: 0 )
                 "away.</p>" +
                 nav() + "</section></main>")
         return html("Download gBASIC", body)
+    end get
+
+    get "/book"( req )
+        v = book_version()
+        body = ("<main class=\"shell\"><section class=\"hero\">" +
+                "<p class=\"eyebrow\">Volume 1 &middot; gBASIC " + v + "</p>" +
+                "<h1>Learning Programming</h1>" +
+                "<p>Programming from nothing, at a prompt, building one " +
+                "program until it is something you would show somebody. " +
+                "No experience assumed.</p>" +
+                "<p>Paperback, ISBN 9798177530765.</p>" +
+
+                "<h2>The examples</h2>" +
+                "<p>Every program printed in the book, and every transcript " +
+                "the book quotes. The transcripts are the useful part when " +
+                "something goes wrong: if a chapter's output does not match " +
+                "what you got, the file beside the program is what it " +
+                "printed on the machine that wrote the book, so you have " +
+                "something that works to compare against something that " +
+                "does not.</p>" +
+                "<p><a href=\"/download/" +
+                "gbasic-learning-programming-examples.tar.gz\">" +
+                "gbasic-learning-programming-examples.tar.gz</a> " +
+                "(<a href=\"/download/" +
+                "gbasic-learning-programming-examples.tar.gz.sha256\">" +
+                "sha256</a>) &mdash; MIT licensed.</p>" +
+
+                "<h2>The gBASIC this book was written against</h2>" +
+                "<p>Every transcript in the book came back from <strong>" +
+                "gBASIC " + v + "</strong>, so that release stays on this " +
+                "site for as long as the edition is in print, and its " +
+                "checksum is printed on page 9. Take a later version if one " +
+                "is offered &mdash; the book says so &mdash; and if " +
+                "something prints differently, this page is where the " +
+                "difference is recorded.</p>" +
+
+                "<h2>Errata</h2>" +
+                book_errata_html() +
+                "<p>If you find something the book got wrong and it is not " +
+                "listed, please say so. Being told is the only way the list " +
+                "gets made, and a reader who is stuck because a page is " +
+                "wrong has no way of knowing it is the page.</p>" +
+
+                nav() + "</section></main>")
+        return html("Learning Programming &mdash; gBASIC", body)
     end get
 
     get "/health"( req )
