@@ -17056,12 +17056,7 @@ static double webserver_effective_timeout(const WebServer *server) {
 }
 
 static int webserver_set_blocking_mode(int fd, int blocking) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0) {
-        return 0;
-    }
-    int next = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
-    return fcntl(fd, F_SETFL, next) == 0;
+    return gb_sock_set_blocking(fd, blocking);
 }
 
 static WebServer *webserver_find(unsigned long id) {
@@ -17119,7 +17114,7 @@ static void webserver_client_close(WebServer *server, size_t index) {
         server->clients[index].ssl = NULL;
     }
 #endif
-    close(server->clients[index].fd);
+    gb_sock_close(server->clients[index].fd);
     free(server->clients[index].buffer);
     server->clients[index] = server->clients[server->client_count - 1];
     server->client_count--;
@@ -17157,7 +17152,7 @@ static void webserver_tls_release(WebServer *server) {
 
 static void webserver_close_native(WebServer *server) {
     if (server->listen_fd >= 0) {
-        close(server->listen_fd);
+        gb_sock_close(server->listen_fd);
         server->listen_fd = -1;
     }
     while (server->client_count > 0) {
@@ -18552,7 +18547,7 @@ static void webserver_progress_drain(WebServer *server) {
         }
     }
     if (server->listen_fd >= 0) {
-        close(server->listen_fd);
+        gb_sock_close(server->listen_fd);
         server->listen_fd = -1;
     }
     size_t i = 0;
@@ -18577,7 +18572,7 @@ static void webserver_finish_shutdown(WebServer *server) {
         return;
     }
     if (server->listen_fd >= 0) {
-        close(server->listen_fd);
+        gb_sock_close(server->listen_fd);
         server->listen_fd = -1;
     }
     while (server->client_count > 0) {
@@ -19196,6 +19191,14 @@ static Value webserver_eval_listen(AstExpr *expr) {
         return value_null();
     }
 
+    /* Winsock must be started before the first socket call or every one of them
+     * fails with WSANOTINITIALISED. A no-op on POSIX; here so the ONE socket
+     * creation site in this tree cannot be the one that forgets. */
+    if (!gb_net_init()) {
+        freeaddrinfo(resolved);
+        webserver_raise("webserver.listen could not initialise networking");
+        return value_null();
+    }
     int fd = socket(resolved->ai_family, SOCK_STREAM, 0);
     if (fd < 0) {
         freeaddrinfo(resolved);

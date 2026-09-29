@@ -202,7 +202,12 @@ endif
 # libgbasic is every object except the CLI entry points (src/main.o, src/repl.o,
 # src/lineedit.o). The CLI is
 # its first consumer; the archive is the seam a future embedder links against.
-LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/platform_posix.o
+# WHICH PLATFORM FILE. Overridable, because tools/cross-build-windows.sh must
+# build the Windows one or it measures the POSIX file failing to be Windows,
+# which is true and says nothing.
+PLATFORM_OBJ ?= src/platform_posix.o
+
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o $(PLATFORM_OBJ)
 OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
@@ -265,6 +270,8 @@ src/lineedit.o: src/lineedit.c include/lineedit.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/platform_posix.o: src/platform_posix.c include/platform.h
+
+src/platform_win32.o: src/platform_win32.c include/platform.h
 
 src/lexer.o: src/lexer.c include/lexer.h
 	$(CC) $(CFLAGS) -c $< -o $@

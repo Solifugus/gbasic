@@ -62,11 +62,33 @@ for mech in 'prctl[[:space:]]*(' '/proc/self/exe' 'SOCK_SEQPACKET'; do
 done
 # ...and the layer must actually be REACHED, or the tripwire above is satisfied
 # by a build that deleted the feature.
-for want in gb_exe_path gb_channel_socketpair gb_arm_parent_death; do
+for want in gb_exe_path gb_channel_socketpair gb_arm_parent_death \
+            gb_net_init gb_sock_close gb_sock_set_blocking; do
     n=$(grep -l "$want" src/eval.c src/actor.c 2>/dev/null | wc -l)
     [ "$n" -ge 1 ] && ok "$want is called from the interpreter" \
                    || bad "$want is defined but nothing calls it"
 done
+
+echo "TIER the Windows bodies still compile"
+# src/platform_win32.c is in NO build -- the Makefile compiles the posix one --
+# so without this it would rot silently until somebody tried the port. Checked
+# against REAL windows.h, not a shim, which is why it is worth anything.
+if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    if x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -Iinclude -D_WIN32_WINNT=0x0601 \
+           -fsyntax-only src/platform_win32.c 2>/tmp/gb_win32.log; then
+        ok "src/platform_win32.c compiles against real windows.h"
+    else
+        bad "src/platform_win32.c: $(head -1 /tmp/gb_win32.log)"
+    fi
+    # every function the header declares must HAVE a Windows body, or the port
+    # discovers the gap on a machine we are borrowing.
+    for want in gb_exe_path gb_channel_socketpair gb_arm_parent_death gb_net_init \
+                gb_sock_close gb_sock_set_blocking gb_platform_name; do
+        grep -q "$want" src/platform_win32.c && ok "win32: $want" || bad "win32: $want has no body"
+    done
+else
+    printf '  SKIP Windows bodies (no x86_64-w64-mingw32-gcc; apt install gcc-mingw-w64-x86-64)\n'
+fi
 
 echo "TIER every optional module builds when disabled ALONE"
 flags=$(grep -o '^[A-Z0-9_]*_AVAILABLE' Makefile | sort -u)

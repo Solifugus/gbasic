@@ -95,6 +95,36 @@ int gb_channel_socketpair(int sv[2]);
  */
 void gb_arm_parent_death(void);
 
+/* ---------------------------------------------------------------------------
+ * THE SOCKET SEAM.
+ *
+ * On POSIX a socket IS a file descriptor and every one of these is a no-op or a
+ * one-liner. They exist because on Windows a socket is a SOCKET, not an fd:
+ * `close()` on one leaks it, and `fcntl()` does not apply. Neither mistake is
+ * visible to a compiler -- both fail at RUNTIME while building cleanly -- so the
+ * seam is introduced on POSIX, where the gate can prove it changed nothing, the
+ * same way the three mechanisms above were.
+ *
+ * THE PART THAT IS NOT A WRAPPER, AND IS THE REAL WINDOWS BLOCKER:
+ *
+ *   `WSAPoll` TAKES SOCKETS ONLY. gBASIC's event loop polls a MIXTURE -- the
+ *   listening socket, accepted clients, libcurl's transfer fds, the actor
+ *   mailbox, and `process.start`'s stdout/stderr PIPES. A pipe cannot go in a
+ *   WSAPoll set at all, so on Windows this loop does not merely need a renamed
+ *   call, it needs a different SHAPE: IOCP, or WSAEventSelect plus
+ *   WaitForMultipleObjects with the non-socket sources fed by threads.
+ *
+ *   This is the Tier 1 design decision, it is invisible to
+ *   tools/cross-build-windows.sh (the error count will never mention it), and it
+ *   is what decides whether a Windows port is weeks or months. It is written
+ *   here rather than discovered later.
+ *
+ * Each returns 1 on success and 0 on failure.
+ */
+int gb_net_init(void);                        /* WSAStartup; nothing on POSIX */
+int gb_sock_close(int fd);                    /* close vs closesocket */
+int gb_sock_set_blocking(int fd, int blocking); /* fcntl vs ioctlsocket FIONBIO */
+
 /* Which platform the bodies above came from, for diagnostics and for the tests
  * that need to say why a tier does not apply. */
 const char *gb_platform_name(void);

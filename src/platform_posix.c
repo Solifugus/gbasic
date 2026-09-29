@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #if defined(__linux__)
@@ -106,4 +107,21 @@ void gb_arm_parent_death(void) {
      * window and does not close it, and pretending otherwise would make
      * run_process_lifetime.sh pass while the promise it tests was unkept. */
 #endif
+}
+
+int gb_net_init(void) {
+    return 1;   /* nothing to start: sockets are file descriptors here */
+}
+
+int gb_sock_close(int fd) {
+    return close(fd) == 0;
+}
+
+int gb_sock_set_blocking(int fd, int blocking) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) {
+        return 0;
+    }
+    int next = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+    return fcntl(fd, F_SETFL, next) == 0;
 }
