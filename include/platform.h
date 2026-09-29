@@ -105,19 +105,26 @@ void gb_arm_parent_death(void);
  * seam is introduced on POSIX, where the gate can prove it changed nothing, the
  * same way the three mechanisms above were.
  *
- * THE PART THAT IS NOT A WRAPPER, AND IS THE REAL WINDOWS BLOCKER:
+ * `WSAPoll` TAKES SOCKETS ONLY, AND THAT TURNS OUT NOT TO BLOCK TIER 1 --
+ * a CORRECTION to what this comment said when it was first written, on
+ * 2026-09-29, after counting what the loop actually polls instead of assuming.
  *
- *   `WSAPoll` TAKES SOCKETS ONLY. gBASIC's event loop polls a MIXTURE -- the
- *   listening socket, accepted clients, libcurl's transfer fds, the actor
- *   mailbox, and `process.start`'s stdout/stderr PIPES. A pipe cannot go in a
- *   WSAPoll set at all, so on Windows this loop does not merely need a renamed
- *   call, it needs a different SHAPE: IOCP, or WSAEventSelect plus
- *   WaitForMultipleObjects with the non-socket sources fed by threads.
+ *   THE MAIN EVENT LOOP IS ALL SOCKETS: the listening socket, accepted clients,
+ *   libcurl's transfer fds, and -- only when actors are in use -- the mailbox.
+ *   Measured: the pollfd set it builds contains ZERO process pipes. So WSAPoll
+ *   serves it, and the loop needs no redesign for Tier 1.
  *
- *   This is the Tier 1 design decision, it is invisible to
- *   tools/cross-build-windows.sh (the error count will never mention it), and it
- *   is what decides whether a Windows port is weeks or months. It is written
- *   here rather than discovered later.
+ *   THE PIPES ARE SOMEWHERE ELSE. `process.run` and `process.poll` each poll a
+ *   child's stdout/stderr in their OWN poll call, not in the event loop. Those
+ *   two need a Windows mechanism of their own (overlapped I/O, or
+ *   PeekNamedPipe), which is work confined to two functions rather than an
+ *   architecture.
+ *
+ *   The first version of this note claimed the loop mixed pipes with sockets and
+ *   therefore needed IOCP or WSAEventSelect-plus-threads. That was reasoned from
+ *   "the tree polls pipes somewhere" and was wrong. It is recorded rather than
+ *   quietly edited, because a scary estimate that nobody re-measures is how a
+ *   port gets abandoned before it starts.
  *
  * Each returns 1 on success and 0 on failure.
  */

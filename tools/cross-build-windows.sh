@@ -104,8 +104,13 @@ echo "   $(grep -c 'unknown conversion type character ‘z’' "$log") warnings 
 echo
 echo "-- NOT MEASURED HERE --"
 echo "   a socket is not a file descriptor on Windows: read/write/close on one"
-echo "   fail at RUNTIME and compile cleanly. This tree does that in ~37 places,"
-echo "   and no error count above will ever notice."
+echo "   fail at RUNTIME and compile cleanly, and no error count above will ever"
+echo "   notice. The webserver already uses recv/send, and the seam for the rest"
+echo "   is gb_sock_* in include/platform.h -- but every new socket call site is"
+echo "   a chance to forget."
+echo "   The event loop itself is ALL SOCKETS (measured), so WSAPoll serves it."
+echo "   process.run and process.poll poll a child's PIPES in their own calls and"
+echo "   need a Windows mechanism of their own -- two functions, not the loop."
 echo
 echo "TOTAL ERRORS: $errors"
 
