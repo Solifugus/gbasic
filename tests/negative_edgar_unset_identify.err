@@ -1,1 +1,1 @@
-runtime error at tests/../stdlib/edgar.bas:150:13: edgar: identity not set — call edgar.identify(e, contact) before fetching
+runtime error at tests/../stdlib/edgar.bas:LINE:COL: edgar: identity not set — call edgar.identify(e, contact) before fetching

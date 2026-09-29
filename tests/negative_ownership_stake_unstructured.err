@@ -1,1 +1,1 @@
-runtime error at tests/../stdlib/ownership.bas:225:13: ownership.stake: not a structured 13D/13G filing (no headerData/submissionType; pre-2025 text filings are out of scope)
+runtime error at tests/../stdlib/ownership.bas:LINE:COL: ownership.stake: not a structured 13D/13G filing (no headerData/submissionType; pre-2025 text filings are out of scope)

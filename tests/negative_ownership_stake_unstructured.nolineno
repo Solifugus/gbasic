@@ -1,0 +1,11 @@
+The line and column of a raise inside stdlib/ownership.bas are not part of what this
+case pins: the message is. See the rationale in tests/run_negative.sh.
+
+This one was earned rather than anticipated. A LICENCE HEADER CHANGE -- 22 lines
+of AGPL boilerplate replaced by 2 of Apache -- moved every line in edgar.bas and
+ownership.bas by 20 and rebaselined all four of these goldens for a change that
+touched no behaviour at all. That is the second time this trap has fired; the
+first cost stdlib/llm.bas five goldens three times in one day.
+
+All four messages are distinct, and two of them already shared a line number
+before this -- so the digits discriminated nothing even when they were pinned.
