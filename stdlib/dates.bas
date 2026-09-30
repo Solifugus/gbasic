@@ -1,5 +1,21 @@
 ' SPDX-License-Identifier: Apache-2.0
 ' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+'
+' dates.bas -- business calendars and the recurrence engine (docs/datetime_design.md).
+'
+' Two verbs over one vocabulary: `dates.select(spec, anchor, cal)` answers THE
+' one day and `dates.series(spec, bounds, cal)` answers ALL of them, both taking
+' the same spec record (weekday / nth / day / month / kind / within / after /
+' before / at / every / when / except / roll). A spec is a RECORD rather than a
+' chained call because a recurrence rule is data a real system stores, versions
+' and inspects -- it goes in a database, through `encode`, or to an actor.
+'
+' Also exports SIXTEEN assignment modifiers as the fluent form over that engine
+' -- `{end of month}`, `{start of month}`, `{next friday}`, `{previous monday}`
+' and so on for every weekday. They need `load dates`; without it the message is
+' `assign modifier not found`, which names no library (filed 2026-09-30).
+'
+' Loaded by seven other stdlib libraries, so a change here is not local.
 
 library dates
 

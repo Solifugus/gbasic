@@ -1,0 +1,10 @@
+ok   record field re-derives (c1)
+ok   record field re-derives (c2)
+ok   array element re-derives (f1)
+ok   array element re-derives (f2)
+ok   nested array re-derives (d1)
+ok   nested array re-derives (d2)
+ok   plain array still forks on write (source)
+ok   plain array still forks on write (copy)
+ok   a derived instance is still a prototype
+new_serial calls: 10

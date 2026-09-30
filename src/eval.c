@@ -35931,6 +35931,56 @@ static int values_equal_for_consider(Value subject, Value candidate) {
 
 static Value derive_record(Value proto);
 
+/* Does this value have an instance ANYWHERE inside it? Asked before rebuilding
+ * an array, so an array of scalars -- which is nearly all of them -- keeps its
+ * copy-on-write share and costs one refcount bump exactly as before. */
+static int value_holds_record(Value v) {
+    if (v.kind == VALUE_RECORD) {
+        return 1;
+    }
+    if (v.kind == VALUE_ARRAY && v.as.array.store) {
+        for (size_t i = 0; i < v.as.array.store->count; i++) {
+            if (value_holds_record(v.as.array.store->items[i])) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Re-derive every instance reachable through an array, at any depth.
+ *
+ * §6 decided recursive derivation and then named two mechanics "still to pin
+ * down during implementation": how deep it goes ("every nested instance, all
+ * the way down -- there is no fixed bound; it follows the data") and leaf vs
+ * instance detection. ARRAYS WERE THE UNFINISHED HALF: a record field holding
+ * an instance re-derived, and the same instance one step inside an array did
+ * not -- measured 2026-09-30, `motor (copy): new engine` gave two cars serials
+ * 2 and 3 while `motors (copy): [new engine]` gave both 4. Same value, same
+ * policy, different answer decided by whether a bracket was in the way, which
+ * is exactly the silent no-op §6 rejected flat duplication to avoid. */
+static Value derive_array(Value proto) {
+    size_t n = proto.as.array.store ? proto.as.array.store->count : 0;
+    Value *items = n ? calloc(n, sizeof(Value)) : NULL;
+    if (n && !items) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i++) {
+        Value element = proto.as.array.store->items[i];
+        if (element.kind == VALUE_RECORD) {
+            items[i] = derive_record(element);
+        } else if (element.kind == VALUE_ARRAY && value_holds_record(element)) {
+            items[i] = derive_array(element);
+        } else {
+            items[i] = value_copy(element);
+        }
+    }
+    /* value_array TAKES OWNERSHIP of the buffer (array_storage_new stores the
+     * pointer, it does not copy), so freeing it here is a double free -- which
+     * is exactly what it was, caught on the first run. */
+    return value_array(items, n);
+}
+
 /* Build a new instance from a prototype record by applying each field's policy:
  *   exclude -> dropped; link -> share the cell (write-through identity);
  *   reset   -> fresh value from the reset expression evaluated in global scope;
@@ -35963,6 +36013,14 @@ static Value derive_record(Value proto) {
             *fields[out].value =
                 src->reset_expr ? eval_expr(src->reset_expr) : value_null();
             current_env = saved;
+        } else if (src->value->kind == VALUE_ARRAY && value_holds_record(*src->value)) {
+            /* COPY of an array carrying instances: rebuild it so each one is
+             * re-derived, which is the same §6 rule the record branch below
+             * follows. An array WITHOUT instances falls through to the
+             * copy-on-write share, so nothing about ordinary array fields
+             * changes. */
+            fields[out].value = cell_alloc();
+            *fields[out].value = derive_array(*src->value);
         } else if (src->value->kind == VALUE_RECORD) {
             /* COPY of a nested instance: re-derive recursively so its own
              * policies (notably `reset`) re-fire at this `new` — the §6

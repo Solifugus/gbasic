@@ -1,0 +1,7 @@
+stdlib/dates.bas
+Why: this golden pins a LINE NUMBER in stdlib/dates.bas that identifies nothing.
+All six negative_dates_* messages are distinct, so the FILE and the MESSAGE are
+the contract and the digits are not. Added 2026-09-30, when a sixteen-line
+descriptive header at the top of dates.bas moved every one of them -- a change
+none of these cases is about, which is the same rebaseline-for-nothing the llm
+and edgar sidecars were added for.

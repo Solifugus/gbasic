@@ -169,6 +169,7 @@ examples=(
     pbi_policy_parse_test.bas
     pbi_derive_test.bas
     pbi_cow_test.bas
+    pbi_nested_array_test.bas
     env_builtin_test.bas
     sleep_test.bas
     edgar_offline_test.bas
