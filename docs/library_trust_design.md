@@ -203,6 +203,28 @@ goes down, costs nothing per submission, and cannot be talked around.
 AI-generated adversarial tests are increment two. They make the **quality**
 claims real; they were never what made the **safety** claims real.
 
+## What lives where (decided 2026-09-30)
+
+This mechanism is mostly **not part of the language**, and the split follows the
+rule this workspace already uses — separate when it CONSUMES the platform, which
+is why Studio, whisker, the books and the site are all their own projects.
+
+| | where | why |
+|---|---|---|
+| modifier scoping | **gbasic** | a language change |
+| the capability registry, `--capabilities`, and its tripwire | **gbasic** | MEASURED: the dangerous surface is enumerated NOWHERE -- 360 scattered dispatch mentions in `eval.c`, `gi` alone 127 times. A scanner in another repo hardcoding today's eleven modules goes silently stale the day a twelfth lands, and every scan after that is incomplete. So the language REPORTS its surface and the scanner derives it -- the same reason run_docs_gate derives the builtin list from the reference instead of pinning it |
+| runtime capability enforcement, if it happens | **gbasic** | same shape as `with principal` |
+| manifest, fetch, submission pipeline, AI test generation, tiers, index, site | **separate project** | different cadence (a service against a versioned artifact), different dependencies (network, storage, model access against a deliberately lean C build), and the 157-suite gate must not grow either -- a gate that goes slow and flaky is one people turn off |
+
+**And the separate project should be written in gBASIC**, which makes it the
+strongest dogfood available: webserver, `http`, `process`, `persist`, the actor
+pool and `tools`/`mcp` all exercised by something real, the role Studio plays for
+the GUI and the site plays for the webserver.
+
+**Not created yet, deliberately.** whisker taught us that a project folder made
+before its scope is settled collects assumptions; the deterministic half is
+specified first.
+
 ## 10. Open questions
 
 1. **Where does the capability scan run** — at submission only, or also in
