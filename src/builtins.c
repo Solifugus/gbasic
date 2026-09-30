@@ -228,6 +228,18 @@ int gbasic_has_builtin(const char *name) {
         "list",
         "files",
         "folders",
+        /* value calls dispatched in eval_call, never registered above.
+           Found 2026-09-30 by deriving the list from docs/reference.md's own
+           "Core Builtin Functions" section and probing each of its 117 names
+           -- these three were the only misses, and `mod` is the one a
+           diagnostic now points people at, so a probe answering false for it
+           would have made that diagnostic a lie. run_docs_gate.sh derives the
+           same list every run, which is what stops this rotting again: the
+           MAINTENANCE RULE above was already written, and was still forgotten
+           three times. */
+        "mod",
+        "concat",
+        "merge",
     };
     if (gbasic_builtin_function(name)) {
         return 1;

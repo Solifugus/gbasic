@@ -752,4 +752,76 @@ $(grep -rn 'body: *encode(' docs/*.md 2>/dev/null || true)
 EOF
 [ "$body_ok" = "1" ] && echo "PASS json body      no document builds an HTTP body with \`encode\`"
 
+# 8. EVERY CORE BUILTIN THE REFERENCE DOCUMENTS MUST ANSWER `has_builtin`.
+#
+#    `has_builtin` exists for ONE purpose and the reference states it: "so a
+#    program can degrade gracefully on an older release instead of crashing".
+#    A name it answers FALSE for, which in fact works, INVERTS the feature --
+#    the documented idiom
+#
+#        if has_builtin("mod") then r = mod(a, b) else r = a - b * floor(a / b)
+#
+#    takes the FALLBACK on a release that has `mod`, and nothing errors. A
+#    program written to the documented advice is silently worse off on a NEWER
+#    interpreter, which is the reverse of what the probe is for.
+#
+#    `mod`, `concat` and `merge` were all dispatched inside eval_call and never
+#    registered, so all three answered false while working -- reported by the
+#    gbasic-books session, which found them by asking the interpreter to confirm
+#    every name its Appendix A prints. Derived independently here: 117 documented
+#    names, exactly those three missing.
+#
+#    WHY DERIVE RATHER THAN LIST: src/builtins.c already carries a MAINTENANCE
+#    RULE telling the next person to add the name by hand, and it was still
+#    forgotten three times. tests/has_builtin.bas pins the two LISTS against each
+#    other, which cannot see a name absent from both. Only the reference knows the
+#    intended surface, so the reference is the oracle.
+hb_extract() {
+    awk '/^## Core Builtin Functions/{f=1;next} f&&/^## /{exit} f' docs/reference.md \
+        | grep -o '^\(- \|\*\*\)`[a-z_][a-z_0-9]*(' \
+        | sed 's/^- //; s/^\*\*//; s/^`//; s/(//' | sort -u
+}
+hb_names="$(hb_extract)"
+hb_count="$(printf '%s\n' "$hb_names" | grep -c . || true)"
+hb_ok=1
+
+# TWO CANARIES, ONE PER BULLET SHAPE, and they are not decoration -- they are
+# here because a perturbation found the count floor alone was not enough. The
+# section writes entries BOTH ways: `- `mod(a, b)`` and `**`merge(a, b, ...)`**.
+# Dropping the second shape silently takes the list from 117 to 85 and still
+# passes any floor low enough to be safe -- and `merge`, one of the three names
+# this tier was built for, is in the 32 that vanish. So each shape is asserted
+# by a name known to be written that way.
+printf '%s\n' "$hb_names" | grep -qx mod \
+    || { echo "FAIL has_builtin    \`mod\` is not in the derived list -- the \`- \\\`name(\` bullet shape stopped matching"; hb_ok=0; status=1; }
+printf '%s\n' "$hb_names" | grep -qx merge \
+    || { echo "FAIL has_builtin    \`merge\` is not in the derived list -- the \`**\\\`name(\` bullet shape stopped matching"; hb_ok=0; status=1; }
+if [ "${hb_count:-0}" -lt 100 ]; then
+    echo "FAIL has_builtin    only $hb_count core builtins found in docs/reference.md (117 at 0.3.0) -- the scanner stopped matching, it did not pass"
+    hb_ok=0; status=1
+fi
+
+if [ "$hb_ok" = "1" ]; then
+    hb_prog="$(mktemp)"
+    {
+        echo 'program main(args)'
+        printf '%s\n' "$hb_names" | while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            printf '  if not has_builtin("%s") then print("%s")\n' "$n" "$n"
+        done
+        echo 'end program'
+    } >"$hb_prog"
+    hb_missing="$(./gbasic "$hb_prog" 2>&1 || true)"
+    rm -f "$hb_prog"
+    if [ -n "$hb_missing" ]; then
+        printf '%s\n' "$hb_missing" | while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            echo "FAIL has_builtin    reference documents \`$n\` but has_builtin says false -- register it in src/builtins.c dispatch_only[]"
+        done
+        status=1
+    else
+        echo "PASS has_builtin    all $hb_count core builtins the reference documents answer has_builtin (both bullet shapes checked)"
+    fi
+fi
+
 exit "$status"
