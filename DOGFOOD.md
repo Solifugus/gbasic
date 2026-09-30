@@ -9756,3 +9756,43 @@ All confirmed by running them. What I did with each:
 was found by RUNNING documented behaviour rather than reading it, and so was
 every item I struck. The doc gates in this tree check prose against prose; that
 is why they saw none of this.
+
+## 2026-09-30 — CC — while: building the two fixes Matthew ruled on
+
+**A correction I owe, recorded because the decision rested on it.** I told
+Matthew that making unknown string escapes a warning would let `on warning stop`
+escalate them, and built the case for the change partly on that. It was wrong.
+I read `runtime error at ...` on the old message and concluded the check ran at
+runtime; the prefix is a **documented legacy quirk** (`GB_DIAG_LEX_DETAIL`,
+whose comment in `include/diagnostics.h` says "CLI kind runtime error"), and the
+real check was in the **lexer**, with a second copy in `copy_string_literal` —
+both parse-time, before any statement has run, so there are no frames for the
+warning channel to consult.
+
+The feature still landed, and the gap is now a TIER rather than a footnote: a
+modifier literal is unescaped at run time and `on warning stop` reaches it
+(2109); an ordinary literal is decided at parse time and nothing can escalate
+it. `tests/run_string_escapes.sh` tier 6 asserts BOTH halves, so closing the gap
+has to be a deliberate act rather than a silent drift.
+
+**Two things existed already that I expected to have to build.**
+`gb_severity` has carried ERROR/WARNING/NOTE since the diagnostics sink was
+written, `gb_severity_str` renders all three and the JSON writer already emits
+the field — and **nothing had ever emitted a non-error severity**. So a
+parse-time warning needed no new machinery, only a caller. That is also why the
+formatter change is free: every diagnostic that exists today is an error and
+takes exactly the branch it took before.
+
+**A gap this did NOT close, filed rather than papered over.** There is no way to
+make a parse-time diagnostic fatal. `on warning stop` is dynamically scoped over
+call frames by design, and a parse-time warning has none. A project that wants
+unknown escapes to be an error has no switch for it. The honest fix is a
+parse-time severity policy (a flag, or a directive the parser sees), and that is
+a design question rather than a patch.
+
+**And the warning channel is worth more than it was this morning**, which is why
+these two changes belong in one entry: `on warning stop` can no longer be
+switched off by a dependency (`01b107c`), so a project that escalates warnings
+now gets a guarantee instead of a preference. Escapes-as-warnings is only a
+sound trade BECAUSE of that — an aggressive diagnostic is affordable when
+suppression works and enforceable when escalation does.
