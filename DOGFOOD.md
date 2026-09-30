@@ -916,9 +916,26 @@ of these were resolved long after their text was written.
 - **What:** No modulo. `%` and `\` are lexer errors; there is no `mod()` /
   `remainder()` builtin; `7 mod 2` collides with duration syntax
   (`unknown duration unit: mod`).
-- **Workaround:** OPEN. Compute `a - floor(a / b) * b` by hand. A `mod()`/
-  `remainder()` builtin (or a `%` operator) is unbuilt — candidate for a future
-  phase.
+- **Workaround:** ~~OPEN. Compute `a - floor(a / b) * b` by hand.~~
+  **FALSE SINCE (at latest) 0.3.0 — struck 2026-09-30 by the platform session.**
+  `mod(a, b)` exists, works, and is documented in `docs/reference.md` under Core
+  Builtin Functions with **floored** semantics: the result takes the sign of the
+  DIVISOR, so `mod(-7, 3)` is `2` and `mod(7, -3)` is `-2`. That differs from
+  QBasic's `MOD`, which truncates toward zero, and the divergence is deliberate —
+  the libraries written against this entry's own `a - floor(a/b)*b` advice depend
+  on floored behaviour (`stdlib/forensics.bas`'s civil-date algorithm is correct
+  for negative years only under it).
+
+  **This entry was cited as design justification elsewhere and was wrong**, which
+  is the cost of a stale ledger rather than a stale comment. Still true: there is
+  no infix `%` and no `\` — but both now REFUSE with the call named, rather than
+  `unexpected token` (`tests/run_qbasic_diagnostics.sh`, 2026-09-30), and
+  `7 mod 3` no longer answers with a list of duration units.
+
+  **Why it survived:** `run_limitations.sh` mechanises the *accepted-limitations
+  bullet list* at the top of this file; dated journal entries like this one are
+  outside it, so nothing could go red. Two of the two remaining `OPEN` journal
+  entries turned out to be false when finally run.
 
 ## 2026-07-18 — CC — while: D0 audit (S13)
 - **Status 2026-09-01:** RESOLVED by PLAT-ERR (2026-08-23). `on error` is
@@ -938,8 +955,35 @@ of these were resolved long after their text was written.
   Black-box tests also showed inconsistent resume points (local-resume in one
   case, whole-statement abandonment in another), so the exact semantics are not
   yet pinned.
-- **Workaround:** OPEN. PRE-VALIDATE with a non-raising checker and only call the
-  raising builtin when it will succeed (see `stdlib/llm.bas` `_json_valid`). The
+- **Workaround:** ~~OPEN. PRE-VALIDATE with a non-raising checker and only call
+  the raising builtin when it will succeed.~~
+  **FALSE — struck 2026-09-30 by the platform session, retired by PLAT-ERR
+  (2026-08-23).** `on error` is FRAME-SCOPED, so a library function catches a
+  raise and returns a clean fallback. Measured, not reasoned:
+
+  ```basic
+  library safe
+      function parse_or(text, fallback)
+          on error goto next
+          r = number(text)
+          if error then
+              error.clear()
+              return fallback
+          end if
+          return r
+      end function
+  end library
+  ```
+
+  `safe.parse_or("42", -1)` gives 42, `safe.parse_or("not a number", -1)` gives
+  -1, and the program carries on.
+
+  **This one mattered more than the modulo entry**, because it carried the whole
+  PRE-VALIDATE DOCTRINE — which is TOCTOU-broken for anything external and drove
+  four independent inventions of a catchable-error convention the language now
+  has. `run_limitations.sh` exists *because* five of fourteen bullets were false
+  in exactly this way; it does not reach the dated journal, which is where this
+  sat. (The original workaround text, kept for the record:)
   true resume model must be read from the `eval.c` error path — tracked as the
   Phase D3 `ERRORS.md` task.
 
@@ -9058,3 +9102,641 @@ on the other side**, and the only remaining known case is the original one, a
 - **Effect it had:** a warning channel printing a false statement about correct
   code, a core dump instead of a diagnostic, and one more silent truncation.
 - **Workaround:** the Studio session's own, and both are now unnecessary.
+
+## 2026-09-27 — CC — while: looking at a dark editor in gBASIC Studio
+
+- **Type:** bug
+- **Severity:** low (cosmetic, but it contradicts the function's own contract)
+- **What:** `sourceeditor.highlight(start_line, end_line, color)` says in its
+  first sentence that it applies a highlight "over whole lines", and it does
+  not. It sets `Gtk.TextTag`'s **`background`**, which paints behind the
+  CHARACTERS and stops at the end of each line's text — so a whole-line
+  highlight renders as a ragged block hugging the code, with the rest of each
+  line left unpainted and a staircase down the right-hand edge.
+
+  Invisible for two years on a light editor, where the tint (`#eaf1fb`) and the
+  background (white) are a few percent apart. The moment Studio gained a dark
+  theme it was obvious: a `#2f3b4d` tint against `#141516` draws the outline of
+  the text rather than a band. **Reported by the user from a screenshot**, not
+  found by any test — no golden can see it, because the asserted text is
+  identical either way.
+- **Workaround:** none needed; fixed here. The property that fills the line is
+  `paragraph-background`, which is settable through `gi.new` exactly as
+  `background` is, and which matches what this function has always claimed to
+  do. One word changed.
+- **Note for anyone extending it:** `_highlight` takes whole LINES, so
+  `paragraph-background` is right for its entire current contract. A future
+  partial-line highlight would want `background` instead, and would be a
+  different function rather than a flag on this one.
+
+## 2026-09-27 — CC — while: adding "copy file path" to a tab's right-click menu
+
+- **Type:** bug
+- **Severity:** medium — it hangs the process, and it is the obvious API
+- **What:** `clipboard.set_text(text)` on the `Gdk.Clipboard` from
+  `widget.get_clipboard()` **never returns**. The process has to be killed;
+  `timeout` reports 124. Minimal case:
+
+  ```basic
+  cb = win.get_clipboard()
+  print to error "A. got clipboard"      ' prints
+  cb.set_text("/home/u/proj/main.bas")
+  print to error "B. set_text returned"  ' never prints
+  ```
+
+  `get_clipboard()` itself is fine and returns a live object. It is the
+  `set_text` call that blocks.
+- **Workaround:** go through a scratch `Gtk.TextBuffer`, which uses only
+  instance methods on a type gBASIC already constructs happily:
+
+  ```basic
+  buf = gi.new("Gtk.TextBuffer")
+  buf.set_text(text, 0 - 1)
+  buf.select_range(buf.get_start_iter(), buf.get_end_iter())
+  buf.copy_clipboard(cb)
+  ```
+
+  That returns promptly, and a round trip (copy, then `paste_clipboard` into a
+  second buffer and read it back) returns the text — **when the copy and the
+  paste are in the same function.**
+- **A second thing, which is probably NOT a gBASIC defect but is worth
+  recording beside it.** That same round trip FAILS across callback
+  boundaries: copy in one timer callback, paste in another, and the paste
+  yields an empty string. Reproduced in a twenty-line program with the buffer
+  held on a global, so it is not a lifetime problem. The likeliest explanation
+  is that Wayland requires a recent input-event serial to take clipboard
+  ownership, and a program driving itself from timers never has one — in which
+  case a real mouse click would work and only automated testing is affected.
+- **CONFIRMED 2026-09-27** by the user, with a real right-click in gBASIC
+  Studio: the path copies and pastes. So the Wayland-serial reading is the
+  right one — the clipboard write is fine, and only a programmatically driven
+  round trip fails. The practical consequence for anyone writing gBASIC GUI
+  tests: **clipboard ownership cannot be exercised from a timer or a
+  synthesised event**, so assert up to the call and confirm the rest by hand.
+  The `set_text` hang above is a separate, real defect and stands.
+
+## 2026-09-27 — CC — while: generating the book's language reference from docs/reference.md
+
+**`has_builtin` answers `false` for `concat`, `merge` and `mod`, which all
+work.** Found by a pass that asks the interpreter to confirm every name the
+book's Appendix A prints, against the published 0.3.0 package.
+
+```basic
+program main(args)
+  print(string(has_builtin("mod")))     ' false
+  print(string(mod(-7, 3)))             ' 2 -- so it is right there
+end program
+```
+
+Same for `concat([1,2],[3])` and `merge({x:1},{y:2})`: both documented under
+**Core Builtin Functions**, both callable, both invisible to `has_builtin`.
+A bare reference agrees with `has_builtin` — `x = concat` says `undefined
+variable: concat`, where `x = len` says the helpful `'len' is a built-in
+function, not a variable; call it, as in len(...)`. So the three seem to be
+dispatched somewhere other than the table those two consult.
+
+**Why it matters more than a wrong answer usually would.** `has_builtin`
+exists for exactly one purpose, and the reference states it: *"so a program
+can degrade gracefully on an older release instead of crashing"*. The idiom it
+recommends —
+
+```basic
+if has_builtin("mod") then
+    r = mod(a, b)
+else
+    r = a - b * floor(a / b)        ' the fallback
+end if
+```
+
+— takes the fallback on a release that has `mod`. A program written to the
+documented idiom is silently worse off on a *newer* interpreter, which is the
+reverse of what the feature is for. Nothing errors, so nothing reports it.
+
+Three suggestions, in the order I would want them: register the three in
+whatever table `has_builtin` reads; or, if they are genuinely a different kind
+of thing, say so in the reference beside each one, so a caller knows not to
+probe them; and either way it is worth a test that walks the reference's own
+core-builtin list and asserts `has_builtin` on each, since that is precisely
+the check that found this.
+
+Not urgent for the book — Appendix A carries the three with a note and a
+pointer to this item — but it will bite somebody writing portable gBASIC.
+
+> **RESOLVED 2026-09-30 by the platform session (`2d504c7`), and the report was
+> exactly right — including the suggestion nobody had to be talked into.**
+>
+> All three are registered. I derived the list independently, the way you
+> suggested: every name under `docs/reference.md`'s own "Core Builtin Functions"
+> heading, probed with `has_builtin`. **117 names, exactly your three missing** —
+> so your Appendix A pass found the complete set, not a sample.
+>
+> Your third suggestion is now a tier in `run_docs_gate.sh`, deriving the list
+> every run rather than pinning it, because `src/builtins.c` **already carried a
+> MAINTENANCE RULE** telling the next person to add the name by hand and it was
+> still forgotten three times. `tests/has_builtin.bas` pins the two lists against
+> each other, which cannot see a name absent from both; only the reference knows
+> the intended surface, so the reference is the oracle.
+>
+> One thing your report could not have predicted: a perturbation showed the
+> section is written with **two** bullet shapes — `` - `mod(a, b)` `` and
+> `` **`merge(a, b, …)`** `` — and a scanner reading only the first finds 85 of
+> 117 and looks like it works, with `merge` among the 32 that vanish. There is a
+> canary per shape now.
+>
+> **It also had a consequence worth knowing about**, since it touches what your
+> readers see: registering the three made note **2102** start firing for
+> `dates.merge` and friends, taking stdlib from 9 notes to 19 across 16
+> libraries — `load dates` and `load finance` included. Ruled by Matthew: the
+> note is author-facing, and a reader who writes `load dates` can do nothing
+> about it. It is now scoped to libraries sitting **beside the program being
+> run**, so stdlib is silent and a reader's own shadowing library still warns.
+> **`load dates` prints nothing now** — it printed a note on 0.3.0 for `frame`,
+> `grid`, `insiders` and six others.
+
+## 2026-09-29 — CC — while: planning Volume 2's text and time chapters against the docs
+
+Two places where a design document describes something the 0.3.0 binary
+does not do. Both found by trying the documented example rather than reading
+it, and neither is caught by the doc gates, which check prose against prose.
+
+**1. `docs/text_design.md` prints regex examples that cannot be typed.**
+Section 3, and again at line 157:
+
+```basic
+match("balance: $1,500.00 due", "\$([0-9,]+)\.([0-9]{2})")
+```
+
+Run it verbatim and you get `invalid escape sequence: \$` at the lexer,
+before the regex engine is reached. `\$`, `\.`, `\d`, `\s`, `\w`, `\(`
+and `\[` are all rejected in a string literal; the supported set is
+`\n \t \\ \" \u{...}`. The example works with the backslashes doubled:
+
+```basic
+match("balance: $1,500.00 due", "\\$([0-9,]+)\\.([0-9]{2})")   ' $1,500.00, groups 1,500 / 00
+```
+
+The trap is sharper than a typo in a doc, because the same file (§ on the
+translation table) correctly states that the builtin accepts `\d`, `\w` and
+`\s` and rewrites them to POSIX classes, *"to let ARI specs use the familiar
+`\d{4}` form"*. Both statements are true and they are about different layers:
+the REGEX dialect takes `\d`, and the STRING LITERAL that carries it will not.
+So every regex in gBASIC source needs its backslashes doubled, and nothing
+says so.
+
+Three suggestions, in the order I would want them: say it once, plainly, in
+`text_design.md` and beside `regex()` in the reference; fix the examples so
+they can be pasted; and consider whether the lexer should pass an unknown
+escape through unchanged rather than raising, which would make every one of
+those documented patterns work as written. The third is a language change and
+may be the wrong trade — an unknown escape is also a good typo detector — but
+it is worth a deliberate decision rather than an accident.
+
+**2. `{end of month}` and `{next friday}` do not exist.**
+
+```basic
+d {date}= "2026-03-15"
+e {end of month}= d      ' assign modifier not found: end of month
+f {next friday}= d       ' assign modifier not found: next friday
+```
+
+`datetime_design.md` (around line 353) describes both as the fluent form,
+"gBASIC-flavoured", retained as sugar over the spec engine. Either they were
+planned and not built, or they were withdrawn and the document still promises
+them. Not urgent — Volume 2 is not drafted yet and its plan records the
+question — but the book cannot teach them until one of the two is true, and
+a reader of the design document today would expect them.
+
+Found while planning, so nothing is blocked. Recorded here because both are
+the same shape as ledger item 44: a document that is ahead of, or behind, the
+binary, in a way only running it reveals.
+
+## 2026-09-29 — CC — while: planning Volume 2 against the reference
+
+Three more, all verified here against the published 0.3.0 package.
+
+**3. Three of the four lines in the reference's own "Modifier use" block do
+not run.** `docs/reference.md`, under `## Modifiers`:
+
+```basic
+x{USD}= 19.95                ' ok
+name {caseless}= "joe"       ' raises -- caseless is a comparison lens
+a {rounded 2}= b             ' assign modifier not found: rounded 2
+a {math.rounded to 2}= b     ' assign modifier not found: math.rounded to 2
+```
+
+The `{caseless}` refusal is a model diagnostic and the language is right to
+give it — *"caseless is a comparison lens, not an assignment modifier; it
+works where a value is read, as in `if x{caseless}= y then`"*. But it is the
+reference demonstrating modifier syntax with a line the reference elsewhere
+forbids. And `rounded` exists nowhere: not in `stdlib/`, not in `src/`. The
+block appears to predate both the lens/modifier split and whatever `rounded`
+was going to be. Worth fixing as examples a reader can paste.
+
+Related, and smaller: the mirror of that good message is missing. An
+assignment modifier used in compare position says `compare modifier not
+found: number` — it reports a modifier that plainly exists as not existing,
+where the other direction explains the mistake.
+
+**4. A loaded library can silently defeat `on warning stop` in its caller.**
+Measured both ways, same program, one line different in the library:
+
+```basic
+' main.bas
+on warning stop
+v = noisy.work()
+```
+
+With the library declaring nothing, the warning escalates: exit 1, and
+`main` never continues. With `on warning print` inside the library's own
+function, the same warning prints and **the program carries on and exits 0**
+— `main` asked for fatal and got advisory.
+
+Warning-mode lookup walks outward from the raising frame, so the nearest
+declaration wins and the nearest declaration is the library's. That is
+consistent with the design and is, I think, still the wrong default here:
+`on warning stop` reads as a policy the program sets, and a dependency can
+switch it off without saying so. It is the enforcing mode, so it is the one
+where being overridable matters.
+
+It matters most where the warning is load-time. A `crypto.bas` dropped
+beside a program shadows the standard one, and warning **2103** is the only
+thing that says so; `on warning ignore` placed *before* the `load` removes
+even that, and the program then reports nothing at all while
+`crypto.sha256_hex` returns whatever the local file says.
+
+Suggestions: consider making `stop` sticky — once a frame has asked for
+fatal, an inner frame may not soften it, only an outer one may relax it; or
+if that is the wrong trade, say plainly in the reference that a warning mode
+is advice to the frames below and not a guarantee, because it currently
+reads as a guarantee.
+
+**5. `notation.to_text` loses a function silently, against its own rule.**
+
+```basic
+t = notation.to_text({ f: greet })     ' -> { f: "<function greet>" }
+reflect.kind(notation.from_text(t).f)  ' -> "string"
+```
+
+No raise, no warning. `encode` and `json_encode` both refuse a function;
+`serialize` keeps it by name and restores it. `notation`'s stated contract is
+that it refuses what it cannot represent rather than skipping it, and this is
+the one place it does neither — it substitutes a lookalike string, which
+round-trips as data and cannot be told from a caption a human wrote.
+
+Same family, also measured: a year-precision date does not survive its own
+round trip. `y {date}= "2026"` writes as `{ v {time}: "2026" }` and
+`notation.from_text` then refuses its own output with *time modifier expects
+an ISO-like time string*. `"2026-03"` and `"2026-03-15"` are fine, and
+`serialize` handles the year fine.
+
+All five items in today's two entries were found by running documented
+examples rather than reading them, which is the same method that found
+item 44 and item 47.
+
+## 2026-09-29 — CC — while: gating every measured claim in the Volume 2 plans
+
+The nineteen chapter plans carried 446 sentences saying "measured" and
+nothing held any of them to the interpreter. They are now gated: 577 claims
+run against the published 0.3.0 package on every check, and bringing them
+under the gate is what found these. As before, everything here came from
+running documented behaviour rather than reading it.
+
+**1. `dates.select` silently ignores an unrecognised spec field.**
+
+```basic
+d {date}= "2026-03-20"
+dates.select({ nosuch: 1 }, d, cal)    ' -> 2026-03-21
+```
+
+No raise, no warning — the field is dropped and the call answers the next
+candidate day, which is a perfectly plausible date. There is no name check
+anywhere in `stdlib/dates.bas`. The *value* checks are good and specific
+(`dates.select: nth is required with within (or use after/before)`,
+`dates: within must be week, month, quarter, or year`), which makes the
+missing name check more surprising rather than less: a caller who has been
+told off for a bad value reasonably concludes a bad key would be caught too.
+
+The field set is closed, so this looks cheap. It also cost a book argument:
+Volume 2 offered typo-catching as one of two reasons to make a recurrence
+spec a record rather than a string mini-language, and the reason is not
+there.
+
+**2. `docs/reference.md` §Actors is wrong about spawn arguments.**
+
+The reference says arguments are copied to the child "as its first message".
+Measured, they arrive as the entry function's **parameters** and the mailbox
+starts empty:
+
+```basic
+' child whose first act is receive(1 seconds) -> nothing
+spawn kid5(5, "x")   ' against a zero-parameter kid5:
+                     ' -> spawn: kid5 expects 0 arguments
+```
+
+So arity is checked against parameters, and a reader who follows the
+reference sits in `receive()` waiting for something nothing queued. This is
+a documentation defect rather than a code one, which is why it is worth
+filing: the code is fine and the sentence will keep costing people an
+afternoon until it changes.
+
+**3. `goto` to a nonexistent label escapes the frame that armed `on error`.**
+
+```basic
+function g2()
+  on error goto next
+  goto nowhere        ' the function is abandoned here
+  print("never printed")
+end function
+```
+
+The caller's handler catches it, reporting *unknown label in function g2:
+nowhere*. The raise is issued by the function-body dispatcher rather than by
+the statement list, so the arming frame is skipped. It carries `1003 /
+invalid control flow` — the same code and source as `continue outside loop`,
+which *is* absorbed locally, so nothing distinguishes the two. "Arming a
+frame arms it" is otherwise true everywhere, and this is the one exception.
+
+**4. Warning 2107's suggested fix is hardcoded to the wrong name.**
+
+Iterating `rows`, the advice still reads *write back with `list[i] = item`*,
+so a reader who pastes the correction gets `undefined variable: list`. The
+same message also advises taking the index on a loop that already has one
+(`for each item, i in rows`). Worth fixing because the diagnostic is
+otherwise excellent — Volume 2 was about to print it as the best argument
+the language makes for itself, and both wrinkles now have to be printed
+beside it.
+
+**5. A `reset` expression is evaluated even when `with` overrides the field.**
+
+Only the *result* is discarded. So a `reset` that allocates a serial,
+inserts a row or calls a service burns one on every `new`, including the
+ones whose value never survives. It is also a different kind of rule from
+the other `with` behaviour: that one falls out of derivation never mutating
+the prototype, and this one is evaluation order.
+
+**6. `notation.to_text` loses a live handle, not only a function.**
+
+Item 5 of the previous entry named the function case. Measured on a real
+`sqlite_connection`, `notation.to_text({h: db})` answers
+`{ h: "<sqlite_connection>" }` — so the silent-lookalike substitution is a
+property of a whole class of value rather than of functions alone.
+
+**Smaller, measured, no action implied:**
+
+- `sort` and `unique` are scalar-only, and both refuse **money** along with
+  records and nested arrays. The one type the language is proudest of cannot
+  be sorted.
+- Deep recursion is a property of the frame, not the language: `return
+  down(n - 1)` survives 936 and segfaults at 937 on an 8 MB stack (≈8.95 KB
+  a frame); a body holding one extra value across the call dies earlier, and
+  the boundary moves with the environment's own size. Still SIGSEGV, exit
+  139, no diagnostic.
+- Actor send ceiling, bisected twice independently and agreeing: 106 483
+  bytes through, 106 484 refused (`1004 / actor`).
+- A non-parent monitor's reason is the literal `"down"`, not `"error"`.
+- `on warning ignore` suppresses the print, not the object: the bare flag
+  reads `false` while `warning.code` still returns the suppressed warning.
+- A structured `error { … }` with no `code` defaults to 2000 (`explicit
+  error`), not 1003.
+- A `timer.after` watcher runs twice — once at registration, once for the
+  tick.
+- Re-declaring a named watcher replaces rather than stacks, but the
+  replacement's body runs at re-registration (1 + 100 + 100 = 201).
+- No call out of a call result: `deserialize(serialize(double))(21)` is a
+  parse error, so the rule is "no call out of any expression" and not only
+  out of a subscript.
+- A library packaging error blames the alias: a library file whose own
+  `load` sits outside its `library` block fails inside the *consumer*, and
+  the message reads `library 'matrix' was loaded as 'm'` — pointing at the
+  rename, which is innocent.
+- The 0.3.0 stdlib exports no one-word modifier; every `export modifier` is
+  in `dates.bas` and every one is multi-word.
+
+**Two in the source, not the binary:**
+
+- `gbasic-design.md` at v0.3.0 still says *Status: gBASIC is 0.2.2*.
+- Its §13 lists **binary-safe strings** as open, and they are done (`chr(0)`
+  survives all four serializers). It also lists an **exact-integer numeric
+  type**, which is genuinely open and is the item most likely to matter to
+  the people Volume 2 is written for.
+
+## 2026-09-29 — CC — while: ruling on whether Volume 2 needs an enforcement chapter
+
+**This entry is an argument, not a defect list.** The author ruled that no
+enforcement layer is planned at present and invited the case for one, so the
+case is here. The measurements are real; the conclusion is a judgement and
+is marked as one.
+
+### The measurement the argument rests on
+
+Three files. `app.bas` loads exactly one library:
+
+```basic
+' app.bas
+load vendor
+program main(args)
+  with principal({ user: "alice", token: "s3cr3t" })
+    print(vendor.format_name())
+  end with
+end program
+
+' vendor.bas
+library vendor
+  load deep from "deep.bas"          ' the documented, CORRECT packaging form
+  function format_name()
+    return "formatted: " + deep.grab().user
+  end function
+end library
+
+' deep.bas
+library deep
+  function grab()
+    print("  [deep] I can see: " + encode(principal()))
+    return principal()
+  end function
+end library
+```
+
+```
+  [deep] I can see: {"user":"alice","token":"s3cr3t"}
+formatted: alice
+```
+
+`deep` is a **transitive** dependency. The application never loads it, never
+names it, and cannot see it in its own source — `vendor` declares it
+privately, which is the packaging the reference correctly insists on at
+§Libraries. And `deep` reads the identity record in full.
+
+Narrowing works today and is one line — `with principal({ user: p.user })`
+around the call, measured, and the library then sees only `user`. Nothing
+asks you to write it. Nothing tells you when you did not.
+
+### The argument, in the language's own terms
+
+Not "gBASIC should have security". The argument is narrower and I think it
+is hard to answer:
+
+**`with principal` is the one place where gBASIC does the thing it otherwise
+refuses to do, and it is the least constrained construct in the language.**
+
+The reference states the rule plainly: there are no closures, so *the only
+way a value reaches a callee is an argument or this scope*. Decision 2 of
+the four — no hidden machinery — is what the whole language is organised
+around, and it is why a reader can trust that a function does what its page
+says. `with principal` is the single deliberate exception: a value that
+arrives without appearing in any signature, at any depth, through code
+nobody chose.
+
+An exception to a language's most load-bearing principle should be the most
+constrained thing in it. This one has no brake at all: no way to declare
+what a library needs, no way to narrow at a boundary except by hand, and no
+way to ask after the fact which dependency read what.
+
+### What I am not arguing for
+
+A sandbox, a capability set, or a permission model that the language
+enforces. That would be gBASIC imposing a policy, which is against its
+grain, and the reference already declines it twice — §Reflection says
+controlling *who* may reflect "is a higher-level concern", and §Identity
+says the principal is deliberately the smallest thing that lets *your* model
+see who asked. Those are good positions and I am not asking to reverse them.
+
+### What I would argue for, cheapest first
+
+1. **A sentence in the reference.** §Identity says a function three levels
+   down sees the caller's principal. It does not say that a library's own
+   private dependency does, and that is the case a reader would want warned
+   about, because it is the one they cannot audit by reading their own
+   program. This is free and it is worth doing whatever else happens.
+
+2. **Make the channel visible.** gBASIC registers every function by name,
+   so "which loaded libraries call `principal()`" is a static question over
+   a table the interpreter already has. As a `reflect` answer, or a CLI
+   flag beside `--json-diagnostics`, it is *auditing, not enforcement* — it
+   imposes no policy, it tells you a fact about your dependency tree that
+   is currently unobtainable. This is the one I would actually build, and
+   it fits the language's disposition exactly: make the fact visible, let
+   the program decide.
+
+3. **Let a caller narrow declaratively**, if 2 proves insufficient — a
+   library declaring what it needs, and seeing only that. This is the real
+   answer and it is a whole feature, so it should wait for 2 to show
+   whether the problem is common enough to earn it.
+
+### The cost while nothing changes, which is the part that belongs here
+
+Volume 2's Chapter 11 now teaches the rule as a discipline:
+
+> Put in the principal only what you would hand to everything the block
+> calls.
+
+That is the correct advice and it is enforced by nothing, its failure is
+silent, and — per the measurement above — a reader cannot fully comply by
+inspecting their own source, because the dependency that reads the record
+may not appear there. A book that gives advice the reader cannot verify
+they have followed is giving advice of a weaker kind than the rest of this
+one, and the chapter has to say so.
+
+Filed as an argument. The ruling stands until the author changes it, and
+the chapter is written on the current position.
+
+## 2026-09-30 — CC — while: validating the ledger and answering the book's reports
+
+**Matthew put this file under one owner today** ("you are the ultimate validator
+of gbasic dogfood"). First act as that owner: run the entries rather than read
+them. Two were false, and both had been cited as design justification.
+
+**1. "No modulo." FALSE.** `mod(a, b)` exists, is documented with floored
+semantics, and the entry's own workaround — `a - floor(a/b)*b` — is what the
+libraries depend on. Struck above.
+
+**2. "`on error resume next` cannot catch a raise inside a library function."
+FALSE**, retired by PLAT-ERR on 2026-08-23. Verified with a live library that
+catches and returns a fallback. This carried the whole PRE-VALIDATE DOCTRINE.
+Struck above.
+
+Both sat in the DATED JOURNAL, which `run_limitations.sh` does not reach — it
+mechanises the accepted-limitations bullet list at the top of this file. That
+suite exists *because* five of fourteen bullets were false in exactly this way,
+and the same rot was living one section below it. **There are now zero `OPEN`
+journal entries**, because there were exactly two and both were wrong.
+
+### What a QBasic reader types, and what they used to get
+
+Volume 2 is *The Core Language*, so its readers arrive from QBasic. Measured
+against 0.3.0, their first ten lines:
+
+| | before | now |
+|---|---|---|
+| `7 mod 3` | `unknown duration unit 'mod'` + seven units | `'mod' is not an operator in gBASIC; the remainder is mod(a, b)` |
+| `7 \ 2` | `unexpected token` | `integer division is floor(a / b)` |
+| `2 ^ 3` | `unexpected token` | `exponentiation is pow(a, b)` |
+| `7 % 3` | `unexpected token` | `the remainder is mod(a, b)` |
+| `"a" & "b"` | `unexpected token` | `'&' does not join text; use +` |
+| `a$ = "x"` | advice about `p(USD)= 19.99` | `'$' is a type sigil; gBASIC has none` |
+| `a%`/`a!`/`a#`/`a&` | `unexpected token` | same sigil message |
+
+`dim` has had a good answer since the beginning, and the lexer comment beside it
+says why it is lexed as a keyword at all: *"to be refused with advice where
+someone arriving from QBasic would type it."* Everything next to it did not.
+That neighbouring inconsistency is what made this a bug and not a policy — the
+argument `run_silent_traps.sh` made when `USD` raised four lines from the typed
+modifiers that printed.
+
+**`$` needed POSITION, not a message.** One character, two different mistakes:
+`$19.99` is a money guess and `a$` is a string sigil. The original message is
+kept for the first and would have been a wrong remedy for the second.
+
+**The remedies are checked by running them**, because a diagnostic is the one
+kind of code nothing executes, so a hint can rot into a lie with every other
+tier green — `web.configure` shipped exactly that. `run_qbasic_diagnostics.sh`
+**scrapes the function names out of what the binary just said** and runs each,
+so renaming a remedy to something that does not exist fails there rather than
+being re-pinned in a golden. `shl`/`shr` are deliberately absent from the table:
+gBASIC has no shift builtin, so there is nothing to name.
+
+### Rulings on the gbasic-books reports above
+
+All confirmed by running them. What I did with each:
+
+- **`has_builtin` denies `mod`/`concat`/`merge`** — **FIXED** (`2d504c7`), see
+  the ruling on that entry. Your suggested reference-derived test is now a gate
+  tier.
+- **`dates.select` ignores an unknown spec field** — **CONFIRMED**:
+  `dates.select({ nosuch: 1 }, d, cal)` answers `2026-03-21` in silence. The
+  field set is closed and the value checks are already good, which makes the
+  missing name check more surprising, not less. Queued; it is the cheapest real
+  fix on this list and it restores the book argument it cost you.
+- **`{end of month}` / `{next friday}` do not exist** — **CONFIRMED**:
+  `assign modifier not found: end of month`. The document is ahead of the
+  binary. This needs a ruling from Matthew (build them, or strike them from
+  `datetime_design.md`), not a patch from me.
+- **Regex escapes: `"\$"` is refused by the LEXER before the regex engine sees
+  it** — **CONFIRMED as a real trap**, and your framing is right: both
+  statements in `text_design.md` are true and about different layers. Your third
+  suggestion — pass an unknown escape through unchanged — is a **language
+  change** and I am not taking it quietly: an unknown escape is also a good typo
+  detector, and the trade deserves a decision rather than an accident. The first
+  two suggestions (say it once plainly; fix the examples so they paste) are
+  uncontroversial and queued.
+- **A loaded library can defeat `on warning stop`** — **CONFIRMED and the most
+  serious item on your list**, because it is the ENFORCING mode and the one
+  where being overridable matters. Your `crypto.bas`-shadow example is the sharp
+  end. Needs Matthew: "sticky stop" changes a documented scoping rule.
+- **`notation.to_text` substitutes `"<function greet>"`** — **CONFIRMED**, and
+  it is against `notation`'s own stated contract, which is to refuse what it
+  cannot represent rather than skip it. A lookalike string that round-trips as
+  data is the worst of the three available behaviours. Queued.
+- **`reference.md` §Actors is wrong about spawn arguments** — **CONFIRMED**,
+  documentation defect, code is fine. Queued; cheap.
+- **Three of four lines in the reference's own "Modifier use" block do not run**
+  — **CONFIRMED**. Queued with the above.
+- **`goto` to a nonexistent label escapes the frame that armed `on error`** —
+  **CONFIRMED**: the caller catches `unknown label in function g2: nowhere`, the
+  armed frame does not. Whether that is a defect or the anti-silence rule
+  working is a real question and I am not ruling on it alone.
+
+**A note on method, since it is the same one three times.** Every item you filed
+was found by RUNNING documented behaviour rather than reading it, and so was
+every item I struck. The doc gates in this tree check prose against prose; that
+is why they saw none of this.
