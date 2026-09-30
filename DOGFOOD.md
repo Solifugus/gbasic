@@ -9707,10 +9707,26 @@ All confirmed by running them. What I did with each:
   field set is closed and the value checks are already good, which makes the
   missing name check more surprising, not less. Queued; it is the cheapest real
   fix on this list and it restores the book argument it cost you.
-- **`{end of month}` / `{next friday}` do not exist** — **CONFIRMED**:
-  `assign modifier not found: end of month`. The document is ahead of the
-  binary. This needs a ruling from Matthew (build them, or strike them from
-  `datetime_design.md`), not a patch from me.
+- **`{end of month}` / `{next friday}` do not exist** — ~~CONFIRMED~~
+  **WRONG, AND I LAUNDERED IT (corrected 2026-09-30).** They exist and work.
+  `stdlib/dates.bas` exports SIXTEEN of them — `end of month` at line 95,
+  `next friday` at 119, plus `start of month` and next/previous for every
+  weekday. With the library loaded, from `2026-03-15`: `{end of month}` gives
+  `2026-03-31`, `{next friday}` `2026-03-20`, `{start of month}` `2026-03-01`,
+  `{previous monday}` `2026-03-09`.
+
+  **The reported snippet has no `load dates`.** I reproduced it by pasting that
+  snippet verbatim, got the same error, and wrote CONFIRMED — the same failure I
+  had spent the morning writing up against myself elsewhere: read one path
+  carefully, assume the other. **Reproducing a report without varying it is not
+  validation**, and a validator who does it launders a wrong finding into a
+  confirmed one, which is worse than the original mistake because it carries
+  this file's authority.
+
+  **What IS real is the diagnostic.** `assign modifier not found: end of month`
+  names no library, while `--add-loads` on the identical file prints
+  `load dates` — the tree already knows the answer and the error does not
+  consult it. Filed in place of the reported defect.
 - **Regex escapes: `"\$"` is refused by the LEXER before the regex engine sees
   it** — **CONFIRMED as a real trap**, and your framing is right: both
   statements in `text_design.md` are true and about different layers. Your third
