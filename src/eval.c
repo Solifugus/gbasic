@@ -695,6 +695,10 @@ typedef struct ErrorFrame {
      * which is the one thing a warning must never do. */
     int warn_mode;
     int warn_pending;
+    /* Whether this frame is executing a LIBRARY's function. Read only by the
+     * warning-mode lookup, which must not let a dependency soften a policy the
+     * program set. */
+    int in_library;
     struct ErrorFrame *parent;
 } ErrorFrame;
 
@@ -3439,14 +3443,55 @@ static void warning_clear_state(void) {
 
 /* DYNAMIC lookup, deliberately unlike error mode: walk outward to the first
  * frame with an explicit setting. A library's advice is the caller's noise to
- * budget. */
+ * budget.
+ *
+ * ...WHICH IS WHAT THIS SAID AND NOT WHAT IT DID, until 2026-09-30. The walk
+ * stopped at the NEAREST declaration, so when a library declared a mode the
+ * library was nearest and the CALLEE got the noise budget -- the opposite of
+ * the sentence above. Reported by the gbasic-books session and reproduced:
+ * a program declaring `on warning stop` and calling a library function that
+ * declares `on warning print` gets the warning PRINTED and exits 0. It asked
+ * for fatal and got advisory.
+ *
+ * That is not a small thing, because escalation is half of why this channel
+ * exists: suppression makes an aggressive warning affordable and ESCALATION
+ * MAKES ONE ENFORCEABLE. A dependency that can switch escalation off leaves the
+ * second half of that sentence false.
+ *
+ * THE BOUNDARY IS THE LIBRARY, NOT THE FRAME, and the difference matters:
+ *
+ *     function helper()
+ *         on warning ignore      ' I know my own code warns here
+ *     end function
+ *     program main
+ *         on warning stop
+ *         helper()
+ *
+ * Both are the author's own code in their own file, and an "outermost wins"
+ * rule would defeat helper's ignore, which would surprise the person who wrote
+ * both. So: THE NEAREST DECLARATION THAT IS NOT INSIDE A LIBRARY, and only if
+ * there is none, the nearest declaration at all -- which leaves intra-program
+ * scoping exactly as it was and lets a library's own preference still apply
+ * when the program has said nothing.
+ *
+ * MEASURED BLAST RADIUS before changing it: NO library in stdlib declares a
+ * warning mode at all (the single mention in finance.bas is a comment), so
+ * nothing gBASIC ships can reach this -- it waits for the first third-party
+ * library. */
 static ErrorFrame *warn_frame_effective(void) {
+    ErrorFrame *nearest = NULL;
     for (ErrorFrame *f = current_error_frame; f; f = f->parent) {
-        if (f->warn_mode != WARN_MODE_UNSET) {
+        if (f->warn_mode == WARN_MODE_UNSET) {
+            continue;
+        }
+        if (!nearest) {
+            nearest = f;
+        }
+        if (!f->in_library) {
             return f;
         }
     }
-    return NULL;
+    return nearest;
 }
 
 static int warn_mode_effective(void) {
@@ -10760,6 +10805,10 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     ErrorFrame frame = {0};
     frame.mode = EFRAME_DEFAULT;
     frame.entry_generation = error_generation;
+    /* `library` is stamped at registration and is NULL for the root source, so
+     * it answers this exactly -- including for a library declared in the SAME
+     * FILE as the program, which has no separate path to match on. */
+    frame.in_library = stmt->as.function.library != NULL;
     frame.parent = current_error_frame;
     current_error_frame = &frame;
 

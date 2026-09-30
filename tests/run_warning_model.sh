@@ -211,3 +211,106 @@ fi
 printf '%s' "$out" | grep -qx 'library:2' \
     || { printf 'FAIL top_level_load control (a load inside the block did not run)\n'; exit 1; }
 printf 'PASS top_level_load control (a load inside the block runs, silently)\n'
+
+# A LIBRARY MAY NOT SOFTEN THE PROGRAM'S WARNING POLICY (2026-09-30).
+#
+# The lookup's own comment said "a library's advice is the caller's noise to
+# budget" and did the opposite: it stopped at the NEAREST declaration, so a
+# library declaring a mode WAS the nearest and the callee got the budget.
+# Reported by the gbasic-books session. A program declaring `on warning stop`
+# and calling a library that declares `on warning print` got the warning printed
+# and exited 0 -- it asked for fatal and got advisory.
+#
+# That is half this channel's justification: suppression makes an aggressive
+# warning affordable and ESCALATION MAKES ONE ENFORCEABLE. A dependency able to
+# switch escalation off leaves the second half false.
+#
+# THE BOUNDARY IS THE LIBRARY, NOT THE FRAME, which is why the intra-program
+# case below is a tier and not a footnote: a helper in the author's OWN file
+# declaring `ignore` inside a program that declared `stop` must still be
+# honoured, so "outermost wins" is the wrong rule and is what this tier rejects.
+wm_dir="$(mktemp -d)"
+gb="$(pwd)/gbasic"
+cp tests/warning_model/dep_noisy.bas tests/warning_model/dep_quiet.bas \
+   tests/warning_model/dep_hushed.bas "$wm_dir/"
+# NOT called in a command substitution: it sets three variables, and $( ) runs a
+# SUBSHELL whose assignments never reach the caller -- which under `set -u` shows
+# up as "wm_out: unbound variable" rather than as a wrong answer. Found by
+# running it.
+wm_rc=""; wm_out=""; wm_stderr=""
+wm_run() {
+    printf '%s\n' "$1" >"$wm_dir/m.bas"
+    wm_rc=0
+    ( cd "$wm_dir" && "$gb" m.bas >"$wm_dir/o" 2>"$wm_dir/e" ) || wm_rc=$?
+    wm_out="$(head -1 "$wm_dir/o" 2>/dev/null || true)"
+    wm_stderr="$(cat "$wm_dir/e" 2>/dev/null || true)"
+}
+
+wm_run 'load dep_noisy
+program main(args)
+  on warning stop
+  v = dep_noisy.work()
+  print("main continued")
+end program'
+[ "$wm_rc" = "1" ] || fail "library softened on warning stop (exit $wm_rc, expected 1)"
+[ -z "$wm_out" ] || fail "library softened on warning stop (main continued: $wm_out)"
+printf 'PASS warn_library_boundary (a library may not soften `on warning stop`)\n'
+
+# CONTROL 1: with the program SILENT, the library's own preference still applies
+# -- without this, the fix is indistinguishable from ignoring library modes.
+#
+# IT USES A LIBRARY DECLARING `ignore`, NOT `print`, AND THAT IS THE WHOLE TIER.
+# The first version used `print`, which is ALSO THE DEFAULT, so a build that
+# never honoured a library's mode produced identical output and this control
+# passed on it -- proven by the perturbation that skips library frames entirely.
+# Declaring the one mode the default is not is what makes the check a DIFFERENCE.
+wm_run 'load dep_hushed
+program main(args)
+  v = dep_hushed.work()
+  print("main continued")
+end program'
+[ "$wm_rc" = "0" ] || fail "library mode ignored when the program declared nothing (exit $wm_rc)"
+[ -z "$wm_stderr" ] \
+    || fail "a library's own `on warning ignore` was not honoured when the program declared nothing: $wm_stderr"
+printf 'PASS warn_library_boundary control 1 (a library sets its own budget when the program has not)\n'
+
+# CONTROL 2: a user must still be able to QUIET a noisy dependency. Asserted as
+# a DIFFERENCE against control 1 -- the same library, the same call, silent here
+# and printing there -- because "exit 0" alone is satisfied by both.
+wm_run 'load dep_noisy
+program main(args)
+  on warning ignore
+  v = dep_noisy.work()
+  print("main continued")
+end program'
+[ "$wm_rc" = "0" ] || fail "on warning ignore did not quiet a dependency (exit $wm_rc)"
+[ -z "$wm_stderr" ] || fail "on warning ignore did not quiet a dependency: $wm_stderr"
+printf 'PASS warn_library_boundary control 2 (a program can still quiet a dependency)\n'
+
+# CONTROL 3: a library with NO declaration was always governed by the program,
+# and must still be -- or the tier above could pass on a build that stopped
+# honouring library frames entirely.
+wm_run 'load dep_quiet
+program main(args)
+  on warning stop
+  v = dep_quiet.work()
+  print("main continued")
+end program'
+[ "$wm_rc" = "1" ] || fail "an undeclaring library stopped honouring the program's stop (exit $wm_rc)"
+printf 'PASS warn_library_boundary control 3 (an undeclaring library still escalates)\n'
+
+# CONTROL 4: THE ONE THAT REJECTS "OUTERMOST WINS". Both frames are the author's
+# own code in their own file, so nearest-wins must survive inside a program.
+wm_run 'program main(args)
+  on warning stop
+  helper()
+  print("main continued")
+end program
+function helper()
+  on warning ignore
+  warning("my own code warns here")
+end function'
+[ "$wm_rc" = "0" ] || fail "an intra-program helper could not soften the program's mode (exit $wm_rc) -- the rule became outermost-wins"
+[ -n "$wm_out" ] || fail "an intra-program helper could not soften the program's mode (main did not continue)"
+printf 'PASS warn_library_boundary control 4 (intra-program nearest-wins is unchanged)\n'
+rm -rf "$wm_dir"
