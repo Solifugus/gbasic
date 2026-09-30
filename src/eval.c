@@ -34656,11 +34656,23 @@ static Value modifier_string_literal(const char *inner, size_t len) {
             memcpy(out + w, utf8, n);
             w += n;
         } else {
-            char message[64];
-            snprintf(message, sizeof(message), "invalid escape sequence: \\%c", esc);
-            free(out);
-            runtime_error_raise(message, 1003, "modifier");
-            return value_null();
+            /* Same rule as an ordinary string literal (parser.y,
+             * copy_string_literal): keep BOTH characters and say so, rather
+             * than refusing the program.
+             *
+             * THE MECHANISM DIFFERS BECAUSE THE STAGE DOES, and that is the
+             * honest version rather than an arbitrary split. A modifier literal
+             * is unescaped while the program RUNS, so the real warning channel
+             * exists here and `on warning stop` / `ignore` govern it. An
+             * ordinary literal is unescaped while the file is PARSED, before any
+             * statement has run, so there are no frames to consult and it goes
+             * to the diagnostics sink as a warning-severity entry instead. Both
+             * print; only this one can be escalated. */
+            warn_fmt(2109, "escape",
+                     "unknown escape \\%c kept as the two characters; write \\\\%c to say so",
+                     esc, esc);
+            out[w++] = '\\';
+            out[w++] = (char)esc;
         }
     }
     out[w] = '\0';

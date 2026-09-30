@@ -150,6 +150,33 @@ static int warn_mode_word(gb_parse_ctx *ctx, const char *word,
 
 /* Same, computing the end position by walking `len` bytes of the lexeme exactly
  * as the lexer's advance() does (byte-based columns, '\n' resets to column 1). */
+/* A WARNING-severity diagnostic, which the sink has been able to carry since it
+ * was written (gb_severity has ERROR/WARNING/NOTE, gb_severity_str renders all
+ * three, and the JSON writer emits the field) and which NOTHING had ever
+ * emitted. It does not set *ok, so the parse continues and the program runs.
+ *
+ * WHAT THIS CANNOT DO, stated because the limitation is real: `on warning stop`
+ * does NOT escalate it. That channel is dynamically scoped over CALL FRAMES and
+ * this fires while the file is being parsed, before any statement has run, so
+ * there are no frames to consult. A project that wants unknown escapes to be
+ * fatal has no switch for that today. Filed rather than papered over. */
+static void report_diag_warning(gb_parse_ctx *ctx, gb_diag_code code, int line, int column,
+                                int end_line, int end_column, const char *message) {
+    gb_span span = { line, column, end_line, end_column };
+    gb_diagnostics_add(ctx->diags, GB_SEVERITY_WARNING, code, 0,
+                       ctx->active_parse_path, span, message);
+}
+
+static void report_diag_warning_lexeme(gb_parse_ctx *ctx, gb_diag_code code, int line, int column,
+                                       const char *text, int len, const char *message) {
+    int end_line = line;
+    int end_column = column;
+    for (int i = 0; i < len; i++) {
+        if (text[i] == '\n') { end_line++; end_column = 1; } else { end_column++; }
+    }
+    report_diag_warning(ctx, code, line, column, end_line, end_column, message);
+}
+
 static void report_diag_lexeme(gb_parse_ctx *ctx, gb_diag_code code, int line, int column,
                                const char *text, int len, const char *message) {
     int end_line = line;
@@ -271,12 +298,30 @@ static char *copy_string_literal(gb_parse_ctx *ctx, const char *start, int lengt
                     text[out++] = utf8[b];
                 }
             } else {
-                char message[64];
-                snprintf(message, sizeof(message), "invalid escape sequence: \\%c", start[i]);
-                report_diag_lexeme(ctx, GB_DIAG_STRING_LITERAL, line, column, start, length, message);
-                *ok = 0;
-                free(text);
-                return NULL;
+                /* AN UNKNOWN ESCAPE KEEPS BOTH CHARACTERS AND WARNS (2026-09-30).
+                 *
+                 * It used to fail the parse, which made every regex in
+                 * docs/text_design.md untypable -- `"\\$([0-9,]+)"` died on the
+                 * `\\$` before the regex engine saw it, while the same document
+                 * correctly states the regex dialect accepts `\\d`. Two true
+                 * statements about different layers, and nothing said so.
+                 *
+                 * KEEPING BOTH CHARACTERS is what makes those patterns work:
+                 * `\\d` in the source becomes the two bytes the regex engine
+                 * wants. Passing them through SILENTLY was the other option and
+                 * was rejected -- an unknown escape is also a good typo
+                 * detector, so it is reported and the author decides.
+                 *
+                 * The pass-through never grows the buffer: two characters in,
+                 * two out, where every other escape shrinks. */
+                char message[96];
+                snprintf(message, sizeof(message),
+                         "unknown escape \\%c kept as the two characters; write \\\\%c to say so",
+                         start[i], start[i]);
+                report_diag_warning_lexeme(ctx, GB_DIAG_STRING_LITERAL, line, column,
+                                           start, length, message);
+                text[out++] = '\\';
+                text[out++] = start[i];
             }
         } else {
             text[out++] = start[i];

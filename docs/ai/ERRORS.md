@@ -170,6 +170,7 @@ scope — so it is not a reserved word and `r.warning` still parses.
 | 2106 | a top-level statement beside a `program` block never runs | `dead code` |
 | 2107 | a write to a `for each` element that nothing reads afterwards | `discarded write` |
 | 2108 | a timer is live and nothing watches `timer.ticks` | `timer` |
+| 2109 | an unknown escape in a MODIFIER string literal was kept as its two characters | `escape` |
 
 **This table stops where the source does**, checked by `tests/run_docs_gate.sh`
 against the codes `src/eval.c` actually emits — it had stopped at 2104 while

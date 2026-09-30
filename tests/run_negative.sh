@@ -29,7 +29,6 @@ cases=(
     negative_sort_type
     negative_sort_mixed
     negative_sort_nested_array
-    negative_invalid_escape
     negative_mod_zero
     negative_mod_type
     negative_mod_arity
@@ -334,7 +333,6 @@ cases=(
     negative_print_to_unknown_stream
     negative_try_decode_arity
     negative_monotonic_arity
-    negative_modifier_escape_invalid
     negative_modifier_escape_surrogate
     negative_modifier_escape_nul
     negative_clause_stmt_start

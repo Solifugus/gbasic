@@ -125,7 +125,19 @@ const char *gb_diag_kind_str(gb_diag_code code) {
 }
 
 void gb_diag_format(FILE *out, const gb_diag *diag) {
-    const char *kind = gb_diag_kind_str(diag->code);
+    /* SEVERITY WINS OVER THE CODE'S KIND WORD. The kind word answers "which
+     * stage produced this", which is the right question for an error and the
+     * wrong one for a warning: the first warning-severity diagnostic ever
+     * emitted (an unknown string escape, 2026-09-30) printed as "runtime error"
+     * because GB_DIAG_STRING_LITERAL maps there, which is worse than saying
+     * nothing.
+     *
+     * NO EXISTING OUTPUT MOVES: measured, nothing in this tree had ever emitted
+     * a non-ERROR severity, so every diagnostic that exists today takes the
+     * `kind` branch exactly as before. */
+    const char *kind = diag->severity == GB_SEVERITY_ERROR
+        ? gb_diag_kind_str(diag->code)
+        : gb_severity_str(diag->severity);
     if (diag->path && diag->path[0]) {
         fprintf(out, "%s at %s:%d:%d: %s\n", kind, diag->path,
                 diag->span.start_line, diag->span.start_column, diag->message);

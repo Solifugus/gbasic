@@ -130,11 +130,15 @@ static Token string_token(Lexer *lexer, const char *start, int line, int column)
                     return error_token_message(lexer, start, line, column,
                                                "invalid unicode escape: \\u{} needs hex digits");
                 }
-            } else if (esc != 'n' && esc != 't' && esc != '\\' && esc != '"') {
-                char message[96];
-                snprintf(message, sizeof(message), "invalid escape sequence: \\%c", esc);
-                return error_token_message(lexer, start, line, column, message);
             }
+            /* AN UNKNOWN ESCAPE IS NO LONGER A LEXER ERROR (2026-09-30). The
+             * token carries the raw text and copy_string_literal() in parser.y
+             * decides what it means -- keeping both characters and WARNING,
+             * rather than refusing the file. Rejecting here made every regex in
+             * docs/text_design.md untypable: `"\$([0-9,]+)"` died on the `\$`
+             * before the regex engine ever saw it, while the same document
+             * correctly says the regex dialect accepts `\d`. Both statements
+             * were true and about different layers, and nothing said so. */
         }
     }
 

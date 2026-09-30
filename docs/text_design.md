@@ -154,6 +154,17 @@ this divergence gets an `UNLEARN.md` bullet. Anchoring is one `^` away.
 A **match record** is plain data (inspectable, not a new value kind — only the
 compiled pattern is):
 
+> **Backslashes in a gBASIC string literal, said once.** A regex arrives as a
+> STRING, and the string literal has escape rules of its own. `\n`, `\t`, `\"`,
+> `\\` and `\u{...}` are interpreted by the literal and never reach the regex
+> engine. Anything else — `\$`, `\.`, `\d`, `\s`, `\w`, `\(`, `\[` — is an
+> **unknown escape**: since 2026-09-30 the literal keeps **both characters** so
+> the pattern arrives intact and the examples on this page work as written, and
+> it **warns**, because an unknown escape is also how a typo looks. Write `\\d`
+> to say you meant it and the warning goes away. Before that date these examples
+> could not be typed at all: the `\$` was refused before the regex engine saw
+> it. See `tests/run_string_escapes.sh`.
+
 For `match("balance: $1,500.00 due", "\$([0-9,]+)\.([0-9]{2})")`:
 
 ```
