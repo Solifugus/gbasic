@@ -9796,3 +9796,53 @@ switched off by a dependency (`01b107c`), so a project that escalates warnings
 now gets a guarantee instead of a preference. Escapes-as-warnings is only a
 sound trade BECAUSE of that — an aggressive diagnostic is affordable when
 suppression works and enforceable when escalation does.
+
+## 2026-09-30 — CC — while: answering the books session's `(copy)` question
+
+**The answer was already written down, and neither of us had read it.** The
+gbasic-books session asked whether `(copy)` of a field holding a value with its
+own policies copies it or re-derives it, and concluded that the ARRAY case was
+correct and the RECORD case deviated. `docs/pbi_design.md` §6 — "the subtle
+case", which calls this *"the single most important semantic decision in PBI"* —
+had decided the opposite two design cycles earlier:
+
+> **Decided: recursive derivation (Reading A).**
+
+So the record case was right, the array case was the gap, and the useful work
+was reading the doc rather than re-arguing the semantics. **Measured against
+§6's own example**, `motor (copy): new engine` gave two cars serials 2 and 3
+while `motors (copy): [new engine]` gave both 4 — the same value, the same
+policy, a different answer decided by whether a bracket was in the way. Fixed
+(`ef190b2`): arrays now give 5 and 6, and `[[new engine]]` gives 8 and 9,
+because §6 says the depth follows the data.
+
+**§6 had already predicted it.** It ends by naming two mechanics "still to pin
+down during implementation" — how deep recursion goes, and leaf-vs-instance
+detection. Arrays were the first, left undone. A design doc that records what it
+did NOT settle is worth more than one that reads as finished, and this is the
+second time this month one of those parked questions turned out to be a live
+defect.
+
+**THE SECOND MECHANIC IS STILL OPEN AND IS NOW WORTH FILING.** Re-derivation
+triggers on FIELD POLICIES, not on constructors:
+
+```basic
+engine = { sn: 0, constructor: engine_ctor }
+holder = { part (copy): new engine }
+new holder   ' constructor does NOT re-run, in a record field or an array
+```
+
+A `constructor` is a policy in every sense a reader cares about, and it does not
+behave like one. I have not changed it — whether a constructor makes a record an
+"instance" for derivation is a design question rather than a gap against a
+decision — but ch10 cannot say anything general about "values carrying their own
+policies" until it is settled.
+
+**A method note, because I nearly repeated this morning's mistake.** The same
+report claimed four libraries "don't say what they are". Two do:
+`ari_advisor.bas` and `gpdf_metrics.bas` both carry full descriptions, just not
+in the `name.bas — …` shape `gtkui.bas` uses. I checked each header block before
+touching it, having spent the morning writing up the opposite habit. The two
+that genuinely had none now have one, and `stdlib/gui.bas` turns out to be five
+lines and deliberately empty — the declarative `gui` module is native, behind
+`#if HAVE_GTK` in `src/eval.c` — which nothing in the tree said anywhere.
