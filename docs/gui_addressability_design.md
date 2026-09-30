@@ -97,7 +97,13 @@ one level up.
 > (`~/development/whisker`, created 2026-09-29) is the widget layer above
 > RV-9's `/w0`. The renderer it would sit on **already exists**: `raster.c` is
 > 306 lines with no ESP dependencies, `font.c` draws text, band clipping is in,
-> and a tap costs 30 ms on the board against 59 ms for a full redraw. Its own
+> and a tap costs **19 ms of latency and 38 ms of work** on the board against
+> 56 ms for a full redraw. *(Corrected 2026-09-30. This said 30 ms against
+> 59 ms, which was wrong twice over: those figures were measured on a clipped
+> repaint that left two black strips on the panel, and the total was being read
+> as a latency when it is press plus release with the finger lifting between
+> them. See RV-9's `docs/roadmap.md` and whisker's `docs/rv9-answers.md` §7.)*
+> Its own
 > `docs/design.md` §6 sets the bar it must clear before gBASIC adopts anything,
 > and if it does not clear it, **gBASIC keeps GTK and has lost nothing** — which
 > is the point of it being a separate project.
