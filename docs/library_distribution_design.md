@@ -145,18 +145,85 @@ identity**, a value built by `c@2` handed to code expecting `c@1` either works
 `instanceof`-fails puzzle, which is exactly how this goes wrong in Java and
 npm.
 
-## 7. The mechanism
+## 7. The mechanism, end to end
 
-- **`libs/`** holds vendored `.bas` files, committed to the project's own repo.
-- **A manifest** (`gbasic.deps`) lists, per dependency: name, exact version,
-  origin, content hash.
-- **`gbasic --fetch`** reads the manifest, walks the graph, vendors each
-  library's dependencies *privately* (§3), verifies every hash, and writes
-  `libs/`. Run once; commit the result.
-- **The interpreter learns nothing.** `load` finds a file exactly as it does
-  today. **Running a program touches no network and needs no tool**, which is
-  the property that makes dependencies "always work": at run time there is no
-  dependency machinery left to fail.
+**There is no install step.** Nothing is written to a system directory, nothing
+registers itself, and nothing executes — fetching a gBASIC library is
+downloading a text file (trust design §1.1). "Install" is the wrong word and
+that is the design, not an omission.
+
+### 7.1 Add
+
+```
+gbasic --add https://github.com/someone/grid 2.0.1
+```
+
+Writes one line to **`gbasic.deps`**: name, **exact** version, origin, content
+hash. Or edit the file — it is text, and `notation` is the natural format for it
+(typed, readable, hand-editable, and already in the stdlib).
+
+### 7.2 Fetch
+
+```
+gbasic --fetch
+```
+
+1. reads `gbasic.deps`
+2. downloads each origin@version
+3. **verifies the hash**, and on a mismatch refuses while printing both
+4. reads *that library's own* manifest and recurses, vendoring **privately** (§3)
+5. writes the tree, recording hashes on a first add
+
+### 7.3 The layout, and why it is nested
+
+```
+gbasic.deps
+libs/producer/producer.bas        <- your direct dependency
+libs/producer/libs/c.bas          <- producer's private c 2.0.1, invisible to you
+libs/consumer/consumer.bas
+libs/consumer/libs/c.bas          <- a different c 1.4.0, also invisible
+```
+
+Each library sits in **its own directory** so that its internal
+`load c from "libs/c.bas"` never has to embed its own name, and so that its
+dependencies are one level BELOW it.
+
+**That nesting is what makes private copies private, and it is enforced by a
+rule that already exists.** MEASURED, both ways:
+
+| the program does a bare `load c` | result |
+|---|---|
+| with `GBASIC_PATH=libs` | **reaches producer's private copy** — a dependency the program never declared, silently |
+| with `GBASIC_PATH` unset | **refused**, with warning 2103: *"library 'c' at ./libs/producer/libs/c.bas was NOT used: it is below the file that loaded it, not beside it"* |
+
+So **`GBASIC_PATH` must not be used for vendored dependencies.** The
+beside-the-file rule (`run_library_depth.sh`) already gives exactly the privacy
+this design needs, because `GBASIC_PATH`'s search is RECURSIVE and the
+beside-the-file search is not. The 2103 warning is already the right diagnostic
+for reaching at something private, and it already names the file.
+
+### 7.4 Commit `libs/`
+
+The project now builds forever with no network — including after the origin
+disappears, which is the failure mode that produced npm's most famous outage.
+
+### 7.5 Use, and run
+
+```basic
+load producer from "libs/producer/producer.bas"
+```
+
+The path is explicit, because that is what keeps the private copies private
+(§7.3). **The interpreter learns nothing**: `load` finds a file exactly as it
+does today. **Running a program touches no network and needs no tool**, which is
+the property that makes dependencies "always work" — at run time there is no
+dependency machinery left to fail.
+
+### 7.6 Update and remove
+
+Updating is editing a version and re-running `--fetch`, which **refuses if the
+new version's capability set has grown** without explicit consent (trust design
+§3). Removing is deleting the line and re-fetching.
 
 ## 8. What this deliberately does NOT do
 
@@ -200,6 +267,15 @@ specified first.
 2. **§5 modifier scoping** — a language change, cheapest now.
 3. Does a vendored library's own `libs/` get committed, or re-fetched? (Committed
    is the offline-forever answer; re-fetched is smaller.)
-4. What does a library declare its **gBASIC version** requirement against, given
+4. **Should a bare `load producer` find `libs/`?** Today it needs the explicit
+   path of §7.5. Making the bare form work means letting `load` search `./libs/`
+   — and it must be **ONE LEVEL ONLY**, because a recursive search is precisely
+   what leaked the private copy in §7.3. Nicer to write, but it is a runtime
+   change, against this document's own "the interpreter learns nothing" rule.
+5. **Where does a library author's own relative `load` point?** A library
+   written with `load c from "libs/c.bas"` only works vendored if it lands at
+   `libs/<name>/<name>.bas`, which is why §7.3 nests. Worth pinning before
+   anyone publishes, because it fixes the on-disk shape permanently.
+6. What does a library declare its **gBASIC version** requirement against, given
    that this tree changes diagnostics between releases? See the compatibility
    axis in the trust document.
