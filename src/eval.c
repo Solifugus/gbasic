@@ -890,6 +890,10 @@ void gb_set_reexec_path(const char *path);
  * declared, else the source we were started from. */
 static const char *program_reexec_path(void);
 static char *current_import_path = NULL;
+/* Whether the library currently being imported sits beside the program being
+ * run. Saved and restored exactly like current_import_path, read only by note
+ * 2102. */
+static int current_import_is_authors_own = 0;
 /* The library whose function is executing, or NULL in the root source. Saved
  * and restored by invoke_function exactly like current_import_path, and read by
  * function_in_current_library so an unqualified call inside a library reaches
@@ -7878,7 +7882,30 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
      * qualification belongs in gbasic_has_builtin, and this warning follows
      * it. */
     if (gbasic_has_builtin(stmt->as.function.name)) {
-        if (imported) {
+        /* NOT FOR A LIBRARY gBASIC SHIPS (ruled 2026-09-30). This note tells a
+         * LIBRARY AUTHOR they have shadowed a builtin, and for stdlib the author
+         * is this project -- the names are deliberate, documented and in the
+         * published cookbooks. A reader who writes `load dates` can do nothing
+         * about `dates.merge`, their own unqualified `merge` still reaches the
+         * builtin, and `dates.merge` is explicit either way: the note names a
+         * fact with no action attached, once per load, in the first chapter of
+         * the book.
+         *
+         * MEASURED, and it is why this guard exists rather than being argued:
+         * registering mod/concat/merge so has_builtin would stop lying took the
+         * notes emitted across loading every stdlib library from 9 to 19, and
+         * from 9 libraries to 16 -- adding dates, finance, fake, lending,
+         * credit, deposits and schedule, which is most of a beginner's first
+         * program.
+         *
+         * IT STAYS FOR EVERYTHING ELSE, which is the half that matters: a
+         * library BESIDE the loading file, or one named by an explicit
+         * `from "..."`, is the author's own and still warns. That is the case
+         * the note was built for -- a local `files.bas` shadowing the builtin in
+         * total silence -- and run_library_scope.sh's control asserts it. */
+        if (imported && !current_import_is_authors_own) {
+            /* deliberate and already decided; see above */
+        } else if (imported) {
             /* THE MESSAGE MUST SAY WHICH SIDE OF THE BOUNDARY IT MEANS. It used
              * to read "unqualified calls use the built-in", which stopped being
              * true of the site it points AT when d08409f made a library resolve
@@ -8639,6 +8666,56 @@ static int same_file_path(const char *a, const char *b) {
     return strcmp(ra, rb) == 0;
 }
 
+/* IS THIS LIBRARY THE AUTHOR'S OWN -- i.e. does it sit beside the program being
+ * run? That is what decides whether shadowing a builtin is worth a note.
+ *
+ * TWO EARLIER PREDICATES WERE WRONG AND THE GATE FOUND BOTH.
+ *
+ * "Was it resolved by name from the stdlib search?" asks the LOADER, and 93
+ * files in tests/ and examples/ reach the real stdlib by explicit relative path
+ * (`load dates from "../stdlib/dates.bas"`) while every shipped library loads
+ * its siblings the same way -- so the same library was stdlib or not depending
+ * on who asked.
+ *
+ * "Is the path under a stdlib directory?" asks the INVOCATION: with
+ * GBASIC_PATH=stdlib the repo's own stdlib is recognised and without it is not,
+ * so the identical program emitted the note or did not depending on the
+ * environment it ran in -- the very inconsistency this was meant to remove.
+ *
+ * What is stable is the ROOT PROGRAM'S directory. A library sitting next to the
+ * file you are writing is yours, and a collision in it is yours to fix; one
+ * reached from anywhere else -- the installed stdlib, GBASIC_PATH, ../stdlib,
+ * a shared directory -- belongs to somebody whose names you do not control, and
+ * telling you about it names a fact with no action attached.
+ *
+ * This is the same notion of "local library" the loader already uses: beside
+ * the loading file, never below it (run_library_depth.sh). */
+static int same_directory(const char *a, const char *b) {
+    if (!a || !b) {
+        return 0;
+    }
+    char ra[PATH_MAX];
+    char rb[PATH_MAX];
+    if (!realpath(a, ra) || !realpath(b, rb)) {
+        return 0;
+    }
+    char *sa = strrchr(ra, '/');
+    char *sb = strrchr(rb, '/');
+    if (!sa || !sb) {
+        return 0;
+    }
+    *sa = '\0';
+    *sb = '\0';
+    return strcmp(ra, rb) == 0;
+}
+
+static int library_is_authors_own(const char *library_path) {
+    /* No root program (a prompt session) means nothing is "beside" anything,
+     * and silence is the safe answer -- the note would name a file the session
+     * may not even have on disk. */
+    return root_source_path && same_directory(library_path, root_source_path);
+}
+
 static void search_gbasic_path_for_library(const char *name,
                                            int exact_filename,
                                            LibraryMatch **matches,
@@ -9064,9 +9141,26 @@ static void library_import(const char *name, const char *path, const char *alias
             return;
         }
         previous_import_path = current_import_path;
+        int previous_is_authors_own = current_import_is_authors_own;
         current_import_path = resolved;
+        current_import_is_authors_own = library_is_authors_own(resolved);
+        /* ASKED OF THE PATH, not the loader. The earlier draft of this comment
+         * argued that a `from "..."` import INHERITS the loader's provenance rather than
+         * being forced to "not stdlib", and the difference is not academic:
+         * every shipped library loads its siblings this way
+         * (`load dates from "dates.bas"` appears in finance, credit, deposits,
+         * fake, insiders and more), so forcing 0 here left `dates.merge`
+         * warning on `load finance` while `load dates` was silent -- the same
+         * note, present or absent depending on who asked for it.
+         *
+         * Inheriting gets both cases right with no test for the path: a root
+         * program is not stdlib, so its `load mine from "./mine.bas"` starts
+         * from 0 and still warns. That was still wrong: 93 files in this tree
+         * load the REAL stdlib by explicit relative path, and they would all
+         * have been treated as the author's own. The file decides. */
         library_import_from_block(library, effective);
         current_import_path = previous_import_path;
+        current_import_is_authors_own = previous_is_authors_own;
         use_pair_pop(use_stack, &use_stack_count);
         if (!error_action_pending()) {
             use_pair_add(&used_pairs, &used_pair_count, resolved, effective);
@@ -9215,9 +9309,12 @@ static void library_import(const char *name, const char *path, const char *alias
 
     use_pair_add(&use_stack, &use_stack_count, matches[0].path, effective);
     previous_import_path = current_import_path;
+    int previous_is_authors_own = current_import_is_authors_own;
     current_import_path = matches[0].path;
+    current_import_is_authors_own = library_is_authors_own(matches[0].path);
     library_import_from_block(matches[0].library, effective);
     current_import_path = previous_import_path;
+    current_import_is_authors_own = previous_is_authors_own;
     use_pair_pop(use_stack, &use_stack_count);
     if (!error_action_pending()) {
         use_pair_add(&used_pairs, &used_pair_count, matches[0].path, effective);
