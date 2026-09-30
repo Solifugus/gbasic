@@ -52,6 +52,28 @@ static Token error_token_message(Lexer *lexer, const char *start, int line, int 
     return error_token(lexer, start, line, column);
 }
 
+/* A QBasic TYPE SIGIL (a%, b$, c!, d#, e&) against the same character used as
+ * an operator or a literal prefix. What separates them is only what PRECEDES
+ * the character, which the lexer already knows -- so `a$` can be answered as a
+ * sigil while `$19.99` is still answered as a money guess. The same positional
+ * technique the reserved-word diagnostics use (run_negative.sh), for the same
+ * reason: one character, two different mistakes, two different remedies. */
+static int follows_identifier(const Lexer *lexer, const char *start) {
+    if (start <= lexer->source) {
+        return 0;
+    }
+    unsigned char prev = (unsigned char)start[-1];
+    return prev == '_' || isalnum(prev);
+}
+
+/* error_message is char[96]; every message below is written to fit. */
+static Token sigil_error(Lexer *lexer, const char *start, int line, int column, char sigil) {
+    char message[96];
+    snprintf(message, sizeof(message),
+             "'%c' is a type sigil; gBASIC has none -- write the name alone", sigil);
+    return error_token_message(lexer, start, line, column, message);
+}
+
 static int match(Lexer *lexer, char expected) {
     if (is_at_end(lexer) || *lexer->current != expected) {
         return 0;
@@ -528,6 +550,11 @@ Token lexer_next(Lexer *lexer) {
             if (match(lexer, '=')) return make_token(lexer, TOKEN_OP_NLE, start, line, column);
             return make_token(lexer, TOKEN_OP_NLT, start, line, column);
         }
+        /* Not `!=`, `!>` or `!<`, so a lone `!`. After a name it is QBasic's
+         * single-precision sigil; anywhere else there is nothing to advise. */
+        if (follows_identifier(lexer, start)) {
+            return sigil_error(lexer, start, line, column, '!');
+        }
         break;
     case '>':
         if (match(lexer, '=')) return make_token(lexer, TOKEN_OP_GE, start, line, column);
@@ -611,10 +638,46 @@ Token lexer_next(Lexer *lexer) {
     /* There is no money literal, and '$' is the guess everyone makes first.
      * A targeted message teaches the modifier form instead of just refusing:
      * sigils privilege one currency and change over time, so money is a
-     * modifier from a plain number -- p(USD)= 19.99 (see reference.md). */
+     * modifier from a plain number -- p(USD)= 19.99 (see reference.md).
+     *
+     * SPLIT BY POSITION 2026-09-30: `a$ = "x"` is not a money guess at all, it
+     * is QBasic's string sigil, and answering it with advice about `p(USD)=`
+     * names a remedy for a mistake the reader did not make. */
     case '$':
+        if (follows_identifier(lexer, start)) {
+            return sigil_error(lexer, start, line, column, '$');
+        }
         return error_token_message(lexer, start, line, column,
                                    "'$' is not a money literal; write p(USD)= 19.99 -- money is a modifier from a plain number");
+    /* The QBasic arithmetic a reader types before they have read anything.
+     * Each names a call that EXISTS -- measured: pow(2,3) is 8, floor(7/2) is 3,
+     * mod(-7,3) is 2 -- because web.configure shipped a refusal naming a remedy
+     * that did not, and that is the mistake worth not repeating. `dim` has had
+     * this treatment since the beginning and these did not, which is what makes
+     * it an inconsistency rather than a policy. */
+    case '\\':
+        return error_token_message(lexer, start, line, column,
+                                   "'\\' is not an operator; integer division is floor(a / b)");
+    case '^':
+        return error_token_message(lexer, start, line, column,
+                                   "'^' is not an operator; exponentiation is pow(a, b)");
+    case '%':
+        if (follows_identifier(lexer, start)) {
+            return sigil_error(lexer, start, line, column, '%');
+        }
+        return error_token_message(lexer, start, line, column,
+                                   "'%' is not an operator; the remainder is mod(a, b)");
+    case '#':
+        if (follows_identifier(lexer, start)) {
+            return sigil_error(lexer, start, line, column, '#');
+        }
+        break;
+    case '&':
+        if (follows_identifier(lexer, start)) {
+            return sigil_error(lexer, start, line, column, '&');
+        }
+        return error_token_message(lexer, start, line, column,
+                                   "'&' does not join text; use + -- \"a\" + \"b\"");
     }
 
     return error_token(lexer, start, line, column);

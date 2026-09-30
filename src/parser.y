@@ -395,12 +395,51 @@ static AstModifierUse parse_modifier_use(char *text) {
  * commonest is a plural nobody is sure about. It also names the one shape a
  * reader is most likely to have meant instead: before 2026-09-23 `1e20` came
  * down this path as the number 1 beside the "unit" e20. */
+/* An OPERATOR WORD is not a duration unit, and the reader who wrote one was not
+ * writing a duration at all. `7 mod 3` is the case that matters: MOD is an infix
+ * operator in QBasic, so it is what a reader of the Core Language book types
+ * first, and answering it with "the units are year, month, week..." names seven
+ * things none of which is the problem. The reference already knows this trap --
+ * "`7 mod 2` is duration syntax, not modulo -- `mod` is a call" -- so the page
+ * was right and only the binary was unhelpful.
+ *
+ * Each entry names a call that EXISTS, measured 2026-09-30: mod(-7,3) is 2,
+ * bxor(6,3) is 5, floor(7/2) is 3. `shl`/`shr` are deliberately ABSENT: gBASIC
+ * has no shift builtin, so there is nothing to name, and a hint pointing at
+ * something that does not exist is the web.configure mistake. They keep the
+ * duration message, which is at least true.
+ *
+ * This cannot fire wrongly: every word here is one no duration unit spells. */
+static const char *operator_word_remedy(const char *unit) {
+    if (strcmp(unit, "mod") == 0) return "the remainder is mod(a, b)";
+    if (strcmp(unit, "xor") == 0) return "bitwise XOR is bxor(a, b)";
+    if (strcmp(unit, "div") == 0) return "integer division is floor(a / b)";
+    return NULL;
+}
+
 static void duration_unit_error(gb_parse_ctx *ctx, char *unit,
                                 int line, int column, int end_line, int end_column) {
     char message[256];
-    snprintf(message, sizeof(message),
-             "unknown duration unit '%s' -- the units are year, month, week, day, "
-             "hour, minute and second, singular or plural", unit);
+    char lowered[32];
+    size_t i = 0;
+    for (; unit[i] && i + 1 < sizeof(lowered); i++) {
+        lowered[i] = (char)tolower((unsigned char)unit[i]);
+    }
+    lowered[i] = '\0';
+
+    const char *remedy = operator_word_remedy(lowered);
+    if (remedy != NULL) {
+        /* Named in the spelling the AUTHOR typed -- `7 MOD 3` is how it is
+         * written in the language they are coming from, and nobody should have to
+         * discover that the diagnostic lower-cased their word. Same rule the
+         * reserved-word diagnostics follow. */
+        snprintf(message, sizeof(message),
+                 "'%s' is not an operator in gBASIC; %s", unit, remedy);
+    } else {
+        snprintf(message, sizeof(message),
+                 "unknown duration unit '%s' -- the units are year, month, week, day, "
+                 "hour, minute and second, singular or plural", unit);
+    }
     free(unit);
     report_syntax_error(ctx, line, column, end_line, end_column, message);
 }
