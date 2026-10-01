@@ -8873,6 +8873,117 @@ static int library_is_native_qualifier(const char *name) {
     return 0;
 }
 
+/* --- THE CAPABILITY SURFACE (docs/library_trust_design.md §1.3) -------------
+ *
+ * WHAT IN THIS INTERPRETER CAN TOUCH THE OUTSIDE WORLD, in one place, so that a
+ * capability scan over somebody else's library is a PROOF rather than a guess.
+ *
+ * It can be a proof because of three measured properties: loading a library
+ * executes nothing, a string cannot become a callable (no eval, no
+ * require(variable), and `spawn` will not parse a computed name), and there is
+ * no FFI beyond `gi`. So what a library can do is exactly what its source
+ * textually says, and the set of dangerous names is CLOSED.
+ *
+ * THE LIST IS DERIVED, NOT REMEMBERED. tests/run_capabilities.sh requires this
+ * table to cover `library_is_native_qualifier` above EXACTLY, in both
+ * directions, and to cover builtins.c's `dispatch_only[]`. A module added
+ * without a classification fails there rather than silently scanning as
+ * harmless -- which is the whole failure this exists to prevent, and is the same
+ * argument eval_module_needs_load's own comment makes one function down.
+ *
+ * ONE LABEL WAS WRONG BY INSPECTION AND MEASUREMENT CAUGHT IT: `xml` looks like
+ * a string parser and carries `xml.parse_file`, `xml.read` and `xml.reader`, so
+ * it reads the filesystem. Classify by reading the module's documented calls,
+ * never by what its name suggests.
+ *
+ * `gi` is labelled `ffi` deliberately: it can instantiate and call anything with
+ * a typelib installed, so it is the one qualifier whose reach is not bounded by
+ * this table. A library using `gi` has to be read.
+ *
+ * The vocabulary is small on purpose -- a label nobody can act on is noise:
+ *   process     runs another program          net        opens a connection
+ *   net:listen  accepts connections          db         connects to a database
+ *   fs:read / fs:write                       display    opens a window
+ *   actors      forks a process              ffi        reaches arbitrary native code
+ */
+typedef struct {
+    const char *name;
+    const char *caps;   /* space-separated; "" means no external effect */
+} GbCapability;
+
+static const GbCapability gb_capability_table[] = {
+    /* native qualifiers -- must match library_is_native_qualifier exactly */
+    { "gi",        "ffi display" },
+    { "gui",       "display" },
+    { "http",      "net" },
+    { "ldap",      "net" },
+    { "money",     "" },
+    { "odbc",      "db" },
+    { "pg",        "db" },
+    { "process",   "process" },
+    { "reflect",   "" },
+    { "rowmodel",  "" },
+    { "smtp",      "net" },
+    { "sqlite",    "db fs:write" },
+    { "this",      "" },
+    { "timer",     "" },
+    { "webclient", "net" },
+    { "webserver", "net:listen" },
+    { "xlsx",      "fs:read fs:write" },
+    { "xml",       "fs:read" },
+    /* unqualified verbs dispatched in eval_file_call / eval_dir_call --
+       must match builtins.c dispatch_only[] exactly */
+    { "exists",    "fs:read" },
+    { "read",      "fs:read" },
+    { "write",     "fs:write" },
+    { "bytes",     "fs:read" },
+    { "lines",     "fs:read" },
+    { "chars",     "fs:read" },
+    { "lock",      "fs:write" },
+    { "unlock",    "fs:write" },
+    { "list",      "fs:read" },
+    { "files",     "fs:read" },
+    { "folders",   "fs:read" },
+    /* ...and the three value functions that also live in dispatch_only[] but
+       touch nothing. Classified rather than omitted: this tier's whole job is
+       that an unclassified name FAILS instead of scanning as harmless, so
+       "harmless" has to be something the table says out loud. The coverage
+       check found these three the first time it ran. */
+    { "mod",       "" },
+    { "concat",    "" },
+    { "merge",     "" },
+    /* and the rest of the outward surface, which is neither of those lists */
+    { "make_dir",       "fs:write" },
+    { "atomic_replace", "fs:write" },
+    { "send",      "actors" },
+    { "receive",   "actors" },
+    { "self",      "actors" },
+    { "spawn",     "actors" },   /* a KEYWORD, not a builtin -- scanners need it anyway */
+};
+
+/* Emitted by `gbasic --capabilities` so a scanner in another project DERIVES this
+ * list instead of hardcoding it. Without that, the day gBASIC gains a module the
+ * scanner does not know, every scan after it is silently incomplete. */
+void gb_print_capabilities(FILE *out) {
+    size_t n = sizeof(gb_capability_table) / sizeof(gb_capability_table[0]);
+    for (size_t i = 0; i < n; i++) {
+        fprintf(out, "%s\t%s\n", gb_capability_table[i].name,
+                gb_capability_table[i].caps[0] ? gb_capability_table[i].caps : "-");
+    }
+}
+
+/* For the tripwire: walk the table from outside this file. */
+const char *gb_capability_at(size_t index, const char **caps) {
+    size_t n = sizeof(gb_capability_table) / sizeof(gb_capability_table[0]);
+    if (index >= n) {
+        return NULL;
+    }
+    if (caps) {
+        *caps = gb_capability_table[index].caps;
+    }
+    return gb_capability_table[index].name;
+}
+
 /* The same question from outside the evaluator, for --add-loads: a native
  * qualifier that needs no `load` (`money`, `process`, `timer`, ...) must be
  * left ALONE rather than reported unresolved, and telling the two apart needs

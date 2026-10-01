@@ -33,6 +33,7 @@ static void print_help(const char *argv0) {
     printf("  --tokens FILE   print lexer tokens\n");
     printf("  --ast FILE      parse and print AST\n");
     printf("  --add-loads FILE analyze unresolved calls/modifiers and print source with load statements\n");
+    printf("  --capabilities   list what this interpreter can touch (name, labels), for capability scanners\n");
     printf("  --add-uses FILE  compatibility alias; emits use statements\n");
     printf("  --json-diagnostics FILE [args...]  run FILE, emitting diagnostics as JSON\n");
     printf("                   lines to stderr. Runs the program, so it takes program\n");
@@ -982,6 +983,14 @@ int main(int argc, char **argv) {
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
         printf("gBASIC 0.3.0\n");
+        return 0;
+    } else if (argc == 2 && strcmp(argv[1], "--capabilities") == 0) {
+        /* WHAT THIS INTERPRETER CAN TOUCH: one name per line, tab, its labels,
+         * "-" for none. Exists so a capability scanner in another project
+         * DERIVES the surface instead of hardcoding it -- the day gBASIC gains a
+         * module a hardcoded scanner does not know, every scan after it is
+         * silently incomplete. docs/library_trust_design.md §1.3. */
+        gb_print_capabilities(stdout);
         return 0;
     } else if (argc == 3 && strcmp(argv[1], "--ast") == 0) {
         ast_only = 1;

@@ -1,7 +1,15 @@
 # Library trust: judging quality, compatibility and safety without a staff
 
-**Status: Proposal. None of this exists.** There is no submission pipeline, no
-capability scanner and no certification. Companion to
+**Status: Proposal, with one piece BUILT.** There is no submission pipeline, no
+capability scanner and no certification.
+
+**Built 2026-09-30: the capability registry and `gbasic --capabilities`** (§1.3),
+because it is the one piece that must live in the language and it is unblocked by
+every open question here and in the distribution document. `tests/run_capabilities.sh`
+requires the table to cover the two lists the interpreter already maintains for
+its own reasons, in both directions — so a module added without a classification
+fails there rather than silently scanning as harmless. It found three
+unclassified names the first time it ran. Companion to
 [library_distribution_design.md](library_distribution_design.md), which covers
 how a library is named, versioned and fetched.
 
