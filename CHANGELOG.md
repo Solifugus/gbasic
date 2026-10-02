@@ -34,6 +34,10 @@ quotes a message verbatim has to re-capture it.
   using the documented degradation idiom now takes the real call instead of its
   fallback.
 
+**It closes a security hole:** a path with an interior NUL was truncated rather
+than refused, so `{file}`, `{dir}`, `make_dir` and `copy` could operate on a
+different file than the one a program validated. See **Security** below.
+
 **It stops rejecting something:**
 
 - **An unknown string escape is a warning, not an error.** `"\$([0-9,]+)"`
@@ -48,6 +52,25 @@ gBASIC ships** — `load frame`, `load grid`, `load insiders` and six others
 printed a note at 0.3.0 and are silent now.
 
 ---
+
+### Security — a path may not contain an interior NUL
+
+`f {file}= "evil.sh" + chr(0) + "harmless.txt"` built a reference to **`evil.sh`**,
+and `write` created it. A program that validated the string it was handed
+operated on a different file — the NUL-injection shape. Reported by the
+gBASIC-books session, who found one site; sweeping found four:
+
+| | before |
+|---|---|
+| `{file}` | built `evil.sh`, which `write` then created |
+| `{dir}` | `"etc" + chr(0) + "x"` reached `/etc` and listed 119 entries |
+| `make_dir` | `"d1" + chr(0) + "zz"` created `d1` |
+| `copy` destination | `"out" + chr(0) + "x"` created `out` |
+
+`real_path` and `file_type` already refused, with the right message and the right
+reason beside it — *"it would then be checked as one path and opened as
+another"* — so the policy was decided and simply had not been applied. The guard
+now sits where an untrusted string first becomes a path.
 
 ### Added — what a QBasic programmer types first, answered with a call that exists
 
