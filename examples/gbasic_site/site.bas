@@ -45,7 +45,7 @@ end function
 ' to exist and stay reachable.
 
 function book_version()
-    return "0.3.0"
+    return "0.4.0"
 end function
 
 function book_errata()
@@ -263,7 +263,7 @@ server site( port: 0 )
 end server
 
 program main( args )
-    G = { version: "0.3.0", suites: "158" }
+    G = { version: "0.4.0", suites: "158" }
 
     port_file{file}= "examples/gbasic_site/tmp_port.txt"
     if exists(port_file) then delete(port_file)

@@ -7,7 +7,142 @@ language surface may still change between releases.
 
 ---
 
-## Unreleased
+## 0.4.0 — 2026-10-02
+
+**Read this first.** Two changes BREAK working programs, one changes a result
+quietly, and **eight diagnostics say something different** — so anything that
+quotes a message verbatim has to re-capture it.
+
+**It breaks:**
+
+- **A modifier no longer reaches you through an intermediate library.** `load
+  finance` used to supply `{end of month}` without loading `dates`; it now
+  refuses. Add the `load`, or write `{dates.end of month}`. The error names the
+  library and the line to add.
+- **`on warning stop` can no longer be softened by a library you loaded.** A
+  program that asked for fatal warnings and got advisory ones now gets fatal
+  ones, so it may exit non-zero where it used to exit 0. That is the fix, not a
+  regression.
+
+**It changes a result:**
+
+- **A nested instance inside an array is now re-derived, not copied.**
+  `motors (copy): [new engine]` gave every instance the same inner serial; each
+  now gets its own. A record field already behaved this way — the array was the
+  half left undone.
+- **`has_builtin` answers `true` for `mod`, `concat` and `merge`.** A program
+  using the documented degradation idiom now takes the real call instead of its
+  fallback.
+
+**It stops rejecting something:**
+
+- **An unknown string escape is a warning, not an error.** `"\$([0-9,]+)"`
+  parses, keeps both characters, and warns. Every regex example in
+  `docs/text_design.md` can now be typed as written. `on warning stop` does
+  **not** escalate it — see below.
+
+**Diagnostics that changed what they say** (re-capture if you quote them):
+`7 mod 3`, `7 \ 2`, `2 ^ 3`, `7 % 3`, `"a" & "b"`, `a$`/`a%`/`a!`/`a#`/`a&`,
+`assign modifier not found`, and **note 2102 no longer fires for libraries
+gBASIC ships** — `load frame`, `load grid`, `load insiders` and six others
+printed a note at 0.3.0 and are silent now.
+
+---
+
+### Added — what a QBasic programmer types first, answered with a call that exists
+
+`dim` has been refused *with advice* since the beginning. Everything beside it
+got `unexpected token`, or advice about something else. Measured against 0.3.0, a
+reader's first ten lines:
+
+| they write | 0.3.0 | now |
+|---|---|---|
+| `7 mod 3` | `unknown duration unit 'mod'` + seven units | `the remainder is mod(a, b)` |
+| `7 \ 2` | `unexpected token` | `integer division is floor(a / b)` |
+| `2 ^ 3` | `unexpected token` | `exponentiation is pow(a, b)` |
+| `7 % 3` | `unexpected token` | `the remainder is mod(a, b)` |
+| `"a" & "b"` | `unexpected token` | `'&' does not join text; use +` |
+| `a$ = "x"` | advice about `p(USD)= 19.99` | `'$' is a type sigil; gBASIC has none` |
+
+`$` is split by **position**: `$19.99` is still answered as a money guess and
+`a$` as a sigil. `shl`/`shr` deliberately keep the duration message, because
+gBASIC has no shift builtin and a hint must name something that exists — which
+the suite enforces by scraping every remedy out of the messages and running it.
+
+### Added — `gbasic --capabilities`
+
+What this interpreter can touch, one name and its labels per line, so a
+capability scanner derives the surface instead of hardcoding it. Thirty-eight
+entries across `process`, `net`, `db`, `fs:read`/`fs:write`, `display`, `actors`
+and `ffi`. First increment of `docs/library_trust_design.md`.
+
+### Added — vendored dependencies resolve by convention
+
+`load producer` now finds `libs/producer/producer.bas`, searched after a file
+beside the loader and **before** the stdlib, so a committed `libs/` is a
+reproducible build rather than a suggestion. It is a convention lookup, not a
+directory scan: a library's own dependencies are siblings at the same depth, so
+no scan could tell a public library from a private copy. See
+`docs/library_distribution_design.md`.
+
+### Fixed — `has_builtin` denied three builtins that work
+
+`mod`, `concat` and `merge` are dispatched inside `eval_call` and were never
+registered, so the probe answered `false` for all three while all three worked —
+inverting the one thing it is for, since the reference's own idiom takes the
+fallback on a release that *has* `mod`. Reported by the gBASIC-books session.
+`run_docs_gate.sh` now derives the list from the reference's own "Core Builtin
+Functions" section: 117 names, exactly those three missing.
+
+### Fixed — note 2102 was advice for a library's author, delivered to its reader
+
+A reader who writes `load dates` can do nothing about `dates.merge` sharing a
+name with a builtin. The note is now scoped to libraries sitting **beside the
+program being run**, so a reader's own shadowing library still warns and the
+stdlib is silent.
+
+### Fixed — a GUI widget field that is not a field is refused
+
+`gui_validate_widget_tree` ignored unknown fields, so `actoin:` was accepted in
+silence. Measuring first found that `spacing` **is** implemented and used seven
+times in `examples/gui` while absent from the list the validator checked — so the
+obvious version of this fix would have broken committed examples.
+
+### Fixed — the ledger's last two `OPEN` entries were both false
+
+"No modulo" (`mod(a, b)` exists, **floored** — unlike QBasic's `MOD`, which
+truncates) and "`on error resume next` cannot catch a raise inside a library
+function" (retired by PLAT-ERR in 0.2.x). Both had been cited as design
+justification.
+
+### Platform groundwork
+
+`include/platform.h` plus `platform_posix.c`/`platform_win32.c` extract the three
+Linux-specific mechanisms (`/proc/self/exe`, `socketpair`, `PR_SET_PDEATHSIG`)
+and a socket seam. The harness runs where the tools are BSD. A Windows
+cross-compile ratchet measures the real cost: eight objects compile unmodified
+and `eval.c`'s surface is sixteen constants. **The event loop is not a blocker**
+— its poll set contains zero process pipes, counted rather than assumed.
+
+### Documentation
+
+Two new designs — `library_distribution_design.md` (identity is **origin +
+version**; private vendored copies, so there is no resolution step at all) and
+`library_trust_design.md` (capabilities are a proof because loading a library
+executes nothing, a string cannot become a callable, and there is no FFI beyond
+`gi`; AI writes tests, never verdicts). `gui_addressability_design.md` §0.3
+decides the addressable layer. Headers for the two stdlib libraries that had
+none, one of which — `gui.bas` — turns out to be five lines and deliberately
+empty.
+
+### Known limitation
+
+**A parse-time diagnostic cannot be escalated.** `on warning stop` is scoped over
+call frames, and an unknown string escape in an ordinary literal is decided
+before any statement runs, so there is no frame to consult. The modifier form
+(`{split "\d"}`) is unescaped at run time and *can* be escalated (code 2109).
+Both halves are pinned in `tests/run_string_escapes.sh`.
+
 
 ### Fixed — the release script disagreed with itself about what it ships
 
