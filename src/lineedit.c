@@ -35,10 +35,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <termios.h>
 #include <unistd.h>
+#ifndef _WIN32
+#include <termios.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#endif
 
 #include "lineedit.h"
 
@@ -131,6 +133,16 @@ void line_history_free(void) {
 
 /* ---- raw mode ------------------------------------------------------------ */
 
+#ifdef _WIN32
+/* WINDOWS: NO EDITING YET, AND THE PROMPT STILL WORKS. raw_on() reports that
+ * raw mode is unavailable, which is the path line_edit already takes for a
+ * terminal whose attributes cannot be read: plain_line() below, a working
+ * prompt without arrow keys or history recall. A console editor needs
+ * ReadConsoleInputW and virtual-terminal output and is its own piece of work;
+ * history is still loaded and saved, since that half is only file I/O. */
+static void raw_off(void) {}
+static int raw_on(void) { return 0; }
+#else
 static struct termios cooked;
 static int raw_active = 0;
 
@@ -182,6 +194,7 @@ static int raw_on(void) {
     raw_active = 1;
     return 1;
 }
+#endif /* _WIN32 */
 
 /* ---- the buffer ---------------------------------------------------------- */
 
@@ -232,11 +245,13 @@ static size_t utf8_cols(const char *s, size_t n) {
 }
 
 static size_t terminal_cols(void) {
+#ifndef _WIN32
     struct winsize ws;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
         return ws.ws_col;
     }
-    return 80;
+#endif
+    return 80;   /* Windows: unreachable while raw_on() refuses; see above */
 }
 
 static void le_grow(LineState *ls, size_t need) {
@@ -345,6 +360,10 @@ static int read_byte(char *out) {
  * takes to deliver the rest of a sequence and far shorter than a person takes
  * to press the next key. */
 static int read_byte_soon(char *out) {
+#ifdef _WIN32
+    (void)out;
+    return 0;    /* unreachable while raw_on() refuses; see the raw-mode note */
+#else
     struct timeval tv = { 0, 50000 };
     fd_set fds;
     FD_ZERO(&fds);
@@ -357,6 +376,7 @@ static int read_byte_soon(char *out) {
         return 0;
     }
     return read_byte(out);
+#endif
 }
 
 /* A terminal we could not put into raw mode -- and there is one that matters:

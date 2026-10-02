@@ -14,8 +14,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
-#include <poll.h>
-#include <regex.h>
+#include <regex.h>   /* Windows: TRE through libsystre (docs/windows_port_status.md) */
 #include <signal.h>
 #include <stdarg.h>  /* va_list/va_start: used by warn_fmt and friends. Arrived
                       * transitively on newer toolchains; gcc 11 (Ubuntu 22.04)
@@ -32,13 +31,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/file.h>
+#include "posix_compat.h"   /* poll, sockets, wait, flock: see the header */
 #include <sys/stat.h>
-#include <sys/wait.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -5027,7 +5021,7 @@ static LockEntry *lock_find(const char *path) {
 
 static void lock_clear(void) {
     while (lock_count > 0) {
-        flock(locks[lock_count - 1].fd, LOCK_UN);
+        gb_flock(locks[lock_count - 1].fd, GB_LOCK_RELEASE);
         close(locks[lock_count - 1].fd);
         free(locks[lock_count - 1].path);
         lock_count--;
@@ -5106,7 +5100,7 @@ static int lock_path(const char *path) {
         perror(path);
         return 0;
     }
-    if (flock(fd, LOCK_EX) != 0) {
+    if (gb_flock(fd, GB_LOCK_EXCLUSIVE) != 0) {
         perror(path);
         close(fd);
         return 0;
@@ -5132,7 +5126,7 @@ static int unlock_path(const char *path) {
             if (locks[i].depth > 0) {
                 return 1;
             }
-            int ok = flock(locks[i].fd, LOCK_UN) == 0;
+            int ok = gb_flock(locks[i].fd, GB_LOCK_RELEASE) == 0;
             close(locks[i].fd);
             free(locks[i].path);
             locks[i] = locks[lock_count - 1];
@@ -8787,12 +8781,12 @@ static int same_file_path(const char *a, const char *b) {
     if (strcmp(a, b) == 0) {
         return 1;
     }
-    char ra[PATH_MAX];
-    char rb[PATH_MAX];
-    if (!realpath(a, ra) || !realpath(b, rb)) {
-        return 0;
-    }
-    return strcmp(ra, rb) == 0;
+    char *ra = gb_realpath(a);
+    char *rb = ra ? gb_realpath(b) : NULL;
+    int same = ra && rb && strcmp(ra, rb) == 0;
+    free(ra);
+    free(rb);
+    return same;
 }
 
 /* IS THIS LIBRARY THE AUTHOR'S OWN -- i.e. does it sit beside the program being
@@ -8819,23 +8813,38 @@ static int same_file_path(const char *a, const char *b) {
  *
  * This is the same notion of "local library" the loader already uses: beside
  * the loading file, never below it (run_library_depth.sh). */
+/* The last directory separator in a CANONICAL path (gb_realpath's output).
+ * Windows: gb_realpath answers with backslashes, and `/` is accepted there too.
+ * POSIX: only `/` -- a backslash is an ordinary filename character, and
+ * treating it as a separator would cut a name in half. */
+static char *last_path_separator(char *path) {
+    char *slash = strrchr(path, '/');
+#ifdef _WIN32
+    char *back = strrchr(path, '\\');
+    if (!slash || (back && back > slash)) {
+        slash = back;
+    }
+#endif
+    return slash;
+}
+
 static int same_directory(const char *a, const char *b) {
     if (!a || !b) {
         return 0;
     }
-    char ra[PATH_MAX];
-    char rb[PATH_MAX];
-    if (!realpath(a, ra) || !realpath(b, rb)) {
-        return 0;
+    char *ra = gb_realpath(a);
+    char *rb = ra ? gb_realpath(b) : NULL;
+    char *sa = ra ? last_path_separator(ra) : NULL;
+    char *sb = rb ? last_path_separator(rb) : NULL;
+    int same = 0;
+    if (sa && sb) {
+        *sa = '\0';
+        *sb = '\0';
+        same = strcmp(ra, rb) == 0;
     }
-    char *sa = strrchr(ra, '/');
-    char *sb = strrchr(rb, '/');
-    if (!sa || !sb) {
-        return 0;
-    }
-    *sa = '\0';
-    *sb = '\0';
-    return strcmp(ra, rb) == 0;
+    free(ra);
+    free(rb);
+    return same;
 }
 
 static int library_is_authors_own(const char *library_path) {
@@ -9908,7 +9917,7 @@ static Value eval_path_call(AstExpr *expr) {
             return value_null();
         }
         if (strcmp(name, "real_path") == 0) {
-            char *resolved = realpath(first_path, NULL);
+            char *resolved = gb_realpath(first_path);
             if (!resolved) {
                 result = value_unknown();
             } else {
@@ -14243,11 +14252,7 @@ static char *actor_self_exe_path(void) {
 /* Clear FD_CLOEXEC on fd so it survives exec into the child. Returns 0 on
  * success, -1 on failure. */
 static int fd_clear_cloexec(int fd) {
-    int flags = fcntl(fd, F_GETFD, 0);
-    if (flags < 0) {
-        return -1;
-    }
-    return fcntl(fd, F_SETFD, flags & ~FD_CLOEXEC);
+    return gb_set_cloexec(fd, 0);
 }
 
 /* `spawn worker(args...)` — start a fresh interpreter as a new actor running
@@ -14257,6 +14262,16 @@ static int fd_clear_cloexec(int fd) {
  * fork+execs `gbasic --actor`, and blocks on a control pipe until the child
  * reports ready. */
 static Value eval_spawn(AstExpr *expr) {
+#ifdef _WIN32
+    /* Deliberately out of Tier 1 (windows_port_status.md §6): an actor channel
+     * needs message boundaries that a Windows socket cannot provide, and a
+     * channel that loses them is worse than none. */
+    (void)expr;
+    runtime_error_raise("spawn is not available on Windows: actors need a "
+                        "message-framed channel Windows does not provide yet",
+                        1003, "actor");
+    return value_null();
+#endif
     char *entry = expr->as.call.name;
     size_t argc = expr->as.call.args.count;
 
@@ -17507,17 +17522,15 @@ static void webserver_install_term_handler(void) {
     if (webserver_term_installed) {
         return;
     }
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = webserver_term_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGTERM, &sa, NULL);
+    gb_on_signal(SIGTERM, webserver_term_handler, 0);
     /* PLAT-WEB-4: writing to a client that already left must be an ERROR,
      * never a process death. Plain sends pass MSG_NOSIGNAL, but SSL_write
      * cannot, and with streaming, dead-peer writes stop being rare -- an
-     * emit loop discovers the disconnect BY the failed write. */
+     * emit loop discovers the disconnect BY the failed write. Windows has no
+     * SIGPIPE: a write to a closed socket simply fails there. */
+#ifdef SIGPIPE
     signal(SIGPIPE, SIG_IGN);
+#endif
     webserver_term_installed = 1;
 }
 
@@ -19460,7 +19473,7 @@ fail:
  * process.start, never by leaking through an unrelated process.run. */
 static Value webserver_register(int fd, const char *bound_address, int bound_port,
                                 int hold, double timeout_s) {
-    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+    gb_set_cloexec(fd, 1);
     webserver_install_term_handler();
 
     WebServer *servers = realloc(webservers, sizeof(WebServer) * (webserver_count + 1));
@@ -19637,6 +19650,15 @@ static Value webserver_eval_inherited(AstExpr *expr) {
 }
 
 static Value webserver_eval_listen(AstExpr *expr) {
+#ifdef _WIN32
+    /* Out of Tier 1 (windows_port_plan.md §5), and REFUSED rather than left
+     * half-working: it still close()s sockets and reads errno where Winsock
+     * reports through WSAGetLastError -- the failure class that compiles
+     * cleanly and breaks at runtime (windows_port_status.md §5). */
+    (void)expr;
+    webserver_raise("webserver.listen is not available on Windows yet");
+    return value_null();
+#endif
     if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
         webserver_raise("webserver.listen expects a port and an optional options record");
         return value_null();
@@ -27094,6 +27116,59 @@ static Value process_do_run(AstExpr *expr) {
     }
     argv[nargs + 1] = NULL;
 
+#ifdef _WIN32
+    /* WINDOWS: everything above -- the options, their refusals, the env
+     * validation -- is shared with POSIX, so the two cannot disagree about what
+     * process.run accepts. Only launching and draining differ, and that lives in
+     * gb_run_capture (src/platform_win32.c), which says what it keeps and what
+     * it cannot (no signals; CreateProcess's search order). */
+    {
+        size_t nenv = run_env ? run_env->as.record.count : 0;
+        const char **env_names = nenv ? calloc(nenv, sizeof(char *)) : NULL;
+        const char **env_values = nenv ? calloc(nenv, sizeof(char *)) : NULL;
+        if (nenv && (!env_names || !env_values)) {
+            abort();
+        }
+        for (size_t i = 0; i < nenv; i++) {
+            RecordField *f = &run_env->as.record.fields[i];
+            env_names[i] = f->name;
+            env_values[i] = f->value->kind == VALUE_NULL ? NULL : f->value->as.string;
+        }
+        GbRunResult rr;
+        int rc = gb_run_capture(argv, cwd, env_names, env_values, nenv, timeout_ms, &rr);
+        free(env_names);
+        free(env_values);
+        free(argv);
+        if (rc == 1) {
+            /* Same message shape as POSIX, and built before opts is freed
+             * because cmd_f points into it. */
+            char msg[700];
+            snprintf(msg, sizeof(msg), "process.run: could not execute '%s': %s",
+                     cmd_f->value->as.string, rr.why);
+            value_free(opts);
+            if (launch_as_result) {
+                ProcBuf empty_out = {0}, empty_err = {0};
+                return process_make_result_ex(-1, &empty_out, &empty_err,
+                                              0, 0, 0, 1, 1, msg);
+            }
+            return process_raise(msg);
+        }
+        value_free(opts);
+        if (rc != 0) {
+            return process_raise("process.run: error reading child output");
+        }
+        ProcBuf out = { rr.out, rr.out_len, rr.out_len };
+        ProcBuf err = { rr.err, rr.err_len, rr.err_len };
+        int success = rr.exit_code == 0 && !rr.timed_out;
+        Value result = launch_as_result
+            ? process_make_result_ex(rr.exit_code, &out, &err, success, 0,
+                                     rr.timed_out, 1, 0, "")
+            : process_make_result(rr.exit_code, &out, &err, success, 0, rr.timed_out);
+        free(rr.out);
+        free(rr.err);
+        return result;
+    }
+#else
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
     if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0 || pipe(exec_pipe) != 0) {
         for (int i = 0; i < 2; i++) {
@@ -27109,7 +27184,7 @@ static Value process_do_run(AstExpr *expr) {
      * automatically (parent reads EOF => exec succeeded), while a failed exec writes
      * errno through it first. This is what distinguishes "could not launch" from a
      * child that ran and exited 127. */
-    fcntl(exec_pipe[1], F_SETFD, fcntl(exec_pipe[1], F_GETFD) | FD_CLOEXEC);
+    gb_set_cloexec(exec_pipe[1], 1);
 
     pid_t launcher_pid = getpid();
     pid_t pid = fork();
@@ -27228,6 +27303,7 @@ static Value process_do_run(AstExpr *expr) {
     free(out.data);
     free(err.data);
     return result;
+#endif /* _WIN32 */
 }
 
 /* ===================== PLAT-PROC: live child control =====================
@@ -27353,7 +27429,7 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
         }
         return -2;
     }
-    fcntl(exec_pipe[1], F_SETFD, fcntl(exec_pipe[1], F_GETFD) | FD_CLOEXEC);
+    gb_set_cloexec(exec_pipe[1], 1);
 
     pid_t launcher_pid = getpid();
     pid_t pid = fork();
@@ -27691,6 +27767,10 @@ static int process_opt_seconds(Value *opts, const char *field, const char *label
 /* process.start(options) -> handle. Same options as process.run minus `timeout`,
  * which has no meaning without a blocking wait to bound. */
 static Value process_do_start(AstExpr *expr) {
+#ifdef _WIN32
+    (void)expr;
+    return process_raise("process.start is not available on Windows yet");
+#endif
     proc_orphans_sweep();
     if (expr->as.call.args.count != 1) {
         return process_raise("process.start expects a single options record");
@@ -28122,13 +28202,11 @@ static Value process_do_self(AstExpr *expr) {
     if (!self_source) {
         return process_raise("process.self: no script path (embedded evaluation)");
     }
-    char script[4096];
-    if (!realpath(self_source, script)) {
-        snprintf(script, sizeof(script), "%s", self_source);
-    }
+    char *resolved = gb_realpath(self_source);
     Value result = value_record(NULL, 0);
     record_set(&result, "interpreter", value_string(exe));
-    record_set(&result, "script", value_string(script));
+    record_set(&result, "script", value_string(resolved ? resolved : self_source));
+    free(resolved);
     Value *items = program_arg_count ? malloc(sizeof(Value) * program_arg_count) : NULL;
     if (program_arg_count && !items) {
         abort();
@@ -28141,6 +28219,13 @@ static Value process_do_self(AstExpr *expr) {
 }
 
 static Value process_do_which(AstExpr *expr) {
+#ifdef _WIN32
+    /* Not merely unimplemented: the search below splits PATH on ':', which on
+     * Windows also splits every "C:\..." entry, and checks POSIX execute bits
+     * where Windows uses PATHEXT -- so it would answer WRONGLY, not fail. */
+    (void)expr;
+    return process_raise("process.which is not available on Windows yet");
+#endif
     if (expr->as.call.args.count != 1) {
         return process_raise("process.which expects a command name");
     }

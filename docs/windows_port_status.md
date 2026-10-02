@@ -188,4 +188,63 @@ not a Tier 1 blocker on this toolchain.
 - **stdin.** stdout/stderr go to binary mode at startup (`gb_stdio_binary`);
   stdin is left in text mode until something reading it on Windows is measured.
 
-**Still open:** nothing here has RUN gBASIC on Windows yet — §5 stands.
+## 10. gbasic.exe builds natively and RUNS (2026-10-02)
+
+From an "MSYS2 UCRT64" shell, `make` builds `gbasic.exe` (lean: every optional
+module off). It is statically linked against libgcc/winpthread, so it imports
+only Windows' own DLLs — the UCRT (`api-ms-win-crt-*`), KERNEL32, ADVAPI32 and
+WS2_32 — and needs nothing installed beside it. The ratchet is at **0**, which
+now means "the Windows build compiles clean" and must stay there.
+
+**Measured on Windows 11, natively (not under MSYS2):**
+- `tests/windows/smoke.bas`: **20 checks, 0 mismatches** — values, money,
+  dates, durations, files, CRLF reading, the interior-NUL path refusal, and
+  `process.run`.
+- `tests/windows/process_run.bas` (new, cross-platform): **33 checks, 0
+  mismatches** — argument quoting (13 hostile arguments round-trip exactly,
+  including `C:\Program Files\`), stdout/stderr separately, exit codes, 2 MB on
+  both streams at once without deadlock, `env` merge, `cwd`, a timeout that
+  ends a 30 s child in ~1 s, and launch failure raised and as a record.
+- stdout is LF-only: 0 CR bytes in the smoke run's output (binary mode).
+
+**Proven red, not only green:** with the quoter's trailing-backslash doubling
+removed, the ARGV tier first STAYED GREEN — `trailing\` needs no quoting, so it
+never exercised the rule. Adding `has space\` and `C:\Program Files\` made the
+perturbation fail, and the way it failed is the reason the tier exists: the
+broken quoter made one argument SWALLOW THE NEXT, with nothing raised.
+
+**How each POSIX mechanism maps (see include/platform.h and
+include/posix_compat.h):**
+
+| | Windows body | status |
+|---|---|---|
+| `process.run` | `CreateProcessW`, pipes drained on two threads, a Job Object (KILL_ON_JOB_CLOSE) for the timeout and for "nothing outlives the interpreter", an explicit inherited-handle list | **works**, 33 checks |
+| `lock` | `LockFileEx` over the whole file | compiles; NOT yet exercised on Windows |
+| `real_path`, library "beside the program" | `GetFinalPathNameByHandleW` (resolves links, requires existence) | compiles; NOT yet exercised; answers use `\` and a drive letter |
+| close-on-exec | `SetHandleInformation` | compiles |
+| prompt Ctrl-C | `signal()` with a re-arming trampoline | compiles; console behaviour NOT measured |
+| prompt line editing | none: plain line input, history file kept | works as a plain prompt |
+| `process.start/poll/read/wait/stop`, `process.which` | **refused by name** | next |
+| `spawn` (actors), `webserver.listen` | **refused by name** | out of Tier 1 |
+| regex | TRE through libsystre (BSD-2) | links; run_regex's flag matrix NOT yet run against it |
+
+**What a Windows process.run cannot match, and says so:** there are no signals
+(`signal` is always 0; a timed-out child reports `exit_code` -1), and
+CreateProcess searches the program's own directory and the current directory
+before PATH and appends only `.exe` — a `.bat`/`.cmd` needs `cmd /c`.
+
+**Linux unchanged, checked as a difference** in WSL Ubuntu 26.04 (gcc 15.2):
+HEAD and HEAD plus these changes built side by side with identical warnings,
+eighteen suites run on both, logs identical bar line numbers, temp names,
+timings, one non-deterministic child count and the order of one stderr line.
+**Both `.bas` suites above also pass on Linux** (20 and 33 checks), so one file
+asserts one behaviour on both platforms. Pre-existing failures on BOTH trees in
+that environment, not investigated: run_repl's Ctrl-C tiers (5 to 10 checks,
+varying run to run — timing-sensitive on a 2-core machine), run_library_depth
+(the chart-library check), run_examples (gui_fields_test), run_negative (a real
+server block), run_xlsx (fixtures it cannot read there).
+
+**Still open, in order:** `process.start` and friends; `process.which` with `;`
+and PATHEXT; running the existing `.bas` suites (regex, lock, paths) under the
+Windows binary; the UTF-8 code page manifest (non-ASCII argv, paths and ODBC);
+`--line-buffered`; time zones; the optional modules (M2 ODBC first).

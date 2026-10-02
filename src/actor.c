@@ -9,8 +9,53 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <unistd.h>
+
+#ifdef _WIN32
+/* WINDOWS: THE TRANSPORT DOES NOT EXIST, AND SAYS SO. Every entry point below
+ * fails with ENOSYS rather than approximating SOCK_SEQPACKET -- a stream socket
+ * would coalesce and split frames with nothing to say so (include/platform.h,
+ * gb_channel_socketpair). `spawn` is refused by name before any of this is
+ * reached; these exist so the evaluator links, and they are what any missed
+ * path would meet. Tier 2 (windows_port_status.md §6) replaces them with a
+ * length-prefixed channel. */
+int mailbox_open(Mailbox *box) {
+    box->read_fd = -1;
+    box->write_fd = -1;
+    errno = ENOSYS;
+    return -1;
+}
+void mailbox_close(Mailbox *box) {
+    box->read_fd = -1;
+    box->write_fd = -1;
+}
+size_t channel_max_message(int write_fd) {
+    (void)write_fd;
+    return 0;
+}
+int channel_send(int write_fd, const void *bytes, size_t len) {
+    (void)write_fd; (void)bytes; (void)len;
+    return ACTOR_CHANNEL_ERROR;
+}
+int channel_send_fds(int write_fd, const void *bytes, size_t len,
+                     const int *fds, size_t nfds) {
+    (void)write_fd; (void)bytes; (void)len; (void)fds; (void)nfds;
+    return ACTOR_CHANNEL_ERROR;
+}
+int channel_recv(int read_fd, void **out, size_t *out_len) {
+    (void)read_fd; (void)out; (void)out_len;
+    return ACTOR_RECV_ERROR;
+}
+int channel_recv_fds(int read_fd, void **out, size_t *out_len,
+                     int **out_fds, size_t *out_nfds) {
+    (void)read_fd; (void)out; (void)out_len;
+    *out_fds = NULL;
+    *out_nfds = 0;
+    return ACTOR_RECV_ERROR;
+}
+#else /* POSIX: everything to the end of the file */
+
+#include <sys/socket.h>
 
 /* Documented portable floor for a single message: 64 KiB. channel_max_message
  * never returns less than this, so a program can rely on at least this much
@@ -212,3 +257,5 @@ int channel_recv_fds(int read_fd, void **out, size_t *out_len,
         return ACTOR_RECV_OK;
     }
 }
+
+#endif /* _WIN32 */

@@ -2,6 +2,8 @@
 *.a
 /gbasic
 /gbasic-lsp
+/gbasic.exe
+/gbasic-lsp.exe
 /libgbasic.a
 parser.tab.c
 parser.tab.h

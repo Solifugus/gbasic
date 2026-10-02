@@ -205,6 +205,17 @@ endif
 # WHICH PLATFORM FILE. Overridable, because tools/cross-build-windows.sh must
 # build the Windows one or it measures the POSIX file failing to be Windows,
 # which is true and says nothing.
+#
+# NATIVE WINDOWS (an "MSYS2 UCRT64" shell, docs/windows_port_status.md §9):
+# make's own OS variable is Windows_NT there. Winsock is a library rather than
+# part of libc, and -static links libgcc/winpthread into the binary so
+# gbasic.exe needs nothing beside it -- the UCRT itself ships with Windows.
+ifeq ($(OS),Windows_NT)
+PLATFORM_OBJ ?= src/platform_win32.o
+# libsystre: the POSIX regex.h API over TRE (BSD-2), since Windows has none.
+# TRE takes its messages through gettext, hence libintl and libiconv.
+LDLIBS += -lsystre -ltre -lintl -liconv -lws2_32 -static
+endif
 PLATFORM_OBJ ?= src/platform_posix.o
 
 LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o $(PLATFORM_OBJ)

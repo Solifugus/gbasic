@@ -364,7 +364,7 @@ static void cache_write(const ReplBuffer *b) {
     char *src = buffer_source(b);
     fputs(src, f);
     free(src);
-    if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
+    if (fflush(f) != 0 || gb_fsync(fileno(f)) != 0) {
         fclose(f);
         unlink(tmp);
         return;
@@ -408,7 +408,7 @@ static char *orphan_find(size_t *count) {
         if (*session_cache && strcmp(path, session_cache) == 0) {
             continue;
         }
-        if (kill((pid_t)pid, 0) == 0 || errno == EPERM) {
+        if (gb_process_alive(pid)) {
             continue;                      /* still running: not an orphan */
         }
         struct stat st;
@@ -978,12 +978,7 @@ int repl_main(int json_diagnostics) {
     /* SA_RESTART so the blocking read of the next line is resumed rather than
      * failing with EINTR: a Ctrl-C at an idle prompt must do nothing, and
      * without this it would look like end-of-input and close the session. */
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = repl_on_interrupt;
-    sa.sa_flags = SA_RESTART;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGINT, &sa, NULL);
+    gb_on_signal(SIGINT, repl_on_interrupt, 1);
 
     /* Runtime errors name their source the way a script's do. `<prompt>` rather
      * than a path, and the line is the line WITHIN the chunk -- which is what a

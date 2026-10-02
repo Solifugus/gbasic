@@ -9,6 +9,17 @@ gbasic tests/windows/smoke.bas
 `mismatches: 0` is a pass. Any other last line is a failure, and each one names
 what it got and what it wanted.
 
+`process_run.bas` is the second suite, and the same kind of file: it asserts
+what `process.run` does — argument quoting, both streams, exit codes, a
+deadlock-sized output, `env`, `cwd`, timeouts, launch failure — using gBASIC
+itself as the child (`process_child.bas`), so it too runs unchanged on both
+platforms. Run both from the repository root:
+
+```
+gbasic tests/windows/smoke.bas
+gbasic tests/windows/process_run.bas
+```
+
 ## Why it is written in gBASIC rather than PowerShell
 
 The gate is 158 bash suites and Windows has no bash. Porting them to PowerShell

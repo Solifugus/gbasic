@@ -21,6 +21,8 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -133,6 +135,39 @@ time_t gb_timegm(struct tm *tm) {
 
 int gb_mkdir(const char *path, int mode) {
     return mkdir(path, (mode_t)mode);
+}
+
+int gb_flock(int fd, int op) {
+    return flock(fd, op == GB_LOCK_EXCLUSIVE ? LOCK_EX : LOCK_UN);
+}
+
+char *gb_realpath(const char *path) {
+    return realpath(path, NULL);
+}
+
+int gb_set_cloexec(int fd, int on) {
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags < 0) {
+        return -1;
+    }
+    return fcntl(fd, F_SETFD, on ? (flags | FD_CLOEXEC) : (flags & ~FD_CLOEXEC));
+}
+
+int gb_fsync(int fd) {
+    return fsync(fd);
+}
+
+int gb_process_alive(long pid) {
+    return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+}
+
+int gb_on_signal(int sig, void (*handler)(int), int restart) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handler;
+    sa.sa_flags = restart ? SA_RESTART : 0;
+    sigemptyset(&sa.sa_mask);
+    return sigaction(sig, &sa, NULL);
 }
 
 void gb_stdio_binary(void) {

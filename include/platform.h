@@ -176,6 +176,93 @@ time_t gb_timegm(struct tm *tm);
  * each one -- not yet built or measured. */
 int gb_mkdir(const char *path, int mode);
 
+/* flock(fd, LOCK_EX) / flock(fd, LOCK_UN): a whole-file advisory lock that
+ * BLOCKS until granted and is released by the OS when the process dies --
+ * which is what `with lock(...)` relies on (run_lock_signal.sh measured that
+ * the kernel release is the whole of the cleanup). Windows: LockFileEx over the
+ * file's whole range. Note Windows locks are MANDATORY for the locked range,
+ * so another process cannot read or write a locked file -- harmless for a lock
+ * FILE used as a sentinel, which is how `lock` uses it. Returns 0 / -1. */
+enum { GB_LOCK_RELEASE = 0, GB_LOCK_EXCLUSIVE = 1 };
+int gb_flock(int fd, int op);
+
+/* realpath(path, NULL): the canonical absolute path of an EXISTING file, with
+ * every symlink resolved, malloc'd; NULL if it cannot be resolved. web.static's
+ * containment check rests on "canonicalize, then compare" (run_web_routes.sh),
+ * so a substitute that did not resolve links would serve files outside the
+ * root. Windows: GetFinalPathNameByHandleW on an opened handle -- which, like
+ * realpath, requires existence and follows links -- then UTF-8. Windows paths
+ * come back with backslashes and a drive letter. */
+char *gb_realpath(const char *path);
+
+/* Set (on=1) or clear (on=0) close-on-exec / non-inheritance on an fd.
+ * Windows: SetHandleInformation(HANDLE_FLAG_INHERIT) on the fd's OS handle.
+ * Returns 0 / -1. */
+int gb_set_cloexec(int fd, int on);
+
+/* fsync. Windows: _commit. Returns 0 / -1. */
+int gb_fsync(int fd);
+
+/* Is a process with this id still running? kill(pid, 0) on POSIX, counting
+ * EPERM as alive (it exists, it is just not ours). Windows: OpenProcess and
+ * GetExitCodeProcess. Used by the prompt to tell a live session's cache file
+ * from an orphan's. */
+int gb_process_alive(long pid);
+
+/* Install `handler` for `sig`. `restart`: a blocking read interrupted by the
+ * signal resumes rather than failing with EINTR (SA_RESTART).
+ * WINDOWS DIFFERS IN A WAY THAT MATTERS: signal() there resets the handler to
+ * the default once it fires, so a second Ctrl-C would kill the prompt. The
+ * Windows body re-arms before calling the handler. Windows has no SA_RESTART;
+ * what a console read does on Ctrl-C there is UNMEASURED. Returns 0 / -1. */
+int gb_on_signal(int sig, void (*handler)(int), int restart);
+
+#ifdef _WIN32
+/* process.run's LAUNCH-AND-DRAIN half, for Windows. POSIX keeps its fork/exec
+ * path in src/eval.c unchanged; option parsing is shared, and the two will
+ * converge on one seam when process.start is ported, once there are two real
+ * implementations to shape it from rather than one and a guess.
+ *
+ * Runs argv[0] with argv[1..] (NULL-terminated), stdout and stderr captured,
+ * stdin inherited. `cwd` may be NULL. The environment is the parent's MERGED
+ * with env_names[i] = env_values[i] (a NULL value unsets) -- process.run's
+ * documented `env` semantics, with names compared case-insensitively as Windows
+ * does. timeout_ms < 0 means none.
+ *
+ * THE PROPERTIES KEPT, each the Windows form of a POSIX one:
+ *   - the child runs in a JOB OBJECT with KILL_ON_JOB_CLOSE, so a timeout ends
+ *     the whole tree (POSIX: kill the process group) and an interpreter killed
+ *     outright takes its children with it (POSIX: PR_SET_PDEATHSIG);
+ *   - exactly three handles are inherited, by an explicit handle list (POSIX:
+ *     close-on-exec on everything else);
+ *   - both pipes are drained concurrently, so a child filling one cannot
+ *     deadlock against a parent reading the other (POSIX: poll over both).
+ *
+ * WHAT DIFFERS, and is reported rather than papered over:
+ *   - there are no signals: `signal` is always 0, and a timed-out child reports
+ *     exit_code -1 with timed_out true;
+ *   - CreateProcess searches the application's directory and the CURRENT
+ *     directory before PATH, and appends only ".exe" -- so a ".bat"/".cmd"
+ *     script needs `cmd /c`, unlike execvp running a script with a shebang.
+ *
+ * Returns 0 when the child ran (res filled; res->out/err malloc'd, caller
+ * frees), 1 when it could not be LAUNCHED (res->why says why; nothing to
+ * free), -1 on an internal failure reading its output. */
+typedef struct {
+    int    exit_code;
+    int    timed_out;
+    char  *out;
+    size_t out_len;
+    char  *err;
+    size_t err_len;
+    char   why[512];
+} GbRunResult;
+
+int gb_run_capture(char *const argv[], const char *cwd,
+                   const char *const *env_names, const char *const *env_values,
+                   size_t env_count, long timeout_ms, GbRunResult *res);
+#endif
+
 /* Make stdout and stderr write bytes exactly as given. Called first thing in
  * main, before any output.
  *
