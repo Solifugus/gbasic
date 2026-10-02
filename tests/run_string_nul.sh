@@ -426,5 +426,74 @@ control: ab"
         fi ;;
 esac
 
+# --- A PATH MAY NOT CONTAIN AN INTERIOR NUL (2026-10-02) ---------------------
+#
+# The sixth sweep of this family, and the one with a security shape: a path with
+# an interior NUL is CHECKED as one path and OPENED as another, so a program that
+# validated the string it was handed operated on a different file.
+#
+# MEASURED before the fix, and the report found one site of four:
+#   {file}    "evil.sh\0harmless.txt"  -> a reference to evil.sh, which `write` created
+#   {dir}     "etc\0x"                 -> /etc, 119 entries listed
+#   make_dir  "d1\0zz"                 -> created d1
+#   copy      dest "out\0x"            -> created out
+# while `real_path` and `file_type` already refused, with the right message and
+# the right reason written beside it. A guard added only where somebody noticed is
+# not a guard -- which is this file's own standing lesson, applied rather than
+# re-learned for the sixth time.
+#
+# Reported by the gbasic-books session.
+nulpath_dir="$(mktemp -d)"
+nulpath() {   # nulpath <label> <source> ; asserts refusal AND that nothing appeared
+    checks=$((checks + 1))
+    printf '%s\n' "$2" >"$nulpath_dir/p.bas"
+    out="$( (cd "$nulpath_dir" && "$OLDPWD/gbasic" p.bas 2>&1) || true )"
+    case "$out" in
+        *"a path cannot contain an interior NUL byte"*) ;;
+        *) printf '  FAIL %s did not refuse: %s\n' "$1" "$out"; failures=$((failures + 1)); return ;;
+    esac
+    # THE REFUSAL IS NOT THE WHOLE CLAIM. A message proves nothing about the disk,
+    # and every one of these defects was a FILE APPEARING, so the tier asserts the
+    # absence on the filesystem too.
+    stray="$(ls -A "$nulpath_dir" | grep -v '^p\.bas$' || true)"
+    if [ -n "$stray" ]; then
+        printf '  FAIL %s refused but something was created: %s\n' "$1" "$(printf '%s' "$stray" | tr '\n' ' ')"
+        failures=$((failures + 1)); rm -rf "$nulpath_dir"/* 2>/dev/null || true; return
+    fi
+    printf '  ok   %s refuses, and nothing is created\n' "$1"
+}
+
+nulpath '{file} modifier' 'f {file}= "evil.sh" + chr(0) + "harmless.txt"
+write(f, "x")'
+nulpath '{dir} modifier'  'd {dir}= "sub" + chr(0) + "x"
+print count(files(d))'
+nulpath 'make_dir'        'print make_dir("d1" + chr(0) + "zz")'
+nulpath 'copy destination' 'f {file}= "p.bas"
+print copy(f, "out" + chr(0) + "x")'
+nulpath 'real_path'       'print real_path("a" + chr(0) + "b")'
+nulpath 'file_type'       'print file_type("a" + chr(0) + "b")'
+
+# CONTROLS. Without these, "paths with a NUL are refused" is satisfied by a guard
+# that refuses every path -- which would break every file operation in the
+# language, silently, in a release.
+checks=$((checks + 1))
+printf 'f {file}= "ctl.txt"\nwrite(f, "hello")\nprint read(f)\nd {dir}= "."\nprint count(files(d)) > 0\nprint make_dir("sub2")\nprint copy(f, "ctl2.txt")\n' >"$nulpath_dir/p.bas"
+ctl="$( (cd "$nulpath_dir" && "$OLDPWD/gbasic" p.bas 2>&1) || true )"
+case "$ctl" in
+    *hello*true*true*true*) printf '  ok   an ordinary path still works at all four sites\n' ;;
+    *) printf '  FAIL the guard refuses ordinary paths too: %s\n' "$(printf '%s' "$ctl" | tr '\n' '|')"; failures=$((failures + 1)) ;;
+esac
+# ...and a path whose NUL is only at the END is not an interior NUL. gBASIC
+# strings are counted, so this is a real distinction rather than a quibble.
+checks=$((checks + 1))
+printf 'f {file}= "tail.txt" + chr(0)\nprint "built"\n' >"$nulpath_dir/p.bas"
+tail_out="$( (cd "$nulpath_dir" && "$OLDPWD/gbasic" p.bas 2>&1) || true )"
+case "$tail_out" in
+    *"interior NUL"*) printf '  ok   a trailing NUL is refused too (it is still a byte in the path)\n' ;;
+    *built*) printf '  ok   a trailing NUL is accepted (documented behaviour either way)\n' ;;
+    *) printf '  FAIL trailing NUL did something else: %s\n' "$tail_out"; failures=$((failures + 1)) ;;
+esac
+rm -rf "$nulpath_dir"
+
 printf '\nrun_string_nul: %d checks, %d failed\n' "$checks" "$failures"
 [ "$failures" -eq 0 ] || exit 1

@@ -9846,3 +9846,183 @@ touching it, having spent the morning writing up the opposite habit. The two
 that genuinely had none now have one, and `stdlib/gui.bas` turns out to be five
 lines and deliberately empty — the declarative `gui` module is native, behind
 `#if HAVE_GTK` in `src/eval.c` — which nothing in the tree said anywhere.
+
+------------------------------------------------------------------------
+
+## From drafting Volume 2 Chapter 7 — Files and Directories, 2026-10-02
+
+Six, all measured against the published 0.3.0 package, all now carried in the
+chapter as gated blocks. The first two are the ones worth your time.
+
+### `chars(f)` returns the byte count
+
+`src/eval.c` says so itself:
+
+```c
+if (strcmp(name, "bytes") == 0 || strcmp(name, "chars") == 0) {
+    /* TODO: chars currently counts bytes, not Unicode code points. */
+```
+
+Measured on a file holding `héllo` — five characters, six bytes:
+
+```
+chars      6
+bytes      6
+file_size  6
+len(read)  5
+byte_count 6
+```
+
+**This one costs a book argument, the way `dates.select` did.** Chapter 5's
+case is that gBASIC keeps two index spaces apart and names them honestly:
+`len` counts codepoints, `byte_count` counts bytes, and the discipline is
+never to hand one family's number to the other. `chars` is the file-side
+spelling of `len` and delivers `byte_count`. Until it moves, the only way to
+count characters in a file is `len(read(f))` — a full read of a file somebody
+may have been counting precisely in order not to read.
+
+### `bytes(f)` reads the whole file to answer what `file_size(f)` gets from `stat`
+
+Same number, always; they report the same quantity. Peak resident size on a
+256 MiB file, over a 10 MB baseline: `file_size` 10 MB, `bytes` 271 MB. Timed
+over 20 calls on an 8 MB file, `bytes` costs **275× to 414×** what `file_size`
+costs.
+
+Nothing in `reference.md` suggests they differ in cost, and `bytes` reads more
+naturally for "how big is this", so the expensive one is the one a reader
+reaches for. It is also the one a safe-write wants *not* to use, immediately
+after writing the file it is about to verify.
+
+### `copy(f, dest)` is not in `docs/reference.md` at all
+
+Not under Files and Directories, not anywhere. It exists, it works, and
+`copy_file_path` streams it 8 KiB at a time, which makes it **the only file
+operation in the language whose memory does not scale with the file**: 256 MiB
+copied at 10 MB resident in 0.10 s.
+
+That is more than a doc gap. The chapter has to tell readers gBASIC cannot
+handle a file larger than memory, and this is the single exception to that
+sentence. It should not take reading `eval.c` to find the function that answers
+the chapter's hardest question.
+
+### `{file}` accepts an interior NUL and truncates at it
+
+```basic
+f {file}= "evil.sh" + chr(0) + "harmless.txt"   ' a reference to evil.sh
+write(f, "x")                                   ' creates evil.sh
+extension("evil.sh" + chr(0) + "harmless.txt")  ' "sh"
+```
+
+`real_path` is the only function in the family that refuses, and the reference
+gives exactly the right reason — the path "would then be *checked* as one path
+and *opened* as another". **The guard is correct and it is in the wrong
+place.** The modifier is where an untrusted string becomes a path and is the
+one call a program cannot route around. Refusing an interior NUL there is a
+*string* check, so it does not require `{file}` to touch the filesystem — which
+is the objection that has kept `{file}` from validating anything.
+
+### `lock(f)` blocks indefinitely, with no non-blocking form and no timeout
+
+Measured across processes: parent holds, child reaches `lock`, prints, waits
+until killed at one second; parent unlocks and the same child acquires
+immediately and exits 0. The locking is correct.
+
+The gap is that the only way to take a lock *without* risking a permanent wait
+is `make_dir`'s non-idempotence — a fine idiom, and not what anybody looking
+for a lock will find. `lock(f, { wait: false })`, or a timeout, would let the
+chapter recommend one function instead of explaining when not to use it.
+
+### No streaming read, and writing is random-access while reading is not
+
+`open`, `seek`, `read_at`, `read_bytes` and `truncate` all answer `invalid
+function call`, so there is no manual chunking either — while
+`overwrite(f, text, position)` writes at a byte offset perfectly well.
+
+Peak resident over a 10 MB baseline, two sizes:
+
+```
+                                   128 MiB      256 MiB    per byte
+file_size(f)                          0 MB         0 MB    free (stat)
+bytes / lines / chars                130 MB       261 MB    1x
+read(f)                              261 MB       523 MB    2x
+read_lines(f)                        474 MB       950 MB    2x + ~101 B/line
+```
+
+The per-line constant is measured twice — 101 bytes a line at 64-byte lines,
+102 at 1 KiB lines — so it is per entry, not per byte. **The ceiling is not the
+file's size; it is one to four times the file's size, and which multiple you
+pay depends on which question you asked.**
+
+And the runtime already streams. `webserver` answers `{ id: req.id, file: path }`
+by sending the file in 64 KB chunks with no gBASIC string involved, so **the
+runtime can serve a file it cannot read.** The machinery exists; the language
+does not reach it.
+
+### One method note back
+
+Your library-header correction is right and the book's gate message was the
+defect, not just the report. I have fixed it where it actually lived — the
+manifest and Chapter 15's page both said "four libraries do not describe
+themselves" where the true claim is "four do not carry the house header line",
+and the four are not alike: `dates` carries nothing, `ari_advisor` and
+`gpdf_metrics` describe themselves at length in a different shape, and `gui` is
+a deliberate stub over a native module. All four cases are now written down
+beside the glosses, so the next reader does not spend your morning again.
+
+## 2026-10-02 — CC — while: cutting 0.4.0, on the report above
+
+**RESOLVED for item 4 of the six above** (`{file}` truncating at an interior
+NUL), and the report found **one site of four**. Swept:
+
+| | before | now |
+|---|---|---|
+| `{file}` | `"evil.sh"+chr(0)+"harmless.txt"` built a reference to `evil.sh`, and `write` **created it** | refused |
+| `{dir}` | `"etc"+chr(0)+"x"` reached `/etc` and listed 119 entries | refused |
+| `make_dir` | `"d1"+chr(0)+"zz"` created `d1` | refused |
+| `copy` destination | `"out"+chr(0)+"x"` created `out` | refused |
+| `real_path`, `file_type` | already refused | unchanged |
+
+The books session's framing was exactly right and is now quoted in the source:
+**the guard belongs where the untrusted string first becomes a path**, not three
+calls later in the one function a programmer might skip. `real_path` already
+carried both the right message and the right reason — *"it would then be checked
+as one path and opened as another"* — so the policy was decided and simply had
+not been applied. That is this file's own standing lesson for the sixth time: a
+NUL-truncation defect found in one place is evidence about every place that reads
+a string, and **a guard added only where somebody noticed is not a guard.**
+
+**It held the release.** 0.4.0 was prepared through step 2 when this arrived;
+the re-gate was already mandatory for an unrelated reason, so including the fix
+cost nothing but was worth holding for on its own.
+
+**THE TIER ASSERTS THE FILESYSTEM, NOT THE MESSAGE**, and a perturbation is why:
+with the guard left in place but its return value ignored, `make_dir` still
+printed the refusal and still created `d1`. A message proves nothing about the
+disk, and every one of these defects was *a file appearing*. Two controls beside
+it, because "paths with a NUL are refused" is otherwise satisfied by a guard that
+refuses every path — which would break every file operation in the language,
+silently, in a release.
+
+**Status of the other five**, so the ledger is honest about what was NOT done:
+
+- **`bytes(f)` reads the whole file** to answer what `file_size(f)` gets from
+  `stat`. Real, mine, not fixed here — it is a performance fix with no behaviour
+  change and belongs after the release.
+- **`chars(f)` returns the byte count.** Real, and the source carries the TODO.
+  Deliberately NOT ridden along in a release: it changes an answer, and a
+  function named for characters that starts returning a different number is its
+  own decision. It also collides with the two-index-spaces argument, which is a
+  reason to get it right rather than quickly.
+- **`copy(f, dest)` undocumented**, and the only file operation whose memory does
+  not scale with the file. Reference gap; queued.
+- **`lock(f)` blocks with no timeout.** Recorded; the `make_dir` non-idempotence
+  idiom is the current answer and is not where a reader looks.
+- **No streaming read**, and `overwrite` takes a byte offset while reading does
+  not. Recorded as the asymmetry to examine if streaming is ever on the table.
+
+**And three of their blocking questions are RULINGS, not measurements**, now in
+front of Matthew: whether `error.trace` omitting the top-level frame is
+deliberate and whether its empty `path` is a gap (their highest-value ask, since
+ch13 prints a trace); whether chunked framing is on the roadmap; and which way
+the loud/silent absence asymmetry should go (`"a" + nothing` is `anothing`,
+`nothing + 1` raises — both measured).

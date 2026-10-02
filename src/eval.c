@@ -10003,6 +10003,38 @@ static Value eval_path_call(AstExpr *expr) {
     return result;
 }
 
+/* A PATH MAY NOT CONTAIN AN INTERIOR NUL, asked wherever an untrusted string
+ * first becomes a path.
+ *
+ * Everything below the string boundary works on a NUL-TERMINATED C string, so a
+ * path with an interior NUL would be CHECKED as one path and OPENED as another.
+ * `real_path` and `file_type` have refused for that reason since they shipped;
+ * this is that test extracted and SWEPT, which is PLAT-NUL's standing lesson --
+ * a NUL-truncation defect found in one place is evidence about every place that
+ * reads a string, and a guard added only where somebody noticed is not a guard.
+ *
+ * Reported by the gbasic-books session 2026-10-02 and measured: `{file}` built a
+ * reference to `evil.sh` from "evil.sh\0harmless.txt" and `write` created it,
+ * `{dir}` reached /etc from "etc\0x", `make_dir` created `d1` from "d1\0zz",
+ * and `copy`'s destination truncated the same way. A program that validated the
+ * string it was given operated on a different path, which is the NUL-injection
+ * shape exactly.
+ *
+ * Returns 1 when the value is clean, 0 after raising. */
+static int path_string_reject_nul(const char *who, Value v) {
+    if (v.kind != VALUE_STRING) {
+        return 1;
+    }
+    if (memchr(v.as.string, '\0', string_length(v.as.string)) == NULL) {
+        return 1;
+    }
+    char message[128];
+    snprintf(message, sizeof(message),
+             "%s: a path cannot contain an interior NUL byte", who);
+    runtime_error_raise(message, 1004, "path operation");
+    return 0;
+}
+
 static int copy_file_path(const char *source_path, const char *target_path) {
     if (strcmp(source_path, target_path) == 0) {
         return 0;
@@ -10460,6 +10492,11 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(target);
             return value_null();
         }
+        if (!path_string_reject_nul(name, target)) {
+            value_free(source);
+            value_free(target);
+            return value_null();
+        }
         const char *target_path = file_target_path(target);
         if (source.kind != VALUE_FILE || !target_path) {
             char message[256];
@@ -10589,6 +10626,10 @@ static Value eval_file_call(AstExpr *expr) {
         }
         Value path_value = eval_expr(expr->as.call.args.items[0]);
         if (error_action_pending()) {
+            value_free(path_value);
+            return value_null();
+        }
+        if (!path_string_reject_nul(name, path_value)) {
             value_free(path_value);
             return value_null();
         }
@@ -37029,6 +37070,10 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
                                 1003, "modifier");
             return value_null();
         }
+        if (!path_string_reject_nul("file modifier", value)) {
+            value_free(value);
+            return value_null();
+        }
         Value file_value = value_file(value.as.string);
         value_free(value);
         return file_value;
@@ -37042,6 +37087,10 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
             value_free(value);
             runtime_error_raise("dir modifier expects a path string",
                                 1003, "modifier");
+            return value_null();
+        }
+        if (!path_string_reject_nul("dir modifier", value)) {
+            value_free(value);
             return value_null();
         }
         Value dir_value = value_dir(value.as.string);
