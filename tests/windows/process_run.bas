@@ -53,7 +53,12 @@ b = chr(92)
 tricky = ["plain", "two words", "", "say " + q + "hi" + q, "trailing" + b,
           "has space" + b, "C:" + b + "Program Files" + b,
           "a" + b + q + "b", b + b + "server" + b + "share", "tab" + chr(9) + "sep",
-          "*.txt", "%PATH%", "$HOME"]
+          "*.txt", "%PATH%", "$HOME",
+          "caf" + chr(233), "pi " + chr(960) + " " + chr(8364)]
+' The last two are the CODE PAGE tier: on Windows a non-ASCII argument crosses
+' CreateProcessW as UTF-16 and is decoded by the CHILD's C runtime through the
+' process code page, which is UTF-8 only because gbasic.exe carries the
+' activeCodePage manifest (src/gbasic.manifest).
 sent = ["args"]
 for each t in tricky
     append(sent, t)

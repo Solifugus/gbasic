@@ -179,10 +179,11 @@ int gb_mkdir(const char *path, int mode);
 /* flock(fd, LOCK_EX) / flock(fd, LOCK_UN): a whole-file advisory lock that
  * BLOCKS until granted and is released by the OS when the process dies --
  * which is what `with lock(...)` relies on (run_lock_signal.sh measured that
- * the kernel release is the whole of the cleanup). Windows: LockFileEx over the
- * file's whole range. Note Windows locks are MANDATORY for the locked range,
- * so another process cannot read or write a locked file -- harmless for a lock
- * FILE used as a sentinel, which is how `lock` uses it. Returns 0 / -1. */
+ * the kernel release is the whole of the cleanup). Windows: LockFileEx on ONE
+ * BYTE far past any real end-of-file, because Windows locks are MANDATORY for
+ * the range they cover and `with lock(f)` writes the very file it locks --
+ * covering the contents made that write fail (measured; see platform_win32.c).
+ * A byte no data reaches makes the lock advisory, as flock is. Returns 0 / -1. */
 enum { GB_LOCK_RELEASE = 0, GB_LOCK_EXCLUSIVE = 1 };
 int gb_flock(int fd, int op);
 
@@ -191,8 +192,9 @@ int gb_flock(int fd, int op);
  * containment check rests on "canonicalize, then compare" (run_web_routes.sh),
  * so a substitute that did not resolve links would serve files outside the
  * root. Windows: GetFinalPathNameByHandleW on an opened handle -- which, like
- * realpath, requires existence and follows links -- then UTF-8. Windows paths
- * come back with backslashes and a drive letter. */
+ * realpath, requires existence and follows links -- then UTF-8, with every
+ * separator written as `/` (C:/Users/...) so that gBASIC's `/`-based path
+ * handling works unchanged on Windows. */
 char *gb_realpath(const char *path);
 
 /* Set (on=1) or clear (on=0) close-on-exec / non-inheritance on an fd.
@@ -262,6 +264,24 @@ int gb_run_capture(char *const argv[], const char *cwd,
                    const char *const *env_names, const char *const *env_values,
                    size_t env_count, long timeout_ms, GbRunResult *res);
 #endif
+
+/* Fill buf with n bytes from the operating system's CRYPTOGRAPHIC random
+ * source -- secure_token, random_bytes and the unseeded RNG's seed all rest
+ * on it. POSIX: /dev/urandom. Windows: BCryptGenRandom with the system
+ * preferred RNG (there is no /dev/urandom, and secure_token failed outright
+ * without this -- measured). Returns 0 when all n bytes were filled, -1
+ * otherwise; never a partial fill reported as success. */
+int gb_secure_random(void *buf, size_t n);
+
+/* rename(from, to), REPLACING `to` if it exists, atomically on one volume --
+ * which is what atomic_replace promises a reader ("the whole old file or the
+ * whole new one"). POSIX rename does exactly that. Windows' C-runtime rename
+ * REFUSES an existing target, so atomic_replace failed on every call that
+ * mattered (measured, examples/nap_fs_test.gb); MoveFileExW with
+ * MOVEFILE_REPLACE_EXISTING is the replacing rename. A cross-volume move is
+ * refused with errno EXDEV on both, so callers keep their existing "same
+ * filesystem" handling. Returns 0 / -1 with errno set. */
+int gb_rename_replace(const char *from, const char *to);
 
 /* Make stdout and stderr write bytes exactly as given. Called first thing in
  * main, before any output.

@@ -15,6 +15,7 @@
 #include "platform.h"
 
 #include <windows.h>
+#include <bcrypt.h>
 #include <direct.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -139,8 +140,18 @@ int gb_mkdir(const char *path, int mode) {
     return _mkdir(path);
 }
 
-/* The whole range, blocking. LockFileEx needs the OVERLAPPED even for a
- * synchronous handle: its Offset fields are where the range starts. */
+/* ONE BYTE AT OFFSET 2^62, NOT THE FILE'S CONTENTS -- and the first version got
+ * this wrong. Windows byte-range locks are MANDATORY: locking the whole file
+ * made every other handle's read or write of it FAIL, including the program's
+ * own. `with lock(f)` locks the very file it then writes (examples/lock_test.gb),
+ * so the write inside the block was lost -- measured, with nothing raised.
+ *
+ * Windows allows locking past end-of-file, and no real file reaches 2^62
+ * bytes, so this byte never overlaps content: the lock excludes only another
+ * locker, which is exactly flock's ADVISORY meaning. Every gBASIC process locks
+ * the same byte, so mutual exclusion between them is unchanged. (SQLite locks
+ * the same way, at a fixed offset outside the data.) LockFileEx needs the
+ * OVERLAPPED even on a synchronous handle: it carries the range's offset. */
 int gb_flock(int fd, int op) {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h == INVALID_HANDLE_VALUE) {
@@ -148,9 +159,10 @@ int gb_flock(int fd, int op) {
     }
     OVERLAPPED ov;
     memset(&ov, 0, sizeof ov);
+    ov.OffsetHigh = 0x40000000;     /* offset 2^62 */
     BOOL ok = (op == GB_LOCK_EXCLUSIVE)
-                  ? LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &ov)
-                  : UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov);
+                  ? LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ov)
+                  : UnlockFileEx(h, 0, 1, 0, &ov);
     return ok ? 0 : -1;
 }
 
@@ -216,6 +228,19 @@ char *gb_realpath(const char *path) {
     }
     char *out = wide_to_utf8(start);
     free(final);
+    /* FORWARD SLASHES. gBASIC paths are written with `/` throughout -- file_name,
+     * dir_name, "beside the loader", web.static's containment, every stdlib
+     * library -- and every Windows API accepts `/`. Answering C:\Users\... made
+     * file_name(real_path(p)) return the WHOLE PATH (measured,
+     * examples/path_builtins_test.bas), so a portable program would break on
+     * the one platform. C:/Users/... keeps it portable; a UNC share becomes
+     * //server/share, which Windows also accepts. A backslash cannot be part of
+     * a Windows file name, so nothing is lost by converting. */
+    for (char *p = out; p && *p; p++) {
+        if (*p == '\\') {
+            *p = '/';
+        }
+    }
     return out;
 }
 
@@ -679,6 +704,52 @@ int gb_run_capture(char *const argv[], const char *cwd,
     res->err = err.data;
     res->err_len = err.len;
     return 0;
+}
+
+/* BCryptGenRandom takes a ULONG count, so a large request is filled in
+ * pieces; the system-preferred RNG needs no algorithm handle. */
+int gb_secure_random(void *buf, size_t n) {
+    unsigned char *p = buf;
+    while (n > 0) {
+        ULONG chunk = n > 0x40000000u ? 0x40000000u : (ULONG)n;
+        if (BCryptGenRandom(NULL, p, chunk, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+            return -1;
+        }
+        p += chunk;
+        n -= chunk;
+    }
+    return 0;
+}
+
+/* The replacing rename. Wide on both sides so a UTF-8 path is not mangled by
+ * the ANSI code page; GetLastError mapped onto the errno values the callers
+ * already test, EXDEV above all. */
+int gb_rename_replace(const char *from, const char *to) {
+    WCHAR *wfrom = utf8_to_wide(from);
+    WCHAR *wto = wfrom ? utf8_to_wide(to) : NULL;
+    if (!wfrom || !wto) {
+        free(wfrom);
+        free(wto);
+        errno = EINVAL;
+        return -1;
+    }
+    BOOL ok = MoveFileExW(wfrom, wto, MOVEFILE_REPLACE_EXISTING);
+    DWORD e = ok ? 0 : GetLastError();
+    free(wfrom);
+    free(wto);
+    if (ok) {
+        return 0;
+    }
+    switch (e) {
+        case ERROR_NOT_SAME_DEVICE:   errno = EXDEV;  break;
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:    errno = ENOENT; break;
+        case ERROR_ACCESS_DENIED:
+        case ERROR_SHARING_VIOLATION: errno = EACCES; break;
+        case ERROR_ALREADY_EXISTS:    errno = EEXIST; break;
+        default:                      errno = EIO;    break;
+    }
+    return -1;
 }
 
 /* See the header: LF out, on every platform. */

@@ -370,7 +370,7 @@ static void cache_write(const ReplBuffer *b) {
         return;
     }
     fclose(f);
-    if (rename(tmp, session_cache) != 0) {
+    if (gb_rename_replace(tmp, session_cache) != 0) {
         unlink(tmp);
     }
 }

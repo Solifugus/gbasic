@@ -149,15 +149,7 @@ static void gbasic_rng_autoseed(void) {
     /* No explicit seed yet: draw a nondeterministic one so unseeded programs
      * still vary run to run. Tests call seed() for reproducibility. */
     uint64_t s = 0;
-    int fd = open("/dev/urandom", O_RDONLY);
-    int got = 0;
-    if (fd >= 0) {
-        if (read(fd, &s, sizeof(s)) == (ssize_t)sizeof(s)) {
-            got = 1;
-        }
-        close(fd);
-    }
-    if (!got) {
+    if (gb_secure_random(&s, sizeof(s)) != 0) {
         s = (uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32);
     }
     gbasic_rng_seed(s);
@@ -1930,8 +1922,16 @@ static void format_number(char *buf, size_t bufsize, double v) {
         snprintf(buf, bufsize, "%.0f", v);
         return;
     }
+    /* SPELLED HERE, NOT BY THE C LIBRARY. "%g" printed what libc chose, and two
+     * libcs disagree: glibc writes a negative NaN as "-nan", Windows' UCRT as
+     * "nan" -- so examples/encode_roundtrip_test.out held on one platform and
+     * failed on the other (measured). These four are glibc's spellings, so no
+     * Linux output moves, and they are the four the decoder below already
+     * reads back, which keeps encode/decode a round trip everywhere. */
     if (!isfinite(v)) {
-        snprintf(buf, bufsize, "%g", v);
+        const char *text = isnan(v) ? (signbit(v) ? "-nan" : "nan")
+                                    : (v < 0 ? "-inf" : "inf");
+        snprintf(buf, bufsize, "%s", text);
         return;
     }
     /* 17 significant digits always round-trips a double, so this terminates
@@ -10090,7 +10090,7 @@ static int copy_file_path(const char *source_path, const char *target_path) {
 }
 
 static int move_file_path(const char *source_path, const char *target_path) {
-    if (rename(source_path, target_path) == 0) {
+    if (gb_rename_replace(source_path, target_path) == 0) {
         return 1;
     }
     if (errno != EXDEV || !copy_file_path(source_path, target_path)) {
@@ -10113,6 +10113,44 @@ static int file_value_compare(const void *left, const void *right) {
  * value reported BY NAME. Writes through a private copy of the path, so the
  * caller's string is untouched. Returns 0 on success; on failure `why` holds a
  * message and the path it is about. */
+/* A path separator. Windows accepts both, and a path reaches gBASIC either way
+ * (typed, or from the shell); on POSIX a backslash is an ordinary filename
+ * character and must not split a name. */
+static int path_is_sep(char c) {
+#ifdef _WIN32
+    return c == '/' || c == '\\';
+#else
+    return c == '/';
+#endif
+}
+
+/* How much of `path` is ROOT -- the part a `mkdir -p` walk must not try to
+ * create. POSIX: the walk starts at index 1, which already steps over a
+ * leading `/`, so nothing more. Windows: a drive ("C:", then its separator)
+ * or a UNC share ("//server/share"), neither of which is a directory anyone
+ * can make. Without this the walk began with mkdir("C:"), and make_dir with
+ * parents failed on EVERY absolute Windows path with "C: exists and is not a
+ * directory" (measured, tests/run_dir_builtins.sh). */
+static size_t path_root_length(const char *path) {
+#ifdef _WIN32
+    if (isalpha((unsigned char)path[0]) && path[1] == ':') {
+        return path_is_sep(path[2]) ? 3 : 2;
+    }
+    if (path_is_sep(path[0]) && path_is_sep(path[1])) {
+        size_t i = 2, seps = 0;
+        for (; path[i]; i++) {
+            if (path_is_sep(path[i]) && ++seps == 2) {
+                return i + 1;          /* past "//server/share/" */
+            }
+        }
+        return i;                      /* the share itself, nothing below it */
+    }
+#else
+    (void)path;
+#endif
+    return 0;
+}
+
 static int make_dir_parents(const char *path, char *why, size_t why_size) {
     size_t len = strlen(path);
     if (len == 0) {
@@ -10126,13 +10164,14 @@ static int make_dir_parents(const char *path, char *why, size_t why_size) {
     memcpy(work, path, len + 1);
     /* Trailing slashes name the same directory, so trim them rather than
      * making an empty final segment that mkdir would refuse. */
-    while (len > 1 && work[len - 1] == '/') {
+    size_t root = path_root_length(work);
+    while (len > 1 && len > root && path_is_sep(work[len - 1])) {
         work[--len] = '\0';
     }
 
     int failed = 0;
-    for (size_t i = 1; i <= len && !failed; i++) {
-        if (work[i] != '/' && work[i] != '\0') {
+    for (size_t i = root + 1; i <= len && !failed; i++) {
+        if (!path_is_sep(work[i]) && work[i] != '\0') {
             continue;
         }
         char saved = work[i];
@@ -10458,8 +10497,9 @@ static Value eval_file_call(AstExpr *expr) {
          * non-atomic sequence. On any failure rename() leaves both source and
          * destination untouched, so a failed replace never destroys the original
          * destination. (Atomic visibility only — durability across a crash would
-         * additionally require fsync of the file and its directory; out of scope.) */
-        if (rename(source_path, target_path) == 0) {
+         * additionally require fsync of the file and its directory; out of scope.)
+         * gb_rename_replace: Windows' own rename refuses an existing target. */
+        if (gb_rename_replace(source_path, target_path) == 0) {
             value_free(source);
             value_free(target);
             return value_bool(1);
@@ -10892,12 +10932,32 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(text_value);
             return value_bool(0);
         }
-        fwrite(text_value.as.string, 1, string_length(text_value.as.string), file);
-        int ok = ferror(file) == 0;
-        fclose(file);
+        /* THE FLUSH IS THE WRITE. fwrite fills stdio's buffer and the bytes
+         * reach the file in fclose, so a write that fails there -- a full
+         * disk, a quota, a locked range on Windows -- failed AFTER every check
+         * above had passed. fclose's result used to be ignored: writing to
+         * /dev/full returned TRUE with exit 0 (measured), and on Windows a
+         * write inside `with lock(f)` vanished the same way. A write that did
+         * not happen now raises exactly as one that could not start does. */
+        size_t len = string_length(text_value.as.string);
+        int failed = fwrite(text_value.as.string, 1, len, file) != len || ferror(file);
+        int saved_errno = errno;
+        if (fclose(file) != 0 && !failed) {
+            failed = 1;
+            saved_errno = errno;
+        }
+        if (failed) {
+            char message[512];
+            snprintf(message, sizeof(message), "could not write file: %s (%s)",
+                     file_value.as.file_path, strerror(saved_errno));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            return value_bool(0);
+        }
         value_free(file_value);
         value_free(text_value);
-        return value_bool(ok);
+        return value_bool(1);
     }
 
     return value_null();
@@ -13540,7 +13600,15 @@ static int ensure_root_mailbox(void) {
         return 1;
     }
     if (mailbox_open(&root_mailbox) != 0) {
+#ifdef _WIN32
+        /* self(), send and receive reach here before spawn does; say WHY in
+         * the same words spawn's refusal uses, not a bare "could not". */
+        runtime_error_raise("actors are not available on Windows: they need a "
+                            "message-framed channel Windows does not provide yet",
+                            1004, "actor");
+#else
         runtime_error_raise("actor: could not create mailbox", 1004, "actor");
+#endif
         return 0;
     }
     root_actor_handle = malloc(sizeof(ActorHandle));
@@ -31061,30 +31129,12 @@ static Value eval_call(AstExpr *expr) {
             abort();
         }
 
-        int fd = open("/dev/urandom", O_RDONLY);
-        if (fd < 0) {
+        if (gb_secure_random(random_bytes, length) != 0) {
             free(random_bytes);
             free(token);
             runtime_error_raise("secure_token could not read secure random bytes", 1003, "random");
             return value_null();
         }
-
-        size_t offset = 0;
-        while (offset < length) {
-            ssize_t count = read(fd, random_bytes + offset, length - offset);
-            if (count < 0 && errno == EINTR) {
-                continue;
-            }
-            if (count <= 0) {
-                close(fd);
-                free(random_bytes);
-                free(token);
-                runtime_error_raise("secure_token could not read secure random bytes", 1003, "random");
-                return value_null();
-            }
-            offset += (size_t)count;
-        }
-        close(fd);
 
         static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         for (size_t i = 0; i < length; i++) {
@@ -31474,27 +31524,11 @@ static Value eval_call(AstExpr *expr) {
         if (!buf) {
             abort();
         }
-        int fd = open("/dev/urandom", O_RDONLY);
-        if (fd < 0) {
+        if (gb_secure_random(buf, n) != 0) {
             free(buf);
             runtime_error_raise("random_bytes could not read secure random bytes", 1003, "random");
             return value_null();
         }
-        size_t off = 0;
-        while (off < n) {
-            ssize_t c = read(fd, buf + off, n - off);
-            if (c < 0 && errno == EINTR) {
-                continue;
-            }
-            if (c <= 0) {
-                close(fd);
-                free(buf);
-                runtime_error_raise("random_bytes could not read secure random bytes", 1003, "random");
-                return value_null();
-            }
-            off += (size_t)c;
-        }
-        close(fd);
         Value r = value_string_n((char *)buf, n);
         free(buf);
         return r;

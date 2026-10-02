@@ -105,6 +105,30 @@ GIO_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --e
 GIO_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags gio-2.0 2>/dev/null)
 GIO_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs gio-2.0 2>/dev/null)
 
+# WINDOWS: NO OPTIONAL MODULE IS AUTO-DETECTED. An MSYS2 install carries
+# libcurl, OpenSSL, libxml2, sqlite3 and zlib as other packages' dependencies,
+# so detection finds them -- and the build then fails to LINK, because the
+# Windows binary is static (gbasic.exe must need nothing beside it) and what
+# pkg-config describes is the DLL form. Each module arrives deliberately, as its
+# milestone does (docs/windows_port_plan.md §6: M2 ODBC, M3 xlsx, M4 sqlite,
+# M5 libcurl), with its static link worked out and measured. A command-line
+# override (make LIBXML2_AVAILABLE=1) still wins over these, as it does on Linux.
+ifeq ($(OS),Windows_NT)
+GTK_AVAILABLE := 0
+LIBPQ_AVAILABLE := 0
+SQLITE3_AVAILABLE := 0
+ODBC_AVAILABLE := 0
+LDAP_AVAILABLE := 0
+LIBCURL_AVAILABLE := 0
+LIBXCRYPT_AVAILABLE := 0
+LIBCRYPTO_AVAILABLE := 0
+LIBSSL_AVAILABLE := 0
+LIBXML2_AVAILABLE := 0
+ZLIB_AVAILABLE := 0
+GIR_AVAILABLE := 0
+GIO_AVAILABLE := 0
+endif
+
 ifeq ($(GTK_AVAILABLE),1)
 CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
 LDLIBS += $(GTK_LIBS) -lm
@@ -214,8 +238,17 @@ ifeq ($(OS),Windows_NT)
 PLATFORM_OBJ ?= src/platform_win32.o
 # libsystre: the POSIX regex.h API over TRE (BSD-2), since Windows has none.
 # TRE takes its messages through gettext, hence libintl and libiconv.
-LDLIBS += -lsystre -ltre -lintl -liconv -lws2_32 -static
+LDLIBS += -lsystre -ltre -lintl -liconv -lws2_32 -lbcrypt -static
+# AN 8 MB MAIN-THREAD STACK, the Linux default. Windows reserves 1 MB, and the
+# tree-walking evaluator and the JSON parser recurse: the parser's 10,000-level
+# nesting cap was sized for 8 MB, so on 1 MB a deep document CRASHED the
+# interpreter (STATUS_STACK_OVERFLOW, measured by run_try_decode.sh) before the
+# cap could refuse it -- the very crash the cap exists to prevent.
+LDLIBS += -Wl,--stack,8388608
+# The application manifest (UTF-8 code page): src/gbasic.manifest.
+WIN_RES := src/gbasic_win32.res.o
 endif
+WIN_RES ?=
 PLATFORM_OBJ ?= src/platform_posix.o
 
 LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o $(PLATFORM_OBJ)
@@ -242,8 +275,11 @@ dev: all gbasic-lsp
 libgbasic.a: $(LIB_OBJS)
 	$(AR) rcs $@ $(LIB_OBJS)
 
-gbasic: src/main.o src/repl.o src/lineedit.o libgbasic.a
-	$(CC) $(CFLAGS) -o $@ src/main.o src/repl.o src/lineedit.o libgbasic.a $(LDLIBS)
+gbasic: src/main.o src/repl.o src/lineedit.o libgbasic.a $(WIN_RES)
+	$(CC) $(CFLAGS) -o $@ src/main.o src/repl.o src/lineedit.o $(WIN_RES) libgbasic.a $(LDLIBS)
+
+src/gbasic_win32.res.o: src/gbasic_win32.rc src/gbasic.manifest
+	windres -i src/gbasic_win32.rc -o $@
 
 gbasic-lsp: $(LSP_OBJS) libgbasic.a
 	$(CC) $(LSP_CFLAGS) -o $@ $(LSP_OBJS) libgbasic.a $(LDLIBS)
@@ -338,6 +374,6 @@ uninstall:
 	@echo "Removed gbasic from $(DESTDIR)$(BINDIR), $(DESTDIR)$(DATADIR) and $(DESTDIR)$(DOCDIR)"
 
 clean:
-	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h
+	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h src/gbasic_win32.res.o
 	rm -f gbasic-lsp $(LSP_OBJS)
 	rm -f .stdlibdir-stamp

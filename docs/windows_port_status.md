@@ -244,7 +244,77 @@ varying run to run — timing-sensitive on a 2-core machine), run_library_depth
 (the chart-library check), run_examples (gui_fields_test), run_negative (a real
 server block), run_xlsx (fixtures it cannot read there).
 
+## 11. The Linux suites, run against gbasic.exe (2026-10-02)
+
+MSYS2 ships bash, so on a DEVELOPMENT machine the tree's own bash suites can
+drive the native binary unchanged (`./gbasic` resolves to `gbasic.exe`). That is
+the same test definitions Linux runs, which is far stronger than new Windows-only
+tests. (An end user's machine has no bash; that is what tests/windows/ is for.)
+A plain `make` in an "MSYS2 UCRT64" shell now builds the lean static binary:
+optional modules are no longer auto-detected on Windows (see the Makefile).
+
+**run_examples' whole list, keep-going:** 181 of 235 pass on Windows. Every
+remaining failure is accounted for: 21 SKIP (xlsx/xml/password modules off by
+design), 12 actors (Tier 2; each now says "not available on Windows"), 2 named
+time zones, and 3 that fail on Linux in WSL too (crypto_kdf, env_builtin,
+gui_fields). On Linux the same list gives IDENTICAL status before and after
+every change in this section.
+
+**Thirty-four suites run on Windows.** Twenty-three pass outright, among them
+the error and warning models, money (146 checks), regex, numfmt, render,
+continuation, keyword fields, for-each-index, stridx/arridx/recidx (their
+COMPLEXITY tiers included), exponent literal, brace modifiers, parse-exit,
+fake, lending, deposits, credit, scoring, chart, notation, insight, decision,
+automation, try_decode, outline, persist, library_scope, dir_builtins. The
+rest fail only on: actors or process.start (alias, optparams, scope,
+equality_kinds, stderr); a module off by design that the suite thinks is
+present because MSYS2 has the library installed (string_nul's sqlite door,
+accounting's SQLite tier, finio's XML tier); POSIX-only fixtures (/bin/sh,
+/etc/hostname, /dev/null, a Python signal probe, `/tmp/...` written INTO a
+program, which a native binary cannot open); named time zones; and the two
+library_depth failures Linux-in-WSL has too.
+
+**WHAT RUNNING THEM FOUND, each fixed and proven:**
+- **`with lock(f)` lost the write inside it, silently.** Windows locks are
+  MANDATORY: locking the whole file blocked the program's own write. gb_flock
+  now locks one byte at 2^62, past any content, which is flock's advisory
+  meaning. examples/lock_test.gb passes.
+- **`write`/`append` reported success for bytes that never arrived -- ON LINUX
+  TOO.** fclose's result was ignored, and the bytes reach the file in fclose.
+  Measured on Linux: writing to /dev/full returned TRUE with exit 0. It now
+  raises "could not write file". New tier in tests/run_silent_traps.sh, PROVEN
+  RED on the old binary; it asserts the REASON ("No space left on device"), so
+  where the binary cannot reach a real /dev/full it says SKIP instead of passing
+  on an open failure -- which is what it first did under MSYS2.
+- **Non-ASCII file names and arguments were mangled.** "greek_pi_π.txt" was
+  created as "greek_pi_Ï€.txt". Fixed for every narrow-string call at once by
+  the activeCodePage=UTF-8 manifest (src/gbasic.manifest, Windows 10 1903+).
+  process_run.bas's code-page tier PROVEN RED without it (café -> caf�).
+  An XML comment with two hyphens in it made the manifest invalid and the
+  binary refused to START; the manifest says so now.
+- **atomic_replace failed on every real call**: Windows' rename refuses an
+  existing target. gb_rename_replace uses MoveFileExW(REPLACE_EXISTING),
+  keeping EXDEV for a cross-volume move. nap_fs_test passes; persist too.
+- **secure_token / random_bytes failed**: no /dev/urandom. gb_secure_random
+  uses BCryptGenRandom.
+- **real_path answered `C:\...`**, so file_name(real_path(p)) returned the whole
+  path. It answers `C:/...` now; Windows accepts `/` everywhere.
+- **make_dir with parents failed on every absolute path**: the walk began with
+  mkdir("C:"). It now starts after the root (drive or UNC) and accepts `\`.
+- **NaN printed differently**: glibc "-nan", UCRT "nan". The formatter spells
+  non-finite numbers itself, in glibc's words, so no Linux output moved.
+- **A deep JSON document CRASHED the interpreter** (STATUS_STACK_OVERFLOW):
+  Windows' 1 MB main stack is exhausted before the parser's 10,000-level cap
+  can refuse it. The binary now reserves 8 MB, the Linux default.
+- **TRE has no REG_STARTEND**, so Windows runs regex's FALLBACK path -- the
+  one a musl build once got wrong. run_regex's fallback tier passes, and its
+  flag matrix passes against TRE.
+
+**Not mine to fix here, flagged instead:** tests/run_core.sh prints
+"FAIL sleep(0) returns 0" ON LINUX and still exits 0 -- a stale assertion
+(sleep now answers `nothing` by design) behind a gate that does not fail.
+
 **Still open, in order:** `process.start` and friends; `process.which` with `;`
-and PATHEXT; running the existing `.bas` suites (regex, lock, paths) under the
-Windows binary; the UTF-8 code page manifest (non-ASCII argv, paths and ODBC);
-`--line-buffered`; time zones; the optional modules (M2 ODBC first).
+and PATHEXT; `--line-buffered`; named time zones; making suites tell a module
+that is installed from one that is BUILT IN; the optional modules (M2 ODBC
+first).

@@ -1,0 +1,4 @@
+/* Windows resources for gbasic.exe: the application manifest (resource type 24,
+ * id 1 is the one the loader reads at process creation). See the manifest for
+ * why it exists -- above all, the UTF-8 code page. */
+1 24 "src/gbasic.manifest"

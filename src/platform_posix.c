@@ -19,6 +19,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -168,6 +169,31 @@ int gb_on_signal(int sig, void (*handler)(int), int restart) {
     sa.sa_flags = restart ? SA_RESTART : 0;
     sigemptyset(&sa.sa_mask);
     return sigaction(sig, &sa, NULL);
+}
+
+int gb_secure_random(void *buf, size_t n) {
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+    size_t off = 0;
+    while (off < n) {
+        ssize_t c = read(fd, (char *)buf + off, n - off);
+        if (c < 0 && errno == EINTR) {
+            continue;
+        }
+        if (c <= 0) {
+            close(fd);
+            return -1;
+        }
+        off += (size_t)c;
+    }
+    close(fd);
+    return 0;
+}
+
+int gb_rename_replace(const char *from, const char *to) {
+    return rename(from, to);
 }
 
 void gb_stdio_binary(void) {
