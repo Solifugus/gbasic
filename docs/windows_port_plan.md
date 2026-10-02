@@ -123,13 +123,37 @@ dependency rather than adding two.
 
 These are the "might break some compatibility" worries, named.
 
-**1. Line endings, and this is the big one.** There are **680 byte-exact golden
-files** in this tree. If a Windows build writes CRLF, every one of them fails.
-**Recommendation: gBASIC always writes LF**, on every platform, and `print` is
-not translated. It matches the determinism the whole test strategy rests on, it
-keeps goldens portable, and a Windows user editing a gBASIC-written file in
-Notepad is a smaller problem than a language whose output depends on where it
-ran. Decide this first; it is cheap now and very expensive later.
+**1. Line endings — MEASURED, and mostly already solved.** Matthew's framing is
+the right one and sharper than my first draft's: this is a READING concern, since
+gBASIC does not generally write its own source. Measured:
+
+| | source (lexer) | `read_lines` | `read` |
+|---|---|---|---|
+| **LF** — Linux, modern macOS | works | 3 lines | verbatim |
+| **CRLF** — Windows | **works** | **3 lines, CR stripped** | verbatim |
+| **CR only** — classic Mac OS 9 and earlier | parse error | 1 line | verbatim |
+
+So **the three conventions that matter already read correctly.** A CRLF `.bas`
+file runs, and `read_lines` on a CRLF data file gives clean lines (`len` 1, not
+2 — the CR is stripped, not kept). `read` is verbatim, which is correct: it
+returns raw content, so a CR survives there and should.
+
+The only gap is **CR-only**, which is classic Mac OS 9 — pre-2001 and
+effectively extinct. Worth closing for completeness one day; not worth planning
+around.
+
+**THE REAL RISK IS ON THE WAY OUT, AND IT IS NOT GBASIC'S DOING.** There are
+**680 byte-exact golden files** in this tree, and MSVCRT opens `stdout` in TEXT
+mode by default, which translates every `\n` into `\r\n` **underneath the
+program**. gBASIC would be emitting LF and Windows would be writing CRLF, and
+every one of those 680 goldens would fail for a reason invisible in the source.
+
+**Recommendation: set `stdout`/`stderr` to binary mode at startup on Windows**
+(`_setmode(_fileno(stdout), _O_BINARY)`), so gBASIC writes LF on every platform.
+One call, and it is the same determinism argument the whole test strategy rests
+on: a language whose output depends on where it ran cannot have byte-exact
+goldens. A Windows user opening a gBASIC-written file in Notepad is the smaller
+problem, and Notepad has handled LF since 2018.
 
 **2. Paths.** Drive letters, backslash separators, and a case-insensitive
 filesystem. Everything in §7 of `library_distribution_design.md` and every
@@ -141,18 +165,34 @@ only in case become one.
 polls need overlapped I/O or `PeekNamedPipe` (two functions, not the loop —
 measured). `spawn` refuses.
 
-**4. HOW DO YOU TEST IT?** The gate is **158 bash suites**, and this has not
-been planned for. Three options, and it needs deciding:
-   - run the gate under MSYS2 or Git-bash on Windows — most coverage, most yak
-   - **cross-compile here, run a smaller native smoke suite on Windows** — my
-     recommendation: the ratchet already proves it compiles, and a native suite
-     of perhaps twenty cases proves it *runs*
-   - trust the cross-compile and test by hand — not acceptable for a release
+**4. HOW DO YOU TEST IT? And the answer is to write the suite in gBASIC.**
 
-   Note what §5 of `windows_port_status.md` says: a socket is not a file
-   descriptor on Windows, so that defect class **compiles cleanly and fails at
-   runtime**. No amount of cross-compiling finds it. Something must run on
-   Windows.
+The gate is **158 bash suites** and Windows has no bash. PowerShell exists, but
+porting 158 suites to it is a project larger than the port, and it would leave
+two gates that can disagree — the failure this tree has a tripwire against in
+four other places.
+
+**The tree already has the answer and uses it everywhere.** Dozens of suites are
+**self-checking `.bas` files**: `tests/equality_test.bas`,
+`tests/recidx_test.bas`, `tests/stridx_test.bas` and many more each state their
+own expected values and print `ok` or a `MISMATCH` naming both sides. The bash
+runner around them only invokes the binary and diffs. On Windows, **the `.bas`
+file is the suite** — it needs no shell at all, and it is the same file on both
+platforms, so the two platforms cannot disagree about what it asserts.
+
+So the recommendation is:
+
+- **the cross-compile ratchet runs here** (`tools/cross-build-windows.sh`), and
+  proves it compiles;
+- **a native smoke suite of self-checking `.bas` files runs there**, and proves
+  it *runs*;
+- the driver on Windows is a handful of lines — PowerShell, or `process.run`
+  from gBASIC itself, which needs nothing installed.
+
+**And it is not optional.** §5 of `windows_port_status.md`: a socket is not a
+file descriptor on Windows, so `read`/`write`/`close` on one **compiles cleanly
+and fails at runtime**. No error count will ever notice. Something must RUN on
+Windows, and the cheapest honest something is a `.bas` file that checks itself.
 
 ## 8. What a Windows release is allowed to be
 
