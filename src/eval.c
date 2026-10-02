@@ -791,6 +791,12 @@ typedef struct {
     int imported;
     int warned;
     char *library;
+    /* The effective name of the library that IMPORTED this one, or NULL when the
+     * root program loaded it directly. Read only by modifier_resolve, so an
+     * unqualified use inside a library prefers the modifiers that library itself
+     * asked for -- without which two versions of one library cannot both export
+     * the same phrase (docs/library_distribution_design.md §5). */
+    char *imported_by;
 } ModifierDef;
 
 typedef struct {
@@ -903,6 +909,11 @@ static int current_import_is_authors_own = 0;
  * function_in_current_library so an unqualified call inside a library reaches
  * that library's own function. */
 static const char *current_function_library = NULL;
+/* The library whose body is being processed while its own `load` statements run,
+ * so a nested import knows who asked for it. Saved and restored by
+ * library_import_from_block exactly like current_import_path. NULL means the
+ * root program is doing the loading. */
+static const char *current_importer_library = NULL;
 static LoadedFile *loaded_files = NULL;
 static size_t loaded_file_count = 0;
 static UsePair *used_pairs = NULL;
@@ -8147,22 +8158,56 @@ static void modifier_use_label(AstModifierUse use, char *buffer, size_t size) {
     }
 }
 
+/* Did the library whose code is running ask for this modifier's library?
+ * NULL == NULL is true on purpose: the root program's own loads. */
+static int modifier_is_in_scope(const ModifierDef *modifier) {
+    const char *here = current_function_library;
+    const char *asked = modifier->imported_by;
+    if (!here || !here[0]) {
+        return asked == NULL || asked[0] == '\0';
+    }
+    return asked && strcmp(asked, here) == 0;
+}
+
+/* TWO PASSES, PREFERRING WHAT THE CURRENT LIBRARY ASKED FOR.
+ *
+ * An unqualified use used to accept ANY library's modifier and take the longest
+ * match, searching backwards -- so last-registered won, globally. Measured: two
+ * versions of one library exporting the same phrase gave BOTH importers the
+ * second one's, so a library written against m@1 silently ran m@2's modifier
+ * (docs/library_distribution_design.md §5). Functions have been scoped per
+ * library since d08409f; modifiers were the half left global.
+ *
+ * Pass one is restricted to modifiers the running library imported. Pass two is
+ * the old unrestricted search, which keeps working every program that relies on
+ * a modifier reaching it through an intermediate library -- MEASURED to be how
+ * `load finance` currently supplies `{end of month}` without loading `dates`.
+ * Closing that leak as well is a separate decision; every file in this tree that
+ * uses a dates modifier already loads dates, so its in-tree cost is zero.
+ *
+ * The longest-match rule is preserved WITHIN each pass, so `end of month` still
+ * beats `end` and the pass only changes which library's copy is found. */
 static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, const char **args_start) {
     ModifierDef *best = NULL;
     const char *best_args = NULL;
     size_t best_len = 0;
-    for (size_t i = modifier_count; i > 0; i--) {
-        ModifierDef *modifier = &modifiers[i - 1];
-        const char *candidate_args = NULL;
-        if (strcmp(modifier->context, context) == 0 &&
-            (!use.library ||
-             (modifier->library && strcmp(modifier->library, use.library) == 0)) &&
-            modifier_phrase_matches(use.name, modifier->name, &candidate_args)) {
-            size_t len = strlen(modifier->name);
-            if (!best || len > best_len) {
-                best = modifier;
-                best_args = candidate_args;
-                best_len = len;
+    for (int in_scope_only = 1; in_scope_only >= 0 && !best; in_scope_only--) {
+        for (size_t i = modifier_count; i > 0; i--) {
+            ModifierDef *modifier = &modifiers[i - 1];
+            const char *candidate_args = NULL;
+            if (in_scope_only && use.library == NULL && !modifier_is_in_scope(modifier)) {
+                continue;
+            }
+            if (strcmp(modifier->context, context) == 0 &&
+                (!use.library ||
+                 (modifier->library && strcmp(modifier->library, use.library) == 0)) &&
+                modifier_phrase_matches(use.name, modifier->name, &candidate_args)) {
+                size_t len = strlen(modifier->name);
+                if (!best || len > best_len) {
+                    best = modifier;
+                    best_args = candidate_args;
+                    best_len = len;
+                }
             }
         }
     }
@@ -8192,7 +8237,8 @@ static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, co
     return best;
 }
 
-static void modifier_register_def(AstStmt *stmt, int imported, const char *library) {
+static void modifier_register_def(AstStmt *stmt, int imported, const char *library,
+                                  const char *imported_by) {
     if (!params_reject_defaults(stmt->as.modifier.params, "modifier",
                                 stmt->as.modifier.name,
                                 stmt->line, stmt->column)) {
@@ -8224,6 +8270,8 @@ static void modifier_register_def(AstStmt *stmt, int imported, const char *libra
         existing->imported = imported;
         free(existing->library);
         existing->library = library ? copy_string(library) : NULL;
+        free(existing->imported_by);
+        existing->imported_by = imported_by ? copy_string(imported_by) : NULL;
         return;
     }
 
@@ -8238,16 +8286,18 @@ static void modifier_register_def(AstStmt *stmt, int imported, const char *libra
     modifiers[modifier_count].imported = imported;
     modifiers[modifier_count].warned = 0;
     modifiers[modifier_count].library = library ? copy_string(library) : NULL;
+    modifiers[modifier_count].imported_by = imported_by ? copy_string(imported_by) : NULL;
     modifier_count++;
 }
 
 static void modifier_register(AstStmt *stmt) {
-    modifier_register_def(stmt, 0, NULL);
+    modifier_register_def(stmt, 0, NULL, NULL);
 }
 
 static void modifier_clear(void) {
     for (size_t i = 0; i < modifier_count; i++) {
         free(modifiers[i].library);
+        free(modifiers[i].imported_by);
     }
     free(modifiers);
     modifiers = NULL;
@@ -9479,6 +9529,13 @@ static void library_import(const char *name, const char *path, const char *alias
 }
 
 static void library_import_from_block(AstStmt *library, const char *effective) {
+    /* Everything this library loads is loaded ON ITS BEHALF, which is what lets
+     * modifier_resolve prefer the modifiers a library asked for over another
+     * library's with the same phrase. Saved and restored, so a nested import
+     * does not leave the wrong answer behind. */
+    const char *importer = current_importer_library;   /* who asked for THIS library */
+    const char *previous_importer = current_importer_library;
+    current_importer_library = effective;               /* nested loads are on its behalf */
     if (strcmp(library->as.library.name, "gui") == 0) {
 #if HAVE_GIR
         /* A single process cannot host both GTK 3 (this gui module) and GTK 4
@@ -9486,6 +9543,7 @@ static void library_import_from_block(AstStmt *library, const char *effective) {
         if (gi_gtk4_active) {
             runtime_error_raise("GTK 3 (gui module) and GTK 4 (gi) cannot be used in the same process",
                                 6001, "gi");
+            current_importer_library = previous_importer;
             return;
         }
 #endif
@@ -9500,6 +9558,7 @@ static void library_import_from_block(AstStmt *library, const char *effective) {
             library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path,
                            stmt->as.use_stmt.alias);
             if (error_action_pending()) {
+                current_importer_library = previous_importer;
                 return;
             }
         } else if (stmt->kind == AST_STMT_FUNCTION && !stmt->as.function.object) {
@@ -9507,9 +9566,10 @@ static void library_import_from_block(AstStmt *library, const char *effective) {
              * declarations — they are never library exports. */
             function_register_def(stmt, 1, effective);
         } else if (stmt->kind == AST_STMT_MODIFIER && stmt->as.modifier.exported) {
-            modifier_register_def(stmt, 1, effective);
+            modifier_register_def(stmt, 1, effective, importer);
         }
     }
+    current_importer_library = previous_importer;
 }
 
 static int find_function_label(AstStmtList body, const char *label, size_t *out_index) {

@@ -103,9 +103,11 @@ are resolved by alias (§2.2). For *published* libraries there are two readings:
   impossible **by construction** rather than by discipline, and the declared
   name becomes a local convenience.
 
-**Recommendation: origin + version**, with the declared name kept as the default
-local spelling. It costs nothing while the ecosystem is small and is unavailable
-afterwards.
+**DECIDED 2026-10-01: origin + version**, with the declared name kept as the
+default local spelling. Collisions are impossible by construction rather than by
+discipline. Matthew also noted that releases are expected to be **minor-version
+only for now**, which does not change the mechanism — exact pins behave the same
+whatever the numbering grows into, and that is the point of refusing ranges.
 
 ## 5. The one language change this needs: scope exported modifiers
 
@@ -125,9 +127,25 @@ the last registration wins.** It warns rather than being silent, and since
 a dependency — but the semantics are wrong.
 
 **A library's exported modifiers should be scoped to importers of that library,
-exactly as its functions already are.** No stdlib library duplicates a modifier
-phrase today, so this is latent rather than live, and the cost of fixing it is
-lowest now.
+exactly as its functions already are.**
+
+> **BUILT 2026-10-01.** `modifier_resolve` now runs **two passes**: the first
+> restricted to modifiers the running library itself imported, the second the old
+> unrestricted search. The two-version case is fixed — `a` gets `HI!!1` and `b`
+> gets `HI!!2`, each the version it asked for — and `tests/run_library_scope.sh`
+> pins it beside the function own-first rule it mirrors.
+>
+> **The second pass is a deliberate fallback**, and a measurement is why: a
+> modifier reaching a program through an INTERMEDIATE library works today —
+> `load finance` supplies `{end of month}` without loading `dates`. Keeping it
+> means nothing breaks. Closing it as well is §9's new question, and its in-tree
+> cost is **zero**: every file in this tree that uses a `dates` modifier already
+> loads `dates`, and `{dates.end of month}` already works as the migration path.
+>
+> **A bug I nearly shipped, caught by perturbation:** recording the importer by
+> reading the file-scope variable gives the library's OWN name, because it has
+> already been set for that library's nested loads by the time its body
+> registers. The importer is captured on entry and passed explicitly.
 
 ## 6. What crosses the version boundary, and how it fails
 
@@ -263,8 +281,15 @@ specified first.
 
 ## 9. Open questions
 
-1. **§4 identity** — name, or origin + version. Blocks everything else.
-2. **§5 modifier scoping** — a language change, cheapest now.
+1. ~~**§4 identity** — name, or origin + version.~~ **DECIDED 2026-10-01**:
+   origin + version.
+2. ~~**§5 modifier scoping**~~ **BUILT 2026-10-01**, with a deliberate fallback.
+2a. **Should the fallback in §5 be closed?** Strict scoping would mean a modifier
+   no longer reaches a program through an intermediate library. MEASURED: the
+   in-tree cost is zero and `{dates.end of month}` is the migration path, so this
+   is affordable — but it would break an outside program relying on the leak, and
+   there are none yet, which makes now the cheapest moment. A perturbation shows
+   exactly what it costs: `{end of month}` via `finance` returns nothing.
 3. Does a vendored library's own `libs/` get committed, or re-fetched? (Committed
    is the offline-forever answer; re-fetched is smaller.)
 4. **Should a bare `load producer` find `libs/`?** Today it needs the explicit

@@ -227,5 +227,102 @@ else
     pass "valgrind (SKIP: not installed)"
 fi
 
+# --- EXPORTED MODIFIERS ARE SCOPED TOO (2026-10-01) -------------------------
+#
+# Functions have resolved to a library's own first since d08409f. MODIFIERS were
+# the half left global: an unqualified use accepted ANY library's modifier and
+# took the longest match searching backwards, so last-registered won. Measured,
+# two versions of one library exporting the same phrase gave BOTH importers the
+# second one's -- a library written against m@1 silently ran m@2's modifier.
+#
+# It is the one place version coexistence was not real, which
+# docs/library_distribution_design.md §5 names as the single language change its
+# scheme needs. Ratified 2026-10-01.
+mod_dir="$(mktemp -d)"
+for v in 1 2; do
+    cat >"$mod_dir/m$v.bas" <<EOF
+library m
+	export modifier shouted for assign
+		return upper(value) + "!!$v"
+	end modifier
+end library
+EOF
+done
+cat >"$mod_dir/a.bas" <<'EOF'
+library a
+	load m from "m1.bas" as am
+	function go(s)
+		r {shouted}= s
+		return r
+	end function
+end library
+EOF
+cat >"$mod_dir/b.bas" <<'EOF'
+library b
+	load m from "m2.bas" as bm
+	function go(s)
+		r {shouted}= s
+		return r
+	end function
+end library
+EOF
+cat >"$mod_dir/main.bas" <<'EOF'
+load a from "a.bas"
+load b from "b.bas"
+print a.go("hi")
+print b.go("hi")
+EOF
+mod_out="$( (cd "$mod_dir" && "$OLDPWD/gbasic" main.bas 2>/dev/null) || true )"
+# THE LOAD-BEARING CHECK: each library gets the version IT asked for. Asserted as
+# BOTH lines, because "a got HI!!1" alone passes on a build where first-registered
+# wins globally -- which is the same defect with the other sign.
+if [ "$mod_out" = "HI!!1
+HI!!2" ]; then
+    pass "each library resolves the modifier version it imported"
+else
+    fail "modifier scoping: got [$mod_out], want HI!!1 then HI!!2"
+fi
+rm -rf "$mod_dir"
+
+# CONTROL 1: the root program's own load still resolves.
+scope_run() { printf '%s\n' "$1" >"$scratch/ms.bas"; (GBASIC_PATH=stdlib ./gbasic "$scratch/ms.bas" 2>/dev/null) || true; }
+got="$(scope_run 'load dates
+d {date}= "2026-03-15"
+e {end of month}= d
+print e')"
+[ "$got" = "2026-03-31" ] && pass "a directly loaded library's modifier resolves" \
+    || fail "direct load broke: [$got]"
+
+# CONTROL 2: THE DELIBERATE FALLBACK. A modifier reaching the program through an
+# INTERMEDIATE library still works -- `load finance` supplies `{end of month}`
+# without loading `dates`, which is how the tree behaves today. Pass two of the
+# resolver exists for this, and closing that leak as well is a SEPARATE decision;
+# every file in this tree that uses a dates modifier already loads dates, so the
+# in-tree cost of closing it would be zero. Pinned so the choice stays visible.
+got="$(scope_run 'load finance
+d {date}= "2026-03-15"
+e {end of month}= d
+print e')"
+[ "$got" = "2026-03-31" ] && pass "a modifier still reaches through an intermediate library (deliberate)" \
+    || fail "the intermediate-library fallback broke: [$got]"
+
+# CONTROL 3: the qualified spelling, which is the migration path if the fallback
+# is ever closed.
+got="$(scope_run 'load dates
+d {date}= "2026-03-15"
+e {dates.end of month}= d
+print e')"
+[ "$got" = "2026-03-31" ] && pass "the qualified form {dates.end of month} resolves" \
+    || fail "qualified form broke: [$got]"
+
+# CONTROL 4: a LOCAL modifier, which has no library at all, must be unaffected.
+got="$(scope_run 'modifier doubled for assign
+    return value * 2
+end modifier
+x {doubled}= 21
+print x')"
+[ "$got" = "42" ] && pass "a local modifier is unaffected by library scoping" \
+    || fail "local modifier broke: [$got]"
+
 printf '\nrun_library_scope: %d checks, %d failed\n' "$checks" "$failures"
 [ "$failures" -eq 0 ] || exit 1
