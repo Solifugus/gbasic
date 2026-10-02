@@ -174,4 +174,79 @@ grep -q "library not found" "$work/err5.txt" \
     && { cat "$work/err5.txt"; fail "its syntax error was hidden behind 'library not found'"; }
 tier_pass 'the file named after the library still fails loudly (it is the file you meant)'
 
+# --- VENDORED DEPENDENCIES: libs/<name>/<name>.bas (2026-10-02) --------------
+#
+# `load producer` resolves a vendored library without the project writing a
+# path, which is the spelling `load dates` already has for an installed one.
+#
+# IT IS A CONVENTION LOOKUP, NOT A DIRECTORY SCAN, and the privacy tier below is
+# why. A library's own dependencies are SIBLINGS inside its directory, at the
+# SAME DEPTH as the library file, so no depth-limited scan of `libs/` could tell
+# a public library from a private copy -- measured, and the reason the obvious
+# implementation was abandoned. Asking for exactly `libs/X/X.bas` can only find
+# what the project itself vendored.
+vend="$work/vendor"
+mkdir -p "$vend/libs/producer"
+cat >"$vend/libs/producer/c.bas" <<'EOF'
+library c
+	function tag()
+		return "private-c"
+	end function
+end library
+EOF
+cat >"$vend/libs/producer/producer.bas" <<'EOF'
+library producer
+	load c
+	function report()
+		return "producer sees " + c.tag()
+	end function
+end library
+EOF
+printf 'load producer\nprint producer.report()\n' >"$vend/app.bas"
+tier_ok=1
+got="$( (cd "$vend" && "$OLDPWD/gbasic" app.bas 2>/dev/null) || true )"
+[ "$got" = "producer sees private-c" ] \
+    || fail "bare \`load producer\` did not resolve libs/producer/producer.bas: [$got]"
+tier_pass 'a bare load resolves libs/<name>/<name>.bas, and the library finds its sibling dep with a bare load too'
+
+# THE PRIVACY TIER, and it is the load-bearing one: the program must NOT be able
+# to reach another library's private dependency. Without it, "vendored libraries
+# resolve" is satisfied by a recursive search that also exposes every private
+# copy in the tree.
+tier_ok=1
+printf 'load c\nprint c.tag()\n' >"$vend/leak.bas"
+leak="$( (cd "$vend" && "$OLDPWD/gbasic" leak.bas 2>&1) || true )"
+printf '%s' "$leak" | grep -q "library not found: c" \
+    || fail "the program reached producer's PRIVATE dependency: [$leak]"
+tier_pass "a library's private dependency is invisible to the program"
+
+# PRECEDENCE, all three rungs. A vendored copy must beat the stdlib -- that is
+# what makes a committed libs/ a reproducible build rather than a suggestion --
+# and a file BESIDE the loader must still beat the vendored copy.
+tier_ok=1
+mkdir -p "$vend/libs/dates"
+cat >"$vend/libs/dates/dates.bas" <<'EOF'
+library dates
+	function dayname(d)
+		return "VENDORED"
+	end function
+end library
+EOF
+printf 'load dates\nd {date}= "2026-03-15"\nprint dates.dayname(d)\n' >"$vend/p.bas"
+got="$( (cd "$vend" && GBASIC_PATH="$OLDPWD/stdlib" "$OLDPWD/gbasic" p.bas 2>/dev/null) || true )"
+[ "$got" = "VENDORED" ] || fail "a vendored copy did not beat the stdlib: [$got]"
+cat >"$vend/dates.bas" <<'EOF'
+library dates
+	function dayname(d)
+		return "BESIDE"
+	end function
+end library
+EOF
+got="$( (cd "$vend" && GBASIC_PATH="$OLDPWD/stdlib" "$OLDPWD/gbasic" p.bas 2>/dev/null) || true )"
+[ "$got" = "BESIDE" ] || fail "a file beside the loader did not beat the vendored copy: [$got]"
+rm -f "$vend/dates.bas" "$vend/libs/dates/dates.bas"
+got="$( (cd "$vend" && GBASIC_PATH="$OLDPWD/stdlib" "$OLDPWD/gbasic" p.bas 2>/dev/null) || true )"
+[ "$got" = "Sunday" ] || fail "with no vendored copy it did not fall through to the stdlib: [$got]"
+tier_pass 'precedence: beside the loader, then libs/<name>/<name>.bas, then the stdlib'
+
 exit $status

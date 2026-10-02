@@ -135,12 +135,21 @@ exactly as its functions already are.**
 > gets `HI!!2`, each the version it asked for — and `tests/run_library_scope.sh`
 > pins it beside the function own-first rule it mirrors.
 >
-> **The second pass is a deliberate fallback**, and a measurement is why: a
-> modifier reaching a program through an INTERMEDIATE library works today —
-> `load finance` supplies `{end of month}` without loading `dates`. Keeping it
-> means nothing breaks. Closing it as well is §9's new question, and its in-tree
-> cost is **zero**: every file in this tree that uses a `dates` modifier already
-> loads `dates`, and `{dates.end of month}` already works as the migration path.
+> **STRICT since 2026-10-02.** The fallback pass is gone: an unqualified
+> modifier resolves ONLY within the libraries the running scope imported, so
+> `load finance` no longer supplies `{end of month}`. Functions were closed this
+> way in `d08409f`, and leaving modifiers leaky meant two rules for two features.
+> The leak also made a program depend on a library's PRIVATE choices — if
+> `finance` stops loading `dates` later, the program breaks for a reason
+> invisible in its own source.
+>
+> **Closing it made a diagnostic reachable, so the diagnostic moved too.**
+> `assign modifier not found: end of month` named nothing a reader could act on.
+> It now says *"library 'dates' exports it, and this file did not load it; add
+> `load dates`"* — and that costs no search, because the modifier is ALREADY in
+> the table, registered when the intermediate library loaded it, and was refused
+> for scope rather than absence. Controls pin that a genuinely absent modifier
+> keeps the plain message and that the lens hint still fires.
 >
 > **A bug I nearly shipped, caught by perturbation:** recording the importer by
 > reading the file-scope variable gives the library's OWN name, because it has
@@ -202,9 +211,40 @@ libs/consumer/consumer.bas
 libs/consumer/libs/c.bas          <- a different c 1.4.0, also invisible
 ```
 
-Each library sits in **its own directory** so that its internal
-`load c from "libs/c.bas"` never has to embed its own name, and so that its
-dependencies are one level BELOW it.
+**DECIDED 2026-10-02, and built.** The layout is `libs/<name>/<name>.bas`, with
+a library's own dependencies as **SIBLINGS** inside its directory:
+
+```
+gbasic.deps
+libs/producer/producer.bas        <- your direct dependency
+libs/producer/c.bas               <- producer's private c, a SIBLING
+libs/consumer/consumer.bas
+libs/consumer/c.bas               <- a different c, also private
+```
+
+**NO SOURCE FILE ANYWHERE ENCODES THE LAYOUT**, which is the property that made
+this the right shape:
+
+- the **library** writes a bare `load c` — resolved beside itself, no path
+- the **program** writes a bare `load producer` — resolved by the vendored
+  lookup, no path
+
+So `--fetch` owns the layout completely, and changing it later edits nobody's
+code. Under the alternative (a nested `libs/` inside each library) every
+published library would carry `from "libs/c.bas"` in its source and the on-disk
+shape would be frozen by every library ever published.
+
+**The lookup is a CONVENTION, not a directory scan, and the privacy property is
+why.** A library and its private dependencies sit at the SAME DEPTH, so no
+depth-limited scan of `libs/` could tell a public library from a private copy —
+measured, and the reason the obvious implementation was abandoned. Asking for
+exactly `libs/X/X.bas` can only find what the project itself vendored: the
+program's own `load c` looks for `libs/c/c.bas`, which does not exist.
+
+**Precedence, all three rungs asserted** (`run_library_depth.sh`): a file BESIDE
+the loader wins, then `libs/<name>/<name>.bas`, then the stdlib. A vendored copy
+beating an installed one is what makes a committed `libs/` a reproducible build
+rather than a suggestion, and warning 2103 reports which copy won.
 
 **That nesting is what makes private copies private, and it is enforced by a
 rule that already exists.** MEASURED, both ways:
@@ -228,11 +268,11 @@ disappears, which is the failure mode that produced npm's most famous outage.
 ### 7.5 Use, and run
 
 ```basic
-load producer from "libs/producer/producer.bas"
+load producer
 ```
 
-The path is explicit, because that is what keeps the private copies private
-(§7.3). **The interpreter learns nothing**: `load` finds a file exactly as it
+No path: the vendored lookup resolves it (§7.3), exactly as `load dates` resolves
+an installed library. **The interpreter learns nothing**: `load` finds a file exactly as it
 does today. **Running a program touches no network and needs no tool**, which is
 the property that makes dependencies "always work" — at run time there is no
 dependency machinery left to fail.
@@ -284,23 +324,17 @@ specified first.
 1. ~~**§4 identity** — name, or origin + version.~~ **DECIDED 2026-10-01**:
    origin + version.
 2. ~~**§5 modifier scoping**~~ **BUILT 2026-10-01**, with a deliberate fallback.
-2a. **Should the fallback in §5 be closed?** Strict scoping would mean a modifier
-   no longer reaches a program through an intermediate library. MEASURED: the
-   in-tree cost is zero and `{dates.end of month}` is the migration path, so this
-   is affordable — but it would break an outside program relying on the leak, and
-   there are none yet, which makes now the cheapest moment. A perturbation shows
-   exactly what it costs: `{end of month}` via `finance` returns nothing.
+2a. ~~**Should the fallback in §5 be closed?**~~ **DONE 2026-10-02** — closed,
+   with the diagnostic improved in the same change.
 3. Does a vendored library's own `libs/` get committed, or re-fetched? (Committed
    is the offline-forever answer; re-fetched is smaller.)
-4. **Should a bare `load producer` find `libs/`?** Today it needs the explicit
-   path of §7.5. Making the bare form work means letting `load` search `./libs/`
-   — and it must be **ONE LEVEL ONLY**, because a recursive search is precisely
-   what leaked the private copy in §7.3. Nicer to write, but it is a runtime
-   change, against this document's own "the interpreter learns nothing" rule.
-5. **Where does a library author's own relative `load` point?** A library
-   written with `load c from "libs/c.bas"` only works vendored if it lands at
-   `libs/<name>/<name>.bas`, which is why §7.3 nests. Worth pinning before
-   anyone publishes, because it fixes the on-disk shape permanently.
+4. ~~**Should a bare `load producer` find `libs/`?**~~ **DONE 2026-10-02** — yes,
+   by a convention lookup rather than a scan. It IS a runtime change against this
+   document's "the interpreter learns nothing" rule, taken deliberately: the
+   alternative froze the layout into every published library's source.
+5. ~~**Where does a library author's own relative `load` point?**~~ **DONE
+   2026-10-02** — nowhere. The author writes a bare `load c` and the dependency
+   is a sibling, so no library encodes the layout.
 6. What does a library declare its **gBASIC version** requirement against, given
    that this tree changes diagnostics between releases? See the compatibility
    axis in the trust document.

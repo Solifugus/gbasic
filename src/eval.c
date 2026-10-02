@@ -8178,24 +8178,58 @@ static int modifier_is_in_scope(const ModifierDef *modifier) {
  * (docs/library_distribution_design.md §5). Functions have been scoped per
  * library since d08409f; modifiers were the half left global.
  *
- * Pass one is restricted to modifiers the running library imported. Pass two is
- * the old unrestricted search, which keeps working every program that relies on
- * a modifier reaching it through an intermediate library -- MEASURED to be how
- * `load finance` currently supplies `{end of month}` without loading `dates`.
- * Closing that leak as well is a separate decision; every file in this tree that
- * uses a dates modifier already loads dates, so its in-tree cost is zero.
+ * STRICT SINCE 2026-10-02: an unqualified modifier resolves ONLY within the
+ * libraries the running scope imported. The fallback pass that shipped a day
+ * earlier is gone, and with it the leak where a modifier reached a program
+ * through an INTERMEDIATE library -- `load finance` used to supply
+ * `{end of month}` without loading `dates`.
  *
- * The longest-match rule is preserved WITHIN each pass, so `end of month` still
- * beats `end` and the pass only changes which library's copy is found. */
+ * Three reasons, the first of which decides it. FUNCTIONS WERE CLOSED THIS WAY
+ * IN d08409f, so leaving modifiers leaky meant two rules for two features, and
+ * somebody would trip over the difference. The leak also made a program depend
+ * on a library's PRIVATE choices: if `finance` stops loading `dates` in a later
+ * version the program breaks for a reason invisible in its own source. And the
+ * cost was MEASURED rather than guessed -- every file in this tree that uses a
+ * dates modifier already loads dates, no library is published yet so nothing
+ * outside can break, and `{dates.end of month}` already works as the migration
+ * path.
+ *
+ * The longest-match rule is preserved, so `end of month` still beats `end`. */
+/* The phrase IS exported, by a library the running scope did not import.
+ *
+ * Worth answering because closing the scope leak (modifier_resolve, below) made
+ * this reachable: a program that said `load finance` and used `{end of month}`
+ * worked until 2026-10-02 and now does not, and "assign modifier not found"
+ * names nothing it can act on. The answer costs no search -- the modifier is
+ * ALREADY IN THE TABLE, registered when the intermediate library loaded it, and
+ * was refused for scope rather than absence. Naming it turns a dead end into one
+ * line to add. */
+static const char *modifier_out_of_scope_library(AstModifierUse use, const char *context) {
+    if (use.library || !use.name) {
+        return NULL;
+    }
+    for (size_t i = modifier_count; i > 0; i--) {
+        ModifierDef *modifier = &modifiers[i - 1];
+        const char *ignored = NULL;
+        if (strcmp(modifier->context, context) == 0 &&
+            modifier->library &&
+            !modifier_is_in_scope(modifier) &&
+            modifier_phrase_matches(use.name, modifier->name, &ignored)) {
+            return modifier->library;
+        }
+    }
+    return NULL;
+}
+
 static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, const char **args_start) {
     ModifierDef *best = NULL;
     const char *best_args = NULL;
     size_t best_len = 0;
-    for (int in_scope_only = 1; in_scope_only >= 0 && !best; in_scope_only--) {
+    {
         for (size_t i = modifier_count; i > 0; i--) {
             ModifierDef *modifier = &modifiers[i - 1];
             const char *candidate_args = NULL;
-            if (in_scope_only && use.library == NULL && !modifier_is_in_scope(modifier)) {
+            if (use.library == NULL && !modifier_is_in_scope(modifier)) {
                 continue;
             }
             if (strcmp(modifier->context, context) == 0 &&
@@ -9422,6 +9456,38 @@ static void library_import(const char *name, const char *path, const char *alias
     size_t deep_count = 0;
 
     search_directory_for_library(base_dir, name, 0, 1, &matches, &match_count);
+
+    /* VENDORED DEPENDENCIES: `libs/<name>/<name>.bas`, beside the loading file.
+     *
+     * So `load producer` resolves without the project writing a path, which is
+     * the spelling `load dates` already has for an installed library -- a
+     * vendored one being the same concept, the same spelling is the less
+     * surprising design (docs/library_distribution_design.md §9.4).
+     *
+     * IT IS A CONVENTION LOOKUP, NOT A DIRECTORY SCAN, and that is what makes it
+     * leak-proof. A library's own dependencies sit as SIBLINGS inside its
+     * directory (`libs/producer/c.bas`), at the same depth as the library file
+     * itself, so NO depth-limited scan of `libs/` could tell a public library
+     * from somebody's private copy -- measured, and the reason the obvious
+     * implementation was abandoned. Asking for exactly `libs/X/X.bas` can only
+     * ever find a library the project itself vendored: the program's own
+     * `load c` looks for `libs/c/c.bas`, which does not exist, so producer's
+     * private `c` stays invisible.
+     *
+     * Searched AFTER beside-the-file and BEFORE the stdlib, so a vendored copy
+     * beats an installed one -- which is what makes a committed `libs/` a
+     * reproducible build rather than a suggestion. */
+    if (!error_action_pending() && base_dir) {
+        size_t need = strlen(base_dir) + strlen("/libs/") + strlen(name) + 1;
+        char *vendor_dir = malloc(need);
+        if (!vendor_dir) {
+            abort();
+        }
+        snprintf(vendor_dir, need, "%s/libs/%s", base_dir, name);
+        search_directory_for_library(vendor_dir, name, 0, 1, &matches, &match_count);
+        free(vendor_dir);
+    }
+
     if (!error_action_pending()) {
         search_gbasic_path_for_library(name, 1, &matches, &match_count);
     }
@@ -35049,7 +35115,15 @@ static void modifier_raise_assign_not_found(AstModifierUse use) {
                  "where a value is read, as in `if x{%s}= y then`",
                  label, label);
     } else {
-        snprintf(message, sizeof(message), "assign modifier not found: %s", label);
+        const char *owner = modifier_out_of_scope_library(use, "assign");
+        if (owner) {
+            snprintf(message, sizeof(message),
+                     "assign modifier not found: %s -- library '%s' exports it, and this "
+                     "file did not load it; add `load %s`",
+                     label, owner, owner);
+        } else {
+            snprintf(message, sizeof(message), "assign modifier not found: %s", label);
+        }
     }
     runtime_error_raise(message, 1003, "modifier");
 }
