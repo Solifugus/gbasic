@@ -93,10 +93,29 @@ The live page is `content/projects/gbasic.md` in the **tedderland** checkout, no
 `examples/gbasic_site/site.bas` here (that one is a prototype and is not what
 serves). Stage the artifacts and deploy from there:
 
+**A PUBLISHED RELEASE A BOOK IS BASED ON IS NEVER REMOVED** (decided
+2026-10-02). This step used to begin `rm -f downloads/gbasic/gbasic-*`, "the
+current release only" — which would have deleted the archive the page's own prose
+promises: *"the book was written against gBASIC 0.3.0 and prints that archive's
+checksum on paper, so 0.3.0 stays downloadable here for as long as the edition is
+in print."* The instruction and the promise contradicted each other, and the
+instruction would have won.
+
+The page now declares the roles in its front matter, and the checker enforces
+both directions:
+
+```
+version: 0.4.0        the current release — every check is asked of this tag
+pinned:  0.3.0        archives that must stay downloadable
+```
+
 ```sh
 cd ../tedderland
-rm -f downloads/gbasic/gbasic-*                     # the current release only
+# Remove ONLY artifacts for versions that are neither current nor pinned.
+# NEVER a blanket rm: a pinned release must stay downloadable, and the checker
+# refuses the deploy when one is missing.
 cp ../gbasic/dist/gbasic-X.Y.Z-linux-x86_64*.tar.gz* downloads/gbasic/
+$EDITOR content/projects/gbasic.md   # set `version:`, add the previous one to `pinned:`
 git add -A && git commit -m "gBASIC X.Y.Z"
 ./deploy.sh --dry-run                               # read what it would change
 ./deploy.sh                                         # rsync --delete to the live host
@@ -105,9 +124,13 @@ git add -A && git commit -m "gBASIC X.Y.Z"
 `deploy.sh` runs `./check-gbasic-release.sh`, which **refuses** while the page is
 dishonest about the release it names. It checks the page against **the tag**, not
 against this tree — a published page describes a release and is therefore
-*supposed* to lag development. So it requires that the page name exactly one
-version, that the version be **tagged** (nothing advertises a release that does
-not exist), and then asks of that tag: does every link into the repo resolve,
+*supposed* to lag development. So it requires that the page **declare** its
+current version and any pinned ones, that every version it names be one of those
+(a stale or typo'd version is still caught, which is what the old "exactly one"
+rule was really protecting), that each be **tagged** (nothing advertises a release
+that does not exist), that each pinned archive still be **staged** (the promise
+runs both ways — that is the check that would have caught the blanket `rm`), and
+then asks of the current tag: does every link into the repo resolve,
 does every licence the page names appear in the SPDX headers, are the artifacts
 it offers actually staged, and do its library counts match — the last measured by
 loading every library with the staged binary itself.
