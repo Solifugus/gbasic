@@ -1171,10 +1171,17 @@ Modifier use:
 
 ```basic
 x{USD}= 19.95
-name {caseless}= "joe"
-a {rounded 2}= b
-a {math.rounded to 2}= b
+d {date}= "2026-03-15"
+p {trimmed}= "  padded  "
 ```
+
+Three of the four examples this block used to show **did not run** (corrected
+2026-10-02, reported by the gbasic-books session, which had a drafted chapter
+carrying a caution about it): `name {caseless}= "joe"` raises, because `caseless`
+is a comparison **lens** rather than an assignment modifier and the interpreter
+says so; and `rounded` names a modifier that exists **nowhere** — not in the
+stdlib, not in the interpreter — so both `{rounded 2}` and
+`{math.rounded to 2}` raise `assign modifier not found`.
 
 Assignment modifiers transform assigned values. Comparison modifiers transform or
 implement comparisons. Both are written in **braces**; the parenthesized spelling
@@ -1783,8 +1790,16 @@ carries the model (`docs/multiprocessing_design.md`):
 - `spawn worker(args…)` — start a new actor running the named function `worker`
   and return a **handle** to it. `worker` must be a `function` declared in the
   program, and the program must be loaded from a file (the child re-execs it). The
-  arguments are copied to the child as its first message; a handle among them —
-  including `self()` — is passed through so the child can message that actor.
+  arguments arrive as the entry function's **parameters**, and the mailbox starts
+  **empty**; a handle among them — including `self()` — is passed through so the
+  child can message that actor. (They do travel over the same channel, which is
+  why they are bound by the same frame cap — but what the child *sees* is
+  parameters. This page said "copied to the child as its first message" until
+  2026-10-02, which described the transport rather than the program: measured, a
+  child printing its parameters gets them, and a following `receive(1 seconds)`
+  answers `nothing`. Arity is checked against the parameters, so
+  `spawn kid0(5, "x")` against a zero-parameter entry is refused outright with
+  `spawn: kid0 expects 0 arguments`.)
 - `send(handle, value)` — copy `value` into the target actor's mailbox as one
   message. Non-blocking: if the mailbox is full or the value is too large for one
   frame, a structured `actor` error is raised rather than blocking. Per-sender
@@ -1934,6 +1949,13 @@ location — the interesting site is where it first went wrong, not the relay.
 
 **`error.trace`** is an array of `{name, path, line, column}` records, innermost
 first (the field is `name` because a keyword cannot follow a dot).
+
+**Each frame's `line` is the CALL SITE, not the raise site** — where that frame
+called the next one inward. That is the right choice, because it is what tells you
+how the program got there, but nothing said so, and a reader who assumes the
+other reading is one frame out in the direction that looks plausible. Added
+2026-10-02 on a request from the gbasic-books session, whose Chapter 13 prints a
+trace.
 
 `with lock` unlocks on error, and `without watchers` restores watcher behavior
 after its block.
@@ -4916,6 +4938,19 @@ type(unknown)    ' "unknown"
 
 ### Strict Conversion
 
+**THE CONVERSIONS ARE DELIBERATELY STRICTER THAN THE OPERATORS, and the two pages
+need reading together.** `1 = true` is **true** and `1 > false` **orders**, because
+a boolean compares as 0 or 1 — the one real coercion the comparison chain keeps,
+measured at 1,472 of 1,500 mixed-kind comparisons in this tree and argued under
+*Expressions*. But `number(true)` and `boolean(1)` both raise
+`unsupported type`.
+
+Both choices are defensible and they are not in tension: comparing is answering a
+question about two values, while converting is asserting that one value *is*
+another kind. Stated here because nothing connected them, so a reader who learned
+`1 = true` from one page could not predict what `number(flag)` does from another.
+Added 2026-10-02, reported by the gbasic-books session.
+
 **`string(value)`** - Converts values to strings using canonical string representation.
 
 **`number(value)`** - Converts strings to numbers:
@@ -5253,11 +5288,28 @@ string; it is not a type-checking wrapper.
 the parser's recursion overran the C stack and segfaulted at around 45 000 levels;
 a non-raising decode whose failure mode is a crash would be worthless.
 
-**Why it matters for performance.** Pre-validating in gBASIC is not merely
-inconvenient, it is quadratic: `mid(s, i, 1)` is O(i) on codepoint-indexed strings,
-so a per-character scan is O(n²). Measured — 16 KB: 1 s; 64 KB: 16 s; 128 KB: 69 s;
-256 KB: 291 s. The C parser handles all of those in well under a second, so
-`try_decode` replaces a scan that got dramatically worse with size.
+**Why it matters for performance.** Pre-validating in gBASIC was measured at
+16 KB: 1 s; 64 KB: 16 s; 128 KB: 69 s; 256 KB: 291 s — plainly quadratic, and the
+C parser handles all of those in well under a second. `try_decode` replaces a
+scan that got dramatically worse with size.
+
+**The REASON given here used to be wrong, and the wrong reason was the harmful
+part** (corrected 2026-10-02, reported by the gbasic-books session). This
+paragraph said `mid(s, i, 1)` is O(i) and therefore a per-character scan is O(n²).
+**PLAT-STRIDX removed both costs** and nobody updated this page, so it went on
+telling readers to avoid the thing that had become fast — and a reader who
+believes `mid` is O(i) rewrites a linear loop into something worse.
+
+Measured on the current binary: **`mid` is flat in the index** — 20 000 calls at
+the far end of a 400 000-codepoint multibyte string cost 0.0218 s against 0.0201 s
+for the same calls on a 100 000-codepoint string, a ratio of 1.09 where O(i) would
+be about 4. And **a per-character scan is linear**: 50k/100k/200k/400k codepoints
+at 0.058/0.114/0.229/0.461 s.
+
+So the quadratic cost those timings record is **not** in `mid`. The likeliest
+cause is accumulation with `+` inside the scan, which is separately measured and
+genuinely quadratic — see *Performance traps*. The advice is unchanged either
+way: use `try_decode` rather than pre-validating in gBASIC.
 
 **`json_encode(value)` — strict JSON.** Type mapping:
 
