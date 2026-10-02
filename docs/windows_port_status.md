@@ -175,4 +175,17 @@ not a Tier 1 blocker on this toolchain.
   Candidate remedies are a UTF-8 `activeCodePage` application manifest or the
   `W` entry points; neither has been tried.
 
+**Found by reading the code while porting it (none yet measured on Windows):**
+- **Time zones.** `zone_push` sets `TZ` to an IANA name and checks
+  `/usr/share/zoneinfo/<zone>`. Windows has no zoneinfo directory and its CRT's
+  `TZ` takes a different syntax (`EST5EDT`), so every named-zone operation will
+  fail or silently use the wrong offset. Candidates: Windows' ICU (`icu.dll`,
+  Windows 10 1903+, carries IANA zones) or a bundled tz database. Unresolved;
+  the `gb_setenv` seam compiles it, it does not make it correct.
+- **`--line-buffered`.** Windows' `setvbuf` treats `_IOLBF` as FULL buffering,
+  so the flag would silently do nothing — the MCP stdio deadlock. Needs an
+  explicit flush per completed line. Recorded in `include/platform.h`.
+- **stdin.** stdout/stderr go to binary mode at startup (`gb_stdio_binary`);
+  stdin is left in text mode until something reading it on Windows is measured.
+
 **Still open:** nothing here has RUN gBASIC on Windows yet — §5 stands.

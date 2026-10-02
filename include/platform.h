@@ -33,6 +33,7 @@
 
 #include <stddef.h>
 #include <sys/types.h>
+#include <time.h>
 
 /* The path of the running executable.
  *
@@ -131,6 +132,68 @@ void gb_arm_parent_death(void);
 int gb_net_init(void);                        /* WSAStartup; nothing on POSIX */
 int gb_sock_close(int fd);                    /* close vs closesocket */
 int gb_sock_set_blocking(int fd, int blocking); /* fcntl vs ioctlsocket FIONBIO */
+
+/* ---------------------------------------------------------------------------
+ * PORTABLE C LIBRARY GAPS.
+ *
+ * Unlike the mechanisms above these are not design questions: each is a POSIX
+ * function the Windows C runtime (UCRT) spells differently, with the same
+ * meaning. They are here rather than as `#ifdef`s at their call sites because
+ * eval.c calls most of them from several places, and one seam is one thing to
+ * get right.
+ */
+
+/* setenv(name, value, 1) / unsetenv(name). Windows: _putenv_s, where an EMPTY
+ * value removes the variable -- so Windows cannot hold an environment variable
+ * set to the empty string, and gb_setenv(name, "") there is an unset. Returns 1
+ * on success, 0 on failure. */
+int gb_setenv(const char *name, const char *value);
+int gb_unsetenv(const char *name);
+
+/* localtime_r / gmtime_r: the thread-safe forms, writing into `out`. Return
+ * `out`, or NULL on failure, as POSIX does. Windows: localtime_s / gmtime_s,
+ * whose argument order is REVERSED and which return an errno rather than the
+ * pointer -- the kind of difference a bare macro would get wrong silently. */
+struct tm;
+struct tm *gb_localtime(const time_t *t, struct tm *out);
+struct tm *gb_gmtime(const time_t *t, struct tm *out);
+
+/* timegm: civil fields interpreted as UTC, to epoch seconds. Not POSIX at all
+ * (a BSD/glibc extension), which is why it needs a seam even on POSIX-like
+ * systems that lack it. Windows: _mkgmtime. */
+time_t gb_timegm(struct tm *tm);
+
+/* mkdir(path, mode). Windows: _mkdir(path), which has no mode -- permissions
+ * there are ACLs, and the 0777 every caller here passes means "the default",
+ * which is what _mkdir gives. Returns 0 on success, -1 with errno set, exactly
+ * like mkdir, because the callers test errno == EEXIST and that distinction is
+ * what makes `make_dir` usable as a cross-process lock (see run_dir_builtins).
+ *
+ * UNVERIFIED ON WINDOWS: a path is UTF-8 in gBASIC and _mkdir takes the ANSI
+ * code page unless the process runs under a UTF-8 code page. The intended
+ * answer is the UTF-8 activeCodePage manifest (Windows 10 1903+), which fixes
+ * every narrow-string path call in the tree at once rather than converting at
+ * each one -- not yet built or measured. */
+int gb_mkdir(const char *path, int mode);
+
+/* Make stdout and stderr write bytes exactly as given. Called first thing in
+ * main, before any output.
+ *
+ * WINDOWS: the C runtime opens both in TEXT mode, translating every "\n" into
+ * "\r\n" underneath the program. gBASIC would be emitting LF and the file on
+ * disk would hold CRLF, and every one of the ~680 byte-exact goldens in this
+ * tree would fail for a reason invisible in the source. Binary mode makes
+ * gBASIC write LF on every platform (windows_port_plan.md §7.1). POSIX: no-op.
+ *
+ * STDIN IS DELIBERATELY LEFT ALONE for now: in binary mode `input()` would see
+ * the "\r" a Windows console line ends with. Unmeasured; decide it when
+ * something reads stdin on Windows.
+ *
+ * KNOWN GAP, recorded rather than fixed here: Windows' setvbuf treats _IOLBF as
+ * FULL buffering (documented by Microsoft), so `--line-buffered` would silently
+ * do nothing there -- which is the MCP stdio deadlock run_mcp.sh demonstrates.
+ * It will need an explicit flush per completed line. */
+void gb_stdio_binary(void);
 
 /* Which platform the bodies above came from, for diagnostics and for the tests
  * that need to say why a tier does not apply. */

@@ -2002,17 +2002,17 @@ static int zone_name_valid(const char *zone) {
 static char *zone_push(const char *zone) {
     const char *cur = getenv("TZ");
     char *saved = cur ? copy_string(cur) : NULL;
-    setenv("TZ", zone, 1);
+    gb_setenv("TZ", zone);
     tzset();
     return saved;
 }
 
 static void zone_pop(char *saved) {
     if (saved) {
-        setenv("TZ", saved, 1);
+        gb_setenv("TZ", saved);
         free(saved);
     } else {
-        unsetenv("TZ");
+        gb_unsetenv("TZ");
     }
     tzset();
 }
@@ -2058,10 +2058,10 @@ static int zone_resolve_instants(DateTime dt, const char *zone,
     time_t e0 = mktime(&t0);
     time_t e1 = mktime(&t1);
     int ok0 = 0, ok1 = 0;
-    if (e0 != (time_t)-1 && localtime_r(&e0, &chk)) {
+    if (e0 != (time_t)-1 && gb_localtime(&e0, &chk)) {
         ok0 = zone_tm_matches(&chk, dt);
     }
-    if (e1 != (time_t)-1 && localtime_r(&e1, &chk)) {
+    if (e1 != (time_t)-1 && gb_localtime(&e1, &chk)) {
         ok1 = zone_tm_matches(&chk, dt);
     }
     zone_pop(saved);
@@ -2092,13 +2092,13 @@ static int zone_resolve_instants(DateTime dt, const char *zone,
 static long long zone_timegm(DateTime dt) {
     struct tm tm;
     zone_fill_tm(dt, &tm);
-    return (long long)timegm(&tm);
+    return (long long)gb_timegm(&tm);
 }
 
 static DateTime zone_civil_from_epoch_utc(long long epoch, DateTimePrecision prec) {
     time_t raw = (time_t)epoch;
     struct tm g;
-    gmtime_r(&raw, &g);
+    gb_gmtime(&raw, &g);
     DateTime dt = {0};
     dt.year = g.tm_year + 1900;
     dt.month = g.tm_mon + 1;
@@ -7342,7 +7342,7 @@ static Value zone_eval_call(AstExpr *expr) {
         char *saved = zone_push(zone);
         time_t raw = (time_t)epoch;
         struct tm l;
-        localtime_r(&raw, &l);
+        gb_localtime(&raw, &l);
         zone_pop(saved);
         DateTime out = {0};
         out.year = l.tm_year + 1900;
@@ -10128,7 +10128,7 @@ static int make_dir_parents(const char *path, char *why, size_t why_size) {
         }
         char saved = work[i];
         work[i] = '\0';
-        if (work[0] != '\0' && mkdir(work, 0777) != 0) {
+        if (work[0] != '\0' && gb_mkdir(work, 0777) != 0) {
             if (errno == EEXIST) {
                 /* THE CASE THAT MUST NOT PASS SILENTLY: the name is taken by
                  * something that is not a directory. Reporting success there
@@ -10395,7 +10395,7 @@ static Value eval_file_call(AstExpr *expr) {
          * included (a directory's mtime is a meaningful change signal). */
         time_t raw = st.st_mtime;
         struct tm local;
-        if (!localtime_r(&raw, &local)) {
+        if (!gb_localtime(&raw, &local)) {
             runtime_error_raise("file_mtime could not convert the file time",
                                 1004,
                                 "file operation");
@@ -10713,7 +10713,7 @@ static Value eval_file_call(AstExpr *expr) {
         }
 
         int ok = is_make
-                     ? mkdir(path, 0777) == 0
+                     ? gb_mkdir(path, 0777) == 0
                      : rmdir(path) == 0;
         if (!ok) {
             char message[512];
@@ -18076,7 +18076,7 @@ static char *webserver_timestamp(void) {
     time_t now = time(NULL);
     struct tm value;
     char buffer[32] = "";
-    if (gmtime_r(&now, &value)) {
+    if (gb_gmtime(&now, &value)) {
         strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &value);
     }
     return copy_string(buffer);
@@ -19582,7 +19582,7 @@ static Value webserver_eval_inherited(AstExpr *expr) {
         int fd = 3 + (int)i;
         int accepting = 0;
         socklen_t opt_len = sizeof(accepting);
-        if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &opt_len) != 0 ||
+        if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, (char *)&accepting, &opt_len) != 0 ||
             !accepting) {
             for (long j = 0; j < i; j++) {
                 value_free(items[j]);
@@ -19631,8 +19631,8 @@ static Value webserver_eval_inherited(AstExpr *expr) {
 #endif
     }
     value_free(tls_opts);
-    unsetenv("LISTEN_FDS");
-    unsetenv("LISTEN_PID");
+    gb_unsetenv("LISTEN_FDS");
+    gb_unsetenv("LISTEN_PID");
     return value_array(items, (size_t)count);
 }
 
@@ -19701,7 +19701,9 @@ static Value webserver_eval_listen(AstExpr *expr) {
         return value_null();
     }
     int reuse = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    /* (const char *): Winsock declares the option value as char *, POSIX as
+     * void * -- the cast is correct for both and changes nothing on POSIX. */
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
     if (bind(fd, resolved->ai_addr, resolved->ai_addrlen) != 0 ||
         listen(fd, 16) != 0 ||
         !webserver_set_blocking_mode(fd, 0)) {
@@ -26819,9 +26821,9 @@ static void process_apply_env(Value *env_rec) {
     size_t n = env_rec->as.record.count;
     for (size_t i = 0; i < n; i++) {
         if (fields[i].value->kind == VALUE_NULL) {
-            unsetenv(fields[i].name);
+            gb_unsetenv(fields[i].name);
         } else {
-            setenv(fields[i].name, fields[i].value->as.string, 1);
+            gb_setenv(fields[i].name, fields[i].value->as.string);
         }
     }
 }
@@ -27414,8 +27416,8 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
             char env_pid[32];
             snprintf(env_count, sizeof(env_count), "%zu", share_count);
             snprintf(env_pid, sizeof(env_pid), "%ld", (long)getpid());
-            setenv("LISTEN_FDS", env_count, 1);
-            setenv("LISTEN_PID", env_pid, 1);
+            gb_setenv("LISTEN_FDS", env_count);
+            gb_setenv("LISTEN_PID", env_pid);
         }
         /* After LISTEN_FDS so a caller could deliberately override it, and
          * before chdir so an env error cannot be confused with a cwd one. */
@@ -30757,11 +30759,11 @@ static Value eval_call(AstExpr *expr) {
         int converted;
         if (zone_arg) {
             char *saved = zone_push(zone_arg);
-            converted = localtime_r(&raw, &local) != NULL;
+            converted = gb_localtime(&raw, &local) != NULL;
             zone_pop(saved);
             free(zone_arg);
         } else {
-            converted = localtime_r(&raw, &local) != NULL;
+            converted = gb_localtime(&raw, &local) != NULL;
         }
         if (!converted) {
             runtime_error_raise("could not convert the current time", 1003, "clock");
@@ -30923,7 +30925,7 @@ static Value eval_call(AstExpr *expr) {
         }
         time_t raw = (time_t)sd;
         struct tm local;
-        if (!localtime_r(&raw, &local)) {
+        if (!gb_localtime(&raw, &local)) {
             runtime_error_raise("could not convert the given epoch time", 1003, "clock");
             return value_null();
         }

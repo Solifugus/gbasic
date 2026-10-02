@@ -15,8 +15,14 @@
 #include "platform.h"
 
 #include <windows.h>
+#include <direct.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <io.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 const char *gb_platform_name(void) { return "windows"; }
 
@@ -100,6 +106,41 @@ void gb_arm_parent_death(void) {
         CloseHandle(job);   /* already in a job that forbids nesting: no worse
                              * than Linux's setuid case, which the header names */
     }
+}
+
+/* _putenv_s with an empty value REMOVES the variable; see the header. */
+int gb_setenv(const char *name, const char *value) {
+    return _putenv_s(name, value) == 0;
+}
+
+int gb_unsetenv(const char *name) {
+    return _putenv_s(name, "") == 0;
+}
+
+/* The _s forms take (out, in) -- reversed from POSIX -- and return an errno. */
+struct tm *gb_localtime(const time_t *t, struct tm *out) {
+    return localtime_s(out, t) == 0 ? out : NULL;
+}
+
+struct tm *gb_gmtime(const time_t *t, struct tm *out) {
+    return gmtime_s(out, t) == 0 ? out : NULL;
+}
+
+time_t gb_timegm(struct tm *tm) {
+    return _mkgmtime(tm);
+}
+
+/* No mode: see the header. _mkdir sets errno = EEXIST for an existing entry,
+ * which is the distinction the callers depend on. */
+int gb_mkdir(const char *path, int mode) {
+    (void)mode;
+    return _mkdir(path);
+}
+
+/* See the header: LF out, on every platform. */
+void gb_stdio_binary(void) {
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
 }
 
 /* WSAStartup is not optional and not idempotent-by-accident: every socket call

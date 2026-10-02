@@ -2503,7 +2503,7 @@ static double xlsx_now_serial(void) {
         t = time(NULL);
     }
     struct tm lt;
-    if (!localtime_r(&t, &lt)) return 0;
+    if (!gb_localtime(&t, &lt)) return 0;
     double day = xlsx_serial_from_civil((long)lt.tm_year + 1900,
                                         (unsigned)lt.tm_mon + 1,
                                         (unsigned)lt.tm_mday);

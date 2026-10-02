@@ -69,6 +69,7 @@
 #include "eval.h"
 #include "gbasic.h"
 #include "lineedit.h"
+#include "platform.h"
 
 #define REPL_SOURCE_NAME "<prompt>"
 
@@ -323,10 +324,10 @@ static int make_dirs(const char *path) {
             continue;
         }
         *p = '\0';
-        mkdir(buf, 0700);
+        gb_mkdir(buf, 0700);
         *p = '/';
     }
-    return mkdir(buf, 0700) == 0 || errno == EEXIST ? 0 : -1;
+    return gb_mkdir(buf, 0700) == 0 || errno == EEXIST ? 0 : -1;
 }
 
 static void cache_open(void) {

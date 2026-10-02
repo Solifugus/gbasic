@@ -22,7 +22,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__linux__)
@@ -107,6 +109,34 @@ void gb_arm_parent_death(void) {
      * window and does not close it, and pretending otherwise would make
      * run_process_lifetime.sh pass while the promise it tests was unkept. */
 #endif
+}
+
+int gb_setenv(const char *name, const char *value) {
+    return setenv(name, value, 1) == 0;
+}
+
+int gb_unsetenv(const char *name) {
+    return unsetenv(name) == 0;
+}
+
+struct tm *gb_localtime(const time_t *t, struct tm *out) {
+    return localtime_r(t, out);
+}
+
+struct tm *gb_gmtime(const time_t *t, struct tm *out) {
+    return gmtime_r(t, out);
+}
+
+time_t gb_timegm(struct tm *tm) {
+    return timegm(tm);
+}
+
+int gb_mkdir(const char *path, int mode) {
+    return mkdir(path, (mode_t)mode);
+}
+
+void gb_stdio_binary(void) {
+    /* POSIX has no text mode: bytes are bytes. */
 }
 
 int gb_net_init(void) {

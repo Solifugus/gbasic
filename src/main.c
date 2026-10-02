@@ -4,6 +4,7 @@
 #include "gbasic.h"
 #include "repl.h"
 #include "lexer.h"
+#include "platform.h"
 
 #include <dirent.h>
 #include <string.h>
@@ -948,6 +949,10 @@ int main(int argc, char **argv) {
     const char *path = NULL;
     char *const *program_args = NULL;
     size_t program_arg_count = 0;
+
+    /* Before ANY output, including an actor's: on Windows stdout starts in text
+     * mode and would turn every "\n" into "\r\n". See include/platform.h. */
+    gb_stdio_binary();
 
     if (argc >= 4 && strcmp(argv[1], "--actor") == 0) {
         return run_actor_mode(argc, argv);
