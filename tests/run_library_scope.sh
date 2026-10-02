@@ -293,18 +293,31 @@ print e')"
 [ "$got" = "2026-03-31" ] && pass "a directly loaded library's modifier resolves" \
     || fail "direct load broke: [$got]"
 
-# CONTROL 2: THE DELIBERATE FALLBACK. A modifier reaching the program through an
-# INTERMEDIATE library still works -- `load finance` supplies `{end of month}`
-# without loading `dates`, which is how the tree behaves today. Pass two of the
-# resolver exists for this, and closing that leak as well is a SEPARATE decision;
-# every file in this tree that uses a dates modifier already loads dates, so the
-# in-tree cost of closing it would be zero. Pinned so the choice stays visible.
+# CONTROL 2: THE LEAK IS CLOSED, AND THE MESSAGE SAYS WHAT TO DO. A modifier does
+# NOT reach the program through an intermediate library: `load finance` no longer
+# supplies `{end of month}`.
+#
+# THIS CONTROL WAS STALE FOR ONE COMMIT AND THE GATE CAUGHT IT. It asserted the
+# fallback still worked, written when the fallback existed; 194fa27 removed the
+# fallback and I did not re-run this suite, so a test was asserting behaviour the
+# tree no longer had. That is the whole reason run_all exists, and it is a better
+# argument for it than any I could have written.
+#
+# The replacement is STRONGER than what it replaces: it pins not just the refusal
+# but the REMEDY, because closing the leak is what made that message reachable and
+# "assign modifier not found" alone names nothing a reader can act on.
 got="$(scope_run 'load finance
 d {date}= "2026-03-15"
 e {end of month}= d
 print e')"
-[ "$got" = "2026-03-31" ] && pass "a modifier still reaches through an intermediate library (deliberate)" \
-    || fail "the intermediate-library fallback broke: [$got]"
+[ -z "$got" ] || fail "a modifier still reached through an intermediate library: [$got]"
+printf 'load finance\nd {date}= "2026-03-15"\ne {end of month}= d\n' >"$scratch/ms2.bas"
+msg="$( { GBASIC_PATH=stdlib ./gbasic "$scratch/ms2.bas" 2>&1 >/dev/null || true; } | grep -v 2103 | tail -1)"
+case "$msg" in
+    *"assign modifier not found: end of month"*"library 'dates' exports it"*"load dates"*)
+        pass 'the leak is closed, and the message names the library and the load to add' ;;
+    *)  fail "the refusal did not name the remedy: [$msg]" ;;
+esac
 
 # CONTROL 3: the qualified spelling, which is the migration path if the fallback
 # is ever closed.
