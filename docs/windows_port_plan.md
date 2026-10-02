@@ -66,9 +66,13 @@ These are the reason the plan is not just "the Linux order, slower".
 on Windows the driver manager ships with the operating system. So `odbc` is
 plausibly the **cheapest** database win on Windows and it is the one that
 reaches SQL Server, Access and Excel-as-a-data-source — exactly the audience
-§1 picked. *(Not yet verified on a Windows box: confirm `odbc32.dll` and the
-driver manager are present and that `src/modules/`'s unixODBC calls map to it.
-This is the single highest-value thing to check first.)*
+§1 picked. *(Checked on a Windows box 2026-10-02, `windows_port_status.md` §9:
+the driver manager ships with the OS and all 24 ODBC calls in `src/eval.c` link
+against `odbc32` and run. CORRECTION: SQL Server is reachable out of the box;
+**Access and Excel are not** on a 64-bit build, since Windows' bundled Access
+driver is 32-bit only — they need the Access Database Engine redistributable.
+A real query and non-ASCII text through the ANSI entry points are not yet
+verified.)*
 
 **The reason `xlsx` and `xml` are excluded from the Linux tarballs does not
 exist on Windows.** `tools/build-release-tarball.sh` excludes them because

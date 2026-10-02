@@ -41,6 +41,18 @@ if ! command -v "$CC_WIN" >/dev/null 2>&1; then
     exit 0
 fi
 
+# A COUNT IS A FACT ABOUT A COMPILER, not only about the source. Measured
+# 2026-10-02 on one tree: Ubuntu's mingw gcc 13 (MSVCRT) reports 82 errors and
+# MSYS2's gcc 16 (UCRT) 123 -- gcc 14 made implicit declarations and pointer
+# mismatches ERRORS by default (43 of them), and UCRT takes %z where MSVCRT
+# does not (18 warnings vs 0). So the baseline records the toolchain it was
+# measured with, and a different toolchain is refused rather than compared.
+# Major version only: a minor update does not change which diagnostics are
+# errors, a major one demonstrably can.
+crt=$(printf '#include <_mingw.h>\n#ifdef _UCRT\nucrt\n#else\nmsvcrt\n#endif\n' \
+      | "$CC_WIN" -E -P -x c - 2>/dev/null | tail -n 1)
+toolchain="gcc$("$CC_WIN" -dumpversion | cut -d. -f1) $("$CC_WIN" -dumpmachine) ${crt:-unknown-crt}"
+
 shim="$(mktemp -d)"
 trap 'rm -rf "$shim"' EXIT
 mkdir -p "$shim/sys" "$shim/arpa" "$shim/netinet"
@@ -75,9 +87,24 @@ size_t regerror(int, const regex_t *, char *, size_t);
 void regfree(regex_t *);
 EOF
 
-log="$(mktemp)"; trap 'rm -rf "$shim" "$log"' EXIT
+log="$(mktemp)"
+# CLEAN WITHOUT `make clean`, for three measured reasons (2026-10-02):
+#   * `make clean` without PLATFORM_OBJ removes platform_posix.o and LEAVES
+#     platform_win32.o, so every run left one Windows object behind -- which
+#     a later run with no working make then counted as "compiled";
+#   * with make absent, `make clean` does nothing at all;
+#   * it deletes src/parser.tab.c/.h, which are COMMITTED, so every run left
+#     the checkout showing two deleted files. They are kept aside and put back.
+mkdir -p "$shim/keep"
+for f in src/parser.tab.c src/parser.tab.h; do [ -f "$f" ] && cp -p "$f" "$shim/keep/"; done
+scrub() {
+    rm -f src/*.o src/modules/*.o gbasic gbasic.exe libgbasic.a .stdlibdir-stamp
+    rm -f src/parser.tab.c src/parser.tab.h
+    for f in "$shim"/keep/*; do [ -f "$f" ] && cp -p "$f" src/; done
+}
+trap 'scrub; rm -rf "$shim" "$log"' EXIT
 echo "== cross-compiling for Windows with $($CC_WIN -dumpversion) =="
-make clean >/dev/null 2>&1
+scrub
 make -k CC="$CC_WIN" PLATFORM_OBJ=src/platform_win32.o \
      CFLAGS="-std=c11 -Wall -Iinclude -I$shim -g -D_WIN32_WINNT=0x0601" \
      GTK_AVAILABLE=0 GIR_AVAILABLE=0 GIO_AVAILABLE=0 LIBPQ_AVAILABLE=0 ODBC_AVAILABLE=0 \
@@ -87,6 +114,18 @@ make -k CC="$CC_WIN" PLATFORM_OBJ=src/platform_win32.o \
 errors=$(grep -c 'error:' "$log")
 objs=$(ls src/*.o 2>/dev/null | wc -l)
 
+# ZERO OBJECTS IS NOT ZERO ERRORS. With `make` or `bison` absent, make never
+# reaches the compiler, the log holds "command not found" and no `error:`
+# line, and this script used to report "improved 82 -> 0" and PASS the
+# ratchet -- measured 2026-10-02 on a WSL Ubuntu that had mingw but not make.
+# Every object that compiles at all is portable C (ast.c, lexer.c, ...), so a
+# real run always produces some; none means the probe did not run.
+if [ "$objs" -eq 0 ]; then
+    echo "FAIL nothing compiled, so nothing was measured. Last lines of the build log:"
+    tail -n 5 "$log" | sed 's/^/   /'
+    exit 1
+fi
+
 echo
 echo "-- objects that cross-compile UNMODIFIED: $objs --"
 ls src/*.o 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' '; echo
@@ -95,12 +134,15 @@ echo "-- errors by file --"
 grep -oE "^[a-z/._]*\.c:[0-9]+:[0-9]+: error" "$log" | cut -d: -f1 | sort | uniq -c | sort -rn
 echo
 echo "-- distinct causes --"
+# gcc quotes names with ‘’ in a UTF-8 locale and with plain ' otherwise (MSYS2
+# by default), so accept both -- matching only one printed an EMPTY list there.
+q="(‘|')"; qe="(’|')"
 grep -E "error" "$log" \
-  | grep -oE "‘[A-Za-z_0-9]+’ undeclared|unknown type name ‘[A-Za-z_0-9]+’|too many arguments to function ‘[a-z_]+’|invalid use of undefined type ‘[a-z_ ]+’" \
-  | sed "s/‘\([^’]*\)’/\1/" | sort -u | sed 's/^/   /'
+  | grep -oE "${q}[A-Za-z_0-9]+${qe} undeclared|unknown type name ${q}[A-Za-z_0-9]+${qe}|too many arguments to function ${q}[a-z_]+${qe}|invalid use of undefined type ${q}[a-z_ ]+${qe}" \
+  | sed -E "s/${q}([^’']*)${qe}/\2/" | sort -u | sed 's/^/   /'
 echo
 echo "-- %z, which MSVCRT's printf does not take (a wrong Content-Length is one of these) --"
-echo "   $(grep -c 'unknown conversion type character ‘z’' "$log") warnings from $(grep -c '%zu' src/*.c | awk -F: '{t+=$2} END {print t}') occurrences in src/"
+echo "   $(grep -cE "unknown conversion type character (‘z’|'z')" "$log") warnings from $(grep -c '%zu' src/*.c | awk -F: '{t+=$2} END {print t}') occurrences in src/"
 echo
 echo "-- NOT MEASURED HERE --"
 echo "   a socket is not a file descriptor on Windows: read/write/close on one"
@@ -112,12 +154,21 @@ echo "   The event loop itself is ALL SOCKETS (measured), so WSAPoll serves it."
 echo "   process.run and process.poll poll a child's PIPES in their own calls and"
 echo "   need a Windows mechanism of their own -- two functions, not the loop."
 echo
-echo "TOTAL ERRORS: $errors"
+echo "TOTAL ERRORS: $errors   (toolchain: $toolchain)"
 
-make clean >/dev/null 2>&1
+# Baseline file: line 1 the count, line 2 the toolchain it was measured with.
 if [ "${1:-}" = "--ratchet" ]; then
-    [ -f "$BASELINE_FILE" ] || { echo "$errors" > "$BASELINE_FILE"; echo "baseline recorded: $errors"; exit 0; }
-    base=$(cat "$BASELINE_FILE")
+    [ -f "$BASELINE_FILE" ] || { printf '%s\n%s\n' "$errors" "$toolchain" > "$BASELINE_FILE"; echo "baseline recorded: $errors ($toolchain)"; exit 0; }
+    base=$(sed -n 1p "$BASELINE_FILE")
+    base_tc=$(sed -n 2p "$BASELINE_FILE")
+    if [ "$base_tc" != "$toolchain" ]; then
+        echo "FAIL NOT COMPARED: the baseline was measured with '${base_tc:-an unrecorded toolchain}'"
+        echo "     and this run used '$toolchain'. Different compilers count differently"
+        echo "     (gcc 13/MSVCRT 82 vs gcc 16/UCRT 123 on the same tree), so the two"
+        echo "     numbers say nothing about each other. Run with the baseline's toolchain"
+        echo "     (CC_WIN=...), or re-baseline deliberately in its own commit."
+        exit 1
+    fi
     if [ "$errors" -gt "$base" ]; then
         echo "FAIL the Windows surface GREW: $base -> $errors"
         echo "     (if that is intended, update $BASELINE_FILE in the same commit)"

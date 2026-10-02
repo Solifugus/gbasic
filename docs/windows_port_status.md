@@ -15,11 +15,13 @@ re-measure rather than trust this page.
 ./tools/cross-build-windows.sh
 ```
 
-**82 errors**, unchanged by 0.4.0's work. It is a **ratchet**: the count lives in
-`tools/cross-build-windows.baseline` and the script fails if the count rises,
-so the port can be done in increments without a regression going unnoticed. It
-is NOT wired into `run_all.sh` — it needs `x86_64-w64-mingw32-gcc` (13-win32
-here) and is opt-in.
+**123 errors on the baseline toolchain, MSYS2 UCRT64 gcc 16** (re-baselined
+2026-10-02, see §9; it was 82 on Ubuntu's mingw gcc 13, and BOTH numbers are
+correct for their compiler). It is a **ratchet**: the count lives in
+`tools/cross-build-windows.baseline` with the toolchain it was measured on, and
+the script fails if the count rises — or if it is run with a different
+toolchain, since counts from two compilers say nothing about each other. It is
+NOT wired into `run_all.sh` and is opt-in. Run it from an "MSYS2 UCRT64" shell.
 
 It generates shim headers into a temp directory and throws them away. Some are
 honest (`poll.h` → `WSAPoll`), some are deliberate lies (`termios.h`, `regex.h`)
@@ -113,3 +115,64 @@ refusal on Windows until Tier 2.
   the honest statement of what this ratchet does not cover.
 - The ratchet count going DOWN is progress and the script says so; update
   `tools/cross-build-windows.baseline` in the same commit that earns the gain.
+
+## 9. First session on a Windows machine (2026-10-02)
+
+Windows 11 Pro 10.0.26200, x64. Toolchains: MSYS2 UCRT64 (gcc 16.2.0, make
+4.4.1, bison 3.8.2) natively, and Ubuntu's mingw gcc 13-win32 under WSL.
+
+**The toolchain decision: MSYS2 UCRT64.** The goal is a Windows download that
+works as broadly as possible with nothing else installed. UCRT is the C runtime
+built into Windows 10 and 11 (and delivered by Windows Update before that), so
+a UCRT binary with libgcc linked statically needs no runtime shipped beside it.
+MSVCRT is the legacy runtime Ubuntu's cross-compiler targets. The Makefile, the
+`tools/*.sh` scripts and pkg-config all work unchanged under MSYS2, and it
+packages zlib, libxml2, sqlite3 and libcurl for M3–M5.
+
+**Why the count went 82 → 123, measured on the same tree:**
+
+| | Ubuntu mingw gcc 13 (MSVCRT) | MSYS2 gcc 16 (UCRT) |
+|---|---|---|
+| errors | 82 | 123 |
+| errors with `-fpermissive` | — | 80 |
+| `%z` warnings (15 sites) | 18 | **0** |
+
+gcc 14 made implicit declarations, incompatible pointer types and int-conversion
+ERRORS by default; that is 43 of the 123 (39 + 3 + 1). They are real port work
+(each is a POSIX function or type Windows lacks), merely reported at a different
+severity. UCRT's printf accepts `%z`, so §3's fifteen `%z` sites are a defect
+only for an MSVCRT build — still worth fixing if MSVCRT is ever targeted, but
+not a Tier 1 blocker on this toolchain.
+
+**Three defects in the ratchet itself, all fixed in the script:**
+- WSL had mingw but not `make`; make failed with "command not found", the log
+  held no `error:` line, and the script reported **"improved 82 -> 0" and
+  PASSED**. A run that compiles nothing now FAILS. Proven both ways.
+- `make clean` without `PLATFORM_OBJ` left `platform_win32.o` behind, so a
+  later broken run could count a stale object as compiled. The script now
+  removes objects itself.
+- Every run deleted the COMMITTED `src/parser.tab.c`/`.h` via `make clean`; they
+  are now kept aside and restored.
+- (And under MSYS2's locale gcc quotes with `'` rather than `‘’`, so the
+  "distinct causes" list printed EMPTY. Both are matched now.)
+
+**ODBC, §4 of the plan — measured with a standalone C probe, not through gBASIC:**
+- All **24** ODBC functions `src/eval.c` calls (inside `#if HAVE_ODBC`; the
+  module is in eval.c, not `src/modules/`) **link against Windows' own
+  `odbc32`** from the standard `<sql.h>`/`<sqlext.h>`. No unixODBC-specific
+  call or header is used.
+- The probe RAN: an ODBC 3 environment allocated as eval.c does, and
+  `SQLDrivers` listed **3 drivers** (SQL Server, ODBC Driver 17 and 18 for
+  SQL Server). `SQLLEN`/`SQLULEN` are 8 bytes, matching 64-bit unixODBC.
+- **The 64-bit driver manager has NO Access driver on this machine.** Every
+  Access/Excel/dBase/Text driver present is the 32-bit Jet driver. So §4's
+  "SQL Server, Access and Excel-as-a-data-source" holds for SQL Server out of
+  the box; Access/Excel need Microsoft's Access Database Engine (ACE)
+  redistributable installed, or a 32-bit build.
+- NOT verified: a real connection, a query, or a round trip. And eval.c uses
+  the ANSI (`A`) entry points, which on Windows pass text through the system
+  code page rather than UTF-8 — non-ASCII text could be mangled both ways.
+  Candidate remedies are a UTF-8 `activeCodePage` application manifest or the
+  `W` entry points; neither has been tried.
+
+**Still open:** nothing here has RUN gBASIC on Windows yet — §5 stands.
