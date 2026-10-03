@@ -138,6 +138,88 @@ done <<EOF
 $(printf '%s\n' "$perf_section" | fold_bullets)
 EOF
 
+# reference.md: EVERY PARAGRAPH THAT MAKES A COMPLEXITY CLAIM MUST CITE A SUITE.
+#
+# Added 2026-10-02, and the reason is a page that was true when written and
+# falsified by a shipped phase. `docs/reference.md` told readers that
+# `mid(s, i, 1)` is O(i) and a per-character scan therefore O(n^2). PLAT-STRIDX
+# removed both costs and nobody updated the page, so for a full release the
+# reference told readers to avoid the thing that had become fast -- and a reader
+# who believes `mid` is O(i) rewrites a linear loop into something WORSE. Found
+# by the gbasic-books session, which had a drafted chapter carrying a "the
+# reference is wrong here" callout.
+#
+# THE CHECKLIST WAS ALREADY NOTIONALLY IN PLACE AND FAILED ANYWAY, three times
+# against design documents and once here, so this is a gate rather than a line in
+# a procedure. The REFERENCE is the one document a reader is entitled to trust
+# without checking, and it was the last one with no gate on its cost claims --
+# UNLEARN's performance section and COOKBOOK's cost bullets have had one since
+# PLAT-DEBT 1.
+#
+# PARAGRAPHS WITH A LOOKAHEAD, not lines: a claim, its elaboration and its
+# citation are normally three paragraphs of one discussion, so a claim paragraph
+# is satisfied by a citation in itself or the next three. A line window either
+# misses the citation or reaches into the next subject -- and a whole-document
+# search would be satisfied by one citation anywhere on a 7,000-line page.
+# MEASURED on today's page: at a lookahead of 0 FOUR of the nine claims go red,
+# which is what says the window is load-bearing rather than decoration -- the
+# `mid` discussion is three claim paragraphs followed by its citation. The upper
+# bound is a JUDGEMENT and not a measurement, and the file says so rather than
+# implying otherwise: 12 also passes here, because nothing on the page currently
+# has an uncited claim within twelve paragraphs of an unrelated citation.
+#
+# AND THE TRIGGER WORDS ARE NARROWER THAN THE OBVIOUS SET, because the first run
+# of this tier produced a false positive that taught the lesson: `amortized` is a
+# LENDING ACCRUAL BASIS in this document (`basis` is `"amortized"`), not a
+# complexity claim. The tier's own rule is reword-rather-than-exempt, and that
+# would have been the wrong remedy here -- the prose was right and the TRIGGER was
+# wrong. `amortized O(1)` still trips on `O(1`, so narrowing costs no coverage.
+#
+# What it checks is the CITATION, not the semantics -- same limit the tiers above
+# state. A paragraph that trips the trigger and is not really a cost claim should
+# be REWORDED rather than exempted, because an exemption list is the thing that
+# rots; `mail.is_ascii`'s stray "O(1)" was reworded for exactly that reason, and
+# its real content (it compares byte_count with len rather than scanning) survived.
+ref_uncited=0
+ref_report="$(awk '
+BEGIN { RS = ""; n = 0; LOOKAHEAD = 3 }
+{ para[n] = $0; n++ }
+END {
+    claims = 0
+    for (i = 0; i < n; i++) {
+        if (para[i] !~ /O\(n|O\(i|O\(1|quadratic/) continue
+        claims++
+        ok = 0
+        for (j = i; j <= i + LOOKAHEAD && j < n; j++)
+            if (para[j] ~ /run_[a-z0-9_]+\.sh/) { ok = 1; break }
+        if (!ok) {
+            one = para[i]; gsub(/\n/, " ", one)
+            printf "UNCITED\t%s\n", substr(one, 1, 96)
+        }
+    }
+    printf "COUNT\t%d\n", claims
+}' docs/reference.md)"
+ref_checked="$(printf '%s\n' "$ref_report" | awk -F'\t' '$1 == "COUNT" { print $2 }')"
+while IFS= read -r line; do
+    case "$line" in
+        UNCITED*)
+            echo "FAIL ref perf      a complexity claim with no suite cited: $(printf '%s' "$line" | cut -f2-)..."
+            echo "                   cite the tests/run_*.sh that asserts it, or reword to drop the claim"
+            ref_uncited=1; status=1 ;;
+    esac
+done <<EOF
+$ref_report
+EOF
+if [ "${ref_checked:-0}" -lt 3 ]; then
+    # A scanner that matches nothing reports a clean run, which is how a gate goes
+    # quiet without going red. The reference has carried stale cost claims for as
+    # long as it has existed, so a zero here is a broken scanner and not a clean page.
+    echo "FAIL ref perf      only ${ref_checked:-0} complexity paragraphs found in docs/reference.md -- the scanner stopped matching, it did not pass"
+    status=1
+elif [ "$ref_uncited" = "0" ]; then
+    echo "PASS ref perf       all $ref_checked complexity claims in reference.md cite a suite"
+fi
+
 # COOKBOOK.md: any bullet that makes a claim about cost. The trigger words are
 # deliberately few and blunt; a bullet that trips one and is not really a
 # performance claim should be reworded rather than exempted, because an

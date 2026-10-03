@@ -2572,7 +2572,7 @@ that reason:
 
 | | |
 |---|---|
-| `mail.is_ascii(text)` | true when every codepoint is below 0x80. O(1) — it compares `byte_count` with `len` rather than scanning. |
+| `mail.is_ascii(text)` | true when every codepoint is below 0x80 — it compares `byte_count` with `len` rather than scanning the text. |
 | `mail.encode_word(text)` | the text unchanged if it is ASCII, an RFC 2047 `=?utf-8?B?…?=` encoded-word if not. |
 | `mail.wrap_base64(text)` | base64, wrapped at 76 columns. |
 | `mail.address_parts(field, address)` | `{ name, address }` from either spelling; raises, naming `field`, if it is not an address. |
@@ -3869,8 +3869,8 @@ program-global registry `_DATAGRID`. It must be created at program scope.
 **Source modes:**
 
 - **Array-backed** — `datagrid.create(rows)` where `rows` is an array of records,
-  of arrays, or of scalars. COW arrays make row access O(1), so the array is
-  never copied into native storage. `create` takes a **COW snapshot**: it shares
+  of arrays, or of scalars. COW arrays make row access O(1) (`tests/run_arridx.sh`),
+  so the array is never copied into native storage. `create` takes a **COW snapshot**: it shares
   the backing store until either side mutates. Later mutation of your variable
   does *not* change the grid, and the grid never touches your variable; call
   `datagrid.set_rows` to show new data. A deliberate, predictable rule.
@@ -5290,7 +5290,8 @@ a non-raising decode whose failure mode is a crash would be worthless.
 
 **Why it matters for performance.** Pre-validating in gBASIC was measured at
 16 KB: 1 s; 64 KB: 16 s; 128 KB: 69 s; 256 KB: 291 s — plainly quadratic, and the
-C parser handles all of those in well under a second. `try_decode` replaces a
+C parser handles all of those in well under a second (`tests/run_try_decode.sh`
+records those figures as the reason this builtin exists). `try_decode` replaces a
 scan that got dramatically worse with size.
 
 **The REASON given here used to be wrong, and the wrong reason was the harmful
@@ -5310,6 +5311,13 @@ So the quadratic cost those timings record is **not** in `mid`. The likeliest
 cause is accumulation with `+` inside the scan, which is separately measured and
 genuinely quadratic — see *Performance traps*. The advice is unchanged either
 way: use `try_decode` rather than pre-validating in gBASIC.
+
+Asserted by `tests/run_stridx.sh`, whose SHAPE tier holds seven access patterns
+to a ratio across a 4x size step rather than to an absolute time, and whose
+CONTROL points the same harness at string concatenation and requires it to
+EXCEED the gate — so if these costs ever become quadratic again the suite goes
+red instead of this page going quietly stale, which is what happened the last
+time.
 
 **`json_encode(value)` — strict JSON.** Type mapping:
 
@@ -5455,6 +5463,11 @@ changes performance, never observable behavior. Practical consequences:
   first time you write to an array that is still sharing storage with a copy;
 - building an array with a loop of `append` is O(n) overall (amortized O(1) per
   append), not O(n²).
+
+Asserted by `tests/run_arridx.sh` — SHAPE checks seven patterns as a ratio
+across a 4x step, and its CONTROL requires still-quadratic string concatenation
+to exceed the same gate, so a tier that stopped measuring anything would be
+visible.
 
 `append`/`prepend`/`insert`/`remove`/etc. still mutate a stored array in place
 when given an assignable path (and notify watchers, as above); the value they
