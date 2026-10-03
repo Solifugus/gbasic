@@ -29,6 +29,11 @@
 # nine is pinned, so none appears here. The mechanical layer is a floor on what
 # changed, never a ceiling, which is exactly why CHANGELOG.md stays hand-written:
 # this makes the curated note cheap to write, not unnecessary.
+#
+# IT ALSO SEPARATES A MOVED SENTENCE FROM A MOVED POSITION. A golden that gained
+# a `.nolineno` sidecar changes without its message changing, and three of the
+# five this reported on its first run were exactly that -- a report that cannot
+# tell them apart sends somebody to re-read a passage that is still correct.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -67,12 +72,32 @@ section "DOCS PAGES TOUCHED -- where the reasoning was written down" \
 section "LANGUAGE SURFACE -- a new builtin or keyword lands here" \
     M "" 'src/builtins.c' 'src/parser.y' 'include/lexer.h'
 
+# A GOLDEN CAN MOVE WITHOUT ITS MESSAGE MOVING, and the first run of this tool
+# cried wolf about exactly that: three of the five it reported for v0.3.0..HEAD
+# were `.nolineno` normalisations -- `edgar.bas:157:17` became
+# `edgar.bas:LINE:COL` so that an insertion into a library stops rebaselining a
+# golden it is not about. The SENTENCE is identical. A report that cannot tell
+# those apart sends somebody to re-read a passage that is still correct, which
+# is the cost this whole thing exists to avoid.
+#
+# Decided by stripping the POSITION from both sides and asking whether anything
+# is left.
 printf -- '-- THE EXACT TEXT OF EVERY CHANGED DIAGNOSTIC\n'
 changed_err="$(git diff --name-only --diff-filter=M "$tag..HEAD" -- '*.err')"
 if [ -z "$changed_err" ]; then
     printf '   (none)\n\n'
 else
-    git diff "$tag..HEAD" -- $changed_err | grep -E '^[-+][^-+]' | sed 's/^/   /'
+    for f in $changed_err; do
+        before="$(git show "$tag:$f" 2>/dev/null | sed -E 's/:[0-9]+:[0-9]+:/:LINE:COL:/g')"
+        after="$(sed -E 's/:[0-9]+:[0-9]+:/:LINE:COL:/g' "$f" 2>/dev/null)"
+        if [ "$before" = "$after" ]; then
+            printf '   %s\n' "$f"
+            printf '      POSITION ONLY -- the sentence is unchanged, nothing to re-capture\n'
+        else
+            printf '   %s\n' "$f"
+            git diff "$tag..HEAD" -- "$f" | grep -E '^[-+][^-+]' | sed 's/^/      /'
+        fi
+    done
     printf '\n'
 fi
 
