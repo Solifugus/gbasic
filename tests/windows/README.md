@@ -21,6 +21,11 @@ gbasic tests/windows/process_run.bas
 gbasic tests/windows/process_start.bas
 ```
 
+`odbc_unicode.bas` needs a SQL Server connection string in
+`GBASIC_ODBC_CONNECTION` (and SKIPs without one). It checks non-ASCII text by
+asking the SERVER what it stored -- `LEN()` and `UNICODE()` -- because reading
+your own write back agrees with itself even when the database holds mojibake.
+
 `process_start.bas` covers the live-child verbs (`process.start`, `poll`,
 `read`, `wait`, `stop`, `write`, `close_stdin`, `release`). A child it must
 observe mid-run blocks on a gate file the suite creates, so no tier depends on

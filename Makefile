@@ -117,7 +117,13 @@ ifeq ($(OS),Windows_NT)
 GTK_AVAILABLE := 0
 LIBPQ_AVAILABLE := 0
 SQLITE3_AVAILABLE := 0
-ODBC_AVAILABLE := 0
+# ODBC IS ON, and is the one exception: its driver manager is odbc32.dll,
+# which ships WITH Windows, so linking it costs the download nothing and needs
+# nothing installed (milestone M2, docs/windows_port_plan.md §4). The drivers
+# themselves are the operator's, exactly as on Linux.
+ODBC_AVAILABLE := 1
+ODBC_CFLAGS :=
+ODBC_LIBS := -lodbc32
 LDAP_AVAILABLE := 0
 LIBCURL_AVAILABLE := 0
 LIBXCRYPT_AVAILABLE := 0

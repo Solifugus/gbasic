@@ -21358,6 +21358,39 @@ static int odbc_conn_has_option(const char *conn, const char *option) {
     return 0;
 }
 
+/* The value of the connection string's Driver= keyword (braces stripped) into
+ * `out`, or 0 if it names none. Keywords are case-insensitive. */
+static int odbc_conn_driver(const char *conn, char *out, size_t size) {
+    const char *p = conn;
+    while (*p) {
+        while (*p == ';' || *p == ' ') {
+            p++;
+        }
+        if (strncasecmp(p, "driver", 6) == 0) {
+            const char *q = p + 6;
+            while (*q == ' ') q++;
+            if (*q == '=') {
+                q++;
+                while (*q == ' ') q++;
+                int braced = *q == '{';
+                if (braced) q++;
+                size_t n = 0;
+                while (q[n] && q[n] != (braced ? '}' : ';') && n + 1 < size) {
+                    out[n] = q[n];
+                    n++;
+                }
+                while (n > 0 && out[n - 1] == ' ') n--;
+                out[n] = '\0';
+                return n > 0;
+            }
+        }
+        while (*p && *p != ';') {
+            p++;
+        }
+    }
+    return 0;
+}
+
 static Value odbc_eval_connect(AstExpr *expr) {
     if (expr->as.call.args.count != 1) {
         odbc_raise_message("odbc.connect expects one argument");
@@ -21408,7 +21441,28 @@ static Value odbc_eval_connect(AstExpr *expr) {
                           NULL,
                           SQL_DRIVER_NOPROMPT);
     if (!SQL_SUCCEEDED(rc)) {
-        odbc_raise_diag(SQL_HANDLE_DBC, dbc, "odbc connection failed");
+        /* AN ABSENT DRIVER, BY NAME. unixODBC names the driver it could not
+         * load; Windows' driver manager says only "Data source name not found
+         * and no default driver specified" (IM002), so a typo in Driver= left
+         * the user to guess which name was wrong (measured, run_odbc.sh). Its
+         * answer is still reported in full after this; the name comes first. */
+        char prefix[400] = "odbc connection failed";
+        char driver[256];
+        SQLCHAR state[8] = {0};
+        SQLINTEGER native = 0;
+        SQLSMALLINT length = 0;
+        SQLCHAR text[8];
+        if (SQL_SUCCEEDED(SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, &native,
+                                        text, (SQLSMALLINT)sizeof(text), &length)) ||
+            length > 0) {
+            if (strcmp((const char *)state, "IM002") == 0 &&
+                odbc_conn_driver(target.as.string, driver, sizeof(driver))) {
+                snprintf(prefix, sizeof(prefix),
+                         "odbc connection failed: no ODBC driver named '%s' is installed "
+                         "(odbc.drivers() lists those that are)", driver);
+            }
+        }
+        odbc_raise_diag(SQL_HANDLE_DBC, dbc, prefix);
         SQLFreeHandle(SQL_HANDLE_DBC, dbc);
         SQLFreeHandle(SQL_HANDLE_ENV, env);
         value_free(target);

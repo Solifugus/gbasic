@@ -413,5 +413,50 @@ actor examples (Tier 2, each says so) and 3 that fail on Linux-in-WSL too.
 Linux keeps its TZ/zoneinfo path; only the two TZ-dance call sites moved into
 a helper (`zone_localtime`), unchanged in behaviour.
 
+## 15. Milestone 2: ODBC on Windows (2026-10-03)
+
+**ODBC is built in on Windows by default.** Its driver manager, odbc32.dll,
+ships WITH Windows, so linking it costs the download nothing and needs nothing
+installed; the drivers are the operator's, as on Linux. gbasic.exe still
+imports only Windows' own DLLs (ODBC32 added).
+
+**Run against a real SQL Server** (the local default instance, Windows
+authentication, in tempdb) through the native binary, with the tree's own
+suites and `GBASIC_ODBC_CONNECTION` / `GBASIC_ESTATE_CONNECTION` /
+`GBASIC_ODBC_DRIVER` pointing at it:
+- **run_odbc.sh: 39 checks, 0 failed** -- odbc_test's 57 fixture checks
+  (BIGINT past 2^53 exact, DECIMAL to the last digit, money through a bound
+  parameter, the injection tier, NULL as `nothing`, commit/rollback), the
+  13-check refusal fixture, the pinned negatives, the 23-check catalog.
+- **run_discovery.sh**: its live tier, 35 checks against the connection.
+- **run_estate.sh**: the live tier materialised the estate in tempdb and traced
+  it, "13 checks against a real sqlserver".
+
+**NON-ASCII TEXT, ASSERTED BY THE SERVER** (new tests/windows/odbc_unicode.bas,
+14 checks; SKIPs without a SQL Server connection). The module uses ODBC's ANSI
+entry points, so on Windows text crosses the process code page -- UTF-8 only
+because of the manifest. **MEASURED WITHOUT IT: every round trip still read
+back EQUAL** while SQL Server stored mojibake ("日本語" as 9 characters, ☃ as
+3): the reader undid the writer's mangling, the same silent class FreeTDS
+produced on Linux. So the suite asks the server (LEN, UNICODE), not itself.
+PROVEN RED: 8 server-side mismatches without the manifest, while the three
+read-back checks stayed green -- the reason they cannot be the oracle. 14/14
+with it, bound parameters and SQL-text literals alike. The plan's open
+question about the ANSI entry points is answered: the manifest settles them.
+
+**One message improved:** Windows' driver manager answers an unknown `Driver=`
+with "Data source name not found and no default driver specified" (IM002),
+naming nothing, where unixODBC names the driver. odbc.connect now says "no
+ODBC driver named 'X' is installed (odbc.drivers() lists those that are)" ahead
+of the driver manager's own text -- run_odbc's "refused by name" tier.
+
+**Access, as measured in §9:** a 64-bit gbasic.exe reaches Access/Excel only
+with Microsoft's Access Database Engine installed (Windows' own Access driver
+is 32-bit). Not tested here.
+
+**Not verified:** the IM002 message change on Linux. WSL here has no unixODBC,
+so the ODBC module is compiled out there; the change is inside it, and Linux's
+unixODBC reports an absent driver as 01000, not IM002.
+
 **Still open, in order:** making suites tell a module that is installed from
-one that is BUILT IN; the optional modules (M2 ODBC first).
+one that is BUILT IN; M3 (zlib + libxml2 for xlsx), M4 (sqlite), M5 (libcurl).
