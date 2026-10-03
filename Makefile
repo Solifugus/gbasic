@@ -146,7 +146,17 @@ else
 LIBCURL_AVAILABLE := 0
 endif
 LIBXCRYPT_AVAILABLE := 0
-LIBCRYPTO_AVAILABLE := 0
+YESCRYPT_VENDORED := 1
+# Crypto builtins over OpenSSL's libcrypto, STATICALLY -- the same code the
+# Linux build runs, Apache-2.0. MSYS2's openssl package carries the archive, so
+# nothing is downloaded. It is the largest single cost in the binary (measured
+# stripped 4.5 -> 9.3 MB, OpenSSL 3 linking its provider layer for the thirteen
+# builtins used); Windows' own CNG was the alternative and lacks Ed25519 and
+# scrypt outright (status doc §21). libssl stays off: it serves only the
+# webserver's TLS, which needs a listener this port does not have yet.
+LIBCRYPTO_AVAILABLE := 1
+LIBCRYPTO_CFLAGS :=
+LIBCRYPTO_LIBS := -lcrypto -lws2_32 -lcrypt32 -luser32 -ladvapi32 -lbcrypt
 LIBSSL_AVAILABLE := 0
 # M3: zlib + libxml2, STATICALLY, for xml and xlsx -- the headline Windows
 # feature (docs/windows_port_plan.md §4: the Linux tarballs omit xlsx because
@@ -220,6 +230,21 @@ else
 CFLAGS += -DHAVE_LIBXCRYPT=0
 endif
 
+# password_hash WITHOUT libxcrypt: the vendored yescrypt (third_party/yescrypt,
+# BSD-2), which produces and verifies the same `$y$` hashes libxcrypt does.
+# Only where libxcrypt is absent -- the Windows block sets it, and
+# `make YESCRYPT_VENDORED=1 LIBXCRYPT_AVAILABLE=0` builds it anywhere, which is
+# how the two are compared.
+YESCRYPT_VENDORED ?= 0
+YESCRYPT_OBJS :=
+ifeq ($(LIBXCRYPT_AVAILABLE)$(YESCRYPT_VENDORED),01)
+CFLAGS += -DHAVE_YESCRYPT=1
+YESCRYPT_OBJS := third_party/yescrypt/yescrypt-opt.o third_party/yescrypt/yescrypt-common.o \
+                 third_party/yescrypt/sha256.o third_party/yescrypt/insecure_memzero.o
+else
+CFLAGS += -DHAVE_YESCRYPT=0
+endif
+
 ifeq ($(LIBSSL_AVAILABLE),1)
 CFLAGS += -DHAVE_LIBSSL=1 $(LIBSSL_CFLAGS)
 LDLIBS += $(LIBSSL_LIBS)
@@ -291,7 +316,7 @@ endif
 WIN_RES ?=
 PLATFORM_OBJ ?= src/platform_posix.o
 
-LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o $(PLATFORM_OBJ)
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS)
 OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
@@ -338,6 +363,11 @@ src/lsp/lsp_position.o: src/lsp/lsp_position.c src/lsp/lsp_position.h
 
 third_party/cjson/cJSON.o: third_party/cjson/cJSON.c third_party/cjson/cJSON.h
 	$(CC) -std=c11 -O2 -Ithird_party/cjson -c $< -o $@
+
+# Upstream's own flags (its Makefile builds -O2 -fomit-frame-pointer); kept off
+# our -Wpedantic because the code is vendored unmodified.
+third_party/yescrypt/%.o: third_party/yescrypt/%.c third_party/yescrypt/yescrypt.h third_party/yescrypt/sha256.h third_party/yescrypt/yescrypt-platform.c
+	$(CC) -std=gnu99 -O2 -fomit-frame-pointer -Ithird_party/yescrypt -c $< -o $@
 
 src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h include/diagnostics.h include/parse_ctx.h
 	bison -d -o src/parser.tab.c src/parser.y
@@ -415,5 +445,6 @@ uninstall:
 
 clean:
 	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h src/gbasic_win32.res.o
+	rm -f third_party/yescrypt/*.o
 	rm -f gbasic-lsp $(LSP_OBJS)
 	rm -f .stdlibdir-stamp

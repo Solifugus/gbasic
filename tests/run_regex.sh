@@ -260,7 +260,8 @@ fi
 printf '\n'
 if [ -z "${CC:-}" ] || command -v "${CC:-cc}" >/dev/null 2>&1; then
     fb="$(mktemp -d)"
-    cp -r src include Makefile stdlib tests "$fb"/ 2>/dev/null
+    # third_party too: the Windows build compiles the vendored yescrypt.
+    cp -r src include Makefile stdlib tests third_party "$fb"/ 2>/dev/null
     python3 - "$fb/src/eval.c" <<'FORCE'
 import sys
 p=sys.argv[1]; s=open(p).read()

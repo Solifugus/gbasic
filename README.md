@@ -392,7 +392,7 @@ On Linux, with a C11 compiler, `make` and `bison`. Everything else is optional:
 | zlib | `compress` / `uncompress` builtins, `xlsx`, compressed PDF streams |
 | libcrypto (OpenSSL) | cryptography builtins, `load crypto` |
 | libssl | TLS in the WebServer |
-| libxcrypt | `password_hash` / `password_verify` |
+| libxcrypt | `password_hash` / `password_verify` (the Windows build uses the vendored yescrypt instead, `third_party/yescrypt`, which writes and reads the same `$y$` hashes) |
 | GTK 3 | `load gui` |
 | libgirepository-2.0 (GLib ≥ 2.80) | `load gi`, and the GTK 4 libraries above |
 

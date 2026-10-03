@@ -662,7 +662,7 @@ libintl) and gettext's libintl (92 symbols, pulled in by TRE's regerror.o for
 translated regex messages). LGPL permits static linking only if every release
 lets users relink against a modified library, an obligation an installer would
 carry forever. **Removed (Matthew's ruling).** Everything else linked is
-permissive: OpenSSL is not linked, libxml2 MIT, sqlite public domain, zlib,
+permissive: OpenSSL is not linked (it is since §21, Apache-2.0), libxml2 MIT, sqlite public domain, zlib,
 TRE BSD-2, libsystre BSD-2.
 
 `nm -u` says exactly what was used: libxml2 takes libiconv_open, libiconv and
@@ -737,3 +737,80 @@ DEFERRED, mcp's HTTP transport, steward) -- that is the listener milestone.
 **NOT VERIFIED ON LINUX:** the WSL tree is a lean build without libcurl, so the
 suites changed here skip there whole -- in particular tests/mcp/client.py's
 rewrite has run on Windows only.
+
+## 21. Crypto builtins and password hashing (2026-10-03)
+
+**The choice, measured first (Matthew's ruling: static libcrypto).** The two
+options were OpenSSL's libcrypto, linked statically, and Windows' own CNG
+(bcrypt.dll):
+
+- **libcrypto** was measured with a trial build, using MSYS2's
+  `openssl 3.6.5` archive (nothing downloaded). It linked first time, and every
+  run_crypto case plus run_otp passed. The cost is SIZE: stripped, gbasic.exe
+  goes from 4.5 MB to 9.3 MB, because OpenSSL 3 pulls in its provider layer for
+  the thirteen builtins we use.
+- **CNG** was not built. Per Microsoft's documented algorithm list it has
+  SHA-1/256/512, MD5, HMAC, AES-GCM and PBKDF2, but no Ed25519 and no scrypt.
+  That would mean a second implementation of every builtin plus two vendored
+  libraries, all kept in agreement with Linux.
+
+A slimmer, pinned OpenSSL build (like curl's) may recover much of the 5 MB.
+That has not been measured. libssl stays off: it serves only the webserver's
+TLS, which needs the listener.
+
+**password_hash / password_verify: vendored yescrypt (Matthew's ruling).**
+Linux uses libxcrypt, which is LGPL and therefore excluded by §19. OpenSSL has
+no yescrypt. Openwall's yescrypt 1.1.0 is vendored unmodified in
+third_party/yescrypt (BSD-2; provenance and SHA-256 in its README). Every
+vendored file is byte-identical between openwall.com and the GitHub tag. It is
+built only where libxcrypt is absent (`HAVE_YESCRYPT`), so Linux is unchanged.
+Both backends sit behind one pair of helpers in src/eval.c, so each call site
+has a single path. Its `SHA256_*` symbols are renamed `libcperciva_*` and do not
+collide with OpenSSL's in the same static link.
+
+A hash is DATA, so the two backends must agree. The vendored path writes exactly
+libxcrypt's default: `$y$j9T$` (N=4096, r=32, p=1) over 16 salt bytes.
+**tests/windows/password_interop.bas** (17 checks) carries one hash made by
+each backend, and was checked from OUTSIDE gBASIC with perl's crypt() over the
+system libxcrypt. Results:
+
+- Windows: 17/17.
+- Linux on libxcrypt: 17/17. This is libxcrypt verifying the vendored output.
+- Linux built with `make YESCRYPT_VENDORED=1 LIBXCRYPT_AVAILABLE=0`: 17/17, with
+  no libcrypt linked.
+
+Three perturbations go red: a different cost, the `$6$` refusal removed, and the
+NUL refusal removed.
+
+Two decisions:
+
+- The vendored backend cannot read `$6$`/`$2b$` hashes. For a WELL-FORMED hash
+  of another scheme it RAISES, naming the scheme. Answering false would tell the
+  caller the password was wrong and lock a real user out with nothing said.
+  Anything that is not a crypt hash at all (an empty column, garbage) still
+  answers false, as libxcrypt does.
+- **Found and fixed on BOTH platforms:** crypt(3) takes a C string, so a
+  password containing NUL was hashed only up to the NUL. "a\0xyz" hashed as "a"
+  and then verified for "a\0anything". Both functions now refuse such a password
+  (the PLAT-NUL rule for a door that cannot hold the byte).
+
+gbasic.exe is now 11.9 MB unstripped and still imports only Windows DLLs.
+
+**The full sweep (tests/run_all.sh, Windows), 159 suites:**
+
+- First pass: 118 passed, 11 failed, 28 skipped whole (each by name), 2 manual.
+- 9 of the 11 failures were the RUN, not the code. The sweep was started without
+  `TMPDIR` set to a Windows path (§17's sweep set it), so gbasic.exe was handed
+  `/tmp/...` paths it cannot resolve. Rerun with it, all 9 exit 0.
+- The other two were real, both harness, and both caused by this change:
+  - run_docs_gate requires every `HAVE_*` the Makefile probes to appear in the
+    README's dependency table. HAVE_YESCRYPT is vendored, so the libxcrypt row
+    now names it.
+  - run_regex's fallback tier rebuilds a copy of the tree, and the copy left out
+    third_party/, which the Windows build now compiles.
+- Final: 129 pass, 28 skip by name, 2 manual. run_docs_gate, run_regex and
+  run_windows_suite also exit 0 on Linux with this change applied.
+
+**NOT VERIFIED ON LINUX:** the libcrypto change itself. The WSL tree has no
+OpenSSL development files, so run_crypto and run_otp skip there, as before.
+The change touches only the Makefile's Windows block.

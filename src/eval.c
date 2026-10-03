@@ -89,7 +89,12 @@
 
 #if HAVE_LIBXCRYPT
 #include <crypt.h>
+#elif HAVE_YESCRYPT
+#include "../third_party/yescrypt/yescrypt.h"
 #endif
+/* password_hash/password_verify have two backends -- libxcrypt, or the
+ * vendored yescrypt where libxcrypt's LGPL is excluded -- and one contract. */
+#define GB_PASSWORD_HASH (HAVE_LIBXCRYPT || HAVE_YESCRYPT)
 
 #if HAVE_LIBCRYPTO
 #include <openssl/evp.h>
@@ -5148,7 +5153,55 @@ static void lock_clear(void) {
     locks = NULL;
 }
 
+#if GB_PASSWORD_HASH
+/* A new hash's setting -- algorithm, cost and salt -- malloc'd, or NULL.
+ *
+ * The yescrypt branch must write what libxcrypt's DEFAULT writes, because a
+ * password hash is data: made on one machine, checked on another. libxcrypt's
+ * crypt_gensalt with no prefix and count 0 is `$y$j9T$` -- YESCRYPT_DEFAULTS,
+ * N=4096 ('9'), r=32 ('T'), p=1 -- over 16 random salt bytes, and
+ * tests/windows/password_interop.bas checks a hash libxcrypt actually wrote. */
+static char *password_new_setting(void) {
 #if HAVE_LIBXCRYPT
+    return crypt_gensalt_ra(NULL, 0, NULL, 0);
+#else
+    unsigned char salt[16];
+    if (gb_secure_random(salt, sizeof(salt)) != 0) return NULL;
+    yescrypt_params_t params;
+    memset(&params, 0, sizeof(params));
+    params.flags = YESCRYPT_DEFAULTS;
+    params.N = 4096;
+    params.r = 32;
+    params.p = 1;
+    uint8_t buf[96];
+    if (!yescrypt_encode_params_r(&params, salt, sizeof(salt), buf, sizeof(buf))) return NULL;
+    return strdup((const char *)buf);
+#endif
+}
+
+/* crypt(3): the password hashed under `setting` (a setting, or a whole hash
+ * to verify against), malloc'd, or NULL when the setting cannot be used.
+ * `password` is a C string here because crypt(3) is: the callers refuse a
+ * password containing NUL rather than let it be truncated. */
+static char *password_crypt(const char *password, const char *setting) {
+#if HAVE_LIBXCRYPT
+    void *data = NULL;
+    int data_size = 0;
+    char *hash = crypt_ra(password, setting, &data, &data_size);
+    char *out = hash ? strdup(hash) : NULL;
+    free(data);
+    return out;
+#else
+    yescrypt_local_t local;
+    if (yescrypt_init_local(&local) != 0) return NULL;
+    uint8_t buf[192];
+    uint8_t *hash = yescrypt_r(NULL, &local, (const uint8_t *)password, strlen(password),
+                               (const uint8_t *)setting, NULL, buf, sizeof(buf));
+    yescrypt_free_local(&local);
+    return hash ? strdup((const char *)buf) : NULL;
+#endif
+}
+
 static int constant_time_string_equal(const char *left, const char *right) {
     size_t left_len = strlen(left);
     size_t right_len = strlen(right);
@@ -31051,8 +31104,8 @@ static Value eval_call(AstExpr *expr) {
                                 1003, "invalid function call");
             return value_null();
         }
-#if HAVE_LIBXCRYPT
-        char *salt = crypt_gensalt_ra(NULL, 0, NULL, 0);
+#if GB_PASSWORD_HASH
+        char *salt = password_new_setting();
         if (!salt) {
             runtime_error_raise("password_hash_cost could not generate a salt",
                                 1003, "password_hash");
@@ -31060,13 +31113,10 @@ static Value eval_call(AstExpr *expr) {
         }
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        void *data = NULL;
-        int data_size = 0;
-        char *hash = crypt_ra("password-hash-cost-probe", salt, &data, &data_size);
+        char *hash = password_crypt("password-hash-cost-probe", salt);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         if (!hash) {
             free(salt);
-            free(data);
             runtime_error_raise("password_hash_cost could not hash", 1003, "password_hash");
             return value_null();
         }
@@ -31097,7 +31147,7 @@ static Value eval_call(AstExpr *expr) {
         *f[0].value = value_number(ms);
         *f[1].value = value_string(prefix);
         free(salt);
-        free(data);
+        free(hash);
         return value_record(f, 2);
 #else
         runtime_error_raise("password_hash_cost is not available in this build",
@@ -31121,27 +31171,34 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("password_hash expects a string", 1003, "invalid function call");
             return value_null();
         }
-#if HAVE_LIBXCRYPT
-        char *salt = crypt_gensalt_ra(NULL, 0, NULL, 0);
+#if GB_PASSWORD_HASH
+        /* crypt(3) takes a C string, so a NUL ENDS the password: "a\0xyz"
+         * hashed as "a" and then verified for "a\0anything". Refused, the
+         * PLAT-NUL rule for a door that cannot hold the byte. */
+        if (strlen(password.as.string) != string_length(password.as.string)) {
+            value_free(password);
+            runtime_error_raise("password_hash: a password cannot contain a NUL byte "
+                                "(crypt(3) would end the password there)",
+                                1003, "password_hash");
+            return value_null();
+        }
+        char *salt = password_new_setting();
         if (!salt) {
             value_free(password);
             runtime_error_raise("password_hash could not generate a salt", 1003, "password_hash");
             return value_null();
         }
 
-        void *data = NULL;
-        int data_size = 0;
-        char *hash = crypt_ra(password.as.string, salt, &data, &data_size);
+        char *hash = password_crypt(password.as.string, salt);
         free(salt);
         value_free(password);
         if (!hash) {
-            free(data);
             runtime_error_raise("password_hash could not hash the password", 1003, "password_hash");
             return value_null();
         }
 
         Value result = value_string(hash);
-        free(data);
+        free(hash);
         return result;
 #else
         value_free(password);
@@ -31180,12 +31237,45 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("password_verify expects a string hash", 1003, "invalid function call");
             return value_null();
         }
-#if HAVE_LIBXCRYPT
-        void *data = NULL;
-        int data_size = 0;
-        char *computed = crypt_ra(password.as.string, hash.as.string, &data, &data_size);
+#if GB_PASSWORD_HASH
+        if (strlen(password.as.string) != string_length(password.as.string)) {
+            value_free(password);
+            value_free(hash);
+            runtime_error_raise("password_verify: a password cannot contain a NUL byte "
+                                "(crypt(3) would end the password there)",
+                                1003, "password_verify");
+            return value_null();
+        }
+#if !HAVE_LIBXCRYPT
+        /* The vendored backend reads yescrypt (`$y$`) and classic scrypt
+         * (`$7$`) only. A well-formed hash of another kind -- `$6$`, `$2b$` --
+         * may be perfectly good, and `false` would tell a caller the PASSWORD
+         * was wrong: a user locked out with nothing said. So it is refused,
+         * naming the scheme. Anything that is not a crypt(3) hash at all (an
+         * empty column, a malformed `$y$`) still answers false, as libxcrypt
+         * does, so the two backends differ only where one of them cannot
+         * answer. */
+        {
+            const char *h = hash.as.string;
+            size_t n = 1;
+            while (h[0] == '$' && h[n] && h[n] != '$' && n < 8) n++;
+            int other_scheme = h[0] == '$' && n > 1 && h[n] == '$' &&
+                               !(n == 2 && (h[1] == 'y' || h[1] == '7'));
+            if (other_scheme) {
+                char m[192];
+                snprintf(m, sizeof(m),
+                         "password_verify: this build verifies yescrypt ($y$) and scrypt ($7$) "
+                         "hashes; this one is %.*s$", (int)n, h);
+                value_free(password);
+                value_free(hash);
+                runtime_error_raise(m, 1003, "password_verify");
+                return value_null();
+            }
+        }
+#endif
+        char *computed = password_crypt(password.as.string, hash.as.string);
         int verified = computed && constant_time_string_equal(computed, hash.as.string);
-        free(data);
+        free(computed);
         value_free(password);
         value_free(hash);
         return value_bool(verified);
