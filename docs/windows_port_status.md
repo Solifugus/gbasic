@@ -454,9 +454,11 @@ of the driver manager's own text -- run_odbc's "refused by name" tier.
 with Microsoft's Access Database Engine installed (Windows' own Access driver
 is 32-bit). Not tested here.
 
-**Not verified:** the IM002 message change on Linux. WSL here has no unixODBC,
-so the ODBC module is compiled out there; the change is inside it, and Linux's
-unixODBC reports an absent driver as 01000, not IM002.
+**Linux, with ODBC compiled in** (WSL Ubuntu with unixODBC and the SQLite ODBC
+driver, before = c0e6a1b, after = a4f4f6d): run_odbc.sh 44/44, the ODBC
+cookbook 24/24, discovery, estate and the negatives -- all five logs IDENTICAL
+before and after. As expected, unixODBC reports an absent driver as 01000 and
+already names it, so the new IM002 message never fires there.
 
 **Still open, in order:** making suites tell a module that is installed from
 one that is BUILT IN; M3 (zlib + libxml2 for xlsx), M4 (sqlite), M5 (libcurl).
