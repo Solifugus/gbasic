@@ -44,8 +44,28 @@
 #include <stddef.h>
 #include <sys/types.h>
 
-#define poll WSAPoll
 typedef unsigned long nfds_t;
+
+/* WSAPoll differs from poll() in two ways the event loop meets. It REFUSES
+ * an empty set (WSAEINVAL) where poll() simply waits out the timeout -- and a
+ * program whose only event source is a timer polls exactly that, so every
+ * timer program failed on its first iteration with "webserver poll failed".
+ * And it reports through WSAGetLastError, never errno, so the caller's
+ * `errno != EINTR` test read whatever errno last held. */
+static inline int gb_compat_poll(struct pollfd *fds, nfds_t nfds, int timeout)
+{
+    if (nfds == 0) {
+        Sleep(timeout < 0 ? INFINITE : (DWORD)timeout);
+        return 0;
+    }
+    int r = WSAPoll(fds, (ULONG)nfds, timeout);
+    if (r == SOCKET_ERROR) {
+        errno = WSAGetLastError() == WSAEINTR ? EINTR : EIO;
+        return -1;
+    }
+    return r;
+}
+#define poll gb_compat_poll
 
 /* Client sockets are made non-blocking at accept, so a peek without the flag
  * is the same peek there. (The webserver is refused on Windows anyway.) */

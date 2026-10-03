@@ -325,9 +325,9 @@ src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h in
 FORCE:
 .PHONY: FORCE
 
-src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h .stdlibdir-stamp
+src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h include/platform.h .stdlibdir-stamp
 
-src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h include/lineedit.h
+src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h include/lineedit.h include/platform.h
 
 src/lineedit.o: src/lineedit.c include/lineedit.h
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -345,7 +345,7 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h .stdlibdir-stamp
+src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h .stdlibdir-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h
@@ -357,7 +357,7 @@ src/diagnostics.o: src/diagnostics.c include/diagnostics.h
 src/frontend.o: src/frontend.c include/gbasic.h include/diagnostics.h include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/actor.o: src/actor.c include/actor.h
+src/actor.o: src/actor.c include/actor.h include/platform.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 install: gbasic

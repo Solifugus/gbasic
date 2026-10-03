@@ -25,14 +25,35 @@ fail() { printf 'FAIL %s\n' "$1"; exit 1; }
 
 # A marker unique to this run, so pgrep cannot match a stray from another suite
 # or another checkout running concurrently.
-marker="gbasic-lifetime-$$-$(od -An -N2 -tu2 </dev/urandom | tr -d ' ')"
+nonce="$(od -An -N2 -tu2 </dev/urandom | tr -d ' ')"
+marker="gbasic-lifetime-$$-$nonce"
 
 # The child is `sleep`, wrapped in a shell only to carry the marker in its argv.
-child_cmd() { printf '%s' "sleep 300 # $marker"; }
+# The duration carries the nonce too, for the platform where the shell's argv
+# is not visible (below); 300.N seconds is 300 seconds for every purpose here.
+child_cmd() { printf '%s' "sleep 300.$nonce # $marker"; }
 
-alive() { pgrep -f "$marker" >/dev/null 2>&1; }
-
-reap_strays() { pkill -9 -f "$marker" >/dev/null 2>&1 || true; }
+# WITHOUT pgrep (MSYS2 under Windows, where procps is not installed by default)
+# the marker cannot simply be looked for another way: there, `sh -c "one
+# command"` hands its MSYS pid to `sleep`, so NO process's argv carries the
+# shell's comment -- only sleep's own, which is why the duration names the run.
+# Scanning /proc for it is what pgrep -f does, minus the dependency.
+proc_matches() { # print the pids whose argv contains $1
+    local p
+    for p in /proc/[0-9]*; do
+        grep -qaF -- "$1" "$p/cmdline" 2>/dev/null && printf '%s\n' "${p#/proc/}"
+    done
+    return 0
+}
+if command -v pgrep >/dev/null 2>&1; then
+    alive() { pgrep -f "$marker" >/dev/null 2>&1; }
+    reap_strays() { pkill -9 -f "$marker" >/dev/null 2>&1 || true; }
+    describe() { pgrep -af "$marker" || true; }
+else
+    alive() { [ -n "$(proc_matches "300.$nonce")" ]; }
+    reap_strays() { local p; for p in $(proc_matches "300.$nonce"); do kill -9 "$p" 2>/dev/null || true; done; }
+    describe() { proc_matches "300.$nonce"; }
+fi
 trap 'reap_strays; rm -rf "$scratch"' EXIT
 
 # Poll for the child to disappear. PDEATHSIG is delivered by the kernel at the
@@ -47,6 +68,20 @@ gone_within() { # seconds
     return 1
 }
 
+# Kill the parent the way a crash would, and NOTHING MORE. Under MSYS2 that is
+# not `kill -9`: MSYS2's SIGKILL of a native process ends its descendants
+# itself, so the children vanished whether or not gBASIC had arranged it --
+# MEASURED, the tiers stayed green against a build with the Job Object's
+# kill-on-close removed, and went red with a bare TerminateProcess. A test of
+# "the interpreter's children die with it" cannot let the shell do the killing.
+kill_hard() { # pid
+    if [ -r "/proc/$1/winpid" ]; then
+        taskkill //F //PID "$(cat "/proc/$1/winpid")" >/dev/null 2>&1 || true
+    else
+        kill -9 "$1" 2>/dev/null || true
+    fi
+}
+
 kill_parent_case() { # label program-body
     reap_strays
     printf '%s\n' "$2" >"$scratch/case.bas"
@@ -57,17 +92,21 @@ kill_parent_case() { # label program-body
     # proves nothing: a child that was never started is trivially "gone".
     local deadline=$(( SECONDS + 10 ))
     while ! alive; do
-        [ "$SECONDS" -lt "$deadline" ] || fail "$1 (the child never started)"
+        # A failure here must not leave the parent behind: it is still running
+        # its loop, and nothing else in this suite would ever stop it.
+        [ "$SECONDS" -lt "$deadline" ] || { kill -9 "$parent" 2>/dev/null || true
+                                            reap_strays
+                                            fail "$1 (the child never started)"; }
         kill -0 "$parent" 2>/dev/null || fail "$1 (parent exited early: $(cat "$scratch/err"))"
         sleep 0.1
     done
 
-    kill -9 "$parent" 2>/dev/null || true
+    kill_hard "$parent"
     wait "$parent" 2>/dev/null || true
 
     gone_within 5 || {
         local info
-        info="$(pgrep -af "$marker" || true)"
+        info="$(describe)"
         reap_strays
         fail "$1 (child outlived a SIGKILLed parent: $info)"
     }

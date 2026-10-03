@@ -53,7 +53,20 @@ int gb_exe_path(char *buf, size_t size) {
     if (need <= 0 || (size_t)need > size) {
         return 0;
     }
-    return WideCharToMultiByte(CP_UTF8, 0, wide, -1, buf, need, NULL, NULL) > 0;
+    if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, buf, need, NULL, NULL) <= 0) {
+        return 0;
+    }
+    /* FORWARD SLASHES, the convention gb_realpath already answers in. The
+     * stdlib-beside-the-binary rule walks back from this path by '/', and with
+     * Windows' own backslashes it found no separator at all -- so an extracted
+     * tree resolved NO library, which is the one thing an installer must not
+     * do. Windows accepts '/' everywhere this path is handed back to it. */
+    for (char *p = buf; *p; p++) {
+        if (*p == '\\') {
+            *p = '/';
+        }
+    }
+    return 1;
 }
 
 /* NOT IMPLEMENTED, AND THAT IS THE ANSWER FOR NOW.
