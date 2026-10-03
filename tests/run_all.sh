@@ -78,8 +78,40 @@ for path in tests/run_*.sh; do
     log="$logdir/$name.log"
     printf '%-32s ' "${name%.sh}"
     if timeout "$timeout_s" bash "$path" >"$log" 2>&1; then
+        # A SUITE THAT REPORTED A FAILURE AND EXITED 0 IS THE FOURTH WAY THIS
+        # GATE CAN GO QUIET, and it is the only one that had happened without
+        # being defended against. The other three are already here or in
+        # CLAUDE.md: a suite that SKIPS everything, a discovery pass that
+        # SHRINKS, and a fixture that HANGS.
+        #
+        # MEASURED 2026-10-02, reported by the Windows port session:
+        # run_core.sh printed `FAIL sleep(0) returns 0` and exited 0, so 24
+        # checks had been advisory and this gate had printed OK over a failing
+        # one for NINE DAYS. The cause is ordinary and will recur: the suite
+        # ended with a bare `[[ "$fail" -eq 0 ]]`, whose status WAS the exit
+        # status until a tier was appended below it, at which point it became a
+        # statement whose value is discarded. Which statement is last changes
+        # without anybody noticing.
+        #
+        # ASKED OF THE OUTPUT RATHER THAN THE SOURCE, deliberately. A static
+        # rule would have to replicate shell semantics to know whether a
+        # counter reaches the exit status -- swept all 158 suites by hand to
+        # find this one, and the classifier was noisy enough to misread a
+        # one-line `fail() { ...; exit 1; }`. The output is the contract: a
+        # suite that says FAIL has failed, whatever its exit code claims.
+        #
+        # The pattern is ANCHORED and allows the two report shapes in use
+        # (`FAIL ...` and `  FAIL ...`), because `SKIP (valgrind unavailable)`,
+        # a path containing the word, and prose about what a tier catches are
+        # all ordinary -- a tripwire that fires on commentary is one somebody
+        # turns off.
+        if grep -qE '^ *FAIL( |$)' "$log"; then
+            printf 'FAIL (said FAIL, exited 0) -> %s\n' "$log"
+            printf '%34s%s\n' '' "$(grep -m1 -E '^ *FAIL( |$)' "$log" | cut -c1-70)"
+            fail=$((fail + 1))
+            failed_names+=("$name")
         # A suite whose every reported case SKIPped ran no assertions. Say so.
-        if grep -q '^SKIP' "$log" && ! grep -q '^PASS\|^OK\|passed' "$log"; then
+        elif grep -q '^SKIP' "$log" && ! grep -q '^PASS\|^OK\|passed' "$log"; then
             printf 'SKIP  %s\n' "$(grep -m1 '^SKIP' "$log" | cut -c1-70)"
             skip=$((skip + 1))
             skipped_names+=("$name")

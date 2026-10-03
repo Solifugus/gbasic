@@ -10408,3 +10408,138 @@ stripped reports 9 of 9, and a broken trigger fires the count floor rather than
 printing a clean line. Your `check-measured.py` is the stronger form and this
 one is not it: it checks that a claim **cites** a suite, not that the claim is
 true. Stated as the limit on the tier rather than left implied.
+
+## What shipped from that batch, 2026-10-02 — and the two items that grew
+
+Closing the loop on my own verdicts, because a validator's note that records a
+verdict and not the outcome is the shape this file exists to catch.
+
+**`type`** — the 27 answers are on the page and held by a derived tripwire
+(`PASS type kinds`, `tests/run_docs_gate.sh`), both directions, four
+perturbations red.
+
+**The undefined-function diagnostic — AND IT WAS NINE TIMES WIDER THAN FILED.**
+The filing was about `is_money`. Measured, a completely invented name gave the
+identical message, so it was never about the absent predicates. And then
+`odbc.vacuum` did not change with the fix, because **nine module dispatchers
+each built the sentence from their own `snprintf`** — webclient, http, timer,
+webserver, sqlite, odbc, pg, gi, money. A rule re-established at nine call
+sites is one a tenth module leaves out, which is the lesson `first_raise_wins`
+produced from the other direction, so the format lives in
+`module_unknown_verb` and the nine raisers stay separate (each module reports
+through its own; what drifts is the format, not the raise).
+
+It says **"no function, library function or builtin of that name is in scope at
+this call"** rather than "nothing defines that name", and that is not hedging:
+in script mode a function declared BELOW its call is not yet registered, so
+this is the message for a function the file plainly does define — a case
+`docs/reference.md` already calls out. The blunter sentence would be a lie in
+the one place a reader is most likely to be confused.
+
+**The tripwire gained a third check because the second perturbation PASSED.** A
+hand-rolled copy producing the same text from a different format string
+satisfied both source greps, so the count of CALL SITES is asserted too —
+derived from the module list the tier probes rather than written as a literal,
+so the two cannot disagree about how many modules there are. Plus the
+behavioural half, since a formatter nobody calls satisfies a grep perfectly.
+
+**`chars(f)` and `bytes(f)` — both confirmed, and `chars` had NO TEST COVERAGE
+IN THE TREE**, which is how a `TODO` in the source reached a release. `chars`
+counts codepoints now and agrees with `len(read(f))`, which was correct all
+along. `bytes` is answered by `stat` on a regular file: measured, a 500 MB file
+goes from allocating half a gigabyte to 0.00s at 13 MB RSS.
+
+The guard is *only for a regular file*, and the reason is worth recording
+because the first draft of the comment got it backwards: `read_whole_file`
+sizes with fseek/ftell, so a FIFO **already** raises `Illegal seek` and
+anything in `/proc` **already** answers 0 — both measured. `stat` would hand a
+FIFO a size of 0 and turn that raise into a number for a file this interpreter
+cannot read, so falling through to the read path is what keeps the existing
+answer. My comment had claimed reading a FIFO "genuinely yields bytes"; it does
+not, here.
+
+**Finding 29 — answered where it matters rather than with a new name.** The
+refusal now reports the serialized size and the ceiling in the same units the
+check uses (`len > channel_max_message(fd)`), so "holds at most N" is exactly
+the predicate — verified at the boundary: a payload serializing to exactly
+106,496 is accepted, 200,037 is refused against that ceiling. `spawn`'s startup
+frame gets the identical pair. **Whether a QUERYABLE form is also wanted is
+still open and is Matthew's call**, since it puts a name in the language and
+the number is now discoverable without one.
+
+**Finding 36 — warning 2110, and the measurement changed the design.** The
+obvious rule is "a bare `receive()` inside a `watch` body", and that rule is
+WRONG: a reply already waiting is returned immediately, which is how the shape
+is normally written and is exactly what chapter 14 does. So the warning is
+issued where the runtime knows it is **about to block** — past `retain_take`,
+with an empty mailbox and no loop running — and the two controls that force
+that placement are in the tier.
+
+**And it is a warning rather than a raise, which is a limit and not caution.**
+A live peer CAN still send into that mailbox: delivery is the kernel's job on
+the socket, not the loop's. So it is a deadlock only if nothing will ever send,
+which the runtime cannot know, and raising would break a program legitimately
+waiting on a slow peer. The program therefore still hangs — with a located
+sentence naming where it is, which is the whole of what was missing. A
+certain-deadlock raise (every spawned child exited and no handle held) is
+possible and deliberately not built.
+
+**Still open from the batch:** the absence-coercion warning, which is the item I
+ranked first and is the one still unbuilt. It gets instrumented and counted
+before it ships, as stated — the instrumentation is written and waiting on a
+clean gate.
+
+### And two things finding 36 taught that reading could not
+
+**My own predicate was wrong when I ran it.** "Warn where it is about to block"
+is the obvious design and I wrote it; measured, it answered NO in the deadlock
+itself. The child had sent and returned but had not yet become a reapable
+zombie, so at the instant the parent committed to an indefinite wait the
+information the warning needs had not arrived — and a millisecond later it had,
+with nothing looking. An indefinite `receive()` in a registration-fired watcher
+therefore waits in 250 ms slices, which changes no semantics (the slice is a
+poll timeout, a message arriving in 1 ms still returns in 1 ms) and buys the
+diagnostic a moment for the truth to settle.
+
+**And it found a latent defect in 2105.** `warn_site_first_time` is one-shot per
+site and `runtime_warn_at` calls it itself, so a guard that calls it as well
+consumes the only chance. 2110's guard did, and was silent on every run with the
+predicate true. **2105's guard does the same thing and prints anyway, purely
+because its two calls use different keys** — `expr->line` in the guard against
+`current_line` in the printer — so it registers two sites for one warning and
+survives by accident. Anything that made those agree would have taken 2105 out
+with no test noticing. Both guards now leave deduplication to the printer, which
+is whose job it is.
+
+## From the Windows port session, 2026-10-02 — run_core.sh printed FAIL and exited 0
+
+**Reported as "just a side note". It was not: the gate had been green over a
+failing check for nine days, and the suite's whole first tier was advisory.**
+
+`tests/run_core.sh` ends its counter tier with a bare `[[ "$fail" -eq 0 ]]`. That
+WAS the script's exit status while it was the last line; a later tier was
+appended below it, and the expression became a statement whose value is
+discarded. The cause is ordinary and will recur — **which statement is last
+changes without anybody noticing.**
+
+What it was hiding: `FAIL sleep(0) returns 0`. `sleep` was deliberately changed
+on 2026-09-24 to answer `nothing` rather than the seconds you asked for, with
+the reason recorded in `examples/sleep_test.bas` (a stray number at the prompt,
+and a `sleep` dropped from the resident program as a question rather than an
+act). That golden was updated; this check was not, and had been failing on every
+run since.
+
+**SWEPT ALL 158 SUITES rather than fixing the one.** Fourteen others keep a
+failure counter instead of failing fast; all fourteen consult it in their exit
+path, and the four whose last line is `fi` or `esac` turn out to use fail-fast
+helpers that `exit 1` immediately. So this was the only instance — and the
+classifier was noisy enough to misread a one-line `fail() { ...; exit 1; }`,
+which is the argument against a static tripwire.
+
+**THE TRIPWIRE IS BEHAVIOURAL AND LIVES IN `run_all.sh`:** a suite whose output
+contains a `FAIL` line is counted as failed whatever its exit code claims. The
+output is the contract. This is the FOURTH way this gate can go quiet and the
+only one that had no defence — the other three (a suite that SKIPS everything, a
+discovery pass that SHRINKS, a fixture that HANGS) were already named in
+`CLAUDE.md`. Proven by reinstating the exact reported bug: `run_core` alone
+exits 0, and the gate reports `FAIL (said FAIL, exited 0)` and names the line.

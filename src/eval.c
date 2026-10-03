@@ -13700,6 +13700,10 @@ typedef struct {
     int status;           /* raw wait status, valid once reaped */
 } ActorChild;
 
+/* Set by eval_run_actor: this interpreter IS a spawned actor, so its parent is
+ * a sender it can never account for. Read only by warning 2110. */
+static int running_as_spawned_actor = 0;
+
 static pid_t actor_group_pgid = 0;
 static ActorChild *actor_children = NULL;
 static size_t actor_child_count = 0;
@@ -13718,6 +13722,34 @@ static size_t actor_track_child(pid_t pid) {
     actor_children[actor_child_count].reaped = 0;
     actor_children[actor_child_count].status = 0;
     return actor_child_count++;
+}
+
+/* Could ANYTHING still send to this mailbox? Read only by warning 2110.
+ *
+ * NO PARENT and NO UNREAPED CHILD means no sender remains -- and the timing is
+ * sound rather than lucky: a child that has exited has already performed its
+ * sends, and those bytes are sitting in the socket, so `receive` would have
+ * taken one instead of reaching the block. The predicate therefore cannot be
+ * true while a child that is going to send is still running. MEASURED both
+ * ways in tests/run_inbox.sh.
+ *
+ * NOT CERTAIN, and that is why 2110 warns rather than raises: a handle can
+ * travel over SCM_RIGHTS, so a grandchild of a dead child could still hold one.
+ * The runtime cannot track that, and a raise would end a program that was
+ * right. */
+static void actor_reap_children(void);
+
+static int actor_no_sender_remains(void) {
+    if (running_as_spawned_actor) {
+        return 0;
+    }
+    actor_reap_children();
+    for (size_t i = 0; i < actor_child_count; i++) {
+        if (!actor_children[i].reaped) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 /* Reap any exited children without blocking, capturing each one's wait status so
@@ -14254,6 +14286,70 @@ static Value actor_receive_impl(int has_tag, Value tag,
             wait_ms = remaining > INT_MAX ? INT_MAX : (int)remaining;
         }
 
+        /* WARNING 2110 NEEDS A MOMENT FOR THE TRUTH TO SETTLE, which is the
+         * one thing reading the code could not have told me. The first draft
+         * asked `actor_no_sender_remains()` once, at the instant of blocking,
+         * and it answered NO even in the deadlock -- measured: the child had
+         * sent and returned, but had not yet become a reapable zombie, so at
+         * the moment the parent committed to an indefinite wait the
+         * information the warning needs had not arrived. A millisecond later
+         * it had, and nothing was looking.
+         *
+         * So an indefinite receive inside a registration-fired watcher waits
+         * in SLICES instead. THE SEMANTICS DO NOT CHANGE: the loop still waits
+         * forever for a message, a message arriving in 1 ms still returns in
+         * 1 ms (the slice is a poll timeout, not a delay), and nothing but the
+         * diagnostic depends on the interval -- so a slow machine costs a later
+         * warning rather than a different answer. Four wakeups a second, only
+         * in a program that is otherwise stuck. */
+        int registration_watcher =
+            watcher_draining && !webserver_event_loop_running;
+        if (!has_timeout && registration_watcher) {
+            wait_ms = 250;
+        }
+
+        /* WARNING 2110: AN INDEFINITE `receive()` IN A WATCHER BODY THAT FIRED
+         * AT REGISTRATION.
+         *
+         * A watcher body runs once when `watch` registers it -- during `main`,
+         * before the event loop exists -- and a bare `receive()` there with
+         * nothing in the mailbox blocks with no diagnostic at all: measured,
+         * exit 124 under `timeout`, the `unwatch` on the next line unreachable
+         * and the loop that would deliver a message never started. Reported by
+         * the gbasic-books session 2026-10-02 (finding 36).
+         *
+         * WHY THIS IS NOT 2105, AND WHY 2105 MUST NOT BE WIDENED TO COVER IT.
+         * 2105 says `receive()` blocks the event loop, which is true when the
+         * loop is running and FALSE here -- there is no loop yet. Its guard
+         * (`webserver_event_loop_running`) is correct; three readings of the
+         * source concluded otherwise and only instrumenting settled it, so
+         * widening would have shipped a false sentence.
+         *
+         * WARNED AT THE MOMENT IT IS ABOUT TO BLOCK, not at the call, because
+         * the call itself is ordinary: a reply already waiting is returned
+         * immediately and that is how the shape is normally written. Only an
+         * EMPTY mailbox makes it a hazard, so the check sits past `retain_take`
+         * where the answer is known -- which is also what keeps it from firing
+         * on a working program.
+         *
+         * A WARNING AND NOT A RAISE, which is a deliberate limit rather than
+         * caution: a live peer CAN still send into this mailbox, since delivery
+         * is the kernel's job on the socket rather than the loop's, so this is
+         * a deadlock only if nothing will ever send -- which the runtime cannot
+         * know. Raising would break a program legitimately waiting on a slow
+         * peer. */
+        if (wait_ms < 0 && watcher_draining && !webserver_event_loop_running &&
+            actor_no_sender_remains() &&
+            warn_site_first_time(current_line, current_column)) {
+            warn_fmt(2110, "actor",
+                     "receive() with no timeout, in a watcher body that fired at "
+                     "REGISTRATION -- during `main`, before the event loop "
+                     "exists. Nothing else in this program runs until a message "
+                     "arrives: not the `unwatch` below it, not the loop that "
+                     "would deliver one. Pass a timeout, or let the loop fire "
+                     "the watcher");
+        }
+
         int w = actor_wait(wait_ms);
         if (w < 0) {
             if (has_tag) {
@@ -14264,7 +14360,53 @@ static Value actor_receive_impl(int has_tag, Value tag,
             return value_null();
         }
         if (w == 0) {
-            /* Only reachable with a deadline: timed out -> nothing. */
+            if (!has_timeout) {
+                /* A DIAGNOSTIC SLICE EXPIRED, NOT THE CALLER'S TIMEOUT -- there
+                 * is no deadline here, so this must go round again or a bare
+                 * `receive()` would start answering `nothing` after 250 ms,
+                 * which is the one way this change could alter semantics.
+                 *
+                 * WARNING 2110: a watcher body runs once when `watch`
+                 * registers it, during `main`, before the event loop exists.
+                 * A blocking receive there with nothing left to send waits for
+                 * a loop that has not started: the `unwatch` on the next line
+                 * is unreachable and the program stops with no diagnostic at
+                 * all (measured, exit 124 under `timeout`). Reported by the
+                 * gbasic-books session 2026-10-02 as finding 36.
+                 *
+                 * WHY NOT 2105, AND WHY 2105 MUST NOT BE WIDENED: 2105 says
+                 * `receive()` blocks the event loop, which is true while the
+                 * loop runs and FALSE here, there being no loop yet. Three
+                 * readings of the source concluded its guard was too narrow
+                 * and only instrumenting settled it, so widening would have
+                 * shipped a false sentence.
+                 *
+                 * AND THE DISCRIMINATOR IS NOT THE SYNTAX. "A bare `receive()`
+                 * inside a `watch` body" is the obvious rule and it is wrong:
+                 * a reply already waiting comes back at once, which is how the
+                 * shape is normally written. What makes it a hazard is that
+                 * NOTHING REMAINS TO SEND, which is what the predicate asks. */
+                /* NO `warn_site_first_time` HERE, and that is a correction
+                 * rather than an omission: `runtime_warn_at` calls it itself,
+                 * it is ONE-SHOT PER SITE, and calling it in the guard too
+                 * consumes the only chance -- so the second call inside the
+                 * printer returns 0 and the warning is silently dropped.
+                 * Measured: the predicate was true on every 250 ms slice and
+                 * nothing was ever printed. Deduplication is the printer's job;
+                 * the guard's job is the predicate. */
+                if (registration_watcher && actor_no_sender_remains()) {
+                    warn_fmt(2110, "actor",
+                             "receive() with no timeout, in a watcher body that "
+                             "fired at REGISTRATION -- during `main`, before the "
+                             "event loop exists -- and every actor this program "
+                             "spawned has exited, so nothing remains to send. "
+                             "Not the `unwatch` below it, not the loop that would "
+                             "deliver a message: nothing else here will run. Pass "
+                             "a timeout, or let the loop fire the watcher");
+                }
+                continue;
+            }
+            /* The caller's deadline: timed out -> nothing. */
             if (has_tag) {
                 value_free(tag);
             }
@@ -14654,6 +14796,10 @@ static Value eval_spawn(AstExpr *expr) {
 int eval_run_actor(AstStmtList program, const char *entry,
                    int inbox_fd, int self_fd, int control_fd) {
     active_root = program;
+    /* THIS PROCESS HAS A PARENT THAT CAN SEND TO IT, which warning 2110 has to
+     * know: its whole claim is that nothing remains to send, and in a spawned
+     * actor that is false however many of its own children have exited. */
+    running_as_spawned_actor = 1;
 
     /* Tie this actor's lifetime to its parent's: if the parent dies for any
      * reason -- normal exit, crash, or kill -- the kernel sends this process
@@ -33146,8 +33292,16 @@ static Value eval_call(AstExpr *expr) {
          * loop wait for it, which is no improvement at all -- `watch(
          * inbox.messages)` is the shape that is. Warned rather than refused: a
          * short wait in a handler is defensible and the author can price it. */
-        if (webserver_event_loop_running &&
-            warn_site_first_time(expr->line, expr->column)) {
+        /* DEDUPLICATION IS THE PRINTER'S JOB, and this guard used to do it too.
+         * `warn_site_first_time` is ONE-SHOT PER SITE and `runtime_warn_at`
+         * calls it itself, so a guard that calls it as well consumes the only
+         * chance -- and 2105 printed anyway ONLY because the two calls used
+         * different keys (`expr->line` here against `current_line` there), so
+         * it registered two sites for one warning and survived by accident.
+         * Found while adding 2110, whose guard used `current_line` and was
+         * therefore silent on every run. Anything that made those two agree
+         * would have taken 2105 out with no test noticing. */
+        if (webserver_event_loop_running) {
             warn_fmt(2105, "actor",
                      "receive() blocks the event loop, so no other request, stream "
                      "or transfer makes progress until a message arrives; read "
