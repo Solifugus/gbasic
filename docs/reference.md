@@ -1317,13 +1317,22 @@ Nothing can detect that, so it is not refused — it is the one rule a modifier
 you write has to keep. The assignment form has no such requirement, because
 there only one value goes through.
 
-Two shapes have **no** inline form and still need the assignment clause: a
-modifier that takes **arguments** (`{split ","}`) and one with a **multi-word**
-name (`{end of month}`). A **library-qualified** name is one word and does work
-inline (`{housestyle.shout}s`). The reason is the grammar: the lexer recognises
-the exact shape `{ IDENT }`, which costs no parsing ambiguity, where admitting
-the general lens form in expression position costs 19 shift/reduce conflicts
-(measured) against a project standard of zero.
+**Every modifier shape works inline** *(since 2026-10-03)* — an argument
+(`{split ","}line`), a multi-word name (`{end of month}invoice`), a chain
+(`{trimmed; upper}raw`) and a library qualifier (`{housestyle.shout}s`). Until
+then only the one-word form did, so those first three were parse errors in
+expression position and the assignment clause was their only spelling.
+
+The reason is the lexer rather than the grammar: admitting the general lens form
+in expression position costs 19 shift/reduce conflicts (measured) against a
+project standard of zero, while the lexer may look as far ahead as it likes and
+costs none. **What it needs is to tell a modifier from a record literal, and the
+decision is one token past the leading identifier**: a record always has `:`,
+`=` or `(` there (`{ a: 1 }`, `{ a = 1 }`, `{ serial (reset 7): 0 }`) and a
+modifier never does. A record keyed by a string (`{ "k": 1 }`) or an empty one
+never reaches that test. And an inline modifier may not span a **newline**,
+which a clause could not either, so a record literal written across lines is
+out of its reach by construction.
 
 A comparison lens applies to any operand, including a call result:
 

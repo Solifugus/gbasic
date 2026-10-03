@@ -811,12 +811,25 @@ what proves the live probes are running anything at all.
   affordable: `{a}` and `{a: 1}` differ at their THIRD token and LALR(1) cannot
   see that far from the brace, so the grammar route costs a shift/reduce
   conflict against a standard of zero. `tests/run_inline_modifier.sh`.
-- A modifier taking ARGUMENTS or having a MULTI-WORD name has no inline form —
-  `{split ","}s` and `{end of month}d` in expression position are parse errors,
-  and the assignment clause stays the only spelling for those. Measured
-  2026-09-22: admitting them inline means putting the lens production into
-  `unary_expression`, which costs **19** shift/reduce conflicts, where the
-  one-word shape the lexer recognises costs none.
+- ~~A modifier taking ARGUMENTS or having a MULTI-WORD name has no inline form —
+  `{split ","}s` and `{end of month}d` in expression position are parse errors.~~
+  **RESOLVED 2026-10-03** (struck). The 19-conflict measurement was right and was
+  about the wrong route: it priced putting the lens production into
+  `unary_expression`, and the fix is in the **lexer**, which may look as far
+  ahead as it likes and costs **zero** — the same place and the same argument as
+  the one-word form. What it needed was a discriminator, and **the decision is
+  ONE TOKEN past the leading identifier**: a record literal always has `:`, `=`
+  or `(` there and a modifier never does. That follow-set is DERIVED from
+  `record_field_list` in `src/parser.y` rather than surveyed, because the first
+  design was a scan to the closing brace for a top-level separator — a survey of
+  the record forms, where the one-word rule's safety argument is a *proof*
+  (`{IDENT}` was previously a parse error, so no program could contain it).
+  Matthew asked whether looking inside the braces was problematic and that is
+  what shrank it. Measured before relying on it: `{ a = 1 }` is a legal record
+  with no colon at all, and `{wrap("[")}` is NOT a modifier, so `(` is
+  record-only. A newline bails out, since a clause already could not span one
+  while a record literal spans lines routinely.
+  `tests/run_limitations.sh` carries the control both ways.
 - No `gi.emit` — the per-widget signal-synthesis catalogue (2026-07-31) covers
   testing; Studio's display tiers run on it.
 - ~~gi cannot call STATIC class functions (`Gtk.StyleContext.add_provider_for_display`)

@@ -87,7 +87,6 @@ run() { GBASIC_PATH=stdlib ./gbasic "$1" 2>&1; }
 # The probe function is probe_<KEY>.
 
 PROBES="
-inline_modifier_args|has no inline form
 atomic_replace_inode|gives dest the temp's inode
 callresult_method_stmt|method call on a call-result receiver
 unnormalized_load_path|print the load path unnormalized
@@ -125,21 +124,39 @@ probe_nul_string_literal() {
     fi
 }
 
-probe_inline_modifier_args() {
-    # BOTH halves, because they fail for the same reason and fixing one without
-    # the other would mean the grammar had changed and the conflict count is
-    # the thing to re-measure: the LEXER recognises `{ IDENT }` and nothing
-    # else, so a clause with arguments and a multi-word one both fall back to
-    # the LBRACE path, where an expression position expects a record literal.
-    printf 'print ({split ","}"a,b")[0]\n' > "$WORK/p.bas"
-    args_out=$(run "$WORK/p.bas")
-    printf 'load dates\nprint ({end of month}{date}"2026-02-10").day\n' > "$WORK/p2.bas"
-    words_out=$(run "$WORK/p2.bas")
-    if printf '%s' "$args_out" | grep -q 'parse error' &&
-       printf '%s' "$words_out" | grep -q 'parse error'; then
-        ok "an argument-bearing and a multi-word modifier are still parse errors inline"
+control_inline_modifier_shapes() {
+    # STRUCK 2026-10-03. The bullet said an argument-bearing and a multi-word
+    # modifier were parse errors inline, because the LEXER recognised `{ IDENT }`
+    # and nothing else, so both fell back to the LBRACE path where an expression
+    # position expects a record literal.
+    #
+    # THE OPPOSITE CHECK NOW, which is what a struck bullet gets: the three
+    # shapes must WORK, and -- the half that matters more -- every record
+    # literal shape must still be a RECORD. The classifier is one token past the
+    # leading identifier, and if it were wrong in either direction this is where
+    # it shows: a record read as a modifier breaks `{ a: 1 }`, which is in
+    # nearly every file in this tree.
+    cat > "$WORK/c.bas" <<'EOF'
+load dates
+print "args=" + string(count({split ","}"a,b,c"))
+print "words=" + string({end of month}({date}"2026-02-10"))
+print "chain=" + {trimmed; upper}"  hi  "
+print "rec1=" + type({ a: 1 })
+print "rec2=" + type({ a = 1 })
+print "rec3=" + type({})
+print "rec4=" + type({ "k": 1 })
+print "rec5=" + type({ a: { b: 1 } })
+print "rec6=" + type({ serial (reset 7): 0 })
+EOF
+    out=$(GBASIC_PATH=stdlib run "$WORK/c.bas")
+    if printf '%s' "$out" | grep -q 'args=3' &&
+       printf '%s' "$out" | grep -q 'words=2026-02-28' &&
+       printf '%s' "$out" | grep -q 'chain=HI' &&
+       [ "$(printf '%s' "$out" | grep -c '=record')" = "6" ]; then
+        ok "CONTROL: every modifier shape applies inline, and every record literal is still a record"
     else
-        fixed "a modifier with arguments or a multi-word name now works inline"
+        printf '%s\n' "$out" | sed 's/^/     /'
+        fail "CONTROL: inline modifier shapes (struck bullet regressed)"
     fi
 }
 
@@ -233,6 +250,7 @@ done <<< "$(printf '%s\n' "$PROBES" | sed '/^$/d')"
 # Each entry: KEY|marker substring identifying the STRUCK bullet it belongs to.
 
 CONTROLS="
+inline_modifier_shapes|has no inline form
 raise_catchable|raise cannot be caught
 call_result_compare|misparses as a modifier clause
 keyword_after_dot|not after a dot

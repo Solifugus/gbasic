@@ -32,6 +32,17 @@ reader sees.
   `clean {trimmed; upper}= raw`. The comma could not be used — it is already the
   argument separator (`{between "a", "b"}`) and arity cannot disambiguate it. A
   `;` inside an argument is content, not a separator.
+- **Every modifier shape now works inline**, not just a one-word name: an
+  argument (`{split ","}line`), a multi-word name (`{end of month}invoice`) and
+  a chain (`{trimmed; upper}raw`) are all expressions now, where the first two
+  were parse errors and the assignment clause was their only spelling. The
+  clause form is **not** redundant and the division of labour is unchanged —
+  *clause when the value is being stored, inline when it is being used* —
+  because the two apply to different things: the clause takes the **whole**
+  right-hand side while inline binds like unary minus, so
+  `b {number}= "10" + "5"` is the **number** 105 and
+  `h = {number}"10" + "5"` is the **string** `"105"`. A compound assignment
+  (`n {number}+= "5"`) has no inline spelling at all.
 - **Any modifier now works as a comparison lens**, alone or chained:
   `if name {trimmed; caseless}= typed then`. A comparison lens is a
   *normalisation of both operands*, so this replaces
@@ -42,6 +53,14 @@ reader sees.
   is applied to each operand separately.
 - **A modifier name may no longer contain `;`.** Measured: nothing in `stdlib`,
   `examples` or `tests` declared one, so the affected set is believed empty.
+- **`{ … }` in expression position is read as a modifier when it cannot be a
+  record.** The lexer decides on one token past the leading identifier: a record
+  always has `:`, `=` or `(` there and a modifier never does, and an inline
+  modifier may not span a newline. Every record literal shape is unaffected —
+  asserted both directions in `tests/run_inline_modifier.sh`, which derives the
+  follow-set from `record_field_list` in `src/parser.y` rather than carrying its
+  own copy, so a new record form fails the check instead of being silently
+  reclassified.
 
 **Diagnostics that say something different** — anything quoting one verbatim has
 to re-capture it:

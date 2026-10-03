@@ -149,6 +149,60 @@ else
     cat "$work/badc.err"; fail "the two forms refuse differently"
 fi
 
+printf 'TIER record or modifier: the follow-set is DERIVED, not surveyed\n'
+# THE DECISION IS ONE TOKEN PAST THE LEADING IDENTIFIER. A record literal always
+# has `:`, `=` or `(` there and a modifier never does, which is what lets the
+# lexer admit `{split ","}` and `{end of month}` inline at zero grammar cost.
+#
+# ASKED OF THE GRAMMAR RATHER THAN OF ME, because the first design was a scan to
+# the closing brace for a top-level separator -- and the safety argument for that
+# is "I enumerated the record forms", a survey, where the one-word rule's
+# argument is a proof. A survey cannot see a record form nobody has written yet.
+# So this reads `record_field_list` and fails if a fourth token joins the three,
+# which is the moment somebody has to revisit src/lexer.c.
+# `|| true` IS LOAD-BEARING, and the perturbation is what showed it: under
+# `pipefail` a `grep` that matches nothing fails the whole assignment and
+# `set -e` ends the suite SILENTLY -- exit 1 with the TIER line printed and no
+# FAIL after it, which is a break nobody could diagnose. The same trap
+# run_http.sh records from the other direction.
+follow="$(awk '/^record_field_list/,/^    ;/' src/parser.y \
+    | grep -oE '(field_name|IDENT) [A-Z_]+' | awk '{print $2}' | sort -u | tr '\n' ' ' || true)"
+if [ "$follow" = "COLON LPAREN OP_EQ " ]; then
+    pass "a record's first field name is followed by exactly COLON, OP_EQ or LPAREN"
+else
+    printf '    got: [%s]\n' "$follow"
+    fail "the record follow-set changed -- src/lexer.c decides record-vs-modifier on it"
+fi
+# And the behavioural half, both directions, because a derived list proves
+# nothing about what the lexer does with it.
+inline_shape() {   # <source line> <expected stdout> <label>
+    printf 'load dates\n%s\n' "$1" >"$work/shape.bas"
+    got="$(GBASIC_PATH=stdlib timeout -k 5 20 ./gbasic "$work/shape.bas" 2>"$work/shape.err")"
+    if [ "$got" = "$2" ]; then
+        pass "$3"
+    else
+        printf '    got [%s], want [%s] %s\n' "$got" "$2" "$(tail -1 "$work/shape.err")"
+        fail "$3"
+    fi
+}
+inline_shape 'print(count({split ","}"a,b,c"))' '3' 'an argument-bearing modifier applies inline'
+inline_shape 'print(string({end of month}({date}"2026-02-10")))' '2026-02-28' 'and a multi-word one'
+inline_shape 'print({trimmed; upper}"  hi  ")' 'HI' 'and a chain'
+inline_shape 'print(type({ a: 1 }))' 'record' 'CONTROL: a COLON record is still a record'
+inline_shape 'print(type({ a = 1 }))' 'record' 'CONTROL: so is an OP_EQ record'
+inline_shape 'print(type({ serial (reset 7): 0 }))' 'record' 'CONTROL: so is an LPAREN policy record'
+inline_shape 'print(type({ "k": 1 }))' 'record' 'CONTROL: so is one keyed by a STRING'
+inline_shape 'print(type({}))' 'record' 'CONTROL: so is the empty one'
+# A RECORD LITERAL SPANS LINES ROUTINELY and a modifier clause cannot, so the
+# scan bails at a newline -- which is what makes a multi-line record unreachable
+# by the modifier path rather than merely unlikely.
+printf 'load dates\nr = {\n  a: 1,\n  b: 2\n}\nprint(type(r) + ":" + string(r.b))\n' >"$work/ml.bas"
+if [ "$(GBASIC_PATH=stdlib ./gbasic "$work/ml.bas" 2>/dev/null)" = "record:2" ]; then
+    pass "CONTROL: a record across lines is untouched"
+else
+    fail "CONTROL: a record across lines is untouched"
+fi
+
 printf 'TIER the clause takes ONE modifier, and why neither spelling can mean more\n'
 # ASKED RATHER THAN DESIGNED: `{trimmed,upper}=` was tried 2026-10-02 and the
 # answer is no -- but the two obvious spellings fail in two DIFFERENT ways, and

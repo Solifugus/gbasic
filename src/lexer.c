@@ -631,6 +631,77 @@ Token lexer_next(Lexer *lexer) {
                 lexer->current = after + 1;
                 return t;
             }
+            /* AND EVERY OTHER MODIFIER SHAPE, 2026-10-03: `{split ","}`,
+             * `{end of month}`, `{trimmed; upper}`. Only the ONE-WORD form was
+             * recognised here, so the inline form reached one of the four
+             * shapes a clause can take -- and once a clause could CHAIN, the
+             * asymmetry was something a reader met on their first
+             * `print({end of month}d)`.
+             *
+             * THE DECISION IS ONE TOKEN PAST THE IDENTIFIER, not a scan for a
+             * top-level separator. A record literal always has `:`, `=` or `(`
+             * there and a modifier never does -- and that follow-set is DERIVED
+             * from the grammar's own `record_field_list` productions rather
+             * than surveyed by hand (tests/run_inline_modifier.sh asks
+             * src/parser.y and fails if a fourth token joins it).
+             *
+             *   { a: 1 }                    COLON   -> record
+             *   { a = 1 }                   OP_EQ   -> record
+             *   { serial (reset 7): 0 }     LPAREN  -> record (the PBI policy form)
+             *   { "k": 1 }                  starts with a STRING, never reaches here
+             *   {}  { }                     no identifier, never reaches here
+             *   { a, b }                    NOT A FORM -- a parse error today
+             *
+             * MEASURED BEFORE RELYING ON IT: `{wrap("[")}` is not a modifier
+             * (the paren clause form was retired by PLAT-BRACE and reports
+             * `assign modifier not found: wrap("[")`), so `(` is record-only.
+             *
+             * A NEWLINE BAILS OUT. A modifier clause already could not span one
+             * -- measured, `{join\n"-"}` is a lexer error -- while a record
+             * literal spans lines routinely, so stopping at a newline cannot
+             * misread a record and costs the modifier nothing. It also keeps
+             * the column bookkeeping below a single-line arithmetic. */
+            if (*after != ':' && *after != '=' && *after != '(' && name_len > 0) {
+                const char *scan = after;
+                int in_string = 0;
+                int escape = 0;
+                int depth = 0;
+                const char *close = NULL;
+                while (*scan && *scan != '\n') {
+                    if (escape) { escape = 0; scan++; continue; }
+                    if (*scan == '\\' && in_string) { escape = 1; scan++; continue; }
+                    if (*scan == '"') { in_string = !in_string; scan++; continue; }
+                    if (!in_string) {
+                        if (*scan == '{') { depth++; }
+                        else if (*scan == '}') {
+                            if (depth == 0) { close = scan; break; }
+                            depth--;
+                        }
+                    }
+                    scan++;
+                }
+                if (close) {
+                    const char *end = close;
+                    while (end > name_start &&
+                           (end[-1] == ' ' || end[-1] == '\t')) {
+                        end--;
+                    }
+                    Token t;
+                    t.type = TOKEN_MODIFIER_PREFIX;
+                    /* The whole PHRASE, which is what `parse_modifier_use`
+                     * takes: it splits the stages, then the library qualifier,
+                     * and the resolver separates the name from its arguments by
+                     * longest match. The clause form has always handed it this
+                     * same text through the lens path. */
+                    t.start = name_start;
+                    t.length = (int)(end - name_start);
+                    t.line = line;
+                    t.column = column;
+                    lexer->column += (int)((close + 1) - start);
+                    lexer->current = close + 1;
+                    return t;
+                }
+            }
         }
         bracket_open(lexer, '{', line);
         return make_token(lexer, TOKEN_LBRACE, start, line, column);
