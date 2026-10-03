@@ -6741,8 +6741,31 @@ static int valid_date_parts(DateTime dt) {
     if (dt.month < 1 || dt.month > 12) {
         return 0;
     }
-    if (dt.precision >= PREC_DAY && (dt.day < 1 || dt.day > 31)) {
-        return 0;
+    if (dt.precision >= PREC_DAY) {
+        /* THE DAY MUST EXIST IN THAT MONTH, which this checked as `1..31` from
+         * the day the type was written. So `{date}"2026-02-30"` was ACCEPTED --
+         * and then `+ 1 day` answered `2026-03-03`, because the epoch
+         * conversion normalises 30 February to 2 March and a day past that is
+         * the 3rd. A date that does not exist silently became a DIFFERENT real
+         * date two days later, with nothing raised, in a type whose whole job
+         * is business arithmetic. Found 2026-10-03 while building the layout
+         * reader, which needed this predicate to be true.
+         *
+         * The month and `> 31` were already refused, so only the per-month
+         * count and the leap rule were missing. */
+        static const int days_in[12] = { 31, 28, 31, 30, 31, 30,
+                                         31, 31, 30, 31, 30, 31 };
+        int limit = days_in[dt.month - 1];
+        if (dt.month == 2) {
+            int y = dt.year;
+            int leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+            if (leap) {
+                limit = 29;
+            }
+        }
+        if (dt.day < 1 || dt.day > limit) {
+            return 0;
+        }
     }
     if (dt.precision >= PREC_HOUR && (dt.hour < 0 || dt.hour > 23)) {
         return 0;
@@ -37599,6 +37622,262 @@ bad_value:
 #undef DT_NEEDS_DATE
 }
 
+/* ---- READING A DATE THROUGH THE SAME LAYOUT ----------------------------
+ *
+ * `{date "DD/MM/YYYY"}cell`, and a LIST when one shape is not enough:
+ * `{date "YYYY-MM-DD", "DD/MM/YYYY", "D MMM YYYY"}cell`.
+ *
+ * THE ORDER IS THE DECLARATION, which is what makes first-match-wins honest
+ * here rather than a race. `03/07/2026` is 7 March or 3 July depending on where
+ * the report came from -- `ari` invented `using date: dmy` for exactly that --
+ * and writing `DD/MM/YYYY` ahead of `MM/DD/YYYY` is the author saying which.
+ *
+ * AND A LAYOUT MATCHES ONLY IF IT ALSO YIELDS A VALID DATE, which lets a list
+ * disambiguate itself where the data allows: `03/15/2026` can only be MM/DD,
+ * so it skips a `DD/MM` candidate rather than inventing month 15. That is the
+ * difference between a candidate set and a guess.
+ *
+ * A DAY NAME IS CHECKED, NOT IGNORED. `DDDD` is redundant with the date, so
+ * accepting it blindly would admit "Sunday, 7 March 2026" -- which is a
+ * Saturday -- as if it were fine. */
+
+static int dt_name_index(const char *text, size_t *used,
+                         const char *const *names, int count, int exact_len) {
+    for (int i = 0; i < count; i++) {
+        size_t n = exact_len > 0 ? (size_t)exact_len : strlen(names[i]);
+        if (strlen(names[i]) < n) {
+            continue;
+        }
+        if (strncasecmp(text, names[i], n) == 0) {
+            /* A SHORT name must not swallow the start of a LONG one when the
+             * layout asked for the long form, and vice versa: the caller fixes
+             * the length, so `Mar` cannot match `MMMM` and `March` cannot be
+             * cut short by `MMM` unless the next character ends the token. */
+            if (exact_len > 0) {
+                *used = n;
+                return i;
+            }
+            if (strlen(names[i]) == n) {
+                *used = n;
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+static int dt_take_digits(const char *text, size_t want_min, size_t want_max,
+                          int *out, size_t *used) {
+    size_t n = 0;
+    int v = 0;
+    while (n < want_max && isdigit((unsigned char)text[n])) {
+        v = v * 10 + (text[n] - '0');
+        n++;
+    }
+    if (n < want_min) {
+        return 0;
+    }
+    *out = v;
+    *used = n;
+    return 1;
+}
+
+/* Reads `text` through one `layout`. Returns 0 when it does not fit, when a
+ * field is out of range, or when a day name contradicts the date. */
+static int datetime_parse_layout(const char *text, const char *layout,
+                                 DateTime *out) {
+    DateTime dt = {0};
+    dt.year = 1;
+    dt.month = 1;
+    dt.day = 1;
+    DateTimePrecision prec = PREC_YEAR;
+    int saw_date = 0, saw_time = 0;
+    int meridiem = -1;          /* -1 none, 0 am, 1 pm */
+    int named_day = -1;
+    int ampm_layout = dt_layout_has_meridiem(layout);
+    const char *L = layout;
+    const char *T = text;
+
+    while (*L) {
+        char c = *L;
+        if (!isalpha((unsigned char)c)) {
+            if (*T != c) {
+                return 0;
+            }
+            L++;
+            T++;
+            continue;
+        }
+        size_t n, used = 0;
+        int v = 0;
+        switch (c) {
+        case 'Y':
+            n = dt_run(L, 'Y', 4);
+            if (n == 4) {
+                if (!dt_take_digits(T, 4, 4, &v, &used)) { return 0; }
+                dt.year = v;
+            } else if (n == 2) {
+                if (!dt_take_digits(T, 2, 2, &v, &used)) { return 0; }
+                /* THE POSIX PIVOT, so a two-digit year can still be a
+                 * birthdate: 00-68 is this century, 69-99 the last. */
+                dt.year = v <= 68 ? 2000 + v : 1900 + v;
+            } else {
+                return 0;
+            }
+            saw_date = 1;
+            if (prec < PREC_YEAR) { prec = PREC_YEAR; }
+            break;
+        case 'M':
+            n = dt_run(L, 'M', 4);
+            if (n <= 2) {
+                if (!dt_take_digits(T, n == 2 ? 2 : 1, 2, &v, &used)) { return 0; }
+                dt.month = v;
+            } else {
+                int idx = dt_name_index(T, &used,
+                                        n == 3 ? DT_MONTH_SHORT : DT_MONTH_LONG,
+                                        12, n == 3 ? 3 : 0);
+                if (idx < 0) { return 0; }
+                dt.month = idx + 1;
+            }
+            saw_date = 1;
+            if (prec < PREC_MONTH) { prec = PREC_MONTH; }
+            break;
+        case 'D':
+            n = dt_run(L, 'D', 4);
+            if (n <= 2) {
+                if (!dt_take_digits(T, n == 2 ? 2 : 1, 2, &v, &used)) { return 0; }
+                dt.day = v;
+                saw_date = 1;
+                if (prec < PREC_DAY) { prec = PREC_DAY; }
+            } else {
+                int idx = dt_name_index(T, &used,
+                                        n == 3 ? DT_DAY_SHORT : DT_DAY_LONG,
+                                        7, n == 3 ? 3 : 0);
+                if (idx < 0) { return 0; }
+                named_day = idx;
+            }
+            break;
+        case 'h':
+            n = dt_run(L, 'h', 2);
+            if (!dt_take_digits(T, n == 2 ? 2 : 1, 2, &v, &used)) { return 0; }
+            dt.hour = v;
+            saw_time = 1;
+            if (prec < PREC_HOUR) { prec = PREC_HOUR; }
+            break;
+        case 'm':
+            n = dt_run(L, 'm', 2);
+            if (!dt_take_digits(T, n == 2 ? 2 : 1, 2, &v, &used)) { return 0; }
+            dt.minute = v;
+            saw_time = 1;
+            if (prec < PREC_MINUTE) { prec = PREC_MINUTE; }
+            break;
+        case 's':
+            n = dt_run(L, 's', 2);
+            if (!dt_take_digits(T, n == 2 ? 2 : 1, 2, &v, &used)) { return 0; }
+            dt.second = v;
+            saw_time = 1;
+            prec = PREC_SECOND;
+            break;
+        case 'a': case 'A': case 'p': case 'P':
+            if (L[1] != 'm' && L[1] != 'M') { return 0; }
+            if ((T[0] == 'a' || T[0] == 'A') && (T[1] == 'm' || T[1] == 'M')) {
+                meridiem = 0;
+            } else if ((T[0] == 'p' || T[0] == 'P') &&
+                       (T[1] == 'm' || T[1] == 'M')) {
+                meridiem = 1;
+            } else {
+                return 0;
+            }
+            used = 2;
+            n = 2;
+            break;
+        default:
+            return 0;
+        }
+        L += n;
+        T += used;
+    }
+    if (*T != '\0') {
+        return 0;   /* the text is longer than the layout accounts for */
+    }
+    if (ampm_layout) {
+        if (meridiem < 0 || dt.hour < 1 || dt.hour > 12) { return 0; }
+        dt.hour = dt.hour % 12;
+        if (meridiem == 1) { dt.hour += 12; }
+    }
+    if (saw_time && !saw_date) {
+        dt.time_only = 1;
+    }
+    dt.precision = prec;
+    if (!valid_date_parts(dt)) {
+        return 0;
+    }
+    if (named_day >= 0 && !dt.time_only) {
+        if (dt_day_of_week(dt.year, dt.month, dt.day) != named_day) {
+            return 0;
+        }
+    }
+    *out = dt;
+    return 1;
+}
+
+/* Try each comma-separated layout in order; the first that fits AND yields a
+ * valid date wins. On failure the message names the text and every layout
+ * tried, because "could not parse" without them is a dead end -- the author
+ * cannot see whether the data is wrong or the list is short. */
+static int datetime_parse_layout_list(const char *who, const char *text,
+                                      const char *args_text, DateTime *out) {
+    char tried[320];
+    size_t used = 0;
+    tried[0] = '\0';
+    const char *cursor = args_text;
+    int any = 0;
+    while (cursor && *cursor) {
+        const char *comma = modifier_args_next_comma(cursor);
+        size_t span = comma ? (size_t)(comma - cursor) : strlen(cursor);
+        char one[128];
+        if (span >= sizeof one) {
+            return 0;
+        }
+        memcpy(one, cursor, span);
+        one[span] = '\0';
+        Value lay = eval_modifier_arg_text(one);
+        if (error_action_pending()) {
+            value_free(lay);
+            return 0;
+        }
+        if (lay.kind != VALUE_STRING) {
+            value_free(lay);
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "`{%s}`'s layouts must be text", who);
+            runtime_error_raise(message, 1003, "datetime");
+            return 0;
+        }
+        any = 1;
+        if (datetime_parse_layout(text, lay.as.string, out)) {
+            value_free(lay);
+            return 1;
+        }
+        int w = snprintf(tried + used, sizeof(tried) - used, "%s\"%s\"",
+                         used ? ", " : "", lay.as.string);
+        if (w > 0 && (size_t)w < sizeof(tried) - used) {
+            used += (size_t)w;
+        }
+        value_free(lay);
+        cursor = comma ? comma + 1 : NULL;
+    }
+    if (!any) {
+        return 0;
+    }
+    char message[512];
+    snprintf(message, sizeof(message),
+             "`%s` does not fit any of the layouts given to `{%s}`: %s",
+             text, who, tried);
+    runtime_error_raise(message, 1003, "datetime");
+    return 0;
+}
+
 static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
                                            int *recognised) {
     if (recognised) {
@@ -37727,6 +38006,30 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
         }
         return value_money(money_make(units, mod_ccy, mod_exp));
     }
+    const char *builtin_args = NULL;
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "date")) != NULL &&
+        !modifier_args_empty(builtin_args)) {
+        /* A LAYOUT, or a list of them. The no-argument form below is unchanged
+         * and stays ISO-only. */
+        if (value.kind != VALUE_STRING) {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "`{date}` with a layout reads TEXT, and this is %s",
+                     builtin_type_name(value));
+            runtime_error_raise(message, 1003, "datetime");
+            value_free(value);
+            return value_null();
+        }
+        DateTime parsed;
+        if (!datetime_parse_layout_list("date", value.as.string, builtin_args,
+                                        &parsed)) {
+            value_free(value);
+            return value_null();
+        }
+        value_free(value);
+        return value_datetime(parsed);
+    }
     if (!modifier.library && strcmp(modifier.name, "date") == 0) {
         DateTime datetime;
         if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
@@ -37738,6 +38041,30 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
         value_free(value);
         return value_datetime(datetime);
     }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "time")) != NULL &&
+        !modifier_args_empty(builtin_args)) {
+        /* A LAYOUT, or a list of them. The no-argument form below is unchanged
+         * and stays ISO-only. */
+        if (value.kind != VALUE_STRING) {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "`{time}` with a layout reads TEXT, and this is %s",
+                     builtin_type_name(value));
+            runtime_error_raise(message, 1003, "datetime");
+            value_free(value);
+            return value_null();
+        }
+        DateTime parsed;
+        if (!datetime_parse_layout_list("time", value.as.string, builtin_args,
+                                        &parsed)) {
+            value_free(value);
+            return value_null();
+        }
+        parsed.time_only = 1;
+        value_free(value);
+        return value_datetime(parsed);
+    }
     if (!modifier.library && strcmp(modifier.name, "time") == 0) {
         DateTime datetime;
         if (value.kind != VALUE_STRING || !parse_time_value(value.as.string, &datetime)) {
@@ -37748,6 +38075,30 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
         }
         value_free(value);
         return value_datetime(datetime);
+    }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "datetime")) != NULL &&
+        !modifier_args_empty(builtin_args)) {
+        /* A LAYOUT, or a list of them. The no-argument form below is unchanged
+         * and stays ISO-only. */
+        if (value.kind != VALUE_STRING) {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "`{datetime}` with a layout reads TEXT, and this is %s",
+                     builtin_type_name(value));
+            runtime_error_raise(message, 1003, "datetime");
+            value_free(value);
+            return value_null();
+        }
+        DateTime parsed;
+        if (!datetime_parse_layout_list("datetime", value.as.string, builtin_args,
+                                        &parsed)) {
+            value_free(value);
+            return value_null();
+        }
+        parsed.precision = PREC_SECOND;
+        value_free(value);
+        return value_datetime(parsed);
     }
     if (!modifier.library && strcmp(modifier.name, "datetime") == 0) {
         /* A datetime is always a full timestamp: parse the date/time parts the
@@ -37770,7 +38121,6 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
         int ok = 0;
         return apply_datetime_lens_to_value(value, lens, modifier.name, &ok);
     }
-    const char *builtin_args = NULL;
     /* The string modifiers answer to BOTH spellings: `trimmed` (the original
      * participle) and `trim` (what everyone types first, since the BUILTIN is
      * `trim`). Matthew's call, 2026-08-17: `upper` is more intuitive and more

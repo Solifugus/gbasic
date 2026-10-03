@@ -16,6 +16,19 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+**It fixes a date that did not exist:**
+
+- **A day is checked against its month.** `valid_date_parts` validated the day
+  as `1..31` from the day the type was written, so **`{date}"2026-02-30"` was
+  accepted** — and `+ 1 day` then answered `2026-03-03`, because the epoch
+  conversion normalises 30 February to 2 March. A date that does not exist
+  silently became a *different real date two days later*, with nothing raised,
+  in the type whose job is business arithmetic. It reached `{date}`,
+  `{datetime}` and every ISO parse. Found while building the layout reader,
+  which needed the predicate to be true. The leap rule is now complete: 2024 and
+  2000 are leap years, **1900 is not**. Nothing in the tree depended on the old
+  permissiveness.
+
 **It changes a result:**
 
 - **`chars(f)` counts CODEPOINTS, not bytes.** It shared a branch with `bytes`
@@ -74,6 +87,19 @@ reader sees.
   `b {number}= "10" + "5"` is the **number** 105 and
   `h = {number}"10" + "5"` is the **string** `"105"`. A compound assignment
   (`n {number}+= "5"`) has no inline spelling at all.
+- **`{date "DD/MM/YYYY"}` reads text through the same layout notation**, and
+  takes a **list** when one shape is not enough:
+  `{date "YYYY-MM-DD", "DD/MM/YYYY", "D MMM YYYY"}cell`. `{date}`, `{datetime}`
+  and `{time}` all take layouts; with no argument they stay ISO-only.
+
+  **The order is the declaration**, which is what makes first-match-wins honest
+  rather than a race — `03/07/2026` is 7 March or 3 July depending on the
+  report, and the order says which. **A layout matches only if it also yields a
+  valid date**, so a list disambiguates itself where the data allows:
+  `03/15/2026` skips a `DD/MM` candidate rather than inventing month 15. **A day
+  name is checked**, so `"Sunday, 7 March 2026"` is refused — that day is a
+  Saturday. A two-digit year takes the POSIX pivot (`00`–`68` this century).
+  When nothing fits, the message names the text and every layout tried.
 - **Any modifier now works as a comparison lens**, alone or chained:
   `if name {trimmed; caseless}= typed then`. A comparison lens is a
   *normalisation of both operands*, so this replaces

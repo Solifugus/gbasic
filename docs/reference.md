@@ -4991,6 +4991,47 @@ not a date or time is refused, and so is a second layout — a *list* is for
 reading (see `{date "A", "B"}`), since there is no second way to render one
 value.
 
+### Reading a date through a layout
+
+**`{date "DD/MM/YYYY"}cell`** reads text through the same notation, and takes a
+**list** when one shape is not enough:
+
+```basic
+cell = "7 Mar 2026"
+a {date "DD/MM/YYYY"}= "07/03/2026"                       ' 2026-03-07
+b {date "YYYY-MM-DD", "DD/MM/YYYY", "D MMM YYYY"}= cell   ' tried in order
+c {datetime "D MMM YYYY h:mm pm"}= "7 Mar 2026 2:05 pm"   ' 2026-03-07 14:05:00
+d {time "hh:mm"}= "14:05"
+```
+
+`{date}`, `{datetime}` and `{time}` all take layouts; with no argument they stay
+ISO-only, unchanged.
+
+**THE ORDER IS THE DECLARATION**, which is what makes first-match-wins honest
+here rather than a race. `03/07/2026` is 7 March or 3 July depending on where
+the report came from, and writing `DD/MM/YYYY` ahead of `MM/DD/YYYY` is you
+saying which:
+
+```basic
+print(string({date "DD/MM/YYYY", "MM/DD/YYYY"}"07/03/2026"))   ' 2026-03-07
+print(string({date "MM/DD/YYYY", "DD/MM/YYYY"}"07/03/2026"))   ' 2026-07-03
+```
+
+**And a layout matches only if it also yields a valid date**, so a list
+disambiguates itself where the data allows: `03/15/2026` skips the `DD/MM`
+candidate rather than inventing month 15.
+
+**A day name is checked, not ignored.** `DDDD` is redundant with the date, so
+`"Sunday, 7 March 2026"` is **refused** — that day is a Saturday — rather than
+admitting contradictory data.
+
+A **two-digit year** takes the POSIX pivot: `00`–`68` is this century, `69`–`99`
+the last, so a birthdate still reads.
+
+When nothing fits, the message names **the text and every layout tried**,
+because "could not parse" alone cannot tell you whether the data is wrong or
+your list is short.
+
 **`epoch()`** returns the current instant as Unix seconds. **`epoch(dt)`**
 places a civil datetime on the timeline by reading it as **local**;
 **`epoch(dt, zone)`** reads it as civil in that zone, which is the only correct
