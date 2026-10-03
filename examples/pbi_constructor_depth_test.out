@@ -1,0 +1,17 @@
+ok   the literal's own `new engine` ran the constructor once
+ok   and the outer constructor has not run yet
+ok   outer constructor ran for c1
+ok   outer constructor ran for c2
+ok   outer constructor ran exactly twice
+ok   nested constructor never re-fired
+ok   c1.motor_a.built is the literal's value
+ok   c2.motor_a.built is the same value
+ok   nested reset re-fired for c1
+ok   nested reset re-fired for c2
+ok   nested prototype re-derives too (c1)
+ok   nested prototype re-derives too (c2)
+ok   and it has no constructor-written field
+ok   total engine constructor runs for two cars
+engine constructor runs: 1
+car constructor runs: 2
+serials issued: 5

@@ -441,12 +441,64 @@ turning `reset` into a no-op as soon as its object is nested. Recursion is cheap
 because `copy` is copy-on-write — re-deriving a nested instance is mostly
 refcount bumps until something is actually written.
 
-Two mechanics still to pin down during implementation (not blocking the decision):
-the rule for **how deep** recursion goes (every nested instance, all the way
-down — there is no fixed bound; it follows the data), and **leaf vs instance
-detection** (when is a field value "an instance to re-derive" vs "a plain value to
-COW-share"? — i.e. any `VALUE_RECORD` that carries field policies, versus a bare
-record/scalar/array). See §10.1.
+Two mechanics were named here as "still to pin down during implementation" and
+**both are now settled** — the first by measurement, the second by a ruling.
+
+**How deep: every nested instance, all the way down.** There is no fixed bound;
+it follows the data. The unfinished half was arrays — a record field holding an
+instance re-derived and the same instance one step inside an array did not, so
+`motor (copy): new engine` gave two cars serials 2 and 3 while
+`motors (copy): [new engine]` gave both 4. Same value, same policy, a different
+answer decided by whether a bracket was in the way, which is the silent no-op
+this section rejected flat duplication to avoid, arriving by the back door.
+Fixed 2026-09-30; pinned by `examples/pbi_nested_array_test.bas`.
+
+**Leaf vs instance detection — and it turned out to be the WRONG QUESTION.**
+Recursion into a record is structural and unconditional: `derive_record` rebuilds
+any `VALUE_RECORD` under a `copy` field, and the recursion's own leaves
+copy-on-write share, so a policy-free nested record is observationally identical
+either way. What makes the recursion *visible* is a **policy** — a `reset` that
+re-fires, a `link` that keeps sharing — and nothing else. So the discriminator is
+the policy, and asking whether a value "is an instance" never has to be answered.
+
+**Which left one real question, which the gbasic-books session asked while
+drafting Volume 2 Chapter 10: does a `constructor` field make a nested record
+re-derivable, and does that constructor fire again?**
+
+**Decided 2026-10-02 (Matthew): no — policies recurse, constructors do not.** A
+`new` runs constructor code at exactly the level the author wrote `new` at, once.
+
+The reason is a difference in kind rather than a preference about depth. A
+`reset` is a **declared per-field policy**: a datum, idempotent, and re-firing it
+is the entire point of recursive derivation. A `constructor` is **arbitrary user
+code with side effects** — it can write a file, send a message, or take an id
+from a server. Under the other reading one `new` would run it
+`1 + (instances nested at any depth)` times: a count the author cannot see from
+the call site, and one that *grows when somebody they have never met nests their
+object inside something else*.
+
+**And it has already run once.** `motor (copy): new engine` runs the engine's
+constructor when the **literal** is evaluated. Re-firing on derivation therefore
+does not give each car a freshly constructed engine — it gives the program
+`1 + n` runs of a side effect that was already performed, which is the shape of
+a bug and not of a feature. A program that genuinely wants per-instance
+construction of a nested object has the spelling for it already: give the OUTER
+object a constructor that does the inner `new`.
+
+One consequence worth stating, because a reader will reach for `new` inside a
+literal expecting it to matter: `motor (copy): new engine` and
+`motor (copy): engine` derive **identically**. The `new` buys the constructor's
+one-time effect at literal-evaluation time and nothing about how the field
+behaves afterwards.
+
+Measured and pinned by `examples/pbi_constructor_depth_test.bas`, whose controls
+outnumber its positive case because "nested constructors do not fire" is equally
+satisfied by a build where constructors fire nowhere, and because "constructors
+do not make a record re-derivable" is equally satisfied by one where nested
+derivation stopped working at all — the reading this section rejected. Both
+perturbations proven red: re-firing nested constructors reports 5 mismatches and
+the engine's constructor run count goes 1 → 5 (which is `1 + 4`, the two cars'
+two engines each), and disabling constructors entirely reports 8.
 
 ---
 
@@ -594,10 +646,16 @@ work, and doing it first de-risks both.
 
 ## 10. Open design questions
 
-1. **Nested-instance copy semantics — DONE: recursive (§6).** Implemented:
-   `derive_value` re-derives any `VALUE_RECORD` under a `copy` field (every nested
-   record is treated as re-derivable), and leaves are `value_copy`'d. Verified
-   with distinct nested serials across `new`.
+1. **Nested-instance copy semantics — DONE: recursive (§6), all three parts.**
+   `derive_record` re-derives any `VALUE_RECORD` under a `copy` field (every
+   nested record is treated as re-derivable) and leaves copy-on-write share.
+   Depth follows the data with no bound, **including through arrays** (fixed
+   2026-09-30; before that a bracket silently stopped the recursion). And
+   **constructors do not re-fire** at nested levels — ruled 2026-10-02, because a
+   policy is a datum while a constructor is arbitrary code with side effects that
+   has already run once at literal-evaluation time. Pinned by
+   `examples/pbi_derive_test.bas`, `examples/pbi_nested_array_test.bas` and
+   `examples/pbi_constructor_depth_test.bas`.
 2. **Derivation surface — DONE.** `new` is a reserved prefix keyword performing
    derivation; `with { … }` overrides values (fresh cell, wins over `reset`),
    carries its own policy, and adds unknown fields but cannot remove inherited
