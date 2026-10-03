@@ -69,24 +69,16 @@ int gb_exe_path(char *buf, size_t size) {
     return 1;
 }
 
-/* NOT IMPLEMENTED, AND THAT IS THE ANSWER FOR NOW.
+/* STILL REFUSES, AND NOTHING ON WINDOWS ASKS ANY MORE.
  *
- * The property relied on is not "a pair of connected sockets" -- it is that ONE
- * READ IS EXACTLY ONE WHOLE FRAME, which SOCK_SEQPACKET provides and Windows
- * cannot: its AF_UNIX is STREAM ONLY. A loopback TCP pair would connect and
- * would silently coalesce and split messages, so a reader would see half a frame
- * with nothing to say so -- an ordinary-looking wrong answer, which is worse
- * than not working.
- *
- * The honest sequence is: give src/actor.c an explicit length prefix (it has
- * none today, because SEQPACKET made one unnecessary), and THEN a stream
- * transport is correct here. That is Tier 2 -- it also needs DuplicateHandle in
- * place of SCM_RIGHTS -- and nothing in the 64 of 65 standard libraries that do
- * not use actors is waiting on it.
- *
- * Refusing means `spawn` raises on Windows. That is a documented gap, which is
- * the same treatment every compiled-out module gets, and it is recoverable. A
- * transport that loses frame boundaries is not. */
+ * The property a pair was used for is that ONE READ IS EXACTLY ONE WHOLE FRAME,
+ * which SOCK_SEQPACKET provides and Windows' STREAM-ONLY AF_UNIX cannot. A pair
+ * of stream sockets standing in for it would silently coalesce and split
+ * messages. So the Windows actor transport (src/actor.c,
+ * docs/windows_port_status.md §22) does not use a pair at all: an inbox is a
+ * named listener, every frame carries a length prefix, and a handle travels as
+ * the inbox's path. This stays a refusal so that anything new reaching for a
+ * pair meets one, rather than a channel that loses boundaries. */
 int gb_channel_socketpair(int sv[2]) {
     (void)sv;
     return 0;
@@ -566,11 +558,14 @@ static void retire_job(HANDLE job) {
  * Returns 0 with *pi (thread handle already closed) and *job filled -- *job may
  * be NULL where the system refused a job, in which case ending the child ends
  * that process alone -- or 1 with `why` saying why it could not be launched. */
-static int win_launch(char *const argv[], const char *cwd,
-                      const char *const *env_names, const char *const *env_values,
-                      size_t env_count, HANDLE in, HANDLE out, HANDLE err,
-                      DWORD extra_flags, PROCESS_INFORMATION *pi, HANDLE *job_out,
-                      char *why, size_t why_size) {
+/* `extra` names further handles the child inherits beside its three standard
+ * ones (an actor's control pipe); they must already be inheritable. */
+static int win_launch_ex(char *const argv[], const char *cwd,
+                         const char *const *env_names, const char *const *env_values,
+                         size_t env_count, HANDLE in, HANDLE out, HANDLE err,
+                         const HANDLE *extra, size_t extra_count,
+                         DWORD extra_flags, PROCESS_INFORMATION *pi, HANDLE *job_out,
+                         char *why, size_t why_size) {
     *job_out = NULL;
     memset(pi, 0, sizeof *pi);
 
@@ -602,7 +597,11 @@ static int win_launch(char *const argv[], const char *cwd,
 
     int ready = 1;
     LPPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
-    HANDLE inherit[3] = { in, out, err };
+    HANDLE inherit[3 + 4] = { in, out, err };
+    size_t inherit_count = 3;
+    for (size_t i = 0; i < extra_count && inherit_count < sizeof inherit / sizeof inherit[0]; i++) {
+        inherit[inherit_count++] = extra[i];
+    }
     SIZE_T attr_size = 0;
     InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
     attrs = malloc(attr_size);
@@ -611,7 +610,8 @@ static int win_launch(char *const argv[], const char *cwd,
         attrs = NULL;
         ready = 0;
     } else if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                                          inherit, sizeof inherit, NULL, NULL)) {
+                                          inherit, sizeof(HANDLE) * inherit_count,
+                                          NULL, NULL)) {
         ready = 0;
     }
 
@@ -667,6 +667,15 @@ static int win_launch(char *const argv[], const char *cwd,
     pi->hThread = NULL;
     *job_out = job;
     return 0;
+}
+
+static int win_launch(char *const argv[], const char *cwd,
+                      const char *const *env_names, const char *const *env_values,
+                      size_t env_count, HANDLE in, HANDLE out, HANDLE err,
+                      DWORD extra_flags, PROCESS_INFORMATION *pi, HANDLE *job_out,
+                      char *why, size_t why_size) {
+    return win_launch_ex(argv, cwd, env_names, env_values, env_count, in, out, err,
+                         NULL, 0, extra_flags, pi, job_out, why, why_size);
 }
 
 /* The parent's stdin, duplicated inheritable for a child -- inherited, as on
@@ -1276,6 +1285,84 @@ void gb_child_release(GbChild *child) {
         retire_job((HANDLE)child->job);
         child->job = NULL;
     }
+}
+
+/* ---- spawn: an actor is the same launch, with a control pipe ------------- */
+
+/* One of the parent's standard handles, duplicated inheritable -- or NUL when
+ * there is none (a GUI parent has no console). NULL only on failure. */
+static HANDLE inheritable_std(DWORD which, int writing) {
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    HANDLE std = GetStdHandle(which);
+    HANDLE dup = NULL;
+    if (std && std != INVALID_HANDLE_VALUE &&
+        DuplicateHandle(GetCurrentProcess(), std, GetCurrentProcess(), &dup,
+                        0, TRUE, DUPLICATE_SAME_ACCESS)) {
+        return dup;
+    }
+    dup = CreateFileW(L"NUL", writing ? GENERIC_WRITE : GENERIC_READ,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+    return dup == INVALID_HANDLE_VALUE ? NULL : dup;
+}
+
+int gb_actor_launch(const char *exe, const char *entry, const char *program,
+                    const char *inbox_path, int control_fd, GbChild *child,
+                    char *why, size_t why_size) {
+    memset(child, 0, sizeof *child);
+    child->out_fd = child->err_fd = child->in_fd = -1;
+
+    HANDLE ctl = (HANDLE)_get_osfhandle(control_fd);
+    HANDLE ctl_child = NULL;
+    if (ctl == INVALID_HANDLE_VALUE ||
+        !DuplicateHandle(GetCurrentProcess(), ctl, GetCurrentProcess(), &ctl_child,
+                         0, TRUE, DUPLICATE_SAME_ACCESS)) {
+        snprintf(why, why_size, "could not pass the control pipe");
+        return 1;
+    }
+    /* An inherited handle has the SAME VALUE in the child, so the number is
+     * all the child needs (gb_fd_from_inherited). */
+    char ctl_s[32];
+    snprintf(ctl_s, sizeof ctl_s, "%llu", (unsigned long long)(uintptr_t)ctl_child);
+    char *argv[] = {
+        (char *)exe, "--actor", (char *)entry, (char *)program,
+        "--actor-inbox", (char *)inbox_path,
+        "--actor-control", ctl_s,
+        NULL
+    };
+    HANDLE in = inheritable_std(STD_INPUT_HANDLE, 0);
+    HANDLE out = inheritable_std(STD_OUTPUT_HANDLE, 1);
+    HANDLE err = inheritable_std(STD_ERROR_HANDLE, 1);
+    int rc = 1;
+    PROCESS_INFORMATION pi;
+    HANDLE job = NULL;
+    if (in && out && err) {
+        /* CREATE_NEW_PROCESS_GROUP, as POSIX puts actors in their own process
+         * group: a Ctrl-C at the console is the parent's, not the actors'. */
+        rc = win_launch_ex(argv, NULL, NULL, NULL, 0, in, out, err, &ctl_child, 1,
+                           CREATE_NEW_PROCESS_GROUP, &pi, &job, why, why_size);
+    } else {
+        snprintf(why, why_size, "could not pass the standard handles");
+    }
+    if (in) CloseHandle(in);
+    if (out) CloseHandle(out);
+    if (err) CloseHandle(err);
+    CloseHandle(ctl_child);
+    if (rc != 0) {
+        return 1;
+    }
+    child->pid = (long)pi.dwProcessId;
+    child->process = pi.hProcess;
+    child->job = job;
+    return 0;
+}
+
+int gb_fd_from_inherited(const char *spec) {
+    char *end = NULL;
+    unsigned long long v = strtoull(spec, &end, 10);
+    if (!end || *end || v == 0) {
+        return -1;
+    }
+    return _open_osfhandle((intptr_t)v, _O_WRONLY | _O_BINARY);
 }
 
 /* BCryptGenRandom takes a ULONG count, so a large request is filled in

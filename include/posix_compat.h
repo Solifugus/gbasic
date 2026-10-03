@@ -18,9 +18,10 @@
  * fails with ENOSYS and waitpid() answers "no such child" -- both TRUE on a
  * Windows build that cannot start a child this way -- so the existing error
  * paths report them. None of them ever reports a success it did not achieve.
- * Their callers are also refused EXPLICITLY at the entry points (process.run,
- * process.start, spawn, process.which, webserver.listen), so a user meets a
- * sentence naming Windows, not an errno; these stand-ins exist so the code
+ * process.*, spawn and the rest now have Windows bodies of their own and do not
+ * reach these; what is still refused EXPLICITLY at its entry point
+ * (webserver.listen) meets a sentence naming Windows, not an errno. These
+ * stand-ins exist so the code
  * behind those refusals compiles, and they are what any missed path hits.
  * Anything an ordinary program reaches -- lock, real_path, close-on-exec,
  * fsync, signal handlers -- has a REAL Windows body in include/platform.h.

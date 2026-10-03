@@ -4105,7 +4105,7 @@ static void value_free(Value value) {
         ActorHandle *handle = value.as.actor;
         if (handle && --handle->ref_count == 0) {
             if (handle->write_fd >= 0) {
-                close(handle->write_fd);
+                channel_handle_close(handle->write_fd);
             }
             free(handle);
         }
@@ -8536,8 +8536,25 @@ static char *dirname_copy(const char *path) {
     return dir;
 }
 
+/* Does `path` name the same file wherever it is read from? On Windows a drive
+ * path (`C:/x`, `C:\x`) is, and so is a rooted one; without this,
+ * `load lib from "C:/Users/me/lib.bas"` was joined onto the loading file's
+ * directory and became `C:/somewhere/C:/Users/me/lib.bas` (measured,
+ * tests/run_alias.sh's actor tier). */
+static int path_is_absolute(const char *path) {
+#ifdef _WIN32
+    if (isalpha((unsigned char)path[0]) && path[1] == ':' &&
+        (path[2] == '/' || path[2] == '\\')) {
+        return 1;
+    }
+    return path[0] == '/' || path[0] == '\\';
+#else
+    return path[0] == '/';
+#endif
+}
+
 static char *resolve_use_path(const char *base_file, const char *use_path) {
-    if (use_path[0] == '/') {
+    if (path_is_absolute(use_path)) {
         return copy_string(use_path);
     }
     char *dir = dirname_copy(base_file ? base_file : ".");
@@ -13823,11 +13840,13 @@ static int ensure_root_mailbox(void) {
     }
     if (mailbox_open(&root_mailbox) != 0) {
 #ifdef _WIN32
-        /* self(), send and receive reach here before spawn does; say WHY in
-         * the same words spawn's refusal uses, not a bare "could not". */
-        runtime_error_raise("actors are not available on Windows: they need a "
-                            "message-framed channel Windows does not provide yet",
-                            1004, "actor");
+        /* Windows names its inbox in the temporary directory, so this can
+         * fail for a reason the author can act on (a path too long for
+         * AF_UNIX's 108 bytes); say which. */
+        char message[256];
+        snprintf(message, sizeof message, "actor: could not create mailbox (%s)",
+                 strerror(errno));
+        runtime_error_raise(message, 1004, "actor");
 #else
         runtime_error_raise("actor: could not create mailbox", 1004, "actor");
 #endif
@@ -13900,6 +13919,15 @@ static Value actor_handle_adopt_fd(int fd) {
  * is the read end of this actor's inbound mailbox; self_fd is a write end to that
  * same mailbox (a dup the parent passed so self() works in the child). Replaces
  * the lazy fresh-socketpair path for children. */
+#ifdef _WIN32
+static char *actor_inbox_path = NULL;
+
+void eval_set_actor_inbox_path(const char *path) {
+    free(actor_inbox_path);
+    actor_inbox_path = copy_string(path);
+}
+#endif
+
 static void actor_child_init(int inbox_fd, int self_fd) {
     root_mailbox.read_fd = inbox_fd;
     root_mailbox.write_fd = self_fd;
@@ -13927,11 +13955,102 @@ typedef struct {
     uint64_t handle_id;   /* actor handle id for this child (0 until bound) */
     int reaped;           /* waitpid has collected this child */
     int status;           /* raw wait status, valid once reaped */
+#ifdef _WIN32
+    GbChild proc;         /* process + job handles; there is no waitpid */
+    char *inbox_path;     /* its named inbox, deleted if it could not */
+#endif
 } ActorChild;
 
+#ifndef _WIN32
 static pid_t actor_group_pgid = 0;
+#endif
 static ActorChild *actor_children = NULL;
 static size_t actor_child_count = 0;
+
+#ifdef _WIN32
+/* WINDOWS: THE SAME FOUR OPERATIONS OVER PROCESS HANDLES. There is no process
+ * group to signal and no waitpid: each child is a GbChild from
+ * gb_actor_launch, in its own Job Object with KILL_ON_JOB_CLOSE -- which is
+ * also what ends it if this process is killed outright (POSIX: PDEATHSIG).
+ *
+ * THE DEATH REASON IS COARSER, and that is a fact about Windows: a process
+ * has an exit code and nothing records whether it was killed, so `killed`
+ * cannot be told from `error` (both are a nonzero code). `normal` is exact. */
+static size_t actor_track_child_win(const GbChild *proc, const char *inbox_path) {
+    ActorChild *next = realloc(actor_children,
+                               sizeof(ActorChild) * (actor_child_count + 1));
+    if (!next) {
+        abort();
+    }
+    actor_children = next;
+    memset(&actor_children[actor_child_count], 0, sizeof(ActorChild));
+    actor_children[actor_child_count].pid = (pid_t)proc->pid;
+    actor_children[actor_child_count].proc = *proc;
+    actor_children[actor_child_count].inbox_path = copy_string(inbox_path);
+    return actor_child_count++;
+}
+
+static void actor_reap_children(void) {
+    for (size_t i = 0; i < actor_child_count; i++) {
+        int code = 0;
+        if (!actor_children[i].reaped && gb_child_exited(&actor_children[i].proc, &code)) {
+            actor_children[i].reaped = 1;
+            actor_children[i].status = code;
+        }
+    }
+}
+
+/* Reached once the child's inbox has hung up, so it is exiting; the bounded
+ * wait closes the window in which the socket closed a moment before the
+ * process finished, without risking a stall if something else closed it. */
+static int actor_child_wait_status(uint64_t handle_id, int *status) {
+    if (handle_id == 0) {
+        return 0;
+    }
+    for (size_t i = 0; i < actor_child_count; i++) {
+        if (actor_children[i].handle_id != handle_id) {
+            continue;
+        }
+        for (int tries = 0; !actor_children[i].reaped && tries < 500; tries++) {
+            int code = 0;
+            if (gb_child_exited(&actor_children[i].proc, &code)) {
+                actor_children[i].reaped = 1;
+                actor_children[i].status = code;
+            } else {
+                Sleep(10);
+            }
+        }
+        if (actor_children[i].reaped) {
+            *status = actor_children[i].status;
+            return 1;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+/* POSIX sends the group SIGTERM; the Windows form is ending each child's job
+ * (its whole tree), then waiting, then deleting the inbox file a killed child
+ * could not delete itself. */
+static void actor_cleanup_children(void) {
+    for (size_t i = 0; i < actor_child_count; i++) {
+        if (!actor_children[i].reaped) {
+            gb_child_stop(&actor_children[i].proc, 1);
+            if (actor_children[i].proc.process) {
+                WaitForSingleObject((HANDLE)actor_children[i].proc.process, 5000);
+            }
+        }
+        gb_child_release(&actor_children[i].proc);
+        if (actor_children[i].inbox_path) {
+            remove(actor_children[i].inbox_path);   /* gone already if it exited */
+            free(actor_children[i].inbox_path);
+        }
+    }
+    free(actor_children);
+    actor_children = NULL;
+    actor_child_count = 0;
+}
+#else
 
 /* Track a freshly forked child; returns its record index so the caller can bind
  * the handle id once the parent's handle to the child has been created. */
@@ -14023,6 +14142,7 @@ static void actor_cleanup_children(void) {
     actor_child_count = 0;
     actor_group_pgid = 0;
 }
+#endif /* _WIN32 */
 
 static Value builtin_actor_self(void) {
     if (!ensure_root_mailbox()) {
@@ -14104,7 +14224,7 @@ static int actor_recv_one(Value *out) {
     /* Any descriptor the frame did not claim would otherwise leak. */
     for (size_t i = 0; i < nfds; i++) {
         if (!used || !used[i]) {
-            close(fds[i]);
+            channel_handle_close(fds[i]);
         }
     }
     free(used);
@@ -14289,9 +14409,7 @@ static Value make_down_message(Value handle, const char *reason) {
 
 /* Has the target behind this mailbox write fd gone (its read end closed)? */
 static int monitor_fd_hung_up(int write_fd) {
-    struct pollfd p = { write_fd, 0, 0 };
-    int r = poll(&p, 1, 0);
-    return r > 0 && (p.revents & (POLLHUP | POLLERR | POLLNVAL));
+    return channel_handle_hung_up(write_fd);
 }
 
 /* Reap children, then synthesize a "down" for every monitor whose target has
@@ -14320,23 +14438,34 @@ static void actor_collect_downs(void) {
  * fds} so a death wakes a receiver exactly as a message does (§7.1). */
 static int actor_wait(int timeout_ms) {
     for (;;) {
+        /* A frame already read off the wire (Windows reassembles them) is
+         * ready now; polling for it would wait on something that has come. */
+        if (mailbox_pending(&root_mailbox)) {
+            return 1;
+        }
         size_t nmon = 0;
         for (Monitor *m = monitor_head; m; m = m->next) {
             nmon++;
         }
-        size_t n = 1 + nmon;
-        struct pollfd *p = malloc(sizeof(struct pollfd) * n);
+        size_t nbox = mailbox_poll_count(&root_mailbox);
+        size_t n = nbox + nmon;
+        struct pollfd *p = malloc(sizeof(struct pollfd) * (n ? n : 1));
         if (!p) {
             abort();
         }
-        p[0].fd = root_mailbox.read_fd;
-        p[0].events = POLLIN;
-        p[0].revents = 0;
-        size_t i = 1;
-        for (Monitor *m = monitor_head; m; m = m->next, i++) {
-            p[i].fd = m->target.as.actor->write_fd;
+        mailbox_poll_fill(&root_mailbox, p);
+        size_t i = nbox;
+        for (Monitor *m = monitor_head; m; m = m->next) {
+            int fd = channel_handle_pollfd(m->target.as.actor->write_fd);
+            if (fd < 0) {
+                /* Already gone, with nothing to poll: say so now. */
+                free(p);
+                return 2;
+            }
+            p[i].fd = fd;
             p[i].events = 0;   /* POLLHUP/POLLERR are reported regardless */
             p[i].revents = 0;
+            i++;
         }
         int r = poll(p, n, timeout_ms);
         if (r < 0) {
@@ -14351,9 +14480,9 @@ static int actor_wait(int timeout_ms) {
             free(p);
             return 0;
         }
-        int inbox = p[0].revents != 0;
+        int inbox = mailbox_poll_ready(&root_mailbox, p, nbox);
         int mon = 0;
-        for (size_t k = 1; k < n; k++) {
+        for (size_t k = nbox; k < n; k++) {
             if (p[k].revents != 0) {
                 mon = 1;
                 break;
@@ -14366,7 +14495,10 @@ static int actor_wait(int timeout_ms) {
         if (mon) {
             return 2;
         }
-        /* spurious wakeup: poll again */
+        /* Woken with no whole frame yet (Windows: part of one arrived). The
+         * caller loops and recomputes its deadline, which polling again here
+         * with the ORIGINAL timeout would not. */
+        return 2;
     }
 }
 
@@ -14539,11 +14671,13 @@ static char *actor_self_exe_path(void) {
     return copy_string(buf);
 }
 
+#ifndef _WIN32
 /* Clear FD_CLOEXEC on fd so it survives exec into the child. Returns 0 on
  * success, -1 on failure. */
 static int fd_clear_cloexec(int fd) {
     return gb_set_cloexec(fd, 0);
 }
+#endif
 
 /* `spawn worker(args...)` — start a fresh interpreter as a new actor running
  * `worker`, returning a handle to its inbound mailbox (docs/multiprocessing_design.md
@@ -14551,17 +14685,118 @@ static int fd_clear_cloexec(int fd) {
  * any handle fds they carry), enqueues them as the child's reserved first frame,
  * fork+execs `gbasic --actor`, and blocks on a control pipe until the child
  * reports ready. */
-static Value eval_spawn(AstExpr *expr) {
 #ifdef _WIN32
-    /* Deliberately out of Tier 1 (windows_port_status.md §6): an actor channel
-     * needs message boundaries that a Windows socket cannot provide, and a
-     * channel that loses them is worse than none. */
-    (void)expr;
-    runtime_error_raise("spawn is not available on Windows: actors need a "
-                        "message-framed channel Windows does not provide yet",
-                        1003, "actor");
-    return value_null();
+/* spawn's WINDOWS HALF, from the evaluated arguments on. The same contract as
+ * the fork+exec path below -- the child re-parses the source, runs `entry`,
+ * and its FIRST message is the startup frame -- with three differences, each
+ * a fact about the transport (src/actor.c):
+ *   - the parent NAMES the child's inbox and the child listens there, so the
+ *     startup frame is sent after the child reports ready rather than queued
+ *     before it exists; nobody else knows the name yet, so it is still first;
+ *   - a handle in the arguments travels as its inbox path, attached to that
+ *     frame exactly as a runtime send attaches one (no descriptor inherited);
+ *   - the child is a process handle in a Job Object, not a pid in a group. */
+static Value spawn_launch_win(const char *entry, char *exe, Value args_array) {
+    char path[256];
+    if (mailbox_new_path(path, sizeof path) != 0) {
+        char message[256];
+        snprintf(message, sizeof message,
+                 "spawn: could not name the child actor's mailbox (%s)", strerror(errno));
+        value_free(args_array);
+        free(exe);
+        runtime_error_raise(message, 1004, "actor");
+        return value_null();
+    }
+
+    /* The handles' connections are BORROWED by the xfer, so the arguments stay
+     * alive until the frame is sent. */
+    ActorMsgSend xfer = {{0}, 0, 0};
+    active_msg_send = &xfer;
+    char *frame = NULL;
+    size_t frame_len = 0;
+    int serialized = serialize_to_buffer(args_array, &frame, &frame_len);
+    active_msg_send = NULL;
+    if (!serialized || xfer.overflow) {
+        free(frame);            /* serialize_value already raised */
+        value_free(args_array);
+        free(exe);
+        return value_null();
+    }
+    if (frame_len > channel_max_message(-1)) {
+        free(frame);
+        value_free(args_array);
+        free(exe);
+        runtime_error_raise("spawn: arguments are too large for one frame",
+                            1004, "actor");
+        return value_null();
+    }
+
+    /* Control pipe: the child writes one status byte; the parent blocks on it.
+     * Not inheritable here -- gb_actor_launch passes the child its own copy. */
+    int ctrl[2];
+    if (_pipe(ctrl, 64, _O_BINARY | _O_NOINHERIT) != 0) {
+        free(frame);
+        value_free(args_array);
+        free(exe);
+        runtime_error_raise("spawn: could not create control pipe", 1004, "actor");
+        return value_null();
+    }
+    GbChild proc;
+    char why[256];
+    if (gb_actor_launch(exe, entry, program_reexec_path(), path, ctrl[1],
+                        &proc, why, sizeof why) != 0) {
+        close(ctrl[0]);
+        close(ctrl[1]);
+        free(frame);
+        value_free(args_array);
+        free(exe);
+        char message[384];
+        snprintf(message, sizeof message, "spawn: could not start the child actor: %s", why);
+        runtime_error_raise(message, 1004, "actor");
+        return value_null();
+    }
+    free(exe);
+    close(ctrl[1]);     /* the child holds the only write end now: EOF = it died */
+    size_t child_index = actor_track_child_win(&proc, path);
+
+    char status = 0;
+    int n;
+    do {
+        n = read(ctrl[0], &status, 1);
+    } while (n < 0 && errno == EINTR);
+    close(ctrl[0]);
+
+    int handle_id = -1;
+    int rc = ACTOR_CHANNEL_ERROR;
+    if (n == 1 && status == 'R') {
+        handle_id = channel_handle_adopt_path(path);
+        if (handle_id >= 0) {
+            rc = channel_send_fds(handle_id, frame, frame_len,
+                                  xfer.count ? xfer.fds : NULL, xfer.count);
+        }
+    }
+    free(frame);
+    value_free(args_array);
+    if (n != 1 || status != 'R') {
+        runtime_error_raise("spawn: child actor failed to start", 1004, "actor");
+        return value_null();
+    }
+    if (rc != ACTOR_CHANNEL_OK) {
+        if (handle_id >= 0) {
+            channel_handle_close(handle_id);
+        }
+        runtime_error_raise("spawn: could not deliver startup arguments",
+                            1004, "actor");
+        return value_null();
+    }
+    Value handle = actor_handle_adopt_fd(handle_id);
+    /* Bound so a monitor on this child reports its exit code (§7.1). */
+    actor_children[child_index].handle_id = handle.as.actor->id;
+    return handle;
+}
 #endif
+
+static Value eval_spawn(AstExpr *expr) {
     char *entry = expr->as.call.name;
     size_t argc = expr->as.call.args.count;
 
@@ -14654,6 +14889,9 @@ static Value eval_spawn(AstExpr *expr) {
     }
     Value args_array = value_array(items, argc);
 
+#ifdef _WIN32
+    return spawn_launch_win(entry, exe, args_array);
+#else
     /* The child's inbound mailbox: the parent keeps the write end as the handle
      * it sends to; the child inherits the read end as its inbox. */
     Mailbox child_box;
@@ -14853,6 +15091,7 @@ static Value eval_spawn(AstExpr *expr) {
     close(child_box.write_fd);   /* the child is reaped by actor_cleanup_children */
     runtime_error_raise("spawn: child actor failed to start", 1004, "actor");
     return value_null();
+#endif /* _WIN32 */
 }
 
 /* Entry point for a spawned actor process (`gbasic --actor entry program ...`).
@@ -14906,7 +15145,23 @@ int eval_run_actor(AstStmtList program, const char *entry,
         return 1;
     }
 
+#ifdef _WIN32
+    /* The inbox is a NAME the parent chose: listen there before saying ready,
+     * since the parent connects the moment it reads 'R'. */
+    (void)inbox_fd;
+    (void)self_fd;
+    if (!actor_inbox_path || mailbox_open_at(&root_mailbox, actor_inbox_path) != 0) {
+        char b = 'E';
+        ssize_t we = write(control_fd, &b, 1);
+        (void)we;
+        close(control_fd);
+        fprintf(stderr, "actor: %s could not open its mailbox\n", entry);
+        return 1;
+    }
+    actor_child_init(root_mailbox.read_fd, root_mailbox.write_fd);
+#else
     actor_child_init(inbox_fd, self_fd);
+#endif
 
     /* Ready: the parent's spawn() unblocks and returns the handle. */
     char ready = 'R';
@@ -14915,6 +15170,15 @@ int eval_run_actor(AstStmtList program, const char *entry,
     close(control_fd);
 
     /* The reserved first frame carries the serialized startup arguments. */
+#ifdef _WIN32
+    /* Handles in it arrive as attached paths, as on any received message. */
+    Value arg_value = value_null();
+    int ok = actor_recv_one(&arg_value) == ACTOR_RECV_OK;
+    if (!ok) {
+        fprintf(stderr, "actor: %s could not read startup arguments\n", entry);
+        return 1;
+    }
+#else
     void *bytes = NULL;
     size_t len = 0;
     if (channel_recv(inbox_fd, &bytes, &len) != ACTOR_RECV_OK) {
@@ -14926,6 +15190,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
     Value arg_value = deserialize_from_buffer(bytes, len, &ok);
     active_spawn_recv = 0;
     free(bytes);
+#endif
     if (!ok || arg_value.kind != VALUE_ARRAY) {
         value_free(arg_value);
         fprintf(stderr, "actor: %s received corrupt startup arguments\n", entry);
@@ -14975,6 +15240,11 @@ int eval_run_actor(AstStmtList program, const char *entry,
     function_clear();
     modifier_clear();
     env_clear(&global_env);
+#ifdef _WIN32
+    /* A Windows inbox is a FILE that outlives its process (src/actor.c);
+     * closing it deletes the name. POSIX has nothing to remove. */
+    actor_mailbox_shutdown();
+#endif
     return exit_status;
 }
 
@@ -19455,7 +19725,8 @@ static int webserver_run_event_loop(void) {
             !timer_wants_loop) {
             break;
         }
-        struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + 2,
+        size_t inbox_fd_count = inbox_wants_loop ? mailbox_poll_count(&root_mailbox) : 0;
+        struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + inbox_fd_count + 2,
                                         sizeof(struct pollfd));
         if (!pollfds) {
             abort();
@@ -19487,13 +19758,17 @@ static int webserver_run_event_loop(void) {
         size_t inbox_slot = descriptor_count + http_fd_count;
         size_t polled = inbox_slot;
         if (inbox_wants_loop) {
-            pollfds[inbox_slot].fd = root_mailbox.read_fd;
-            pollfds[inbox_slot].events = POLLIN;
-            polled++;
+            mailbox_poll_fill(&root_mailbox, &pollfds[inbox_slot]);
+            polled += inbox_fd_count;
         }
         long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
         if (timer_wants_loop) {
             tick_ms = timer_poll_timeout_ms(tick_ms);
+        }
+        /* A frame already read off the wire will not wake the poll. */
+        int inbox_pending = inbox_wants_loop && mailbox_pending(&root_mailbox);
+        if (inbox_pending) {
+            tick_ms = 0;
         }
         int ready = poll(pollfds, polled, (int)tick_ms);
         if (ready < 0 && errno != EINTR) {
@@ -19505,7 +19780,9 @@ static int webserver_run_event_loop(void) {
             free(pollfds);
             return 1;
         }
-        if (inbox_wants_loop && (pollfds[inbox_slot].revents & POLLIN)) {
+        if (inbox_wants_loop &&
+            (inbox_pending ||
+             mailbox_poll_ready(&root_mailbox, &pollfds[inbox_slot], inbox_fd_count))) {
             if (!inbox_loop_service()) {
                 free(pollfds);
                 return 1;

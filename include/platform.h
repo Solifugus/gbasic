@@ -374,6 +374,20 @@ void gb_child_stop(GbChild *child, int force);
  * when the interpreter exits (the orphan bargain POSIX strikes in eval.c).
  * Does not touch the fds. Idempotent. */
 void gb_child_release(GbChild *child);
+
+/* `spawn` on Windows: `exe --actor ENTRY PROGRAM --actor-inbox PATH
+ * --actor-control HANDLE`, launched as process.start launches (a job with
+ * KILL_ON_JOB_CLOSE, its own process group, an explicit inherit list) with the
+ * parent's standard handles and ONE more: the write end of `control_fd`, a
+ * pipe the child reports ready ('R') or failed ('E') on. 0 started, 1 not
+ * (why says why). The caller still owns control_fd. */
+int gb_actor_launch(const char *exe, const char *entry, const char *program,
+                    const char *inbox_path, int control_fd, GbChild *child,
+                    char *why, size_t why_size);
+
+/* The child's side: the inherited handle `spec` names, as a writable CRT fd
+ * (-1 if it is not a handle number). */
+int gb_fd_from_inherited(const char *spec);
 #endif
 
 /* Fill buf with n bytes from the operating system's CRYPTOGRAPHIC random

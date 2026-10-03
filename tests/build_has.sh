@@ -32,8 +32,11 @@ build_has() {
         password) probe='x = password_hash("build_has")' ;;
         xlsx)     probe='x = xlsx.open("build_has_no_such.xlsx")' ;;
         # PLATFORM capabilities, not modules: always compiled in, refused at run
-        # time where the platform cannot provide them (Windows, today). `self()`
-        # opens the root mailbox, which is where that refusal lives. The listen
+        # time where the platform cannot provide them. `self()` opens the root
+        # mailbox, which is where an actor refusal would live -- Windows has had
+        # actors since 2026-10-03 (docs/windows_port_status.md §22), and the
+        # probe stays so a platform that cannot open one is still skipped by
+        # name rather than failed. Listeners are refused on Windows today. The listen
         # probe asks for a port that cannot exist, so a platform WITH listeners
         # refuses it for the ordinary reason and NOTHING IS EVER BOUND -- a probe
         # that really listened would leave the event loop serving after main.

@@ -865,6 +865,18 @@ static int run_actor_mode(int argc, char **argv) {
     int control_fd = -1;
 
     for (int i = 4; i + 1 < argc; i += 2) {
+#ifdef _WIN32
+        /* Windows: the inbox is a PATH the child listens at, and the control
+         * pipe an inherited HANDLE (gb_actor_launch); there is no self fd,
+         * since self() is a handle to that same path. */
+        if (strcmp(argv[i], "--actor-inbox") == 0) {
+            eval_set_actor_inbox_path(argv[i + 1]);
+            inbox_fd = 0;
+            self_fd = 0;
+        } else if (strcmp(argv[i], "--actor-control") == 0) {
+            control_fd = gb_fd_from_inherited(argv[i + 1]);
+        }
+#else
         if (strcmp(argv[i], "--actor-inbox") == 0) {
             inbox_fd = atoi(argv[i + 1]);
         } else if (strcmp(argv[i], "--actor-self") == 0) {
@@ -872,6 +884,7 @@ static int run_actor_mode(int argc, char **argv) {
         } else if (strcmp(argv[i], "--actor-control") == 0) {
             control_fd = atoi(argv[i + 1]);
         }
+#endif
     }
     if (inbox_fd < 0 || self_fd < 0 || control_fd < 0) {
         fprintf(stderr, "actor: missing mailbox descriptors\n");

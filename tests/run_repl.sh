@@ -968,13 +968,17 @@ quit
 # AND THE REFUSAL IS STILL THERE as the fallback, for a machine with nowhere to
 # write a cache. Without this the error would have become unreachable and would
 # rot; with it, both the ordinary path and the fallback are asserted.
+# A directory UNDER A REGULAR FILE cannot be created anywhere. (/proc/... could
+# not be on Linux, but MSYS2 rewrites that to C:/msys64/proc/..., which Windows
+# happily creates -- so there the cache existed and the spawn simply worked.)
+: > "$work/not_a_dir"
 nofile="$(printf 'function worker()
 return 1
 end function
 h = spawn worker()
 print "session survives"
 quit
-' | GBASIC_SESSION_DIR=/proc/nonexistent/nope "$GB" --repl 2>&1)"
+' | GBASIC_SESSION_DIR="$work/not_a_dir/nope" "$GB" --repl 2>&1)"
 contains "and without a cache it refuses, naming the cause" \
     "nothing for the child actor to run" "$nofile"
 lacks "rather than leaking the child's own complaint" "No such file or directory" "$nofile"

@@ -87,6 +87,11 @@ fi
 printf 'TIER receive() inside a watcher warns, and still answers\n'
 if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
     printf '  SKIP warn tier (needs curl and python3)\n'
+elif ! build_has listen; then
+    # The fixture is a SERVER: its handler is the watcher the receive runs in.
+    # Where listeners are refused (Windows, today) the tier would spend five
+    # minutes polling a port nothing can bind and then blame the machine.
+    printf '  SKIP warn tier (needs a listener, not available on this platform)\n'
 else
     wport="$(python3 - <<'PORT'
 import socket

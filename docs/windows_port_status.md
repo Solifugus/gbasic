@@ -92,7 +92,9 @@ ERE, the console line editor, the 15 `%z` sites, pipe polling in two functions.
 rather than faking a channel, because `AF_UNIX`/`SOCK_SEQPACKET` has no Windows
 equivalent that preserves message boundaries and fd passing, and a silently
 different channel is worse than an absent one. `spawn` should raise a clear
-refusal on Windows until Tier 2.
+refusal on Windows until Tier 2. **(Done 2026-10-03, §22: a length-prefixed
+AF_UNIX stream, handles as paths. `gb_channel_socketpair` still refuses; the
+Windows transport does not use a pair.)**
 
 ## 7. Two things to decide before writing much
 
@@ -814,3 +816,98 @@ gbasic.exe is now 11.9 MB unstripped and still imports only Windows DLLs.
 **NOT VERIFIED ON LINUX:** the libcrypto change itself. The WSL tree has no
 OpenSSL development files, so run_crypto and run_otp skip there, as before.
 The change touches only the Makefile's Windows block.
+
+## 22. Actors on Windows (2026-10-03)
+
+`spawn`, `send`, `receive`, `self()`, monitors, handle passing and
+`watch(inbox.messages)` now work on Windows. §6 refused them because the
+transport's three properties come from one Linux socket type. Each is rebuilt
+in src/actor.c rather than approximated:
+
+| Property | Linux | Windows |
+|---|---|---|
+| one send is one whole message | SOCK_SEQPACKET | `[u32 length][u32 handle count]` prefix, reassembled per connection |
+| senders never interleave | the kernel queues datagrams | the inbox is an AF_UNIX LISTENER and each sending PROCESS has its own connection, so no connection has two writers |
+| a handle can travel in a message | the descriptor, via SCM_RIGHTS | the inbox's PATH, attached to the frame; the receiver connects itself |
+
+There is no DuplicateHandle, because a path needs nothing duplicated. All the
+handles one process holds to one inbox share one connection, which keeps what
+one process sends to one actor in sending order, as on Linux. An inbox lives in
+the user's own temporary directory (`gbasic-actor-<pid>-<n>-<random>.sock`),
+which other users cannot open, and is deleted when it closes.
+
+**Measured before writing it** (a C probe against Windows 11 26200):
+
+- a client may connect before the listener accepts;
+- a non-blocking send was accepted WHOLE or refused with nothing written, up to
+  8 MiB. A partial send is still handled by finishing the frame, because
+  nothing documents that property;
+- an actor that EXITS or IS KILLED shows POLLHUP on every connection to it,
+  which is the monitor signal;
+- a send to a closed peer REPORTS SUCCESS once, so a send checks for the
+  hang-up first;
+- the socket FILE outlives its process, so the parent deletes a killed child's.
+
+**What differs, and is reported rather than hidden:**
+
+- The largest message is a fixed 4 MiB (Linux: about 104 KiB, derived from
+  SO_SNDBUF). Both exceed the 64 KiB floor the reference promises.
+- A monitor's death reason cannot tell `killed` from `error`. A Windows process
+  has an exit code and nothing records whether it was terminated, so both are
+  `error`. `normal` is exact.
+- A child is a process handle in a Job Object with KILL_ON_JOB_CLOSE, in its own
+  process group (CREATE_NEW_PROCESS_GROUP, as Linux uses setpgid). Teardown
+  ends each child's job, the form of Linux's SIGTERM to the actor group.
+
+**tests/windows/actor_transport.bas** (12 checks on Windows, 11 on Linux) attacks what
+was rebuilt rather than the features the examples already cover:
+
+- four senders at once, with self-describing payloads of 2–24 KB, so a split,
+  spliced or reordered frame cannot pass;
+- a handle passed at RUNTIME to an actor that never saw its target;
+- 1 MiB carried whole (Windows) or refused by size (Linux);
+- 16 MiB refused on both;
+- a send to an actor that has gone must raise.
+
+Three perturbations of src/actor.c were run, and two went red. "Frames
+delivered newest first" passed, and that is the transport rather than a blind
+test: the inbox reads a new frame only when its queue is empty, so it never
+holds two to reorder. The SENDING-ORDER check has NOT been proven red by a
+clean perturbation; the one attempted also broke spawn's startup. Order holds
+by construction, because each sender writes one stream.
+
+- No hang-up check before a send: red ("a send to it raises").
+- A received handle bound to the wrong inbox: red (6 checks).
+
+**Found by the actor tiers, which had always skipped on Windows:**
+
+- **A real bug:** `load lib from "C:/…"` was treated as RELATIVE and joined
+  onto the loading file's directory (`C:/x/C:/Users/…`). Absolute means a
+  drive path or a rooted path on Windows now (`path_is_absolute`, src/eval.c).
+- **Three harness gaps:**
+  - run_alias wrote MSYS2's `/c/…` `$PWD` into a program (now `cygpath -m`).
+  - run_repl's "no cache can be written" used `/proc/…`, which MSYS2 rewrites
+    to a directory Windows will create (now a directory under a regular file).
+  - run_inbox's warn tier needs a LISTENER (now skipped by name without one).
+
+**Results.**
+
+- Windows, tests/run_all.sh: **130 passed, 0 failed, 27 skipped by name, 2
+  manual.** §21 was 129/28. Every actor tier that had skipped now runs. What
+  is left skips for the listener (next), for modules not built here
+  (postgres, ldap, gi), or for no valgrind.
+- run_examples runs all 11 actor examples (245 pass).
+- Linux (WSL), 14 suites on HEAD and on HEAD+patch: all exit 0, and compiler
+  warnings are identical (20 and 20). run_inbox's valgrind tier is clean on
+  the patched tree.
+
+On Linux, run_repl failed on UNPATCHED HEAD in one run, because files it had
+just made in WSL's `/tmp` disappeared mid-run. With a private TMPDIR both trees
+pass 147/147. That is recorded as the machine, not the code.
+
+**Not verified:**
+
+- A Windows actor that is KILLED by something outside gBASIC. Its exit code is
+  `error`, by design, and that path was not exercised.
+- A temporary directory long enough to overflow AF_UNIX's 108 bytes. The
+  refusal names ENAMETOOLONG, but no such directory was tried.
