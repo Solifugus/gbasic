@@ -4927,6 +4927,35 @@ type(nothing)    ' "nothing"
 type(unknown)    ' "unknown"
 ```
 
+**`type` answers for every value kind, and the list is longer than the seven
+above.** Documented in full because it was not, and the gap is now held by a
+tripwire in `tests/run_docs_gate.sh` that reads the answers out of
+`builtin_type_name` in `src/eval.c` and requires every one of them to appear
+here — in both directions, so an answer that is removed from the interpreter
+cannot keep a paragraph on this page either.
+
+<!--TYPEKINDS-->
+| | `type` answers |
+|---|---|
+| core | `number`, `string`, `boolean`, `array`, `record`, `nothing`, `unknown` |
+| typed values | `datetime`, `duration`, `money`, `file`, `directory` |
+| language | `function`, `regex`, `watcher`, `actor`, `process` |
+| handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `xml_reader`, `http`, `workbook` |
+| GObject bridge | `gobject`, `gboxed`, `gvariant` |
+<!--/TYPEKINDS-->
+
+**Two answers are not the word you wrote**, and both read as a bug in your own
+program rather than as a fact about the language:
+
+```basic
+type({date}"2026-10-02")   ' "datetime", NOT "date"
+type({dir}"/tmp")          ' "directory", NOT "dir"
+```
+
+A `{date}` modifier builds a **datetime** whose time-of-day is midnight — there
+is no separate date kind — and `{dir}` is the short spelling of a value `type`
+calls `directory`. So `type(d) = "date"` is `false` with nothing wrong anywhere.
+
 **Type predicates** - Return `true` or `false`:
 - `is_string(value)` - checks if value is a string
 - `is_number(value)` - checks if value is a number  
@@ -4935,6 +4964,26 @@ type(unknown)    ' "unknown"
 - `is_record(value)` - checks if value is a record
 - `is_nothing(value)` - checks if value is `nothing`
 - `is_unknown(value)` - checks if value is `unknown`
+
+**THERE ARE SEVEN PREDICATES AND MANY MORE KINDS, SO `type` IS THE GENERAL TEST.**
+`is_money`, `is_datetime`, `is_file` and the rest **do not exist** — the seven
+that do are exactly the kinds with a literal form, which is the same reasoning
+that ruled against `is_function`. Compare the string instead:
+
+```basic
+amount = {USD}"19.99"
+if type(amount) = "money" then            ' the portable test
+    print("that is money")
+end if
+' `if is_money(amount) then` -- there is no such function
+```
+
+Calling one of the absent ones reports `undefined function: is_money`, and
+`has_builtin("is_money")` answers `false` without raising, which is the cheaper
+way to ask. Reported by the gbasic-books session 2026-10-02, whose filing noted
+that the diagnostic used to say `invalid function call: is_money` — a sentence
+about the **call**, which sends a reader to check their arguments when the
+problem is that the name does not exist.
 
 ### Strict Conversion
 
@@ -5518,6 +5567,23 @@ Rounding and sign:
   `ceil(-2.1)` is `-2`. Note `floor` rounds toward negative infinity while
   `int`-style truncation would round toward zero; they differ on negatives.
 - `sign(x)` — `-1`, `0` or `1`.
+
+**WHAT RAISES AND WHAT REACHES `inf` IS A LINE WORTH KNOWING, because the two
+answers look nothing alike and the language draws it in one place.** A result
+that has **no value at all** raises: `1 / 0` is a runtime error, `sqrt(-1)` is a
+runtime error. A result that **overflows a double** does not — `number("1e308") *
+10` is `inf`, with no diagnostic, and it travels through everything downstream
+including `encode` (see *Encoding*, where the dialect writes `inf` and
+`json_encode` refuses it).
+
+That is deliberate rather than an oversight, and the distinction is between
+*undefined* and *too large*: zero division and a negative square root have no
+answer in any arithmetic, while an overflow has an IEEE answer that keeps
+propagating correctly — `inf > x` is true for every finite `x`, and a product
+that overflows and is then divided back can land on a real number again.
+Raising there would break ordinary numerics for the sake of a diagnostic.
+Recorded 2026-10-02, reported by the gbasic-books session as an inconsistency;
+it is a line, and nothing had drawn it.
 
 Powers, roots and logarithms. Each raises rather than returning `nan` or
 `inf`, so a domain error stops at the call that made it:
@@ -7895,6 +7961,29 @@ answered something, and printing the word would be noise:
 (`write(f, "hello")` was the example here until 2026-09-23 and it was wrong:
 `write` answers `true`. It is in the section on the resident program now,
 where the point is that it acts as well.)
+
+**A NAME or LITERAL holding `nothing` DOES show it, and that asymmetry is
+deliberate.** The rule is about the *call*, not about the value:
+
+```text
+> n = nothing
+> n
+nothing
+> nothing
+nothing
+> gives_nothing()        ' a function whose body is `return nothing`
+>
+```
+
+`return nothing` is gBASIC's void convention — the unused-result warning exempts
+it by value for exactly that reason — so a call answering `nothing` is
+overwhelmingly a command, and echoing the word would put a line of noise under
+every command you type. Asking a *name* is never a command, so there is nothing
+to keep quiet about. `unknown` echoes from both positions, because nothing
+returns it as a convention. Stated here 2026-10-02 after the gbasic-books
+session measured the gap: the rule above was documented and the contrast was
+not, so exploring absence at the prompt — the obvious way to learn this part of
+the language — reads as though the call did not run.
 
 `?` asks the same thing explicitly, and it is a **question**, not shorthand for
 `print`. The difference shows when a name has been taken by a command: `? list`

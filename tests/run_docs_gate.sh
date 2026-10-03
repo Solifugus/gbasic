@@ -906,4 +906,52 @@ if [ "$hb_ok" = "1" ]; then
     fi
 fi
 
+# 9. EVERY ANSWER `type` CAN GIVE MUST BE DOCUMENTED, AND NOTHING ELSE.
+#
+#    Added 2026-10-02, on a report from the gbasic-books session that `type`
+#    "answers for twelve kinds and seven have a predicate". MEASURED, it answers
+#    for TWENTY-SEVEN -- their count came from this page, which listed seven
+#    examples and then stopped, so the filing undercounted the gap it was
+#    reporting by twenty. That is the shape this gate exists for: a page can be
+#    wrong by OMISSION and read as complete, and a reader cannot tell a short
+#    list from an exhaustive one.
+#
+#    BOTH DIRECTIONS, like the roster and licensing tiers. A new value kind that
+#    nobody documents fails, and a kind REMOVED from the interpreter cannot keep
+#    a row on this page either -- which is the half a "did we document
+#    everything" check misses, and the half that caught `sourceview` and `text`
+#    in docs/project_state.md.
+#
+#    DERIVED FROM `builtin_type_name`, never hand-listed, because a hand-listed
+#    expectation is a third copy that rots alongside the two it is comparing.
+#    The fallback `"value"` is excluded: the switch is exhaustive over ValueKind,
+#    so it is unreachable, and documenting an answer no value can produce would
+#    be worse than omitting it.
+tk_src="$(awk '/^static const char \*builtin_type_name/,/^}/' src/eval.c \
+    | grep -o 'return "[a-z_]*"' | sed 's/return "//;s/"//' | grep -v '^value$' | sort -u)"
+tk_doc="$(awk '/<!--TYPEKINDS-->/,/<!--\/TYPEKINDS-->/' docs/reference.md \
+    | grep -o '`[a-z_]*`' | tr -d '`' | grep -v '^type$' | sort -u)"
+tk_src_n="$(printf '%s\n' "$tk_src" | grep -c .)"
+if [ "$tk_src_n" -lt 20 ]; then
+    # A scanner that matches nothing reports a clean run.
+    echo "FAIL type kinds    only $tk_src_n answers found in builtin_type_name -- the scanner stopped matching, it did not pass"
+    status=1
+elif [ "$(printf '%s\n' "$tk_doc" | grep -c .)" = "0" ]; then
+    echo "FAIL type kinds    the TYPEKINDS block in docs/reference.md is empty or its markers are gone"
+    status=1
+else
+    tk_ok=1
+    for k in $tk_src; do
+        printf '%s\n' "$tk_doc" | grep -qx "$k" \
+            || { echo "FAIL type kinds    \`type\` can answer \`$k\` and docs/reference.md's TYPEKINDS table does not list it"; tk_ok=0; status=1; }
+    done
+    for k in $tk_doc; do
+        printf '%s\n' "$tk_src" | grep -qx "$k" \
+            || { echo "FAIL type kinds    docs/reference.md lists \`$k\` as a \`type\` answer and builtin_type_name never returns it"; tk_ok=0; status=1; }
+    done
+    if [ "$tk_ok" = "1" ]; then
+        echo "PASS type kinds     docs/reference.md lists all $tk_src_n answers \`type\` can give, and none it cannot"
+    fi
+fi
+
 exit "$status"
