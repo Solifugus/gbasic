@@ -382,5 +382,36 @@ always-unknown `which` satisfies the agreement on a machine where every probe
 fails. PROVEN RED: with the ".exe" rule removed, four probes disagree and the
 control fires. 46/46 on Windows.
 
-**Still open, in order:** named time zones; making suites tell a module that
-is installed from one that is BUILT IN; the optional modules (M2 ODBC first).
+## 14. Named time zones (2026-10-02)
+
+`now(zone)`, `to_zone`, `from_zone`, `zone_offset` and `zone_resolve` work on
+Windows with IANA names, through the ICU that ships with Windows 10 1903 and
+later (System32\icu.dll: the full IANA database, kept current by Windows
+Update; the same 1903 floor the UTF-8 manifest sets). It is LOADED, not linked,
+so a Windows without it still runs gBASIC and only refuses zones -- with a
+sentence saying the zone DATABASE is missing, not that the name is misspelled.
+
+**One question, asked of ICU: a zone's offset at an instant.** Instant-to-civil
+is the instant plus that offset. Civil-to-instant takes the offsets a day
+before and a day after and keeps each candidate whose own offset matches: two
+survivors are the repeated fall-back hour, none is the spring-forward gap. The
+answers are POSIX's by construction -- ambiguous takes the earlier instant; in
+the gap the instant read with the pre-transition offset (02:30 EST, shown as
+03:30 EDT). ICU's ucal_open does not fail on an unknown name -- it opens
+"Etc/Unknown", which is GMT, glibc's silent fallback again -- so known-ness is
+asked separately (ucal_getCanonicalTimeZoneID's is-system flag).
+
+**Measured on Windows:** examples/zone_test.bas (21 checks: EDT/EST, Berlin,
+Kolkata's half hour, round trips, the gap, the ambiguous hour) and
+datetime_zone_test.bas pass; the datetime cookbook passes 36/36; run_core's
+now("Asia/Tokyo") tier passes. PROVEN RED: with the gap choosing the earlier
+candidate, "gap shifts FORWARD" fails (01:30 where 03:30 is right).
+run_examples' whole list is now **183 of 235** on Windows; what remains is 11
+actor examples (Tier 2, each says so) and 3 that fail on Linux-in-WSL too.
+(§11 said 12 actor examples; the count is 11.)
+
+Linux keeps its TZ/zoneinfo path; only the two TZ-dance call sites moved into
+a helper (`zone_localtime`), unchanged in behaviour.
+
+**Still open, in order:** making suites tell a module that is installed from
+one that is BUILT IN; the optional modules (M2 ODBC first).

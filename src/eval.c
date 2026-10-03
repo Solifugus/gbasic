@@ -1994,12 +1994,40 @@ static int zone_name_valid(const char *zone) {
     if (strcmp(zone, "UTC") == 0 || strcmp(zone, "GMT") == 0) {
         return 1;
     }
+#ifdef _WIN32
+    /* Windows has no zoneinfo directory: ask the ICU it ships (platform.h).
+     * -1 when ICU itself is missing, so that is not reported as a typo. */
+    return gb_zone_known(zone);
+#else
     char path[512];
     snprintf(path, sizeof(path), "/usr/share/zoneinfo/%s", zone);
     struct stat st;
     return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+#endif
 }
 
+/* 1 when `zone` may be used; otherwise 0 with `message` saying why -- a name
+ * that is not a zone, or (Windows) no zone database to look it up in, which
+ * must not read as a misspelling of a name that is fine. */
+static int zone_check(const char *zone, char *message, size_t size) {
+    int known = zone_name_valid(zone);
+    if (known == 1) {
+        return 1;
+    }
+    if (known < 0) {
+        snprintf(message, size,
+                 "named time zones need the zone database Windows ships from "
+                 "Windows 10 version 1903 (icu.dll), which this system lacks: '%s'",
+                 zone);
+    } else {
+        snprintf(message, size,
+                 "unknown timezone '%s' (expected an IANA name like America/New_York, or UTC)",
+                 zone);
+    }
+    return 0;
+}
+
+#ifndef _WIN32
 static char *zone_push(const char *zone) {
     const char *cur = getenv("TZ");
     char *saved = cur ? copy_string(cur) : NULL;
@@ -2016,6 +2044,27 @@ static void zone_pop(char *saved) {
         gb_unsetenv("TZ");
     }
     tzset();
+}
+#endif
+
+/* The civil fields of UTC instant `raw` in `zone`. Returns 1 on success.
+ * POSIX: the TZ dance above. Windows: the zone's offset at that instant, from
+ * Windows' ICU, added to the instant -- exact, since an offset is a property
+ * of an instant and never ambiguous in this direction. */
+static int zone_localtime(const char *zone, time_t raw, struct tm *out) {
+#ifdef _WIN32
+    int offset = 0;
+    if (gb_zone_offset(zone, (long long)raw, &offset) != 0) {
+        return 0;
+    }
+    time_t shifted = raw + (time_t)offset;
+    return gb_gmtime(&shifted, out) != NULL;
+#else
+    char *saved = zone_push(zone);
+    int ok = gb_localtime(&raw, out) != NULL;
+    zone_pop(saved);
+    return ok;
+#endif
 }
 
 static void zone_fill_tm(DateTime dt, struct tm *tm) {
@@ -2047,6 +2096,61 @@ static int zone_tm_matches(const struct tm *l, DateTime dt) {
  * whose round trip reproduces the fields exactly. Two survivors = ambiguous,
  * one = unique, none = the gap (where both interpretations are real instants
  * on either side of it). */
+static long long zone_timegm(DateTime dt);
+
+#ifdef _WIN32
+/* WINDOWS: THE SAME THREE ANSWERS, FROM ONE QUESTION. There is no mktime-under-
+ * TZ here, so the civil time is resolved from the zone's OFFSET AT AN INSTANT
+ * (gb_zone_offset), by the standard method: take the offsets a day before and
+ * a day after the naive instant -- any transition near it lies between them --
+ * and keep each candidate `naive - offset` whose own offset is that offset.
+ * Two survivors: the repeated fall-back hour (ambiguous). One: unique. None:
+ * the spring-forward gap, where the two candidates straddle it.
+ *
+ * The answers are the POSIX ones by construction: ambiguous takes the EARLIER
+ * instant, and in the gap the LATER instant is the one read with the
+ * PRE-transition offset (02:30 EST, which renders as 03:30 EDT) -- exactly
+ * what the isdst=0 / isdst=1 pair below produces. */
+static int zone_resolve_instants(DateTime dt, const char *zone,
+                                 long long *chosen, long long *earlier,
+                                 long long *later) {
+    long long naive = zone_timegm(dt);
+    int before = 0, after = 0;
+    if (gb_zone_offset(zone, naive - 86400, &before) != 0 ||
+        gb_zone_offset(zone, naive + 86400, &after) != 0) {
+        *chosen = *earlier = *later = naive;   /* unreachable for a known zone */
+        return 0;
+    }
+    long long cand[2] = { naive - before, naive - after };
+    int want[2] = { before, after };
+    int valid[2] = { 0, 0 };
+    for (int i = 0; i < 2; i++) {
+        int got = 0;
+        valid[i] = gb_zone_offset(zone, cand[i], &got) == 0 && got == want[i];
+    }
+    if (before == after) {
+        valid[1] = 0;                           /* one offset: one candidate */
+    }
+    long long lo = cand[0] < cand[1] ? cand[0] : cand[1];
+    long long hi = cand[0] < cand[1] ? cand[1] : cand[0];
+    if (valid[0] && valid[1]) {
+        *earlier = lo;
+        *later = hi;
+        *chosen = lo;
+        return 1;
+    }
+    if (valid[0] || valid[1]) {
+        *chosen = valid[0] ? cand[0] : cand[1];
+        *earlier = *chosen;
+        *later = *chosen;
+        return 0;
+    }
+    *earlier = lo;
+    *later = hi;
+    *chosen = hi;
+    return 2;
+}
+#else
 static int zone_resolve_instants(DateTime dt, const char *zone,
                                  long long *chosen, long long *earlier,
                                  long long *later) {
@@ -2088,6 +2192,7 @@ static int zone_resolve_instants(DateTime dt, const char *zone,
     *chosen = *later;
     return 2;
 }
+#endif
 
 /* UTC epoch seconds from civil fields interpreted AS UTC. */
 static long long zone_timegm(DateTime dt) {
@@ -7336,21 +7441,16 @@ static Value zone_eval_call(AstExpr *expr) {
         runtime_error_raise(message, 1003, "datetime");
         return value_null();
     }
-    if (!zone_name_valid(zone)) {
-        snprintf(message, sizeof(message),
-                 "unknown timezone '%s' (expected an IANA name like America/New_York, or UTC)",
-                 zone);
+    if (!zone_check(zone, message, sizeof(message))) {
         runtime_error_raise(message, 1003, "datetime");
         return value_null();
     }
 
     if (strcmp(name, "to_zone") == 0) {
         long long epoch = zone_timegm(dt);
-        char *saved = zone_push(zone);
         time_t raw = (time_t)epoch;
         struct tm l;
-        gb_localtime(&raw, &l);
-        zone_pop(saved);
+        zone_localtime(zone, raw, &l);
         DateTime out = {0};
         out.year = l.tm_year + 1900;
         out.month = l.tm_mon + 1;
@@ -31017,11 +31117,8 @@ static Value eval_call(AstExpr *expr) {
             }
             zone_arg = copy_string(z.as.string ? z.as.string : "");
             value_free(z);
-            if (!zone_name_valid(zone_arg)) {
-                char message[256];
-                snprintf(message, sizeof(message),
-                         "unknown timezone '%s' (expected an IANA name like America/New_York, or UTC)",
-                         zone_arg);
+            char message[384];
+            if (!zone_check(zone_arg, message, sizeof(message))) {
                 free(zone_arg);
                 runtime_error_raise(message, 1003, "datetime");
                 return value_null();
@@ -31036,9 +31133,7 @@ static Value eval_call(AstExpr *expr) {
         struct tm local;
         int converted;
         if (zone_arg) {
-            char *saved = zone_push(zone_arg);
-            converted = gb_localtime(&raw, &local) != NULL;
-            zone_pop(saved);
+            converted = zone_localtime(zone_arg, raw, &local);
             free(zone_arg);
         } else {
             converted = gb_localtime(&raw, &local) != NULL;

@@ -285,6 +285,23 @@ typedef struct {
     int   in_fd;
 } GbChild;
 
+/* NAMED TIME ZONES on Windows, through the ICU that ships with Windows 10 1903
+ * and later (System32\icu.dll): the full IANA database, kept current by
+ * Windows Update, and the same 1903 floor the UTF-8 manifest already sets.
+ * POSIX uses /usr/share/zoneinfo and the TZ variable instead, neither of which
+ * exists on Windows in a form an IANA name can use.
+ *
+ * gb_zone_known: 1 for a zone ICU knows, 0 for one it does not, -1 when ICU
+ * itself is unavailable (Windows older than 1903) -- distinguished so the
+ * caller does not report an absent DATABASE as a misspelled NAME.
+ *
+ * gb_zone_offset: the zone's total UTC offset (standard + daylight), in
+ * seconds, at the UTC instant `utc_epoch`. 0 on success, -1 on failure. Both
+ * civil-to-instant and instant-to-civil are built from this one question in
+ * src/eval.c, so ICU is asked only what it is unambiguous about. */
+int gb_zone_known(const char *zone);
+int gb_zone_offset(const char *zone, long long utc_epoch, int *offset_seconds);
+
 /* process.which: the path CreateProcess WOULD RUN for `name`, malloc'd, or NULL.
  *
  * The contract is POSIX's "the path execvp would run", and its point is that

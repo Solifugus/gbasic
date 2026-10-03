@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <signal.h>
+#include <stdint.h>
 #include <wchar.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -759,6 +760,99 @@ int gb_run_capture(char *const argv[], const char *cwd,
     res->out_len = out.len;
     res->err = err.data;
     res->err_len = err.len;
+    return 0;
+}
+
+/* ---- named time zones: Windows' own ICU ------------------------------------ */
+
+/* The few ICU C-API calls used, bound at first use from System32\icu.dll (the
+ * combined, unversioned ICU Windows ships since 1903). Loaded rather than
+ * linked so a Windows without it still RUNS gBASIC and only refuses zones. */
+typedef void   *(*IcuCalOpen)(const WCHAR *zone, int32_t len, const char *locale,
+                              int type, int *status);
+typedef void    (*IcuCalClose)(void *cal);
+typedef void    (*IcuCalSetMillis)(void *cal, double ms, int *status);
+typedef int32_t (*IcuCalGet)(const void *cal, int field, int *status);
+typedef int32_t (*IcuCalCanonical)(const WCHAR *id, int32_t len, WCHAR *result,
+                                   int32_t cap, signed char *is_system, int *status);
+
+static struct {
+    int tried;
+    int ok;
+    IcuCalOpen open;
+    IcuCalClose close;
+    IcuCalSetMillis set_millis;
+    IcuCalGet get;
+    IcuCalCanonical canonical;
+} icu;
+
+enum { ICU_GREGORIAN = 1, ICU_ZONE_OFFSET = 15, ICU_DST_OFFSET = 16 };
+#define ICU_FAILED(status) ((status) > 0)
+
+static int icu_load(void) {
+    if (icu.tried) {
+        return icu.ok;
+    }
+    icu.tried = 1;
+    HMODULE m = LoadLibraryExW(L"icu.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!m) {
+        return 0;
+    }
+    /* Through a generic FUNCTION pointer, not void *: ISO C allows converting
+     * one function pointer type to another, and not via an object pointer. */
+    typedef void (*AnyFn)(void);
+    icu.open = (IcuCalOpen)(AnyFn)GetProcAddress(m, "ucal_open");
+    icu.close = (IcuCalClose)(AnyFn)GetProcAddress(m, "ucal_close");
+    icu.set_millis = (IcuCalSetMillis)(AnyFn)GetProcAddress(m, "ucal_setMillis");
+    icu.get = (IcuCalGet)(AnyFn)GetProcAddress(m, "ucal_get");
+    icu.canonical = (IcuCalCanonical)(AnyFn)GetProcAddress(m, "ucal_getCanonicalTimeZoneID");
+    icu.ok = icu.open && icu.close && icu.set_millis && icu.get && icu.canonical;
+    return icu.ok;
+}
+
+/* KNOWN means ICU's own system data has it. Asked explicitly, because
+ * ucal_open on an unknown name does NOT fail: it quietly opens "Etc/Unknown",
+ * which is GMT -- the same silent fallback glibc's tzset makes, and the
+ * reason the POSIX side checks /usr/share/zoneinfo before trusting TZ. */
+int gb_zone_known(const char *zone) {
+    if (!icu_load()) {
+        return -1;
+    }
+    WCHAR *w = utf8_to_wide(zone);
+    if (!w) {
+        return 0;
+    }
+    WCHAR canon[128];
+    signed char is_system = 0;
+    int status = 0;
+    icu.canonical(w, -1, canon, (int32_t)(sizeof canon / sizeof canon[0]), &is_system, &status);
+    free(w);
+    return !ICU_FAILED(status) && is_system;
+}
+
+int gb_zone_offset(const char *zone, long long utc_epoch, int *offset_seconds) {
+    if (!icu_load()) {
+        return -1;
+    }
+    WCHAR *w = utf8_to_wide(zone);
+    if (!w) {
+        return -1;
+    }
+    int status = 0;
+    void *cal = icu.open(w, -1, "", ICU_GREGORIAN, &status);
+    free(w);
+    if (!cal || ICU_FAILED(status)) {
+        if (cal) icu.close(cal);
+        return -1;
+    }
+    icu.set_millis(cal, (double)utc_epoch * 1000.0, &status);
+    int32_t zone_ms = icu.get(cal, ICU_ZONE_OFFSET, &status);
+    int32_t dst_ms = icu.get(cal, ICU_DST_OFFSET, &status);
+    icu.close(cal);
+    if (ICU_FAILED(status)) {
+        return -1;
+    }
+    *offset_seconds = (int)((zone_ms + dst_ms) / 1000);
     return 0;
 }
 
