@@ -37375,6 +37375,230 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     return value;
 }
 
+/* ---- A DATE LAYOUT, WRITTEN THE WAY IT READS ---------------------------
+ *
+ * `{string "YYYY-MM-DD hh:mm:ss"}d` rather than `%Y-%m-%d %H:%M:%S`.
+ *
+ * ONE RULE CARRIES IT: date parts are UPPERCASE, time parts are lowercase.
+ * That is what resolves the collision every other scheme fumbles -- `MM` is
+ * the month and `mm` is the minutes -- and it is memorable rather than
+ * arbitrary, where `%M` against `%m` is a coin flip you look up every time.
+ *
+ * A SECOND RULE COVERS THE NAMES, and it is the same for both: one or two
+ * letters is a NUMBER, three is a SHORT NAME, four is a LONG NAME. So M/MM are
+ * 3 and 03, MMM is Mar, MMMM is March -- and D/DD/DDD/DDDD are 7, 07, Sat,
+ * Saturday. (`DDD` is day-of-YEAR in strftime; the obvious reading wins here
+ * over the inherited one.)
+ *
+ * NOTHING BUT TOKENS AND PUNCTUATION MAY APPEAR, and that is the decision that
+ * makes the notation safe rather than merely short. If prose passed through,
+ * `"Business hours: hh:mm"` would render the `ss` in "Business" as seconds --
+ * MEASURED against the system word list, 4,536 of 104,334 English words
+ * contain `ss` and 939 contain `mm`, so roughly one word in twenty-three would
+ * be silently corrupted, and they are exactly the words a caption uses:
+ * business, session, summary, assessment, comment. So a letter run that is not
+ * a token is REFUSED BY NAME, and prose goes outside the layout where
+ * concatenation already puts it:
+ *
+ *     print("Posted " + {string "D MMM YYYY"}d)
+ *
+ * THE 12-HOUR CLOCK IS IMPLICIT. `hh` is 24-hour unless the layout also
+ * carries `am` or `pm`, in which case it is 12-hour -- no extra token to
+ * remember, and the layout reads like what it produces. The CASE of the
+ * meridiem token is the case it is emitted in, so `pm` gives `pm` and `PM`
+ * gives `PM`; which of the two words appears is decided by the hour. */
+
+static const char *const DT_MONTH_SHORT[12] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
+static const char *const DT_MONTH_LONG[12] = {
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+};
+static const char *const DT_DAY_SHORT[7] = {
+    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+};
+static const char *const DT_DAY_LONG[7] = {
+    "Sunday", "Monday", "Tuesday", "Wednesday",
+    "Thursday", "Friday", "Saturday"
+};
+
+/* Sunday = 0. Sakamoto's method, so it needs no library call and no epoch. */
+static int dt_day_of_week(int y, int m, int d) {
+    static const int t[] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+    if (m < 3) {
+        y -= 1;
+    }
+    return (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
+}
+
+/* How many of `c` start at `p`, capped at `cap`. */
+static size_t dt_run(const char *p, char c, size_t cap) {
+    size_t n = 0;
+    while (p[n] == c && n < cap) {
+        n++;
+    }
+    return n;
+}
+
+static int dt_layout_has_meridiem(const char *layout) {
+    for (const char *p = layout; *p; p++) {
+        if ((p[0] == 'a' || p[0] == 'A') && (p[1] == 'm' || p[1] == 'M')) {
+            return 1;
+        }
+        if ((p[0] == 'p' || p[0] == 'P') && (p[1] == 'm' || p[1] == 'M')) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Renders `dt` through `layout`. Returns 0 and sets *err on a layout this
+ * notation does not define, or on a field the value does not carry. */
+static int datetime_render_layout(DateTime dt, const char *layout,
+                                  char *out, size_t outsz, char *err,
+                                  size_t errsz) {
+    size_t o = 0;
+    int ampm = dt_layout_has_meridiem(layout);
+    const char *p = layout;
+
+/* `dt_put_n__` and not `w`: the first version of this macro declared `int w`,
+ * which SHADOWED the caller's `int w` holding the weekday -- and because the
+ * shadow is in scope inside its own initialiser, `DT_PUT("%s", DAY[w])`
+ * expanded to `int w = snprintf(..., DAY[w])` reading an UNINITIALISED index.
+ * Out-of-bounds, and it segfaulted on exactly the three layouts that name a day
+ * (`DDD`, `DDDD`). Classic macro hygiene, and the only reason it was caught
+ * before shipping is that the layouts were tried one at a time -- a loop over
+ * all of them died at the first and printed nothing, which read as the whole
+ * fixture being broken rather than three cases. */
+#define DT_PUT(fmt, ...)                                                       \
+    do {                                                                       \
+        int dt_put_n__ = snprintf(out + o, outsz - o, fmt, __VA_ARGS__);       \
+        if (dt_put_n__ < 0 || (size_t)dt_put_n__ >= outsz - o) {               \
+            snprintf(err, errsz, "the formatted result is too long");          \
+            return 0;                                                          \
+        }                                                                      \
+        o += (size_t)dt_put_n__;                                               \
+    } while (0)
+#define DT_NEEDS_DATE(tok)                                                     \
+    do {                                                                       \
+        if (dt.time_only) {                                                    \
+            snprintf(err, errsz,                                               \
+                     "`%s` needs a date and this is a time-only value", tok);  \
+            return 0;                                                          \
+        }                                                                      \
+    } while (0)
+
+    while (*p) {
+        char c = *p;
+        if (!isalpha((unsigned char)c)) {
+            DT_PUT("%c", c);
+            p++;
+            continue;
+        }
+        size_t n;
+        switch (c) {
+        case 'Y':
+            n = dt_run(p, 'Y', 4);
+            DT_NEEDS_DATE("Y");
+            if (n == 4)      { DT_PUT("%04d", dt.year); }
+            else if (n == 2) { DT_PUT("%02d", dt.year % 100); }
+            else             { goto unknown; }
+            p += n;
+            continue;
+        case 'M':
+            n = dt_run(p, 'M', 4);
+            DT_NEEDS_DATE("M");
+            if (dt.month < 1 || dt.month > 12) { goto bad_value; }
+            if (n == 1)      { DT_PUT("%d", dt.month); }
+            else if (n == 2) { DT_PUT("%02d", dt.month); }
+            else if (n == 3) { DT_PUT("%s", DT_MONTH_SHORT[dt.month - 1]); }
+            else             { DT_PUT("%s", DT_MONTH_LONG[dt.month - 1]); }
+            p += n;
+            continue;
+        case 'D':
+            n = dt_run(p, 'D', 4);
+            DT_NEEDS_DATE("D");
+            if (n <= 2) {
+                if (n == 1) { DT_PUT("%d", dt.day); }
+                else        { DT_PUT("%02d", dt.day); }
+            } else {
+                int w = dt_day_of_week(dt.year, dt.month, dt.day);
+                if (w < 0 || w > 6) { goto bad_value; }
+                DT_PUT("%s", n == 3 ? DT_DAY_SHORT[w] : DT_DAY_LONG[w]);
+            }
+            p += n;
+            continue;
+        case 'h':
+            n = dt_run(p, 'h', 2);
+            {
+                int h = dt.hour;
+                if (ampm) {
+                    h = h % 12;
+                    if (h == 0) { h = 12; }
+                }
+                if (n == 1) { DT_PUT("%d", h); } else { DT_PUT("%02d", h); }
+            }
+            p += n;
+            continue;
+        case 'm':
+            n = dt_run(p, 'm', 2);
+            if (n == 1) { DT_PUT("%d", dt.minute); }
+            else        { DT_PUT("%02d", dt.minute); }
+            p += n;
+            continue;
+        case 's':
+            n = dt_run(p, 's', 2);
+            if (n == 1) { DT_PUT("%d", dt.second); }
+            else        { DT_PUT("%02d", dt.second); }
+            p += n;
+            continue;
+        case 'a': case 'A': case 'p': case 'P':
+            if ((p[1] == 'm' || p[1] == 'M')) {
+                int pm = dt.hour >= 12;
+                int upper = (p[1] == 'M');
+                DT_PUT("%s", pm ? (upper ? "PM" : "pm") : (upper ? "AM" : "am"));
+                p += 2;
+                continue;
+            }
+            goto unknown;
+        default:
+            goto unknown;
+        }
+    }
+    if (o >= outsz) {
+        snprintf(err, errsz, "the formatted result is too long");
+        return 0;
+    }
+    out[o] = '\0';
+    return 1;
+
+unknown:
+    {
+        /* NAME THE RUN, not the first letter: a reader who wrote `DDD` meaning
+         * day-of-year needs to see `DDD`, and one who put a word in the layout
+         * needs to see the word. */
+        const char *q = p;
+        while (*q && isalpha((unsigned char)*q)) {
+            q++;
+        }
+        int len = (int)(q - p);
+        if (len > 24) { len = 24; }
+        snprintf(err, errsz,
+                 "`%.*s` is not a date layout token -- the tokens are YYYY YY,"
+                 " M MM MMM MMMM, D DD DDD DDDD, h hh, m mm, s ss and am/pm,"
+                 " and anything else goes outside the layout",
+                 len, p);
+    }
+    return 0;
+bad_value:
+    snprintf(err, errsz, "the value's date fields are out of range");
+    return 0;
+#undef DT_PUT
+#undef DT_NEEDS_DATE
+}
+
 static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
                                            int *recognised) {
     if (recognised) {
@@ -37630,9 +37854,59 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
     if (!modifier.library &&
         (builtin_args = builtin_modifier_args_text(modifier.name, "string")) != NULL) {
         if (!modifier_args_empty(builtin_args)) {
-            runtime_error_raise("string modifier expects no arguments", 1003, "modifier");
+            /* `{string "YYYY-MM-DD"}d` -- a LAYOUT, and only for a datetime.
+             * It is an argument to the modifier that already turns a value into
+             * text rather than a new verb, because every modifier here is named
+             * for what it PRODUCES and `{string}` already says that. */
+            if (value.kind != VALUE_DATETIME) {
+                char message[160];
+                snprintf(message, sizeof(message),
+                         "a layout applies to a date or time, and this is %s;"
+                         " `{string}` with no argument renders any value",
+                         builtin_type_name(value));
+                runtime_error_raise(message, 1003, "modifier");
+                value_free(value);
+                return value_null();
+            }
+            if (modifier_args_have_comma(builtin_args)) {
+                /* A LIST ONLY MAKES SENSE WHEN READING. `{date "A", "B"}` means
+                 * try A then B; there is no second way to render one value, so
+                 * a second argument here is a mistake rather than an option. */
+                runtime_error_raise("`{string}` takes ONE layout -- a list of"
+                                    " layouts is for reading, as in"
+                                    " `{date \"A\", \"B\"}`",
+                                    1003, "modifier");
+                value_free(value);
+                return value_null();
+            }
+            int has_layout = 0;
+            Value layout = eval_optional_modifier_arg("string", builtin_args,
+                                                      &has_layout);
+            if (error_action_pending()) {
+                value_free(layout);
+                value_free(value);
+                return value_null();
+            }
+            if (layout.kind != VALUE_STRING) {
+                value_free(layout);
+                value_free(value);
+                runtime_error_raise("`{string}`'s layout must be text",
+                                    1003, "modifier");
+                return value_null();
+            }
+            char rendered[256];
+            char why[320];
+            if (!datetime_render_layout(value.as.datetime, layout.as.string,
+                                        rendered, sizeof rendered,
+                                        why, sizeof why)) {
+                value_free(layout);
+                value_free(value);
+                runtime_error_raise(why, 1003, "modifier");
+                return value_null();
+            }
+            value_free(layout);
             value_free(value);
-            return value_null();
+            return value_string(rendered);
         }
         return builtin_string_modifier_value(value);
     }

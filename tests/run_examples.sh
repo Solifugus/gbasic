@@ -172,6 +172,7 @@ examples=(
     pbi_nested_array_test.bas
     pbi_constructor_depth_test.bas
     datetime_iso_test.bas
+    datetime_layout_test.bas
     file_counts_test.bas
     env_builtin_test.bas
     sleep_test.bas

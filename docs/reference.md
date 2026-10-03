@@ -4935,6 +4935,62 @@ sign are all refused. And a bare date is still a bare date: `2026-03-07` ends in
 `-07`, so the suffix is looked for only **after** the date/time separator — a
 scan from the right would read it as seven hours west.
 
+### Date and time layouts
+
+**`{string "YYYY-MM-DD hh:mm:ss"}d`** renders a `datetime` through a layout
+written the way it reads — not `%Y-%m-%d %H:%M:%S`.
+
+It is an **argument to `{string}`**, not a new verb, because every modifier is
+named for what it *produces* and `{string}` already turned a value into text.
+`{format "…"}` was the first proposal and reads as though text goes *in*.
+
+```basic
+d {datetime}= "2026-03-07 14:05:09"                   ' a Saturday
+print({string "YYYY-MM-DD"}d)                         ' 2026-03-07
+print({string "DDDD, D MMMM YYYY"}d)                  ' Saturday, 7 March 2026
+print({string "DD/MM/YYYY"}d)                         ' 07/03/2026
+print({string "h:mm pm"}d)                            ' 2:05 pm
+print({string "YYYYMMDD"}d)                           ' 20260307
+print("Posted " + {string "D MMM YYYY"}d)             ' Posted 7 Mar 2026
+```
+
+**Date parts are UPPERCASE, time parts are lowercase.** That one rule resolves
+the collision every other scheme fumbles: `MM` is the month, `mm` is the
+minutes.
+
+**One or two letters is a number, three is a short name, four is a long name** —
+the same for both `M` and `D`:
+
+| | | | |
+|---|---|---|---|
+| `YYYY` 2026 | `YY` 26 | | |
+| `M` 3 | `MM` 03 | `MMM` Mar | `MMMM` March |
+| `D` 7 | `DD` 07 | `DDD` Sat | `DDDD` Saturday |
+| `h` 14 | `hh` 14 | `m`/`mm` minutes | `s`/`ss` seconds |
+| `am` / `pm` | the meridiem, in the case you wrote it | | |
+
+(`DDD` is day-of-*year* in `strftime`; the obvious reading wins here over the
+inherited one.)
+
+**The 12-hour clock is implicit.** `hh` is 24-hour unless the layout also
+carries `am` or `pm`. Midnight is `12:00 am` and noon is `12:00 pm`.
+
+**Nothing but tokens and punctuation may appear**, and that is what makes the
+notation safe rather than merely short. A letter run that is not a token is
+**refused by name**, so prose goes *outside* the layout, where concatenation
+already puts it. If prose passed through, `"Business hours: hh:mm"` would render
+the `ss` in *Business* as seconds — measured against the system word list, 4,536
+of 104,334 English words contain `ss` and 939 contain `mm`, about one word in
+twenty-three, and they are exactly the words a caption uses: *business*,
+*session*, *summary*, *assessment*, *comment*.
+
+A **date-precision** value really is midnight, so `hh:mm:ss` renders
+`00:00:00`. A **time-only** value has no date, so a date token is refused rather
+than answered with a zero that looks like a year. A layout on anything that is
+not a date or time is refused, and so is a second layout — a *list* is for
+reading (see `{date "A", "B"}`), since there is no second way to render one
+value.
+
 **`epoch()`** returns the current instant as Unix seconds. **`epoch(dt)`**
 places a civil datetime on the timeline by reading it as **local**;
 **`epoch(dt, zone)`** reads it as civil in that zone, which is the only correct

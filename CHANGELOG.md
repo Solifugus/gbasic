@@ -38,6 +38,27 @@ reader sees.
 
 **It adds language:**
 
+- **A date layout, written the way it reads**: `{string "YYYY-MM-DD hh:mm:ss"}d`
+  rather than `%Y-%m-%d %H:%M:%S`. Until now there was **no** output formatting
+  at all — `string(dt)` gave ISO and everything else was built by hand from the
+  dot fields. It is an **argument to `{string}`**, not a new verb, because every
+  modifier is named for what it produces and `{string}` already turned a value
+  into text.
+
+  **Date parts are uppercase, time parts lowercase**, which resolves the
+  collision every other scheme fumbles — `MM` is the month, `mm` is the minutes.
+  **One or two letters is a number, three a short name, four a long name**, the
+  same for `M` and `D`: `MMM` is Mar, `MMMM` March, `DDD` Sat, `DDDD` Saturday.
+  The **12-hour clock is implicit** — `hh` is 24-hour unless the layout carries
+  `am` or `pm`, and the case you write is the case you get.
+
+  **A letter run that is not a token is refused by name**, so prose goes outside
+  the layout. That is what makes the notation safe rather than merely short: if
+  prose passed through, `"Business hours: hh:mm"` would render the `ss` in
+  *Business* as seconds — measured, 4,536 of 104,334 English words contain `ss`,
+  about one in twenty-three. A list of layouts is also refused, since there is
+  no second way to render one value.
+
 - **A modifier clause chains with `;`**, applied left to right:
   `clean {trimmed; upper}= raw`. The comma could not be used — it is already the
   argument separator (`{between "a", "b"}`) and arity cannot disambiguate it. A

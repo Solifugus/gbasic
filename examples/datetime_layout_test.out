@@ -1,0 +1,54 @@
+-- the common layouts
+ok   ISO date             
+ok   ISO date and time    
+ok   and it equals {string}
+ok   day first            
+ok   month first          
+ok   no separators at all 
+
+-- 1 or 2 letters a NUMBER, 3 a SHORT name, 4 a LONG name
+ok   M  the month number  
+ok   MM zero-padded       
+ok   MMM  short           
+ok   MMMM long            
+ok   D  the day number    
+ok   DD zero-padded       
+ok   DDD  short day name  
+ok   DDDD long day name   
+ok   YY two digits        
+ok   a sentence of them   
+
+-- weekdays against an OUTSIDE ORACLE
+ok   2026-01-01 (branch)  
+ok   2026-02-01 (branch)  
+ok   2024-02-29 leap      
+ok   2000-02-29 century   
+ok   1900-03-01 non-leap  
+ok   1970-01-01 epoch     
+ok   2026-12-31           
+
+-- THE 12-HOUR CLOCK IS IMPLICIT: am/pm in the layout switches it
+ok   24-hour by default   
+ok   12-hour with pm      
+ok   the CASE you wrote   
+ok   midnight is 12 am    
+ok   noon is 12 pm        
+ok   11:59 is am          
+ok   23:59 is 11:59 pm    
+
+-- what the value does NOT carry
+ok   a date has midnight  
+ok   a time renders a time
+ok   but not a date token 
+
+-- refusals, each beside a legal neighbour
+ok   an unknown token     
+ok   and it NAMES the run 
+ok   prose is refused     
+ok   YYY means nothing    
+ok   a non-date subject   
+ok   two layouts          
+ok   CONTROL {string}d    
+ok   CONTROL on a number  
+ok   CONTROL prose outside
+ok   CONTROL in a chain   
