@@ -4750,6 +4750,38 @@ flag  = default(false, true)              ' false — it is a value
 
 `fallback` is evaluated eagerly, so keep it cheap (a literal, or a name).
 
+**AND `default` IS THE REMEDY FOR THE ONE DOOR THAT HAS NO OPINION.** Every
+other operation on an absence either refuses or answers a question; `+`
+**manufactures the word** (measured 2026-10-03, reported by the gbasic-books
+session):
+
+| | `nothing` | `unknown` |
+|---|---|---|
+| arithmetic, ordering | raises | raises |
+| a condition | quietly **false** | raises |
+| equality, `default` | answers | answers |
+| **concatenation** | **`"a" + nothing` is `anothing`** | **`aunknown`** |
+
+That falls out of two decisions each of which is right on its own — `+`
+concatenates when either side is a string, and `string` is total — and the
+result is that text meant for a person can contain the word `nothing` where a
+number should be, with nothing raised and exit 0:
+
+```basic
+owed = nothing
+print("Total owed: " + owed)      ' Total owed: nothing
+print("Total owed: " + default(owed, "n/a"))
+```
+
+**There is deliberately no warning for it**, and the reason is worth knowing
+because it is the same reason twice: showing that something is absent is
+ordinary, so `print("find(zz)=" + find(f, "zz"))` is correct code of exactly the
+shape above. Measured across every program in the tree, the coercion happens at
+ten places and **eight are that idiom** — a rule firing on it would be wrong
+about the language rather than merely noisy, which is why rows 6 and 7 of
+`docs/warning_model_design.md` were built, measured and reverted. Use `default`
+wherever the text is for a person.
+
 **`has_builtin(name)`** (*since 0.1.0-rc3*) - Answers whether this interpreter
 has an unqualified builtin of that name, so a program can degrade gracefully on
 an older release instead of crashing with `undefined variable`. Names of module

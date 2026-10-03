@@ -10642,12 +10642,53 @@ and the suppression burden is six `on warning ignore` lines in fixtures, which
 PLAT-WARN exists to make affordable. If it does not, it is noise on a core
 operator.
 
-**My recommendation is to ship it**, on that asymmetry, with the books session's
-framing intact: a warning so `on warning stop` fails a test run while production
-keeps the ergonomics, and `string(nothing)` staying silent because an explicit
-conversion is the author saying they meant it. **But it fires on correct code
-three times for every defect it finds in our own tree, on `+`, so it is
-Matthew's call rather than mine.**
+### RECOMMENDATION WITHDRAWN, 2026-10-03 — do NOT ship it
+
+I first recommended shipping it on that asymmetry. **That was wrong, and what
+changed my mind is this document's own standard**, which I had not applied to my
+own proposal:
+
+| row | fired on correct code | outcome |
+|---|---|---|
+| 6, blind shadow | 287 times across 103 files | **reverted** |
+| 7, `unknown` compared to a value | twice, and **correct both times** | **reverted** |
+| 9, discarded for-each write | **0** (measured before and after) | shipped |
+| this | **8 sites of 10** | — |
+
+Eighty per cent is not near row 9, it is past row 7 — which was reverted on two
+firings, in an application, where "absent therefore not equal" was the intended
+reading. I had argued from WHERE the false positives live (tests, not
+applications); the standard this file sets is HOW MANY there are, and row 7 says
+so in as many words: *"an opt-out does not rescue a diagnostic that is wrong far
+more often than right — the channel lowers the bar for shipping a warning, it
+does not remove it."*
+
+**And the sharper reason: the six correct sites are not accidents, they are the
+IDIOM.** `print("find(zz)=" + find(f, "zz"))` is how a program shows that
+something is absent. A rule that fires on the idiom is wrong about the language,
+not merely noisy — which is exactly what row 9's design note says makes a
+warning unaffordable.
+
+**Following row 7's own template, what this argues for is recorded rather than
+built: a narrower rule that is ALWAYS wrong, and I do not have one.** The two
+real defects were an absence coerced into a COMPOSITE KEY, where the text is
+never read by a person; the six correct ones render an absence FOR a person.
+Nothing at the `+` distinguishes those — it needs to know where the string goes.
+`print("Total owed: " + owed)` and `print("find(zz)=" + find(f, "zz"))` are the
+same expression.
+
+**What addresses the invoice case instead, in order of what I would do:**
+
+1. **Teach it where it bites.** `+` is the one door with no opinion — every
+   other operation on an absence raises or answers a question, and concatenation
+   silently manufactures the word (`"a" + nothing` is `anothing`). The reference
+   should say so beside `default()`, which is the remedy and already exists.
+2. **If a switch is wanted it must be OPT-IN, declared by the author**, because
+   the measurement says the runtime cannot find the discriminator and the author
+   can. That is new machinery with no precedent here — the four `on warning`
+   modes are about SEVERITY, not about selecting a rule — so it needs its own
+   decision and its own measurement of whether anyone would turn it on.
+3. **Not a default warning**, on the arithmetic above.
 
 ## My own sweep made a live paid API call and overwrote a committed fixture, 2026-10-02
 
