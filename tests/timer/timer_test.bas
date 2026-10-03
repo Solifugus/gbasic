@@ -51,7 +51,7 @@ timer.cancel(5)
 check("cancelling a non-timer is refused", contains(error.message, "expects a timer"), true)
 error.clear()
 timer.nosuch(1)
-check("an unknown function is named", contains(error.message, "invalid function call: timer.nosuch"), true)
+check("an unknown function is named", contains(error.message, "undefined function: timer.nosuch"), true)
 error.clear()
 on error stop
 ' CONTROL: without these the refusal tier is satisfied by a module that

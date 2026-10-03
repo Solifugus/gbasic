@@ -370,7 +370,9 @@ day — so assume you will hit them too.
   ```
 
 - **There is no `today()`.** `now()` exists and returns a `datetime`, so
-  `today()` is the natural guess; it fails with `invalid function call: today`.
+  `today()` is the natural guess; it fails with `undefined function: today`, and
+  `has_builtin("today")` answers `false` without raising if you want to ask
+  first.
 
 - **`spawn` needs the call form, even with no arguments of your own.**
   `spawn worker` is a *parse* error (`expecting LPAREN`), not a runtime one.

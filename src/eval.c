@@ -7918,6 +7918,28 @@ static int unqualified_hint(const char *name, char *buf, size_t size) {
     return 1;
 }
 
+/* ONE SENTENCE FOR "THAT MODULE HAS NO SUCH VERB", built in one place.
+ *
+ * Nine module dispatchers -- webclient, http, timer, webserver, sqlite, odbc,
+ * pg, gi, money -- each raised `invalid function call: odbc.vacuum` from its
+ * own `snprintf`, and the text said the wrong thing for all nine: the problem
+ * is not that the CALL is invalid, it is that the NAME does not exist, and a
+ * sentence about the call sends a reader to check their arguments. The same
+ * complaint the gbasic-books session filed against `is_money` 2026-10-02, one
+ * namespace over.
+ *
+ * SHARED AS TEXT AND NOT AS A RAISE, because the nine raisers genuinely
+ * differ (each module reports through its own, which is how a module's errors
+ * carry its own source word). What drifts is the FORMAT, so that is what is
+ * shared -- the rule run_sqlite.sh's statement-note formatter already follows,
+ * for the same reason and with a tripwire asserting one construction site.
+ * A rule re-established at nine call sites is one a tenth module leaves out. */
+static void module_unknown_verb(char *buf, size_t size, const char *module,
+                                const char *verb) {
+    snprintf(buf, size, "undefined function: %s.%s -- the '%s' module does"
+                        " not define '%s'", module, verb, module, verb);
+}
+
 static void function_register_def(AstStmt *stmt, int imported, const char *library) {
     if (!params_defaults_are_trailing(stmt->as.function.params, "function",
                                       stmt->as.function.name,
@@ -10248,6 +10270,34 @@ static Value eval_file_call(AstExpr *expr) {
             return value_bool(ok);
         }
 
+        if (strcmp(name, "bytes") == 0) {
+            /* BY `stat`, NOT BY READING THE FILE. `bytes` shared the
+             * read-the-whole-thing path with `read`, `read_lines`, `lines` and
+             * `chars` and then used only the SIZE -- so asking how large a file
+             * is allocated and copied every byte of it, which on a log or a
+             * database dump is gigabytes of work and memory for a question the
+             * kernel answers for free, and an OOM where there should be a
+             * number. Reported by the gbasic-books session 2026-10-02.
+             *
+             * ONLY FOR A REGULAR FILE, and that guard is about keeping the
+             * EXISTING answer rather than about `stat` being wrong elsewhere.
+             * `read_whole_file` sizes a file with fseek/ftell, so a FIFO
+             * ALREADY raises (`Illegal seek`) and anything in /proc already
+             * answers 0 -- both measured. `stat` would hand a FIFO a size of 0
+             * and so turn that raise into a number, which is a NEW answer for
+             * a file this interpreter cannot read; falling through to the read
+             * path keeps the refusal. The two sources agree only for a regular
+             * file, so that is where the shortcut is taken. `exists` already
+             * asks `stat` rather than opening, for the neighbouring reason:
+             * ask the question you mean. */
+            struct stat info;
+            if (stat(file_value.as.file_path, &info) == 0 &&
+                S_ISREG(info.st_mode)) {
+                value_free(file_value);
+                return value_number((double)info.st_size);
+            }
+        }
+
         long size = 0;
         char *text = read_whole_file(file_value.as.file_path, &size);
         if (!text) {
@@ -10284,11 +10334,31 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(file_value);
             return result;
         }
-        if (strcmp(name, "bytes") == 0 || strcmp(name, "chars") == 0) {
-            /* TODO: chars currently counts bytes, not Unicode code points. */
+        if (strcmp(name, "bytes") == 0) {
+            /* Reached only for a non-regular file; the regular case answered
+             * from `stat` above without reading anything. */
             free(text);
             value_free(file_value);
             return value_number((double)size);
+        }
+        if (strcmp(name, "chars") == 0) {
+            /* CODEPOINTS, which is what the name says and what it did not do.
+             * The line this replaces was a `TODO: chars currently counts
+             * bytes, not Unicode code points.` sharing a branch with `bytes`,
+             * so the two verbs returned the IDENTICAL NUMBER on every file --
+             * which is right for ASCII and wrong for every other file, in the
+             * direction that looks like a working answer: a 12-character file
+             * holding one accented letter reported 13, and nothing in the pair
+             * said which of the two was the byte count.
+             *
+             * `len(read(f))` was already correct, so the two routes to the same
+             * question disagreed. Counted with the same walker `len` uses, not
+             * a second one. Reported by the gbasic-books session 2026-10-02. */
+            Value result =
+                value_number((double)string_codepoint_count(text, (size_t)size));
+            free(text);
+            value_free(file_value);
+            return result;
         }
 
         int lines = 0;
@@ -13761,6 +13831,13 @@ static Value builtin_actor_send(Value handle, Value message, int strict) {
     }
     int rc = channel_send_fds(handle.as.actor->write_fd, bytes, len,
                               xfer.count ? xfer.fds : NULL, xfer.count);
+    /* THE CEILING IS READ BEFORE THE FREES, because the only place a program
+     * can learn it is the refusal and the handle owns the socket it is read
+     * from. Computed only on the failing path, so an ordinary send still costs
+     * no getsockopt. */
+    size_t ceiling = (rc == ACTOR_CHANNEL_TOOBIG)
+                         ? channel_max_message(handle.as.actor->write_fd)
+                         : 0;
     free(bytes);
     value_free(handle);
     value_free(message);   /* closes the handles' fds; the receiver has its own */
@@ -13770,10 +13847,23 @@ static Value builtin_actor_send(Value handle, Value message, int strict) {
     case ACTOR_CHANNEL_FULL:
         runtime_error_raise("send: target mailbox is full", 1004, "actor");
         return value_null();
-    case ACTOR_CHANNEL_TOOBIG:
-        runtime_error_raise("send: message is too large for one frame",
-                            1004, "actor");
+    case ACTOR_CHANNEL_TOOBIG: {
+        /* BOTH NUMBERS, because neither alone is actionable. This said only
+         * "message is too large for one frame", so a program that had to split
+         * a payload could not learn what to split it into -- the ceiling is
+         * derived from SO_SNDBUF and so is a property of the machine, not a
+         * constant anybody can look up. Measured on this host: 106,240 bytes
+         * through and 106,496 refused. Reported by the gbasic-books session as
+         * "the channel maximum is not queryable"; this makes it discoverable
+         * where it matters rather than adding a name to the language. */
+        char message_text[192];
+        snprintf(message_text, sizeof(message_text),
+                 "send: message is %zu bytes and one frame on this channel"
+                 " holds at most %zu -- split it, or hand the data over a file",
+                 len, ceiling);
+        runtime_error_raise(message_text, 1004, "actor");
         return value_null();
+    }
     default:
         runtime_error_raise("send: target actor is no longer reachable",
                             1004, "actor");
@@ -14409,8 +14499,15 @@ static Value eval_spawn(AstExpr *expr) {
     if (!serialized || xfer.failed) {
         fatal = 1;   /* serialize_value already raised */
     } else if (frame_len > channel_max_message(child_box.write_fd)) {
-        runtime_error_raise("spawn: arguments are too large for one frame",
-                            1004, "actor");
+        /* Same two numbers as `send`, for the same reason: the startup frame
+         * goes down the same channel and its ceiling is the same machine
+         * fact. */
+        char too_big[192];
+        snprintf(too_big, sizeof(too_big),
+                 "spawn: arguments are %zu bytes and one frame on this channel"
+                 " holds at most %zu -- pass less, or hand the data over a file",
+                 frame_len, channel_max_message(child_box.write_fd));
+        runtime_error_raise(too_big, 1004, "actor");
         fatal = 1;
     } else {
         /* Reserved startup frame: enqueued before the handle exists, so it is
@@ -15953,10 +16050,8 @@ static Value webclient_eval_call(AstExpr *expr) {
         return webclient_eval_request(expr);
     }
     char message[256];
-    snprintf(message,
-             sizeof(message),
-             "invalid function call: webclient.%s",
-             expr->as.call.name);
+    module_unknown_verb(message, sizeof(message), "webclient",
+                        expr->as.call.name);
     webclient_raise(message);
     return value_null();
 }
@@ -16690,8 +16785,7 @@ static Value http_eval_call(AstExpr *expr) {
         return http_do_release(expr);
     }
     char message[200];
-    snprintf(message, sizeof(message), "invalid function call: http.%s",
-             expr->as.call.name);
+    module_unknown_verb(message, sizeof(message), "http", expr->as.call.name);
     return http_raise(message);
 }
 
@@ -17270,8 +17364,7 @@ static Value timer_eval_call(AstExpr *expr) {
         return timer_do_cancel(expr);
     }
     char message[200];
-    snprintf(message, sizeof(message), "invalid function call: timer.%s",
-             expr->as.call.name);
+    module_unknown_verb(message, sizeof(message), "timer", expr->as.call.name);
     return timer_raise(message);
 }
 
@@ -20172,8 +20265,8 @@ static Value webserver_eval_call(AstExpr *expr) {
         return webserver_eval_redirect(expr);
     }
     char message[256];
-    snprintf(message, sizeof(message), "invalid function call: webserver.%s",
-             expr->as.call.name);
+    module_unknown_verb(message, sizeof(message), "webserver",
+                        expr->as.call.name);
     webserver_raise(message);
     return value_null();
 }
@@ -20998,7 +21091,7 @@ static Value sqlite_eval_call(AstExpr *expr) {
         return sqlite_eval_last_insert_rowid(expr);
     }
     char message[256];
-    snprintf(message, sizeof(message), "invalid function call: sqlite.%s", name);
+    module_unknown_verb(message, sizeof(message), "sqlite", name);
     sqlite_raise_message(message);
     return value_null();
 }
@@ -22526,7 +22619,7 @@ static Value odbc_eval_call(AstExpr *expr) {
         return odbc_eval_catalog(expr, 0);
     }
     char message[256];
-    snprintf(message, sizeof(message), "invalid function call: odbc.%s", name);
+    module_unknown_verb(message, sizeof(message), "odbc", name);
     odbc_raise_message(message);
     return value_null();
 }
@@ -23759,7 +23852,7 @@ static Value pg_eval_call(AstExpr *expr) {
         return pg_eval_transaction(expr, "ROLLBACK", "rollback");
     }
     char message[256];
-    snprintf(message, sizeof(message), "invalid function call: pg.%s", name);
+    module_unknown_verb(message, sizeof(message), "pg", name);
     pg_raise_message(message);
     return value_null();
 }
@@ -26710,7 +26803,11 @@ static Value gi_eval_call(AstExpr *expr) {
     if (strcmp(name, "variant_get") == 0)    return gi_do_variant_get(expr);
     if (strcmp(name, "variant_print") == 0)  return gi_do_variant_print(expr);
     if (strcmp(name, "variant_type") == 0)   return gi_do_variant_type(expr);
-    return gi_raisef("invalid function call: gi.%s", name);
+    {
+        char message[256];
+        module_unknown_verb(message, sizeof(message), "gi", name);
+        return gi_raisef("%s", message);
+    }
 }
 #endif /* HAVE_GIR */
 
@@ -29781,7 +29878,7 @@ static Value money_eval_call(AstExpr *expr) {
     }
 
     char message[128];
-    snprintf(message, sizeof(message), "invalid function call: money.%s", name);
+    module_unknown_verb(message, sizeof(message), "money", name);
     runtime_error_raise(message, 1003, "money");
     return value_null();
 }
@@ -30132,6 +30229,14 @@ static Value eval_call(AstExpr *expr) {
         call_label(expr, label, sizeof(label));
         if (!library_alias_hint(expr->as.call.library, hint, sizeof(hint))) {
             hint[0] = '\0';
+            /* The qualified half of the same change: with no alias hint to
+             * offer, this is simply a name the named library or module does
+             * not define. */
+            snprintf(message, sizeof(message),
+                     "undefined function: %s -- '%s' does not define '%s'",
+                     label, expr->as.call.library, expr->as.call.name);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
         }
         snprintf(message, sizeof(message), "invalid function call: %s%s", label, hint);
         runtime_error_raise(message, 1003, "invalid function call");
@@ -34798,8 +34903,30 @@ static Value eval_call(AstExpr *expr) {
 
     char message[512];
     if (!unqualified_hint(expr->as.call.name, message, sizeof(message))) {
-        snprintf(message, sizeof(message), "invalid function call: %s",
-                 expr->as.call.name);
+        /* A NAME NOTHING DEFINES SAYS SO, rather than describing the call.
+         * This said `invalid function call: is_money` -- a sentence about the
+         * CALL, which sends a reader to check their arguments when the problem
+         * is that there is no such function. Measured: a completely invented
+         * name gave the identical message, so it was what gBASIC said for
+         * every undefined function. Reported by the gbasic-books session
+         * 2026-10-02, from the five `is_*` predicates that do not exist.
+         *
+         * The three HINTED variants above (a name a loaded library defines, an
+         * ambiguous one, a replaced alias) already name a remedy and are
+         * deliberately untouched: there the call is valid once qualified, so
+         * "undefined" would be the wrong word.
+         *
+         * AND IT SAYS "IN SCOPE AT THIS CALL" RATHER THAN "DOES NOT EXIST",
+         * which is not hedging: in script mode a function declared BELOW the
+         * line that calls it is not yet registered, so this is the message for
+         * a function the file plainly does define -- a case docs/reference.md
+         * already calls out. "nothing defines that name" would be a lie there,
+         * in the one place a reader is most likely to be confused. */
+        snprintf(message, sizeof(message),
+                 "undefined function: %s -- no function, library function or"
+                 " builtin of that name is in scope at this call"
+                 " (has_builtin(\"%s\") asks without raising)",
+                 expr->as.call.name, expr->as.call.name);
     }
     runtime_error_raise(message, 1003, "invalid function call");
     return value_null();

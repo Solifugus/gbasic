@@ -105,6 +105,79 @@ want gi        "ffi display"
 want money     "-"
 want timer     "-"
 
+echo
+echo "--- TIER 5: ONE SENTENCE FOR AN UNKNOWN VERB, BUILT IN ONE PLACE ---"
+# Nine module dispatchers answer a verb they do not have -- webclient, http,
+# timer, webserver, sqlite, odbc, pg, gi, money -- and each used to build
+# `invalid function call: odbc.vacuum` from its own snprintf. The text said the
+# wrong thing for all nine: the problem is not that the CALL is invalid, it is
+# that the NAME does not exist, and a sentence about the call sends a reader to
+# check their arguments. Reported by the gbasic-books session 2026-10-02 against
+# `is_money`; the same complaint one namespace over.
+#
+# A RULE RE-ESTABLISHED AT NINE CALL SITES IS ONE A TENTH MODULE LEAVES OUT,
+# which is the lesson `first_raise_wins` produced from the other direction, so
+# the format lives in `module_unknown_verb` and this tier fails if a second
+# construction site appears. Sited HERE because this suite's subject is the
+# module surface and it already enumerates the modules.
+#
+# TWO HALVES, and the second is what keeps the first from being decoration: the
+# formatter must exist and be the ONLY builder of that text, AND the message
+# must actually REACH a caller for every module -- a formatter nobody calls
+# would satisfy a source grep perfectly.
+checks=$((checks + 1))
+builders="$(grep -c 'undefined function: %s\.%s' src/eval.c || true)"
+if [ "$builders" = "1" ]; then
+    echo "ok   the unknown-verb sentence is built in exactly one place"
+else
+    echo "MISMATCH unknown-verb text built in $builders places, want 1 -- route it through module_unknown_verb"
+    status=1
+fi
+checks=$((checks + 1))
+stale="$(grep -c '"invalid function call: [a-z]*\.%s"' src/eval.c || true)"
+if [ "$stale" = "0" ]; then
+    echo "ok   no module still builds the old sentence"
+else
+    echo "MISMATCH $stale module dispatchers still say 'invalid function call'"
+    status=1
+fi
+# AND THE COUNT, because the two checks above have a measured blind spot: a
+# hand-rolled copy that happens to produce the SAME TEXT from a different
+# format string passes both (proven -- that perturbation was green). Counting
+# the CALL SITES is the direct statement, and the expected number is the length
+# of the module list this tier probes rather than a literal, so the two cannot
+# disagree about how many modules there are.
+checks=$((checks + 1))
+mod_list="webclient http timer webserver sqlite odbc pg gi money"
+want_calls="$(printf '%s\n' $mod_list | grep -c .)"
+# One definition plus one call per module.
+got_calls="$(( $(grep -c 'module_unknown_verb(' src/eval.c) - 1 ))"
+if [ "$got_calls" = "$want_calls" ]; then
+    echo "ok   all $want_calls module dispatchers call the shared formatter"
+else
+    echo "MISMATCH $got_calls dispatchers call module_unknown_verb, want $want_calls -- a module is building its own sentence"
+    status=1
+fi
+# The behavioural half: ask each module for a verb nothing defines.
+verb_tmp="$tmp/unknown_verb.bas"
+for mod in $mod_list; do
+    checks=$((checks + 1))
+    case "$mod" in
+        timer|money) printf '%s.definitely_not_a_verb()\n' "$mod" >"$verb_tmp" ;;
+        *) printf 'load %s\n%s.definitely_not_a_verb()\n' "$mod" "$mod" >"$verb_tmp" ;;
+    esac
+    out="$(GBASIC_PATH=stdlib ./gbasic "$verb_tmp" 2>&1 || true)"
+    case "$out" in
+        *"undefined function: $mod.definitely_not_a_verb"*)
+            printf 'ok   %s names the verb it does not define\n' "$mod" ;;
+        *"not available in this build"*|*"was not built with"*)
+            printf 'ok   %s (compiled out; nothing to ask)\n' "$mod" ;;
+        *)
+            printf 'MISMATCH %s: [%s]\n' "$mod" "$(printf '%s' "$out" | tail -1)"
+            status=1 ;;
+    esac
+done
+
 printf '\nchecks: %d\n' "$checks"
 if [ "$status" = 0 ]; then printf 'mismatches: 0\n'; else printf 'FAILED\n'; fi
 exit "$status"

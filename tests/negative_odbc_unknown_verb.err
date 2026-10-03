@@ -1,1 +1,1 @@
-runtime error at tests/negative_odbc_unknown_verb.bas:2:1: invalid function call: odbc.vacuum
+runtime error at tests/negative_odbc_unknown_verb.bas:2:1: undefined function: odbc.vacuum -- the 'odbc' module does not define 'vacuum'

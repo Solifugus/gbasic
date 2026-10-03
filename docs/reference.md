@@ -1618,9 +1618,15 @@ still come after it — a `program` block's body runs in order like any other.
 (This paragraph said "inside a `program` block" until 2026-09-23, which is the
 natural reading and was false.)
 
-The diagnostic for the script-mode case is `invalid function call: sq`, which
-names the call rather than the ordering — if you see it for a function you are
-certain exists, check whether it is declared *below* the line that calls it.
+The diagnostic for the script-mode case is `undefined function: sq — no
+function, library function or builtin of that name is in scope at this call`,
+which names the scope rather than the ordering — if you see it for a function
+you are certain exists, check whether it is declared *below* the line that
+calls it. It says **in scope at this call** rather than "nothing defines that
+name" for exactly this reason: here the file plainly does define it, and the
+blunter sentence would be a lie in the one place a reader is most likely to be
+confused. (It read `invalid function call: sq` until 2026-10-02, which was a
+sentence about the call and sent readers to check their arguments.)
 
 **A library's own dependencies are declared INSIDE its `library` block.**
 Declaring one beside the library rather than inside it is not a scoping error —
@@ -5733,7 +5739,21 @@ File functions (see also the file/directory value types):
   than stopping at the first one. Before rc9 `write` was binary-safe and `read`
   was not, so a file holding binary — a `serialize` payload, an image — could
   be written and silently read back short.
-- `bytes(f)` / `lines(f)` / `chars(f)` — the file's **size** in bytes, its line count, its character count. These are counts, not content; use `read` for the content.
+- `bytes(f)` / `lines(f)` / `chars(f)` — the file's **size** in bytes, its line
+  count, and its count of **codepoints**. These are counts, not content; use
+  `read` for the content. `bytes` is answered by `stat` on a regular file, so it
+  costs nothing on a large one; `lines` and `chars` read it.
+
+  **`chars` counted BYTES until 2026-10-02**, sharing a branch with `bytes`
+  under a `TODO` in the source, so the two verbs returned the identical number
+  on every file — right for ASCII and wrong for everything else, in the
+  direction that looks like a working answer. It had no test coverage in the
+  tree, which is how the `TODO` reached a release. `chars(f)` now agrees with
+  `len(read(f))`, which was correct all along, and the two routes to the same
+  question no longer disagree. Asserted in `examples/file_counts_test.bas`,
+  whose load-bearing check is that `chars` and `bytes` **differ** on a
+  multibyte file — every value check in the file is also satisfied by a build
+  where they are one function.
 - `read_lines(f)` — the file's lines as an array of **strings**, without their
   line endings. `lines(f)` counts them; this returns them.
 - `overwrite(f, text, position)` — write `text` **in place** at a byte offset,
