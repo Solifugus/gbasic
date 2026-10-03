@@ -10543,3 +10543,45 @@ only one that had no defence — the other three (a suite that SKIPS everything,
 discovery pass that SHRINKS, a fixture that HANGS) were already named in
 `CLAUDE.md`. Proven by reinstating the exact reported bug: `run_core` alone
 exits 0, and the gate reports `FAIL (said FAIL, exited 0)` and names the line.
+
+## Asked 2026-10-02 — can a clause carry several modifiers, like `{trimmed,upper}=`?
+
+**No in the clause, YES inline, and the inline half had no test and no sentence
+in the reference.** Measured rather than recalled, which is how the second half
+turned up.
+
+The clause takes exactly one, and the two obvious spellings fail in two
+*different* ways — each one a fact about what that syntax already means rather
+than a gap:
+
+| written | what happens | why |
+|---|---|---|
+| `x {trimmed,upper}= s` | `assign modifier not found: trimmed,upper` | the comma is part of the **name** |
+| `x {trimmed upper}= s` | `trimmed modifier expects no arguments` | a space continues a name (`{end of month}`) or starts an **argument** (`{split ","}`), by longest match against registered names |
+| `x {trimmed}{upper}= s` | parse error | one clause per assignment |
+
+**So both candidate spellings are already claimed**, which is the real answer to
+"why not" — not a missing feature but two occupied syntaxes.
+
+**The inline form composes for free and nests to any depth.** The grammar rule
+is `MODIFIER_PREFIX unary_expression` and its result IS a `unary_expression`, so
+it is right-recursive like unary minus. `x {upper}= {trimmed}s` works too — a
+clause over an inline chain.
+
+**IT HAS WORKED SINCE THE INLINE FORM SHIPPED AND NOTHING ASSERTED IT**: zero
+matches for `{a}{b}` across every test and example in the tree, and the
+reference's *Inline type modifiers* section said nothing about nesting. A
+working capability that is undocumented and unasserted is the same shape as the
+`chars` TODO that reached a release, so both are closed now — six checks in
+`tests/inline_modifier_test.bas` and the three refusals with three controls in
+`tests/run_inline_modifier.sh`.
+
+**TWO LESSONS FROM WRITING THOSE CHECKS, both my own.** My first order
+demonstration used `{trimmed}` and `{upper}`, which **commute** on the input I
+chose, so it agreed in both orders and proved nothing; the pair that shows order
+is `{number}` and `{trimmed}`, where only one order has a defined answer at all.
+And my first three CONTROLS went through the refusal helper with an **empty
+needle** — `case "$out" in *""*)` matches anything — so all three passed while
+asserting nothing, including on a build where the clause had stopped working.
+They have their own helper now, requiring exit 0 and an exact answer, and on its
+first non-vacuous run it caught my expected array rendering being wrong.

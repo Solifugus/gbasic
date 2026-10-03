@@ -1216,6 +1216,31 @@ be given it on.
 It binds like unary minus, tighter than any binary operator, so
 `{number}"12" + 1` is `({number}"12") + 1` — 13, not 121.
 
+**AND LIKE UNARY MINUS IT NESTS**, to any depth, innermost first — the grammar
+rule is `MODIFIER_PREFIX <expression>` and its result is itself an expression,
+so composition costs nothing and was never designed:
+
+```basic
+clean = {upper}{trimmed}raw            ' trim, then upcase
+n = {number}{trimmed}field             ' the common one
+total {USD}= {number}{trimmed}cell     ' a clause over an inline chain
+```
+
+Order matters where the two do not commute: `{number}{trimmed}"  42  "` is the
+number `42`, while `{trimmed}{number}"  42  "` raises `trim expects a string`.
+Documented and asserted 2026-10-02, after the question was asked — it worked
+from the day the inline form shipped and there was not one `{a}{b}` anywhere in
+the tree.
+
+**The CLAUSE form takes exactly one modifier**, and neither obvious extension is
+available because both spellings already mean something else: a comma becomes
+part of the **name** (`{trimmed,upper}=` reports `assign modifier not found:
+trimmed,upper`) and a space is how a name **continues** (`{end of month}`) or
+takes an **argument** (`{split ","}`), resolved by longest match against the
+registered names — so `{trimmed upper}=` reads `upper` as an argument and
+reports `trimmed modifier expects no arguments`. Chain inline and store the
+result, as the third line above does.
+
 Two shapes have **no** inline form and still need the assignment clause: a
 modifier that takes **arguments** (`{split ","}`) and one with a **multi-word**
 name (`{end of month}`). A **library-qualified** name is one word and does work

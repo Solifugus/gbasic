@@ -70,10 +70,10 @@ else
     n=$(sed -n 's/^checks: //p' "$work/out")
     # A coverage floor: a fixture that stops running its checks otherwise
     # passes by asserting nothing.
-    if [ -z "$n" ] || [ "$n" -lt 28 ]; then
-        fail "only ${n:-0} checks ran, wanted at least 28"
+    if [ -z "$n" ] || [ "$n" -lt 34 ]; then
+        fail "only ${n:-0} checks ran, wanted at least 34"
     else
-        pass "$n checks (10 parity pairs, precedence, 8 positions, 8 controls)"
+        pass "$n checks (10 parity pairs, precedence, 8 positions, 6 nesting, 8 controls)"
     fi
 fi
 
@@ -148,6 +148,62 @@ elif grep -q 'assign modifier not found: nosuchmodifier' "$work/badc.err"; then
 else
     cat "$work/badc.err"; fail "the two forms refuse differently"
 fi
+
+printf 'TIER the clause takes ONE modifier, and why neither spelling can mean more\n'
+# ASKED RATHER THAN DESIGNED: `{trimmed,upper}=` was tried 2026-10-02 and the
+# answer is no -- but the two obvious spellings fail in two DIFFERENT ways, and
+# each one is a fact about what that syntax already means rather than a gap.
+#
+# A COMMA BECOMES PART OF THE NAME, so the lookup fails on a name nobody
+# registered. A SPACE is how a modifier name CONTINUES (`{end of month}`) or
+# takes an ARGUMENT (`{split ","}`), resolved by longest match against the
+# registered names -- so `trimmed` matched as the name and `upper` was read as
+# an argument to it. Both spellings are claimed; that is the whole reason
+# neither is available for composition.
+#
+# PINNED BECAUSE THE INLINE FORM DOES COMPOSE (asserted in the fixture), which
+# makes "can I write two in a clause" a question somebody will ask again -- and
+# the answer is more useful as two located diagnostics than as a sentence.
+clause_refusal() {   # <source line> <needle>
+    printf 's = "  hello  "\n%s\nprint(x)\n' "$1" >"$work/clause.bas"
+    out="$(timeout -k 5 20 ./gbasic "$work/clause.bas" 2>&1 || true)"
+    case "$out" in
+        *"$2"*) pass "$3" ;;
+        *) printf '    got: %s\n' "$(printf '%s' "$out" | tail -1)"; fail "$3" ;;
+    esac
+}
+clause_refusal 'x {trimmed,upper}= s' 'assign modifier not found: trimmed,upper' \
+    'a comma is part of the NAME, so the lookup fails on it'
+clause_refusal 'x {trimmed upper}= s' 'expects no arguments' \
+    'a space makes the second word an ARGUMENT, not a second modifier'
+clause_refusal 'x {trimmed}{upper}= s' 'syntax error' \
+    'two clauses in a row is a parse error'
+# THE CONTROLS, or "the clause refuses" is satisfied by a clause that refuses
+# everything -- and these three are exactly what the two spellings above are
+# claimed BY, so without them the refusals above read as gaps rather than as
+# consequences.
+#
+# A SEPARATE HELPER THAT REQUIRES SUCCESS AND AN ANSWER, which is a correction
+# made before this shipped: the first draft ran them through `clause_refusal`
+# with an EMPTY needle, and `case "$out" in *""*)` matches anything -- so all
+# three passed while asserting nothing at all, including on a build where the
+# clause had stopped working. The same vacuous-control shape this suite's own
+# neighbours keep producing.
+clause_works() {   # <source line> <expected stdout> <label>
+    printf 's = "  hello  "\n%s\nprint(string(x))\n' "$1" >"$work/clause.bas"
+    got="$(timeout -k 5 20 ./gbasic "$work/clause.bas" 2>"$work/clause.err")"
+    rc=$?
+    if [ "$rc" != 0 ]; then
+        printf '    exit %s: %s\n' "$rc" "$(tail -1 "$work/clause.err")"; fail "$3"
+    elif [ "$got" != "$2" ]; then
+        printf '    got [%s], want [%s]\n' "$got" "$2"; fail "$3"
+    else
+        pass "$3"
+    fi
+}
+clause_works 'x {trimmed}= s' 'hello' 'CONTROL: one modifier in a clause still works'
+clause_works 'x {split "e"}= s' '["  h","llo  "]' 'CONTROL: a name plus an argument still works'
+clause_works 'x = {upper}{trimmed}s' 'HELLO' 'CONTROL: the inline form still nests'
 
 printf 'TIER valgrind\n'
 if vg_available; then

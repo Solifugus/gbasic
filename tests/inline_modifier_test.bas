@@ -53,6 +53,13 @@ function check_same(label, got, want)
     return nothing
 end function
 
+' A clause modifier applied to an inline one. In a function because a clause is
+' an ASSIGNMENT and `check(...)` takes an expression.
+function up_of_trim(s)
+    out {upper}= {trimmed}s
+    return out
+end function
+
 function check(label, got, want)
     tally.checks = tally.checks + 1
     if string(got) = string(want) then
@@ -156,6 +163,34 @@ check("a clause WITH ARGUMENTS still parses", k[1], "b")
 
 m {end of month}= {date}"2026-02-10"
 check("a MULTI-WORD clause still parses", m.day, 28)
+
+print ""
+print "-- NESTING: the inline form composes, because it is a PREFIX OPERATOR"
+' NOT A DESIGNED FEATURE, which is why it had no test until 2026-10-02 (asked
+' after `{trimmed,upper}=` was tried and refused). The grammar rule is
+' `MODIFIER_PREFIX unary_expression` and its result IS a unary_expression, so it
+' is right-recursive like unary minus and nests for free. Found by measuring,
+' not by reading: there was no `{a}{b}` anywhere in the tree.
+'
+' THE CLAUSE FORM TAKES EXACTLY ONE, and cannot be extended by either obvious
+' spelling because both are already claimed -- a comma becomes part of the NAME
+' (`assign modifier not found: trimmed,upper`) and a space is how a name
+' continues (`{end of month}`) or takes an argument (`{split ","}`), resolved by
+' longest match against registered names. Those refusals are pinned in
+' tests/run_inline_modifier.sh.
+padded = "  hello  "
+check("two deep", {upper}{trimmed}padded, "HELLO")
+check("the other order", {trimmed}{upper}padded, "HELLO")
+check("a clause over an inline", up_of_trim(padded), "HELLO")
+' ORDER IS INNERMOST-FIRST, and the two checks above cannot show it because
+' `trimmed` and `upper` COMMUTE on that input -- a pair that agrees proves
+' nothing about order. This pair does not commute: `trimmed` wants a string, so
+' only one of the two orders has a defined answer at all.
+check("innermost first", {number}{trimmed}"  42  ", 42)
+check("and the type survives the chain", type({number}{trimmed}"  42  "), "number")
+' Three deep, so "it nests" is not satisfied by a parser that happens to allow
+' exactly two.
+check("three deep", {string}{number}{trimmed}"  42  ", "42")
 
 print ""
 print "-- CONTROL: record literals are untouched"
