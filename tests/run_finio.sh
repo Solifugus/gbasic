@@ -72,7 +72,14 @@ fi
 # that tries to total its amounts.
 printf 'TIER amount_kind\n'
 out="$scratch/amt.out"
-if timeout 120 ./gbasic tests/finio/amount_kind_test.bas >"$out" 2>&1; then
+# The table names EVERY adapter, and the ISO 20022 ones (camt, pain.001) are
+# XML: a build without libxml2 cannot load them at all, so this tier cannot
+# run there -- said as a SKIP rather than failing a build that is correct
+# (measured on Windows, where XML arrives with milestone M3).
+. tests/build_has.sh
+if ! build_has xml; then
+    ok "SKIP amount_kind (this gbasic was built without libxml2; the XML adapters cannot load)"
+elif timeout 120 ./gbasic tests/finio/amount_kind_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
     if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 18 ]; then

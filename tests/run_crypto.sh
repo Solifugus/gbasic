@@ -2,13 +2,15 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-
-if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists libcrypto; then
-    printf 'SKIP examples/crypto_test.bas (OpenSSL libcrypto not available)\n'
-    exit 0
-fi
+. tests/build_has.sh
 
 make
+
+# Asked of the BINARY, not pkg-config (tests/build_has.sh says why).
+if ! build_has crypto; then
+    printf 'SKIP examples/crypto_test.bas (this gbasic was built without OpenSSL libcrypto)\n'
+    exit 0
+fi
 
 stdout_file="$(mktemp)"
 stderr_file="$(mktemp)"

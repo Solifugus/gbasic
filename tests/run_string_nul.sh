@@ -271,7 +271,11 @@ fi
 #
 # THE THREE MODULES NEEDED THREE DIFFERENT ANSWERS, and the differences are
 # facts about the databases rather than about us.
-if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sqlite3; then
+#
+# Asked of the BINARY, not pkg-config: an installed sqlite3 is not a gbasic
+# built with it (tests/build_has.sh, measured on Windows).
+. tests/build_has.sh
+if build_has sqlite; then
     db="$scratch/nul.db"; rm -f "$db"
     cat > "$scratch/nul_db.bas" <<BAS
 load sqlite
@@ -297,7 +301,7 @@ BAS
     fi
     rm -f "$db"
 else
-    pass "sqlite doors (SKIP: sqlite3 development files not available)"
+    pass "sqlite doors (SKIP: this gbasic was built without sqlite)"
 fi
 
 # --- THE FILE-FORMAT DOORS --------------------------------------------------
