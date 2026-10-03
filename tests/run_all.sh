@@ -131,6 +131,56 @@ for path in tests/run_*.sh; do
     fi
 done
 
+# NOTHING IN THIS TREE MAKES A LIVE PAID CALL WITHOUT BEING ASKED.
+#
+# Two fixtures exist whose whole job is to call a real model and overwrite the
+# recordings every other check replays: tests/ari_advisor/record.bas and
+# tests/nlq/record.bas. Both said so in their headers and NEITHER ENFORCED IT,
+# and on 2026-10-02 an instrumentation sweep that ran every `.bas` in the tree
+# ran one of them -- a live paid call nobody asked for, and a committed
+# recording overwritten (restored from git). The fixture's own comment was the
+# only thing between a glob and somebody's API bill.
+#
+# CHECKED HERE because the property belongs to the whole gate rather than to
+# either library's suite, and this is the one thing that sees every file. A
+# static scan, deliberately: the behavioural check would be to RUN them, which
+# is the act being prevented.
+#
+# FOUND BY WHAT IT DOES, NOT BY ITS NAME. The first draft globbed
+# `tests/record*.bas` and reported tests/record_nul_test.bas, which is about
+# RECORD VALUES -- a tripwire whose false positives look exactly like its true
+# ones is not a tripwire, which is the lesson finio's amount-kind check already
+# produced. Measured instead: `load llm` WITH `load webclient` is carried by
+# exactly the two recorders and by none of the eight fixtures that REPLAY
+# through `with_transport`, because a replayer's transport reads a file and only
+# a recorder needs a real HTTP client. A future fixture that legitimately wants
+# both will fail this and somebody will decide, which is the right direction for
+# a check about spending money.
+#
+# BOTH DIRECTIONS, so the rule cannot rot in either: every recorder must carry
+# the switch, AND at least two must exist -- a scan that matches nothing
+# reports a clean run, which is how this gate goes quiet without going red.
+rec_total=0
+rec_bad=0
+for rec in $(grep -rl 'load webclient' tests/*.bas tests/*/*.bas 2>/dev/null | xargs -r grep -l 'load llm' 2>/dev/null); do
+    [ -f "$rec" ] || continue
+    rec_total=$((rec_total + 1))
+    grep -q 'GBASIC_RECORD_FIXTURES' "$rec" || {
+        printf 'FAIL %-27s makes live model calls with no GBASIC_RECORD_FIXTURES guard\n' "$rec"
+        rec_bad=1
+    }
+done
+if [ "$rec_total" -lt 2 ]; then
+    printf 'FAIL %-32s only %d recorder(s) found -- the scan stopped matching, it did not pass\n' 'record guard' "$rec_total"
+    fail=$((fail + 1))
+    failed_names+=("record-guard")
+elif [ "$rec_bad" != "0" ]; then
+    fail=$((fail + 1))
+    failed_names+=("record-guard")
+else
+    printf '%-32s OK (%d recorders, each opt-in)\n' 'record guard' "$rec_total"
+fi
+
 printf '\n%d passed, %d failed, %d skipped entirely' "$pass" "$fail" "$skip"
 [ "$excluded" -gt 0 ] && printf ', %d manual excluded' "$excluded"
 printf '\n'

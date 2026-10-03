@@ -10648,3 +10648,51 @@ keeps the ergonomics, and `string(nothing)` staying silent because an explicit
 conversion is the author saying they meant it. **But it fires on correct code
 three times for every defect it finds in our own tree, on `+`, so it is
 Matthew's call rather than mine.**
+
+## My own sweep made a live paid API call and overwrote a committed fixture, 2026-10-02
+
+Recording this against myself because the ledger's standing rule cuts both ways
+and this is the sharpest instance of it in the file.
+
+**What happened.** The absence-coercion instrumentation above ran every `.bas`
+in the tree — `examples/*.bas examples/*/*.bas tests/*.bas tests/*/*.bas` —
+which includes `tests/ari_advisor/record.bas`, **a fixture whose entire job is
+to call a real model and overwrite the recordings every other check replays.**
+There are API keys in this environment, so it went through. Evidence:
+`tests/ari_advisor/replay/b8f69e7c-0.json` had an mtime inside the sweep window,
+a new `chatcmpl-` id, a `created` timestamp 1,055,274 seconds later than the
+recording it replaced, a different `system_fingerprint` and different completion
+text. Restored from git; `run_ari_advisor` passes against the original, so
+nothing is lost but the call was still made and nobody asked for it.
+
+It also dropped a 95 KB `nacha.txt` into the repo root from
+`examples/finio_lab/make_nacha.bas`. Removed.
+
+**THE FIXTURE'S OWN COMMENT WAS THE ONLY GUARD.** Its header has always said it
+is "run deliberately, with an API key, by somebody who means to" — and
+`tests/run_ari_advisor.sh` says "NO NETWORK AND NO KEY" in capitals. All true,
+all prose, and **an intention nobody enforces is indistinguishable from the
+defect**, which is the sentence this file keeps writing about other people's
+code.
+
+**Both recorders are opt-in now** (`GBASIC_RECORD_FIXTURES=1`), matching every
+other expensive or destructive tier here — `RUN_FINIO_COST`,
+`GBASIC_POSTGRES_TEST`, `NAP_FS_STRESS`, `LIBCURL_FLOOR_BUILD`. Checked as the
+FIRST statement, before any `load`, request or write, and verified: run bare they
+refuse with exit 2 and the recordings are byte-identical afterwards.
+
+**And a tripwire in `run_all.sh`, because two recorders is a number that
+grows.** It FINDS THEM BY WHAT THEY DO, not by name: the first draft globbed
+`tests/record*.bas` and reported `tests/record_nul_test.bas`, which is about
+RECORD VALUES — a tripwire whose false positives look exactly like its true ones
+is not a tripwire, which is the lesson finio's amount-kind check already
+produced. Measured instead: `load llm` together with `load webclient` is carried
+by exactly the two recorders and by **none** of the eight fixtures that replay
+through `with_transport`, because a replayer's transport reads a file and only a
+recorder needs a real HTTP client. Both directions proven red — a recorder that
+loses its guard, and the scan broken so it matches nothing.
+
+**The standing lesson, which is mine and general: a sweep that runs every file
+in the tree runs the files whose job is to touch the outside world.** Any future
+instrumentation pass excludes the recorders, and anything else that spends money,
+writes outside a scratch directory, or talks to a network.

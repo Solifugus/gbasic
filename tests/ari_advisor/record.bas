@@ -16,6 +16,24 @@
 ' documented idiom, not a workaround.
 
 program main( args )
+    ' AN INTENTION NOBODY ENFORCES IS NOT A GUARD. The header above has always
+    ' said this is "run deliberately, with an API key, by somebody who means to"
+    ' -- and on 2026-10-02 an instrumentation sweep that ran every `.bas` in the
+    ' tree ran THIS, made a live paid call, and overwrote a committed recording.
+    ' The file was restored from git; the lesson is that the fixture had no way
+    ' to tell a deliberate run from an accidental one, and its own comment was
+    ' the only thing standing between a glob and somebody's API bill.
+    '
+    ' So it is opt-in, the way every other expensive or destructive tier in this
+    ' tree is (RUN_FINIO_COST, GBASIC_POSTGRES_TEST, NAP_FS_STRESS,
+    ' LIBCURL_FLOOR_BUILD). Checked FIRST, before any load, any request or any
+    ' write, so a refusal costs nothing and changes nothing.
+    if is_unknown(env("GBASIC_RECORD_FIXTURES")) then
+        print to error "refusing to record: this makes LIVE, PAID model calls and"
+        print to error "OVERWRITES committed fixtures. Set GBASIC_RECORD_FIXTURES=1"
+        print to error "if that is what you want."
+        exit(2)
+    end if
     load ari_discover
     load ari_advisor
     load llm
