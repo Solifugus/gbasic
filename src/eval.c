@@ -6756,7 +6756,100 @@ static int valid_date_parts(DateTime dt) {
     return 1;
 }
 
+/* ISO 8601's `T` SEPARATOR AND ZONE DESIGNATOR, normalised away before the
+ * strict position scanner below ever sees them.
+ *
+ * `2026-03-07T14:05:09Z` is what a web API hands you and it was REFUSED -- the
+ * scanner wanted a space at position 10 and nothing after the seconds. Both are
+ * syntax rather than semantics, so they are stripped here and the one scanner
+ * stays the single place that decides what a datetime looks like.
+ *
+ * AN OFFSET IS HONOURED BY CONVERTING TO UTC, and that is forced by the type
+ * rather than chosen: a gBASIC `datetime` is CIVIL and carries no zone (which
+ * is why `epoch(dt, zone)` exists), while `14:05:09+02:00` denotes an INSTANT.
+ * Turning an instant into a civil time needs a zone, and UTC is the only one the
+ * text implies. The alternative -- keep the wall clock and drop the offset --
+ * would make `14:05:09+02:00` and `14:05:09Z` the SAME VALUE while they are two
+ * hours apart, which is a wrong answer with nothing raised.
+ *
+ * `Z` and `+00:00` are therefore no-ops, which is the overwhelmingly common
+ * case; only a non-zero offset moves the digits.
+ *
+ * THE SUFFIX IS LOOKED FOR ONLY AFTER THE DATE/TIME SEPARATOR, because a bare
+ * `2026-03-07` ends in `-07` and a scan from the right would read it as an
+ * offset of seven hours. */
+static int datetime_strip_zone(const char *text, char *buf, size_t bufsz,
+                               long long *offset_seconds) {
+    *offset_seconds = 0;
+    size_t len = strlen(text);
+    if (len == 0 || len >= bufsz) {
+        return 0;
+    }
+    memcpy(buf, text, len + 1);
+    if (len <= 10 || (buf[10] != ' ' && buf[10] != 'T')) {
+        /* No time component: nothing to normalise, and no place a zone could
+         * legally sit. */
+        return 1;
+    }
+    buf[10] = ' ';
+
+    /* `Z` -- UTC, so the civil fields are already the answer. */
+    if (len > 11 && (buf[len - 1] == 'Z' || buf[len - 1] == 'z')) {
+        buf[len - 1] = '\0';
+        return 1;
+    }
+    /* `+HH`, `+HH:MM`, `+HHMM` and their `-` forms, anchored at the end and
+     * never before position 11. */
+    for (size_t i = len; i > 11; i--) {
+        char c = buf[i - 1];
+        if (c != '+' && c != '-') {
+            continue;
+        }
+        const char *p = buf + i;          /* just past the sign */
+        size_t rest = len - i;
+        int hh = -1, mm = 0;
+        if (rest == 2 && all_digits(p, 0, 2)) {
+            hh = parse_int_span(p, 0, 2);
+        } else if (rest == 4 && all_digits(p, 0, 4)) {
+            hh = parse_int_span(p, 0, 2);
+            mm = parse_int_span(p, 2, 2);
+        } else if (rest == 5 && all_digits(p, 0, 2) && p[2] == ':' &&
+                   all_digits(p, 3, 2)) {
+            hh = parse_int_span(p, 0, 2);
+            mm = parse_int_span(p, 3, 2);
+        }
+        if (hh < 0 || hh > 23 || mm > 59) {
+            return 0;   /* a sign at the end that is not a zone: refuse. */
+        }
+        *offset_seconds = (long long)(hh * 3600 + mm * 60) * (c == '-' ? -1 : 1);
+        buf[i - 1] = '\0';
+        return 1;
+    }
+    return 1;
+}
+
+static long long zone_timegm(DateTime dt);
+static DateTime zone_civil_from_epoch_utc(long long epoch, DateTimePrecision prec);
+static int parse_date_value_strict(const char *text, DateTime *out);
+
 static int parse_date_value(const char *text, DateTime *out) {
+    char buf[64];
+    long long offset = 0;
+    if (!datetime_strip_zone(text, buf, sizeof buf, &offset)) {
+        return 0;
+    }
+    DateTime dt;
+    if (!parse_date_value_strict(buf, &dt)) {
+        return 0;
+    }
+    if (offset != 0) {
+        dt = zone_civil_from_epoch_utc(zone_timegm(dt) - offset, dt.precision);
+    }
+    *out = dt;
+    return 1;
+}
+
+static int parse_date_value_strict(const char *text, DateTime *out) {
     size_t len = strlen(text);
     DateTime dt = {0};
     dt.month = 1;

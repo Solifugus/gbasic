@@ -26,6 +26,16 @@ reader sees.
   compensated for the old number will now be off**; one that trusted the name
   is now right.
 
+**It accepts input it used to refuse:**
+
+- **A `datetime` reads ISO 8601's `T` separator and zone designator.**
+  `2026-03-07T14:05:09Z` is what a web API hands you and it was refused. `Z`,
+  `+HH:MM`, `+HHMM` and `+HH` are accepted with their `-` forms. **An offset is
+  honoured by converting to UTC**, because the type is civil and carries no zone
+  while the text denotes an instant — so `+02:00` moves the digits back two
+  hours and `Z` is a no-op. A zone with no time, an impossible offset and a bare
+  sign are refused, and a bare date is untouched (`2026-03-07` ends in `-07`).
+
 **It adds language:**
 
 - **A modifier clause chains with `;`**, applied left to right:

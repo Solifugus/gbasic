@@ -1,0 +1,36 @@
+-- the T separator is a separator and nothing more
+ok   T parses            
+ok   and agrees with space
+
+-- Z is UTC, so the civil fields already ARE the answer
+ok   Z is a no-op        
+ok   with a space too    
+ok   +00:00 likewise     
+
+-- a non-zero offset converts to UTC, and the SIGN is the whole point
+ok   +02:00 goes BACK    
+ok   -05:00 goes FORWARD 
+
+-- the compact spellings of the same offset agree
+ok   +0200               
+ok   +02                 
+
+-- IT IS DATE ARITHMETIC, NOT HOUR SUBTRACTION
+ok   crosses a year      
+ok   and a month         
+
+-- lower precisions keep theirs
+ok   minute precision    
+ok   hour precision      
+
+-- CONTROLS: a bare date ends in `-07` and is NOT an offset
+ok   a bare date         
+ok   month precision     
+ok   year precision      
+
+-- CONTROLS: and the refusals, so this is not `accept anything`
+ok   a zone with no time 
+ok   an impossible offset
+ok   a bare sign         
+ok   trailing junk       
+ok   some other letter   

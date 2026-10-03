@@ -4908,6 +4908,33 @@ datetime as **local**, so `number(from_zone(now(), zone))` — the documented
 route to UTC — is wrong by the offset too, because a UTC civil value is being
 read as local. State the zone: `epoch(dt, zone)`.
 
+**ISO 8601 INPUT** *(since 2026-10-03)*. A `datetime` reads the `T` separator
+and a zone designator, so a timestamp off a web API parses as it stands:
+
+```basic
+a {datetime}= "2026-03-07T14:05:09"        ' 2026-03-07 14:05:09
+b {datetime}= "2026-03-07T14:05:09Z"       ' 2026-03-07 14:05:09
+c {datetime}= "2026-03-07T14:05:09+02:00"  ' 2026-03-07 12:05:09  — see below
+```
+
+`Z`, `+HH:MM`, `+HHMM` and `+HH` are all accepted, with their `-` forms.
+
+**AN OFFSET IS HONOURED BY CONVERTING TO UTC**, and the type forces that rather
+than taste. A gBASIC `datetime` is **civil** and carries no zone — which is why
+`epoch(dt, zone)` exists — while `14:05:09+02:00` denotes an **instant**.
+Turning an instant into a civil time needs a zone, and UTC is the only one the
+text implies. Keeping the wall clock and dropping the offset would make
+`14:05:09+02:00` and `14:05:09Z` the *same value* when they are two hours apart,
+which is a wrong answer with nothing raised. `Z` and `+00:00` are therefore
+no-ops, which is the common case; only a non-zero offset moves the digits, and
+it moves them by **date arithmetic** — `2026-01-01T00:30:00+02:00` is
+`2025-12-31 22:30:00`.
+
+A zone with no time (`2026-03-07Z`), an impossible offset (`+99:00`) and a bare
+sign are all refused. And a bare date is still a bare date: `2026-03-07` ends in
+`-07`, so the suffix is looked for only **after** the date/time separator — a
+scan from the right would read it as seven hours west.
+
 **`epoch()`** returns the current instant as Unix seconds. **`epoch(dt)`**
 places a civil datetime on the timeline by reading it as **local**;
 **`epoch(dt, zone)`** reads it as civil in that zone, which is the only correct
