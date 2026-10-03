@@ -4,6 +4,24 @@ Most of a release is already checked by something. This page is the **order**,
 and for each step it names the gate that enforces it — so the prose never
 becomes the authority. Where a step is genuinely manual, it says so.
 
+
+## Before you start: what changed, and what a book has to revisit
+
+`./tools/since-release.sh [tag]` reports the MECHANICAL half — which pinned
+diagnostics and goldens moved since the last tag, split into *modified* (a
+passage quoting one is now wrong) and *added* (something new to teach), plus the
+docs pages touched and the commit subjects.
+
+**It is a floor on what changed, never a ceiling**, and the reason is worth
+knowing before trusting it: it sees only diagnostics a GOLDEN pins. Measured on
+`v0.4.0..HEAD`, one `.err` moved while the same commit reworded the sentence
+NINE module dispatchers emit — none of those nine is pinned, so none appeared.
+
+So `CHANGELOG.md`'s **Unreleased** section stays hand-written and is kept current
+as work lands rather than reconstructed at release time. "This breaks working
+programs" is a judgement, and the curated note is the one a reader sees; the tool
+exists to make writing it cheap, not to replace it.
+
 ## 1. Green gate
 
 ```sh

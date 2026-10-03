@@ -7,6 +7,112 @@ language surface may still change between releases.
 
 ---
 
+## Unreleased
+
+Kept current as work lands, so a book revising against the next release has the
+list already written rather than reconstructed. `./tools/since-release.sh`
+reports the mechanical half of this — which pinned diagnostics and goldens moved
+since the last tag — and is a floor on what changed, never a ceiling: it sees
+only messages a golden pins. This section is the curated half and is the one a
+reader sees.
+
+**It changes a result:**
+
+- **`chars(f)` counts CODEPOINTS, not bytes.** It shared a branch with `bytes`
+  under a `TODO` in the source, so the two verbs returned the identical number
+  on every file — right for ASCII and wrong for everything else. A 12-character
+  file holding one accented letter reported 13 and now reports 12. `chars(f)`
+  now agrees with `len(read(f))`, which was correct all along. **A program that
+  compensated for the old number will now be off**; one that trusted the name
+  is now right.
+
+**It adds language:**
+
+- **A modifier clause chains with `;`**, applied left to right:
+  `clean {trimmed; upper}= raw`. The comma could not be used — it is already the
+  argument separator (`{between "a", "b"}`) and arity cannot disambiguate it. A
+  `;` inside an argument is content, not a separator.
+- **Any modifier now works as a comparison lens**, alone or chained:
+  `if name {trimmed; caseless}= typed then`. A comparison lens is a
+  *normalisation of both operands*, so this replaces
+  `trim(lower(a)) = trim(lower(b))`. Previously `caseless` was the only
+  comparison lens and `a {trimmed}= b` was refused outright. A lens that
+  *answers* the comparison (`caseless`, or one declared `for compare`) must be
+  the last stage. **A stage must be a pure function of its input**, because it
+  is applied to each operand separately.
+- **A modifier name may no longer contain `;`.** Measured: nothing in `stdlib`,
+  `examples` or `tests` declared one, so the affected set is believed empty.
+
+**Diagnostics that say something different** — anything quoting one verbatim has
+to re-capture it:
+
+- **`undefined function: NAME`** replaces `invalid function call: NAME` for a
+  name nothing defines, and names `has_builtin` as the way to ask first. It says
+  *in scope at this call* rather than "nothing defines that name", because in
+  script mode a function declared below its call is not yet registered and the
+  blunter sentence would be false there. The three *hinted* variants (a name a
+  loaded library defines, an ambiguous one, a replaced alias) are unchanged.
+- **The same for all nine module dispatchers** — `webclient`, `http`, `timer`,
+  `webserver`, `sqlite`, `odbc`, `pg`, `gi`, `money`: `undefined function:
+  odbc.vacuum -- the 'odbc' module does not define 'vacuum'`. Only
+  `negative_odbc_unknown_verb.err` pins one of these, so `since-release.sh`
+  reports one change where there are nine.
+- **The actor frame limit names both numbers**: `send: message is 200037 bytes
+  and one frame on this channel holds at most 106496`. The ceiling comes from
+  `SO_SNDBUF` and is a property of the machine, so there was no constant to look
+  up. `spawn` gets the same pair.
+- **A chain names the stage nobody recognised**: `assign modifier not found:
+  nosuch (stage 2 of this clause)`. A one-stage clause is unchanged.
+
+**It refuses things it used to accept quietly:**
+
+- **An unrecognised `dates` spec field.** `{ weekdayz: [...] }` was ignored,
+  which made it the *empty spec* that every day satisfies — so `select` answered
+  tomorrow and `matches` answered true for everything. Refused by name, in all
+  three verbs and recursively into `when:`. `dates.calendar` gets the same rule
+  over its own four fields.
+- **`notation.to_text` on a live value.** A function value was written as
+  `"<function greet>"` and read back as that *string*, raising nothing at either
+  end, so a record holding a callback came back with a string where the function
+  was.
+
+**New diagnostic:**
+
+- **Warning `2110`** — a `receive()` with no timeout, in a watcher body that
+  fired at *registration*, when every actor the program spawned has exited.
+  Nothing remains to send, the event loop has not started, and the program stops
+  with no diagnostic at all. It is a warning rather than a raise because a
+  handle can travel over `SCM_RIGHTS`, so a grandchild could still hold one.
+
+**Faster, with no visible change:**
+
+- **`bytes(f)` is answered by `stat`** on a regular file instead of reading it.
+  A 500 MB file went from allocating half a gigabyte to 0.00s at 13 MB RSS. A
+  FIFO or anything in `/proc` keeps the read path and the answer it already
+  gave.
+
+**Decisions recorded, with no behaviour change:**
+
+- **A `constructor` does not re-fire at nested levels.** Policies recurse,
+  constructors do not: a policy is a datum, a constructor is arbitrary code with
+  side effects that has already run once at literal-evaluation time.
+  `motor (copy): new engine` and `motor (copy): engine` derive *identically*.
+- **No warning for coercing an absence into a string.** `"Total owed: " + owed`
+  gives `Total owed: nothing`, which is real and reaches an invoice — but
+  measured across every program in the tree the coercion happens at ten places
+  and **eight are the idiom for showing that something is absent**. Use
+  `default(owed, "n/a")`; the reference now says so beside it.
+
+**For anyone running the test tree:**
+
+- **The two recorder fixtures are opt-in** (`GBASIC_RECORD_FIXTURES=1`). They
+  make live, paid model calls and overwrite committed recordings; nothing
+  enforced that before.
+- **`run_all.sh` fails a suite that prints `FAIL` and exits 0.** `run_core.sh`
+  did exactly that for nine days, so the gate reported OK over a failing check.
+
+---
+
 ## 0.4.0 — 2026-10-02
 
 **Read this first.** Two changes BREAK working programs, one changes a result
