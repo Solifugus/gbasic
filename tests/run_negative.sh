@@ -349,6 +349,9 @@ cases=(
     negative_dates_no_business
     negative_dates_select_no_nth
     negative_dates_series_zero
+    negative_dates_select_unknown_field
+    negative_dates_series_when_unknown_field
+    negative_dates_calendar_unknown_field
     negative_schedule_no_hours
     negative_zone_unknown
     negative_zone_allday

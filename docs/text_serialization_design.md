@@ -80,6 +80,30 @@ deliberate asymmetry with a stated reason rather than an oversight. A root
 array may carry a default, so a document that is simply a list of dates is
 `{date}: [ "2026-04-14", … ]`.
 
+**2c. A LIVE HANDLE IS REFUSED, NOT RENDERED (2026-10-02).** A function, regex,
+watcher, actor, process, connection, workbook or GObject has no textual form
+this format can read back, and `string(v)` renders one as `<function greet>`.
+That used to be **written out as an ordinary quoted string**: `{ cb: greet }`
+became `cb: "<function greet>"`, read back as the *string* `<function greet>`,
+and raised nothing at either end — so a record holding a callback came back with
+a string where the function was, and the failure surfaced wherever somebody
+later tried to call it.
+
+**The round trip was self-consistent and wrong, which is why nothing caught
+it** — the property this design calls load-bearing was satisfied, because the
+token went out and the same token came back. What it did not preserve was the
+*type*, which is the one thing the title of this document promises. `encode`
+already refuses live values for exactly this reason, and this format had the
+stronger obligation and the weaker behaviour. Reported by the gbasic-books
+session.
+
+The fixture asserts the **refusal** and not the round trip, and the difference
+matters: `from_text(to_text(r)).cb` equals `"<function greet>"` both before and
+after any change that merely picks a different token, so only "it refuses"
+separates a fix from a rewording. Its controls are a record of plain data and
+one carrying a tagged kind, both still accepted, since a writer that refused
+everything would satisfy the refusal checks alone.
+
 **3. The format has its own parser, and its output is NOT gBASIC source.**
 
 This is what makes decision 2 affordable. Every conflict count below matters

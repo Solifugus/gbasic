@@ -128,4 +128,38 @@ program main(args)
     wed23 {date}= "2026-12-23"
     run = dates.series({ every: "business day" }, { from: wed23, count: 3 }, hcal)
     x = check("bday steps skip hol   ", string(run[2]), "2026-12-28")
+
+    ' THE VOCABULARY LIST IS COMPLETE. An unrecognised spec field is refused by
+    ' name as of 2026-10-02, and the risk a refusal introduces is the opposite
+    ' of the one it fixes: a field left out of _spec_fields() would refuse
+    ' legal code. The refusals are pinned as negatives; THIS is the control
+    ' that says the list is not short, and it is the check that goes red if
+    ' somebody adds a spec field and forgets to declare it.
+    every_field = { weekday: ["monday"], day: 5, month: 1, kind: "business",
+                    except: [{date}"2026-01-12"], nth: 1, within: "month",
+                    after: {date}"2026-01-01", on_or_after: {date}"2026-01-01",
+                    before: {date}"2026-12-31", on_or_before: {date}"2026-12-31",
+                    roll: "forward", at: "09:00", every: "month",
+                    when: { nth: 1, weekday: ["monday"] } }
+    on error goto next
+    probe = dates.matches({date}"2026-01-05", every_field, cal)
+    if error then
+        x = check("every spec field legal", "refused: " + error.message, "accepted")
+        error.clear()
+    else
+        x = check("every spec field legal", "accepted", "accepted")
+    end if
+
+    ' And the same for the calendar's own four, which are a SEPARATE
+    ' vocabulary -- mixing them would accept `weekend:` on a selector and
+    ' `nth:` on a calendar, both of which do nothing.
+    on error goto next
+    cprobe = dates.calendar({ weekend: ["saturday"], holidays: [{date}"2026-07-04"],
+                              observe: "nearest", hours: { open: "09:00", close: "17:00" } })
+    if error then
+        x = check("every calendar field  ", "refused: " + error.message, "accepted")
+        error.clear()
+    else
+        x = check("every calendar field  ", "accepted", "accepted")
+    end if
 end program

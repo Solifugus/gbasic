@@ -34,3 +34,5 @@ ok BYMONTH: Jan 15
 ok BYMONTH: Jul 15        
 ok month as number        
 ok bday steps skip hol   
+ok every spec field legal
+ok every calendar field  

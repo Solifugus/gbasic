@@ -207,7 +207,26 @@ library notation
         if t = "number" then
             return string(v)
         end if
-        return _escape(string(v))
+        ' A KIND THIS FORMAT CANNOT HOLD IS REFUSED, NOT RENDERED.
+        '
+        ' Everything representable has already returned: the five scalars
+        ' above, and money/datetime/duration/file/dir through _tag_of before
+        ' _scalar is ever reached. So anything arriving here is a LIVE HANDLE
+        ' -- a function, a regex, a watcher, an actor, a process, a connection,
+        ' a workbook, a GObject -- and `string(v)` renders it as
+        ' `<function greet>`, which used to be written out as an ordinary
+        ' quoted string.
+        '
+        ' THE ROUND TRIP WAS SELF-CONSISTENT AND WRONG, which is why nothing
+        ' caught it: `{ cb: greet }` wrote `cb: "<function greet>"`, read back
+        ' as the STRING `<function greet>`, and raised nothing at either end --
+        ' so a record holding a callback came back with a string where the
+        ' function was, and the failure surfaced wherever somebody later tried
+        ' to call it. This format's whole claim is that it keeps EVERY gBASIC
+        ' type; a lossy token that reads back as a different type is the one
+        ' thing it may not do, and `encode` already refuses live values for
+        ' exactly this reason. Reported by the gbasic-books session 2026-10-02.
+        error "notation: a " + t + " value cannot be written as text (" + string(v) + ") -- it is a live handle rather than data, and writing it would read back as a string"
     end function
 
     ' Does every element share one tag? Then the array carries it once and the
