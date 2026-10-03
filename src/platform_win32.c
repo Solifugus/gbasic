@@ -121,18 +121,8 @@ int gb_unsetenv(const char *name) {
     return _putenv_s(name, "") == 0;
 }
 
-/* The _s forms take (out, in) -- reversed from POSIX -- and return an errno. */
-struct tm *gb_localtime(const time_t *t, struct tm *out) {
-    return localtime_s(out, t) == 0 ? out : NULL;
-}
-
-struct tm *gb_gmtime(const time_t *t, struct tm *out) {
-    return gmtime_s(out, t) == 0 ? out : NULL;
-}
-
-time_t gb_timegm(struct tm *tm) {
-    return _mkgmtime(tm);
-}
+/* gb_localtime, gb_gmtime, gb_timegm and gb_mktime are below the ICU section,
+ * which the local-time pair is built on. */
 
 /* No mode: see the header. _mkdir sets errno = EEXIST for an existing entry,
  * which is the distinction the callers depend on. */
@@ -854,6 +844,159 @@ int gb_zone_offset(const char *zone, long long utc_epoch, int *offset_seconds) {
     }
     *offset_seconds = (int)((zone_ms + dst_ms) / 1000);
     return 0;
+}
+
+/* ---- civil time: any year, not only 1970 onward --------------------------- */
+
+/* WHY NOT THE C RUNTIME. gmtime_s, localtime_s, _mkgmtime and mktime all refuse
+ * an instant before 1970 on Windows, where glibc's accept any year -- so
+ * epoch() of a 1950 datetime RAISED on Windows and answered on Linux, and a
+ * pinned 1900 clock read as zero (measured, examples and run_xlsx.sh). UTC is
+ * therefore pure arithmetic (Howard Hinnant's days-from-civil algorithms,
+ * exact for every proleptic Gregorian year), and LOCAL time is UTC plus the
+ * zone's offset at that instant from the ICU above, which also carries the
+ * HISTORICAL rules glibc's tz database does (New York's 1950 daylight time). */
+
+static long long floor_div(long long a, long long b) {
+    long long q = a / b;
+    return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
+}
+
+static long long days_from_civil(long long y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    long long era = floor_div(y, 400);
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153 * (m + (m > 2 ? (unsigned)-3 : 9)) + 2) / 5 + d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (long long)doe - 719468;
+}
+
+static void civil_from_days(long long z, long long *y, unsigned *m, unsigned *d) {
+    z += 719468;
+    long long era = floor_div(z, 146097);
+    unsigned doe = (unsigned)(z - era * 146097);
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned mp = (5 * doy + 2) / 153;
+    *d = doy - (153 * mp + 2) / 5 + 1;
+    *m = mp < 10 ? mp + 3 : mp - 9;
+    *y = (long long)yoe + era * 400 + (*m <= 2);
+}
+
+struct tm *gb_gmtime(const time_t *t, struct tm *out) {
+    long long secs = (long long)*t;
+    long long days = floor_div(secs, 86400);
+    long long rem = secs - days * 86400;
+    long long y;
+    unsigned m, d;
+    civil_from_days(days, &y, &m, &d);
+    memset(out, 0, sizeof *out);
+    out->tm_year = (int)(y - 1900);
+    out->tm_mon = (int)m - 1;
+    out->tm_mday = (int)d;
+    out->tm_hour = (int)(rem / 3600);
+    out->tm_min = (int)(rem % 3600 / 60);
+    out->tm_sec = (int)(rem % 60);
+    out->tm_wday = (int)(floor_div(days + 4, 7) * -7 + days + 4);   /* 1970-01-01: Thursday */
+    out->tm_yday = (int)(days - days_from_civil(y, 1, 1));
+    return out;
+}
+
+/* Like timegm: out-of-range fields are normalised (month 12 is next January,
+ * day 32 runs into the next month), and the fields are rewritten to match. */
+time_t gb_timegm(struct tm *tm) {
+    long long y = (long long)tm->tm_year + 1900 + floor_div(tm->tm_mon, 12);
+    long long mon = tm->tm_mon - floor_div(tm->tm_mon, 12) * 12;
+    long long days = days_from_civil(y, (unsigned)mon + 1, 1) + tm->tm_mday - 1;
+    long long secs = days * 86400 + (long long)tm->tm_hour * 3600 + (long long)tm->tm_min * 60 +
+                     tm->tm_sec;
+    time_t t = (time_t)secs;
+    gb_gmtime(&t, tm);
+    return t;
+}
+
+/* THE LOCAL ZONE, as Linux understands it: the TZ variable when it names a zone
+ * ICU knows, else the system's own zone. Windows' C runtime reads TZ only in
+ * POSIX form ("EST5EDT") and MISREADS an IANA name in silence, so a TZ of
+ * "Australia/Sydney" gave the system's time with no complaint (measured,
+ * run_xlsx.sh); here it means what it means on Linux. NULL = ICU's default
+ * zone, which ICU derives from the Windows setting. */
+static const char *local_zone_name(void) {
+    const char *tz = getenv("TZ");
+    return (tz && tz[0] && gb_zone_known(tz) == 1) ? tz : NULL;
+}
+
+/* Offset of the LOCAL zone at UTC instant `t`, and whether that is daylight
+ * time. 0 on success; -1 when ICU is unavailable. */
+static int local_offset(long long t, int *offset, int *is_dst) {
+    if (!icu_load()) {
+        return -1;
+    }
+    const char *zone = local_zone_name();
+    WCHAR *w = zone ? utf8_to_wide(zone) : NULL;
+    int status = 0;
+    void *cal = icu.open(w, w ? -1 : 0, "", ICU_GREGORIAN, &status);
+    free(w);
+    if (!cal || ICU_FAILED(status)) {
+        if (cal) icu.close(cal);
+        return -1;
+    }
+    icu.set_millis(cal, (double)t * 1000.0, &status);
+    int32_t zone_ms = icu.get(cal, ICU_ZONE_OFFSET, &status);
+    int32_t dst_ms = icu.get(cal, ICU_DST_OFFSET, &status);
+    icu.close(cal);
+    if (ICU_FAILED(status)) {
+        return -1;
+    }
+    *offset = (int)((zone_ms + dst_ms) / 1000);
+    *is_dst = dst_ms != 0;
+    return 0;
+}
+
+struct tm *gb_localtime(const time_t *t, struct tm *out) {
+    int offset = 0, is_dst = 0;
+    if (local_offset((long long)*t, &offset, &is_dst) != 0) {
+        /* No ICU (before Windows 10 1903): the C runtime, 1970 onward only. */
+        return localtime_s(out, t) == 0 ? out : NULL;
+    }
+    time_t shifted = *t + (time_t)offset;
+    gb_gmtime(&shifted, out);
+    out->tm_isdst = is_dst;
+    return out;
+}
+
+/* Local civil fields to an instant, for any year. The tm_isdst hint is not
+ * consulted: the fields are resolved the way zone_resolve resolves a named
+ * zone -- an ambiguous time takes the EARLIER instant, a time in the
+ * spring-forward gap the one read with the pre-transition offset -- so local
+ * and named zones answer alike. Returns -1 only when there is no answer. */
+time_t gb_mktime(struct tm *tm) {
+    struct tm copy = *tm;
+    long long naive = (long long)gb_timegm(&copy);
+    int before = 0, after = 0, dst = 0;
+    if (local_offset(naive - 86400, &before, &dst) != 0 ||
+        local_offset(naive + 86400, &after, &dst) != 0) {
+        return mktime(tm);          /* no ICU: the C runtime, 1970 onward */
+    }
+    long long cand[2] = { naive - before, naive - after };
+    int want[2] = { before, after };
+    int valid[2] = { 0, 0 };
+    for (int i = 0; i < 2; i++) {
+        int got = 0;
+        valid[i] = local_offset(cand[i], &got, &dst) == 0 && got == want[i];
+    }
+    if (before == after) {
+        valid[1] = 0;
+    }
+    long long lo = cand[0] < cand[1] ? cand[0] : cand[1];
+    long long hi = cand[0] < cand[1] ? cand[1] : cand[0];
+    long long chosen = (valid[0] && valid[1]) ? lo
+                     : valid[0] ? cand[0]
+                     : valid[1] ? cand[1]
+                     : hi;
+    time_t t = (time_t)chosen;
+    gb_localtime(&t, tm);
+    return t;
 }
 
 /* ---- process.which: CreateProcess's search, answered without launching --- */

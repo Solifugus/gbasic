@@ -460,5 +460,58 @@ cookbook 24/24, discovery, estate and the negatives -- all five logs IDENTICAL
 before and after. As expected, unixODBC reports an absent driver as 01000 and
 already names it, so the new IM002 message never fires there.
 
-**Still open, in order:** making suites tell a module that is installed from
-one that is BUILT IN; M3 (zlib + libxml2 for xlsx), M4 (sqlite), M5 (libcurl).
+## 16. Milestone 3: xml and xlsx on Windows (2026-10-03)
+
+**zlib and libxml2 2.15.4 are built in, STATICALLY**: gbasic.exe (4.7 MB) still
+imports only Windows' own DLLs. `LIBXML_STATIC` is required, or libxml2's
+headers declare every function dllimport. This is the plan's §4 argument made
+real: the Linux tarballs omit xlsx because libxml2's soname varies across
+distributions, a problem a static Windows build does not have.
+
+**Measured on Windows:** all 10 xlsx and 8 xml examples pass (run_examples'
+list: 203 of 235); run_xlsx passes EVERY tier but one -- the reader discards
+nothing (all 11 container entries retained, the unmodelled part byte-identical),
+saves are byte-deterministic and validate under an independent `unzip -t`, the
+evaluator agrees with every cached value including the LibreOffice-computed
+post-2001, text/math and cross-sheet sets, dependency-ordered recalc within and
+across sheets, the six in-test fixtures (defined names, intersection, coercion,
+residue, arrays, external names), the 40k-row ceiling, every refusal. Also
+passing: the xlsx cookbook (30), grid, consolidate, compress (30), finio with
+its amount_kind tier now running, the finio cookbook and tutorial, every finio
+adapter's main fixture (camt 92, pain.001 37, BAI2 38, NACHA 141, OFX 55), chart's
+XML structure tier, ari.
+
+**Two Windows defects running it found, both fixed:**
+- **Every date before 1970 failed on Windows.** gmtime_s, localtime_s,
+  _mkgmtime and mktime all refuse a negative instant there, so epoch() of a 1950
+  datetime RAISED and a pinned 1900 clock read as zero. gb_gmtime/gb_timegm are
+  now calendar arithmetic (Hinnant's days-from-civil, exact for every year), and
+  gb_localtime/new gb_mktime add the local zone's offset from Windows' ICU --
+  which also carries HISTORICAL rules: New York's 1950 daylight time comes out as
+  on Linux. A pre-1970 probe (epoch local and UTC, to_zone, from_zone,
+  zone_offset, 1969 + 1 second, a 1900 date) now prints the same as Linux line
+  for line.
+- **TZ=Area/City was silently misread.** Windows' C runtime takes only POSIX
+  TZ syntax; an IANA name gave the system's own time with no complaint. Local
+  time now honours a TZ that names a zone ICU knows, as Linux does (measured:
+  TZ=Australia/Sydney gives UTC+10, TZ=Asia/Tokyo UTC+9). An unknown TZ is
+  ignored in favour of the system zone. Ambiguous and skipped local times resolve
+  as zone_resolve does.
+
+**Harness facts, not gBASIC defects, all measured:**
+- MSYS2 REMOVES `TZ` when it launches a native program, so run_xlsx's Sydney
+  tier and run_nap_fs's mtime tier (both set TZ) cannot pass under MSYS2 bash;
+  natively the same TZ is honoured.
+- A suite that writes a `/tmp/...` path INTO a program fails because a native
+  binary cannot resolve it. Running the suites with `TMPDIR` in `C:/...` form
+  (which bash and the binary both understand) cures it.
+- The finio generators and reference scripts are Python writing in text mode,
+  which on Windows emits CRLF: "fixtures drifted" and BAI2's "disagreement" over
+  identical text are that.
+- `chmod 000` has no effect on Windows (NACHA's unreadable tier, run_core's
+  permission tier), and Windows reports a path through a file as "No such file",
+  not "Not a directory".
+
+**Still open, in order:** the suites a partial sweep found failing on a build
+refusal (agent, ari_advisor, doc_examples, event_study) and a full sweep for the
+rest; M4 (sqlite); M5 (libcurl).

@@ -163,6 +163,16 @@ struct tm *gb_gmtime(const time_t *t, struct tm *out);
  * systems that lack it. Windows: _mkgmtime. */
 time_t gb_timegm(struct tm *tm);
 
+/* mktime: LOCAL civil fields to an instant (tm_isdst -1 = work it out).
+ * Windows: neither this nor the three above use the C runtime, which refuses
+ * every instant before 1970 there -- epoch() of a 1950 datetime raised on
+ * Windows and answered on Linux (measured). They are calendar arithmetic plus
+ * the local zone's offset from Windows' ICU, which carries historical rules and
+ * honours TZ=Area/City the way Linux does (Windows' C runtime misreads such a
+ * TZ silently). An ambiguous or skipped local time resolves as zone_resolve
+ * does: the earlier instant, or the pre-transition offset's reading. */
+time_t gb_mktime(struct tm *tm);
+
 /* mkdir(path, mode). Windows: _mkdir(path), which has no mode -- permissions
  * there are ACLs, and the 0777 every caller here passes means "the default",
  * which is what _mkdir gives. Returns 0 on success, -1 with errno set, exactly

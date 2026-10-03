@@ -134,6 +134,10 @@ time_t gb_timegm(struct tm *tm) {
     return timegm(tm);
 }
 
+time_t gb_mktime(struct tm *tm) {
+    return mktime(tm);
+}
+
 int gb_mkdir(const char *path, int mode) {
     return mkdir(path, (mode_t)mode);
 }

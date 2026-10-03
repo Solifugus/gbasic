@@ -129,8 +129,18 @@ LIBCURL_AVAILABLE := 0
 LIBXCRYPT_AVAILABLE := 0
 LIBCRYPTO_AVAILABLE := 0
 LIBSSL_AVAILABLE := 0
-LIBXML2_AVAILABLE := 0
-ZLIB_AVAILABLE := 0
+# M3: zlib + libxml2, STATICALLY, for xml and xlsx -- the headline Windows
+# feature (docs/windows_port_plan.md §4: the Linux tarballs omit xlsx because
+# libxml2's soname varies across distributions, a problem a static Windows
+# build does not have). LIBXML_STATIC is not optional: without it libxml2's
+# headers declare every function __declspec(dllimport) and the static archive
+# cannot satisfy them. The dependency list is pkg-config --static's.
+LIBXML2_AVAILABLE := 1
+LIBXML2_CFLAGS := $(shell pkg-config --cflags libxml-2.0 2>/dev/null) -DLIBXML_STATIC
+LIBXML2_LIBS := -lxml2 -liconv -lbcrypt -lz
+ZLIB_AVAILABLE := 1
+ZLIB_CFLAGS :=
+ZLIB_LIBS := -lz
 GIR_AVAILABLE := 0
 GIO_AVAILABLE := 0
 endif

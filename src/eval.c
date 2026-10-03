@@ -2229,7 +2229,7 @@ static double datetime_to_epoch(DateTime dt, int *ok) {
     tm.tm_min = dt.minute;
     tm.tm_sec = dt.second;
     tm.tm_isdst = -1;
-    time_t t = mktime(&tm);
+    time_t t = gb_mktime(&tm);   /* any year; Windows' mktime stops at 1970 */
     if (t == (time_t)-1) {
         *ok = 0;
         return 0;
@@ -7394,7 +7394,7 @@ static Value zone_eval_call(AstExpr *expr) {
         struct tm tm;
         zone_fill_tm(local_dt, &tm);
         tm.tm_isdst = -1;
-        time_t instant = mktime(&tm);
+        time_t instant = gb_mktime(&tm);
         if (instant == (time_t)-1) {
             runtime_error_raise("zone_offset could not place that datetime on the timeline",
                                 1003, "datetime");
