@@ -18,7 +18,13 @@ platforms. Run both from the repository root:
 ```
 gbasic tests/windows/smoke.bas
 gbasic tests/windows/process_run.bas
+gbasic tests/windows/process_start.bas
 ```
+
+`process_start.bas` covers the live-child verbs (`process.start`, `poll`,
+`read`, `wait`, `stop`, `write`, `close_stdin`, `release`). A child it must
+observe mid-run blocks on a gate file the suite creates, so no tier depends on
+how fast the machine is.
 
 ## Why it is written in gBASIC rather than PowerShell
 

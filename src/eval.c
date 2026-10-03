@@ -542,6 +542,13 @@ struct ProcessHandle {
     int reaped;             /* waitpid completed; `status` is final */
     int status;             /* raw wait(2) status, valid when reaped */
     size_t ref_count;
+#ifdef _WIN32
+    /* The process and its job (include/platform.h, gb_child_start). out_fd,
+     * err_fd and in_fd above are the same pipes as C-runtime fds; on Windows
+     * `status` is the exit code itself, or -1 for a child this interpreter
+     * ENDED, which is the Windows form of "killed by a signal". */
+    GbChild win;
+#endif
 };
 
 /* PLAT-HTTP: a handle to a LIVE HTTP request started by `http.start`.
@@ -3019,6 +3026,11 @@ static void process_handle_release(ProcessHandle *handle) {
         }
         free(handle->pending_out.data);
         free(handle->pending_err.data);
+#ifdef _WIN32
+        /* A still-running child stays in its job, which is kept until the
+         * interpreter exits and then ends it: the orphan list's bargain. */
+        gb_child_release(&handle->win);
+#else
         if (!handle->reaped) {
             int st;
             pid_t r;
@@ -3029,6 +3041,7 @@ static void process_handle_release(ProcessHandle *handle) {
                 proc_orphan_add(handle->pid);
             }
         }
+#endif
         free(handle);
     }
 }
@@ -27056,6 +27069,26 @@ static int process_drain(int out_fd, int err_fd, ProcBuf *out, ProcBuf *err,
     return rc;
 }
 
+#ifdef _WIN32
+/* The validated `env` record as the two parallel arrays the Windows launcher
+ * takes (a NULL value unsets). The strings are BORROWED from the record; the
+ * caller frees only the two arrays. */
+static size_t process_env_arrays(Value *env, const char ***names, const char ***values) {
+    size_t n = env ? env->as.record.count : 0;
+    *names = n ? calloc(n, sizeof(char *)) : NULL;
+    *values = n ? calloc(n, sizeof(char *)) : NULL;
+    if (n && (!*names || !*values)) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i++) {
+        RecordField *f = &env->as.record.fields[i];
+        (*names)[i] = f->name;
+        (*values)[i] = f->value->kind == VALUE_NULL ? NULL : f->value->as.string;
+    }
+    return n;
+}
+#endif
+
 static Value process_do_run(AstExpr *expr) {
     if (expr->as.call.args.count != 1) {
         return process_raise("process.run expects a single options record");
@@ -27191,17 +27224,8 @@ static Value process_do_run(AstExpr *expr) {
      * gb_run_capture (src/platform_win32.c), which says what it keeps and what
      * it cannot (no signals; CreateProcess's search order). */
     {
-        size_t nenv = run_env ? run_env->as.record.count : 0;
-        const char **env_names = nenv ? calloc(nenv, sizeof(char *)) : NULL;
-        const char **env_values = nenv ? calloc(nenv, sizeof(char *)) : NULL;
-        if (nenv && (!env_names || !env_values)) {
-            abort();
-        }
-        for (size_t i = 0; i < nenv; i++) {
-            RecordField *f = &run_env->as.record.fields[i];
-            env_names[i] = f->name;
-            env_values[i] = f->value->kind == VALUE_NULL ? NULL : f->value->as.string;
-        }
+        const char **env_names = NULL, **env_values = NULL;
+        size_t nenv = process_env_arrays(run_env, &env_names, &env_values);
         GbRunResult rr;
         int rc = gb_run_capture(argv, cwd, env_names, env_values, nenv, timeout_ms, &rr);
         free(env_names);
@@ -27632,6 +27656,21 @@ static void process_pump(ProcessHandle *h) {
         int *fd = which ? &h->err_fd : &h->out_fd;
         ProcBuf *b = which ? &h->pending_err : &h->pending_out;
         while (*fd >= 0) {
+#ifdef _WIN32
+            /* An anonymous pipe cannot be made non-blocking; gb_child_read asks
+             * how much is there first, so this still NEVER blocks. */
+            int r = gb_child_read(*fd, buf, sizeof(buf));
+            if (r > 0) {
+                procbuf_append(b, buf, (size_t)r);
+                continue;
+            }
+            if (r == -1) {
+                break;                          /* nothing more right now */
+            }
+            close(*fd);                         /* EOF (0) or an error (-2) */
+            *fd = -1;
+            break;
+#else
             ssize_t r = read(*fd, buf, sizeof(buf));
             if (r > 0) {
                 procbuf_append(b, buf, (size_t)r);
@@ -27651,6 +27690,7 @@ static void process_pump(ProcessHandle *h) {
             close(*fd);                         /* unrecoverable: treat as EOF */
             *fd = -1;
             break;
+#endif
         }
     }
 }
@@ -27660,6 +27700,17 @@ static void process_try_reap(ProcessHandle *h) {
     if (h->reaped) {
         return;
     }
+#ifdef _WIN32
+    int code = 0;
+    if (gb_child_exited(&h->win, &code)) {
+        /* A status of -1 already recorded means WE ended it (process_do_stop);
+         * keep that rather than the exit code Terminate chose. */
+        if (h->status != -1) {
+            h->status = code;
+        }
+        h->reaped = 1;
+    }
+#else
     int st;
     pid_t r;
     do {
@@ -27672,6 +27723,7 @@ static void process_try_reap(ProcessHandle *h) {
         h->status = 0;      /* ECHILD: already gone; treat as exit 0 unknown */
         h->reaped = 1;
     }
+#endif
 }
 
 /* Wait until the child has exited AND its pipes have hit EOF (so no output is
@@ -27695,6 +27747,14 @@ static int process_wait_until(ProcessHandle *h, long timeout_ms) {
             slice = timeout_ms - elapsed_ms;
             if (slice < 1) slice = 1;
         }
+#ifdef _WIN32
+        /* No poll on an anonymous pipe: pump on a short tick instead. The pump
+         * above drains whatever arrived, so a chatty child still cannot fill
+         * its pipe and deadlock against a waiting parent. */
+        Sleep((DWORD)slice);
+        elapsed_ms += slice;
+        continue;
+#endif
         struct pollfd pfds[2];
         nfds_t n = 0;
         if (h->out_fd >= 0) { pfds[n].fd = h->out_fd; pfds[n].events = POLLIN; n++; }
@@ -27835,10 +27895,6 @@ static int process_opt_seconds(Value *opts, const char *field, const char *label
 /* process.start(options) -> handle. Same options as process.run minus `timeout`,
  * which has no meaning without a blocking wait to bound. */
 static Value process_do_start(AstExpr *expr) {
-#ifdef _WIN32
-    (void)expr;
-    return process_raise("process.start is not available on Windows yet");
-#endif
     proc_orphans_sweep();
     if (expr->as.call.args.count != 1) {
         return process_raise("process.start expects a single options record");
@@ -27881,6 +27937,16 @@ static Value process_do_start(AstExpr *expr) {
     }
 
     RecordField *lf = record_find(&opts, "listen_fds");
+#ifdef _WIN32
+    /* Handing a listening socket to a child is the worker pool's mechanism
+     * (LISTEN_FDS), and the webserver is refused on Windows; a socket is also
+     * not inherited the way an fd is. Refused by name rather than ignored. */
+    if (lf) {
+        free(launch.argv);
+        value_free(opts);
+        return process_raise("process.start: options.listen_fds is not available on Windows");
+    }
+#endif
     if (lf) {
         if (lf->value->kind != VALUE_ARRAY) {
             free(launch.argv);
@@ -27929,6 +27995,43 @@ static Value process_do_start(AstExpr *expr) {
         }
     }
 
+#ifdef _WIN32
+    /* Everything above -- options, refusals, env validation -- is shared with
+     * POSIX; only the launch differs, and it is process.run's launch. */
+    (void)share_fds;
+    (void)share_count;
+    {
+        const char **env_names = NULL, **env_values = NULL;
+        size_t nenv = process_env_arrays(launch.env, &env_names, &env_values);
+        GbChild child;
+        char why[512];
+        int rc = gb_child_start(launch.argv, launch.cwd, env_names, env_values, nenv,
+                                want_stdin, &child, why, sizeof why);
+        free(env_names);
+        free(env_values);
+        if (rc != 0) {
+            char msg[700];
+            snprintf(msg, sizeof(msg), "process.start: could not execute '%s': %s",
+                     launch.argv[0], why);
+            free(launch.argv);
+            value_free(opts);
+            return process_raise(msg);
+        }
+        free(launch.argv);
+        value_free(opts);
+        ProcessHandle *h = calloc(1, sizeof(ProcessHandle));
+        if (!h) {
+            abort();
+        }
+        h->pid = (pid_t)child.pid;
+        h->out_fd = child.out_fd;
+        h->err_fd = child.err_fd;
+        h->in_fd = child.in_fd;
+        h->win = child;
+        h->ref_count = 1;
+        return value_process(h);
+    }
+#endif
     int out_fd = -1, err_fd = -1, in_fd = -1, launch_errno = 0;
     pid_t pid = process_launch(launch.argv, launch.cwd, launch.env, share_fds, share_count,
                                &out_fd, &err_fd, &launch_errno, want_stdin, &in_fd);
@@ -28164,8 +28267,15 @@ static Value process_do_stop(AstExpr *expr) {
         return r;
     }
 
+#ifdef _WIN32
+    /* No SIGTERM on Windows. CTRL_BREAK to the child's own process group is
+     * the polite form -- a child may handle it and carry on, as with SIGTERM --
+     * and the force form below ends the whole job, as SIGKILL to the group does. */
+    gb_child_stop(&h->win, 0);
+#else
     kill(-h->pid, SIGTERM);
     kill(h->pid, SIGTERM);           /* in case setpgid lost a race */
+#endif
 
     if (force_ms < 0) {
         /* Polite only. Do not wait: whether the child honors SIGTERM is its
@@ -28178,8 +28288,13 @@ static Value process_do_stop(AstExpr *expr) {
     }
 
     if (!process_wait_until(h, force_ms)) {
+#ifdef _WIN32
+        h->status = -1;              /* WE ended it: reported as exit_code -1 */
+        gb_child_stop(&h->win, 1);
+#else
         kill(-h->pid, SIGKILL);
         kill(h->pid, SIGKILL);
+#endif
         process_wait_until(h, -1);   /* SIGKILL is not refusable; this terminates */
     }
     Value r = process_make_status(h);
@@ -28209,7 +28324,11 @@ static Value process_do_release(AstExpr *expr) {
     if (!h->reaped) {
         /* Still running and the caller is done with it: hand it to the orphan
          * list so it is reaped later rather than becoming a zombie. */
+#ifdef _WIN32
+        gb_child_release(&h->win);   /* the job keeps it, until we exit */
+#else
         proc_orphan_add(h->pid);
+#endif
         h->reaped = 1;
         h->status = 0;
     }

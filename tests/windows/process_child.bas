@@ -33,5 +33,23 @@ program main(args)
         print(read(f))
     else if mode = "env" then
         print(string(env(args[1])))
+    else if mode = "gate" then
+        ' One line, then BLOCK until the parent creates the gate file, then a
+        ' second line. Lets the parent observe the child mid-run without
+        ' guessing at timing.
+        print("first")
+        g {file}= args[1]
+        while not exists(g)
+            sleep(0.02)
+        end while
+        print("second")
+    else if mode = "echo" then
+        ' Answer each line on stdin until END: a conversation, not a command.
+        line = input("")
+        while line != "END"
+            print("got " + line)
+            line = input("")
+        end while
+        print("bye")
     end if
 end program

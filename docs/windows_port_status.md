@@ -314,7 +314,50 @@ library_depth failures Linux-in-WSL has too.
 "FAIL sleep(0) returns 0" ON LINUX and still exits 0 -- a stale assertion
 (sleep now answers `nothing` by design) behind a gate that does not fail.
 
-**Still open, in order:** `process.start` and friends; `process.which` with `;`
-and PATHEXT; `--line-buffered`; named time zones; making suites tell a module
-that is installed from one that is BUILT IN; the optional modules (M2 ODBC
-first).
+## 12. process.start and the live-child verbs (2026-10-02)
+
+`process.start`, `poll`, `read`, `wait`, `stop`, `write`, `close_stdin` and
+`release` work on Windows. **tests/windows/process_start.bas: 37 checks, 0
+mismatches** on Windows; it is cross-platform like process_run.bas, with
+gBASIC itself as the child.
+
+**How:** process.run and process.start share ONE launch (`win_launch` in
+src/platform_win32.c: quoting, environment, handle list, job), so they cannot
+disagree. The child's pipes are handed back as C-runtime fds, so eval.c's
+read/write/close on them are unchanged; four things got Windows bodies:
+
+| POSIX | Windows |
+|---|---|
+| non-blocking read | `PeekNamedPipe`, then read only what is there |
+| `waitpid(WNOHANG)` | `WaitForSingleObject(process, 0)` |
+| `poll` over the pipes | a 20 ms pump tick (anonymous pipes cannot be polled) |
+| SIGTERM / SIGKILL to the group | `CTRL_BREAK` to the child's own process group / `TerminateJobObject` |
+
+A child this interpreter ENDS reports `exit_code` -1 and `success` false, the
+Windows form of "killed by a signal" (`signal` is always 0: there are none).
+`listen_fds` is refused by name on Windows.
+
+**PROVEN RED, and the first attempt was not:** with the forced stop disabled,
+every stop tier STAYED GREEN -- a gBASIC child dies on the polite CTRL_BREAK,
+so `force_after` was never needed. No gBASIC program can refuse the polite
+stop, so a Windows-only tier uses `ping`, which answers Ctrl+Break by printing
+its statistics and carrying on: it asserts the polite stop does NOT kill it
+and `force_after` then does, promptly. With force disabled that tier fails
+("and promptly": the stop waited out all 30 pings). On POSIX the same property
+is run_process.sh's SIGTERM-ignoring child.
+
+**A released child dies with the interpreter**: after the suite (which
+releases a running `sleep 30` child), no gbasic.exe remains -- the job is kept
+and KILL_ON_JOB_CLOSE ends it at exit. Measured by process count, not yet a
+committed tier.
+
+**`--line-buffered` now works on Windows**, where setvbuf's `_IOLBF` is FULL
+buffering: process_start.bas measured a child's first line staying in its
+buffer until exit. On Windows the flag makes stdout UNBUFFERED (at least as
+prompt; more writes, paid only when asked for). run_stream's mid-run,
+partial-line, 20 000-line volume, JSON and opt-in tiers pass on Windows.
+run_equality now passes completely (it compares two child handles).
+
+**Still open, in order:** `process.which` with `;` and PATHEXT; named time
+zones; making suites tell a module that is installed from one that is BUILT
+IN; the optional modules (M2 ODBC first).

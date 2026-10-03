@@ -973,7 +973,7 @@ int repl_main(int json_diagnostics) {
      * prompt: a diagnostic on stderr must land between the lines that produced
      * it, not after a block buffer flushes at the end. Piped, this is also what
      * makes a golden possible. */
-    setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
+    gb_stdout_line_buffered();
 
     /* SA_RESTART so the blocking read of the next line is resumed rather than
      * failing with EINTR: a Ctrl-C at an idle prompt must do nothing, and

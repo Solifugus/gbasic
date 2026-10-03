@@ -196,6 +196,10 @@ int gb_rename_replace(const char *from, const char *to) {
     return rename(from, to);
 }
 
+void gb_stdout_line_buffered(void) {
+    setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
+}
+
 void gb_stdio_binary(void) {
     /* POSIX has no text mode: bytes are bytes. */
 }

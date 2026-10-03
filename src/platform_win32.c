@@ -467,7 +467,7 @@ static DWORD WINAPI pipe_reader_main(LPVOID arg) {
     return 0;
 }
 
-static void set_why_from_error(GbRunResult *res, DWORD code) {
+static void set_why_from_error(char *why, size_t why_size, DWORD code) {
     WCHAR *msg = NULL;
     FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                        FORMAT_MESSAGE_IGNORE_INSERTS,
@@ -481,10 +481,10 @@ static void set_why_from_error(GbRunResult *res, DWORD code) {
         while (n > 0 && (utf8[n - 1] == '\n' || utf8[n - 1] == '\r' || utf8[n - 1] == ' ')) {
             utf8[--n] = '\0';
         }
-        snprintf(res->why, sizeof res->why, "%s", utf8);
+        snprintf(why, why_size, "%s", utf8);
         free(utf8);
     } else {
-        snprintf(res->why, sizeof res->why, "Windows error %lu", (unsigned long)code);
+        snprintf(why, why_size, "Windows error %lu", (unsigned long)code);
     }
 }
 
@@ -514,12 +514,28 @@ static void retire_job(HANDLE job) {
      * outcome, without the bookkeeping. */
 }
 
-int gb_run_capture(char *const argv[], const char *cwd,
-                   const char *const *env_names, const char *const *env_values,
-                   size_t env_count, long timeout_ms, GbRunResult *res) {
-    memset(res, 0, sizeof *res);
+/* ONE LAUNCH, shared by process.run and process.start so the two cannot
+ * disagree about quoting, the environment, which handles a child inherits, or
+ * the job it lives in.
+ *
+ * `in`, `out`, `err` are the child's three standard handles, already
+ * inheritable; exactly these and nothing else reach it (POSIX's close-on-exec
+ * discipline, by an explicit handle list). The child is created SUSPENDED,
+ * put in a fresh Job Object with KILL_ON_JOB_CLOSE, then resumed -- so it is in
+ * the job before it can start anything of its own. `extra_flags` adds creation
+ * flags (process.start passes CREATE_NEW_PROCESS_GROUP; see gb_child_stop).
+ *
+ * Returns 0 with *pi (thread handle already closed) and *job filled -- *job may
+ * be NULL where the system refused a job, in which case ending the child ends
+ * that process alone -- or 1 with `why` saying why it could not be launched. */
+static int win_launch(char *const argv[], const char *cwd,
+                      const char *const *env_names, const char *const *env_values,
+                      size_t env_count, HANDLE in, HANDLE out, HANDLE err,
+                      DWORD extra_flags, PROCESS_INFORMATION *pi, HANDLE *job_out,
+                      char *why, size_t why_size) {
+    *job_out = NULL;
+    memset(pi, 0, sizeof *pi);
 
-    /* The command line. */
     WBuf cmdline = {0};
     for (size_t i = 0; argv[i]; i++) {
         WCHAR *w = utf8_to_wide(argv[i]);
@@ -527,14 +543,14 @@ int gb_run_capture(char *const argv[], const char *cwd,
         free(w);
         if (!good) {
             free(cmdline.buf);
-            snprintf(res->why, sizeof res->why, "an argument is not valid UTF-8");
+            snprintf(why, why_size, "an argument is not valid UTF-8");
             return 1;
         }
     }
     WCHAR *wcwd = NULL;
     if (cwd && !(wcwd = utf8_to_wide(cwd))) {
         free(cmdline.buf);
-        snprintf(res->why, sizeof res->why, "the working directory is not valid UTF-8");
+        snprintf(why, why_size, "the working directory is not valid UTF-8");
         return 1;
     }
     int env_ok = 0;
@@ -542,45 +558,23 @@ int gb_run_capture(char *const argv[], const char *cwd,
     if (!env_ok) {
         free(cmdline.buf);
         free(wcwd);
-        snprintf(res->why, sizeof res->why, "could not build the environment");
+        snprintf(why, why_size, "could not build the environment");
         return 1;
     }
 
-    /* Pipes: the child's ends inheritable, ours not. stdin is inherited, as on
-     * POSIX; with no console stdin the child reads NUL. */
-    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
-    HANDLE out_r = NULL, out_w = NULL, err_r = NULL, err_w = NULL, in_dup = NULL;
-    int pipes = CreatePipe(&out_r, &out_w, &sa, 0) && CreatePipe(&err_r, &err_w, &sa, 0) &&
-                SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0) &&
-                SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
-    HANDLE std_in = GetStdHandle(STD_INPUT_HANDLE);
-    if (pipes && !(std_in && std_in != INVALID_HANDLE_VALUE &&
-                   DuplicateHandle(GetCurrentProcess(), std_in, GetCurrentProcess(), &in_dup,
-                                   0, TRUE, DUPLICATE_SAME_ACCESS))) {
-        in_dup = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
-                             OPEN_EXISTING, 0, NULL);
-        if (in_dup == INVALID_HANDLE_VALUE) {
-            in_dup = NULL;
-            pipes = 0;
-        }
-    }
-
-    /* Exactly these three handles reach the child, and nothing else that
-     * happens to be inheritable -- POSIX's close-on-exec discipline. */
+    int ready = 1;
     LPPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
-    HANDLE inherit[3] = { in_dup, out_w, err_w };
-    if (pipes) {
-        SIZE_T attr_size = 0;
-        InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
-        attrs = malloc(attr_size);
-        if (!attrs || !InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size)) {
-            free(attrs);
-            attrs = NULL;
-            pipes = 0;
-        } else if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                                              inherit, sizeof inherit, NULL, NULL)) {
-            pipes = 0;
-        }
+    HANDLE inherit[3] = { in, out, err };
+    SIZE_T attr_size = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
+    attrs = malloc(attr_size);
+    if (!attrs || !InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size)) {
+        free(attrs);
+        attrs = NULL;
+        ready = 0;
+    } else if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                          inherit, sizeof inherit, NULL, NULL)) {
+        ready = 0;
     }
 
     HANDLE job = CreateJobObjectW(NULL, NULL);
@@ -594,24 +588,21 @@ int gb_run_capture(char *const argv[], const char *cwd,
         }
     }
 
-    PROCESS_INFORMATION pi;
-    memset(&pi, 0, sizeof pi);
     BOOL launched = FALSE;
     DWORD launch_error = ERROR_NOT_ENOUGH_MEMORY;
-    if (pipes) {
+    if (ready) {
         STARTUPINFOEXW si;
         memset(&si, 0, sizeof si);
         si.StartupInfo.cb = sizeof si;
         si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        si.StartupInfo.hStdInput = in_dup;
-        si.StartupInfo.hStdOutput = out_w;
-        si.StartupInfo.hStdError = err_w;
+        si.StartupInfo.hStdInput = in;
+        si.StartupInfo.hStdOutput = out;
+        si.StartupInfo.hStdError = err;
         si.lpAttributeList = attrs;
-        /* SUSPENDED so it is in the job before it can start anything itself. */
         launched = CreateProcessW(NULL, cmdline.buf, NULL, NULL, TRUE,
                                   CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT |
-                                      EXTENDED_STARTUPINFO_PRESENT,
-                                  envblock, wcwd, &si.StartupInfo, &pi);
+                                      EXTENDED_STARTUPINFO_PRESENT | extra_flags,
+                                  envblock, wcwd, &si.StartupInfo, pi);
         if (!launched) {
             launch_error = GetLastError();
         }
@@ -623,24 +614,89 @@ int gb_run_capture(char *const argv[], const char *cwd,
     free(cmdline.buf);
     free(wcwd);
     free(envblock);
-    /* Our copies of the child's ends: closed, or the readers never see EOF. */
-    if (out_w) CloseHandle(out_w);
-    if (err_w) CloseHandle(err_w);
-    if (in_dup) CloseHandle(in_dup);
 
     if (!launched) {
-        if (out_r) CloseHandle(out_r);
-        if (err_r) CloseHandle(err_r);
         if (job) CloseHandle(job);
-        set_why_from_error(res, launch_error);
+        set_why_from_error(why, why_size, launch_error);
         return 1;
     }
-    if (job && !AssignProcessToJobObject(job, pi.hProcess)) {
-        CloseHandle(job);    /* still runs; a timeout then ends only this process */
+    if (job && !AssignProcessToJobObject(job, pi->hProcess)) {
+        CloseHandle(job);
         job = NULL;
     }
-    ResumeThread(pi.hThread);
-    CloseHandle(pi.hThread);
+    ResumeThread(pi->hThread);
+    CloseHandle(pi->hThread);
+    pi->hThread = NULL;
+    *job_out = job;
+    return 0;
+}
+
+/* The parent's stdin, duplicated inheritable for a child -- inherited, as on
+ * POSIX -- or NUL when there is none (no console). NULL only on failure. */
+static HANDLE inheritable_stdin(void) {
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    HANDLE std_in = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE dup = NULL;
+    if (std_in && std_in != INVALID_HANDLE_VALUE &&
+        DuplicateHandle(GetCurrentProcess(), std_in, GetCurrentProcess(), &dup,
+                        0, TRUE, DUPLICATE_SAME_ACCESS)) {
+        return dup;
+    }
+    dup = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                      OPEN_EXISTING, 0, NULL);
+    return dup == INVALID_HANDLE_VALUE ? NULL : dup;
+}
+
+/* A pipe whose CHILD end is inheritable and whose PARENT end is not. `child_reads`
+ * says which end the child gets. Returns 1 on success. */
+static int child_pipe(HANDLE *parent_end, HANDLE *child_end, int child_reads) {
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    HANDLE r = NULL, w = NULL;
+    if (!CreatePipe(&r, &w, &sa, 0)) {
+        return 0;
+    }
+    *parent_end = child_reads ? w : r;
+    *child_end = child_reads ? r : w;
+    if (!SetHandleInformation(*parent_end, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(r);
+        CloseHandle(w);
+        return 0;
+    }
+    return 1;
+}
+
+int gb_run_capture(char *const argv[], const char *cwd,
+                   const char *const *env_names, const char *const *env_values,
+                   size_t env_count, long timeout_ms, GbRunResult *res) {
+    memset(res, 0, sizeof *res);
+
+    HANDLE out_r = NULL, out_w = NULL, err_r = NULL, err_w = NULL;
+    HANDLE in_dup = NULL;
+    int pipes = child_pipe(&out_r, &out_w, 0);
+    pipes = pipes && child_pipe(&err_r, &err_w, 0);
+    pipes = pipes && (in_dup = inheritable_stdin()) != NULL;
+    if (!pipes) {
+        if (out_r) CloseHandle(out_r);
+        if (out_w) CloseHandle(out_w);
+        if (err_r) CloseHandle(err_r);
+        if (err_w) CloseHandle(err_w);
+        snprintf(res->why, sizeof res->why, "could not create pipes");
+        return 1;
+    }
+
+    PROCESS_INFORMATION pi;
+    HANDLE job = NULL;
+    int rc = win_launch(argv, cwd, env_names, env_values, env_count,
+                        in_dup, out_w, err_w, 0, &pi, &job, res->why, sizeof res->why);
+    /* Our copies of the child's ends: closed, or the readers never see EOF. */
+    CloseHandle(out_w);
+    CloseHandle(err_w);
+    CloseHandle(in_dup);
+    if (rc != 0) {
+        CloseHandle(out_r);
+        CloseHandle(err_r);
+        return 1;
+    }
 
     PipeReader out = { out_r, NULL, 0, 0, 0 };
     PipeReader err = { err_r, NULL, 0, 0, 0 };
@@ -706,6 +762,119 @@ int gb_run_capture(char *const argv[], const char *cwd,
     return 0;
 }
 
+/* ---- process.start: the same launch, handed back running ----------------- */
+
+int gb_child_start(char *const argv[], const char *cwd,
+                   const char *const *env_names, const char *const *env_values,
+                   size_t env_count, int want_stdin, GbChild *child,
+                   char *why, size_t why_size) {
+    memset(child, 0, sizeof *child);
+    child->out_fd = child->err_fd = child->in_fd = -1;
+
+    HANDLE out_r = NULL, out_w = NULL, err_r = NULL, err_w = NULL;
+    HANDLE in_parent = NULL, in_child = NULL;
+    int ok = child_pipe(&out_r, &out_w, 0) && child_pipe(&err_r, &err_w, 0);
+    if (ok) {
+        ok = want_stdin ? child_pipe(&in_parent, &in_child, 1)
+                        : (in_child = inheritable_stdin()) != NULL;
+    }
+    if (!ok) {
+        HANDLE all[] = { out_r, out_w, err_r, err_w, in_parent, in_child };
+        for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+            if (all[i]) CloseHandle(all[i]);
+        }
+        snprintf(why, why_size, "could not create pipes");
+        return 1;
+    }
+
+    PROCESS_INFORMATION pi;
+    HANDLE job = NULL;
+    int rc = win_launch(argv, cwd, env_names, env_values, env_count,
+                        in_child, out_w, err_w, CREATE_NEW_PROCESS_GROUP,
+                        &pi, &job, why, why_size);
+    CloseHandle(out_w);
+    CloseHandle(err_w);
+    CloseHandle(in_child);
+    if (rc != 0) {
+        CloseHandle(out_r);
+        CloseHandle(err_r);
+        if (in_parent) CloseHandle(in_parent);
+        return 1;
+    }
+
+    /* Ours become C-runtime fds: eval.c reads, writes and closes them with the
+     * same calls it uses on POSIX, and closing the fd closes the handle. */
+    child->out_fd = _open_osfhandle((intptr_t)out_r, _O_RDONLY | _O_BINARY);
+    child->err_fd = _open_osfhandle((intptr_t)err_r, _O_RDONLY | _O_BINARY);
+    child->in_fd = in_parent ? _open_osfhandle((intptr_t)in_parent, _O_WRONLY | _O_BINARY) : -1;
+    child->pid = (long)pi.dwProcessId;
+    child->process = pi.hProcess;
+    child->job = job;
+    return 0;
+}
+
+/* Anonymous pipes cannot be made non-blocking or polled, so ask how much is
+ * there and read exactly that. A broken pipe with nothing left is end of
+ * file: the child's end was closed (it exited, or closed its stdout). */
+int gb_child_read(int fd, char *buf, size_t cap) {
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -2;
+    }
+    DWORD avail = 0;
+    if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL)) {
+        return GetLastError() == ERROR_BROKEN_PIPE ? 0 : -2;
+    }
+    if (avail == 0) {
+        return -1;
+    }
+    DWORD want = avail < cap ? avail : (DWORD)cap;
+    DWORD got = 0;
+    if (!ReadFile(h, buf, want, &got, NULL)) {
+        return GetLastError() == ERROR_BROKEN_PIPE ? 0 : -2;
+    }
+    return (int)got;
+}
+
+int gb_child_exited(GbChild *child, int *exit_code) {
+    if (!child->process) {
+        return 1;
+    }
+    if (WaitForSingleObject((HANDLE)child->process, 0) != WAIT_OBJECT_0) {
+        return 0;
+    }
+    DWORD code = 0;
+    GetExitCodeProcess((HANDLE)child->process, &code);
+    *exit_code = (int)code;
+    return 1;
+}
+
+void gb_child_stop(GbChild *child, int force) {
+    if (!child->process) {
+        return;
+    }
+    if (!force) {
+        GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, (DWORD)child->pid);
+        return;
+    }
+    if (child->job) {
+        TerminateJobObject((HANDLE)child->job, 1);
+    } else {
+        TerminateProcess((HANDLE)child->process, 1);
+    }
+}
+
+void gb_child_release(GbChild *child) {
+    if (child->process) {
+        CloseHandle((HANDLE)child->process);
+        child->process = NULL;
+    }
+    if (child->job) {
+        retire_job((HANDLE)child->job);
+        child->job = NULL;
+    }
+}
+
 /* BCryptGenRandom takes a ULONG count, so a large request is filled in
  * pieces; the system-preferred RNG needs no algorithm handle. */
 int gb_secure_random(void *buf, size_t n) {
@@ -750,6 +919,11 @@ int gb_rename_replace(const char *from, const char *to) {
         default:                      errno = EIO;    break;
     }
     return -1;
+}
+
+/* _IONBF, not _IOLBF: see the header -- Windows' _IOLBF is full buffering. */
+void gb_stdout_line_buffered(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
 }
 
 /* See the header: LF out, on every platform. */

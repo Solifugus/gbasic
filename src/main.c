@@ -965,7 +965,7 @@ int main(int argc, char **argv) {
      * `input` prompt) is already fflushed explicitly, so this makes the whole
      * output surface prompt. Must run before any output. */
     if (extract_flag(&argc, argv, "--line-buffered")) {
-        setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
+        gb_stdout_line_buffered();   /* Windows cannot line-buffer: platform.h */
     }
 
     /* The prompt, which is also what `gbasic` with no arguments does: a

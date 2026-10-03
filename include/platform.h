@@ -263,6 +263,53 @@ typedef struct {
 int gb_run_capture(char *const argv[], const char *cwd,
                    const char *const *env_names, const char *const *env_values,
                    size_t env_count, long timeout_ms, GbRunResult *res);
+
+/* process.start's LIVE CHILD, for Windows: the same launch as gb_run_capture
+ * (one function, so the two cannot disagree), but handed back running.
+ *
+ * THE PIPES ARE C-RUNTIME FILE DESCRIPTORS (_open_osfhandle), so src/eval.c's
+ * read/write/close on them work unchanged; what does not is non-blocking
+ * reading, which gb_child_read provides with PeekNamedPipe. `in_fd` is -1
+ * unless want_stdin (process.start's `stdin: "pipe"`); otherwise the child
+ * inherits ours, as on POSIX.
+ *
+ * The child gets its own PROCESS GROUP (CREATE_NEW_PROCESS_GROUP), the Windows
+ * form of POSIX's setpgid: it is what lets gb_child_stop address it, and, as on
+ * POSIX, a Ctrl-C typed at the console is not delivered to it. */
+typedef struct {
+    long  pid;
+    void *process;      /* HANDLE; NULL once released */
+    void *job;          /* HANDLE or NULL */
+    int   out_fd;
+    int   err_fd;
+    int   in_fd;
+} GbChild;
+
+/* 0 started (*child filled), 1 could not be launched (why says why). */
+int gb_child_start(char *const argv[], const char *cwd,
+                   const char *const *env_names, const char *const *env_values,
+                   size_t env_count, int want_stdin, GbChild *child,
+                   char *why, size_t why_size);
+
+/* NEVER BLOCKS. >0 bytes read into buf; 0 end of file (the child closed its end
+ * and nothing is left); -1 nothing available right now; -2 an error. */
+int gb_child_read(int fd, char *buf, size_t cap);
+
+/* NEVER BLOCKS. 1 and *exit_code once the process has exited, else 0. */
+int gb_child_exited(GbChild *child, int *exit_code);
+
+/* force = 0: the POLITE stop -- CTRL_BREAK to the child's process group, the
+ * nearest Windows has to SIGTERM; a child may handle it and keep running, which
+ * is the same bargain SIGTERM strikes. Needs a shared console; without one it
+ * does nothing, and the caller reports the child as still running.
+ * force = 1: TerminateJobObject (the whole tree), the form of SIGKILL. */
+void gb_child_stop(GbChild *child, int force);
+
+/* Done with the handle: closes the process handle and RETIRES the job -- closed
+ * at once if the tree has exited, otherwise kept so KILL_ON_JOB_CLOSE ends it
+ * when the interpreter exits (the orphan bargain POSIX strikes in eval.c).
+ * Does not touch the fds. Idempotent. */
+void gb_child_release(GbChild *child);
 #endif
 
 /* Fill buf with n bytes from the operating system's CRYPTOGRAPHIC random
@@ -294,13 +341,19 @@ int gb_rename_replace(const char *from, const char *to);
  *
  * STDIN IS DELIBERATELY LEFT ALONE for now: in binary mode `input()` would see
  * the "\r" a Windows console line ends with. Unmeasured; decide it when
- * something reads stdin on Windows.
- *
- * KNOWN GAP, recorded rather than fixed here: Windows' setvbuf treats _IOLBF as
- * FULL buffering (documented by Microsoft), so `--line-buffered` would silently
- * do nothing there -- which is the MCP stdio deadlock run_mcp.sh demonstrates.
- * It will need an explicit flush per completed line. */
+ * something reads stdin on Windows. */
 void gb_stdio_binary(void);
+
+/* What `--line-buffered` (and the prompt) ask of stdout: every completed line
+ * leaves the process as it is printed. POSIX: setvbuf _IOLBF.
+ *
+ * WINDOWS CANNOT LINE-BUFFER: its setvbuf treats _IOLBF as FULL buffering, so
+ * the flag silently did nothing -- MEASURED by tests/windows/process_start.bas,
+ * where a child's first line stayed in its buffer until it exited. There it
+ * is UNBUFFERED instead: at least as prompt (a partial line also leaves at
+ * once), the same bytes, at the cost of more writes -- paid only by a program
+ * that asked for the flag. */
+void gb_stdout_line_buffered(void);
 
 /* Which platform the bodies above came from, for diagnostics and for the tests
  * that need to say why a tier does not apply. */
