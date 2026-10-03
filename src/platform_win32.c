@@ -762,6 +762,125 @@ int gb_run_capture(char *const argv[], const char *cwd,
     return 0;
 }
 
+/* ---- process.which: CreateProcess's search, answered without launching --- */
+
+/* Is `w` an existing REGULAR file (not a directory)? */
+static int which_is_file(const WCHAR *w) {
+    DWORD attrs = GetFileAttributesW(w);
+    return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+/* Try dir + name (+ ".exe" when the name has no extension). On a hit, the
+ * full path as UTF-8 with `/` separators; NULL otherwise. `dir` may be NULL
+ * for "the name as given". */
+static char *which_try(const WCHAR *dir, size_t dir_len, const WCHAR *name, int add_exe) {
+    WBuf b = {0};
+    int good = 1;
+    if (dir && dir_len > 0) {
+        good = wbuf_put(&b, dir, dir_len);
+        if (good && dir[dir_len - 1] != L'\\' && dir[dir_len - 1] != L'/') {
+            good = wbuf_putc(&b, L'\\');
+        }
+    }
+    good = good && wbuf_put(&b, name, wcslen(name));
+    if (good && add_exe) {
+        good = wbuf_put(&b, L".exe", 4);
+    }
+    char *out = NULL;
+    if (good && which_is_file(b.buf)) {
+        WCHAR full[32768];
+        DWORD n = GetFullPathNameW(b.buf, (DWORD)(sizeof full / sizeof full[0]), full, NULL);
+        out = (n > 0 && n < sizeof full / sizeof full[0]) ? wide_to_utf8(full) : NULL;
+        for (char *p = out; p && *p; p++) {
+            if (*p == '\\') {
+                *p = '/';
+            }
+        }
+    }
+    free(b.buf);
+    return out;
+}
+
+char *gb_which(const char *name) {
+    WCHAR *wname = utf8_to_wide(name);
+    if (!wname || !wname[0]) {
+        free(wname);
+        return NULL;
+    }
+    /* CreateProcess appends ".exe" only when the LAST COMPONENT has no
+     * extension at all; "tool.bat" and "tool.exe" are taken as given. */
+    const WCHAR *last = wname;
+    for (const WCHAR *p = wname; *p; p++) {
+        if (*p == L'\\' || *p == L'/' || *p == L':') {
+            last = p + 1;
+        }
+    }
+    int add_exe = wcschr(last, L'.') == NULL;
+    int is_path = last != wname;     /* a separator or a drive: not searched */
+
+    char *hit = NULL;
+    if (is_path) {
+        hit = which_try(NULL, 0, wname, add_exe);
+        free(wname);
+        return hit;
+    }
+
+    /* The documented order: application dir, current dir, System32, System,
+     * Windows, then PATH. */
+    WCHAR dir[32768];
+    DWORD n = GetModuleFileNameW(NULL, dir, (DWORD)(sizeof dir / sizeof dir[0]));
+    if (n > 0 && n < sizeof dir / sizeof dir[0]) {
+        WCHAR *slash = wcsrchr(dir, L'\\');
+        if (slash) {
+            hit = which_try(dir, (size_t)(slash - dir), wname, add_exe);
+        }
+    }
+    if (!hit && (n = GetCurrentDirectoryW((DWORD)(sizeof dir / sizeof dir[0]), dir)) > 0 &&
+        n < sizeof dir / sizeof dir[0]) {
+        hit = which_try(dir, n, wname, add_exe);
+    }
+    if (!hit && (n = GetSystemDirectoryW(dir, (DWORD)(sizeof dir / sizeof dir[0]))) > 0 &&
+        n < sizeof dir / sizeof dir[0]) {
+        hit = which_try(dir, n, wname, add_exe);
+    }
+    WCHAR windir[MAX_PATH + 1];
+    DWORD wn = GetWindowsDirectoryW(windir, MAX_PATH + 1);
+    if (!hit && wn > 0 && wn <= MAX_PATH) {
+        WCHAR sys16[MAX_PATH + 16];
+        swprintf(sys16, sizeof sys16 / sizeof sys16[0], L"%ls\\System", windir);
+        hit = which_try(sys16, wcslen(sys16), wname, add_exe);
+        if (!hit) {
+            hit = which_try(windir, wn, wname, add_exe);
+        }
+    }
+    if (!hit) {
+        DWORD need = GetEnvironmentVariableW(L"PATH", NULL, 0);
+        WCHAR *path = need ? malloc((size_t)need * sizeof(WCHAR)) : NULL;
+        if (path && GetEnvironmentVariableW(L"PATH", path, need) > 0) {
+            WCHAR *cursor = path;
+            while (!hit && cursor) {
+                WCHAR *semi = wcschr(cursor, L';');
+                size_t len = semi ? (size_t)(semi - cursor) : wcslen(cursor);
+                /* A PATH entry may be quoted ("C:\Program Files\x"). An empty
+                 * entry is skipped: unlike POSIX it does not mean the current
+                 * directory, which CreateProcess already searched. */
+                WCHAR *entry = cursor;
+                if (len >= 2 && entry[0] == L'"' && entry[len - 1] == L'"') {
+                    entry++;
+                    len -= 2;
+                }
+                if (len > 0) {
+                    hit = which_try(entry, len, wname, add_exe);
+                }
+                cursor = semi ? semi + 1 : NULL;
+            }
+        }
+        free(path);
+    }
+    free(wname);
+    return hit;
+}
+
 /* ---- process.start: the same launch, handed back running ----------------- */
 
 int gb_child_start(char *const argv[], const char *cwd,

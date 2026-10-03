@@ -358,6 +358,29 @@ prompt; more writes, paid only when asked for). run_stream's mid-run,
 partial-line, 20 000-line volume, JSON and opt-in tiers pass on Windows.
 run_equality now passes completely (it compares two child handles).
 
-**Still open, in order:** `process.which` with `;` and PATHEXT; named time
-zones; making suites tell a module that is installed from one that is BUILT
-IN; the optional modules (M2 ODBC first).
+## 13. process.which (2026-10-02)
+
+`process.which(name)` works on Windows, and the whole `process.*` family is now
+available there (bar `listen_fds`). Its contract is POSIX's -- "the path
+execvp would run" -- whose point is that asking first never disagrees with
+running. So the Windows answer is the path **CreateProcess** would run, by
+CreateProcess's own documented search (the program's directory, the current
+directory, System32, the 16-bit System directory, the Windows directory, then
+each `;`-separated PATH entry, quotes stripped), appending ".exe" only when the
+name has no extension.
+
+**Deliberately NOT PATHEXT.** It is the tempting choice and the wrong one:
+CreateProcess ignores PATHEXT, so a `which` that found `tool.bat` through it
+would answer "installed" for a command process.run then cannot launch. A `.bat`
+or `.cmd` is reached by naming it, or through `cmd /c`.
+
+**The oracle, in tests/windows/process_run.bas and true on either platform
+whatever is installed:** for each probe (cmd, ping, sh, ls, hostname, whoami,
+and a name that exists nowhere), `which` finds it EXACTLY WHEN process.run can
+launch it -- with a control that at least one probe was found, since an
+always-unknown `which` satisfies the agreement on a machine where every probe
+fails. PROVEN RED: with the ".exe" rule removed, four probes disagree and the
+control fires. 46/46 on Windows.
+
+**Still open, in order:** named time zones; making suites tell a module that
+is installed from one that is BUILT IN; the optional modules (M2 ODBC first).

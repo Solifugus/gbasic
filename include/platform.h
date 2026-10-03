@@ -285,6 +285,21 @@ typedef struct {
     int   in_fd;
 } GbChild;
 
+/* process.which: the path CreateProcess WOULD RUN for `name`, malloc'd, or NULL.
+ *
+ * The contract is POSIX's "the path execvp would run", and its point is that
+ * asking first never disagrees with running -- so this follows CreateProcess's
+ * own search and NOT PATHEXT, which CreateProcess ignores: a `which` that found
+ * "tool.bat" through PATHEXT would answer yes for a command process.run then
+ * cannot launch. Order, as CreateProcess documents it: the program's own
+ * directory, the current directory, System32, the 16-bit System directory, the
+ * Windows directory, then each PATH entry (`;`-separated, quotes stripped).
+ * ".exe" is appended when the name's last component has no extension. A name
+ * containing a separator or a drive is a path, checked as given (plus ".exe"
+ * on the same rule). Only a REGULAR FILE answers -- never a directory. The
+ * answer is written with `/`, like gb_realpath. */
+char *gb_which(const char *name);
+
 /* 0 started (*child filled), 1 could not be launched (why says why). */
 int gb_child_start(char *const argv[], const char *cwd,
                    const char *const *env_names, const char *const *env_values,

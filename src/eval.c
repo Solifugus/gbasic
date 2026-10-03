@@ -28406,13 +28406,6 @@ static Value process_do_self(AstExpr *expr) {
 }
 
 static Value process_do_which(AstExpr *expr) {
-#ifdef _WIN32
-    /* Not merely unimplemented: the search below splits PATH on ':', which on
-     * Windows also splits every "C:\..." entry, and checks POSIX execute bits
-     * where Windows uses PATHEXT -- so it would answer WRONGLY, not fail. */
-    (void)expr;
-    return process_raise("process.which is not available on Windows yet");
-#endif
     if (expr->as.call.args.count != 1) {
         return process_raise("process.which expects a command name");
     }
@@ -28431,6 +28424,19 @@ static Value process_do_which(AstExpr *expr) {
         value_free(name_v);
         return value_unknown();
     }
+
+#ifdef _WIN32
+    /* Not the search below: it splits PATH on ':', which would cut every
+     * "C:\..." entry in two, and tests POSIX execute bits. gb_which follows
+     * CreateProcess's own search, so asking first agrees with running. */
+    {
+        char *hit = gb_which(name);
+        Value out = hit ? value_string(hit) : value_unknown();
+        free(hit);
+        value_free(name_v);
+        return out;
+    }
+#endif
 
     if (strchr(name, '/') != NULL) {
         Value out = process_is_executable(name) ? value_string(name)

@@ -124,6 +124,32 @@ ok("launch_failure result: exit_code -1", r.exit_code, -1)
 ok("launch_failure result: why names the command",
    contains(r.why, "gbasic-no-such-program-xyz"), true)
 
+print("-- which: asking first must agree with running --")
+' THE ORACLE, and it holds on either platform whatever is installed: for each
+' name, `which` finds it EXACTLY WHEN process.run can launch it. A which that
+' searched differently from the launcher -- Windows' PATHEXT, which
+' CreateProcess ignores, is the tempting mistake -- answers yes for a command
+' run then cannot start, or no for one it can. Each candidate gets arguments
+' that make it exit at once; the timeout only bounds a surprise.
+probes = [["cmd", ["/c", "exit"]], ["ping", ["-n", "1", "127.0.0.1"]],
+          ["sh", ["-c", "exit 0"]], ["ls", []], ["hostname", []], ["whoami", []],
+          ["gbasic-no-such-program-xyz", []]]
+found_any = false
+for each p in probes
+    w = process.which(p[0])
+    r = process.run({ command: p[0], args: p[1], timeout: 10, launch_failure: "result" })
+    ok("which(" + p[0] + ") agrees with run", is_unknown(w), r.launch_failed)
+    if not is_unknown(w) then
+        found_any = true
+    end if
+end for
+' Without this the oracle is satisfied by a which that answers unknown for
+' everything on a machine where every probe also fails to launch.
+ok("and at least one probe was found", found_any, true)
+ok("a missing program is unknown", is_unknown(process.which("gbasic-no-such-program-xyz")), true)
+ok("the interpreter's own path is found as given", is_unknown(process.which(me.interpreter)), false)
+ok("a directory is not a program", is_unknown(process.which(here)), true)
+
 print("")
 ' THE SELF-CHECK, as in smoke.bas: a run that counted nothing must not pass.
 if tally.checks < 30 then
