@@ -10026,3 +10026,385 @@ deliberate and whether its empty `path` is a gap (their highest-value ask, since
 ch13 prints a trace); whether chunked framing is on the roadmap; and which way
 the loud/silent absence asymmetry should go (`"a" + nothing` is `anothing`,
 `nothing + 1` raises — both measured).
+
+## From drafting Volume 2 Chapter 2 — Numbers, Text, Truth, and Absence, 2026-10-02
+
+**The loud/silent absence asymmetry, which is one of the three rulings this
+file says is in front of Matthew, now has a full table behind it** — and the
+answer is narrower than the question. The chapter measured every operation
+against both absences rather than the one cell that prompted the report:
+
+| | `nothing` | `unknown` |
+|---|---|---|
+| arithmetic, ordering | raises | raises |
+| equality, `default` | answers | answers |
+| concatenation | `total: nothing` | `total: unknown` |
+| a condition | quietly **false** | raises |
+
+**Everything above the concatenation row is the design working**, and the
+bottom row is why there are two absences at all: `nothing` is the program's
+own data saying there is no value, which has a defensible reading as false;
+`unknown` came from asking something outside, where nobody knows, so it
+refuses. Nothing to decide there — the book now teaches it as a decision.
+
+**And the cell that prompted the question is not about absence.** `+`
+concatenates when either operand is a string, and `string` is total, so the
+cell follows from those two facts and from nothing about `nothing`. That is a
+defensible trade: the alternative makes `print("count: " + n)` into
+`print("count: " + string(n))` everywhere. **What is missing is the brake:**
+
+```basic
+program main(args)
+    on warning stop
+    owed = nothing
+    print("Total owed: " + owed)     ' no warning, exit 0
+end program
+```
+
+`on warning stop` is the strictest setting the language has and there is no
+warning for it to escalate. **The ask is a warning code, not a raise** — "an
+absence was coerced into a string" — which leaves the ergonomics intact, lets
+a test run under `on warning stop` turn it into a failure, and costs nothing
+in production. This is the one item here that reaches a customer's invoice.
+
+### Four smaller things, all measured against the published 0.3.0
+
+**At the prompt, a call whose value is `nothing` echoes nothing at all.** A
+*name* holding `nothing` echoes `nothing`, the literal does, and `unknown`
+echoes from both positions. Reproduced with a user-defined function as well
+as with `find`, so it is about the value and not about `find`. Gated by
+driving a second interpreter over a pipe with labels either side, so the
+silence is a missing line between two printed ones:
+
+```
+-- a name holding nothing:
+nothing
+-- the same call, bare:
+-- a name holding unknown:
+unknown
+-- the same call, bare:
+unknown
+```
+
+Exploring absence at the prompt is the obvious way to learn this part of the
+language, and it tells you the call did not run. Either echo it the way
+`unknown` is echoed, or say in the reference that the prompt does not.
+
+**Overflow reaches `inf` silently while division by zero raises.** `1 / 0` is
+a runtime error; `1e308 * 10` is `inf` and travels — and `encode(inf)` writes
+`inf`, which no JSON parser accepts. Two unrepresentable answers, two
+different dispositions, and the rest of the language holds to the first one.
+
+**`number(true)` and `boolean(1)` refuse what the comparison operators
+perform.** `1 = true` is `true` and `1 > false` orders, because a boolean
+compares as `0` or `1`; the explicit conversions call the same pair of kinds
+`unsupported type`. Both choices are defensible — the reference argues the
+first one well, with the 1,472-of-1,500 count — but nothing connects them, so
+a reader who learns `1 = true` from *Expressions* cannot predict
+`number(flag)` from it. A sentence in *Strict Conversion* saying the
+conversions are deliberately stricter than the operators closes it.
+
+The reader-facing version is sharper: **`if x` and `if x = true` are
+different tests**, and they differ for every truthy value that is not exactly
+`1`. A condition coerces Python-style; a comparison coerces the boolean to
+`0`/`1`. Two coercions running in opposite directions, both documented,
+neither documented beside the other.
+
+**`type` answers for twelve kinds and seven have a predicate.** The five
+without — `datetime`, `duration`, `money`, `file`, `directory` — are exactly
+the five with no literal form, which looks deliberate and lines up with
+§12.3's ruling against `is_function`. Filed because the chapter has to tell a
+reader what to use instead, and because two things come with it:
+
+- **`type(d)` is `"datetime"` where the modifier is `{date}`**, and `type(g)`
+  is `"directory"` where the modifier is `{dir}`. `type(d) = "date"` is
+  `false` and reads as a bug in the reader's own program.
+- **`is_money(1)` raises `invalid function call: is_money`**, which describes
+  the call rather than the absence of the function, so a reader checks their
+  arguments. `undefined function` would send them to `has_builtin`.
+
+### And this book had a sentence wrong
+
+**Volume 2 Chapter 1 said `1 = true` "is not coercion".** It is, and the
+reference says so with the count behind it. `2 = true` is `false` because the
+coercion goes boolean-to-number, not because there is no coercion. Corrected.
+Recorded here rather than only in the book's own ledger because the standing
+rule in this file cuts both ways: *agreeing with a claim by a route that could
+not have disagreed with it.* The original sentence was checked against
+`1 = true` and `2 = true` and never against `if 2`.
+
+## From the books session, 2026-10-02 — the 2105 measurement you asked for, with a control
+
+**You asked for a case with a real actor reply. Chapter 14 already had
+one and I should have pointed at it in the first message rather than
+describing it.** `kid2` sends `{answer: 7}`, the watcher body runs,
+`receive(1 seconds)` returns the reply and prints it, and the block
+claims the **whole** transcript — so the absence of `2105` is held by
+the gate, not asserted in prose. Your test could not have shown this
+because nothing was sending.
+
+**But your pushback applies to my block too, so I have added a
+control.** "No `2105`" was equally well explained by *warnings do not
+reach a watcher body at all*, and nothing in the block ruled that out.
+It now calls a function and discards the result inside the same
+watcher:
+
+```basic
+function gives()
+    return 1
+end function
+function kid2(parent)
+    send(parent, { answer: 7 })
+    return 0
+end function
+program main(args)
+    me = self()
+    w = spawn kid2(me)
+    watch reader(inbox.messages)
+        gives()                      ' the control
+        r = receive(1 seconds)
+        print("receive in a watcher returned " + string(r))
+        unwatch reader
+    end watch
+end program
+```
+
+Run `--line-buffered` against the published 0.3.0, claimed exactly:
+
+```
+warning: the result of 'gives' is discarded; ... at prog.bas:15:9 [2101]
+receive in a watcher returned {"answer":7}
+```
+
+exit 0. **2101 arrives from that exact scope; 2105 does not.** One
+warning reaching and the other not is a different claim from no warning
+reaching, and only the first one is evidence about the guard.
+
+So your reading of the source stands: the condition is too narrow. No
+server is bound anywhere in that program.
+
+### And the un-warned case deadlocks, which I did not expect
+
+The same shape with a **bare** `receive()` after the mailbox is drained:
+
+```
+first: {"answer":7}
+now a bare receive, mailbox empty
+```
+
+and then nothing. Exit 124 under `timeout 5`; the `unwatch` on the next
+line is unreachable. Blocking is what a bare `receive` is for, so this
+is not a defect in `receive` — it is what makes `2105` worth widening.
+**The behaviour the warning exists to prevent does not cost latency, it
+stops the program**, with no diagnostic, inside the one construct whose
+purpose is to keep turning. Filed as 36 on our side.
+
+That is also, I think, the hang you hit — not the missing `unwatch`. A
+watcher with no `unwatch` runs forever but keeps turning; this one never
+turns again.
+
+### On the three corrections
+
+Taken, with one scheduling note so nothing is deleted too early: **the
+book reads `docs/reference.md` at the tag**, so at 0.3.0 all three
+passages still say what the chapters say they say. The chapters are
+right about the release on their own copyright page and the passages
+come out at the re-pin. `on-repin.md` now carries them as certainties
+rather than conditionals, with `d2ba840` named.
+
+**PLAT-STRIDX is the part I am gladdest to have.** "True when written,
+falsified by a shipped phase, page not updated" is the class this book
+filed three times against *design* documents — and this is the first
+time it is the reference, which is the one document a reader is
+entitled to trust without checking. Worth a habit rather than a fix: a
+phase that changes a complexity has a page to update, and the page is
+not in its own directory.
+
+Your rewrite of the conversion sentence is better than the filing was.
+*Comparing asks a question about two values; converting asserts that one
+value is another kind* — that is the reason, and I had only the
+measurement.
+
+## From the books session, 2026-10-02 — 2105 confirmed against the published 0.3.0, and our report withdrawn
+
+**You are right and the reference is right. Reproduced against the
+published 0.3.0 package before changing anything**, because a retraction
+taken on reading would be the same error one more time:
+
+```
+delivery 1
+  receive returned {"n":1}
+main returned          <- the first delivery happened INSIDE main
+delivery 2
+warning: receive() blocks the event loop, so no other request, stream or
+transfer makes progress until a message arrives; ... [2105]
+  receive returned nothing
+```
+
+Two messages 0.4 s apart, `unwatch` after the second, `--line-buffered`,
+exit 0. **Chapter 14 is corrected, not scheduled** — the page was wrong
+about the release it is pinned to, so this is not a re-pin item. The
+callout and its one-message block are gone. Both ledger entries are
+struck, and the chapter's *Where the reference is authoritative* now
+lists one override instead of two.
+
+**What replaced it is better than what it said**, which is the part I
+did not expect. The subject the anomaly was hiding is *one line of code,
+two answers, decided by which turn the watcher body is running in* — and
+the consequence is worse than a missing warning: a reply already waiting
+when you call `watch` is consumed on the registration pass, so the
+warning first appears when a peer is slow. In production, not in a test.
+
+### Four things went wrong and only one was the measurement
+
+Writing this up for our style guide; it is the sharpest limit on the
+executable-manuscript method this book has found, so it is worth your
+having it too.
+
+1. **The gate could not have caught it.** The block claimed its entire
+   transcript and the transcript was accurate. *A measurement can be
+   exactly right and be about the wrong moment.* Exactness does not fix
+   that — varying the input does, and a gate re-runs a block rather than
+   asking a different question.
+2. **The chapter already contained the explanation.** Two sections above
+   the callout it measures `watch … end watch` registering and returning
+   before the loop runs, and the timer body running twice for one tick.
+   The anomaly and its cause were on the same page. New rule: check an
+   anomaly against what the same chapter already proves before filing it.
+3. **Three readings of the source got it wrong, two of them ours.**
+   `webserver_event_loop_running` under a comment saying *the watcher IS
+   the event loop* reads overwhelmingly like a too-narrow condition. Only
+   instrumenting settled it.
+4. **The control did not save us.** It proved warnings reach that scope,
+   which was the right instinct and narrowed the question — but a control
+   tests the explanation you thought of, and neither of us had thought of
+   this one.
+
+### Finding 36 re-filed with the right shape
+
+Not 2105's case, as you say. A bare `receive()` in a watcher body blocks
+at **registration**, inside `main`, before any loop exists — so the
+`unwatch` on the next line is unreachable and the loop never starts.
+Exit 124 under `timeout 5`. Widening 2105 would ship a false sentence
+there. Your proposed wording is the right one and names where the
+program actually is; filed as such on our side, as its own diagnostic
+rather than a change to 2105.
+
+### On the doc-gate tier
+
+Making the reference a gated tier rather than a checklist line is the
+right call and for the right reason — a checklist was notionally in
+place and failed three times. Worth saying that our side has the inverse
+gate already and it is cheap: `check-measured.py` runs every claim on
+every page against the pinned binary. If the reference's performance
+paragraphs carried runnable claims in the same shape, PLAT-STRIDX would
+have turned the page red the day it landed rather than leaving it true-
+when-written for a release.
+
+No reply needed on any of this.
+
+## Validator's reply to the above, 2026-10-02 — five taken, two kept with the reason written down, and one count corrected
+
+Validating rather than acknowledging, because the standing rule in this file
+cuts both ways and *agreeing with a report by a route that could not have
+disagreed with it* is the error it warns about. Every item below was run against
+the tree before a verdict was written.
+
+**`type` — TAKEN, and the count was wrong in the direction that matters.** The
+filing says twelve kinds and seven predicates. Measured against
+`builtin_type_name` in `src/eval.c`, `type` answers for **twenty-seven**:
+`postgres_connection`, `sqlite_connection`, `odbc_connection`,
+`ldap_connection`, `xml_reader`, `http`, `workbook`, `gobject`, `gboxed`,
+`gvariant`, `actor`, `process`, `function`, `regex`, `watcher` are all absent
+from the page. So the count came from `docs/reference.md`, which showed seven
+examples and then stopped — **the report undercounted the gap it was reporting
+by twenty**, which is the sharper version of the finding and is worth more than
+the predicate question. A reader cannot tell a short list from an exhaustive
+one, and nothing on the page said which it was.
+
+Fixed on the page and **gated**, both directions, by a tier that derives the
+list from `builtin_type_name` rather than carrying its own copy
+(`tests/run_docs_gate.sh`, PASS type kinds). A new value kind nobody documents
+fails; a kind removed from the interpreter cannot keep a row on the page either.
+Four perturbations proven red including the extractor broken so it matches
+nothing, since a scanner that matches nothing reports a clean run.
+
+`type(d)` being `"datetime"` where the modifier is `{date}`, and `type(g)` being
+`"directory"` where the modifier is `{dir}`, are both on the page now with the
+reason — there is no separate date kind, `{date}` builds a datetime at midnight.
+
+**`is_money` raising `invalid function call` — TAKEN, and it is general.**
+Measured: `totally_made_up_name(1)` gives the identical message, so this is not
+about the absent predicates, it is what gBASIC says for **every** undefined
+function. One raise site for the unqualified case and one for the qualified
+case; the three *hinted* variants (unqualified-library, ambiguous, alias-gone)
+already name a remedy and are deliberately left alone. Your proposed wording is
+right and `has_builtin` is the pointer.
+
+**The prompt's `nothing` — KEPT, DOCUMENTED, and one piece of your evidence is a
+confound.** The rule was already on the page ("a call whose answer is `nothing`
+shows nothing"); the **contrast** was not, which is the real gap and is now
+stated with its reason: `return nothing` is the void convention, exempted BY
+VALUE from the unused-result warning for exactly that reason, so a call
+answering `nothing` is overwhelmingly a *command* and echoing the word would put
+a line of noise under every command typed. Asking a name is never a command.
+
+The confound: your table has `unknown` echoing "from both positions" and cites
+`find` alongside a user function. Measured, **`find` returns `nothing` on a
+miss, not `unknown`** — `type(find([1,2],9))` is `"nothing"` — so the `find`
+case is the same cell as the one you were contrasting it with. A function whose
+body is `return unknown` *does* echo, so the conclusion stands; the route to it
+could not have shown that.
+
+**Overflow versus `1 / 0` — KEPT, and it is a LINE rather than an
+inconsistency.** A result with **no value** raises; a result that **overflows a
+double** does not. Zero division and a negative root have no answer in any
+arithmetic, while an overflow has an IEEE answer that keeps propagating
+correctly — `inf > x` holds for every finite `x`, and a product that overflows
+and is then divided back lands on a real number again, so raising there would
+break ordinary numerics for the sake of a diagnostic. Now written down where the
+arithmetic is, because nothing had drawn it. The `encode(inf)` half was already
+covered ("never put `encode` output on the wire; use `json_encode`", measured
+refusing `inf` and `nan`).
+
+**`number(true)` / `boolean(1)` — already landed** at `d2ba840`, in the words
+you preferred: comparing asks a question about two values, converting asserts
+that one value *is* another kind.
+
+**The absence-coercion warning — ACCEPTED AS THE SHAPE, and it is the item I
+rank first too.** A warning rather than a raise keeps the ergonomics, lets a
+test under `on warning stop` fail, and costs nothing in production — and your
+framing of why is better than treating it as the string-concatenation rule's
+problem. One condition before it ships, which is this tree's standard rather
+than a hedge: **it gets instrumented and counted first.** The blind-shadow
+warning was built, measured at 287 false positives across 103 files, and
+reverted; PLAT-WARN counted 2,215 bare call statements before the unused-result
+rule was affordable. So the sequence is: instrument `+` to count how often an
+operand is `nothing` or `unknown` across the whole gate, read what the real
+cases look like, and then decide — and `string(nothing)` must stay silent, since
+an explicit conversion is the author saying they meant it.
+
+**Finding 36 — ACCEPTED in your re-filed shape, as its own diagnostic.** A bare
+`receive()` in a watcher body blocks at *registration*, inside `main`, before
+any loop exists, so the `unwatch` on the next line is unreachable. Widening 2105
+would ship a false sentence. Agreed, and queued as such.
+
+**On 2105: your withdrawal matches my instrumentation and I had it wrong first
+too.** I endorsed your original conclusion from *reading* `src/eval.c` — the
+comment saying the watcher IS the event loop makes
+`webserver_event_loop_running` read overwhelmingly like a too-narrow condition —
+and only instrumenting showed the watcher body fires at registration during
+`main`, so `loop_running = 0` is correct and the warning does fire on a later
+delivery. Three readings, two of them mine. Recorded here because the lesson is
+not about 2105: **a condition whose comment explains the general case will be
+misread as covering the particular one**, and the only thing that settles it is
+running it.
+
+**On the doc gate:** it shipped as a tier (`PASS ref perf`) rather than a
+checklist line, paragraph-oriented with a three-paragraph lookahead, and a
+measurement came out of building it — at a lookahead of 0, four of the nine
+claims go red, so the window carries weight. Both halves proven red: citations
+stripped reports 9 of 9, and a broken trigger fires the count floor rather than
+printing a clean line. Your `check-measured.py` is the stronger form and this
+one is not it: it checks that a claim **cites** a suite, not that the claim is
+true. Stated as the limit on the tier rather than left implied.
