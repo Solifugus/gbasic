@@ -397,7 +397,99 @@ static char *join_words(char *left, char *right) {
     return joined;
 }
 
+/* The next `;` that SEPARATES STAGES, i.e. one not inside a string literal, or
+ * NULL if there is none.
+ *
+ * DELIBERATELY A SECOND COPY of the same walk `modifier_args_next_comma` does
+ * in src/eval.c, on the same terms the file already states for
+ * `eval_modifier_arg_text` mirroring `copy_string_literal`: the eval-side
+ * scanner cannot be reached from here. Held in step BY TEST rather than by
+ * hope -- a clause carrying a `;` inside an argument (`{join "; "; trimmed}`)
+ * drives both, and a change to one that is not made to the other fails. */
+static const char *modifier_next_stage(const char *text) {
+    int in_string = 0;
+    int escape = 0;
+    for (const char *p = text; *p; p++) {
+        if (escape) {
+            escape = 0;
+            continue;
+        }
+        if (*p == '\\' && in_string) {
+            escape = 1;
+            continue;
+        }
+        if (*p == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (*p == ';' && !in_string) {
+            return p;
+        }
+    }
+    return NULL;
+}
+
+static AstModifierUse parse_modifier_use_one(char *text);
+
+/* A clause is a CHAIN OF STAGES separated by a top-level `;`, applied left to
+ * right. The comma could not be used: it is already the ARGUMENT separator
+ * (`{between "a", "b"}`), and arity cannot disambiguate the two because
+ * optional arguments exist -- measured, see §9 of
+ * docs/brace_modifier_design.md. `;` is unclaimed in gBASIC: it is not a token
+ * at all, so `x = 1; y = 2` is a LEXER error, and nothing in the language
+ * competes for it.
+ *
+ * SPLIT HERE RATHER THAN AT APPLY TIME because each stage may carry its own
+ * library qualifier (`{housestyle.shout; trimmed}`), and the qualifier split
+ * below would otherwise take the first `.` in the whole phrase. */
 static AstModifierUse parse_modifier_use(char *text) {
+    const char *sep = modifier_next_stage(text);
+    if (!sep) {
+        return parse_modifier_use_one(text);
+    }
+
+    /* EACH STAGE IS TRIMMED. `{trimmed; caseless}` is how anybody writes it, and
+     * the space after the `;` would otherwise ride along in the name: declared
+     * modifiers survive that (`modifier_phrase_matches` skips leading space)
+     * but the BUILT-IN lenses are compared exactly, so the first run of this
+     * reported `compare modifier not found:  caseless` -- with the space
+     * visible in the message, naming a modifier that exists. */
+    const char *head_start = text;
+    while (*head_start == ' ' || *head_start == '\t') {
+        head_start++;
+    }
+    const char *head_end = sep;
+    while (head_end > head_start &&
+           (head_end[-1] == ' ' || head_end[-1] == '\t')) {
+        head_end--;
+    }
+    size_t head_len = (size_t)(head_end - head_start);
+    char *head = malloc(head_len + 1);
+    if (!head) {
+        abort();
+    }
+    memcpy(head, head_start, head_len);
+    head[head_len] = '\0';
+
+    const char *tail_start = sep + 1;
+    while (*tail_start == ' ' || *tail_start == '\t') {
+        tail_start++;
+    }
+    char *tail = copy_const(tail_start);
+    free(text);
+
+    AstModifierUse first = parse_modifier_use_one(head);
+    AstModifierUse rest = parse_modifier_use(tail);
+    AstModifierUse *stage = malloc(sizeof(AstModifierUse));
+    if (!stage) {
+        abort();
+    }
+    *stage = rest;
+    first.next = stage;
+    return first;
+}
+
+static AstModifierUse parse_modifier_use_one(char *text) {
     AstModifierUse modifier = ast_modifier_use(text, ast_expr_list_empty());
     char *dot = strchr(modifier.name, '.');
     if (!dot) {

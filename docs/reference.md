@@ -1232,14 +1232,53 @@ Documented and asserted 2026-10-02, after the question was asked — it worked
 from the day the inline form shipped and there was not one `{a}{b}` anywhere in
 the tree.
 
-**The CLAUSE form takes exactly one modifier**, and neither obvious extension is
-available because both spellings already mean something else: a comma becomes
-part of the **name** (`{trimmed,upper}=` reports `assign modifier not found:
-trimmed,upper`) and a space is how a name **continues** (`{end of month}`) or
-takes an **argument** (`{split ","}`), resolved by longest match against the
-registered names — so `{trimmed upper}=` reads `upper` as an argument and
-reports `trimmed modifier expects no arguments`. Chain inline and store the
-result, as the third line above does.
+**A CLAUSE CHAINS WITH `;`** *(added 2026-10-03)*, applied left to right:
+
+```basic
+clean {trimmed; upper}= raw
+n {trimmed; number}= field
+csv {trimmed; split ","; join "-"}= line
+```
+
+The separator is a semicolon and **not** a comma because the comma is already
+the **argument** separator — `{between "a", "b"}` supplies two arguments — and
+arity cannot tell the two apart, optional arguments being ordinary, so
+`{split ",", trimmed}` would be a second argument or a second stage with
+nothing to choose between them. A `;` **inside an argument** is content, not a
+separator: `{join "; "; upper}` is one argument holding a semicolon followed by
+a second stage.
+
+A stage that fails stops the chain, and its own diagnostic is what you see —
+`{number; trimmed}` on `"  42  "` reports `trim expects a string`, because
+trimming a number is what the second stage was asked to do.
+
+**AND THIS IS WHAT COMPARISON LENSES ARE FOR.** A comparison lens is a
+**normalisation of both operands**, so chaining one does the work that
+otherwise has to be written out on both sides in both ways:
+
+```basic
+name = "  Ada Lovelace  "
+typed = "ada lovelace"
+if name {trimmed; caseless}= typed then       ' not trim(lower(a)) = trim(lower(b))
+    print("match")
+end if
+```
+
+Until 2026-10-03 `caseless` was the only comparison lens, so `a {trimmed}= b`
+reported `compare modifier not found: trimmed` — an assignment modifier could
+not be used to compare at all. **Any of them now can**, alone or chained, and
+it is applied to each side symmetrically: `"joe" {upper}= "JOE"` is true,
+`"  b  " {trimmed}> "a"` orders. The datetime precision lenses (`{day}`,
+`{month}`) were always this shape and are unchanged.
+
+A lens that **answers** the comparison rather than transforming a value —
+`caseless`, or one you declare `for compare`, whose body is handed
+`left`/`right`/`operator` and returns the verdict — must be the **last** stage,
+since nothing can follow a verdict. `{caseless; trimmed}=` is refused by name.
+
+Because both sides get the same treatment, a chain only makes sense where both
+operands can take it: `{split ";"}` compares two arrays, and against a number it
+raises rather than guessing.
 
 Two shapes have **no** inline form and still need the assignment clause: a
 modifier that takes **arguments** (`{split ","}`) and one with a **multi-word**

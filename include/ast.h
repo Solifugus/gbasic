@@ -166,10 +166,20 @@ struct AstServerItem {
     int column;
 };
 
-typedef struct {
+/* A MODIFIER CLAUSE IS A CHAIN OF STAGES, and `next` is additive on purpose:
+ * every existing reader of library/name/args sees STAGE ONE unchanged, and only
+ * the apply path and the free walk the rest. The struct is passed BY VALUE
+ * throughout (~100 sites), which is why a list field would have been the
+ * expensive shape and a pointer to the tail is not.
+ *
+ * `next` is NULL for the one-stage clause every program already writes. Stages
+ * are separated by a top-level `;` inside the braces -- see §9 of
+ * docs/brace_modifier_design.md for why the comma could not be used. */
+typedef struct AstModifierUse {
     char *library;
     char *name;
     AstExprList args;
+    struct AstModifierUse *next;
 } AstModifierUse;
 
 typedef struct {

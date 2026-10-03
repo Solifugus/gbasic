@@ -35545,6 +35545,20 @@ static Value eval_compare_modifier(AstModifierUse use, const char *op, Value lef
     return value_null();
 }
 
+static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
+                                           int *recognised);
+
+/* Normalise ONE side with a stage. Returns 0 when the name is not a
+ * transformation at all, so the comparison path can report `compare modifier
+ * not found` rather than the assign-side sentence. */
+static int compare_normalise(AstModifierUse stage, Value *side) {
+    AstModifierUse one = stage;
+    one.next = NULL;
+    int recognised = 1;
+    *side = apply_one_assignment_modifier(one, *side, &recognised);
+    return recognised;
+}
+
 static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     const char *op = expr->as.binary.op;
     int result = 0;
@@ -35595,6 +35609,122 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         fake.as.binary.op = expr->as.binary.op;
         fake.as.binary.modifier = ast_modifier_none();
         return eval_comparison(&fake, lensed_left, lensed_right);
+    }
+
+    /* A COMPARISON LENS IS A NORMALISATION OF BOTH SIDES, and that is what makes
+     * it compose. `left {trimmed; caseless}= right` trims both operands and
+     * then compares them caselessly -- the thing that otherwise has to be
+     * written `trim(lower(a)) = trim(lower(b))`, converting both sides in both
+     * ways, which is the work this removes.
+     *
+     * THE PATTERN IS NOT NEW HERE: the datetime precision lenses directly above
+     * already lens both sides and re-enter `eval_comparison` with the modifier
+     * cleared. This generalises that one case to every stage and to the
+     * modifiers that were previously assign-only.
+     *
+     * SO TWO GAPS CLOSE AT ONCE, and the first is the larger. Measured before
+     * this: `caseless` was the ONLY compare lens, so `a {trimmed}= b` reported
+     * `compare modifier not found: trimmed` -- an assign modifier could not be
+     * used to compare AT ALL, composed or alone. And `a {caseless}= b` with
+     * `a = "  Joe  "` answered FALSE, because the untrimmed spaces defeat it,
+     * which is the case that prompted this.
+     *
+     * A TERMINAL STAGE MUST BE LAST. `caseless` and a user-declared `for
+     * compare` modifier ANSWER the comparison rather than transforming a value
+     * (their body is handed left/right/operator and returns the verdict), so
+     * nothing can follow one -- it would be comparing booleans. Refused by
+     * name, naming the stage, rather than silently dropping the rest. */
+    if (expr->as.binary.modifier.name && expr->as.binary.modifier.next) {
+        AstModifierUse *stage = &expr->as.binary.modifier;
+        int index = 0;
+        while (stage) {
+            const char *ignored = "";
+            index++;
+            int terminal =
+                modifier_resolve(*stage, "compare", &ignored) != NULL ||
+                (!stage->library && modifier_is(stage->name, "caseless"));
+            if (terminal) {
+                if (stage->next) {
+                    char message[256];
+                    char label[160];
+                    modifier_use_label(*stage, label, sizeof(label));
+                    snprintf(message, sizeof(message),
+                             "compare modifier '%s' answers the comparison, so it"
+                             " must be the last stage in the clause -- it is stage"
+                             " %d and something follows it",
+                             label, index);
+                    runtime_error_raise(message, 1003, "modifier");
+                    value_free(left);
+                    value_free(right);
+                    return value_null();
+                }
+                AstExpr fake = {0};
+                fake.kind = AST_EXPR_BINARY;
+                fake.as.binary.op = expr->as.binary.op;
+                fake.as.binary.modifier = *stage;
+                fake.as.binary.modifier.next = NULL;
+                return eval_comparison(&fake, left, right);
+            }
+            /* A NORMALISING STAGE: applied to BOTH sides, symmetrically. */
+            if (!compare_normalise(*stage, &left)) {
+                char message[256];
+                char label[160];
+                modifier_use_label(*stage, label, sizeof(label));
+                snprintf(message, sizeof(message),
+                         "compare modifier not found: %s (stage %d of this clause)",
+                         label, index);
+                runtime_error_raise(message, 1003, "modifier");
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+            if (error_action_pending()) {
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+            if (!compare_normalise(*stage, &right) || error_action_pending()) {
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+            stage = stage->next;
+        }
+        AstExpr fake = {0};
+        fake.kind = AST_EXPR_BINARY;
+        fake.as.binary.op = expr->as.binary.op;
+        fake.as.binary.modifier = ast_modifier_none();
+        return eval_comparison(&fake, left, right);
+    }
+
+    /* A SINGLE stage that is not a compare lens: normalise both sides with it
+     * and compare ordinarily, which is what makes `a {trimmed}= b` mean what it
+     * reads as. Reached only after the compare-context and datetime-lens paths
+     * above have declined, so no existing spelling changes meaning. */
+    if (expr->as.binary.modifier.name &&
+        (expr->as.binary.modifier.library ||
+         !modifier_is(expr->as.binary.modifier.name, "caseless"))) {
+        Value probe_left = left;
+        if (compare_normalise(expr->as.binary.modifier, &probe_left)) {
+            left = probe_left;
+            if (error_action_pending()) {
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+            if (!compare_normalise(expr->as.binary.modifier, &right) ||
+                error_action_pending()) {
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+            AstExpr fake = {0};
+            fake.kind = AST_EXPR_BINARY;
+            fake.as.binary.op = expr->as.binary.op;
+            fake.as.binary.modifier = ast_modifier_none();
+            return eval_comparison(&fake, left, right);
+        }
+        left = probe_left;
     }
 
     if (expr->as.binary.modifier.name &&
@@ -37072,7 +37202,48 @@ static Value eval_expr(AstExpr *expr) {
     return value_null();
 }
 
+/* `recognised`, when non-NULL, turns the final NOT-FOUND branch from a raise
+ * into an ANSWER: the value comes back untouched and the caller decides what to
+ * say. The comparison path needs that, because "assign modifier not found" is
+ * the wrong sentence for `a {nosuch}= b` -- the author was comparing. One flag
+ * set at entry and cleared in one branch, rather than a predicate duplicating
+ * this function's twenty-branch dispatch, which is the copy that would rot. */
+static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
+                                           int *recognised);
+
+/* EVERY STAGE IN THE CLAUSE, LEFT TO RIGHT. `x {trimmed; upper}= s` trims and
+ * then upcases, which is the order it is written in and the order the inline
+ * form already composes in (`{upper}{trimmed}s` nests, so the INNERMOST runs
+ * first -- the two spellings read in opposite directions and each reads the way
+ * its own syntax suggests).
+ *
+ * ONE STAGE IS THE OVERWHELMING CASE and costs one extra NULL test. A failing
+ * stage stops the chain: `error_action_pending` is checked between stages so a
+ * raise in stage two is not handed a value stage three would then complain
+ * about -- which is PLAT-ERR's first-raise-wins rule applied one level up. */
 static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
+    if (!modifier.name) {
+        return value;
+    }
+    if (!modifier.next) {
+        return apply_one_assignment_modifier(modifier, value, NULL);
+    }
+    AstModifierUse *stage = &modifier;
+    while (stage) {
+        value = apply_one_assignment_modifier(*stage, value, NULL);
+        if (error_action_pending()) {
+            return value;
+        }
+        stage = stage->next;
+    }
+    return value;
+}
+
+static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
+                                           int *recognised) {
+    if (recognised) {
+        *recognised = 1;
+    }
     if (!modifier.name) {
         return value;
     }
@@ -37379,6 +37550,12 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return dir_value;
     }
 
+    if (recognised) {
+        /* Not a transformation this runtime knows. Say so by flag and leave the
+         * value alone; the caller owns the diagnostic. */
+        *recognised = 0;
+        return value;
+    }
     modifier_raise_assign_not_found(modifier);
     value_free(value);
     return value_null();

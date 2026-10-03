@@ -213,6 +213,7 @@ AstModifierUse ast_modifier_use(char *name, AstExprList args) {
     modifier.library = NULL;
     modifier.name = name;
     modifier.args = args;
+    modifier.next = NULL;   /* one stage unless the clause says otherwise */
     return modifier;
 }
 
@@ -1146,8 +1147,14 @@ static void free_expr(AstExpr *expr) {
         break;
     case AST_EXPR_BINARY:
         free(expr->as.binary.op);
-        free(expr->as.binary.modifier.library);
-        free(expr->as.binary.modifier.name);
+        /* THROUGH THE HELPER, because a modifier use is no longer two strings:
+         * it is a chain, and a hand-rolled pair of `free`s leaks every stage
+         * past the first. Measured by valgrind the moment stages shipped -- 8
+         * blocks, 320 direct bytes -- and the shape is PLAT-OPTPARAM's lesson
+         * again: three storage sites for one value, one of which used the
+         * helper and two of which open-coded it, so a change to the shape was
+         * applied once and missed twice. */
+        ast_free_modifier_use(expr->as.binary.modifier);
         for (size_t i = 0; i < expr->as.binary.modifier.args.count; i++) {
             free_expr(expr->as.binary.modifier.args.items[i]);
         }
@@ -1225,8 +1232,7 @@ static void free_stmt(AstStmt *stmt) {
     switch (stmt->kind) {
     case AST_STMT_ASSIGN:
         free_expr(stmt->as.assign.target);
-        free(stmt->as.assign.modifier.library);
-        free(stmt->as.assign.modifier.name);
+        ast_free_modifier_use(stmt->as.assign.modifier);
         for (size_t i = 0; i < stmt->as.assign.modifier.args.count; i++) {
             free_expr(stmt->as.assign.modifier.args.items[i]);
         }
@@ -1455,6 +1461,17 @@ void ast_free_modifier_use(AstModifierUse modifier) {
     free(modifier.library);
     free(modifier.name);
     ast_free_expr_list(modifier.args);
+    /* The chain is heap-allocated per stage past the first; the first is held
+     * by value in the node that owns the clause. */
+    AstModifierUse *stage = modifier.next;
+    while (stage) {
+        AstModifierUse *next = stage->next;
+        free(stage->library);
+        free(stage->name);
+        ast_free_expr_list(stage->args);
+        free(stage);
+        stage = next;
+    }
 }
 
 void ast_free_modifier_signature(AstModifierSignature sig) {

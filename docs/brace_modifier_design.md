@@ -214,7 +214,58 @@ end-of-string or whitespace, so a **space before the comma** is what turns
 composition breaks no working program (it has no meaning today), and the
 *spaced* spelling would diverge from the unspaced one, which is a trap.
 
-### Options, with effort
+### DECIDED 2026-10-03 (Matthew): option B, with a SEMICOLON — and the
+### comparison half turned out to be the valuable one
+
+`;` was chosen over `|` on preference, and the measurements say that costs
+nothing: **neither is a token in gBASIC** (`print "a"; "b"` and `print 6 | 3`
+are both *lexer* errors, and bitwise operations are builtins — `band`, `bor`,
+`bnot`, `bxor` — so `|` is not reserved for a future bitwise-or either). There
+was no technical edge to either; the earlier draft of this section implied there
+was and that was wrong.
+
+**MY "KEEP THE COMPARISON HALF SEPARATE" ADVICE WAS WRONG, and measuring the
+compare path is what showed it.** A comparison lens is not a comparison *mode*
+to be composed — `eval_compare_modifier` hands a declared lens
+`left`/`right`/`operator` and takes its *verdict*, so two of those cannot chain.
+But `caseless` is implemented as `string_value_equal_caseless`, a **normalised
+comparison**, and the datetime precision lenses directly above it already lens
+**both operands** and re-enter `eval_comparison` with the modifier cleared. So
+the composable thing is the **normalisation**, the pattern was already in the
+same function, and one mechanism serves both halves.
+
+Measured before building, which is why the compare half is the larger win:
+
+| | before |
+|---|---|
+| `a {caseless}= b`, `a = "  Joe  "`, `b = "joe"` | **false** — the spaces defeat it |
+| `a {trimmed}= b` | `compare modifier not found: trimmed` |
+| what it took | `trim(lower(a)) = trim(lower(b))` — both sides, both ways |
+
+So `caseless` was the **only** comparison lens, and an assignment modifier could
+not be used to compare at all, composed or alone. Both gaps close with the one
+change: every stage normalises both sides, a terminal stage (a verdict) must be
+last, and `{trimmed; caseless}=` answers **true**.
+
+### What it cost
+
+Zero grammar conflicts, as predicted. `AstModifierUse` gained a `next` pointer —
+additive, so every existing reader sees stage one. The split is in
+`parse_modifier_use` (each stage may carry its own qualifier) and each stage is
+**trimmed**, which the first run forced: `{trimmed; caseless}` reported
+`compare modifier not found:  caseless`, with the space visible in the message,
+naming a modifier that exists.
+
+**AND IT LEAKED, which is the part worth remembering.** Three places store a
+modifier use and only ONE called `ast_free_modifier_use`; the binary (comparison
+lens) and assign (clause) sites open-coded `free(library); free(name);`. So the
+shape change was applied once and missed twice — 8 blocks, 320 direct bytes,
+caught by valgrind within minutes of the feature working. PLAT-OPTPARAM's lesson
+exactly. Both sites go through the helper now and
+`tests/run_brace_modifiers.sh` has a valgrind tier so the next shape change
+cannot repeat it.
+
+### Options as they stood before the decision, with effort
 
 - **(A) Nothing.** Composition already exists for one-word modifiers by
   nesting the inline form (`{upper}{trimmed}s`, documented in the reference),

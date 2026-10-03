@@ -24,7 +24,7 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 fail() { printf 'FAIL %s\n' "$1"; exit 1; }
 
-for name in forms residual; do
+for name in forms residual stages; do
     GBASIC_PATH=stdlib ./gbasic "tests/brace_modifiers/$name.bas" \
         >"$scratch/got" 2>"$scratch/err" \
         || fail "$name (exited nonzero: $(cat "$scratch/err"))"
@@ -61,4 +61,36 @@ grep -q "source_declares_function" src/parser.y \
     && fail "source_declares_function survives: nothing calls it since the guesser went"
 printf 'PASS machinery_removed\n'
 
-printf 'run_brace_modifiers: 5 cases passed\n'
+# --- valgrind, because a clause is now a HEAP CHAIN ------------------------
+#
+# A modifier use went from two strings to a chain malloc'd per stage, and the
+# free path is where that goes wrong silently: a leaked stage changes no answer.
+# It DID go wrong -- 8 blocks, 320 direct bytes, caught the moment stages
+# shipped -- because three places store a modifier use and only ONE of them
+# called `ast_free_modifier_use`; the binary (comparison lens) and assign
+# (clause) sites open-coded `free(library); free(name);`, so the shape change
+# was applied once and missed twice. PLAT-OPTPARAM's lesson, where an unfreed
+# parser field turned 22 suites red on their own valgrind tiers.
+#
+# Both open-coded sites go through the helper now, and this tier is here so the
+# next shape change cannot repeat it.
+printf 'TIER valgrind\n'
+if command -v valgrind >/dev/null 2>&1; then
+    vg_fail=0
+    for name in stages forms residual; do
+        if ! GBASIC_PATH=stdlib valgrind --error-exitcode=9 \
+                --errors-for-leak-kinds=definite --leak-check=full -q \
+                ./gbasic "tests/brace_modifiers/$name.bas" \
+                >/dev/null 2>"$scratch/vg"; then
+            printf 'FAIL valgrind %s\n' "$name"
+            head -12 "$scratch/vg"
+            vg_fail=1
+        fi
+    done
+    [ "$vg_fail" = 0 ] || exit 1
+    printf 'PASS valgrind (no definite leak or invalid access over 3 fixtures)\n'
+else
+    printf 'PASS SKIP (valgrind unavailable)\n'
+fi
+
+printf 'run_brace_modifiers: 7 cases passed\n'
