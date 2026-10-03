@@ -728,7 +728,10 @@ and the stale-looking ones carry a Status line saying what overtook them.
     by reading. Fixed with a version shim whose fallback keeps the restriction
     rather than dropping it; guarded by `tests/run_libcurl_floor.sh`.
 
-49. **A `load` written AFTER a `return` runs BEFORE it.** A `load` that is a
+49. ~~**A `load` written AFTER a `return` runs BEFORE it.**~~ **BY DESIGN
+    2026-10-03** (struck; Matthew: `load` hoists like a declaration, not a
+    statement). The consequence below stays as the record of why the
+    workbench suite skips on a build without GI. A `load` that is a
     direct child of the `program` block is pre-registered (run_pre_registration's
     shared pass), so examples/native_workbench's `load gi`, placed after its
     headless modes have returned, runs before `main` executes a line -- and
@@ -10055,3 +10058,5 @@ the loud/silent absence asymmetry should go (`"a" + nothing` is `anothing`,
   app with that reason. The example could guard its GI loads instead, which
   would let the headless modes run everywhere; not done here because the GI
   modes it could disturb cannot be run on either test machine.
+- **Status:** BY DESIGN (2026-10-03, Matthew): `load` hoists like a declaration,
+  not a statement. Not a defect; struck from the open ledger (item 49).

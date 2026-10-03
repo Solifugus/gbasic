@@ -627,3 +627,30 @@ timing outlier on a busy machine, recorded here rather than called green.
 **Still open, in order:** M4 (sqlite); M5 (libcurl, which brings webclient,
 http, smtp and every llm-loading suite back); actors (a length-prefixed stream
 channel -- §6); the listener; the Windows line editor.
+## 18. Milestone 4: sqlite on Windows (2026-10-03)
+
+**sqlite 3.53.4 is built in, STATICALLY** (`-lsqlite3 -lz`; its header declares
+no dllimport, so no _STATIC define the way libxml2 needs one). gbasic.exe is
+6.4 MB and still imports only Windows' own DLLs (objdump: the UCRT api-ms-win-
+crt set, KERNEL32, ADVAPI32, bcrypt, ODBC32, WS2_32). The library was already in
+MSYS2 as a Python dependency; nothing was installed.
+
+**Measured on Windows, all exit 0:** run_sqlite (every tier, the integration
+fixture and its ten pinned refusals, the statement-note tier), run_dbframe (the
+whole xlsx -> grid -> consolidate -> sqlite pipeline, the injection tier),
+run_compile (the formula compiler's interpreter/SQL/frame three-way oracle),
+run_string_nul (its sqlite door now runs: an interior NUL survives both ways,
+asked of the database), run_accounting, the xlsx cookbook (36, recipes 11-12 no
+longer skipped), run_doc_examples (its sqlite block now runs), run_negative,
+run_capabilities, run_platform. run_examples: 219 passed, up from 216, with no
+sqlite skip left -- and the WebClient skips rose 7 -> 13, because the edgar and
+screener examples now get past sqlite to their next dependency, which is M5.
+
+The skips run_discovery and run_odbc_cookbook still report are the SQLite ODBC
+DRIVER (a separate installable those M2 tiers use), not this module.
+
+Linux is untouched by construction: the change is inside the Makefile's
+Windows-only block. Ratchet still 0.
+
+**Next:** M5 (libcurl -- webclient, http, smtp and everything that loads
+`llm`), then actors, the listener, and the Windows line editor.

@@ -116,7 +116,12 @@ GIO_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs g
 ifeq ($(OS),Windows_NT)
 GTK_AVAILABLE := 0
 LIBPQ_AVAILABLE := 0
-SQLITE3_AVAILABLE := 0
+# M4: sqlite, STATICALLY. One library and zlib (its pkg-config Libs.private),
+# and its header declares no dllimport, so no _STATIC define is needed the way
+# libxml2's is. Unlocks dbframe, edgar and screener.
+SQLITE3_AVAILABLE := 1
+SQLITE3_CFLAGS :=
+SQLITE3_LIBS := -lsqlite3 -lz
 # ODBC IS ON, and is the one exception: its driver manager is odbc32.dll,
 # which ships WITH Windows, so linking it costs the download nothing and needs
 # nothing installed (milestone M2, docs/windows_port_plan.md §4). The drivers
