@@ -38,3 +38,17 @@ ok   a type failure names
 ok   COST: no stage number 
 ok   CONTROL one stage    
 ok   CONTROL one lens     
+
+-- WHAT ORDER, exactly: the sequencing is STAGE-MAJOR on a comparison
+ok   assign: A then B     
+ok   and B saw A's output 
+ok   compare: stage-major 
+
+-- THE COST: a comparison runs each stage TWICE
+ok   2 stages -> 4 calls  
+ok   and assign -> 2      
+
+-- AND SO A STAGE MUST BE A PURE FUNCTION OF ITS INPUT
+ok   non-pure breaks it   
+ok   because it ran twice 
+ok   CONTROL pure is true 

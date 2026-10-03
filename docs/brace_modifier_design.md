@@ -265,6 +265,38 @@ exactly. Both sites go through the helper now and
 `tests/run_brace_modifiers.sh` has a valgrind tier so the next shape change
 cannot repeat it.
 
+### Sequencing: stage-major on a comparison, and WHY (asked 2026-10-03)
+
+On the assign side there is one order. On a comparison each stage is applied to
+**both operands**, and there are two ways to sequence that:
+
+| | order of calls |
+|---|---|
+| **stage-major** (implemented) | `A(left) A(right) B(left) B(right)` |
+| operand-major | `A(left) B(left) A(right) B(right)` |
+
+**They give the same answer for a pure stage**, and differ only in the order of
+side effects — so neither is observable from a correct program, which is exactly
+why it needed pinning rather than being left to whatever the code happened to
+do. Measured and asserted in `tests/brace_modifiers/stages.bas`; the
+operand-major perturbation reports
+`got A:L B:La A:R B:Ra, want A:L A:R B:La B:Ra`.
+
+**Stage-major is deliberate, for ADJACENCY.** The two calls to one stage are
+back to back, so a stage that reads anything outside its argument — a clock, a
+counter, a file — sees the two operands at as nearly the same instant as
+possible. Operand-major separates them by the whole rest of the chain.
+
+**Two consequences fall out, both now documented in the reference rather than
+discovered.** A comparison runs each stage ONCE PER OPERAND, so a three-stage
+chain is six invocations where the assignment form is three — a lens reads like
+a pure test and is not free. And **a stage must be a pure function of its
+input**: one that answers differently each call is handed the two operands
+separately, so equal values compare unequal. Demonstrated rather than asserted
+— `"same" {ticking}= "same"` is **false** — and it cannot be detected, so it is
+the one rule a modifier author has to keep. The assignment form has no such
+requirement, only one value going through.
+
 ### Options as they stood before the decision, with effort
 
 - **(A) Nothing.** Composition already exists for one-word modifiers by

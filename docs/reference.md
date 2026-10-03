@@ -1288,6 +1288,35 @@ Because both sides get the same treatment, a chain only makes sense where both
 operands can take it: `{split ";"}` compares two arrays, and against a number it
 raises rather than guessing.
 
+**TWO CONSEQUENCES OF "BOTH SIDES", worth knowing before you declare a
+modifier of your own.**
+
+**Each stage runs once per operand**, so a comparison through a three-stage
+chain is six invocations of your code where the assignment form is three. A lens
+reads like a pure test and is not free.
+
+**The order is stage-major**: stage 1 on the left, stage 1 on the right, stage 2
+on the left, stage 2 on the right — not the whole chain down one side and then
+the other. For a stage that is a pure function of its argument the two orders
+give the same answer and the difference is invisible, which is why it is
+*stated*: the two calls to one stage are adjacent, so a stage that reads
+anything outside its argument sees both operands at as nearly the same instant
+as possible.
+
+**Which is the reason a stage must be a pure function of its input.** One that
+answers differently each call is handed the two operands separately, so **equal
+values compare unequal**:
+
+```basic
+' A modifier that is not a pure function of its argument.
+ticks = []
+same = "same" {ticking}= "same"      ' FALSE: the left got "1", the right "2"
+```
+
+Nothing can detect that, so it is not refused — it is the one rule a modifier
+you write has to keep. The assignment form has no such requirement, because
+there only one value goes through.
+
 Two shapes have **no** inline form and still need the assignment clause: a
 modifier that takes **arguments** (`{split ","}`) and one with a **multi-word**
 name (`{end of month}`). A **library-qualified** name is one word and does work

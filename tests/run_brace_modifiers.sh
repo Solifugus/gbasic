@@ -30,6 +30,16 @@ for name in forms residual stages; do
         || fail "$name (exited nonzero: $(cat "$scratch/err"))"
     diff -u "tests/brace_modifiers/$name.out" "$scratch/got" \
         || fail "$name (output diverged)"
+    # A COVERAGE FLOOR for the self-checking fixture, because a golden that
+    # matches proves only that the output did not change -- a fixture whose
+    # checks stopped running would match a golden regenerated from it.
+    if [ "$name" = stages ]; then
+        n_ok="$(grep -c '^ok' "$scratch/got" || true)"
+        [ "$n_ok" -ge 34 ] \
+            || fail "stages ran only $n_ok checks, wanted at least 34"
+        grep -q MISMATCH "$scratch/got" \
+            && fail "stages disagreed with itself"
+    fi
     printf 'PASS %s\n' "$name"
 done
 

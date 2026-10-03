@@ -26,6 +26,25 @@
 ' a stage silently skipped yields an ordinary string, and a comparison with one
 ' stage dropped yields an ordinary `false`. A golden would record either.
 
+' A stage that RECORDS when it ran, so the ORDER is observable. The order is a
+' real choice and was not pinned until it was asked about.
+modifier mark_a(  ) for assign
+    append(trace, "A:" + string(value))
+    return value + "a"
+end modifier
+
+modifier mark_b(  ) for assign
+    append(trace, "B:" + string(value))
+    return value + "b"
+end modifier
+
+' A stage that is NOT a pure function of its input: it answers something
+' different every time it is called.
+modifier ticking(  ) for assign
+    append(ticks, "t")
+    return string(count(ticks))
+end modifier
+
 function check(label, got, want)
     if string(got) = string(want) then
         print "ok   " + label
@@ -36,6 +55,11 @@ function check(label, got, want)
 end function
 
 program main( args )
+    ' The modifiers above append to these, and a top-level assignment would NOT
+    ' run (warning 2106) -- the block is what executes. They are set here,
+    ' before the first clause that uses one.
+    trace = []
+    ticks = []
     print "-- assign: stages run LEFT TO RIGHT"
     s = "  hello  "
     a {trimmed; upper}= s
@@ -156,4 +180,55 @@ program main( args )
     z {trimmed}= s
     check("CONTROL one stage    ", z, "hello")
     check("CONTROL one lens     ", "a" {caseless}= "A", true)
+
+    print ""
+    print "-- WHAT ORDER, exactly: the sequencing is STAGE-MAJOR on a comparison"
+    ' ASKED 2026-10-03 and pinned because the answer is a CHOICE. On the assign
+    ' side there is only one order. On a comparison each stage is applied to
+    ' BOTH operands, and there are two ways to sequence that:
+    '
+    '   stage-major   A(left) A(right) B(left) B(right)   <- what this does
+    '   operand-major A(left) B(left)  A(right) B(right)
+    '
+    ' They give the SAME ANSWER for a pure stage and differ only in the order of
+    ' side effects -- so neither is observable from a correct program, which is
+    ' exactly why it needed pinning rather than being left to the code.
+    '
+    ' STAGE-MAJOR IS DELIBERATE, for ADJACENCY: the two calls to one stage are
+    ' back to back, so a stage that reads anything outside its argument -- a
+    ' clock, a counter, a file -- sees the two operands at as nearly the same
+    ' moment as possible. Operand-major separates them by the whole rest of the
+    ' chain.
+    trace = []
+    probe_assign {mark_a; mark_b}= "_"
+    check("assign: A then B     ", join(trace, " "), "A:_ B:_a")
+    check("and B saw A's output ", probe_assign, "_ab")
+    trace = []
+    probe_cmp = ("L" {mark_a; mark_b}= "R")
+    check("compare: stage-major ", join(trace, " "), "A:L A:R B:La B:Ra")
+
+    print ""
+    print "-- THE COST: a comparison runs each stage TWICE"
+    ' Once per operand, necessarily -- you cannot normalise both sides without
+    ' calling the normaliser on both sides. Worth knowing because a lens LOOKS
+    ' like a pure test, and a three-stage chain is six invocations of user code.
+    trace = []
+    probe_n = ("L" {mark_a; mark_b}= "R")
+    check("2 stages -> 4 calls  ", count(trace), 4)
+    trace = []
+    probe_m {mark_a; mark_b}= "_"
+    check("and assign -> 2      ", count(trace), 2)
+
+    print ""
+    print "-- AND SO A STAGE MUST BE A PURE FUNCTION OF ITS INPUT"
+    ' This is inherent rather than a defect: a stage that answers differently
+    ' each call gets called twice with the two operands, so EQUAL VALUES COMPARE
+    ' UNEQUAL. Nothing can detect it, so it is documented and pinned here --
+    ' the demonstration IS the warning.
+    ticks = []
+    check("non-pure breaks it   ", "same" {ticking}= "same", false)
+    check("because it ran twice ", count(ticks), 2)
+    ' CONTROL: the same comparison through a PURE stage is true, or the check
+    ' above would be satisfied by a lens that reports false for everything.
+    check("CONTROL pure is true ", "same" {trimmed}= "same", true)
 end program
