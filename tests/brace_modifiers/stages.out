@@ -28,5 +28,13 @@ ok   {month}
 -- refusals, each beside a legal neighbour
 ok   terminal must be last
 ok   unknown stage named  
+ok   and WHICH stage it is
+ok   assign: stage named  
+ok   and a different stage
+ok   one stage: no number 
+ok   the lens redirect too
+ok   and no stage number  
+ok   a type failure names  
+ok   COST: no stage number 
 ok   CONTROL one stage    
 ok   CONTROL one lens     

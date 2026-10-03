@@ -104,9 +104,52 @@ program main( args )
     q = ("a" {nosuch; trimmed}= "a")
     if error then
         check("unknown stage named  ", contains(error.message, "nosuch"), true)
+        check("and WHICH stage it is", contains(error.message, "stage 1"), true)
         error.clear()
     else
         check("unknown stage named  ", "accepted", "refused")
+    end if
+    ' THE ASSIGN SIDE NAMES THE STAGE TOO, which is what the gbasic-books
+    ' session asked for before this shipped: `{trimmed; nosuch; upper}` and
+    ' `{trimmed; upper; nosuch}` gave the IDENTICAL message, and "which part was
+    ' not found" is the question a reader has.
+    w {trimmed; nosuch; upper}= s
+    if error then
+        check("assign: stage named  ", contains(error.message, "stage 2"), true)
+        error.clear()
+    else
+        check("assign: stage named  ", "accepted", "refused")
+    end if
+    w2 {trimmed; upper; nosuch}= s
+    if error then
+        check("and a different stage", contains(error.message, "stage 3"), true)
+        error.clear()
+    else
+        check("and a different stage", "accepted", "refused")
+    end if
+    ' CONTROL: a ONE-stage clause keeps its sentence exactly, including the
+    ' redirect that is the commonest cause of it -- a stage number on a clause
+    ' with one stage would be noise, and this is what stops the suffix leaking.
+    w3 {nosuch}= s
+    if error then
+        check("one stage: no number ", contains(error.message, "stage"), false)
+        error.clear()
+    end if
+    w4 {caseless}= s
+    if error then
+        check("the lens redirect too", contains(error.message, "comparison lens"), true)
+        check("and no stage number  ", contains(error.message, "stage"), false)
+        error.clear()
+    end if
+    ' A STAGE THAT IS FOUND AND THEN FAILS reports its own cause WITHOUT a stage
+    ' number -- a known and pinned limit, not an oversight: amending a pending
+    ' error means touching the path 333 negative goldens rest on. The modifier's
+    ' name identifies the stage in every chain that does not repeat one.
+    w5 {number; trimmed}= "  42  "
+    if error then
+        check("a type failure names  ", contains(error.message, "trim expects"), true)
+        check("COST: no stage number ", contains(error.message, "stage"), false)
+        error.clear()
     end if
     ' CONTROL: a one-stage clause is untouched in both contexts, or the whole
     ' change is satisfied by a build that refuses every clause.

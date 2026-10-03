@@ -35414,7 +35414,12 @@ static void bind_modifier_args(AstStmt *stmt, const char *args_text) {
  * statement `x{lens}= v` has no useful meaning, and deciding otherwise at a
  * statement start needs the lookahead PLAT-BRACE spent its conflicts getting
  * rid of. What was wrong here was the diagnostic, not the grammar. */
-static void modifier_raise_assign_not_found(AstModifierUse use) {
+/* `suffix` is appended to whichever sentence is chosen, or NULL for none. It
+ * exists so a CHAIN can say which stage failed without this function having to
+ * know what a chain is, and without an append-to-the-pending-error API -- the
+ * error path is what 333 negative goldens rest on. */
+static void modifier_raise_assign_not_found_at(AstModifierUse use,
+                                               const char *suffix) {
     char label[160];
     modifier_use_label(use, label, sizeof(label));
     const char *ignored = NULL;
@@ -35447,7 +35452,15 @@ static void modifier_raise_assign_not_found(AstModifierUse use) {
             snprintf(message, sizeof(message), "assign modifier not found: %s", label);
         }
     }
+    if (suffix) {
+        size_t used = strlen(message);
+        snprintf(message + used, sizeof(message) - used, "%s", suffix);
+    }
     runtime_error_raise(message, 1003, "modifier");
+}
+
+static void modifier_raise_assign_not_found(AstModifierUse use) {
+    modifier_raise_assign_not_found_at(use, NULL);
 }
 
 static Value eval_assign_modifier(AstModifierUse use, Value value) {
@@ -37229,8 +37242,38 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return apply_one_assignment_modifier(modifier, value, NULL);
     }
     AstModifierUse *stage = &modifier;
+    int index = 0;
     while (stage) {
-        value = apply_one_assignment_modifier(*stage, value, NULL);
+        /* WHICH STAGE WAS NOT FOUND is the question a reader has, and
+         * `assign modifier not found: nosuch` cannot answer it in a chain --
+         * `{trimmed; nosuch; upper}` and `{trimmed; upper; nosuch}` gave the
+         * IDENTICAL message. Raised here rather than inside the applier, using
+         * the `recognised` flag that already exists for the comparison path, so
+         * no error-path surgery is needed. Reported by the gbasic-books session
+         * before the feature shipped, as a release-note item; it is a
+         * diagnostic instead.
+         *
+         * A stage that is FOUND and then fails on its input still reports its
+         * own cause without a stage number (`trim expects a string`), which
+         * names the modifier and so identifies the stage in every chain that
+         * does not repeat one. That limit is pinned in
+         * tests/brace_modifiers/stages.bas rather than left to be rediscovered:
+         * amending a pending error's message means touching the path 333
+         * negative goldens rest on. */
+        int recognised = 1;
+        index++;
+        value = apply_one_assignment_modifier(*stage, value, &recognised);
+        if (!recognised) {
+            /* The one-stage sentence is unchanged -- including the "that is a
+             * comparison lens" redirect, which is the commonest cause -- so
+             * only a CHAIN gains the stage number. */
+            char suffix[64];
+            snprintf(suffix, sizeof(suffix), " (stage %d of this clause)", index);
+            modifier_raise_assign_not_found_at(*stage,
+                                               modifier.next ? suffix : NULL);
+            value_free(value);
+            return value_null();
+        }
         if (error_action_pending()) {
             return value;
         }

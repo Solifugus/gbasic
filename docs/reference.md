@@ -1248,9 +1248,17 @@ nothing to choose between them. A `;` **inside an argument** is content, not a
 separator: `{join "; "; upper}` is one argument holding a semicolon followed by
 a second stage.
 
-A stage that fails stops the chain, and its own diagnostic is what you see —
-`{number; trimmed}` on `"  42  "` reports `trim expects a string`, because
-trimming a number is what the second stage was asked to do.
+A stage that fails stops the chain. A stage **nobody recognises** names its
+position — `{trimmed; nosuch; upper}` reports
+`assign modifier not found: nosuch (stage 2 of this clause)`, and a one-stage
+clause keeps its sentence unchanged. A stage that is found and then **fails on
+its input** reports its own cause without a position: `{number; trimmed}` on
+`"  42  "` says `trim expects a string`, which names the modifier and so
+identifies the stage in any chain that does not repeat one.
+
+**If a stage raises, the target is not assigned** — it keeps whatever it held,
+and stays undefined if it held nothing. That is the ordinary rule for a failed
+assignment rather than a new one: the raise unwinds before the store.
 
 **AND THIS IS WHAT COMPARISON LENSES ARE FOR.** A comparison lens is a
 **normalisation of both operands**, so chaining one does the work that
