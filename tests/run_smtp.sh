@@ -323,7 +323,9 @@ ok "reject: a refused recipient fails the whole send, in the relay's own words"
 
 # ------------------------------------------------------------------- tls
 if command -v openssl >/dev/null 2>&1; then
-    openssl req -x509 -newkey rsa:2048 -keyout "$scratch/key.pem" -out "$scratch/cert.pem" \
+    # MSYS2_ARG_CONV_EXCL: under MSYS2 a native openssl would otherwise get
+    # "/CN=127.0.0.1" rewritten as a Windows path. Meaningless anywhere else.
+    MSYS2_ARG_CONV_EXCL='*' openssl req -x509 -newkey rsa:2048 -keyout "$scratch/key.pem" -out "$scratch/cert.pem" \
         -days 2 -nodes -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" \
         >/dev/null 2>&1 || fail "tls (could not generate a certificate)"
 

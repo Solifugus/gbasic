@@ -687,3 +687,53 @@ converter passed. The tier streams a ~200 KB file through xml.reader instead.
 After: the link line has no -liconv or -lintl, nm finds none of either
 library's internals, and run_regex, run_xlsx, the camt and pain.001 adapters,
 the xlsx cookbook, grid, chart, run_examples and run_negative all exit 0.
+## 20. Milestone 5: libcurl on Windows, over Schannel (2026-10-03)
+
+**libcurl 8.22.0, built by tools/build-curl-windows.sh**: pinned version and
+SHA-256 (cross-checked against MSYS2's own recipe for the same release, which
+records the identical hash), configure-only (the release tarball ships its
+configure, so no autotools), static, TLS = **Schannel**. Protocols HTTP(S) and
+SMTP(S) -- plus WS/WSS, which curl enables by default at no dependency cost;
+`file:` is off. Dependencies: zlib and Windows' own libraries -- no OpenSSL, no
+LGPL. The Makefile switches libcurl on exactly when
+~/gbasic-deps/curl-schannel/lib/libcurl.a exists, so a machine that has not run
+the script still builds, with webclient/http/smtp refusing cleanly.
+
+gbasic.exe: 6.0 MB, importing only Windows DLLs (adds CRYPT32, IPHLPAPI,
+Secur32). Smaller than at M4 because §19 removed the LGPL libraries.
+
+**TLS TRUST IS THE WINDOWS STORE, measured:** a real https:// fetch returns 200
+with the chain verified; a certificate for the WRONG NAME is refused
+(SEC_E_WRONG_PRINCIPAL) and a SELF-SIGNED one is refused (SEC_E_UNTRUSTED_ROOT).
+Nothing in gBASIC sets a CA path (only ldap has the option, and ldap is off),
+so Schannel's default trust is what applies.
+
+**Measured on Windows, all exit 0:** run_webclient; run_http (SEMANTICS 31,
+CONCURRENCY 1824ms sequential vs 639ms concurrent, DELIVERY, NO_WATCH, IGNORED,
+RAISE/http, WARN); run_smtp (11: wire framing and dot-stuffing, auth, reject,
+TLS and STARTTLS with verification ON by default, and a STARTTLS downgrade
+refused); run_mcp (17 over the stdio transport -- what a desktop MCP client
+uses); run_agent (45), run_llm_transcript, run_market (44 fixture assertions),
+run_event_study, run_json_strict, run_nlq (112), run_tools, run_ari_advisor,
+run_libcurl_floor, run_doc_examples, run_examples, run_negative.
+Still skipped by name: the tiers that need a LISTENER (http's RAISE/server and
+DEFERRED, mcp's HTTP transport, steward) -- that is the listener milestone.
+
+**Harness defects fixed, several not Windows-specific:**
+- A native Windows python ends its output `\r\n`: run_http's fixture-server
+  port became "12345\r" and every URL built from it was malformed.
+- tests/mcp/client.py used select() on a pipe (Windows accepts only sockets:
+  WinError 10093) and text mode (a blank line arrived as "\r"); it uses a reader
+  thread and bytes now, unchanged in meaning.
+- run_mcp passed MCP_URL="" when no server was up, and the fixture's
+  is_string() is true for an empty string -- so on ANY machine without a server
+  it connected to an empty URL. Set only when there is one.
+- run_http's and run_ari_advisor's valgrind tiers never asked vg_available, so
+  they FAILED on any machine without valgrind; hidden until now because both
+  suites skipped whole on builds without libcurl.
+- run_smtp's certificate step: MSYS2 rewrote `-subj /CN=...` into a path for the
+  native openssl (MSYS2_ARG_CONV_EXCL on that one call).
+
+**NOT VERIFIED ON LINUX:** the WSL tree is a lean build without libcurl, so the
+suites changed here skip there whole -- in particular tests/mcp/client.py's
+rewrite has run on Windows only.

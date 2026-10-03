@@ -107,8 +107,11 @@ else
     fi
 fi
 
+has_listen=1; build_has listen || has_listen=0
 if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
     printf '  SKIP http tier (needs curl and python3)\n'
+elif [ "$has_listen" = 0 ]; then
+    printf '  SKIP http tier (this platform cannot listen: webserver.listen is refused)\n'
 else
     printf 'TIER the HTTP transport gives the identical reply\n'
     hport="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
@@ -156,7 +159,7 @@ printf 'TIER consuming: gBASIC as an MCP client\n'
 # by a client that refuses everything.
 consume_url=""
 chsrv=""
-if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+if [ "$has_listen" = 1 ] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     cport="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
     MCP_HTTP_PORT="$cport" timeout -k 5 120 ./gbasic --line-buffered tests/mcp/http_server.bas \
         >"$work/ch.out" 2>"$work/ch.err" &
@@ -169,7 +172,12 @@ if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
         sleep 0.05
     done
 fi
-if MCP_URL="$consume_url" timeout -k 5 180 ./gbasic tests/mcp/consume_test.bas \
+# MCP_URL is set ONLY when there is a server: the fixture asks is_string(), and
+# an empty variable is still a string -- so passing MCP_URL="" sent it to
+# connect to an empty URL on every machine where the server did not come up.
+mcp_url_env=()
+[ -n "$consume_url" ] && mcp_url_env=(MCP_URL="$consume_url")
+if env "${mcp_url_env[@]}" timeout -k 5 180 ./gbasic tests/mcp/consume_test.bas \
         >"$work/c.out" 2>"$work/c.err"; then
     cchecks="$(sed -n 's/^checks: //p' "$work/c.out")"
     want=17
@@ -183,7 +191,7 @@ if MCP_URL="$consume_url" timeout -k 5 180 ./gbasic tests/mcp/consume_test.bas \
         if [ -n "$consume_url" ]; then
             pass "$cchecks checks over BOTH transports, gBASIC consuming gBASIC"
         else
-            pass "$cchecks checks over stdio (http skipped: no curl/python3)"
+            pass "$cchecks checks over stdio (http skipped: no curl/python3, or no listener on this platform)"
         fi
     fi
 else

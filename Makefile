@@ -130,7 +130,21 @@ ODBC_AVAILABLE := 1
 ODBC_CFLAGS :=
 ODBC_LIBS := -lodbc32
 LDAP_AVAILABLE := 0
+# M5: libcurl, STATICALLY, over SCHANNEL -- Windows' own TLS, which trusts the
+# Windows certificate store and needs no OpenSSL. Built by
+# tools/build-curl-windows.sh (pinned version and SHA-256) into
+# ~/gbasic-deps/curl-schannel, and switched on exactly when that library
+# exists, so a machine that has not built it still builds a gbasic.exe -- with
+# webclient/http/smtp refusing cleanly, the HAVE_* contract. Its dependencies
+# are zlib and Windows' own libraries: no LGPL (§19 of the status doc).
+CURL_WIN_PREFIX ?= $(shell cygpath -m "$$HOME/gbasic-deps/curl-schannel" 2>/dev/null)
+ifneq ($(wildcard $(CURL_WIN_PREFIX)/lib/libcurl.a),)
+LIBCURL_AVAILABLE := 1
+LIBCURL_CFLAGS := -I$(CURL_WIN_PREFIX)/include -DCURL_STATICLIB
+LIBCURL_LIBS := $(CURL_WIN_PREFIX)/lib/libcurl.a -lsecur32 -lbcrypt -ladvapi32 -lcrypt32 -lz -lws2_32 -liphlpapi
+else
 LIBCURL_AVAILABLE := 0
+endif
 LIBXCRYPT_AVAILABLE := 0
 LIBCRYPTO_AVAILABLE := 0
 LIBSSL_AVAILABLE := 0

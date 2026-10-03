@@ -43,6 +43,11 @@ if ! build_has webclient; then
     printf 'SKIP tests/run_steward.sh (this build has no webclient, which llm loads)\n'
     exit 0
 fi
+# Steward is an application SERVED over HTTP; every tier talks to it there.
+if ! build_has listen; then
+    printf 'SKIP tests/run_steward.sh (this platform cannot listen: webserver.listen is refused)\n'
+    exit 0
+fi
 export GBASIC_PATH=stdlib
 
 if ! command -v python3 >/dev/null 2>&1; then

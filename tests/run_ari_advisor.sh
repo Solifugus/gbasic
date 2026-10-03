@@ -82,7 +82,9 @@ printf 'TIER valgrind\n'
 if [ -f tests/valgrind_tier.sh ]; then
     # shellcheck disable=SC1091
     . tests/valgrind_tier.sh
-    if vg_run ./gbasic tests/ari_advisor/advisor_test.bas >/dev/null 2>/tmp/ari_adv_vg.txt; then
+    if ! vg_available; then
+        printf '  SKIP (valgrind is not installed)\n'
+    elif vg_run ./gbasic tests/ari_advisor/advisor_test.bas >/dev/null 2>/tmp/ari_adv_vg.txt; then
         printf '  ok   no definite leak or invalid access\n'
     else
         if [ "${VG_EXIT:-0}" = "0" ]; then

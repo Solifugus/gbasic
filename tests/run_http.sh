@@ -65,7 +65,9 @@ server_pid=$!
 port=""
 for _ in {1..60}; do
     if read -r word value < "$work/ready" 2>/dev/null && [[ "$word" == "READY" ]]; then
-        port="$value"
+        # A native Windows python ends the line \r\n, and a port of "12345\r"
+        # makes every URL built from it malformed.
+        port="${value%$'\r'}"
         break
     fi
     if ! kill -0 "$server_pid" 2>/dev/null; then
@@ -213,6 +215,12 @@ fi
 # The same claim for the queue the defect came from. python3 drives it rather
 # than /dev/tcp: the readiness probe there opens and closes a connection
 # without sending anything, which is itself a request the server sees.
+# This tier and DEFERRED below need a LISTENER, which this platform may refuse.
+. tests/build_has.sh
+has_listen=1; build_has listen || has_listen=0
+if [[ $has_listen -eq 0 ]]; then
+note "SKIP RAISE/server (this platform cannot listen: webserver.listen is refused)"
+else
 server_port="$(python3 - <<'PORT'
 import socket
 s = socket.socket()
@@ -221,6 +229,7 @@ print(s.getsockname()[1])
 s.close()
 PORT
 )"
+server_port="${server_port%$'\r'}"   # a native Windows python ends it \r\n
 set +e
 HTTP_SERVER_PORT="$server_port" timeout -k 5 30 ./gbasic tests/http/server_watcher_raise.bas \
     >"$work/sraise.out" 2>"$work/sraise.err" &
@@ -251,6 +260,7 @@ elif ! grep -q 'runtime error at .*server_watcher_raise\.bas:[0-9]*:[0-9]*: the 
 else
     note "PASS RAISE/server (exit $sraise_status, located)"
 fi
+fi   # has_listen
 
 # --- DEFERRED: a handler that starts a call and does not answer ------------
 #
@@ -263,11 +273,15 @@ fi
 # each upstream call takes 800ms; both handlers must have STARTED before either
 # ANSWER appears. A test that only checked both clients got their bodies would
 # pass on a handler that blocked the loop and served them one at a time.
+if [[ $has_listen -eq 0 ]]; then
+note "SKIP DEFERRED (this platform cannot listen: webserver.listen is refused)"
+else
 srv_port="$(python3 - <<'PORT'
 import socket
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()
 PORT
 )"
+srv_port="${srv_port%$'\r'}"
 # --line-buffered because the tier reads the fixture's stdout after killing it:
 # block-buffered, the lines that prove the ordering may never reach the file,
 # and the tier would report "0 started" for a run that worked.
@@ -346,6 +360,7 @@ elif [[ "$got" != "2" ]]; then
 else
     note "PASS DEFERRED (two handlers returned unanswered; both answered later from the http watcher)"
 fi
+fi   # has_listen
 
 # --- WARN: a blocking wait inside the loop, and its control ----------------
 if ! timeout -k 5 60 ./gbasic tests/http/wait_in_watcher.bas \
@@ -371,7 +386,9 @@ fi
 # A new refcounted value kind, a shared multi handle torn down before
 # curl_global_cleanup, and an event that holds a reference to a handle. None of
 # that shows up as a wrong answer.
-if vg_run ./gbasic tests/http/http_test.bas; then
+if ! vg_available; then
+    note "SKIP VALGRIND (valgrind is not installed)"
+elif vg_run ./gbasic tests/http/http_test.bas; then
     note "PASS VALGRIND (no definite leak or invalid access)"
 else
     bad "VALGRIND"
