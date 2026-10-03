@@ -164,3 +164,90 @@ is retired with a note pointing here, because the behaviour it pinned no
 longer exists.
 
 Negative: the paren form is a parse error naming the replacement.
+
+## 9. Open question: several modifiers in one clause (measured 2026-10-03)
+
+Asked by Matthew after `{trimmed,upper}=` was tried. **Not decided** — this
+section records what the measurements say so the next person does not re-derive
+them.
+
+### The grammar is free; the comma is not
+
+**No grammar change is needed for any in-brace separator.** The lexer captures
+`{...}` as ONE raw token (`LENS_CONTENT`) and the parser never looks inside, so
+bison's count is unchanged at **0 conflicts**. Demonstrated: `{trimmed|upper}`,
+`{trimmed;upper}`, `{trimmed>upper}` and `{trimmed+upper}` all reach the same
+runtime message (`assign modifier not found: trimmed|upper`) — the parser has
+no objection to any of them. Compare §3's measurement that admitting the
+general lens form in *expression* position costs **19**.
+
+**But the comma is already the argument separator**, which is the fact that
+decides this. Measured against a two-parameter modifier:
+
+```basic
+modifier between(lo, hi) for assign … end modifier
+x {between "a", "b"}= v     ' works
+x {between "a" "b"}= v      ' refused: expects 2 arguments
+```
+
+So the collision is real and concrete: `{split ",", trimmed}` reports
+`split modifier expects zero or one argument` today, having read `",", trimmed`
+as two arguments. **Arity cannot disambiguate it**, because `split`'s argument
+is *optional* — `{split}` and `{split ","}` are both legal, so "one more
+comma-separated item" is a second argument or a second modifier with nothing to
+choose between them.
+
+### And the comma's current meaning is already whitespace-sensitive
+
+Measured, four spellings, three different outcomes:
+
+| written | today |
+|---|---|
+| `{trimmed, upper}` | `assign modifier not found: trimmed, upper` |
+| `{split, trimmed}` | `assign modifier not found: split, trimmed` |
+| `{trimmed , upper}` | **`trimmed modifier expects no arguments`** |
+| `{split ",", trimmed}` | `split modifier expects zero or one argument` |
+
+`modifier_phrase_matches` requires the registered name be followed by
+end-of-string or whitespace, so a **space before the comma** is what turns
+`, upper` into arguments. Two consequences: claiming `{trimmed, upper}` for
+composition breaks no working program (it has no meaning today), and the
+*spaced* spelling would diverge from the unspaced one, which is a trap.
+
+### Options, with effort
+
+- **(A) Nothing.** Composition already exists for one-word modifiers by
+  nesting the inline form (`{upper}{trimmed}s`, documented in the reference),
+  and `x {upper}= {trimmed}s` reaches the clause case. **Cost 0.** The gap is
+  that **multi-word and argument-taking modifiers have no inline form**, so
+  `{end of month}` and `{split ","}` cannot compose by any route — that is the
+  only thing actually unreachable today.
+- **(B) A non-comma separator, e.g. `{trimmed|upper}`.** Zero grammar cost;
+  reuses `modifier_args_next_comma`, which is already the single quote-aware
+  top-level scanner; no ambiguity with arguments, so argument-taking stages
+  compose — which is the gap in (A). Cost: a second spelling for an idea the
+  inline form expresses by juxtaposition, against the `{USD}x` / `x {USD}=`
+  parity §3 was careful to keep. **Estimate ~1 day.**
+- **(C) Comma, disambiguated by arity.** Not recommended: unresolvable for
+  optional-arity modifiers, and the failure is a *wrong argument count* rather
+  than a refusal, so it guesses where this project refuses.
+- **(D) Comma, refused when any stage takes arguments.** `{trimmed,upper}` is
+  unambiguous and would work; `{split ",", trimmed}` is refused by name with a
+  remedy. Keeps the comma, keeps zero ambiguity. **Estimate ~1 day.** Cost: it
+  refuses exactly the case (A) cannot reach, so it closes no gap — and whether
+  a comma means "stage" or "argument" would depend on whether the *first* stage
+  took one, which is the context-sensitivity this design removed from the paren
+  form in the first place.
+
+### What any of B/C/D also has to answer
+
+- **Which stage failed.** A clause is ONE source position, so three stages share
+  it; the diagnostic must name the stage and the value it received, or
+  `{a|b|c}=` failing is worse than three lines. (The shared-position hazard is
+  the same one that made warning 2110 silent — see DOGFOOD.)
+- **Comparison lenses share the production.** `left {caseless|trimmed}= right`
+  would compose too, and a comparison *mode* is not a transformation; it needs
+  its own ruling rather than inheriting this one.
+- **Shape change.** `AstModifierUse` is one name plus args. A stage list touches
+  ast.c (23 references), eval.c (58), ast.h (12), parser.y (7), main.c (8),
+  repl.c (1) — mostly reads of `.name` a compatibility accessor could keep.
