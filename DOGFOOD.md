@@ -10585,3 +10585,66 @@ needle** — `case "$out" in *""*)` matches anything — so all three passed whi
 asserting nothing, including on a build where the clause had stopped working.
 They have their own helper now, requiring exit 0 and an exact answer, and on its
 first non-vacuous run it caught my expected array rendering being wrong.
+
+## The absence-coercion warning: MEASURED, and I am not shipping it without a ruling
+
+The item I ranked first from the books session's batch, instrumented as promised
+before building anything. **The measurement does not support the warning as
+specified, and it is not close enough for me to decide alone.**
+
+`+` was instrumented to report every concatenation where one operand is
+`nothing` or `unknown`, and every `.bas` in the tree was run: **1,303 programs,
+822 events, 21 distinct sites.**
+
+**ELEVEN OF THE TWENTY-ONE WERE AN ARTIFACT OF MY OWN METHOD.** Running each
+fixture bare means `env("HTTP_FIXTURE_PORT")` answers `unknown`, so
+`"http://127.0.0.1:" + env(...)` built `http://127.0.0.1:unknown/` — an absence
+my sweep manufactured. Re-run with the variable set, the way their suite runs
+them, all eleven are silent. **A sweep that creates the condition it is counting
+is measuring itself**, and without that second run the headline number was
+twice the truth.
+
+The ten that remain, classified by reading each one:
+
+| site | what it is |
+|---|---|
+| `string_concat_test.bas:5,6` | the fixture that EXISTS to pin this coercion |
+| `xlsx_consolidate_test.bas:103` | printing `to_money("n/a")`, which is `unknown` **by design** |
+| `xlsx_macro_sheet_test.bas:41,42` | printing `xlsx.cell` on a macro sheet, `unknown` **by design** |
+| `stridx_test.bas:178` | printing a `find` miss, `nothing` **by design** |
+| `fundamentals.bas:139,239` | an **unguarded** component in a composite key |
+
+**So eight of ten are correct code, and the reason is the finding: showing that
+something is absent is a legitimate and ordinary thing to do.**
+`print("find(zz)=" + find(f, "zz"))` is good code. And it is *the same
+expression shape* as `print("Total owed: " + owed)`, which is the bug. **There is
+no syntactic discriminator** — what differs is whether the author believed a
+value was there, which is not available at the `+`.
+
+That is the blind-shadow shape, which was built, measured at 287 false positives
+and reverted. Here it is 1:4 by site.
+
+**THE TWO THAT WERE REAL ARE FIXED, and the warning found them**, which is the
+argument on the other side. `stdlib/fundamentals.bas` built `_dedup` and `_pk`
+keys by concatenating `fp`, which EDGAR omits on some facts — measured 59 of
+4,096 rows — so the period key read `2023-12-31|nothing`. It grouped correctly
+*by accident*, every absent `fp` rendering the same way, and the giveaway is that
+the neighbouring `start` is defaulted explicitly eight lines up while this was
+not. `fp` is guarded now; no golden moved, which is what says the grouping was
+already right and only its basis was unstated.
+
+**AND THERE IS AN ASYMMETRY WORTH WEIGHING, which is why this is a ruling and not
+a verdict.** Every one of the eight correct sites is a TEST FIXTURE whose purpose
+is to display an absence. The only *working* consumer in the sweep —
+`fundamentals`, a library doing a job — is the one that was wrong. If that
+asymmetry holds outside this tree, the warning targets exactly the right thing
+and the suppression burden is six `on warning ignore` lines in fixtures, which
+PLAT-WARN exists to make affordable. If it does not, it is noise on a core
+operator.
+
+**My recommendation is to ship it**, on that asymmetry, with the books session's
+framing intact: a warning so `on warning stop` fails a test run while production
+keeps the ergonomics, and `string(nothing)` staying silent because an explicit
+conversion is the author saying they meant it. **But it fires on correct code
+three times for every defect it finds in our own tree, on `+`, so it is
+Matthew's call rather than mine.**
