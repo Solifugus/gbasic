@@ -139,10 +139,13 @@ LIBSSL_AVAILABLE := 0
 # libxml2's soname varies across distributions, a problem a static Windows
 # build does not have). LIBXML_STATIC is not optional: without it libxml2's
 # headers declare every function __declspec(dllimport) and the static archive
-# cannot satisfy them. The dependency list is pkg-config --static's.
+# cannot satisfy them. The dependency list is pkg-config --static's LESS
+# -liconv: libiconv is LGPL, and the three functions libxml2 takes from it are
+# supplied by src/platform_win32.c over the Windows code pages instead, so no
+# LGPL code is linked into gbasic.exe (tests/windows/xml_encodings.bas).
 LIBXML2_AVAILABLE := 1
 LIBXML2_CFLAGS := $(shell pkg-config --cflags libxml-2.0 2>/dev/null) -DLIBXML_STATIC
-LIBXML2_LIBS := -lxml2 -liconv -lbcrypt -lz
+LIBXML2_LIBS := -lxml2 -lbcrypt -lz
 ZLIB_AVAILABLE := 1
 ZLIB_CFLAGS :=
 ZLIB_LIBS := -lz
@@ -258,8 +261,10 @@ endif
 ifeq ($(OS),Windows_NT)
 PLATFORM_OBJ ?= src/platform_win32.o
 # libsystre: the POSIX regex.h API over TRE (BSD-2), since Windows has none.
-# TRE takes its messages through gettext, hence libintl and libiconv.
-LDLIBS += -lsystre -ltre -lintl -liconv -lws2_32 -lbcrypt -static
+# TRE takes its messages through gettext; that one function is supplied by
+# src/platform_win32.c, so the LGPL libintl (and the libiconv it needs) is
+# NOT linked -- gbasic.exe carries permissive-licensed code only.
+LDLIBS += -lsystre -ltre -lws2_32 -lbcrypt -static
 # AN 8 MB MAIN-THREAD STACK, the Linux default. Windows reserves 1 MB, and the
 # tree-walking evaluator and the JSON parser recurse: the parser's 10,000-level
 # nesting cap was sized for 8 MB, so on 1 MB a deep document CRASHED the

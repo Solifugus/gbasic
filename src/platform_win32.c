@@ -1367,3 +1367,207 @@ int gb_sock_set_blocking(int fd, int blocking) {
     u_long nonblocking = blocking ? 0 : 1;
     return ioctlsocket((SOCKET)fd, FIONBIO, &nonblocking) == 0;
 }
+
+/* ---- iconv for libxml2, without the LGPL libiconv ------------------------- */
+/*
+ * libxml2 decodes UTF-8, UTF-16 and ISO-8859-x itself and hands every other
+ * declared encoding to iconv -- referencing exactly libiconv_open, libiconv and
+ * libiconv_close (nm -u). The libiconv that provides them is LGPL, and linked
+ * STATICALLY into gbasic.exe it would bind every release to ship a relink kit,
+ * so these three are supplied here instead, over Windows' own code pages (what
+ * the retired win-iconv did; this is gBASIC's code). Measured against glibc's
+ * iconv by tests/windows/xml_encodings.bas, whose expected codepoints come from
+ * the encoding standards rather than from either implementation.
+ *
+ * ONE CHARACTER AT A TIME, because the contract is about character boundaries:
+ * input ending inside a character is EINVAL (the caller resubmits it with more
+ * bytes -- libxml2 converts long documents in pieces, so this happens), output
+ * with no room for the next character is E2BIG, and an invalid or unmappable
+ * character is EILSEQ. Only encodings whose characters are at most two bytes
+ * and carry no shift state are accepted; ISO-2022, UTF-7 and GB18030's
+ * four-byte forms are REFUSED at open, never half-handled.
+ */
+enum { GB_ICONV_CP, GB_ICONV_U16LE, GB_ICONV_U16BE };
+
+typedef struct {
+    int from_kind, to_kind;
+    UINT from_cp, to_cp;
+    UINT from_max;      /* MaxCharSize of a code-page source */
+} GbIconv;
+
+static int iconv_lookup(const char *name, int *kind, UINT *cp) {
+    char n[64];
+    size_t k = 0;
+    for (const char *p = name; *p && k + 1 < sizeof n; p++) {
+        char c = *p;
+        if (c >= 'a' && c <= 'z') {
+            c = (char)(c - 'a' + 'A');
+        }
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+            n[k++] = c;
+        }
+    }
+    n[k] = '\0';
+    static const struct { const char *name; UINT cp; } names[] = {
+        {"UTF8", 65001}, {"USASCII", 20127}, {"ASCII", 20127}, {"ANSIX341968", 20127},
+        {"ISO88591", 28591}, {"LATIN1", 28591}, {"ISO88592", 28592}, {"ISO88593", 28593},
+        {"ISO88594", 28594}, {"ISO88595", 28595}, {"ISO88596", 28596}, {"ISO88597", 28597},
+        {"ISO88598", 28598}, {"ISO88599", 28599}, {"ISO885913", 28603}, {"ISO885915", 28605},
+        {"KOI8R", 20866}, {"KOI8U", 21866},
+        {"SHIFTJIS", 932}, {"SJIS", 932}, {"MSKANJI", 932}, {"WINDOWS31J", 932},
+        {"EUCJP", 20932},
+        {"GB2312", 936}, {"GBK", 936}, {"EUCCN", 936},
+        {"BIG5", 950},
+        {"EUCKR", 949}, {"UHC", 949}, {"KSC5601", 949},
+    };
+    if (strcmp(n, "UTF16LE") == 0) { *kind = GB_ICONV_U16LE; *cp = 0; return 1; }
+    if (strcmp(n, "UTF16BE") == 0) { *kind = GB_ICONV_U16BE; *cp = 0; return 1; }
+    *kind = GB_ICONV_CP;
+    *cp = 0;
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        if (strcmp(n, names[i].name) == 0) {
+            *cp = names[i].cp;
+            break;
+        }
+    }
+    if (!*cp) {
+        /* WINDOWS-1252, CP1252, CP437, IBM850: the number IS the code page. */
+        const char *digits = NULL;
+        if (strncmp(n, "WINDOWS", 7) == 0) digits = n + 7;
+        else if (strncmp(n, "CP", 2) == 0) digits = n + 2;
+        else if (strncmp(n, "IBM", 3) == 0) digits = n + 3;
+        if (digits && *digits) {
+            UINT v = 0;
+            for (const char *d = digits; *d; d++) {
+                if (*d < '0' || *d > '9' || v > 100000) { v = 0; break; }
+                v = v * 10 + (UINT)(*d - '0');
+            }
+            *cp = v;
+        }
+    }
+    if (!*cp || !IsValidCodePage(*cp)) {
+        return 0;
+    }
+    CPINFO info;
+    if (*cp != 65001 && (!GetCPInfo(*cp, &info) || info.MaxCharSize > 2)) {
+        return 0;   /* stateful or four-byte: refused, not half-handled */
+    }
+    return 1;
+}
+
+void *libiconv_open(const char *tocode, const char *fromcode) {
+    GbIconv *cd = calloc(1, sizeof *cd);
+    if (!cd || !iconv_lookup(tocode, &cd->to_kind, &cd->to_cp) ||
+        !iconv_lookup(fromcode, &cd->from_kind, &cd->from_cp)) {
+        free(cd);
+        errno = EINVAL;
+        return (void *)-1;
+    }
+    CPINFO info;
+    cd->from_max = (cd->from_kind == GB_ICONV_CP && cd->from_cp != 65001 &&
+                    GetCPInfo(cd->from_cp, &info)) ? info.MaxCharSize : 1;
+    return cd;
+}
+
+int libiconv_close(void *cd) {
+    if (cd && cd != (void *)-1) {
+        free(cd);
+    }
+    return 0;
+}
+
+/* Bytes in the next source character, from its first byte(s); 0 = invalid. */
+static size_t iconv_char_len(const GbIconv *cd, const unsigned char *in, size_t avail) {
+    if (cd->from_kind != GB_ICONV_CP) {
+        if (avail < 2) return 2;
+        unsigned u = cd->from_kind == GB_ICONV_U16LE ? (unsigned)(in[0] | in[1] << 8)
+                                                     : (unsigned)(in[0] << 8 | in[1]);
+        return (u >= 0xD800 && u <= 0xDBFF) ? 4 : 2;
+    }
+    if (cd->from_cp == 65001) {
+        unsigned char b = in[0];
+        if (b < 0x80) return 1;
+        if (b >= 0xC2 && b <= 0xDF) return 2;
+        if (b >= 0xE0 && b <= 0xEF) return 3;
+        if (b >= 0xF0 && b <= 0xF4) return 4;
+        return 0;
+    }
+    if (cd->from_max == 2 && IsDBCSLeadByteEx(cd->from_cp, in[0])) {
+        return 2;
+    }
+    return 1;
+}
+
+size_t libiconv(void *handle, char **inbuf, size_t *inleft, char **outbuf, size_t *outleft) {
+    GbIconv *cd = handle;
+    if (!inbuf || !*inbuf) {
+        return 0;               /* reset: nothing here carries shift state */
+    }
+    while (*inleft > 0) {
+        const unsigned char *in = (const unsigned char *)*inbuf;
+        size_t len = iconv_char_len(cd, in, *inleft);
+        if (len == 0) { errno = EILSEQ; return (size_t)-1; }
+        if (len > *inleft) { errno = EINVAL; return (size_t)-1; }
+
+        WCHAR w[2];
+        int nw;
+        if (cd->from_kind == GB_ICONV_CP) {
+            nw = MultiByteToWideChar(cd->from_cp, MB_ERR_INVALID_CHARS,
+                                     (const char *)in, (int)len, w, 2);
+            if (nw <= 0 && GetLastError() == ERROR_INVALID_FLAGS) {
+                nw = MultiByteToWideChar(cd->from_cp, 0, (const char *)in, (int)len, w, 2);
+            }
+        } else {
+            int le = cd->from_kind == GB_ICONV_U16LE;
+            nw = (int)(len / 2);
+            for (int i = 0; i < nw; i++) {
+                w[i] = le ? (WCHAR)(in[2 * i] | in[2 * i + 1] << 8)
+                          : (WCHAR)(in[2 * i] << 8 | in[2 * i + 1]);
+            }
+            if (nw == 2 && (w[1] < 0xDC00 || w[1] > 0xDFFF)) nw = 0;
+            if (nw == 1 && w[0] >= 0xDC00 && w[0] <= 0xDFFF) nw = 0;
+        }
+        if (nw <= 0) { errno = EILSEQ; return (size_t)-1; }
+
+        char tmp[8];
+        int nout;
+        if (cd->to_kind == GB_ICONV_CP) {
+            BOOL used = FALSE;
+            if (cd->to_cp == 65001) {
+                nout = WideCharToMultiByte(65001, WC_ERR_INVALID_CHARS, w, nw,
+                                           tmp, (int)sizeof tmp, NULL, NULL);
+            } else {
+                nout = WideCharToMultiByte(cd->to_cp, WC_NO_BEST_FIT_CHARS, w, nw,
+                                           tmp, (int)sizeof tmp, NULL, &used);
+                if (nout <= 0 && GetLastError() == ERROR_INVALID_FLAGS) {
+                    nout = WideCharToMultiByte(cd->to_cp, 0, w, nw, tmp, (int)sizeof tmp,
+                                               NULL, &used);
+                }
+            }
+            if (nout <= 0 || used) { errno = EILSEQ; return (size_t)-1; }
+        } else {
+            int le = cd->to_kind == GB_ICONV_U16LE;
+            nout = nw * 2;
+            for (int i = 0; i < nw; i++) {
+                tmp[2 * i + (le ? 0 : 1)] = (char)(w[i] & 0xFF);
+                tmp[2 * i + (le ? 1 : 0)] = (char)(w[i] >> 8);
+            }
+        }
+        if ((size_t)nout > *outleft) { errno = E2BIG; return (size_t)-1; }
+        memcpy(*outbuf, tmp, (size_t)nout);
+        *outbuf += nout;
+        *outleft -= (size_t)nout;
+        *inbuf += len;
+        *inleft -= len;
+    }
+    return 0;
+}
+
+/* ---- gettext for TRE, without the LGPL libintl ---------------------------- */
+/* TRE's regerror() asks gettext to translate its messages -- the only reason
+ * libintl was linked at all (nm -u: libintl_gettext, nothing else). With no
+ * catalogue installed, gettext returns its argument, so this is what TRE
+ * already got; defining it here keeps the LGPL library out of the binary. */
+char *libintl_gettext(const char *msgid) {
+    return (char *)msgid;
+}

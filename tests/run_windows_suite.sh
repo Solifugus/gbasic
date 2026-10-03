@@ -30,6 +30,10 @@ for f in tests/windows/*.bas; do
         ran=$((ran + 1))
     elif [ "$rc" -eq 0 ] && [ "${last#SKIP}" != "$last" ]; then
         printf '%s\n' "$last"
+    elif printf '%s' "$out" | grep -qE 'support is (not available in this build|unavailable)|requires OpenSSL|not available on Windows'; then
+        # A module this build lacks (xml_encodings.bas needs libxml2): the
+        # binary's own refusal, never a feature under test failing.
+        printf 'SKIP %s (%s)\n' "$f" "$(printf '%s' "$out" | grep -m1 -oE '[A-Za-z0-9 -]*(support is [a-z ]*|requires OpenSSL|not available on Windows)')"
     else
         printf 'FAIL %s (exit %s)\n' "$f" "$rc"
         printf '%s\n' "$out" | grep -E 'MISMATCH|BROKEN|error' | head -20

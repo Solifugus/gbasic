@@ -654,3 +654,36 @@ Windows-only block. Ratchet still 0.
 
 **Next:** M5 (libcurl -- webclient, http, smtp and everything that loads
 `llm`), then actors, the listener, and the Windows line editor.
+## 19. No LGPL code in gbasic.exe (2026-10-03)
+
+**Found while scoping M5, and true since M3:** the static gbasic.exe contained
+two LGPL-2.1+ libraries -- libiconv (pulled in by libxml2's encoding.o and by
+libintl) and gettext's libintl (92 symbols, pulled in by TRE's regerror.o for
+translated regex messages). LGPL permits static linking only if every release
+lets users relink against a modified library, an obligation an installer would
+carry forever. **Removed (Matthew's ruling).** Everything else linked is
+permissive: OpenSSL is not linked, libxml2 MIT, sqlite public domain, zlib,
+TRE BSD-2, libsystre BSD-2.
+
+`nm -u` says exactly what was used: libxml2 takes libiconv_open, libiconv and
+libiconv_close; TRE takes libintl_gettext. src/platform_win32.c now supplies
+those four -- gettext returns its argument (what TRE got with no catalogue
+anyway), and iconv converts one character at a time over the Windows code
+pages, honouring the contract: a partial character is EINVAL, no room E2BIG,
+invalid or unmappable EILSEQ, and an encoding that is stateful or has
+four-byte characters is refused at open. MSYS2 no longer packages win-iconv,
+so this is gBASIC's own code, not a substitute library.
+
+**tests/windows/xml_encodings.bas** (run by run_windows_suite on every
+platform) checks Shift_JIS, windows-1252, KOI8-R, GBK, Big5 and EUC-KR against
+codepoints taken from the encoding STANDARDS, not from either implementation:
+14 of 14 on Linux (glibc iconv), on the old Windows binary (libiconv) and on the
+new one. Two perturbations go red -- iconv refusing everything, and a partial
+character swallowed instead of handed back -- and the second needed the tier
+rebuilt first: MEASURED, xml.parse converts an in-memory document in ONE call,
+so a long document through it never splits a character and the swallowing
+converter passed. The tier streams a ~200 KB file through xml.reader instead.
+
+After: the link line has no -liconv or -lintl, nm finds none of either
+library's internals, and run_regex, run_xlsx, the camt and pain.001 adapters,
+the xlsx cookbook, grid, chart, run_examples and run_negative all exit 0.
