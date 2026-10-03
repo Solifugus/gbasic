@@ -98,11 +98,13 @@ check_same("USD agrees", {USD}19.99, d)
 e {JPY}= 1200
 check_same("JPY agrees", {JPY}1200, e)
 
-f {file}= "/etc/hostname"
-check_same("file agrees", {file}"/etc/hostname", f)
+' Repo-relative paths (the suite runs from the root): files that exist on every
+' platform, where /etc/hostname and /etc do not exist on Windows.
+f {file}= "README.md"
+check_same("file agrees", {file}"README.md", f)
 
-g {dir}= "/etc"
-check_same("dir agrees", {dir}"/etc", g)
+g {dir}= "tests"
+check_same("dir agrees", {dir}"tests", g)
 
 h {trimmed}= "  spaced  "
 check_same("a stdlib modifier agrees", {trimmed}"  spaced  ", h)
@@ -119,7 +121,7 @@ print "-- and they agree on the TYPE, not merely on how it renders"
 ' characters, which is how finio's OFX adapter shipped amounts as TEXT for its
 ' whole life. So the kind is asserted separately from the value.
 check("inline {USD} is money", type({USD}19.99), "money")
-check("inline {file} is a file", type({file}"/etc/hostname"), "file")
+check("inline {file} is a file", type({file}"README.md"), "file")
 check("inline {date} is a datetime", type({date}"2026-09-22"), "datetime")
 
 print ""
@@ -132,7 +134,7 @@ check("a parenthesised subject is still available", {number}("12" + "1"), 121)
 
 print ""
 print "-- POSITIONS: everywhere an expression may go"
-check("as an argument", bytes({file}"/etc/hostname") > 0, true)
+check("as an argument", bytes({file}"README.md") > 0, true)
 arr = [ {USD}1.50, {USD}2.50 ]
 check("as an array element", string(arr[0] + arr[1]), "4.00")
 rec = { due: {date}"2026-01-31" }
@@ -144,8 +146,8 @@ if ({date}"2026-09-22").year > 2000 then
 else
     check("as a condition", false, true)
 end if
-check("applied to a computed subject", type({file}("/etc" + "/hostname")), "file")
-check("applied to a variable", type({file}("/etc/hostname")), "file")
+check("applied to a computed subject", type({file}("READ" + "ME.md")), "file")
+check("applied to a variable", type({file}("README.md")), "file")
 
 print ""
 print "-- CONTROL: the clause forms the lexer does NOT claim still work"

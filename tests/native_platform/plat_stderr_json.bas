@@ -20,8 +20,10 @@ end function
 ' runtime's diagnostic carries the same path, line and column in each.
 child = "tests/native_platform/plat_stderr_diag_child.bas"
 base = "./gbasic --json-diagnostics " + child
-loud = process.run({ command: "/bin/sh", args: ["-c", "GBASIC_STDERR_LOUD=1 " + base] })
-quiet = process.run({ command: "/bin/sh", args: ["-c", "GBASIC_STDERR_LOUD=0 " + base] })
+' `sh`, not "/bin/sh": nothing here depends on where the shell lives, and
+' Windows has no /bin -- PATH finds the same shell on Linux and MSYS2's there.
+loud = process.run({ command: "sh", args: ["-c", "GBASIC_STDERR_LOUD=1 " + base] })
+quiet = process.run({ command: "sh", args: ["-c", "GBASIC_STDERR_LOUD=0 " + base] })
 
 print "loud-exit=" + loud.exit_code
 print "quiet-exit=" + quiet.exit_code

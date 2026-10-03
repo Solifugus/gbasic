@@ -34,6 +34,17 @@
 #include <stddef.h>
 #include <sys/types.h>
 #include <time.h>
+#include <fcntl.h>
+
+/* open()'s binary flag, for every file gBASIC creates with open(2). Windows'
+ * open defaults to TEXT mode, so write() turns each "\n" into "\r\n": the
+ * session cache came back with a CR on every line (measured, run_repl.sh) where
+ * the program typed none. POSIX has no such mode and no such flag, so 0. */
+#ifdef O_BINARY
+#define GB_O_BINARY O_BINARY
+#else
+#define GB_O_BINARY 0
+#endif
 
 /* The path of the running executable.
  *
@@ -206,6 +217,17 @@ int gb_flock(int fd, int op);
  * separator written as `/` (C:/Users/...) so that gBASIC's `/`-based path
  * handling works unchanged on Windows. */
 char *gb_realpath(const char *path);
+
+/* A file's (or directory's) last-modification time as SECONDS SINCE THE EPOCH,
+ * UTC, following links as stat() does. 0 / -1 with errno set.
+ *
+ * Not stat()'s st_mtime on Windows, because the C runtime COMPUTES that field:
+ * it turns the file's UTC FILETIME into local time with the SYSTEM zone and
+ * back with TZ, so whenever TZ names a different zone the "epoch" is shifted
+ * by the difference -- measured, TZ=UTC on a UTC-5 machine read a file stamped
+ * 2020-01-01T00:00Z as 1577818800, five hours early, while gBASIC's own local
+ * time honoured TZ correctly. Windows keeps the real UTC time; this reads it. */
+int gb_file_mtime(const char *path, time_t *out);
 
 /* Set (on=1) or clear (on=0) close-on-exec / non-inheritance on an fd.
  * Windows: SetHandleInformation(HANDLE_FLAG_INHERIT) on the fd's OS handle.

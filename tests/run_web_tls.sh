@@ -9,6 +9,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 make >/dev/null
+. tests/build_has.sh
+if ! build_has listen; then
+    printf 'SKIP tests/run_web_tls.sh (this platform cannot listen: webserver.listen is refused)\n'
+    exit 0
+fi
 
 for tool in curl openssl; do
     if ! command -v "$tool" >/dev/null 2>&1; then

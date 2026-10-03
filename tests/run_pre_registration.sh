@@ -205,6 +205,11 @@ expected_actor='child=top/block
 parent-top=top
 parent-block=block'
 
+. tests/build_has.sh
+if ! build_has actors; then
+    printf 'SKIP plat_guard_prereg_actor (actors are not available on this platform; the shared-pass tier above still holds structurally)\n'
+    exit "$status"
+fi
 actual_actor=$(timeout -k 5 60 ./gbasic tests/native_platform/plat_guard_prereg_actor.bas 2>&1 </dev/null)
 if [ "$actual_actor" = "$expected_actor" ]; then
     printf 'PASS plat_guard_prereg_actor (a child reaches a library loaded either side of the block)\n'

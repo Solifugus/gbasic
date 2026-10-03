@@ -38,6 +38,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 make >/dev/null
+. tests/build_has.sh
+if ! build_has webclient; then
+    printf 'SKIP tests/run_steward.sh (this build has no webclient, which llm loads)\n'
+    exit 0
+fi
 export GBASIC_PATH=stdlib
 
 if ! command -v python3 >/dev/null 2>&1; then

@@ -53,6 +53,11 @@ trap 'rm -rf "$work"' EXIT
 export GBASIC_SESSION_DIR="$work/sessions"
 mkdir -p "$GBASIC_SESSION_DIR"
 
+# What THIS binary on THIS platform can do (tests/build_has.sh): actors, a line
+# editor and POSIX signals are each absent on Windows today, and a tier whose
+# subject is absent says so by name rather than failing as if it were broken.
+has_cap() { ( cd "$root" && . tests/build_has.sh && build_has "$1" ); }
+
 pass=0; fail=0
 check() {
     local label="$1" want="$2" got="$3"
@@ -808,17 +813,24 @@ cached_bounded() { printf '%s' "$2" | GBASIC_SESSION_DIR="$cache" timeout -k 5 "
 # The cache holds the PROGRAM, not the transcript -- the same rule `list` and
 # `save` follow. A question is not program text, and the literal transcript is
 # what history is for.
-cfifo="$work/c.fifo"; rm -f "$cfifo"; mkfifo "$cfifo"
-GBASIC_SESSION_DIR="$cache" "$GB" --repl < "$cfifo" >/dev/null 2>&1 &
-cpid=$!
-exec 4>"$cfifo"
+# A LIVE SESSION IS DRIVEN THROUGH A COPROCESS, which is an ordinary pipe. It was
+# a `mkfifo` FIFO, and a native Windows program reads NOTHING from an MSYS2 FIFO
+# (measured: no output even after the writer closed) -- so on Windows every tier
+# below was a session that never received a line. A pipe works on both.
+# The cache is found by GLOB, not `session-$!.bas`: gBASIC names it with its own
+# pid, which under MSYS2 is not the pid the shell reports.
+coproc CSESS { GBASIC_SESSION_DIR="$cache" exec "$GB" --repl >/dev/null 2>&1; }
+cpid=$CSESS_PID
+exec 4>&"${CSESS[1]}"
 # `dbl(x)` and not `1 + 1`: a bare call PARSES, so it is the recording rule's
 # real subject -- `1 + 1` does not parse at all and takes the wrapper path,
 # which records nothing either way, so a check using it is vacuous. Measured:
 # with the rule removed it stayed green.
 printf 'x = 2\nfunction dbl(n)\nreturn n*2\nend function\nprint dbl(x)\ndbl(x)\n' >&4
-wait_for_file() { local i=0; while [ "$i" -lt 100 ]; do [ -s "$1" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
-wait_for_file "$cache/session-$cpid.bas" || true
+wait_for_cache() { local i=0; while [ "$i" -lt 100 ]; do
+    for f in "$cache"/session-*.bas; do [ -s "$f" ] && return 0; done
+    sleep 0.1; i=$((i+1)); done; return 1; }
+wait_for_cache || true
 sleep 0.5
 live="$(cat "$cache"/session-*.bas 2>/dev/null)"
 check "the cache holds the program while you type" "x = 2
@@ -828,12 +840,21 @@ end function
 print dbl(x)" "$live"
 lacks "and not the questions asked along the way" "
 dbl(x)" "$live"
-check "and only its owner can read it" "-rw-------" \
-    "$(ls -l "$cache"/session-*.bas 2>/dev/null | head -1 | awk '{print $1}')"
+# Owner-only is a MODE here, and a mode means nothing where the filesystem does
+# not keep one (Windows: ACLs, and MSYS2 shows the file -rw-r--r--). Asked of the
+# filesystem first -- can a file be made 600 at all? -- and skipped by name if not.
+modes_kept() { local f="$work/.modeprobe"; : > "$f"; chmod 600 "$f" 2>/dev/null
+    local m; m="$(ls -l "$f" | awk '{print $1}')"; rm -f "$f"; [ "$m" = "-rw-------" ]; }
+if modes_kept; then
+    check "and only its owner can read it" "-rw-------" \
+        "$(ls -l "$cache"/session-*.bas 2>/dev/null | head -1 | awk '{print $1}')"
+else
+    printf 'ok   SKIP owner-only cache file (this filesystem keeps no Unix modes)\n'; pass=$((pass+1))
+fi
 
 # SIGKILL: the case the whole thing exists for.
 kill -9 "$cpid" 2>/dev/null; wait "$cpid" 2>/dev/null
-exec 4>&-; rm -f "$cfifo"
+exec 4>&-
 check "a killed session leaves its program behind" "1" \
     "$(ls "$cache" 2>/dev/null | grep -c '^session-')"
 contains "the next session says so" "ended without saving" \
@@ -870,16 +891,15 @@ check "and recovering consumes it" "0" \
 # satisfied by a recovery that brought back nothing at all. A fresh orphan is
 # made the same way -- by killing a session -- rather than by writing the file
 # by hand, which would test the reader and not the thing that writes it.
-make_orphan() {
-    local f="$work/o.fifo"; rm -f "$f"; mkfifo "$f"
-    GBASIC_SESSION_DIR="$cache" "$GB" --repl < "$f" >/dev/null 2>&1 &
-    local p=$!
-    exec 5>"$f"
+make_orphan() {   # a coprocess, as above: a pipe a native program can read
+    coproc OSESS { GBASIC_SESSION_DIR="$cache" exec "$GB" --repl >/dev/null 2>&1; }
+    local p=$OSESS_PID
+    exec 5>&"${OSESS[1]}"
     printf '%s' "$1" >&5
-    local i=0
-    while [ "$i" -lt 100 ] && [ ! -s "$cache/session-$p.bas" ]; do sleep 0.1; i=$((i+1)); done
+    wait_for_cache || true
+    sleep 0.3
     kill -9 "$p" 2>/dev/null; wait "$p" 2>/dev/null
-    exec 5>&-; rm -f "$f"
+    exec 5>&-
 }
 make_orphan 'x = 2
 function dbl(n)
@@ -927,6 +947,9 @@ echo "== SPAWN: the cache is the file a child re-execs =="
 # session had nothing for a child to run -- docs/multiprocessing_design.md §3
 # predicted this would need "a clear error at spawn", and nothing could reach
 # the case until the prompt existed. The cache dissolves it: there IS a file.
+if ! has_cap actors; then
+    printf 'ok   SKIP spawn tier (actors are not available on this platform)\n'; pass=$((pass+1))
+else
 rm -rf "$cache"; mkdir -p "$cache"
 # THE CHILD MUST PROVE IT RAN. A weak version of this check -- `print "spawn
 # works"` on the line after the spawn -- passes on the REFUSAL too, because the
@@ -959,6 +982,7 @@ contains "the session survives either way" "session survives" "$nofile"
 # THE CONTROL on all of it: spawn from a real file is untouched.
 printf 'function worker()\n  return 1\nend function\nprogram main()\n  h = spawn worker()\n  print "spawned ok"\nend program\n' > "$work/spawn.bas"
 contains "and spawn from a file still works" "spawned ok" "$("$GB" "$work/spawn.bas" 2>&1)"
+fi   # has_cap actors
 
 echo
 echo "== EDITING: the pty tier =="
@@ -966,7 +990,12 @@ echo "== EDITING: the pty tier =="
 # cannot exercise a single key of it -- tests/repl_pty.py gives it a real
 # pseudo-terminal and types one byte at a time, because the editor reads a byte
 # at a time and redraws after each.
-if command -v python3 >/dev/null 2>&1; then
+if ! has_cap lineedit; then
+    # Windows: raw_on declines, so the prompt reads PLAIN LINES -- no arrows, no
+    # history. A known gap (docs/windows_port_status.md), not an editor that
+    # broke; typeahead is skipped with it, being the editor's own window.
+    echo "SKIP editing and typeahead tiers (the line editor is not available on this platform yet)"
+elif command -v python3 >/dev/null 2>&1; then
     # Strip the redraw: every keystroke repaints the row, so what a tier wants
     # is the program's output, not the repainting.
     # Keystrokes are written with ANSI-C quoting ($'...') at the call sites, so
@@ -1159,6 +1188,14 @@ echo "== INTERRUPT: Ctrl-C ends the chunk, not the session =="
 # prompt itself is unaffected -- it installs a handler, which replaces the
 # inherited ignore -- so the tier would have passed while its control measured
 # nothing, which is exactly the failure this file keeps guarding against.
+#
+# THE WHOLE TIER IS POSIX SIGNALS, sent with kill -INT down a FIFO: neither
+# reaches a native Windows console program from MSYS2, so there the tier has no
+# premise. Whether Ctrl-C at a Windows prompt interrupts a loop is recorded as
+# UNVERIFIED in docs/windows_port_status.md rather than claimed here.
+if ! has_cap signals; then
+    printf 'ok   SKIP interrupt tier (no POSIX signals to send on this platform)\n'; pass=$((pass+1))
+else
 set -m
 
 wait_for() {   # wait_for FILE PATTERN SECONDS
@@ -1265,6 +1302,7 @@ kill -INT "$loop_pid" 2>/dev/null
 wait "$loop_pid" 2>/dev/null
 check "a script is still ended by the same signal" "130" "$?"
 set +m
+fi   # has_cap signals
 
 echo
 echo "== VALGRIND =="

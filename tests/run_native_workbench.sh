@@ -51,7 +51,16 @@ run_mode() {
     fi
 }
 
-# --- Pure-gBASIC tier (always) ---------------------------------------------
+# --- Pure-gBASIC tier (always, where the app can load at all) ---------------
+# The modes below need no GI, but the APP does: `load gi` is a declaration and
+# is hoisted, so it runs before `main` chooses a mode, and a build without GI
+# (Windows, or a lean Linux build) cannot start the app in ANY mode. Said by
+# name rather than reported as the inspector being broken.
+. tests/build_has.sh
+if ! build_has gi; then
+    printf 'SKIP %s (this build has no gobject-introspection, which the app loads before any mode runs)\n' "$APP"
+    exit 0
+fi
 run_mode inspect
 run_mode process
 

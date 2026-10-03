@@ -375,7 +375,12 @@ serial_case "23:59:59"   1785801599   46237  86399
 # line: the day must differ, or the answer is a day out for half the world.
 d_utc=$(TZ=UTC             GBASIC_XLSX_NOW=1785801000 timeout 60 ./gbasic tests/xlsx_serial_probe.bas 2>/dev/null | head -1)
 d_syd=$(TZ=Australia/Sydney GBASIC_XLSX_NOW=1785801000 timeout 60 ./gbasic tests/xlsx_serial_probe.bas 2>/dev/null | head -1)
-if [ -n "$d_utc" ] && [ -n "$d_syd" ] && [ "$d_syd" -eq $((d_utc + 1)) ]; then
+tz_reached="$(TZ=Australia/Sydney timeout 60 ./gbasic tests/tz_seen.bas 2>/dev/null)"
+if [ "$tz_reached" != "Australia/Sydney" ]; then
+    # The premise is that the zone ARRIVES; under MSYS2 an Area/City TZ is
+    # removed before a native program starts (tests/tz_seen.bas says why).
+    printf 'SKIP serial %-12s (TZ=Australia/Sydney never reached the binary: it saw %s)\n' "timezone" "$tz_reached"
+elif [ -n "$d_utc" ] && [ -n "$d_syd" ] && [ "$d_syd" -eq $((d_utc + 1)) ]; then
     printf 'PASS serial %-12s local time honoured (UTC %s, Sydney %s)\n' "timezone" "$d_utc" "$d_syd"
 else
     printf 'FAIL serial %-12s expected Sydney one day ahead; got UTC=%s Sydney=%s\n' "timezone" "$d_utc" "$d_syd"

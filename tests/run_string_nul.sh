@@ -204,6 +204,10 @@ fi
 # transmitted the right bytes all along -- the sender measured them with strlen
 # and the receiver rebuilt them as a C string.
 printf 'TIER a field name survives the actor boundary\n'
+. tests/build_has.sh
+if ! build_has actors; then
+    printf '  SKIP actor boundary (actors are not available on this platform)\n'
+else
 cat >"$scratch/actor.bas" <<'EOF'
 function worker(parent)
     m = receive()
@@ -230,6 +234,7 @@ if out=$(GBASIC_PATH=stdlib timeout -k 5 30 ./gbasic "$scratch/actor.bas" 2>&1);
 else
     fail "the actor fixture did not run"
 fi
+fi   # build_has actors
 
 printf 'TIER valgrind\n'
 if vg_available; then

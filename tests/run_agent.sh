@@ -36,6 +36,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh
 make >/dev/null
+. tests/build_has.sh
+if ! build_has webclient; then
+    printf 'SKIP tests/run_agent.sh (this build has no webclient, which llm loads and agent loads llm)\n'
+    exit 0
+fi
 export GBASIC_PATH=stdlib
 
 work="$(mktemp -d)"

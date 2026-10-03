@@ -215,8 +215,11 @@ fi
 
 # --- STREAM: the shape the ask asked for -----------------------------------
 printf 'TIER stream\n'
+. tests/build_has.sh
 if ! command -v curl >/dev/null 2>&1; then
     printf '  SKIP stream (curl not installed)\n'
+elif ! build_has listen; then
+    printf '  SKIP stream (this platform cannot listen: webserver.listen is refused)\n'
 else
     export GBASIC_PATH=stdlib
     log="$scratch/stream.log"

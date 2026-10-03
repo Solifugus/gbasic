@@ -270,8 +270,16 @@ for example in "${examples[@]}"; do
     expected="${path%.*}.out"
     stdout_file="$(mktemp)"
     stderr_file="$(mktemp)"
+    # A `gui_*` case loads the stdlib `gui` library, which must resolve against
+    # THIS TREE's stdlib -- without it gui_fields_test passed only where gBASIC
+    # was installed, and failed in WSL and on Windows. Narrow, as run_negative's
+    # identical rule for negative_gui_* is: no other case's resolution moves.
+    run_prefix=()
+    if [[ "$example" == gui_* ]]; then
+        run_prefix=(env GBASIC_PATH=stdlib)
+    fi
 
-    if ./gbasic "$path" >"$stdout_file" 2>"$stderr_file"; then
+    if "${run_prefix[@]}" ./gbasic "$path" >"$stdout_file" 2>"$stderr_file"; then
         if [[ -f "$expected" ]]; then
             actual_text="$(cat "$stdout_file")"
             expected_text="$(cat "$expected")"
@@ -308,8 +316,14 @@ for example in "${examples[@]}"; do
         # first, and it silently rots when an example starts using a new module.
         # The message is emitted only by the `#if HAVE_*` guards, so it cannot be
         # produced by a genuine failure of the feature under test.
-        if [[ -s "$stderr_file" ]] && grep -qE 'support is (not available in this build|unavailable)' "$stderr_file"; then
-            printf 'SKIP %s (%s)\n' "$path" "$(sed -n 's/.*: \([A-Za-z-]* support is [^;]*\).*/\1/p' "$stderr_file" | head -1)"
+        # The libcrypto builtins word theirs "requires OpenSSL", and a PLATFORM
+        # refusal (actors, listeners on Windows) is the same kind of answer --
+        # each emitted only where the capability is absent, never by a feature
+        # under test failing (tests/build_has.sh holds the same list).
+        if [[ -s "$stderr_file" ]] && grep -qE 'support is (not available in this build|unavailable)|requires OpenSSL|not available on Windows' "$stderr_file"; then
+            reason="$(sed -n 's/.*: \([A-Za-z-]* support is [^;]*\).*/\1/p' "$stderr_file" | head -1)"
+            [[ -n "$reason" ]] || reason="$(head -1 "$stderr_file" | sed 's/^runtime error at [^ ]*: //')"
+            printf 'SKIP %s (%s)\n' "$path" "$reason"
             rm -f "$stdout_file" "$stderr_file"
             continue
         fi

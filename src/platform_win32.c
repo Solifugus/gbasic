@@ -248,6 +248,40 @@ char *gb_realpath(const char *path) {
     return out;
 }
 
+/* The UTC FILETIME, read from a handle -- opened like gb_realpath's, so a
+ * directory works and a link is followed as stat() follows it -- and never
+ * through the C runtime, which shifts it by TZ (see platform.h). FILETIME
+ * counts 100ns ticks since 1601-01-01; 11644473600 s separate that from 1970. */
+int gb_file_mtime(const char *path, time_t *out) {
+    WCHAR *wpath = utf8_to_wide(path);
+    if (!wpath) {
+        errno = EINVAL;
+        return -1;
+    }
+    HANDLE h = CreateFileW(wpath, FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    free(wpath);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        errno = (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) ? ENOENT
+              : (e == ERROR_ACCESS_DENIED) ? EACCES : EIO;
+        return -1;
+    }
+    FILETIME written;
+    BOOL ok = GetFileTime(h, NULL, NULL, &written);
+    CloseHandle(h);
+    if (!ok) {
+        errno = EIO;
+        return -1;
+    }
+    ULARGE_INTEGER ticks;
+    ticks.LowPart = written.dwLowDateTime;
+    ticks.HighPart = written.dwHighDateTime;
+    *out = (time_t)((long long)(ticks.QuadPart / 10000000ULL) - 11644473600LL);
+    return 0;
+}
+
 int gb_set_cloexec(int fd, int on) {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h == INVALID_HANDLE_VALUE) {

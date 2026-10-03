@@ -29,6 +29,11 @@ set -u
 cd "$(dirname "$0")/.."
 
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
+. tests/build_has.sh
+if ! build_has webclient; then
+    printf 'SKIP tests/run_ari_advisor.sh (this build has no webclient, which llm loads)\n'
+    exit 0
+fi
 export GBASIC_PATH="$PWD/stdlib"
 status=0
 

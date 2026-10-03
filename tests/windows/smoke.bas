@@ -80,6 +80,10 @@ write(f, "alpha" + chr(10) + "beta" + chr(10))
 ok("write then read round-trips", read(f), "alpha" + chr(10) + "beta" + chr(10))
 ok("read_lines on LF", count(read_lines(f)), 2)
 ok("line count agrees", lines(f), 2)
+' Removed once used: this file runs from the repository root as part of the
+' gate (tests/run_windows_suite.sh), and a suite must not leave files behind in
+' the tree it tests.
+delete(f)
 
 ' CRLF is the Windows convention and reading it is the whole point of this tier.
 g {file}= "smoke_crlf.txt"
@@ -88,6 +92,7 @@ gl = read_lines(g)
 ok("read_lines on CRLF gives clean lines", count(gl), 2)
 ok("...and strips the CR rather than keeping it", len(gl[0]), 5)
 ok("read() stays verbatim", contains(read(g), chr(13)), true)
+delete(g)
 
 ' A path with an interior NUL must be REFUSED, not truncated (0.4.0 security
 ' fix). On Windows the failure would be a file appearing under the wrong name.

@@ -194,6 +194,10 @@ end program' \
 # cannot travel as a compiled program (regex_t holds internal pointers), so this
 # proves the pattern+flags representation actually reconstitutes.
 printf -- '-- actor round-trip (recompiled on the far side)\n'
+. tests/build_has.sh
+if ! build_has actors; then
+    printf 'SKIP actor round-trip (actors are not available on this platform)\n'
+else
 cat >"$tmp/actor.bas" <<'EOF'
 ' Mailbox loopback: the value is serialized, crosses a real socket, and is
 ' deserialized -- the same path a spawned actor's message takes.
@@ -215,6 +219,7 @@ else
     cat "$err"
     status=1
 fi
+fi   # build_has actors
 
 # --- Tier 5: valgrind ---------------------------------------------------------
 if vg_available; then

@@ -256,19 +256,31 @@ r_missing="$(why "$fw/no_such_dir/brain.json")"
 r_notdir="$(why "$fw/plain.txt/brain.json")"
 r_denied="$(why "$fw/ro/brain.json")"
 core_fail=0
-for pair in "missing:$r_missing" "notdir:$r_notdir" "denied:$r_denied"; do
+# The permission case needs a directory this process CANNOT write, and neither
+# root nor Windows (where chmod 500 is no barrier to the owner) can make one.
+# Asked of the directory, not the platform; without it the case is skipped BY
+# NAME and the other two must still differ.
+can_deny=1
+if [ "$(id -u)" = "0" ] || ( : > "$fw/ro/.probe" ) 2>/dev/null; then
+    can_deny=0
+    rm -f "$fw/ro/.probe"
+fi
+pairs="missing:$r_missing notdir:$r_notdir"
+[ "$can_deny" = 1 ] && pairs="$pairs denied:$r_denied"
+for pair in $pairs; do
     [ -n "${pair#*:}" ] || { printf 'FAIL write failure gives no reason (%s)\n' "${pair%%:*}"; core_fail=1; }
 done
 # THE POINT IS THAT THEY DIFFER. Any one of them alone passes on a build that
 # prints the same reason for everything.
-if [ "$r_missing" = "$r_notdir" ] || [ "$r_notdir" = "$r_denied" ] || [ "$r_missing" = "$r_denied" ]; then
-    printf 'FAIL the three write failures do not differ: [%s] [%s] [%s]\n' "$r_missing" "$r_notdir" "$r_denied"
+if [ "$r_missing" = "$r_notdir" ] ||
+   { [ "$can_deny" = 1 ] && { [ "$r_notdir" = "$r_denied" ] || [ "$r_missing" = "$r_denied" ]; }; }; then
+    printf 'FAIL the write failures do not differ: [%s] [%s] [%s]\n' "$r_missing" "$r_notdir" "$r_denied"
     core_fail=1
 fi
-# Running as root defeats the permission case, which is a fact about the
-# machine rather than a failure -- say so instead of passing quietly.
-if [ "$(id -u)" = "0" ]; then
-    printf 'ok   SKIP (running as root: the permission case cannot be created)\n'
+# Running as root (or on Windows) defeats the permission case, which is a fact
+# about the machine rather than a failure -- say so instead of passing quietly.
+if [ "$core_fail" = "0" ] && [ "$can_deny" = 0 ]; then
+    printf 'ok   a write failure says WHY: %s / %s (SKIP the permission case: a read-only directory cannot be made here)\n' "$r_missing" "$r_notdir"
 elif [ "$core_fail" = "0" ]; then
     printf 'ok   a write failure says WHY: %s / %s / %s\n' "$r_missing" "$r_notdir" "$r_denied"
 fi

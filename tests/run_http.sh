@@ -40,13 +40,14 @@ make >/dev/null
 
 # Distinguish "no libcurl in this build" from a real failure, the way
 # run_odbc_cookbook.sh separates an absent driver from a broken cookbook.
-probe="$(mktemp)"; printf 'load http\n' > "$probe"
-if ./gbasic "$probe" 2>&1 | grep -q 'not available in this build'; then
-    rm -f "$probe"
+# (Asked through build_has: the inline `./gbasic probe | grep -q` it replaces
+# could never skip under pipefail, which takes gbasic's own exit 1 as the
+# pipeline's status however grep answered.)
+. tests/build_has.sh
+if ! build_has http; then
     printf 'SKIP tests/run_http.sh (this build has no libcurl)\n'
     exit 0
 fi
-rm -f "$probe"
 
 work="$(mktemp -d)"
 server_pid=""

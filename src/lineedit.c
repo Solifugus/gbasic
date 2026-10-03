@@ -43,6 +43,7 @@
 #endif
 
 #include "lineedit.h"
+#include "platform.h"   /* GB_O_BINARY */
 
 #define LE_MAX_HISTORY 1000
 
@@ -107,11 +108,11 @@ void line_history_save(const char *path) {
      * connection string with a password in it, and a history file readable by
      * everyone on the machine is how that leaves the session. Created with the
      * mode rather than chmod'ed after, so there is no window where it is not. */
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | GB_O_BINARY, 0600);
     if (fd < 0) {
         return;
     }
-    FILE *f = fdopen(fd, "w");
+    FILE *f = fdopen(fd, "wb");
     if (!f) {
         close(fd);
         return;

@@ -501,7 +501,9 @@ XML structure tier, ari.
 **Harness facts, not gBASIC defects, all measured:**
 - MSYS2 REMOVES `TZ` when it launches a native program, so run_xlsx's Sydney
   tier and run_nap_fs's mtime tier (both set TZ) cannot pass under MSYS2 bash;
-  natively the same TZ is honoured.
+  natively the same TZ is honoured. **CORRECTED in §17, both halves:** MSYS2
+  removes only a TZ the C runtime cannot parse (`Australia/Sydney` is removed,
+  `UTC` arrives), and run_nap_fs was a REAL defect -- file times shifted by TZ.
 - A suite that writes a `/tmp/...` path INTO a program fails because a native
   binary cannot resolve it. Running the suites with `TMPDIR` in `C:/...` form
   (which bash and the binary both understand) cures it.
@@ -510,8 +512,118 @@ XML structure tier, ari.
   identical text are that.
 - `chmod 000` has no effect on Windows (NACHA's unreadable tier, run_core's
   permission tier), and Windows reports a path through a file as "No such file",
-  not "Not a directory".
+  not "Not a directory". (The second is now gBASIC's to answer, and it does --
+  §17.)
 
 **Still open, in order:** the suites a partial sweep found failing on a build
 refusal (agent, ari_advisor, doc_examples, event_study) and a full sweep for the
 rest; M4 (sqlite); M5 (libcurl).
+
+## 17. The full suite sweep (2026-10-03)
+
+**Every `tests/run_*.sh` against gbasic.exe under MSYS2.** The first
+sweep: 99 of 158 exited 0. After this round: 157 of 159 (the 159th is the new
+run_windows_suite.sh), then 159 of 159 once the two below were dealt with. What remains red is listed at the end,
+each with its reason.
+
+**Four Windows defects the sweep found, all fixed:**
+- **A program whose only event source is a timer died on its first iteration**
+  with "webserver poll failed": WSAPoll refuses an EMPTY set (poll() waits out
+  the timeout) and reports through WSAGetLastError, never errno. poll() is a
+  wrapper now (include/posix_compat.h). run_timer: 8 failures -> 0.
+- **An extracted install resolved NO library.** gb_exe_path answered with
+  backslashes, so the stdlib-beside-the-binary rule found no separator to walk
+  back from -- the one thing an installer must not get wrong. Forward slashes
+  now, as gb_realpath. run_relocatable passes every tier but the actor one.
+- **file_mtime was shifted by TZ.** The C runtime COMPUTES st_mtime, through the
+  system zone and back through TZ, so TZ=UTC on a UTC-5 machine read a file
+  stamped 2020-01-01T00:00Z as 1577818800 -- five hours early -- while gBASIC's
+  own local time honoured TZ. New gb_file_mtime reads the UTC FILETIME from a
+  handle. Measured: epoch 1577836800 under TZ unset, UTC and Asia/Tokyo.
+- **The session cache, and the history file, were written with CRLF** (open()
+  defaults to text mode on Windows). GB_O_BINARY at both opens; run_repl's
+  cache tier went red on it and green after.
+
+**And one message made right:** a write or read through a path whose parent is
+a plain FILE said "No such file or directory" -- Windows reports both as path
+not found -- where DOGFOOD 35's whole point is that the two need different
+fixes. An ENOENT whose nearest existing ancestor is not a directory is now
+reported as "Not a directory" (path_open_errno; unchanged on POSIX).
+
+**One build defect:** eval.o, main.o, repl.o, actor.o and lineedit.o did not
+depend on include/platform.h (nor eval.o on posix_compat.h), so editing either
+header REBUILT NOTHING -- found when the poll fix produced an identical binary.
+It affects Linux equally.
+
+**Gates that could not tell "absent" from "broken" -- the bulk of the sweep.**
+tests/build_has.sh now answers, by asking the binary, for: gi; the libcrypto
+builtins; and three PLATFORM capabilities -- `actors`, `listen` (a probe that
+never binds) and `signals`/`lineedit` (absent on Windows). About forty suites
+gate on it, whole-suite where the subject is the capability and per tier where
+other tiers still run; every skip names what is missing and why. Two of the
+pre-existing inline probes (run_http, run_smtp) could NEVER skip, for reasons
+that have nothing to do with Windows: `./gbasic probe | grep -q` under pipefail
+takes gbasic's exit 1, and a probe written to a fixed /tmp path is unreadable
+by a native binary.
+
+**MEASURED ON LINUX, AND THIS IS THE STRONGER RESULT:** the WSL tree is a LEAN
+build (no libcurl, libcrypto, sqlite, pg, GI), and before this round 19 suites
+FAILED there for exactly the reasons Windows did -- run_examples stopped at
+gui_fields, run_negative, run_library_depth, run_native_workbench, every
+llm-loading suite. After it, all 19 pass or skip by name, and no suite moved
+the other way (57 suites compared base against new; pass counts identical
+wherever base was green, run_repl's 137 included).
+
+**Harness defects fixed on both platforms** (each was green only on a machine
+with gBASIC INSTALLED, or only by accident):
+- run_library_depth built GBASIC_PATH as `$PWD/../../../stdlib` with PWD already
+  inside mktemp -- `/stdlib`, which exists nowhere; run_examples' gui_fields and
+  run_negative's server-block control loaded stdlib libraries with no
+  GBASIC_PATH at all.
+- run_web_routes' coverage floor now falls by the MEASURED size of a tier
+  skipped by name (2 and 11), and by nothing else.
+- run_process_lifetime passed for the WRONG REASON under MSYS2: its `kill -9`
+  ends a native process's descendants itself, so the tiers stayed green against
+  a build with the Job Object's kill-on-close REMOVED. It kills with a bare
+  TerminateProcess now; that perturbation goes red, the real build green.
+- tests/windows/*.bas were the Windows gate and NOTHING RAN THEM.
+  tests/run_windows_suite.sh discovers them by glob, on every platform; with the
+  local SQL Server it passes odbc_unicode (14), process_run (46),
+  process_start (37) and smoke (20).
+- run_process's fixtures are POSIX by design (#! helpers, /tmp, `which sh`);
+  where the binary cannot exec a #! script they are skipped BY NAME and
+  run_windows_suite covers process.* instead. Its env tier measured MSYS2's sh
+  (which re-creates HOME), not gBASIC: a native child proves the unset works,
+  and the fixture now unsets a variable the runner exports, with a control.
+- run_repl drove live sessions through a FIFO, and a native program reads
+  NOTHING from an MSYS2 FIFO; it uses a coprocess (a pipe) now. The cache tiers
+  -- a killed session leaves its program, `recover` restores it as entries --
+  pass on Windows as a result, and on Linux with the same 137 checks.
+- Python's text mode (CRLF) in four fixture generators, run_doc_examples'
+  manifest and the BAI2 oracle; `grep $'\r'` under MSYS2 (which strips CR).
+
+**Corrected harness facts (§16 was wrong on both):** MSYS2 removes a TZ only
+when the C runtime cannot parse it -- TZ=UTC reaches the binary,
+TZ=Australia/Sydney does not (tests/tz_seen.bas lets a suite ask). And /proc
+under MSYS2 is Cygwin's emulation, which cannot see a native process, so
+gb_have_proc answers no there.
+
+**UNVERIFIED on Windows, and said so rather than claimed:**
+- Ctrl-C at a Windows prompt interrupting a runaway loop: the tier sends POSIX
+  signals down a FIFO, neither of which reaches a native console program.
+- web.static containment against Windows symlinks and junctions: native
+  symlinks need Developer Mode, and MSYS2's `ln -s` makes a copy, so the tier
+  has no premise here (moot until the listener exists).
+- The line editor does not exist on Windows (raw_on declines; the prompt reads
+  plain lines) -- a known gap, its tiers skipped by name.
+
+**Still red under MSYS2:** nothing. The re-sweep left two, and neither is
+a Windows defect: run_docs_gate counted 159 suites against the 158 README.md
+and site.bas stated (this round added one; updated), and run_stridx's ASCII
+forward-scan shape case measured 15x across a 4x step ONCE -- re-run three
+times it measured 1.97x, 2.26x and 2.11x against its 8x gate, so that was a
+timing outlier on a busy machine, recorded here rather than called green.
+
+**Still open, in order:** M4 (sqlite); M5 (libcurl, which brings webclient,
+http, smtp and every llm-loading suite back); actors (a length-prefixed stream
+channel -- §6); the listener; the Windows line editor.

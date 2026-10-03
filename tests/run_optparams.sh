@@ -103,6 +103,10 @@ printf 'TIER across a process boundary\n'
 # the arguments the CALL supplied and the child fills the tail itself. Sending
 # materialized defaults instead would put them on the wire and let a child
 # built from different source disagree with its parent about what they are.
+. tests/build_has.sh
+if ! build_has actors; then
+    printf '  SKIP process boundary (actors are not available on this platform)\n'
+else
 cat >"$scratch/actor.bas" <<'EOF'
 function worker(a, b = 99)
     print "child sees " + string(a) + "," + string(b)
@@ -117,6 +121,7 @@ if ./gbasic "$scratch/actor.bas" >"$scratch/out" 2>"$scratch/err" \
 else
     fail "an actor child applies the default itself ($(cat "$scratch/out" "$scratch/err" | head -2))"
 fi
+fi   # build_has actors
 
 # --------------------------------------------------------------- grammar
 printf 'TIER the grammar stayed at zero conflicts\n'

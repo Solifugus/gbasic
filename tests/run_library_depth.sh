@@ -60,7 +60,11 @@ BAS
     fi
 }
 
-run() { ( cd "$work/p" && GBASIC_PATH="$PWD/../../../stdlib" "$gb" prog.bas 2>"$work/err.txt" ); }
+# THIS TREE's stdlib, beside the binary under test. It was "$PWD/../../../stdlib"
+# with PWD already $work/p -- under mktemp that is /stdlib, which exists nowhere,
+# so these tiers passed only on a machine with gBASIC INSTALLED (chart then came
+# from the installed copy) and failed everywhere else, WSL and Windows included.
+run() { ( cd "$work/p" && GBASIC_PATH="${gb%/gbasic}/stdlib" "$gb" prog.bas 2>"$work/err.txt" ); }
 
 # --- 1. a stray BELOW the loading file must NOT be used ----------------------
 tier

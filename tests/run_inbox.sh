@@ -25,6 +25,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh
 make >/dev/null
+. tests/build_has.sh
+if ! build_has actors; then
+    printf 'SKIP tests/run_inbox.sh (actors are not available on this platform)\n'
+    exit 0
+fi
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

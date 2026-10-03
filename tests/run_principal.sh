@@ -61,7 +61,10 @@ else
 fi
 
 printf 'TIER a principal does not cross spawn, and an explicit handoff does\n'
-if timeout -k 5 60 ./gbasic tests/principal_actor.bas >"$work/act.out" 2>"$work/act.err"; then
+. tests/build_has.sh
+if ! build_has actors; then
+    printf '  SKIP actor tier (actors are not available on this platform)\n'
+elif timeout -k 5 60 ./gbasic tests/principal_actor.bas >"$work/act.out" 2>"$work/act.err"; then
     got="$(tr '\n' '|' <"$work/act.out")"
     want='inherited:true|explicit:gwen|after:true|parent still: gwen|'
     if [ "$got" != "$want" ]; then
@@ -82,6 +85,8 @@ PORT
 )"
 if [ -z "$hport" ] || ! command -v curl >/dev/null 2>&1; then
     printf '  SKIP handler tier (needs python3 and curl)\n'
+elif ! build_has listen; then
+    printf '  SKIP handler tier (this platform cannot listen: webserver.listen is refused)\n'
 else
     PORT="$hport" timeout -k 5 30 ./gbasic --line-buffered tests/principal_handler.bas \
         >"$work/h.out" 2>"$work/h.err" &

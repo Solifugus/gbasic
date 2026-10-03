@@ -10264,6 +10264,46 @@ static size_t path_root_length(const char *path) {
     return 0;
 }
 
+/* The errno an open of `path` failed with, as POSIX would have reported it.
+ * POSIX already distinguishes a parent that is an ordinary FILE (ENOTDIR) from
+ * one that is missing (ENOENT), and the read/write messages exist to tell those
+ * apart (DOGFOOD 35): three causes, three fixes. Windows reports both as "path
+ * not found", so `a.txt/brain.json` read "No such file or directory" and sent
+ * the reader looking for a directory that was never the problem (measured,
+ * tests/run_core.sh). There, an ENOENT whose nearest EXISTING ancestor is not a
+ * directory is the ENOTDIR it is. Unchanged on POSIX. */
+static int path_open_errno(const char *path, int err) {
+#ifdef _WIN32
+    if (err != ENOENT) {
+        return err;
+    }
+    size_t len = strlen(path);
+    char *prefix = malloc(len + 1);
+    if (!prefix) {
+        return err;
+    }
+    for (size_t i = path_root_length(path); i < len; i++) {
+        if (!path_is_sep(path[i]) || i == 0) {
+            continue;
+        }
+        memcpy(prefix, path, i);
+        prefix[i] = '\0';
+        struct stat st;
+        if (stat(prefix, &st) != 0) {
+            break;                       /* missing: ENOENT was right */
+        }
+        if (!S_ISDIR(st.st_mode)) {
+            free(prefix);
+            return ENOTDIR;
+        }
+    }
+    free(prefix);
+#else
+    (void)path;
+#endif
+    return err;
+}
+
 static int make_dir_parents(const char *path, char *why, size_t why_size) {
     size_t len = strlen(path);
     if (len == 0) {
@@ -10421,7 +10461,8 @@ static Value eval_file_call(AstExpr *expr) {
               * `make_dir` and `atomic_replace` already reported theirs; this is
               * the rest of the family catching up. */
             snprintf(message, sizeof(message), "could not read file: %s (%s)",
-                     file_value.as.file_path, strerror(errno));
+                     file_value.as.file_path,
+                     strerror(path_open_errno(file_value.as.file_path, errno)));
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             return value_null();
@@ -10553,8 +10594,22 @@ static Value eval_file_call(AstExpr *expr) {
          * has second precision, so any sub-second st_mtim.tv_nsec is intentionally
          * dropped (we do not fabricate precision the value model can't hold). Local
          * time, mirroring from_epoch(). Works for any stat-able path, directories
-         * included (a directory's mtime is a meaningful change signal). */
-        time_t raw = st.st_mtime;
+         * included (a directory's mtime is a meaningful change signal).
+         * Read through gb_file_mtime, NOT st.st_mtime: on Windows the C runtime
+         * shifts that field whenever TZ differs from the system zone. */
+        time_t raw;
+        if (gb_file_mtime(file_value.as.file_path, &raw) != 0) {
+            char message[512];
+            snprintf(message,
+                     sizeof(message),
+                     "%s could not read file metadata: %s (%s)",
+                     name,
+                     file_value.as.file_path,
+                     strerror(errno));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            return value_null();
+        }
         struct tm local;
         if (!gb_localtime(&raw, &local)) {
             runtime_error_raise("file_mtime could not convert the file time",
@@ -11039,7 +11094,8 @@ static Value eval_file_call(AstExpr *expr) {
         if (!file) {
             char message[512];
             snprintf(message, sizeof(message), "could not write file: %s (%s)",
-                     file_value.as.file_path, strerror(errno));
+                     file_value.as.file_path,
+                     strerror(path_open_errno(file_value.as.file_path, errno)));
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             value_free(text_value);

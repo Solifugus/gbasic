@@ -51,6 +51,18 @@ fail() { checks=$((checks + 1)); failures=$((failures + 1)); printf '  FAIL %s\n
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+# `market` loads `webclient` (the live providers are HTTP), so a build without
+# it cannot load the library at all -- the tiers that run it are skipped BY
+# NAME, and the no-network tripwire, which reads source, still runs. Without
+# this the semantics tier "passed" its mismatch check over EMPTY output.
+. tests/build_has.sh
+has_web=1
+build_has webclient || has_web=0
+
+if [[ $has_web -eq 0 ]]; then
+printf 'TIER semantics\n  SKIP (this build has no webclient, which market loads)\n'
+printf 'TIER offline\n  SKIP (this build has no webclient, which market loads)\n'
+else
 printf 'TIER semantics\n'
 ./gbasic tests/market_test.bas >"$work/out" 2>"$work/err" || true
 
@@ -105,6 +117,7 @@ if out="$(timeout 20 ./gbasic "$work/nonet.bas" 2>&1)"; then
 else
     fail 'a missing fixture fails as a value, with a reason (it raised or hung)'
 fi
+fi   # has_web
 
 printf 'TIER no-network\n'
 # A tripwire, not a behaviour test: this suite must never reach the internet.
@@ -123,4 +136,8 @@ if [[ $failures -gt 0 ]]; then
     exit 1
 fi
 
-printf 'PASS tests/run_market.sh (%d checks, %s assertions in the fixture)\n' "$checks" "$reported"
+if [[ $has_web -eq 0 ]]; then
+    printf 'PASS tests/run_market.sh (%d checks; the fixture tiers SKIPPED, no webclient)\n' "$checks"
+else
+    printf 'PASS tests/run_market.sh (%d checks, %s assertions in the fixture)\n' "$checks" "$reported"
+fi

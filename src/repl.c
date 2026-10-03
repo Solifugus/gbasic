@@ -351,11 +351,11 @@ static void cache_write(const ReplBuffer *b) {
     }
     char tmp[5200];
     snprintf(tmp, sizeof(tmp), "%s.tmp", session_cache);
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | GB_O_BINARY, 0600);
     if (fd < 0) {
         return;
     }
-    FILE *f = fdopen(fd, "w");
+    FILE *f = fdopen(fd, "wb");
     if (!f) {
         close(fd);
         unlink(tmp);

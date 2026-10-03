@@ -21,7 +21,9 @@ function combined(flagged)
     if flagged then
         cmd = "./gbasic --line-buffered " + child + " 2>&1"
     end if
-    r = process.run({ command: "/bin/sh", args: ["-c", cmd] })
+    ' `sh`, not "/bin/sh": nothing here depends on where the shell lives, and
+    ' Windows has no /bin -- PATH finds the same shell on Linux and MSYS2's there.
+    r = process.run({ command: "sh", args: ["-c", cmd] })
     return r.stdout
 end function
 

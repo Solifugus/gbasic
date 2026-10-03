@@ -15,6 +15,16 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+. tests/portable.sh
+
+# The measurement IS /proc/<pid>/status. Where there is no procfs that can see
+# the interpreter (macOS; MSYS2, whose /proc cannot see a native process) there
+# is nothing to sample, so the tier says so up front -- a run that reached the
+# end having sampled nothing still FAILS below, which is the other half.
+if ! gb_have_proc; then
+    echo "SKIP run_xml_bigfile (no /proc that can see the interpreter's VmHWM here)"
+    exit 0
+fi
 
 BIG="examples/tmp_xml_big.xml"
 PROG="examples/tmp_xml_big_stream.bas"

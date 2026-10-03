@@ -329,7 +329,7 @@ src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/buil
 
 src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h include/lineedit.h include/platform.h
 
-src/lineedit.o: src/lineedit.c include/lineedit.h
+src/lineedit.o: src/lineedit.c include/lineedit.h include/platform.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/platform_posix.o: src/platform_posix.c include/platform.h

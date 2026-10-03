@@ -150,6 +150,15 @@ char *gb_realpath(const char *path) {
     return realpath(path, NULL);
 }
 
+int gb_file_mtime(const char *path, time_t *out) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    *out = st.st_mtime;
+    return 0;
+}
+
 int gb_set_cloexec(int fd, int on) {
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags < 0) {

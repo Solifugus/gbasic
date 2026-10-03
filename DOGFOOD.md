@@ -728,6 +728,17 @@ and the stale-looking ones carry a Status line saying what overtook them.
     by reading. Fixed with a version shim whose fallback keeps the restriction
     rather than dropping it; guarded by `tests/run_libcurl_floor.sh`.
 
+49. **A `load` written AFTER a `return` runs BEFORE it.** A `load` that is a
+    direct child of the `program` block is pre-registered (run_pre_registration's
+    shared pass), so examples/native_workbench's `load gi`, placed after its
+    headless modes have returned, runs before `main` executes a line -- and
+    `inspect`/`process`, which need no GI, cannot start in ANY mode on a build
+    without it (Windows, or a lean Linux build). MEASURED, the way out exists: a
+    `load` nested in an `if`, or in a function, is NOT hoisted. Not applied to
+    the example, because the GI tiers it could change (async, smoke, the actor
+    worker) cannot run on either machine here; the suite skips by name instead.
+    Entry 2026-10-03 below.
+
 ### Open — accepted as documented limitations (no action planned)
 
 **Every live bullet below is EXECUTABLE.** `tests/run_limitations.sh` runs one
@@ -10026,3 +10037,21 @@ deliberate and whether its empty `path` is a gap (their highest-value ask, since
 ch13 prints a trace); whether chunked framing is on the roadmap; and which way
 the loud/silent absence asymmetry should go (`"a" + nothing` is `anothing`,
 `nothing + 1` raises — both measured).
+
+## 2026-10-03 — CC — while: the Windows suite sweep (native_workbench under a build without GI)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `examples/native_workbench/workbench.bas` documents its `inspect`
+  and `process` modes as "pure gBASIC, no GI", and run_native_workbench.sh runs
+  them "always". On a build without gobject-introspection (Windows; also a lean
+  Linux build) the app fails in EVERY mode with "gobject-introspection support
+  is unavailable" at the `load gi` that sits after the headless branches have
+  already returned -- because a `load` that is a DIRECT CHILD of the `program`
+  block is pre-registered, so it runs before `main` executes a line. Measured
+  the way out (one probe each, Windows build): a `load gi` inside `if false`
+  and one inside an uncalled function are NOT hoisted -- both programs ran past
+  them on a build with no GI.
+- **Workaround:** the suite asks the binary (`build_has gi`) and skips the whole
+  app with that reason. The example could guard its GI loads instead, which
+  would let the headless modes run everywhere; not done here because the GI
+  modes it could disturb cannot be run on either test machine.

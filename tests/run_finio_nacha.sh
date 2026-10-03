@@ -272,7 +272,10 @@ if [ "$distinct" = "3" ] && [ "$sizes" = "13300 13160 13440" ]; then
 else
     bad "the framing premise does not hold: $distinct distinct files, sizes $sizes"
 fi
-if grep -q $'\r' "$D/crlf.ach" && ! grep -q $'\r' "$D/payroll.ach"; then
+# Counted with tr rather than grep: MSYS2's grep strips the CR before each
+# newline by default, so `grep $'\r'` cannot see a CRLF file there at all.
+cr_count() { tr -dc '\r' < "$1" | wc -c | tr -d ' '; }
+if [ "$(cr_count "$D/crlf.ach")" -gt 0 ] && [ "$(cr_count "$D/payroll.ach")" -eq 0 ]; then
     ok "and the CRLF one really carries CR where the other does not"
 else
     bad "the CRLF fixture is not CRLF"
@@ -309,6 +312,14 @@ else
     cp "$D/payroll.ach" "$D/not_ach.txt" "$scratch/arch/"
     printf 'nothing will read this\n' > "$scratch/arch/locked.bin"
     chmod 000 "$scratch/arch/locked.bin"
+fi
+# The tier needs a file nobody can read, and chmod is not that everywhere --
+# under Windows the owner still reads it. Asked of the FILE, not the platform:
+# a tier that cannot create its own premise says so rather than failing.
+if [ "$(id -u)" != "0" ] && cat "$scratch/arch/locked.bin" >/dev/null 2>&1; then
+    chmod 644 "$scratch/arch/locked.bin"
+    printf '  SKIP unreadable (chmod 000 did not make a file unreadable here)\n'
+elif [ "$(id -u)" != "0" ]; then
     cat > "$scratch/scan.bas" <<'BEOF'
 load finio
 load finio_nacha

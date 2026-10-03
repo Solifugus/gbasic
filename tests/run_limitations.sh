@@ -151,6 +151,19 @@ probe_spawn_bare_name() {
     qualified_out=$(GBASIC_PATH=stdlib run "$WORK/p.bas")
     printf 'function w1(b)\n  return nothing\nend function\nprogram main(args)\n  f = w1\n  h = spawn f(self())\nend program\n' > "$WORK/p.bas"
     value_out=$(run "$WORK/p.bas")
+    # Where the platform refuses spawn OUTRIGHT (Windows, today) the function-
+    # value half cannot be observed -- the refusal arrives before any name is
+    # resolved -- and must not read as "fixed". The qualified half is a PARSE
+    # error and still decides.
+    . tests/build_has.sh
+    if ! build_has actors; then
+        if printf '%s' "$qualified_out" | grep -q 'parse error'; then
+            skipped "spawn's function-value half (spawn is refused on this platform); the qualified half still holds"
+        else
+            fixed "spawn now accepts a qualified name"
+        fi
+        return
+    fi
     if printf '%s' "$qualified_out" | grep -q 'parse error' &&
        printf '%s' "$value_out" | grep -q 'spawn: no function named'; then
         ok "spawn still takes a bare function name (not a qualified one, not a value)"
@@ -167,6 +180,14 @@ probe_atomic_replace_inode() {
     before_inode=$(gb_stat_inode "$WORK/ar/dest")
     before_perm=$(gb_stat_mode "$WORK/ar/dest")
     temp_inode=$(gb_stat_inode "$WORK/ar/tmp")
+    # THE PREMISE IS TWO DIFFERENT MODES, and chmod does not make them
+    # everywhere (under MSYS2 both files report the same mode). Without it,
+    # "the mode did not change" is the premise failing, not the limitation
+    # being fixed -- so the probe says it could not decide.
+    if [ "$before_perm" = "$(gb_stat_mode "$WORK/ar/tmp")" ]; then
+        skipped "atomic_replace's inode/permission bullet (chmod could not give the two files different modes here)"
+        return
+    fi
     printf 'print atomic_replace("%s/ar/tmp", "%s/ar/dest")\n' "$WORK" "$WORK" > "$WORK/p.bas"
     run "$WORK/p.bas" >/dev/null
     after_inode=$(gb_stat_inode "$WORK/ar/dest")
@@ -405,7 +426,9 @@ control_inline_modifier() {
     # than the rendering -- `string(a datetime)` and the text it was parsed
     # from are the same characters, so a rendering check passes on a build
     # where the modifier was never applied (measured).
-    printf 'p = "/etc/hostname"\nprint type({file}p)\nprint bytes({file}p) > 0\n' > "$WORK/c.bas"
+    # README.md, relative to the repo root this suite runs in: a file that is
+    # always there on every platform, where /etc/hostname is not on Windows.
+    printf 'p = "README.md"\nprint type({file}p)\nprint bytes({file}p) > 0\n' > "$WORK/c.bas"
     out=$(run "$WORK/c.bas")
     if [ "$(printf '%s' "$out" | head -1)" = "file" ] \
        && [ "$(printf '%s' "$out" | tail -1)" = "true" ]; then
