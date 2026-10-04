@@ -1,6 +1,6 @@
 # gBASIC Project State
 
-Last updated: 2026-09-19 (0.2.2)
+Last updated: 2026-10-03 (0.5.0)
 
 This file is the compact source of truth for current implementation status.
 Detailed language behavior belongs in `docs/reference.md`; completed development
@@ -9,7 +9,7 @@ document list, with a status column, is `docs/README.md`.
 
 ## Current Version
 
-- Version: `0.2.2`
+- Version: `0.5.0`
 - Implementation: C11
 - Front end: hand-written lexer and Bison parser
 - Runtime: tree-walking evaluator
@@ -20,6 +20,9 @@ document list, with a status column, is `docs/README.md`.
 - variables, strict expressions, assignment (including the compound forms
   `+=`, `-=`, `*=`, `/=`), input, and output
 - multiline and inline `if`/`else`
+- statements that **continue across a line break** inside an unclosed `(`, `[`
+  or `{` — no trailing marker to forget, since the brackets already say where
+  the statement ends
 - `consider`, `while`, the post-test `do ... until c`, and `break`/`continue` —
   each optionally naming the loop it means (`break x`, `continue x`)
 - array iteration with `for each` and compatible `for ... in`; a counted `for`
@@ -40,7 +43,19 @@ document list, with a status column, is `docs/README.md`.
 - first-class function values (references) that can be stored, passed, and called
 - Policy-Based Inheritance object model (`new`, `constructor`, methods via `this`)
 - shared-nothing actors over `spawn`/`send`/`receive` with monitor/link
-- assignment and comparison modifiers, written in braces (`p{USD} = 19.95`)
+- modifiers that validate or convert, written in braces (`p{USD} = 19.95`) —
+  as an assignment clause, **inline in any expression** in every shape
+  (`{split ","}line`, `{dates.end of month}d`, `{trimmed; upper}raw`),
+  **chained with `;`** left to right, and **any** of them usable as a
+  comparison lens (`if name {trimmed; caseless}= typed then`). A clause takes
+  the whole right-hand side while inline binds like unary minus, so the two are
+  not interchangeable
+- a **date/time layout notation** used for both rendering and parsing
+  (`{string "DDDD, D MMMM YYYY"}d`, `{date "DD/MM/YYYY", "MM/DD/YYYY"}cell`):
+  date parts uppercase and time parts lowercase, so `MM` is the month and `mm`
+  the minutes; one or two letters a number, three a short name, four a long
+  one; the 12-hour clock implicit via `am`/`pm`. A layout matches only if it
+  also yields a date that exists
 - watchers, locks, and a **frame-scoped error model** — `on error goto next`,
   `on error goto LABEL`, `if error then` (`docs/error_model_design.md`)
 - a **warning channel** beside it — `on warning print|ignore|stop|goto next`,

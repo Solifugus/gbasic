@@ -44,8 +44,21 @@ end function
 ' the errata. A printed promise cannot be moved afterwards, so the page has
 ' to exist and stay reachable.
 
+' THIS IS NOT THE RELEASE VERSION AND MUST NOT BE BUMPED WITH ONE. It is the
+' release Volume 1 was WRITTEN AGAINST, whose archive checksum is printed in the
+' paperback, where it cannot be corrected afterwards -- so it changes only when
+' a new EDITION is pinned, which is not a release decision.
+'
+' IT WAS BUMPED WITH A RELEASE ONCE, which is why this comment exists: a8ef5e3
+' (0.4.0, 2026-10-02) moved it 0.3.0 -> 0.4.0 alongside the real version, so
+' this page said "Volume 1 - gBASIC 0.4.0" about a book written against 0.3.0.
+' The live page was unaffected and went on correctly promising 0.3.0, so the
+' public promise held and nothing failed -- the three version gates read
+' `version: "..."` and cannot see this function. Found 2026-10-03 while checking
+' whether the site was ready to deploy for 0.5.0, by noticing that the live page
+' and this one disagreed. See RELEASING.md: bump the six by name, never by sweep.
 function book_version()
-    return "0.4.0"
+    return "0.3.0"
 end function
 
 function book_errata()

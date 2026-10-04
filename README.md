@@ -70,6 +70,21 @@ name  {trimmed}= input("Name: ")
 if command {caseless}= "quit" then print("Goodbye")
 ```
 
+A modifier is not limited to an assignment clause: stages chain, any modifier
+works as a comparison lens, and every shape works **inline** in an expression.
+Dates carry a layout notation that reads the way it prints — date parts
+uppercase, time parts lowercase, so `MM` is the month and `mm` the minutes — and
+the same notation reads text back:
+
+```basic
+due {date "DD/MM/YYYY"}= "15/05/2026"
+print {string "DDDD, D MMMM YYYY"}due
+
+clean {trimmed; upper}= "  ada  "
+print clean
+print {split ","}"a,b,c"
+```
+
 Watchers are reactive blocks that fire the moment a stored value actually
 changes:
 
@@ -100,9 +115,12 @@ continue across a line break inside an unclosed `(`, `[` or `{`; `for each` with
 assignment; functions with literal default parameter values, programs,
 libraries and `load` (with `as` to pick the qualifier); first-class function
 values; **prototypal objects** with per-property inheritance policies;
-assignment and comparison modifiers; watchers and locks; frame-scoped
+modifiers that validate or convert — as an
+assignment clause, inline in any expression, chained with `;`, and any of them
+usable as a comparison lens; watchers and locks; frame-scoped
 `on error` and a suppressible warning channel; distinct `nothing` and
-`unknown`; date, duration, money, file and directory values; binary-safe
+`unknown`; date, duration, money, file and directory values, with a layout
+notation for both rendering and parsing dates; binary-safe
 Unicode-aware strings; regular expressions as a value kind; bitwise builtins;
 and strict RFC 8259 JSON alongside a round-tripping gBASIC dialect.
 

@@ -11035,3 +11035,58 @@ comment beside it says why.
 buffer and a 64-byte subject copy on the stack per call, and the buffers are
 written only on the failing path. Valgrind clean over the fixture, which
 exercises both.
+
+---
+
+## The book pin HAD already been bumped with a release, 2026-10-03
+
+Filed the same day `RELEASING.md` gained a warning about this as a *hypothetical*
+trap. It is not hypothetical. Checking whether the website was ready to deploy
+for 0.5.0, the live page and the repo's own site app **disagreed about which
+release the paperback was written against**:
+
+| | says |
+|---|---|
+| `tedderland/content/projects/gbasic.md` line 603 | *"The book was written against gBASIC 0.3.0 and prints that archive's checksum on paper"* |
+| `examples/gbasic_site/site.bas` `book_version()` | `0.4.0` |
+
+`git log -S` settles it: `book_version()` returned `0.3.0` from the day the book
+page was created (92fcb96, 2026-09-28) until **a8ef5e3, the 0.4.0 release
+commit**, which moved it `0.3.0 -> 0.4.0` in the same hunk as the real version:
+
+```
+-    return "0.3.0"
++    return "0.4.0"
+-    G = { version: "0.3.0", suites: "158" }
++    G = { version: "0.4.0", suites: "158" }
+```
+
+So the `/book` page rendered **"Volume 1 · gBASIC 0.4.0"** about a book written
+against 0.3.0, for a release and a day.
+
+**WHY NOTHING CAUGHT IT, which is the part worth keeping.** The three version
+gates all read `version: "..."` — `run_docs_gate` derives the wanted version
+from `src/main.c` and checks that key in both site apps, and `run_examples`
+compares `--version` to the README. **None of them can see a function.** And the
+public promise was unaffected, because the live page is a different repository
+and nobody edited it, so there was no symptom anywhere: the site suites passed,
+the docs gate passed, and the only observable was a sentence on a prototype page
+that nobody had reason to read.
+
+**It was found by asking a question about something else.** Not by a sweep, not
+by a gate — by comparing two documents that are supposed to agree while
+answering "is the website ready to deploy". That is the same way the stale
+`CLAUDE.md` inline-modifier claim surfaced an hour earlier: the question was
+about a book, and the defect was in a file nobody had cause to re-read.
+
+**Fixed**, with the account written at the definition rather than only here, so
+the next release's bump meets the explanation at the point of the mistake.
+
+**NOT FIXED: there is still no gate.** A check is statable — `book_version()`
+must not equal `src/main.c`'s version — and it would have caught this exactly.
+It is **not free**: it fires legitimately for one commit whenever a new edition
+*is* pinned to the current release, which is precisely what Volume 2 may do. That
+is the PLAT-WARN trade (a silent failure that breaks a printed promise against a
+false positive a human clears once per book) and it looks worth taking, but it is
+a judgement about somebody else's workflow and is **Matthew's call, not mine** —
+recorded here rather than added quietly.
