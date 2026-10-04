@@ -748,6 +748,25 @@ and the stale-looking ones carry a Status line saying what overtook them.
     `[10,10,10,100,100,100]` names 55, a value occurring **zero** times. Full
     argument in `docs/bulk_data_design.md` §2b.
 
+50. **A date that does not exist is refused, and told it is not a date.**
+    `{date}"2026-02-30"`, `{date}"2026-13-01"` and `{date}"1900-02-29"` all
+    answer `date modifier expects an ISO-like date string` — **the same sentence
+    a string that genuinely is not a date gets** — and all three *are* ISO-like,
+    which is the one thing about them that is not wrong. So the author is sent to
+    check the shape of their string, finds nothing wrong with it, and cannot
+    reach the real answer. The layout path reads worse: `2026-02-30` fits
+    `YYYY-MM-DD` character for character, and `does not fit any of the layouts
+    given` points at the one part of that call that is right. **The behaviour is
+    correct** — refusing the impossible date is 0.5.0's headline entry — so this
+    is a diagnostic defect, the reports-the-wrong-cause class, and it arose the
+    usual way: a guard was added in the right place and the message beside it was
+    the one already there (`valid_date_parts` returns a bare `0`/`1`, leaving the
+    caller nothing to report with). Fix: the predicate reports WHICH rule failed
+    and the two modifier sites name the cause and the limit — with the CONTROL
+    that a genuinely malformed string still gets the generic message, or the fix
+    is satisfied by blaming the calendar for every unparseable string. Found
+    verifying the 0.5.0 artifact by running it, after the tag was cut.
+
 ### Open — accepted as documented limitations (no action planned)
 
 **Every live bullet below is EXECUTABLE.** `tests/run_limitations.sh` runs one
@@ -10836,3 +10855,93 @@ what a person means by a typical price, and which is the statistical *modal
 class*. That is why `mode` is near-useless on raw business data and why the
 remedy is a declared bin carried in the answer rather than a resolved tie. Full
 argument in `docs/bulk_data_design.md` §2b.
+
+---
+
+## A date that does not exist is refused, and told it is not a date, 2026-10-03
+
+Found **verifying the 0.5.0 artifact by running it**, which is the step
+`RELEASING.md` added precisely because reading a build log misses this kind of
+thing. The release's headline entry is that `{date}"2026-02-30"` is no longer
+accepted. It is refused. **The sentence it is refused with is false.**
+
+Measured across the entry points:
+
+| input | message |
+|---|---|
+| `{date}"2026-02-30"` | `date modifier expects an ISO-like date string` |
+| `{date}"2026-13-01"` | `date modifier expects an ISO-like date string` |
+| `{date}"1900-02-29"` | `date modifier expects an ISO-like date string` |
+| `{date}"not a date"` | `date modifier expects an ISO-like date string` |
+| `{datetime}"2026-02-30 10:00:00"` | `datetime modifier expects an ISO-like date-time string` |
+| `{date "YYYY-MM-DD"}"2026-02-30"` | ``2026-02-30` does not fit any of the layouts given to `{date}`: "YYYY-MM-DD"`` |
+
+**The first three ARE ISO-like** — being ISO-like is the one thing about them
+that is not wrong — and they get the identical sentence as a string that
+genuinely is not a date. A reader who typed `2026-02-30` is told to check the
+*shape* of their string, which is correct, so they look at the shape, find
+nothing wrong with it, and have no way to reach the real answer: **the 30th of
+February does not exist.** The three causes are distinct and each has an obvious
+remedy the author cannot be told — a day past the month's length, a month
+outside 1..12, and the 29th of a February that is not a leap year.
+
+**The layout path is no better and reads worse.** `2026-02-30` fits
+`YYYY-MM-DD` exactly, character for character; saying it "does not fit any of
+the layouts given" points at the layout list, which is the one part of that call
+that is right. And a layout list is where this message is *least* affordable,
+because the whole point of a list is that the author is unsure which shape the
+data takes, so being told "none of them fit" is exactly the answer they expect
+to have to act on.
+
+**This is the reports-the-wrong-cause class**, which this tree has now produced
+from `decode(read(f))` (DOGFOOD 34), from `odbc`'s "expects an odbc connection"
+over a closed one, from `xml.parse`'s NUL refusal blaming a premature end of
+data, and from `1e20`. The pattern each time: **a guard was added in the right
+place and the message beside it was the one that was already there.** That is
+what happened here — `valid_date_parts` returns a bare `0`/`1`, so the caller
+has nothing to report with and emits the generic parse failure it emitted
+before the check existed.
+
+**Why it is not fixed in 0.5.0.** The tag was already cut and both artifacts
+built and verified when this was found. The BEHAVIOUR is right -- a date that
+does not exist is refused, which is the entry the release is making -- and the
+fix is a diagnostic improvement, not a correctness one. Folding it in means
+re-tagging and a fresh ~2h gate, which is Matthew's call rather than mine.
+
+**What the fix needs.** `valid_date_parts` reports WHICH rule failed (an
+out-parameter, or a small enum return), its ~10 call sites pass NULL where they
+do not care, and the two modifier sites compose a message naming the cause and
+the limit: *February 2026 has 28 days*, *month 13 does not exist*, *1900 was not
+a leap year*. **THE CONTROL IS THE LOAD-BEARING HALF**: a genuinely malformed
+string must STILL get the generic message, or "name the cause" is satisfied by a
+build that blames the calendar for every unparseable string -- which is the same
+error one direction over.
+
+## `reference.md` illustrated a qualified call with a verb that does not exist
+
+Found by the same artifact verification, from the other side: I wrote
+`sqlite.open(...)` in the verification program because the reference uses it to
+show what a qualified call looks like, and got `undefined function: sqlite.open
+-- the 'sqlite' module does not define 'open'`. The verb is `sqlite.connect`.
+
+**Fixed (one word).** Recorded because of what the sweep after it measured
+rather than for the typo: every one of the **76** `module.verb` names
+`reference.md` mentions, probed against the binary, and this was the **only**
+one that does not exist. So the page is accurate about the module surface and
+this was a single illustrative example rather than a rot.
+
+**AND MY OWN PROBE'S FIRST DRAFT REPORTED THREE**, which is the part worth
+remembering. `http.events` and `timer.ticks` also answered "the module does not
+define" -- because they are **watch sources** (`watch(http.events)`), not
+functions, and my probe called everything as a function. A sweep whose false
+positives are indistinguishable from its true ones is not a sweep, which is the
+lesson the `finio` amount-kind tripwire's first draft already produced when it
+reported `pain.001` as broken for having a field called `control_sum`.
+
+**Nothing checks this.** `run_doc_examples.sh` reads `reference.md` in
+`:parse` mode, so an undefined verb is a RUNTIME error it cannot see, and this
+one was in inline prose rather than a fenced block, so it was outside even that.
+A tripwire deriving the verb list per module and checking the page against it is
+the shape `run_docs_gate.sh` already uses for `type`'s 27 kinds -- not built,
+because the sweep measured one defect in 76 names and the gate costs more than
+that is worth until the surface rots again.

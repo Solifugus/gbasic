@@ -8596,7 +8596,7 @@ gbasic --add-loads FILE
 Compatibility note: `--add-uses` remains an alias that emits `use` statements.
 
 It reads both shapes a call can take. A **qualified** call names its library
-outright (`sqlite.open(...)`, `stats.zscore(...)`), so the `load` follows from the
+outright (`sqlite.connect(...)`, `stats.zscore(...)`), so the `load` follows from the
 qualifier; this is the ordinary shape, because a call into another library must
 be qualified. An **unqualified** call is resolved by searching the libraries on
 the path for one that provides that function, which is what a library's calls to
