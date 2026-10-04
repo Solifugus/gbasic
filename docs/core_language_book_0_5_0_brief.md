@@ -1,4 +1,4 @@
-# What 0.5.0 changes for a core-language book
+# What 0.5.0 (and 0.5.1) changes for a core-language book
 
 **Status: Record.** A working note, not an authority. Written 2026-10-03 for the session finishing *gBASIC: The
 Core Language*, which was held for this release. Every example below was RUN
@@ -256,3 +256,62 @@ three version gates and breaks a printed promise, because the docs gate reads
 
 Run the book's examples against the **tarball's** binary rather than whatever is
 on `PATH`, or the pin is decorative.
+
+---
+
+## Addendum: 0.5.1, and it came from this book
+
+0.5.1 exists because of the ch02 revision. Rewriting the complaint that the
+`^`/`%` refusals "name neither the character you typed nor the thing to type
+instead" — true of 0.3.0, fixed in 0.5.0 — surfaced that **`<>` had no sentence
+at all**. Sweeping the rest of what a reader arriving from QBasic types found
+two more. `MOD`, `&` and `dim` already named a remedy and these three did not,
+which is what made it an inconsistency rather than a policy.
+
+**Pin 0.5.1, not 0.5.0**, and teach these:
+
+```
+print 1 <> 2    '<>' is not an operator; not-equal is != -- a != b
+let x = 1       `let` is not a gBASIC statement; assign directly (x = 1)
+rem a comment   `rem` is not a gBASIC comment; a comment starts with ' and runs to the end of the line
+```
+
+**The `let`/`rem` pair is the sharper story for a chapter, because the old
+messages did not merely fail to help — they misdirected.** Both parse as the
+beginning of a *call*, so the parser asked for a parenthesis:
+
+```
+let x = 1       syntax error, unexpected OP_EQ, expecting LPAREN      (0.5.0)
+rem a comment   syntax error, unexpected IDENT, expecting LPAREN      (0.5.0)
+```
+
+A beginner typing the word every BASIC book opens with was told to add a
+parenthesis, which is the one change that cannot help. If the chapter wants an
+example of the difference between a terse diagnostic and a *wrong* one, this is
+a better one than `^`.
+
+**Three facts the chapter can rely on, each measured:**
+
+- **Neither word is reserved**, and that is deliberate — `let` remains a legal
+  name for your own function (`function let(a)` … `print let(2)` answers `3`).
+  The rule is the one `sub` already set: the fix is a message, not a keyword,
+  because reserving a word breaks every program using it as a name.
+- **A name that merely begins with one is untouched**: `letter` and `remainder`
+  are ordinary names.
+- **`(` is the discriminator**, so a syntax error *inside* a call you really
+  wrote keeps the parser's own sentence rather than being answered with advice
+  about a statement you did not write.
+
+**`UNLEARN.md` had all three right all along** — `<>` → `!=`, `rem` → `'`,
+`dim x` → just assign — so the page was correct and only the binary was
+unhelpful, which is the same pattern `run_qbasic_diagnostics.sh` records for
+`mod`. If the draft cites UNLEARN on these, the citation was never wrong; what
+changed is that the binary now agrees with it. The `<>` and `let`/`rem` entries
+there are updated to quote the new sentences.
+
+**And a note on the ledger, since this is the second time it mattered.** The
+`on-repin.md` entry about `on warning stop` predicted the fix correctly and its
+consequence wrongly — a local function still defeats `main`'s setting, and only
+the *library* boundary changed. Re-measuring rather than applying the list is
+what caught it, and that is the right default for every remaining entry: the
+ledger says where to look, not what is true.

@@ -115,6 +115,40 @@ lacks 'let drops the paren advice'  'let x = 1'     'LPAREN'
 lacks 'rem drops the paren advice'  'rem a comment' 'LPAREN'
 lacks 'angle not-equal drops OP_GT' 'print 1 <> 2'  'OP_GT'
 
+echo "--- TIER 1c: the same three AT THE PROMPT ---"
+# THE PROMPT IS WHERE A BEGINNER TYPES `let`, and it is a DIFFERENT PATH: a
+# chunk that does not parse is retried wrapped in `print (\n...\n)`, which makes
+# the first word on the line `print` and would defeat the line-first-word scan
+# these messages rest on. Measured: all three are correct, because the prompt
+# reports THE ORIGINAL diagnostic when the wrapped retry also fails -- so the
+# scan sees the line the author actually typed. That is the repl's documented
+# rule rather than luck, and it is asserted here because nothing else would
+# notice the wrapper path changing.
+# THE `|| true` IS NOT DECORATION, and this file already says so twice about
+# `say` above: the run is MEANT to fail, and under `pipefail` an unguarded
+# pipeline ends the suite SILENTLY via `set -e` -- green-looking scrollback, no
+# FAIL line. Written without it, this tier printed its own header and nothing
+# else, and the suite exited 0 having skipped every tier after it. Third time in
+# one file, now by me.
+prompt_say() {
+    { printf '%s\nquit\n' "$1" | ./gbasic --repl 2>&1 || true; } | head -1
+}
+pwant() {  # pwant <label> <source> <substring>
+    checks=$((checks + 1))
+    local got; got="$(prompt_say "$2")"
+    case "$got" in
+        *"$3"*) printf 'ok   %s\n' "$1" ;;
+        *) printf 'MISMATCH %s\n  want substring: %s\n  got:            %s\n' "$1" "$3" "$got"; status=1 ;;
+    esac
+}
+pwant 'prompt let'   'let x = 1'    '`let` is not a gBASIC statement'
+pwant 'prompt rem'   'rem a note'   '`rem` is not a gBASIC comment'
+pwant 'prompt <>'    'print 1 <> 2' "not-equal is !="
+# And the position is the LINE THE AUTHOR TYPED, not the wrapper's extra line --
+# the discriminator run_repl.sh records for the wrapped-retry path, where the
+# original and the wrapper both say "unexpected" and only the position differs.
+pwant 'prompt position' 'let x = 1'  '<prompt>:1:'
+
 echo "--- TIER 2: the five type sigils ---"
 for pair in 'a$ = "x":$' 'a% = 5:%' 'a! = 5:!' 'a# = 5:#' 'a& = 5:&'; do
     src="${pair%:*}"; ch="${pair##*:}"
