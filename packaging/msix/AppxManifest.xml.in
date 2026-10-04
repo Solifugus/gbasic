@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  gBASIC's MSIX manifest (tools/build-msix.sh fills the @...@ fields).
+
+  gbasic is a CONSOLE program, so three things here are load-bearing:
+    - desktop4/iot2 Subsystem="console" and SupportsMultipleInstances: run in the
+      terminal that typed the command, as many at once as are started;
+    - the uap5 AppExecutionAlias: `gbasic` on every user's PATH with no PATH
+      edit (the alias lives in %LOCALAPPDATA%\Microsoft\WindowsApps);
+    - AppListEntry="none": a console tool is not a Start-menu app.
+  runFullTrust because gbasic reads and writes the user's own files and starts
+  processes, which a sandboxed package could not.
+
+  The layout mirrors `make install`: bin\gbasic.exe beside share\gbasic\stdlib,
+  which is where gb_exe_relative_stdlib looks, so no GBASIC_PATH is needed.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:iot2="http://schemas.microsoft.com/appx/manifest/iot/windows10/2"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 desktop4 iot2 rescap">
+
+  <Identity Name="@IDENTITY_NAME@"
+            Publisher="@PUBLISHER@"
+            Version="@VERSION@"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>gBASIC</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_DISPLAY@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>A modern BASIC: the gbasic interpreter and its standard library.</Description>
+  </Properties>
+
+  <Dependencies>
+    <!-- 1903: the floor the UTF-8 manifest and System32\icu.dll already set. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.18362.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="gbasic"
+                 Executable="bin\gbasic.exe"
+                 EntryPoint="Windows.FullTrustApplication"
+                 desktop4:Subsystem="console"
+                 desktop4:SupportsMultipleInstances="true"
+                 iot2:Subsystem="console"
+                 iot2:SupportsMultipleInstances="true">
+      <uap:VisualElements DisplayName="gBASIC"
+                          Description="The gbasic interpreter"
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png"
+                          AppListEntry="none" />
+      <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias"
+                        Executable="bin\gbasic.exe"
+                        EntryPoint="Windows.FullTrustApplication">
+          <uap5:AppExecutionAlias desktop4:Subsystem="console">
+            <uap5:ExecutionAlias Alias="gbasic.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

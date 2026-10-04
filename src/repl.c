@@ -296,6 +296,24 @@ static char session_cache[5120];   /* empty when there is nowhere to write one *
  * "ended without saving" rather than "crashed", which is true of each. */
 static int program_saved = 1;
 
+#ifdef _WIN32
+/* %LOCALAPPDATA%\gbasic, written with `/` like every other path gBASIC builds
+ * (make_dirs walks `/` only). 0 when the variable is unset. */
+static int windows_state_dir(char *out, size_t n) {
+    const char *base = getenv("LOCALAPPDATA");
+    if (!base || !*base) {
+        return 0;
+    }
+    snprintf(out, n, "%s/gbasic", base);
+    for (char *p = out; *p; p++) {
+        if (*p == '\\') {
+            *p = '/';
+        }
+    }
+    return 1;
+}
+#endif
+
 static void cache_dir(char *out, size_t n) {
     const char *dir = getenv("GBASIC_SESSION_DIR");
     if (dir && *dir) {
@@ -307,6 +325,16 @@ static void cache_dir(char *out, size_t n) {
         snprintf(out, n, "%s/gbasic", xdg);
         return;
     }
+#ifdef _WIN32
+    /* A Windows terminal has no HOME (measured: PowerShell and cmd leave it
+     * unset), so without this a session had NO cache -- and so no recovery,
+     * and no `spawn` at the prompt. %LOCALAPPDATA% is where per-user state
+     * belongs there; it comes before HOME so Git Bash, which does set HOME,
+     * finds the same sessions as PowerShell. */
+    if (windows_state_dir(out, n)) {
+        return;
+    }
+#endif
     const char *home = getenv("HOME");
     if (home && *home) {
         snprintf(out, n, "%s/.local/state/gbasic", home);
@@ -453,6 +481,37 @@ static char *read_line(FILE *in) {
         abort();
     }
     int c;
+    /* A UTF-8 byte-order mark opening the STREAM is not part of the first
+     * line: PowerShell puts one in front of everything it pipes to a native
+     * program, and left in, the first line's command (`quit`, `list`) was not
+     * recognised. The lexer skips one at the start of a buffer for the same
+     * reason (src/lexer.c), but the prompt reads commands before any lexing. */
+    static int stream_started = 0;
+    if (!stream_started) {
+        stream_started = 1;
+        c = fgetc(in);
+        if (c == 0xEF) {
+            int c2 = fgetc(in);
+            int c3 = c2 == 0xBB ? fgetc(in) : EOF;
+            if (!(c2 == 0xBB && c3 == 0xBF)) {
+                /* Not a mark: keep what was read as line content, and hand a
+                 * newline back to the loop below so it still ends the line. */
+                line[len++] = (char)c;
+                if (c2 == '\n') {
+                    ungetc(c2, in);
+                } else if (c2 != EOF) {
+                    line[len++] = (char)c2;
+                    if (c3 == '\n') {
+                        ungetc(c3, in);
+                    } else if (c3 != EOF) {
+                        line[len++] = (char)c3;
+                    }
+                }
+            }
+        } else if (c != EOF) {
+            ungetc(c, in);
+        }
+    }
     while ((c = fgetc(in)) != EOF) {
         if (len + 2 > cap) {
             cap *= 2;
@@ -960,6 +1019,15 @@ int repl_main(int json_diagnostics) {
     char hist_default[4096] = {0};
     if (!hist_path) {
         const char *home = getenv("HOME");
+#ifdef _WIN32
+        /* Beside the session cache, for the reason cache_dir gives. */
+        char state[4000];   /* + "/history" always fits hist_default */
+        if (windows_state_dir(state, sizeof state)) {
+            snprintf(hist_default, sizeof(hist_default), "%s/history", state);
+            hist_path = hist_default;
+            home = NULL;
+        }
+#endif
         if (home) {
             snprintf(hist_default, sizeof(hist_default), "%s/.gbasic_history", home);
             hist_path = hist_default;

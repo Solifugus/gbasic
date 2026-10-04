@@ -911,3 +911,94 @@ pass 147/147. That is recorded as the machine, not the code.
   `error`, by design, and that path was not exercised.
 - A temporary directory long enough to overflow AF_UNIX's 108 bytes. The
   refusal names ENAMETOOLONG, but no such directory was tried.
+
+## 23. The installer: an MSIX prototype (2026-10-04)
+
+**Why MSIX (Matthew's choice).** One package reaches all three channels:
+
+- the **Microsoft Store**, which signs and hosts it (individual registration is
+  now free);
+- **winget**;
+- the **gBASIC website**.
+
+The last two need it signed by a certificate machines already trust: Azure
+Trusted Signing or a purchased certificate. That is not decided yet.
+
+**What exists.**
+
+- `tools/build-msix.sh` stages `make install`'s layout (bin\gbasic.exe beside
+  share\gbasic\stdlib), plus LICENSE, NOTICE, LICENSING.md and each
+  third_party licence.
+- `packaging/msix/make-assets.ps1` draws placeholder logos at build time.
+- `packaging/msix/AppxManifest.xml.in` is filled in, and the result is packed
+  with the Windows SDK 10.0.26100 `makeappx` and signed with `signtool`.
+- **The manifest is a console program:**
+  - `desktop4:Subsystem="console"`, so it runs in the typing terminal;
+  - a `uap5` execution alias, so `gbasic` works anywhere with no PATH edit;
+  - `AppListEntry="none"`, so it stays off the Start menu;
+  - `runFullTrust`, because gbasic reads the user's files and starts
+    processes.
+- **The package:** 4.6 MB, version 0.4.0.0, minimum Windows 10 1903 (the floor
+  §14 already set).
+- **The test certificate:** without a real certificate the build signs with a
+  SELF-SIGNED one, made by `packaging/msix/make-test-cert.ps1` in the user's
+  own store. It installs only where someone chose to trust it; Matthew
+  imported it into LocalMachine\TrustedPeople. The `.pfx` is under the
+  git-ignored `build/`.
+- **An MSYS2 trap:** it rewrites makeappx's `/o /d /p` switches as if they were
+  paths, so the script sets `MSYS2_ARG_CONV_EXCL` for the SDK tools.
+
+**Installed and checked through the alias** (`packaging/msix/check-installed.ps1`,
+8 checks, all ok):
+
+- the alias resolves into WindowsApps;
+- the console works;
+- the stdlib is found with no GBASIC_PATH;
+- **`spawn` re-execs the binary from WindowsApps** — the risk named before
+  building, and it works;
+- actor_transport passes inside the package;
+- process.run starts `cmd`;
+- `spawn` works at the prompt with no HOME;
+- a file written lands where the program asked.
+
+**Packaged state is REDIRECTED** (measured): the REPL's session cache, written
+to `%LOCALAPPDATA%\gbasic`, lands in
+`%LOCALAPPDATA%\Packages\gBASIC.gbasic_<id>\LocalCache\Local\gbasic`. That is
+correct and invisible to the program; docs/reference.md now says where it is.
+
+**Found and fixed while doing it:**
+
+- **The prompt had no session cache on Windows at all.** It came from HOME,
+  which PowerShell and cmd do not set, so there was no crash recovery and no
+  `spawn` at the prompt. Windows now uses `%LOCALAPPDATA%\gbasic`, ahead of
+  HOME, so Git Bash and PowerShell share one. History moves beside it.
+- **A UTF-8 byte-order mark was a lexer error at 1:1.** Notepad's "UTF-8 with
+  BOM", PowerShell 5.1's `Set-Content -Encoding utf8`, and PowerShell piping
+  into a native program all write one, so a valid program was refused for a
+  byte nobody can see. The lexer skips a leading mark (offsets stay true file
+  offsets), and so does the prompt's input, because it reads commands before
+  any lexing. `examples/utf8_bom_test.bas` (a file that starts with the mark)
+  and two run_repl checks cover it. Both fixes, removed alone, turn their own
+  check red.
+
+**Results.**
+
+- Windows run_all: 129 passed, 1 failed, 27 skipped by name, 2 manual.
+- The failure was run_arridx's NEGATIVE CONTROL: a quadratic loop that must
+  exceed an 8x gate measured 7.5x while a Linux suite ran beside it in WSL.
+  Rerun alone it measured 15.1x and 21.6x, and every shape tier passed
+  throughout. The sweep was not rerun whole.
+- Linux, 14 lexer/prompt suites plus the LSP suite on HEAD and HEAD+patch: all
+  exit 0. The only file in the tree that begins with a mark is the new example.
+
+**Not done:**
+
+- real signing;
+- Store submission;
+- the winget manifest;
+- designed artwork;
+- an `.appinstaller` file for the website's auto-update;
+- the notices file that brings every licence together;
+- the `.msix` lacks curl/libxml2/sqlite/zlib/TRE licence texts. They are
+  linked statically and their notices must ship. `licenses/` has gBASIC's own
+  and yescrypt's only.

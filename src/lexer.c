@@ -462,6 +462,16 @@ void lexer_init(Lexer *lexer, const char *source) {
 void lexer_init_at(Lexer *lexer, const char *source, int first_line) {
     lexer->source = source;
     lexer->current = source;
+    /* A UTF-8 BYTE-ORDER MARK is how the text says its encoding, not text:
+     * Notepad's "UTF-8 with BOM", PowerShell 5.1's `Set-Content -Encoding
+     * utf8`, and PowerShell PIPING into a native program all put one first,
+     * and each read as "lexer error at 1:1: unexpected token" -- a valid
+     * program refused for a byte the author cannot see. Skipped here, so
+     * offsets stay offsets into the real file and columns still start at 1. */
+    if ((unsigned char)source[0] == 0xEF && (unsigned char)source[1] == 0xBB &&
+        (unsigned char)source[2] == 0xBF) {
+        lexer->current = source + 3;
+    }
     lexer->error_message[0] = '\0';
     lexer->line = first_line;
     lexer->column = 1;

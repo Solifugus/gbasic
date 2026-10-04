@@ -681,6 +681,15 @@ out="$(printf 'print 5\nquit\n' | GBASIC_REPL_PROMPT=1 "$GB" --repl 2>/dev/null)
 contains "and a prompt appears when asked for" "> " "$out"
 contains "with a banner" "help" "$out"
 check "no arguments is the prompt" "7" "$(printf 'print 7\nquit\n' | "$GB" 2>/dev/null)"
+# A UTF-8 BYTE-ORDER MARK opening the stream is an encoding marker, not input:
+# PowerShell puts one before everything it pipes to a native program. The
+# command on the FIRST line is the case that failed (`quit` read as code, an
+# exit of 1), so it is the subject, with the control that the line after it
+# would have run. Measured on Windows 2026-10-04 (docs/windows_port_status.md §23).
+bom_out="$(printf '\357\273\277quit\nprint 9\n' | "$GB" --repl 2>&1)"; bom_rc=$?
+check "a byte-order mark does not hide the first line's command" "0" "$bom_rc"
+lacks "and quit really stopped reading" "9" "$bom_out"
+check "a byte-order mark before code is skipped too" "4" "$(printf '\357\273\277print 4\nquit\n' | "$GB" --repl 2>&1)"
 
 echo
 echo "== COMMANDS: what a curious person reaches for =="

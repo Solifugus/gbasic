@@ -32,6 +32,7 @@ examples=(
     array_append_prepend_test.bas
     gui_fields_test.bas
     array_cow_test.bas
+    utf8_bom_test.bas
     array_insert_remove_test.bas
     array_reverse_test.bas
     array_sort_test.bas
