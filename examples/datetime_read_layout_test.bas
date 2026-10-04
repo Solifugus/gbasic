@@ -84,7 +84,11 @@ program main( args )
     ' A DAY NAME IS CHECKED, NOT IGNORED. 7 March 2026 is a Saturday, so
     ' accepting this would admit contradictory data as if it were fine.
     bad = {date "DDDD, D MMMM YYYY"}"Sunday, 7 March 2026"
-    check("a contradictory day  ", contains(error.message, "does not fit"), true)
+    ' THIS CHECK USED TO ASSERT "does not fit", WHICH IS FALSE ABOUT ITS OWN
+    ' INPUT: `Sunday, 7 March 2026` fits `DDDD, D MMMM YYYY` exactly, and what
+    ' is wrong is the CALENDAR -- that date is a Saturday. Corrected with the
+    ' rest of them 2026-10-03.
+    check("a contradictory day  ", contains(error.message, "was a Saturday, not a Sunday"), true)
     error.clear()
     ' The message names the TEXT and EVERY layout tried, because "could not
     ' parse" alone cannot tell a reader whether the data is wrong or the list is
@@ -94,7 +98,9 @@ program main( args )
     check("and both layouts     ", contains(error.message, "DD/MM/YYYY"), true)
     error.clear()
     over = {date "DD/MM/YYYY"}"32/01/2026"
-    check("day 32               ", contains(error.message, "does not fit"), true)
+    ' Same correction: `32/01/2026` fits `DD/MM/YYYY` -- two digits, two
+    ' digits, four -- and January simply has 31 days.
+    check("day 32               ", contains(error.message, "January 2026 has 31 days"), true)
     error.clear()
     tail = {date "DD/MM/YYYY"}"07/03/2026 extra"
     check("trailing text        ", contains(error.message, "does not fit"), true)
@@ -116,17 +122,28 @@ program main( args )
     ' was ACCEPTED -- and `+ 1 day` then answered `2026-03-03`, because the
     ' epoch conversion normalises 30 February to 2 March. A date that does not
     ' exist became a DIFFERENT REAL DATE two days later with nothing raised.
+    ' AND THE MESSAGE IS PART OF THE ASSERTION, which these four checks did not
+    ' say when they were written: they asserted the word "ISO-like", so they
+    ' pinned a sentence that is FALSE about their own input. `2026-02-30` IS
+    ' ISO-like -- that is the one thing about it which is not wrong -- and the
+    ' author was sent to look at the shape of a string with nothing wrong with
+    ' its shape. Fixed 2026-10-03, found verifying the 0.5.0 artifact by
+    ' running it; the checks now name the cause, which is what a reader needs.
     feb29 = {date}"2026-02-29"
-    check("29 Feb in a non-leap ", contains(error.message, "ISO-like"), true)
+    check("29 Feb in a non-leap ", error.message,
+          "`2026-02-29` is not a real date -- 2026 was not a leap year, so February 2026 has 28 days")
     error.clear()
     feb30 = {date}"2026-02-30"
-    check("30 Feb ever          ", contains(error.message, "ISO-like"), true)
+    check("30 Feb ever          ", error.message,
+          "`2026-02-30` is not a real date -- February 2026 has 28 days")
     error.clear()
     apr31 = {date}"2026-04-31"
-    check("31 April             ", contains(error.message, "ISO-like"), true)
+    check("31 April             ", error.message,
+          "`2026-04-31` is not a real date -- April 2026 has 30 days")
     error.clear()
     jun31 = {date "YYYY-MM-DD"}"2026-06-31"
-    check("31 June via a layout ", contains(error.message, "does not fit"), true)
+    check("31 June via a layout ", error.message,
+          "`2026-06-31` is not a real date -- June 2026 has 30 days")
     error.clear()
     ' THE LEAP RULE IN FULL, which is where a half-done fix shows: 2024 is a
     ' leap year, 2000 is one BECAUSE it divides by 400, and 1900 is NOT because
@@ -136,7 +153,8 @@ program main( args )
     ok00 {date}= "2000-02-29"
     check("CONTROL 2000 leap    ", ok00, "2000-02-29")
     no1900 = {date}"1900-02-29"
-    check("1900 is NOT leap     ", contains(error.message, "ISO-like"), true)
+    check("1900 is NOT leap     ", error.message,
+          "`1900-02-29` is not a real date -- 1900 was not a leap year, so February 1900 has 28 days")
     error.clear()
     ok28 {date}= "2026-02-28"
     check("CONTROL 28 Feb       ", ok28, "2026-02-28")
@@ -159,4 +177,74 @@ program main( args )
     check("read then render     ", {string "D MMM YYYY"}rt, "7 Mar 2026")
     rt2 {datetime "DDDD, D MMMM YYYY h:mm pm"}= "Saturday, 7 March 2026 2:05 pm"
     check("and the long way     ", {string "DDDD, D MMMM YYYY h:mm pm"}rt2, "Saturday, 7 March 2026 2:05 pm")
+
+    print ""
+    print "-- THE REFUSAL NAMES THE CAUSE, AND ONLY WHEN THERE IS ONE TO NAME"
+    ' THE CONTROL IS THE LOAD-BEARING HALF OF THIS WHOLE SECTION. "Name the
+    ' cause" is satisfied by a build that blames the CALENDAR for every string
+    ' that will not parse -- which is the same error one direction over, and
+    ' would be worse, since it would answer a question about February for input
+    ' that is not a date at all. So a malformed string must STILL get the
+    ' generic sentence, and that is asserted first.
+    bad = {date}"not a date"
+    check("CONTROL malformed    ", error.message,
+          "date modifier expects an ISO-like date string")
+    error.clear()
+    bad2 = {time}"half past four"
+    check("CONTROL malformed time", error.message,
+          "time modifier expects an ISO-like time string")
+    error.clear()
+    bad3 = {date "YYYY-MM-DD"}"not a date at all"
+    check("CONTROL layout no fit", contains(error.message, "does not fit any of the layouts"), true)
+    error.clear()
+
+    ' EVERY CALENDAR RULE HAS ITS OWN SENTENCE, because each has a different
+    ' remedy and an author cannot act on a rule nobody named.
+    m13 = {date}"2026-13-01"
+    check("month out of range   ", error.message,
+          "`2026-13-01` is not a real date -- a month is 1 to 12, not 13")
+    error.clear()
+    h25 = {time}"25:00:00"
+    check("hour out of range    ", error.message,
+          "`25:00:00` is not a real time -- an hour is 0 to 23, not 25")
+    error.clear()
+    mi60 = {time}"10:60:00"
+    check("minute out of range  ", error.message,
+          "`10:60:00` is not a real time -- a minute is 0 to 59, not 60")
+    error.clear()
+    se61 = {time}"10:00:61"
+    check("second out of range  ", error.message,
+          "`10:00:61` is not a real time -- a second is 0 to 59, not 61")
+    error.clear()
+    dtbad = {datetime}"2026-02-30 10:00:00"
+    check("{datetime} says date-time", error.message,
+          "`2026-02-30 10:00:00` is not a real date-time -- February 2026 has 28 days")
+    error.clear()
+
+    ' A DAY NAME THAT DOES NOT MATCH is the OTHER way a well-shaped string
+    ' fails to be a real date, and "does not fit the layout" sends the author to
+    ' the layout, which fitted perfectly.
+    wrongday = {date "DDDD, D MMMM YYYY"}"Sunday, 7 March 2026"
+    check("wrong day name       ", error.message,
+          "`Sunday, 7 March 2026` is not a real date -- 7 March 2026 was a Saturday, not a Sunday")
+    error.clear()
+
+    ' WITH SEVERAL LAYOUTS THE READING IS NAMED. `02/30/2026` faults under
+    ' `DD/MM/YYYY` with "a month is 1 to 12, not 30", which is true of that
+    ' reading and reads like nonsense to an author who never wrote a month 30 --
+    ' so the layout that produced it is said out loud. The CONTROL beside it is
+    ' that a list which CAN disambiguate still does, since a message about the
+    ' first fault must not mean the list stopped trying the rest.
+    none = {date "DD/MM/YYYY", "MM/DD/YYYY"}"02/30/2026"
+    check("list names the reading", error.message,
+          "`02/30/2026` is not a real date under any of the 2 layouts given to `{date}` -- read as \"DD/MM/YYYY\", a month is 1 to 12, not 30")
+    error.clear()
+    still {date "DD/MM/YYYY", "MM/DD/YYYY"}= "03/15/2026"
+    check("CONTROL list still works", still, "2026-03-15")
+    ' AND ONE LAYOUT DOES NOT CARRY THE EXTRA CLAUSE, or it would be noise on
+    ' the commonest shape.
+    one = {date "DD/MM/YYYY"}"30/02/2026"
+    check("one layout, no clause", error.message,
+          "`30/02/2026` is not a real date -- February 2026 has 28 days")
+    error.clear()
 end program

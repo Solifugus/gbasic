@@ -24,10 +24,12 @@ Nothing yet.
 
 **Read this first.** One change **refuses input that used to be accepted and
 was silently wrong** — a date that does not exist — and two more refuse things
-that were being quietly *ignored*. One changes a result (`chars`). **Twelve
-diagnostics say something different**: one sentence, the **nine** module
-dispatchers that each held their own copy of it, and the two actor frame-limit
-messages — so anything quoting a message verbatim has to re-capture it. The
+that were being quietly *ignored*. One changes a result (`chars`). **Diagnostics
+say something different in four families**: the twelve reworded ones (one
+sentence, the **nine** module dispatchers that each held their own copy of it,
+and the two actor frame-limit messages), plus every refusal of an impossible
+date, which now names the calendar rule instead of claiming the text is not
+ISO-like — so anything quoting a message verbatim has to re-capture it. The
 language additions are a **date layout notation** used for both rendering and
 parsing, **modifier chaining** with `;`, and **every modifier shape working
 inline**.
@@ -44,6 +46,34 @@ inline**.
   which needed the predicate to be true. The leap rule is now complete: 2024 and
   2000 are leap years, **1900 is not**. Nothing in the tree depended on the old
   permissiveness.
+
+  **And the refusal names the calendar rule it broke**, which the first cut of
+  this did not — it shipped with the message that was already at the raise site,
+  so `{date}"2026-02-30"` answered *expects an ISO-like date string*. That is
+  **false**: being ISO-like is the one thing about `2026-02-30` that is not
+  wrong, and it was the identical sentence a string that genuinely is not a date
+  got, so the author was sent to inspect a shape with nothing wrong with it.
+  Each rule now has its own sentence, because each has a different remedy:
+
+  ```
+  `2026-02-30`  is not a real date -- February 2026 has 28 days
+  `1900-02-29`  is not a real date -- 1900 was not a leap year, so February 1900 has 28 days
+  `2026-13-01`  is not a real date -- a month is 1 to 12, not 13
+  `25:00:00`    is not a real time -- an hour is 0 to 23, not 25
+  ```
+
+  The leap case gets a sentence of its own because *February 1900 has 28 days*
+  invites the reply "no it does not" from anyone who knows the four-year rule
+  and not the hundred-year one — and the 29th of a non-leap February is the
+  commonest impossible date in real data. **A string that is genuinely not a
+  date still gets the old generic message**, which is the control: *name the
+  cause* is otherwise satisfied by blaming the calendar for everything that will
+  not parse. The layout paths are included — `Sunday, 7 March 2026` reports
+  *7 March 2026 was a Saturday, not a Sunday* rather than claiming the text does
+  not fit a layout it fits exactly — and with several layouts declared the
+  reading is named, since *a month is 1 to 12, not 30* reads like nonsense to an
+  author who never wrote a month 30. `notation` inherits all of it with no
+  change of its own, the fix being at the modifier rather than at each caller.
 
 **It changes a result:**
 

@@ -747,8 +747,43 @@ and the stale-looking ones carry a Status line saying what overtook them.
     and **refused** — resolving a tie to the value between the modes, which on
     `[10,10,10,100,100,100]` names 55, a value occurring **zero** times. Full
     argument in `docs/bulk_data_design.md` §2b.
+    **RULED 2026-10-03, and the ruling is the part a later session needs:**
+    asked whether to fix this inside 0.5.0 because *gBASIC: The Core Language*
+    pins that release and a book documenting the builtins would make this
+    defect documented-and-wrong on paper, Matthew's answer was to **leave the
+    builtin alone and have the book OMIT `mode` entirely** — no mention, no
+    caveat. So **do not document `mode` in a book until this item is struck** --
+    that is a deliberate silence and not an oversight: a
+    caveat in print dates the book to a release we intend to supersede, and a
+    page that teaches a known wrong answer is worse than a page that is one
+    builtin short. `median` is unaffected and safe to teach as it stands.
+    **NOT RULED, and left open rather than decided quietly:** `docs/reference.md`
+    ALREADY carries a one-line mention of `mode`, and the ruling above was about
+    the book. Whether that line should gain a warning, or go, is a separate
+    question nobody has been asked -- so it stands unchanged, and this note
+    exists so the next person knows the silence in the book was chosen and the
+    reference line simply was not considered.
 
-50. **A date that does not exist is refused, and told it is not a date.**
+50. ~~**A date that does not exist is refused, and told it is not a date.**~~
+    **RESOLVED 2026-10-03, before the tag was pushed** (struck). Every calendar
+    rule has its own sentence now — `February 2026 has 28 days`, `1900 was not a
+    leap year, so February 1900 has 28 days`, `a month is 1 to 12, not 13`, `an
+    hour is 0 to 23, not 25` — and the layout paths are included, so
+    `Sunday, 7 March 2026` reports `7 March 2026 was a Saturday, not a Sunday`
+    rather than blaming a layout it fits exactly. `valid_date_parts` was kept as
+    a thin wrapper over the new `date_parts_fault`, so its ten callers are
+    untouched and there is still exactly one implementation of what a real date
+    is. **The control is the load-bearing half**: a string that is genuinely not
+    a date still gets the generic message, and the perturbation that blames the
+    calendar for everything is caught by that check ALONE. `notation` inherited
+    the whole improvement with no change of its own. Five perturbations proven
+    red, each by the check written for it. **And the fixture's own assertions
+    had been pinning the false sentence** — six checks in
+    `datetime_read_layout_test` asserted `ISO-like` or `does not fit` for input
+    that is ISO-like and does fit, which is how a wrong message survives a
+    suite written in the same hour as the code. The original text follows.
+
+    **Originally filed as:**
     `{date}"2026-02-30"`, `{date}"2026-13-01"` and `{date}"1900-02-29"` all
     answer `date modifier expects an ISO-like date string` — **the same sentence
     a string that genuinely is not a date gets** — and all three *are* ISO-like,
@@ -10945,3 +10980,58 @@ A tripwire deriving the verb list per module and checking the page against it is
 the shape `run_docs_gate.sh` already uses for `type`'s 27 kinds -- not built,
 because the sweep measured one defect in 76 names and the gate costs more than
 that is worth until the surface rots again.
+
+---
+
+## Status update on the date diagnostic: fixed, and the fixture had been defending it
+
+Matthew's ruling was to fold it into 0.5.0 rather than ship the wrong sentence
+for a release, so the tag was deleted, the fix made, and the tag re-cut.
+
+**THE PART WORTH RECORDING IS NOT THE FIX.** It is that
+`examples/datetime_read_layout_test.bas` — written the same morning as the
+validation it tests, by me — contained **six checks asserting the false
+message**:
+
+```
+check("29 Feb in a non-leap ", contains(error.message, "ISO-like"), true)
+check("30 Feb ever          ", contains(error.message, "ISO-like"), true)
+check("31 April             ", contains(error.message, "ISO-like"), true)
+check("1900 is NOT leap     ", contains(error.message, "ISO-like"), true)
+check("a contradictory day  ", contains(error.message, "does not fit"), true)
+check("day 32               ", contains(error.message, "does not fit"), true)
+```
+
+Every one of those is a claim that is **wrong about its own input**.
+`2026-02-30` IS ISO-like. `Sunday, 7 March 2026` DOES fit
+`DDDD, D MMMM YYYY`. `32/01/2026` DOES fit `DD/MM/YYYY`. The checks passed, the
+suite was green, and the green was evidence for a sentence that was false --
+because a `contains` against a substring of whatever the binary happened to say
+asserts that the binary is consistent, not that it is right. **The assertion was
+written by reading the output rather than by deciding what the output should
+be**, which is the transcript problem this tree records for goldens, reproduced
+one layer up in a fixture whose header says "SELF-CHECKING AND FORCED".
+
+They assert the WHOLE message now, which is the only form that could have
+failed: a substring check cannot distinguish a message that names the cause from
+one that names something else, and the full text is the contract a book quotes.
+
+**AND THE FIX FOUND ITS OWN BUG BEFORE THE COMPILER DID.** The first draft of
+the raise site read
+
+```c
+const char *subject = value.kind == VALUE_STRING ? value.as.string : NULL;
+value_free(value);
+datetime_raise_parse_failure("date", "date", subject, keep);
+```
+
+-- a **use-after-free** that would have printed whatever the allocator left
+behind, inside a diagnostic, which is the worst possible place for plausible
+garbage. It compiled without a warning and the fixture would have passed on most
+runs. The subject is copied into a local buffer before the free now, and the
+comment beside it says why.
+
+**COST, STATED:** `{date}`/`{time}`/`{datetime}` now carry a 128-byte `why`
+buffer and a 64-byte subject copy on the stack per call, and the buffers are
+written only on the failing path. Valgrind clean over the fixture, which
+exercises both.

@@ -197,7 +197,7 @@ way a person would describe it rather than the way a parser meets it:
 a missing comma:          expected ',' or '}' at line 3, column 3
 a trailing comma:         a trailing comma before '}' at line 1, column 7
 a misspelled currency:    unknown type tag 'USSD' at line 2, column 17
-an impossible date:       date modifier expects an ISO-like date string at line 2, column 18
+an impossible date:       `2026-02-30` is not a real date -- February 2026 has 28 days at line 2, column 18
 a missing quote:          unterminated string at line 2, column 9
 ```
 
@@ -208,9 +208,17 @@ them looking for a missing value when the mistake is punctuation they can
 already see. The trailing-comma message points at the **comma**, not at the
 closer that tripped over it.
 
-`{date}` raising "expects an ISO-like date string" is true and useless in a
+`{date}` raising "expects an ISO-like date string" is useless in a
 two-hundred-line file, so the modifier's raise is caught and re-raised with the
 line and column — which is the whole reason tokens carry them.
+
+**And it was not even true.** That sentence is what `{date}` said for an
+*impossible* date until 2026-10-03, and `2026-02-30` **is** ISO-like — being
+ISO-like is the one thing about it that is not wrong — so a reader was sent to
+check the shape of a string whose shape is fine. The modifier names the calendar
+rule now (`February 2026 has 28 days`), and this page gets it for free because
+the fix is at the modifier rather than at each caller: nothing in `notation`
+changed.
 
 ## Still open
 

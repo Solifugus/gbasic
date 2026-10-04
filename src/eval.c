@@ -658,7 +658,6 @@ typedef struct {
 } PrincipalEntry;
 
 
-
 typedef struct {
     AstStmt *stmt;
     int pending;
@@ -6725,21 +6724,64 @@ static int parse_int_span(const char *text, int start, int count) {
     return value;
 }
 
-static int valid_date_parts(DateTime dt) {
+/* MONTH AND DAY NAMES, shared by two readers. `datetime_render_layout` emits
+ * them for `MMM`/`MMMM`/`DDD`/`DDDD`, and `date_parts_fault` just below names
+ * the month when it refuses a day that does not exist. They sit here, well
+ * above the renderer, only because this is the earlier of the two uses. */
+static const char *const DT_MONTH_SHORT[12] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
+static const char *const DT_MONTH_LONG[12] = {
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+};
+static const char *const DT_DAY_SHORT[7] = {
+    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+};
+static const char *const DT_DAY_LONG[7] = {
+    "Sunday", "Monday", "Tuesday", "Wednesday",
+    "Thursday", "Friday", "Saturday"
+};
+
+/* WHICH CALENDAR RULE DID THIS BREAK, and in words the author can act on.
+ *
+ * The validation below was added 2026-10-03 and shipped with the message that
+ * was already at its caller: `{date}"2026-02-30"` answered `date modifier
+ * expects an ISO-like date string`, WHICH IS FALSE -- being ISO-like is the one
+ * thing about `2026-02-30` that is not wrong -- and it was the identical
+ * sentence a string that genuinely is not a date got. So the author was sent to
+ * look at the shape of their string, found nothing wrong with it, and had no
+ * route to the real answer. The reports-the-wrong-cause class, arrived at the
+ * way it always is here: A GUARD WENT IN THE RIGHT PLACE AND THE MESSAGE BESIDE
+ * IT WAS THE ONE ALREADY THERE.
+ *
+ * `valid_date_parts` is kept as a WRAPPER rather than being changed, so its ten
+ * existing callers are untouched and there is still exactly one implementation
+ * of what a real date is. `why` is optional: the two modifier sites that raise
+ * pass a buffer, everything else passes NULL.
+ *
+ * Returns 0 when the parts are a real date, nonzero when they are not. */
+static int date_parts_fault(DateTime dt, char *why, size_t why_size) {
+#define DPF(...) do { if (why && why_size) { snprintf(why, why_size, __VA_ARGS__); } } while (0)
     if (dt.time_only) {
         if (dt.hour < 0 || dt.hour > 23) {
-            return 0;
+            DPF("an hour is 0 to 23, not %d", dt.hour);
+            return 1;
         }
         if (dt.precision >= PREC_MINUTE && (dt.minute < 0 || dt.minute > 59)) {
-            return 0;
+            DPF("a minute is 0 to 59, not %d", dt.minute);
+            return 1;
         }
         if (dt.precision >= PREC_SECOND && (dt.second < 0 || dt.second > 59)) {
-            return 0;
+            DPF("a second is 0 to 59, not %d", dt.second);
+            return 1;
         }
-        return 1;
+        return 0;
     }
     if (dt.month < 1 || dt.month > 12) {
-        return 0;
+        DPF("a month is 1 to 12, not %d", dt.month);
+        return 1;
     }
     if (dt.precision >= PREC_DAY) {
         /* THE DAY MUST EXIST IN THAT MONTH, which this checked as `1..31` from
@@ -6756,28 +6798,54 @@ static int valid_date_parts(DateTime dt) {
         static const int days_in[12] = { 31, 28, 31, 30, 31, 30,
                                          31, 31, 30, 31, 30, 31 };
         int limit = days_in[dt.month - 1];
+        int leap = 0;
         if (dt.month == 2) {
             int y = dt.year;
-            int leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+            leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
             if (leap) {
                 limit = 29;
             }
         }
-        if (dt.day < 1 || dt.day > limit) {
-            return 0;
+        if (dt.day < 1) {
+            DPF("a day of the month is 1 or more, not %d", dt.day);
+            return 1;
+        }
+        if (dt.day > limit) {
+            /* THE LEAP CASE GETS ITS OWN SENTENCE, because "February 1900 has
+             * 28 days" invites the reply "no it does not, February has 29" from
+             * anyone who knows the four-year rule and not the hundred-year one
+             * -- and the 29th of a non-leap February is the single commonest
+             * impossible date in real data. */
+            if (dt.month == 2 && dt.day == 29 && !leap) {
+                DPF("%d was not a leap year, so February %d has 28 days",
+                    dt.year, dt.year);
+            } else {
+                DPF("%s %d has %d days", DT_MONTH_LONG[dt.month - 1],
+                    dt.year, limit);
+            }
+            return 1;
         }
     }
     if (dt.precision >= PREC_HOUR && (dt.hour < 0 || dt.hour > 23)) {
-        return 0;
+        DPF("an hour is 0 to 23, not %d", dt.hour);
+        return 1;
     }
     if (dt.precision >= PREC_MINUTE && (dt.minute < 0 || dt.minute > 59)) {
-        return 0;
+        DPF("a minute is 0 to 59, not %d", dt.minute);
+        return 1;
     }
     if (dt.precision >= PREC_SECOND && (dt.second < 0 || dt.second > 59)) {
-        return 0;
+        DPF("a second is 0 to 59, not %d", dt.second);
+        return 1;
     }
-    return 1;
+    return 0;
+#undef DPF
 }
+
+static int valid_date_parts(DateTime dt) {
+    return date_parts_fault(dt, NULL, 0) == 0;
+}
+
 
 /* ISO 8601's `T` SEPARATOR AND ZONE DESIGNATOR, normalised away before the
  * strict position scanner below ever sees them.
@@ -6853,16 +6921,28 @@ static int datetime_strip_zone(const char *text, char *buf, size_t bufsz,
 
 static long long zone_timegm(DateTime dt);
 static DateTime zone_civil_from_epoch_utc(long long epoch, DateTimePrecision prec);
-static int parse_date_value_strict(const char *text, DateTime *out);
+static int parse_date_value_strict(const char *text, DateTime *out,
+                                   char *why, size_t why_size);
 
-static int parse_date_value(const char *text, DateTime *out) {
+/* `why` IS OPTIONAL AND ONLY THE RAISING SITES ASK FOR IT. On failure it is
+ * written only when the text had the SHAPE of a date and broke a CALENDAR rule;
+ * a malformed string leaves it empty, which is how the caller tells the two
+ * apart and why a genuinely unparseable string still gets the generic message.
+ * That distinction is the control on this whole change: "name the cause" is
+ * otherwise satisfied by blaming the calendar for every string that will not
+ * parse, which is the same error one direction over. */
+static int parse_date_value_why(const char *text, DateTime *out,
+                                char *why, size_t why_size) {
+    if (why && why_size) {
+        why[0] = '\0';
+    }
     char buf[64];
     long long offset = 0;
     if (!datetime_strip_zone(text, buf, sizeof buf, &offset)) {
         return 0;
     }
     DateTime dt;
-    if (!parse_date_value_strict(buf, &dt)) {
+    if (!parse_date_value_strict(buf, &dt, why, why_size)) {
         return 0;
     }
     if (offset != 0) {
@@ -6872,7 +6952,12 @@ static int parse_date_value(const char *text, DateTime *out) {
     return 1;
 }
 
-static int parse_date_value_strict(const char *text, DateTime *out) {
+static int parse_date_value(const char *text, DateTime *out) {
+    return parse_date_value_why(text, out, NULL, 0);
+}
+
+static int parse_date_value_strict(const char *text, DateTime *out,
+                                   char *why, size_t why_size) {
     size_t len = strlen(text);
     DateTime dt = {0};
     dt.month = 1;
@@ -6894,7 +6979,7 @@ static int parse_date_value_strict(const char *text, DateTime *out) {
     dt.month = parse_int_span(text, 5, 2);
     dt.precision = PREC_MONTH;
     if (len == 7) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -6907,7 +6992,7 @@ static int parse_date_value_strict(const char *text, DateTime *out) {
     dt.day = parse_int_span(text, 8, 2);
     dt.precision = PREC_DAY;
     if (len == 10) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -6920,7 +7005,7 @@ static int parse_date_value_strict(const char *text, DateTime *out) {
     dt.hour = parse_int_span(text, 11, 2);
     dt.precision = PREC_HOUR;
     if (len == 13) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -6933,7 +7018,7 @@ static int parse_date_value_strict(const char *text, DateTime *out) {
     dt.minute = parse_int_span(text, 14, 2);
     dt.precision = PREC_MINUTE;
     if (len == 16) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -6945,14 +7030,18 @@ static int parse_date_value_strict(const char *text, DateTime *out) {
     }
     dt.second = parse_int_span(text, 17, 2);
     dt.precision = PREC_SECOND;
-    if (!valid_date_parts(dt)) {
+    if (date_parts_fault(dt, why, why_size)) {
         return 0;
     }
     *out = dt;
     return 1;
 }
 
-static int parse_time_value(const char *text, DateTime *out) {
+static int parse_time_value_why(const char *text, DateTime *out,
+                                char *why, size_t why_size) {
+    if (why && why_size) {
+        why[0] = '\0';
+    }
     size_t len = strlen(text);
     DateTime dt = {0};
     dt.time_only = 1;
@@ -6963,7 +7052,7 @@ static int parse_time_value(const char *text, DateTime *out) {
     dt.hour = parse_int_span(text, 0, 2);
     dt.precision = PREC_HOUR;
     if (len == 2) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -6976,7 +7065,7 @@ static int parse_time_value(const char *text, DateTime *out) {
     dt.minute = parse_int_span(text, 3, 2);
     dt.precision = PREC_MINUTE;
     if (len == 5) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -6988,11 +7077,15 @@ static int parse_time_value(const char *text, DateTime *out) {
     }
     dt.second = parse_int_span(text, 6, 2);
     dt.precision = PREC_SECOND;
-    if (!valid_date_parts(dt)) {
+    if (date_parts_fault(dt, why, why_size)) {
         return 0;
     }
     *out = dt;
     return 1;
+}
+
+static int parse_time_value(const char *text, DateTime *out) {
+    return parse_time_value_why(text, out, NULL, 0);
 }
 
 static int datetime_lens_precision(const char *name, DateTimePrecision *out) {
@@ -37439,21 +37532,10 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
  * meridiem token is the case it is emitted in, so `pm` gives `pm` and `PM`
  * gives `PM`; which of the two words appears is decided by the hour. */
 
-static const char *const DT_MONTH_SHORT[12] = {
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-};
-static const char *const DT_MONTH_LONG[12] = {
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-};
-static const char *const DT_DAY_SHORT[7] = {
-    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
-};
-static const char *const DT_DAY_LONG[7] = {
-    "Sunday", "Monday", "Tuesday", "Wednesday",
-    "Thursday", "Friday", "Saturday"
-};
+/* The month and day name tables live up beside `date_parts_fault`, because the
+ * calendar diagnostic names the month too ("February 2026 has 28 days") and a
+ * second copy of the names is a second thing that can disagree with this
+ * renderer about what March is called. */
 
 /* Sunday = 0. Sakamoto's method, so it needs no library call and no epoch. */
 static int dt_day_of_week(int y, int m, int d) {
@@ -37693,7 +37775,11 @@ static int dt_take_digits(const char *text, size_t want_min, size_t want_max,
 /* Reads `text` through one `layout`. Returns 0 when it does not fit, when a
  * field is out of range, or when a day name contradicts the date. */
 static int datetime_parse_layout(const char *text, const char *layout,
-                                 DateTime *out) {
+                                 DateTime *out,
+                                 char *why, size_t why_size){
+    if (why && why_size) {
+        why[0] = '\0';
+    }
     DateTime dt = {0};
     dt.year = 1;
     dt.month = 1;
@@ -37817,11 +37903,21 @@ static int datetime_parse_layout(const char *text, const char *layout,
         dt.time_only = 1;
     }
     dt.precision = prec;
-    if (!valid_date_parts(dt)) {
+    if (date_parts_fault(dt, why, why_size)) {
         return 0;
     }
     if (named_day >= 0 && !dt.time_only) {
-        if (dt_day_of_week(dt.year, dt.month, dt.day) != named_day) {
+        int actual = dt_day_of_week(dt.year, dt.month, dt.day);
+        if (actual != named_day) {
+            /* THE TEXT NAMED A DAY AND THE DATE FALLS ON A DIFFERENT ONE, which
+             * is the other way a well-shaped string can fail to be a real date
+             * -- and saying only that it "does not fit the layout" sends the
+             * author to the layout, which fitted. */
+            if (why && why_size) {
+                snprintf(why, why_size, "%d %s %d was a %s, not a %s",
+                         dt.day, DT_MONTH_LONG[dt.month - 1], dt.year,
+                         DT_DAY_LONG[actual], DT_DAY_LONG[named_day]);
+            }
             return 0;
         }
     }
@@ -37838,6 +37934,15 @@ static int datetime_parse_layout_list(const char *who, const char *text,
     char tried[320];
     size_t used = 0;
     tried[0] = '\0';
+    /* THE FIRST CALENDAR FAULT, kept for the message. A layout that FITS and
+     * yields an impossible date is a different answer from one that does not
+     * fit, and the list cannot say which until every layout has been tried --
+     * because a later one may still succeed, which is the whole point of a
+     * list. The FIRST is the one reported, since the order is the author's
+     * declaration and so is the first reading of the data they asked for. */
+    char fault[128] = {0};
+    char fault_layout[80] = {0};
+    int layouts = 0;
     const char *cursor = args_text;
     int any = 0;
     while (cursor && *cursor) {
@@ -37863,9 +37968,17 @@ static int datetime_parse_layout_list(const char *who, const char *text,
             return 0;
         }
         any = 1;
-        if (datetime_parse_layout(text, lay.as.string, out)) {
+        layouts++;
+        char why[128] = {0};
+        if (datetime_parse_layout(text, lay.as.string, out, why, sizeof why)) {
             value_free(lay);
             return 1;
+        }
+        if (why[0]) {
+            if (!fault[0]) {
+                snprintf(fault, sizeof fault, "%s", why);
+                snprintf(fault_layout, sizeof fault_layout, "%s", lay.as.string);
+            }
         }
         int w = snprintf(tried + used, sizeof(tried) - used, "%s\"%s\"",
                          used ? ", " : "", lay.as.string);
@@ -37879,11 +37992,57 @@ static int datetime_parse_layout_list(const char *who, const char *text,
         return 0;
     }
     char message[512];
+    if (fault[0]) {
+        /* IT FITTED AND IS STILL NOT A DATE. Saying "does not fit any of the
+         * layouts given" would point at the layout list, which is the one part
+         * of the call that is right -- and a LIST is where that is least
+         * affordable, since the reason to write one is that the author does not
+         * know which shape the data takes, so "none fit" is an answer they
+         * expect to have to act on. */
+        if (layouts > 1) {
+            /* WITH SEVERAL LAYOUTS THE READING HAS TO BE NAMED. `02/30/2026`
+             * under `DD/MM/YYYY` faults with "a month is 1 to 12, not 30",
+             * which is true of that reading and reads like nonsense to an
+             * author who never wrote a month 30 -- so the layout that produced
+             * it is said out loud. With ONE layout there is nothing to
+             * disambiguate and the extra clause is noise. */
+            snprintf(message, sizeof(message),
+                     "`%.48s` is not a real date under any of the %d layouts"
+                     " given to `{%s}` -- read as \"%s\", %s",
+                     text, layouts, who, fault_layout, fault);
+        } else {
+            snprintf(message, sizeof(message),
+                     "`%.48s` is not a real date -- %s", text, fault);
+        }
+    } else {
     snprintf(message, sizeof(message),
              "`%s` does not fit any of the layouts given to `{%s}`: %s",
              text, who, tried);
+    }
     runtime_error_raise(message, 1003, "datetime");
     return 0;
+}
+
+/* THE REFUSAL NAMES THE SUBJECT AND THE CAUSE when the text was shaped like a
+ * date and broke a calendar rule, and keeps the old generic sentence when the
+ * text is simply not a date. Both halves matter: the specific message is the
+ * fix, and the generic one surviving is the CONTROL -- without it "name the
+ * cause" is satisfied by a build that blames the calendar for every string that
+ * will not parse.
+ *
+ * The subject is bounded at 48 characters because it is caller data of any
+ * length and the point is to identify it, not to reprint it. */
+static void datetime_raise_parse_failure(const char *who, const char *noun,
+                                         const char *text, const char *why) {
+    char message[256];
+    if (why && why[0]) {
+        snprintf(message, sizeof(message), "`%.48s` is not a real %s -- %s",
+                 text ? text : "", noun, why);
+    } else {
+        snprintf(message, sizeof(message),
+                 "%s modifier expects an ISO-like %s string", who, noun);
+    }
+    runtime_error_raise(message, 1003, "datetime");
 }
 
 static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
@@ -38040,10 +38199,19 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
     }
     if (!modifier.library && strcmp(modifier.name, "date") == 0) {
         DateTime datetime;
-        if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
+        char why[128] = {0};
+        if (value.kind != VALUE_STRING ||
+            !parse_date_value_why(value.as.string, &datetime, why, sizeof why)) {
+            /* THE SUBJECT IS COPIED BEFORE THE VALUE IS FREED. Pointing
+             * at `value.as.string` and then freeing `value` is a
+             * use-after-free that would print whatever the allocator left
+             * behind -- plausible text, in a diagnostic. */
+            char subject[64] = {0};
+            if (value.kind == VALUE_STRING) {
+                snprintf(subject, sizeof subject, "%s", value.as.string);
+            }
             value_free(value);
-            runtime_error_raise("date modifier expects an ISO-like date string",
-                                1003, "datetime");
+            datetime_raise_parse_failure("date", "date", subject, why);
             return value_null();
         }
         value_free(value);
@@ -38075,10 +38243,19 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
     }
     if (!modifier.library && strcmp(modifier.name, "time") == 0) {
         DateTime datetime;
-        if (value.kind != VALUE_STRING || !parse_time_value(value.as.string, &datetime)) {
+        char why[128] = {0};
+        if (value.kind != VALUE_STRING ||
+            !parse_time_value_why(value.as.string, &datetime, why, sizeof why)) {
+            /* THE SUBJECT IS COPIED BEFORE THE VALUE IS FREED. Pointing
+             * at `value.as.string` and then freeing `value` is a
+             * use-after-free that would print whatever the allocator left
+             * behind -- plausible text, in a diagnostic. */
+            char subject[64] = {0};
+            if (value.kind == VALUE_STRING) {
+                snprintf(subject, sizeof subject, "%s", value.as.string);
+            }
             value_free(value);
-            runtime_error_raise("time modifier expects an ISO-like time string",
-                                1003, "datetime");
+            datetime_raise_parse_failure("time", "time", subject, why);
             return value_null();
         }
         value_free(value);
@@ -38114,10 +38291,19 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
          * string fills 00:00:00 (distinguishing it from precision-inferring
          * `date`). Matches the value `now()` produces. */
         DateTime datetime;
-        if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
+        char why[128] = {0};
+        if (value.kind != VALUE_STRING ||
+            !parse_date_value_why(value.as.string, &datetime, why, sizeof why)) {
+            /* THE SUBJECT IS COPIED BEFORE THE VALUE IS FREED. Pointing
+             * at `value.as.string` and then freeing `value` is a
+             * use-after-free that would print whatever the allocator left
+             * behind -- plausible text, in a diagnostic. */
+            char subject[64] = {0};
+            if (value.kind == VALUE_STRING) {
+                snprintf(subject, sizeof subject, "%s", value.as.string);
+            }
             value_free(value);
-            runtime_error_raise("datetime modifier expects an ISO-like date-time string",
-                                1003, "datetime");
+            datetime_raise_parse_failure("datetime", "date-time", subject, why);
             return value_null();
         }
         datetime.precision = PREC_SECOND;

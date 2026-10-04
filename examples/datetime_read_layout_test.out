@@ -54,3 +54,17 @@ ok   {datetime} ISO and Z
 ok   {time} ISO           
 ok   read then render     
 ok   and the long way     
+
+-- THE REFUSAL NAMES THE CAUSE, AND ONLY WHEN THERE IS ONE TO NAME
+ok   CONTROL malformed    
+ok   CONTROL malformed time
+ok   CONTROL layout no fit
+ok   month out of range   
+ok   hour out of range    
+ok   minute out of range  
+ok   second out of range  
+ok   {datetime} says date-time
+ok   wrong day name       
+ok   list names the reading
+ok   CONTROL list still works
+ok   one layout, no clause
