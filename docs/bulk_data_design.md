@@ -105,6 +105,191 @@ all 45 filter loops. That is why the comprehension question in §5 is priced
 
 ---
 
+## 2a. What an aggregate does with an absence — SQL's answer, and its warning
+
+§2's projection is only useful if `sum(rows.amount)` survives a ragged row, and
+real business data *is* ragged. Matthew's question was whether `unknown` is meant
+to behave like SQL's `NULL` here, and whether a **warning** makes more sense
+than an error.
+
+**SQL's answer is more designed than it first looks**, and it is a standard
+rather than a convention:
+
+```sql
+-- values {10, NULL, 7}
+SUM(col)    → 17      -- NULLs ignored
+AVG(col)    → 8.5     -- 17 / 2, divided by the NON-NULL count
+MIN / MAX   → ignore NULLs
+COUNT(col)  → 2       -- non-NULLs
+COUNT(*)    → 3       -- rows
+SUM over all-NULLs → NULL, not 0
+```
+
+**And the SQL standard raises a warning for exactly this**: SQLSTATE `01003`,
+*"null value eliminated in set function"* — class `01` being the warning class.
+Some engines emit it; PostgreSQL does not. So "skip them, and say you did" is
+the designed answer, and Matthew's instinct matches the standard.
+
+### Why a warning works here, when the same shape failed this morning
+
+The absence-coercion warning was **recommended and then withdrawn** on
+2026-10-03 (see `DOGFOOD.md`) because it fired on correct code at **8 sites of
+10**: showing that something is absent is an *idiom*, and
+`print("find(zz)=" + find(f, "zz"))` is indistinguishable from the bug.
+
+**There is no counterpart here.** Nobody writes `sum(rows.amount)` *in order to*
+skip nulls — you write it because you want the total, and if a row has no amount
+you want to know. So the expected false-positive rate is near zero, which is
+row 9's bar in `warning_model_design.md` (shipped at 0) rather than row 7's
+(reverted at 2).
+
+That also answers §2's own steward worry: **silent** skipping is the dangerous
+thing. Skipping *with a warning* is not silent, and `on warning stop` turns it
+into a failure for a test run while production keeps the ergonomics.
+
+### Today's behaviour is the strictest possible
+
+```
+sum([10, unknown, 7])   → RAISES "sum expects a numeric array"
+sum([10, nothing, 7])   → RAISES
+mean / max / median     → RAISE
+count([10, unknown, 7]) → 3           (SQL's COUNT(*))
+sum([])                 → RAISES "non-empty array"
+```
+
+So SQL semantics would be a **loosening**, which is exactly why it must not be
+a quiet one.
+
+### Four details where the wrong choice would be silent
+
+1. **`mean`'s denominator.** SQL divides by the *non-null* count. Skip the nulls
+   and divide by the full count and every average is silently too low. Assert
+   it; do not assume it.
+2. **All-absent is `unknown`, not 0.** "There was nothing to add" is not "the
+   total is zero." This collides with an existing decision — `sum([])` *raises*
+   today — so gBASIC would have `sum([])` raise while `sum([unknown, unknown])`
+   answers `unknown`. Defensible (an empty list is a programming mistake;
+   all-absent is a data fact) but decide it rather than inherit it.
+3. **`count` has one meaning where SQL has two.** `count([10, unknown, 7])` is 3
+   today, which is `COUNT(*)`; SQL's `COUNT(amount)` is 2. Keep `count` as
+   length and add a separate way to ask for present values, because silently
+   changing `count` moves existing answers.
+4. **gBASIC has two absences and SQL has one.** `unknown` is the close match for
+   `NULL` — *nobody knows*. `nothing` is the program's own data saying there is
+   no value. Treating them the same in an aggregate is probably right, because
+   the distinction does not help here and two rules are a trap people hit once a
+   year — but it is a real question.
+
+**Recommendation: skip, and warn.** SQL's semantics with SQL's warning. It is a
+documented standard, the false-positive argument that killed the other warning
+does not apply, and it is what makes the projection useful rather than refusing
+on the first ragged row.
+
+---
+
+## 2b. `median` and `mode` — and two defects `mode` has today
+
+Both are **builtins already**, along with `percentile`, `quantile`, `stdev` and
+`variance`. The absence rule above applies to them unchanged: skip, warn, and
+all-absent answers `unknown`.
+
+`median` needs nothing else. Measured, it already takes the statistical
+convention on an even count — `median([4,1,2,3])` is **2.5**, the mean of the two
+middle values — which is the right default and worth pinning rather than leaving
+to be rediscovered.
+
+**`mode` has two defects, both present today and neither about absences.**
+Measured:
+
+| | answers | should be |
+|---|---|---|
+| `mode([1,1,2,2])` | **1** | a tie: two values are equally the mode |
+| `mode([2,2,1,1])` | **2** | — and it is **source order**, not the lowest |
+| `mode([1,2,3])` | **1** | there is **no mode**; nothing repeats |
+| `mode([19.95, 32.50, 7.00, 4.25, 88.00])` | **19.95** | no mode |
+
+That last row is the sharp one. **On continuous data — money, measurements, any
+real price list — every value is unique, so `mode` always returns the first
+element and always looks like an answer.** Nobody downstream can tell it from a
+real mode, and the answer depends on how the data happened to be sorted.
+
+This is the silent-wrong-answer class in a shipped builtin, and it matches a
+known wart in SQL:2003, whose `MODE()` is *implementation-defined* on ties. This
+project's bar is higher: it refuses rather than guesses.
+
+Three things to decide:
+
+- **A tie should be reported, not resolved.** Either return every tied value (an
+  array, which makes `mode` the only aggregate that answers a list) or refuse
+  by name. Returning one of them because it came first is the thing to stop.
+- **No repeats means no mode** — `unknown`, not the first element.
+- **`mode` refuses text today** (`mode expects a numeric array`), which is the
+  one aggregate where text is the *common* case: the most frequent category,
+  city, or status code. Numeric-only makes it nearly useless for the data people
+  actually have.
+
+### "What is most typical?" — and why the midpoint of a tie is not it
+
+The ordinary intuition about `mode` is better than the textbook definition: it
+is *the most typical value*, which is a question businesses ask constantly and
+almost never ask of `mode`. Two proposals for resolving its ambiguities were
+measured rather than reasoned about, and one of them is unsound.
+
+**A tie may not be resolved to the value between the modes.** Measured on
+`[10, 10, 10, 100, 100, 100]` — a cheap line and a premium line, which is an
+ordinary shape and not a contrived one:
+
+| | |
+|---|---|
+| the two modes | 10 and 100 |
+| the value between them | 55 |
+| times 55 occurs in the data | **0** |
+
+So "the most typical sale is 55" is false in the strongest way available: 55 is
+the **rarest** price in that list. The midpoint of two modes is a fact about the
+modes, not about the data, and nothing bounds how far it sits from any value
+that occurred. The rule is sound only while the two modes are *adjacent*
+(`[1,1,2,2]` → 1.5 at least lies between two values that both occurred), and a
+rule that holds only when the answer barely matters is not a rule. The type is
+not the discriminator either — the separation of the modes is — so "integers but
+not reals" would not rescue it.
+
+**The "drop down on ambiguity" instinct is binning, and binning is correct.**
+Measured on `[19.95, 19.99, 20.05, 21.00, 19.95]`:
+
+| | mode |
+|---|---|
+| raw | 19.95 — a one-vote margin, i.e. noise |
+| rounded to the dollar | **20** |
+
+"About $20" is what a person means by the typical price. That is the statistical
+**modal class**: the ambiguity is not resolved by dropping to a lesser answer,
+it is resolved by *widening the bucket until the question has one*. It is also
+the whole reason `mode` is unused in business — raw business data is continuous,
+mode on continuous data is meaningless, and every tool answers anyway.
+
+So the three honest answers, none of which invents a value:
+
+- **Report every tied mode** — an array. `mode([10,10,100,100])` → `[10, 100]`.
+  Bimodal *is* the answer; collapsing it hides that there are two products.
+- **Report the mode with its frequency** — `{value:, count:, of:}`. Two of five
+  is not typicality, and a bare `19.95` cannot say so. This is the field that
+  makes the continuous case report its own weakness instead of concealing it.
+- **Bin with the granularity declared, and carried in the answer** —
+  `mode(prices, {to: 1.00})` → 20, following the rule `reasoning.finding`
+  already follows: the choice that shapes an answer travels with it. A guessed
+  bin width is the same error as a guessed midpoint.
+
+`mode([1,2,3])` is `unknown`. Nothing repeats, so there is no most typical
+value, and that one needs no argument.
+
+`mode` is used **nowhere** in `stdlib/`, `examples/` or `tests/`, and is
+documented in a single line, so this is latent rather than burning. Recorded in
+`DOGFOOD.md` as well, because a wrong answer in a shipped builtin belongs in the
+ledger and not only in a proposal.
+
+---
+
 ## 3. Sorting
 
 **`sort` refuses records outright** — `sort supports only scalar array values`.

@@ -16,6 +16,22 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+Nothing yet.
+
+---
+
+## 0.5.0 — 2026-10-03
+
+**Read this first.** One change **refuses input that used to be accepted and
+was silently wrong** — a date that does not exist — and two more refuse things
+that were being quietly *ignored*. One changes a result (`chars`). **Twelve
+diagnostics say something different**: one sentence, the **nine** module
+dispatchers that each held their own copy of it, and the two actor frame-limit
+messages — so anything quoting a message verbatim has to re-capture it. The
+language additions are a **date layout notation** used for both rendering and
+parsing, **modifier chaining** with `;`, and **every modifier shape working
+inline**.
+
 **It fixes a date that did not exist:**
 
 - **A day is checked against its month.** `valid_date_parts` validated the day
@@ -38,6 +54,18 @@ reader sees.
   now agrees with `len(read(f))`, which was correct all along. **A program that
   compensated for the old number will now be off**; one that trusted the name
   is now right.
+
+- **`fundamentals` no longer builds a grouping key out of an absence.** EDGAR
+  omits the fiscal period on some facts — measured 59 of 4,096 rows in
+  `fundamentals_derived_test` — and `fp` reached the composite keys at `_dedup`
+  and `_pk` through string concatenation, so a period key read
+  `2023-12-31|nothing`. It grouped correctly *by accident*, every absent `fp`
+  rendering the same way, and **no golden moved**, which is what says the
+  grouping was already right and only its basis was unstated. `fp` is now
+  defaulted to `""` the way the neighbouring `start` already was, so a row with
+  no fiscal period reports **`""` where it used to report `unknown`** — the one
+  visible consequence, and it is in the direction the field was already being
+  used. Found by instrumenting `+` to count absence coercions tree-wide.
 
 **It accepts input it used to refuse:**
 
@@ -107,7 +135,14 @@ reader sees.
   comparison lens and `a {trimmed}= b` was refused outright. A lens that
   *answers* the comparison (`caseless`, or one declared `for compare`) must be
   the last stage. **A stage must be a pure function of its input**, because it
-  is applied to each operand separately.
+  is applied to each operand separately — a stage that answers differently each
+  call makes **equal values compare unequal**, and nothing can detect it.
+  **A lens is not free**: a comparison runs each stage once per operand, so a
+  three-stage chain is **six** invocations of your code where the assignment
+  form is three. The order is **stage-major** (`A(left) A(right) B(left)
+  B(right)`), chosen so the two calls to one stage are adjacent — a stage that
+  reads a clock or a counter sees both operands as nearly together as possible.
+  It is unobservable from a correct program, which is why it is pinned.
 - **A modifier name may no longer contain `;`.** Measured: nothing in `stdlib`,
   `examples` or `tests` declared one, so the affected set is believed empty.
 - **`{ … }` in expression position is read as a modifier when it cannot be a
@@ -178,6 +213,33 @@ to re-capture it:
   measured across every program in the tree the coercion happens at ten places
   and **eight are the idiom for showing that something is absent**. Use
   `default(owed, "n/a")`; the reference now says so beside it.
+
+**For anyone quoting the reference** — four corrections, each verified against
+the binary before the page was edited:
+
+- **`mid(s, i, 1)` is not O(i), and a per-character scan is not quadratic.**
+  PLAT-STRIDX removed both costs and the page was never updated, so it went on
+  telling readers to avoid what had become fast — and a reader who believes
+  `mid` is O(i) rewrites a linear loop into something worse. Measured: `mid` is
+  **flat** in the index (ratio 1.09 across a 4x string where O(i) would be ~4)
+  and a scan is **linear** (0.058 / 0.114 / 0.229 / 0.461 across 2x steps). The
+  quoted timings were never in dispute and are kept; it is the *reason* that was
+  wrong, and the likeliest real cause — accumulating with `+` inside the scan —
+  is separately measured and genuinely quadratic, so the page points there now.
+  The advice itself is unchanged.
+- **Three of the four lines in the "Modifier use" block did not run.**
+  `{caseless}` is a comparison lens and raises as one; `rounded` named a
+  modifier that exists nowhere. Replaced with three that run.
+- **`spawn` arguments are parameters, not a first message.** The old sentence
+  described the transport rather than the program: a child gets them as
+  parameters, a following `receive(1 seconds)` answers `nothing`, and arity is
+  checked, so a zero-parameter entry refuses outright.
+- **`type` answers for 27 kinds; the page listed 7.** The full list is now
+  there and a tripwire derives it from `builtin_type_name` in `src/eval.c`, both
+  directions, so it cannot drift again. Added with it: `error.trace`'s `line` is
+  the **call site**, not the raise site, and the strict conversions are
+  deliberately stricter than the operators — `1 = true` is true and `1 > false`
+  orders, while `number(true)` and `boolean(1)` raise.
 
 **For anyone running the test tree:**
 

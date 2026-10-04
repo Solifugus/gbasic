@@ -728,6 +728,26 @@ and the stale-looking ones carry a Status line saying what overtook them.
     by reading. Fixed with a version shim whose fallback keeps the restriction
     rather than dropping it; guarded by `tests/run_libcurl_floor.sh`.
 
+49. **`mode()` answers the FIRST ELEMENT when there is no mode.** `mode([1,2,3])`
+    is `1`, `mode([9,8,7])` is `9`, and `mode([19.95, 32.50, 7.00])` is `19.95`
+    — so **on continuous data, where every value is unique, `mode` always
+    returns the first element and always looks like an answer**, with the result
+    depending on how the data happened to be sorted. A tie is resolved the same
+    way: `mode([1,1,2,2])` is `1` and `mode([2,2,1,1])` is `2`, i.e. source
+    order rather than a reported tie. Silent-wrong-answer class — a plausible
+    number, no diagnostic, exit 0 — and it matches a known wart in SQL:2003,
+    whose `MODE()` is *implementation-defined* on ties, where this project
+    refuses rather than guesses everywhere else. **Not fixed deliberately**:
+    `mode` is used nowhere in `stdlib/`, `examples/` or `tests/` and is
+    documented in one line, so nothing is burning, and a behaviour change to a
+    documented builtin belongs in the next release rather than in a tag already
+    measured. The fix has to decide three things (report every tied value rather
+    than picking one; `unknown` when nothing repeats; and accept TEXT, which is
+    the one aggregate where text is the *common* case). One proposal was measured
+    and **refused** — resolving a tie to the value between the modes, which on
+    `[10,10,10,100,100,100]` names 55, a value occurring **zero** times. Full
+    argument in `docs/bulk_data_design.md` §2b.
+
 ### Open — accepted as documented limitations (no action planned)
 
 **Every live bullet below is EXECUTABLE.** `tests/run_limitations.sh` runs one
@@ -10750,3 +10770,69 @@ loses its guard, and the scan broken so it matches nothing.
 in the tree runs the files whose job is to touch the outside world.** Any future
 instrumentation pass excludes the recorders, and anything else that spends money,
 writes outside a scratch directory, or talks to a network.
+
+---
+
+
+## `mode()` answers the FIRST ELEMENT when there is no mode, 2026-10-03
+
+Found while answering Matthew's question about how `median` and `mode` should
+treat an absence. The absence question turned out to be the smaller one.
+
+**`mode` is a builtin and it returns a confidently wrong answer on data that
+does not repeat.** Measured:
+
+| | answers | should be |
+|---|---|---|
+| `mode([1,2,3])` | **1** | there is **no mode** |
+| `mode([9,8,7])` | **9** | — and it is the FIRST element, so the answer depends on input order |
+| `mode([19.95, 32.50, 7.00, 4.25, 88.00])` | **19.95** | no mode |
+| `mode([1,1,2,2])` | **1** | a tie — two values are equally the mode |
+| `mode([2,2,1,1])` | **2** | — source order again, not the lowest |
+
+**The third row is the one that matters.** On continuous data — money,
+measurements, any real price list — every value is unique, so **`mode` always
+returns the first element and always looks like an answer.** Nothing downstream
+can tell it from a real mode, and the result depends on how the data happened to
+be sorted.
+
+This is the silent-wrong-answer class: a plausible number, no diagnostic, exit
+0. It matches a known wart in SQL:2003, whose `MODE()` is
+*implementation-defined* on ties — and this project's bar is higher, since it
+refuses rather than guesses everywhere else.
+
+**NOT FIXED YET, deliberately, and here is the accounting.** `mode` is used
+**nowhere** in `stdlib/`, `examples/` or `tests/` and is documented in a single
+line of `docs/reference.md`, so nothing is being burned today; and 0.5.0 is
+prepared bar the tag, so a behaviour change to a documented builtin belongs in
+the next release rather than in a tag that is already measured. Recorded here
+rather than only in `docs/bulk_data_design.md` §2b because a wrong answer in a
+shipped builtin belongs in the ledger, where somebody hitting it will look.
+
+**What the fix needs to decide**, from §2b:
+
+- **A tie is reported, not resolved** — return every tied value, or refuse by
+  name. Returning one because it came first is the thing to stop.
+- **No repeats means no mode** — `unknown`, not the first element.
+- **`mode` refuses text today**, which is the one aggregate where text is the
+  *common* case: the most frequent category, city or status code. Numeric-only
+  makes it close to useless for the data people actually have.
+
+`median` needs none of this: measured, it already takes the statistical
+convention on an even count (`median([4,1,2,3])` is 2.5, the mean of the two
+middle values), which is right and is now pinned in §2b rather than left to be
+rediscovered.
+
+**One proposal was measured and refused**, and it is worth recording because it
+is the natural first idea: resolving a tie to *the value between the two modes*.
+On `[10, 10, 10, 100, 100, 100]` — a cheap line and a premium line, an ordinary
+business shape — the midpoint is 55, and **55 occurs in that data zero times**.
+So the "most typical" sale would be reported as the single rarest value present.
+The midpoint of two modes is a fact about the modes, not about the data. What the
+instinct behind it is actually reaching for is **binning**: on
+`[19.95, 19.99, 20.05, 21.00, 19.95]` the raw mode is 19.95 by a one-vote margin
+(noise), and rounded to the dollar the mode is **20** — "about $20", which is
+what a person means by a typical price, and which is the statistical *modal
+class*. That is why `mode` is near-useless on raw business data and why the
+remedy is a declared bin carried in the answer rather than a resolved tie. Full
+argument in `docs/bulk_data_design.md` §2b.

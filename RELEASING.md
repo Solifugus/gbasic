@@ -57,6 +57,21 @@ six; the gates catch a miss:
 
 A half-bumped tree cannot ship. That is the point of three independent checks.
 
+**One version string in that list is NOT the release and must not move with
+it.** `book_version()` in `examples/gbasic_site/site.bas` is the release **the
+paperback was written against** — the page's own prose promises that archive
+stays downloadable, and the checksum is printed on paper where it cannot be
+corrected afterwards. The docs gate's check reads `version: "…"` and therefore
+does not see it, which is deliberate; what that means in practice is that a
+blanket `sed -i s/0.4.0/0.5.0/g` over the tree would pass every gate and break a
+printed promise. **Bump the six by name, never by sweep** — the same correction
+this file already carries for the blanket `rm` in step 7, and for the same
+reason: the convenient command and the promise disagree, and the command wins.
+
+`site.bas` holds **two** version strings for that reason: the release
+(`version:`, guarded) and the book's pin (`book_version()`, which only changes
+when a new edition is pinned, and that is not a release decision).
+
 ## 3. Commit, then tag
 
 ```sh

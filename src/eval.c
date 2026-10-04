@@ -35774,7 +35774,15 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
                 (!stage->library && modifier_is(stage->name, "caseless"));
             if (terminal) {
                 if (stage->next) {
-                    char message[256];
+                    /* 512 LIKE `modifier_raise_assign_not_found_at`, NOT 256
+                     * LIKE THE OTHER FOUR SITES IN THIS FAMILY: this is the
+                     * longest sentence of the five, and at 256 the compiler
+                     * said so -- `snprintf` output between 129 and 297 bytes
+                     * into a destination of size 256. A truncation here would
+                     * cut the clause that NAMES THE REMEDY ("it is stage N and
+                     * something follows it"), leaving a message that states the
+                     * rule and not what to do about it. */
+                    char message[512];
                     char label[160];
                     modifier_use_label(*stage, label, sizeof(label));
                     snprintf(message, sizeof(message),
