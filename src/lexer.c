@@ -565,6 +565,24 @@ Token lexer_next(Lexer *lexer) {
         return make_token(lexer, TOKEN_OP_GT, start, line, column);
     case '<':
         if (match(lexer, '=')) return make_token(lexer, TOKEN_OP_LE, start, line, column);
+        /* `<>` IS NOT A TYPO, IT IS WHAT THE READER LEARNED. It is not-equal in
+         * QBasic, VB and every BASIC a reader of this one arrives from, so it
+         * belongs with the `\` `^` `%` `&` family below rather than being left
+         * to the grammar -- which lexed it as `<` then `>` and reported
+         * `unexpected OP_GT`, naming the SECOND HALF of the operator and never
+         * mentioning `!=`.
+         *
+         * Reported by the gbasic-book session (2026-10-04) as an aside while
+         * revising the chapter that had complained the `^`/`%` refusals named
+         * neither the character typed nor the thing to type instead -- those
+         * two had since been written and this one had not. Found by sweeping
+         * the rest of what a QBasic reader types, which is also how `let` and
+         * `rem` below were found. */
+        if (peek(lexer) == '>') {
+            advance(lexer);
+            return error_token_message(lexer, start, line, column,
+                                       "'<>' is not an operator; not-equal is != -- a != b");
+        }
         return make_token(lexer, TOKEN_OP_LT, start, line, column);
     case '+':
         if (match(lexer, '=')) return make_token(lexer, TOKEN_PLUS_EQ, start, line, column);

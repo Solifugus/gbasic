@@ -89,8 +89,16 @@ the standing ones.
 
 ## Operators and lexical
 
-- **Not-equal is `!=`, not `<>`.** `<>` is a parse error. The family
-  `!>`, `!<`, `!>=`, `!<=` also exists.
+- **Not-equal is `!=`, not `<>`.** `<>` is refused, and since 0.5.1 the refusal
+  says so: `'<>' is not an operator; not-equal is != -- a != b`. Before that it
+  lexed as `<` then `>` and reported `unexpected OP_GT`, naming the second half
+  of the operator and never mentioning `!=`. The family `!>`, `!<`, `!>=`,
+  `!<=` also exists.
+- **`let` and `rem` are not statements**, and both are refused by name since
+  0.5.1 — they used to parse as the start of a CALL, so the error said
+  `expecting LPAREN` and told you to add a parenthesis, which cannot help.
+  Assign directly (`x = 1`); a comment is `'` to the end of the line. Neither
+  word is RESERVED, so `let` remains a legal name for your own function.
 - **`mod(a, b)` exists** (0.1.0-rc7), and it is **FLOORED** — the result takes
   the sign of the DIVISOR, so `mod(-7, 3)` is `2`, not `-1`. **That differs
   from QBasic's `MOD`**, which truncates. Floored was chosen because it is what
@@ -670,6 +678,6 @@ gBASIC function now warns, because a function cannot change its caller — so
 
 Negative knowledge in one line each — feature you expect → gBASIC instead:
 numeric `for` → `for each`; `<>` → `!=`; `a % b` → `mod(a, b)` (floored);
-`&` → `+`; `rem`/`//` → `'`; `dim x` → just assign; `s[i]` → `mid(s,i,1)`;
+`&` → `+`; `rem`/`//` → `'`; `let x = 1` → `x = 1`; `dim x` → just assign; `s[i]` → `mid(s,i,1)`;
 `print a, b` → `print(string(a)+" "+string(b))`; exception catch → `on error goto next` + `if error then`;
 `print #f` / stderr redirect → `print to error x`.

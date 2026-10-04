@@ -6312,6 +6312,75 @@ static const char *syntax_error_reserved_word(gb_parse_ctx *ctx, const char *mes
     return NULL;
 }
 
+/* THE CLASSIC-BASIC STATEMENT WORDS THAT ARE NOT RESERVED, AND MUST NOT BE.
+ *
+ * `dim` has had a sentence since the beginning; `let` and `rem` did not, which
+ * is what makes it an inconsistency rather than a policy -- the same shape as
+ * nine module dispatchers each holding their own copy of one format. Measured
+ * 2026-10-04 by sweeping what a QBasic reader types: `MOD`, `&` and `dim` each
+ * name a remedy, while `<>`, `let` and `rem` gave a bare syntax error.
+ *
+ * AND THE TWO HERE WERE WORSE THAN TERSE, THEY MISDIRECTED. `let x = 1` and
+ * `rem a note` parse as the beginning of a CALL, so bison reported `expecting
+ * LPAREN` -- telling a beginner to add a parenthesis, which is the one change
+ * that cannot help. Reports-the-wrong-cause, in a beginner's path, for the word
+ * every BASIC book opens with.
+ *
+ * A MESSAGE, NOT A KEYWORD, which is the rule `sub` already set above: `let`
+ * and `rem` are ordinary identifiers and reserving them would break any program
+ * that uses one as a name. So the SOURCE is asked, read-only and after the
+ * parse is already over, exactly as the statement-initial reserved-word rule
+ * does one function up -- here by walking back to the start of the error's own
+ * line, since `let` sits two tokens behind the `=` the parser tripped on and
+ * the ctx carries only one.
+ *
+ * `(` IS THE DISCRIMINATOR: a program may legitimately define `function
+ * let(x)`, and a syntax error INSIDE such a call must not be answered with
+ * advice about a statement the author did not write. */
+static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
+    if (!ctx->tok_after || !ctx->active_lexer || !ctx->active_lexer->source) {
+        return NULL;
+    }
+    const char *base = ctx->active_lexer->source;
+    const char *p = ctx->tok_after;
+    if (p < base) {
+        return NULL;
+    }
+    while (p > base && p[-1] != '\n') {
+        p--;
+    }
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    const char *w = p;
+    while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) {
+        p++;
+    }
+    size_t n = (size_t)(p - w);
+    if (n != 3) {
+        return NULL;
+    }
+    char word[4];
+    for (size_t i = 0; i < 3; i++) {
+        char c = w[i];
+        word[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    }
+    word[3] = '\0';
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (*p == '(') {
+        return NULL;       /* a call, not a classic-BASIC statement */
+    }
+    if (strcmp(word, "let") == 0) {
+        return "`let` is not a gBASIC statement; assign directly (x = 1)";
+    }
+    if (strcmp(word, "rem") == 0) {
+        return "`rem` is not a gBASIC comment; a comment starts with ' and runs to the end of the line";
+    }
+    return NULL;
+}
+
 static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                                 int end_line, int end_column, const char *message) {
     if (ctx->lexer_error_reported) {
@@ -6329,6 +6398,14 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
         end_column = column + (int)strlen(ctx->bad_block_word);
         message = block_message;
         ctx->bad_block_word[0] = '\0';
+    }
+    /* A CLASSIC-BASIC STATEMENT WORD REPLACES the message rather than appending
+     * to it, unlike the reserved-word note: bison's own sentence here is about
+     * a parenthesis it wanted, which is the wrong advice entirely, so carrying
+     * it alongside would leave the misdirection in place beside the fix. */
+    const char *basic_word = syntax_error_basic_word(ctx);
+    if (basic_word) {
+        message = basic_word;
     }
     char reworded[512];
     const char *reserved = syntax_error_reserved_word(ctx, message);

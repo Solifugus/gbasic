@@ -20,6 +20,44 @@ Nothing yet.
 
 ---
 
+## 0.5.1 — 2026-10-04
+
+**Read this first.** A patch release, and every change is a **diagnostic** — no
+behaviour moves, nothing that ran stops running. Three messages a reader
+arriving from QBasic meets first now name what to write instead, and two of them
+had been giving advice that could not help.
+
+**Three diagnostics a reader arriving from QBasic meets first:**
+
+- **`<>` says what to write instead.** It is not-equal in QBasic and VB, so it
+  is not a typo — it is what the reader learned — and it lexed as `<` then `>`
+  and reported `syntax error, unexpected OP_GT`, naming the **second half** of
+  the operator and never mentioning `!=`. Now:
+  `'<>' is not an operator; not-equal is != -- a != b`.
+- **`let` and `rem` are refused by name**, and the old messages were worse than
+  terse — they **misdirected**. Both parse as the beginning of a *call*, so
+  bison reported `expecting LPAREN`, telling a beginner to add a parenthesis,
+  which is the one change that cannot help. Now `` `let` is not a gBASIC
+  statement; assign directly (x = 1) `` and `` `rem` is not a gBASIC comment; a
+  comment starts with ' and runs to the end of the line ``.
+- **Neither word is reserved**, and must not be: `let` stays a legal name for
+  your own function, which is the rule `sub` already set. The source is asked
+  on the error path instead, read-only and after the parse is over — and `(` is
+  the discriminator, so a syntax error *inside* a call you really wrote keeps
+  bison's own sentence.
+
+`dim`, `MOD` and `&` already named a remedy and these three did not, which is
+what made it an inconsistency rather than a policy — the same shape as nine
+module dispatchers each holding their own copy of one format. **Reported by the
+book session as an aside** while revising the chapter that had complained the
+`^`/`%` refusals "name neither the character you typed nor the thing to type
+instead": 0.5.0 names both, so the complaint was deleted, and writing the
+replacement surfaced that `<>` had no sentence. Sweeping the rest of what a
+QBasic reader types found the other two. `docs/ai/UNLEARN.md` had all three
+right all along, so the page was correct and only the binary was unhelpful.
+
+---
+
 ## 0.5.0 — 2026-10-03
 
 **Read this first.** One change **refuses input that used to be accepted and

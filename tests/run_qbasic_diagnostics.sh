@@ -84,6 +84,37 @@ want 'caret'         'print 2 ^ 3'        'exponentiation is pow(a, b)'
 want 'percent op'    'print 7 % 3'        'the remainder is mod(a, b)'
 want 'ampersand'     'print "a" & "b"'    'does not join text; use +'
 
+echo "--- TIER 1b: the three the first sweep missed (2026-10-04) ---"
+# REPORTED BY THE BOOK, AS AN ASIDE. The Core Language session was revising the
+# chapter that had complained the `^`/`%` refusals "name neither the character
+# you typed nor the thing to type instead" -- 0.5.0 names both, so the complaint
+# was deleted, and in writing the replacement they noticed `<>` had no sentence.
+# Sweeping the rest of what a QBasic reader types found two more, so the aside
+# was worth more than the chapter edit.
+#
+# `<>` IS NOT A TYPO, IT IS WHAT THE READER LEARNED: it is not-equal in QBasic
+# and VB, so it is the likeliest of all of these to be typed, and it lexed as
+# `<` then `>` and reported `unexpected OP_GT` -- naming the SECOND HALF of the
+# operator and never mentioning `!=`.
+#
+# AND `let`/`rem` WERE WORSE THAN TERSE, THEY MISDIRECTED: both parse as the
+# start of a CALL, so bison said `expecting LPAREN`, telling a beginner to add a
+# parenthesis -- the one change that cannot help. `dim` has had a sentence since
+# the beginning and these did not, which is what makes it an inconsistency
+# rather than a policy.
+want 'angle not-equal'  'print 1 <> 2'    "'<>' is not an operator; not-equal is !="
+want 'let statement'    'let x = 1'       '`let` is not a gBASIC statement'
+want 'rem comment'      'rem a comment'   '`rem` is not a gBASIC comment'
+# Case-insensitive, because the reader's own book prints them in capitals.
+want 'LET capitals'     'LET x = 1'       '`let` is not a gBASIC statement'
+want 'REM capitals'     'REM a comment'   '`rem` is not a gBASIC comment'
+# And the misdirection is GONE, not merely accompanied -- asserted, because
+# appending a sentence while leaving `expecting LPAREN` in place would read as
+# two conflicting instructions.
+lacks 'let drops the paren advice'  'let x = 1'     'LPAREN'
+lacks 'rem drops the paren advice'  'rem a comment' 'LPAREN'
+lacks 'angle not-equal drops OP_GT' 'print 1 <> 2'  'OP_GT'
+
 echo "--- TIER 2: the five type sigils ---"
 for pair in 'a$ = "x":$' 'a% = 5:%' 'a! = 5:!' 'a# = 5:#' 'a& = 5:&'; do
     src="${pair%:*}"; ch="${pair##*:}"
@@ -169,6 +200,40 @@ want 'unknown unit ms'     'print 7 ms'          'unknown duration unit'
 # shl/shr are deliberately NOT in the table: gBASIC has no shift builtin, so
 # there is nothing to name. This pins that as a decision, not an oversight.
 want 'shl has no remedy'   'print 7 shl 1'       'unknown duration unit'
+# THE COMPARISON OPERATORS THAT DO EXIST must be untouched: `<>` is recognised
+# by ADJACENCY, so a build that caught `<` or `>` generally would pass the tier
+# above while breaking every comparison in the language.
+want 'less than kept'        'print 1 < 2'    'true'
+want 'greater than kept'     'print 2 > 1'    'true'
+want 'less or equal kept'    'print 1 <= 1'   'true'
+want 'greater or equal kept' 'print 2 >= 1'   'true'
+# `let` and `rem` ARE NOT RESERVED and must not become so -- the rule `sub`
+# already set. A name that merely STARTS with one is an ordinary name, which is
+# what the length check in syntax_error_basic_word buys.
+want 'letter is a name'    'letter = 5
+print letter'                                    '5'
+want 'remainder is a name' 'remainder = 5
+print remainder'                                 '5'
+want 'let as a function'   'function let(a)
+    return a + 1
+end function
+print let(2)'                                    '3'
+# THE TWO CONTROLS BELOW REPLACE TWO THAT WERE VACUOUS, and only perturbation
+# showed it -- both perturbations came back GREEN against checks written for
+# them. Worth the comment because the reason is the same reason twice: THE
+# HELPER ONLY RUNS ON A SYNTAX ERROR, and both originals were valid or
+# error-free at the point that matters.
+#
+#   `letter = 5`      is VALID, so nothing ever reaches the helper -- it proves
+#                     only that correct code still runs, which no perturbation
+#                     here can break. The real risk of widening the length test
+#                     is a SYNTAX ERROR on a line whose first word merely BEGINS
+#                     with `let`, so that is what is asserted.
+#   `print let(2 +)`  starts with `print`, so the line-first-word scan never
+#                     sees `let` at all and the `(` discriminator is not what
+#                     protects it. Only a line that BEGINS `let(` can reach it.
+lacks 'letter x = 1 is not let advice' 'letter x = 1' 'not a gBASIC statement'
+lacks 'let( as a statement is not let advice' 'let(2 +)' 'not a gBASIC statement'
 # The operators that DO exist, and the money modifier the $ message points at.
 want 'not-equal operator'  'a = 1
 b = 2
@@ -179,7 +244,8 @@ want 'exponent literal'    'print 1e20'          '1e+20'
 want 'dim still advises'   'DIM a(5)'            'assign to create a variable'
 
 echo "--- TIER 6: located, nonzero, nothing ran, and it reaches the sink ---"
-for src in 'print 7 mod 3' 'print 7 \ 2' 'print 2 ^ 3' 'a$ = "x"' 'a% = 5' 'print "a" & "b"'; do
+for src in 'print 7 mod 3' 'print 7 \ 2' 'print 2 ^ 3' 'a$ = "x"' 'a% = 5' 'print "a" & "b"' \
+           'print 1 <> 2' 'let x = 1' 'rem a comment'; do
     checks=$((checks + 1))
     printf 'print "RAN"\n%s\n' "$src" >"$tmp/p.bas"
     out="$(./gbasic "$tmp/p.bas" 2>&1)" && rc=0 || rc=$?

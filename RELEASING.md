@@ -179,6 +179,27 @@ gBASIC.
 Old artifacts are **removed, not kept**: a superseded tarball that stays live is
 precisely the file nobody should still be getting.
 
+**`pinned:` MEANS A PROMISE EXISTS, NOT "RECENT"** — and this needed saying
+because I got it wrong on 2026-10-03, the same day the rest of this section was
+written. Staging 0.5.0, I added **0.4.0** to `pinned:` on the reasoning that a
+superseded archive somebody may already be pointing at is not the file to delete
+on the day it is superseded. Defensible, and not the policy above; worse, it was
+**circular** — adding 0.4.0 to `pinned:` made that line the only place the page
+named it, which then satisfied the checker's rule that every version named be
+current-or-pinned. The pin justified itself.
+
+The test is whether **something outside this repo promises the archive**. Today
+exactly one thing does: the paperback prints 0.3.0's checksum on paper, where it
+cannot be corrected. A release that was merely current last week promises
+nothing. On that rule the list does not grow — which is the state the sentence
+above exists to protect, since on the other rule it grows by one every release
+forever.
+
+Reverted at 0.5.1 (`pinned: 0.3.0` alone, 0.4.0's and 0.5.0's artifacts
+removed). **If a grace period is wanted, it is a rule with a stated length that
+belongs here and in the checker — not a judgement made per release in a commit
+message.**
+
 ## 8. Manual tail
 
 - A GitHub Release page, if wanted — the changelog section is paste-ready.
