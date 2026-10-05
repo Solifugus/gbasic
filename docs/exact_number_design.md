@@ -22,6 +22,41 @@ returned as strings for exactly this reason. So gBASIC refuses to lose precision
 when a value crosses a driver and loses it in its own arithmetic. One of those
 two positions is wrong.
 
+## Measured: nothing in this tree loses integer precision today
+
+Instrumented at the single arithmetic site and swept across **every `.bas` in
+`examples/` and `tests/`** — 1288 programs, the two recorder fixtures excluded
+because they make live paid model calls:
+
+```
+programs run:    1288
+INTPREC events:  0
+distinct sites:  0
+coverage ok:     1288 of 1288
+```
+
+Three things follow, and the third is a warning about the evidence rather than
+about numbers:
+
+- **The change is invisible in practice.** Nothing in the tree depends on the
+  lossy behaviour and nothing currently reaches it, so exactness cannot break
+  what is here.
+- **A warning alone would fire on nothing**, which is what makes it affordable
+  and also what makes it a poor deliverable on its own: it would sit silent
+  until somebody wrote the arithmetic that needed it.
+- **THE GATE CANNOT VALIDATE THIS WORK.** A corpus that produces zero events
+  exercises none of the paths an exactness change touches, so the fixture is the
+  *only* evidence increment 1 works — the lesson `run_inbox.sh` records, that a
+  tier present in thirty-six suites measures nothing about a shape none of them
+  exercises. Every increment below therefore ships with its own cases, and
+  "the gate stayed green" is not a claim about any of them.
+
+The sweep's own first run reported `0 events` having executed **8** of those
+1288 programs, because `gbasic` reads stdin and the first fixture calling
+`input()` consumed the loop's file list. It asserts a coverage floor now. A
+probe that cannot fire is indistinguishable from one that found nothing, and
+that is the second time the same shape appeared in one evening.
+
 ## What was rejected, and what it would have cost
 
 **A new `integer` value kind.** Measured surface of the kinds added this way:
