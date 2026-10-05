@@ -1002,3 +1002,55 @@ correct and invisible to the program; docs/reference.md now says where it is.
 - the `.msix` lacks curl/libxml2/sqlite/zlib/TRE licence texts. They are
   linked statically and their notices must ship. `licenses/` has gBASIC's own
   and yescrypt's only.
+## 24. Release signing: Azure Artifact Signing (2026-10-05)
+
+**Matthew's choice, after comparing it with a purchased certificate.** The
+Basic plan is $9.99/month for 5,000 signatures. There is no hardware token, and
+the identity check is for an individual in the US.
+
+**Set up in the Azure portal by Matthew:**
+- signing account `gbasicsigning` (East US, Basic);
+- an Individual / Public identity validation, now Completed;
+- certificate profile `gbasicrelease` (Public Trust).
+
+The certificate subject, and therefore the MSIX Publisher, is
+`CN=Matthew Tedder, O=Matthew Tedder, L=Fayetteville, S=ny, C=US`. The
+lowercase `ny` is what the billing address said at validation; changing it
+means validating again.
+
+**Tooling, installed with Matthew's approval:**
+- the Azure CLI (winget);
+- the .NET 8 runtime 8.0.31 (winget), which the plug-in needs;
+- Microsoft's signtool plug-in, `Microsoft.ArtifactSigning.Client` 1.0.128.
+  `tools/fetch-signing-client.sh` unpacks it into the git-ignored `build/`,
+  PINNED by SHA-256.
+
+**`MSIX_SIGN=azure tools/build-msix.sh`:**
+- reads `packaging/msix/release-signing.env` (account, profile, Publisher;
+  nothing secret);
+- writes the plug-in's metadata with every credential source EXCEPT the Azure
+  CLI excluded, so a release is signed only as whoever ran `az login`;
+- signs `gbasic.exe` and then the package, both timestamped by Microsoft;
+- then READS THE SUBJECT BACK from the signed package, and fails unless it
+  equals the manifest Publisher and the signature is Valid.
+
+The plug-in finds `az` on PATH; `az` is
+`C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin`.
+
+**Measured:**
+- Signing takes about 2 s per file.
+- The package and the exe are Valid. The chain runs to Microsoft Identity
+  Verification Root CA 2020, which Windows trusts by default, so installing
+  needs no TrustedPeople import. The timestamp is from Microsoft Public RSA Time
+  Stamping Authority.
+- Installed: `packaging/msix/check-installed.ps1` passes 8/8 on the signed
+  package.
+- A manifest Publisher that differs from the certificate is REFUSED by signtool
+  itself, which says only "SignerSign() failed ... 0x8007000b". The build now
+  names the likely cause.
+
+**Not verified:**
+- The signed package was installed on a machine that still trusts the test
+  certificate, so this does not by itself prove a clean machine installs it.
+  The chain says one will.
+- SmartScreen's reaction to a download has not been observed.
