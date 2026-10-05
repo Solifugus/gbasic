@@ -379,6 +379,17 @@ struct Value {
         struct {
             char *name;
             char *library;
+            /* `bound(fn, ctx)`: an EXPLICITLY CAPTURED context, appended as the
+             * last argument on every call. NULL for an ordinary function value.
+             *
+             * THIS IS NOT A CLOSURE, and the difference is the reason it is
+             * affordable where a closure is not (first_class_functions_design
+             * §2). A closure captures an ENVIRONMENT implicitly and by
+             * reference, which admits reference cycles in a refcounted runtime
+             * and keeps frames alive. This captures ONE VALUE, named at the
+             * bind site and COPIED -- and a gBASIC record is a value, so
+             * nothing cyclic is constructible. */
+            Value *context;
         } function;
     } as;
 };
@@ -1846,6 +1857,20 @@ static Value value_function(const char *name, const char *library) {
     value.kind = VALUE_FUNCTION;
     value.as.function.name = copy_string(name);
     value.as.function.library = library ? copy_string(library) : NULL;
+    value.as.function.context = NULL;
+    return value;
+}
+
+/* Takes ownership of `context`. */
+static Value value_function_bound(const char *name, const char *library,
+                                  Value context) {
+    Value value = value_function(name, library);
+    Value *held = malloc(sizeof(Value));
+    if (!held) {
+        abort();
+    }
+    *held = context;
+    value.as.function.context = held;
     return value;
 }
 
@@ -2280,6 +2305,31 @@ static const RegexShorthand *regex_shorthand_find(char letter) {
     }
     return NULL;
 }
+
+/* A BOUND CONTEXT IS REFUSED WHERE IT CANNOT TRAVEL, never dropped.
+ *
+ * Several paths take a function value apart and keep only its NAME: the gi
+ * signal bridge, gi's source callbacks, and `webserver.on_request`. Measured
+ * before this existed, `gi.connect(obj, sig, bound(h, ctx))` ran the handler
+ * with the context SILENTLY GONE -- `ctx = nothing`, no error, exit 0. That is
+ * the failure class this tree is organised against, and `bound` introduced it,
+ * so the refusal ships WITH the feature rather than after somebody loses a
+ * context to it.
+ *
+ * Returns 1 and raises when the value carries a context. */
+static int bound_context_unsupported(const Value *fv, const char *where) {
+    if (!fv || fv->kind != VALUE_FUNCTION || !fv->as.function.context) {
+        return 0;
+    }
+    char message[320];
+    snprintf(message, sizeof(message),
+             "%s cannot take a bound function: it keeps the function's NAME,"
+             " so the context would be silently dropped -- pass the plain"
+             " function and carry the context another way", where);
+    runtime_error_raise(message, 1003, "invalid argument type");
+    return 1;
+}
+
 
 /* A growable byte buffer for building the translated pattern. */
 typedef struct {
@@ -3874,6 +3924,11 @@ static Value value_copy(Value value) {
         return value;
     }
     if (value.kind == VALUE_FUNCTION) {
+        if (value.as.function.context) {
+            return value_function_bound(value.as.function.name,
+                                        value.as.function.library,
+                                        value_copy(*value.as.function.context));
+        }
         return value_function(value.as.function.name, value.as.function.library);
     }
     if (value.kind == VALUE_WORKBOOK) {
@@ -3994,6 +4049,10 @@ static void value_free(Value value) {
     } else if (value.kind == VALUE_FUNCTION) {
         free(value.as.function.name);
         free(value.as.function.library);
+        if (value.as.function.context) {
+            value_free(*value.as.function.context);
+            free(value.as.function.context);
+        }
     } else if (value.kind == VALUE_REGEX) {
         regex_release(value.as.regex);
     } else if (value.kind == VALUE_WORKBOOK) {
@@ -9267,6 +9326,7 @@ static const GbCapability gb_capability_table[] = {
     { "mod",       "" },
     { "concat",    "" },
     { "key",       "" },
+    { "bound",     "" },
     { "merge",     "" },
     /* and the rest of the outward surface, which is neither of those lists */
     { "make_dir",       "fs:write" },
@@ -11521,14 +11581,21 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
 
 /* Evaluate a user-function call. `receiver` is NULL for a plain call and a live
  * record pointer for a method call (binds `this` inside the body). */
-static Value eval_user_function_with_receiver(AstExpr *expr,
-                                              FunctionDef *function,
-                                              Value *receiver) {
+/* `bound_ctx`, when non-NULL, is a `bound(fn, ctx)` context: it is appended as
+ * the LAST argument, so one function can serve bound and unbound use given a
+ * literal default (`function f(x, ctx = nothing)`). Last rather than first is
+ * the whole reason that works -- context-first would make the two signatures
+ * incompatible. `webserver.on_request` passes its own context FIRST and is the
+ * one bespoke precedent, left alone rather than churned. */
+static Value eval_user_function_bound(AstExpr *expr,
+                                      FunctionDef *function,
+                                      Value *receiver,
+                                      Value *bound_ctx) {
     AstStmt *stmt = function->stmt;
     size_t want_min = stmt->as.function.params.required;
     size_t want_max = stmt->as.function.params.count;
-    if (expr->as.call.args.count < want_min ||
-        expr->as.call.args.count > want_max) {
+    size_t supplied = expr->as.call.args.count + (bound_ctx ? 1 : 0);
+    if (supplied < want_min || supplied > want_max) {
         /* A real, located runtime error -- not a bare fprintf. The old behavior
          * printed one unlocated line and KEPT RUNNING with a null result, so the
          * caller's own return value looked fine and the failure surfaced frames
@@ -11539,27 +11606,30 @@ static Value eval_user_function_with_receiver(AstExpr *expr,
          * spawn path a few thousand lines down has raised for this all along;
          * plain calls were the outlier. */
         char message[256];
+        /* THE COUNT NAMED IS THE EFFECTIVE ONE. A bound function called with
+         * one argument supplies two, and reporting "got 1" would send the
+         * author to count the arguments they wrote -- which are correct. */
         if (want_min == want_max) {
-            snprintf(message, sizeof message, "%s expects %zu argument%s, got %zu",
+            snprintf(message, sizeof message, "%s expects %zu argument%s, got %zu%s",
                      expr->as.call.name, want_max,
-                     want_max == 1 ? "" : "s",
-                     expr->as.call.args.count);
+                     want_max == 1 ? "" : "s", supplied,
+                     bound_ctx ? " (including the bound context)" : "");
         } else {
             /* Name the RANGE. "expects 3 arguments, got 5" would be false once
              * some are optional, and an author reading it would go looking for
              * a parameter that is not missing. */
             snprintf(message, sizeof message,
-                     "%s expects %zu to %zu arguments, got %zu",
-                     expr->as.call.name, want_min, want_max,
-                     expr->as.call.args.count);
+                     "%s expects %zu to %zu arguments, got %zu%s",
+                     expr->as.call.name, want_min, want_max, supplied,
+                     bound_ctx ? " (including the bound context)" : "");
         }
         runtime_error_raise(message, 1003, "invalid function call");
         return value_null();
     }
 
     Value *args = NULL;
-    if (expr->as.call.args.count > 0) {
-        args = malloc(sizeof(Value) * expr->as.call.args.count);
+    if (supplied > 0) {
+        args = malloc(sizeof(Value) * supplied);
         if (!args) {
             abort();
         }
@@ -11600,11 +11670,20 @@ static Value eval_user_function_with_receiver(AstExpr *expr,
         return value_null();
     }
 
-    return invoke_function(stmt, args, expr->as.call.args.count, receiver);
+    if (bound_ctx) {
+        args[expr->as.call.args.count] = value_copy(*bound_ctx);
+    }
+    return invoke_function(stmt, args, supplied, receiver);
+}
+
+static Value eval_user_function_with_receiver(AstExpr *expr,
+                                              FunctionDef *function,
+                                              Value *receiver) {
+    return eval_user_function_bound(expr, function, receiver, NULL);
 }
 
 static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
-    return eval_user_function_with_receiver(expr, function, NULL);
+    return eval_user_function_bound(expr, function, NULL, NULL);
 }
 
 /* If `instance` carries a `constructor` function field, invoke it with `this` =
@@ -13394,7 +13473,25 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         /* A function value travels as its registered name (+ owning library), not
          * as code or captured state (§10). The receiver resolves it through its
          * own registry — within one program (the actor case execs the same
-         * program) it always resolves, like a spawn entry name. */
+         * program) it always resolves, like a spawn entry name.
+         *
+         * A BOUND FUNCTION IS REFUSED, for now, and the refusal is the honest
+         * answer rather than the easy one. Writing the name alone would hand
+         * back a function that had quietly LOST its context -- the only thing
+         * distinguishing it from the unbound one -- and a context may hold
+         * values that cannot be serialized at all, so there is no guess here
+         * that is safe. Carrying an encodable context is its own increment.
+         *
+         * NOTE `encode` refuses a function value OUTRIGHT, so this question
+         * arises only here: measured, `serialize({f: fn})` is 35 bytes while
+         * `encode` raises. */
+        if (v.as.function.context) {
+            runtime_error_raise("serialize: a function value carrying a bound"
+                                " context cannot be serialized -- the name"
+                                " would travel and the context would not",
+                                1003, "actor");
+            return 0;
+        }
         serbuf_u8(b, SER_FUNCTION);
         serbuf_blob(b, v.as.function.name, strlen(v.as.function.name));
         if (v.as.function.library) {
@@ -20532,6 +20629,10 @@ static Value webserver_eval_on_hook(AstExpr *expr, int drain) {
         webserver_raise(message);
         return value_null();
     }
+    if (bound_context_unsupported(&fn, "webserver.on_request")) {
+        value_free(fn);
+        return value_null();
+    }
     Value ctx = eval_expr(expr->as.call.args.items[2]);
     if (error_action_pending()) {
         value_free(fn);
@@ -26332,6 +26433,11 @@ static Value gi_do_connect(AstExpr *expr) {
         return gi_raise("gi.connect expects a function as the handler");
     }
 
+    if (bound_context_unsupported(&fv, "gi.connect")) {
+        value_free(ov); value_free(sv); value_free(fv);
+        return value_null();
+    }
+
     GiClosureData *data = calloc(1, sizeof(*data));
     if (!data) {
         abort();
@@ -26499,7 +26605,13 @@ static Value gi_do_quit(AstExpr *expr) {
  * data is owned by the source and freed via gi_closure_data_free when it is
  * removed. */
 
+/* Returns NULL having RAISED when the value carries a bound context -- the
+ * source keeps only the name, so carrying one is not possible here yet and
+ * dropping it silently is the failure `bound` must not introduce. */
 static GiClosureData *gi_closure_data_new(Value fn) {
+    if (bound_context_unsupported(&fn, "a gi event-source callback")) {
+        return NULL;
+    }
     GiClosureData *d = calloc(1, sizeof(*d));
     if (!d) {
         abort();
@@ -26613,6 +26725,10 @@ static Value gi_do_timeout(AstExpr *expr) {
         return gi_raise("gi.timeout expects a non-negative interval");
     }
     GiClosureData *d = gi_closure_data_new(fv);
+    if (!d) {                      /* raised: a bound context cannot travel here */
+        value_free(mv); value_free(fv);
+        return value_null();
+    }
     guint id = g_timeout_add_full(G_PRIORITY_DEFAULT, (guint)mv.as.number,
                                   gi_timeout_cb, d, gi_closure_data_free);
     value_free(mv); value_free(fv);
@@ -26630,6 +26746,10 @@ static Value gi_do_idle(AstExpr *expr) {
         return gi_raise("gi.idle expects a function");
     }
     GiClosureData *d = gi_closure_data_new(fv);
+    if (!d) {
+        value_free(fv);
+        return value_null();
+    }
     guint id = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, gi_timeout_cb, d, gi_closure_data_free);
     value_free(fv);
     return value_number((double)id);
@@ -29080,7 +29200,12 @@ static Value eval_method_call(AstExpr *expr) {
                 if (have_temp) value_free(temp);
                 return value_null();
             }
-            Value out = eval_user_function_with_receiver(expr, m, ref);
+            /* A BOUND METHOD CARRIES ITS CONTEXT. This path already routes
+             * through the bound-aware call, so supporting it costs one
+             * argument -- and refusing here would be arbitrary when a plain
+             * call a few lines away works. */
+            Value out = eval_user_function_bound(expr, m, ref,
+                                                 mf->value->as.function.context);
             if (have_temp) value_free(temp);
             return out;
         }
@@ -30302,8 +30427,8 @@ static Value eval_call(AstExpr *expr) {
                     runtime_error_raise(message, 1003, "invalid function call");
                     return value_null();
                 }
-                return eval_user_function_with_receiver(expr, method,
-                                                        receiver_value);
+                return eval_user_function_bound(expr, method, receiver_value,
+                                                method_field->value->as.function.context);
             }
         }
 
@@ -33737,6 +33862,67 @@ static Value eval_call(AstExpr *expr) {
      * COMPOUNDS ARE REFUSED. An array or record key needs a decision about
      * ordering that nobody has needed yet, and inventing one here would be a
      * guess buried in a key nobody reads. */
+    /* `bound(fn, context)` -- a function value that CARRIES a context,
+     * appended as the last argument on every call.
+     *
+     * WHY: gBASIC has no closures, deliberately, so a callback could not carry
+     * state. MEASURED, that cost two workarounds in this tree --
+     * `examples/automation_lab/08_what_price.bas` has "the 10.00 is written
+     * in", so pricing a second product means a second identical function; and
+     * `stdlib/datagrid.bas` reaches its grid through a program-global
+     * `_DATAGRID` registry which a LIBRARY cannot create, so the workaround
+     * leaked into the API of every program using it.
+     *
+     * NOT A CLOSURE, and the distinction is what makes it affordable: a
+     * closure captures an ENVIRONMENT implicitly and by reference, admitting
+     * cycles and keeping frames alive; this captures ONE NAMED VALUE, copied.
+     * A gBASIC record is a value, so nothing cyclic is constructible, and the
+     * properties the no-closures rule protects -- `encode` totality and
+     * fork+exec actor sendability -- are untouched.
+     *
+     * THE CONTEXT GOES LAST so one function can serve both uses given a
+     * literal default (`function f(x, ctx = nothing)`); context-first would
+     * make the two signatures incompatible.
+     *
+     * RE-BINDING IS REFUSED. Appending two contexts would make a function's
+     * arity depend on how many times the value had been bound, which nothing
+     * at the call site shows. */
+    if (strcmp(expr->as.call.name, "bound") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("bound expects a function value and a context",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value fv = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(fv); return value_null(); }
+        if (fv.kind != VALUE_FUNCTION) {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "bound expects a function value as its first argument,"
+                     " not a %s", value_kind_name(fv.kind));
+            value_free(fv);
+            runtime_error_raise(message, 1003, "invalid argument type");
+            return value_null();
+        }
+        if (fv.as.function.context) {
+            value_free(fv);
+            runtime_error_raise("bound: this function value already carries a"
+                                " context -- bind the original function"
+                                " instead, since two contexts would make its"
+                                " arity depend on how often it had been bound",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value ctx = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(fv); value_free(ctx);
+            return value_null();
+        }
+        Value out = value_function_bound(fv.as.function.name,
+                                         fv.as.function.library, ctx);
+        value_free(fv);
+        return out;
+    }
     if (strcmp(expr->as.call.name, "key") == 0) {
         if (expr->as.call.args.count < 1) {
             runtime_error_raise("key expects at least one value", 1003,
@@ -35392,7 +35578,8 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise(message, 1003, "invalid function call");
             return value_null();
         }
-        return eval_user_function(expr, target);
+        return eval_user_function_bound(expr, target, NULL,
+                                        fn_symbol->value.as.function.context);
     }
 
     char message[512];

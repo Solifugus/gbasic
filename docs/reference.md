@@ -5441,6 +5441,50 @@ response = merge(web.static(rel, root), { id: req.id })
 
 There is no record `+`, for the same reason there is no array `+`.
 
+**`bound(fn, context)`** — a function value that **carries a context**, passed
+as the **last** argument on every call. gBASIC has no closures, so a callback
+could not otherwise carry state.
+
+```basic
+function price(b, ctx)
+    return ctx.cost * b / (1 + b)
+end function
+
+cheap = bound(price, { cost: 10.00 })
+dear  = bound(price, { cost: 22.50 })
+```
+
+**The function being called need not know about contexts**, which is the point:
+a library that calls `f(x)` works with a bound value unchanged, so no callback
+API has to grow a parameter. The context goes last so one function serves both
+uses given a literal default — `function f(x, ctx = nothing)`.
+
+**It is not a closure.** A closure captures an *environment*, implicitly and by
+reference; `bound` captures **one named value, copied at bind time**. So
+mutating the original afterwards is *not* seen by the callback:
+
+```basic
+c = { cost: 10.00 }
+held = bound(price, c)
+c.cost = 99.00                  ' held still uses 10.00
+```
+
+That is why it is available where closures are not: a gBASIC record is a value,
+so no reference cycle is constructible, and `encode` totality and actor
+sendability are untouched.
+
+Re-binding is refused (`bound(bound(f, a), b)`) — two contexts would make a
+function's arity depend on how often the value had been bound, which nothing at
+the call site shows. A bound value is still `type()` `"function"`, and a record
+field holding one works as a method, so two objects can share one function with
+different configuration.
+
+**Where a context cannot travel it is refused, not dropped.** `gi.connect`,
+gi's event-source callbacks and `webserver.on_request` keep only the function's
+*name*, so they raise rather than silently losing the context. `encode` refuses
+a function value as it always has; `serialize` accepts a plain one and refuses a
+bound one, because the name would travel and the context would not.
+
 **`key(a, b, …)`** — one string that cannot collide, for use as a **composite
 record key**. Variadic, one argument or more; every argument must be a scalar
 (an array or record is refused by name).
