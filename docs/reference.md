@@ -5441,6 +5441,34 @@ response = merge(web.static(rel, root), { id: req.id })
 
 There is no record `+`, for the same reason there is no array `+`.
 
+**`key(a, b, …)`** — one string that cannot collide, for use as a **composite
+record key**. Variadic, one argument or more; every argument must be a scalar
+(an array or record is refused by name).
+
+A record is keyed by a *string*, so a composite key is otherwise built by
+concatenation with a chosen separator — and that is wrong in two ways nothing
+reports. **A separator inside the data merges two keys**: with `|`, the pairs
+`("North|East", "A")` and `("North", "East|A")` produce the same key. **And an
+absence renders as a word**, so `nothing` collides with the literal text
+`"nothing"` and every absent value keys the same as every other.
+
+```basic
+k = key(row.start, row.end, row.period)      ' safe whatever they contain
+k = row.start + "|" + row.end                ' merges if either holds a "|"
+```
+
+Both of those were live in this tree. In `insight` the separator case merged
+two cells of a decomposition, which is worse than a wrong grouping because the
+cell count feeds the significance threshold; in `fundamentals` the absence case
+grouped correctly *by accident*, every absent value rendering identically.
+
+**The result is opaque and unambiguous, not readable.** Each component is
+length- and kind-tagged, so no two distinct inputs can produce one key and the
+encoding is not a format to depend on — keep the readable values separately if
+you need them. Absences **group together** (as SQL's `GROUP BY` does with
+`NULL`) while never equalling a string. Picking a rarer separator is not an
+alternative: it is the same defect with a longer fuse.
+
 **`keys(record)`** - Returns array of key strings:
 ```basic
 keys({x:1, y:2})               ' ["x", "y"]

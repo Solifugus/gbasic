@@ -9266,6 +9266,7 @@ static const GbCapability gb_capability_table[] = {
        check found these three the first time it ran. */
     { "mod",       "" },
     { "concat",    "" },
+    { "key",       "" },
     { "merge",     "" },
     /* and the rest of the outward surface, which is neither of those lists */
     { "make_dir",       "fs:write" },
@@ -33694,6 +33695,136 @@ static Value eval_call(AstExpr *expr) {
         double r = a.as.number - q * b.as.number;
         value_free(a); value_free(b);
         return value_number(r);
+    }
+    /* `key(a, b, ...)` -- ONE STRING THAT CANNOT COLLIDE, for a composite
+     * record key.
+     *
+     * WHY THIS EXISTS: a record is keyed by a string, so a composite key gets
+     * built by concatenation with a chosen separator, and that is wrong in two
+     * ways nothing reports. MEASURED in this tree:
+     *
+     *   stdlib/insight.bas   key = key + string(r[d]) + "|"
+     *   stdlib/fundamentals  k = r["start"] + "|" + r["end"] + "|" + r["fp"]
+     *   stdlib/ari.bas       k = gen + " :: " + d.reason
+     *   stdlib/finio.bas     key = key + "/" + string(c.revision)
+     *
+     * (1) A SEPARATOR INSIDE THE DATA MERGES TWO CELLS. Demonstrated against
+     * `insight` before this was written: the cells ("North|East", "A") and
+     * ("North", "East|A") produce the identical key, and a decomposition over
+     * eight distinct cells reported SEVEN. That is worse than a wrong grouping,
+     * because `search.cells` feeds the Bonferroni threshold -- so the merge
+     * corrupts both the statistic and the width it is judged against, in the
+     * library whose whole job is deciding whether a deviation is real.
+     *
+     * (2) AN ABSENCE RENDERS AS A WORD. `fundamentals` built
+     * `"2023-12-31|nothing"` and grouped correctly BY ACCIDENT, every absent
+     * value rendering the same way; the giveaway was that the neighbouring
+     * field was defaulted explicitly and this one was not.
+     *
+     * THE ENCODING IS INJECTIVE BY CONSTRUCTION, not by choosing a rarer
+     * separator -- a rarer separator is the same defect with a longer fuse.
+     * Each component is `<kind><bytelen>:<bytes>`, so decoding is "read the
+     * kind, read digits to the colon, take exactly that many bytes" and no
+     * concatenation is ambiguous. THE KIND TAG IS NOT DECORATION: without it
+     * `key(true)` and `key("true")` both encode as `4:true`, which is the
+     * original defect one level down.
+     *
+     * Absence gets its own tag rather than a rendering, so absences group
+     * together -- which is what SQL's GROUP BY does with NULL, and is the
+     * behaviour `fundamentals` was relying on without saying so -- while never
+     * colliding with the string "nothing".
+     *
+     * COMPOUNDS ARE REFUSED. An array or record key needs a decision about
+     * ordering that nobody has needed yet, and inventing one here would be a
+     * guess buried in a key nobody reads. */
+    if (strcmp(expr->as.call.name, "key") == 0) {
+        if (expr->as.call.args.count < 1) {
+            runtime_error_raise("key expects at least one value", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        StringBuilder out;
+        sb_init(&out);
+        for (size_t i = 0; i < expr->as.call.args.count; i++) {
+            Value v = eval_expr(expr->as.call.args.items[i]);
+            if (error_action_pending()) {
+                value_free(v);
+                free(out.items);
+                return value_null();
+            }
+            char tag = 0;
+            switch (v.kind) {
+                case VALUE_STRING:   tag = 's'; break;
+                case VALUE_NUMBER:   tag = 'n'; break;
+                case VALUE_BOOL:     tag = 'b'; break;
+                case VALUE_DATETIME: tag = 'd'; break;
+                case VALUE_DURATION: tag = 'r'; break;
+                case VALUE_MONEY:    tag = 'm'; break;
+                case VALUE_FILE:     tag = 'f'; break;
+                case VALUE_DIR:      tag = 'y'; break;
+                case VALUE_NULL:     tag = 'z'; break;
+                case VALUE_UNKNOWN:  tag = 'u'; break;
+                default: {
+                    char message[192];
+                    snprintf(message, sizeof(message),
+                             "key cannot use a %s as part of a key -- argument"
+                             " %zu; a key is built from scalar values",
+                             value_kind_name(v.kind), i + 1);
+                    value_free(v);
+                    free(out.items);
+                    runtime_error_raise(message, 1003, "invalid argument type");
+                    return value_null();
+                }
+            }
+            /* THIS EARLY RETURN IS NOT WHAT PREVENTS THE ABSENCE COLLISION
+             * -- the KIND TAG is. Measured: with this branch removed,
+             * `key(nothing)` is `z7:nothing` and `key("nothing")` is
+             * `s7:nothing`, which still differ. A perturbation written to
+             * prove this branch load-bearing came back GREEN and was withdrawn
+             * as not-a-defect rather than counted.
+             *
+             * What it does buy is a key that does not EMBED the words
+             * "nothing" and "unknown": those come from `builtin_string_value`,
+             * whose rendering is a display decision, and a stored key that
+             * moved when a display rendering changed would be a quiet
+             * invalidation of everything keyed by it. */
+            if (tag == 'z' || tag == 'u') {
+                sb_append_char(&out, tag);
+                sb_append_char(&out, ':');
+                value_free(v);
+                continue;
+            }
+            /* `builtin_string_value` TAKES OWNERSHIP of its argument -- it
+             * returns the value itself for a string and frees it for every
+             * other kind -- so `v` must NOT be freed here. Freeing it as well
+             * was a double free on the shared refcounted string buffer, and it
+             * crashed only on STRING components: a number and a boolean carry
+             * no allocation, so those two appeared to work perfectly. The
+             * ownership-vs-borrow trap record_find already records. */
+            Value text = builtin_string_value(v);
+            if (error_action_pending() || text.kind != VALUE_STRING) {
+                value_free(text);
+                free(out.items);
+                return value_null();
+            }
+            size_t n = string_length(text.as.string);
+            char head[40];
+            snprintf(head, sizeof head, "%c%zu:", tag, n);
+            for (const char *h = head; *h; h++) {
+                sb_append_char(&out, *h);
+            }
+            /* BYTE BY BYTE, not sb_append_text: a gBASIC string may contain an
+             * interior NUL (PLAT-NUL), and append_text walks to the first one.
+             * A key that silently truncated at a NUL would be the very defect
+             * this function exists to remove. */
+            for (size_t b = 0; b < n; b++) {
+                sb_append_char(&out, text.as.string[b]);
+            }
+            value_free(text);
+        }
+        Value result = value_string_n(out.items ? out.items : "", out.length);
+        free(out.items);
+        return result;
     }
     if (strcmp(expr->as.call.name, "concat") == 0 ||
         strcmp(expr->as.call.name, "merge") == 0) {

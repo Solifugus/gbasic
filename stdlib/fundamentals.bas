@@ -155,7 +155,15 @@ library fundamentals
     function _dedup(rows)
         best = {}
         for each r in rows
-            k = r["start"] + "|" + r["end"] + "|" + r["fp"]
+            ' BUILT BY `key`, NOT JOINED ON "|". This line is where the
+            ' absence defect lived: `fp` reached it unguarded, so the key read
+            ' `2023-12-31|nothing` and grouped correctly BY ACCIDENT, every
+            ' absent value rendering the same way. Guarding it with "" fixed
+            ' the accident and left a residual -- an absent `fp` and a
+            ' genuinely empty one became the same key. `key` distinguishes
+            ' them, and no value of any component can be mistaken for a
+            ' separator.
+            k = key(r["start"], r["end"], r["fp"])
             if has(best, k) then
                 if _later(r, best[k]) then
                     best[k] = r
