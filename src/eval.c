@@ -14606,34 +14606,6 @@ static size_t actor_track_child(pid_t pid) {
     return actor_child_count++;
 }
 
-/* Could ANYTHING still send to this mailbox? Read only by warning 2110.
- *
- * NO PARENT and NO UNREAPED CHILD means no sender remains -- and the timing is
- * sound rather than lucky: a child that has exited has already performed its
- * sends, and those bytes are sitting in the socket, so `receive` would have
- * taken one instead of reaching the block. The predicate therefore cannot be
- * true while a child that is going to send is still running. MEASURED both
- * ways in tests/run_inbox.sh.
- *
- * NOT CERTAIN, and that is why 2110 warns rather than raises: a handle can
- * travel over SCM_RIGHTS, so a grandchild of a dead child could still hold one.
- * The runtime cannot track that, and a raise would end a program that was
- * right. */
-static void actor_reap_children(void);
-
-static int actor_no_sender_remains(void) {
-    if (running_as_spawned_actor) {
-        return 0;
-    }
-    actor_reap_children();
-    for (size_t i = 0; i < actor_child_count; i++) {
-        if (!actor_children[i].reaped) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 /* Reap any exited children without blocking, capturing each one's wait status so
  * a later monitor death-notification can report the precise reason. */
 static void actor_reap_children(void) {
@@ -14709,6 +14681,32 @@ static void actor_cleanup_children(void) {
     actor_group_pgid = 0;
 }
 #endif /* _WIN32 */
+
+/* Could ANYTHING still send to this mailbox? Read only by warning 2110.
+ *
+ * NO PARENT and NO UNREAPED CHILD means no sender remains -- and the timing is
+ * sound rather than lucky: a child that has exited has already performed its
+ * sends, and those bytes are sitting in the socket, so `receive` would have
+ * taken one instead of reaching the block. The predicate therefore cannot be
+ * true while a child that is going to send is still running. MEASURED both
+ * ways in tests/run_inbox.sh.
+ *
+ * NOT CERTAIN, and that is why 2110 warns rather than raises: a handle can
+ * travel over SCM_RIGHTS, so a grandchild of a dead child could still hold one.
+ * The runtime cannot track that, and a raise would end a program that was
+ * right. */
+static int actor_no_sender_remains(void) {
+    if (running_as_spawned_actor) {
+        return 0;
+    }
+    actor_reap_children();
+    for (size_t i = 0; i < actor_child_count; i++) {
+        if (!actor_children[i].reaped) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
 static Value builtin_actor_self(void) {
     if (!ensure_root_mailbox()) {
@@ -15419,11 +15417,16 @@ static Value spawn_launch_win(const char *entry, char *exe, Value args_array) {
         return value_null();
     }
     if (frame_len > channel_max_message(-1)) {
+        /* The same sentence as the POSIX path below, with the same two numbers. */
+        char too_big[192];
+        snprintf(too_big, sizeof(too_big),
+                 "spawn: arguments are %zu bytes and one frame on this channel"
+                 " holds at most %zu -- pass less, or hand the data over a file",
+                 frame_len, channel_max_message(-1));
         free(frame);
         value_free(args_array);
         free(exe);
-        runtime_error_raise("spawn: arguments are too large for one frame",
-                            1004, "actor");
+        runtime_error_raise(too_big, 1004, "actor");
         return value_null();
     }
 

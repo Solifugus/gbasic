@@ -84,7 +84,37 @@ static void sockaddr_for(struct sockaddr_un *a, const char *path) {
     strncpy(a->sun_path, path, sizeof a->sun_path - 1);
 }
 
+/* A PROCESS THAT ENDS WITH A CONNECTION OPEN CAN LOSE WHAT IT SENT. Measured
+ * with a C probe (Windows 11 26200): a sender that wrote 100,000 bytes and
+ * exited with its socket open delivered NONE of them -- the receiver got
+ * WSAECONNRESET -- while one that called shutdown(SD_SEND) and closesocket
+ * first delivered all 100,000.
+ *
+ * gBASIC DOES NOT HIT THIS TODAY, also measured: an actor that returns, dies
+ * of a runtime error, or calls exit(n) runs the interpreter's teardown, which
+ * frees every handle and so closes every connection gracefully
+ * (peer_release). With this hook removed, nothing was lost on any of those
+ * paths, whether or not the receiver was reading at the time. The hook is
+ * DEFENCE IN DEPTH for any exit that skips teardown: it costs one atexit and
+ * makes the loss impossible rather than merely not reached. A process KILLED
+ * or crashing can still lose what is unread on its side; POSIX's datagrams
+ * would survive that, and the difference is in docs/windows_port_status.md. */
+static void peers_close_gracefully(void) {
+    for (WinPeer *p = peers; p; p = p->next) {
+        if (p->s != INVALID_SOCKET) {
+            shutdown(p->s, SD_SEND);
+            closesocket(p->s);
+            p->s = INVALID_SOCKET;
+        }
+    }
+}
+
 static WinPeer *peer_get(const char *path) {
+    static int exit_hook = 0;
+    if (!exit_hook) {
+        atexit(peers_close_gracefully);
+        exit_hook = 1;
+    }
     for (WinPeer *p = peers; p; p = p->next) {
         if (strcmp(p->path, path) == 0) {
             return p;
@@ -130,6 +160,7 @@ static void peer_release(WinPeer *p) {
         }
     }
     if (p->s != INVALID_SOCKET) {
+        shutdown(p->s, SD_SEND);    /* graceful: what was sent still arrives */
         closesocket(p->s);
     }
     free(p->path);

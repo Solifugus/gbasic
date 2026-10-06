@@ -92,6 +92,13 @@ function quitter()
     return nothing
 end function
 
+' Sends and returns at once: whatever it sent must outlive it.
+function burst(parent, n)
+    for i = 1 to n
+        send(parent, ["burst", i, repeat(string(i), 20000)])
+    next
+end function
+
 function attempt_send(target, msg)
     on error goto next
     send(target, msg)
@@ -159,10 +166,31 @@ if on_windows then
     back = receive(10 seconds)
     ok("and it comes back whole", is_nothing(back) = false and back = big, true)
 else
-    ok("Linux refuses 1 MiB as one frame", contains(got, "too large"), true)
+    ok("Linux refuses 1 MiB as one frame", contains(got, "holds at most"), true)
 end if
 huge = repeat(big, 16)
-ok("16 MiB is refused everywhere, by size", contains(attempt_send(e, huge), "too large"), true)
+ok("16 MiB is refused everywhere, by size", contains(attempt_send(e, huge), "holds at most"), true)
+
+print("-- what an actor sent outlives it --")
+' The property a reply depends on: a child sends and returns, and its messages
+' are still there to read. On Windows a process that ends with a connection
+' OPEN loses what it sent (measured with a C probe); gBASIC's teardown closes
+' connections gracefully, so this passes today with or without the extra
+' atexit hook in src/actor.c -- it asserts the behaviour, not the hook.
+' Waiting for the death notice FIRST makes "the sender has exited" a fact
+' before anything is read.
+b = spawn burst(self(), 3)
+monitor(b)
+d = receive("down", 10 seconds)
+ok("the sender has exited before anything is read", is_nothing(d) = false and d[2] = "normal", true)
+arrived = 0
+for k = 1 to 3
+    m = receive("burst", 5 seconds)
+    if is_nothing(m) = false and m[2] = repeat(string(m[1]), 20000) then
+        arrived = arrived + 1
+    end if
+end for
+ok("every message it sent arrives after it exited", arrived, 3)
 
 print("-- a send to an actor that has gone --")
 q = spawn quitter()
