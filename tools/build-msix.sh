@@ -54,6 +54,11 @@ mkdir -p "$stage/bin" "$stage/share/gbasic" "$stage/licenses"
 
 cp gbasic.exe "$stage/bin/gbasic.exe"
 strip "$stage/bin/gbasic.exe"
+# The language server, so an editor finds `gbasic-lsp` once gBASIC is
+# installed (the VS Code extension looks for it on PATH).
+make gbasic-lsp >/dev/null
+cp gbasic-lsp.exe "$stage/bin/gbasic-lsp.exe"
+strip "$stage/bin/gbasic-lsp.exe"
 cp -r stdlib "$stage/share/gbasic/stdlib"
 cp LICENSE NOTICE LICENSING.md "$stage/licenses/"
 # Every statically linked library's licence, generated from what the linker
@@ -135,8 +140,8 @@ rm -f "$pkg"
 # SDK tools' own switches, /o /d /p -- before a native program sees it.
 export MSYS2_ARG_CONV_EXCL='*'
 if [ "$sign_mode" = azure ]; then
-    # The exe too, for anywhere it travels without the package around it.
-    sign_files "$(cygpath -w "$stage/bin/gbasic.exe")"
+    # The exes too, for anywhere they travel without the package around them.
+    sign_files "$(cygpath -w "$stage/bin/gbasic.exe")" "$(cygpath -w "$stage/bin/gbasic-lsp.exe")"
 fi
 if ! "$makeappx" pack /o /d "$stage_win" /p "$(cygpath -w "$pkg")" > "$out/makeappx.log" 2>&1; then
     cat "$out/makeappx.log" >&2

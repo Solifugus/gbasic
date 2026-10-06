@@ -79,6 +79,37 @@ print(trim(r.stdout))
     elseif (Test-Path $plain) { Write-Output "note the session cache is at $plain (not redirected)" }
     else { Write-Output "note no session cache directory was found" }
 
+    # The language server, through ITS alias, speaking the protocol: initialize,
+    # open a file with an error, and require the error back. Bytes are written
+    # through a .NET process rather than a PowerShell pipe, which would add a
+    # byte-order mark and rewrite line endings -- exactly what JSON-RPC's
+    # Content-Length framing cannot survive.
+    $lspAlias = Get-Command gbasic-lsp -ErrorAction SilentlyContinue
+    Check 'gbasic-lsp resolves to the package alias' ($lspAlias -and $lspAlias.Source -like '*\WindowsApps\*') "$($lspAlias.Source)"
+    if ($lspAlias) {
+        # Frames go in from a FILE through cmd's redirect. (Fed through a .NET
+        # Process pipe from Windows PowerShell, the server saw nothing -- the
+        # same server answers over Node's pipes in the VS Code test, so that is
+        # PowerShell's plumbing, not the server.)
+        $msgs = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}',
+            '{"jsonrpc":"2.0","method":"initialized","params":{}}',
+            '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///c:/x/a.gb","languageId":"gbasic","version":1,"text":"x = )\n"}}}',
+            '{"jsonrpc":"2.0","id":2,"method":"shutdown"}',
+            '{"jsonrpc":"2.0","method":"exit"}')
+        $ms = New-Object IO.MemoryStream
+        foreach ($m in $msgs) {
+            $b = [Text.Encoding]::UTF8.GetBytes($m)
+            $h = [Text.Encoding]::ASCII.GetBytes("Content-Length: $($b.Length)`r`n`r`n")
+            $ms.Write($h, 0, $h.Length)
+            $ms.Write($b, 0, $b.Length)
+        }
+        $framesFile = Join-Path $work 'lsp_frames.bin'
+        [IO.File]::WriteAllBytes($framesFile, $ms.ToArray())
+        $reply = (cmd /c "gbasic-lsp < `"$framesFile`"" 2>&1 | Out-String)
+        Check 'gbasic-lsp answers through the alias with the error' ($reply -match 'publishDiagnostics' -and $reply -match 'syntax error') ($reply.Substring(0, [Math]::Min(200, $reply.Length)))
+    }
+
     Set-Content -Path write.bas -Encoding ascii -Value @'
 f {file}= "written.txt"
 write(f, "here")

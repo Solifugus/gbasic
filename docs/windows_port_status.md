@@ -1104,3 +1104,66 @@ with the Makefile; there was no surprise.
 **Not done:** gbasic itself cannot print the notices yet. A packaged app's
 install folder is not browsable, so a `--licenses` flag would make them
 reachable from the command line.
+
+## 26. VS Code: live errors from gbasic-lsp, shipped in the MSIX (2026-10-06)
+
+**The extension** (`editors/vscode/gbasic`, now 0.2.0) was syntax-only. It now
+starts `gbasic-lsp` and shows the server's diagnostics as you type.
+
+- `src/extension.ts` finds the server through the `gbasic.lsp.path` setting,
+  then on PATH. An MSIX alias is a zero-byte reparse point that stat() cannot
+  follow, so existence is asked with lstat().
+- Without a server it still highlights and says so once, with a link to the
+  setting.
+- The client is Microsoft's `vscode-languageclient` 10.1.2, bundled by esbuild
+  into `dist/extension.js`. It needs VS Code 1.91 or later.
+
+**Tooling, installed with Matthew's approval:**
+- Node.js LTS 24.19.0 and VS Code (winget);
+- the extension's dev dependencies, in its git-ignored `node_modules`, pinned
+  by `package-lock.json`.
+
+npm's install-script policy held back the postinstall scripts of esbuild and
+@vscode/vsce-sign. Nothing needed them: the build, the test and `vsce package`
+all work without.
+
+**The server could not have worked on Windows (fixed in ed684a3):**
+- It read and wrote JSON-RPC in TEXT mode, so every `\r\n` header went out as
+  `\r\r\n`.
+- `gb_stdin_binary()` now joins `gb_stdio_binary()`, and `gbasic-lsp` calls
+  both.
+- tests/lsp/run_lsp.sh passes on Windows and Linux.
+
+**In the package:**
+- `tools/build-msix.sh` builds, strips and Azure-signs `gbasic-lsp.exe` beside
+  `gbasic.exe`.
+- The manifest gives it a second Application, because an alias belongs to one:
+  `gbasic-lsp` is on PATH, but it is not in the Start menu.
+- `tools/make-notices.sh` now traces BOTH links, and maps any object under
+  `third_party/<name>/` to `<name>`. So the server's cJSON 1.7.18 (MIT) is in
+  the notices: 12 components. Removing its manifest line fails the build.
+
+**Measured:**
+- **In a real VS Code:** `tests/run_vscode_extension.sh` uses
+  @vscode/test-electron's own VS Code with every other extension disabled.
+  Opening a file with a syntax error gives a diagnostic from `gbasic` at 1:5,
+  and fixing the UNSAVED buffer clears it. Pointing the client at another
+  language makes it time out, so the test can fail.
+- **Against the INSTALLED package**, with `GBASIC_TEST_INSTALLED=1`, so the
+  server is the MSIX alias and not the repo build: same result. That is the
+  whole chain a user has: VS Code, extension, PATH, alias, the signed packaged
+  server, diagnostics.
+- **check-installed.ps1:** 10/10. New: the alias resolves, and the server
+  answers a framed initialize/didOpen with the error. The frames are fed from a
+  file through cmd. Fed through a .NET pipe from Windows PowerShell 5.1, even
+  the repo build saw nothing, while the same server answers over Node's pipes.
+  That is PowerShell's plumbing, and it was not chased further.
+- **Packaging:** `npm run package` builds `gbasic-0.2.0.vsix`: 11 files,
+  116 KB.
+
+**Not done:**
+- publishing (step 2 of the plan): it needs Matthew's Marketplace publisher
+  and an Azure DevOps token;
+- `make install` does not install `gbasic-lsp`;
+- the Kate definition still has hand-copied lists;
+- the server reports parse errors only.

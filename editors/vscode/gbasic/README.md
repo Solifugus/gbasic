@@ -1,6 +1,24 @@
 # gBASIC for VS Code
 
-Syntax highlighting for the gBASIC language.
+gBASIC language support: syntax highlighting, snippets, and **errors underlined
+as you type**, from the `gbasic-lsp` language server.
+
+## Live errors (the language server)
+
+The extension starts `gbasic-lsp` when a gBASIC file opens, and the server's
+diagnostics appear as squiggles and in the Problems panel while you type --
+before you save, without running anything.
+
+- **Windows, installed from the gBASIC package (MSIX):** nothing to configure;
+  the package puts `gbasic-lsp` on PATH.
+- **Built from source (Linux, macOS, or a Windows build):** run
+  `make gbasic-lsp`, then either put it on PATH or set **`gbasic.lsp.path`** to
+  its full path. (`make install` does not install it yet.)
+- **No server found:** you still get highlighting and snippets; the extension
+  says so once, with a link to the setting.
+
+The server reports parse errors today. Runtime errors still come from running
+the program (see *Running & clickable errors* below).
 
 ## The `.bas` ambiguity (read this)
 
@@ -63,7 +81,7 @@ reusable in your own tasks as `"problemMatcher": "$gbasic"`.
 ## Snippets
 
 Type a prefix and press Tab: `program`, `function`, `library`, `if`, `ifelse`,
-`foreach`, `while`, `onerror` (on error resume next / stop), `readfile`,
+`foreach`, `while`, `onerror` (`on error goto next` with an `if error then` check), `readfile`,
 `writefile`. These scaffold the matching `end …` so the common
 "missing `end program`/`end function`" mistakes don't happen.
 
@@ -85,7 +103,25 @@ like the Kate setup (keywords blue, literals forest green), add to your VS Code
 
 ## Maintenance
 
-The keyword and builtin lists in `syntaxes/gbasic.tmLanguage.json` are derived
-from `src/lexer.c` and `src/builtins.c`. Keep them in sync when the language
-gains keywords/builtins (the Kate definition in `editors/kate/gbasic.xml` has the
-same lists).
+The grammar's keyword, constant, word-operator and builtin lists are
+**generated** from the interpreter (`src/lexer.c`, `src/builtins.c`): edit
+`syntaxes/gbasic.tmLanguage.template.json`, then run
+`python3 tools/sync_vscode_grammar.py` from the repository root.
+`tests/run_editor_grammar.sh` fails when they drift, checks every snippet
+parses, and asserts how real lines are coloured.
+
+The client is TypeScript (`src/extension.ts`), bundled by esbuild into
+`dist/extension.js`:
+
+```sh
+npm ci                 # once
+npm run build          # dist/extension.js
+npm test               # runs the extension inside a downloaded VS Code
+npm run package        # gbasic-<version>.vsix
+```
+
+`tests/run_vscode_extension.sh` runs the in-VS Code test from the repository
+root (it needs Node.js and `npm ci`, and skips naming which is missing).
+
+The Kate definition (`editors/kate/gbasic.xml`) still carries hand-copied
+lists and is not checked.

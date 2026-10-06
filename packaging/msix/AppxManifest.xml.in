@@ -68,6 +68,32 @@
         </uap5:Extension>
       </Extensions>
     </Application>
+    <!-- The language server. An alias belongs to an Application, so it is a
+         second one: `gbasic-lsp` on PATH, which is where the VS Code extension
+         looks. Not an app anyone launches by hand, so not in the Start menu. -->
+    <Application Id="gbasiclsp"
+                 Executable="bin\gbasic-lsp.exe"
+                 EntryPoint="Windows.FullTrustApplication"
+                 desktop4:Subsystem="console"
+                 desktop4:SupportsMultipleInstances="true"
+                 iot2:Subsystem="console"
+                 iot2:SupportsMultipleInstances="true">
+      <uap:VisualElements DisplayName="gBASIC language server"
+                          Description="Diagnostics for editors, over the Language Server Protocol"
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png"
+                          AppListEntry="none" />
+      <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias"
+                        Executable="bin\gbasic-lsp.exe"
+                        EntryPoint="Windows.FullTrustApplication">
+          <uap5:AppExecutionAlias desktop4:Subsystem="console">
+            <uap5:ExecutionAlias Alias="gbasic-lsp.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
   </Applications>
 
   <Capabilities>

@@ -24,28 +24,36 @@ manifest="packaging/windows/notices.manifest"
 work="build/notices"
 mkdir -p "$work" "$(dirname "$out")"
 
-make >/dev/null
+make >/dev/null 2>&1 || { make; exit 1; }
+make gbasic-lsp >/dev/null 2>&1 || { make gbasic-lsp; exit 1; }
 
-# The real link command, as make would run it, pointed at a scratch output.
-link="$(make -n -B gbasic 2>/dev/null | grep -E -- '-o gbasic(\.exe)? ' | tail -1)"
-if [ -z "$link" ]; then
-    echo "make-notices: could not find gbasic's link command in make -n" >&2
-    exit 1
-fi
-link="$(printf '%s' "$link" | sed -E "s#-o gbasic(\.exe)? #-o $work/trace.exe #")"
-eval "$link -Wl,--trace" > "$work/trace.log" 2>&1 || {
-    cat "$work/trace.log" >&2
-    echo "make-notices: the traced link failed" >&2
-    exit 1
-}
-rm -f "$work/trace.exe"
+# Every binary that ships, relinked as make would link it, with the trace on.
+# Both: gbasic-lsp is in the package too, and it alone carries cJSON.
+: > "$work/trace.log"
+for bin in gbasic gbasic-lsp; do
+    link="$(make -n -B "$bin" 2>/dev/null | grep -E -- "-o $bin(\.exe)? " | tail -1)"
+    if [ -z "$link" ]; then
+        echo "make-notices: could not find $bin's link command in make -n" >&2
+        exit 1
+    fi
+    link="$(printf '%s' "$link" | sed -E "s#-o $bin(\.exe)? #-o $work/trace.exe #")"
+    eval "$link -Wl,--trace" >> "$work/trace.log" 2>&1 || {
+        cat "$work/trace.log" >&2
+        echo "make-notices: the traced link of $bin failed" >&2
+        exit 1
+    }
+    rm -f "$work/trace.exe"
+done
 
 # Archives the linker opened: lines like "/path/libfoo.a(member.o)" or "/path/libfoo.a".
 archives="$(sed -n -E 's/^([^(]*\.a)(\(.*)?$/\1/p' "$work/trace.log" | sort -u)"
+# Objects linked directly from a vendored tree: third_party/<name>/x.o -> <name>.
+vendored="$(sed -n -E 's#^(.*/)?third_party/([^/]+)/[^/(]+\.o$#\2#p' "$work/trace.log" | sort -u)"
 
 owners=""
 unowned=""
 add_owner() { case " $owners " in *" $1 "*) ;; *) owners="$owners $1" ;; esac; }
+for v in $vendored; do add_owner "$v"; done
 while IFS= read -r a; do
     [ -n "$a" ] || continue
     case "$a" in
@@ -77,7 +85,7 @@ for o in $owners; do
     grep -q "^$o	" "$manifest" || missing="$missing $o"
 done
 if [ -n "$missing" ]; then
-    printf 'make-notices: linked into gbasic.exe but not in %s:%s\n' "$manifest" "$missing" >&2
+    printf 'make-notices: linked into gbasic.exe or gbasic-lsp.exe but not in %s:%s\n' "$manifest" "$missing" >&2
     printf 'Add a line for each with where its licence text lives.\n' >&2
     exit 1
 fi
@@ -111,6 +119,8 @@ version_of() {
     case "$1" in
         curl) printf '%s' "$curl_version" ;;
         yescrypt) printf '%s' "$yescrypt_version" ;;
+        cjson) awk '/#define CJSON_VERSION_(MAJOR|MINOR|PATCH)/ {v = v (v ? "." : "") $3} END {print v}' third_party/cjson/cJSON.h | tr -d '
+' ;;
         *) pacman -Q "$1" | awk '{print $2}' ;;
     esac
 }
@@ -135,6 +145,7 @@ version_of() {
             @curl) curl_text ;;
             @yescrypt) yescrypt_text ;;
             /*) cat "$text" ;;
+            third_party/*) cat "$text" ;;
         esac
         printf '\n\n'
     done

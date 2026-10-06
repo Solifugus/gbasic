@@ -9,11 +9,11 @@
 # the pinned build script, so the notices describe the binary actually built.
 #
 # Columns, TAB-separated:
-#   owner     an MSYS2 package name, or `curl` / `yescrypt` (built from pinned
-#             source by this tree)
+#   owner     an MSYS2 package name, `curl` / `yescrypt` (built from pinned
+#             source by this tree), or a third_party/<name> object linked directly
 #   name      what to call it in the notices
 #   licence   SPDX-style, for the reader
-#   text      where the licence text is: a path under /ucrt64, or @curl or
+#   text      where the licence text is: a path under /ucrt64 or third_party/, or @curl or
 #             @yescrypt for the two this tree builds itself
 #
 # Windows' own system DLLs (kernel32, ws2_32, odbc32, ...) are not here: they
@@ -30,3 +30,4 @@ mingw-w64-ucrt-x86_64-winpthreads	winpthreads	MIT AND BSD-3-Clause-Clear	/ucrt64
 mingw-w64-ucrt-x86_64-gcc	GCC runtime (libgcc)	GPL-3.0-or-later WITH GCC-exception-3.1	/ucrt64/share/licenses/gcc/COPYING.RUNTIME
 curl	curl	curl (MIT-style)	@curl
 yescrypt	yescrypt	BSD-2-Clause	@yescrypt
+cjson	cJSON	MIT	third_party/cjson/LICENSE

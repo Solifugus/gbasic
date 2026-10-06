@@ -2,7 +2,13 @@
 
 All notable changes to the gBASIC VS Code extension are documented here.
 
-## [Unreleased]
+## [0.2.0] - Unreleased
+
+### Added
+- **Live errors as you type**, from the `gbasic-lsp` language server: found
+  through the `gbasic.lsp.path` setting or on PATH (an installed gBASIC puts it
+  there). Without a server the extension still highlights, and says so once.
+- Requires VS Code 1.91 or later (the language client's floor).
 
 ### Changed
 - The grammar's keyword, constant, word-operator and builtin lists are now
