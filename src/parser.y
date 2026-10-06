@@ -397,7 +397,99 @@ static char *join_words(char *left, char *right) {
     return joined;
 }
 
+/* The next `;` that SEPARATES STAGES, i.e. one not inside a string literal, or
+ * NULL if there is none.
+ *
+ * DELIBERATELY A SECOND COPY of the same walk `modifier_args_next_comma` does
+ * in src/eval.c, on the same terms the file already states for
+ * `eval_modifier_arg_text` mirroring `copy_string_literal`: the eval-side
+ * scanner cannot be reached from here. Held in step BY TEST rather than by
+ * hope -- a clause carrying a `;` inside an argument (`{join "; "; trimmed}`)
+ * drives both, and a change to one that is not made to the other fails. */
+static const char *modifier_next_stage(const char *text) {
+    int in_string = 0;
+    int escape = 0;
+    for (const char *p = text; *p; p++) {
+        if (escape) {
+            escape = 0;
+            continue;
+        }
+        if (*p == '\\' && in_string) {
+            escape = 1;
+            continue;
+        }
+        if (*p == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (*p == ';' && !in_string) {
+            return p;
+        }
+    }
+    return NULL;
+}
+
+static AstModifierUse parse_modifier_use_one(char *text);
+
+/* A clause is a CHAIN OF STAGES separated by a top-level `;`, applied left to
+ * right. The comma could not be used: it is already the ARGUMENT separator
+ * (`{between "a", "b"}`), and arity cannot disambiguate the two because
+ * optional arguments exist -- measured, see §9 of
+ * docs/brace_modifier_design.md. `;` is unclaimed in gBASIC: it is not a token
+ * at all, so `x = 1; y = 2` is a LEXER error, and nothing in the language
+ * competes for it.
+ *
+ * SPLIT HERE RATHER THAN AT APPLY TIME because each stage may carry its own
+ * library qualifier (`{housestyle.shout; trimmed}`), and the qualifier split
+ * below would otherwise take the first `.` in the whole phrase. */
 static AstModifierUse parse_modifier_use(char *text) {
+    const char *sep = modifier_next_stage(text);
+    if (!sep) {
+        return parse_modifier_use_one(text);
+    }
+
+    /* EACH STAGE IS TRIMMED. `{trimmed; caseless}` is how anybody writes it, and
+     * the space after the `;` would otherwise ride along in the name: declared
+     * modifiers survive that (`modifier_phrase_matches` skips leading space)
+     * but the BUILT-IN lenses are compared exactly, so the first run of this
+     * reported `compare modifier not found:  caseless` -- with the space
+     * visible in the message, naming a modifier that exists. */
+    const char *head_start = text;
+    while (*head_start == ' ' || *head_start == '\t') {
+        head_start++;
+    }
+    const char *head_end = sep;
+    while (head_end > head_start &&
+           (head_end[-1] == ' ' || head_end[-1] == '\t')) {
+        head_end--;
+    }
+    size_t head_len = (size_t)(head_end - head_start);
+    char *head = malloc(head_len + 1);
+    if (!head) {
+        abort();
+    }
+    memcpy(head, head_start, head_len);
+    head[head_len] = '\0';
+
+    const char *tail_start = sep + 1;
+    while (*tail_start == ' ' || *tail_start == '\t') {
+        tail_start++;
+    }
+    char *tail = copy_const(tail_start);
+    free(text);
+
+    AstModifierUse first = parse_modifier_use_one(head);
+    AstModifierUse rest = parse_modifier_use(tail);
+    AstModifierUse *stage = malloc(sizeof(AstModifierUse));
+    if (!stage) {
+        abort();
+    }
+    *stage = rest;
+    first.next = stage;
+    return first;
+}
+
+static AstModifierUse parse_modifier_use_one(char *text) {
     AstModifierUse modifier = ast_modifier_use(text, ast_expr_list_empty());
     char *dot = strchr(modifier.name, '.');
     if (!dot) {
@@ -1941,6 +2033,75 @@ static const char *syntax_error_reserved_word(gb_parse_ctx *ctx, const char *mes
     return NULL;
 }
 
+/* THE CLASSIC-BASIC STATEMENT WORDS THAT ARE NOT RESERVED, AND MUST NOT BE.
+ *
+ * `dim` has had a sentence since the beginning; `let` and `rem` did not, which
+ * is what makes it an inconsistency rather than a policy -- the same shape as
+ * nine module dispatchers each holding their own copy of one format. Measured
+ * 2026-10-04 by sweeping what a QBasic reader types: `MOD`, `&` and `dim` each
+ * name a remedy, while `<>`, `let` and `rem` gave a bare syntax error.
+ *
+ * AND THE TWO HERE WERE WORSE THAN TERSE, THEY MISDIRECTED. `let x = 1` and
+ * `rem a note` parse as the beginning of a CALL, so bison reported `expecting
+ * LPAREN` -- telling a beginner to add a parenthesis, which is the one change
+ * that cannot help. Reports-the-wrong-cause, in a beginner's path, for the word
+ * every BASIC book opens with.
+ *
+ * A MESSAGE, NOT A KEYWORD, which is the rule `sub` already set above: `let`
+ * and `rem` are ordinary identifiers and reserving them would break any program
+ * that uses one as a name. So the SOURCE is asked, read-only and after the
+ * parse is already over, exactly as the statement-initial reserved-word rule
+ * does one function up -- here by walking back to the start of the error's own
+ * line, since `let` sits two tokens behind the `=` the parser tripped on and
+ * the ctx carries only one.
+ *
+ * `(` IS THE DISCRIMINATOR: a program may legitimately define `function
+ * let(x)`, and a syntax error INSIDE such a call must not be answered with
+ * advice about a statement the author did not write. */
+static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
+    if (!ctx->tok_after || !ctx->active_lexer || !ctx->active_lexer->source) {
+        return NULL;
+    }
+    const char *base = ctx->active_lexer->source;
+    const char *p = ctx->tok_after;
+    if (p < base) {
+        return NULL;
+    }
+    while (p > base && p[-1] != '\n') {
+        p--;
+    }
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    const char *w = p;
+    while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) {
+        p++;
+    }
+    size_t n = (size_t)(p - w);
+    if (n != 3) {
+        return NULL;
+    }
+    char word[4];
+    for (size_t i = 0; i < 3; i++) {
+        char c = w[i];
+        word[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    }
+    word[3] = '\0';
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (*p == '(') {
+        return NULL;       /* a call, not a classic-BASIC statement */
+    }
+    if (strcmp(word, "let") == 0) {
+        return "`let` is not a gBASIC statement; assign directly (x = 1)";
+    }
+    if (strcmp(word, "rem") == 0) {
+        return "`rem` is not a gBASIC comment; a comment starts with ' and runs to the end of the line";
+    }
+    return NULL;
+}
+
 static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                                 int end_line, int end_column, const char *message) {
     if (ctx->lexer_error_reported) {
@@ -1958,6 +2119,14 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
         end_column = column + (int)strlen(ctx->bad_block_word);
         message = block_message;
         ctx->bad_block_word[0] = '\0';
+    }
+    /* A CLASSIC-BASIC STATEMENT WORD REPLACES the message rather than appending
+     * to it, unlike the reserved-word note: bison's own sentence here is about
+     * a parenthesis it wanted, which is the wrong advice entirely, so carrying
+     * it alongside would leave the misdirection in place beside the fix. */
+    const char *basic_word = syntax_error_basic_word(ctx);
+    if (basic_word) {
+        message = basic_word;
     }
     char reworded[512];
     const char *reserved = syntax_error_reserved_word(ctx, message);

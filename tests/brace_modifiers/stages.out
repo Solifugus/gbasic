@@ -1,0 +1,54 @@
+-- assign: stages run LEFT TO RIGHT
+ok   trimmed then upper   
+ok   trimmed then number  
+ok   and it IS a number   
+
+-- three stages, and a ; INSIDE an argument is not a separator
+ok   three stages         
+ok   ; inside an argument 
+ok   both in one clause   
+
+-- compare: the case this exists for
+ok   caseless alone       
+ok   trimmed alone        
+ok   trimmed THEN caseless
+ok   and it is not lax    
+
+-- compare: a single assign modifier normalises both sides
+ok   {upper} both sides   
+ok   {trimmed} ordering   
+ok   {number} both sides  
+ok   the RIGHT side too   
+ok   and both at once     
+
+-- the datetime lenses are untouched
+ok   {day}                
+ok   {month}              
+
+-- refusals, each beside a legal neighbour
+ok   terminal must be last
+ok   unknown stage named  
+ok   and WHICH stage it is
+ok   assign: stage named  
+ok   and a different stage
+ok   one stage: no number 
+ok   the lens redirect too
+ok   and no stage number  
+ok   a type failure names  
+ok   COST: no stage number 
+ok   CONTROL one stage    
+ok   CONTROL one lens     
+
+-- WHAT ORDER, exactly: the sequencing is STAGE-MAJOR on a comparison
+ok   assign: A then B     
+ok   and B saw A's output 
+ok   compare: stage-major 
+
+-- THE COST: a comparison runs each stage TWICE
+ok   2 stages -> 4 calls  
+ok   and assign -> 2      
+
+-- AND SO A STAGE MUST BE A PURE FUNCTION OF ITS INPUT
+ok   non-pure breaks it   
+ok   because it ran twice 
+ok   CONTROL pure is true 

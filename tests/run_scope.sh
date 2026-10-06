@@ -205,7 +205,19 @@ program main(args)
 end program
 EOF
 ./gbasic "$scratch/unknown.bas" >/dev/null 2>"$scratch/uerr"
-if grep -q "invalid function call: no_such_function_anywhere$" "$scratch/uerr"; then
+# WHAT THIS CONTROL IS FOR: the hint is LOOKED UP, not manufactured. A name no
+# library defines must get the plain message, or the "write stats.ols(...)"
+# advice above would be invented rather than read out of the loaded libraries.
+#
+# ASSERTED AS THE ABSENCE OF THE HINT rather than by anchoring the whole line,
+# which is what the check used to do and what made it a hostage to the message's
+# wording: the sentence changed on 2026-10-02 (`invalid function call` ->
+# `undefined function ... in scope at this call`, because the old one described
+# the CALL when the problem is the NAME) and this control went red for a change
+# it is not about. The two halves it actually needs are that the FUNCTION is
+# named and that no qualification advice is attached.
+if grep -q "no_such_function_anywhere" "$scratch/uerr" &&
+   ! grep -qE "must be qualified|defines it|Write " "$scratch/uerr"; then
     pass "  and a name no library defines gets the plain message"
 else
     fail "  and a name no library defines gets the plain message ($(tail -c 90 "$scratch/uerr"))"

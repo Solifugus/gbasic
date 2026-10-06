@@ -1,1 +1,2 @@
 runtime error at tests/negative_watch_named_scope.bas:2:5: a named watcher may only be declared at top level
+  in setup  tests/negative_watch_named_scope.bas:9:1

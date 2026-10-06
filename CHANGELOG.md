@@ -7,6 +7,318 @@ language surface may still change between releases.
 
 ---
 
+## Unreleased
+
+Kept current as work lands, so a book revising against the next release has the
+list already written rather than reconstructed. `./tools/since-release.sh`
+reports the mechanical half of this — which pinned diagnostics and goldens moved
+since the last tag — and is a floor on what changed, never a ceiling: it sees
+only messages a golden pins. This section is the curated half and is the one a
+reader sees.
+
+Nothing yet.
+
+---
+
+## 0.5.1 — 2026-10-04
+
+**Read this first.** A patch release, and every change is a **diagnostic** — no
+behaviour moves, nothing that ran stops running. Three messages a reader
+arriving from QBasic meets first now name what to write instead, and two of them
+had been giving advice that could not help.
+
+**Three diagnostics a reader arriving from QBasic meets first:**
+
+- **`<>` says what to write instead.** It is not-equal in QBasic and VB, so it
+  is not a typo — it is what the reader learned — and it lexed as `<` then `>`
+  and reported `syntax error, unexpected OP_GT`, naming the **second half** of
+  the operator and never mentioning `!=`. Now:
+  `'<>' is not an operator; not-equal is != -- a != b`.
+- **`let` and `rem` are refused by name**, and the old messages were worse than
+  terse — they **misdirected**. Both parse as the beginning of a *call*, so
+  bison reported `expecting LPAREN`, telling a beginner to add a parenthesis,
+  which is the one change that cannot help. Now `` `let` is not a gBASIC
+  statement; assign directly (x = 1) `` and `` `rem` is not a gBASIC comment; a
+  comment starts with ' and runs to the end of the line ``.
+- **Neither word is reserved**, and must not be: `let` stays a legal name for
+  your own function, which is the rule `sub` already set. The source is asked
+  on the error path instead, read-only and after the parse is over — and `(` is
+  the discriminator, so a syntax error *inside* a call you really wrote keeps
+  bison's own sentence.
+
+`dim`, `MOD` and `&` already named a remedy and these three did not, which is
+what made it an inconsistency rather than a policy — the same shape as nine
+module dispatchers each holding their own copy of one format. **Reported by the
+book session as an aside** while revising the chapter that had complained the
+`^`/`%` refusals "name neither the character you typed nor the thing to type
+instead": 0.5.0 names both, so the complaint was deleted, and writing the
+replacement surfaced that `<>` had no sentence. Sweeping the rest of what a
+QBasic reader types found the other two. `docs/ai/UNLEARN.md` had all three
+right all along, so the page was correct and only the binary was unhelpful.
+
+---
+
+## 0.5.0 — 2026-10-03
+
+**Read this first.** One change **refuses input that used to be accepted and
+was silently wrong** — a date that does not exist — and two more refuse things
+that were being quietly *ignored*. One changes a result (`chars`). **Diagnostics
+say something different in four families**: the twelve reworded ones (one
+sentence, the **nine** module dispatchers that each held their own copy of it,
+and the two actor frame-limit messages), plus every refusal of an impossible
+date, which now names the calendar rule instead of claiming the text is not
+ISO-like — so anything quoting a message verbatim has to re-capture it. The
+language additions are a **date layout notation** used for both rendering and
+parsing, **modifier chaining** with `;`, and **every modifier shape working
+inline**.
+
+**It fixes a date that did not exist:**
+
+- **A day is checked against its month.** `valid_date_parts` validated the day
+  as `1..31` from the day the type was written, so **`{date}"2026-02-30"` was
+  accepted** — and `+ 1 day` then answered `2026-03-03`, because the epoch
+  conversion normalises 30 February to 2 March. A date that does not exist
+  silently became a *different real date two days later*, with nothing raised,
+  in the type whose job is business arithmetic. It reached `{date}`,
+  `{datetime}` and every ISO parse. Found while building the layout reader,
+  which needed the predicate to be true. The leap rule is now complete: 2024 and
+  2000 are leap years, **1900 is not**. Nothing in the tree depended on the old
+  permissiveness.
+
+  **And the refusal names the calendar rule it broke**, which the first cut of
+  this did not — it shipped with the message that was already at the raise site,
+  so `{date}"2026-02-30"` answered *expects an ISO-like date string*. That is
+  **false**: being ISO-like is the one thing about `2026-02-30` that is not
+  wrong, and it was the identical sentence a string that genuinely is not a date
+  got, so the author was sent to inspect a shape with nothing wrong with it.
+  Each rule now has its own sentence, because each has a different remedy:
+
+  ```
+  `2026-02-30`  is not a real date -- February 2026 has 28 days
+  `1900-02-29`  is not a real date -- 1900 was not a leap year, so February 1900 has 28 days
+  `2026-13-01`  is not a real date -- a month is 1 to 12, not 13
+  `25:00:00`    is not a real time -- an hour is 0 to 23, not 25
+  ```
+
+  The leap case gets a sentence of its own because *February 1900 has 28 days*
+  invites the reply "no it does not" from anyone who knows the four-year rule
+  and not the hundred-year one — and the 29th of a non-leap February is the
+  commonest impossible date in real data. **A string that is genuinely not a
+  date still gets the old generic message**, which is the control: *name the
+  cause* is otherwise satisfied by blaming the calendar for everything that will
+  not parse. The layout paths are included — `Sunday, 7 March 2026` reports
+  *7 March 2026 was a Saturday, not a Sunday* rather than claiming the text does
+  not fit a layout it fits exactly — and with several layouts declared the
+  reading is named, since *a month is 1 to 12, not 30* reads like nonsense to an
+  author who never wrote a month 30. `notation` inherits all of it with no
+  change of its own, the fix being at the modifier rather than at each caller.
+
+**It changes a result:**
+
+- **`chars(f)` counts CODEPOINTS, not bytes.** It shared a branch with `bytes`
+  under a `TODO` in the source, so the two verbs returned the identical number
+  on every file — right for ASCII and wrong for everything else. A 12-character
+  file holding one accented letter reported 13 and now reports 12. `chars(f)`
+  now agrees with `len(read(f))`, which was correct all along. **A program that
+  compensated for the old number will now be off**; one that trusted the name
+  is now right.
+
+- **`fundamentals` no longer builds a grouping key out of an absence.** EDGAR
+  omits the fiscal period on some facts — measured 59 of 4,096 rows in
+  `fundamentals_derived_test` — and `fp` reached the composite keys at `_dedup`
+  and `_pk` through string concatenation, so a period key read
+  `2023-12-31|nothing`. It grouped correctly *by accident*, every absent `fp`
+  rendering the same way, and **no golden moved**, which is what says the
+  grouping was already right and only its basis was unstated. `fp` is now
+  defaulted to `""` the way the neighbouring `start` already was, so a row with
+  no fiscal period reports **`""` where it used to report `unknown`** — the one
+  visible consequence, and it is in the direction the field was already being
+  used. Found by instrumenting `+` to count absence coercions tree-wide.
+
+**It accepts input it used to refuse:**
+
+- **A `datetime` reads ISO 8601's `T` separator and zone designator.**
+  `2026-03-07T14:05:09Z` is what a web API hands you and it was refused. `Z`,
+  `+HH:MM`, `+HHMM` and `+HH` are accepted with their `-` forms. **An offset is
+  honoured by converting to UTC**, because the type is civil and carries no zone
+  while the text denotes an instant — so `+02:00` moves the digits back two
+  hours and `Z` is a no-op. A zone with no time, an impossible offset and a bare
+  sign are refused, and a bare date is untouched (`2026-03-07` ends in `-07`).
+
+**It adds language:**
+
+- **A date layout, written the way it reads**: `{string "YYYY-MM-DD hh:mm:ss"}d`
+  rather than `%Y-%m-%d %H:%M:%S`. Until now there was **no** output formatting
+  at all — `string(dt)` gave ISO and everything else was built by hand from the
+  dot fields. It is an **argument to `{string}`**, not a new verb, because every
+  modifier is named for what it produces and `{string}` already turned a value
+  into text.
+
+  **Date parts are uppercase, time parts lowercase**, which resolves the
+  collision every other scheme fumbles — `MM` is the month, `mm` is the minutes.
+  **One or two letters is a number, three a short name, four a long name**, the
+  same for `M` and `D`: `MMM` is Mar, `MMMM` March, `DDD` Sat, `DDDD` Saturday.
+  The **12-hour clock is implicit** — `hh` is 24-hour unless the layout carries
+  `am` or `pm`, and the case you write is the case you get.
+
+  **A letter run that is not a token is refused by name**, so prose goes outside
+  the layout. That is what makes the notation safe rather than merely short: if
+  prose passed through, `"Business hours: hh:mm"` would render the `ss` in
+  *Business* as seconds — measured, 4,536 of 104,334 English words contain `ss`,
+  about one in twenty-three. A list of layouts is also refused, since there is
+  no second way to render one value.
+
+- **A modifier clause chains with `;`**, applied left to right:
+  `clean {trimmed; upper}= raw`. The comma could not be used — it is already the
+  argument separator (`{between "a", "b"}`) and arity cannot disambiguate it. A
+  `;` inside an argument is content, not a separator.
+- **Every modifier shape now works inline**, not just a one-word name: an
+  argument (`{split ","}line`), a multi-word name (`{end of month}invoice`) and
+  a chain (`{trimmed; upper}raw`) are all expressions now, where the first two
+  were parse errors and the assignment clause was their only spelling. The
+  clause form is **not** redundant and the division of labour is unchanged —
+  *clause when the value is being stored, inline when it is being used* —
+  because the two apply to different things: the clause takes the **whole**
+  right-hand side while inline binds like unary minus, so
+  `b {number}= "10" + "5"` is the **number** 105 and
+  `h = {number}"10" + "5"` is the **string** `"105"`. A compound assignment
+  (`n {number}+= "5"`) has no inline spelling at all.
+- **`{date "DD/MM/YYYY"}` reads text through the same layout notation**, and
+  takes a **list** when one shape is not enough:
+  `{date "YYYY-MM-DD", "DD/MM/YYYY", "D MMM YYYY"}cell`. `{date}`, `{datetime}`
+  and `{time}` all take layouts; with no argument they stay ISO-only.
+
+  **The order is the declaration**, which is what makes first-match-wins honest
+  rather than a race — `03/07/2026` is 7 March or 3 July depending on the
+  report, and the order says which. **A layout matches only if it also yields a
+  valid date**, so a list disambiguates itself where the data allows:
+  `03/15/2026` skips a `DD/MM` candidate rather than inventing month 15. **A day
+  name is checked**, so `"Sunday, 7 March 2026"` is refused — that day is a
+  Saturday. A two-digit year takes the POSIX pivot (`00`–`68` this century).
+  When nothing fits, the message names the text and every layout tried.
+- **Any modifier now works as a comparison lens**, alone or chained:
+  `if name {trimmed; caseless}= typed then`. A comparison lens is a
+  *normalisation of both operands*, so this replaces
+  `trim(lower(a)) = trim(lower(b))`. Previously `caseless` was the only
+  comparison lens and `a {trimmed}= b` was refused outright. A lens that
+  *answers* the comparison (`caseless`, or one declared `for compare`) must be
+  the last stage. **A stage must be a pure function of its input**, because it
+  is applied to each operand separately — a stage that answers differently each
+  call makes **equal values compare unequal**, and nothing can detect it.
+  **A lens is not free**: a comparison runs each stage once per operand, so a
+  three-stage chain is **six** invocations of your code where the assignment
+  form is three. The order is **stage-major** (`A(left) A(right) B(left)
+  B(right)`), chosen so the two calls to one stage are adjacent — a stage that
+  reads a clock or a counter sees both operands as nearly together as possible.
+  It is unobservable from a correct program, which is why it is pinned.
+- **A modifier name may no longer contain `;`.** Measured: nothing in `stdlib`,
+  `examples` or `tests` declared one, so the affected set is believed empty.
+- **`{ … }` in expression position is read as a modifier when it cannot be a
+  record.** The lexer decides on one token past the leading identifier: a record
+  always has `:`, `=` or `(` there and a modifier never does, and an inline
+  modifier may not span a newline. Every record literal shape is unaffected —
+  asserted both directions in `tests/run_inline_modifier.sh`, which derives the
+  follow-set from `record_field_list` in `src/parser.y` rather than carrying its
+  own copy, so a new record form fails the check instead of being silently
+  reclassified.
+
+**Diagnostics that say something different** — anything quoting one verbatim has
+to re-capture it:
+
+- **`undefined function: NAME`** replaces `invalid function call: NAME` for a
+  name nothing defines, and names `has_builtin` as the way to ask first. It says
+  *in scope at this call* rather than "nothing defines that name", because in
+  script mode a function declared below its call is not yet registered and the
+  blunter sentence would be false there. The three *hinted* variants (a name a
+  loaded library defines, an ambiguous one, a replaced alias) are unchanged.
+- **The same for all nine module dispatchers** — `webclient`, `http`, `timer`,
+  `webserver`, `sqlite`, `odbc`, `pg`, `gi`, `money`: `undefined function:
+  odbc.vacuum -- the 'odbc' module does not define 'vacuum'`. Only
+  `negative_odbc_unknown_verb.err` pins one of these, so `since-release.sh`
+  reports one change where there are nine.
+- **The actor frame limit names both numbers**: `send: message is 200037 bytes
+  and one frame on this channel holds at most 106496`. The ceiling comes from
+  `SO_SNDBUF` and is a property of the machine, so there was no constant to look
+  up. `spawn` gets the same pair.
+- **A chain names the stage nobody recognised**: `assign modifier not found:
+  nosuch (stage 2 of this clause)`. A one-stage clause is unchanged.
+
+**It refuses things it used to accept quietly:**
+
+- **An unrecognised `dates` spec field.** `{ weekdayz: [...] }` was ignored,
+  which made it the *empty spec* that every day satisfies — so `select` answered
+  tomorrow and `matches` answered true for everything. Refused by name, in all
+  three verbs and recursively into `when:`. `dates.calendar` gets the same rule
+  over its own four fields.
+- **`notation.to_text` on a live value.** A function value was written as
+  `"<function greet>"` and read back as that *string*, raising nothing at either
+  end, so a record holding a callback came back with a string where the function
+  was.
+
+**New diagnostic:**
+
+- **Warning `2110`** — a `receive()` with no timeout, in a watcher body that
+  fired at *registration*, when every actor the program spawned has exited.
+  Nothing remains to send, the event loop has not started, and the program stops
+  with no diagnostic at all. It is a warning rather than a raise because a
+  handle can travel over `SCM_RIGHTS`, so a grandchild could still hold one.
+
+**Faster, with no visible change:**
+
+- **`bytes(f)` is answered by `stat`** on a regular file instead of reading it.
+  A 500 MB file went from allocating half a gigabyte to 0.00s at 13 MB RSS. A
+  FIFO or anything in `/proc` keeps the read path and the answer it already
+  gave.
+
+**Decisions recorded, with no behaviour change:**
+
+- **A `constructor` does not re-fire at nested levels.** Policies recurse,
+  constructors do not: a policy is a datum, a constructor is arbitrary code with
+  side effects that has already run once at literal-evaluation time.
+  `motor (copy): new engine` and `motor (copy): engine` derive *identically*.
+- **No warning for coercing an absence into a string.** `"Total owed: " + owed`
+  gives `Total owed: nothing`, which is real and reaches an invoice — but
+  measured across every program in the tree the coercion happens at ten places
+  and **eight are the idiom for showing that something is absent**. Use
+  `default(owed, "n/a")`; the reference now says so beside it.
+
+**For anyone quoting the reference** — four corrections, each verified against
+the binary before the page was edited:
+
+- **`mid(s, i, 1)` is not O(i), and a per-character scan is not quadratic.**
+  PLAT-STRIDX removed both costs and the page was never updated, so it went on
+  telling readers to avoid what had become fast — and a reader who believes
+  `mid` is O(i) rewrites a linear loop into something worse. Measured: `mid` is
+  **flat** in the index (ratio 1.09 across a 4x string where O(i) would be ~4)
+  and a scan is **linear** (0.058 / 0.114 / 0.229 / 0.461 across 2x steps). The
+  quoted timings were never in dispute and are kept; it is the *reason* that was
+  wrong, and the likeliest real cause — accumulating with `+` inside the scan —
+  is separately measured and genuinely quadratic, so the page points there now.
+  The advice itself is unchanged.
+- **Three of the four lines in the "Modifier use" block did not run.**
+  `{caseless}` is a comparison lens and raises as one; `rounded` named a
+  modifier that exists nowhere. Replaced with three that run.
+- **`spawn` arguments are parameters, not a first message.** The old sentence
+  described the transport rather than the program: a child gets them as
+  parameters, a following `receive(1 seconds)` answers `nothing`, and arity is
+  checked, so a zero-parameter entry refuses outright.
+- **`type` answers for 27 kinds; the page listed 7.** The full list is now
+  there and a tripwire derives it from `builtin_type_name` in `src/eval.c`, both
+  directions, so it cannot drift again. Added with it: `error.trace`'s `line` is
+  the **call site**, not the raise site, and the strict conversions are
+  deliberately stricter than the operators — `1 = true` is true and `1 > false`
+  orders, while `number(true)` and `boolean(1)` raise.
+
+**For anyone running the test tree:**
+
+- **The two recorder fixtures are opt-in** (`GBASIC_RECORD_FIXTURES=1`). They
+  make live, paid model calls and overwrite committed recordings; nothing
+  enforced that before.
+- **`run_all.sh` fails a suite that prints `FAIL` and exits 0.** `run_core.sh`
+  did exactly that for nine days, so the gate reported OK over a failing check.
+
+---
+
 ## 0.4.0 — 2026-10-02
 
 **Read this first.** Two changes BREAK working programs, one changes a result

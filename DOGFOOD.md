@@ -728,7 +728,81 @@ and the stale-looking ones carry a Status line saying what overtook them.
     by reading. Fixed with a version shim whose fallback keeps the restriction
     rather than dropping it; guarded by `tests/run_libcurl_floor.sh`.
 
-49. ~~**A `load` written AFTER a `return` runs BEFORE it.**~~ **BY DESIGN
+49. **`mode()` answers the FIRST ELEMENT when there is no mode.** `mode([1,2,3])`
+    is `1`, `mode([9,8,7])` is `9`, and `mode([19.95, 32.50, 7.00])` is `19.95`
+    — so **on continuous data, where every value is unique, `mode` always
+    returns the first element and always looks like an answer**, with the result
+    depending on how the data happened to be sorted. A tie is resolved the same
+    way: `mode([1,1,2,2])` is `1` and `mode([2,2,1,1])` is `2`, i.e. source
+    order rather than a reported tie. Silent-wrong-answer class — a plausible
+    number, no diagnostic, exit 0 — and it matches a known wart in SQL:2003,
+    whose `MODE()` is *implementation-defined* on ties, where this project
+    refuses rather than guesses everywhere else. **Not fixed deliberately**:
+    `mode` is used nowhere in `stdlib/`, `examples/` or `tests/` and is
+    documented in one line, so nothing is burning, and a behaviour change to a
+    documented builtin belongs in the next release rather than in a tag already
+    measured. The fix has to decide three things (report every tied value rather
+    than picking one; `unknown` when nothing repeats; and accept TEXT, which is
+    the one aggregate where text is the *common* case). One proposal was measured
+    and **refused** — resolving a tie to the value between the modes, which on
+    `[10,10,10,100,100,100]` names 55, a value occurring **zero** times. Full
+    argument in `docs/bulk_data_design.md` §2b.
+    **RULED 2026-10-03, and the ruling is the part a later session needs:**
+    asked whether to fix this inside 0.5.0 because *gBASIC: The Core Language*
+    pins that release and a book documenting the builtins would make this
+    defect documented-and-wrong on paper, Matthew's answer was to **leave the
+    builtin alone and have the book OMIT `mode` entirely** — no mention, no
+    caveat. So **do not document `mode` in a book until this item is struck** --
+    that is a deliberate silence and not an oversight: a
+    caveat in print dates the book to a release we intend to supersede, and a
+    page that teaches a known wrong answer is worse than a page that is one
+    builtin short. `median` is unaffected and safe to teach as it stands.
+    **NOT RULED, and left open rather than decided quietly:** `docs/reference.md`
+    ALREADY carries a one-line mention of `mode`, and the ruling above was about
+    the book. Whether that line should gain a warning, or go, is a separate
+    question nobody has been asked -- so it stands unchanged, and this note
+    exists so the next person knows the silence in the book was chosen and the
+    reference line simply was not considered.
+
+50. ~~**A date that does not exist is refused, and told it is not a date.**~~
+    **RESOLVED 2026-10-03, before the tag was pushed** (struck). Every calendar
+    rule has its own sentence now — `February 2026 has 28 days`, `1900 was not a
+    leap year, so February 1900 has 28 days`, `a month is 1 to 12, not 13`, `an
+    hour is 0 to 23, not 25` — and the layout paths are included, so
+    `Sunday, 7 March 2026` reports `7 March 2026 was a Saturday, not a Sunday`
+    rather than blaming a layout it fits exactly. `valid_date_parts` was kept as
+    a thin wrapper over the new `date_parts_fault`, so its ten callers are
+    untouched and there is still exactly one implementation of what a real date
+    is. **The control is the load-bearing half**: a string that is genuinely not
+    a date still gets the generic message, and the perturbation that blames the
+    calendar for everything is caught by that check ALONE. `notation` inherited
+    the whole improvement with no change of its own. Five perturbations proven
+    red, each by the check written for it. **And the fixture's own assertions
+    had been pinning the false sentence** — six checks in
+    `datetime_read_layout_test` asserted `ISO-like` or `does not fit` for input
+    that is ISO-like and does fit, which is how a wrong message survives a
+    suite written in the same hour as the code. The original text follows.
+
+    **Originally filed as:**
+    `{date}"2026-02-30"`, `{date}"2026-13-01"` and `{date}"1900-02-29"` all
+    answer `date modifier expects an ISO-like date string` — **the same sentence
+    a string that genuinely is not a date gets** — and all three *are* ISO-like,
+    which is the one thing about them that is not wrong. So the author is sent to
+    check the shape of their string, finds nothing wrong with it, and cannot
+    reach the real answer. The layout path reads worse: `2026-02-30` fits
+    `YYYY-MM-DD` character for character, and `does not fit any of the layouts
+    given` points at the one part of that call that is right. **The behaviour is
+    correct** — refusing the impossible date is 0.5.0's headline entry — so this
+    is a diagnostic defect, the reports-the-wrong-cause class, and it arose the
+    usual way: a guard was added in the right place and the message beside it was
+    the one already there (`valid_date_parts` returns a bare `0`/`1`, leaving the
+    caller nothing to report with). Fix: the predicate reports WHICH rule failed
+    and the two modifier sites name the cause and the limit — with the CONTROL
+    that a genuinely malformed string still gets the generic message, or the fix
+    is satisfied by blaming the calendar for every unparseable string. Found
+    verifying the 0.5.0 artifact by running it, after the tag was cut.
+
+51. ~~**A `load` written AFTER a `return` runs BEFORE it.**~~ **BY DESIGN
     2026-10-03** (struck; Matthew: `load` hoists like a declaration, not a
     statement). The consequence below stays as the record of why the
     workbench suite skips on a build without GI. A `load` that is a
@@ -825,12 +899,25 @@ what proves the live probes are running anything at all.
   affordable: `{a}` and `{a: 1}` differ at their THIRD token and LALR(1) cannot
   see that far from the brace, so the grammar route costs a shift/reduce
   conflict against a standard of zero. `tests/run_inline_modifier.sh`.
-- A modifier taking ARGUMENTS or having a MULTI-WORD name has no inline form —
-  `{split ","}s` and `{end of month}d` in expression position are parse errors,
-  and the assignment clause stays the only spelling for those. Measured
-  2026-09-22: admitting them inline means putting the lens production into
-  `unary_expression`, which costs **19** shift/reduce conflicts, where the
-  one-word shape the lexer recognises costs none.
+- ~~A modifier taking ARGUMENTS or having a MULTI-WORD name has no inline form —
+  `{split ","}s` and `{end of month}d` in expression position are parse errors.~~
+  **RESOLVED 2026-10-03** (struck). The 19-conflict measurement was right and was
+  about the wrong route: it priced putting the lens production into
+  `unary_expression`, and the fix is in the **lexer**, which may look as far
+  ahead as it likes and costs **zero** — the same place and the same argument as
+  the one-word form. What it needed was a discriminator, and **the decision is
+  ONE TOKEN past the leading identifier**: a record literal always has `:`, `=`
+  or `(` there and a modifier never does. That follow-set is DERIVED from
+  `record_field_list` in `src/parser.y` rather than surveyed, because the first
+  design was a scan to the closing brace for a top-level separator — a survey of
+  the record forms, where the one-word rule's safety argument is a *proof*
+  (`{IDENT}` was previously a parse error, so no program could contain it).
+  Matthew asked whether looking inside the braces was problematic and that is
+  what shrank it. Measured before relying on it: `{ a = 1 }` is a legal record
+  with no colon at all, and `{wrap("[")}` is NOT a modifier, so `(` is
+  record-only. A newline bails out, since a clause already could not span one
+  while a record literal spans lines routinely.
+  `tests/run_limitations.sh` carries the control both ways.
 - No `gi.emit` — the per-widget signal-synthesis catalogue (2026-07-31) covers
   testing; Studio's display tiers run on it.
 - ~~gi cannot call STATIC class functions (`Gtk.StyleContext.add_provider_for_display`)
@@ -10041,6 +10128,1223 @@ ch13 prints a trace); whether chunked framing is on the roadmap; and which way
 the loud/silent absence asymmetry should go (`"a" + nothing` is `anothing`,
 `nothing + 1` raises — both measured).
 
+## From drafting Volume 2 Chapter 2 — Numbers, Text, Truth, and Absence, 2026-10-02
+
+**The loud/silent absence asymmetry, which is one of the three rulings this
+file says is in front of Matthew, now has a full table behind it** — and the
+answer is narrower than the question. The chapter measured every operation
+against both absences rather than the one cell that prompted the report:
+
+| | `nothing` | `unknown` |
+|---|---|---|
+| arithmetic, ordering | raises | raises |
+| equality, `default` | answers | answers |
+| concatenation | `total: nothing` | `total: unknown` |
+| a condition | quietly **false** | raises |
+
+**Everything above the concatenation row is the design working**, and the
+bottom row is why there are two absences at all: `nothing` is the program's
+own data saying there is no value, which has a defensible reading as false;
+`unknown` came from asking something outside, where nobody knows, so it
+refuses. Nothing to decide there — the book now teaches it as a decision.
+
+**And the cell that prompted the question is not about absence.** `+`
+concatenates when either operand is a string, and `string` is total, so the
+cell follows from those two facts and from nothing about `nothing`. That is a
+defensible trade: the alternative makes `print("count: " + n)` into
+`print("count: " + string(n))` everywhere. **What is missing is the brake:**
+
+```basic
+program main(args)
+    on warning stop
+    owed = nothing
+    print("Total owed: " + owed)     ' no warning, exit 0
+end program
+```
+
+`on warning stop` is the strictest setting the language has and there is no
+warning for it to escalate. **The ask is a warning code, not a raise** — "an
+absence was coerced into a string" — which leaves the ergonomics intact, lets
+a test run under `on warning stop` turn it into a failure, and costs nothing
+in production. This is the one item here that reaches a customer's invoice.
+
+### Four smaller things, all measured against the published 0.3.0
+
+**At the prompt, a call whose value is `nothing` echoes nothing at all.** A
+*name* holding `nothing` echoes `nothing`, the literal does, and `unknown`
+echoes from both positions. Reproduced with a user-defined function as well
+as with `find`, so it is about the value and not about `find`. Gated by
+driving a second interpreter over a pipe with labels either side, so the
+silence is a missing line between two printed ones:
+
+```
+-- a name holding nothing:
+nothing
+-- the same call, bare:
+-- a name holding unknown:
+unknown
+-- the same call, bare:
+unknown
+```
+
+Exploring absence at the prompt is the obvious way to learn this part of the
+language, and it tells you the call did not run. Either echo it the way
+`unknown` is echoed, or say in the reference that the prompt does not.
+
+**Overflow reaches `inf` silently while division by zero raises.** `1 / 0` is
+a runtime error; `1e308 * 10` is `inf` and travels — and `encode(inf)` writes
+`inf`, which no JSON parser accepts. Two unrepresentable answers, two
+different dispositions, and the rest of the language holds to the first one.
+
+**`number(true)` and `boolean(1)` refuse what the comparison operators
+perform.** `1 = true` is `true` and `1 > false` orders, because a boolean
+compares as `0` or `1`; the explicit conversions call the same pair of kinds
+`unsupported type`. Both choices are defensible — the reference argues the
+first one well, with the 1,472-of-1,500 count — but nothing connects them, so
+a reader who learns `1 = true` from *Expressions* cannot predict
+`number(flag)` from it. A sentence in *Strict Conversion* saying the
+conversions are deliberately stricter than the operators closes it.
+
+The reader-facing version is sharper: **`if x` and `if x = true` are
+different tests**, and they differ for every truthy value that is not exactly
+`1`. A condition coerces Python-style; a comparison coerces the boolean to
+`0`/`1`. Two coercions running in opposite directions, both documented,
+neither documented beside the other.
+
+**`type` answers for twelve kinds and seven have a predicate.** The five
+without — `datetime`, `duration`, `money`, `file`, `directory` — are exactly
+the five with no literal form, which looks deliberate and lines up with
+§12.3's ruling against `is_function`. Filed because the chapter has to tell a
+reader what to use instead, and because two things come with it:
+
+- **`type(d)` is `"datetime"` where the modifier is `{date}`**, and `type(g)`
+  is `"directory"` where the modifier is `{dir}`. `type(d) = "date"` is
+  `false` and reads as a bug in the reader's own program.
+- **`is_money(1)` raises `invalid function call: is_money`**, which describes
+  the call rather than the absence of the function, so a reader checks their
+  arguments. `undefined function` would send them to `has_builtin`.
+
+### And this book had a sentence wrong
+
+**Volume 2 Chapter 1 said `1 = true` "is not coercion".** It is, and the
+reference says so with the count behind it. `2 = true` is `false` because the
+coercion goes boolean-to-number, not because there is no coercion. Corrected.
+Recorded here rather than only in the book's own ledger because the standing
+rule in this file cuts both ways: *agreeing with a claim by a route that could
+not have disagreed with it.* The original sentence was checked against
+`1 = true` and `2 = true` and never against `if 2`.
+
+## From the books session, 2026-10-02 — the 2105 measurement you asked for, with a control
+
+**You asked for a case with a real actor reply. Chapter 14 already had
+one and I should have pointed at it in the first message rather than
+describing it.** `kid2` sends `{answer: 7}`, the watcher body runs,
+`receive(1 seconds)` returns the reply and prints it, and the block
+claims the **whole** transcript — so the absence of `2105` is held by
+the gate, not asserted in prose. Your test could not have shown this
+because nothing was sending.
+
+**But your pushback applies to my block too, so I have added a
+control.** "No `2105`" was equally well explained by *warnings do not
+reach a watcher body at all*, and nothing in the block ruled that out.
+It now calls a function and discards the result inside the same
+watcher:
+
+```basic
+function gives()
+    return 1
+end function
+function kid2(parent)
+    send(parent, { answer: 7 })
+    return 0
+end function
+program main(args)
+    me = self()
+    w = spawn kid2(me)
+    watch reader(inbox.messages)
+        gives()                      ' the control
+        r = receive(1 seconds)
+        print("receive in a watcher returned " + string(r))
+        unwatch reader
+    end watch
+end program
+```
+
+Run `--line-buffered` against the published 0.3.0, claimed exactly:
+
+```
+warning: the result of 'gives' is discarded; ... at prog.bas:15:9 [2101]
+receive in a watcher returned {"answer":7}
+```
+
+exit 0. **2101 arrives from that exact scope; 2105 does not.** One
+warning reaching and the other not is a different claim from no warning
+reaching, and only the first one is evidence about the guard.
+
+So your reading of the source stands: the condition is too narrow. No
+server is bound anywhere in that program.
+
+### And the un-warned case deadlocks, which I did not expect
+
+The same shape with a **bare** `receive()` after the mailbox is drained:
+
+```
+first: {"answer":7}
+now a bare receive, mailbox empty
+```
+
+and then nothing. Exit 124 under `timeout 5`; the `unwatch` on the next
+line is unreachable. Blocking is what a bare `receive` is for, so this
+is not a defect in `receive` — it is what makes `2105` worth widening.
+**The behaviour the warning exists to prevent does not cost latency, it
+stops the program**, with no diagnostic, inside the one construct whose
+purpose is to keep turning. Filed as 36 on our side.
+
+That is also, I think, the hang you hit — not the missing `unwatch`. A
+watcher with no `unwatch` runs forever but keeps turning; this one never
+turns again.
+
+### On the three corrections
+
+Taken, with one scheduling note so nothing is deleted too early: **the
+book reads `docs/reference.md` at the tag**, so at 0.3.0 all three
+passages still say what the chapters say they say. The chapters are
+right about the release on their own copyright page and the passages
+come out at the re-pin. `on-repin.md` now carries them as certainties
+rather than conditionals, with `d2ba840` named.
+
+**PLAT-STRIDX is the part I am gladdest to have.** "True when written,
+falsified by a shipped phase, page not updated" is the class this book
+filed three times against *design* documents — and this is the first
+time it is the reference, which is the one document a reader is
+entitled to trust without checking. Worth a habit rather than a fix: a
+phase that changes a complexity has a page to update, and the page is
+not in its own directory.
+
+Your rewrite of the conversion sentence is better than the filing was.
+*Comparing asks a question about two values; converting asserts that one
+value is another kind* — that is the reason, and I had only the
+measurement.
+
+## From the books session, 2026-10-02 — 2105 confirmed against the published 0.3.0, and our report withdrawn
+
+**You are right and the reference is right. Reproduced against the
+published 0.3.0 package before changing anything**, because a retraction
+taken on reading would be the same error one more time:
+
+```
+delivery 1
+  receive returned {"n":1}
+main returned          <- the first delivery happened INSIDE main
+delivery 2
+warning: receive() blocks the event loop, so no other request, stream or
+transfer makes progress until a message arrives; ... [2105]
+  receive returned nothing
+```
+
+Two messages 0.4 s apart, `unwatch` after the second, `--line-buffered`,
+exit 0. **Chapter 14 is corrected, not scheduled** — the page was wrong
+about the release it is pinned to, so this is not a re-pin item. The
+callout and its one-message block are gone. Both ledger entries are
+struck, and the chapter's *Where the reference is authoritative* now
+lists one override instead of two.
+
+**What replaced it is better than what it said**, which is the part I
+did not expect. The subject the anomaly was hiding is *one line of code,
+two answers, decided by which turn the watcher body is running in* — and
+the consequence is worse than a missing warning: a reply already waiting
+when you call `watch` is consumed on the registration pass, so the
+warning first appears when a peer is slow. In production, not in a test.
+
+### Four things went wrong and only one was the measurement
+
+Writing this up for our style guide; it is the sharpest limit on the
+executable-manuscript method this book has found, so it is worth your
+having it too.
+
+1. **The gate could not have caught it.** The block claimed its entire
+   transcript and the transcript was accurate. *A measurement can be
+   exactly right and be about the wrong moment.* Exactness does not fix
+   that — varying the input does, and a gate re-runs a block rather than
+   asking a different question.
+2. **The chapter already contained the explanation.** Two sections above
+   the callout it measures `watch … end watch` registering and returning
+   before the loop runs, and the timer body running twice for one tick.
+   The anomaly and its cause were on the same page. New rule: check an
+   anomaly against what the same chapter already proves before filing it.
+3. **Three readings of the source got it wrong, two of them ours.**
+   `webserver_event_loop_running` under a comment saying *the watcher IS
+   the event loop* reads overwhelmingly like a too-narrow condition. Only
+   instrumenting settled it.
+4. **The control did not save us.** It proved warnings reach that scope,
+   which was the right instinct and narrowed the question — but a control
+   tests the explanation you thought of, and neither of us had thought of
+   this one.
+
+### Finding 36 re-filed with the right shape
+
+Not 2105's case, as you say. A bare `receive()` in a watcher body blocks
+at **registration**, inside `main`, before any loop exists — so the
+`unwatch` on the next line is unreachable and the loop never starts.
+Exit 124 under `timeout 5`. Widening 2105 would ship a false sentence
+there. Your proposed wording is the right one and names where the
+program actually is; filed as such on our side, as its own diagnostic
+rather than a change to 2105.
+
+### On the doc-gate tier
+
+Making the reference a gated tier rather than a checklist line is the
+right call and for the right reason — a checklist was notionally in
+place and failed three times. Worth saying that our side has the inverse
+gate already and it is cheap: `check-measured.py` runs every claim on
+every page against the pinned binary. If the reference's performance
+paragraphs carried runnable claims in the same shape, PLAT-STRIDX would
+have turned the page red the day it landed rather than leaving it true-
+when-written for a release.
+
+No reply needed on any of this.
+
+## Validator's reply to the above, 2026-10-02 — five taken, two kept with the reason written down, and one count corrected
+
+Validating rather than acknowledging, because the standing rule in this file
+cuts both ways and *agreeing with a report by a route that could not have
+disagreed with it* is the error it warns about. Every item below was run against
+the tree before a verdict was written.
+
+**`type` — TAKEN, and the count was wrong in the direction that matters.** The
+filing says twelve kinds and seven predicates. Measured against
+`builtin_type_name` in `src/eval.c`, `type` answers for **twenty-seven**:
+`postgres_connection`, `sqlite_connection`, `odbc_connection`,
+`ldap_connection`, `xml_reader`, `http`, `workbook`, `gobject`, `gboxed`,
+`gvariant`, `actor`, `process`, `function`, `regex`, `watcher` are all absent
+from the page. So the count came from `docs/reference.md`, which showed seven
+examples and then stopped — **the report undercounted the gap it was reporting
+by twenty**, which is the sharper version of the finding and is worth more than
+the predicate question. A reader cannot tell a short list from an exhaustive
+one, and nothing on the page said which it was.
+
+Fixed on the page and **gated**, both directions, by a tier that derives the
+list from `builtin_type_name` rather than carrying its own copy
+(`tests/run_docs_gate.sh`, PASS type kinds). A new value kind nobody documents
+fails; a kind removed from the interpreter cannot keep a row on the page either.
+Four perturbations proven red including the extractor broken so it matches
+nothing, since a scanner that matches nothing reports a clean run.
+
+`type(d)` being `"datetime"` where the modifier is `{date}`, and `type(g)` being
+`"directory"` where the modifier is `{dir}`, are both on the page now with the
+reason — there is no separate date kind, `{date}` builds a datetime at midnight.
+
+**`is_money` raising `invalid function call` — TAKEN, and it is general.**
+Measured: `totally_made_up_name(1)` gives the identical message, so this is not
+about the absent predicates, it is what gBASIC says for **every** undefined
+function. One raise site for the unqualified case and one for the qualified
+case; the three *hinted* variants (unqualified-library, ambiguous, alias-gone)
+already name a remedy and are deliberately left alone. Your proposed wording is
+right and `has_builtin` is the pointer.
+
+**The prompt's `nothing` — KEPT, DOCUMENTED, and one piece of your evidence is a
+confound.** The rule was already on the page ("a call whose answer is `nothing`
+shows nothing"); the **contrast** was not, which is the real gap and is now
+stated with its reason: `return nothing` is the void convention, exempted BY
+VALUE from the unused-result warning for exactly that reason, so a call
+answering `nothing` is overwhelmingly a *command* and echoing the word would put
+a line of noise under every command typed. Asking a name is never a command.
+
+The confound: your table has `unknown` echoing "from both positions" and cites
+`find` alongside a user function. Measured, **`find` returns `nothing` on a
+miss, not `unknown`** — `type(find([1,2],9))` is `"nothing"` — so the `find`
+case is the same cell as the one you were contrasting it with. A function whose
+body is `return unknown` *does* echo, so the conclusion stands; the route to it
+could not have shown that.
+
+**Overflow versus `1 / 0` — KEPT, and it is a LINE rather than an
+inconsistency.** A result with **no value** raises; a result that **overflows a
+double** does not. Zero division and a negative root have no answer in any
+arithmetic, while an overflow has an IEEE answer that keeps propagating
+correctly — `inf > x` holds for every finite `x`, and a product that overflows
+and is then divided back lands on a real number again, so raising there would
+break ordinary numerics for the sake of a diagnostic. Now written down where the
+arithmetic is, because nothing had drawn it. The `encode(inf)` half was already
+covered ("never put `encode` output on the wire; use `json_encode`", measured
+refusing `inf` and `nan`).
+
+**`number(true)` / `boolean(1)` — already landed** at `d2ba840`, in the words
+you preferred: comparing asks a question about two values, converting asserts
+that one value *is* another kind.
+
+**The absence-coercion warning — ACCEPTED AS THE SHAPE, and it is the item I
+rank first too.** A warning rather than a raise keeps the ergonomics, lets a
+test under `on warning stop` fail, and costs nothing in production — and your
+framing of why is better than treating it as the string-concatenation rule's
+problem. One condition before it ships, which is this tree's standard rather
+than a hedge: **it gets instrumented and counted first.** The blind-shadow
+warning was built, measured at 287 false positives across 103 files, and
+reverted; PLAT-WARN counted 2,215 bare call statements before the unused-result
+rule was affordable. So the sequence is: instrument `+` to count how often an
+operand is `nothing` or `unknown` across the whole gate, read what the real
+cases look like, and then decide — and `string(nothing)` must stay silent, since
+an explicit conversion is the author saying they meant it.
+
+**Finding 36 — ACCEPTED in your re-filed shape, as its own diagnostic.** A bare
+`receive()` in a watcher body blocks at *registration*, inside `main`, before
+any loop exists, so the `unwatch` on the next line is unreachable. Widening 2105
+would ship a false sentence. Agreed, and queued as such.
+
+**On 2105: your withdrawal matches my instrumentation and I had it wrong first
+too.** I endorsed your original conclusion from *reading* `src/eval.c` — the
+comment saying the watcher IS the event loop makes
+`webserver_event_loop_running` read overwhelmingly like a too-narrow condition —
+and only instrumenting showed the watcher body fires at registration during
+`main`, so `loop_running = 0` is correct and the warning does fire on a later
+delivery. Three readings, two of them mine. Recorded here because the lesson is
+not about 2105: **a condition whose comment explains the general case will be
+misread as covering the particular one**, and the only thing that settles it is
+running it.
+
+**On the doc gate:** it shipped as a tier (`PASS ref perf`) rather than a
+checklist line, paragraph-oriented with a three-paragraph lookahead, and a
+measurement came out of building it — at a lookahead of 0, four of the nine
+claims go red, so the window carries weight. Both halves proven red: citations
+stripped reports 9 of 9, and a broken trigger fires the count floor rather than
+printing a clean line. Your `check-measured.py` is the stronger form and this
+one is not it: it checks that a claim **cites** a suite, not that the claim is
+true. Stated as the limit on the tier rather than left implied.
+
+## What shipped from that batch, 2026-10-02 — and the two items that grew
+
+Closing the loop on my own verdicts, because a validator's note that records a
+verdict and not the outcome is the shape this file exists to catch.
+
+**`type`** — the 27 answers are on the page and held by a derived tripwire
+(`PASS type kinds`, `tests/run_docs_gate.sh`), both directions, four
+perturbations red.
+
+**The undefined-function diagnostic — AND IT WAS NINE TIMES WIDER THAN FILED.**
+The filing was about `is_money`. Measured, a completely invented name gave the
+identical message, so it was never about the absent predicates. And then
+`odbc.vacuum` did not change with the fix, because **nine module dispatchers
+each built the sentence from their own `snprintf`** — webclient, http, timer,
+webserver, sqlite, odbc, pg, gi, money. A rule re-established at nine call
+sites is one a tenth module leaves out, which is the lesson `first_raise_wins`
+produced from the other direction, so the format lives in
+`module_unknown_verb` and the nine raisers stay separate (each module reports
+through its own; what drifts is the format, not the raise).
+
+It says **"no function, library function or builtin of that name is in scope at
+this call"** rather than "nothing defines that name", and that is not hedging:
+in script mode a function declared BELOW its call is not yet registered, so
+this is the message for a function the file plainly does define — a case
+`docs/reference.md` already calls out. The blunter sentence would be a lie in
+the one place a reader is most likely to be confused.
+
+**The tripwire gained a third check because the second perturbation PASSED.** A
+hand-rolled copy producing the same text from a different format string
+satisfied both source greps, so the count of CALL SITES is asserted too —
+derived from the module list the tier probes rather than written as a literal,
+so the two cannot disagree about how many modules there are. Plus the
+behavioural half, since a formatter nobody calls satisfies a grep perfectly.
+
+**`chars(f)` and `bytes(f)` — both confirmed, and `chars` had NO TEST COVERAGE
+IN THE TREE**, which is how a `TODO` in the source reached a release. `chars`
+counts codepoints now and agrees with `len(read(f))`, which was correct all
+along. `bytes` is answered by `stat` on a regular file: measured, a 500 MB file
+goes from allocating half a gigabyte to 0.00s at 13 MB RSS.
+
+The guard is *only for a regular file*, and the reason is worth recording
+because the first draft of the comment got it backwards: `read_whole_file`
+sizes with fseek/ftell, so a FIFO **already** raises `Illegal seek` and
+anything in `/proc` **already** answers 0 — both measured. `stat` would hand a
+FIFO a size of 0 and turn that raise into a number for a file this interpreter
+cannot read, so falling through to the read path is what keeps the existing
+answer. My comment had claimed reading a FIFO "genuinely yields bytes"; it does
+not, here.
+
+**Finding 29 — answered where it matters rather than with a new name.** The
+refusal now reports the serialized size and the ceiling in the same units the
+check uses (`len > channel_max_message(fd)`), so "holds at most N" is exactly
+the predicate — verified at the boundary: a payload serializing to exactly
+106,496 is accepted, 200,037 is refused against that ceiling. `spawn`'s startup
+frame gets the identical pair. **Whether a QUERYABLE form is also wanted is
+still open and is Matthew's call**, since it puts a name in the language and
+the number is now discoverable without one.
+
+**Finding 36 — warning 2110, and the measurement changed the design.** The
+obvious rule is "a bare `receive()` inside a `watch` body", and that rule is
+WRONG: a reply already waiting is returned immediately, which is how the shape
+is normally written and is exactly what chapter 14 does. So the warning is
+issued where the runtime knows it is **about to block** — past `retain_take`,
+with an empty mailbox and no loop running — and the two controls that force
+that placement are in the tier.
+
+**And it is a warning rather than a raise, which is a limit and not caution.**
+A live peer CAN still send into that mailbox: delivery is the kernel's job on
+the socket, not the loop's. So it is a deadlock only if nothing will ever send,
+which the runtime cannot know, and raising would break a program legitimately
+waiting on a slow peer. The program therefore still hangs — with a located
+sentence naming where it is, which is the whole of what was missing. A
+certain-deadlock raise (every spawned child exited and no handle held) is
+possible and deliberately not built.
+
+**Still open from the batch:** the absence-coercion warning, which is the item I
+ranked first and is the one still unbuilt. It gets instrumented and counted
+before it ships, as stated — the instrumentation is written and waiting on a
+clean gate.
+
+### And two things finding 36 taught that reading could not
+
+**My own predicate was wrong when I ran it.** "Warn where it is about to block"
+is the obvious design and I wrote it; measured, it answered NO in the deadlock
+itself. The child had sent and returned but had not yet become a reapable
+zombie, so at the instant the parent committed to an indefinite wait the
+information the warning needs had not arrived — and a millisecond later it had,
+with nothing looking. An indefinite `receive()` in a registration-fired watcher
+therefore waits in 250 ms slices, which changes no semantics (the slice is a
+poll timeout, a message arriving in 1 ms still returns in 1 ms) and buys the
+diagnostic a moment for the truth to settle.
+
+**And it found a latent defect in 2105.** `warn_site_first_time` is one-shot per
+site and `runtime_warn_at` calls it itself, so a guard that calls it as well
+consumes the only chance. 2110's guard did, and was silent on every run with the
+predicate true. **2105's guard does the same thing and prints anyway, purely
+because its two calls use different keys** — `expr->line` in the guard against
+`current_line` in the printer — so it registers two sites for one warning and
+survives by accident. Anything that made those agree would have taken 2105 out
+with no test noticing. Both guards now leave deduplication to the printer, which
+is whose job it is.
+
+## From the Windows port session, 2026-10-02 — run_core.sh printed FAIL and exited 0
+
+**Reported as "just a side note". It was not: the gate had been green over a
+failing check for nine days, and the suite's whole first tier was advisory.**
+
+`tests/run_core.sh` ends its counter tier with a bare `[[ "$fail" -eq 0 ]]`. That
+WAS the script's exit status while it was the last line; a later tier was
+appended below it, and the expression became a statement whose value is
+discarded. The cause is ordinary and will recur — **which statement is last
+changes without anybody noticing.**
+
+What it was hiding: `FAIL sleep(0) returns 0`. `sleep` was deliberately changed
+on 2026-09-24 to answer `nothing` rather than the seconds you asked for, with
+the reason recorded in `examples/sleep_test.bas` (a stray number at the prompt,
+and a `sleep` dropped from the resident program as a question rather than an
+act). That golden was updated; this check was not, and had been failing on every
+run since.
+
+**SWEPT ALL 158 SUITES rather than fixing the one.** Fourteen others keep a
+failure counter instead of failing fast; all fourteen consult it in their exit
+path, and the four whose last line is `fi` or `esac` turn out to use fail-fast
+helpers that `exit 1` immediately. So this was the only instance — and the
+classifier was noisy enough to misread a one-line `fail() { ...; exit 1; }`,
+which is the argument against a static tripwire.
+
+**THE TRIPWIRE IS BEHAVIOURAL AND LIVES IN `run_all.sh`:** a suite whose output
+contains a `FAIL` line is counted as failed whatever its exit code claims. The
+output is the contract. This is the FOURTH way this gate can go quiet and the
+only one that had no defence — the other three (a suite that SKIPS everything, a
+discovery pass that SHRINKS, a fixture that HANGS) were already named in
+`CLAUDE.md`. Proven by reinstating the exact reported bug: `run_core` alone
+exits 0, and the gate reports `FAIL (said FAIL, exited 0)` and names the line.
+
+## Asked 2026-10-02 — can a clause carry several modifiers, like `{trimmed,upper}=`?
+
+**No in the clause, YES inline, and the inline half had no test and no sentence
+in the reference.** Measured rather than recalled, which is how the second half
+turned up.
+
+The clause takes exactly one, and the two obvious spellings fail in two
+*different* ways — each one a fact about what that syntax already means rather
+than a gap:
+
+| written | what happens | why |
+|---|---|---|
+| `x {trimmed,upper}= s` | `assign modifier not found: trimmed,upper` | the comma is part of the **name** |
+| `x {trimmed upper}= s` | `trimmed modifier expects no arguments` | a space continues a name (`{end of month}`) or starts an **argument** (`{split ","}`), by longest match against registered names |
+| `x {trimmed}{upper}= s` | parse error | one clause per assignment |
+
+**So both candidate spellings are already claimed**, which is the real answer to
+"why not" — not a missing feature but two occupied syntaxes.
+
+**The inline form composes for free and nests to any depth.** The grammar rule
+is `MODIFIER_PREFIX unary_expression` and its result IS a `unary_expression`, so
+it is right-recursive like unary minus. `x {upper}= {trimmed}s` works too — a
+clause over an inline chain.
+
+**IT HAS WORKED SINCE THE INLINE FORM SHIPPED AND NOTHING ASSERTED IT**: zero
+matches for `{a}{b}` across every test and example in the tree, and the
+reference's *Inline type modifiers* section said nothing about nesting. A
+working capability that is undocumented and unasserted is the same shape as the
+`chars` TODO that reached a release, so both are closed now — six checks in
+`tests/inline_modifier_test.bas` and the three refusals with three controls in
+`tests/run_inline_modifier.sh`.
+
+**TWO LESSONS FROM WRITING THOSE CHECKS, both my own.** My first order
+demonstration used `{trimmed}` and `{upper}`, which **commute** on the input I
+chose, so it agreed in both orders and proved nothing; the pair that shows order
+is `{number}` and `{trimmed}`, where only one order has a defined answer at all.
+And my first three CONTROLS went through the refusal helper with an **empty
+needle** — `case "$out" in *""*)` matches anything — so all three passed while
+asserting nothing, including on a build where the clause had stopped working.
+They have their own helper now, requiring exit 0 and an exact answer, and on its
+first non-vacuous run it caught my expected array rendering being wrong.
+
+## The absence-coercion warning: MEASURED, and I am not shipping it without a ruling
+
+The item I ranked first from the books session's batch, instrumented as promised
+before building anything. **The measurement does not support the warning as
+specified, and it is not close enough for me to decide alone.**
+
+`+` was instrumented to report every concatenation where one operand is
+`nothing` or `unknown`, and every `.bas` in the tree was run: **1,303 programs,
+822 events, 21 distinct sites.**
+
+**ELEVEN OF THE TWENTY-ONE WERE AN ARTIFACT OF MY OWN METHOD.** Running each
+fixture bare means `env("HTTP_FIXTURE_PORT")` answers `unknown`, so
+`"http://127.0.0.1:" + env(...)` built `http://127.0.0.1:unknown/` — an absence
+my sweep manufactured. Re-run with the variable set, the way their suite runs
+them, all eleven are silent. **A sweep that creates the condition it is counting
+is measuring itself**, and without that second run the headline number was
+twice the truth.
+
+The ten that remain, classified by reading each one:
+
+| site | what it is |
+|---|---|
+| `string_concat_test.bas:5,6` | the fixture that EXISTS to pin this coercion |
+| `xlsx_consolidate_test.bas:103` | printing `to_money("n/a")`, which is `unknown` **by design** |
+| `xlsx_macro_sheet_test.bas:41,42` | printing `xlsx.cell` on a macro sheet, `unknown` **by design** |
+| `stridx_test.bas:178` | printing a `find` miss, `nothing` **by design** |
+| `fundamentals.bas:139,239` | an **unguarded** component in a composite key |
+
+**So eight of ten are correct code, and the reason is the finding: showing that
+something is absent is a legitimate and ordinary thing to do.**
+`print("find(zz)=" + find(f, "zz"))` is good code. And it is *the same
+expression shape* as `print("Total owed: " + owed)`, which is the bug. **There is
+no syntactic discriminator** — what differs is whether the author believed a
+value was there, which is not available at the `+`.
+
+That is the blind-shadow shape, which was built, measured at 287 false positives
+and reverted. Here it is 1:4 by site.
+
+**THE TWO THAT WERE REAL ARE FIXED, and the warning found them**, which is the
+argument on the other side. `stdlib/fundamentals.bas` built `_dedup` and `_pk`
+keys by concatenating `fp`, which EDGAR omits on some facts — measured 59 of
+4,096 rows — so the period key read `2023-12-31|nothing`. It grouped correctly
+*by accident*, every absent `fp` rendering the same way, and the giveaway is that
+the neighbouring `start` is defaulted explicitly eight lines up while this was
+not. `fp` is guarded now; no golden moved, which is what says the grouping was
+already right and only its basis was unstated.
+
+**AND THERE IS AN ASYMMETRY WORTH WEIGHING, which is why this is a ruling and not
+a verdict.** Every one of the eight correct sites is a TEST FIXTURE whose purpose
+is to display an absence. The only *working* consumer in the sweep —
+`fundamentals`, a library doing a job — is the one that was wrong. If that
+asymmetry holds outside this tree, the warning targets exactly the right thing
+and the suppression burden is six `on warning ignore` lines in fixtures, which
+PLAT-WARN exists to make affordable. If it does not, it is noise on a core
+operator.
+
+### RECOMMENDATION WITHDRAWN, 2026-10-03 — do NOT ship it
+
+I first recommended shipping it on that asymmetry. **That was wrong, and what
+changed my mind is this document's own standard**, which I had not applied to my
+own proposal:
+
+| row | fired on correct code | outcome |
+|---|---|---|
+| 6, blind shadow | 287 times across 103 files | **reverted** |
+| 7, `unknown` compared to a value | twice, and **correct both times** | **reverted** |
+| 9, discarded for-each write | **0** (measured before and after) | shipped |
+| this | **8 sites of 10** | — |
+
+Eighty per cent is not near row 9, it is past row 7 — which was reverted on two
+firings, in an application, where "absent therefore not equal" was the intended
+reading. I had argued from WHERE the false positives live (tests, not
+applications); the standard this file sets is HOW MANY there are, and row 7 says
+so in as many words: *"an opt-out does not rescue a diagnostic that is wrong far
+more often than right — the channel lowers the bar for shipping a warning, it
+does not remove it."*
+
+**And the sharper reason: the six correct sites are not accidents, they are the
+IDIOM.** `print("find(zz)=" + find(f, "zz"))` is how a program shows that
+something is absent. A rule that fires on the idiom is wrong about the language,
+not merely noisy — which is exactly what row 9's design note says makes a
+warning unaffordable.
+
+**Following row 7's own template, what this argues for is recorded rather than
+built: a narrower rule that is ALWAYS wrong, and I do not have one.** The two
+real defects were an absence coerced into a COMPOSITE KEY, where the text is
+never read by a person; the six correct ones render an absence FOR a person.
+Nothing at the `+` distinguishes those — it needs to know where the string goes.
+`print("Total owed: " + owed)` and `print("find(zz)=" + find(f, "zz"))` are the
+same expression.
+
+**What addresses the invoice case instead, in order of what I would do:**
+
+1. **Teach it where it bites.** `+` is the one door with no opinion — every
+   other operation on an absence raises or answers a question, and concatenation
+   silently manufactures the word (`"a" + nothing` is `anothing`). The reference
+   should say so beside `default()`, which is the remedy and already exists.
+2. **If a switch is wanted it must be OPT-IN, declared by the author**, because
+   the measurement says the runtime cannot find the discriminator and the author
+   can. That is new machinery with no precedent here — the four `on warning`
+   modes are about SEVERITY, not about selecting a rule — so it needs its own
+   decision and its own measurement of whether anyone would turn it on.
+3. **Not a default warning**, on the arithmetic above.
+
+## My own sweep made a live paid API call and overwrote a committed fixture, 2026-10-02
+
+Recording this against myself because the ledger's standing rule cuts both ways
+and this is the sharpest instance of it in the file.
+
+**What happened.** The absence-coercion instrumentation above ran every `.bas`
+in the tree — `examples/*.bas examples/*/*.bas tests/*.bas tests/*/*.bas` —
+which includes `tests/ari_advisor/record.bas`, **a fixture whose entire job is
+to call a real model and overwrite the recordings every other check replays.**
+There are API keys in this environment, so it went through. Evidence:
+`tests/ari_advisor/replay/b8f69e7c-0.json` had an mtime inside the sweep window,
+a new `chatcmpl-` id, a `created` timestamp 1,055,274 seconds later than the
+recording it replaced, a different `system_fingerprint` and different completion
+text. Restored from git; `run_ari_advisor` passes against the original, so
+nothing is lost but the call was still made and nobody asked for it.
+
+It also dropped a 95 KB `nacha.txt` into the repo root from
+`examples/finio_lab/make_nacha.bas`. Removed.
+
+**THE FIXTURE'S OWN COMMENT WAS THE ONLY GUARD.** Its header has always said it
+is "run deliberately, with an API key, by somebody who means to" — and
+`tests/run_ari_advisor.sh` says "NO NETWORK AND NO KEY" in capitals. All true,
+all prose, and **an intention nobody enforces is indistinguishable from the
+defect**, which is the sentence this file keeps writing about other people's
+code.
+
+**Both recorders are opt-in now** (`GBASIC_RECORD_FIXTURES=1`), matching every
+other expensive or destructive tier here — `RUN_FINIO_COST`,
+`GBASIC_POSTGRES_TEST`, `NAP_FS_STRESS`, `LIBCURL_FLOOR_BUILD`. Checked as the
+FIRST statement, before any `load`, request or write, and verified: run bare they
+refuse with exit 2 and the recordings are byte-identical afterwards.
+
+**And a tripwire in `run_all.sh`, because two recorders is a number that
+grows.** It FINDS THEM BY WHAT THEY DO, not by name: the first draft globbed
+`tests/record*.bas` and reported `tests/record_nul_test.bas`, which is about
+RECORD VALUES — a tripwire whose false positives look exactly like its true ones
+is not a tripwire, which is the lesson finio's amount-kind check already
+produced. Measured instead: `load llm` together with `load webclient` is carried
+by exactly the two recorders and by **none** of the eight fixtures that replay
+through `with_transport`, because a replayer's transport reads a file and only a
+recorder needs a real HTTP client. Both directions proven red — a recorder that
+loses its guard, and the scan broken so it matches nothing.
+
+**The standing lesson, which is mine and general: a sweep that runs every file
+in the tree runs the files whose job is to touch the outside world.** Any future
+instrumentation pass excludes the recorders, and anything else that spends money,
+writes outside a scratch directory, or talks to a network.
+
+---
+
+
+## `mode()` answers the FIRST ELEMENT when there is no mode, 2026-10-03
+
+Found while answering Matthew's question about how `median` and `mode` should
+treat an absence. The absence question turned out to be the smaller one.
+
+**`mode` is a builtin and it returns a confidently wrong answer on data that
+does not repeat.** Measured:
+
+| | answers | should be |
+|---|---|---|
+| `mode([1,2,3])` | **1** | there is **no mode** |
+| `mode([9,8,7])` | **9** | — and it is the FIRST element, so the answer depends on input order |
+| `mode([19.95, 32.50, 7.00, 4.25, 88.00])` | **19.95** | no mode |
+| `mode([1,1,2,2])` | **1** | a tie — two values are equally the mode |
+| `mode([2,2,1,1])` | **2** | — source order again, not the lowest |
+
+**The third row is the one that matters.** On continuous data — money,
+measurements, any real price list — every value is unique, so **`mode` always
+returns the first element and always looks like an answer.** Nothing downstream
+can tell it from a real mode, and the result depends on how the data happened to
+be sorted.
+
+This is the silent-wrong-answer class: a plausible number, no diagnostic, exit
+0. It matches a known wart in SQL:2003, whose `MODE()` is
+*implementation-defined* on ties — and this project's bar is higher, since it
+refuses rather than guesses everywhere else.
+
+**NOT FIXED YET, deliberately, and here is the accounting.** `mode` is used
+**nowhere** in `stdlib/`, `examples/` or `tests/` and is documented in a single
+line of `docs/reference.md`, so nothing is being burned today; and 0.5.0 is
+prepared bar the tag, so a behaviour change to a documented builtin belongs in
+the next release rather than in a tag that is already measured. Recorded here
+rather than only in `docs/bulk_data_design.md` §2b because a wrong answer in a
+shipped builtin belongs in the ledger, where somebody hitting it will look.
+
+**What the fix needs to decide**, from §2b:
+
+- **A tie is reported, not resolved** — return every tied value, or refuse by
+  name. Returning one because it came first is the thing to stop.
+- **No repeats means no mode** — `unknown`, not the first element.
+- **`mode` refuses text today**, which is the one aggregate where text is the
+  *common* case: the most frequent category, city or status code. Numeric-only
+  makes it close to useless for the data people actually have.
+
+`median` needs none of this: measured, it already takes the statistical
+convention on an even count (`median([4,1,2,3])` is 2.5, the mean of the two
+middle values), which is right and is now pinned in §2b rather than left to be
+rediscovered.
+
+**One proposal was measured and refused**, and it is worth recording because it
+is the natural first idea: resolving a tie to *the value between the two modes*.
+On `[10, 10, 10, 100, 100, 100]` — a cheap line and a premium line, an ordinary
+business shape — the midpoint is 55, and **55 occurs in that data zero times**.
+So the "most typical" sale would be reported as the single rarest value present.
+The midpoint of two modes is a fact about the modes, not about the data. What the
+instinct behind it is actually reaching for is **binning**: on
+`[19.95, 19.99, 20.05, 21.00, 19.95]` the raw mode is 19.95 by a one-vote margin
+(noise), and rounded to the dollar the mode is **20** — "about $20", which is
+what a person means by a typical price, and which is the statistical *modal
+class*. That is why `mode` is near-useless on raw business data and why the
+remedy is a declared bin carried in the answer rather than a resolved tie. Full
+argument in `docs/bulk_data_design.md` §2b.
+
+---
+
+## A date that does not exist is refused, and told it is not a date, 2026-10-03
+
+Found **verifying the 0.5.0 artifact by running it**, which is the step
+`RELEASING.md` added precisely because reading a build log misses this kind of
+thing. The release's headline entry is that `{date}"2026-02-30"` is no longer
+accepted. It is refused. **The sentence it is refused with is false.**
+
+Measured across the entry points:
+
+| input | message |
+|---|---|
+| `{date}"2026-02-30"` | `date modifier expects an ISO-like date string` |
+| `{date}"2026-13-01"` | `date modifier expects an ISO-like date string` |
+| `{date}"1900-02-29"` | `date modifier expects an ISO-like date string` |
+| `{date}"not a date"` | `date modifier expects an ISO-like date string` |
+| `{datetime}"2026-02-30 10:00:00"` | `datetime modifier expects an ISO-like date-time string` |
+| `{date "YYYY-MM-DD"}"2026-02-30"` | ``2026-02-30` does not fit any of the layouts given to `{date}`: "YYYY-MM-DD"`` |
+
+**The first three ARE ISO-like** — being ISO-like is the one thing about them
+that is not wrong — and they get the identical sentence as a string that
+genuinely is not a date. A reader who typed `2026-02-30` is told to check the
+*shape* of their string, which is correct, so they look at the shape, find
+nothing wrong with it, and have no way to reach the real answer: **the 30th of
+February does not exist.** The three causes are distinct and each has an obvious
+remedy the author cannot be told — a day past the month's length, a month
+outside 1..12, and the 29th of a February that is not a leap year.
+
+**The layout path is no better and reads worse.** `2026-02-30` fits
+`YYYY-MM-DD` exactly, character for character; saying it "does not fit any of
+the layouts given" points at the layout list, which is the one part of that call
+that is right. And a layout list is where this message is *least* affordable,
+because the whole point of a list is that the author is unsure which shape the
+data takes, so being told "none of them fit" is exactly the answer they expect
+to have to act on.
+
+**This is the reports-the-wrong-cause class**, which this tree has now produced
+from `decode(read(f))` (DOGFOOD 34), from `odbc`'s "expects an odbc connection"
+over a closed one, from `xml.parse`'s NUL refusal blaming a premature end of
+data, and from `1e20`. The pattern each time: **a guard was added in the right
+place and the message beside it was the one that was already there.** That is
+what happened here — `valid_date_parts` returns a bare `0`/`1`, so the caller
+has nothing to report with and emits the generic parse failure it emitted
+before the check existed.
+
+**Why it is not fixed in 0.5.0.** The tag was already cut and both artifacts
+built and verified when this was found. The BEHAVIOUR is right -- a date that
+does not exist is refused, which is the entry the release is making -- and the
+fix is a diagnostic improvement, not a correctness one. Folding it in means
+re-tagging and a fresh ~2h gate, which is Matthew's call rather than mine.
+
+**What the fix needs.** `valid_date_parts` reports WHICH rule failed (an
+out-parameter, or a small enum return), its ~10 call sites pass NULL where they
+do not care, and the two modifier sites compose a message naming the cause and
+the limit: *February 2026 has 28 days*, *month 13 does not exist*, *1900 was not
+a leap year*. **THE CONTROL IS THE LOAD-BEARING HALF**: a genuinely malformed
+string must STILL get the generic message, or "name the cause" is satisfied by a
+build that blames the calendar for every unparseable string -- which is the same
+error one direction over.
+
+## `reference.md` illustrated a qualified call with a verb that does not exist
+
+Found by the same artifact verification, from the other side: I wrote
+`sqlite.open(...)` in the verification program because the reference uses it to
+show what a qualified call looks like, and got `undefined function: sqlite.open
+-- the 'sqlite' module does not define 'open'`. The verb is `sqlite.connect`.
+
+**Fixed (one word).** Recorded because of what the sweep after it measured
+rather than for the typo: every one of the **76** `module.verb` names
+`reference.md` mentions, probed against the binary, and this was the **only**
+one that does not exist. So the page is accurate about the module surface and
+this was a single illustrative example rather than a rot.
+
+**AND MY OWN PROBE'S FIRST DRAFT REPORTED THREE**, which is the part worth
+remembering. `http.events` and `timer.ticks` also answered "the module does not
+define" -- because they are **watch sources** (`watch(http.events)`), not
+functions, and my probe called everything as a function. A sweep whose false
+positives are indistinguishable from its true ones is not a sweep, which is the
+lesson the `finio` amount-kind tripwire's first draft already produced when it
+reported `pain.001` as broken for having a field called `control_sum`.
+
+**Nothing checks this.** `run_doc_examples.sh` reads `reference.md` in
+`:parse` mode, so an undefined verb is a RUNTIME error it cannot see, and this
+one was in inline prose rather than a fenced block, so it was outside even that.
+A tripwire deriving the verb list per module and checking the page against it is
+the shape `run_docs_gate.sh` already uses for `type`'s 27 kinds -- not built,
+because the sweep measured one defect in 76 names and the gate costs more than
+that is worth until the surface rots again.
+
+---
+
+## Status update on the date diagnostic: fixed, and the fixture had been defending it
+
+Matthew's ruling was to fold it into 0.5.0 rather than ship the wrong sentence
+for a release, so the tag was deleted, the fix made, and the tag re-cut.
+
+**THE PART WORTH RECORDING IS NOT THE FIX.** It is that
+`examples/datetime_read_layout_test.bas` — written the same morning as the
+validation it tests, by me — contained **six checks asserting the false
+message**:
+
+```
+check("29 Feb in a non-leap ", contains(error.message, "ISO-like"), true)
+check("30 Feb ever          ", contains(error.message, "ISO-like"), true)
+check("31 April             ", contains(error.message, "ISO-like"), true)
+check("1900 is NOT leap     ", contains(error.message, "ISO-like"), true)
+check("a contradictory day  ", contains(error.message, "does not fit"), true)
+check("day 32               ", contains(error.message, "does not fit"), true)
+```
+
+Every one of those is a claim that is **wrong about its own input**.
+`2026-02-30` IS ISO-like. `Sunday, 7 March 2026` DOES fit
+`DDDD, D MMMM YYYY`. `32/01/2026` DOES fit `DD/MM/YYYY`. The checks passed, the
+suite was green, and the green was evidence for a sentence that was false --
+because a `contains` against a substring of whatever the binary happened to say
+asserts that the binary is consistent, not that it is right. **The assertion was
+written by reading the output rather than by deciding what the output should
+be**, which is the transcript problem this tree records for goldens, reproduced
+one layer up in a fixture whose header says "SELF-CHECKING AND FORCED".
+
+They assert the WHOLE message now, which is the only form that could have
+failed: a substring check cannot distinguish a message that names the cause from
+one that names something else, and the full text is the contract a book quotes.
+
+**AND THE FIX FOUND ITS OWN BUG BEFORE THE COMPILER DID.** The first draft of
+the raise site read
+
+```c
+const char *subject = value.kind == VALUE_STRING ? value.as.string : NULL;
+value_free(value);
+datetime_raise_parse_failure("date", "date", subject, keep);
+```
+
+-- a **use-after-free** that would have printed whatever the allocator left
+behind, inside a diagnostic, which is the worst possible place for plausible
+garbage. It compiled without a warning and the fixture would have passed on most
+runs. The subject is copied into a local buffer before the free now, and the
+comment beside it says why.
+
+**COST, STATED:** `{date}`/`{time}`/`{datetime}` now carry a 128-byte `why`
+buffer and a 64-byte subject copy on the stack per call, and the buffers are
+written only on the failing path. Valgrind clean over the fixture, which
+exercises both.
+
+---
+
+## The book pin HAD already been bumped with a release, 2026-10-03
+
+Filed the same day `RELEASING.md` gained a warning about this as a *hypothetical*
+trap. It is not hypothetical. Checking whether the website was ready to deploy
+for 0.5.0, the live page and the repo's own site app **disagreed about which
+release the paperback was written against**:
+
+| | says |
+|---|---|
+| `tedderland/content/projects/gbasic.md` line 603 | *"The book was written against gBASIC 0.3.0 and prints that archive's checksum on paper"* |
+| `examples/gbasic_site/site.bas` `book_version()` | `0.4.0` |
+
+`git log -S` settles it: `book_version()` returned `0.3.0` from the day the book
+page was created (92fcb96, 2026-09-28) until **a8ef5e3, the 0.4.0 release
+commit**, which moved it `0.3.0 -> 0.4.0` in the same hunk as the real version:
+
+```
+-    return "0.3.0"
++    return "0.4.0"
+-    G = { version: "0.3.0", suites: "158" }
++    G = { version: "0.4.0", suites: "158" }
+```
+
+So the `/book` page rendered **"Volume 1 · gBASIC 0.4.0"** about a book written
+against 0.3.0, for a release and a day.
+
+**WHY NOTHING CAUGHT IT, which is the part worth keeping.** The three version
+gates all read `version: "..."` — `run_docs_gate` derives the wanted version
+from `src/main.c` and checks that key in both site apps, and `run_examples`
+compares `--version` to the README. **None of them can see a function.** And the
+public promise was unaffected, because the live page is a different repository
+and nobody edited it, so there was no symptom anywhere: the site suites passed,
+the docs gate passed, and the only observable was a sentence on a prototype page
+that nobody had reason to read.
+
+**It was found by asking a question about something else.** Not by a sweep, not
+by a gate — by comparing two documents that are supposed to agree while
+answering "is the website ready to deploy". That is the same way the stale
+`CLAUDE.md` inline-modifier claim surfaced an hour earlier: the question was
+about a book, and the defect was in a file nobody had cause to re-read.
+
+**Fixed**, with the account written at the definition rather than only here, so
+the next release's bump meets the explanation at the point of the mistake.
+
+**NOT FIXED: there is still no gate.** A check is statable — `book_version()`
+must not equal `src/main.c`'s version — and it would have caught this exactly.
+It is **not free**: it fires legitimately for one commit whenever a new edition
+*is* pinned to the current release, which is precisely what Volume 2 may do. That
+is the PLAT-WARN trade (a silent failure that breaks a printed promise against a
+false positive a human clears once per book) and it looks worth taking, but it is
+a judgement about somebody else's workflow and is **Matthew's call, not mine** —
+recorded here rather than added quietly.
+
+---
+
+## From the books session, drafting Volume 2 Chapter 10 — 2026-10-04
+
+Two findings, measured against the **published 0.5.0 package**
+(`gbasic-0.5.0-linux-x86_64-full`, sha256 `581d191e…`), not a working tree.
+Each number below is stable across three runs.
+
+### 1. `link` costs exactly what `copy` costs at `new`
+
+5000 derivations of a prototype whose one field is a 400 000-character
+string:
+
+```
+copy     0.0245 s
+link     0.0245 s
+exclude  0.00093 s
+```
+
+`link` exists to say *do not give each instance its own*, so a reader who
+reaches for it as an optimisation gets nothing — the two are
+indistinguishable in both directions. `(exclude)` is the only policy that
+makes the field free, by a factor of twenty-six.
+
+**And derivation is not O(fields).** The cost is proportional to the size of
+the field. 5000 derivations of a 100 000 / 400 000 / 1 600 000-character
+field cost 0.0070 / 0.0248 / 0.0987 s — linear in the payload.
+
+**The strangest half: keeping is cheaper than dropping.** 5000 derivations
+appended to an array cost 0.0041 s; the same 5000 assigned to a variable
+that is immediately overwritten cost 0.0255 s. Six times, backwards from any
+prediction, which points at make-and-discard churn on a large allocation
+rather than at `new` itself.
+
+**What is asked.** Whether `link` is *meant* to cost what `copy` costs — if
+the cell really is shared, the per-`new` work should be a refcount and not
+something that scales with the value — and whether the keep-versus-drop
+asymmetry deserves a line in *Performance traps*. The chapter prints all
+three as measurements and deliberately claims no mechanism for them.
+
+**How this was missed for weeks, which may be the useful part.** Every
+*behavioural* claim in that chapter's plan sat in a gated block; not one
+*cost* claim did. The plan had carried "derivation is O(fields) regardless
+of record size" since the outline, and nothing could ever have contradicted
+it. A cost sentence is exactly the kind a reader acts on, by restructuring
+code.
+
+### 2. `remove_key` severs `link` and preserves `reset` — still undocumented
+
+Re-measured at 0.5.0, unchanged from the 0.3.0 report (swept item 9). A
+`link` field chains correctly through two levels of `new`, but a record that
+has been through `remove_key` is linked to nothing, while a `reset` policy
+on it still re-fires.
+
+The book now states it as a rule and supplies the rationale that makes it
+defensible — `remove_key` returns a *new* record, and a new record has no
+identity to share. That is the book inventing a justification the authority
+does not give. **One sentence in *Objects* would retire this**, either way.
+
+### Not a finding, recorded because it closes one
+
+**`chars`, `bytes`, `notation.to_text` on a live handle, and the reference's
+`mid` rationale are all confirmed fixed at 0.5.0**, each re-measured here
+before the ledger entry was marked. The `mid` one came with
+`tests/run_stridx.sh` holding the costs to a ratio across a size step, which
+is the right shape and is why that page cannot go quietly stale again.
+
+### And four more closed, found by a route worth describing
+
+Volume 2's **chapter plans** are still gated — 230 measured blocks written
+against 0.3.0 while the chapters were being outlined. Re-running them against
+0.5.0 turned ten of them red, and **every single failure was this language
+getting better**. Listing them because the set is a decent summary of what
+0.5.0 did to a book:
+
+| the plan said | 0.5.0 |
+|---|---|
+| `dates.select({nosuch: 1}, …)` silently answers | refuses, and names the whole 15-word vocabulary |
+| `"\d"` is `invalid escape sequence` | keeps both characters, warns, and the pattern matches |
+| `invalid function call: sq` | `undefined function: sq`, pointing at `has_builtin` |
+| `invalid function call: stats.mean` | `'stats' does not define 'mean'` |
+| `send: message is too large for one frame` | names 120013 and 106496, and says what to do |
+| `notation.to_text` of a function → `"<function greet>"` | refuses, and says why text cannot carry a live handle |
+| a library's `on warning print` defeats `main`'s `on warning stop` | the caller's guarantee holds |
+| `print {end of month}"…"` is a parse error | answers; every shape works inline now |
+| `"10"{number}= 10` → `compare modifier not found: number` | `true` |
+| a nested instance in an **array** does not re-derive | it does, at any depth |
+
+Two of those — the `dates.select` name check and the `send` figure — were
+filed here and had no visible owner; finding them fixed by a gate rather than
+by a reply is the system working.
+
+**The `dates.select` one gave a chapter its argument back.** Volume 2's
+Chapter 4 offers two reasons to prefer a spec *record* over a string
+mini-language, and typo-catching was one of them. At 0.3.0 the check did not
+exist, so the chapter had to drop that half and stand on storability alone.
+It stands on both again.
+
+## From the Volume 2 readthrough — 2026-10-04 (filed late, 2026-10-05)
+
+Three findings. These were written into the book's own ledger during the
+readthrough and **were not carried across to this file at the time** — an
+oversight on the books side, caught a day later when the author asked
+after this file. They are measured against the published 0.5.0 package
+(`gbasic-0.5.0-linux-x86_64-full`), not a working tree.
+
+Two of them concern each other, and are worth reading in order: finding 40
+establishes a behaviour, and finding 39 is a diagnostic that denies it in
+the interpreter's own voice.
+
+### 39. Warning 2101 states a reason that is not true of the run it fires on
+
+The text is *the result of 'f' is discarded; a gBASIC function cannot
+change its caller, so an update returns the new value and dropping it does
+nothing (assign it, or return nothing)*.
+
+The check behind it is purely syntactic — a bare call statement, a
+non-`nothing` return, a user-defined function — and does no reachability
+analysis at all. So it fires on runs where dropping the result changed the
+caller's own data:
+
+```
+function tick()
+    g.n = g.n + 1
+    return g.n
+end function
+program main(args)
+    g = { n: 0 }
+    tick()                  ' warns: "dropping it does nothing"
+    print "g.n = " + g.n    ' g.n = 1
+end program
+```
+
+and, worse, through an argument — which the clause *cannot change its
+caller* denies outright:
+
+```
+function touch(x)
+    x.shared = "TOUCHED"
+    return x
+end function
+program main(args)
+    p = { shared (link): "orig" }
+    touch(p)                      ' warns: "dropping it does nothing"
+    print p.shared                ' TOUCHED
+end program
+```
+
+**What is asked.** Not that the warning go away — an update API called for
+effect is exactly the defect it was built for, and it earns its place. What
+is wrong is the justification clause, which teaches a reader a rule the
+language does not have. *Dropping the result of a function whose only
+effect is its return value does nothing* would be true, would still carry
+the advice, and would stop contradicting finding 40.
+
+### 40. `link` crosses an argument copy, and nothing says so
+
+An argument is a copy; a `link` field is one shared cell. Nothing in the
+reference or in any diagnostic says what happens when the two meet. The
+answer is that `link` wins:
+
+```
+function touch(x)
+    x.shared = "from the function"
+    x.name = "from the function"
+    return 0
+end function
+program main(args)
+    proto = { name (copy): "unnamed", shared (link): "Main" }
+    a = new proto
+    touch(a)
+    print a.name          ' unnamed      -- copied, as documented
+    print a.shared        ' from the function
+    print proto.shared    ' from the function
+end program
+```
+
+Derivation is not required. A plain record literal annotated `(link)` and
+never `new`'d behaves the same way, as does one nested in an array, and one
+returned from a function. The cell survives every in-process copy. It does
+**not** cross a `spawn`, which is correct and is the one boundary the
+reference does state.
+
+This is consistent behaviour and arguably the only sensible meaning of
+`link`. It is filed because it is the single exception to the language's
+most-repeated promise, and because finding 39's diagnostic asserts its
+opposite.
+
+### 41. A watcher's `principal()` is the scope at the top of the drain
+
+Volume 2 said flatly that a watcher does not inherit a principal. That was
+the book overreaching — the reference is careful and says only that an
+**event-loop** watcher does not inherit. A body runs on three occasions and
+inherits on two of them, because both execute inside the mutating code:
+
+```
+program main(args)
+    v = 0
+    with principal({ user: "alice" })
+        watch wv(v)
+            print("   watcher sees: " + encode(principal()))
+        end watch
+        v = 1
+    end with
+end program
+'   watcher sees: {"user":"alice"}      (registration)
+'   watcher sees: {"user":"alice"}      (the mutation)
+```
+
+The consequence is the part wanting a decision. A write only *enqueues* a
+watcher, so a `with principal` block opened inside a watcher body has
+already closed by the time the drain is serviced — and the watcher then
+runs under whatever scope was open at the **top** of the drain:
+
+```
+watch wv(v)
+    print("    audit logs: " + encode(principal()))
+end watch
+watch wt(t)
+    with principal({ user: "bob" })
+        v = v + 1
+    end with
+end watch
+with principal({ user: "alice" })
+    t = 1
+end with
+'     audit logs: {"user":"alice"}
+```
+
+`bob` made the write; the audit line says `alice`.
+
+This is consistent with the execution model and is not a bug in the
+principal — it is what deferral means. It is filed because a watcher is the
+obvious place to put an audit line, `principal()` is the obvious thing to
+read there, and the result is a confident misattribution with no
+diagnostic. If a principal is meant to be auditable, the language may want
+either a watcher body to carry the scope of the write that enqueued it, or
+`principal()` inside a deferred body to refuse rather than answer with a
+scope that did not make the write.
+
 ## 2026-10-03 — CC — while: the Windows suite sweep (native_workbench under a build without GI)
 - **Type:** language-surprise
 - **Severity:** low
@@ -10059,4 +11363,4 @@ the loud/silent absence asymmetry should go (`"a" + nothing` is `anothing`,
   would let the headless modes run everywhere; not done here because the GI
   modes it could disturb cannot be run on either test machine.
 - **Status:** BY DESIGN (2026-10-03, Matthew): `load` hoists like a declaration,
-  not a statement. Not a defect; struck from the open ledger (item 49).
+  not a statement. Not a defect; struck from the open ledger (item 51).

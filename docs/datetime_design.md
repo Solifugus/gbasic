@@ -334,6 +334,32 @@ paydays = dates.series(
 a business day before Monday in a holiday week) — the established gBASIC answer
 for absent information, and kinder than raising in scheduling code that probes.
 
+**AN UNRECOGNISED FIELD IS REFUSED BY NAME (2026-10-02), AND UNTIL THEN THE
+ARGUMENT BELOW WAS HALF FALSE.** The paragraph after this one justifies records
+over a string mini-language partly on getting "`unknown field` errors instead of
+parse errors" — and there were none. A field nobody recognised was *ignored*, so
+`{ weekdayz: ["monday"] }` was not a weekday rule at all; it was the **empty
+spec**, which every day satisfies, so `select` answered tomorrow and `matches`
+answered `true` for everything. A constraint silently dropped is worse than one
+refused, because the result is an ordinary-looking date with nothing to question.
+Reported by the gbasic-books session.
+
+One checker serves all three verbs, because three copies of a vocabulary drift,
+and it **recurses into `when:`** — a series sub-rule is itself a spec and a typo
+there is the same mistake one level in, so the message names which level it is
+on. `dates.calendar` gets the same rule over its own four fields
+(`weekend:`, `holidays:`, `observe:`, `hours:`) and the two lists are
+deliberately **separate**: merging them would accept `weekend:` on a selector
+and `nth:` on a calendar, both of which do nothing. `{ holidayz: [...] }` built
+a calendar with no holidays in it, so every business-day question answered as
+though the office never closed.
+
+The risk a refusal introduces is the opposite of the one it fixes — a field left
+out of the vocabulary would refuse legal code — so `examples/dates_select_test.bas`
+carries a control that passes **every** field at once and requires it accepted.
+That is the check which goes red when somebody adds a spec field and forgets to
+declare it. The three refusals are pinned as negatives beside it.
+
 Why records and not a string mini-language ("2nd tue after 15th"): no grammar
 to learn or misparse, `unknown field` errors instead of parse errors,
 composable (a spec can be built up in code), and it is the house pattern.

@@ -80,6 +80,30 @@ deliberate asymmetry with a stated reason rather than an oversight. A root
 array may carry a default, so a document that is simply a list of dates is
 `{date}: [ "2026-04-14", … ]`.
 
+**2c. A LIVE HANDLE IS REFUSED, NOT RENDERED (2026-10-02).** A function, regex,
+watcher, actor, process, connection, workbook or GObject has no textual form
+this format can read back, and `string(v)` renders one as `<function greet>`.
+That used to be **written out as an ordinary quoted string**: `{ cb: greet }`
+became `cb: "<function greet>"`, read back as the *string* `<function greet>`,
+and raised nothing at either end — so a record holding a callback came back with
+a string where the function was, and the failure surfaced wherever somebody
+later tried to call it.
+
+**The round trip was self-consistent and wrong, which is why nothing caught
+it** — the property this design calls load-bearing was satisfied, because the
+token went out and the same token came back. What it did not preserve was the
+*type*, which is the one thing the title of this document promises. `encode`
+already refuses live values for exactly this reason, and this format had the
+stronger obligation and the weaker behaviour. Reported by the gbasic-books
+session.
+
+The fixture asserts the **refusal** and not the round trip, and the difference
+matters: `from_text(to_text(r)).cb` equals `"<function greet>"` both before and
+after any change that merely picks a different token, so only "it refuses"
+separates a fix from a rewording. Its controls are a record of plain data and
+one carrying a tagged kind, both still accepted, since a writer that refused
+everything would satisfy the refusal checks alone.
+
 **3. The format has its own parser, and its output is NOT gBASIC source.**
 
 This is what makes decision 2 affordable. Every conflict count below matters
@@ -173,7 +197,7 @@ way a person would describe it rather than the way a parser meets it:
 a missing comma:          expected ',' or '}' at line 3, column 3
 a trailing comma:         a trailing comma before '}' at line 1, column 7
 a misspelled currency:    unknown type tag 'USSD' at line 2, column 17
-an impossible date:       date modifier expects an ISO-like date string at line 2, column 18
+an impossible date:       `2026-02-30` is not a real date -- February 2026 has 28 days at line 2, column 18
 a missing quote:          unterminated string at line 2, column 9
 ```
 
@@ -184,9 +208,17 @@ them looking for a missing value when the mistake is punctuation they can
 already see. The trailing-comma message points at the **comma**, not at the
 closer that tripped over it.
 
-`{date}` raising "expects an ISO-like date string" is true and useless in a
+`{date}` raising "expects an ISO-like date string" is useless in a
 two-hundred-line file, so the modifier's raise is caught and re-raised with the
 line and column — which is the whole reason tokens carry them.
+
+**And it was not even true.** That sentence is what `{date}` said for an
+*impossible* date until 2026-10-03, and `2026-02-30` **is** ISO-like — being
+ISO-like is the one thing about it that is not wrong — so a reader was sent to
+check the shape of a string whose shape is fine. The modifier names the calendar
+rule now (`February 2026 has 28 days`), and this page gets it for free because
+the fix is at the modifier rather than at each caller: nothing in `notation`
+changed.
 
 ## Still open
 

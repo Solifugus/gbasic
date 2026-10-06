@@ -70,10 +70,10 @@ else
     n=$(sed -n 's/^checks: //p' "$work/out")
     # A coverage floor: a fixture that stops running its checks otherwise
     # passes by asserting nothing.
-    if [ -z "$n" ] || [ "$n" -lt 28 ]; then
-        fail "only ${n:-0} checks ran, wanted at least 28"
+    if [ -z "$n" ] || [ "$n" -lt 34 ]; then
+        fail "only ${n:-0} checks ran, wanted at least 34"
     else
-        pass "$n checks (10 parity pairs, precedence, 8 positions, 8 controls)"
+        pass "$n checks (10 parity pairs, precedence, 8 positions, 6 nesting, 8 controls)"
     fi
 fi
 
@@ -148,6 +148,116 @@ elif grep -q 'assign modifier not found: nosuchmodifier' "$work/badc.err"; then
 else
     cat "$work/badc.err"; fail "the two forms refuse differently"
 fi
+
+printf 'TIER record or modifier: the follow-set is DERIVED, not surveyed\n'
+# THE DECISION IS ONE TOKEN PAST THE LEADING IDENTIFIER. A record literal always
+# has `:`, `=` or `(` there and a modifier never does, which is what lets the
+# lexer admit `{split ","}` and `{end of month}` inline at zero grammar cost.
+#
+# ASKED OF THE GRAMMAR RATHER THAN OF ME, because the first design was a scan to
+# the closing brace for a top-level separator -- and the safety argument for that
+# is "I enumerated the record forms", a survey, where the one-word rule's
+# argument is a proof. A survey cannot see a record form nobody has written yet.
+# So this reads `record_field_list` and fails if a fourth token joins the three,
+# which is the moment somebody has to revisit src/lexer.c.
+# `|| true` IS LOAD-BEARING, and the perturbation is what showed it: under
+# `pipefail` a `grep` that matches nothing fails the whole assignment and
+# `set -e` ends the suite SILENTLY -- exit 1 with the TIER line printed and no
+# FAIL after it, which is a break nobody could diagnose. The same trap
+# run_http.sh records from the other direction.
+follow="$(awk '/^record_field_list/,/^    ;/' src/parser.y \
+    | grep -oE '(field_name|IDENT) [A-Z_]+' | awk '{print $2}' | sort -u | tr '\n' ' ' || true)"
+if [ "$follow" = "COLON LPAREN OP_EQ " ]; then
+    pass "a record's first field name is followed by exactly COLON, OP_EQ or LPAREN"
+else
+    printf '    got: [%s]\n' "$follow"
+    fail "the record follow-set changed -- src/lexer.c decides record-vs-modifier on it"
+fi
+# And the behavioural half, both directions, because a derived list proves
+# nothing about what the lexer does with it.
+inline_shape() {   # <source line> <expected stdout> <label>
+    printf 'load dates\n%s\n' "$1" >"$work/shape.bas"
+    got="$(GBASIC_PATH=stdlib timeout -k 5 20 ./gbasic "$work/shape.bas" 2>"$work/shape.err")"
+    if [ "$got" = "$2" ]; then
+        pass "$3"
+    else
+        printf '    got [%s], want [%s] %s\n' "$got" "$2" "$(tail -1 "$work/shape.err")"
+        fail "$3"
+    fi
+}
+inline_shape 'print(count({split ","}"a,b,c"))' '3' 'an argument-bearing modifier applies inline'
+inline_shape 'print(string({end of month}({date}"2026-02-10")))' '2026-02-28' 'and a multi-word one'
+inline_shape 'print({trimmed; upper}"  hi  ")' 'HI' 'and a chain'
+inline_shape 'print(type({ a: 1 }))' 'record' 'CONTROL: a COLON record is still a record'
+inline_shape 'print(type({ a = 1 }))' 'record' 'CONTROL: so is an OP_EQ record'
+inline_shape 'print(type({ serial (reset 7): 0 }))' 'record' 'CONTROL: so is an LPAREN policy record'
+inline_shape 'print(type({ "k": 1 }))' 'record' 'CONTROL: so is one keyed by a STRING'
+inline_shape 'print(type({}))' 'record' 'CONTROL: so is the empty one'
+# A RECORD LITERAL SPANS LINES ROUTINELY and a modifier clause cannot, so the
+# scan bails at a newline -- which is what makes a multi-line record unreachable
+# by the modifier path rather than merely unlikely.
+printf 'load dates\nr = {\n  a: 1,\n  b: 2\n}\nprint(type(r) + ":" + string(r.b))\n' >"$work/ml.bas"
+if [ "$(GBASIC_PATH=stdlib ./gbasic "$work/ml.bas" 2>/dev/null)" = "record:2" ]; then
+    pass "CONTROL: a record across lines is untouched"
+else
+    fail "CONTROL: a record across lines is untouched"
+fi
+
+printf 'TIER the clause takes ONE modifier, and why neither spelling can mean more\n'
+# ASKED RATHER THAN DESIGNED: `{trimmed,upper}=` was tried 2026-10-02 and the
+# answer is no -- but the two obvious spellings fail in two DIFFERENT ways, and
+# each one is a fact about what that syntax already means rather than a gap.
+#
+# A COMMA BECOMES PART OF THE NAME, so the lookup fails on a name nobody
+# registered. A SPACE is how a modifier name CONTINUES (`{end of month}`) or
+# takes an ARGUMENT (`{split ","}`), resolved by longest match against the
+# registered names -- so `trimmed` matched as the name and `upper` was read as
+# an argument to it. Both spellings are claimed; that is the whole reason
+# neither is available for composition.
+#
+# PINNED BECAUSE THE INLINE FORM DOES COMPOSE (asserted in the fixture), which
+# makes "can I write two in a clause" a question somebody will ask again -- and
+# the answer is more useful as two located diagnostics than as a sentence.
+clause_refusal() {   # <source line> <needle>
+    printf 's = "  hello  "\n%s\nprint(x)\n' "$1" >"$work/clause.bas"
+    out="$(timeout -k 5 20 ./gbasic "$work/clause.bas" 2>&1 || true)"
+    case "$out" in
+        *"$2"*) pass "$3" ;;
+        *) printf '    got: %s\n' "$(printf '%s' "$out" | tail -1)"; fail "$3" ;;
+    esac
+}
+clause_refusal 'x {trimmed,upper}= s' 'assign modifier not found: trimmed,upper' \
+    'a comma is part of the NAME, so the lookup fails on it'
+clause_refusal 'x {trimmed upper}= s' 'expects no arguments' \
+    'a space makes the second word an ARGUMENT, not a second modifier'
+clause_refusal 'x {trimmed}{upper}= s' 'syntax error' \
+    'two clauses in a row is a parse error'
+# THE CONTROLS, or "the clause refuses" is satisfied by a clause that refuses
+# everything -- and these three are exactly what the two spellings above are
+# claimed BY, so without them the refusals above read as gaps rather than as
+# consequences.
+#
+# A SEPARATE HELPER THAT REQUIRES SUCCESS AND AN ANSWER, which is a correction
+# made before this shipped: the first draft ran them through `clause_refusal`
+# with an EMPTY needle, and `case "$out" in *""*)` matches anything -- so all
+# three passed while asserting nothing at all, including on a build where the
+# clause had stopped working. The same vacuous-control shape this suite's own
+# neighbours keep producing.
+clause_works() {   # <source line> <expected stdout> <label>
+    printf 's = "  hello  "\n%s\nprint(string(x))\n' "$1" >"$work/clause.bas"
+    got="$(timeout -k 5 20 ./gbasic "$work/clause.bas" 2>"$work/clause.err")"
+    rc=$?
+    if [ "$rc" != 0 ]; then
+        printf '    exit %s: %s\n' "$rc" "$(tail -1 "$work/clause.err")"; fail "$3"
+    elif [ "$got" != "$2" ]; then
+        printf '    got [%s], want [%s]\n' "$got" "$2"; fail "$3"
+    else
+        pass "$3"
+    fi
+}
+clause_works 'x {trimmed}= s' 'hello' 'CONTROL: one modifier in a clause still works'
+clause_works 'x {split "e"}= s' '["  h","llo  "]' 'CONTROL: a name plus an argument still works'
+clause_works 'x = {upper}{trimmed}s' 'HELLO' 'CONTROL: the inline form still nests'
 
 printf 'TIER valgrind\n'
 if vg_available; then

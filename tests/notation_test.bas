@@ -22,6 +22,11 @@ load notation
 
 tally = { checks: 0, mismatches: 0 }
 
+' A function value to hand the writer. Exists only to be refused.
+function notation_probe()
+    return 1
+end function
+
 function check(label, got, want)
     tally.checks = tally.checks + 1
     if string(got) = string(want) then
@@ -189,6 +194,28 @@ check("so is a bare typed value", contains(error.message, "must be a record or a
 error.clear()
 check("CONTROL: a record root is accepted", len(notation.to_text({ a: 1 })) > 0, true)
 check("CONTROL: an array root is accepted", len(notation.to_text([ 1 ])) > 0, true)
+' A LIVE HANDLE IS REFUSED RATHER THAN RENDERED, added 2026-10-02 on a report
+' from the gbasic-books session. `{ cb: greet }` used to write
+' `cb: "<function greet>"` and read back as the STRING `<function greet>` --
+' SELF-CONSISTENT AND WRONG, raising nothing at either end, so a record holding
+' a callback came back with a string where the function was and the failure
+' surfaced wherever somebody later tried to call it. This format's whole claim
+' is that it keeps every gBASIC type, so a token that reads back as a DIFFERENT
+' type is the one thing it may not write.
+'
+' THE ASSERTION IS THE REFUSAL AND NOT THE ROUND TRIP, because the round trip
+' PASSED on the broken library: `from_text(to_text(r)).cb` equalled
+' `"<function greet>"` both before and after any fix that merely changed the
+' token. Only "it refuses" separates them.
+notation.to_text({ cb: notation_probe })
+check("a function value is refused", contains(error.message, "a function value cannot be written"), true)
+check("and the refusal names the handle", contains(error.message, "<function notation_probe>"), true)
+error.clear()
+notation.to_text({ r: regex("a+") })
+check("so is a regex", contains(error.message, "a regex value cannot be written"), true)
+error.clear()
+check("CONTROL: a record of plain data is still accepted", len(notation.to_text({ a: 1, b: "two" })) > 0, true)
+check("CONTROL: and so are the five tagged kinds", len(notation.to_text({ d: dt })) > 0, true)
 notation.from_text("{ a {nosuch}: \"1\" }")
 check("an unknown tag is refused by name", contains(error.message, "unknown type tag 'nosuch'"), true)
 error.clear()

@@ -1,0 +1,70 @@
+-- one layout, each shape the notation can read
+ok   day first            
+ok   month first          
+ok   a short month name   
+ok   long names, and a day
+ok   no separators        
+ok   a full timestamp     
+ok   12-hour, pm          
+ok   12-hour, midnight    
+ok   12-hour, noon        
+ok   a time only          
+
+-- a two-digit year takes the POSIX pivot: 00-68 this century, 69-99 the last
+ok   26 is 2026           
+ok   68 is 2068           
+ok   69 is 1969           
+ok   99 is 1999           
+
+-- A LIST, AND THE ORDER IS THE DECLARATION
+ok   dmy declared first   
+ok   mdy declared first   
+ok   and they DIFFER      
+
+-- and the list disambiguates itself where the data allows
+ok   03/15 can only be mdy
+ok   15/03 can only be dmy
+ok   the third candidate  
+
+-- refusals, each beside a legal neighbour
+ok   a contradictory day  
+ok   names the text       
+ok   and both layouts     
+ok   day 32               
+ok   trailing text        
+ok   text too short       
+ok   hour 13 with pm      
+ok   a non-text subject   
+
+-- A DAY THAT DOES NOT EXIST IN THAT MONTH
+ok   29 Feb in a non-leap 
+ok   30 Feb ever          
+ok   31 April             
+ok   31 June via a layout 
+ok   CONTROL 2024 leap    
+ok   CONTROL 2000 leap    
+ok   1900 is NOT leap     
+ok   CONTROL 28 Feb       
+ok   CONTROL 30 April     
+ok   CONTROL 31 December  
+
+-- CONTROLS: the no-argument forms are untouched
+ok   {date} ISO           
+ok   {datetime} ISO and Z 
+ok   {time} ISO           
+ok   read then render     
+ok   and the long way     
+
+-- THE REFUSAL NAMES THE CAUSE, AND ONLY WHEN THERE IS ONE TO NAME
+ok   CONTROL malformed    
+ok   CONTROL malformed time
+ok   CONTROL layout no fit
+ok   month out of range   
+ok   hour out of range    
+ok   minute out of range  
+ok   second out of range  
+ok   {datetime} says date-time
+ok   wrong day name       
+ok   list names the reading
+ok   CONTROL list still works
+ok   one layout, no clause

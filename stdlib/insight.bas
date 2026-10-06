@@ -711,6 +711,17 @@ library insight
 
     ' --- internals -----------------------------------------------------------
 
+    ' `key` is variadic and the dimensions arrive as an ARRAY, so the parts are
+    ' folded through it one at a time. Folding preserves injectivity: each
+    ' component is length- and kind-tagged, so no accumulation is ambiguous.
+    function _key_of(parts)
+        k = ""
+        for each p in parts
+            k = k + key(p)
+        next
+        return k
+    end function
+
     function _accumulate(rows, spec, dims, assoc_names)
         baseline = { }
         current = { }
@@ -723,12 +734,22 @@ library insight
         measure = spec["measure"]
         pcol = spec["period"]
         for each r in rows
-            key = ""
+            ' THE CELL KEY IS BUILT BY `key`, NOT BY JOINING ON "|".
+            ' Measured before this changed: the cells ("North|East", "A") and
+            ' ("North", "East|A") produced the IDENTICAL key, so a
+            ' decomposition over eight distinct cells reported SEVEN -- two
+            ' merged, their measures summed together. Worse than a wrong
+            ' grouping, because `search.cells` feeds the Bonferroni threshold,
+            ' so the merge corrupted both the statistic and the width it is
+            ' judged against. And an absent dimension rendered as the word
+            ' `unknown`, colliding with any cell whose dimension really is that
+            ' text. `key` is injective by construction; `parts` keeps the
+            ' readable values, which is all the key was ever read for.
             parts = []
             for each d in dims
-                key = key + string(r[d]) + "|"
                 append(parts, string(r[d]))
             next
+            key = _key_of(parts)
             if is_unknown(baseline[key]) then
                 baseline[key] = 0
                 current[key] = 0

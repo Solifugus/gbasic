@@ -113,7 +113,26 @@ library fundamentals
             r["start"] = st
             r["value"] = f["val"]
             r["fy"] = f["fy"]
-            r["fp"] = f["fp"]
+            ' `fp` IS GUARDED LIKE `start` ABOVE, and it was not. EDGAR omits the
+            ' fiscal period on some facts -- measured 59 of 4096 rows in
+            ' examples/fundamentals_derived_test.bas -- and an absent one reached
+            ' the composite keys at `_dedup` and `_pk` through string
+            ' concatenation, so the period key read `2023-12-31|nothing`. It
+            ' grouped correctly by accident (every absent `fp` renders the same
+            ' way), but the neighbouring `start` is defaulted explicitly eight
+            ' lines up and this was not, so the key depended on how `nothing`
+            ' happens to render rather than on anything anybody decided.
+            '
+            ' Found by instrumenting `+` to count absence coercions across the
+            ' tree (2026-10-02): 822 events at 21 sites, of which 11 were an
+            ' artifact of running fixtures outside their own harness and all but
+            ' these two were deliberate displays of an absence. These two were
+            ' the only unguarded ones.
+            fpv = ""
+            if has(f, "fp") then
+                fpv = f["fp"]
+            end if
+            r["fp"] = fpv
             r["form"] = f["form"]
             r["accession"] = f["accn"]
             r["filed"] = f["filed"]
@@ -136,7 +155,15 @@ library fundamentals
     function _dedup(rows)
         best = {}
         for each r in rows
-            k = r["start"] + "|" + r["end"] + "|" + r["fp"]
+            ' BUILT BY `key`, NOT JOINED ON "|". This line is where the
+            ' absence defect lived: `fp` reached it unguarded, so the key read
+            ' `2023-12-31|nothing` and grouped correctly BY ACCIDENT, every
+            ' absent value rendering the same way. Guarding it with "" fixed
+            ' the accident and left a residual -- an absent `fp` and a
+            ' genuinely empty one became the same key. `key` distinguishes
+            ' them, and no value of any component can be mistaken for a
+            ' separator.
+            k = key(r["start"], r["end"], r["fp"])
             if has(best, k) then
                 if _later(r, best[k]) then
                     best[k] = r

@@ -11,9 +11,9 @@ covering double-entry accounting, loan servicing, deposits, credit analytics,
 securities analysis and more. A gBASIC program is meant to be a real
 application, not a demonstration.
 
-This repository holds the C implementation of gBASIC `0.4.0`. It is an **early
+This repository holds the C implementation of gBASIC `0.5.1`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**159 test suites** gate every change, goldens are byte-exact, and the claims in
+**163 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -70,6 +70,21 @@ name  {trimmed}= input("Name: ")
 if command {caseless}= "quit" then print("Goodbye")
 ```
 
+A modifier is not limited to an assignment clause: stages chain, any modifier
+works as a comparison lens, and every shape works **inline** in an expression.
+Dates carry a layout notation that reads the way it prints — date parts
+uppercase, time parts lowercase, so `MM` is the month and `mm` the minutes — and
+the same notation reads text back:
+
+```basic
+due {date "DD/MM/YYYY"}= "15/05/2026"
+print {string "DDDD, D MMMM YYYY"}due
+
+clean {trimmed; upper}= "  ada  "
+print clean
+print {split ","}"a,b,c"
+```
+
 Watchers are reactive blocks that fire the moment a stored value actually
 changes:
 
@@ -100,9 +115,12 @@ continue across a line break inside an unclosed `(`, `[` or `{`; `for each` with
 assignment; functions with literal default parameter values, programs,
 libraries and `load` (with `as` to pick the qualifier); first-class function
 values; **prototypal objects** with per-property inheritance policies;
-assignment and comparison modifiers; watchers and locks; frame-scoped
+modifiers that validate or convert — as an
+assignment clause, inline in any expression, chained with `;`, and any of them
+usable as a comparison lens; watchers and locks; frame-scoped
 `on error` and a suppressible warning channel; distinct `nothing` and
-`unknown`; date, duration, money, file and directory values; binary-safe
+`unknown`; date, duration, money, file and directory values, with a layout
+notation for both rendering and parsing dates; binary-safe
 Unicode-aware strings; regular expressions as a value kind; bitwise builtins;
 and strict RFC 8259 JSON alongside a round-tripping gBASIC dialect.
 
@@ -441,6 +459,7 @@ guide, and it opens with the hazard worth knowing before you start: a bare
 ./gbasic --add-loads program.bas     # print source with suggested `load` lines
 ./gbasic --json-diagnostics prog.bas # diagnostics as JSON on stderr
 ./gbasic --line-buffered program.bas # flush stdout per completed line
+./gbasic --full-trace program.bas    # list every frame inside a library
 ./gbasic --version
 ```
 
@@ -472,7 +491,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 159 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 163 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite
@@ -615,7 +634,7 @@ design proposal as an available feature.
 ## Version
 
 ```sh
-./gbasic --version        # gBASIC 0.4.0
+./gbasic --version        # gBASIC 0.5.1
 ```
 
 ## Contributing

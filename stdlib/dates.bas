@@ -195,6 +195,22 @@ library dates
     end function
 
     function calendar(spec)
+        ' A CALENDAR SPEC IS A DIFFERENT VOCABULARY FROM A SELECTOR SPEC, and
+        ' gets the same treatment for the same reason: `{ holidayz: [...] }`
+        ' built a calendar with NO holidays in it, so every business-day
+        ' question answered as though the office never closed. Four fields,
+        ' listed here rather than in _spec_fields() precisely because mixing
+        ' the two would accept `weekend:` on a selector and `nth:` on a
+        ' calendar, both of which do nothing.
+        if type(spec) != "record" then
+            error "dates.calendar: spec must be a record"
+        end if
+        cal_known = ["weekend", "holidays", "observe", "hours"]
+        for each k in keys(spec)
+            if not contains(cal_known, k) then
+                error "dates.calendar: unknown spec field '" + k + "' -- the vocabulary is " + join(cal_known, ", ")
+            end if
+        end for
         weekend = ["saturday", "sunday"]
         if has(spec, "weekend") then
             weekend = []
@@ -498,6 +514,45 @@ library dates
         return lower(w) = name
     end function
 
+    ' A SPEC FIELD NOBODY RECOGNISES IS A TYPO, AND IT USED TO BE SILENT.
+    '
+    ' The comment at the top of this section has claimed since the selectors
+    ' were written that "a malformed spec ERRORS; a spec no day satisfies
+    ' yields UNKNOWN -- the two failure modes mean different things". That was
+    ' true of every malformation except the commonest one: an unrecognised
+    ' FIELD was ignored, so `{ weekdayz: ["monday"] }` was not a weekday rule
+    ' at all -- it was the EMPTY spec, which every day satisfies, so `select`
+    ' answered tomorrow and `matches` answered true for everything. A constraint
+    ' silently dropped is worse than one refused, because the answer is an
+    ' ordinary-looking date. Reported by the gbasic-books session 2026-10-02.
+    '
+    ' Refused BY NAME, the rule webserver.listen already follows for its
+    ' options and reasoning.check_context for its fields. ONE checker for all
+    ' three verbs, because three copies of a vocabulary drift -- and it
+    ' RECURSES into `when:`, since a series sub-rule is itself a spec and a
+    ' typo there is the same mistake one level in.
+    function _spec_fields()
+        return ["weekday", "day", "month", "kind", "except", "nth", "within",
+                "after", "on_or_after", "before", "on_or_before", "roll", "at",
+                "every", "when"]
+    end function
+
+    function _check_spec(spec, who)
+        if type(spec) != "record" then
+            error who + ": spec must be a record"
+        end if
+        known = _spec_fields()
+        for each k in keys(spec)
+            if not contains(known, k) then
+                error who + ": unknown spec field '" + k + "' -- the vocabulary is " + join(known, ", ")
+            end if
+        end for
+        if has(spec, "when") then
+            _check_spec(spec.when, who + " (when:)")
+        end if
+        return nothing          ' the void convention: 2101 exempts it by value
+    end function
+
     function _excepted(dd, spec)
         if not has(spec, "except") then
             return false
@@ -594,6 +649,7 @@ library dates
     end function
 
     function matches(d, spec, cal)
+        _check_spec(spec, "dates.matches")
         dd {day}= d
         if not _candidate(dd, spec, cal) then
             return false
@@ -651,6 +707,7 @@ library dates
     end function
 
     function select(spec, anchor, cal)
+        _check_spec(spec, "dates.select")
         aa {day}= anchor
         n = 1
         if has(spec, "nth") then
@@ -787,6 +844,7 @@ library dates
     end function
 
     function series(spec, bounds, cal)
+        _check_spec(spec, "dates.series")
         start {day}= bounds.from
         want = 0 - 1
         if has(bounds, "count") then

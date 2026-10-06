@@ -99,7 +99,7 @@ money.retire("NOSUCH")
 check("retiring an unknown currency is refused", error.message, "no such currency: NOSUCH")
 error.clear()
 r = money.nonsense()
-check("an unknown verb is refused", error.message, "invalid function call: money.nonsense")
+check("an unknown verb is refused", error.message, "undefined function: money.nonsense -- the 'money' module does not define 'nonsense'")
 error.clear()
 
 on error stop

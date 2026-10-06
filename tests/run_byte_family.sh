@@ -15,11 +15,10 @@
 # still disagree.
 #
 # SHAPE is measured because the reason these exist is partly cost: the
-# workaround was a loop over `byte_at` reassembling with `from_bytes`, which is
-# correct and QUADRATIC since every `+` copies the accumulator. Asserted as a
-# RATIO across a 4x size step -- never an absolute time -- with the loop
-# required to exceed it, so if the loop ever stops being quadratic this tier
-# says so rather than quietly measuring nothing.
+# workaround was a loop over `byte_at` reassembling with `from_bytes`. Asserted
+# as the LOOP AGAINST THE SLICE on the same bytes in the same run -- never an
+# absolute time and never the loop's growth alone, both of which were tried and
+# are recorded at the gate below with what they measured instead.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -64,15 +63,50 @@ program main(args)
         i = i + 1
     end while
     t2 = monotonic()
+    ' A LINEAR REFERENCE OVER THE SAME TWO SIZES, IN THE SAME PROCESS. `byte_at`
+    ' is O(1) since PLAT-STRIDX, so a loop that reads and discards is linear --
+    ' the quadratic cost is the `+` accumulation above, and nothing else.
+    t5 = monotonic()
+    n = 0
+    i = 0
+    while i < small
+        n = n + byte_at(raw, 100 + i)
+        i = i + 1
+    end while
+    t6 = monotonic()
+    n2 = 0
+    i = 0
+    while i < big
+        n2 = n2 + byte_at(raw, 100 + i)
+        i = i + 1
+    end while
+    t7 = monotonic()
     loop_small = t1 - t0
     loop_big = t2 - t1
+    ref_small = t6 - t5
+    ref_big = t7 - t6
     ratio = 0
     if loop_small > 0 then ratio = loop_big / loop_small
+    ref = 0
+    if ref_small > 0 then ref = ref_big / ref_small
     print "LOOP_RATIO " + string(round(ratio, 2))
+    print "REF_RATIO " + string(round(ref, 2))
     t3 = monotonic()
     c = byte_slice(raw, 100, big)
     t4 = monotonic()
-    print "SLICE_SECONDS " + string(round(t4 - t3, 4))
+    slice_s = t4 - t3
+    ' THE FIXTURE COMPUTES THE RATIO, because the shell cannot safely parse the
+    ' slice's own time: it is microseconds, `print` emits the shortest
+    ' round-trip decimal (PLAT-NUMFMT), and `9.14e-06` matched by a `[0-9.]+`
+    ' grep reads as 9.14 -- which is how the first version of this gate reported
+    ' "byte_slice took 9.14s". The old gate escaped it only because `round(x, 4)`
+    ' flattened the exponent away to 0.0.
+    if slice_s > 0 then
+        print "LOOP_OVER_SLICE " + string(round(loop_big / slice_s, 0))
+    else
+        print "LOOP_OVER_SLICE below-clock"
+    end if
+    print "SLICE_MICROS " + string(round(slice_s * 1000000, 1))
     print "IDENTICAL " + string(c = b)
 end program
 BAS
@@ -80,24 +114,56 @@ if ! ./gbasic "$work/shape.bas" >"$work/shape.txt" 2>&1; then
     cat "$work/shape.txt"; fail "the shape fixture did not run"
 else
     ratio="$(grep -oE 'LOOP_RATIO [0-9.]+' "$work/shape.txt" | awk '{print $2}')"
-    slice_s="$(grep -oE 'SLICE_SECONDS [0-9.]+' "$work/shape.txt" | awk '{print $2}')"
+    ref="$(grep -oE 'REF_RATIO [0-9.]+' "$work/shape.txt" | awk '{print $2}')"
+    over="$(grep -oE 'LOOP_OVER_SLICE [0-9.]+' "$work/shape.txt" | awk '{print $2}')"
+    micros="$(grep -oE 'SLICE_MICROS [0-9.]+' "$work/shape.txt" | awk '{print $2}')"
     same="$(grep -oE 'IDENTICAL (true|false)' "$work/shape.txt" | awk '{print $2}')"
     [ "$same" = "true" ] || fail "byte_slice and the loop disagree about the bytes"
-    # THE NEGATIVE CONTROL. A 4x size step on a quadratic loop costs ~16x; if
-    # this ever drops to linear the tier is measuring nothing and should say so.
     shape_ok=1
-    # THE NEGATIVE CONTROL, and the gate sits where the measurement supports
-    # it: at 32K -> 128K the loop was 8.26x and 8.95x across runs, against 4x
-    # for linear and 16x for perfectly quadratic. 6x separates the two without
-    # sitting on either. Measured at SMALLER sizes the ratio is lower (4.8-5.3x
-    # at 8K -> 32K), because the copying has not yet dominated -- which is why
-    # the sizes are part of the assertion rather than incidental to it.
-    awk -v r="$ratio" 'BEGIN { exit (r > 6) ? 0 : 1 }' \
-        || { fail "the byte_at loop grew only ${ratio}x for 4x the bytes; it is no longer quadratic and this tier is vacuous"; shape_ok=0; }
-    # And the slice must be nowhere near it.
-    awk -v s="$slice_s" 'BEGIN { exit (s < 0.05) ? 0 : 1 }' \
-        || { fail "byte_slice took ${slice_s}s for 128KB, which is not a slice"; shape_ok=0; }
-    [ "$shape_ok" = 1 ] && printf 'PASS shape (the loop grows %sx for 4x the bytes; byte_slice takes %ss)\n' "$ratio" "$slice_s"
+    # THE NEGATIVE CONTROL IS THE LOOP AGAINST THE SLICE, ON THE SAME DATA IN
+    # THE SAME RUN -- a correction made 2026-10-03 after the old one produced a
+    # FALSE RED in the gate and then turned out to be asserting something this
+    # machine cannot see.
+    #
+    # IT USED TO ASSERT THE LOOP'S ABSOLUTE GROWTH: `> 6` for a 4x size step,
+    # calibrated against 8.26x and 8.95x. Under gate load it measured 5.85x and
+    # went red; standalone minutes later, 6.56x. So the gate sat INSIDE the
+    # run-to-run band -- and the direction is what makes that unacceptable
+    # rather than merely unlucky: load inflates the SMALL measurement more than
+    # the big one, fixed overhead being a larger share of it, so a busy machine
+    # COMPRESSES the ratio toward 1 and this fires exactly when somebody else is
+    # building. That is the failure CLAUDE.md names, and the third tier in this
+    # tree calibrated on an idle box (run_ari_discover's 180s against a measured
+    # 356s; repl_pty's 0.2s silence window).
+    #
+    # AND MEASURING IT PROPERLY SHOWED THE CLAIM WAS NOT OBSERVABLE HERE AT ALL.
+    # A linear reference loop over the same two sizes in the same process
+    # (`byte_at` read and discarded, O(1) since PLAT-STRIDX) measures 4.2-4.4x,
+    # correctly linear. The accumulating loop measures 5.2-5.7x -- about 1.3x
+    # faster than linear, nowhere near the 16x of a quadratic. Across four
+    # sizes it is 0.113s / 0.281s / 0.453s, i.e. 4.0x for 4x the bytes: LINEAR.
+    #
+    # The premise is not wrong, it is undersized. Plain `a = a + "x"` IS still
+    # quadratic -- measured at 50K/100K/200K/400K the 2x steps cost 3.31x,
+    # 2.67x and 3.79x, trending to a quadratic's 4x -- but in THIS loop the
+    # per-iteration cost of `byte_at` plus an array literal plus `from_bytes`
+    # dominates the copy until well past 128K, and the fixture's own file is
+    # not large enough to reach 256K.
+    #
+    # SO THE TIER ASSERTS THE CLAIM THAT IS BOTH TRUE AND MEASURABLE: the loop
+    # is enormously slower than the slice for the same bytes. Measured three
+    # times: 41,717x / 51,968x / 54,777x. The gate is 1000x -- a 40x margin,
+    # three orders of magnitude from anything load can do, and both sides scale
+    # together so load cancels. The growth ratios are still REPORTED, because
+    # they are the number to re-read if somebody makes `+` linear.
+    awk -v o="${over:-0}" 'BEGIN { exit (o > 1000) ? 0 : 1 }' \
+        || { fail "the loop is only ${over:-?}x the slice for the same 128KB -- under 1000x, so either the slice stopped being a slice or this tier is measuring nothing"; shape_ok=0; }
+    # And the slice must be fast in absolute terms too, or "1000x a very slow
+    # slice" would pass. 50,000 micros is 0.05s.
+    awk -v m="${micros:-999999}" 'BEGIN { exit (m < 50000) ? 0 : 1 }' \
+        || { fail "byte_slice took ${micros:-?} microseconds for 128KB, which is not a slice"; shape_ok=0; }
+    [ "$shape_ok" = 1 ] && printf 'PASS shape (the loop is %sx the slice, which takes %s micros; growth %sx against a linear reference of %sx)\n' \
+        "$over" "$micros" "$ratio" "$ref"
 fi
 
 # --- Tier 3: valgrind ---------------------------------------------------------

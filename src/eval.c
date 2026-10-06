@@ -370,6 +370,17 @@ struct Value {
         struct {
             char *name;
             char *library;
+            /* `bound(fn, ctx)`: an EXPLICITLY CAPTURED context, appended as the
+             * last argument on every call. NULL for an ordinary function value.
+             *
+             * THIS IS NOT A CLOSURE, and the difference is the reason it is
+             * affordable where a closure is not (first_class_functions_design
+             * §2). A closure captures an ENVIRONMENT implicitly and by
+             * reference, which admits reference cycles in a refcounted runtime
+             * and keeps frames alive. This captures ONE VALUE, named at the
+             * bind site and COPIED -- and a gBASIC record is a value, so
+             * nothing cyclic is constructible. */
+            Value *context;
         } function;
     } as;
 };
@@ -656,7 +667,6 @@ typedef struct {
 } PrincipalEntry;
 
 
-
 typedef struct {
     AstStmt *stmt;
     int pending;
@@ -869,6 +879,13 @@ static ErrorFrame *current_error_frame = &base_error_frame;
 typedef struct {
     const char *name;
     const char *path;
+    /* The LIBRARY this frame's function belongs to, or NULL for the root
+     * program. Already stamped on the AST beside `source_path`, so this costs a
+     * pointer and no new bookkeeping -- and it is what lets a report say "in
+     * library accounting" without listing every frame inside it. The frames are
+     * all still in `error.trace`, so collapsing is a REPORTING choice and never
+     * a loss of data. */
+    const char *library;
     int line;
     int column;
 } CallFrameInfo;
@@ -879,6 +896,29 @@ static int current_line = 0;
 static int current_column = 0;
 static AstStmtList active_root = {0};
 static char *root_source_path = NULL;
+
+/* `--full-trace`: list every frame inside a library instead of collapsing the
+ * run to one line. Off by default on Matthew's ruling -- a raise four frames
+ * into `accounting` is noise for someone whose own code is one frame -- and the
+ * frames are never discarded, so this is a presentation switch over data
+ * `error.trace` carries either way. */
+static int trace_full = 0;
+/* Set from main.c. The frames ride IN THE MESSAGE so they travel through the
+ * sink -- main.c installs one UNCONDITIONALLY, not only for
+ * --json-diagnostics, so a STOP-mode error is collected and drained in the
+ * legacy format. My first attempt printed to stderr directly behind a
+ * `gb_get_active_sink()` guard and therefore printed NOTHING, ever: the guard
+ * was true on every run. In JSON mode the frames are omitted rather than
+ * embedded, so an editor's `message` field keeps meaning one sentence. */
+static int trace_json_mode = 0;
+
+void eval_set_json_diagnostics(int on) {
+    trace_json_mode = on;
+}
+
+void eval_set_full_trace(int on) {
+    trace_full = on;
+}
 
 /* THE FILE A CHILD PROCESS RE-EXECS TO *BE* THIS PROGRAM. Normally that is the
  * source path and this stays NULL; at the prompt it is the session cache, a
@@ -1845,6 +1885,20 @@ static Value value_function(const char *name, const char *library) {
     value.kind = VALUE_FUNCTION;
     value.as.function.name = copy_string(name);
     value.as.function.library = library ? copy_string(library) : NULL;
+    value.as.function.context = NULL;
+    return value;
+}
+
+/* Takes ownership of `context`. */
+static Value value_function_bound(const char *name, const char *library,
+                                  Value context) {
+    Value value = value_function(name, library);
+    Value *held = malloc(sizeof(Value));
+    if (!held) {
+        abort();
+    }
+    *held = context;
+    value.as.function.context = held;
     return value;
 }
 
@@ -2392,6 +2446,31 @@ static const RegexShorthand *regex_shorthand_find(char letter) {
     }
     return NULL;
 }
+
+/* A BOUND CONTEXT IS REFUSED WHERE IT CANNOT TRAVEL, never dropped.
+ *
+ * Several paths take a function value apart and keep only its NAME: the gi
+ * signal bridge, gi's source callbacks, and `webserver.on_request`. Measured
+ * before this existed, `gi.connect(obj, sig, bound(h, ctx))` ran the handler
+ * with the context SILENTLY GONE -- `ctx = nothing`, no error, exit 0. That is
+ * the failure class this tree is organised against, and `bound` introduced it,
+ * so the refusal ships WITH the feature rather than after somebody loses a
+ * context to it.
+ *
+ * Returns 1 and raises when the value carries a context. */
+static int bound_context_unsupported(const Value *fv, const char *where) {
+    if (!fv || fv->kind != VALUE_FUNCTION || !fv->as.function.context) {
+        return 0;
+    }
+    char message[320];
+    snprintf(message, sizeof(message),
+             "%s cannot take a bound function: it keeps the function's NAME,"
+             " so the context would be silently dropped -- pass the plain"
+             " function and carry the context another way", where);
+    runtime_error_raise(message, 1003, "invalid argument type");
+    return 1;
+}
+
 
 /* A growable byte buffer for building the translated pattern. */
 typedef struct {
@@ -3425,12 +3504,12 @@ static Value error_capture_trace(void) {
     }
     for (size_t i = 0; i < count; i++) {
         CallFrameInfo *frame = &call_stack[call_stack_depth - 1 - i];
-        RecordField *fields = calloc(4, sizeof(RecordField));
+        RecordField *fields = calloc(5, sizeof(RecordField));
         if (!fields) {
             abort();
         }
-        const char *names[] = {"name", "path", "line", "column"};
-        for (size_t j = 0; j < 4; j++) {
+        const char *names[] = {"name", "path", "library", "line", "column"};
+        for (size_t j = 0; j < 5; j++) {
             fields[j].name = field_name_new(names[j]);
             fields[j].value = cell_alloc();
             if (!fields[j].value) {
@@ -3439,9 +3518,12 @@ static Value error_capture_trace(void) {
         }
         *fields[0].value = value_string(frame->name ? frame->name : "");
         *fields[1].value = value_string(frame->path ? frame->path : "");
-        *fields[2].value = value_number(frame->line);
-        *fields[3].value = value_number(frame->column);
-        items[i] = value_record(fields, 4);
+        /* EMPTY MEANS THE ROOT PROGRAM, not "unknown" -- the two were the same
+         * string before `path` was fixed, and they are different claims. */
+        *fields[2].value = value_string(frame->library ? frame->library : "");
+        *fields[3].value = value_number(frame->line);
+        *fields[4].value = value_number(frame->column);
+        items[i] = value_record(fields, 5);
     }
     return value_array(items, count);
 }
@@ -3524,13 +3606,124 @@ static void runtime_error_raise_at(const char *message, int code,
 /* The raise found no armed frame: report it exactly as the old STOP mode did
  * (same sink, same single line -- byte-exact against 333 negative goldens)
  * and stop the run. */
+/* THE FRAMES, BENEATH THE DIAGNOSTIC, and only when there are frames to show.
+ *
+ * `error.trace` has carried these since PLAT-ERR and the report threw them
+ * away, so this prints what the runtime already knew -- the Python gap that was
+ * a REPORTING gap rather than a missing capability.
+ *
+ * TEXT MODE ONLY. With a sink installed (`--json-diagnostics`) these would be
+ * non-JSON lines in a JSON stream, which is exactly the defect
+ * run_parse_exit.sh exists for. A structured consumer gets no traceback, as it
+ * got none before, and that is a stated limit rather than a regression.
+ *
+ * A LIBRARY RUN COLLAPSES TO ONE LINE unless `--full-trace`. A raise several
+ * frames inside `accounting` tells a reader nothing they can act on; that it
+ * happened IN accounting tells them where to look. The frames are still in
+ * `error.trace`, so nothing is lost -- only not shown.
+ *
+ * COSTED BEFORE BUILDING: exactly THREE negative goldens raise strictly inside
+ * a function body, and NO example golden shows a runtime error at all, so the
+ * byte-exactness PLAT-ERR calls its compatibility hinge survives everywhere
+ * else untouched. */
+static RecordField *record_find(Value *record, const char *name);
+
+/* Append the frames to `out`, innermost first, or leave it empty when there is
+ * nothing to show. The text rides in the DIAGNOSTIC MESSAGE because main.c
+ * installs a sink on every run, so anything written straight to stderr here
+ * would be out of order with the drained diagnostic -- or, as the first
+ * attempt proved, never written at all.
+ *
+ * A LIBRARY RUN COLLAPSES TO ONE LINE unless `--full-trace`: a raise several
+ * frames inside `accounting` tells a reader nothing they can act on, while
+ * "in library accounting" tells them where to look. `error.trace` keeps every
+ * frame, so this is presentation and never a loss.
+ *
+ * OMITTED ENTIRELY IN JSON MODE, so an editor's `message` stays one sentence. */
+static void raise_trace_text(char *out, size_t size) {
+    out[0] = '\0';
+    if (trace_json_mode) {
+        return;
+    }
+    Value t = current_error.trace;
+    if (t.kind != VALUE_ARRAY || !t.as.array.store) {
+        return;
+    }
+    size_t n = t.as.array.store->count;
+    size_t used = 0;
+    const char *last_lib = NULL;
+    for (size_t i = 0; i < n && used + 1 < size; i++) {
+        Value *fr = &t.as.array.store->items[i];
+        if (fr->kind != VALUE_RECORD) {
+            continue;
+        }
+        RecordField *nf = record_find(fr, "name");
+        RecordField *pf = record_find(fr, "path");
+        RecordField *lf = record_find(fr, "library");
+        RecordField *lnf = record_find(fr, "line");
+        RecordField *cf = record_find(fr, "column");
+        const char *nm = (nf && nf->value->kind == VALUE_STRING) ? nf->value->as.string : "?";
+        const char *pa = (pf && pf->value->kind == VALUE_STRING) ? pf->value->as.string : "";
+        const char *lb = (lf && lf->value->kind == VALUE_STRING) ? lf->value->as.string : "";
+        int ln = (lnf && lnf->value->kind == VALUE_NUMBER) ? (int)lnf->value->as.number : 0;
+        int cl = (cf && cf->value->kind == VALUE_NUMBER) ? (int)cf->value->as.number : 0;
+        int w;
+        if (lb[0] && !trace_full) {
+            /* A COLLAPSED LIBRARY LINE IS SUPPRESSED WHEN THE ERROR IS ALREADY
+             * REPORTED IN THAT LIBRARY, because then it says nothing new.
+             * MEASURED: of 33 negative goldens this change moved, THIRTY were
+             * this shape --
+             *
+             *   runtime error at stdlib/chart.bas:541:25: chart: column ...
+             *     in library chart
+             *
+             * where the path names the file and the message already begins
+             * `chart:`, so the frame line is the same fact a third time. The
+             * line earns its place only when a library sits in the MIDDLE of a
+             * chain -- user code into a library into a callback -- which is
+             * exactly when the header cannot tell you a library was involved.
+             * `--full-trace` still shows every frame. */
+            const char *ep = current_error.path && current_error.path[0]
+                           ? current_error.path : runtime_error_path();
+            if (ep && pa[0] && strcmp(ep, pa) == 0) {
+                last_lib = lb;
+                continue;
+            }
+            /* Per CONSECUTIVE run, so a library re-entered after the caller's
+             * own frame is named again rather than merged with an earlier,
+             * unrelated visit. */
+            if (last_lib && strcmp(last_lib, lb) == 0) {
+                continue;
+            }
+            w = snprintf(out + used, size - used, "\n  in library %s", lb);
+            last_lib = lb;
+        } else {
+            last_lib = NULL;
+            w = snprintf(out + used, size - used, "\n  in %s  %s:%d:%d",
+                         nm, pa[0] ? pa : "?", ln, cl);
+        }
+        if (w < 0 || (size_t)w >= size - used) {
+            break;
+        }
+        used += (size_t)w;
+    }
+}
+
 static void raise_report_fatal(void) {
     gb_span span = { current_error.line, current_error.column,
                      current_error.line, current_error.column };
+    char frames[1024];
+    raise_trace_text(frames, sizeof frames);
+    char full[2048];
+    if (frames[0]) {
+        snprintf(full, sizeof full, "%s%s", current_error.message, frames);
+    } else {
+        snprintf(full, sizeof full, "%s", current_error.message);
+    }
     gb_report(GB_DIAG_RUNTIME_ERROR, current_error.code,
               current_error.path && current_error.path[0] ? current_error.path
                                                           : runtime_error_path(),
-              span, current_error.message);
+              span, full);
     raise_in_flight = 0;
     runtime_stopped = 1;
 }
@@ -3992,6 +4185,11 @@ static Value value_copy(Value value) {
         return value;
     }
     if (value.kind == VALUE_FUNCTION) {
+        if (value.as.function.context) {
+            return value_function_bound(value.as.function.name,
+                                        value.as.function.library,
+                                        value_copy(*value.as.function.context));
+        }
         return value_function(value.as.function.name, value.as.function.library);
     }
     if (value.kind == VALUE_WORKBOOK) {
@@ -4112,6 +4310,10 @@ static void value_free(Value value) {
     } else if (value.kind == VALUE_FUNCTION) {
         free(value.as.function.name);
         free(value.as.function.library);
+        if (value.as.function.context) {
+            value_free(*value.as.function.context);
+            free(value.as.function.context);
+        }
     } else if (value.kind == VALUE_REGEX) {
         regex_release(value.as.regex);
     } else if (value.kind == VALUE_WORKBOOK) {
@@ -6890,38 +7092,240 @@ static int parse_int_span(const char *text, int start, int count) {
     return value;
 }
 
-static int valid_date_parts(DateTime dt) {
+/* MONTH AND DAY NAMES, shared by two readers. `datetime_render_layout` emits
+ * them for `MMM`/`MMMM`/`DDD`/`DDDD`, and `date_parts_fault` just below names
+ * the month when it refuses a day that does not exist. They sit here, well
+ * above the renderer, only because this is the earlier of the two uses. */
+static const char *const DT_MONTH_SHORT[12] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
+static const char *const DT_MONTH_LONG[12] = {
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+};
+static const char *const DT_DAY_SHORT[7] = {
+    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+};
+static const char *const DT_DAY_LONG[7] = {
+    "Sunday", "Monday", "Tuesday", "Wednesday",
+    "Thursday", "Friday", "Saturday"
+};
+
+/* WHICH CALENDAR RULE DID THIS BREAK, and in words the author can act on.
+ *
+ * The validation below was added 2026-10-03 and shipped with the message that
+ * was already at its caller: `{date}"2026-02-30"` answered `date modifier
+ * expects an ISO-like date string`, WHICH IS FALSE -- being ISO-like is the one
+ * thing about `2026-02-30` that is not wrong -- and it was the identical
+ * sentence a string that genuinely is not a date got. So the author was sent to
+ * look at the shape of their string, found nothing wrong with it, and had no
+ * route to the real answer. The reports-the-wrong-cause class, arrived at the
+ * way it always is here: A GUARD WENT IN THE RIGHT PLACE AND THE MESSAGE BESIDE
+ * IT WAS THE ONE ALREADY THERE.
+ *
+ * `valid_date_parts` is kept as a WRAPPER rather than being changed, so its ten
+ * existing callers are untouched and there is still exactly one implementation
+ * of what a real date is. `why` is optional: the two modifier sites that raise
+ * pass a buffer, everything else passes NULL.
+ *
+ * Returns 0 when the parts are a real date, nonzero when they are not. */
+static int date_parts_fault(DateTime dt, char *why, size_t why_size) {
+#define DPF(...) do { if (why && why_size) { snprintf(why, why_size, __VA_ARGS__); } } while (0)
     if (dt.time_only) {
         if (dt.hour < 0 || dt.hour > 23) {
-            return 0;
+            DPF("an hour is 0 to 23, not %d", dt.hour);
+            return 1;
         }
         if (dt.precision >= PREC_MINUTE && (dt.minute < 0 || dt.minute > 59)) {
-            return 0;
+            DPF("a minute is 0 to 59, not %d", dt.minute);
+            return 1;
         }
         if (dt.precision >= PREC_SECOND && (dt.second < 0 || dt.second > 59)) {
-            return 0;
+            DPF("a second is 0 to 59, not %d", dt.second);
+            return 1;
         }
-        return 1;
+        return 0;
     }
     if (dt.month < 1 || dt.month > 12) {
-        return 0;
+        DPF("a month is 1 to 12, not %d", dt.month);
+        return 1;
     }
-    if (dt.precision >= PREC_DAY && (dt.day < 1 || dt.day > 31)) {
-        return 0;
+    if (dt.precision >= PREC_DAY) {
+        /* THE DAY MUST EXIST IN THAT MONTH, which this checked as `1..31` from
+         * the day the type was written. So `{date}"2026-02-30"` was ACCEPTED --
+         * and then `+ 1 day` answered `2026-03-03`, because the epoch
+         * conversion normalises 30 February to 2 March and a day past that is
+         * the 3rd. A date that does not exist silently became a DIFFERENT real
+         * date two days later, with nothing raised, in a type whose whole job
+         * is business arithmetic. Found 2026-10-03 while building the layout
+         * reader, which needed this predicate to be true.
+         *
+         * The month and `> 31` were already refused, so only the per-month
+         * count and the leap rule were missing. */
+        static const int days_in[12] = { 31, 28, 31, 30, 31, 30,
+                                         31, 31, 30, 31, 30, 31 };
+        int limit = days_in[dt.month - 1];
+        int leap = 0;
+        if (dt.month == 2) {
+            int y = dt.year;
+            leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+            if (leap) {
+                limit = 29;
+            }
+        }
+        if (dt.day < 1) {
+            DPF("a day of the month is 1 or more, not %d", dt.day);
+            return 1;
+        }
+        if (dt.day > limit) {
+            /* THE LEAP CASE GETS ITS OWN SENTENCE, because "February 1900 has
+             * 28 days" invites the reply "no it does not, February has 29" from
+             * anyone who knows the four-year rule and not the hundred-year one
+             * -- and the 29th of a non-leap February is the single commonest
+             * impossible date in real data. */
+            if (dt.month == 2 && dt.day == 29 && !leap) {
+                DPF("%d was not a leap year, so February %d has 28 days",
+                    dt.year, dt.year);
+            } else {
+                DPF("%s %d has %d days", DT_MONTH_LONG[dt.month - 1],
+                    dt.year, limit);
+            }
+            return 1;
+        }
     }
     if (dt.precision >= PREC_HOUR && (dt.hour < 0 || dt.hour > 23)) {
-        return 0;
+        DPF("an hour is 0 to 23, not %d", dt.hour);
+        return 1;
     }
     if (dt.precision >= PREC_MINUTE && (dt.minute < 0 || dt.minute > 59)) {
-        return 0;
+        DPF("a minute is 0 to 59, not %d", dt.minute);
+        return 1;
     }
     if (dt.precision >= PREC_SECOND && (dt.second < 0 || dt.second > 59)) {
+        DPF("a second is 0 to 59, not %d", dt.second);
+        return 1;
+    }
+    return 0;
+#undef DPF
+}
+
+static int valid_date_parts(DateTime dt) {
+    return date_parts_fault(dt, NULL, 0) == 0;
+}
+
+
+/* ISO 8601's `T` SEPARATOR AND ZONE DESIGNATOR, normalised away before the
+ * strict position scanner below ever sees them.
+ *
+ * `2026-03-07T14:05:09Z` is what a web API hands you and it was REFUSED -- the
+ * scanner wanted a space at position 10 and nothing after the seconds. Both are
+ * syntax rather than semantics, so they are stripped here and the one scanner
+ * stays the single place that decides what a datetime looks like.
+ *
+ * AN OFFSET IS HONOURED BY CONVERTING TO UTC, and that is forced by the type
+ * rather than chosen: a gBASIC `datetime` is CIVIL and carries no zone (which
+ * is why `epoch(dt, zone)` exists), while `14:05:09+02:00` denotes an INSTANT.
+ * Turning an instant into a civil time needs a zone, and UTC is the only one the
+ * text implies. The alternative -- keep the wall clock and drop the offset --
+ * would make `14:05:09+02:00` and `14:05:09Z` the SAME VALUE while they are two
+ * hours apart, which is a wrong answer with nothing raised.
+ *
+ * `Z` and `+00:00` are therefore no-ops, which is the overwhelmingly common
+ * case; only a non-zero offset moves the digits.
+ *
+ * THE SUFFIX IS LOOKED FOR ONLY AFTER THE DATE/TIME SEPARATOR, because a bare
+ * `2026-03-07` ends in `-07` and a scan from the right would read it as an
+ * offset of seven hours. */
+static int datetime_strip_zone(const char *text, char *buf, size_t bufsz,
+                               long long *offset_seconds) {
+    *offset_seconds = 0;
+    size_t len = strlen(text);
+    if (len == 0 || len >= bufsz) {
         return 0;
+    }
+    memcpy(buf, text, len + 1);
+    if (len <= 10 || (buf[10] != ' ' && buf[10] != 'T')) {
+        /* No time component: nothing to normalise, and no place a zone could
+         * legally sit. */
+        return 1;
+    }
+    buf[10] = ' ';
+
+    /* `Z` -- UTC, so the civil fields are already the answer. */
+    if (len > 11 && (buf[len - 1] == 'Z' || buf[len - 1] == 'z')) {
+        buf[len - 1] = '\0';
+        return 1;
+    }
+    /* `+HH`, `+HH:MM`, `+HHMM` and their `-` forms, anchored at the end and
+     * never before position 11. */
+    for (size_t i = len; i > 11; i--) {
+        char c = buf[i - 1];
+        if (c != '+' && c != '-') {
+            continue;
+        }
+        const char *p = buf + i;          /* just past the sign */
+        size_t rest = len - i;
+        int hh = -1, mm = 0;
+        if (rest == 2 && all_digits(p, 0, 2)) {
+            hh = parse_int_span(p, 0, 2);
+        } else if (rest == 4 && all_digits(p, 0, 4)) {
+            hh = parse_int_span(p, 0, 2);
+            mm = parse_int_span(p, 2, 2);
+        } else if (rest == 5 && all_digits(p, 0, 2) && p[2] == ':' &&
+                   all_digits(p, 3, 2)) {
+            hh = parse_int_span(p, 0, 2);
+            mm = parse_int_span(p, 3, 2);
+        }
+        if (hh < 0 || hh > 23 || mm > 59) {
+            return 0;   /* a sign at the end that is not a zone: refuse. */
+        }
+        *offset_seconds = (long long)(hh * 3600 + mm * 60) * (c == '-' ? -1 : 1);
+        buf[i - 1] = '\0';
+        return 1;
     }
     return 1;
 }
 
+static long long zone_timegm(DateTime dt);
+static DateTime zone_civil_from_epoch_utc(long long epoch, DateTimePrecision prec);
+static int parse_date_value_strict(const char *text, DateTime *out,
+                                   char *why, size_t why_size);
+
+/* `why` IS OPTIONAL AND ONLY THE RAISING SITES ASK FOR IT. On failure it is
+ * written only when the text had the SHAPE of a date and broke a CALENDAR rule;
+ * a malformed string leaves it empty, which is how the caller tells the two
+ * apart and why a genuinely unparseable string still gets the generic message.
+ * That distinction is the control on this whole change: "name the cause" is
+ * otherwise satisfied by blaming the calendar for every string that will not
+ * parse, which is the same error one direction over. */
+static int parse_date_value_why(const char *text, DateTime *out,
+                                char *why, size_t why_size) {
+    if (why && why_size) {
+        why[0] = '\0';
+    }
+    char buf[64];
+    long long offset = 0;
+    if (!datetime_strip_zone(text, buf, sizeof buf, &offset)) {
+        return 0;
+    }
+    DateTime dt;
+    if (!parse_date_value_strict(buf, &dt, why, why_size)) {
+        return 0;
+    }
+    if (offset != 0) {
+        dt = zone_civil_from_epoch_utc(zone_timegm(dt) - offset, dt.precision);
+    }
+    *out = dt;
+    return 1;
+}
+
 static int parse_date_value(const char *text, DateTime *out) {
+    return parse_date_value_why(text, out, NULL, 0);
+}
+
+static int parse_date_value_strict(const char *text, DateTime *out,
+                                   char *why, size_t why_size) {
     size_t len = strlen(text);
     DateTime dt = {0};
     dt.month = 1;
@@ -6943,7 +7347,7 @@ static int parse_date_value(const char *text, DateTime *out) {
     dt.month = parse_int_span(text, 5, 2);
     dt.precision = PREC_MONTH;
     if (len == 7) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -6956,7 +7360,7 @@ static int parse_date_value(const char *text, DateTime *out) {
     dt.day = parse_int_span(text, 8, 2);
     dt.precision = PREC_DAY;
     if (len == 10) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -6969,7 +7373,7 @@ static int parse_date_value(const char *text, DateTime *out) {
     dt.hour = parse_int_span(text, 11, 2);
     dt.precision = PREC_HOUR;
     if (len == 13) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -6982,7 +7386,7 @@ static int parse_date_value(const char *text, DateTime *out) {
     dt.minute = parse_int_span(text, 14, 2);
     dt.precision = PREC_MINUTE;
     if (len == 16) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -6994,14 +7398,18 @@ static int parse_date_value(const char *text, DateTime *out) {
     }
     dt.second = parse_int_span(text, 17, 2);
     dt.precision = PREC_SECOND;
-    if (!valid_date_parts(dt)) {
+    if (date_parts_fault(dt, why, why_size)) {
         return 0;
     }
     *out = dt;
     return 1;
 }
 
-static int parse_time_value(const char *text, DateTime *out) {
+static int parse_time_value_why(const char *text, DateTime *out,
+                                char *why, size_t why_size) {
+    if (why && why_size) {
+        why[0] = '\0';
+    }
     size_t len = strlen(text);
     DateTime dt = {0};
     dt.time_only = 1;
@@ -7012,7 +7420,7 @@ static int parse_time_value(const char *text, DateTime *out) {
     dt.hour = parse_int_span(text, 0, 2);
     dt.precision = PREC_HOUR;
     if (len == 2) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -7025,7 +7433,7 @@ static int parse_time_value(const char *text, DateTime *out) {
     dt.minute = parse_int_span(text, 3, 2);
     dt.precision = PREC_MINUTE;
     if (len == 5) {
-        if (!valid_date_parts(dt)) {
+        if (date_parts_fault(dt, why, why_size)) {
             return 0;
         }
         *out = dt;
@@ -7037,11 +7445,15 @@ static int parse_time_value(const char *text, DateTime *out) {
     }
     dt.second = parse_int_span(text, 6, 2);
     dt.precision = PREC_SECOND;
-    if (!valid_date_parts(dt)) {
+    if (date_parts_fault(dt, why, why_size)) {
         return 0;
     }
     *out = dt;
     return 1;
+}
+
+static int parse_time_value(const char *text, DateTime *out) {
+    return parse_time_value_why(text, out, NULL, 0);
 }
 
 static int datetime_lens_precision(const char *name, DateTimePrecision *out) {
@@ -8076,6 +8488,28 @@ static int unqualified_hint(const char *name, char *buf, size_t size) {
              " function from another library must be qualified. Write one of: %s",
              name, n, list);
     return 1;
+}
+
+/* ONE SENTENCE FOR "THAT MODULE HAS NO SUCH VERB", built in one place.
+ *
+ * Nine module dispatchers -- webclient, http, timer, webserver, sqlite, odbc,
+ * pg, gi, money -- each raised `invalid function call: odbc.vacuum` from its
+ * own `snprintf`, and the text said the wrong thing for all nine: the problem
+ * is not that the CALL is invalid, it is that the NAME does not exist, and a
+ * sentence about the call sends a reader to check their arguments. The same
+ * complaint the gbasic-books session filed against `is_money` 2026-10-02, one
+ * namespace over.
+ *
+ * SHARED AS TEXT AND NOT AS A RAISE, because the nine raisers genuinely
+ * differ (each module reports through its own, which is how a module's errors
+ * carry its own source word). What drifts is the FORMAT, so that is what is
+ * shared -- the rule run_sqlite.sh's statement-note formatter already follows,
+ * for the same reason and with a tripwire asserting one construction site.
+ * A rule re-established at nine call sites is one a tenth module leaves out. */
+static void module_unknown_verb(char *buf, size_t size, const char *module,
+                                const char *verb) {
+    snprintf(buf, size, "undefined function: %s.%s -- the '%s' module does"
+                        " not define '%s'", module, verb, module, verb);
 }
 
 static void function_register_def(AstStmt *stmt, int imported, const char *library) {
@@ -9227,6 +9661,8 @@ static const GbCapability gb_capability_table[] = {
        check found these three the first time it ran. */
     { "mod",       "" },
     { "concat",    "" },
+    { "key",       "" },
+    { "bound",     "" },
     { "merge",     "" },
     /* and the rest of the outward surface, which is neither of those lists */
     { "make_dir",       "fs:write" },
@@ -10519,6 +10955,34 @@ static Value eval_file_call(AstExpr *expr) {
             return value_bool(ok);
         }
 
+        if (strcmp(name, "bytes") == 0) {
+            /* BY `stat`, NOT BY READING THE FILE. `bytes` shared the
+             * read-the-whole-thing path with `read`, `read_lines`, `lines` and
+             * `chars` and then used only the SIZE -- so asking how large a file
+             * is allocated and copied every byte of it, which on a log or a
+             * database dump is gigabytes of work and memory for a question the
+             * kernel answers for free, and an OOM where there should be a
+             * number. Reported by the gbasic-books session 2026-10-02.
+             *
+             * ONLY FOR A REGULAR FILE, and that guard is about keeping the
+             * EXISTING answer rather than about `stat` being wrong elsewhere.
+             * `read_whole_file` sizes a file with fseek/ftell, so a FIFO
+             * ALREADY raises (`Illegal seek`) and anything in /proc already
+             * answers 0 -- both measured. `stat` would hand a FIFO a size of 0
+             * and so turn that raise into a number, which is a NEW answer for
+             * a file this interpreter cannot read; falling through to the read
+             * path keeps the refusal. The two sources agree only for a regular
+             * file, so that is where the shortcut is taken. `exists` already
+             * asks `stat` rather than opening, for the neighbouring reason:
+             * ask the question you mean. */
+            struct stat info;
+            if (stat(file_value.as.file_path, &info) == 0 &&
+                S_ISREG(info.st_mode)) {
+                value_free(file_value);
+                return value_number((double)info.st_size);
+            }
+        }
+
         long size = 0;
         char *text = read_whole_file(file_value.as.file_path, &size);
         if (!text) {
@@ -10556,11 +11020,31 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(file_value);
             return result;
         }
-        if (strcmp(name, "bytes") == 0 || strcmp(name, "chars") == 0) {
-            /* TODO: chars currently counts bytes, not Unicode code points. */
+        if (strcmp(name, "bytes") == 0) {
+            /* Reached only for a non-regular file; the regular case answered
+             * from `stat` above without reading anything. */
             free(text);
             value_free(file_value);
             return value_number((double)size);
+        }
+        if (strcmp(name, "chars") == 0) {
+            /* CODEPOINTS, which is what the name says and what it did not do.
+             * The line this replaces was a `TODO: chars currently counts
+             * bytes, not Unicode code points.` sharing a branch with `bytes`,
+             * so the two verbs returned the IDENTICAL NUMBER on every file --
+             * which is right for ASCII and wrong for every other file, in the
+             * direction that looks like a working answer: a 12-character file
+             * holding one accented letter reported 13, and nothing in the pair
+             * said which of the two was the byte count.
+             *
+             * `len(read(f))` was already correct, so the two routes to the same
+             * question disagreed. Counted with the same walker `len` uses, not
+             * a second one. Reported by the gbasic-books session 2026-10-02. */
+            Value result =
+                value_number((double)string_codepoint_count(text, (size_t)size));
+            free(text);
+            value_free(file_value);
+            return result;
         }
 
         int lines = 0;
@@ -11400,7 +11884,18 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
 
     if (call_stack_depth < CALL_STACK_MAX) {
         call_stack[call_stack_depth].name = stmt->as.function.name;
-        call_stack[call_stack_depth].path = stmt->as.function.source_path;
+        /* PATH FALLS BACK TO THE ROOT SOURCE. `source_path` is stamped at
+         * registration ONLY for an IMPORTED function, so a root-program frame
+         * carried NULL and `error.trace` reported `path: ""` for it -- measured:
+         * a library frame said `./lib.bas` and the frame that called it said
+         * nothing. The path was known all along (`root_source_path`); it was
+         * simply never asked for. A trace whose frames cannot say which file
+         * they are in defeats the one job a trace has, which is locating a raise
+         * several frames from where you are reading. */
+        call_stack[call_stack_depth].path = stmt->as.function.source_path
+                                         ? stmt->as.function.source_path
+                                         : root_source_path;
+        call_stack[call_stack_depth].library = stmt->as.function.library;
         call_stack[call_stack_depth].line = current_line;
         call_stack[call_stack_depth].column = current_column;
     }
@@ -11549,14 +12044,21 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
 
 /* Evaluate a user-function call. `receiver` is NULL for a plain call and a live
  * record pointer for a method call (binds `this` inside the body). */
-static Value eval_user_function_with_receiver(AstExpr *expr,
-                                              FunctionDef *function,
-                                              Value *receiver) {
+/* `bound_ctx`, when non-NULL, is a `bound(fn, ctx)` context: it is appended as
+ * the LAST argument, so one function can serve bound and unbound use given a
+ * literal default (`function f(x, ctx = nothing)`). Last rather than first is
+ * the whole reason that works -- context-first would make the two signatures
+ * incompatible. `webserver.on_request` passes its own context FIRST and is the
+ * one bespoke precedent, left alone rather than churned. */
+static Value eval_user_function_bound(AstExpr *expr,
+                                      FunctionDef *function,
+                                      Value *receiver,
+                                      Value *bound_ctx) {
     AstStmt *stmt = function->stmt;
     size_t want_min = stmt->as.function.params.required;
     size_t want_max = stmt->as.function.params.count;
-    if (expr->as.call.args.count < want_min ||
-        expr->as.call.args.count > want_max) {
+    size_t supplied = expr->as.call.args.count + (bound_ctx ? 1 : 0);
+    if (supplied < want_min || supplied > want_max) {
         /* A real, located runtime error -- not a bare fprintf. The old behavior
          * printed one unlocated line and KEPT RUNNING with a null result, so the
          * caller's own return value looked fine and the failure surfaced frames
@@ -11567,27 +12069,30 @@ static Value eval_user_function_with_receiver(AstExpr *expr,
          * spawn path a few thousand lines down has raised for this all along;
          * plain calls were the outlier. */
         char message[256];
+        /* THE COUNT NAMED IS THE EFFECTIVE ONE. A bound function called with
+         * one argument supplies two, and reporting "got 1" would send the
+         * author to count the arguments they wrote -- which are correct. */
         if (want_min == want_max) {
-            snprintf(message, sizeof message, "%s expects %zu argument%s, got %zu",
+            snprintf(message, sizeof message, "%s expects %zu argument%s, got %zu%s",
                      expr->as.call.name, want_max,
-                     want_max == 1 ? "" : "s",
-                     expr->as.call.args.count);
+                     want_max == 1 ? "" : "s", supplied,
+                     bound_ctx ? " (including the bound context)" : "");
         } else {
             /* Name the RANGE. "expects 3 arguments, got 5" would be false once
              * some are optional, and an author reading it would go looking for
              * a parameter that is not missing. */
             snprintf(message, sizeof message,
-                     "%s expects %zu to %zu arguments, got %zu",
-                     expr->as.call.name, want_min, want_max,
-                     expr->as.call.args.count);
+                     "%s expects %zu to %zu arguments, got %zu%s",
+                     expr->as.call.name, want_min, want_max, supplied,
+                     bound_ctx ? " (including the bound context)" : "");
         }
         runtime_error_raise(message, 1003, "invalid function call");
         return value_null();
     }
 
     Value *args = NULL;
-    if (expr->as.call.args.count > 0) {
-        args = malloc(sizeof(Value) * expr->as.call.args.count);
+    if (supplied > 0) {
+        args = malloc(sizeof(Value) * supplied);
         if (!args) {
             abort();
         }
@@ -11628,11 +12133,20 @@ static Value eval_user_function_with_receiver(AstExpr *expr,
         return value_null();
     }
 
-    return invoke_function(stmt, args, expr->as.call.args.count, receiver);
+    if (bound_ctx) {
+        args[expr->as.call.args.count] = value_copy(*bound_ctx);
+    }
+    return invoke_function(stmt, args, supplied, receiver);
+}
+
+static Value eval_user_function_with_receiver(AstExpr *expr,
+                                              FunctionDef *function,
+                                              Value *receiver) {
+    return eval_user_function_bound(expr, function, receiver, NULL);
 }
 
 static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
-    return eval_user_function_with_receiver(expr, function, NULL);
+    return eval_user_function_bound(expr, function, NULL, NULL);
 }
 
 /* If `instance` carries a `constructor` function field, invoke it with `this` =
@@ -13422,7 +13936,25 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         /* A function value travels as its registered name (+ owning library), not
          * as code or captured state (§10). The receiver resolves it through its
          * own registry — within one program (the actor case execs the same
-         * program) it always resolves, like a spawn entry name. */
+         * program) it always resolves, like a spawn entry name.
+         *
+         * A BOUND FUNCTION IS REFUSED, for now, and the refusal is the honest
+         * answer rather than the easy one. Writing the name alone would hand
+         * back a function that had quietly LOST its context -- the only thing
+         * distinguishing it from the unbound one -- and a context may hold
+         * values that cannot be serialized at all, so there is no guess here
+         * that is safe. Carrying an encodable context is its own increment.
+         *
+         * NOTE `encode` refuses a function value OUTRIGHT, so this question
+         * arises only here: measured, `serialize({f: fn})` is 35 bytes while
+         * `encode` raises. */
+        if (v.as.function.context) {
+            runtime_error_raise("serialize: a function value carrying a bound"
+                                " context cannot be serialized -- the name"
+                                " would travel and the context would not",
+                                1003, "actor");
+            return 0;
+        }
         serbuf_u8(b, SER_FUNCTION);
         serbuf_blob(b, v.as.function.name, strlen(v.as.function.name));
         if (v.as.function.library) {
@@ -13961,6 +14493,12 @@ typedef struct {
 #endif
 } ActorChild;
 
+/* Set by eval_run_actor: this interpreter IS a spawned actor, so its parent is
+ * a sender it can never account for. Read only by warning 2110. On every
+ * platform: a Windows actor has a parent that can send just as a POSIX one
+ * does. */
+static int running_as_spawned_actor = 0;
+
 #ifndef _WIN32
 static pid_t actor_group_pgid = 0;
 #endif
@@ -14066,6 +14604,34 @@ static size_t actor_track_child(pid_t pid) {
     actor_children[actor_child_count].reaped = 0;
     actor_children[actor_child_count].status = 0;
     return actor_child_count++;
+}
+
+/* Could ANYTHING still send to this mailbox? Read only by warning 2110.
+ *
+ * NO PARENT and NO UNREAPED CHILD means no sender remains -- and the timing is
+ * sound rather than lucky: a child that has exited has already performed its
+ * sends, and those bytes are sitting in the socket, so `receive` would have
+ * taken one instead of reaching the block. The predicate therefore cannot be
+ * true while a child that is going to send is still running. MEASURED both
+ * ways in tests/run_inbox.sh.
+ *
+ * NOT CERTAIN, and that is why 2110 warns rather than raises: a handle can
+ * travel over SCM_RIGHTS, so a grandchild of a dead child could still hold one.
+ * The runtime cannot track that, and a raise would end a program that was
+ * right. */
+static void actor_reap_children(void);
+
+static int actor_no_sender_remains(void) {
+    if (running_as_spawned_actor) {
+        return 0;
+    }
+    actor_reap_children();
+    for (size_t i = 0; i < actor_child_count; i++) {
+        if (!actor_children[i].reaped) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 /* Reap any exited children without blocking, capturing each one's wait status so
@@ -14180,6 +14746,13 @@ static Value builtin_actor_send(Value handle, Value message, int strict) {
     }
     int rc = channel_send_fds(handle.as.actor->write_fd, bytes, len,
                               xfer.count ? xfer.fds : NULL, xfer.count);
+    /* THE CEILING IS READ BEFORE THE FREES, because the only place a program
+     * can learn it is the refusal and the handle owns the socket it is read
+     * from. Computed only on the failing path, so an ordinary send still costs
+     * no getsockopt. */
+    size_t ceiling = (rc == ACTOR_CHANNEL_TOOBIG)
+                         ? channel_max_message(handle.as.actor->write_fd)
+                         : 0;
     free(bytes);
     value_free(handle);
     value_free(message);   /* closes the handles' fds; the receiver has its own */
@@ -14189,10 +14762,23 @@ static Value builtin_actor_send(Value handle, Value message, int strict) {
     case ACTOR_CHANNEL_FULL:
         runtime_error_raise("send: target mailbox is full", 1004, "actor");
         return value_null();
-    case ACTOR_CHANNEL_TOOBIG:
-        runtime_error_raise("send: message is too large for one frame",
-                            1004, "actor");
+    case ACTOR_CHANNEL_TOOBIG: {
+        /* BOTH NUMBERS, because neither alone is actionable. This said only
+         * "message is too large for one frame", so a program that had to split
+         * a payload could not learn what to split it into -- the ceiling is
+         * derived from SO_SNDBUF and so is a property of the machine, not a
+         * constant anybody can look up. Measured on this host: 106,240 bytes
+         * through and 106,496 refused. Reported by the gbasic-books session as
+         * "the channel maximum is not queryable"; this makes it discoverable
+         * where it matters rather than adding a name to the language. */
+        char message_text[192];
+        snprintf(message_text, sizeof(message_text),
+                 "send: message is %zu bytes and one frame on this channel"
+                 " holds at most %zu -- split it, or hand the data over a file",
+                 len, ceiling);
+        runtime_error_raise(message_text, 1004, "actor");
         return value_null();
+    }
     default:
         runtime_error_raise("send: target actor is no longer reachable",
                             1004, "actor");
@@ -14595,6 +15181,70 @@ static Value actor_receive_impl(int has_tag, Value tag,
             wait_ms = remaining > INT_MAX ? INT_MAX : (int)remaining;
         }
 
+        /* WARNING 2110 NEEDS A MOMENT FOR THE TRUTH TO SETTLE, which is the
+         * one thing reading the code could not have told me. The first draft
+         * asked `actor_no_sender_remains()` once, at the instant of blocking,
+         * and it answered NO even in the deadlock -- measured: the child had
+         * sent and returned, but had not yet become a reapable zombie, so at
+         * the moment the parent committed to an indefinite wait the
+         * information the warning needs had not arrived. A millisecond later
+         * it had, and nothing was looking.
+         *
+         * So an indefinite receive inside a registration-fired watcher waits
+         * in SLICES instead. THE SEMANTICS DO NOT CHANGE: the loop still waits
+         * forever for a message, a message arriving in 1 ms still returns in
+         * 1 ms (the slice is a poll timeout, not a delay), and nothing but the
+         * diagnostic depends on the interval -- so a slow machine costs a later
+         * warning rather than a different answer. Four wakeups a second, only
+         * in a program that is otherwise stuck. */
+        int registration_watcher =
+            watcher_draining && !webserver_event_loop_running;
+        if (!has_timeout && registration_watcher) {
+            wait_ms = 250;
+        }
+
+        /* WARNING 2110: AN INDEFINITE `receive()` IN A WATCHER BODY THAT FIRED
+         * AT REGISTRATION.
+         *
+         * A watcher body runs once when `watch` registers it -- during `main`,
+         * before the event loop exists -- and a bare `receive()` there with
+         * nothing in the mailbox blocks with no diagnostic at all: measured,
+         * exit 124 under `timeout`, the `unwatch` on the next line unreachable
+         * and the loop that would deliver a message never started. Reported by
+         * the gbasic-books session 2026-10-02 (finding 36).
+         *
+         * WHY THIS IS NOT 2105, AND WHY 2105 MUST NOT BE WIDENED TO COVER IT.
+         * 2105 says `receive()` blocks the event loop, which is true when the
+         * loop is running and FALSE here -- there is no loop yet. Its guard
+         * (`webserver_event_loop_running`) is correct; three readings of the
+         * source concluded otherwise and only instrumenting settled it, so
+         * widening would have shipped a false sentence.
+         *
+         * WARNED AT THE MOMENT IT IS ABOUT TO BLOCK, not at the call, because
+         * the call itself is ordinary: a reply already waiting is returned
+         * immediately and that is how the shape is normally written. Only an
+         * EMPTY mailbox makes it a hazard, so the check sits past `retain_take`
+         * where the answer is known -- which is also what keeps it from firing
+         * on a working program.
+         *
+         * A WARNING AND NOT A RAISE, which is a deliberate limit rather than
+         * caution: a live peer CAN still send into this mailbox, since delivery
+         * is the kernel's job on the socket rather than the loop's, so this is
+         * a deadlock only if nothing will ever send -- which the runtime cannot
+         * know. Raising would break a program legitimately waiting on a slow
+         * peer. */
+        if (wait_ms < 0 && watcher_draining && !webserver_event_loop_running &&
+            actor_no_sender_remains() &&
+            warn_site_first_time(current_line, current_column)) {
+            warn_fmt(2110, "actor",
+                     "receive() with no timeout, in a watcher body that fired at "
+                     "REGISTRATION -- during `main`, before the event loop "
+                     "exists. Nothing else in this program runs until a message "
+                     "arrives: not the `unwatch` below it, not the loop that "
+                     "would deliver one. Pass a timeout, or let the loop fire "
+                     "the watcher");
+        }
+
         int w = actor_wait(wait_ms);
         if (w < 0) {
             if (has_tag) {
@@ -14605,7 +15255,53 @@ static Value actor_receive_impl(int has_tag, Value tag,
             return value_null();
         }
         if (w == 0) {
-            /* Only reachable with a deadline: timed out -> nothing. */
+            if (!has_timeout) {
+                /* A DIAGNOSTIC SLICE EXPIRED, NOT THE CALLER'S TIMEOUT -- there
+                 * is no deadline here, so this must go round again or a bare
+                 * `receive()` would start answering `nothing` after 250 ms,
+                 * which is the one way this change could alter semantics.
+                 *
+                 * WARNING 2110: a watcher body runs once when `watch`
+                 * registers it, during `main`, before the event loop exists.
+                 * A blocking receive there with nothing left to send waits for
+                 * a loop that has not started: the `unwatch` on the next line
+                 * is unreachable and the program stops with no diagnostic at
+                 * all (measured, exit 124 under `timeout`). Reported by the
+                 * gbasic-books session 2026-10-02 as finding 36.
+                 *
+                 * WHY NOT 2105, AND WHY 2105 MUST NOT BE WIDENED: 2105 says
+                 * `receive()` blocks the event loop, which is true while the
+                 * loop runs and FALSE here, there being no loop yet. Three
+                 * readings of the source concluded its guard was too narrow
+                 * and only instrumenting settled it, so widening would have
+                 * shipped a false sentence.
+                 *
+                 * AND THE DISCRIMINATOR IS NOT THE SYNTAX. "A bare `receive()`
+                 * inside a `watch` body" is the obvious rule and it is wrong:
+                 * a reply already waiting comes back at once, which is how the
+                 * shape is normally written. What makes it a hazard is that
+                 * NOTHING REMAINS TO SEND, which is what the predicate asks. */
+                /* NO `warn_site_first_time` HERE, and that is a correction
+                 * rather than an omission: `runtime_warn_at` calls it itself,
+                 * it is ONE-SHOT PER SITE, and calling it in the guard too
+                 * consumes the only chance -- so the second call inside the
+                 * printer returns 0 and the warning is silently dropped.
+                 * Measured: the predicate was true on every 250 ms slice and
+                 * nothing was ever printed. Deduplication is the printer's job;
+                 * the guard's job is the predicate. */
+                if (registration_watcher && actor_no_sender_remains()) {
+                    warn_fmt(2110, "actor",
+                             "receive() with no timeout, in a watcher body that "
+                             "fired at REGISTRATION -- during `main`, before the "
+                             "event loop exists -- and every actor this program "
+                             "spawned has exited, so nothing remains to send. "
+                             "Not the `unwatch` below it, not the loop that would "
+                             "deliver a message: nothing else here will run. Pass "
+                             "a timeout, or let the loop fire the watcher");
+                }
+                continue;
+            }
+            /* The caller's deadline: timed out -> nothing. */
             if (has_tag) {
                 value_free(tag);
             }
@@ -14952,8 +15648,15 @@ static Value eval_spawn(AstExpr *expr) {
     if (!serialized || xfer.failed) {
         fatal = 1;   /* serialize_value already raised */
     } else if (frame_len > channel_max_message(child_box.write_fd)) {
-        runtime_error_raise("spawn: arguments are too large for one frame",
-                            1004, "actor");
+        /* Same two numbers as `send`, for the same reason: the startup frame
+         * goes down the same channel and its ceiling is the same machine
+         * fact. */
+        char too_big[192];
+        snprintf(too_big, sizeof(too_big),
+                 "spawn: arguments are %zu bytes and one frame on this channel"
+                 " holds at most %zu -- pass less, or hand the data over a file",
+                 frame_len, channel_max_message(child_box.write_fd));
+        runtime_error_raise(too_big, 1004, "actor");
         fatal = 1;
     } else {
         /* Reserved startup frame: enqueued before the handle exists, so it is
@@ -15101,6 +15804,10 @@ static Value eval_spawn(AstExpr *expr) {
 int eval_run_actor(AstStmtList program, const char *entry,
                    int inbox_fd, int self_fd, int control_fd) {
     active_root = program;
+    /* THIS PROCESS HAS A PARENT THAT CAN SEND TO IT, which warning 2110 has to
+     * know: its whole claim is that nothing remains to send, and in a spawned
+     * actor that is false however many of its own children have exited. */
+    running_as_spawned_actor = 1;
 
     /* Tie this actor's lifetime to its parent's: if the parent dies for any
      * reason -- normal exit, crash, or kill -- the kernel sends this process
@@ -16528,10 +17235,8 @@ static Value webclient_eval_call(AstExpr *expr) {
         return webclient_eval_request(expr);
     }
     char message[256];
-    snprintf(message,
-             sizeof(message),
-             "invalid function call: webclient.%s",
-             expr->as.call.name);
+    module_unknown_verb(message, sizeof(message), "webclient",
+                        expr->as.call.name);
     webclient_raise(message);
     return value_null();
 }
@@ -17265,8 +17970,7 @@ static Value http_eval_call(AstExpr *expr) {
         return http_do_release(expr);
     }
     char message[200];
-    snprintf(message, sizeof(message), "invalid function call: http.%s",
-             expr->as.call.name);
+    module_unknown_verb(message, sizeof(message), "http", expr->as.call.name);
     return http_raise(message);
 }
 
@@ -17845,8 +18549,7 @@ static Value timer_eval_call(AstExpr *expr) {
         return timer_do_cancel(expr);
     }
     char message[200];
-    snprintf(message, sizeof(message), "invalid function call: timer.%s",
-             expr->as.call.name);
+    module_unknown_verb(message, sizeof(message), "timer", expr->as.call.name);
     return timer_raise(message);
 }
 
@@ -20674,6 +21377,10 @@ static Value webserver_eval_on_hook(AstExpr *expr, int drain) {
         webserver_raise(message);
         return value_null();
     }
+    if (bound_context_unsupported(&fn, "webserver.on_request")) {
+        value_free(fn);
+        return value_null();
+    }
     Value ctx = eval_expr(expr->as.call.args.items[2]);
     if (error_action_pending()) {
         value_free(fn);
@@ -20763,8 +21470,8 @@ static Value webserver_eval_call(AstExpr *expr) {
         return webserver_eval_redirect(expr);
     }
     char message[256];
-    snprintf(message, sizeof(message), "invalid function call: webserver.%s",
-             expr->as.call.name);
+    module_unknown_verb(message, sizeof(message), "webserver",
+                        expr->as.call.name);
     webserver_raise(message);
     return value_null();
 }
@@ -21589,7 +22296,7 @@ static Value sqlite_eval_call(AstExpr *expr) {
         return sqlite_eval_last_insert_rowid(expr);
     }
     char message[256];
-    snprintf(message, sizeof(message), "invalid function call: sqlite.%s", name);
+    module_unknown_verb(message, sizeof(message), "sqlite", name);
     sqlite_raise_message(message);
     return value_null();
 }
@@ -23171,7 +23878,7 @@ static Value odbc_eval_call(AstExpr *expr) {
         return odbc_eval_catalog(expr, 0);
     }
     char message[256];
-    snprintf(message, sizeof(message), "invalid function call: odbc.%s", name);
+    module_unknown_verb(message, sizeof(message), "odbc", name);
     odbc_raise_message(message);
     return value_null();
 }
@@ -24404,7 +25111,7 @@ static Value pg_eval_call(AstExpr *expr) {
         return pg_eval_transaction(expr, "ROLLBACK", "rollback");
     }
     char message[256];
-    snprintf(message, sizeof(message), "invalid function call: pg.%s", name);
+    module_unknown_verb(message, sizeof(message), "pg", name);
     pg_raise_message(message);
     return value_null();
 }
@@ -26528,6 +27235,11 @@ static Value gi_do_connect(AstExpr *expr) {
         return gi_raise("gi.connect expects a function as the handler");
     }
 
+    if (bound_context_unsupported(&fv, "gi.connect")) {
+        value_free(ov); value_free(sv); value_free(fv);
+        return value_null();
+    }
+
     GiClosureData *data = calloc(1, sizeof(*data));
     if (!data) {
         abort();
@@ -26695,7 +27407,13 @@ static Value gi_do_quit(AstExpr *expr) {
  * data is owned by the source and freed via gi_closure_data_free when it is
  * removed. */
 
+/* Returns NULL having RAISED when the value carries a bound context -- the
+ * source keeps only the name, so carrying one is not possible here yet and
+ * dropping it silently is the failure `bound` must not introduce. */
 static GiClosureData *gi_closure_data_new(Value fn) {
+    if (bound_context_unsupported(&fn, "a gi event-source callback")) {
+        return NULL;
+    }
     GiClosureData *d = calloc(1, sizeof(*d));
     if (!d) {
         abort();
@@ -26809,6 +27527,10 @@ static Value gi_do_timeout(AstExpr *expr) {
         return gi_raise("gi.timeout expects a non-negative interval");
     }
     GiClosureData *d = gi_closure_data_new(fv);
+    if (!d) {                      /* raised: a bound context cannot travel here */
+        value_free(mv); value_free(fv);
+        return value_null();
+    }
     guint id = g_timeout_add_full(G_PRIORITY_DEFAULT, (guint)mv.as.number,
                                   gi_timeout_cb, d, gi_closure_data_free);
     value_free(mv); value_free(fv);
@@ -26826,6 +27548,10 @@ static Value gi_do_idle(AstExpr *expr) {
         return gi_raise("gi.idle expects a function");
     }
     GiClosureData *d = gi_closure_data_new(fv);
+    if (!d) {
+        value_free(fv);
+        return value_null();
+    }
     guint id = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, gi_timeout_cb, d, gi_closure_data_free);
     value_free(fv);
     return value_number((double)id);
@@ -27355,7 +28081,11 @@ static Value gi_eval_call(AstExpr *expr) {
     if (strcmp(name, "variant_get") == 0)    return gi_do_variant_get(expr);
     if (strcmp(name, "variant_print") == 0)  return gi_do_variant_print(expr);
     if (strcmp(name, "variant_type") == 0)   return gi_do_variant_type(expr);
-    return gi_raisef("invalid function call: gi.%s", name);
+    {
+        char message[256];
+        module_unknown_verb(message, sizeof(message), "gi", name);
+        return gi_raisef("%s", message);
+    }
 }
 #endif /* HAVE_GIR */
 
@@ -29447,7 +30177,12 @@ static Value eval_method_call(AstExpr *expr) {
                 if (have_temp) value_free(temp);
                 return value_null();
             }
-            Value out = eval_user_function_with_receiver(expr, m, ref);
+            /* A BOUND METHOD CARRIES ITS CONTEXT. This path already routes
+             * through the bound-aware call, so supporting it costs one
+             * argument -- and refusing here would be arbitrary when a plain
+             * call a few lines away works. */
+            Value out = eval_user_function_bound(expr, m, ref,
+                                                 mf->value->as.function.context);
             if (have_temp) value_free(temp);
             return out;
         }
@@ -30601,7 +31336,7 @@ static Value money_eval_call(AstExpr *expr) {
     }
 
     char message[128];
-    snprintf(message, sizeof(message), "invalid function call: money.%s", name);
+    module_unknown_verb(message, sizeof(message), "money", name);
     runtime_error_raise(message, 1003, "money");
     return value_null();
 }
@@ -30669,8 +31404,8 @@ static Value eval_call(AstExpr *expr) {
                     runtime_error_raise(message, 1003, "invalid function call");
                     return value_null();
                 }
-                return eval_user_function_with_receiver(expr, method,
-                                                        receiver_value);
+                return eval_user_function_bound(expr, method, receiver_value,
+                                                method_field->value->as.function.context);
             }
         }
 
@@ -30952,6 +31687,14 @@ static Value eval_call(AstExpr *expr) {
         call_label(expr, label, sizeof(label));
         if (!library_alias_hint(expr->as.call.library, hint, sizeof(hint))) {
             hint[0] = '\0';
+            /* The qualified half of the same change: with no alias hint to
+             * offer, this is simply a name the named library or module does
+             * not define. */
+            snprintf(message, sizeof(message),
+                     "undefined function: %s -- '%s' does not define '%s'",
+                     label, expr->as.call.library, expr->as.call.name);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
         }
         snprintf(message, sizeof(message), "invalid function call: %s%s", label, hint);
         runtime_error_raise(message, 1003, "invalid function call");
@@ -33859,8 +34602,16 @@ static Value eval_call(AstExpr *expr) {
          * loop wait for it, which is no improvement at all -- `watch(
          * inbox.messages)` is the shape that is. Warned rather than refused: a
          * short wait in a handler is defensible and the author can price it. */
-        if (webserver_event_loop_running &&
-            warn_site_first_time(expr->line, expr->column)) {
+        /* DEDUPLICATION IS THE PRINTER'S JOB, and this guard used to do it too.
+         * `warn_site_first_time` is ONE-SHOT PER SITE and `runtime_warn_at`
+         * calls it itself, so a guard that calls it as well consumes the only
+         * chance -- and 2105 printed anyway ONLY because the two calls used
+         * different keys (`expr->line` here against `current_line` there), so
+         * it registered two sites for one warning and survived by accident.
+         * Found while adding 2110, whose guard used `current_line` and was
+         * therefore silent on every run. Anything that made those two agree
+         * would have taken 2105 out with no test noticing. */
+        if (webserver_event_loop_running) {
             warn_fmt(2105, "actor",
                      "receive() blocks the event loop, so no other request, stream "
                      "or transfer makes progress until a message arrives; read "
@@ -34044,6 +34795,197 @@ static Value eval_call(AstExpr *expr) {
         double r = a.as.number - q * b.as.number;
         value_free(a); value_free(b);
         return value_number(r);
+    }
+    /* `key(a, b, ...)` -- ONE STRING THAT CANNOT COLLIDE, for a composite
+     * record key.
+     *
+     * WHY THIS EXISTS: a record is keyed by a string, so a composite key gets
+     * built by concatenation with a chosen separator, and that is wrong in two
+     * ways nothing reports. MEASURED in this tree:
+     *
+     *   stdlib/insight.bas   key = key + string(r[d]) + "|"
+     *   stdlib/fundamentals  k = r["start"] + "|" + r["end"] + "|" + r["fp"]
+     *   stdlib/ari.bas       k = gen + " :: " + d.reason
+     *   stdlib/finio.bas     key = key + "/" + string(c.revision)
+     *
+     * (1) A SEPARATOR INSIDE THE DATA MERGES TWO CELLS. Demonstrated against
+     * `insight` before this was written: the cells ("North|East", "A") and
+     * ("North", "East|A") produce the identical key, and a decomposition over
+     * eight distinct cells reported SEVEN. That is worse than a wrong grouping,
+     * because `search.cells` feeds the Bonferroni threshold -- so the merge
+     * corrupts both the statistic and the width it is judged against, in the
+     * library whose whole job is deciding whether a deviation is real.
+     *
+     * (2) AN ABSENCE RENDERS AS A WORD. `fundamentals` built
+     * `"2023-12-31|nothing"` and grouped correctly BY ACCIDENT, every absent
+     * value rendering the same way; the giveaway was that the neighbouring
+     * field was defaulted explicitly and this one was not.
+     *
+     * THE ENCODING IS INJECTIVE BY CONSTRUCTION, not by choosing a rarer
+     * separator -- a rarer separator is the same defect with a longer fuse.
+     * Each component is `<kind><bytelen>:<bytes>`, so decoding is "read the
+     * kind, read digits to the colon, take exactly that many bytes" and no
+     * concatenation is ambiguous. THE KIND TAG IS NOT DECORATION: without it
+     * `key(true)` and `key("true")` both encode as `4:true`, which is the
+     * original defect one level down.
+     *
+     * Absence gets its own tag rather than a rendering, so absences group
+     * together -- which is what SQL's GROUP BY does with NULL, and is the
+     * behaviour `fundamentals` was relying on without saying so -- while never
+     * colliding with the string "nothing".
+     *
+     * COMPOUNDS ARE REFUSED. An array or record key needs a decision about
+     * ordering that nobody has needed yet, and inventing one here would be a
+     * guess buried in a key nobody reads. */
+    /* `bound(fn, context)` -- a function value that CARRIES a context,
+     * appended as the last argument on every call.
+     *
+     * WHY: gBASIC has no closures, deliberately, so a callback could not carry
+     * state. MEASURED, that cost two workarounds in this tree --
+     * `examples/automation_lab/08_what_price.bas` has "the 10.00 is written
+     * in", so pricing a second product means a second identical function; and
+     * `stdlib/datagrid.bas` reaches its grid through a program-global
+     * `_DATAGRID` registry which a LIBRARY cannot create, so the workaround
+     * leaked into the API of every program using it.
+     *
+     * NOT A CLOSURE, and the distinction is what makes it affordable: a
+     * closure captures an ENVIRONMENT implicitly and by reference, admitting
+     * cycles and keeping frames alive; this captures ONE NAMED VALUE, copied.
+     * A gBASIC record is a value, so nothing cyclic is constructible, and the
+     * properties the no-closures rule protects -- `encode` totality and
+     * fork+exec actor sendability -- are untouched.
+     *
+     * THE CONTEXT GOES LAST so one function can serve both uses given a
+     * literal default (`function f(x, ctx = nothing)`); context-first would
+     * make the two signatures incompatible.
+     *
+     * RE-BINDING IS REFUSED. Appending two contexts would make a function's
+     * arity depend on how many times the value had been bound, which nothing
+     * at the call site shows. */
+    if (strcmp(expr->as.call.name, "bound") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("bound expects a function value and a context",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value fv = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(fv); return value_null(); }
+        if (fv.kind != VALUE_FUNCTION) {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "bound expects a function value as its first argument,"
+                     " not a %s", value_kind_name(fv.kind));
+            value_free(fv);
+            runtime_error_raise(message, 1003, "invalid argument type");
+            return value_null();
+        }
+        if (fv.as.function.context) {
+            value_free(fv);
+            runtime_error_raise("bound: this function value already carries a"
+                                " context -- bind the original function"
+                                " instead, since two contexts would make its"
+                                " arity depend on how often it had been bound",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value ctx = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(fv); value_free(ctx);
+            return value_null();
+        }
+        Value out = value_function_bound(fv.as.function.name,
+                                         fv.as.function.library, ctx);
+        value_free(fv);
+        return out;
+    }
+    if (strcmp(expr->as.call.name, "key") == 0) {
+        if (expr->as.call.args.count < 1) {
+            runtime_error_raise("key expects at least one value", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        StringBuilder out;
+        sb_init(&out);
+        for (size_t i = 0; i < expr->as.call.args.count; i++) {
+            Value v = eval_expr(expr->as.call.args.items[i]);
+            if (error_action_pending()) {
+                value_free(v);
+                free(out.items);
+                return value_null();
+            }
+            char tag = 0;
+            switch (v.kind) {
+                case VALUE_STRING:   tag = 's'; break;
+                case VALUE_NUMBER:   tag = 'n'; break;
+                case VALUE_BOOL:     tag = 'b'; break;
+                case VALUE_DATETIME: tag = 'd'; break;
+                case VALUE_DURATION: tag = 'r'; break;
+                case VALUE_MONEY:    tag = 'm'; break;
+                case VALUE_FILE:     tag = 'f'; break;
+                case VALUE_DIR:      tag = 'y'; break;
+                case VALUE_NULL:     tag = 'z'; break;
+                case VALUE_UNKNOWN:  tag = 'u'; break;
+                default: {
+                    char message[192];
+                    snprintf(message, sizeof(message),
+                             "key cannot use a %s as part of a key -- argument"
+                             " %zu; a key is built from scalar values",
+                             value_kind_name(v.kind), i + 1);
+                    value_free(v);
+                    free(out.items);
+                    runtime_error_raise(message, 1003, "invalid argument type");
+                    return value_null();
+                }
+            }
+            /* THIS EARLY RETURN IS NOT WHAT PREVENTS THE ABSENCE COLLISION
+             * -- the KIND TAG is. Measured: with this branch removed,
+             * `key(nothing)` is `z7:nothing` and `key("nothing")` is
+             * `s7:nothing`, which still differ. A perturbation written to
+             * prove this branch load-bearing came back GREEN and was withdrawn
+             * as not-a-defect rather than counted.
+             *
+             * What it does buy is a key that does not EMBED the words
+             * "nothing" and "unknown": those come from `builtin_string_value`,
+             * whose rendering is a display decision, and a stored key that
+             * moved when a display rendering changed would be a quiet
+             * invalidation of everything keyed by it. */
+            if (tag == 'z' || tag == 'u') {
+                sb_append_char(&out, tag);
+                sb_append_char(&out, ':');
+                value_free(v);
+                continue;
+            }
+            /* `builtin_string_value` TAKES OWNERSHIP of its argument -- it
+             * returns the value itself for a string and frees it for every
+             * other kind -- so `v` must NOT be freed here. Freeing it as well
+             * was a double free on the shared refcounted string buffer, and it
+             * crashed only on STRING components: a number and a boolean carry
+             * no allocation, so those two appeared to work perfectly. The
+             * ownership-vs-borrow trap record_find already records. */
+            Value text = builtin_string_value(v);
+            if (error_action_pending() || text.kind != VALUE_STRING) {
+                value_free(text);
+                free(out.items);
+                return value_null();
+            }
+            size_t n = string_length(text.as.string);
+            char head[40];
+            snprintf(head, sizeof head, "%c%zu:", tag, n);
+            for (const char *h = head; *h; h++) {
+                sb_append_char(&out, *h);
+            }
+            /* BYTE BY BYTE, not sb_append_text: a gBASIC string may contain an
+             * interior NUL (PLAT-NUL), and append_text walks to the first one.
+             * A key that silently truncated at a NUL would be the very defect
+             * this function exists to remove. */
+            for (size_t b = 0; b < n; b++) {
+                sb_append_char(&out, text.as.string[b]);
+            }
+            value_free(text);
+        }
+        Value result = value_string_n(out.items ? out.items : "", out.length);
+        free(out.items);
+        return result;
     }
     if (strcmp(expr->as.call.name, "concat") == 0 ||
         strcmp(expr->as.call.name, "merge") == 0) {
@@ -35611,13 +36553,36 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise(message, 1003, "invalid function call");
             return value_null();
         }
-        return eval_user_function(expr, target);
+        return eval_user_function_bound(expr, target, NULL,
+                                        fn_symbol->value.as.function.context);
     }
 
     char message[512];
     if (!unqualified_hint(expr->as.call.name, message, sizeof(message))) {
-        snprintf(message, sizeof(message), "invalid function call: %s",
-                 expr->as.call.name);
+        /* A NAME NOTHING DEFINES SAYS SO, rather than describing the call.
+         * This said `invalid function call: is_money` -- a sentence about the
+         * CALL, which sends a reader to check their arguments when the problem
+         * is that there is no such function. Measured: a completely invented
+         * name gave the identical message, so it was what gBASIC said for
+         * every undefined function. Reported by the gbasic-books session
+         * 2026-10-02, from the five `is_*` predicates that do not exist.
+         *
+         * The three HINTED variants above (a name a loaded library defines, an
+         * ambiguous one, a replaced alias) already name a remedy and are
+         * deliberately untouched: there the call is valid once qualified, so
+         * "undefined" would be the wrong word.
+         *
+         * AND IT SAYS "IN SCOPE AT THIS CALL" RATHER THAN "DOES NOT EXIST",
+         * which is not hedging: in script mode a function declared BELOW the
+         * line that calls it is not yet registered, so this is the message for
+         * a function the file plainly does define -- a case docs/reference.md
+         * already calls out. "nothing defines that name" would be a lie there,
+         * in the one place a reader is most likely to be confused. */
+        snprintf(message, sizeof(message),
+                 "undefined function: %s -- no function, library function or"
+                 " builtin of that name is in scope at this call"
+                 " (has_builtin(\"%s\") asks without raising)",
+                 expr->as.call.name, expr->as.call.name);
     }
     runtime_error_raise(message, 1003, "invalid function call");
     return value_null();
@@ -35951,7 +36916,12 @@ static void bind_modifier_args(AstStmt *stmt, const char *args_text) {
  * statement `x{lens}= v` has no useful meaning, and deciding otherwise at a
  * statement start needs the lookahead PLAT-BRACE spent its conflicts getting
  * rid of. What was wrong here was the diagnostic, not the grammar. */
-static void modifier_raise_assign_not_found(AstModifierUse use) {
+/* `suffix` is appended to whichever sentence is chosen, or NULL for none. It
+ * exists so a CHAIN can say which stage failed without this function having to
+ * know what a chain is, and without an append-to-the-pending-error API -- the
+ * error path is what 333 negative goldens rest on. */
+static void modifier_raise_assign_not_found_at(AstModifierUse use,
+                                               const char *suffix) {
     char label[160];
     modifier_use_label(use, label, sizeof(label));
     const char *ignored = NULL;
@@ -35984,7 +36954,15 @@ static void modifier_raise_assign_not_found(AstModifierUse use) {
             snprintf(message, sizeof(message), "assign modifier not found: %s", label);
         }
     }
+    if (suffix) {
+        size_t used = strlen(message);
+        snprintf(message + used, sizeof(message) - used, "%s", suffix);
+    }
     runtime_error_raise(message, 1003, "modifier");
+}
+
+static void modifier_raise_assign_not_found(AstModifierUse use) {
+    modifier_raise_assign_not_found_at(use, NULL);
 }
 
 static Value eval_assign_modifier(AstModifierUse use, Value value) {
@@ -36082,6 +37060,20 @@ static Value eval_compare_modifier(AstModifierUse use, const char *op, Value lef
     return value_null();
 }
 
+static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
+                                           int *recognised);
+
+/* Normalise ONE side with a stage. Returns 0 when the name is not a
+ * transformation at all, so the comparison path can report `compare modifier
+ * not found` rather than the assign-side sentence. */
+static int compare_normalise(AstModifierUse stage, Value *side) {
+    AstModifierUse one = stage;
+    one.next = NULL;
+    int recognised = 1;
+    *side = apply_one_assignment_modifier(one, *side, &recognised);
+    return recognised;
+}
+
 static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     const char *op = expr->as.binary.op;
     int result = 0;
@@ -36132,6 +37124,130 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         fake.as.binary.op = expr->as.binary.op;
         fake.as.binary.modifier = ast_modifier_none();
         return eval_comparison(&fake, lensed_left, lensed_right);
+    }
+
+    /* A COMPARISON LENS IS A NORMALISATION OF BOTH SIDES, and that is what makes
+     * it compose. `left {trimmed; caseless}= right` trims both operands and
+     * then compares them caselessly -- the thing that otherwise has to be
+     * written `trim(lower(a)) = trim(lower(b))`, converting both sides in both
+     * ways, which is the work this removes.
+     *
+     * THE PATTERN IS NOT NEW HERE: the datetime precision lenses directly above
+     * already lens both sides and re-enter `eval_comparison` with the modifier
+     * cleared. This generalises that one case to every stage and to the
+     * modifiers that were previously assign-only.
+     *
+     * SO TWO GAPS CLOSE AT ONCE, and the first is the larger. Measured before
+     * this: `caseless` was the ONLY compare lens, so `a {trimmed}= b` reported
+     * `compare modifier not found: trimmed` -- an assign modifier could not be
+     * used to compare AT ALL, composed or alone. And `a {caseless}= b` with
+     * `a = "  Joe  "` answered FALSE, because the untrimmed spaces defeat it,
+     * which is the case that prompted this.
+     *
+     * A TERMINAL STAGE MUST BE LAST. `caseless` and a user-declared `for
+     * compare` modifier ANSWER the comparison rather than transforming a value
+     * (their body is handed left/right/operator and returns the verdict), so
+     * nothing can follow one -- it would be comparing booleans. Refused by
+     * name, naming the stage, rather than silently dropping the rest. */
+    if (expr->as.binary.modifier.name && expr->as.binary.modifier.next) {
+        AstModifierUse *stage = &expr->as.binary.modifier;
+        int index = 0;
+        while (stage) {
+            const char *ignored = "";
+            index++;
+            int terminal =
+                modifier_resolve(*stage, "compare", &ignored) != NULL ||
+                (!stage->library && modifier_is(stage->name, "caseless"));
+            if (terminal) {
+                if (stage->next) {
+                    /* 512 LIKE `modifier_raise_assign_not_found_at`, NOT 256
+                     * LIKE THE OTHER FOUR SITES IN THIS FAMILY: this is the
+                     * longest sentence of the five, and at 256 the compiler
+                     * said so -- `snprintf` output between 129 and 297 bytes
+                     * into a destination of size 256. A truncation here would
+                     * cut the clause that NAMES THE REMEDY ("it is stage N and
+                     * something follows it"), leaving a message that states the
+                     * rule and not what to do about it. */
+                    char message[512];
+                    char label[160];
+                    modifier_use_label(*stage, label, sizeof(label));
+                    snprintf(message, sizeof(message),
+                             "compare modifier '%s' answers the comparison, so it"
+                             " must be the last stage in the clause -- it is stage"
+                             " %d and something follows it",
+                             label, index);
+                    runtime_error_raise(message, 1003, "modifier");
+                    value_free(left);
+                    value_free(right);
+                    return value_null();
+                }
+                AstExpr fake = {0};
+                fake.kind = AST_EXPR_BINARY;
+                fake.as.binary.op = expr->as.binary.op;
+                fake.as.binary.modifier = *stage;
+                fake.as.binary.modifier.next = NULL;
+                return eval_comparison(&fake, left, right);
+            }
+            /* A NORMALISING STAGE: applied to BOTH sides, symmetrically. */
+            if (!compare_normalise(*stage, &left)) {
+                char message[256];
+                char label[160];
+                modifier_use_label(*stage, label, sizeof(label));
+                snprintf(message, sizeof(message),
+                         "compare modifier not found: %s (stage %d of this clause)",
+                         label, index);
+                runtime_error_raise(message, 1003, "modifier");
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+            if (error_action_pending()) {
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+            if (!compare_normalise(*stage, &right) || error_action_pending()) {
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+            stage = stage->next;
+        }
+        AstExpr fake = {0};
+        fake.kind = AST_EXPR_BINARY;
+        fake.as.binary.op = expr->as.binary.op;
+        fake.as.binary.modifier = ast_modifier_none();
+        return eval_comparison(&fake, left, right);
+    }
+
+    /* A SINGLE stage that is not a compare lens: normalise both sides with it
+     * and compare ordinarily, which is what makes `a {trimmed}= b` mean what it
+     * reads as. Reached only after the compare-context and datetime-lens paths
+     * above have declined, so no existing spelling changes meaning. */
+    if (expr->as.binary.modifier.name &&
+        (expr->as.binary.modifier.library ||
+         !modifier_is(expr->as.binary.modifier.name, "caseless"))) {
+        Value probe_left = left;
+        if (compare_normalise(expr->as.binary.modifier, &probe_left)) {
+            left = probe_left;
+            if (error_action_pending()) {
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+            if (!compare_normalise(expr->as.binary.modifier, &right) ||
+                error_action_pending()) {
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+            AstExpr fake = {0};
+            fake.kind = AST_EXPR_BINARY;
+            fake.as.binary.op = expr->as.binary.op;
+            fake.as.binary.modifier = ast_modifier_none();
+            return eval_comparison(&fake, left, right);
+        }
+        left = probe_left;
     }
 
     if (expr->as.binary.modifier.name &&
@@ -37609,7 +38725,624 @@ static Value eval_expr(AstExpr *expr) {
     return value_null();
 }
 
+/* `recognised`, when non-NULL, turns the final NOT-FOUND branch from a raise
+ * into an ANSWER: the value comes back untouched and the caller decides what to
+ * say. The comparison path needs that, because "assign modifier not found" is
+ * the wrong sentence for `a {nosuch}= b` -- the author was comparing. One flag
+ * set at entry and cleared in one branch, rather than a predicate duplicating
+ * this function's twenty-branch dispatch, which is the copy that would rot. */
+static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
+                                           int *recognised);
+
+/* EVERY STAGE IN THE CLAUSE, LEFT TO RIGHT. `x {trimmed; upper}= s` trims and
+ * then upcases, which is the order it is written in and the order the inline
+ * form already composes in (`{upper}{trimmed}s` nests, so the INNERMOST runs
+ * first -- the two spellings read in opposite directions and each reads the way
+ * its own syntax suggests).
+ *
+ * ONE STAGE IS THE OVERWHELMING CASE and costs one extra NULL test. A failing
+ * stage stops the chain: `error_action_pending` is checked between stages so a
+ * raise in stage two is not handed a value stage three would then complain
+ * about -- which is PLAT-ERR's first-raise-wins rule applied one level up. */
 static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
+    if (!modifier.name) {
+        return value;
+    }
+    if (!modifier.next) {
+        return apply_one_assignment_modifier(modifier, value, NULL);
+    }
+    AstModifierUse *stage = &modifier;
+    int index = 0;
+    while (stage) {
+        /* WHICH STAGE WAS NOT FOUND is the question a reader has, and
+         * `assign modifier not found: nosuch` cannot answer it in a chain --
+         * `{trimmed; nosuch; upper}` and `{trimmed; upper; nosuch}` gave the
+         * IDENTICAL message. Raised here rather than inside the applier, using
+         * the `recognised` flag that already exists for the comparison path, so
+         * no error-path surgery is needed. Reported by the gbasic-books session
+         * before the feature shipped, as a release-note item; it is a
+         * diagnostic instead.
+         *
+         * A stage that is FOUND and then fails on its input still reports its
+         * own cause without a stage number (`trim expects a string`), which
+         * names the modifier and so identifies the stage in every chain that
+         * does not repeat one. That limit is pinned in
+         * tests/brace_modifiers/stages.bas rather than left to be rediscovered:
+         * amending a pending error's message means touching the path 333
+         * negative goldens rest on. */
+        int recognised = 1;
+        index++;
+        value = apply_one_assignment_modifier(*stage, value, &recognised);
+        if (!recognised) {
+            /* The one-stage sentence is unchanged -- including the "that is a
+             * comparison lens" redirect, which is the commonest cause -- so
+             * only a CHAIN gains the stage number. */
+            char suffix[64];
+            snprintf(suffix, sizeof(suffix), " (stage %d of this clause)", index);
+            modifier_raise_assign_not_found_at(*stage,
+                                               modifier.next ? suffix : NULL);
+            value_free(value);
+            return value_null();
+        }
+        if (error_action_pending()) {
+            return value;
+        }
+        stage = stage->next;
+    }
+    return value;
+}
+
+/* ---- A DATE LAYOUT, WRITTEN THE WAY IT READS ---------------------------
+ *
+ * `{string "YYYY-MM-DD hh:mm:ss"}d` rather than `%Y-%m-%d %H:%M:%S`.
+ *
+ * ONE RULE CARRIES IT: date parts are UPPERCASE, time parts are lowercase.
+ * That is what resolves the collision every other scheme fumbles -- `MM` is
+ * the month and `mm` is the minutes -- and it is memorable rather than
+ * arbitrary, where `%M` against `%m` is a coin flip you look up every time.
+ *
+ * A SECOND RULE COVERS THE NAMES, and it is the same for both: one or two
+ * letters is a NUMBER, three is a SHORT NAME, four is a LONG NAME. So M/MM are
+ * 3 and 03, MMM is Mar, MMMM is March -- and D/DD/DDD/DDDD are 7, 07, Sat,
+ * Saturday. (`DDD` is day-of-YEAR in strftime; the obvious reading wins here
+ * over the inherited one.)
+ *
+ * NOTHING BUT TOKENS AND PUNCTUATION MAY APPEAR, and that is the decision that
+ * makes the notation safe rather than merely short. If prose passed through,
+ * `"Business hours: hh:mm"` would render the `ss` in "Business" as seconds --
+ * MEASURED against the system word list, 4,536 of 104,334 English words
+ * contain `ss` and 939 contain `mm`, so roughly one word in twenty-three would
+ * be silently corrupted, and they are exactly the words a caption uses:
+ * business, session, summary, assessment, comment. So a letter run that is not
+ * a token is REFUSED BY NAME, and prose goes outside the layout where
+ * concatenation already puts it:
+ *
+ *     print("Posted " + {string "D MMM YYYY"}d)
+ *
+ * THE 12-HOUR CLOCK IS IMPLICIT. `hh` is 24-hour unless the layout also
+ * carries `am` or `pm`, in which case it is 12-hour -- no extra token to
+ * remember, and the layout reads like what it produces. The CASE of the
+ * meridiem token is the case it is emitted in, so `pm` gives `pm` and `PM`
+ * gives `PM`; which of the two words appears is decided by the hour. */
+
+/* The month and day name tables live up beside `date_parts_fault`, because the
+ * calendar diagnostic names the month too ("February 2026 has 28 days") and a
+ * second copy of the names is a second thing that can disagree with this
+ * renderer about what March is called. */
+
+/* Sunday = 0. Sakamoto's method, so it needs no library call and no epoch. */
+static int dt_day_of_week(int y, int m, int d) {
+    static const int t[] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+    if (m < 3) {
+        y -= 1;
+    }
+    return (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
+}
+
+/* How many of `c` start at `p`, capped at `cap`. */
+static size_t dt_run(const char *p, char c, size_t cap) {
+    size_t n = 0;
+    while (p[n] == c && n < cap) {
+        n++;
+    }
+    return n;
+}
+
+static int dt_layout_has_meridiem(const char *layout) {
+    for (const char *p = layout; *p; p++) {
+        if ((p[0] == 'a' || p[0] == 'A') && (p[1] == 'm' || p[1] == 'M')) {
+            return 1;
+        }
+        if ((p[0] == 'p' || p[0] == 'P') && (p[1] == 'm' || p[1] == 'M')) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Renders `dt` through `layout`. Returns 0 and sets *err on a layout this
+ * notation does not define, or on a field the value does not carry. */
+static int datetime_render_layout(DateTime dt, const char *layout,
+                                  char *out, size_t outsz, char *err,
+                                  size_t errsz) {
+    size_t o = 0;
+    int ampm = dt_layout_has_meridiem(layout);
+    const char *p = layout;
+
+/* `dt_put_n__` and not `w`: the first version of this macro declared `int w`,
+ * which SHADOWED the caller's `int w` holding the weekday -- and because the
+ * shadow is in scope inside its own initialiser, `DT_PUT("%s", DAY[w])`
+ * expanded to `int w = snprintf(..., DAY[w])` reading an UNINITIALISED index.
+ * Out-of-bounds, and it segfaulted on exactly the three layouts that name a day
+ * (`DDD`, `DDDD`). Classic macro hygiene, and the only reason it was caught
+ * before shipping is that the layouts were tried one at a time -- a loop over
+ * all of them died at the first and printed nothing, which read as the whole
+ * fixture being broken rather than three cases. */
+#define DT_PUT(fmt, ...)                                                       \
+    do {                                                                       \
+        int dt_put_n__ = snprintf(out + o, outsz - o, fmt, __VA_ARGS__);       \
+        if (dt_put_n__ < 0 || (size_t)dt_put_n__ >= outsz - o) {               \
+            snprintf(err, errsz, "the formatted result is too long");          \
+            return 0;                                                          \
+        }                                                                      \
+        o += (size_t)dt_put_n__;                                               \
+    } while (0)
+#define DT_NEEDS_DATE(tok)                                                     \
+    do {                                                                       \
+        if (dt.time_only) {                                                    \
+            snprintf(err, errsz,                                               \
+                     "`%s` needs a date and this is a time-only value", tok);  \
+            return 0;                                                          \
+        }                                                                      \
+    } while (0)
+
+    while (*p) {
+        char c = *p;
+        if (!isalpha((unsigned char)c)) {
+            DT_PUT("%c", c);
+            p++;
+            continue;
+        }
+        size_t n;
+        switch (c) {
+        case 'Y':
+            n = dt_run(p, 'Y', 4);
+            DT_NEEDS_DATE("Y");
+            if (n == 4)      { DT_PUT("%04d", dt.year); }
+            else if (n == 2) { DT_PUT("%02d", dt.year % 100); }
+            else             { goto unknown; }
+            p += n;
+            continue;
+        case 'M':
+            n = dt_run(p, 'M', 4);
+            DT_NEEDS_DATE("M");
+            if (dt.month < 1 || dt.month > 12) { goto bad_value; }
+            if (n == 1)      { DT_PUT("%d", dt.month); }
+            else if (n == 2) { DT_PUT("%02d", dt.month); }
+            else if (n == 3) { DT_PUT("%s", DT_MONTH_SHORT[dt.month - 1]); }
+            else             { DT_PUT("%s", DT_MONTH_LONG[dt.month - 1]); }
+            p += n;
+            continue;
+        case 'D':
+            n = dt_run(p, 'D', 4);
+            DT_NEEDS_DATE("D");
+            if (n <= 2) {
+                if (n == 1) { DT_PUT("%d", dt.day); }
+                else        { DT_PUT("%02d", dt.day); }
+            } else {
+                int w = dt_day_of_week(dt.year, dt.month, dt.day);
+                if (w < 0 || w > 6) { goto bad_value; }
+                DT_PUT("%s", n == 3 ? DT_DAY_SHORT[w] : DT_DAY_LONG[w]);
+            }
+            p += n;
+            continue;
+        case 'h':
+            n = dt_run(p, 'h', 2);
+            {
+                int h = dt.hour;
+                if (ampm) {
+                    h = h % 12;
+                    if (h == 0) { h = 12; }
+                }
+                if (n == 1) { DT_PUT("%d", h); } else { DT_PUT("%02d", h); }
+            }
+            p += n;
+            continue;
+        case 'm':
+            n = dt_run(p, 'm', 2);
+            if (n == 1) { DT_PUT("%d", dt.minute); }
+            else        { DT_PUT("%02d", dt.minute); }
+            p += n;
+            continue;
+        case 's':
+            n = dt_run(p, 's', 2);
+            if (n == 1) { DT_PUT("%d", dt.second); }
+            else        { DT_PUT("%02d", dt.second); }
+            p += n;
+            continue;
+        case 'a': case 'A': case 'p': case 'P':
+            if ((p[1] == 'm' || p[1] == 'M')) {
+                int pm = dt.hour >= 12;
+                int upper = (p[1] == 'M');
+                DT_PUT("%s", pm ? (upper ? "PM" : "pm") : (upper ? "AM" : "am"));
+                p += 2;
+                continue;
+            }
+            goto unknown;
+        default:
+            goto unknown;
+        }
+    }
+    if (o >= outsz) {
+        snprintf(err, errsz, "the formatted result is too long");
+        return 0;
+    }
+    out[o] = '\0';
+    return 1;
+
+unknown:
+    {
+        /* NAME THE RUN, not the first letter: a reader who wrote `DDD` meaning
+         * day-of-year needs to see `DDD`, and one who put a word in the layout
+         * needs to see the word. */
+        const char *q = p;
+        while (*q && isalpha((unsigned char)*q)) {
+            q++;
+        }
+        int len = (int)(q - p);
+        if (len > 24) { len = 24; }
+        snprintf(err, errsz,
+                 "`%.*s` is not a date layout token -- the tokens are YYYY YY,"
+                 " M MM MMM MMMM, D DD DDD DDDD, h hh, m mm, s ss and am/pm,"
+                 " and anything else goes outside the layout",
+                 len, p);
+    }
+    return 0;
+bad_value:
+    snprintf(err, errsz, "the value's date fields are out of range");
+    return 0;
+#undef DT_PUT
+#undef DT_NEEDS_DATE
+}
+
+/* ---- READING A DATE THROUGH THE SAME LAYOUT ----------------------------
+ *
+ * `{date "DD/MM/YYYY"}cell`, and a LIST when one shape is not enough:
+ * `{date "YYYY-MM-DD", "DD/MM/YYYY", "D MMM YYYY"}cell`.
+ *
+ * THE ORDER IS THE DECLARATION, which is what makes first-match-wins honest
+ * here rather than a race. `03/07/2026` is 7 March or 3 July depending on where
+ * the report came from -- `ari` invented `using date: dmy` for exactly that --
+ * and writing `DD/MM/YYYY` ahead of `MM/DD/YYYY` is the author saying which.
+ *
+ * AND A LAYOUT MATCHES ONLY IF IT ALSO YIELDS A VALID DATE, which lets a list
+ * disambiguate itself where the data allows: `03/15/2026` can only be MM/DD,
+ * so it skips a `DD/MM` candidate rather than inventing month 15. That is the
+ * difference between a candidate set and a guess.
+ *
+ * A DAY NAME IS CHECKED, NOT IGNORED. `DDDD` is redundant with the date, so
+ * accepting it blindly would admit "Sunday, 7 March 2026" -- which is a
+ * Saturday -- as if it were fine. */
+
+static int dt_name_index(const char *text, size_t *used,
+                         const char *const *names, int count, int exact_len) {
+    for (int i = 0; i < count; i++) {
+        size_t n = exact_len > 0 ? (size_t)exact_len : strlen(names[i]);
+        if (strlen(names[i]) < n) {
+            continue;
+        }
+        if (strncasecmp(text, names[i], n) == 0) {
+            /* A SHORT name must not swallow the start of a LONG one when the
+             * layout asked for the long form, and vice versa: the caller fixes
+             * the length, so `Mar` cannot match `MMMM` and `March` cannot be
+             * cut short by `MMM` unless the next character ends the token. */
+            if (exact_len > 0) {
+                *used = n;
+                return i;
+            }
+            if (strlen(names[i]) == n) {
+                *used = n;
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+static int dt_take_digits(const char *text, size_t want_min, size_t want_max,
+                          int *out, size_t *used) {
+    size_t n = 0;
+    int v = 0;
+    while (n < want_max && isdigit((unsigned char)text[n])) {
+        v = v * 10 + (text[n] - '0');
+        n++;
+    }
+    if (n < want_min) {
+        return 0;
+    }
+    *out = v;
+    *used = n;
+    return 1;
+}
+
+/* Reads `text` through one `layout`. Returns 0 when it does not fit, when a
+ * field is out of range, or when a day name contradicts the date. */
+static int datetime_parse_layout(const char *text, const char *layout,
+                                 DateTime *out,
+                                 char *why, size_t why_size){
+    if (why && why_size) {
+        why[0] = '\0';
+    }
+    DateTime dt = {0};
+    dt.year = 1;
+    dt.month = 1;
+    dt.day = 1;
+    DateTimePrecision prec = PREC_YEAR;
+    int saw_date = 0, saw_time = 0;
+    int meridiem = -1;          /* -1 none, 0 am, 1 pm */
+    int named_day = -1;
+    int ampm_layout = dt_layout_has_meridiem(layout);
+    const char *L = layout;
+    const char *T = text;
+
+    while (*L) {
+        char c = *L;
+        if (!isalpha((unsigned char)c)) {
+            if (*T != c) {
+                return 0;
+            }
+            L++;
+            T++;
+            continue;
+        }
+        size_t n, used = 0;
+        int v = 0;
+        switch (c) {
+        case 'Y':
+            n = dt_run(L, 'Y', 4);
+            if (n == 4) {
+                if (!dt_take_digits(T, 4, 4, &v, &used)) { return 0; }
+                dt.year = v;
+            } else if (n == 2) {
+                if (!dt_take_digits(T, 2, 2, &v, &used)) { return 0; }
+                /* THE POSIX PIVOT, so a two-digit year can still be a
+                 * birthdate: 00-68 is this century, 69-99 the last. */
+                dt.year = v <= 68 ? 2000 + v : 1900 + v;
+            } else {
+                return 0;
+            }
+            saw_date = 1;
+            if (prec < PREC_YEAR) { prec = PREC_YEAR; }
+            break;
+        case 'M':
+            n = dt_run(L, 'M', 4);
+            if (n <= 2) {
+                if (!dt_take_digits(T, n == 2 ? 2 : 1, 2, &v, &used)) { return 0; }
+                dt.month = v;
+            } else {
+                int idx = dt_name_index(T, &used,
+                                        n == 3 ? DT_MONTH_SHORT : DT_MONTH_LONG,
+                                        12, n == 3 ? 3 : 0);
+                if (idx < 0) { return 0; }
+                dt.month = idx + 1;
+            }
+            saw_date = 1;
+            if (prec < PREC_MONTH) { prec = PREC_MONTH; }
+            break;
+        case 'D':
+            n = dt_run(L, 'D', 4);
+            if (n <= 2) {
+                if (!dt_take_digits(T, n == 2 ? 2 : 1, 2, &v, &used)) { return 0; }
+                dt.day = v;
+                saw_date = 1;
+                if (prec < PREC_DAY) { prec = PREC_DAY; }
+            } else {
+                int idx = dt_name_index(T, &used,
+                                        n == 3 ? DT_DAY_SHORT : DT_DAY_LONG,
+                                        7, n == 3 ? 3 : 0);
+                if (idx < 0) { return 0; }
+                named_day = idx;
+            }
+            break;
+        case 'h':
+            n = dt_run(L, 'h', 2);
+            if (!dt_take_digits(T, n == 2 ? 2 : 1, 2, &v, &used)) { return 0; }
+            dt.hour = v;
+            saw_time = 1;
+            if (prec < PREC_HOUR) { prec = PREC_HOUR; }
+            break;
+        case 'm':
+            n = dt_run(L, 'm', 2);
+            if (!dt_take_digits(T, n == 2 ? 2 : 1, 2, &v, &used)) { return 0; }
+            dt.minute = v;
+            saw_time = 1;
+            if (prec < PREC_MINUTE) { prec = PREC_MINUTE; }
+            break;
+        case 's':
+            n = dt_run(L, 's', 2);
+            if (!dt_take_digits(T, n == 2 ? 2 : 1, 2, &v, &used)) { return 0; }
+            dt.second = v;
+            saw_time = 1;
+            prec = PREC_SECOND;
+            break;
+        case 'a': case 'A': case 'p': case 'P':
+            if (L[1] != 'm' && L[1] != 'M') { return 0; }
+            if ((T[0] == 'a' || T[0] == 'A') && (T[1] == 'm' || T[1] == 'M')) {
+                meridiem = 0;
+            } else if ((T[0] == 'p' || T[0] == 'P') &&
+                       (T[1] == 'm' || T[1] == 'M')) {
+                meridiem = 1;
+            } else {
+                return 0;
+            }
+            used = 2;
+            n = 2;
+            break;
+        default:
+            return 0;
+        }
+        L += n;
+        T += used;
+    }
+    if (*T != '\0') {
+        return 0;   /* the text is longer than the layout accounts for */
+    }
+    if (ampm_layout) {
+        if (meridiem < 0 || dt.hour < 1 || dt.hour > 12) { return 0; }
+        dt.hour = dt.hour % 12;
+        if (meridiem == 1) { dt.hour += 12; }
+    }
+    if (saw_time && !saw_date) {
+        dt.time_only = 1;
+    }
+    dt.precision = prec;
+    if (date_parts_fault(dt, why, why_size)) {
+        return 0;
+    }
+    if (named_day >= 0 && !dt.time_only) {
+        int actual = dt_day_of_week(dt.year, dt.month, dt.day);
+        if (actual != named_day) {
+            /* THE TEXT NAMED A DAY AND THE DATE FALLS ON A DIFFERENT ONE, which
+             * is the other way a well-shaped string can fail to be a real date
+             * -- and saying only that it "does not fit the layout" sends the
+             * author to the layout, which fitted. */
+            if (why && why_size) {
+                snprintf(why, why_size, "%d %s %d was a %s, not a %s",
+                         dt.day, DT_MONTH_LONG[dt.month - 1], dt.year,
+                         DT_DAY_LONG[actual], DT_DAY_LONG[named_day]);
+            }
+            return 0;
+        }
+    }
+    *out = dt;
+    return 1;
+}
+
+/* Try each comma-separated layout in order; the first that fits AND yields a
+ * valid date wins. On failure the message names the text and every layout
+ * tried, because "could not parse" without them is a dead end -- the author
+ * cannot see whether the data is wrong or the list is short. */
+static int datetime_parse_layout_list(const char *who, const char *text,
+                                      const char *args_text, DateTime *out) {
+    char tried[320];
+    size_t used = 0;
+    tried[0] = '\0';
+    /* THE FIRST CALENDAR FAULT, kept for the message. A layout that FITS and
+     * yields an impossible date is a different answer from one that does not
+     * fit, and the list cannot say which until every layout has been tried --
+     * because a later one may still succeed, which is the whole point of a
+     * list. The FIRST is the one reported, since the order is the author's
+     * declaration and so is the first reading of the data they asked for. */
+    char fault[128] = {0};
+    char fault_layout[80] = {0};
+    int layouts = 0;
+    const char *cursor = args_text;
+    int any = 0;
+    while (cursor && *cursor) {
+        const char *comma = modifier_args_next_comma(cursor);
+        size_t span = comma ? (size_t)(comma - cursor) : strlen(cursor);
+        char one[128];
+        if (span >= sizeof one) {
+            return 0;
+        }
+        memcpy(one, cursor, span);
+        one[span] = '\0';
+        Value lay = eval_modifier_arg_text(one);
+        if (error_action_pending()) {
+            value_free(lay);
+            return 0;
+        }
+        if (lay.kind != VALUE_STRING) {
+            value_free(lay);
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "`{%s}`'s layouts must be text", who);
+            runtime_error_raise(message, 1003, "datetime");
+            return 0;
+        }
+        any = 1;
+        layouts++;
+        char why[128] = {0};
+        if (datetime_parse_layout(text, lay.as.string, out, why, sizeof why)) {
+            value_free(lay);
+            return 1;
+        }
+        if (why[0]) {
+            if (!fault[0]) {
+                snprintf(fault, sizeof fault, "%s", why);
+                snprintf(fault_layout, sizeof fault_layout, "%s", lay.as.string);
+            }
+        }
+        int w = snprintf(tried + used, sizeof(tried) - used, "%s\"%s\"",
+                         used ? ", " : "", lay.as.string);
+        if (w > 0 && (size_t)w < sizeof(tried) - used) {
+            used += (size_t)w;
+        }
+        value_free(lay);
+        cursor = comma ? comma + 1 : NULL;
+    }
+    if (!any) {
+        return 0;
+    }
+    char message[512];
+    if (fault[0]) {
+        /* IT FITTED AND IS STILL NOT A DATE. Saying "does not fit any of the
+         * layouts given" would point at the layout list, which is the one part
+         * of the call that is right -- and a LIST is where that is least
+         * affordable, since the reason to write one is that the author does not
+         * know which shape the data takes, so "none fit" is an answer they
+         * expect to have to act on. */
+        if (layouts > 1) {
+            /* WITH SEVERAL LAYOUTS THE READING HAS TO BE NAMED. `02/30/2026`
+             * under `DD/MM/YYYY` faults with "a month is 1 to 12, not 30",
+             * which is true of that reading and reads like nonsense to an
+             * author who never wrote a month 30 -- so the layout that produced
+             * it is said out loud. With ONE layout there is nothing to
+             * disambiguate and the extra clause is noise. */
+            snprintf(message, sizeof(message),
+                     "`%.48s` is not a real date under any of the %d layouts"
+                     " given to `{%s}` -- read as \"%s\", %s",
+                     text, layouts, who, fault_layout, fault);
+        } else {
+            snprintf(message, sizeof(message),
+                     "`%.48s` is not a real date -- %s", text, fault);
+        }
+    } else {
+    snprintf(message, sizeof(message),
+             "`%s` does not fit any of the layouts given to `{%s}`: %s",
+             text, who, tried);
+    }
+    runtime_error_raise(message, 1003, "datetime");
+    return 0;
+}
+
+/* THE REFUSAL NAMES THE SUBJECT AND THE CAUSE when the text was shaped like a
+ * date and broke a calendar rule, and keeps the old generic sentence when the
+ * text is simply not a date. Both halves matter: the specific message is the
+ * fix, and the generic one surviving is the CONTROL -- without it "name the
+ * cause" is satisfied by a build that blames the calendar for every string that
+ * will not parse.
+ *
+ * The subject is bounded at 48 characters because it is caller data of any
+ * length and the point is to identify it, not to reprint it. */
+static void datetime_raise_parse_failure(const char *who, const char *noun,
+                                         const char *text, const char *why) {
+    char message[256];
+    if (why && why[0]) {
+        snprintf(message, sizeof(message), "`%.48s` is not a real %s -- %s",
+                 text ? text : "", noun, why);
+    } else {
+        snprintf(message, sizeof(message),
+                 "%s modifier expects an ISO-like %s string", who, noun);
+    }
+    runtime_error_raise(message, 1003, "datetime");
+}
+
+static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
+                                           int *recognised) {
+    if (recognised) {
+        *recognised = 1;
+    }
     if (!modifier.name) {
         return value;
     }
@@ -37733,27 +39466,117 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         }
         return value_money(money_make(units, mod_ccy, mod_exp));
     }
+    const char *builtin_args = NULL;
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "date")) != NULL &&
+        !modifier_args_empty(builtin_args)) {
+        /* A LAYOUT, or a list of them. The no-argument form below is unchanged
+         * and stays ISO-only. */
+        if (value.kind != VALUE_STRING) {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "`{date}` with a layout reads TEXT, and this is %s",
+                     builtin_type_name(value));
+            runtime_error_raise(message, 1003, "datetime");
+            value_free(value);
+            return value_null();
+        }
+        DateTime parsed;
+        if (!datetime_parse_layout_list("date", value.as.string, builtin_args,
+                                        &parsed)) {
+            value_free(value);
+            return value_null();
+        }
+        value_free(value);
+        return value_datetime(parsed);
+    }
     if (!modifier.library && strcmp(modifier.name, "date") == 0) {
         DateTime datetime;
-        if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
+        char why[128] = {0};
+        if (value.kind != VALUE_STRING ||
+            !parse_date_value_why(value.as.string, &datetime, why, sizeof why)) {
+            /* THE SUBJECT IS COPIED BEFORE THE VALUE IS FREED. Pointing
+             * at `value.as.string` and then freeing `value` is a
+             * use-after-free that would print whatever the allocator left
+             * behind -- plausible text, in a diagnostic. */
+            char subject[64] = {0};
+            if (value.kind == VALUE_STRING) {
+                snprintf(subject, sizeof subject, "%s", value.as.string);
+            }
             value_free(value);
-            runtime_error_raise("date modifier expects an ISO-like date string",
-                                1003, "datetime");
+            datetime_raise_parse_failure("date", "date", subject, why);
             return value_null();
         }
         value_free(value);
         return value_datetime(datetime);
     }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "time")) != NULL &&
+        !modifier_args_empty(builtin_args)) {
+        /* A LAYOUT, or a list of them. The no-argument form below is unchanged
+         * and stays ISO-only. */
+        if (value.kind != VALUE_STRING) {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "`{time}` with a layout reads TEXT, and this is %s",
+                     builtin_type_name(value));
+            runtime_error_raise(message, 1003, "datetime");
+            value_free(value);
+            return value_null();
+        }
+        DateTime parsed;
+        if (!datetime_parse_layout_list("time", value.as.string, builtin_args,
+                                        &parsed)) {
+            value_free(value);
+            return value_null();
+        }
+        parsed.time_only = 1;
+        value_free(value);
+        return value_datetime(parsed);
+    }
     if (!modifier.library && strcmp(modifier.name, "time") == 0) {
         DateTime datetime;
-        if (value.kind != VALUE_STRING || !parse_time_value(value.as.string, &datetime)) {
+        char why[128] = {0};
+        if (value.kind != VALUE_STRING ||
+            !parse_time_value_why(value.as.string, &datetime, why, sizeof why)) {
+            /* THE SUBJECT IS COPIED BEFORE THE VALUE IS FREED. Pointing
+             * at `value.as.string` and then freeing `value` is a
+             * use-after-free that would print whatever the allocator left
+             * behind -- plausible text, in a diagnostic. */
+            char subject[64] = {0};
+            if (value.kind == VALUE_STRING) {
+                snprintf(subject, sizeof subject, "%s", value.as.string);
+            }
             value_free(value);
-            runtime_error_raise("time modifier expects an ISO-like time string",
-                                1003, "datetime");
+            datetime_raise_parse_failure("time", "time", subject, why);
             return value_null();
         }
         value_free(value);
         return value_datetime(datetime);
+    }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "datetime")) != NULL &&
+        !modifier_args_empty(builtin_args)) {
+        /* A LAYOUT, or a list of them. The no-argument form below is unchanged
+         * and stays ISO-only. */
+        if (value.kind != VALUE_STRING) {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "`{datetime}` with a layout reads TEXT, and this is %s",
+                     builtin_type_name(value));
+            runtime_error_raise(message, 1003, "datetime");
+            value_free(value);
+            return value_null();
+        }
+        DateTime parsed;
+        if (!datetime_parse_layout_list("datetime", value.as.string, builtin_args,
+                                        &parsed)) {
+            value_free(value);
+            return value_null();
+        }
+        parsed.precision = PREC_SECOND;
+        value_free(value);
+        return value_datetime(parsed);
     }
     if (!modifier.library && strcmp(modifier.name, "datetime") == 0) {
         /* A datetime is always a full timestamp: parse the date/time parts the
@@ -37761,10 +39584,19 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
          * string fills 00:00:00 (distinguishing it from precision-inferring
          * `date`). Matches the value `now()` produces. */
         DateTime datetime;
-        if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
+        char why[128] = {0};
+        if (value.kind != VALUE_STRING ||
+            !parse_date_value_why(value.as.string, &datetime, why, sizeof why)) {
+            /* THE SUBJECT IS COPIED BEFORE THE VALUE IS FREED. Pointing
+             * at `value.as.string` and then freeing `value` is a
+             * use-after-free that would print whatever the allocator left
+             * behind -- plausible text, in a diagnostic. */
+            char subject[64] = {0};
+            if (value.kind == VALUE_STRING) {
+                snprintf(subject, sizeof subject, "%s", value.as.string);
+            }
             value_free(value);
-            runtime_error_raise("datetime modifier expects an ISO-like date-time string",
-                                1003, "datetime");
+            datetime_raise_parse_failure("datetime", "date-time", subject, why);
             return value_null();
         }
         datetime.precision = PREC_SECOND;
@@ -37776,7 +39608,6 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         int ok = 0;
         return apply_datetime_lens_to_value(value, lens, modifier.name, &ok);
     }
-    const char *builtin_args = NULL;
     /* The string modifiers answer to BOTH spellings: `trimmed` (the original
      * participle) and `trim` (what everyone types first, since the BUILTIN is
      * `trim`). Matthew's call, 2026-08-17: `upper` is more intuitive and more
@@ -37860,9 +39691,59 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     if (!modifier.library &&
         (builtin_args = builtin_modifier_args_text(modifier.name, "string")) != NULL) {
         if (!modifier_args_empty(builtin_args)) {
-            runtime_error_raise("string modifier expects no arguments", 1003, "modifier");
+            /* `{string "YYYY-MM-DD"}d` -- a LAYOUT, and only for a datetime.
+             * It is an argument to the modifier that already turns a value into
+             * text rather than a new verb, because every modifier here is named
+             * for what it PRODUCES and `{string}` already says that. */
+            if (value.kind != VALUE_DATETIME) {
+                char message[160];
+                snprintf(message, sizeof(message),
+                         "a layout applies to a date or time, and this is %s;"
+                         " `{string}` with no argument renders any value",
+                         builtin_type_name(value));
+                runtime_error_raise(message, 1003, "modifier");
+                value_free(value);
+                return value_null();
+            }
+            if (modifier_args_have_comma(builtin_args)) {
+                /* A LIST ONLY MAKES SENSE WHEN READING. `{date "A", "B"}` means
+                 * try A then B; there is no second way to render one value, so
+                 * a second argument here is a mistake rather than an option. */
+                runtime_error_raise("`{string}` takes ONE layout -- a list of"
+                                    " layouts is for reading, as in"
+                                    " `{date \"A\", \"B\"}`",
+                                    1003, "modifier");
+                value_free(value);
+                return value_null();
+            }
+            int has_layout = 0;
+            Value layout = eval_optional_modifier_arg("string", builtin_args,
+                                                      &has_layout);
+            if (error_action_pending()) {
+                value_free(layout);
+                value_free(value);
+                return value_null();
+            }
+            if (layout.kind != VALUE_STRING) {
+                value_free(layout);
+                value_free(value);
+                runtime_error_raise("`{string}`'s layout must be text",
+                                    1003, "modifier");
+                return value_null();
+            }
+            char rendered[256];
+            char why[320];
+            if (!datetime_render_layout(value.as.datetime, layout.as.string,
+                                        rendered, sizeof rendered,
+                                        why, sizeof why)) {
+                value_free(layout);
+                value_free(value);
+                runtime_error_raise(why, 1003, "modifier");
+                return value_null();
+            }
+            value_free(layout);
             value_free(value);
-            return value_null();
+            return value_string(rendered);
         }
         return builtin_string_modifier_value(value);
     }
@@ -37916,6 +39797,12 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return dir_value;
     }
 
+    if (recognised) {
+        /* Not a transformation this runtime knows. Say so by flag and leave the
+         * value alone; the caller owns the diagnostic. */
+        *recognised = 0;
+        return value;
+    }
     modifier_raise_assign_not_found(modifier);
     value_free(value);
     return value_null();

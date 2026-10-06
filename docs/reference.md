@@ -1171,10 +1171,17 @@ Modifier use:
 
 ```basic
 x{USD}= 19.95
-name {caseless}= "joe"
-a {rounded 2}= b
-a {math.rounded to 2}= b
+d {date}= "2026-03-15"
+p {trimmed}= "  padded  "
 ```
+
+Three of the four examples this block used to show **did not run** (corrected
+2026-10-02, reported by the gbasic-books session, which had a drafted chapter
+carrying a caution about it): `name {caseless}= "joe"` raises, because `caseless`
+is a comparison **lens** rather than an assignment modifier and the interpreter
+says so; and `rounded` names a modifier that exists **nowhere** — not in the
+stdlib, not in the interpreter — so both `{rounded 2}` and
+`{math.rounded to 2}` raise `assign modifier not found`.
 
 Assignment modifiers transform assigned values. Comparison modifiers transform or
 implement comparisons. Both are written in **braces**; the parenthesized spelling
@@ -1209,13 +1216,123 @@ be given it on.
 It binds like unary minus, tighter than any binary operator, so
 `{number}"12" + 1` is `({number}"12") + 1` — 13, not 121.
 
-Two shapes have **no** inline form and still need the assignment clause: a
-modifier that takes **arguments** (`{split ","}`) and one with a **multi-word**
-name (`{end of month}`). A **library-qualified** name is one word and does work
-inline (`{housestyle.shout}s`). The reason is the grammar: the lexer recognises
-the exact shape `{ IDENT }`, which costs no parsing ambiguity, where admitting
-the general lens form in expression position costs 19 shift/reduce conflicts
-(measured) against a project standard of zero.
+**AND LIKE UNARY MINUS IT NESTS**, to any depth, innermost first — the grammar
+rule is `MODIFIER_PREFIX <expression>` and its result is itself an expression,
+so composition costs nothing and was never designed:
+
+```basic
+clean = {upper}{trimmed}raw            ' trim, then upcase
+n = {number}{trimmed}field             ' the common one
+total {USD}= {number}{trimmed}cell     ' a clause over an inline chain
+```
+
+Order matters where the two do not commute: `{number}{trimmed}"  42  "` is the
+number `42`, while `{trimmed}{number}"  42  "` raises `trim expects a string`.
+Documented and asserted 2026-10-02, after the question was asked — it worked
+from the day the inline form shipped and there was not one `{a}{b}` anywhere in
+the tree.
+
+**A CLAUSE CHAINS WITH `;`** *(added 2026-10-03)*, applied left to right:
+
+```basic
+clean {trimmed; upper}= raw
+n {trimmed; number}= field
+csv {trimmed; split ","; join "-"}= line
+```
+
+The separator is a semicolon and **not** a comma because the comma is already
+the **argument** separator — `{between "a", "b"}` supplies two arguments — and
+arity cannot tell the two apart, optional arguments being ordinary, so
+`{split ",", trimmed}` would be a second argument or a second stage with
+nothing to choose between them. A `;` **inside an argument** is content, not a
+separator: `{join "; "; upper}` is one argument holding a semicolon followed by
+a second stage.
+
+A stage that fails stops the chain. A stage **nobody recognises** names its
+position — `{trimmed; nosuch; upper}` reports
+`assign modifier not found: nosuch (stage 2 of this clause)`, and a one-stage
+clause keeps its sentence unchanged. A stage that is found and then **fails on
+its input** reports its own cause without a position: `{number; trimmed}` on
+`"  42  "` says `trim expects a string`, which names the modifier and so
+identifies the stage in any chain that does not repeat one.
+
+**If a stage raises, the target is not assigned** — it keeps whatever it held,
+and stays undefined if it held nothing. That is the ordinary rule for a failed
+assignment rather than a new one: the raise unwinds before the store.
+
+**AND THIS IS WHAT COMPARISON LENSES ARE FOR.** A comparison lens is a
+**normalisation of both operands**, so chaining one does the work that
+otherwise has to be written out on both sides in both ways:
+
+```basic
+name = "  Ada Lovelace  "
+typed = "ada lovelace"
+if name {trimmed; caseless}= typed then       ' not trim(lower(a)) = trim(lower(b))
+    print("match")
+end if
+```
+
+Until 2026-10-03 `caseless` was the only comparison lens, so `a {trimmed}= b`
+reported `compare modifier not found: trimmed` — an assignment modifier could
+not be used to compare at all. **Any of them now can**, alone or chained, and
+it is applied to each side symmetrically: `"joe" {upper}= "JOE"` is true,
+`"  b  " {trimmed}> "a"` orders. The datetime precision lenses (`{day}`,
+`{month}`) were always this shape and are unchanged.
+
+A lens that **answers** the comparison rather than transforming a value —
+`caseless`, or one you declare `for compare`, whose body is handed
+`left`/`right`/`operator` and returns the verdict — must be the **last** stage,
+since nothing can follow a verdict. `{caseless; trimmed}=` is refused by name.
+
+Because both sides get the same treatment, a chain only makes sense where both
+operands can take it: `{split ";"}` compares two arrays, and against a number it
+raises rather than guessing.
+
+**TWO CONSEQUENCES OF "BOTH SIDES", worth knowing before you declare a
+modifier of your own.**
+
+**Each stage runs once per operand**, so a comparison through a three-stage
+chain is six invocations of your code where the assignment form is three. A lens
+reads like a pure test and is not free.
+
+**The order is stage-major**: stage 1 on the left, stage 1 on the right, stage 2
+on the left, stage 2 on the right — not the whole chain down one side and then
+the other. For a stage that is a pure function of its argument the two orders
+give the same answer and the difference is invisible, which is why it is
+*stated*: the two calls to one stage are adjacent, so a stage that reads
+anything outside its argument sees both operands at as nearly the same instant
+as possible.
+
+**Which is the reason a stage must be a pure function of its input.** One that
+answers differently each call is handed the two operands separately, so **equal
+values compare unequal**:
+
+```basic
+' A modifier that is not a pure function of its argument.
+ticks = []
+same = "same" {ticking}= "same"      ' FALSE: the left got "1", the right "2"
+```
+
+Nothing can detect that, so it is not refused — it is the one rule a modifier
+you write has to keep. The assignment form has no such requirement, because
+there only one value goes through.
+
+**Every modifier shape works inline** *(since 2026-10-03)* — an argument
+(`{split ","}line`), a multi-word name (`{end of month}invoice`), a chain
+(`{trimmed; upper}raw`) and a library qualifier (`{housestyle.shout}s`). Until
+then only the one-word form did, so those first three were parse errors in
+expression position and the assignment clause was their only spelling.
+
+The reason is the lexer rather than the grammar: admitting the general lens form
+in expression position costs 19 shift/reduce conflicts (measured) against a
+project standard of zero, while the lexer may look as far ahead as it likes and
+costs none. **What it needs is to tell a modifier from a record literal, and the
+decision is one token past the leading identifier**: a record always has `:`,
+`=` or `(` there (`{ a: 1 }`, `{ a = 1 }`, `{ serial (reset 7): 0 }`) and a
+modifier never does. A record keyed by a string (`{ "k": 1 }`) or an empty one
+never reaches that test. And an inline modifier may not span a **newline**,
+which a clause could not either, so a record literal written across lines is
+out of its reach by construction.
 
 A comparison lens applies to any operand, including a call result:
 
@@ -1611,9 +1728,15 @@ still come after it — a `program` block's body runs in order like any other.
 (This paragraph said "inside a `program` block" until 2026-09-23, which is the
 natural reading and was false.)
 
-The diagnostic for the script-mode case is `invalid function call: sq`, which
-names the call rather than the ordering — if you see it for a function you are
-certain exists, check whether it is declared *below* the line that calls it.
+The diagnostic for the script-mode case is `undefined function: sq — no
+function, library function or builtin of that name is in scope at this call`,
+which names the scope rather than the ordering — if you see it for a function
+you are certain exists, check whether it is declared *below* the line that
+calls it. It says **in scope at this call** rather than "nothing defines that
+name" for exactly this reason: here the file plainly does define it, and the
+blunter sentence would be a lie in the one place a reader is most likely to be
+confused. (It read `invalid function call: sq` until 2026-10-02, which was a
+sentence about the call and sent readers to check their arguments.)
 
 **A library's own dependencies are declared INSIDE its `library` block.**
 Declaring one beside the library rather than inside it is not a scoping error —
@@ -1783,8 +1906,16 @@ carries the model (`docs/multiprocessing_design.md`):
 - `spawn worker(args…)` — start a new actor running the named function `worker`
   and return a **handle** to it. `worker` must be a `function` declared in the
   program, and the program must be loaded from a file (the child re-execs it). The
-  arguments are copied to the child as its first message; a handle among them —
-  including `self()` — is passed through so the child can message that actor.
+  arguments arrive as the entry function's **parameters**, and the mailbox starts
+  **empty**; a handle among them — including `self()` — is passed through so the
+  child can message that actor. (They do travel over the same channel, which is
+  why they are bound by the same frame cap — but what the child *sees* is
+  parameters. This page said "copied to the child as its first message" until
+  2026-10-02, which described the transport rather than the program: measured, a
+  child printing its parameters gets them, and a following `receive(1 seconds)`
+  answers `nothing`. Arity is checked against the parameters, so
+  `spawn kid0(5, "x")` against a zero-parameter entry is refused outright with
+  `spawn: kid0 expects 0 arguments`.)
 - `send(handle, value)` — copy `value` into the target actor's mailbox as one
   message. Non-blocking: if the mailbox is full or the value is too large for one
   frame, a structured `actor` error is raised rather than blocking. Per-sender
@@ -1932,8 +2063,45 @@ string for callers to match on. Because a snapshot carries `message`,
 **re-raising is just `error e`**, and it preserves the original trace and
 location — the interesting site is where it first went wrong, not the relay.
 
-**`error.trace`** is an array of `{name, path, line, column}` records, innermost
-first (the field is `name` because a keyword cannot follow a dot).
+**`error.trace`** is an array of `{name, path, library, line, column}` records,
+innermost first (the field is `name` because a keyword cannot follow a dot).
+
+**`path` is the file the frame's function is written in**, and it is set for
+every frame. Before 2026-10-05 it was stamped only for an *imported* function,
+so a library frame said `./lib.bas` while the frame that **called** it said
+nothing — the path was known all along and simply never asked for, which
+defeats the one job a trace has.
+
+**An uncaught raise prints the frames beneath the diagnostic**, innermost first:
+
+```
+runtime error at prog.bas:12:5: division by zero
+  in compute  prog.bas:12:5
+  in main     prog.bas:40:9
+```
+
+**What is NOT shown is the part to know.** A run of frames inside one library
+collapses to a single `in library NAME` line — and is omitted entirely when the
+error is already *reported* in that library, because the path and the message
+both name it there already. So a `chart` refusal stays one line, as it always
+has. `--full-trace` lists every frame. Frames are **not** included under
+`--json-diagnostics`, where a `message` stays one sentence; a program wanting
+them reads `error.trace`, which always holds every frame regardless of what the
+report chooses to show.
+
+**`library` is the library that owns the frame, or `""` for the root program.**
+That is what lets a report name a library without listing every frame inside it
+— `in library accounting` rather than four lines of its internals — while
+`error.trace` keeps every frame, so collapsing is a presentation choice and
+never a loss. Note `""` means *the root program*, a different claim from
+"unknown"; while `path` was also empty the two were indistinguishable.
+
+**Each frame's `line` is the CALL SITE, not the raise site** — where that frame
+called the next one inward. That is the right choice, because it is what tells you
+how the program got there, but nothing said so, and a reader who assumes the
+other reading is one frame out in the direction that looks plausible. Added
+2026-10-02 on a request from the gbasic-books session, whose Chapter 13 prints a
+trace.
 
 `with lock` unlocks on error, and `without watchers` restores watcher behavior
 after its block.
@@ -2550,7 +2718,7 @@ that reason:
 
 | | |
 |---|---|
-| `mail.is_ascii(text)` | true when every codepoint is below 0x80. O(1) — it compares `byte_count` with `len` rather than scanning. |
+| `mail.is_ascii(text)` | true when every codepoint is below 0x80 — it compares `byte_count` with `len` rather than scanning the text. |
 | `mail.encode_word(text)` | the text unchanged if it is ASCII, an RFC 2047 `=?utf-8?B?…?=` encoded-word if not. |
 | `mail.wrap_base64(text)` | base64, wrapped at 76 columns. |
 | `mail.address_parts(field, address)` | `{ name, address }` from either spelling; raises, naming `field`, if it is not an address. |
@@ -3847,8 +4015,8 @@ program-global registry `_DATAGRID`. It must be created at program scope.
 **Source modes:**
 
 - **Array-backed** — `datagrid.create(rows)` where `rows` is an array of records,
-  of arrays, or of scalars. COW arrays make row access O(1), so the array is
-  never copied into native storage. `create` takes a **COW snapshot**: it shares
+  of arrays, or of scalars. COW arrays make row access O(1) (`tests/run_arridx.sh`),
+  so the array is never copied into native storage. `create` takes a **COW snapshot**: it shares
   the backing store until either side mutates. Later mutation of your variable
   does *not* change the grid, and the grid never touches your variable; call
   `datagrid.set_rows` to show new data. A deliberate, predictable rule.
@@ -4658,6 +4826,38 @@ flag  = default(false, true)              ' false — it is a value
 
 `fallback` is evaluated eagerly, so keep it cheap (a literal, or a name).
 
+**AND `default` IS THE REMEDY FOR THE ONE DOOR THAT HAS NO OPINION.** Every
+other operation on an absence either refuses or answers a question; `+`
+**manufactures the word** (measured 2026-10-03, reported by the gbasic-books
+session):
+
+| | `nothing` | `unknown` |
+|---|---|---|
+| arithmetic, ordering | raises | raises |
+| a condition | quietly **false** | raises |
+| equality, `default` | answers | answers |
+| **concatenation** | **`"a" + nothing` is `anothing`** | **`aunknown`** |
+
+That falls out of two decisions each of which is right on its own — `+`
+concatenates when either side is a string, and `string` is total — and the
+result is that text meant for a person can contain the word `nothing` where a
+number should be, with nothing raised and exit 0:
+
+```basic
+owed = nothing
+print("Total owed: " + owed)      ' Total owed: nothing
+print("Total owed: " + default(owed, "n/a"))
+```
+
+**There is deliberately no warning for it**, and the reason is worth knowing
+because it is the same reason twice: showing that something is absent is
+ordinary, so `print("find(zz)=" + find(f, "zz"))` is correct code of exactly the
+shape above. Measured across every program in the tree, the coercion happens at
+ten places and **eight are that idiom** — a rule firing on it would be wrong
+about the language rather than merely noisy, which is why rows 6 and 7 of
+`docs/warning_model_design.md` were built, measured and reverted. Use `default`
+wherever the text is for a person.
+
 **`has_builtin(name)`** (*since 0.1.0-rc3*) - Answers whether this interpreter
 has an unqualified builtin of that name, so a program can degrade gracefully on
 an older release instead of crashing with `undefined variable`. Names of module
@@ -4737,6 +4937,130 @@ The same asymmetry bites the other way. `number(dt)` and `epoch(dt)` read a
 datetime as **local**, so `number(from_zone(now(), zone))` — the documented
 route to UTC — is wrong by the offset too, because a UTC civil value is being
 read as local. State the zone: `epoch(dt, zone)`.
+
+**ISO 8601 INPUT** *(since 2026-10-03)*. A `datetime` reads the `T` separator
+and a zone designator, so a timestamp off a web API parses as it stands:
+
+```basic
+a {datetime}= "2026-03-07T14:05:09"        ' 2026-03-07 14:05:09
+b {datetime}= "2026-03-07T14:05:09Z"       ' 2026-03-07 14:05:09
+c {datetime}= "2026-03-07T14:05:09+02:00"  ' 2026-03-07 12:05:09  — see below
+```
+
+`Z`, `+HH:MM`, `+HHMM` and `+HH` are all accepted, with their `-` forms.
+
+**AN OFFSET IS HONOURED BY CONVERTING TO UTC**, and the type forces that rather
+than taste. A gBASIC `datetime` is **civil** and carries no zone — which is why
+`epoch(dt, zone)` exists — while `14:05:09+02:00` denotes an **instant**.
+Turning an instant into a civil time needs a zone, and UTC is the only one the
+text implies. Keeping the wall clock and dropping the offset would make
+`14:05:09+02:00` and `14:05:09Z` the *same value* when they are two hours apart,
+which is a wrong answer with nothing raised. `Z` and `+00:00` are therefore
+no-ops, which is the common case; only a non-zero offset moves the digits, and
+it moves them by **date arithmetic** — `2026-01-01T00:30:00+02:00` is
+`2025-12-31 22:30:00`.
+
+A zone with no time (`2026-03-07Z`), an impossible offset (`+99:00`) and a bare
+sign are all refused. And a bare date is still a bare date: `2026-03-07` ends in
+`-07`, so the suffix is looked for only **after** the date/time separator — a
+scan from the right would read it as seven hours west.
+
+### Date and time layouts
+
+**`{string "YYYY-MM-DD hh:mm:ss"}d`** renders a `datetime` through a layout
+written the way it reads — not `%Y-%m-%d %H:%M:%S`.
+
+It is an **argument to `{string}`**, not a new verb, because every modifier is
+named for what it *produces* and `{string}` already turned a value into text.
+`{format "…"}` was the first proposal and reads as though text goes *in*.
+
+```basic
+d {datetime}= "2026-03-07 14:05:09"                   ' a Saturday
+print({string "YYYY-MM-DD"}d)                         ' 2026-03-07
+print({string "DDDD, D MMMM YYYY"}d)                  ' Saturday, 7 March 2026
+print({string "DD/MM/YYYY"}d)                         ' 07/03/2026
+print({string "h:mm pm"}d)                            ' 2:05 pm
+print({string "YYYYMMDD"}d)                           ' 20260307
+print("Posted " + {string "D MMM YYYY"}d)             ' Posted 7 Mar 2026
+```
+
+**Date parts are UPPERCASE, time parts are lowercase.** That one rule resolves
+the collision every other scheme fumbles: `MM` is the month, `mm` is the
+minutes.
+
+**One or two letters is a number, three is a short name, four is a long name** —
+the same for both `M` and `D`:
+
+| | | | |
+|---|---|---|---|
+| `YYYY` 2026 | `YY` 26 | | |
+| `M` 3 | `MM` 03 | `MMM` Mar | `MMMM` March |
+| `D` 7 | `DD` 07 | `DDD` Sat | `DDDD` Saturday |
+| `h` 14 | `hh` 14 | `m`/`mm` minutes | `s`/`ss` seconds |
+| `am` / `pm` | the meridiem, in the case you wrote it | | |
+
+(`DDD` is day-of-*year* in `strftime`; the obvious reading wins here over the
+inherited one.)
+
+**The 12-hour clock is implicit.** `hh` is 24-hour unless the layout also
+carries `am` or `pm`. Midnight is `12:00 am` and noon is `12:00 pm`.
+
+**Nothing but tokens and punctuation may appear**, and that is what makes the
+notation safe rather than merely short. A letter run that is not a token is
+**refused by name**, so prose goes *outside* the layout, where concatenation
+already puts it. If prose passed through, `"Business hours: hh:mm"` would render
+the `ss` in *Business* as seconds — measured against the system word list, 4,536
+of 104,334 English words contain `ss` and 939 contain `mm`, about one word in
+twenty-three, and they are exactly the words a caption uses: *business*,
+*session*, *summary*, *assessment*, *comment*.
+
+A **date-precision** value really is midnight, so `hh:mm:ss` renders
+`00:00:00`. A **time-only** value has no date, so a date token is refused rather
+than answered with a zero that looks like a year. A layout on anything that is
+not a date or time is refused, and so is a second layout — a *list* is for
+reading (see `{date "A", "B"}`), since there is no second way to render one
+value.
+
+### Reading a date through a layout
+
+**`{date "DD/MM/YYYY"}cell`** reads text through the same notation, and takes a
+**list** when one shape is not enough:
+
+```basic
+cell = "7 Mar 2026"
+a {date "DD/MM/YYYY"}= "07/03/2026"                       ' 2026-03-07
+b {date "YYYY-MM-DD", "DD/MM/YYYY", "D MMM YYYY"}= cell   ' tried in order
+c {datetime "D MMM YYYY h:mm pm"}= "7 Mar 2026 2:05 pm"   ' 2026-03-07 14:05:00
+d {time "hh:mm"}= "14:05"
+```
+
+`{date}`, `{datetime}` and `{time}` all take layouts; with no argument they stay
+ISO-only, unchanged.
+
+**THE ORDER IS THE DECLARATION**, which is what makes first-match-wins honest
+here rather than a race. `03/07/2026` is 7 March or 3 July depending on where
+the report came from, and writing `DD/MM/YYYY` ahead of `MM/DD/YYYY` is you
+saying which:
+
+```basic
+print(string({date "DD/MM/YYYY", "MM/DD/YYYY"}"07/03/2026"))   ' 2026-03-07
+print(string({date "MM/DD/YYYY", "DD/MM/YYYY"}"07/03/2026"))   ' 2026-07-03
+```
+
+**And a layout matches only if it also yields a valid date**, so a list
+disambiguates itself where the data allows: `03/15/2026` skips the `DD/MM`
+candidate rather than inventing month 15.
+
+**A day name is checked, not ignored.** `DDDD` is redundant with the date, so
+`"Sunday, 7 March 2026"` is **refused** — that day is a Saturday — rather than
+admitting contradictory data.
+
+A **two-digit year** takes the POSIX pivot: `00`–`68` is this century, `69`–`99`
+the last, so a birthdate still reads.
+
+When nothing fits, the message names **the text and every layout tried**,
+because "could not parse" alone cannot tell you whether the data is wrong or
+your list is short.
 
 **`epoch()`** returns the current instant as Unix seconds. **`epoch(dt)`**
 places a civil datetime on the timeline by reading it as **local**;
@@ -4905,6 +5229,35 @@ type(nothing)    ' "nothing"
 type(unknown)    ' "unknown"
 ```
 
+**`type` answers for every value kind, and the list is longer than the seven
+above.** Documented in full because it was not, and the gap is now held by a
+tripwire in `tests/run_docs_gate.sh` that reads the answers out of
+`builtin_type_name` in `src/eval.c` and requires every one of them to appear
+here — in both directions, so an answer that is removed from the interpreter
+cannot keep a paragraph on this page either.
+
+<!--TYPEKINDS-->
+| | `type` answers |
+|---|---|
+| core | `number`, `string`, `boolean`, `array`, `record`, `nothing`, `unknown` |
+| typed values | `datetime`, `duration`, `money`, `file`, `directory` |
+| language | `function`, `regex`, `watcher`, `actor`, `process` |
+| handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `xml_reader`, `http`, `workbook` |
+| GObject bridge | `gobject`, `gboxed`, `gvariant` |
+<!--/TYPEKINDS-->
+
+**Two answers are not the word you wrote**, and both read as a bug in your own
+program rather than as a fact about the language:
+
+```basic
+type({date}"2026-10-02")   ' "datetime", NOT "date"
+type({dir}"/tmp")          ' "directory", NOT "dir"
+```
+
+A `{date}` modifier builds a **datetime** whose time-of-day is midnight — there
+is no separate date kind — and `{dir}` is the short spelling of a value `type`
+calls `directory`. So `type(d) = "date"` is `false` with nothing wrong anywhere.
+
 **Type predicates** - Return `true` or `false`:
 - `is_string(value)` - checks if value is a string
 - `is_number(value)` - checks if value is a number  
@@ -4914,7 +5267,40 @@ type(unknown)    ' "unknown"
 - `is_nothing(value)` - checks if value is `nothing`
 - `is_unknown(value)` - checks if value is `unknown`
 
+**THERE ARE SEVEN PREDICATES AND MANY MORE KINDS, SO `type` IS THE GENERAL TEST.**
+`is_money`, `is_datetime`, `is_file` and the rest **do not exist** — the seven
+that do are exactly the kinds with a literal form, which is the same reasoning
+that ruled against `is_function`. Compare the string instead:
+
+```basic
+amount = {USD}"19.99"
+if type(amount) = "money" then            ' the portable test
+    print("that is money")
+end if
+' `if is_money(amount) then` -- there is no such function
+```
+
+Calling one of the absent ones reports `undefined function: is_money`, and
+`has_builtin("is_money")` answers `false` without raising, which is the cheaper
+way to ask. Reported by the gbasic-books session 2026-10-02, whose filing noted
+that the diagnostic used to say `invalid function call: is_money` — a sentence
+about the **call**, which sends a reader to check their arguments when the
+problem is that the name does not exist.
+
 ### Strict Conversion
+
+**THE CONVERSIONS ARE DELIBERATELY STRICTER THAN THE OPERATORS, and the two pages
+need reading together.** `1 = true` is **true** and `1 > false` **orders**, because
+a boolean compares as 0 or 1 — the one real coercion the comparison chain keeps,
+measured at 1,472 of 1,500 mixed-kind comparisons in this tree and argued under
+*Expressions*. But `number(true)` and `boolean(1)` both raise
+`unsupported type`.
+
+Both choices are defensible and they are not in tension: comparing is answering a
+question about two values, while converting is asserting that one value *is*
+another kind. Stated here because nothing connected them, so a reader who learned
+`1 = true` from one page could not predict what `number(flag)` does from another.
+Added 2026-10-02, reported by the gbasic-books session.
 
 **`string(value)`** - Converts values to strings using canonical string representation.
 
@@ -5085,6 +5471,78 @@ response = merge(web.static(rel, root), { id: req.id })
 
 There is no record `+`, for the same reason there is no array `+`.
 
+**`bound(fn, context)`** — a function value that **carries a context**, passed
+as the **last** argument on every call. gBASIC has no closures, so a callback
+could not otherwise carry state.
+
+```basic
+function price(b, ctx)
+    return ctx.cost * b / (1 + b)
+end function
+
+cheap = bound(price, { cost: 10.00 })
+dear  = bound(price, { cost: 22.50 })
+```
+
+**The function being called need not know about contexts**, which is the point:
+a library that calls `f(x)` works with a bound value unchanged, so no callback
+API has to grow a parameter. The context goes last so one function serves both
+uses given a literal default — `function f(x, ctx = nothing)`.
+
+**It is not a closure.** A closure captures an *environment*, implicitly and by
+reference; `bound` captures **one named value, copied at bind time**. So
+mutating the original afterwards is *not* seen by the callback:
+
+```basic
+c = { cost: 10.00 }
+held = bound(price, c)
+c.cost = 99.00                  ' held still uses 10.00
+```
+
+That is why it is available where closures are not: a gBASIC record is a value,
+so no reference cycle is constructible, and `encode` totality and actor
+sendability are untouched.
+
+Re-binding is refused (`bound(bound(f, a), b)`) — two contexts would make a
+function's arity depend on how often the value had been bound, which nothing at
+the call site shows. A bound value is still `type()` `"function"`, and a record
+field holding one works as a method, so two objects can share one function with
+different configuration.
+
+**Where a context cannot travel it is refused, not dropped.** `gi.connect`,
+gi's event-source callbacks and `webserver.on_request` keep only the function's
+*name*, so they raise rather than silently losing the context. `encode` refuses
+a function value as it always has; `serialize` accepts a plain one and refuses a
+bound one, because the name would travel and the context would not.
+
+**`key(a, b, …)`** — one string that cannot collide, for use as a **composite
+record key**. Variadic, one argument or more; every argument must be a scalar
+(an array or record is refused by name).
+
+A record is keyed by a *string*, so a composite key is otherwise built by
+concatenation with a chosen separator — and that is wrong in two ways nothing
+reports. **A separator inside the data merges two keys**: with `|`, the pairs
+`("North|East", "A")` and `("North", "East|A")` produce the same key. **And an
+absence renders as a word**, so `nothing` collides with the literal text
+`"nothing"` and every absent value keys the same as every other.
+
+```basic
+k = key(row.start, row.end, row.period)      ' safe whatever they contain
+k = row.start + "|" + row.end                ' merges if either holds a "|"
+```
+
+Both of those were live in this tree. In `insight` the separator case merged
+two cells of a decomposition, which is worse than a wrong grouping because the
+cell count feeds the significance threshold; in `fundamentals` the absence case
+grouped correctly *by accident*, every absent value rendering identically.
+
+**The result is opaque and unambiguous, not readable.** Each component is
+length- and kind-tagged, so no two distinct inputs can produce one key and the
+encoding is not a format to depend on — keep the readable values separately if
+you need them. Absences **group together** (as SQL's `GROUP BY` does with
+`NULL`) while never equalling a string. Picking a rarer separator is not an
+alternative: it is the same defect with a longer fuse.
+
 **`keys(record)`** - Returns array of key strings:
 ```basic
 keys({x:1, y:2})               ' ["x", "y"]
@@ -5253,11 +5711,36 @@ string; it is not a type-checking wrapper.
 the parser's recursion overran the C stack and segfaulted at around 45 000 levels;
 a non-raising decode whose failure mode is a crash would be worthless.
 
-**Why it matters for performance.** Pre-validating in gBASIC is not merely
-inconvenient, it is quadratic: `mid(s, i, 1)` is O(i) on codepoint-indexed strings,
-so a per-character scan is O(n²). Measured — 16 KB: 1 s; 64 KB: 16 s; 128 KB: 69 s;
-256 KB: 291 s. The C parser handles all of those in well under a second, so
-`try_decode` replaces a scan that got dramatically worse with size.
+**Why it matters for performance.** Pre-validating in gBASIC was measured at
+16 KB: 1 s; 64 KB: 16 s; 128 KB: 69 s; 256 KB: 291 s — plainly quadratic, and the
+C parser handles all of those in well under a second (`tests/run_try_decode.sh`
+records those figures as the reason this builtin exists). `try_decode` replaces a
+scan that got dramatically worse with size.
+
+**The REASON given here used to be wrong, and the wrong reason was the harmful
+part** (corrected 2026-10-02, reported by the gbasic-books session). This
+paragraph said `mid(s, i, 1)` is O(i) and therefore a per-character scan is O(n²).
+**PLAT-STRIDX removed both costs** and nobody updated this page, so it went on
+telling readers to avoid the thing that had become fast — and a reader who
+believes `mid` is O(i) rewrites a linear loop into something worse.
+
+Measured on the current binary: **`mid` is flat in the index** — 20 000 calls at
+the far end of a 400 000-codepoint multibyte string cost 0.0218 s against 0.0201 s
+for the same calls on a 100 000-codepoint string, a ratio of 1.09 where O(i) would
+be about 4. And **a per-character scan is linear**: 50k/100k/200k/400k codepoints
+at 0.058/0.114/0.229/0.461 s.
+
+So the quadratic cost those timings record is **not** in `mid`. The likeliest
+cause is accumulation with `+` inside the scan, which is separately measured and
+genuinely quadratic — see *Performance traps*. The advice is unchanged either
+way: use `try_decode` rather than pre-validating in gBASIC.
+
+Asserted by `tests/run_stridx.sh`, whose SHAPE tier holds seven access patterns
+to a ratio across a 4x size step rather than to an absolute time, and whose
+CONTROL points the same harness at string concatenation and requires it to
+EXCEED the gate — so if these costs ever become quadratic again the suite goes
+red instead of this page going quietly stale, which is what happened the last
+time.
 
 **`json_encode(value)` — strict JSON.** Type mapping:
 
@@ -5404,6 +5887,11 @@ changes performance, never observable behavior. Practical consequences:
 - building an array with a loop of `append` is O(n) overall (amortized O(1) per
   append), not O(n²).
 
+Asserted by `tests/run_arridx.sh` — SHAPE checks seven patterns as a ratio
+across a 4x step, and its CONTROL requires still-quadratic string concatenation
+to exceed the same gate, so a tier that stopped measuring anything would be
+visible.
+
 `append`/`prepend`/`insert`/`remove`/etc. still mutate a stored array in place
 when given an assignable path (and notify watchers, as above); the value they
 return is the resulting array. Taking a copy first (`b = a`) and then appending
@@ -5453,6 +5941,23 @@ Rounding and sign:
   `ceil(-2.1)` is `-2`. Note `floor` rounds toward negative infinity while
   `int`-style truncation would round toward zero; they differ on negatives.
 - `sign(x)` — `-1`, `0` or `1`.
+
+**WHAT RAISES AND WHAT REACHES `inf` IS A LINE WORTH KNOWING, because the two
+answers look nothing alike and the language draws it in one place.** A result
+that has **no value at all** raises: `1 / 0` is a runtime error, `sqrt(-1)` is a
+runtime error. A result that **overflows a double** does not — `number("1e308") *
+10` is `inf`, with no diagnostic, and it travels through everything downstream
+including `encode` (see *Encoding*, where the dialect writes `inf` and
+`json_encode` refuses it).
+
+That is deliberate rather than an oversight, and the distinction is between
+*undefined* and *too large*: zero division and a negative square root have no
+answer in any arithmetic, while an overflow has an IEEE answer that keeps
+propagating correctly — `inf > x` is true for every finite `x`, and a product
+that overflows and is then divided back can land on a real number again.
+Raising there would break ordinary numerics for the sake of a diagnostic.
+Recorded 2026-10-02, reported by the gbasic-books session as an inconsistency;
+it is a line, and nothing had drawn it.
 
 Powers, roots and logarithms. Each raises rather than returning `nan` or
 `inf`, so a domain error stops at the call that made it:
@@ -5602,7 +6107,21 @@ File functions (see also the file/directory value types):
   than stopping at the first one. Before rc9 `write` was binary-safe and `read`
   was not, so a file holding binary — a `serialize` payload, an image — could
   be written and silently read back short.
-- `bytes(f)` / `lines(f)` / `chars(f)` — the file's **size** in bytes, its line count, its character count. These are counts, not content; use `read` for the content.
+- `bytes(f)` / `lines(f)` / `chars(f)` — the file's **size** in bytes, its line
+  count, and its count of **codepoints**. These are counts, not content; use
+  `read` for the content. `bytes` is answered by `stat` on a regular file, so it
+  costs nothing on a large one; `lines` and `chars` read it.
+
+  **`chars` counted BYTES until 2026-10-02**, sharing a branch with `bytes`
+  under a `TODO` in the source, so the two verbs returned the identical number
+  on every file — right for ASCII and wrong for everything else, in the
+  direction that looks like a working answer. It had no test coverage in the
+  tree, which is how the `TODO` reached a release. `chars(f)` now agrees with
+  `len(read(f))`, which was correct all along, and the two routes to the same
+  question no longer disagree. Asserted in `examples/file_counts_test.bas`,
+  whose load-bearing check is that `chars` and `bytes` **differ** on a
+  multibyte file — every value check in the file is also satisfied by a build
+  where they are one function.
 - `read_lines(f)` — the file's lines as an array of **strings**, without their
   line endings. `lines(f)` counts them; this returns them.
 - `overwrite(f, text, position)` — write `text` **in place** at a byte offset,
@@ -7831,6 +8350,29 @@ answered something, and printing the word would be noise:
 `write` answers `true`. It is in the section on the resident program now,
 where the point is that it acts as well.)
 
+**A NAME or LITERAL holding `nothing` DOES show it, and that asymmetry is
+deliberate.** The rule is about the *call*, not about the value:
+
+```text
+> n = nothing
+> n
+nothing
+> nothing
+nothing
+> gives_nothing()        ' a function whose body is `return nothing`
+>
+```
+
+`return nothing` is gBASIC's void convention — the unused-result warning exempts
+it by value for exactly that reason — so a call answering `nothing` is
+overwhelmingly a command, and echoing the word would put a line of noise under
+every command you type. Asking a *name* is never a command, so there is nothing
+to keep quiet about. `unknown` echoes from both positions, because nothing
+returns it as a convention. Stated here 2026-10-02 after the gbasic-books
+session measured the gap: the rule above was documented and the contrast was
+not, so exploring absence at the prompt — the obvious way to learn this part of
+the language — reads as though the call did not run.
+
 `?` asks the same thing explicitly, and it is a **question**, not shorthand for
 `print`. The difference shows when a name has been taken by a command: `? list`
 reads back a variable called `list`, where a bare `list` shows the program.
@@ -8160,7 +8702,7 @@ gbasic --add-loads FILE
 Compatibility note: `--add-uses` remains an alias that emits `use` statements.
 
 It reads both shapes a call can take. A **qualified** call names its library
-outright (`sqlite.open(...)`, `stats.zscore(...)`), so the `load` follows from the
+outright (`sqlite.connect(...)`, `stats.zscore(...)`), so the `load` follows from the
 qualifier; this is the ordinary shape, because a call into another library must
 be qualified. An **unqualified** call is resolved by searching the libraries on
 the path for one that provides that function, which is what a library's calls to

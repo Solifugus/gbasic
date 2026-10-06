@@ -287,7 +287,23 @@ to implementation.
   backed-up mailbox surface through one catchable failure path. The limit is a
   property of the `channel` (queried from the socket's `SO_SNDBUF` / max-datagram,
   with a documented floor so programs have a portable lower bound to rely on), not
-  a language constant. Raising it for genuinely large payloads — chunked framing
+  a language constant.
+
+  **AND THE REFUSAL NAMES BOTH NUMBERS (2026-10-02).** It said only "message is
+  too large for one frame", which told a program that had to split a payload
+  nothing about what to split it into — and because the limit is derived from
+  `SO_SNDBUF` it is a property of the machine, so there is no constant anybody
+  can look up instead. It now reports the serialized size and the ceiling in the
+  same units the check uses (`len > channel_max_message(fd)`), so "holds at most
+  N" is exactly the predicate: measured on one host, 200,037 bytes refused
+  against a 106,496-byte frame, and a payload serializing to exactly 106,496
+  accepted. `spawn`'s startup frame gets the identical pair for the identical
+  reason. Reported by the gbasic-books session as "the channel maximum is not
+  queryable"; this makes it discoverable where it matters rather than adding a
+  name to the language, and whether a queryable form is also wanted is still
+  open.
+
+  Raising it for genuinely large payloads — chunked framing
   over the `SOCK_STREAM` fallback, or an out-of-band shared-memory/temp-file
   hand-off referenced by a small in-frame token — is a deliberate later refinement,
   not a v1 obligation; the explicit error keeps the v1 boundary honest in the

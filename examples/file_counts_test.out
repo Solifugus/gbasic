@@ -1,0 +1,12 @@
+ok   bytes counts bytes     
+ok   chars counts codepoints
+ok   lines counts lines     
+ok   the two verbs differ   
+ok   chars agrees with len  
+ok   bytes agrees with count
+ok   ASCII: bytes = 4       
+ok   ASCII: chars = 4 too   
+ok   ASCII: the two agree   
+ok   empty: bytes = 0       
+ok   empty: chars = 0       
+ok   empty: lines = 0       

@@ -239,6 +239,8 @@ int gbasic_has_builtin(const char *name) {
            three times. */
         "mod",
         "concat",
+        "key",
+        "bound",
         "merge",
     };
     if (gbasic_builtin_function(name)) {

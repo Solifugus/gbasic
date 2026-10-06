@@ -4,6 +4,24 @@ Most of a release is already checked by something. This page is the **order**,
 and for each step it names the gate that enforces it — so the prose never
 becomes the authority. Where a step is genuinely manual, it says so.
 
+
+## Before you start: what changed, and what a book has to revisit
+
+`./tools/since-release.sh [tag]` reports the MECHANICAL half — which pinned
+diagnostics and goldens moved since the last tag, split into *modified* (a
+passage quoting one is now wrong) and *added* (something new to teach), plus the
+docs pages touched and the commit subjects.
+
+**It is a floor on what changed, never a ceiling**, and the reason is worth
+knowing before trusting it: it sees only diagnostics a GOLDEN pins. Measured on
+`v0.4.0..HEAD`, one `.err` moved while the same commit reworded the sentence
+NINE module dispatchers emit — none of those nine is pinned, so none appeared.
+
+So `CHANGELOG.md`'s **Unreleased** section stays hand-written and is kept current
+as work lands rather than reconstructed at release time. "This breaks working
+programs" is a judgement, and the curated note is the one a reader sees; the tool
+exists to make writing it cheap, not to replace it.
+
 ## 1. Green gate
 
 ```sh
@@ -38,6 +56,21 @@ six; the gates catch a miss:
 | `CLAUDE.md` | — |
 
 A half-bumped tree cannot ship. That is the point of three independent checks.
+
+**One version string in that list is NOT the release and must not move with
+it.** `book_version()` in `examples/gbasic_site/site.bas` is the release **the
+paperback was written against** — the page's own prose promises that archive
+stays downloadable, and the checksum is printed on paper where it cannot be
+corrected afterwards. The docs gate's check reads `version: "…"` and therefore
+does not see it, which is deliberate; what that means in practice is that a
+blanket `sed -i s/0.4.0/0.5.0/g` over the tree would pass every gate and break a
+printed promise. **Bump the six by name, never by sweep** — the same correction
+this file already carries for the blanket `rm` in step 7, and for the same
+reason: the convenient command and the promise disagree, and the command wins.
+
+`site.bas` holds **two** version strings for that reason: the release
+(`version:`, guarded) and the book's pin (`book_version()`, which only changes
+when a new edition is pinned, and that is not a release decision).
 
 ## 3. Commit, then tag
 
@@ -145,6 +178,27 @@ gBASIC.
 
 Old artifacts are **removed, not kept**: a superseded tarball that stays live is
 precisely the file nobody should still be getting.
+
+**`pinned:` MEANS A PROMISE EXISTS, NOT "RECENT"** — and this needed saying
+because I got it wrong on 2026-10-03, the same day the rest of this section was
+written. Staging 0.5.0, I added **0.4.0** to `pinned:` on the reasoning that a
+superseded archive somebody may already be pointing at is not the file to delete
+on the day it is superseded. Defensible, and not the policy above; worse, it was
+**circular** — adding 0.4.0 to `pinned:` made that line the only place the page
+named it, which then satisfied the checker's rule that every version named be
+current-or-pinned. The pin justified itself.
+
+The test is whether **something outside this repo promises the archive**. Today
+exactly one thing does: the paperback prints 0.3.0's checksum on paper, where it
+cannot be corrected. A release that was merely current last week promises
+nothing. On that rule the list does not grow — which is the state the sentence
+above exists to protect, since on the other rule it grows by one every release
+forever.
+
+Reverted at 0.5.1 (`pinned: 0.3.0` alone, 0.4.0's and 0.5.0's artifacts
+removed). **If a grace period is wanted, it is a rule with a stated length that
+belongs here and in the checker — not a judgement made per release in a commit
+message.**
 
 ## 8. Manual tail
 

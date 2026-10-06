@@ -171,6 +171,11 @@ examples=(
     pbi_derive_test.bas
     pbi_cow_test.bas
     pbi_nested_array_test.bas
+    pbi_constructor_depth_test.bas
+    datetime_iso_test.bas
+    datetime_layout_test.bas
+    datetime_read_layout_test.bas
+    file_counts_test.bas
     env_builtin_test.bas
     sleep_test.bas
     edgar_offline_test.bas

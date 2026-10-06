@@ -1,0 +1,1 @@
+runtime error at tests/../stdlib/dates.bas:547:17: dates.select: unknown spec field 'weekdayz' -- the vocabulary is weekday, day, month, kind, except, nth, within, after, on_or_after, before, on_or_before, roll, at, every, when

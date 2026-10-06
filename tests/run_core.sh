@@ -45,13 +45,21 @@ printf '  sleep(0.30): elapsed %dms (requested %dms)\n' "$elapsed_ms" "$requeste
 [[ "$elapsed_ms" -ge "$requested_ms" ]]
 check "sleep elapsed >= requested" $?
 
-# sleep(0) must return promptly and not error
+# sleep(0) must return promptly and not error.
+#
+# IT ANSWERS `nothing`, SINCE 2026-09-24, and this check asserted `0` for nine
+# days after that -- failing on every run and reported by nobody, because the
+# suite's exit status had been stranded (see the bottom of this file). The
+# change was deliberate and recorded in examples/sleep_test.bas: `sleep` used to
+# answer the seconds you asked for, which is not an answer, and it cost a stray
+# number at the prompt and a `sleep` dropped from the resident program as a
+# question rather than an act. Reported by the Windows port session 2026-10-02.
 zero_prog="$(mktemp --suffix=.bas)"
-printf 'program m(args)\n    print(sleep(0))\nend program\n' >"$zero_prog"
-[[ "$(./gbasic "$zero_prog")" == "0" ]]
+printf 'program m(args)\n    print(is_nothing(sleep(0)))\nend program\n' >"$zero_prog"
+[[ "$(./gbasic "$zero_prog")" == "true" ]]
 zero_status=$?
 rm -f "$zero_prog"
-check "sleep(0) returns 0" "$zero_status"
+check "sleep(0) answers nothing, promptly" "$zero_status"
 
 # --- env: set vs unset ------------------------------------------------------
 export GBASIC_CORE_TEST_SET=present
@@ -231,7 +239,17 @@ printf '%s' "$idem_out" | grep -qx 'mismatches: 0'
 check "{file}/{dir} idempotent, and still refuse a wrong type" $?
 
 printf 'core suite: %d passed / %d failed\n' "$pass" "$fail"
-[[ "$fail" -eq 0 ]]
+# THE COUNTER FEEDS THE ONE EXIT AT THE BOTTOM, and it is written this way
+# because the obvious form was a `[[ "$fail" -eq 0 ]]` on this line -- which WAS
+# the script's exit status while this was the last line, and became a statement
+# whose value is discarded the moment a tier was appended below it. MEASURED
+# 2026-10-02 (reported by the Windows port session): the suite printed
+# `FAIL sleep(0) returns 0` and exited 0, so 24 checks had been advisory and the
+# gate had been green over a failing one for nine days. A bare test expression
+# is not an exit status; only the last one in a file is, and which one is last
+# changes without anybody noticing.
+core_fail=0
+[[ "$fail" -eq 0 ]] || core_fail=1
 
 # --- WHY a file operation failed, not only WHICH file (DOGFOOD 35) ---------
 #
@@ -255,7 +273,6 @@ why() {   # path -> the parenthesised reason, or empty
 r_missing="$(why "$fw/no_such_dir/brain.json")"
 r_notdir="$(why "$fw/plain.txt/brain.json")"
 r_denied="$(why "$fw/ro/brain.json")"
-core_fail=0
 # The permission case needs a directory this process CANNOT write, and neither
 # root nor Windows (where chmod 500 is no barrier to the owner) can make one.
 # Asked of the directory, not the platform; without it the case is skipped BY

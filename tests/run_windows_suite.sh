@@ -42,6 +42,21 @@ for f in tests/windows/*.bas; do
     fi
 done
 
+# THE WINDOWS FILE VERSION MUST BE THE BINARY'S VERSION. src/gbasic.manifest
+# carries one by hand (it is what Windows shows in a file's Properties, and the
+# MSIX build reads `gbasic --version` instead); it sat at 0.4.0.0 while the
+# binary said 0.5.1, found only when master was merged. Asked of the source on
+# every platform, since the manifest is a source file.
+gb_version="$(grep -o 'printf("gBASIC [0-9][0-9.]*[0-9]' src/main.c | head -1 | sed 's/.* //')"
+manifest_version="$(sed -n 's/.*name="gBASIC.gbasic" version="\([0-9.]*\)".*/\1/p' src/gbasic.manifest)"
+if [ -n "$gb_version" ] && [ "$manifest_version" = "$gb_version.0" ]; then
+    printf 'PASS src/gbasic.manifest version %s matches gbasic %s\n' "$manifest_version" "$gb_version"
+else
+    printf 'FAIL src/gbasic.manifest says %s but gbasic --version says %s (want %s.0)\n' \
+        "${manifest_version:-nothing}" "${gb_version:-nothing}" "$gb_version"
+    status=1
+fi
+
 # smoke, process_run and process_start need nothing optional; a run that
 # passed fewer than those three passed nothing it should have.
 if [ "$ran" -lt 3 ]; then

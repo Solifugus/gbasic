@@ -78,8 +78,40 @@ for path in tests/run_*.sh; do
     log="$logdir/$name.log"
     printf '%-32s ' "${name%.sh}"
     if timeout "$timeout_s" bash "$path" >"$log" 2>&1; then
+        # A SUITE THAT REPORTED A FAILURE AND EXITED 0 IS THE FOURTH WAY THIS
+        # GATE CAN GO QUIET, and it is the only one that had happened without
+        # being defended against. The other three are already here or in
+        # CLAUDE.md: a suite that SKIPS everything, a discovery pass that
+        # SHRINKS, and a fixture that HANGS.
+        #
+        # MEASURED 2026-10-02, reported by the Windows port session:
+        # run_core.sh printed `FAIL sleep(0) returns 0` and exited 0, so 24
+        # checks had been advisory and this gate had printed OK over a failing
+        # one for NINE DAYS. The cause is ordinary and will recur: the suite
+        # ended with a bare `[[ "$fail" -eq 0 ]]`, whose status WAS the exit
+        # status until a tier was appended below it, at which point it became a
+        # statement whose value is discarded. Which statement is last changes
+        # without anybody noticing.
+        #
+        # ASKED OF THE OUTPUT RATHER THAN THE SOURCE, deliberately. A static
+        # rule would have to replicate shell semantics to know whether a
+        # counter reaches the exit status -- swept all 158 suites by hand to
+        # find this one, and the classifier was noisy enough to misread a
+        # one-line `fail() { ...; exit 1; }`. The output is the contract: a
+        # suite that says FAIL has failed, whatever its exit code claims.
+        #
+        # The pattern is ANCHORED and allows the two report shapes in use
+        # (`FAIL ...` and `  FAIL ...`), because `SKIP (valgrind unavailable)`,
+        # a path containing the word, and prose about what a tier catches are
+        # all ordinary -- a tripwire that fires on commentary is one somebody
+        # turns off.
+        if grep -qE '^ *FAIL( |$)' "$log"; then
+            printf 'FAIL (said FAIL, exited 0) -> %s\n' "$log"
+            printf '%34s%s\n' '' "$(grep -m1 -E '^ *FAIL( |$)' "$log" | cut -c1-70)"
+            fail=$((fail + 1))
+            failed_names+=("$name")
         # A suite whose every reported case SKIPped ran no assertions. Say so.
-        if grep -q '^SKIP' "$log" && ! grep -q '^PASS\|^OK\|passed' "$log"; then
+        elif grep -q '^SKIP' "$log" && ! grep -q '^PASS\|^OK\|passed' "$log"; then
             printf 'SKIP  %s\n' "$(grep -m1 '^SKIP' "$log" | cut -c1-70)"
             skip=$((skip + 1))
             skipped_names+=("$name")
@@ -98,6 +130,56 @@ for path in tests/run_*.sh; do
         failed_names+=("$name")
     fi
 done
+
+# NOTHING IN THIS TREE MAKES A LIVE PAID CALL WITHOUT BEING ASKED.
+#
+# Two fixtures exist whose whole job is to call a real model and overwrite the
+# recordings every other check replays: tests/ari_advisor/record.bas and
+# tests/nlq/record.bas. Both said so in their headers and NEITHER ENFORCED IT,
+# and on 2026-10-02 an instrumentation sweep that ran every `.bas` in the tree
+# ran one of them -- a live paid call nobody asked for, and a committed
+# recording overwritten (restored from git). The fixture's own comment was the
+# only thing between a glob and somebody's API bill.
+#
+# CHECKED HERE because the property belongs to the whole gate rather than to
+# either library's suite, and this is the one thing that sees every file. A
+# static scan, deliberately: the behavioural check would be to RUN them, which
+# is the act being prevented.
+#
+# FOUND BY WHAT IT DOES, NOT BY ITS NAME. The first draft globbed
+# `tests/record*.bas` and reported tests/record_nul_test.bas, which is about
+# RECORD VALUES -- a tripwire whose false positives look exactly like its true
+# ones is not a tripwire, which is the lesson finio's amount-kind check already
+# produced. Measured instead: `load llm` WITH `load webclient` is carried by
+# exactly the two recorders and by none of the eight fixtures that REPLAY
+# through `with_transport`, because a replayer's transport reads a file and only
+# a recorder needs a real HTTP client. A future fixture that legitimately wants
+# both will fail this and somebody will decide, which is the right direction for
+# a check about spending money.
+#
+# BOTH DIRECTIONS, so the rule cannot rot in either: every recorder must carry
+# the switch, AND at least two must exist -- a scan that matches nothing
+# reports a clean run, which is how this gate goes quiet without going red.
+rec_total=0
+rec_bad=0
+for rec in $(grep -rl 'load webclient' tests/*.bas tests/*/*.bas 2>/dev/null | xargs -r grep -l 'load llm' 2>/dev/null); do
+    [ -f "$rec" ] || continue
+    rec_total=$((rec_total + 1))
+    grep -q 'GBASIC_RECORD_FIXTURES' "$rec" || {
+        printf 'FAIL %-27s makes live model calls with no GBASIC_RECORD_FIXTURES guard\n' "$rec"
+        rec_bad=1
+    }
+done
+if [ "$rec_total" -lt 2 ]; then
+    printf 'FAIL %-32s only %d recorder(s) found -- the scan stopped matching, it did not pass\n' 'record guard' "$rec_total"
+    fail=$((fail + 1))
+    failed_names+=("record-guard")
+elif [ "$rec_bad" != "0" ]; then
+    fail=$((fail + 1))
+    failed_names+=("record-guard")
+else
+    printf '%-32s OK (%d recorders, each opt-in)\n' 'record guard' "$rec_total"
+fi
 
 printf '\n%d passed, %d failed, %d skipped entirely' "$pass" "$fail" "$skip"
 [ "$excluded" -gt 0 ] && printf ', %d manual excluded' "$excluded"
