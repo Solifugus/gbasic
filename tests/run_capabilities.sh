@@ -170,7 +170,11 @@ for mod in $mod_list; do
     case "$out" in
         *"undefined function: $mod.definitely_not_a_verb"*)
             printf 'ok   %s names the verb it does not define\n' "$mod" ;;
-        *"not available in this build"*|*"was not built with"*)
+        # The third spelling is gi's ("gobject-introspection support is
+        # unavailable; install ..."), the one tests/build_has.sh already
+        # counts as a build refusal; without it any build lacking GI -- Windows,
+        # or a lean Linux build -- failed here rather than skipping.
+        *"not available in this build"*|*"was not built with"*|*"support is unavailable"*)
             printf 'ok   %s (compiled out; nothing to ask)\n' "$mod" ;;
         *)
             printf 'MISMATCH %s: [%s]\n' "$mod" "$(printf '%s' "$out" | tail -1)"
