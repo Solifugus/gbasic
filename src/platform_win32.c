@@ -1422,6 +1422,11 @@ void gb_stdio_binary(void) {
     _setmode(_fileno(stderr), _O_BINARY);
 }
 
+/* See the header: for a protocol on stdin, never for the console. */
+void gb_stdin_binary(void) {
+    _setmode(_fileno(stdin), _O_BINARY);
+}
+
 /* WSAStartup is not optional and not idempotent-by-accident: every socket call
  * before it fails with WSANOTINITIALISED. Called once, from wherever a socket is
  * first wanted; Winsock refcounts, so a second call is harmless. */

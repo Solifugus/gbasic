@@ -217,6 +217,10 @@ void gb_stdio_binary(void) {
     /* POSIX has no text mode: bytes are bytes. */
 }
 
+void gb_stdin_binary(void) {
+    /* No text mode here either. */
+}
+
 int gb_net_init(void) {
     return 1;   /* nothing to start: sockets are file descriptors here */
 }

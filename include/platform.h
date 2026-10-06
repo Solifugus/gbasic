@@ -422,6 +422,14 @@ int gb_rename_replace(const char *from, const char *to);
  * something reads stdin on Windows. */
 void gb_stdio_binary(void);
 
+/* Make stdin read bytes exactly as sent. NOT for gbasic itself (see above): for
+ * a program whose stdin is a PROTOCOL, not a console. gbasic-lsp reads
+ * `Content-Length` bytes of JSON-RPC, and in text mode Windows turned every
+ * "\r\n" into "\n" before the count was taken -- while its text-mode stdout
+ * wrote every "\r\n" header as "\r\r\n" (measured, tests/lsp/run_lsp.sh's
+ * handshake on Windows 2026-10-06). POSIX: no-op. */
+void gb_stdin_binary(void);
+
 /* What `--line-buffered` (and the prompt) ask of stdout: every completed line
  * leaves the process as it is printed. POSIX: setvbuf _IOLBF.
  *
