@@ -459,6 +459,7 @@ guide, and it opens with the hazard worth knowing before you start: a bare
 ./gbasic --add-loads program.bas     # print source with suggested `load` lines
 ./gbasic --json-diagnostics prog.bas # diagnostics as JSON on stderr
 ./gbasic --line-buffered program.bas # flush stdout per completed line
+./gbasic --full-trace program.bas    # list every frame inside a library
 ./gbasic --version
 ```
 

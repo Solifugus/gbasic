@@ -899,6 +899,29 @@ static int current_column = 0;
 static AstStmtList active_root = {0};
 static char *root_source_path = NULL;
 
+/* `--full-trace`: list every frame inside a library instead of collapsing the
+ * run to one line. Off by default on Matthew's ruling -- a raise four frames
+ * into `accounting` is noise for someone whose own code is one frame -- and the
+ * frames are never discarded, so this is a presentation switch over data
+ * `error.trace` carries either way. */
+static int trace_full = 0;
+/* Set from main.c. The frames ride IN THE MESSAGE so they travel through the
+ * sink -- main.c installs one UNCONDITIONALLY, not only for
+ * --json-diagnostics, so a STOP-mode error is collected and drained in the
+ * legacy format. My first attempt printed to stderr directly behind a
+ * `gb_get_active_sink()` guard and therefore printed NOTHING, ever: the guard
+ * was true on every run. In JSON mode the frames are omitted rather than
+ * embedded, so an editor's `message` field keeps meaning one sentence. */
+static int trace_json_mode = 0;
+
+void eval_set_json_diagnostics(int on) {
+    trace_json_mode = on;
+}
+
+void eval_set_full_trace(int on) {
+    trace_full = on;
+}
+
 /* THE FILE A CHILD PROCESS RE-EXECS TO *BE* THIS PROGRAM. Normally that is the
  * source path and this stays NULL; at the prompt it is the session cache, a
  * real file holding exactly what has been typed.
@@ -3466,13 +3489,124 @@ static void runtime_error_raise_at(const char *message, int code,
 /* The raise found no armed frame: report it exactly as the old STOP mode did
  * (same sink, same single line -- byte-exact against 333 negative goldens)
  * and stop the run. */
+/* THE FRAMES, BENEATH THE DIAGNOSTIC, and only when there are frames to show.
+ *
+ * `error.trace` has carried these since PLAT-ERR and the report threw them
+ * away, so this prints what the runtime already knew -- the Python gap that was
+ * a REPORTING gap rather than a missing capability.
+ *
+ * TEXT MODE ONLY. With a sink installed (`--json-diagnostics`) these would be
+ * non-JSON lines in a JSON stream, which is exactly the defect
+ * run_parse_exit.sh exists for. A structured consumer gets no traceback, as it
+ * got none before, and that is a stated limit rather than a regression.
+ *
+ * A LIBRARY RUN COLLAPSES TO ONE LINE unless `--full-trace`. A raise several
+ * frames inside `accounting` tells a reader nothing they can act on; that it
+ * happened IN accounting tells them where to look. The frames are still in
+ * `error.trace`, so nothing is lost -- only not shown.
+ *
+ * COSTED BEFORE BUILDING: exactly THREE negative goldens raise strictly inside
+ * a function body, and NO example golden shows a runtime error at all, so the
+ * byte-exactness PLAT-ERR calls its compatibility hinge survives everywhere
+ * else untouched. */
+static RecordField *record_find(Value *record, const char *name);
+
+/* Append the frames to `out`, innermost first, or leave it empty when there is
+ * nothing to show. The text rides in the DIAGNOSTIC MESSAGE because main.c
+ * installs a sink on every run, so anything written straight to stderr here
+ * would be out of order with the drained diagnostic -- or, as the first
+ * attempt proved, never written at all.
+ *
+ * A LIBRARY RUN COLLAPSES TO ONE LINE unless `--full-trace`: a raise several
+ * frames inside `accounting` tells a reader nothing they can act on, while
+ * "in library accounting" tells them where to look. `error.trace` keeps every
+ * frame, so this is presentation and never a loss.
+ *
+ * OMITTED ENTIRELY IN JSON MODE, so an editor's `message` stays one sentence. */
+static void raise_trace_text(char *out, size_t size) {
+    out[0] = '\0';
+    if (trace_json_mode) {
+        return;
+    }
+    Value t = current_error.trace;
+    if (t.kind != VALUE_ARRAY || !t.as.array.store) {
+        return;
+    }
+    size_t n = t.as.array.store->count;
+    size_t used = 0;
+    const char *last_lib = NULL;
+    for (size_t i = 0; i < n && used + 1 < size; i++) {
+        Value *fr = &t.as.array.store->items[i];
+        if (fr->kind != VALUE_RECORD) {
+            continue;
+        }
+        RecordField *nf = record_find(fr, "name");
+        RecordField *pf = record_find(fr, "path");
+        RecordField *lf = record_find(fr, "library");
+        RecordField *lnf = record_find(fr, "line");
+        RecordField *cf = record_find(fr, "column");
+        const char *nm = (nf && nf->value->kind == VALUE_STRING) ? nf->value->as.string : "?";
+        const char *pa = (pf && pf->value->kind == VALUE_STRING) ? pf->value->as.string : "";
+        const char *lb = (lf && lf->value->kind == VALUE_STRING) ? lf->value->as.string : "";
+        int ln = (lnf && lnf->value->kind == VALUE_NUMBER) ? (int)lnf->value->as.number : 0;
+        int cl = (cf && cf->value->kind == VALUE_NUMBER) ? (int)cf->value->as.number : 0;
+        int w;
+        if (lb[0] && !trace_full) {
+            /* A COLLAPSED LIBRARY LINE IS SUPPRESSED WHEN THE ERROR IS ALREADY
+             * REPORTED IN THAT LIBRARY, because then it says nothing new.
+             * MEASURED: of 33 negative goldens this change moved, THIRTY were
+             * this shape --
+             *
+             *   runtime error at stdlib/chart.bas:541:25: chart: column ...
+             *     in library chart
+             *
+             * where the path names the file and the message already begins
+             * `chart:`, so the frame line is the same fact a third time. The
+             * line earns its place only when a library sits in the MIDDLE of a
+             * chain -- user code into a library into a callback -- which is
+             * exactly when the header cannot tell you a library was involved.
+             * `--full-trace` still shows every frame. */
+            const char *ep = current_error.path && current_error.path[0]
+                           ? current_error.path : runtime_error_path();
+            if (ep && pa[0] && strcmp(ep, pa) == 0) {
+                last_lib = lb;
+                continue;
+            }
+            /* Per CONSECUTIVE run, so a library re-entered after the caller's
+             * own frame is named again rather than merged with an earlier,
+             * unrelated visit. */
+            if (last_lib && strcmp(last_lib, lb) == 0) {
+                continue;
+            }
+            w = snprintf(out + used, size - used, "\n  in library %s", lb);
+            last_lib = lb;
+        } else {
+            last_lib = NULL;
+            w = snprintf(out + used, size - used, "\n  in %s  %s:%d:%d",
+                         nm, pa[0] ? pa : "?", ln, cl);
+        }
+        if (w < 0 || (size_t)w >= size - used) {
+            break;
+        }
+        used += (size_t)w;
+    }
+}
+
 static void raise_report_fatal(void) {
     gb_span span = { current_error.line, current_error.column,
                      current_error.line, current_error.column };
+    char frames[1024];
+    raise_trace_text(frames, sizeof frames);
+    char full[2048];
+    if (frames[0]) {
+        snprintf(full, sizeof full, "%s%s", current_error.message, frames);
+    } else {
+        snprintf(full, sizeof full, "%s", current_error.message);
+    }
     gb_report(GB_DIAG_RUNTIME_ERROR, current_error.code,
               current_error.path && current_error.path[0] ? current_error.path
                                                           : runtime_error_path(),
-              span, current_error.message);
+              span, full);
     raise_in_flight = 0;
     runtime_stopped = 1;
 }

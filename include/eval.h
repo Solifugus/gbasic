@@ -7,6 +7,13 @@
 
 int eval_program(AstStmtList program);
 void eval_set_source_path(const char *path);
+/* `--full-trace`: list every frame inside a library rather than collapsing the
+ * run to one line. Presentation only; `error.trace` carries every frame
+ * regardless. */
+void eval_set_full_trace(int on);
+/* Frames are omitted from the diagnostic message in JSON mode, so an editor's
+ * `message` field keeps meaning one sentence. */
+void eval_set_json_diagnostics(int on);
 
 /* The file a child process re-execs to BE this program -- what `spawn` hands an
  * actor, and what `process.self` reports as the script. Defaults to the source

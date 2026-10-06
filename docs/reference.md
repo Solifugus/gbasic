@@ -2072,6 +2072,23 @@ so a library frame said `./lib.bas` while the frame that **called** it said
 nothing — the path was known all along and simply never asked for, which
 defeats the one job a trace has.
 
+**An uncaught raise prints the frames beneath the diagnostic**, innermost first:
+
+```
+runtime error at prog.bas:12:5: division by zero
+  in compute  prog.bas:12:5
+  in main     prog.bas:40:9
+```
+
+**What is NOT shown is the part to know.** A run of frames inside one library
+collapses to a single `in library NAME` line — and is omitted entirely when the
+error is already *reported* in that library, because the path and the message
+both name it there already. So a `chart` refusal stays one line, as it always
+has. `--full-trace` lists every frame. Frames are **not** included under
+`--json-diagnostics`, where a `message` stays one sentence; a program wanting
+them reads `error.trace`, which always holds every frame regardless of what the
+report chooses to show.
+
 **`library` is the library that owns the frame, or `""` for the root program.**
 That is what lets a report name a library without listing every frame inside it
 — `in library accounting` rather than four lines of its internals — while

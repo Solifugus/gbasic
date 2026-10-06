@@ -39,6 +39,7 @@ static void print_help(const char *argv0) {
     printf("                   lines to stderr. Runs the program, so it takes program\n");
     printf("                   arguments; the inspect-only modes above do not.\n");
     printf("  --line-buffered  flush stdout at every completed line instead of at buffer\n");
+    printf("  --full-trace     list every frame inside a library in a traceback\n");
     printf("                   capacity; combines with any of the above\n");
 }
 
@@ -963,6 +964,14 @@ int main(int argc, char **argv) {
         setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     }
 
+    /* `--full-trace`: show every frame inside a library instead of collapsing
+     * the run to one line. A presentation switch -- the frames are in
+     * `error.trace` either way -- so it is a flag rather than a language
+     * construct, beside --json-diagnostics and --line-buffered. */
+    if (extract_flag(&argc, argv, "--full-trace")) {
+        eval_set_full_trace(1);
+    }
+
     /* The prompt, which is also what `gbasic` with no arguments does: a
      * language whose bare name prints a usage message has nothing to try. It is
      * dispatched here, above the mode table, because a prompt takes no FILE and
@@ -1068,6 +1077,7 @@ int main(int argc, char **argv) {
         /* Install the sink so a STOP-mode runtime error is collected rather than
          * printed mid-run, then drained below in the exact legacy format. The
          * error is terminal, so it stays the last line on stderr. */
+        eval_set_json_diagnostics(json_diagnostics);
         gb_set_active_sink(&diags);
         exit_status = eval_program(program);
         gb_set_active_sink(NULL);

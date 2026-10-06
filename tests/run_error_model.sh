@@ -48,6 +48,84 @@ for name in "${positive[@]}"; do
     printf 'PASS %s\n' "$name"
 done
 
+# --- THE TRACEBACK BENEATH THE DIAGNOSTIC ------------------------------------
+# `error.trace` has carried the frames since PLAT-ERR and the report threw them
+# away, so this prints what the runtime already knew.
+#
+# THE RULE THAT MATTERS IS WHAT IS **NOT** SHOWN. Matthew's ruling: a raise
+# inside a library should say so without detailing it. Measured, the first
+# implementation of that moved 33 goldens and THIRTY were pure redundancy --
+#
+#     runtime error at stdlib/chart.bas:541:25: chart: column 'name' holds ...
+#       in library chart
+#
+# where the path names the file and the message already begins `chart:`. So a
+# collapsed library line is SUPPRESSED when the error is reported in that very
+# library, which took the cost back to 3 goldens and made the feature better.
+# A library line earns its place only mid-chain, where the header cannot tell
+# you a library was involved.
+trace_dir="$scratch/tb"
+mkdir -p "$trace_dir"
+cat > "$trace_dir/deep.bas" <<'BAS'
+library deep
+    function a()
+        return b()
+    end function
+    function b()
+        error "four frames in"
+        return 1
+    end function
+end library
+BAS
+cat > "$trace_dir/show.bas" <<'BAS'
+load deep
+function mine()
+    return deep.a()
+end function
+program main( args )
+    print mine()
+end program
+BAS
+tb_out="$( (cd "$trace_dir" && "$OLDPWD/gbasic" show.bas 2>&1 >/dev/null) || true )"
+tb_full="$( (cd "$trace_dir" && "$OLDPWD/gbasic" --full-trace show.bas 2>&1 >/dev/null) || true )"
+# THE USER'S OWN FRAME IS SHOWN -- that is the information the header lacks.
+if printf '%s\n' "$tb_out" | grep -q "in mine  show.bas"; then
+    printf 'PASS traceback shows the caller frame\n'
+else
+    printf '%s\n' "$tb_out" | sed 's/^/  /'
+    fail "traceback (the caller frame is missing)"
+fi
+# AND THE LIBRARY RUN IS NOT, because the header already names that file.
+if printf '%s\n' "$tb_out" | grep -q "in library deep"; then
+    printf '%s\n' "$tb_out" | sed 's/^/  /'
+    fail "traceback (a redundant library line was printed)"
+else
+    printf 'PASS traceback suppresses the library it is already reported in\n'
+fi
+# CONTROL: --full-trace shows every frame, or "suppressed" would be
+# indistinguishable from "never collected".
+if printf '%s\n' "$tb_full" | grep -q "in a  " && printf '%s\n' "$tb_full" | grep -q "in b  "; then
+    printf 'PASS --full-trace lists every library frame\n'
+else
+    printf '%s\n' "$tb_full" | sed 's/^/  /'
+    fail "--full-trace (frames missing)"
+fi
+# AND THE JSON STREAM STAYS ONE SENTENCE PER DIAGNOSTIC: frames in a `message`
+# would reach an editor as a multi-line field it never asked for, and the
+# no-frames-in-JSON rule is what keeps run_parse_exit's claim true.
+tb_json="$( (cd "$trace_dir" && "$OLDPWD/gbasic" --json-diagnostics show.bas 2>&1 >/dev/null) || true )"
+if printf '%s\n' "$tb_json" | head -1 | grep -q "in mine"; then
+    fail "traceback leaked into --json-diagnostics"
+else
+    printf 'PASS --json-diagnostics carries no frames\n'
+fi
+if printf '%s\n' "$tb_json" | head -1 \
+     | python3 -c 'import sys,json; json.loads(sys.stdin.read())' 2>/dev/null; then
+    printf 'PASS --json-diagnostics is still valid JSON\n'
+else
+    printf 'SKIP json validity (python3 unavailable)\n'
+fi
+
 # --- WHERE a raise reports: the failing subexpression, not the statement ---
 # DOGFOOD 27. A raise reports `current_line`/`current_column`, which `eval_stmt`
 # stamps from the STATEMENT -- so the same fault spelled four ways reported four
