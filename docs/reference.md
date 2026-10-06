@@ -2063,8 +2063,21 @@ string for callers to match on. Because a snapshot carries `message`,
 **re-raising is just `error e`**, and it preserves the original trace and
 location — the interesting site is where it first went wrong, not the relay.
 
-**`error.trace`** is an array of `{name, path, line, column}` records, innermost
-first (the field is `name` because a keyword cannot follow a dot).
+**`error.trace`** is an array of `{name, path, library, line, column}` records,
+innermost first (the field is `name` because a keyword cannot follow a dot).
+
+**`path` is the file the frame's function is written in**, and it is set for
+every frame. Before 2026-10-05 it was stamped only for an *imported* function,
+so a library frame said `./lib.bas` while the frame that **called** it said
+nothing — the path was known all along and simply never asked for, which
+defeats the one job a trace has.
+
+**`library` is the library that owns the frame, or `""` for the root program.**
+That is what lets a report name a library without listing every frame inside it
+— `in library accounting` rather than four lines of its internals — while
+`error.trace` keeps every frame, so collapsing is a presentation choice and
+never a loss. Note `""` means *the root program*, a different claim from
+"unknown"; while `path` was also empty the two were indistinguishable.
 
 **Each frame's `line` is the CALL SITE, not the raise site** — where that frame
 called the next one inward. That is the right choice, because it is what tells you

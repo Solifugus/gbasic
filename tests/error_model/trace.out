@@ -1,1 +1,3 @@
 trace: deepest,middle
+frames without a path: 0
+frame owners: root,root

@@ -881,6 +881,13 @@ static ErrorFrame *current_error_frame = &base_error_frame;
 typedef struct {
     const char *name;
     const char *path;
+    /* The LIBRARY this frame's function belongs to, or NULL for the root
+     * program. Already stamped on the AST beside `source_path`, so this costs a
+     * pointer and no new bookkeeping -- and it is what lets a report say "in
+     * library accounting" without listing every frame inside it. The frames are
+     * all still in `error.trace`, so collapsing is a REPORTING choice and never
+     * a loss of data. */
+    const char *library;
     int line;
     int column;
 } CallFrameInfo;
@@ -3357,12 +3364,12 @@ static Value error_capture_trace(void) {
     }
     for (size_t i = 0; i < count; i++) {
         CallFrameInfo *frame = &call_stack[call_stack_depth - 1 - i];
-        RecordField *fields = calloc(4, sizeof(RecordField));
+        RecordField *fields = calloc(5, sizeof(RecordField));
         if (!fields) {
             abort();
         }
-        const char *names[] = {"name", "path", "line", "column"};
-        for (size_t j = 0; j < 4; j++) {
+        const char *names[] = {"name", "path", "library", "line", "column"};
+        for (size_t j = 0; j < 5; j++) {
             fields[j].name = field_name_new(names[j]);
             fields[j].value = cell_alloc();
             if (!fields[j].value) {
@@ -3371,9 +3378,12 @@ static Value error_capture_trace(void) {
         }
         *fields[0].value = value_string(frame->name ? frame->name : "");
         *fields[1].value = value_string(frame->path ? frame->path : "");
-        *fields[2].value = value_number(frame->line);
-        *fields[3].value = value_number(frame->column);
-        items[i] = value_record(fields, 4);
+        /* EMPTY MEANS THE ROOT PROGRAM, not "unknown" -- the two were the same
+         * string before `path` was fixed, and they are different claims. */
+        *fields[2].value = value_string(frame->library ? frame->library : "");
+        *fields[3].value = value_number(frame->line);
+        *fields[4].value = value_number(frame->column);
+        items[i] = value_record(fields, 5);
     }
     return value_array(items, count);
 }
@@ -11432,7 +11442,18 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
 
     if (call_stack_depth < CALL_STACK_MAX) {
         call_stack[call_stack_depth].name = stmt->as.function.name;
-        call_stack[call_stack_depth].path = stmt->as.function.source_path;
+        /* PATH FALLS BACK TO THE ROOT SOURCE. `source_path` is stamped at
+         * registration ONLY for an IMPORTED function, so a root-program frame
+         * carried NULL and `error.trace` reported `path: ""` for it -- measured:
+         * a library frame said `./lib.bas` and the frame that called it said
+         * nothing. The path was known all along (`root_source_path`); it was
+         * simply never asked for. A trace whose frames cannot say which file
+         * they are in defeats the one job a trace has, which is locating a raise
+         * several frames from where you are reading. */
+        call_stack[call_stack_depth].path = stmt->as.function.source_path
+                                         ? stmt->as.function.source_path
+                                         : root_source_path;
+        call_stack[call_stack_depth].library = stmt->as.function.library;
         call_stack[call_stack_depth].line = current_line;
         call_stack[call_stack_depth].column = current_column;
     }

@@ -33,6 +33,7 @@ positive=(
     rearm
     snapshot_reraise
     trace
+    tracelib
     resume_ident
     clear
     arg_raise
