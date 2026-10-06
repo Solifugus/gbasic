@@ -11090,3 +11090,243 @@ is the PLAT-WARN trade (a silent failure that breaks a printed promise against a
 false positive a human clears once per book) and it looks worth taking, but it is
 a judgement about somebody else's workflow and is **Matthew's call, not mine** —
 recorded here rather than added quietly.
+
+---
+
+## From the books session, drafting Volume 2 Chapter 10 — 2026-10-04
+
+Two findings, measured against the **published 0.5.0 package**
+(`gbasic-0.5.0-linux-x86_64-full`, sha256 `581d191e…`), not a working tree.
+Each number below is stable across three runs.
+
+### 1. `link` costs exactly what `copy` costs at `new`
+
+5000 derivations of a prototype whose one field is a 400 000-character
+string:
+
+```
+copy     0.0245 s
+link     0.0245 s
+exclude  0.00093 s
+```
+
+`link` exists to say *do not give each instance its own*, so a reader who
+reaches for it as an optimisation gets nothing — the two are
+indistinguishable in both directions. `(exclude)` is the only policy that
+makes the field free, by a factor of twenty-six.
+
+**And derivation is not O(fields).** The cost is proportional to the size of
+the field. 5000 derivations of a 100 000 / 400 000 / 1 600 000-character
+field cost 0.0070 / 0.0248 / 0.0987 s — linear in the payload.
+
+**The strangest half: keeping is cheaper than dropping.** 5000 derivations
+appended to an array cost 0.0041 s; the same 5000 assigned to a variable
+that is immediately overwritten cost 0.0255 s. Six times, backwards from any
+prediction, which points at make-and-discard churn on a large allocation
+rather than at `new` itself.
+
+**What is asked.** Whether `link` is *meant* to cost what `copy` costs — if
+the cell really is shared, the per-`new` work should be a refcount and not
+something that scales with the value — and whether the keep-versus-drop
+asymmetry deserves a line in *Performance traps*. The chapter prints all
+three as measurements and deliberately claims no mechanism for them.
+
+**How this was missed for weeks, which may be the useful part.** Every
+*behavioural* claim in that chapter's plan sat in a gated block; not one
+*cost* claim did. The plan had carried "derivation is O(fields) regardless
+of record size" since the outline, and nothing could ever have contradicted
+it. A cost sentence is exactly the kind a reader acts on, by restructuring
+code.
+
+### 2. `remove_key` severs `link` and preserves `reset` — still undocumented
+
+Re-measured at 0.5.0, unchanged from the 0.3.0 report (swept item 9). A
+`link` field chains correctly through two levels of `new`, but a record that
+has been through `remove_key` is linked to nothing, while a `reset` policy
+on it still re-fires.
+
+The book now states it as a rule and supplies the rationale that makes it
+defensible — `remove_key` returns a *new* record, and a new record has no
+identity to share. That is the book inventing a justification the authority
+does not give. **One sentence in *Objects* would retire this**, either way.
+
+### Not a finding, recorded because it closes one
+
+**`chars`, `bytes`, `notation.to_text` on a live handle, and the reference's
+`mid` rationale are all confirmed fixed at 0.5.0**, each re-measured here
+before the ledger entry was marked. The `mid` one came with
+`tests/run_stridx.sh` holding the costs to a ratio across a size step, which
+is the right shape and is why that page cannot go quietly stale again.
+
+### And four more closed, found by a route worth describing
+
+Volume 2's **chapter plans** are still gated — 230 measured blocks written
+against 0.3.0 while the chapters were being outlined. Re-running them against
+0.5.0 turned ten of them red, and **every single failure was this language
+getting better**. Listing them because the set is a decent summary of what
+0.5.0 did to a book:
+
+| the plan said | 0.5.0 |
+|---|---|
+| `dates.select({nosuch: 1}, …)` silently answers | refuses, and names the whole 15-word vocabulary |
+| `"\d"` is `invalid escape sequence` | keeps both characters, warns, and the pattern matches |
+| `invalid function call: sq` | `undefined function: sq`, pointing at `has_builtin` |
+| `invalid function call: stats.mean` | `'stats' does not define 'mean'` |
+| `send: message is too large for one frame` | names 120013 and 106496, and says what to do |
+| `notation.to_text` of a function → `"<function greet>"` | refuses, and says why text cannot carry a live handle |
+| a library's `on warning print` defeats `main`'s `on warning stop` | the caller's guarantee holds |
+| `print {end of month}"…"` is a parse error | answers; every shape works inline now |
+| `"10"{number}= 10` → `compare modifier not found: number` | `true` |
+| a nested instance in an **array** does not re-derive | it does, at any depth |
+
+Two of those — the `dates.select` name check and the `send` figure — were
+filed here and had no visible owner; finding them fixed by a gate rather than
+by a reply is the system working.
+
+**The `dates.select` one gave a chapter its argument back.** Volume 2's
+Chapter 4 offers two reasons to prefer a spec *record* over a string
+mini-language, and typo-catching was one of them. At 0.3.0 the check did not
+exist, so the chapter had to drop that half and stand on storability alone.
+It stands on both again.
+
+## From the Volume 2 readthrough — 2026-10-04 (filed late, 2026-10-05)
+
+Three findings. These were written into the book's own ledger during the
+readthrough and **were not carried across to this file at the time** — an
+oversight on the books side, caught a day later when the author asked
+after this file. They are measured against the published 0.5.0 package
+(`gbasic-0.5.0-linux-x86_64-full`), not a working tree.
+
+Two of them concern each other, and are worth reading in order: finding 40
+establishes a behaviour, and finding 39 is a diagnostic that denies it in
+the interpreter's own voice.
+
+### 39. Warning 2101 states a reason that is not true of the run it fires on
+
+The text is *the result of 'f' is discarded; a gBASIC function cannot
+change its caller, so an update returns the new value and dropping it does
+nothing (assign it, or return nothing)*.
+
+The check behind it is purely syntactic — a bare call statement, a
+non-`nothing` return, a user-defined function — and does no reachability
+analysis at all. So it fires on runs where dropping the result changed the
+caller's own data:
+
+```
+function tick()
+    g.n = g.n + 1
+    return g.n
+end function
+program main(args)
+    g = { n: 0 }
+    tick()                  ' warns: "dropping it does nothing"
+    print "g.n = " + g.n    ' g.n = 1
+end program
+```
+
+and, worse, through an argument — which the clause *cannot change its
+caller* denies outright:
+
+```
+function touch(x)
+    x.shared = "TOUCHED"
+    return x
+end function
+program main(args)
+    p = { shared (link): "orig" }
+    touch(p)                      ' warns: "dropping it does nothing"
+    print p.shared                ' TOUCHED
+end program
+```
+
+**What is asked.** Not that the warning go away — an update API called for
+effect is exactly the defect it was built for, and it earns its place. What
+is wrong is the justification clause, which teaches a reader a rule the
+language does not have. *Dropping the result of a function whose only
+effect is its return value does nothing* would be true, would still carry
+the advice, and would stop contradicting finding 40.
+
+### 40. `link` crosses an argument copy, and nothing says so
+
+An argument is a copy; a `link` field is one shared cell. Nothing in the
+reference or in any diagnostic says what happens when the two meet. The
+answer is that `link` wins:
+
+```
+function touch(x)
+    x.shared = "from the function"
+    x.name = "from the function"
+    return 0
+end function
+program main(args)
+    proto = { name (copy): "unnamed", shared (link): "Main" }
+    a = new proto
+    touch(a)
+    print a.name          ' unnamed      -- copied, as documented
+    print a.shared        ' from the function
+    print proto.shared    ' from the function
+end program
+```
+
+Derivation is not required. A plain record literal annotated `(link)` and
+never `new`'d behaves the same way, as does one nested in an array, and one
+returned from a function. The cell survives every in-process copy. It does
+**not** cross a `spawn`, which is correct and is the one boundary the
+reference does state.
+
+This is consistent behaviour and arguably the only sensible meaning of
+`link`. It is filed because it is the single exception to the language's
+most-repeated promise, and because finding 39's diagnostic asserts its
+opposite.
+
+### 41. A watcher's `principal()` is the scope at the top of the drain
+
+Volume 2 said flatly that a watcher does not inherit a principal. That was
+the book overreaching — the reference is careful and says only that an
+**event-loop** watcher does not inherit. A body runs on three occasions and
+inherits on two of them, because both execute inside the mutating code:
+
+```
+program main(args)
+    v = 0
+    with principal({ user: "alice" })
+        watch wv(v)
+            print("   watcher sees: " + encode(principal()))
+        end watch
+        v = 1
+    end with
+end program
+'   watcher sees: {"user":"alice"}      (registration)
+'   watcher sees: {"user":"alice"}      (the mutation)
+```
+
+The consequence is the part wanting a decision. A write only *enqueues* a
+watcher, so a `with principal` block opened inside a watcher body has
+already closed by the time the drain is serviced — and the watcher then
+runs under whatever scope was open at the **top** of the drain:
+
+```
+watch wv(v)
+    print("    audit logs: " + encode(principal()))
+end watch
+watch wt(t)
+    with principal({ user: "bob" })
+        v = v + 1
+    end with
+end watch
+with principal({ user: "alice" })
+    t = 1
+end with
+'     audit logs: {"user":"alice"}
+```
+
+`bob` made the write; the audit line says `alice`.
+
+This is consistent with the execution model and is not a bug in the
+principal — it is what deferral means. It is filed because a watcher is the
+obvious place to put an audit line, `principal()` is the obvious thing to
+read there, and the result is a confident misattribution with no
+diagnostic. If a principal is meant to be auditable, the language may want
+either a watcher body to carry the scope of the write that enqueued it, or
+`principal()` inside a deferred body to refuse rather than answer with a
+scope that did not make the write.
