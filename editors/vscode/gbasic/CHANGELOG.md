@@ -2,6 +2,29 @@
 
 All notable changes to the gBASIC VS Code extension are documented here.
 
+## [Unreleased]
+
+### Changed
+- The grammar's keyword, constant, word-operator and builtin lists are now
+  GENERATED from the interpreter (`tools/sync_vscode_grammar.py`), and
+  `tests/run_editor_grammar.sh` fails when they drift. They had fallen behind:
+  `do`, `until` and `unwatch` were not highlighted, and `resume` (an ordinary
+  name) was.
+- A keyword or builtin after a dot is a field name and is no longer coloured
+  (`r.count`, `rule.as`); a builtin is coloured only where it is called.
+- New: modifier clauses (`{file}"path"`, `x {date}= s`, `x {split ","}= s`),
+  scientific-notation and hex numbers, `server NAME(` blocks, `this` as the
+  method receiver, unknown string escapes marked as invalid.
+- Indentation knows `do … until`, `with … end with`, `server`, `else` bodies,
+  and that an inline `if … then stmt` opens no block.
+- The problem matcher also catches `lexer error at FILE:LINE:COL`.
+
+### Fixed
+- Two snippets taught retired syntax: `on error resume next` (now
+  `on error goto next` with `if error then … error.clear()`), and the
+  `f(file)= "path"` modifier spelling (now `f {file}= "path"`). Every snippet is
+  now checked to parse.
+
 ## [0.1.0] - 2026-06-27
 
 Initial release.

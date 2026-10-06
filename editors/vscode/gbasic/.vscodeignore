@@ -5,3 +5,4 @@ PUBLISHING.md
 .gitignore
 **/*.svg
 **/.DS_Store
+syntaxes/*.template.json

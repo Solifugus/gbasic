@@ -3,24 +3,61 @@
     "lineComment": "'"
   },
   "brackets": [
-    ["(", ")"],
-    ["[", "]"],
-    ["{", "}"]
+    [
+      "(",
+      ")"
+    ],
+    [
+      "[",
+      "]"
+    ],
+    [
+      "{",
+      "}"
+    ]
   ],
   "autoClosingPairs": [
-    { "open": "(", "close": ")" },
-    { "open": "[", "close": "]" },
-    { "open": "{", "close": "}" },
-    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] }
+    {
+      "open": "(",
+      "close": ")"
+    },
+    {
+      "open": "[",
+      "close": "]"
+    },
+    {
+      "open": "{",
+      "close": "}"
+    },
+    {
+      "open": "\"",
+      "close": "\"",
+      "notIn": [
+        "string",
+        "comment"
+      ]
+    }
   ],
   "surroundingPairs": [
-    ["(", ")"],
-    ["[", "]"],
-    ["{", "}"],
-    ["\"", "\""]
+    [
+      "(",
+      ")"
+    ],
+    [
+      "[",
+      "]"
+    ],
+    [
+      "{",
+      "}"
+    ],
+    [
+      "\"",
+      "\""
+    ]
   ],
   "indentationRules": {
-    "increaseIndentPattern": "^\\s*(program|library|function|modifier|if|for|while|consider)\\b(?!.*\\bend\\b).*$",
-    "decreaseIndentPattern": "^\\s*(end|else)\\b.*$"
+    "increaseIndentPattern": "^\\s*((program|library|function|modifier|server|for|while|consider|with)\\b(?!.*\\bend\\b).*|if\\b.*\\bthen\\s*('.*)?|else\\b.*|do\\s*('.*)?)$",
+    "decreaseIndentPattern": "^\\s*(end|else|next|until)\\b.*$"
   }
 }

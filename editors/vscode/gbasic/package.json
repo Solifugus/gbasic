@@ -49,7 +49,7 @@
         "fileLocation": ["autoDetect", "${workspaceFolder}"],
         "severity": "error",
         "pattern": {
-          "regexp": "^(parse error|runtime error) at (.+):(\\d+):(\\d+): (.+)$",
+          "regexp": "^(lexer error|parse error|runtime error) at (.+):(\\d+):(\\d+): (.+)$",
           "file": 2,
           "line": 3,
           "column": 4,
