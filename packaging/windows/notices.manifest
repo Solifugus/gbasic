@@ -1,0 +1,32 @@
+# Third-party code linked STATICALLY into gbasic.exe on Windows, and where its
+# licence text comes from. tools/make-notices.sh reads this.
+#
+# THIS FILE IS NOT THE LIST OF WHAT SHIPS -- the linker is. make-notices relinks
+# with -Wl,--trace, maps every archive it pulled in to the package that owns it,
+# and FAILS if an owner has no line here. So adding a library to the build
+# without its notice is a build error, not a silent omission. Versions are not
+# written here either: they are read from what is installed (pacman -Q) or from
+# the pinned build script, so the notices describe the binary actually built.
+#
+# Columns, TAB-separated:
+#   owner     an MSYS2 package name, or `curl` / `yescrypt` (built from pinned
+#             source by this tree)
+#   name      what to call it in the notices
+#   licence   SPDX-style, for the reader
+#   text      where the licence text is: a path under /ucrt64, or @curl or
+#             @yescrypt for the two this tree builds itself
+#
+# Windows' own system DLLs (kernel32, ws2_32, odbc32, ...) are not here: they
+# are linked by import library, ship with Windows, and need no notice. Their
+# import libraries belong to mingw-w64-ucrt-x86_64-crt, whose line covers them.
+mingw-w64-ucrt-x86_64-openssl	OpenSSL (libcrypto)	Apache-2.0	/ucrt64/share/licenses/openssl/LICENSE
+mingw-w64-ucrt-x86_64-libxml2	libxml2	MIT	/ucrt64/share/licenses/libxml2/COPYING
+mingw-w64-ucrt-x86_64-sqlite3	SQLite	Public domain	/ucrt64/share/licenses/sqlite3/LICENSE
+mingw-w64-ucrt-x86_64-zlib	zlib	Zlib	/ucrt64/share/licenses/zlib/LICENSE
+mingw-w64-ucrt-x86_64-libsystre	libsystre	BSD-2-Clause	/ucrt64/share/licenses/libsystre/LICENSE
+mingw-w64-ucrt-x86_64-libtre	TRE	BSD-2-Clause	/ucrt64/share/licenses/libtre/LICENSE
+mingw-w64-ucrt-x86_64-crt	mingw-w64 runtime	ZPL-2.1 and others (see text)	/ucrt64/share/licenses/crt/COPYING.MinGW-w64-runtime.txt
+mingw-w64-ucrt-x86_64-winpthreads	winpthreads	MIT AND BSD-3-Clause-Clear	/ucrt64/share/licenses/winpthreads/COPYING
+mingw-w64-ucrt-x86_64-gcc	GCC runtime (libgcc)	GPL-3.0-or-later WITH GCC-exception-3.1	/ucrt64/share/licenses/gcc/COPYING.RUNTIME
+curl	curl	curl (MIT-style)	@curl
+yescrypt	yescrypt	BSD-2-Clause	@yescrypt

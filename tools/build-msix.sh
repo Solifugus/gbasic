@@ -17,7 +17,7 @@
 #
 # THE LAYOUT IS `make install`'s: bin\gbasic.exe beside share\gbasic\stdlib,
 # which gb_exe_relative_stdlib finds with no GBASIC_PATH. Plus LICENSE, NOTICE,
-# LICENSING.md and every third_party licence, since the package IS a
+# LICENSING.md and THIRD-PARTY-NOTICES.txt (tools/make-notices.sh), since the package IS a
 # distribution of them.
 #
 # SIGNING. With no MSIX_PFX the package is signed with a SELF-SIGNED test
@@ -56,12 +56,9 @@ cp gbasic.exe "$stage/bin/gbasic.exe"
 strip "$stage/bin/gbasic.exe"
 cp -r stdlib "$stage/share/gbasic/stdlib"
 cp LICENSE NOTICE LICENSING.md "$stage/licenses/"
-for d in third_party/*/; do
-    name="$(basename "$d")"
-    for f in "$d"LICENSE* "$d"COPYING* "$d"README*; do
-        [ -e "$f" ] && { mkdir -p "$stage/licenses/$name"; cp "$f" "$stage/licenses/$name/"; }
-    done
-done
+# Every statically linked library's licence, generated from what the linker
+# actually used; it fails the build if one has no entry (tools/make-notices.sh).
+bash tools/make-notices.sh "$stage/licenses/THIRD-PARTY-NOTICES.txt" >/dev/null
 
 stage_win="$(cygpath -w "$stage")"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/msix/make-assets.ps1 \

@@ -1054,3 +1054,53 @@ The plug-in finds `az` on PATH; `az` is
   certificate, so this does not by itself prove a clean machine installs it.
   The chain says one will.
 - SmartScreen's reaction to a download has not been observed.
+
+## 25. Third-party notices for gbasic.exe (2026-10-06)
+
+The Windows binary links its libraries STATICALLY. So it is a redistribution of
+each of them, and each permissive licence asks that its notice travel with it.
+Until now the package carried only gBASIC's own LICENSE/NOTICE and yescrypt's
+README.
+
+**What is in the binary was MEASURED, not read off the Makefile.** A relink with
+`-Wl,--trace` lists every archive the linker took code from:
+
+- curl 8.22.0 (the pinned Schannel build);
+- OpenSSL libcrypto 3.6.5;
+- libxml2 2.15.4;
+- SQLite 3.53.4;
+- zlib 1.3.2;
+- TRE 0.9.0 with libsystre 1.0.2;
+- yescrypt 1.1.0 (vendored, inside libgbasic.a);
+- the mingw-w64 crt and winpthreads 14.0.0;
+- GCC's libgcc 16.2.0.
+
+Everything else is a Windows system DLL by import library: no notice. It agreed
+with the Makefile; there was no surprise.
+
+**`tools/make-notices.sh`** writes `THIRD-PARTY-NOTICES.txt` from that trace.
+
+- Each archive is mapped to its owner: pacman for MSYS2 packages, the pinned
+  build for curl, and libgbasic.a's members for yescrypt.
+- Every owner must have a line in `packaging/windows/notices.manifest`, which
+  says where its licence text lives.
+- Versions come from what is installed.
+- curl's text comes from its pinned tarball, checked against the pinned
+  SHA-256.
+- yescrypt has no licence file, so its text is the deduplicated headers of the
+  sources the build compiles.
+
+**Results:**
+
+- **Perturbed:** removing zlib's or yescrypt's manifest line FAILS the
+  generator, naming the component. A library added to the build without its
+  notice is therefore a build error.
+- **Packaged:** `tools/build-msix.sh` runs it into `licenses/`, replacing the
+  old copy loop. The Azure-signed package carries it (44 KB, 11 components),
+  installs, and passes check-installed 8/8.
+- **Documented:** LICENSING.md now says what the Windows binary contains and
+  where the notices are.
+
+**Not done:** gbasic itself cannot print the notices yet. A packaged app's
+install folder is not browsable, so a `--licenses` flag would make them
+reachable from the command line.
