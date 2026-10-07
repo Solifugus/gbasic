@@ -1,12 +1,14 @@
 # Working with lists and records in bulk — 0.6.0 considerations
 
-**Status: Proposal.** None of this exists. It is a list of things to consider
-for 0.6.0, with the measurements that say which of them would actually remove
-loops *in this tree* rather than in Python.
+**Status: §2 SHIPPED (0.6.0 increment 1, 2026-10-06); §2a, §2b, §3, §4 proposed;
+§5 deliberately unpriced.** The rest is a list of things to consider for 0.6.0,
+with the measurements that say which of them would actually remove loops *in
+this tree* rather than in Python.
 
 Written 2026-10-03 from a design conversation with Matthew. The prompt was list
 comprehensions; the survey below moved the answer somewhere smaller and
-cheaper.
+cheaper. Each section is annotated as it ships, including where building it
+contradicted what was written here.
 
 ---
 
@@ -102,6 +104,79 @@ all 45 filter loops. That is why the comprehension question in §5 is priced
   kind, not answer `[]`.
 - **An empty list.** `[].amount` is `[]`; whether `sum([])` is `0` or a refusal
   is a separate existing question this inherits.
+
+### SHIPPED 2026-10-06 — and the one thing this section did not anticipate
+
+`tests/run_projection.sh`, 58 + 18 self-checking assertions plus shell-level
+refusals, thirteen perturbations proven red. One site in `src/eval.c`, the single
+place that raised `field access expects a record`. Every question above was
+settled as this section guessed, except assignment, which is refused by name
+(`append cannot change a projection: … change the array itself, or assign the
+projection to a name first`) rather than merely refused.
+
+**WHAT THE PLAN MISSED, AND IT WAS NOT SMALL: none of the five aggregates could
+reach money.** §1 counted loops and §2 named `sum`, `mean`, `count`, `min` and
+`max` as unlocked for nothing — and measured after projection worked, four of the
+five still refused a money array:
+
+```
+sum(invoices.total)    sum expects a numeric array
+mean(invoices.total)   mean expects a numeric array
+max(invoices.total)    max supports only scalar array values
+sort(invoices.total)   sort supports only scalar array values
+```
+
+`money` is this tree's exact business number — a loan balance, an invoice line,
+a ledger posting — so the release whose subject is business data in bulk would
+have shipped `sum(invoices.total)` refusing while the `+` operator added the same
+two values happily. That is the `web.configure` shape: a capability announced
+that does not reach the obvious case.
+
+**Fixed by taking the answer from the operators rather than inventing one**, which
+is what keeps it small. Ordering already knew what to do: `<` orders money within
+a currency and refuses across one (PLAT-EQ's rule — equality answers, ordering
+would invent a rate), and it orders exact durations and refuses month-bearing
+ones (a month has no fixed length). The sorter simply did not know the same
+things, so `value_sort_comparable` gained both kinds and
+`array_all_sort_comparable` gained the two conditional refusals **in the
+operator's own words** — in a pre-pass, because a `qsort` comparator returns an
+`int` and cannot raise. The fold is the same argument one operator along: money
+addition already refuses mixed currencies and is already overflow-checked, and
+`mean` divides through the existing `money_scale_by`, so `sum`/`mean` over money
+decide nothing new.
+
+**That produced the suite's strongest tier, which was not in the plan either:
+the `<` operator is the ORACLE for the sorter.** They are different code — a
+raising branch chain against a comparator that cannot raise — asking one
+question, so agreement is evidence rather than a second call into one place. The
+tier walks eleven pairs and requires the same verdict *and*, where both answer,
+the same direction; reverting money to its pre-0.6.0 state reddens it
+immediately. It records the one deliberate divergence as a divergence: `<`
+refuses an absence because there is no answer, while `sort` must place one and
+ranks it lowest.
+
+**`median`, `stdev`, `variance`, `percentile`, `quantile` and `correlation` stay
+numeric**, stated rather than discovered: two of them are meaningless on money
+(a variance of money is money squared) and none is among the five §1 measured.
+
+**The diagnostics were part of the work, not a polish pass.** `sum expects a
+numeric array` is true and says nothing about *which* row is wrong, and over a
+projection that is the whole question — an array of absences means a row lacks
+the field. It names the element now (`element 1 is unknown`), which also removed
+an asymmetry this increment had introduced: `[{USD}"1.00", 7]` named element 1
+while `[7, {USD}"1.00"]` answered the terse sentence. Naming a kind in a sentence
+is one helper rather than an article at each site, because two rules were being
+got wrong across three messages: "a array" and "a unknown" read as mistakes, and
+`money`, `nothing` and `unknown` take **no** article — `money` being a mass noun
+and the other two the words for having no value.
+
+**Two perturbations worth recording** because each is caught by exactly one
+check. A projection that **drops** the elements with no value leaves the sum, the
+mean, the min and the max all *correct* — it only shortens the array — so what
+catches it is the count and the absence checks, not any figure; it also flips
+`all(rows.paid)` from `false` to `true`, reporting an unpaid row as paid. And a
+`mean` over money that **rounds at the minor unit** prints `19.82`, identical to
+the right answer, so only `avg * 3` separates them: `59.46` against `59.45`.
 
 ---
 

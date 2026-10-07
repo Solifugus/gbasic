@@ -77,7 +77,7 @@ want() {
         *) printf 'MISMATCH %s\n  want: %s\n  got:  %s\n' "$1" "$3" "$got"; status=1 ;;
     esac
 }
-want 'array refused'   'print key([1, 2])'        'key cannot use a array'
+want 'array refused'   'print key([1, 2])'        'key cannot use an array'
 want 'record refused'  'print key({ a: 1 })'      'key cannot use a record'
 want 'no arguments'    'print key()'              'key expects at least one value'
 # CONTROLS: the scalars it must accept, or "it refuses compounds" is satisfied

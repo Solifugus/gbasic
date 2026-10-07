@@ -1099,6 +1099,32 @@ static const char *value_kind_name(ValueKind kind) {
     return "value";
 }
 
+/* NAMING A VALUE'S KIND IN A SENTENCE. "a array" and "a unknown" read as
+ * mistakes, which is a poor look for the message a beginner meets, and three of
+ * the kinds take no article at all: `money` is a mass noun, and `nothing` and
+ * `unknown` are the words for having no value rather than names of things.
+ * The kind names are a closed set, so both rules are a lookup, not grammar.
+ *
+ * Writes into the caller's buffer rather than a static one, so two kinds may be
+ * named in one message. */
+static const char *kind_phrase(ValueKind kind, char *buf, size_t n) {
+    const char *noun = value_kind_name(kind);
+    if (kind == VALUE_MONEY || kind == VALUE_NULL || kind == VALUE_UNKNOWN) {
+        snprintf(buf, n, "%s", noun);
+        return buf;
+    }
+    const char *article = "a";
+    switch (noun[0]) {
+    case 'a': case 'e': case 'i': case 'o': case 'u':
+        article = "an";
+        break;
+    default:
+        break;
+    }
+    snprintf(buf, n, "%s %s", article, noun);
+    return buf;
+}
+
 static char *copy_string(const char *text) {
     size_t length = strlen(text);
     char *copy = malloc(length + 1);
@@ -8048,6 +8074,70 @@ static int expr_is_lvalue_path(AstExpr *expr) {
         expr->kind == AST_EXPR_INDEX;
 }
 
+/* IS THIS PATH A PROJECTION -- `rows.amount` -- rather than a place?
+ *
+ * `expr_is_lvalue_path` is purely SYNTACTIC (IDENT, FIELD or INDEX), which is
+ * right for assignment and wrong for a projection: `rows.amount` looks exactly
+ * like `config.amount`, and one of the two is a derived value. So
+ * `sort(rows.item)` took the in-place branch and raised `field assignment
+ * target expects a record` -- a message about assignment, for an expression
+ * nobody was assigning to.
+ *
+ * A PROJECTION IS A VALUE, NOT A PLACE: it is computed from every element, so
+ * there is nothing to sort in place and the answer must be a sorted copy.
+ *
+ * APPLIED ONLY TO THE THREE BUILTINS THAT ANSWER A VALUE -- `sort`, `reverse`,
+ * `unique`. The five that MUTATE through the path (`append`, `prepend`,
+ * `insert`, `remove`, `remove_value`, `take_last`) must go on refusing a
+ * projection, because appending to a derived array is meaningless and silently
+ * appending to a throwaway copy would be worse than the refusal.
+ *
+ * Only the BASE is evaluated, and only when the base is itself a pure read (an
+ * identifier, or a chain of field reads rooted at one), so this cannot run a
+ * call twice or create an intermediate record. */
+static int expr_is_pure_read(AstExpr *e) {
+    while (e) {
+        if (e->kind == AST_EXPR_IDENT) {
+            return 1;
+        }
+        if (e->kind != AST_EXPR_FIELD) {
+            return 0;
+        }
+        e = e->as.field.object;
+    }
+    return 0;
+}
+
+static int expr_is_array_projection(AstExpr *expr) {
+    if (!expr || expr->kind != AST_EXPR_FIELD) {
+        return 0;
+    }
+    if (!expr_is_pure_read(expr->as.field.object)) {
+        return 0;
+    }
+    Value base = eval_expr(expr->as.field.object);
+    int is_projection = !error_action_pending() && base.kind == VALUE_ARRAY;
+    value_free(base);
+    return is_projection;
+}
+
+/* A PROJECTION IS NOT A PLACE, said in those words.
+ *
+ * The five mutating builtins reached `resolve_lvalue_ref` and raised `field
+ * assignment target expects a record` for `append(rows.a, 9)` -- which names
+ * the one thing that is NOT wrong, since `rows` plainly IS an array. The
+ * refusal is correct (appending to a derived array is meaningless, and silently
+ * appending to a throwaway copy would be worse); only the sentence was about
+ * the wrong subject. */
+static void projection_not_a_place(const char *verb) {
+    char message[224];
+    snprintf(message, sizeof(message),
+             "%s cannot change a projection: it is computed from every element"
+             " of the array, so there is nothing to store into -- %s the array"
+             " itself, or assign the projection to a name first", verb, verb);
+    runtime_error_raise(message, 1003, "field access");
+}
+
 static void repl_note_effect(void);
 
 /* Is this lvalue path rooted at a name the SESSION still holds once the
@@ -9471,6 +9561,8 @@ static const GbCapability gb_capability_table[] = {
     { "concat",    "" },
     { "key",       "" },
     { "bound",     "" },
+    { "any",       "" },
+    { "all",       "" },
     { "merge",     "" },
     /* and the rest of the outward surface, which is neither of those lists */
     { "make_dir",       "fs:write" },
@@ -12569,29 +12661,46 @@ static int value_sort_rank(Value value) {
     return 2;
 }
 
+/* WHAT HAS AN ORDER, and the answer is taken from the ORDERING OPERATOR rather
+ * than chosen here: `<` is the language's statement of what can be ordered, and
+ * a sorter that ordered something `<` refuses would be inventing an order while
+ * one that refused something `<` answers would be a second, narrower rule
+ * nobody wrote down. MONEY and DURATION were the two kinds where they disagreed
+ * -- `a.total < b.total` answered and `sort(invoices.total)` refused -- which is
+ * the hole a bulk-data release cannot ship with, money being the business value
+ * type and `max(invoices.total)` the obvious thing to write.
+ *
+ * The two conditional cases are enforced in `array_all_sort_comparable`, not
+ * here, because a qsort comparator returns an int and CANNOT raise: mixed
+ * currencies and month-bearing durations have to be refused in a pre-pass. */
 static int value_sort_comparable(Value value) {
     return value.kind == VALUE_NUMBER ||
         value.kind == VALUE_STRING ||
         value.kind == VALUE_BOOL ||
         value.kind == VALUE_DATETIME ||
+        value.kind == VALUE_MONEY ||
+        value.kind == VALUE_DURATION ||
         value.kind == VALUE_NULL ||
         value.kind == VALUE_UNKNOWN;
 }
 
-static int array_all_sort_comparable(Value array) {
+static int array_all_sort_comparable(Value array, const char *verb) {
     if (array.kind != VALUE_ARRAY) {
-        runtime_error_raise("sort expects an array", 1003, "invalid function call");
+        char m[96];
+        snprintf(m, sizeof m, "%s expects an array", verb);
+        runtime_error_raise(m, 1003, "invalid function call");
         return 0;
     }
 
     ValueKind ordinary_kind = VALUE_NULL;
     int have_ordinary_kind = 0;
+    Value first_ordinary = value_null();
     for (size_t i = 0; i < array.as.array.store->count; i++) {
         Value item = array.as.array.store->items[i];
         if (!value_sort_comparable(item)) {
-            runtime_error_raise("sort supports only scalar array values",
-                                1003,
-                                "invalid function call");
+            char m[96];
+            snprintf(m, sizeof m, "%s supports only scalar array values", verb);
+            runtime_error_raise(m, 1003, "invalid function call");
             return 0;
         }
         if (item.kind == VALUE_NULL || item.kind == VALUE_UNKNOWN) {
@@ -12600,11 +12709,42 @@ static int array_all_sort_comparable(Value array) {
         if (!have_ordinary_kind) {
             ordinary_kind = item.kind;
             have_ordinary_kind = 1;
+            first_ordinary = item;
         } else if (ordinary_kind != item.kind) {
-            runtime_error_raise("sort requires ordinary values to have the same type",
-                                1003,
-                                "invalid function call");
+            char m[128];
+            snprintf(m, sizeof m,
+                     "%s requires ordinary values to have the same type", verb);
+            runtime_error_raise(m, 1003, "invalid function call");
             return 0;
+        }
+        /* THE TWO CONDITIONAL ORDERS, refused here because the comparator
+         * cannot. Each says exactly what the `<` operator says for the same
+         * pair, so the two cannot drift: ordering money across currencies would
+         * invent a rate, and a month has no fixed length. */
+        if (item.kind == VALUE_MONEY &&
+            (item.as.money.currency != first_ordinary.as.money.currency ||
+             item.as.money.exponent != first_ordinary.as.money.exponent)) {
+            const char *la = currency_alpha_of(first_ordinary.as.money.currency);
+            const char *ra = currency_alpha_of(item.as.money.currency);
+            char m[160];
+            snprintf(m, sizeof m,
+                     "%s cannot order money in different currencies (%s and %s)",
+                     verb, la ? la : "?", ra ? ra : "?");
+            runtime_error_raise(m, 1003, "money");
+            return 0;
+        }
+        if (item.kind == VALUE_DURATION) {
+            long long months, seconds;
+            duration_totals(item.as.duration, &months, &seconds);
+            if (months != 0) {
+                char m[192];
+                snprintf(m, sizeof m,
+                         "%s cannot order a duration carrying months or years,"
+                         " because a month has no fixed length; use exact"
+                         " durations or dates.between", verb);
+                runtime_error_raise(m, 1003, "duration");
+                return 0;
+            }
         }
     }
     return 1;
@@ -12635,6 +12775,20 @@ static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
     }
     if (left->kind == VALUE_DATETIME) {
         return datetime_compare_exact(left->as.datetime, right->as.datetime);
+    }
+    if (left->kind == VALUE_MONEY) {
+        /* Same currency by construction -- `array_all_sort_comparable` has
+         * already refused a mixed array -- so the scaled integers compare
+         * directly, which is also what `<` does. */
+        long long a = left->as.money.units, b = right->as.money.units;
+        return (a > b) - (a < b);
+    }
+    if (left->kind == VALUE_DURATION) {
+        long long lm, ls, rm, rs;
+        duration_totals(left->as.duration, &lm, &ls);
+        duration_totals(right->as.duration, &rm, &rs);
+        (void)lm; (void)rm;   /* month-bearing durations were refused above */
+        return (ls > rs) - (ls < rs);
     }
     return 0;
 }
@@ -12707,7 +12861,7 @@ static const char *builtin_type_name(Value value) {
 }
 
 static Value sort_array_value(Value array) {
-    if (!array_all_sort_comparable(array)) {
+    if (!array_all_sort_comparable(array, "sort")) {
         value_free(array);
         return value_null();
     }
@@ -12724,7 +12878,7 @@ static Value sort_array_ref(Value *array, int *changed) {
         runtime_error_raise("sort expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (!array_all_sort_comparable(*array)) {
+    if (!array_all_sort_comparable(*array, "sort")) {
         return value_null();
     }
     array_ensure_unique(array);
@@ -34107,10 +34261,11 @@ static Value eval_call(AstExpr *expr) {
                 case VALUE_UNKNOWN:  tag = 'u'; break;
                 default: {
                     char message[192];
+                    char phrase[48];
                     snprintf(message, sizeof(message),
-                             "key cannot use a %s as part of a key -- argument"
+                             "key cannot use %s as part of a key -- argument"
                              " %zu; a key is built from scalar values",
-                             value_kind_name(v.kind), i + 1);
+                             kind_phrase(v.kind, phrase, sizeof phrase), i + 1);
                     value_free(v);
                     free(out.items);
                     runtime_error_raise(message, 1003, "invalid argument type");
@@ -34820,6 +34975,10 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
+        if (expr_is_array_projection(array_expr)) {
+            projection_not_a_place(expr->as.call.name);
+            return value_null();
+        }
         if (expr_is_lvalue_path(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
@@ -35206,6 +35365,10 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
+        if (expr_is_array_projection(array_expr)) {
+            projection_not_a_place(expr->as.call.name);
+            return value_null();
+        }
         if (expr_is_lvalue_path(array_expr)) {
             if (!prepend && !webserver_validate_response_append(array_expr, item)) {
                 value_free(item);
@@ -35252,6 +35415,10 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
+        if (expr_is_array_projection(array_expr)) {
+            projection_not_a_place(expr->as.call.name);
+            return value_null();
+        }
         if (expr_is_lvalue_path(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
@@ -35287,6 +35454,10 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
+        if (expr_is_array_projection(array_expr)) {
+            projection_not_a_place(expr->as.call.name);
+            return value_null();
+        }
         if (expr_is_lvalue_path(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
@@ -35319,6 +35490,10 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
+        if (expr_is_array_projection(array_expr)) {
+            projection_not_a_place(expr->as.call.name);
+            return value_null();
+        }
         if (expr_is_lvalue_path(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
@@ -35349,7 +35524,8 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (expr_is_lvalue_path(array_expr)) {
+        if (expr_is_lvalue_path(array_expr) &&
+            !expr_is_array_projection(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
                 return value_null();
@@ -35389,7 +35565,8 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (expr_is_lvalue_path(array_expr)) {
+        if (expr_is_lvalue_path(array_expr) &&
+            !expr_is_array_projection(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
                 return value_null();
@@ -35411,6 +35588,82 @@ static Value eval_call(AstExpr *expr) {
         return unique_array_value(array);
     }
 
+    /* `any(flags)` / `all(flags)` -- 19 measured loops in this tree, and
+     * NEARLY FREE ONCE PROJECTION EXISTS: the shape is `any(rows.paid)`, which
+     * needs no predicate at all, so there is nothing here about functions or
+     * callbacks.
+     *
+     * BOOLEANS ONLY, plus absences. Refusing a number is deliberately STRICTER
+     * than `if`, which accepts any truthy value: `any(rows.amount)` would
+     * otherwise quietly mean "any non-zero amount", which is a different
+     * question from the one it looks like. The motivating case is a flag
+     * column, and a flag column is boolean.
+     *
+     * AN ABSENCE IS NOT TRUE. `unknown` neither satisfies `any` nor `all`,
+     * which follows from projection yielding `unknown` for a missing field --
+     * so `all(rows.paid)` over rows where one lacks the field is false, not
+     * true, and not an error. That is the conservative reading: a row that
+     * never said it was paid has not been paid. */
+    if (strcmp(expr->as.call.name, "any") == 0 ||
+        strcmp(expr->as.call.name, "all") == 0) {
+        const char *verb = expr->as.call.name;
+        if (expr->as.call.args.count != 1) {
+            char message[128];
+            snprintf(message, sizeof message, "%s expects one array", verb);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        Value arg = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(arg);
+            return value_null();
+        }
+        if (arg.kind != VALUE_ARRAY) {
+            char message[160];
+            snprintf(message, sizeof message, "%s expects an array, not a %s",
+                     verb, value_kind_name(arg.kind));
+            value_free(arg);
+            runtime_error_raise(message, 1003, "invalid argument type");
+            return value_null();
+        }
+        int want_all = strcmp(verb, "all") == 0;
+        size_t n = arg.as.array.store ? arg.as.array.store->count : 0;
+        int result = want_all ? 1 : 0;
+        for (size_t i = 0; i < n; i++) {
+            Value *el = &arg.as.array.store->items[i];
+            int truth;
+            if (el->kind == VALUE_BOOL) {
+                truth = el->as.boolean ? 1 : 0;
+            } else if (el->kind == VALUE_UNKNOWN || el->kind == VALUE_NULL) {
+                truth = 0;
+            } else {
+                char message[192];
+                /* THE REMEDY NAMED HERE MUST EXIST. The first draft said
+                 * "compare it first -- any(rows.amount > 0)", and that DOES NOT
+                 * WORK: a projection is an array, and PLAT-EQ refuses ordering
+                 * on arrays ("arrays support only = and !="). Caught by running
+                 * it, which is the whole point of run_qbasic_diagnostics'
+                 * remedy tier -- web.configure shipped a refusal naming a
+                 * remedy that did not exist and that is the mistake worth not
+                 * repeating. So this names the boolean form, which works, and
+                 * states plainly that the comparison form does not. */
+                snprintf(message, sizeof message,
+                         "%s expects true or false; element %zu is a %s."
+                         " It takes a boolean field (%s(rows.paid)); comparing a"
+                         " projection is not available, since arrays support"
+                         " only = and !=",
+                         verb, i, value_kind_name(el->kind), verb);
+                value_free(arg);
+                runtime_error_raise(message, 1003, "invalid argument type");
+                return value_null();
+            }
+            if (want_all && !truth) { result = 0; break; }
+            if (!want_all && truth) { result = 1; break; }
+        }
+        value_free(arg);
+        return value_bool(result);
+    }
+
     if (strcmp(expr->as.call.name, "sort") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("sort expects one argument", 1003, "invalid function call");
@@ -35418,7 +35671,8 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (expr_is_lvalue_path(array_expr)) {
+        if (expr_is_lvalue_path(array_expr) &&
+            !expr_is_array_projection(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
                 return value_null();
@@ -35554,9 +35808,175 @@ static Value eval_call(AstExpr *expr) {
         }
 
         Value arg = eval_expr(expr->as.call.args.items[0]);
+        /* `min`/`max` OVER ANY ORDERABLE SCALAR, not just numbers.
+         *
+         * `sort` has always ordered strings and dates while `max(["a","b"])`
+         * refused as "expects a numeric array" -- one inconsistency, and the
+         * sort side is the one that is right. Projection makes it matter:
+         * `max(rows.name)` and `max(rows.due)` are ordinary questions about
+         * business data.
+         *
+         * THE SAME GATE AND THE SAME COMPARATOR AS `sort`, deliberately, so the
+         * two cannot disagree about what is orderable or how two values order
+         * -- including that MIXED ordinary types are refused, which is sort's
+         * existing rule rather than a new one. Numeric arrays keep the exact
+         * double path below untouched.
+         *
+         * Placed before the numeric gate because that gate is what refused. */
+        /* AN ARRAY CONTAINING AN ABSENCE FALLS THROUGH to the numeric gate,
+         * which refuses -- deliberately, and this was caught by probing what
+         * the fixture should assert rather than by reading. `sort`'s comparator
+         * ranks `unknown` below every ordinary value, so routing an absence
+         * through it made `max([1, unknown, 3])` answer 3 while
+         * `sum([1, unknown, 3])` still refused: §2a's skip-the-absence rule
+         * arriving early, WITHOUT §2a's warning, and inconsistently between two
+         * aggregates. A silent answer over data with holes in it is the thing
+         * this release has a rule for; it belongs with that rule, not ahead of
+         * it. Increment 4 makes both consistent AND loud. */
+        int arg_has_absence = 0;
+        if (arg.kind == VALUE_ARRAY && arg.as.array.store) {
+            for (size_t i = 0; i < arg.as.array.store->count; i++) {
+                ValueKind k = arg.as.array.store->items[i].kind;
+                if (k == VALUE_UNKNOWN || k == VALUE_NULL) {
+                    arg_has_absence = 1;
+                    break;
+                }
+            }
+        }
+        if ((strcmp(expr->as.call.name, "min") == 0 ||
+             strcmp(expr->as.call.name, "max") == 0) &&
+            arg.kind == VALUE_ARRAY && !array_is_numeric(arg) && !arg_has_absence) {
+            if (!array_all_sort_comparable(arg, expr->as.call.name)) {
+                value_free(arg);
+                return value_null();
+            }
+            size_t n = arg.as.array.store->count;
+            if (n == 0) {
+                char message[128];
+                snprintf(message, sizeof message, "%s expects a non-empty array",
+                         expr->as.call.name);
+                runtime_error_raise(message, 1003, "invalid function call");
+                value_free(arg);
+                return value_null();
+            }
+            int want_max = strcmp(expr->as.call.name, "max") == 0;
+            size_t best = 0;
+            for (size_t i = 1; i < n; i++) {
+                int cmp = sort_value_compare(&arg.as.array.store->items[i],
+                                             &arg.as.array.store->items[best]);
+                if (want_max ? cmp > 0 : cmp < 0) {
+                    best = i;
+                }
+            }
+            Value out = value_copy(arg.as.array.store->items[best]);
+            value_free(arg);
+            return out;
+        }
+        /* `sum` AND `mean` OVER MONEY, which completes the five aggregates §1
+         * says projection unlocks. `count` was already total, and `min`/`max`
+         * are widened above, so without these two `sum(invoices.total)` -- the
+         * most obvious expression in a business language -- would refuse in the
+         * release whose subject is business data in bulk, while
+         * `max(invoices.total)` beside it answered.
+         *
+         * NOTHING NEW IS DECIDED HERE: money addition already refuses mixed
+         * currencies, is already overflow-checked (int64 max plus one unit used
+         * to return the most NEGATIVE money value), and division by a count
+         * already rounds through `money_scale_by`. This is the fold, with the
+         * same refusals in the same words as the `+` operator so the two cannot
+         * drift -- the argument the ordering widening above rests on as well.
+         *
+         * DELIBERATELY NOT `median`, `stdev`, `variance`, `percentile`,
+         * `quantile` OR `correlation`. Two of those are meaningless on money
+         * (a variance of money is money squared) and the rest are not among the
+         * five the loop survey measured, so they stay numeric until something
+         * measures a need. */
+        if ((strcmp(expr->as.call.name, "sum") == 0 ||
+             strcmp(expr->as.call.name, "mean") == 0) &&
+            arg.kind == VALUE_ARRAY && arg.as.array.store &&
+            arg.as.array.store->count > 0 &&
+            arg.as.array.store->items[0].kind == VALUE_MONEY) {
+            size_t n = arg.as.array.store->count;
+            MoneyValue total = arg.as.array.store->items[0].as.money;
+            for (size_t i = 1; i < n; i++) {
+                Value *el = &arg.as.array.store->items[i];
+                if (el->kind != VALUE_MONEY) {
+                    char message[192];
+                    char phrase[48];
+                    snprintf(message, sizeof message,
+                             "%s over money expects every element to be money;"
+                             " element %zu is %s", expr->as.call.name, i,
+                             kind_phrase(el->kind, phrase, sizeof phrase));
+                    runtime_error_raise(message, 1003, "money");
+                    value_free(arg);
+                    return value_null();
+                }
+                if (el->as.money.currency != total.currency ||
+                    el->as.money.exponent != total.exponent) {
+                    const char *la = currency_alpha_of(total.currency);
+                    const char *ra = currency_alpha_of(el->as.money.currency);
+                    char message[160];
+                    snprintf(message, sizeof message,
+                             "cannot add money in different currencies (%s and %s)",
+                             la ? la : "?", ra ? ra : "?");
+                    runtime_error_raise(message, 1003, "money");
+                    value_free(arg);
+                    return value_null();
+                }
+                if (__builtin_add_overflow(total.units, el->as.money.units,
+                                           &total.units)) {
+                    runtime_error_raise("money value is out of range", 1003,
+                                        "money");
+                    value_free(arg);
+                    return value_null();
+                }
+            }
+            if (strcmp(expr->as.call.name, "mean") == 0) {
+                const char *merr = NULL;
+                long long scaled = 0;
+                if (!money_scale_by(total.units, (double)n, 1, &scaled, &merr)) {
+                    runtime_error_raise(merr ? merr : "invalid money operation",
+                                        1003, "money");
+                    value_free(arg);
+                    return value_null();
+                }
+                total.units = scaled;
+            }
+            value_free(arg);
+            return value_money(total);
+        }
         if (!array_is_numeric(arg)) {
+            /* NAME THE ELEMENT (DOGFOOD 41/43). `sum expects a numeric array`
+             * is true and says nothing about WHICH row is wrong, and over a
+             * projection that is the whole question -- an array of absences
+             * means a row is missing the field, and the author needs to know
+             * which. It also removed an asymmetry this increment introduced:
+             * `[{USD}"1.00", 7]` named element 1 while `[7, {USD}"1.00"]`
+             * answered the terse sentence, so the quality of the diagnostic
+             * depended on which kind happened to come first. */
             char message[256];
-            snprintf(message, sizeof(message), "%s expects a numeric array", expr->as.call.name);
+            size_t bad = 0;
+            int found = 0;
+            if (arg.kind == VALUE_ARRAY && arg.as.array.store) {
+                for (size_t i = 0; i < arg.as.array.store->count; i++) {
+                    if (arg.as.array.store->items[i].kind != VALUE_NUMBER) {
+                        bad = i;
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (found) {
+                char phrase[48];
+                snprintf(message, sizeof(message),
+                         "%s expects a numeric array; element %zu is %s",
+                         expr->as.call.name, bad,
+                         kind_phrase(arg.as.array.store->items[bad].kind,
+                                     phrase, sizeof phrase));
+            } else {
+                snprintf(message, sizeof(message), "%s expects a numeric array",
+                         expr->as.call.name);
+            }
             runtime_error_raise(message, 1003, "invalid function call");
             value_free(arg);
             return value_null();
@@ -37807,6 +38227,65 @@ static Value eval_expr(AstExpr *expr) {
             value_free(object);
             runtime_error_raise(message, HTTP_ERROR_CODE, "http");
             return value_null();
+        }
+        /* PROJECTION: `rows.amount` is the array of that field from every
+         * element. The blocking primitive for working with data in bulk, and
+         * smaller than `map`, `filter` or `sort`.
+         *
+         * MEASURED BEFORE BUILDING IT: of 813 `for each` loops in this tree, 22
+         * are a sum over the loop variable and EVERY ONE is `total = total +
+         * r.amount` -- summing a FIELD. `sum`, `mean`, `count`, `min` and `max`
+         * already exist and simply could not reach data, because nothing could
+         * name a field across a list. So this one case unlocks five aggregates,
+         * and `any(rows.paid)` needs no predicate at all.
+         *
+         * THE SYNTAX IS SAFE BY PROOF RATHER THAN BY SURVEY: every dotted
+         * access on an array raised here, so no working program could contain
+         * the shape and claiming it cannot change one. That is a stronger
+         * argument than the enumeration the record/modifier classifier rests
+         * on, which had to survey the record forms.
+         *
+         * A MISSING FIELD YIELDS `unknown` FOR THAT ELEMENT, matching what
+         * `r.amont` already does on a record -- the alternative, raising, would
+         * make a projection unusable on real business data, where a row
+         * legitimately lacks a value. What an aggregate then does with the
+         * absence is the aggregate's rule, not this one's.
+         *
+         * A NON-RECORD ELEMENT RAISES AND NAMES THE INDEX, because that is a
+         * shape error rather than missing data, and `rows.amount` over a list
+         * someone has accidentally built from numbers should say which element
+         * broke it. */
+        if (object.kind == VALUE_ARRAY) {
+            ArrayStorage *src = object.as.array.store;
+            size_t n = src ? src->count : 0;
+            Value *items = n ? malloc(sizeof(Value) * n) : NULL;
+            if (n && !items) {
+                abort();
+            }
+            for (size_t i = 0; i < n; i++) {
+                Value *el = &src->items[i];
+                if (el->kind != VALUE_RECORD) {
+                    char message[192];
+                    char phrase[48];
+                    snprintf(message, sizeof(message),
+                             "projection `.%s` expects every element to be a"
+                             " record; element %zu is %s",
+                             expr->as.field.field, i,
+                             kind_phrase(el->kind, phrase, sizeof phrase));
+                    for (size_t j = 0; j < i; j++) {
+                        value_free(items[j]);
+                    }
+                    free(items);
+                    value_free(object);
+                    runtime_error_raise(message, 1003, "field access");
+                    return value_null();
+                }
+                const RecordField *f =
+                    record_find_const(el, expr->as.field.field);
+                items[i] = f ? value_copy(*f->value) : value_unknown();
+            }
+            value_free(object);
+            return value_array(items, n);
         }
         if (object.kind != VALUE_RECORD) {
             runtime_error_raise("field access expects a record", 1003, "field access");

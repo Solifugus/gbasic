@@ -5853,11 +5853,90 @@ mutation. Mutators that leave the stored array unchanged, such as no-match
 `sort()` and `unique()` support scalar arrays. Date/time values use exact
 date/time equality and ordering, not same-day or same-month comparison.
 
+**What has an order is taken from the `<` operator** *(since 0.6.0)*, not
+decided separately: numbers, strings, booleans, date/times, **money** and
+**durations**. Before 0.6.0 the two disagreed on the last two — `a.total <
+b.total` answered while `sort(invoices.total)` refused — so a sorter that
+ordered what `<` refuses would be inventing an order, and one that refused what
+`<` answers would be a second, narrower rule nobody had written down.
+
+Two orders are **conditional**, and each is refused in the same words the
+operator uses, because a comparison function cannot raise:
+
+- money in **different currencies** — ordering it would invent an exchange rate;
+- a duration carrying **months or years** — a month has no fixed length.
+
+Records, arrays and other non-scalars are refused, and so is an array mixing two
+ordinary types. An **absence** is the one deliberate divergence: `unknown < 1`
+has no answer and raises, while `sort` has to put it somewhere and ranks
+`nothing` then `unknown` below every ordinary value. Asserted in
+`tests/run_projection.sh`, whose second tier uses the operator as the oracle.
+
 Aggregates:
 
-- `len(value)` — length of an array or string.
-- `sum(array)` / `mean(array)` / `median(array)` / `mode(array)` — numeric aggregates.
-- `min(array)` / `max(array)` — extremes.
+- `len(value)` / `count(value)` — length of an array, string or record.
+- `sum(array)` / `mean(array)` — over numbers, or over **money** *(since
+  0.6.0)*, where the fold refuses mixed currencies in the same words as `+` and
+  is overflow-checked the same way. `mean` keeps the result below the minor unit
+  in money's guard digits, so the average of 32.50, 7.00 and 19.95 displays as
+  `19.82` and multiplies back by 3 to exactly `59.45`.
+- `median(array)` / `mode(array)` and the *Statistics* summaries below stay
+  **numeric**. A variance of money is money squared, and the rest were not among
+  the aggregates the loop survey measured; see §4 of
+  `docs/bulk_data_design.md`.
+- `min(array)` / `max(array)` — extremes, over **anything `sort` orders**
+  *(since 0.6.0)*, so text, dates, money and durations as well as numbers. An
+  array containing an absence is still refused, consistently with `sum`, until
+  the aggregate absence rules land.
+- `any(array)` / `all(array)` — over **booleans**. `any([])` is `false` and
+  `all([])` is `true`, the usual vacuous-truth convention. An **absence is not
+  true**: a row that never said it was paid has not been paid, so
+  `all(rows.paid)` is `false` when a row lacks the field.
+
+#### Projection — one field across every row
+
+*(since 0.6.0)* A dotted access on an **array of records** answers the array of
+that field from every element:
+
+```basic
+rows = [ { item: "hammer", amount: 19.95, paid: true },
+         { item: "saw",    amount: 32.50, paid: false },
+         { item: "nails",  amount:  7.00, paid: true } ]
+
+print sum(rows.amount)      ' 59.45
+print max(rows.amount)      ' 32.5
+print rows.item             ' [hammer, saw, nails]
+print any(rows.paid)        ' true
+print all(rows.paid)        ' false
+```
+
+This is the smallest thing that makes the aggregates reach business data.
+Measured across this tree before it was built: of 813 `for each` loops, 22 are a
+sum over the loop variable and **every one** of the 22 is
+`total = total + r.amount` — summing a *field*. `sum`, `mean`, `count`, `min`
+and `max` all existed already and simply could not be pointed at data, because
+nothing in the language could name a field across a list.
+
+- **A missing field is `unknown` for that element**, matching what `r.amont`
+  already does on a record, and the element is **kept** — so the projection is
+  always the same length as the array. Raising instead would make a projection
+  unusable on real business data, where a row legitimately lacks a value; what
+  an aggregate then does with the absence is the aggregate's rule.
+- **A non-record element raises and names the index** — that is a shape error
+  rather than missing data, so a list accidentally built from numbers says which
+  element broke it.
+- **Nesting falls out of applying the rule twice**: `rows.customer.name`.
+- **A projection is a value, not a place.** It is computed from every element, so
+  there is nothing to store into: `append`, `prepend`, `insert`, `remove` and
+  `remove_value` refuse it and name both remedies — change the array itself, or
+  assign the projection to a name first. `sort`, `reverse` and `unique` *do*
+  work on one, answering a new array rather than mutating anything.
+- It is a **copy**: writing to the projection leaves the rows alone, and writing
+  to a row leaves an already-taken projection alone.
+
+A typo yields an array of absences rather than an error, which is the cost of
+matching record behaviour. The mitigation is the aggregate absence rules rather
+than a different syntax.
 
 #### Array value semantics
 

@@ -33,6 +33,15 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
+- **Total a field across rows** — `sum(rows.amount)`, not a loop. A dotted
+  access on an array of records is a **projection**: the array of that field
+  from every element, so `sum`/`mean`/`count`/`min`/`max`/`sort` and
+  `any(rows.paid)`/`all(rows.paid)` all reach business data. Works over money
+  and durations as well as numbers. A missing field is `unknown` for that
+  element and the element is **kept**, so the projection is always the same
+  length as the array. A projection is a **value, not a place**: `append(rows.a,
+  x)` is refused by name — change the array itself, or assign the projection to
+  a name first. → `tests/projection/projection_test.bas`
 - **Display any value** — `print v` and `string(v)` use one renderer and always
   agree, so a record shows its fields (`{"a":1}`), an array its elements
   (`["a","b"]`) and a duration its units (`2 days 3 hours`). Display is total —
