@@ -5841,7 +5841,7 @@ Mutation:
 - `append(array, value)` / `prepend(array, value)`
 - `insert(array, index, value)` / `remove(array, index)`
 - `take_first(array)` / `take_last(array)`
-- `reverse(array)` / `unique(array)` / `sort(array)`
+- `reverse(array)` / `unique(array)` / `sort(array [, options])`
 
 When `append`, `prepend`, `insert`, `remove`, `remove_value`, `take_first`,
 `take_last`, `reverse`, `sort`, or `unique` mutates a stored array through an
@@ -5852,6 +5852,60 @@ mutation. Mutators that leave the stored array unchanged, such as no-match
 
 `sort()` and `unique()` support scalar arrays. Date/time values use exact
 date/time equality and ordering, not same-day or same-month comparison.
+
+#### Sorting records — `sort(rows, { by: … })`
+
+*(since 0.6.0)* `sort` takes an optional second argument, an options record:
+
+```basic
+sort(rows, { by: "amount" })                          ' one field
+sort(rows, { by: "amount", descending: true })        ' reversed
+sort(rows, { by: ["last", "first"] })                 ' several fields, in order
+sort(rows, { by: ["score", "id"], descending: ["score"] })   ' mixed direction
+sort(xs, { descending: true })                        ' a plain list, reversed
+```
+
+- **`by`** names a field, or a list of fields compared in order. Every element
+  must then be a record, and each key column goes through the **same ordering
+  gate** the array itself goes through — so a key mixing two ordinary types, or
+  money in two currencies, is refused in the gate's own words, naming the
+  column. An element lacking the field sorts as an absence.
+- **`descending`** is `true`/`false` for every key, **or a list of the field
+  names that descend**. Naming a field `by` does not sort on is refused rather
+  than ignored, that being the one mistake this shape makes easy. With no `by`,
+  `descending: true` reverses a plain list — which previously had to be written
+  `reverse(sort(xs))`, two passes to say one thing.
+- An unknown option is refused **by name**, and the options are read **before
+  the array is touched**, so a misspelled option cannot leave a half-sorted
+  array behind.
+- `sort` still **mutates in place** through an assignable path and answers the
+  sorted array, exactly as the one-argument form does.
+
+**The sort is stable**, and that is a portability requirement rather than a
+nicety: `qsort` is not stable and its tie order differs between implementations,
+so a golden pinning rows sorted by one field would read differently on glibc and
+on a BSD libc. Stability also makes the one thing `descending` cannot express
+affordable — sorting by the minor key and then by the major key gives mixed
+directions in two declared passes, and `tests/run_sort_records.sh` asserts that
+the two routes give the identical answer.
+
+**There is no comparator-function form, and that is a decision rather than a
+gap.** Fields, several fields and per-field direction cover every record sort
+measured in this tree; a comparator is the one piece of code everyone gets wrong
+(`a - b` against `a < b`, and returning a boolean silently half-sorts); and it
+would cost a gBASIC call per comparison, *O(n log n)* times, in a tree-walking
+interpreter. A declared collation (`using: {trimmed; caseless}`) is likewise not
+here: of 73 `sort` call sites in this tree none orders a lowered, trimmed or
+naturally-collated key, and a comparison lens is a grammar construct rather than
+a value, so nothing can pass one as an argument. If a real case appears that
+`by` cannot express, that case is the argument.
+
+**Where an absence sorts is not settled across the tree.** Core `sort` ranks
+`nothing` then `unknown` **below** every ordinary value; `frame.sort_by` ranks an
+absence **last**. There is no universal convention to appeal to — `ORDER BY x
+ASC` puts NULLs last in PostgreSQL and Oracle and first in MySQL and SQLite — so
+`frame.sort_by` is deliberately **not** built on core `sort` yet, and
+`tests/run_sort_records.sh` pins both answers so neither can move alone.
 
 **What has an order is taken from the `<` operator** *(since 0.6.0)*, not
 decided separately: numbers, strings, booleans, date/times, **money** and

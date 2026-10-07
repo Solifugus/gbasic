@@ -12684,19 +12684,24 @@ static int value_sort_comparable(Value value) {
         value.kind == VALUE_UNKNOWN;
 }
 
-static int array_all_sort_comparable(Value array, const char *verb) {
-    if (array.kind != VALUE_ARRAY) {
-        char m[96];
-        snprintf(m, sizeof m, "%s expects an array", verb);
-        runtime_error_raise(m, 1003, "invalid function call");
-        return 0;
-    }
-
+/* THE ORDERING GATE, over a plain run of values rather than an array VALUE.
+ *
+ * Split out so `sort(rows, { by: "total" })` can put a KEY COLUMN through the
+ * identical rules -- same type among the ordinaries, one currency, no
+ * month-bearing duration -- rather than restating them. One authority for what
+ * can be ordered was the whole argument for widening it to money and duration;
+ * a second copy for keys would undo that on the first edit.
+ *
+ * `what` names the subject in the message: "sort" for an array, or
+ * "sort by `total`" for a key column, so the author is told WHICH column. */
+static int values_all_sort_comparable(const Value *items, size_t count,
+                                      const char *what) {
     ValueKind ordinary_kind = VALUE_NULL;
     int have_ordinary_kind = 0;
     Value first_ordinary = value_null();
-    for (size_t i = 0; i < array.as.array.store->count; i++) {
-        Value item = array.as.array.store->items[i];
+    const char *verb = what;
+    for (size_t i = 0; i < count; i++) {
+        Value item = items[i];
         if (!value_sort_comparable(item)) {
             char m[96];
             snprintf(m, sizeof m, "%s supports only scalar array values", verb);
@@ -12748,6 +12753,17 @@ static int array_all_sort_comparable(Value array, const char *verb) {
         }
     }
     return 1;
+}
+
+static int array_all_sort_comparable(Value array, const char *verb) {
+    if (array.kind != VALUE_ARRAY) {
+        char m[96];
+        snprintf(m, sizeof m, "%s expects an array", verb);
+        runtime_error_raise(m, 1003, "invalid function call");
+        return 0;
+    }
+    return values_all_sort_comparable(array.as.array.store->items,
+                                      array.as.array.store->count, verb);
 }
 
 static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
@@ -12860,25 +12876,334 @@ static const char *builtin_type_name(Value value) {
     return "value";
 }
 
-static Value sort_array_value(Value array) {
-    if (!array_all_sort_comparable(array, "sort")) {
+/* --- `sort(rows, { by: ..., descending: ... })` ---------------------------
+ *
+ * WHY RECORDS AND NOT A COMPARATOR FUNCTION: measured across this tree, the four
+ * hand-rolled sorts over records are
+ *
+ *   stdlib/frame.bas:340        sort_by(df, col)    one field ascending, O(n^2)
+ *   stdlib/fundamentals.bas:183 _sort_rows(rows)    TWO fields ascending, faked
+ *                                                   as r["end"] + "|" + r["start"]
+ *   stdlib/nlq.bas:1507         _by_score(rows)     score DESCENDING, id ASCENDING
+ *   stdlib/stats.bas:3438,8313  PCA ordering        indices by a PARALLEL array
+ *
+ * -- and three of the four are field sorts. The fourth is not a field sort at
+ * all and a comparator would not have helped it either, since what it orders is
+ * an index array against a separate column of eigenvalues.
+ *
+ * THE THIRD ONE IS WHY `descending` TAKES TWO SHAPES. A plain boolean turns
+ * every key around, which covers frame and fundamentals and NOT nlq, whose own
+ * comment says why its total order matters ("or the answer depends on a driver's
+ * row order"). So `descending` is either a boolean (every key) or an ARRAY OF
+ * FIELD NAMES (those keys), which keeps the common case one word and makes the
+ * mixed case declarative -- and CHECKABLE, since naming a field that is not in
+ * `by` is refused rather than ignored.
+ *
+ * A COMPARATOR FUNCTION IS REJECTED, NOT DEFERRED. Fields, several fields and
+ * per-field direction cover every measured case; a comparator is the one piece
+ * of code everyone gets wrong (`a - b` against `a < b`, and returning a boolean
+ * silently half-sorts); and it costs a gBASIC call per comparison, O(n log n)
+ * times, in a tree-walking interpreter. If a real case appears that this cannot
+ * express, that case is the argument.
+ *
+ * A DECLARED COLLATION (`using: {trimmed; caseless}`) IS DEFERRED, and the
+ * measurement is the reason: of 73 `sort` call sites in this tree, NONE orders a
+ * lowered, trimmed or naturally-collated key. Its spelling is also not free --
+ * a comparison lens is a GRAMMAR construct driven by a parser-triggered lexer
+ * mode, not a value, so there is no way to pass one as an argument today, and
+ * inventing a second vocabulary for it on a guess would commit the language to a
+ * syntax nothing has asked for. */
+#define SORT_MAX_KEYS 16
+
+typedef struct {
+    const char *keys[SORT_MAX_KEYS];
+    int descending[SORT_MAX_KEYS];
+    size_t key_count;
+    int scalar_descending;      /* no `by`: direction for the whole array */
+} SortSpec;
+
+/* Read the options record. Refuses an unknown field BY NAME -- the rule
+ * `webserver.listen` and `web.configure` already follow, because a misspelled
+ * option that is ignored leaves a program sorted the way the author did not
+ * ask for, in silence. */
+static int sort_spec_from_options(Value options, SortSpec *spec) {
+    memset(spec, 0, sizeof *spec);
+    if (options.kind == VALUE_NULL || options.kind == VALUE_UNKNOWN) {
+        return 1;
+    }
+    if (options.kind != VALUE_RECORD) {
+        char phrase[48];
+        char m[192];
+        snprintf(m, sizeof m,
+                 "sort expects an options record as its second argument, got"
+                 " %s -- sort(rows, { by: \"amount\" })",
+                 kind_phrase(options.kind, phrase, sizeof phrase));
+        runtime_error_raise(m, 1003, "invalid function call");
+        return 0;
+    }
+    for (size_t i = 0; i < options.as.record.count; i++) {
+        const char *name = options.as.record.fields[i].name;
+        if (strcmp(name, "by") != 0 && strcmp(name, "descending") != 0) {
+            char m[224];
+            snprintf(m, sizeof m,
+                     "sort: unknown option '%s' (known: by, descending)", name);
+            runtime_error_raise(m, 1003, "invalid function call");
+            return 0;
+        }
+    }
+
+    const RecordField *by = record_find_const(&options, "by");
+    if (by && by->value->kind != VALUE_NULL && by->value->kind != VALUE_UNKNOWN) {
+        const Value *v = by->value;
+        if (v->kind == VALUE_STRING) {
+            spec->keys[0] = v->as.string;
+            spec->key_count = 1;
+        } else if (v->kind == VALUE_ARRAY) {
+            size_t n = v->as.array.store ? v->as.array.store->count : 0;
+            if (n == 0) {
+                runtime_error_raise("sort: `by` is an empty list, so it names no"
+                                    " field to sort on", 1003,
+                                    "invalid function call");
+                return 0;
+            }
+            if (n > SORT_MAX_KEYS) {
+                char m[128];
+                snprintf(m, sizeof m,
+                         "sort: `by` names %zu fields; at most %d are supported",
+                         n, SORT_MAX_KEYS);
+                runtime_error_raise(m, 1003, "invalid function call");
+                return 0;
+            }
+            for (size_t i = 0; i < n; i++) {
+                Value *el = &v->as.array.store->items[i];
+                if (el->kind != VALUE_STRING) {
+                    char phrase[48];
+                    char m[192];
+                    snprintf(m, sizeof m,
+                             "sort: `by` must name fields as text; entry %zu is"
+                             " %s", i,
+                             kind_phrase(el->kind, phrase, sizeof phrase));
+                    runtime_error_raise(m, 1003, "invalid function call");
+                    return 0;
+                }
+                spec->keys[i] = el->as.string;
+            }
+            spec->key_count = n;
+        } else {
+            char phrase[48];
+            char m[192];
+            snprintf(m, sizeof m,
+                     "sort: `by` names a field or a list of fields, got %s",
+                     kind_phrase(v->kind, phrase, sizeof phrase));
+            runtime_error_raise(m, 1003, "invalid function call");
+            return 0;
+        }
+    }
+
+    const RecordField *desc = record_find_const(&options, "descending");
+    if (desc && desc->value->kind != VALUE_NULL &&
+        desc->value->kind != VALUE_UNKNOWN) {
+        const Value *v = desc->value;
+        if (v->kind == VALUE_BOOL) {
+            spec->scalar_descending = v->as.boolean;
+            for (size_t i = 0; i < spec->key_count; i++) {
+                spec->descending[i] = v->as.boolean;
+            }
+        } else if (v->kind == VALUE_ARRAY) {
+            if (spec->key_count == 0) {
+                runtime_error_raise("sort: `descending` names fields, but there"
+                                    " is no `by` to name them in -- use"
+                                    " `descending: true` to reverse a plain"
+                                    " list", 1003, "invalid function call");
+                return 0;
+            }
+            size_t n = v->as.array.store ? v->as.array.store->count : 0;
+            for (size_t i = 0; i < n; i++) {
+                Value *el = &v->as.array.store->items[i];
+                if (el->kind != VALUE_STRING) {
+                    char phrase[48];
+                    char m[192];
+                    snprintf(m, sizeof m,
+                             "sort: `descending` names fields as text; entry %zu"
+                             " is %s", i,
+                             kind_phrase(el->kind, phrase, sizeof phrase));
+                    runtime_error_raise(m, 1003, "invalid function call");
+                    return 0;
+                }
+                int found = 0;
+                for (size_t k = 0; k < spec->key_count; k++) {
+                    if (strcmp(spec->keys[k], el->as.string) == 0) {
+                        spec->descending[k] = 1;
+                        found = 1;
+                    }
+                }
+                /* NAMED BUT NOT SORTED ON is refused rather than ignored: it is
+                 * the one mistake this shape makes easy, and ignoring it leaves
+                 * the rows in ascending order with nothing said. */
+                if (!found) {
+                    char m[224];
+                    snprintf(m, sizeof m,
+                             "sort: `descending` names '%s', which `by` does not"
+                             " sort on", el->as.string);
+                    runtime_error_raise(m, 1003, "invalid function call");
+                    return 0;
+                }
+            }
+        } else {
+            char phrase[48];
+            char m[192];
+            snprintf(m, sizeof m,
+                     "sort: `descending` is true/false, or a list of the fields"
+                     " that descend, got %s",
+                     kind_phrase(v->kind, phrase, sizeof phrase));
+            runtime_error_raise(m, 1003, "invalid function call");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Every element must be a record, and each key column must pass the ordering
+ * gate -- checked BEFORE a single comparison, because the comparator cannot
+ * raise. The key array BORROWS: it holds shallow struct copies and is never
+ * freed element-wise. */
+static int sort_keys_comparable(const Value *items, size_t count,
+                                const SortSpec *spec) {
+    for (size_t i = 0; i < count; i++) {
+        if (items[i].kind != VALUE_RECORD) {
+            char phrase[48];
+            char m[224];
+            snprintf(m, sizeof m,
+                     "sort by `%s` expects every element to be a record;"
+                     " element %zu is %s", spec->keys[0], i,
+                     kind_phrase(items[i].kind, phrase, sizeof phrase));
+            runtime_error_raise(m, 1003, "invalid function call");
+            return 0;
+        }
+    }
+    if (count == 0) {
+        return 1;
+    }
+    Value *column = malloc(sizeof(Value) * count);
+    if (!column) {
+        abort();
+    }
+    int ok = 1;
+    for (size_t k = 0; k < spec->key_count && ok; k++) {
+        for (size_t i = 0; i < count; i++) {
+            const RecordField *f = record_find_const(&items[i], spec->keys[k]);
+            column[i] = f ? *f->value : value_unknown();
+        }
+        char what[160];
+        snprintf(what, sizeof what, "sort by `%s`", spec->keys[k]);
+        ok = values_all_sort_comparable(column, count, what);
+    }
+    free(column);
+    return ok;
+}
+
+static int sort_record_compare(const Value *left, const Value *right,
+                               const SortSpec *spec) {
+    for (size_t k = 0; k < spec->key_count; k++) {
+        const RecordField *lf = record_find_const(left, spec->keys[k]);
+        const RecordField *rf = record_find_const(right, spec->keys[k]);
+        Value lv = lf ? *lf->value : value_unknown();
+        Value rv = rf ? *rf->value : value_unknown();
+        int cmp = sort_value_compare(&lv, &rv);
+        if (cmp != 0) {
+            return spec->descending[k] ? -cmp : cmp;
+        }
+    }
+    return 0;
+}
+
+static int sort_spec_compare(const Value *left, const Value *right,
+                             const SortSpec *spec) {
+    if (spec->key_count > 0) {
+        return sort_record_compare(left, right, spec);
+    }
+    int cmp = sort_value_compare(left, right);
+    return spec->scalar_descending ? -cmp : cmp;
+}
+
+/* STABLE, and that is a portability requirement rather than a nicety: `qsort`
+ * is not stable and its tie order differs between implementations, so a golden
+ * pinning rows sorted by one field would read differently on glibc and on a BSD
+ * libc. Stability also makes the one thing `descending` cannot express
+ * affordable -- sorting by the minor key and then by the major key gives mixed
+ * directions in two declared passes.
+ *
+ * A bottom-up merge sort over the item structs. The structs are MOVED, never
+ * copied, so no reference count changes and nothing is freed here. */
+static void sort_values_stable(Value *items, size_t count, const SortSpec *spec) {
+    if (count < 2) {
+        return;
+    }
+    Value *scratch = malloc(sizeof(Value) * count);
+    if (!scratch) {
+        abort();
+    }
+    Value *src = items;
+    Value *dst = scratch;
+    for (size_t width = 1; width < count; width *= 2) {
+        for (size_t lo = 0; lo < count; lo += 2 * width) {
+            size_t mid = lo + width < count ? lo + width : count;
+            size_t hi = lo + 2 * width < count ? lo + 2 * width : count;
+            size_t a = lo, b = mid, o = lo;
+            while (a < mid && b < hi) {
+                /* `<= 0` takes from the LEFT run on a tie, which is what makes
+                 * the merge stable. */
+                dst[o++] = sort_spec_compare(&src[a], &src[b], spec) <= 0
+                               ? src[a++] : src[b++];
+            }
+            while (a < mid) { dst[o++] = src[a++]; }
+            while (b < hi)  { dst[o++] = src[b++]; }
+        }
+        Value *swap = src; src = dst; dst = swap;
+    }
+    if (src != items) {
+        memcpy(items, src, sizeof(Value) * count);
+    }
+    free(scratch);
+}
+
+/* The gate for whichever shape is being sorted: a key column per `by` field, or
+ * the array itself when there is none. */
+static int sort_spec_comparable(const Value *items, size_t count,
+                                const SortSpec *spec) {
+    if (spec->key_count > 0) {
+        return sort_keys_comparable(items, count, spec);
+    }
+    return values_all_sort_comparable(items, count, "sort");
+}
+
+static Value sort_array_value(Value array, const SortSpec *spec) {
+    if (array.kind != VALUE_ARRAY) {
+        runtime_error_raise("sort expects an array", 1003, "invalid function call");
+        value_free(array);
+        return value_null();
+    }
+    if (!sort_spec_comparable(array.as.array.store->items,
+                              array.as.array.store->count, spec)) {
         value_free(array);
         return value_null();
     }
     array_ensure_unique(&array);
     if (array.as.array.store->count > 1) {
-        qsort(array.as.array.store->items, array.as.array.store->count, sizeof(Value), sort_value_compare);
+        sort_values_stable(array.as.array.store->items,
+                           array.as.array.store->count, spec);
     }
     return array;
 }
 
-static Value sort_array_ref(Value *array, int *changed) {
+static Value sort_array_ref(Value *array, int *changed, const SortSpec *spec) {
     *changed = 0;
     if (!array || array->kind != VALUE_ARRAY) {
         runtime_error_raise("sort expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (!array_all_sort_comparable(*array, "sort")) {
+    if (!sort_spec_comparable(array->as.array.store->items,
+                              array->as.array.store->count, spec)) {
         return value_null();
     }
     array_ensure_unique(array);
@@ -12893,7 +13218,7 @@ static Value sort_array_ref(Value *array, int *changed) {
             abort();
         }
         memcpy(snapshot, s->items, sizeof(Value) * s->count);
-        qsort(s->items, s->count, sizeof(Value), sort_value_compare);
+        sort_values_stable(s->items, s->count, spec);
         for (size_t i = 0; i < s->count; i++) {
             if (!value_storage_equal(&snapshot[i], &s->items[i])) {
                 *changed = 1;
@@ -35665,9 +35990,29 @@ static Value eval_call(AstExpr *expr) {
     }
 
     if (strcmp(expr->as.call.name, "sort") == 0) {
-        if (expr->as.call.args.count != 1) {
-            runtime_error_raise("sort expects one argument", 1003, "invalid function call");
+        if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
+            runtime_error_raise("sort expects 1 to 2 arguments", 1003,
+                                "invalid function call");
             return value_null();
+        }
+
+        /* THE OPTIONS ARE READ BEFORE THE ARRAY IS TOUCHED, so a misspelled
+         * option cannot leave a half-sorted array behind -- and because the
+         * refusal is then about the options rather than about whatever the
+         * ordering gate made of the data. */
+        SortSpec spec;
+        memset(&spec, 0, sizeof spec);
+        Value options = value_null();
+        if (expr->as.call.args.count == 2) {
+            options = eval_expr(expr->as.call.args.items[1]);
+            if (error_action_pending()) {
+                value_free(options);
+                return value_null();
+            }
+            if (!sort_spec_from_options(options, &spec)) {
+                value_free(options);
+                return value_null();
+            }
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
@@ -35675,11 +36020,13 @@ static Value eval_call(AstExpr *expr) {
             !expr_is_array_projection(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
+                value_free(options);
                 return value_null();
             }
             int changed = 0;
             repl_note_lvalue_effect(array_expr);
-            Value result = sort_array_ref(array, &changed);
+            Value result = sort_array_ref(array, &changed, &spec);
+            value_free(options);
             if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
                 return result;
             }
@@ -35689,9 +36036,12 @@ static Value eval_call(AstExpr *expr) {
         Value array = eval_expr(array_expr);
         if (error_action_pending()) {
             value_free(array);
+            value_free(options);
             return value_null();
         }
-        return sort_array_value(array);
+        Value out = sort_array_value(array, &spec);
+        value_free(options);
+        return out;
     }
 
     if (strcmp(expr->as.call.name, "len") == 0) {

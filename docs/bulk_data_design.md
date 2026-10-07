@@ -1,7 +1,8 @@
 # Working with lists and records in bulk — 0.6.0 considerations
 
-**Status: §2 SHIPPED (0.6.0 increment 1, 2026-10-06); §2a, §2b, §3, §4 proposed;
-§5 deliberately unpriced.** The rest is a list of things to consider for 0.6.0,
+**Status: §2 SHIPPED (0.6.0 increment 1, 2026-10-06); §3 SHIPPED (increment 2,
+same day, items 1–2 of four); §2a, §2b, §4 proposed; §5 deliberately
+unpriced.** The rest is a list of things to consider for 0.6.0,
 with the measurements that say which of them would actually remove loops *in
 this tree* rather than in Python.
 
@@ -395,6 +396,73 @@ Four ways to extend it, deliberately in this order:
    one piece of code everyone gets wrong: `a - b` against `a < b`, and returning
    a boolean silently half-sorts. It is the escape hatch for what 1–3 cannot
    express, and if 1–3 are good it is rarely reached.
+
+### SHIPPED 2026-10-06 — items 1 and 2; 3 and 4 refused with the measurement
+
+`tests/run_sort_records.sh`, 40 self-checking assertions, eight perturbations
+proven red. `sort` takes an options record; the one-argument form is untouched.
+
+**THE MEASUREMENT CHANGED THE SHAPE, and this section had the wrong count.** It
+said `_row_key` was the case for several fields, which is true, and listed four
+ways to extend `sort` without measuring which ones the tree needs. Measured, the
+hand-rolled sorts over records are:
+
+| where | shape |
+|---|---|
+| `stdlib/frame.bas:340` | one field ascending, O(n²) insertion sort |
+| `stdlib/fundamentals.bas:183` | **two** fields, faked as `r["end"] + "|" + r["start"]` |
+| `stdlib/nlq.bas:1507` | score **descending** then id **ascending** |
+| `stdlib/stats.bas:3438, 8313` | an **index array** against a parallel column |
+
+**The third is why `descending` takes two shapes.** A plain boolean turns every
+key around, which covers frame and fundamentals and *not* nlq — whose own comment
+says why its total order matters ("or the answer depends on a driver's row
+order"). So `descending` is a boolean (every key) **or a list of field names**
+(those keys), which keeps the common case one word and makes the mixed case
+declarative and checkable: naming a field `by` does not sort on is refused.
+
+**The fourth is not a field sort at all**, and a comparator function would not
+have helped it either — what it orders is an index array against a separate
+column of eigenvalues. So the one case this section offered a comparator for
+turns out not to be a comparator case.
+
+**Item 3, a declared collation, is deferred with a measurement rather than a
+preference.** Of 73 `sort` call sites in this tree, **none** orders a lowered,
+trimmed or naturally-collated key. Its spelling is also not free, which this
+section assumed it was: a comparison lens is a **grammar** construct driven by a
+parser-triggered lexer mode, not a value, so `using: {trimmed; caseless}` cannot
+be written as an argument today, and inventing a second vocabulary on a guess
+would commit the language to a syntax nothing has asked for.
+
+**The sort is STABLE, and that is a portability requirement.** `qsort` is not
+stable and its tie order differs between implementations, so a golden pinning
+rows sorted by one field would read differently on glibc and on a BSD libc.
+Stability also pays for the one thing `descending` cannot express: sorting by the
+minor key and then by the major key gives mixed directions in two declared
+passes, and the suite asserts the two routes give the **identical** answer —
+which is also what reddens an unstable merge twice over.
+
+**MIGRATED, with goldens byte-identical:** `fundamentals._sort_rows` (its
+concatenated key was equivalent only because `end` is a fixed-width ISO date, and
+its absent `start` is defaulted to `""` one function up — the residual of the
+`fp` defect) and `nlq._by_score`. Both insertion sorts are gone, and the suite
+reads the source as well as the goldens, because a library that quietly kept its
+own sort would pass the goldens perfectly.
+
+**NOT MIGRATED, AND THIS IS A QUESTION FOR THE USER: `frame.sort_by` ranks an
+absence LAST and core `sort` ranks it FIRST.** Demonstrated, not inferred:
+
+```
+rows = [ { x: 3 }, { x: unknown }, { x: 1 } ]
+frame.sort_by(...)  ->  [{x:1}, {x:3}, {x:unknown}]
+sort(rows, {by:"x"}) -> [{x:unknown}, {x:1}, {x:3}]
+```
+
+There is no universal convention to appeal to: `ORDER BY x ASC` puts NULLs **last**
+in PostgreSQL and Oracle and **first** in MySQL and SQLite. So this is a
+convention gBASIC has to choose, which makes it a language-visible decision
+rather than this increment's to take. Both answers are **pinned** in the suite, so
+neither side can move alone and whoever rules on it has to come to that tier.
 
 ---
 

@@ -33,6 +33,12 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
+- **Sort a list of records** — `sort(rows, { by: "amount", descending: true })`,
+  `sort(rows, { by: ["last", "first"] })`, and `descending: ["score"]` to turn
+  only some keys around. Stable, mutates in place through an assignable path, and
+  an unknown option is refused by name. There is no comparator-function form by
+  decision; `by` covers every record sort measured in this tree.
+  → `tests/sort_records/sort_records_test.bas`
 - **Total a field across rows** — `sum(rows.amount)`, not a loop. A dotted
   access on an array of records is a **projection**: the array of that field
   from every element, so `sum`/`mean`/`count`/`min`/`max`/`sort` and

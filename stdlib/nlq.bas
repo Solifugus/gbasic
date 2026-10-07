@@ -1501,31 +1501,13 @@ library nlq
         return ranked[last].score
     end function
 
-    ' Insertion sort, descending by score then by id so the order is TOTAL: two
-    ' tables on the same score must not rank by whichever the catalog listed
-    ' first, or the answer depends on a driver's row order.
+    ' Descending by score then by id so the order is TOTAL: two tables on the
+    ' same score must not rank by whichever the catalog listed first, or the
+    ' answer depends on a driver's row order. Was a hand-written insertion sort;
+    ' core `sort` states the same order in one line, and `descending` naming only
+    ' `score` is why it can -- a plain boolean would have turned `id` around too.
     function _by_score(rows)
-        out = []
-        for each r in rows
-            placed = false
-            i = 0
-            next_out = []
-            while i < count(out)
-                if not placed then
-                    if r.score > out[i].score or (r.score = out[i].score and r.id < out[i].id) then
-                        append(next_out, r)
-                        placed = true
-                    end if
-                end if
-                append(next_out, out[i])
-                i = i + 1
-            end while
-            if not placed then
-                append(next_out, r)
-            end if
-            out = next_out
-        end for
-        return out
+        return sort(rows, { by: ["score", "id"], descending: ["score"] })
     end function
 
     function _append_to(arr, v)

@@ -180,24 +180,14 @@ library fundamentals
         return r["end"] + "|" + r["start"]
     end function
 
+    ' Core `sort` by the two fields, which is what `_row_key` was faking with
+    ' string concatenation -- and the reason the `fp` defect existed one function
+    ' over. Was an O(n^2) insertion sort over that concatenated key; the answer is
+    ' identical because `end` is a fixed-width ISO date, so comparing the joined
+    ' strings and comparing the pair are the same ordering, and `start` is
+    ' defaulted to "" above so no absence reaches the key.
     function _sort_rows(rows)
-        n = count(rows)
-        i = 1
-        while i < n
-            j = i
-            while j > 0
-                if _row_key(rows[j]) < _row_key(rows[j - 1]) then
-                    tmp = rows[j]
-                    rows[j] = rows[j - 1]
-                    rows[j - 1] = tmp
-                    j = j - 1
-                else
-                    j = 0
-                end if
-            end while
-            i = i + 1
-        end while
-        return rows
+        return sort(rows, { by: ["end", "start"] })
     end function
 
     ' --- rows -> fact frame (column-major) ----------------------------------
