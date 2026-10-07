@@ -33,6 +33,15 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
+- **Set operations on lists** — `a excluding b` and `a intersecting b`, infix
+  word operators since 0.6.0 (both words are now reserved). Filters over the LEFT
+  side, so its order and duplicates survive; membership is the same `=` that
+  `contains` uses, so records compare by value. Two lists required — text is
+  refused rather than read as characters. Cost is the product of the lengths.
+  → `tests/set_ops/set_ops_test.bas`
+- **Read the end of a list / take a window** — `last(a)` (not `a[count(a) - 1]`)
+  and `slice(a, at [, count])`, 0-based like `byte_slice` and clamped past the
+  end. `take_last` pops; `last` reads. → `tests/set_ops/set_ops_test.bas`
 - **Sort a list of records** — `sort(rows, { by: "amount", descending: true })`,
   `sort(rows, { by: ["last", "first"] })`, and `descending: ["score"]` to turn
   only some keys around. Stable, mutates in place through an assignable path, and

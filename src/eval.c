@@ -35447,6 +35447,127 @@ static Value eval_call(AstExpr *expr) {
         return result;
     }
 
+    /* `last(a)` -- `first` has existed since arrays did and this simply did not,
+     * so reading the end of a list meant `a[count(a) - 1]`: arithmetic on a
+     * length, which is where an off-by-one lives, and which is wrong in a
+     * different way on an empty list (index -1 rather than an answer).
+     *
+     * `take_last` exists and POPS, which is a different thing; nothing read the
+     * last element without removing it. */
+    if (strcmp(expr->as.call.name, "last") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("last expects one argument", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        Value array = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        if (array.kind != VALUE_ARRAY) {
+            value_free(array);
+            runtime_error_raise("last expects an array", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        if (array.as.array.store->count == 0) {
+            /* `nothing`, exactly as `first` answers for an empty list -- and the
+             * reason a `last` builtin is worth having at all, since
+             * `a[count(a) - 1]` is an out-of-range read there. */
+            value_free(array);
+            return value_null();
+        }
+        Value result = value_copy(
+            array.as.array.store->items[array.as.array.store->count - 1]);
+        value_free(array);
+        return result;
+    }
+
+    /* `slice(a, at [, count])` -- the same shape and the same conventions as
+     * `byte_slice(s, at [, count])`, deliberately: 0-based `at`, and to the end
+     * when no count is given. A second convention for the same idea one type
+     * along is how an off-by-one gets written.
+     *
+     * CLAMPED RATHER THAN REFUSED, because a slice is how a window over data is
+     * taken and the window legitimately runs past the end -- `slice(rows, 100, 20)`
+     * over 105 rows is the last page, not a mistake. A negative `at` IS refused,
+     * since it means the caller computed an index and the computation is wrong;
+     * there is no from-the-end convention to read it as. */
+    if (strcmp(expr->as.call.name, "slice") == 0) {
+        if (expr->as.call.args.count < 2 || expr->as.call.args.count > 3) {
+            runtime_error_raise("slice expects a list, a start and an optional"
+                                " count", 1003, "invalid function call");
+            return value_null();
+        }
+        Value array = eval_expr(expr->as.call.args.items[0]);
+        Value start = eval_expr(expr->as.call.args.items[1]);
+        Value howmany = expr->as.call.args.count == 3
+                            ? eval_expr(expr->as.call.args.items[2])
+                            : value_null();
+        if (error_action_pending()) {
+            value_free(array);
+            value_free(start);
+            value_free(howmany);
+            return value_null();
+        }
+        if (array.kind != VALUE_ARRAY) {
+            char phrase[48];
+            char m[160];
+            snprintf(m, sizeof m,
+                     "slice expects a list, got %s -- use byte_slice or mid for"
+                     " text", kind_phrase(array.kind, phrase, sizeof phrase));
+            value_free(array);
+            value_free(start);
+            value_free(howmany);
+            runtime_error_raise(m, 1003, "invalid function call");
+            return value_null();
+        }
+        if (start.kind != VALUE_NUMBER ||
+            (howmany.kind != VALUE_NULL && howmany.kind != VALUE_NUMBER)) {
+            value_free(array);
+            value_free(start);
+            value_free(howmany);
+            runtime_error_raise("slice expects whole numbers for the start and"
+                                " count", 1003, "invalid function call");
+            return value_null();
+        }
+        double sd = start.as.number;
+        double cd = howmany.kind == VALUE_NUMBER ? howmany.as.number : 0;
+        if (sd < 0 || sd != (double)(long long)sd ||
+            (howmany.kind == VALUE_NUMBER &&
+             (cd < 0 || cd != (double)(long long)cd))) {
+            value_free(array);
+            value_free(start);
+            value_free(howmany);
+            runtime_error_raise("slice expects a start and count that are whole"
+                                " numbers and not negative", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        size_t n = array.as.array.store ? array.as.array.store->count : 0;
+        size_t at = (size_t)(long long)sd;
+        size_t want = howmany.kind == VALUE_NUMBER ? (size_t)(long long)cd
+                                                   : (at < n ? n - at : 0);
+        if (at > n) {
+            at = n;
+        }
+        if (want > n - at) {
+            want = n - at;
+        }
+        Value *items = want ? malloc(sizeof(Value) * want) : NULL;
+        if (want && !items) {
+            abort();
+        }
+        for (size_t i = 0; i < want; i++) {
+            items[i] = value_copy(array.as.array.store->items[at + i]);
+        }
+        value_free(array);
+        value_free(start);
+        value_free(howmany);
+        return value_array(items, want);
+    }
+
     if (strcmp(expr->as.call.name, "rest") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("rest expects one argument", 1003, "invalid function call");
@@ -37671,6 +37792,94 @@ static Value eval_binary(AstExpr *expr) {
     if (expr->line > 0) {
         current_line = expr->line;
         current_column = expr->column > 0 ? expr->column : previous_column;
+    }
+
+    /* --- `a excluding b` / `a intersecting b` -------------------------------
+     *
+     * SET DIFFERENCE AND INTERSECTION, as infix word operators. MEASURED before
+     * choosing the spelling, because this project rejected `IDENT expression` as
+     * a statement form over FOUR conflicts and the design offered a function form
+     * as the fallback: the operator costs **ZERO** shift/reduce conflicts, at its
+     * own precedence level between comparison and additive. So `a excluding b`
+     * reads as English and the function form was not needed.
+     *
+     * The cost is two RESERVED WORDS, measured too: no identifier in this tree is
+     * named `excluding` or `intersecting` (three matches, all in prose comments),
+     * and the keyword-field rules already let `r.excluding` and
+     * `{ excluding: 1 }` keep working, so what is actually claimed is the name of
+     * a variable, parameter or function -- which nothing has.
+     *
+     * MEMBERSHIP IS `array_find_index`, THE SAME AUTHORITY `contains`, `find` and
+     * `remove_value` USE. PLAT-EQ's sweep established that six routes ask "is this
+     * value present" and must agree; these are the seventh and eighth, and they
+     * agree BY CONSTRUCTION rather than by a test, which is the only way that
+     * property survives an edit. So records compare by VALUE, as PLAT-EQ made
+     * them.
+     *
+     * THE LEFT SIDE'S ORDER AND DUPLICATES ARE PRESERVED. These are filters over
+     * `a`, not set-theoretic sets: `unique` exists separately and composes, so
+     * folding it in here would take away the choice. */
+    int is_excluding = strcmp(op, "excluding") == 0;
+    if (is_excluding || strcmp(op, "intersecting") == 0) {
+        Value left = eval_expr(expr->as.binary.left);
+        if (error_action_pending()) {
+            value_free(left);
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+        Value right = eval_expr(expr->as.binary.right);
+        if (error_action_pending()) {
+            value_free(left);
+            value_free(right);
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+        if (left.kind != VALUE_ARRAY || right.kind != VALUE_ARRAY) {
+            char lp[48], rp[48];
+            char message[256];
+            snprintf(message, sizeof message,
+                     "`%s` works on two lists, got %s and %s", op,
+                     kind_phrase(left.kind, lp, sizeof lp),
+                     kind_phrase(right.kind, rp, sizeof rp));
+            value_free(left);
+            value_free(right);
+            runtime_error_raise(message, 1003, "invalid operand type");
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+        size_t n = left.as.array.store ? left.as.array.store->count : 0;
+        Value *items = n ? malloc(sizeof(Value) * n) : NULL;
+        if (n && !items) {
+            abort();
+        }
+        size_t kept = 0;
+        for (size_t i = 0; i < n; i++) {
+            size_t ignored = 0;
+            int present = array_find_index(right, left.as.array.store->items[i],
+                                           &ignored);
+            if (error_action_pending()) {
+                for (size_t j = 0; j < kept; j++) {
+                    value_free(items[j]);
+                }
+                free(items);
+                value_free(left);
+                value_free(right);
+                current_line = previous_line;
+                current_column = previous_column;
+                return value_null();
+            }
+            if (present != is_excluding) {
+                items[kept++] = value_copy(left.as.array.store->items[i]);
+            }
+        }
+        value_free(left);
+        value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_array(items, kept);
     }
 
     if (strcmp(op, "and") == 0) {

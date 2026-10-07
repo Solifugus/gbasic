@@ -677,6 +677,7 @@ typedef struct {
 %token AS
 %token DIM
 %token PLUS_EQ MINUS_EQ STAR_EQ SLASH_EQ
+%token EXCLUDING INTERSECTING
 %token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
@@ -725,7 +726,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %type <server_item_list> server_item_list
 %type <name_list> server_string_list
 %type <expr> expression or_expression and_expression comparison_expression
-%type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal
+%type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal set_expression
 %type <expr_list> argument_list argument_list_opt array_argument_list
 %type <text> field_name dot_field_name
 %type <record_field_list> record_field_list
@@ -1516,11 +1517,17 @@ not_expression
     ;
 
 comparison_expression
-    : additive_expression { $$ = $1; }
-    | additive_expression comparison_operator additive_expression { $$ = expr_at(ast_binary($2, ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
-    | additive_expression comparison_lens comparison_operator additive_expression {
+    : set_expression { $$ = $1; }
+    | set_expression comparison_operator set_expression { $$ = expr_at(ast_binary($2, ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
+    | set_expression comparison_lens comparison_operator set_expression {
         $$ = expr_at(ast_binary($3, $2, $1, $4), @3.first_line, @3.first_column);
       }
+    ;
+
+set_expression
+    : additive_expression { $$ = $1; }
+    | set_expression EXCLUDING additive_expression { $$ = expr_at(ast_binary(copy_const("excluding"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
+    | set_expression INTERSECTING additive_expression { $$ = expr_at(ast_binary(copy_const("intersecting"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
     ;
 
 additive_expression
@@ -2229,6 +2236,8 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_AND: return AND;
     case TOKEN_OR: return OR;
     case TOKEN_NOT: return NOT;
+    case TOKEN_EXCLUDING: return EXCLUDING;
+    case TOKEN_INTERSECTING: return INTERSECTING;
     case TOKEN_WITH: return WITH;
     case TOKEN_NEW: return NEW;
     case TOKEN_SPAWN: return SPAWN;

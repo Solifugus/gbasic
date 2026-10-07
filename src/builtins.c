@@ -116,6 +116,8 @@ int gbasic_builtin_function(const char *name) {
         "find_by",
         "join_from",
         "first",
+        "last",
+        "slice",
         "rest",
         "left",
         "right",

@@ -101,17 +101,24 @@ A passage leads north."
 
 ### Reserved words
 
-Keywords are matched **case-insensitively**. There are 46, and 44 of them
+Keywords are matched **case-insensitively**. There are 48, and 46 of them
 cannot be used as a variable, parameter or function name:
 
 ```text
 and       as        break     consider  continue  dim       do        each
-else      error     export    false     for       function  gosub     goto
-if        in        library   load      modifier  new       not       nothing
-on        or        print     program   return    spawn     step      stop
-then      to        true      unknown   until     unwatch   use       watch
-watchers  while     with      without
+else      end       error     excluding export    false     for       function
+gosub     goto      if        in        intersecting        library   load
+modifier  new       next      not       nothing   on        or        print
+program   return    spawn     step      stop      then      to        true
+unknown   until     unwatch   use       watch     watchers  while     with
+without
 ```
+
+`excluding` and `intersecting` arrived in 0.6.0 as the set operators, and the
+price was measured before it was taken: no identifier anywhere in this tree was
+named either (the only three matches were in prose comments), and the infix form
+costs **zero** grammar conflicts, which is what decided it over a function form —
+this project rejected `IDENT expression` as a statement form over four.
 
 The remaining two — **`end` and `next`** — are recovered as identifiers by the
 grammar and *may* be used as ordinary names. That is why closing a `for` with
@@ -5834,7 +5841,42 @@ Access and search:
 - `remove_value(array, value)` — remove the first matching value and return the resulting array; when the first argument is an assignable path, the array is updated in place.
 - `find_by(records, field_name, value)` — the first matching record index, or `nothing`.
 - `first(array)` — the first element, or `nothing`.
+- `last(array)` — the last element, or `nothing` *(since 0.6.0)*. `first` had
+  existed since arrays did and this had not, so reading the end meant
+  `a[count(a) - 1]` — arithmetic on a length, and an out-of-range read rather
+  than an answer on an empty list. `take_last` **pops**; `last` only reads.
 - `rest(array)` — a new array without the first element.
+- `slice(array, at [, count])` — a new array of `count` elements from `at`, to
+  the end if no count is given *(since 0.6.0)*. The same shape and the same
+  **0-based** `at` as `byte_slice(s, at [, count])`, deliberately: a second
+  convention for the same idea one type along is how an off-by-one gets written.
+  **Clamped, not refused** — a window legitimately runs past the end, which is
+  what the last page of a report is — while a negative `at` or `count` *is*
+  refused, since it means a computed index is wrong and there is no
+  from-the-end convention to read it as.
+
+Set operations *(since 0.6.0)* — infix word operators, not functions:
+
+- `a excluding b` — the elements of `a` not present in `b`.
+- `a intersecting b` — the elements of `a` also present in `b`.
+
+Both are **filters over the left side**, so its order and its duplicates survive;
+`unique` exists separately and composes, so folding it in would take the choice
+away. Membership is the same question `contains`, `find` and `remove_value` ask,
+through the same code, so records compare **by value** as PLAT-EQ made them and
+`unknown` and `nothing` are ordinary values to match. Two lists are required:
+text is refused rather than treated as a list of characters, because `contains`
+on a string asks a different question with the same shape and guessing which was
+meant is how a set operation silently becomes a substring search.
+
+They bind **tighter than comparison and looser than arithmetic**, so
+`a excluding b = c` is `(a excluding b) = c` and `a excluding [1 + 1]` excludes
+`2`. The cost is the **product of the two lengths** — each element of the left is
+compared against the right until a match — because membership is `=`, which for
+records is deep equality, so there is no key to hash and no order to
+binary-search; `unique` pays the same price for the same reason. Measured as a
+ratio by `tests/run_set_ops.sh`, which is bounded both ways, since a cost that
+quietly got cheaper would leave this paragraph wrong.
 
 Mutation:
 

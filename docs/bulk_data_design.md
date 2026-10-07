@@ -1,8 +1,7 @@
 # Working with lists and records in bulk — 0.6.0 considerations
 
-**Status: §2 SHIPPED (0.6.0 increment 1, 2026-10-06); §3 SHIPPED (increment 2,
-same day, items 1–2 of four); §2a, §2b, §4 proposed; §5 deliberately
-unpriced.** The rest is a list of things to consider for 0.6.0,
+**Status: §2, §3 and §4 SHIPPED (0.6.0 increments 1–3, 2026-10-06); §2a and §2b
+proposed; §5 deliberately unpriced.** The rest is a list of things to consider for 0.6.0,
 with the measurements that say which of them would actually remove loops *in
 this tree* rather than in Python.
 
@@ -483,6 +482,63 @@ compounds, so records compare by value — probably right); whether duplicates a
 preserved on the left (probably yes, since `unique` exists separately); and
 whether these are operators or functions, which is a grammar cost to measure
 rather than guess.
+
+### SHIPPED 2026-10-06 — and the conflict count said operator
+
+`tests/run_set_ops.sh`, 54 self-checking assertions plus a `contains` oracle, a
+measured cost tier, the grammar measurement and the reserved-word controls. Nine
+perturbations proven red.
+
+**THE SPELLING WAS DECIDED BY THE MEASUREMENT THIS SECTION ASKED FOR.** The infix
+word operator costs **zero** shift/reduce conflicts, at its own precedence level
+between comparison and additive — so `a excluding b` reads as English and
+`excluding(a, b)` was not needed. The suite asserts the zero, because that
+measurement is the whole reason for the shape: if it ever starts costing
+conflicts the decision has to be revisited rather than absorbed.
+
+**The price is two reserved words, measured too:** no identifier in this tree was
+named `excluding` or `intersecting` (three matches, all in prose), and the
+keyword-field rules already let `r.excluding` and `{ excluding: 1 }` work — so
+what is claimed is the name of a variable, parameter or function, which nothing
+had. Both halves are asserted, because "the words are reserved" without the
+controls would be indistinguishable from reserving them everywhere, which would
+have been too expensive to take.
+
+**Membership is `array_find_index`, the authority `contains`, `find` and
+`remove_value` already share.** PLAT-EQ's sweep established that six routes ask
+"is this value present" and must agree; these are the seventh and eighth, and they
+agree by construction rather than by a test — the only way that property survives
+an edit. The oracle asserts it anyway, through `contains`, because "by
+construction" is a claim about today's source.
+
+**Filters over the left side, so order and duplicates survive.** `unique` exists
+separately and composes; folding it in would have taken the choice away, and the
+suite pins `unique(a intersecting b)` as the composition.
+
+**The cost is the product of the two lengths, and that is documented rather than
+hidden**, because membership is `=` and for records that is deep equality — no key
+to hash, no order to binary-search. `unique` pays the same price for the same
+reason. The suite measures it as a ratio across a 2x step on both sides (4.0
+against an ideal 4.0) and is bounded **both ways**: a cost that quietly got
+cheaper would leave the reference wrong, which is how this tree's performance
+notes went stale for six weeks once already.
+
+**`last(a)` and `slice(a, at [, count])` shipped with them.** `first` had existed
+since arrays did and `last` had not, so reading the end meant `a[count(a) - 1]` —
+arithmetic on a length, and an out-of-range read rather than an answer on an empty
+list. `slice` takes `byte_slice`'s conventions exactly (0-based `at`, to the end
+with no count) because a second convention for one idea is how an off-by-one gets
+written, and it CLAMPS past the end — a window legitimately runs off the end,
+which is what the last page of a report is — while a negative index is refused,
+there being no from-the-end convention to read it as.
+
+**Deliberately not built:** `take`/`drop` (expressible as `slice`), `flatten` and
+`zip` (no measured need), and `remove_at` (not a gap — `remove(a, i)` already
+removes by index). **Not yet migrated:** the 20 measured "append if not in another
+list" loops, which belong with §7's migrations in increment 7 because their
+goldens are the slow half of this gate; what the suite asserts instead is that the
+operator and the hand-written loop AGREE on real frame data, which is the property
+a migration rests on.
 
 ---
 

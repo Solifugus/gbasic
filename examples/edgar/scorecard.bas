@@ -77,7 +77,7 @@ function by_end(frame, col)
 end function
 
 ' latest value of a column in an FY-only forensic frame (last row = latest year).
-function last(frame, col)
+function last_of(frame, col)
     c = frame[col]
     n = count(c)
     if n = 0 then
@@ -157,11 +157,11 @@ program main(args)
 
     print("")
     print("-- forensic scorecard (latest fiscal year) ---------------------")
-    print("  Piotroski F-Score   " + show(last(pt, "f_score")) + " / 9        (fundamental health, higher better)")
-    print("  Beneish M-Score     " + num2(last(be, "mscore")) + "         (manipulation; flag=" + show(last(be, "flag")) + ", threshold -1.78)")
-    print("  Altman Z\"           " + num2(last(al, "zscore")) + "         (distress; zone=" + show(last(al, "zone")) + ")")
-    print("  Sloan accrual ratio " + num3(last(acc, "accrual_ratio")) + "        (earnings quality; lower/negative better)")
-    print("  Dilution net        " + money_b(last(di, "net")) + "      (buybacks minus stock-based comp)")
+    print("  Piotroski F-Score   " + show(last_of(pt, "f_score")) + " / 9        (fundamental health, higher better)")
+    print("  Beneish M-Score     " + num2(last_of(be, "mscore")) + "         (manipulation; flag=" + show(last_of(be, "flag")) + ", threshold -1.78)")
+    print("  Altman Z\"           " + num2(last_of(al, "zscore")) + "         (distress; zone=" + show(last_of(al, "zone")) + ")")
+    print("  Sloan accrual ratio " + num3(last_of(acc, "accrual_ratio")) + "        (earnings quality; lower/negative better)")
+    print("  Dilution net        " + money_b(last_of(di, "net")) + "      (buybacks minus stock-based comp)")
 
     ' --- composite red flags (evidence, not verdicts) ------------------------
     fl = forensics.flags(facts, subs)
