@@ -33,6 +33,19 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
+- **An aggregate over ragged data** — `sum(rows.amount)` SKIPS absences and warns
+  (2111); `mean` divides by the PRESENT count; all-absent answers `unknown`, not
+  0; `sum([])` still raises. `count` is COUNT(*) and `count(present(x))` is
+  COUNT(col). `present(x)` is also the warning's opt-out — it leaves nothing to
+  skip, so it is silent without disabling other warnings.
+  → `tests/absence/absence_test.bas`
+- **`mode` answers a LIST** — every tied value, or `unknown` when nothing repeats.
+  It used to return the first element, which on money or any price list is always
+  "an answer". Accepts text, which is the case it is actually wanted for.
+  `first(mode(x))` if you want one. → `tests/absence/absence_test.bas`
+- **An absence sorts LAST**, and the two absences are not ordered against each
+  other (ruled 2026-10-07; `frame.sort_by` and core `sort` agree now).
+  → `tests/run_absence.sh`
 - **Set operations on lists** — `a excluding b` and `a intersecting b`, infix
   word operators since 0.6.0 (both words are now reserved). Filters over the LEFT
   side, so its order and duplicates survive; membership is the same `=` that

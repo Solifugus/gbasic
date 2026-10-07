@@ -437,12 +437,12 @@ library nlq
         for each t in extra
             append(allowed, lower(t))
         end for
-        for each named in _tables_named(low)
-            if not contains(allowed, named) then
-                append(problems, { kind: "ungrounded_table", detail: named,
-                                   why: ("the grounding never surfaced it; the query names a table " +
-                                         "nobody offered, which runs if the name happens to exist") })
-            end if
+        ' The loop stays because it builds a record per problem; the filter is
+        ' `excluding`.
+        for each named in _tables_named(low) excluding allowed
+            append(problems, { kind: "ungrounded_table", detail: named,
+                               why: ("the grounding never surfaced it; the query names a table " +
+                                     "nobody offered, which runs if the name happens to exist") })
         end for
         return problems
     end function

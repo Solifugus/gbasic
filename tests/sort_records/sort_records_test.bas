@@ -158,10 +158,16 @@ program main( args )
     sort(plain)
     check("one argument unchanged   ", plain, [1, 2, 3])
 
-    print "-- an absent key is an absence, ranked as `sort` already ranks one"
+    print "-- an absent key is an absence, and absences sort LAST"
+    ' RULED 2026-10-07. `frame.sort_by` had already chosen last and core `sort` had
+    ' chosen first; this is the resolution of the disagreement increment 2 found and
+    ' pinned, and it is what lets `frame.sort_by` be built on core `sort` at all.
+    ' A MISSING FIELD AND AN EXPLICIT `unknown` ARE ALIKE here: both are absences,
+    ' and neither is a small number.
     holes = [ { x: 3 }, { x: unknown }, { x: 1 }, { y: "no x at all" } ]
-    check("absent and unknown alike ", sort(holes, { by: "x" }).x, [unknown, unknown, 1, 3])
-    check("scalar sort agrees       ", sort([3, unknown, 1]), [unknown, 1, 3])
+    check("absent and unknown alike ", sort(holes, { by: "x" }).x, [1, 3, unknown, unknown])
+    check("scalar sort agrees       ", sort([3, unknown, 1]), [1, 3, unknown])
+    check("and descending too       ", sort(holes, { by: "x", descending: true }).x, [unknown, unknown, 3, 1])
 
     print "-- REFUSALS"
     on error goto next

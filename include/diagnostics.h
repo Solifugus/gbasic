@@ -123,6 +123,12 @@ gb_diagnostics *gb_get_active_sink(void);
 void            gb_report(gb_diag_code code, int subcode, const char *path,
                           gb_span span, const char *message);
 
+/* A runtime WARNING to the active sink, with NO stderr fallback: the caller owns
+ * the text form (see gb_report_warning in src/diagnostics.c). Answers 1 if the
+ * sink took it, 0 if there is no sink and the caller must print it itself. */
+int             gb_report_warning(int subcode, const char *path, gb_span span,
+                                  const char *message);
+
 /* Same as gb_report, but to an explicit sink instead of the process-global one
  * (NULL sink => immediate stderr, byte-identical to gb_report's fallback). The
  * reentrant parser passes its per-parse ctx->diags here so concurrent parses do

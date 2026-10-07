@@ -98,12 +98,18 @@ program main( args )
 
     print "-- THE ONE DELIBERATE DIVERGENCE: an absence"
     ' `<` refuses because there is no answer; `sort` must place it, and ranks it
-    ' below every ordinary value. If this ever starts agreeing, either `<` has
+    ' AFTER every ordinary value (ruled 2026-10-07, matching `frame.sort_by` and
+    ' PostgreSQL's `ORDER BY ... ASC`). If this ever starts agreeing, either `<` has
     ' begun inventing an order or `sort` has begun refusing arrays with holes --
     ' and the second would break `sort([1, unknown, 3])`, which works today.
     fails("`<` refuses an absence   ", operator_answers(unknown, 1), false)
     fails("sort places an absence   ", sorter_answers(unknown, 1), true)
-    fails("and ranks it first       ", string(sort([3, unknown, 1])), "[unknown,1,3]")
+    fails("and ranks it last        ", string(sort([3, unknown, 1])), "[1,3,unknown]")
+    ' AND THE TWO ABSENCES ARE NOT ORDERED AGAINST EACH OTHER: the old comparator
+    ' put `nothing` before `unknown`, inventing an order between two different ways
+    ' of having no value. Equal, so a stable sort keeps entry order.
+    fails("absences keep entry order", string(sort([unknown, 1, nothing])), "[1,unknown,nothing]")
+    fails("and the other way round  ", string(sort([nothing, 1, unknown])), "[1,nothing,unknown]")
 
     print "-- min/max take the same verdict as sort, being the same gate"
     on error goto next

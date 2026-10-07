@@ -3828,6 +3828,27 @@ static void runtime_warn_at(const char *message, int code, const char *source,
      * warning and exactly 2 shell checks match on its text
      * (`run_inbox.sh`, `run_http.sh`), both of which grep for
      * `warning: <the message>` and survive anything appended after it. */
+    /* IN JSON MODE THE SINK TAKES IT INSTEAD. Pre-existing for every warning code
+     * and found by tests/run_absence.sh: this fprintf is not JSON, so any program
+     * that warned under `--json-diagnostics` put a non-JSON line into a JSON
+     * stream -- which is the defect run_parse_exit.sh exists for, one channel
+     * along, and that stream is gBASIC Studio's own consumer.
+     *
+     * THE TEXT PATH IS UNTOUCHED, deliberately: the format above was chosen by
+     * measurement (0 goldens contain a printed warning; exactly 2 shell checks
+     * grep for `warning: <the message>`), and the sink's own formatter writes a
+     * different shape, so routing every run through it would rewrite that line
+     * for everybody. Only the JSON consumer's stream changes. */
+    if (trace_json_mode) {
+        gb_span span = {0};
+        span.start_line = line;
+        span.start_column = column;
+        span.end_line = line;
+        span.end_column = column;
+        if (gb_report_warning(code, runtime_error_path(), span, message)) {
+            return;
+        }
+    }
     fprintf(stderr, "warning: %s at %s:%d:%d [%d]\n", message,
             runtime_error_path() ? runtime_error_path() : "?",
             line, column, code);
@@ -12542,14 +12563,6 @@ static Value reverse_array_ref(Value *array, int *changed) {
     return value_copy(*array);
 }
 
-static int value_unique_comparable(Value value) {
-    return value.kind == VALUE_NUMBER ||
-        value.kind == VALUE_STRING ||
-        value.kind == VALUE_BOOL ||
-        value.kind == VALUE_DATETIME ||
-        value.kind == VALUE_NULL ||
-        value.kind == VALUE_UNKNOWN;
-}
 
 /* ONE DEFINITION OF EQUALITY, and `unique` used to have its own.
  *
@@ -12564,9 +12577,16 @@ static int value_unique_comparable(Value value) {
  * Callers hold BORROWED values, so both sides are copied: values_equal
  * consumes what it is given.
  *
- * The scalar refusal above it stays. Lifting it would be a feature change
- * (deep comparison of records, O(n^2) in a different sense), not part of
- * making the routes agree. */
+ * THE SCALAR REFUSAL ABOVE IT IS GONE AS OF 0.6.0, and this comment used to say
+ * it stayed -- correctly, because lifting it is a feature change rather than part
+ * of making the routes agree, and nothing had asked. `frame.dedupe` is what asked:
+ * it deduplicated rows by SERIALIZING each one to a binary blob and searching a
+ * growing list of blobs, which is `unique` written out by hand with an allocation
+ * per row, and it existed only because `unique` would not take records. What
+ * decides a duplicate is `=`, and PLAT-EQ made `=` answer deeply for records and
+ * arrays, so the refusal was asking for ORDERABILITY in order to decide EQUALITY
+ * -- two different questions, and `contains([{a:1}], {a:1})` had always answered
+ * the second. The cost is unchanged: it was O(n^2) for scalars already. */
 static int unique_values_equal(Value left, Value right) {
     return values_equal(value_copy(left), value_copy(right));
 }
@@ -12576,14 +12596,10 @@ static int array_all_unique_comparable(Value array) {
         runtime_error_raise("unique expects an array", 1003, "invalid function call");
         return 0;
     }
-    for (size_t i = 0; i < array.as.array.store->count; i++) {
-        if (!value_unique_comparable(array.as.array.store->items[i])) {
-            runtime_error_raise("unique supports only scalar array values",
-                                1003,
-                                "invalid function call");
-            return 0;
-        }
-    }
+    /* Every kind answers `=` after PLAT-EQ's three instalments, so there is
+     * nothing left to refuse here beyond "not a list". Kept as a function rather
+     * than inlined, because the shape says where the rule WAS and both call sites
+     * still need the not-a-list check. */
     return 1;
 }
 
@@ -12651,14 +12667,26 @@ static Value unique_array_ref(Value *array, int *changed) {
     return value_copy(*array);
 }
 
+/* WHERE AN ABSENCE SORTS: **LAST**, and the two absences compare EQUAL to each
+ * other.
+ *
+ * RULED 2026-10-07 by Matthew, and the question was real rather than an
+ * oversight: `ORDER BY x ASC` puts NULLs LAST in PostgreSQL and Oracle and FIRST
+ * in MySQL and SQLite, so there is no convention to appeal to. `frame.sort_by`
+ * had already chosen last, and core `sort` had chosen first, which is the
+ * disagreement increment 2's migration FOUND and pinned rather than resolved;
+ * this is the resolution, and it is what lets `frame.sort_by` be built on core
+ * `sort` at all.
+ *
+ * TWO ABSENCES COMPARE EQUAL rather than `nothing` before `unknown`. The old rank
+ * invented an order between two different ways of having no value, and §2a's rule
+ * for aggregates is to treat them alike; with a STABLE sort, equal means they keep
+ * the order they arrived in, which invents nothing. */
 static int value_sort_rank(Value value) {
-    if (value.kind == VALUE_NULL) {
-        return 0;
-    }
-    if (value.kind == VALUE_UNKNOWN) {
+    if (value.kind == VALUE_NULL || value.kind == VALUE_UNKNOWN) {
         return 1;
     }
-    return 2;
+    return 0;
 }
 
 /* WHAT HAS AN ORDER, and the answer is taken from the ORDERING OPERATOR rather
@@ -12774,8 +12802,8 @@ static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
     if (left_rank != right_rank) {
         return left_rank < right_rank ? -1 : 1;
     }
-    if (left_rank < 2) {
-        return 0;
+    if (left_rank != 0) {
+        return 0;   /* both absent, and the two absences are not ordered */
     }
 
     if (left->kind == VALUE_NUMBER) {
@@ -35484,6 +35512,64 @@ static Value eval_call(AstExpr *expr) {
         return result;
     }
 
+    /* `present(a)` -- the list without its absences.
+     *
+     * TWO JOBS, and the second is what makes the aggregate warning affordable.
+     *
+     * (1) SQL has TWO counts and gBASIC has one: `count([10, unknown, 7])` is 3,
+     * which is `COUNT(*)`, and `COUNT(amount)` is 2. Silently changing `count` to
+     * mean the second would move existing answers, so the second question gets its
+     * own spelling: `count(present(rows.amount))`.
+     *
+     * (2) IT IS THE WARNING'S OPT-OUT, and it needs no special case to be one --
+     * an aggregate over `present(x)` has nothing absent to skip, so it is silent
+     * because there is nothing to say. That matters because `on warning ignore` is
+     * the only other way to quiet a warning and it is a BLUNT instrument, turning
+     * off every warning in the frame; a remedy that says "I meant to skip these"
+     * at the call site is what keeps 2111 from becoming noise authors learn to
+     * disable.
+     *
+     * An absence is `nothing` or `unknown`, treated alike -- §2a's rule, because
+     * the distinction does not help here and two rules are a trap people hit once
+     * a year. */
+    if (strcmp(expr->as.call.name, "present") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("present expects one argument", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        Value array = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        if (array.kind != VALUE_ARRAY) {
+            char phrase[48];
+            char m[160];
+            snprintf(m, sizeof m,
+                     "present expects a list, got %s -- for one value, `default`"
+                     " supplies a replacement",
+                     kind_phrase(array.kind, phrase, sizeof phrase));
+            value_free(array);
+            runtime_error_raise(m, 1003, "invalid function call");
+            return value_null();
+        }
+        size_t n = array.as.array.store ? array.as.array.store->count : 0;
+        Value *items = n ? malloc(sizeof(Value) * n) : NULL;
+        if (n && !items) {
+            abort();
+        }
+        size_t kept = 0;
+        for (size_t i = 0; i < n; i++) {
+            ValueKind k = array.as.array.store->items[i].kind;
+            if (k != VALUE_NULL && k != VALUE_UNKNOWN) {
+                items[kept++] = value_copy(array.as.array.store->items[i]);
+            }
+        }
+        value_free(array);
+        return value_array(items, kept);
+    }
+
     /* `slice(a, at [, count])` -- the same shape and the same conventions as
      * `byte_slice(s, at [, count])`, deliberately: 0-based `at`, and to the end
      * when no count is given. A second convention for the same idea one type
@@ -36294,29 +36380,213 @@ static Value eval_call(AstExpr *expr) {
          * double path below untouched.
          *
          * Placed before the numeric gate because that gate is what refused. */
-        /* AN ARRAY CONTAINING AN ABSENCE FALLS THROUGH to the numeric gate,
-         * which refuses -- deliberately, and this was caught by probing what
-         * the fixture should assert rather than by reading. `sort`'s comparator
-         * ranks `unknown` below every ordinary value, so routing an absence
-         * through it made `max([1, unknown, 3])` answer 3 while
-         * `sum([1, unknown, 3])` still refused: §2a's skip-the-absence rule
-         * arriving early, WITHOUT §2a's warning, and inconsistently between two
-         * aggregates. A silent answer over data with holes in it is the thing
-         * this release has a rule for; it belongs with that rule, not ahead of
-         * it. Increment 4 makes both consistent AND loud. */
-        int arg_has_absence = 0;
+        /* --- §2a: AN AGGREGATE SKIPS AN ABSENCE, AND SAYS IT DID ------------
+         *
+         * Every aggregate here used to REFUSE an array with a hole in it
+         * (`sum expects a numeric array`), which made projection useless on the
+         * first ragged row -- and real business data is ragged.
+         *
+         * SQL'S ANSWER, WITH SQL'S WARNING, and both halves are the standard
+         * rather than a convention: `SUM` ignores NULLs, `AVG` divides by the
+         * NON-NULL count, and the SQL standard raises SQLSTATE 01003, "null value
+         * eliminated in set function" -- class 01 being the warning class.
+         * PostgreSQL does not emit it; gBASIC does, as 2111.
+         *
+         * WHY A WARNING WORKS HERE WHEN THE SAME SHAPE FAILED ON 2026-10-03: the
+         * absence-coercion warning was recommended and then WITHDRAWN because it
+         * fired on correct code at 8 sites of 10 -- showing that something is
+         * absent is an idiom, so `print("find=" + find(f, "zz"))` is
+         * indistinguishable from the bug. There is no counterpart here. Nobody
+         * writes `sum(rows.amount)` IN ORDER TO skip nulls; they write it because
+         * they want the total, and if a row has no amount they want to know. The
+         * expected false-positive rate is near zero, which is the bar
+         * `warning_model_design.md` row 9 shipped at.
+         *
+         * THE SILENT THING IS THE DANGEROUS THING, which is §2's own steward
+         * worry: skipping WITH a warning is not silent, `on warning stop` turns it
+         * into a failure for a test run, and `present(x)` says "I meant that" at
+         * the call site without disabling anything else.
+         *
+         * `len` AND `count` DO NOT COME THROUGH HERE AT ALL, which is worth saying
+         * because the obvious implementation exempts them and that exemption would
+         * be DEAD CODE: both are answered by their own branches earlier in
+         * `eval_call` (`builtin_len_value`, and `count` at the top). They are
+         * `COUNT(*)` and must keep counting rows; `COUNT(amount)` is
+         * `count(present(x))`. A `len` guard WAS written here first and a
+         * perturbation proved it could never fire -- the check that was supposed to
+         * catch its removal stayed green -- so it is gone rather than left as a
+         * rule a reader would trust.
+         *
+         * ALL-ABSENT ANSWERS `unknown`, NOT 0 -- "there was nothing to add" is not
+         * "the total is zero". That leaves a deliberate asymmetry with `sum([])`,
+         * which still RAISES: an empty list is a programming mistake, while
+         * all-absent is a fact about the data. Decided rather than inherited.
+         *
+         * BOTH ABSENCES ARE TREATED ALIKE. `unknown` is the close match for NULL
+         * (nobody knows) and `nothing` is the program's own data saying there is
+         * no value, but the distinction does not help an aggregate and two rules
+         * here would be a trap people hit once a year. */
         if (arg.kind == VALUE_ARRAY && arg.as.array.store) {
-            for (size_t i = 0; i < arg.as.array.store->count; i++) {
+            size_t n = arg.as.array.store->count;
+            size_t absent = 0;
+            for (size_t i = 0; i < n; i++) {
                 ValueKind k = arg.as.array.store->items[i].kind;
-                if (k == VALUE_UNKNOWN || k == VALUE_NULL) {
-                    arg_has_absence = 1;
-                    break;
+                if (k == VALUE_NULL || k == VALUE_UNKNOWN) {
+                    absent++;
                 }
             }
+            if (absent > 0) {
+                if (absent == n) {
+                    /* Nothing was present, so there is no answer to give -- and
+                     * `unknown` is the answer, not a refusal and not zero. Still
+                     * warned, because the caller asked for a total and got none. */
+                    warn_fmt(2111, "absence",
+                             "%s has nothing to work with: all %zu values are"
+                             " absent, so the answer is `unknown`", 
+                             expr->as.call.name, n);
+                    value_free(arg);
+                    return value_unknown();
+                }
+                warn_fmt(2111, "absence",
+                         "%s skipped %zu absent value%s of %zu, so the answer is"
+                         " over the %zu that are present -- wrap the list in"
+                         " present() to say you meant that",
+                         expr->as.call.name, absent, absent == 1 ? "" : "s", n,
+                         n - absent);
+                if (error_action_pending()) {   /* `on warning stop` escalated it */
+                    value_free(arg);
+                    return value_null();
+                }
+                Value *kept = malloc(sizeof(Value) * (n - absent));
+                if (!kept) {
+                    abort();
+                }
+                size_t k = 0;
+                for (size_t i = 0; i < n; i++) {
+                    ValueKind vk = arg.as.array.store->items[i].kind;
+                    if (vk != VALUE_NULL && vk != VALUE_UNKNOWN) {
+                        kept[k++] = value_copy(arg.as.array.store->items[i]);
+                    }
+                }
+                value_free(arg);
+                arg = value_array(kept, k);
+            }
+        }
+        /* --- `mode`: EVERY TIED VALUE, OR `unknown` -------------------------
+         *
+         * THREE DEFECTS, ALL MEASURED AND ALL SHIPPED UNTIL NOW:
+         *
+         *   mode([1,1,2,2])  answered 1   -- a tie, resolved by SOURCE ORDER
+         *   mode([2,2,1,1])  answered 2   -- the same multiset, a different answer
+         *   mode([1,2,3])    answered 1   -- there is NO mode; nothing repeats
+         *   mode(money list) answered the first element, for the same reason
+         *
+         * THE LAST ROW IS THE SHARP ONE: on continuous data -- money, measurements,
+         * any real price list -- every value is unique, so `mode` returned the
+         * first element and ALWAYS LOOKED LIKE AN ANSWER, with nothing downstream
+         * able to tell it from a real mode. SQL:2003's `MODE()` is
+         * implementation-defined on ties; this project's bar is to refuse rather
+         * than guess.
+         *
+         * SO IT ANSWERS AN ARRAY -- the only aggregate that does, and deliberately:
+         * returning one of several tied values because it came first is the thing
+         * being stopped, and a caller cannot tell a tie from a single mode unless
+         * the shape says so. `first(mode(x))` is the explicit "give me one".
+         * MEASURED BEFORE CHANGING THE SHAPE: nothing in stdlib, examples or tests
+         * calls `mode`, so the fix costs no migration.
+         *
+         * NOTHING REPEATS MEANS NO MODE: `unknown`, not the first element.
+         *
+         * TEXT IS ACCEPTED, and this is the one aggregate where text is the COMMON
+         * case -- the most frequent category, city or status code. Numeric-only
+         * made it nearly useless for the data people actually have. Equality is
+         * `values_equal`, the authority every other membership route uses, so a
+         * record counts as equal to an identical record.
+         *
+         * THE TIE LIST IS SORTED when its values are orderable, so the same
+         * multiset gives the same answer whatever order it arrived in -- which is
+         * the defect, one level up. Where they are NOT orderable (records, arrays)
+         * the list is in first-seen order; the complete answer is there either way,
+         * and inventing an order over records is what `sort` itself refuses. */
+        if (strcmp(expr->as.call.name, "mode") == 0 && arg.kind == VALUE_ARRAY) {
+            size_t n = arg.as.array.store ? arg.as.array.store->count : 0;
+            if (n == 0) {
+                runtime_error_raise("mode expects a non-empty array", 1003,
+                                    "invalid function call");
+                value_free(arg);
+                return value_null();
+            }
+            size_t *tally = malloc(sizeof(size_t) * n);
+            if (!tally) {
+                abort();
+            }
+            size_t best = 0;
+            for (size_t i = 0; i < n; i++) {
+                tally[i] = 0;
+                for (size_t j = 0; j < n; j++) {
+                    if (values_equal(value_copy(arg.as.array.store->items[i]),
+                                     value_copy(arg.as.array.store->items[j]))) {
+                        tally[i]++;
+                    }
+                    if (error_action_pending()) {
+                        free(tally);
+                        value_free(arg);
+                        return value_null();
+                    }
+                }
+                if (tally[i] > best) {
+                    best = tally[i];
+                }
+            }
+            if (best < 2) {
+                /* NOTHING REPEATS. The commonest case on continuous data, and the
+                 * one that used to return the first element with a straight face. */
+                free(tally);
+                value_free(arg);
+                return value_unknown();
+            }
+            Value *ties = malloc(sizeof(Value) * n);
+            if (!ties) {
+                abort();
+            }
+            size_t tie_count = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (tally[i] != best) {
+                    continue;
+                }
+                int already = 0;
+                for (size_t k = 0; k < tie_count; k++) {
+                    if (values_equal(value_copy(ties[k]),
+                                     value_copy(arg.as.array.store->items[i]))) {
+                        already = 1;
+                        break;
+                    }
+                }
+                if (!already) {
+                    ties[tie_count++] = value_copy(arg.as.array.store->items[i]);
+                }
+            }
+            free(tally);
+            value_free(arg);
+            int orderable = 1;
+            for (size_t i = 0; i < tie_count && orderable; i++) {
+                if (!value_sort_comparable(ties[i]) ||
+                    ties[i].kind != ties[0].kind) {
+                    orderable = 0;
+                }
+            }
+            Value out = value_array(ties, tie_count);
+            if (orderable && tie_count > 1) {
+                SortSpec plain;
+                memset(&plain, 0, sizeof plain);
+                sort_values_stable(out.as.array.store->items,
+                                   out.as.array.store->count, &plain);
+            }
+            return out;
         }
         if ((strcmp(expr->as.call.name, "min") == 0 ||
              strcmp(expr->as.call.name, "max") == 0) &&
-            arg.kind == VALUE_ARRAY && !array_is_numeric(arg) && !arg_has_absence) {
+            arg.kind == VALUE_ARRAY && !array_is_numeric(arg)) {
             if (!array_all_sort_comparable(arg, expr->as.call.name)) {
                 value_free(arg);
                 return value_null();
@@ -36500,21 +36770,10 @@ static Value eval_call(AstExpr *expr) {
             result = (sorted[count / 2 - 1] + sorted[count / 2]) / 2.0;
         }
         free(sorted);
-    } else if (strcmp(name, "mode") == 0) {
-        result = arg.as.array.store->items[0].as.number;
-        size_t best_count = 0;
-        for (size_t i = 0; i < count; i++) {
-            size_t current_count = 0;
-            for (size_t j = 0; j < count; j++) {
-                if (arg.as.array.store->items[i].as.number == arg.as.array.store->items[j].as.number) {
-                    current_count++;
-                }
-            }
-            if (current_count > best_count) {
-                best_count = current_count;
-                result = arg.as.array.store->items[i].as.number;
-            }
-        }
+    /* `mode` IS HANDLED ABOVE, before the numeric gate, because it accepts text.
+     * Its old branch lived here and answered the FIRST element on continuous data;
+     * it is removed rather than left unreachable, so nothing can quietly come back
+     * to it. */
     } else if (strcmp(name, "variance") == 0 || strcmp(name, "stdev") == 0 ||
                strcmp(name, "pvariance") == 0 || strcmp(name, "pstdev") == 0 ||
                strcmp(name, "skewness") == 0 || strcmp(name, "kurtosis") == 0) {

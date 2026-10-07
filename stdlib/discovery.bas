@@ -1667,18 +1667,10 @@ library discovery
         for each q in qb
             append(tb, q.kind + ": " + q.text)
         end for
-        only_a = []
-        for each x in ta
-            if not contains(tb, x) then
-                append(only_a, x)
-            end if
-        end for
-        only_b = []
-        for each x in tb
-            if not contains(ta, x) then
-                append(only_b, x)
-            end if
-        end for
+        ' Core set difference (0.6.0). This was the textbook shape written out by
+        ' hand -- and membership is the same `=` the loop's `contains` asked.
+        only_a = ta excluding tb
+        only_b = tb excluding ta
         differences = []
         if ca.expression != cb.expression then
             append(differences, "the expression differs: " + ca.expression + "   versus   " + cb.expression)
@@ -1694,15 +1686,13 @@ library discovery
         end for
         ' READ SIDES that differ change which rows exist at all, so they belong
         ' beside the predicates rather than under them.
-        for each x in ra.reads
-            if not contains(rb.reads, x) then
-                append(differences, "only the first reads " + x)
-            end if
+        ' The loop stays because it builds a SENTENCE per difference; what moved is
+        ' the filter, which is `excluding`.
+        for each x in ra.reads excluding rb.reads
+            append(differences, "only the first reads " + x)
         end for
-        for each x in rb.reads
-            if not contains(ra.reads, x) then
-                append(differences, "only the second reads " + x)
-            end if
+        for each x in rb.reads excluding ra.reads
+            append(differences, "only the second reads " + x)
         end for
         return { shared: shared,
                  differences: differences,

@@ -10,6 +10,10 @@ print len(scores)
 print sum(scores)
 print mean(scores)
 print median(scores)
+' `mode` answers EVERY tied value as a list since 0.6.0, so `[91]` rather than
+' 91 -- a caller cannot otherwise tell one mode from a tie, which is what made the
+' old shape return the first element on continuous data and look like an answer.
 print mode(scores)
+print first(mode(scores))
 print min(scores)
 print max(scores)

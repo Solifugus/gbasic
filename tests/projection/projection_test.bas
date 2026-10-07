@@ -159,24 +159,20 @@ program main( args )
     check("any refuses non-boolean  ", contains(error.message, "takes a boolean field"), true)
     check("and promises no bad remedy", contains(error.message, "rows.amount > 0"), false)
     error.clear()
-    ' AN ARRAY WITH HOLES still refuses, consistently across aggregates, until
-    ' the absence rules land with their warning. `sort`'s comparator ranks
-    ' `unknown` below every ordinary value, so routing one through it made `max`
-    ' answer while `sum` refused -- the skip-the-absence rule arriving early and
-    ' silently. Pinned so it cannot arrive that way again.
-    m = max(mixed.a)
-    check("max over holes refuses   ", contains(error.message, "numeric array"), true)
-    error.clear()
-    s2 = sum(mixed.a)
-    check("sum over holes refuses   ", contains(error.message, "numeric array"), true)
-    ' AND IT NAMES THE ELEMENT, which over a projection is the whole question --
-    ' an array of absences means a ROW is missing the field, and `sum expects a
-    ' numeric array` alone leaves the author to find which. It also removed an
-    ' asymmetry this increment introduced: `[{USD}"1.00", 7]` named element 1
-    ' while `[7, {USD}"1.00"]` answered the terse sentence, so the quality of the
-    ' diagnostic depended on which kind happened to come first.
-    check("and names the element     ", contains(error.message, "element 1 is unknown"), true)
-    error.clear()
+    ' AN ARRAY WITH HOLES NO LONGER REFUSES -- increment 4 shipped §2a's rule, so
+    ' an aggregate SKIPS an absence and WARNS that it did (2111, SQL's own
+    ' SQLSTATE 01003). These checks used to assert the refusal, which was the
+    ' DEFERRAL rather than the design, and they are the pins that went red when
+    ' the rule landed, which is what pins are for. The aggregates' own behaviour
+    ' is asserted in tests/run_absence.sh; what belongs HERE is that a projection
+    ' is what makes a hole reachable in the first place.
+    on warning ignore
+    check("sum over a hole answers  ", sum(mixed.a), 4)
+    check("max over a hole answers  ", max(mixed.a), 3)
+    check("and both agree on present", sum(present(mixed.a)), 4)
+    on warning print
+    ' THE ELEMENT IS STILL NAMED where the value is genuinely the wrong KIND
+    ' rather than absent -- the two are different faults and only one is skipped.
     s3 = sum([7, {USD}"1.00"])
     check("either order names it    ", contains(error.message, "element 1 is money"), true)
     ' AND `money` TAKES NO ARTICLE: it is a mass noun, as are `nothing` and

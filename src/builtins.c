@@ -118,6 +118,7 @@ int gbasic_builtin_function(const char *name) {
         "first",
         "last",
         "slice",
+        "present",
         "rest",
         "left",
         "right",

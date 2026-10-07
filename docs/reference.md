@@ -5935,19 +5935,24 @@ the two routes give the identical answer.
 gap.** Fields, several fields and per-field direction cover every record sort
 measured in this tree; a comparator is the one piece of code everyone gets wrong
 (`a - b` against `a < b`, and returning a boolean silently half-sorts); and it
-would cost a gBASIC call per comparison, *O(n log n)* times, in a tree-walking
-interpreter. A declared collation (`using: {trimmed; caseless}`) is likewise not
+would cost an interpreted call at every comparison the merge makes, in a
+tree-walking interpreter. (No complexity is cited here because there is nothing to
+measure: the form does not exist.) A declared collation (`using: {trimmed; caseless}`) is likewise not
 here: of 73 `sort` call sites in this tree none orders a lowered, trimmed or
 naturally-collated key, and a comparison lens is a grammar construct rather than
 a value, so nothing can pass one as an argument. If a real case appears that
 `by` cannot express, that case is the argument.
 
-**Where an absence sorts is not settled across the tree.** Core `sort` ranks
-`nothing` then `unknown` **below** every ordinary value; `frame.sort_by` ranks an
-absence **last**. There is no universal convention to appeal to — `ORDER BY x
-ASC` puts NULLs last in PostgreSQL and Oracle and first in MySQL and SQLite — so
-`frame.sort_by` is deliberately **not** built on core `sort` yet, and
-`tests/run_sort_records.sh` pins both answers so neither can move alone.
+**An absence sorts LAST**, and the two absences are **not ordered against each
+other** *(ruled 2026-10-07)*. There is no universal convention to appeal to —
+`ORDER BY x ASC` puts NULLs last in PostgreSQL and Oracle and first in MySQL and
+SQLite — so this was a choice gBASIC had to make, and `frame.sort_by` had already
+made it. Core `sort` ranked them first until 0.6.0, which is the disagreement that
+suite found and pinned; `frame.sort_by` is now built on core `sort`, and the two
+cannot drift again. Two absences compare **equal**, so with a stable sort they
+keep the order they arrived in rather than being given an invented one. Under
+`descending: true` they come first, which is the consequence of reversing the
+comparison rather than a second rule — and is what PostgreSQL does too.
 
 **What has an order is taken from the `<` operator** *(since 0.6.0)*, not
 decided separately: numbers, strings, booleans, date/times, **money** and
@@ -5976,10 +5981,13 @@ Aggregates:
   is overflow-checked the same way. `mean` keeps the result below the minor unit
   in money's guard digits, so the average of 32.50, 7.00 and 19.95 displays as
   `19.82` and multiplies back by 3 to exactly `59.45`.
-- `median(array)` / `mode(array)` and the *Statistics* summaries below stay
-  **numeric**. A variance of money is money squared, and the rest were not among
-  the aggregates the loop survey measured; see §4 of
-  `docs/bulk_data_design.md`.
+- `median(array)` — the statistical convention on an even count: the mean of the
+  two middle values, so `median([4,1,2,3])` is `2.5`.
+- `mode(array)` — **every tied value, as a list**, or `unknown` when nothing
+  repeats *(changed in 0.6.0; see below)*.
+- The *Statistics* summaries below stay **numeric**. A variance of money is money
+  squared, and the rest were not among the aggregates the loop survey measured;
+  see §4 of `docs/bulk_data_design.md`.
 - `min(array)` / `max(array)` — extremes, over **anything `sort` orders**
   *(since 0.6.0)*, so text, dates, money and durations as well as numbers. An
   array containing an absence is still refused, consistently with `sum`, until
@@ -5988,6 +5996,76 @@ Aggregates:
   `all([])` is `true`, the usual vacuous-truth convention. An **absence is not
   true**: a row that never said it was paid has not been paid, so
   `all(rows.paid)` is `false` when a row lacks the field.
+
+#### An aggregate skips an absence, and says it did
+
+*(since 0.6.0)* A list with a hole in it used to make every aggregate refuse
+(`sum expects a numeric array`), which made projection useless on the first
+ragged row — and real business data is ragged. The rule is **SQL's, with SQL's
+warning**:
+
+```basic
+sum([10, unknown, 7])      ' 17        -- and warns, code 2111
+mean([10, unknown, 7])     ' 8.5       -- 17 / 2, the PRESENT count
+max([10, unknown, 7])      ' 10
+count([10, unknown, 7])    ' 3         -- COUNT(*): rows, not values
+count(present([10, unknown, 7]))  ' 2  -- COUNT(amount)
+sum([unknown, nothing])    ' unknown   -- not 0
+sum([])                    ' RAISES    -- an empty list is a mistake
+```
+
+- **`mean` divides by the number present**, not the length. Skipping the
+  absences and dividing by the full count makes every average quietly too low.
+- **All-absent answers `unknown`, not `0`.** "There was nothing to add" is not
+  "the total is zero". `sum([])` still *raises*, and the asymmetry is deliberate:
+  an empty list is a programming mistake, all-absent is a fact about the data.
+- **`nothing` and `unknown` are treated alike here.** `unknown` is the close
+  match for SQL's `NULL` and `nothing` is the program's own data saying there is
+  no value, but the distinction does not help an aggregate and two rules would be
+  a trap people hit once a year. (`=` still tells them apart, so `unique` keeps
+  them as two values.)
+- **`present(array)`** — the list without its absences. It gives SQL's second
+  count a spelling of its own instead of silently moving `count`, and it is the
+  warning's **opt-out**: an aggregate over `present(x)` has nothing to skip, so
+  it is silent because there is nothing to say. That matters because
+  `on warning ignore` is the only other way to quiet it and it covers every
+  warning in the frame.
+- **The warning is the point.** Skipping *silently* is the dangerous thing;
+  skipping with a warning is not silent, and `on warning stop` turns it into a
+  failure for a test run while production keeps the ergonomics. The SQL standard
+  raises exactly this as SQLSTATE `01003`, *"null value eliminated in set
+  function"* — class `01` being the warning class. Some engines emit it;
+  PostgreSQL does not.
+
+#### `mode` answers a list
+
+*(changed in 0.6.0)* `mode` used to return **one** value, chosen by source order,
+and that was wrong three ways at once — measured:
+
+| | answered | now |
+|---|---|---|
+| `mode([1,1,2,2])` | `1` | `[1, 2]` |
+| `mode([2,2,1,1])` | `2` | `[1, 2]` |
+| `mode([1,2,3])` | `1` | `unknown` |
+| `mode([19.95, 32.50, 7.00])` | `19.95` | `unknown` |
+
+The last row is the sharp one: **on continuous data — money, measurements, any
+real price list — every value is unique, so `mode` returned the first element and
+always looked like an answer**, with nothing downstream able to tell it from a
+real mode. SQL:2003's `MODE()` is implementation-defined on ties; this is the
+higher bar.
+
+So it answers **every tied value, as a list** — the only aggregate that answers a
+list, because a caller cannot otherwise tell a tie from a single mode, and
+returning one of several because it came first is the thing being stopped.
+`first(mode(x))` is the explicit "give me one". Nothing repeating means
+**`unknown`**, not the first element. **Text is accepted**, which is the one
+aggregate where text is the *common* case (the most frequent category, city or
+status code); equality is `=`, so an identical record counts as a repeat. The tie
+list is **sorted** where its values are orderable, so the same multiset gives the
+same answer whatever order it arrived in; where they are not (records, arrays) it
+is in first-seen order, since inventing an order over records is what `sort`
+itself refuses to do.
 
 #### Projection — one field across every row
 

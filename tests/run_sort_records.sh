@@ -108,29 +108,36 @@ else
     tail -15 "$tmp/nlq.log" | sed 's/^/  /'; printf 'FAIL run_nlq\n'; status=1
 fi
 
-echo "--- TIER 3: the disagreement this migration FOUND, pinned ---"
-# `frame.sort_by` ranks an absence LAST; core `sort` ranks it FIRST. So
-# `frame.sort_by` is NOT migrated, and the disagreement is PINNED rather than
-# left to be discovered -- changing either side without the other now goes red,
-# and whoever rules on it has to come here.
+echo "--- TIER 3: the disagreement this migration found, now RESOLVED ---"
+# `frame.sort_by` ranked an absence LAST and core `sort` ranked it FIRST, which this
+# tier PINNED rather than resolved -- there is no universal convention to appeal to,
+# `ORDER BY x ASC` putting NULLs last in PostgreSQL and Oracle and first in MySQL
+# and SQLite, so it was a language-visible choice rather than this suite's to take.
 #
-# There is no universal answer to appeal to: `ORDER BY x ASC` puts NULLs LAST in
-# PostgreSQL and Oracle and FIRST in MySQL and SQLite. It is a convention gBASIC
-# has to choose, which makes it the user's call rather than this suite's.
+# MATTHEW RULED **LAST** ON 2026-10-07, core moved, and `frame.sort_by` is built on
+# core `sort` now. What is asserted here is the RULED ANSWER from this suite's own
+# side; the agreement between the two, and the `nothing` defect the migration fixed,
+# are tests/run_absence.sh TIER 3, which owns the absence rules.
 cat >"$tmp/absence.bas" <<'BAS'
-load frame
-rows = [ { x: 3 }, { x: unknown }, { x: 1 } ]
-print "frame: " + string(frame.to_rows(frame.sort_by(frame.from_rows(rows), "x")))
-print "core:  " + string(sort(rows, { by: "x" }))
+rows = [ { x: 3 }, { x: unknown }, { x: 1 }, { x: nothing } ]
+print "asc:  " + string(sort(rows, { by: "x" }).x)
+print "desc: " + string(sort(rows, { by: "x", descending: true }).x)
 BAS
 out="$({ GBASIC_PATH=stdlib ./gbasic "$tmp/absence.bas" 2>&1 </dev/null || true; })"
-expect_frame='frame: [{"x":1},{"x":3},{"x":unknown}]'
-expect_core='core:  [{"x":unknown},{"x":1},{"x":3}]'
-for want in "$expect_frame" "$expect_core"; do
+# Ordinaries first, then the absences in ENTRY order -- the two compare equal, so a
+# stable sort gives them no invented order of their own.
+want_asc='asc:  [1,3,unknown,nothing]'
+# And DESCENDING puts them first, which falls out of reversing the comparison rather
+# than being a second rule -- and is what PostgreSQL does too. NOTE the absences keep
+# their ENTRY order either way (`unknown` then `nothing`, as written): negating the
+# comparison cannot reorder elements that compare EQUAL, which is what stability means
+# and is the stronger statement of the two.
+want_desc='desc: [unknown,nothing,3,1]'
+for want in "$want_asc" "$want_desc"; do
     if printf '%s\n' "$out" | grep -qxF "$want"; then
-        printf 'ok   pinned: %s\n' "$want"
+        printf 'ok   %s\n' "$want"
     else
-        printf 'MISMATCH the absence convention moved\n  want: %s\n  got:\n' "$want"
+        printf 'MISMATCH the ruled absence order moved\n  want: %s\n  got:\n' "$want"
         printf '%s\n' "$out" | sed 's/^/    /'
         status=1
     fi

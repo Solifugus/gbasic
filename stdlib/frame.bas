@@ -302,65 +302,47 @@ library frame
     end function
 
     ' Drop duplicate rows, keeping first occurrence (compared by serialization).
+    ' Core `unique`, which decides a duplicate with `=` -- the same question this
+    ' used to ask by SERIALIZING each row to a binary blob and searching a growing
+    ' list of blobs, an allocation per row. That shape existed only because `unique`
+    ' REFUSED records, asking for orderability in order to decide equality; it takes
+    ' them as of 0.6.0, so the hand-written version is gone. Same answer (deep
+    ' equality, first occurrence kept) and no `serialize` in the path.
     function dedupe(df)
-        names = keys(df)
-        n = _nrows(df)
-        out = _empty_like(df)
-        seen = []
-        i = 0
-        while i < n
-            sig = serialize(_row_at(df, i))
-            if not contains(seen, sig) then
-                append(seen, sig)
-                c = 0
-                while c < len(names)
-                    append(out[names[c]], df[names[c]][i])
-                    c = c + 1
-                end while
-            end if
-            i = i + 1
-        end while
-        return out
+        if _nrows(df) = 0 then
+            return _empty_like(df)
+        end if
+        return from_rows(unique(to_rows(df)))
     end function
 
     ' Order comparison that sends `unknown` to the end; otherwise the native
     ' `<` on numbers or strings.
-    function _less(a, b)
-        if is_unknown(a) then
-            return false
-        end if
-        if is_unknown(b) then
-            return true
-        end if
-        return a < b
-    end function
-
-    ' Sort rows ascending by one column (stable insertion sort; row counts in
-    ' analysis frames are modest, and this keeps ties in input order).
+    ' Core `sort` by the column, which is what the hand-written insertion sort here
+    ' used to be. TWO THINGS MADE THE MIGRATION POSSIBLE, both in 0.6.0: `sort`
+    ' learned to take a field, and core and this library AGREED about where an
+    ' absence goes. They had disagreed -- this ranked an absence LAST and core
+    ' ranked it FIRST -- which increment 2 found and PINNED rather than resolved,
+    ' because `ORDER BY x ASC` puts NULLs last in PostgreSQL and Oracle and first in
+    ' MySQL and SQLite, so there was no convention to appeal to. Matthew ruled LAST
+    ' on 2026-10-07 and core moved.
+    '
+    ' AND IT FIXES A DEFECT THE OLD VERSION HAD: `_less` guarded `is_unknown`, and
+    ' `is_unknown(nothing)` is FALSE, so a column holding `nothing` fell through to
+    ' `a < b` and RAISED mid-sort ("unknown and nothing support only = and !="). A
+    ' frame built from JSON, a database or `read_csv` holds `nothing` wherever a
+    ' value was absent, so sorting such a column could not be done at all. Core
+    ' `sort` treats both absences alike and puts both last.
+    '
+    ' Still stable, which core `sort` now guarantees for portability, so ties keep
+    ' input order exactly as the insertion sort did.
     function sort_by(df, colname)
         rows = to_rows(df)
-        n = len(rows)
-        i = 1
-        while i < n
-            cur = rows[i]
-            j = i - 1
-            while j >= 0
-                if _less(cur[colname], rows[j][colname]) then
-                    rows[j + 1] = rows[j]
-                    j = j - 1
-                else
-                    break
-                end if
-            end while
-            rows[j + 1] = cur
-            i = i + 1
-        end while
-        ' Rebuild preserving the original column order (from_rows uses row 0's
-        ' key order, which is the same since every row shares the schema).
-        if n = 0 then
+        if len(rows) = 0 then
             return _empty_like(df)
         end if
-        return from_rows(rows)
+        ' Rebuild preserving the original column order (from_rows uses row 0's key
+        ' order, which is the same since every row shares the schema).
+        return from_rows(sort(rows, { by: colname }))
     end function
 
     ' --- Numeric-string helpers (used by read_csv inference and coerce) ---

@@ -172,6 +172,7 @@ scope — so it is not a reserved word and `r.warning` still parses.
 | 2108 | a timer is live and nothing watches `timer.ticks` | `timer` |
 | 2109 | an unknown escape in a MODIFIER string literal was kept as its two characters | `escape` |
 | 2110 | an indefinite `receive()` in a watcher body that fired at REGISTRATION, with nothing left to send | `actor` |
+| 2111 | an aggregate SKIPPED one or more absent values, or found every value absent | `absence` |
 
 **This table stops where the source does**, checked by `tests/run_docs_gate.sh`
 against the codes `src/eval.c` actually emits — it had stopped at 2104 while

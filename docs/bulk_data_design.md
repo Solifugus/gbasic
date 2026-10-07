@@ -1,7 +1,7 @@
 # Working with lists and records in bulk — 0.6.0 considerations
 
-**Status: §2, §3 and §4 SHIPPED (0.6.0 increments 1–3, 2026-10-06); §2a and §2b
-proposed; §5 deliberately unpriced.** The rest is a list of things to consider for 0.6.0,
+**Status: §2, §2a, §2b, §3, §4 and §7's library migrations SHIPPED (0.6.0
+increments 1–4 and 7, 2026-10-06/07); §5 deliberately unpriced.** The rest is a list of things to consider for 0.6.0,
 with the measurements that say which of them would actually remove loops *in
 this tree* rather than in Python.
 
@@ -260,6 +260,45 @@ documented standard, the false-positive argument that killed the other warning
 does not apply, and it is what makes the projection useful rather than refusing
 on the first ragged row.
 
+### SHIPPED 2026-10-07 (increment 4) — all four details decided, and one was dead
+
+`tests/run_absence.sh`, 57 self-checking assertions plus the two diagnostic
+channels, the migrations, the frame goldens and valgrind. Eleven perturbations
+proven red. Warning **2111**, source `absence`.
+
+Every detail above was settled as recommended: `mean` divides by the **present**
+count (asserted by value, not assumed from SQL); all-absent answers `unknown` with
+`sum([])` still raising, and the asymmetry is stated rather than inherited;
+`count` stays `COUNT(*)` with **`present(a)`** giving `COUNT(col)` a spelling of
+its own; and the two absences are treated alike.
+
+**`present(a)` turned out to do a second job that makes the warning affordable.**
+A warning needs an opt-out that is not `on warning ignore`, which covers every
+warning in the frame — and an aggregate over `present(x)` has nothing to skip, so
+it is silent *because there is nothing to say*, with no special case anywhere. The
+remedy the warning names is therefore one the suite can run, which this tree has
+twice shipped messages that failed.
+
+**ONE OF MY OWN CHECKS COULD NOT FAIL, and a perturbation is what found it.** The
+filter was written with a `len` exemption — `len` and `count` are `COUNT(*)` and
+must keep counting rows — and the fixture asserted `len([10, unknown, 7])` is 3.
+Perturbing the exemption away left that check GREEN, because `len` and `count` are
+answered by their own branches earlier in `eval_call` and never reach the
+aggregate path at all. The exemption was DEAD CODE stating a rule a reader would
+have trusted; it is gone, and what the fixture asserts now is the **difference**
+between the two counts, which is what §2a's third detail is actually about.
+
+**A PRE-EXISTING DEFECT IN ANOTHER CHANNEL, found by this suite rather than by
+reading:** `--json-diagnostics` emitted a warning as its plain stderr line, so any
+program that warned put a **non-JSON line into a JSON stream** — the defect
+`run_parse_exit.sh` exists for, one channel along, and that stream is gBASIC
+Studio's own consumer. True of all eleven warning codes, not just 2111; the
+`gb_diag` struct has carried `GB_SEVERITY_WARNING` since it was written and
+nothing routed a runtime warning through it. Fixed in JSON mode only, because the
+text format was chosen by measurement (0 goldens contain a printed warning;
+exactly 2 shell checks grep for `warning: <message>`) and the sink's formatter
+writes a different shape.
+
 ---
 
 ## 2b. `median` and `mode` — and two defects `mode` has today
@@ -302,6 +341,28 @@ Three things to decide:
   one aggregate where text is the *common* case: the most frequent category,
   city, or status code. Numeric-only makes it nearly useless for the data people
   actually have.
+
+### SHIPPED 2026-10-07 (increment 4) — and nothing had to be migrated, nearly
+
+All three decisions went as this section argued: a tie is **reported** (every tied
+value, as a list), nothing repeating answers **`unknown`**, and **text is
+accepted**. `median`'s even-count convention is pinned at 2.5.
+
+`mode` is the only aggregate that answers a list, which is deliberate: a caller
+cannot otherwise tell a tie from a single mode, and `first(mode(x))` is the
+explicit "give me one". The tie list is **sorted** where its values are orderable,
+so the same multiset gives the same answer whatever order it arrived in — the
+defect one level up, since returning the ties in first-seen order would make
+`mode([1,1,2,2])` and `mode([2,2,1,1])` differ again. Where the values are not
+orderable (records, arrays) it is first-seen, because inventing an order over
+records is what `sort` itself refuses.
+
+**A MEASUREMENT I GOT WRONG AND CORRECTED:** I justified the return-shape change
+on "nothing in the tree calls `mode`", from a grep over `*.bas`. There is one
+caller, in `examples/parse_test.gb` — a `.gb` file, which that grep could not see.
+Both extensions are used interchangeably in this tree and the measurement had to
+cover both. The caller is a one-line demo, so the conclusion held; the method did
+not.
 
 ### "What is most typical?" — and why the midpoint of a tie is not it
 
@@ -539,6 +600,42 @@ list" loops, which belong with §7's migrations in increment 7 because their
 goldens are the slow half of this gate; what the suite asserts instead is that the
 operator and the hand-written loop AGREE on real frame data, which is the property
 a migration rests on.
+
+---
+
+## 7-as-shipped. The library migrations (increment 7, 2026-10-07)
+
+Done where the ruling unblocked it, with the goldens as the proof:
+
+- **`frame.sort_by` → core `sort`.** Needed two things, both in 0.6.0: `sort`
+  learning to take a field, and core agreeing with the library about where an
+  absence goes. **It also fixed a defect the hand-rolled version had**: `_less`
+  guarded `is_unknown`, and `is_unknown(nothing)` is `false`, so a column holding
+  `nothing` fell through to `a < b` and **raised mid-sort**. A frame built from
+  JSON, a database or `read_csv` holds `nothing` wherever a value was absent, so
+  that column could not be sorted at all. `_less` is deleted, so there is one
+  absence rule rather than two that can drift.
+- **`frame.dedupe` → core `unique`.** It deduplicated rows by **serializing each
+  one to a binary blob** and searching a growing list of blobs — `unique` written
+  out by hand with an allocation per row — and it existed only because `unique`
+  **refused records**, asking for *orderability* in order to decide *equality*.
+  Those are two different questions and `contains([{a:1}], {a:1})` had always
+  answered the second, so the refusal is gone: `unique` now asks `=`, like the
+  other five membership routes. The cost is unchanged — it was O(n²) for scalars
+  already.
+- **`fundamentals._sort_rows` and `nlq._by_score`** moved in increment 2.
+- **Seven loops onto `excluding` and `unique`**, in `discovery`, `nlq` and
+  `stats`.
+
+**AND A COUNT THIS DOCUMENT HAD WRONG.** §4 said "20 append-if-not-in-another-list
+loops". Measured by *shape* rather than by the guard, there are **12 that are a
+genuine set difference** (the haystack is a different list) and **12 that are a
+dedupe-accumulate** (the haystack *is* the list being appended to). Those are
+different operators — `excluding` and `unique` — and conflating them is how a
+migration replaces one with the other. 17 of the 24 remain, each appending a
+*transform* of the element or testing against a list holding a transform of it,
+which neither operator can express without `map` — and §5 prices `map` after this
+release deliberately.
 
 ---
 
