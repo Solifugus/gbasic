@@ -26312,10 +26312,73 @@ static int gi_object_arg(Value v, const char *ctx, GObject **out) {
 
 /* --- signal dispatch ---------------------------------------------------- */
 
+/* WHAT A CONNECTED HANDLER NEEDS TO BE CALLED AGAIN LATER.
+ *
+ * THE NAME RATHER THAN THE `FunctionDef *`, deliberately and from the start: a
+ * handler is resolved afresh on every signal, so redefining the function at a
+ * prompt takes effect and a pointer can never dangle past a reload.
+ *
+ * AND SINCE 0.6.0 THE BOUND CONTEXT, which is `bound(fn, ctx)`'s whole point.
+ * GTK calls a handler with the arguments the SIGNAL defines and nothing else, so
+ * everything else a handler needs had to be smuggled -- through a program-global
+ * registry, or inside an object the signal happens to hand back. `gi.connect`
+ * REFUSED a bound function rather than drop its context silently, which was the
+ * right refusal and left the gap this closes.
+ *
+ * THE CONTEXT IS OWNED: a `value_copy` taken at connect time and freed with the
+ * closure. It cannot be a borrow, because the closure outlives the statement that
+ * created it by design -- that is what connecting a signal means. */
 typedef struct {
     char *name;      /* gBASIC function name */
     char *library;   /* owning library, or NULL */
+    Value context;   /* the bound context, or `nothing` when there is none */
+    int has_context;
 } GiClosureData;
+
+/* Fill in the name, library and context from a function value. Shared by the
+ * signal and event-source paths so the two cannot disagree about what a bound
+ * handler carries -- which they did while only one of them had a context. */
+static void gi_closure_data_fill(GiClosureData *d, Value fn) {
+    d->name = copy_string(fn.as.function.name);
+    d->library = fn.as.function.library ? copy_string(fn.as.function.library) : NULL;
+    if (fn.as.function.context) {
+        d->context = value_copy(*fn.as.function.context);
+        d->has_context = 1;
+    } else {
+        d->context = value_null();
+        d->has_context = 0;
+    }
+}
+
+/* Build the argument array for a handler, appending the bound context LAST when
+ * there is one -- the same position `bound` uses everywhere else, which is what
+ * lets one function serve both the plain and the bound call.
+ *
+ * EXTRA PARAMETERS GET `nothing`, as they did before, and a handler declaring
+ * FEWER parameters than the signal provides simply does not see the rest. The one
+ * new rule is that the context occupies the LAST declared parameter, so a bound
+ * handler for a 2-argument signal declares three. */
+static Value *gi_handler_args(const GiClosureData *d, AstStmt *stmt,
+                              const Value *provided, size_t nprovided,
+                              size_t *out_want) {
+    size_t want = stmt->as.function.params.count;
+    *out_want = want;
+    Value *args = want ? malloc(sizeof(Value) * want) : NULL;
+    if (want && !args) {
+        abort();
+    }
+    size_t positional = want;
+    if (d->has_context && want > 0) {
+        positional = want - 1;
+    }
+    for (size_t i = 0; i < positional; i++) {
+        args[i] = i < nprovided ? value_copy(provided[i]) : value_null();
+    }
+    if (d->has_context && want > 0) {
+        args[want - 1] = value_copy(d->context);
+    }
+    return args;
+}
 
 static void gi_closure_finalize(gpointer data, GClosure *closure) {
     (void)closure;
@@ -26325,6 +26388,7 @@ static void gi_closure_finalize(gpointer data, GClosure *closure) {
     }
     free(d->name);
     free(d->library);
+    value_free(d->context);
     free(d);
 }
 
@@ -26344,20 +26408,23 @@ static void gi_signal_marshal(GClosure *closure, GValue *return_gvalue,
         return;   /* handler function disappeared; nothing to call */
     }
 
-    size_t want = def->stmt->as.function.params.count;
-    Value *args = want ? malloc(sizeof(Value) * want) : NULL;
-    if (want && !args) {
+    /* The signal's own parameters, converted once, then handed to the shared
+     * builder which appends the bound context last if there is one. */
+    Value *provided = n_param_values ? malloc(sizeof(Value) * n_param_values) : NULL;
+    if (n_param_values && !provided) {
         abort();
     }
-    for (size_t i = 0; i < want; i++) {
-        if (i < n_param_values) {
-            if (!gi_value_from_gvalue(&param_values[i], &args[i])) {
-                args[i] = value_null();
-            }
-        } else {
-            args[i] = value_null();
+    for (guint i = 0; i < n_param_values; i++) {
+        if (!gi_value_from_gvalue(&param_values[i], &provided[i])) {
+            provided[i] = value_null();
         }
     }
+    size_t want = 0;
+    Value *args = gi_handler_args(d, def->stmt, provided, n_param_values, &want);
+    for (guint i = 0; i < n_param_values; i++) {
+        value_free(provided[i]);
+    }
+    free(provided);
 
     int saved_stopped = runtime_stopped;
     int saved_line = current_line;
@@ -27291,17 +27358,15 @@ static Value gi_do_connect(AstExpr *expr) {
         return gi_raise("gi.connect expects a function as the handler");
     }
 
-    if (bound_context_unsupported(&fv, "gi.connect")) {
-        value_free(ov); value_free(sv); value_free(fv);
-        return value_null();
-    }
-
+    /* A BOUND HANDLER IS CARRIED NOW, not refused. The refusal that stood here
+     * was correct for what the closure then held -- a name and nothing else, so a
+     * context could only have been dropped in silence, which is the failure
+     * `bound` must not introduce. The closure holds the context too now. */
     GiClosureData *data = calloc(1, sizeof(*data));
     if (!data) {
         abort();
     }
-    data->name = copy_string(fv.as.function.name);
-    data->library = fv.as.function.library ? copy_string(fv.as.function.library) : NULL;
+    gi_closure_data_fill(data, fv);
 
     GClosure *closure = g_closure_new_simple(sizeof(GClosure), data);
     g_closure_set_marshal(closure, gi_signal_marshal);
@@ -27463,19 +27528,16 @@ static Value gi_do_quit(AstExpr *expr) {
  * data is owned by the source and freed via gi_closure_data_free when it is
  * removed. */
 
-/* Returns NULL having RAISED when the value carries a bound context -- the
- * source keeps only the name, so carrying one is not possible here yet and
- * dropping it silently is the failure `bound` must not introduce. */
+/* A timeout, idle or tick callback, carrying its bound context like a signal
+ * handler -- the same struct and the same appending rule, so the two paths cannot
+ * disagree about what a bound handler receives. They did while only one of them
+ * had a context, which is why the fill is shared rather than written twice. */
 static GiClosureData *gi_closure_data_new(Value fn) {
-    if (bound_context_unsupported(&fn, "a gi event-source callback")) {
-        return NULL;
-    }
     GiClosureData *d = calloc(1, sizeof(*d));
     if (!d) {
         abort();
     }
-    d->name = copy_string(fn.as.function.name);
-    d->library = fn.as.function.library ? copy_string(fn.as.function.library) : NULL;
+    gi_closure_data_fill(d, fn);
     return d;
 }
 
@@ -27486,6 +27548,7 @@ static void gi_closure_data_free(gpointer data) {
     }
     free(d->name);
     free(d->library);
+    value_free(d->context);
     free(d);
 }
 
@@ -27498,14 +27561,10 @@ static gboolean gi_source_dispatch(GiClosureData *d, Value *args, size_t nargs) 
     if (!def || !def->stmt) {
         return G_SOURCE_REMOVE;   /* handler disappeared: drop the source */
     }
-    size_t want = def->stmt->as.function.params.count;
-    Value *pv = want ? malloc(sizeof(Value) * want) : NULL;
-    if (want && !pv) {
-        abort();
-    }
-    for (size_t i = 0; i < want; i++) {
-        pv[i] = (i < nargs) ? value_copy(args[i]) : value_null();
-    }
+    /* The same builder the signal path uses, so a bound source callback receives
+     * its context in the same place a bound signal handler does. */
+    size_t want = 0;
+    Value *pv = gi_handler_args(d, def->stmt, args, nargs, &want);
 
     int saved_stopped = runtime_stopped;
     int saved_line = current_line;

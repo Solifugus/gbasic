@@ -5516,11 +5516,28 @@ the call site shows. A bound value is still `type()` `"function"`, and a record
 field holding one works as a method, so two objects can share one function with
 different configuration.
 
-**Where a context cannot travel it is refused, not dropped.** `gi.connect`,
-gi's event-source callbacks and `webserver.on_request` keep only the function's
-*name*, so they raise rather than silently losing the context. `encode` refuses
-a function value as it always has; `serialize` accepts a plain one and refuses a
-bound one, because the name would travel and the context would not.
+**A GTK signal handler and a gi event-source callback carry their context**
+*(since 0.6.0)*. This is what `bound` was for: GTK calls a handler with the
+arguments the *signal* defines and nothing else, so anything else a handler needed
+had to be smuggled — through a program-global registry, or inside an object the
+signal happens to hand back.
+
+```basic
+gi.connect(factory, "bind", bound(on_bind, { gid: 3, ordinal: 1 }))
+gi.timeout(200, bound(poll, { endpoint: url }))
+```
+
+The context belongs to the **connection**, not to the object or the function, so
+one object may carry two handlers of the same function that differ only in what
+they were bound with. It is copied at connect time and freed with the closure — a
+closure outlives the statement that created it, which is what connecting a signal
+means, so it cannot be a borrow into the caller's frame.
+
+**Where a context still cannot travel it is refused, not dropped.**
+`webserver.on_request` keeps only the function's *name*, so it raises rather than
+silently losing the context. `encode` refuses a function value as it always has;
+`serialize` accepts a plain one and refuses a bound one, because the name would
+travel and the context would not.
 
 **`key(a, b, …)`** — one string that cannot collide, for use as a **composite
 record key**. Variadic, one argument or more; every argument must be a scalar

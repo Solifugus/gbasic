@@ -97,3 +97,46 @@ if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
 else
     printf 'SKIP tests/datagrid/{logic,lifetime,display_smoke}.bas (no display)\n'
 fi
+
+# --- Structural tier: the bound context replaced a per-bind SEARCH -----------
+#
+# GTK calls a bind handler with only (factory, item), so before 0.6.0 the handler
+# recovered its column by SCANNING grid.columns for the factory that fired -- a
+# linear search per bind, and a bind fires per visible cell per scroll. Each
+# factory is connected with a bound context naming its grid and column ordinal now.
+#
+# READ FROM THE SOURCE, because the behavioural tiers above pass either way: a
+# library that quietly kept its search would render identical cells.
+if grep -q 'function _find_col' stdlib/datagrid.bas; then
+    printf 'FAIL stdlib/datagrid.bas still defines _find_col; the per-bind search is not gone\n'
+    exit 1
+fi
+printf 'PASS _find_col is gone (the per-bind factory search)\n'
+if grep -q 'gi.connect(fac, "bind", bound(_bind' stdlib/datagrid.bas; then
+    printf 'PASS the bind handler is connected with a bound context\n'
+else
+    printf 'FAIL the bind handler no longer carries a bound context\n'
+    exit 1
+fi
+# THE CONTEXT MUST NOT HOLD THE COLUMN RECORD, which is the obvious thing and
+# LEAKS: a column carries its `factory`, so a context holding one makes
+# factory -> closure -> context -> factory, a reference cycle GObject cannot
+# collect. The ordinal is what is carried instead, and this says why.
+if grep -qE 'bound\(_bind, \{[^}]*col:' stdlib/datagrid.bas; then
+    printf 'FAIL the bound context holds a column record, which cycles through its factory\n'
+    exit 1
+fi
+printf 'PASS the context carries an ordinal, so no factory cycle\n'
+# AND THE REGISTRY IS STILL THERE, asserted because it was EXPECTED TO GO and does
+# not: it is also the id -> grid map for the whole API, and a gBASIC record is a
+# value, so a record-valued handle could not carry mutation between calls. A library
+# cannot hold mutable state of its own either (measured). If someone deletes it
+# believing `bound` made it unnecessary, this says which half `bound` actually
+# removed.
+if grep -q '_DATAGRID' stdlib/datagrid.bas; then
+    printf 'PASS the registry remains: it is the id->grid map, which bound() does not replace\n'
+else
+    printf 'FAIL the registry is gone -- if that is deliberate, the handle shape must have\n'
+    printf '     changed too, since a record-valued handle cannot carry mutation\n'
+    exit 1
+fi

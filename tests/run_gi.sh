@@ -37,6 +37,7 @@ positive_cases=(
     gi_static_test
     gi_handler_survives_scope_test
     gi_string_nul_test
+    gi_bound_context_test
 )
 
 for name in "${positive_cases[@]}"; do
@@ -228,3 +229,54 @@ for name in "${negative_cases[@]}"; do
         exit 1
     fi
 done
+
+# --- Valgrind: the first OWNED memory inside a gi closure --------------------
+#
+# THIS SUITE HAD NO VALGRIND TIER, and neither did run_datagrid -- which is how a
+# leak in the closure data could have shipped with nothing in the gate to notice.
+# Until 0.6.0 a GiClosureData held two malloc'd strings and nothing else; it now
+# holds an owned `Value` (the bound context, a `value_copy` taken at connect time),
+# so a missing free leaks a record per connected signal, and a long-running GUI
+# connects a great many.
+#
+# `vg_run_leaks_only` RATHER THAN `vg_run`: a program that pumps a GLib main loop
+# ends with GLib's own event-loop descriptors open -- an eventfd from
+# g_main_context_new_with_flags and whatever g_bus_get_sync holds -- which
+# --track-fds reports at exit and which no gBASIC code opened. The LEAK claim, which
+# is the one this tier is for, is kept in full. See tests/valgrind_tier.sh.
+. "$(dirname "$0")/valgrind_tier.sh"
+if vg_available; then
+    vg_err="$(mktemp)"
+    # `set +e` AROUND IT, and both halves of that were learned by perturbing the
+    # free away rather than by reading. Under `set -e` a bare command returning
+    # non-zero aborts the script BEFORE `$?` is read, so the suite died with
+    # valgrind's own exit code and printed NOTHING -- failing the gate correctly and
+    # saying nothing about why, exactly when the tier matters. And wrapping it in
+    # `if ! cmd; then rc=$?` does not fix it either: inside that body `$?` is the
+    # status of the NEGATION, which is 0, so the message came out as "reported no
+    # zero-leak line" for what was plainly a leak.
+    set +e
+    GBASIC_PATH=stdlib vg_run_leaks_only ./gbasic tests/gi/gi_bound_context_test.bas \
+        >/dev/null 2>"$vg_err" </dev/null
+    vg_rc=$?
+    set -e
+    if [ "$vg_rc" = "$VG_EXIT" ]; then
+        grep -E "definitely lost|^==.*(Invalid|Mismatched)" "$vg_err" | head -8
+        rm -f "$vg_err"
+        printf 'FAIL valgrind (bound context)\n'
+        exit 1
+    fi
+    # AND IT MUST ACTUALLY BE CLAIMING SOMETHING: a run where valgrind reported no
+    # leak summary at all would also exit 0, which is the "a tier that measures
+    # nothing" shape this tree has recorded more than once.
+    if ! grep -q "definitely lost: 0 bytes" "$vg_err"; then
+        printf 'FAIL valgrind reported no zero-leak line; the tier proved nothing\n'
+        grep -E "definitely lost|ERROR SUMMARY" "$vg_err" | head -4
+        rm -f "$vg_err"
+        exit 1
+    fi
+    rm -f "$vg_err"
+    printf 'PASS valgrind (no definite leak; the bound context is freed with the closure)\n'
+else
+    printf 'SKIP valgrind (unavailable)\n'
+fi

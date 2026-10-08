@@ -35,12 +35,20 @@
 '     load datagrid
 '     _DATAGRID = datagrid.new_registry()
 '
-' The grid's per-grid state (data source, columns) has to be reachable from the
-' factory "bind" signal handler, which GTK invokes with only (factory, item).
-' gBASIC has no closures, so the handler finds its grid through a program-global
-' registry named `_DATAGRID`. It must be created at program scope (a library
-' function cannot create a program global visible to other functions); every
-' datagrid call then reads and updates it.
+' The grid's per-grid state (data source, columns) is held in a program-global
+' registry named `_DATAGRID`. It must be created at program scope: a library
+' function cannot create a program global visible to other functions, AND A LIBRARY
+' CANNOT HOLD MUTABLE STATE OF ITS OWN (measured -- a top-level assignment inside a
+' `library` block is not visible to that library's functions, which answer
+' `undefined variable`). So the map has to live where the program can see it.
+'
+' SINCE 0.6.0 THE HANDLER NO LONGER NEEDS IT TO FIND ITS COLUMN: `gi.connect`
+' carries a bound context, so each factory is connected with the grid id and column
+' ordinal it serves. THE REGISTRY STILL CANNOT GO, and the reason is worth stating
+' because it was expected to: it is also the id -> grid MAP for the whole API. A
+' handle is `{ id: gid }` rather than the grid record itself because a gBASIC record
+' is a VALUE, so a record-valued handle could not carry mutation from one call to
+' the next -- which is the entire reason for the id indirection.
 ' ---------------------------------------------------------------------------
 '
 ' API:
@@ -112,13 +120,6 @@ library datagrid
         return dflt
     end function
 
-    function _find_col(grid, factory)
-        for each c in grid.columns
-            if c.factory = factory then return c
-        end for
-        return nothing
-    end function
-
     ' Logical row count of a grid's current source.
     function _source_count(grid)
         if grid.kind = "virtual" then
@@ -176,12 +177,22 @@ library datagrid
         item.set_child(label)
     end function
 
-    function _bind(factory, item)
+    ' `ctx` IS A BOUND CONTEXT, carried by `gi.connect` since 0.6.0 and naming
+    ' which grid and which COLUMN this factory belongs to. GTK calls a bind handler
+    ' with only (factory, item), so before this the column had to be recovered by
+    ' SEARCHING grid.columns for the matching factory -- a linear scan per bind,
+    ' and a bind fires per visible cell per scroll.
+    '
+    ' THE CONTEXT HOLDS AN ORDINAL AND NOT THE COLUMN RECORD, which looks like the
+    ' obvious thing and would leak: a column record carries its `factory`, so a
+    ' context holding one would make factory -> closure -> context -> factory, a
+    ' reference cycle GObject cannot collect. The ordinal is stable because columns
+    ' are only ever appended -- there is no remove_column.
+    function _bind(factory, item, ctx)
         _DATAGRID.accesses = _DATAGRID.accesses + 1
         row = item.get_item()
-        gid = rowmodel.row_grid(row)
         idx = rowmodel.row_index(row)
-        grid = _DATAGRID.grids[gid]
+        grid = _DATAGRID.grids[ctx.gid]
         ' A destroyed grid keeps a tombstone slot (see destroy). GTK should have
         ' dropped its widgets by then, but a late in-flight bind must render blank
         ' rather than unwind through the toolkit.
@@ -190,7 +201,7 @@ library datagrid
             label.set_label("")
             return nothing
         end if
-        col = _find_col(grid, factory)
+        col = grid.columns[ctx.ordinal]
         value = _cell(grid, idx, col)
         label = item.get_child()
         label.set_label(_format(value, col))
@@ -233,14 +244,17 @@ library datagrid
 
     function add_column(handle, spec)
         grid = _DATAGRID.grids[handle.id]
+        ordinal = count(grid.columns)
         fac = gi.new("Gtk.SignalListItemFactory")
         gi.connect(fac, "setup", _setup)
-        gi.connect(fac, "bind", _bind)
+        ' The bind handler is told which grid and column it serves, rather than
+        ' searching for its own factory on every cell.
+        gi.connect(fac, "bind", bound(_bind, { gid: handle.id, ordinal: ordinal }))
         gcol = gi.new("Gtk.ColumnViewColumn")
         gcol.set_title(_get(spec, "title", ""))
         gcol.set_factory(fac)
         gcol.set_resizable(_get(spec, "resizable", true))
-        col = { ordinal: count(grid.columns), factory: fac, gcolumn: gcol }
+        col = { ordinal: ordinal, factory: fac, gcolumn: gcol }
         if has(spec, "field") then col.field = spec.field
         if has(spec, "index") then col.index = spec.index
         if has(spec, "format") then col.format = spec.format

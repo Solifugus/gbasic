@@ -33,6 +33,13 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
+- **A GTK signal handler that needs state** — `gi.connect(w, "sig", bound(fn,
+  ctx))` *(since 0.6.0)*; same for `gi.timeout`/`gi.idle`/`gi.watch_fd`. The
+  context arrives as the handler's LAST parameter and belongs to the CONNECTION, so
+  one function can serve many widgets with different state. Do not put a GObject in
+  the context when the closure is attached to that same object — it cycles and
+  GObject cannot collect it (carry an id or ordinal instead).
+  → `tests/gi/gi_bound_context_test.bas`
 - **Large integers are exact** *(0.6.0)* — a decimal or hex integer literal that
   fits int64 is EXACT, and `+ - *` and unary minus of two exact operands stay
   exact, so `9007199254740992 + 1` is `9007199254740993` and prints those digits.
