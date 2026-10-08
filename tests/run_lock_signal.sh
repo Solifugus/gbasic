@@ -51,6 +51,13 @@ if ! command -v python3 >/dev/null 2>&1; then
     echo "     cannot tell a signal death from exit 143, which is the point)"
     exit 0
 fi
+# The whole subject is HOW A PROCESS DIES BY A SIGNAL. Windows has no such
+# death and python there has no os.fork/waitpid status to read one with.
+. tests/build_has.sh
+if ! build_has signals; then
+    echo "SKIP run_lock_signal (no POSIX signal death on this platform)"
+    exit 0
+fi
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

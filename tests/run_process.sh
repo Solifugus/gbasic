@@ -24,6 +24,32 @@ stdout_file="$(mktemp)"
 stderr_file="$(mktemp)"
 trap 'rm -f "$stdout_file" "$stderr_file"' EXIT
 
+# THESE FIXTURES ARE POSIX BY DESIGN -- nap6_which says so in as many words --
+# and a platform without POSIX process semantics answers them CORRECTLY and
+# differently: Windows executes no `#!` script, `cwd: "/tmp"` names C:\tmp,
+# `which sh` is C:/msys64/usr/bin/sh.exe, and a missing file is "The system
+# cannot find the file specified". Asked of the BINARY, by running a fixture
+# that needs a `#!` script: where that is refused, the POSIX-shaped cases are
+# skipped BY NAME and tests/run_windows_suite.sh holds process.run/start to the
+# same shape with gBASIC itself as the child. The cases left run everywhere.
+posix_only=""
+probe_out="$(./gbasic tests/native_platform/nap6_streams.bas 2>&1 || true)"
+if printf '%s' "$probe_out" | grep -q 'not a valid Win32 application'; then
+    posix_only=" nap6_streams nap6_argv nap6_bigstreams nap6_binary nap6_cwd nap6_timeout nap6_which
+                 plat_proc_basic plat_proc_exit plat_proc_big plat_proc_stop plat_proc_ignore
+                 plat_proc_interleave plat_proc_bytes plat_proc_actor
+                 negative_nap6_missing negative_plat_proc_missing "
+    posix_only=" $(echo $posix_only) "   # one space between names, and around them
+fi
+posix_skip() { # name -> 0 (and says so) when the case is skipped here
+    case "$posix_only" in
+        *" $1 "*)
+            printf 'SKIP tests/native_platform/%s.bas (POSIX process semantics; run_windows_suite.sh covers this platform)\n' "$1"
+            return 0 ;;
+    esac
+    return 1
+}
+
 # --- Positive cases (byte-exact stdout vs sibling .out) --------------------
 positive_cases=(
     nap6_basic
@@ -52,6 +78,7 @@ positive_cases=(
 )
 
 for name in "${positive_cases[@]}"; do
+    posix_skip "$name" && continue
     source="tests/native_platform/$name.bas"
     expected="tests/native_platform/$name.out"
     : >"$stdout_file"
@@ -89,6 +116,7 @@ negative_cases=(
 )
 
 for name in "${negative_cases[@]}"; do
+    posix_skip "$name" && continue
     source="tests/native_platform/$name.bas"
     expected="tests/native_platform/$name.err"
     : >"$stdout_file"
@@ -138,6 +166,10 @@ done
 # how a resource-accounting tier starts accounting for nothing.
 if ! gb_have_proc; then
     printf 'SKIP plat_proc_abandon (no /proc: the fd audit has no portable mechanism yet)\n'
+elif [ -n "$posix_only" ]; then
+    # MSYS2 HAS a /proc, but it describes MSYS processes: a native interpreter's
+    # descriptors are not in it, so the audit would count nothing and pass.
+    printf 'SKIP plat_proc_abandon (POSIX process semantics: /proc cannot see a native process here)\n'
 elif command -v ps >/dev/null 2>&1; then
     : >"$stdout_file"
     : >"$stderr_file"
@@ -198,7 +230,7 @@ fi
 # refuses unknown options by name for exactly this reason, and the edge is
 # sharper here: an ignored option there leaves a server on loopback, here it
 # leaves a credential unset.
-env_out="$(./gbasic tests/process/env_options.bas 2>&1)"
+env_out="$(GB_INHERITED=1 ./gbasic tests/process/env_options.bas 2>&1)"
 if printf '%s' "$env_out" | grep -q MISMATCH; then
     printf 'FAIL env_options\n'
     printf '%s\n' "$env_out" | grep MISMATCH

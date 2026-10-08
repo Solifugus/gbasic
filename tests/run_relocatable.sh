@@ -141,6 +141,10 @@ esac
 # computes its own answer rather than inheriting the parent's. A relocated tree
 # whose parent resolves and whose children do not would fail only in programs
 # that use actors -- the kind of gap that surfaces long after a release.
+. tests/build_has.sh
+if ! build_has actors; then
+    printf 'SKIP a spawned actor resolves it too (actors are not available on this platform)\n'
+else
 cat > "$P/a.bas" <<'ACT'
 function child()
   m = receive()
@@ -157,6 +161,7 @@ end program
 ACT
 got="$( unset GBASIC_PATH; cd "$P" && timeout 30 "$R/bin/gbasic" a.bas 2>&1 | tail -1 )"
 want "a spawned actor resolves it too" "shipped-with-the-binary" "$got"
+fi   # build_has actors
 
 echo
 echo "== QUIET: the ordinary case says nothing =="

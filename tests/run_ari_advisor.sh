@@ -29,6 +29,11 @@ set -u
 cd "$(dirname "$0")/.."
 
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
+. tests/build_has.sh
+if ! build_has webclient; then
+    printf 'SKIP tests/run_ari_advisor.sh (this build has no webclient, which llm loads)\n'
+    exit 0
+fi
 export GBASIC_PATH="$PWD/stdlib"
 status=0
 
@@ -77,7 +82,9 @@ printf 'TIER valgrind\n'
 if [ -f tests/valgrind_tier.sh ]; then
     # shellcheck disable=SC1091
     . tests/valgrind_tier.sh
-    if vg_run ./gbasic tests/ari_advisor/advisor_test.bas >/dev/null 2>/tmp/ari_adv_vg.txt; then
+    if ! vg_available; then
+        printf '  SKIP (valgrind is not installed)\n'
+    elif vg_run ./gbasic tests/ari_advisor/advisor_test.bas >/dev/null 2>/tmp/ari_adv_vg.txt; then
         printf '  ok   no definite leak or invalid access\n'
     else
         if [ "${VG_EXIT:-0}" = "0" ]; then

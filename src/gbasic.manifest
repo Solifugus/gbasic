@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  gbasic.exe's application manifest, embedded by src/gbasic_win32.rc.
+
+  activeCodePage UTF-8 IS THE LOAD-BEARING LINE. gBASIC strings are UTF-8, and
+  without it every narrow-string Windows call (fopen, the C runtime's argv, the
+  ANSI APIs including ODBC's) reads them through the legacy code page.
+  Measured: examples/nap_fs_test.gb created a file named with a Greek pi as
+  "greek_pi_" followed by two Latin-1 characters, and the next operation on the
+  correct name failed. One declaration fixes every such call site at once on
+  Windows 10 1903 and later; older Windows ignores it.
+
+  longPathAware lifts the 260-character path limit where the system has long
+  paths enabled; elsewhere it is ignored.
+
+  KEEP THIS COMMENT ASCII AND FREE OF TWO HYPHENS IN A ROW: XML forbids the
+  latter inside a comment, and an invalid manifest stops the program from
+  starting at all ("side-by-side configuration is incorrect"). Measured.
+-->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity type="win32" name="gBASIC.gbasic" version="0.6.0.0"/>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>

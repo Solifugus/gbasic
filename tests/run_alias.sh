@@ -211,8 +211,16 @@ fi
 printf 'TIER actor: an alias survives fork+exec\n'
 # No `program` block: a spawned function runs in a re-exec'd child that never
 # enters one, so a library it needs has to be loaded at the top level.
+. tests/build_has.sh
+if ! build_has actors; then
+    printf '  SKIP actor (actors are not available on this platform)\n'
+else
+# The path is written INTO a program, so it must be one gbasic can open: under
+# MSYS2 $PWD is /c/..., which a native gbasic.exe cannot (the run_silent_traps
+# idiom). This tier skipped on Windows until actors worked there.
+here_native="$(cygpath -m "$PWD" 2>/dev/null || printf '%s' "$PWD")"
 cat >"$scratch/actor.bas" <<EOF
-load alias_host from "$PWD/tests/libs/alias_host.bas" as host
+load alias_host from "$here_native/tests/libs/alias_host.bas" as host
 
 function worker()
     back = receive()
@@ -230,6 +238,7 @@ if timeout -k 5 30 ./gbasic "$scratch/actor.bas" 2>"$scratch/err" | grep -q '^ho
 else
     fail "the child resolves the alias and a function value through it ($(head -1 "$scratch/err"))"
 fi
+fi   # build_has actors
 
 printf 'TIER valgrind\n'
 # The import registry allocates three strings per effective name and the alias

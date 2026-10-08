@@ -194,6 +194,10 @@ end program' \
 # cannot travel as a compiled program (regex_t holds internal pointers), so this
 # proves the pattern+flags representation actually reconstitutes.
 printf -- '-- actor round-trip (recompiled on the far side)\n'
+. tests/build_has.sh
+if ! build_has actors; then
+    printf 'SKIP actor round-trip (actors are not available on this platform)\n'
+else
 cat >"$tmp/actor.bas" <<'EOF'
 ' Mailbox loopback: the value is serialized, crosses a real socket, and is
 ' deserialized -- the same path a spawned actor's message takes.
@@ -215,6 +219,7 @@ else
     cat "$err"
     status=1
 fi
+fi   # build_has actors
 
 # --- Tier 5: valgrind ---------------------------------------------------------
 if vg_available; then
@@ -255,7 +260,8 @@ fi
 printf '\n'
 if [ -z "${CC:-}" ] || command -v "${CC:-cc}" >/dev/null 2>&1; then
     fb="$(mktemp -d)"
-    cp -r src include Makefile stdlib tests "$fb"/ 2>/dev/null
+    # third_party too: the Windows build compiles the vendored yescrypt.
+    cp -r src include Makefile stdlib tests third_party "$fb"/ 2>/dev/null
     python3 - "$fb/src/eval.c" <<'FORCE'
 import sys
 p=sys.argv[1]; s=open(p).read()

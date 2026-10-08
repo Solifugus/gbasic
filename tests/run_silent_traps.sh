@@ -168,5 +168,54 @@ grep -qF "NOTHING IS FALSE" "$scratch/out" || fail "condition control (nothing s
 grep -qF "LOOPED 3" "$scratch/out" || fail "condition control (do-until stopped working)"
 ok condition_ordinary_unchanged
 
+# --- a write that never reached the file ------------------------------------
+# `write` and `append` returned TRUE with exit 0 when the bytes never arrived:
+# fwrite only fills stdio's buffer, the real write is in fclose, and fclose's
+# result was ignored. Found by the Windows port, where a write inside
+# `with lock(f)` vanished this way, and then MEASURED HERE on Linux: /dev/full
+# accepts the open and fails the flush with ENOSPC, which is a full disk or a
+# quota in miniature.
+printf 'program main( args )\n    f {file}= "/dev/full"\n    ok = write(f, "hello")\n    print("CONTINUED " + string(ok))\nend program\n' >"$scratch/w.bas"
+flush_reachable=0
+if [ -w /dev/full ]; then
+    if ./gbasic "$scratch/w.bas" >"$scratch/out" 2>"$scratch/err"; then
+        fail "write_flush (a write that never happened exited 0: $(cat "$scratch/out"))"
+    fi
+    # THE REASON DECIDES WHETHER THIS TIER MEASURED ANYTHING. The shell having
+    # /dev/full does not mean the BINARY does: under MSYS2 driving a native
+    # gbasic.exe, "/dev/full" is a missing file, the OPEN fails, and the tier
+    # would pass for a cause it is not about (measured there). Only a flush
+    # failure says "No space left on device".
+    grep -qF "No space left on device" "$scratch/err" && flush_reachable=1
+fi
+if [ "$flush_reachable" = 1 ]; then
+    grep -qF "could not write file" "$scratch/err" \
+        || fail "write_flush (no diagnostic: $(cat "$scratch/err"))"
+    grep -qF "CONTINUED" "$scratch/out" && fail "write_flush (execution continued past it)"
+    ok write_flush_failure_raises
+
+    printf 'program main( args )\n    on error goto next\n    f {file}= "/dev/full"\n    append(f, "more")\n    if error then\n        print("CAUGHT")\n    end if\nend program\n' >"$scratch/w2.bas"
+    ./gbasic "$scratch/w2.bas" >"$scratch/out" 2>"$scratch/err" \
+        || fail "write_flush (catching it should leave exit 0: $(cat "$scratch/err"))"
+    grep -qF "CAUGHT" "$scratch/out" || fail "write_flush (append's failure was not catchable)"
+    ok append_flush_failure_catchable
+else
+    printf 'SKIP write_flush (the binary cannot reach a real /dev/full here; the flush failure is NOT measured: %s)\n' \
+        "$(cat "$scratch/err" 2>/dev/null)"
+fi
+
+# THE CONTROL: an ordinary write still returns true and still writes, or the
+# two checks above are satisfied by a build that refuses every write.
+# The path is written INTO the program, so it must be one the binary can open:
+# under MSYS2 driving a native gbasic.exe, /tmp/... means nothing to Windows,
+# and `cygpath -m` gives the C:/... form. Elsewhere cygpath does not exist and
+# the path is used as it is.
+scratch_native="$(cygpath -m "$scratch" 2>/dev/null || printf '%s' "$scratch")"
+printf 'program main( args )\n    f {file}= "%s/ok.txt"\n    r = write(f, "abc")\n    r2 = append(f, "def")\n    print(string(r) + " " + string(r2) + " " + read(f))\nend program\n' "$scratch_native" >"$scratch/w3.bas"
+./gbasic "$scratch/w3.bas" >"$scratch/out" 2>"$scratch/err" \
+    || fail "write control (an ordinary write failed: $(cat "$scratch/err"))"
+grep -qxF "true true abcdef" "$scratch/out" || fail "write control (got: $(cat "$scratch/out"))"
+ok ordinary_write_unchanged
+
 printf 'run_silent_traps: %d cases passed\n' "$cases"
 

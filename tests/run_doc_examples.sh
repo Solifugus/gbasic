@@ -87,7 +87,10 @@ rm -rf "$work"; mkdir -p "$work"
 python3 - "$DOC" "$work" <<'PY'
 import re, sys, os
 doc, work = sys.argv[1], sys.argv[2]
-src = open(doc).read()
+# UTF-8 and no newline translation, both ways: on Windows python reads the
+# locale's code page and writes \r\n, so the manifest's marker column arrived
+# as "fragment\r", matched nothing, and every exemption on the page vanished.
+src = open(doc, encoding="utf-8", newline="").read()
 lines = src.splitlines()
 manifest = []
 for i, m in enumerate(re.finditer(r'```basic\n(.*?)```', src, re.S)):
@@ -104,13 +107,13 @@ for i, m in enumerate(re.finditer(r'```basic\n(.*?)```', src, re.S)):
         elif t == "<!--needs-context-->":
             marker = "needs-context"
     path = os.path.join(work, f"block_{i:03d}.bas")
-    open(path, "w").write(m.group(1))
+    open(path, "w", encoding="utf-8", newline="").write(m.group(1))
     manifest.append(f"{i:03d}\t{line}\t{marker}")
-open(os.path.join(work, "manifest"), "w").write("\n".join(manifest) + "\n")
+open(os.path.join(work, "manifest"), "w", newline="").write("\n".join(manifest) + "\n")
 PY
 
 total=0; parsed=0; ran=0; fragments=0; contextual=0
-parse_bad=(); run_bad=(); unearned=()
+parse_bad=(); run_bad=(); unearned=(); unbuilt=()
 
 while IFS=$'\t' read -r idx line marker; do
     total=$((total + 1))
@@ -164,7 +167,18 @@ while IFS=$'\t' read -r idx line marker; do
     fi
 
     if [[ $rc -ne 0 ]]; then
-        run_bad+=("$DOC:$line  $(head -1 "$work/rerr" | sed 's/^[a-z ]*error at [^ ]*: //')")
+        reason="$(head -1 "$work/rerr" | sed 's/^[a-z ]*error at [^ ]*: //')"
+        # A BUILD that lacks what the block uses is not a defect in the PAGE:
+        # the block may be perfectly right and this binary unable to show it
+        # (a lean build, or Windows before a module's milestone). Counted and
+        # NAMED rather than passed -- it is not in `ran` -- and only a refusal
+        # in the binary's own words qualifies, so a full build, where nothing
+        # refuses, still holds every block to running clean.
+        if command grep -qE 'not available in this build|requires OpenSSL|not available on Windows' "$work/rerr"; then
+            unbuilt+=("$DOC:$line  $reason")
+        else
+            run_bad+=("$DOC:$line  $reason")
+        fi
         continue
     fi
     ran=$((ran + 1))
@@ -192,6 +206,10 @@ else
     printf '    %s\n' "${run_bad[@]}"
     printf '    (if the block genuinely needs surrounding context, mark it\n'
     printf '     <!--needs-context--> on the line above its fence)\n'
+fi
+if [[ ${#unbuilt[@]} -gt 0 ]]; then
+    printf '  SKIP %d block(s) not runnable in THIS build (not counted as run):\n' "${#unbuilt[@]}"
+    printf '    %s\n' "${unbuilt[@]}"
 fi
 
 printf 'TIER markers\n'

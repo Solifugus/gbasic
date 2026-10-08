@@ -114,7 +114,12 @@ accept 'ts = tools.define("t", [ { name: "a", describe: "d", '"$OK_PARAMS"', rea
 accept 'ts = tools.define("t", [ { name: "a", describe: "d", params: [ { name: "p", type: "number", describe: "d", required: false, default: 3 } ], reads: [], mutates: [], fn: f } ])' 'an optional parameter with a default of the right type'
 
 printf 'TIER the pool: parallel bodies and the principal handoff\n'
-if timeout -k 5 90 ./gbasic --line-buffered tests/tools/pool.bas >"$work/p.out" 2>"$work/p.err"; then
+. tests/build_has.sh
+has_actors=1; build_has actors || has_actors=0
+has_listen=1; build_has listen || has_listen=0
+if [ "$has_actors" = 0 ]; then
+    printf '  SKIP pool tier (actors are not available on this platform)\n'
+elif timeout -k 5 90 ./gbasic --line-buffered tests/tools/pool.bas >"$work/p.out" 2>"$work/p.err"; then
     order="$(sed -n 's/^reply \(c[0-9]*\).*/\1/p' "$work/p.out" | tr '\n' ' ')"
     first="$(echo "$order" | awk '{print $1}')"
     n="$(printf '%s\n' $order | grep -c . || true)"
@@ -138,6 +143,8 @@ fi
 printf 'TIER the whole chain: a handler that calls a tool without blocking\n'
 if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
     printf '  SKIP handler tier (needs curl and python3)\n'
+elif [ "$has_actors" = 0 ] || [ "$has_listen" = 0 ]; then
+    printf '  SKIP handler tier (needs actors and a listener; this platform refuses one or both)\n'
 else
     hport="$(python3 - <<'PORT'
 import socket

@@ -126,7 +126,9 @@ print("\n".join(out))
 print("file %d groups %d" % (total_file, groups))
 PYEOF
 for f in tests/finio/bai2/statement.bai tests/finio/bai2/packed.bai tests/finio/bai2/continued.bai tests/finio/foreign_bai2/spec-section3.txt; do
-    py="$(python3 "$scratch/oracle.py" "$f" 2>&1 | tr '\n' ';')"
+    # tr -d '\r': python's text-mode stdout ends each line \r\n on Windows,
+    # and the oracle prints only figures, so a \r is never part of an answer.
+    py="$(python3 "$scratch/oracle.py" "$f" 2>&1 | tr -d '\r' | tr '\n' ';')"
     gb="$(timeout 60 ./gbasic tests/finio/bai2_totals.bas "$f" 2>&1 | tr '\n' ';')"
     if [ -n "$py" ] && [ "$py" = "$gb" ]; then
         ok "$(basename "$f"): an independent implementation agrees [$py]"

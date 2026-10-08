@@ -14,8 +14,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
-#include <poll.h>
-#include <regex.h>
+#include <regex.h>   /* Windows: TRE through libsystre (docs/windows_port_status.md) */
 #include <signal.h>
 #include <stdarg.h>  /* va_list/va_start: used by warn_fmt and friends. Arrived
                       * transitively on newer toolchains; gcc 11 (Ubuntu 22.04)
@@ -32,13 +31,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/file.h>
+#include "posix_compat.h"   /* poll, sockets, wait, flock: see the header */
 #include <sys/stat.h>
-#include <sys/wait.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -95,7 +89,12 @@
 
 #if HAVE_LIBXCRYPT
 #include <crypt.h>
+#elif HAVE_YESCRYPT
+#include "../third_party/yescrypt/yescrypt.h"
 #endif
+/* password_hash/password_verify have two backends -- libxcrypt, or the
+ * vendored yescrypt where libxcrypt's LGPL is excluded -- and one contract. */
+#define GB_PASSWORD_HASH (HAVE_LIBXCRYPT || HAVE_YESCRYPT)
 
 #if HAVE_LIBCRYPTO
 #include <openssl/evp.h>
@@ -155,15 +154,7 @@ static void gbasic_rng_autoseed(void) {
     /* No explicit seed yet: draw a nondeterministic one so unseeded programs
      * still vary run to run. Tests call seed() for reproducibility. */
     uint64_t s = 0;
-    int fd = open("/dev/urandom", O_RDONLY);
-    int got = 0;
-    if (fd >= 0) {
-        if (read(fd, &s, sizeof(s)) == (ssize_t)sizeof(s)) {
-            got = 1;
-        }
-        close(fd);
-    }
-    if (!got) {
+    if (gb_secure_random(&s, sizeof(s)) != 0) {
         s = (uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32);
     }
     gbasic_rng_seed(s);
@@ -593,6 +584,13 @@ struct ProcessHandle {
     int reaped;             /* waitpid completed; `status` is final */
     int status;             /* raw wait(2) status, valid when reaped */
     size_t ref_count;
+#ifdef _WIN32
+    /* The process and its job (include/platform.h, gb_child_start). out_fd,
+     * err_fd and in_fd above are the same pipes as C-runtime fds; on Windows
+     * `status` is the exit code itself, or -1 for a child this interpreter
+     * ENDED, which is the Windows form of "killed by a signal". */
+    GbChild win;
+#endif
 };
 
 /* PLAT-HTTP: a handle to a LIVE HTTP request started by `http.start`.
@@ -2128,8 +2126,16 @@ static void format_number(char *buf, size_t bufsize, double v) {
         snprintf(buf, bufsize, "%.0f", v);
         return;
     }
+    /* SPELLED HERE, NOT BY THE C LIBRARY. "%g" printed what libc chose, and two
+     * libcs disagree: glibc writes a negative NaN as "-nan", Windows' UCRT as
+     * "nan" -- so examples/encode_roundtrip_test.out held on one platform and
+     * failed on the other (measured). These four are glibc's spellings, so no
+     * Linux output moves, and they are the four the decoder below already
+     * reads back, which keeps encode/decode a round trip everywhere. */
     if (!isfinite(v)) {
-        snprintf(buf, bufsize, "%g", v);
+        const char *text = isnan(v) ? (signbit(v) ? "-nan" : "nan")
+                                    : (v < 0 ? "-inf" : "inf");
+        snprintf(buf, bufsize, "%s", text);
         return;
     }
     /* 17 significant digits always round-trips a double, so this terminates
@@ -2185,28 +2191,77 @@ static int zone_name_valid(const char *zone) {
     if (strcmp(zone, "UTC") == 0 || strcmp(zone, "GMT") == 0) {
         return 1;
     }
+#ifdef _WIN32
+    /* Windows has no zoneinfo directory: ask the ICU it ships (platform.h).
+     * -1 when ICU itself is missing, so that is not reported as a typo. */
+    return gb_zone_known(zone);
+#else
     char path[512];
     snprintf(path, sizeof(path), "/usr/share/zoneinfo/%s", zone);
     struct stat st;
     return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+#endif
 }
 
+/* 1 when `zone` may be used; otherwise 0 with `message` saying why -- a name
+ * that is not a zone, or (Windows) no zone database to look it up in, which
+ * must not read as a misspelling of a name that is fine. */
+static int zone_check(const char *zone, char *message, size_t size) {
+    int known = zone_name_valid(zone);
+    if (known == 1) {
+        return 1;
+    }
+    if (known < 0) {
+        snprintf(message, size,
+                 "named time zones need the zone database Windows ships from "
+                 "Windows 10 version 1903 (icu.dll), which this system lacks: '%s'",
+                 zone);
+    } else {
+        snprintf(message, size,
+                 "unknown timezone '%s' (expected an IANA name like America/New_York, or UTC)",
+                 zone);
+    }
+    return 0;
+}
+
+#ifndef _WIN32
 static char *zone_push(const char *zone) {
     const char *cur = getenv("TZ");
     char *saved = cur ? copy_string(cur) : NULL;
-    setenv("TZ", zone, 1);
+    gb_setenv("TZ", zone);
     tzset();
     return saved;
 }
 
 static void zone_pop(char *saved) {
     if (saved) {
-        setenv("TZ", saved, 1);
+        gb_setenv("TZ", saved);
         free(saved);
     } else {
-        unsetenv("TZ");
+        gb_unsetenv("TZ");
     }
     tzset();
+}
+#endif
+
+/* The civil fields of UTC instant `raw` in `zone`. Returns 1 on success.
+ * POSIX: the TZ dance above. Windows: the zone's offset at that instant, from
+ * Windows' ICU, added to the instant -- exact, since an offset is a property
+ * of an instant and never ambiguous in this direction. */
+static int zone_localtime(const char *zone, time_t raw, struct tm *out) {
+#ifdef _WIN32
+    int offset = 0;
+    if (gb_zone_offset(zone, (long long)raw, &offset) != 0) {
+        return 0;
+    }
+    time_t shifted = raw + (time_t)offset;
+    return gb_gmtime(&shifted, out) != NULL;
+#else
+    char *saved = zone_push(zone);
+    int ok = gb_localtime(&raw, out) != NULL;
+    zone_pop(saved);
+    return ok;
+#endif
 }
 
 static void zone_fill_tm(DateTime dt, struct tm *tm) {
@@ -2238,6 +2293,61 @@ static int zone_tm_matches(const struct tm *l, DateTime dt) {
  * whose round trip reproduces the fields exactly. Two survivors = ambiguous,
  * one = unique, none = the gap (where both interpretations are real instants
  * on either side of it). */
+static long long zone_timegm(DateTime dt);
+
+#ifdef _WIN32
+/* WINDOWS: THE SAME THREE ANSWERS, FROM ONE QUESTION. There is no mktime-under-
+ * TZ here, so the civil time is resolved from the zone's OFFSET AT AN INSTANT
+ * (gb_zone_offset), by the standard method: take the offsets a day before and
+ * a day after the naive instant -- any transition near it lies between them --
+ * and keep each candidate `naive - offset` whose own offset is that offset.
+ * Two survivors: the repeated fall-back hour (ambiguous). One: unique. None:
+ * the spring-forward gap, where the two candidates straddle it.
+ *
+ * The answers are the POSIX ones by construction: ambiguous takes the EARLIER
+ * instant, and in the gap the LATER instant is the one read with the
+ * PRE-transition offset (02:30 EST, which renders as 03:30 EDT) -- exactly
+ * what the isdst=0 / isdst=1 pair below produces. */
+static int zone_resolve_instants(DateTime dt, const char *zone,
+                                 long long *chosen, long long *earlier,
+                                 long long *later) {
+    long long naive = zone_timegm(dt);
+    int before = 0, after = 0;
+    if (gb_zone_offset(zone, naive - 86400, &before) != 0 ||
+        gb_zone_offset(zone, naive + 86400, &after) != 0) {
+        *chosen = *earlier = *later = naive;   /* unreachable for a known zone */
+        return 0;
+    }
+    long long cand[2] = { naive - before, naive - after };
+    int want[2] = { before, after };
+    int valid[2] = { 0, 0 };
+    for (int i = 0; i < 2; i++) {
+        int got = 0;
+        valid[i] = gb_zone_offset(zone, cand[i], &got) == 0 && got == want[i];
+    }
+    if (before == after) {
+        valid[1] = 0;                           /* one offset: one candidate */
+    }
+    long long lo = cand[0] < cand[1] ? cand[0] : cand[1];
+    long long hi = cand[0] < cand[1] ? cand[1] : cand[0];
+    if (valid[0] && valid[1]) {
+        *earlier = lo;
+        *later = hi;
+        *chosen = lo;
+        return 1;
+    }
+    if (valid[0] || valid[1]) {
+        *chosen = valid[0] ? cand[0] : cand[1];
+        *earlier = *chosen;
+        *later = *chosen;
+        return 0;
+    }
+    *earlier = lo;
+    *later = hi;
+    *chosen = hi;
+    return 2;
+}
+#else
 static int zone_resolve_instants(DateTime dt, const char *zone,
                                  long long *chosen, long long *earlier,
                                  long long *later) {
@@ -2250,10 +2360,10 @@ static int zone_resolve_instants(DateTime dt, const char *zone,
     time_t e0 = mktime(&t0);
     time_t e1 = mktime(&t1);
     int ok0 = 0, ok1 = 0;
-    if (e0 != (time_t)-1 && localtime_r(&e0, &chk)) {
+    if (e0 != (time_t)-1 && gb_localtime(&e0, &chk)) {
         ok0 = zone_tm_matches(&chk, dt);
     }
-    if (e1 != (time_t)-1 && localtime_r(&e1, &chk)) {
+    if (e1 != (time_t)-1 && gb_localtime(&e1, &chk)) {
         ok1 = zone_tm_matches(&chk, dt);
     }
     zone_pop(saved);
@@ -2279,18 +2389,19 @@ static int zone_resolve_instants(DateTime dt, const char *zone,
     *chosen = *later;
     return 2;
 }
+#endif
 
 /* UTC epoch seconds from civil fields interpreted AS UTC. */
 static long long zone_timegm(DateTime dt) {
     struct tm tm;
     zone_fill_tm(dt, &tm);
-    return (long long)timegm(&tm);
+    return (long long)gb_timegm(&tm);
 }
 
 static DateTime zone_civil_from_epoch_utc(long long epoch, DateTimePrecision prec) {
     time_t raw = (time_t)epoch;
     struct tm g;
-    gmtime_r(&raw, &g);
+    gb_gmtime(&raw, &g);
     DateTime dt = {0};
     dt.year = g.tm_year + 1900;
     dt.month = g.tm_mon + 1;
@@ -2315,7 +2426,7 @@ static double datetime_to_epoch(DateTime dt, int *ok) {
     tm.tm_min = dt.minute;
     tm.tm_sec = dt.second;
     tm.tm_isdst = -1;
-    time_t t = mktime(&tm);
+    time_t t = gb_mktime(&tm);   /* any year; Windows' mktime stops at 1970 */
     if (t == (time_t)-1) {
         *ok = 0;
         return 0;
@@ -3242,6 +3353,11 @@ static void process_handle_release(ProcessHandle *handle) {
         }
         free(handle->pending_out.data);
         free(handle->pending_err.data);
+#ifdef _WIN32
+        /* A still-running child stays in its job, which is kept until the
+         * interpreter exits and then ends it: the orphan list's bargain. */
+        gb_child_release(&handle->win);
+#else
         if (!handle->reaped) {
             int st;
             pid_t r;
@@ -3252,6 +3368,7 @@ static void process_handle_release(ProcessHandle *handle) {
                 proc_orphan_add(handle->pid);
             }
         }
+#endif
         free(handle);
     }
 }
@@ -4373,7 +4490,7 @@ static void value_free(Value value) {
         ActorHandle *handle = value.as.actor;
         if (handle && --handle->ref_count == 0) {
             if (handle->write_fd >= 0) {
-                close(handle->write_fd);
+                channel_handle_close(handle->write_fd);
             }
             free(handle);
         }
@@ -5416,7 +5533,7 @@ static LockEntry *lock_find(const char *path) {
 
 static void lock_clear(void) {
     while (lock_count > 0) {
-        flock(locks[lock_count - 1].fd, LOCK_UN);
+        gb_flock(locks[lock_count - 1].fd, GB_LOCK_RELEASE);
         close(locks[lock_count - 1].fd);
         free(locks[lock_count - 1].path);
         lock_count--;
@@ -5425,7 +5542,55 @@ static void lock_clear(void) {
     locks = NULL;
 }
 
+#if GB_PASSWORD_HASH
+/* A new hash's setting -- algorithm, cost and salt -- malloc'd, or NULL.
+ *
+ * The yescrypt branch must write what libxcrypt's DEFAULT writes, because a
+ * password hash is data: made on one machine, checked on another. libxcrypt's
+ * crypt_gensalt with no prefix and count 0 is `$y$j9T$` -- YESCRYPT_DEFAULTS,
+ * N=4096 ('9'), r=32 ('T'), p=1 -- over 16 random salt bytes, and
+ * tests/windows/password_interop.bas checks a hash libxcrypt actually wrote. */
+static char *password_new_setting(void) {
 #if HAVE_LIBXCRYPT
+    return crypt_gensalt_ra(NULL, 0, NULL, 0);
+#else
+    unsigned char salt[16];
+    if (gb_secure_random(salt, sizeof(salt)) != 0) return NULL;
+    yescrypt_params_t params;
+    memset(&params, 0, sizeof(params));
+    params.flags = YESCRYPT_DEFAULTS;
+    params.N = 4096;
+    params.r = 32;
+    params.p = 1;
+    uint8_t buf[96];
+    if (!yescrypt_encode_params_r(&params, salt, sizeof(salt), buf, sizeof(buf))) return NULL;
+    return strdup((const char *)buf);
+#endif
+}
+
+/* crypt(3): the password hashed under `setting` (a setting, or a whole hash
+ * to verify against), malloc'd, or NULL when the setting cannot be used.
+ * `password` is a C string here because crypt(3) is: the callers refuse a
+ * password containing NUL rather than let it be truncated. */
+static char *password_crypt(const char *password, const char *setting) {
+#if HAVE_LIBXCRYPT
+    void *data = NULL;
+    int data_size = 0;
+    char *hash = crypt_ra(password, setting, &data, &data_size);
+    char *out = hash ? strdup(hash) : NULL;
+    free(data);
+    return out;
+#else
+    yescrypt_local_t local;
+    if (yescrypt_init_local(&local) != 0) return NULL;
+    uint8_t buf[192];
+    uint8_t *hash = yescrypt_r(NULL, &local, (const uint8_t *)password, strlen(password),
+                               (const uint8_t *)setting, NULL, buf, sizeof(buf));
+    yescrypt_free_local(&local);
+    return hash ? strdup((const char *)buf) : NULL;
+#endif
+}
+
 static int constant_time_string_equal(const char *left, const char *right) {
     size_t left_len = strlen(left);
     size_t right_len = strlen(right);
@@ -5495,7 +5660,7 @@ static int lock_path(const char *path) {
         perror(path);
         return 0;
     }
-    if (flock(fd, LOCK_EX) != 0) {
+    if (gb_flock(fd, GB_LOCK_EXCLUSIVE) != 0) {
         perror(path);
         close(fd);
         return 0;
@@ -5521,7 +5686,7 @@ static int unlock_path(const char *path) {
             if (locks[i].depth > 0) {
                 return 1;
             }
-            int ok = flock(locks[i].fd, LOCK_UN) == 0;
+            int ok = gb_flock(locks[i].fd, GB_LOCK_RELEASE) == 0;
             close(locks[i].fd);
             free(locks[i].path);
             locks[i] = locks[lock_count - 1];
@@ -7884,7 +8049,7 @@ static Value zone_eval_call(AstExpr *expr) {
         struct tm tm;
         zone_fill_tm(local_dt, &tm);
         tm.tm_isdst = -1;
-        time_t instant = mktime(&tm);
+        time_t instant = gb_mktime(&tm);
         if (instant == (time_t)-1) {
             runtime_error_raise("zone_offset could not place that datetime on the timeline",
                                 1003, "datetime");
@@ -7931,21 +8096,16 @@ static Value zone_eval_call(AstExpr *expr) {
         runtime_error_raise(message, 1003, "datetime");
         return value_null();
     }
-    if (!zone_name_valid(zone)) {
-        snprintf(message, sizeof(message),
-                 "unknown timezone '%s' (expected an IANA name like America/New_York, or UTC)",
-                 zone);
+    if (!zone_check(zone, message, sizeof(message))) {
         runtime_error_raise(message, 1003, "datetime");
         return value_null();
     }
 
     if (strcmp(name, "to_zone") == 0) {
         long long epoch = zone_timegm(dt);
-        char *saved = zone_push(zone);
         time_t raw = (time_t)epoch;
         struct tm l;
-        localtime_r(&raw, &l);
-        zone_pop(saved);
+        zone_localtime(zone, raw, &l);
         DateTime out = {0};
         out.year = l.tm_year + 1900;
         out.month = l.tm_mon + 1;
@@ -9117,8 +9277,25 @@ static char *dirname_copy(const char *path) {
     return dir;
 }
 
+/* Does `path` name the same file wherever it is read from? On Windows a drive
+ * path (`C:/x`, `C:\x`) is, and so is a rooted one; without this,
+ * `load lib from "C:/Users/me/lib.bas"` was joined onto the loading file's
+ * directory and became `C:/somewhere/C:/Users/me/lib.bas` (measured,
+ * tests/run_alias.sh's actor tier). */
+static int path_is_absolute(const char *path) {
+#ifdef _WIN32
+    if (isalpha((unsigned char)path[0]) && path[1] == ':' &&
+        (path[2] == '/' || path[2] == '\\')) {
+        return 1;
+    }
+    return path[0] == '/' || path[0] == '\\';
+#else
+    return path[0] == '/';
+#endif
+}
+
 static char *resolve_use_path(const char *base_file, const char *use_path) {
-    if (use_path[0] == '/') {
+    if (path_is_absolute(use_path)) {
         return copy_string(use_path);
     }
     char *dir = dirname_copy(base_file ? base_file : ".");
@@ -9528,12 +9705,12 @@ static int same_file_path(const char *a, const char *b) {
     if (strcmp(a, b) == 0) {
         return 1;
     }
-    char ra[PATH_MAX];
-    char rb[PATH_MAX];
-    if (!realpath(a, ra) || !realpath(b, rb)) {
-        return 0;
-    }
-    return strcmp(ra, rb) == 0;
+    char *ra = gb_realpath(a);
+    char *rb = ra ? gb_realpath(b) : NULL;
+    int same = ra && rb && strcmp(ra, rb) == 0;
+    free(ra);
+    free(rb);
+    return same;
 }
 
 /* IS THIS LIBRARY THE AUTHOR'S OWN -- i.e. does it sit beside the program being
@@ -9560,23 +9737,38 @@ static int same_file_path(const char *a, const char *b) {
  *
  * This is the same notion of "local library" the loader already uses: beside
  * the loading file, never below it (run_library_depth.sh). */
+/* The last directory separator in a CANONICAL path (gb_realpath's output).
+ * Windows: gb_realpath answers with backslashes, and `/` is accepted there too.
+ * POSIX: only `/` -- a backslash is an ordinary filename character, and
+ * treating it as a separator would cut a name in half. */
+static char *last_path_separator(char *path) {
+    char *slash = strrchr(path, '/');
+#ifdef _WIN32
+    char *back = strrchr(path, '\\');
+    if (!slash || (back && back > slash)) {
+        slash = back;
+    }
+#endif
+    return slash;
+}
+
 static int same_directory(const char *a, const char *b) {
     if (!a || !b) {
         return 0;
     }
-    char ra[PATH_MAX];
-    char rb[PATH_MAX];
-    if (!realpath(a, ra) || !realpath(b, rb)) {
-        return 0;
+    char *ra = gb_realpath(a);
+    char *rb = ra ? gb_realpath(b) : NULL;
+    char *sa = ra ? last_path_separator(ra) : NULL;
+    char *sb = rb ? last_path_separator(rb) : NULL;
+    int same = 0;
+    if (sa && sb) {
+        *sa = '\0';
+        *sb = '\0';
+        same = strcmp(ra, rb) == 0;
     }
-    char *sa = strrchr(ra, '/');
-    char *sb = strrchr(rb, '/');
-    if (!sa || !sb) {
-        return 0;
-    }
-    *sa = '\0';
-    *sb = '\0';
-    return strcmp(ra, rb) == 0;
+    free(ra);
+    free(rb);
+    return same;
 }
 
 static int library_is_authors_own(const char *library_path) {
@@ -10653,7 +10845,7 @@ static Value eval_path_call(AstExpr *expr) {
             return value_null();
         }
         if (strcmp(name, "real_path") == 0) {
-            char *resolved = realpath(first_path, NULL);
+            char *resolved = gb_realpath(first_path);
             if (!resolved) {
                 result = value_unknown();
             } else {
@@ -10826,7 +11018,7 @@ static int copy_file_path(const char *source_path, const char *target_path) {
 }
 
 static int move_file_path(const char *source_path, const char *target_path) {
-    if (rename(source_path, target_path) == 0) {
+    if (gb_rename_replace(source_path, target_path) == 0) {
         return 1;
     }
     if (errno != EXDEV || !copy_file_path(source_path, target_path)) {
@@ -10849,6 +11041,84 @@ static int file_value_compare(const void *left, const void *right) {
  * value reported BY NAME. Writes through a private copy of the path, so the
  * caller's string is untouched. Returns 0 on success; on failure `why` holds a
  * message and the path it is about. */
+/* A path separator. Windows accepts both, and a path reaches gBASIC either way
+ * (typed, or from the shell); on POSIX a backslash is an ordinary filename
+ * character and must not split a name. */
+static int path_is_sep(char c) {
+#ifdef _WIN32
+    return c == '/' || c == '\\';
+#else
+    return c == '/';
+#endif
+}
+
+/* How much of `path` is ROOT -- the part a `mkdir -p` walk must not try to
+ * create. POSIX: the walk starts at index 1, which already steps over a
+ * leading `/`, so nothing more. Windows: a drive ("C:", then its separator)
+ * or a UNC share ("//server/share"), neither of which is a directory anyone
+ * can make. Without this the walk began with mkdir("C:"), and make_dir with
+ * parents failed on EVERY absolute Windows path with "C: exists and is not a
+ * directory" (measured, tests/run_dir_builtins.sh). */
+static size_t path_root_length(const char *path) {
+#ifdef _WIN32
+    if (isalpha((unsigned char)path[0]) && path[1] == ':') {
+        return path_is_sep(path[2]) ? 3 : 2;
+    }
+    if (path_is_sep(path[0]) && path_is_sep(path[1])) {
+        size_t i = 2, seps = 0;
+        for (; path[i]; i++) {
+            if (path_is_sep(path[i]) && ++seps == 2) {
+                return i + 1;          /* past "//server/share/" */
+            }
+        }
+        return i;                      /* the share itself, nothing below it */
+    }
+#else
+    (void)path;
+#endif
+    return 0;
+}
+
+/* The errno an open of `path` failed with, as POSIX would have reported it.
+ * POSIX already distinguishes a parent that is an ordinary FILE (ENOTDIR) from
+ * one that is missing (ENOENT), and the read/write messages exist to tell those
+ * apart (DOGFOOD 35): three causes, three fixes. Windows reports both as "path
+ * not found", so `a.txt/brain.json` read "No such file or directory" and sent
+ * the reader looking for a directory that was never the problem (measured,
+ * tests/run_core.sh). There, an ENOENT whose nearest EXISTING ancestor is not a
+ * directory is the ENOTDIR it is. Unchanged on POSIX. */
+static int path_open_errno(const char *path, int err) {
+#ifdef _WIN32
+    if (err != ENOENT) {
+        return err;
+    }
+    size_t len = strlen(path);
+    char *prefix = malloc(len + 1);
+    if (!prefix) {
+        return err;
+    }
+    for (size_t i = path_root_length(path); i < len; i++) {
+        if (!path_is_sep(path[i]) || i == 0) {
+            continue;
+        }
+        memcpy(prefix, path, i);
+        prefix[i] = '\0';
+        struct stat st;
+        if (stat(prefix, &st) != 0) {
+            break;                       /* missing: ENOENT was right */
+        }
+        if (!S_ISDIR(st.st_mode)) {
+            free(prefix);
+            return ENOTDIR;
+        }
+    }
+    free(prefix);
+#else
+    (void)path;
+#endif
+    return err;
+}
+
 static int make_dir_parents(const char *path, char *why, size_t why_size) {
     size_t len = strlen(path);
     if (len == 0) {
@@ -10862,18 +11132,19 @@ static int make_dir_parents(const char *path, char *why, size_t why_size) {
     memcpy(work, path, len + 1);
     /* Trailing slashes name the same directory, so trim them rather than
      * making an empty final segment that mkdir would refuse. */
-    while (len > 1 && work[len - 1] == '/') {
+    size_t root = path_root_length(work);
+    while (len > 1 && len > root && path_is_sep(work[len - 1])) {
         work[--len] = '\0';
     }
 
     int failed = 0;
-    for (size_t i = 1; i <= len && !failed; i++) {
-        if (work[i] != '/' && work[i] != '\0') {
+    for (size_t i = root + 1; i <= len && !failed; i++) {
+        if (!path_is_sep(work[i]) && work[i] != '\0') {
             continue;
         }
         char saved = work[i];
         work[i] = '\0';
-        if (work[0] != '\0' && mkdir(work, 0777) != 0) {
+        if (work[0] != '\0' && gb_mkdir(work, 0777) != 0) {
             if (errno == EEXIST) {
                 /* THE CASE THAT MUST NOT PASS SILENTLY: the name is taken by
                  * something that is not a directory. Reporting success there
@@ -11033,7 +11304,8 @@ static Value eval_file_call(AstExpr *expr) {
               * `make_dir` and `atomic_replace` already reported theirs; this is
               * the rest of the family catching up. */
             snprintf(message, sizeof(message), "could not read file: %s (%s)",
-                     file_value.as.file_path, strerror(errno));
+                     file_value.as.file_path,
+                     strerror(path_open_errno(file_value.as.file_path, errno)));
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             return value_null();
@@ -11185,10 +11457,24 @@ static Value eval_file_call(AstExpr *expr) {
          * has second precision, so any sub-second st_mtim.tv_nsec is intentionally
          * dropped (we do not fabricate precision the value model can't hold). Local
          * time, mirroring from_epoch(). Works for any stat-able path, directories
-         * included (a directory's mtime is a meaningful change signal). */
-        time_t raw = st.st_mtime;
+         * included (a directory's mtime is a meaningful change signal).
+         * Read through gb_file_mtime, NOT st.st_mtime: on Windows the C runtime
+         * shifts that field whenever TZ differs from the system zone. */
+        time_t raw;
+        if (gb_file_mtime(file_value.as.file_path, &raw) != 0) {
+            char message[512];
+            snprintf(message,
+                     sizeof(message),
+                     "%s could not read file metadata: %s (%s)",
+                     name,
+                     file_value.as.file_path,
+                     strerror(errno));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            return value_null();
+        }
         struct tm local;
-        if (!localtime_r(&raw, &local)) {
+        if (!gb_localtime(&raw, &local)) {
             runtime_error_raise("file_mtime could not convert the file time",
                                 1004,
                                 "file operation");
@@ -11242,8 +11528,9 @@ static Value eval_file_call(AstExpr *expr) {
          * non-atomic sequence. On any failure rename() leaves both source and
          * destination untouched, so a failed replace never destroys the original
          * destination. (Atomic visibility only — durability across a crash would
-         * additionally require fsync of the file and its directory; out of scope.) */
-        if (rename(source_path, target_path) == 0) {
+         * additionally require fsync of the file and its directory; out of scope.)
+         * gb_rename_replace: Windows' own rename refuses an existing target. */
+        if (gb_rename_replace(source_path, target_path) == 0) {
             value_free(source);
             value_free(target);
             return value_bool(1);
@@ -11506,7 +11793,7 @@ static Value eval_file_call(AstExpr *expr) {
         }
 
         int ok = is_make
-                     ? mkdir(path, 0777) == 0
+                     ? gb_mkdir(path, 0777) == 0
                      : rmdir(path) == 0;
         if (!ok) {
             char message[512];
@@ -11670,18 +11957,39 @@ static Value eval_file_call(AstExpr *expr) {
         if (!file) {
             char message[512];
             snprintf(message, sizeof(message), "could not write file: %s (%s)",
-                     file_value.as.file_path, strerror(errno));
+                     file_value.as.file_path,
+                     strerror(path_open_errno(file_value.as.file_path, errno)));
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
             return value_bool(0);
         }
-        fwrite(text_value.as.string, 1, string_length(text_value.as.string), file);
-        int ok = ferror(file) == 0;
-        fclose(file);
+        /* THE FLUSH IS THE WRITE. fwrite fills stdio's buffer and the bytes
+         * reach the file in fclose, so a write that fails there -- a full
+         * disk, a quota, a locked range on Windows -- failed AFTER every check
+         * above had passed. fclose's result used to be ignored: writing to
+         * /dev/full returned TRUE with exit 0 (measured), and on Windows a
+         * write inside `with lock(f)` vanished the same way. A write that did
+         * not happen now raises exactly as one that could not start does. */
+        size_t len = string_length(text_value.as.string);
+        int failed = fwrite(text_value.as.string, 1, len, file) != len || ferror(file);
+        int saved_errno = errno;
+        if (fclose(file) != 0 && !failed) {
+            failed = 1;
+            saved_errno = errno;
+        }
+        if (failed) {
+            char message[512];
+            snprintf(message, sizeof(message), "could not write file: %s (%s)",
+                     file_value.as.file_path, strerror(saved_errno));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            return value_bool(0);
+        }
         value_free(file_value);
         value_free(text_value);
-        return value_bool(ok);
+        return value_bool(1);
     }
 
     return value_null();
@@ -14766,7 +15074,17 @@ static int ensure_root_mailbox(void) {
         return 1;
     }
     if (mailbox_open(&root_mailbox) != 0) {
+#ifdef _WIN32
+        /* Windows names its inbox in the temporary directory, so this can
+         * fail for a reason the author can act on (a path too long for
+         * AF_UNIX's 108 bytes); say which. */
+        char message[256];
+        snprintf(message, sizeof message, "actor: could not create mailbox (%s)",
+                 strerror(errno));
+        runtime_error_raise(message, 1004, "actor");
+#else
         runtime_error_raise("actor: could not create mailbox", 1004, "actor");
+#endif
         return 0;
     }
     root_actor_handle = malloc(sizeof(ActorHandle));
@@ -14836,6 +15154,15 @@ static Value actor_handle_adopt_fd(int fd) {
  * is the read end of this actor's inbound mailbox; self_fd is a write end to that
  * same mailbox (a dup the parent passed so self() works in the child). Replaces
  * the lazy fresh-socketpair path for children. */
+#ifdef _WIN32
+static char *actor_inbox_path = NULL;
+
+void eval_set_actor_inbox_path(const char *path) {
+    free(actor_inbox_path);
+    actor_inbox_path = copy_string(path);
+}
+#endif
+
 static void actor_child_init(int inbox_fd, int self_fd) {
     root_mailbox.read_fd = inbox_fd;
     root_mailbox.write_fd = self_fd;
@@ -14863,15 +15190,108 @@ typedef struct {
     uint64_t handle_id;   /* actor handle id for this child (0 until bound) */
     int reaped;           /* waitpid has collected this child */
     int status;           /* raw wait status, valid once reaped */
+#ifdef _WIN32
+    GbChild proc;         /* process + job handles; there is no waitpid */
+    char *inbox_path;     /* its named inbox, deleted if it could not */
+#endif
 } ActorChild;
 
 /* Set by eval_run_actor: this interpreter IS a spawned actor, so its parent is
- * a sender it can never account for. Read only by warning 2110. */
+ * a sender it can never account for. Read only by warning 2110. On every
+ * platform: a Windows actor has a parent that can send just as a POSIX one
+ * does. */
 static int running_as_spawned_actor = 0;
 
+#ifndef _WIN32
 static pid_t actor_group_pgid = 0;
+#endif
 static ActorChild *actor_children = NULL;
 static size_t actor_child_count = 0;
+
+#ifdef _WIN32
+/* WINDOWS: THE SAME FOUR OPERATIONS OVER PROCESS HANDLES. There is no process
+ * group to signal and no waitpid: each child is a GbChild from
+ * gb_actor_launch, in its own Job Object with KILL_ON_JOB_CLOSE -- which is
+ * also what ends it if this process is killed outright (POSIX: PDEATHSIG).
+ *
+ * THE DEATH REASON IS COARSER, and that is a fact about Windows: a process
+ * has an exit code and nothing records whether it was killed, so `killed`
+ * cannot be told from `error` (both are a nonzero code). `normal` is exact. */
+static size_t actor_track_child_win(const GbChild *proc, const char *inbox_path) {
+    ActorChild *next = realloc(actor_children,
+                               sizeof(ActorChild) * (actor_child_count + 1));
+    if (!next) {
+        abort();
+    }
+    actor_children = next;
+    memset(&actor_children[actor_child_count], 0, sizeof(ActorChild));
+    actor_children[actor_child_count].pid = (pid_t)proc->pid;
+    actor_children[actor_child_count].proc = *proc;
+    actor_children[actor_child_count].inbox_path = copy_string(inbox_path);
+    return actor_child_count++;
+}
+
+static void actor_reap_children(void) {
+    for (size_t i = 0; i < actor_child_count; i++) {
+        int code = 0;
+        if (!actor_children[i].reaped && gb_child_exited(&actor_children[i].proc, &code)) {
+            actor_children[i].reaped = 1;
+            actor_children[i].status = code;
+        }
+    }
+}
+
+/* Reached once the child's inbox has hung up, so it is exiting; the bounded
+ * wait closes the window in which the socket closed a moment before the
+ * process finished, without risking a stall if something else closed it. */
+static int actor_child_wait_status(uint64_t handle_id, int *status) {
+    if (handle_id == 0) {
+        return 0;
+    }
+    for (size_t i = 0; i < actor_child_count; i++) {
+        if (actor_children[i].handle_id != handle_id) {
+            continue;
+        }
+        for (int tries = 0; !actor_children[i].reaped && tries < 500; tries++) {
+            int code = 0;
+            if (gb_child_exited(&actor_children[i].proc, &code)) {
+                actor_children[i].reaped = 1;
+                actor_children[i].status = code;
+            } else {
+                Sleep(10);
+            }
+        }
+        if (actor_children[i].reaped) {
+            *status = actor_children[i].status;
+            return 1;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+/* POSIX sends the group SIGTERM; the Windows form is ending each child's job
+ * (its whole tree), then waiting, then deleting the inbox file a killed child
+ * could not delete itself. */
+static void actor_cleanup_children(void) {
+    for (size_t i = 0; i < actor_child_count; i++) {
+        if (!actor_children[i].reaped) {
+            gb_child_stop(&actor_children[i].proc, 1);
+            if (actor_children[i].proc.process) {
+                WaitForSingleObject((HANDLE)actor_children[i].proc.process, 5000);
+            }
+        }
+        gb_child_release(&actor_children[i].proc);
+        if (actor_children[i].inbox_path) {
+            remove(actor_children[i].inbox_path);   /* gone already if it exited */
+            free(actor_children[i].inbox_path);
+        }
+    }
+    free(actor_children);
+    actor_children = NULL;
+    actor_child_count = 0;
+}
+#else
 
 /* Track a freshly forked child; returns its record index so the caller can bind
  * the handle id once the parent's handle to the child has been created. */
@@ -14887,34 +15307,6 @@ static size_t actor_track_child(pid_t pid) {
     actor_children[actor_child_count].reaped = 0;
     actor_children[actor_child_count].status = 0;
     return actor_child_count++;
-}
-
-/* Could ANYTHING still send to this mailbox? Read only by warning 2110.
- *
- * NO PARENT and NO UNREAPED CHILD means no sender remains -- and the timing is
- * sound rather than lucky: a child that has exited has already performed its
- * sends, and those bytes are sitting in the socket, so `receive` would have
- * taken one instead of reaching the block. The predicate therefore cannot be
- * true while a child that is going to send is still running. MEASURED both
- * ways in tests/run_inbox.sh.
- *
- * NOT CERTAIN, and that is why 2110 warns rather than raises: a handle can
- * travel over SCM_RIGHTS, so a grandchild of a dead child could still hold one.
- * The runtime cannot track that, and a raise would end a program that was
- * right. */
-static void actor_reap_children(void);
-
-static int actor_no_sender_remains(void) {
-    if (running_as_spawned_actor) {
-        return 0;
-    }
-    actor_reap_children();
-    for (size_t i = 0; i < actor_child_count; i++) {
-        if (!actor_children[i].reaped) {
-            return 0;
-        }
-    }
-    return 1;
 }
 
 /* Reap any exited children without blocking, capturing each one's wait status so
@@ -14990,6 +15382,33 @@ static void actor_cleanup_children(void) {
     actor_children = NULL;
     actor_child_count = 0;
     actor_group_pgid = 0;
+}
+#endif /* _WIN32 */
+
+/* Could ANYTHING still send to this mailbox? Read only by warning 2110.
+ *
+ * NO PARENT and NO UNREAPED CHILD means no sender remains -- and the timing is
+ * sound rather than lucky: a child that has exited has already performed its
+ * sends, and those bytes are sitting in the socket, so `receive` would have
+ * taken one instead of reaching the block. The predicate therefore cannot be
+ * true while a child that is going to send is still running. MEASURED both
+ * ways in tests/run_inbox.sh.
+ *
+ * NOT CERTAIN, and that is why 2110 warns rather than raises: a handle can
+ * travel over SCM_RIGHTS, so a grandchild of a dead child could still hold one.
+ * The runtime cannot track that, and a raise would end a program that was
+ * right. */
+static int actor_no_sender_remains(void) {
+    if (running_as_spawned_actor) {
+        return 0;
+    }
+    actor_reap_children();
+    for (size_t i = 0; i < actor_child_count; i++) {
+        if (!actor_children[i].reaped) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static Value builtin_actor_self(void) {
@@ -15092,7 +15511,7 @@ static int actor_recv_one(Value *out) {
     /* Any descriptor the frame did not claim would otherwise leak. */
     for (size_t i = 0; i < nfds; i++) {
         if (!used || !used[i]) {
-            close(fds[i]);
+            channel_handle_close(fds[i]);
         }
     }
     free(used);
@@ -15277,9 +15696,7 @@ static Value make_down_message(Value handle, const char *reason) {
 
 /* Has the target behind this mailbox write fd gone (its read end closed)? */
 static int monitor_fd_hung_up(int write_fd) {
-    struct pollfd p = { write_fd, 0, 0 };
-    int r = poll(&p, 1, 0);
-    return r > 0 && (p.revents & (POLLHUP | POLLERR | POLLNVAL));
+    return channel_handle_hung_up(write_fd);
 }
 
 /* Reap children, then synthesize a "down" for every monitor whose target has
@@ -15308,23 +15725,34 @@ static void actor_collect_downs(void) {
  * fds} so a death wakes a receiver exactly as a message does (§7.1). */
 static int actor_wait(int timeout_ms) {
     for (;;) {
+        /* A frame already read off the wire (Windows reassembles them) is
+         * ready now; polling for it would wait on something that has come. */
+        if (mailbox_pending(&root_mailbox)) {
+            return 1;
+        }
         size_t nmon = 0;
         for (Monitor *m = monitor_head; m; m = m->next) {
             nmon++;
         }
-        size_t n = 1 + nmon;
-        struct pollfd *p = malloc(sizeof(struct pollfd) * n);
+        size_t nbox = mailbox_poll_count(&root_mailbox);
+        size_t n = nbox + nmon;
+        struct pollfd *p = malloc(sizeof(struct pollfd) * (n ? n : 1));
         if (!p) {
             abort();
         }
-        p[0].fd = root_mailbox.read_fd;
-        p[0].events = POLLIN;
-        p[0].revents = 0;
-        size_t i = 1;
-        for (Monitor *m = monitor_head; m; m = m->next, i++) {
-            p[i].fd = m->target.as.actor->write_fd;
+        mailbox_poll_fill(&root_mailbox, p);
+        size_t i = nbox;
+        for (Monitor *m = monitor_head; m; m = m->next) {
+            int fd = channel_handle_pollfd(m->target.as.actor->write_fd);
+            if (fd < 0) {
+                /* Already gone, with nothing to poll: say so now. */
+                free(p);
+                return 2;
+            }
+            p[i].fd = fd;
             p[i].events = 0;   /* POLLHUP/POLLERR are reported regardless */
             p[i].revents = 0;
+            i++;
         }
         int r = poll(p, n, timeout_ms);
         if (r < 0) {
@@ -15339,9 +15767,9 @@ static int actor_wait(int timeout_ms) {
             free(p);
             return 0;
         }
-        int inbox = p[0].revents != 0;
+        int inbox = mailbox_poll_ready(&root_mailbox, p, nbox);
         int mon = 0;
-        for (size_t k = 1; k < n; k++) {
+        for (size_t k = nbox; k < n; k++) {
             if (p[k].revents != 0) {
                 mon = 1;
                 break;
@@ -15354,7 +15782,10 @@ static int actor_wait(int timeout_ms) {
         if (mon) {
             return 2;
         }
-        /* spurious wakeup: poll again */
+        /* Woken with no whole frame yet (Windows: part of one arrived). The
+         * caller loops and recomputes its deadline, which polling again here
+         * with the ORIGINAL timeout would not. */
+        return 2;
     }
 }
 
@@ -15637,15 +16068,13 @@ static char *actor_self_exe_path(void) {
     return copy_string(buf);
 }
 
+#ifndef _WIN32
 /* Clear FD_CLOEXEC on fd so it survives exec into the child. Returns 0 on
  * success, -1 on failure. */
 static int fd_clear_cloexec(int fd) {
-    int flags = fcntl(fd, F_GETFD, 0);
-    if (flags < 0) {
-        return -1;
-    }
-    return fcntl(fd, F_SETFD, flags & ~FD_CLOEXEC);
+    return gb_set_cloexec(fd, 0);
 }
+#endif
 
 /* `spawn worker(args...)` — start a fresh interpreter as a new actor running
  * `worker`, returning a handle to its inbound mailbox (docs/multiprocessing_design.md
@@ -15653,6 +16082,122 @@ static int fd_clear_cloexec(int fd) {
  * any handle fds they carry), enqueues them as the child's reserved first frame,
  * fork+execs `gbasic --actor`, and blocks on a control pipe until the child
  * reports ready. */
+#ifdef _WIN32
+/* spawn's WINDOWS HALF, from the evaluated arguments on. The same contract as
+ * the fork+exec path below -- the child re-parses the source, runs `entry`,
+ * and its FIRST message is the startup frame -- with three differences, each
+ * a fact about the transport (src/actor.c):
+ *   - the parent NAMES the child's inbox and the child listens there, so the
+ *     startup frame is sent after the child reports ready rather than queued
+ *     before it exists; nobody else knows the name yet, so it is still first;
+ *   - a handle in the arguments travels as its inbox path, attached to that
+ *     frame exactly as a runtime send attaches one (no descriptor inherited);
+ *   - the child is a process handle in a Job Object, not a pid in a group. */
+static Value spawn_launch_win(const char *entry, char *exe, Value args_array) {
+    char path[256];
+    if (mailbox_new_path(path, sizeof path) != 0) {
+        char message[256];
+        snprintf(message, sizeof message,
+                 "spawn: could not name the child actor's mailbox (%s)", strerror(errno));
+        value_free(args_array);
+        free(exe);
+        runtime_error_raise(message, 1004, "actor");
+        return value_null();
+    }
+
+    /* The handles' connections are BORROWED by the xfer, so the arguments stay
+     * alive until the frame is sent. */
+    ActorMsgSend xfer = {{0}, 0, 0};
+    active_msg_send = &xfer;
+    char *frame = NULL;
+    size_t frame_len = 0;
+    int serialized = serialize_to_buffer(args_array, &frame, &frame_len);
+    active_msg_send = NULL;
+    if (!serialized || xfer.overflow) {
+        free(frame);            /* serialize_value already raised */
+        value_free(args_array);
+        free(exe);
+        return value_null();
+    }
+    if (frame_len > channel_max_message(-1)) {
+        /* The same sentence as the POSIX path below, with the same two numbers. */
+        char too_big[192];
+        snprintf(too_big, sizeof(too_big),
+                 "spawn: arguments are %zu bytes and one frame on this channel"
+                 " holds at most %zu -- pass less, or hand the data over a file",
+                 frame_len, channel_max_message(-1));
+        free(frame);
+        value_free(args_array);
+        free(exe);
+        runtime_error_raise(too_big, 1004, "actor");
+        return value_null();
+    }
+
+    /* Control pipe: the child writes one status byte; the parent blocks on it.
+     * Not inheritable here -- gb_actor_launch passes the child its own copy. */
+    int ctrl[2];
+    if (_pipe(ctrl, 64, _O_BINARY | _O_NOINHERIT) != 0) {
+        free(frame);
+        value_free(args_array);
+        free(exe);
+        runtime_error_raise("spawn: could not create control pipe", 1004, "actor");
+        return value_null();
+    }
+    GbChild proc;
+    char why[256];
+    if (gb_actor_launch(exe, entry, program_reexec_path(), path, ctrl[1],
+                        &proc, why, sizeof why) != 0) {
+        close(ctrl[0]);
+        close(ctrl[1]);
+        free(frame);
+        value_free(args_array);
+        free(exe);
+        char message[384];
+        snprintf(message, sizeof message, "spawn: could not start the child actor: %s", why);
+        runtime_error_raise(message, 1004, "actor");
+        return value_null();
+    }
+    free(exe);
+    close(ctrl[1]);     /* the child holds the only write end now: EOF = it died */
+    size_t child_index = actor_track_child_win(&proc, path);
+
+    char status = 0;
+    int n;
+    do {
+        n = read(ctrl[0], &status, 1);
+    } while (n < 0 && errno == EINTR);
+    close(ctrl[0]);
+
+    int handle_id = -1;
+    int rc = ACTOR_CHANNEL_ERROR;
+    if (n == 1 && status == 'R') {
+        handle_id = channel_handle_adopt_path(path);
+        if (handle_id >= 0) {
+            rc = channel_send_fds(handle_id, frame, frame_len,
+                                  xfer.count ? xfer.fds : NULL, xfer.count);
+        }
+    }
+    free(frame);
+    value_free(args_array);
+    if (n != 1 || status != 'R') {
+        runtime_error_raise("spawn: child actor failed to start", 1004, "actor");
+        return value_null();
+    }
+    if (rc != ACTOR_CHANNEL_OK) {
+        if (handle_id >= 0) {
+            channel_handle_close(handle_id);
+        }
+        runtime_error_raise("spawn: could not deliver startup arguments",
+                            1004, "actor");
+        return value_null();
+    }
+    Value handle = actor_handle_adopt_fd(handle_id);
+    /* Bound so a monitor on this child reports its exit code (§7.1). */
+    actor_children[child_index].handle_id = handle.as.actor->id;
+    return handle;
+}
+#endif
+
 static Value eval_spawn(AstExpr *expr) {
     char *entry = expr->as.call.name;
     size_t argc = expr->as.call.args.count;
@@ -15746,6 +16291,9 @@ static Value eval_spawn(AstExpr *expr) {
     }
     Value args_array = value_array(items, argc);
 
+#ifdef _WIN32
+    return spawn_launch_win(entry, exe, args_array);
+#else
     /* The child's inbound mailbox: the parent keeps the write end as the handle
      * it sends to; the child inherits the read end as its inbox. */
     Mailbox child_box;
@@ -15952,6 +16500,7 @@ static Value eval_spawn(AstExpr *expr) {
     close(child_box.write_fd);   /* the child is reaped by actor_cleanup_children */
     runtime_error_raise("spawn: child actor failed to start", 1004, "actor");
     return value_null();
+#endif /* _WIN32 */
 }
 
 /* Entry point for a spawned actor process (`gbasic --actor entry program ...`).
@@ -16009,7 +16558,23 @@ int eval_run_actor(AstStmtList program, const char *entry,
         return 1;
     }
 
+#ifdef _WIN32
+    /* The inbox is a NAME the parent chose: listen there before saying ready,
+     * since the parent connects the moment it reads 'R'. */
+    (void)inbox_fd;
+    (void)self_fd;
+    if (!actor_inbox_path || mailbox_open_at(&root_mailbox, actor_inbox_path) != 0) {
+        char b = 'E';
+        ssize_t we = write(control_fd, &b, 1);
+        (void)we;
+        close(control_fd);
+        fprintf(stderr, "actor: %s could not open its mailbox\n", entry);
+        return 1;
+    }
+    actor_child_init(root_mailbox.read_fd, root_mailbox.write_fd);
+#else
     actor_child_init(inbox_fd, self_fd);
+#endif
 
     /* Ready: the parent's spawn() unblocks and returns the handle. */
     char ready = 'R';
@@ -16018,6 +16583,15 @@ int eval_run_actor(AstStmtList program, const char *entry,
     close(control_fd);
 
     /* The reserved first frame carries the serialized startup arguments. */
+#ifdef _WIN32
+    /* Handles in it arrive as attached paths, as on any received message. */
+    Value arg_value = value_null();
+    int ok = actor_recv_one(&arg_value) == ACTOR_RECV_OK;
+    if (!ok) {
+        fprintf(stderr, "actor: %s could not read startup arguments\n", entry);
+        return 1;
+    }
+#else
     void *bytes = NULL;
     size_t len = 0;
     if (channel_recv(inbox_fd, &bytes, &len) != ACTOR_RECV_OK) {
@@ -16029,6 +16603,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
     Value arg_value = deserialize_from_buffer(bytes, len, &ok);
     active_spawn_recv = 0;
     free(bytes);
+#endif
     if (!ok || arg_value.kind != VALUE_ARRAY) {
         value_free(arg_value);
         fprintf(stderr, "actor: %s received corrupt startup arguments\n", entry);
@@ -16078,6 +16653,11 @@ int eval_run_actor(AstStmtList program, const char *entry,
     function_clear();
     modifier_clear();
     env_clear(&global_env);
+#ifdef _WIN32
+    /* A Windows inbox is a FILE that outlives its process (src/actor.c);
+     * closing it deletes the name. POSIX has nothing to remove. */
+    actor_mailbox_shutdown();
+#endif
     return exit_status;
 }
 
@@ -18911,17 +19491,15 @@ static void webserver_install_term_handler(void) {
     if (webserver_term_installed) {
         return;
     }
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = webserver_term_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGTERM, &sa, NULL);
+    gb_on_signal(SIGTERM, webserver_term_handler, 0);
     /* PLAT-WEB-4: writing to a client that already left must be an ERROR,
      * never a process death. Plain sends pass MSG_NOSIGNAL, but SSL_write
      * cannot, and with streaming, dead-peer writes stop being rare -- an
-     * emit loop discovers the disconnect BY the failed write. */
+     * emit loop discovers the disconnect BY the failed write. Windows has no
+     * SIGPIPE: a write to a closed socket simply fails there. */
+#ifdef SIGPIPE
     signal(SIGPIPE, SIG_IGN);
+#endif
     webserver_term_installed = 1;
 }
 
@@ -19480,7 +20058,7 @@ static char *webserver_timestamp(void) {
     time_t now = time(NULL);
     struct tm value;
     char buffer[32] = "";
-    if (gmtime_r(&now, &value)) {
+    if (gb_gmtime(&now, &value)) {
         strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &value);
     }
     return copy_string(buffer);
@@ -20556,7 +21134,8 @@ static int webserver_run_event_loop(void) {
             !timer_wants_loop) {
             break;
         }
-        struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + 2,
+        size_t inbox_fd_count = inbox_wants_loop ? mailbox_poll_count(&root_mailbox) : 0;
+        struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + inbox_fd_count + 2,
                                         sizeof(struct pollfd));
         if (!pollfds) {
             abort();
@@ -20588,13 +21167,17 @@ static int webserver_run_event_loop(void) {
         size_t inbox_slot = descriptor_count + http_fd_count;
         size_t polled = inbox_slot;
         if (inbox_wants_loop) {
-            pollfds[inbox_slot].fd = root_mailbox.read_fd;
-            pollfds[inbox_slot].events = POLLIN;
-            polled++;
+            mailbox_poll_fill(&root_mailbox, &pollfds[inbox_slot]);
+            polled += inbox_fd_count;
         }
         long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
         if (timer_wants_loop) {
             tick_ms = timer_poll_timeout_ms(tick_ms);
+        }
+        /* A frame already read off the wire will not wake the poll. */
+        int inbox_pending = inbox_wants_loop && mailbox_pending(&root_mailbox);
+        if (inbox_pending) {
+            tick_ms = 0;
         }
         int ready = poll(pollfds, polled, (int)tick_ms);
         if (ready < 0 && errno != EINTR) {
@@ -20606,7 +21189,9 @@ static int webserver_run_event_loop(void) {
             free(pollfds);
             return 1;
         }
-        if (inbox_wants_loop && (pollfds[inbox_slot].revents & POLLIN)) {
+        if (inbox_wants_loop &&
+            (inbox_pending ||
+             mailbox_poll_ready(&root_mailbox, &pollfds[inbox_slot], inbox_fd_count))) {
             if (!inbox_loop_service()) {
                 free(pollfds);
                 return 1;
@@ -20864,7 +21449,7 @@ fail:
  * process.start, never by leaking through an unrelated process.run. */
 static Value webserver_register(int fd, const char *bound_address, int bound_port,
                                 int hold, double timeout_s) {
-    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+    gb_set_cloexec(fd, 1);
     webserver_install_term_handler();
 
     WebServer *servers = realloc(webservers, sizeof(WebServer) * (webserver_count + 1));
@@ -20986,7 +21571,7 @@ static Value webserver_eval_inherited(AstExpr *expr) {
         int fd = 3 + (int)i;
         int accepting = 0;
         socklen_t opt_len = sizeof(accepting);
-        if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &opt_len) != 0 ||
+        if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, (char *)&accepting, &opt_len) != 0 ||
             !accepting) {
             for (long j = 0; j < i; j++) {
                 value_free(items[j]);
@@ -21035,12 +21620,21 @@ static Value webserver_eval_inherited(AstExpr *expr) {
 #endif
     }
     value_free(tls_opts);
-    unsetenv("LISTEN_FDS");
-    unsetenv("LISTEN_PID");
+    gb_unsetenv("LISTEN_FDS");
+    gb_unsetenv("LISTEN_PID");
     return value_array(items, (size_t)count);
 }
 
 static Value webserver_eval_listen(AstExpr *expr) {
+#ifdef _WIN32
+    /* Out of Tier 1 (windows_port_plan.md §5), and REFUSED rather than left
+     * half-working: it still close()s sockets and reads errno where Winsock
+     * reports through WSAGetLastError -- the failure class that compiles
+     * cleanly and breaks at runtime (windows_port_status.md §5). */
+    (void)expr;
+    webserver_raise("webserver.listen is not available on Windows yet");
+    return value_null();
+#endif
     if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
         webserver_raise("webserver.listen expects a port and an optional options record");
         return value_null();
@@ -21105,7 +21699,9 @@ static Value webserver_eval_listen(AstExpr *expr) {
         return value_null();
     }
     int reuse = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    /* (const char *): Winsock declares the option value as char *, POSIX as
+     * void * -- the cast is correct for both and changes nothing on POSIX. */
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
     if (bind(fd, resolved->ai_addr, resolved->ai_addrlen) != 0 ||
         listen(fd, 16) != 0 ||
         !webserver_set_blocking_mode(fd, 0)) {
@@ -22561,6 +23157,39 @@ static int odbc_conn_has_option(const char *conn, const char *option) {
     return 0;
 }
 
+/* The value of the connection string's Driver= keyword (braces stripped) into
+ * `out`, or 0 if it names none. Keywords are case-insensitive. */
+static int odbc_conn_driver(const char *conn, char *out, size_t size) {
+    const char *p = conn;
+    while (*p) {
+        while (*p == ';' || *p == ' ') {
+            p++;
+        }
+        if (strncasecmp(p, "driver", 6) == 0) {
+            const char *q = p + 6;
+            while (*q == ' ') q++;
+            if (*q == '=') {
+                q++;
+                while (*q == ' ') q++;
+                int braced = *q == '{';
+                if (braced) q++;
+                size_t n = 0;
+                while (q[n] && q[n] != (braced ? '}' : ';') && n + 1 < size) {
+                    out[n] = q[n];
+                    n++;
+                }
+                while (n > 0 && out[n - 1] == ' ') n--;
+                out[n] = '\0';
+                return n > 0;
+            }
+        }
+        while (*p && *p != ';') {
+            p++;
+        }
+    }
+    return 0;
+}
+
 static Value odbc_eval_connect(AstExpr *expr) {
     if (expr->as.call.args.count != 1) {
         odbc_raise_message("odbc.connect expects one argument");
@@ -22611,7 +23240,28 @@ static Value odbc_eval_connect(AstExpr *expr) {
                           NULL,
                           SQL_DRIVER_NOPROMPT);
     if (!SQL_SUCCEEDED(rc)) {
-        odbc_raise_diag(SQL_HANDLE_DBC, dbc, "odbc connection failed");
+        /* AN ABSENT DRIVER, BY NAME. unixODBC names the driver it could not
+         * load; Windows' driver manager says only "Data source name not found
+         * and no default driver specified" (IM002), so a typo in Driver= left
+         * the user to guess which name was wrong (measured, run_odbc.sh). Its
+         * answer is still reported in full after this; the name comes first. */
+        char prefix[400] = "odbc connection failed";
+        char driver[256];
+        SQLCHAR state[8] = {0};
+        SQLINTEGER native = 0;
+        SQLSMALLINT length = 0;
+        SQLCHAR text[8];
+        if (SQL_SUCCEEDED(SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, &native,
+                                        text, (SQLSMALLINT)sizeof(text), &length)) ||
+            length > 0) {
+            if (strcmp((const char *)state, "IM002") == 0 &&
+                odbc_conn_driver(target.as.string, driver, sizeof(driver))) {
+                snprintf(prefix, sizeof(prefix),
+                         "odbc connection failed: no ODBC driver named '%s' is installed "
+                         "(odbc.drivers() lists those that are)", driver);
+            }
+        }
+        odbc_raise_diag(SQL_HANDLE_DBC, dbc, prefix);
         SQLFreeHandle(SQL_HANDLE_DBC, dbc);
         SQLFreeHandle(SQL_HANDLE_ENV, env);
         value_free(target);
@@ -28309,9 +28959,9 @@ static void process_apply_env(Value *env_rec) {
     size_t n = env_rec->as.record.count;
     for (size_t i = 0; i < n; i++) {
         if (fields[i].value->kind == VALUE_NULL) {
-            unsetenv(fields[i].name);
+            gb_unsetenv(fields[i].name);
         } else {
-            setenv(fields[i].name, fields[i].value->as.string, 1);
+            gb_setenv(fields[i].name, fields[i].value->as.string);
         }
     }
 }
@@ -28454,6 +29104,26 @@ static int process_drain(int out_fd, int err_fd, ProcBuf *out, ProcBuf *err,
     return rc;
 }
 
+#ifdef _WIN32
+/* The validated `env` record as the two parallel arrays the Windows launcher
+ * takes (a NULL value unsets). The strings are BORROWED from the record; the
+ * caller frees only the two arrays. */
+static size_t process_env_arrays(Value *env, const char ***names, const char ***values) {
+    size_t n = env ? env->as.record.count : 0;
+    *names = n ? calloc(n, sizeof(char *)) : NULL;
+    *values = n ? calloc(n, sizeof(char *)) : NULL;
+    if (n && (!*names || !*values)) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i++) {
+        RecordField *f = &env->as.record.fields[i];
+        (*names)[i] = f->name;
+        (*values)[i] = f->value->kind == VALUE_NULL ? NULL : f->value->as.string;
+    }
+    return n;
+}
+#endif
+
 static Value process_do_run(AstExpr *expr) {
     if (expr->as.call.args.count != 1) {
         return process_raise("process.run expects a single options record");
@@ -28582,6 +29252,50 @@ static Value process_do_run(AstExpr *expr) {
     }
     argv[nargs + 1] = NULL;
 
+#ifdef _WIN32
+    /* WINDOWS: everything above -- the options, their refusals, the env
+     * validation -- is shared with POSIX, so the two cannot disagree about what
+     * process.run accepts. Only launching and draining differ, and that lives in
+     * gb_run_capture (src/platform_win32.c), which says what it keeps and what
+     * it cannot (no signals; CreateProcess's search order). */
+    {
+        const char **env_names = NULL, **env_values = NULL;
+        size_t nenv = process_env_arrays(run_env, &env_names, &env_values);
+        GbRunResult rr;
+        int rc = gb_run_capture(argv, cwd, env_names, env_values, nenv, timeout_ms, &rr);
+        free(env_names);
+        free(env_values);
+        free(argv);
+        if (rc == 1) {
+            /* Same message shape as POSIX, and built before opts is freed
+             * because cmd_f points into it. */
+            char msg[700];
+            snprintf(msg, sizeof(msg), "process.run: could not execute '%s': %s",
+                     cmd_f->value->as.string, rr.why);
+            value_free(opts);
+            if (launch_as_result) {
+                ProcBuf empty_out = {0}, empty_err = {0};
+                return process_make_result_ex(-1, &empty_out, &empty_err,
+                                              0, 0, 0, 1, 1, msg);
+            }
+            return process_raise(msg);
+        }
+        value_free(opts);
+        if (rc != 0) {
+            return process_raise("process.run: error reading child output");
+        }
+        ProcBuf out = { rr.out, rr.out_len, rr.out_len };
+        ProcBuf err = { rr.err, rr.err_len, rr.err_len };
+        int success = rr.exit_code == 0 && !rr.timed_out;
+        Value result = launch_as_result
+            ? process_make_result_ex(rr.exit_code, &out, &err, success, 0,
+                                     rr.timed_out, 1, 0, "")
+            : process_make_result(rr.exit_code, &out, &err, success, 0, rr.timed_out);
+        free(rr.out);
+        free(rr.err);
+        return result;
+    }
+#else
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
     if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0 || pipe(exec_pipe) != 0) {
         for (int i = 0; i < 2; i++) {
@@ -28597,7 +29311,7 @@ static Value process_do_run(AstExpr *expr) {
      * automatically (parent reads EOF => exec succeeded), while a failed exec writes
      * errno through it first. This is what distinguishes "could not launch" from a
      * child that ran and exited 127. */
-    fcntl(exec_pipe[1], F_SETFD, fcntl(exec_pipe[1], F_GETFD) | FD_CLOEXEC);
+    gb_set_cloexec(exec_pipe[1], 1);
 
     pid_t launcher_pid = getpid();
     pid_t pid = fork();
@@ -28716,6 +29430,7 @@ static Value process_do_run(AstExpr *expr) {
     free(out.data);
     free(err.data);
     return result;
+#endif /* _WIN32 */
 }
 
 /* ===================== PLAT-PROC: live child control =====================
@@ -28841,7 +29556,7 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
         }
         return -2;
     }
-    fcntl(exec_pipe[1], F_SETFD, fcntl(exec_pipe[1], F_GETFD) | FD_CLOEXEC);
+    gb_set_cloexec(exec_pipe[1], 1);
 
     pid_t launcher_pid = getpid();
     pid_t pid = fork();
@@ -28904,8 +29619,8 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
             char env_pid[32];
             snprintf(env_count, sizeof(env_count), "%zu", share_count);
             snprintf(env_pid, sizeof(env_pid), "%ld", (long)getpid());
-            setenv("LISTEN_FDS", env_count, 1);
-            setenv("LISTEN_PID", env_pid, 1);
+            gb_setenv("LISTEN_FDS", env_count);
+            gb_setenv("LISTEN_PID", env_pid);
         }
         /* After LISTEN_FDS so a caller could deliberately override it, and
          * before chdir so an env error cannot be confused with a cwd one. */
@@ -28976,6 +29691,21 @@ static void process_pump(ProcessHandle *h) {
         int *fd = which ? &h->err_fd : &h->out_fd;
         ProcBuf *b = which ? &h->pending_err : &h->pending_out;
         while (*fd >= 0) {
+#ifdef _WIN32
+            /* An anonymous pipe cannot be made non-blocking; gb_child_read asks
+             * how much is there first, so this still NEVER blocks. */
+            int r = gb_child_read(*fd, buf, sizeof(buf));
+            if (r > 0) {
+                procbuf_append(b, buf, (size_t)r);
+                continue;
+            }
+            if (r == -1) {
+                break;                          /* nothing more right now */
+            }
+            close(*fd);                         /* EOF (0) or an error (-2) */
+            *fd = -1;
+            break;
+#else
             ssize_t r = read(*fd, buf, sizeof(buf));
             if (r > 0) {
                 procbuf_append(b, buf, (size_t)r);
@@ -28995,6 +29725,7 @@ static void process_pump(ProcessHandle *h) {
             close(*fd);                         /* unrecoverable: treat as EOF */
             *fd = -1;
             break;
+#endif
         }
     }
 }
@@ -29004,6 +29735,17 @@ static void process_try_reap(ProcessHandle *h) {
     if (h->reaped) {
         return;
     }
+#ifdef _WIN32
+    int code = 0;
+    if (gb_child_exited(&h->win, &code)) {
+        /* A status of -1 already recorded means WE ended it (process_do_stop);
+         * keep that rather than the exit code Terminate chose. */
+        if (h->status != -1) {
+            h->status = code;
+        }
+        h->reaped = 1;
+    }
+#else
     int st;
     pid_t r;
     do {
@@ -29016,6 +29758,7 @@ static void process_try_reap(ProcessHandle *h) {
         h->status = 0;      /* ECHILD: already gone; treat as exit 0 unknown */
         h->reaped = 1;
     }
+#endif
 }
 
 /* Wait until the child has exited AND its pipes have hit EOF (so no output is
@@ -29064,6 +29807,14 @@ static int process_wait_until(ProcessHandle *h, long timeout_ms) {
             slice = timeout_ms - elapsed_ms;
             if (slice < 1) slice = 1;
         }
+#ifdef _WIN32
+        /* No poll on an anonymous pipe: pump on a short tick instead. The pump
+         * above drains whatever arrived, so a chatty child still cannot fill
+         * its pipe and deadlock against a waiting parent. */
+        Sleep((DWORD)slice);
+        elapsed_ms += slice;
+        continue;
+#endif
         struct pollfd pfds[2];
         nfds_t n = 0;
         if (h->out_fd >= 0) { pfds[n].fd = h->out_fd; pfds[n].events = POLLIN; n++; }
@@ -29247,6 +29998,16 @@ static Value process_do_start(AstExpr *expr) {
     }
 
     RecordField *lf = record_find(&opts, "listen_fds");
+#ifdef _WIN32
+    /* Handing a listening socket to a child is the worker pool's mechanism
+     * (LISTEN_FDS), and the webserver is refused on Windows; a socket is also
+     * not inherited the way an fd is. Refused by name rather than ignored. */
+    if (lf) {
+        free(launch.argv);
+        value_free(opts);
+        return process_raise("process.start: options.listen_fds is not available on Windows");
+    }
+#endif
     if (lf) {
         if (lf->value->kind != VALUE_ARRAY) {
             free(launch.argv);
@@ -29295,6 +30056,43 @@ static Value process_do_start(AstExpr *expr) {
         }
     }
 
+#ifdef _WIN32
+    /* Everything above -- options, refusals, env validation -- is shared with
+     * POSIX; only the launch differs, and it is process.run's launch. */
+    (void)share_fds;
+    (void)share_count;
+    {
+        const char **env_names = NULL, **env_values = NULL;
+        size_t nenv = process_env_arrays(launch.env, &env_names, &env_values);
+        GbChild child;
+        char why[512];
+        int rc = gb_child_start(launch.argv, launch.cwd, env_names, env_values, nenv,
+                                want_stdin, &child, why, sizeof why);
+        free(env_names);
+        free(env_values);
+        if (rc != 0) {
+            char msg[700];
+            snprintf(msg, sizeof(msg), "process.start: could not execute '%s': %s",
+                     launch.argv[0], why);
+            free(launch.argv);
+            value_free(opts);
+            return process_raise(msg);
+        }
+        free(launch.argv);
+        value_free(opts);
+        ProcessHandle *h = calloc(1, sizeof(ProcessHandle));
+        if (!h) {
+            abort();
+        }
+        h->pid = (pid_t)child.pid;
+        h->out_fd = child.out_fd;
+        h->err_fd = child.err_fd;
+        h->in_fd = child.in_fd;
+        h->win = child;
+        h->ref_count = 1;
+        return value_process(h);
+    }
+#endif
     int out_fd = -1, err_fd = -1, in_fd = -1, launch_errno = 0;
     pid_t pid = process_launch(launch.argv, launch.cwd, launch.env, share_fds, share_count,
                                &out_fd, &err_fd, &launch_errno, want_stdin, &in_fd);
@@ -29530,8 +30328,15 @@ static Value process_do_stop(AstExpr *expr) {
         return r;
     }
 
+#ifdef _WIN32
+    /* No SIGTERM on Windows. CTRL_BREAK to the child's own process group is
+     * the polite form -- a child may handle it and carry on, as with SIGTERM --
+     * and the force form below ends the whole job, as SIGKILL to the group does. */
+    gb_child_stop(&h->win, 0);
+#else
     kill(-h->pid, SIGTERM);
     kill(h->pid, SIGTERM);           /* in case setpgid lost a race */
+#endif
 
     if (force_ms < 0) {
         /* Polite only. Do not wait: whether the child honors SIGTERM is its
@@ -29544,8 +30349,13 @@ static Value process_do_stop(AstExpr *expr) {
     }
 
     if (!process_wait_until(h, force_ms)) {
+#ifdef _WIN32
+        h->status = -1;              /* WE ended it: reported as exit_code -1 */
+        gb_child_stop(&h->win, 1);
+#else
         kill(-h->pid, SIGKILL);
         kill(h->pid, SIGKILL);
+#endif
         process_wait_until(h, -1);   /* SIGKILL is not refusable; this terminates */
     }
     Value r = process_make_status(h);
@@ -29575,7 +30385,11 @@ static Value process_do_release(AstExpr *expr) {
     if (!h->reaped) {
         /* Still running and the caller is done with it: hand it to the orphan
          * list so it is reaped later rather than becoming a zombie. */
+#ifdef _WIN32
+        gb_child_release(&h->win);   /* the job keeps it, until we exit */
+#else
         proc_orphan_add(h->pid);
+#endif
         h->reaped = 1;
         h->status = 0;
     }
@@ -29636,13 +30450,11 @@ static Value process_do_self(AstExpr *expr) {
     if (!self_source) {
         return process_raise("process.self: no script path (embedded evaluation)");
     }
-    char script[4096];
-    if (!realpath(self_source, script)) {
-        snprintf(script, sizeof(script), "%s", self_source);
-    }
+    char *resolved = gb_realpath(self_source);
     Value result = value_record(NULL, 0);
     record_set(&result, "interpreter", value_string(exe));
-    record_set(&result, "script", value_string(script));
+    record_set(&result, "script", value_string(resolved ? resolved : self_source));
+    free(resolved);
     Value *items = program_arg_count ? malloc(sizeof(Value) * program_arg_count) : NULL;
     if (program_arg_count && !items) {
         abort();
@@ -29673,6 +30485,19 @@ static Value process_do_which(AstExpr *expr) {
         value_free(name_v);
         return value_unknown();
     }
+
+#ifdef _WIN32
+    /* Not the search below: it splits PATH on ':', which would cut every
+     * "C:\..." entry in two, and tests POSIX execute bits. gb_which follows
+     * CreateProcess's own search, so asking first agrees with running. */
+    {
+        char *hit = gb_which(name);
+        Value out = hit ? value_string(hit) : value_unknown();
+        free(hit);
+        value_free(name_v);
+        return out;
+    }
+#endif
 
     if (strchr(name, '/') != NULL) {
         Value out = process_is_executable(name) ? value_string(name)
@@ -32090,8 +32915,8 @@ static Value eval_call(AstExpr *expr) {
                                 1003, "invalid function call");
             return value_null();
         }
-#if HAVE_LIBXCRYPT
-        char *salt = crypt_gensalt_ra(NULL, 0, NULL, 0);
+#if GB_PASSWORD_HASH
+        char *salt = password_new_setting();
         if (!salt) {
             runtime_error_raise("password_hash_cost could not generate a salt",
                                 1003, "password_hash");
@@ -32099,13 +32924,10 @@ static Value eval_call(AstExpr *expr) {
         }
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        void *data = NULL;
-        int data_size = 0;
-        char *hash = crypt_ra("password-hash-cost-probe", salt, &data, &data_size);
+        char *hash = password_crypt("password-hash-cost-probe", salt);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         if (!hash) {
             free(salt);
-            free(data);
             runtime_error_raise("password_hash_cost could not hash", 1003, "password_hash");
             return value_null();
         }
@@ -32136,7 +32958,7 @@ static Value eval_call(AstExpr *expr) {
         *f[0].value = value_number(ms);
         *f[1].value = value_string(prefix);
         free(salt);
-        free(data);
+        free(hash);
         return value_record(f, 2);
 #else
         runtime_error_raise("password_hash_cost is not available in this build",
@@ -32160,27 +32982,34 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("password_hash expects a string", 1003, "invalid function call");
             return value_null();
         }
-#if HAVE_LIBXCRYPT
-        char *salt = crypt_gensalt_ra(NULL, 0, NULL, 0);
+#if GB_PASSWORD_HASH
+        /* crypt(3) takes a C string, so a NUL ENDS the password: "a\0xyz"
+         * hashed as "a" and then verified for "a\0anything". Refused, the
+         * PLAT-NUL rule for a door that cannot hold the byte. */
+        if (strlen(password.as.string) != string_length(password.as.string)) {
+            value_free(password);
+            runtime_error_raise("password_hash: a password cannot contain a NUL byte "
+                                "(crypt(3) would end the password there)",
+                                1003, "password_hash");
+            return value_null();
+        }
+        char *salt = password_new_setting();
         if (!salt) {
             value_free(password);
             runtime_error_raise("password_hash could not generate a salt", 1003, "password_hash");
             return value_null();
         }
 
-        void *data = NULL;
-        int data_size = 0;
-        char *hash = crypt_ra(password.as.string, salt, &data, &data_size);
+        char *hash = password_crypt(password.as.string, salt);
         free(salt);
         value_free(password);
         if (!hash) {
-            free(data);
             runtime_error_raise("password_hash could not hash the password", 1003, "password_hash");
             return value_null();
         }
 
         Value result = value_string(hash);
-        free(data);
+        free(hash);
         return result;
 #else
         value_free(password);
@@ -32219,12 +33048,45 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("password_verify expects a string hash", 1003, "invalid function call");
             return value_null();
         }
-#if HAVE_LIBXCRYPT
-        void *data = NULL;
-        int data_size = 0;
-        char *computed = crypt_ra(password.as.string, hash.as.string, &data, &data_size);
+#if GB_PASSWORD_HASH
+        if (strlen(password.as.string) != string_length(password.as.string)) {
+            value_free(password);
+            value_free(hash);
+            runtime_error_raise("password_verify: a password cannot contain a NUL byte "
+                                "(crypt(3) would end the password there)",
+                                1003, "password_verify");
+            return value_null();
+        }
+#if !HAVE_LIBXCRYPT
+        /* The vendored backend reads yescrypt (`$y$`) and classic scrypt
+         * (`$7$`) only. A well-formed hash of another kind -- `$6$`, `$2b$` --
+         * may be perfectly good, and `false` would tell a caller the PASSWORD
+         * was wrong: a user locked out with nothing said. So it is refused,
+         * naming the scheme. Anything that is not a crypt(3) hash at all (an
+         * empty column, a malformed `$y$`) still answers false, as libxcrypt
+         * does, so the two backends differ only where one of them cannot
+         * answer. */
+        {
+            const char *h = hash.as.string;
+            size_t n = 1;
+            while (h[0] == '$' && h[n] && h[n] != '$' && n < 8) n++;
+            int other_scheme = h[0] == '$' && n > 1 && h[n] == '$' &&
+                               !(n == 2 && (h[1] == 'y' || h[1] == '7'));
+            if (other_scheme) {
+                char m[192];
+                snprintf(m, sizeof(m),
+                         "password_verify: this build verifies yescrypt ($y$) and scrypt ($7$) "
+                         "hashes; this one is %.*s$", (int)n, h);
+                value_free(password);
+                value_free(hash);
+                runtime_error_raise(m, 1003, "password_verify");
+                return value_null();
+            }
+        }
+#endif
+        char *computed = password_crypt(password.as.string, hash.as.string);
         int verified = computed && constant_time_string_equal(computed, hash.as.string);
-        free(data);
+        free(computed);
         value_free(password);
         value_free(hash);
         return value_bool(verified);
@@ -32266,11 +33128,8 @@ static Value eval_call(AstExpr *expr) {
             }
             zone_arg = copy_string(z.as.string ? z.as.string : "");
             value_free(z);
-            if (!zone_name_valid(zone_arg)) {
-                char message[256];
-                snprintf(message, sizeof(message),
-                         "unknown timezone '%s' (expected an IANA name like America/New_York, or UTC)",
-                         zone_arg);
+            char message[384];
+            if (!zone_check(zone_arg, message, sizeof(message))) {
                 free(zone_arg);
                 runtime_error_raise(message, 1003, "datetime");
                 return value_null();
@@ -32285,12 +33144,10 @@ static Value eval_call(AstExpr *expr) {
         struct tm local;
         int converted;
         if (zone_arg) {
-            char *saved = zone_push(zone_arg);
-            converted = localtime_r(&raw, &local) != NULL;
-            zone_pop(saved);
+            converted = zone_localtime(zone_arg, raw, &local);
             free(zone_arg);
         } else {
-            converted = localtime_r(&raw, &local) != NULL;
+            converted = gb_localtime(&raw, &local) != NULL;
         }
         if (!converted) {
             runtime_error_raise("could not convert the current time", 1003, "clock");
@@ -32452,7 +33309,7 @@ static Value eval_call(AstExpr *expr) {
         }
         time_t raw = (time_t)sd;
         struct tm local;
-        if (!localtime_r(&raw, &local)) {
+        if (!gb_localtime(&raw, &local)) {
             runtime_error_raise("could not convert the given epoch time", 1003, "clock");
             return value_null();
         }
@@ -32503,30 +33360,12 @@ static Value eval_call(AstExpr *expr) {
             abort();
         }
 
-        int fd = open("/dev/urandom", O_RDONLY);
-        if (fd < 0) {
+        if (gb_secure_random(random_bytes, length) != 0) {
             free(random_bytes);
             free(token);
             runtime_error_raise("secure_token could not read secure random bytes", 1003, "random");
             return value_null();
         }
-
-        size_t offset = 0;
-        while (offset < length) {
-            ssize_t count = read(fd, random_bytes + offset, length - offset);
-            if (count < 0 && errno == EINTR) {
-                continue;
-            }
-            if (count <= 0) {
-                close(fd);
-                free(random_bytes);
-                free(token);
-                runtime_error_raise("secure_token could not read secure random bytes", 1003, "random");
-                return value_null();
-            }
-            offset += (size_t)count;
-        }
-        close(fd);
 
         static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         for (size_t i = 0; i < length; i++) {
@@ -32916,27 +33755,11 @@ static Value eval_call(AstExpr *expr) {
         if (!buf) {
             abort();
         }
-        int fd = open("/dev/urandom", O_RDONLY);
-        if (fd < 0) {
+        if (gb_secure_random(buf, n) != 0) {
             free(buf);
             runtime_error_raise("random_bytes could not read secure random bytes", 1003, "random");
             return value_null();
         }
-        size_t off = 0;
-        while (off < n) {
-            ssize_t c = read(fd, buf + off, n - off);
-            if (c < 0 && errno == EINTR) {
-                continue;
-            }
-            if (c <= 0) {
-                close(fd);
-                free(buf);
-                runtime_error_raise("random_bytes could not read secure random bytes", 1003, "random");
-                return value_null();
-            }
-            off += (size_t)c;
-        }
-        close(fd);
         Value r = value_string_n((char *)buf, n);
         free(buf);
         return r;

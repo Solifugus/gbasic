@@ -38,8 +38,15 @@ r = process.run({ command: "sh", args: ["-c", "printf %s \"${PATH:+set}\""],
 check("the inherited environment survives", r.stdout, "set")
 
 ' `nothing` unsets, which is the only way to hide an inherited variable.
-r = process.run({ command: "sh", args: ["-c", "printf %s \"${HOME:+set}\""],
-                  env: { HOME: nothing } })
+' GB_INHERITED is exported by tests/run_process.sh, NOT HOME: under MSYS2 the
+' child `sh` re-creates HOME at startup when it is missing, so a check on HOME
+' measured the shell rather than gBASIC (measured -- a native `cmd /c set`
+' child showed HOME correctly removed). The CONTROL first: without it, a run
+' where nothing exported the variable would pass the unset check vacuously.
+r = process.run({ command: "sh", args: ["-c", "printf %s \"${GB_INHERITED:+set}\""] })
+check("the variable to unset really is inherited (control)", r.stdout, "set")
+r = process.run({ command: "sh", args: ["-c", "printf %s \"${GB_INHERITED:+set}\""],
+                  env: { GB_INHERITED: nothing } })
 check("nothing unsets a variable", r.stdout, "")
 
 ' Several at once, and the parent must be untouched by any of it.

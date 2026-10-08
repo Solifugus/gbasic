@@ -438,10 +438,13 @@ for name in "${cases[@]}"; do
     # Only skip when the EXPECTED text is not itself that message -- negative_
     # xml_not_loaded and friends deliberately assert an unavailable module, and
     # must still be compared rather than skipped past.
+    # A PLATFORM refusal is the same kind of answer -- `webserver.listen is not
+    # available on Windows yet` reaches a listen misuse before the misuse can be
+    # judged -- and is treated the same way, under the same two conditions.
     if [[ "$actual_text" != "$expected_text" ]] &&
-       grep -qE 'support is (not available in this build|unavailable)' "$stderr_file" &&
-       ! grep -qE 'support is (not available in this build|unavailable)' "$expected"; then
-        printf 'SKIP %s (module compiled out)\n' "$source"
+       grep -qE 'support is (not available in this build|unavailable)|not available on Windows' "$stderr_file" &&
+       ! grep -qE 'support is (not available in this build|unavailable)|not available on Windows' "$expected"; then
+        printf 'SKIP %s (module compiled out, or refused on this platform)\n' "$source"
         rm -f "$stdout_file" "$stderr_file"
         continue
     fi
@@ -606,8 +609,11 @@ case "$got" in
     *) printf 'PASS a later error is not blamed on an earlier block\n' ;;
 esac
 
-# 5. AND A REAL SERVER BLOCK IS UNTOUCHED.
-if ./gbasic tests/web_server_block/block_hoist.bas >/dev/null 2>&1; then
+# 5. AND A REAL SERVER BLOCK IS UNTOUCHED. GBASIC_PATH because a server block
+#    implies `load web`, which must resolve against THIS tree's stdlib -- without
+#    it this control passed only where the caller's environment happened to set
+#    one, and failed with "library not found: web" everywhere else.
+if GBASIC_PATH=stdlib ./gbasic tests/web_server_block/block_hoist.bas >/dev/null 2>&1; then
     printf 'PASS a real server block still parses and runs\n'
 else
     printf 'FAIL a real server block broke\n'; bh_fail=1

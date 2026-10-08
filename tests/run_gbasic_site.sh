@@ -14,6 +14,11 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 make
+. tests/build_has.sh
+if ! build_has listen; then
+    printf 'SKIP tests/run_gbasic_site.sh (this platform cannot listen: webserver.listen is refused)\n'
+    exit 0
+fi
 
 port_file="examples/gbasic_site/tmp_port.txt"
 server_port_file="examples/gbasic_site/server_port.txt"

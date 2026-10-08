@@ -34,6 +34,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh
 make >/dev/null
+. tests/build_has.sh
+if ! build_has crypto; then
+    printf 'SKIP tests/run_otp.sh (this build has no libcrypto, which HMAC needs)\n'
+    exit 0
+fi
 export GBASIC_PATH=stdlib
 
 work="$(mktemp -d)"

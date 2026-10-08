@@ -65,19 +65,10 @@
     ],
     "description": "while loop"
   },
-  "On error resume next": {
-    "prefix": "onerror",
-    "body": [
-      "on error resume next",
-      "$0",
-      "on error stop"
-    ],
-    "description": "guard a statement, ignoring errors"
-  },
   "Read text file": {
     "prefix": "readfile",
     "body": [
-      "${1:f}(file)= ${2:\"path\"}",
+      "${1:f} {file}= ${2:\"path\"}",
       "${3:text} = read(${1:f})"
     ],
     "description": "read a whole file into a string"
@@ -85,9 +76,21 @@
   "Write text file": {
     "prefix": "writefile",
     "body": [
-      "${1:f}(file)= ${2:\"path\"}",
+      "${1:f} {file}= ${2:\"path\"}",
       "write(${1:f}, ${3:text})"
     ],
     "description": "write a string to a file (create/overwrite)"
+  },
+  "On error": {
+    "prefix": "onerror",
+    "body": [
+      "on error goto next",
+      "$0",
+      "if error then",
+      "\tprint to error error.message",
+      "\terror.clear()",
+      "end if"
+    ],
+    "description": "Catch a raise in this function, then check and acknowledge it (on error is frame-scoped)."
   }
 }

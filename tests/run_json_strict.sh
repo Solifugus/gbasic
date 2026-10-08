@@ -72,6 +72,13 @@ PY
 
 # --- Tier 2b: NAP-13 provider payloads --------------------------------------
 # Every request body the llm tool path puts on the wire must parse externally.
+# `llm` loads `webclient`; without it the fixture cannot load, and "no provider
+# payloads were emitted" would blame the encoder for an absent module.
+. tests/build_has.sh
+if ! build_has webclient; then
+    printf 'SKIP llm provider payloads (this build has no webclient, which llm loads)\n'
+    exit 0
+fi
 timeout 60 ./gbasic examples/llm_tools_test.bas 2>/dev/null | grep '^{' | python3 -c "
 import json, sys
 n = 0

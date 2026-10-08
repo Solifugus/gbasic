@@ -49,6 +49,13 @@ const char *gb_capability_at(size_t index, const char **caps);
 int eval_run_actor(AstStmtList program, const char *entry,
                    int inbox_fd, int self_fd, int control_fd);
 
+#ifdef _WIN32
+/* Windows names an inbox rather than handing it over: the spawned child
+ * listens at the path its parent chose (src/actor.c). Set before
+ * eval_run_actor, which then ignores inbox_fd and self_fd. */
+void eval_set_actor_inbox_path(const char *path);
+#endif
+
 /* ---- REPL session -----------------------------------------------------------
  *
  * `eval_program` opens an environment, runs one root and releases everything.

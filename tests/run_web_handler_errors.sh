@@ -24,6 +24,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 make >/dev/null
+. tests/build_has.sh
+if ! build_has listen; then
+    printf 'SKIP tests/run_web_handler_errors.sh (this platform cannot listen: webserver.listen is refused)\n'
+    exit 0
+fi
 
 export GBASIC_PATH=stdlib
 scratch="$(mktemp -d)"

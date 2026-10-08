@@ -77,7 +77,9 @@ B2 = [("E2E-0003", "4300.10", "Orion Logistics", "FR1420041010050500013M02606", 
 
 
 def write(path, text):
-    with open(path, "w") as fh:
+    # newline="": write exactly the text built above. Text mode on Windows
+    # turns every \n into \r\n, which made a regenerated fixture "drift".
+    with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(text)
     print("%-40s %6d bytes" % (path, len(text)))
 

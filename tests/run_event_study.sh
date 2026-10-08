@@ -88,7 +88,13 @@ fi
 
 printf 'TIER composition\n'
 # The point of the whole exercise: a price frame from `market` feeds this
-# without an adapter. Offline fixture, so no network.
+# without an adapter. Offline fixture, so no network. `market` loads
+# `webclient`, so a build without it cannot run this tier -- skipped BY NAME;
+# the semantics tier above needs nothing optional and always runs.
+. tests/build_has.sh
+if ! build_has webclient; then
+    printf '  SKIP composition (this build has no webclient, which market loads)\n'
+else
 cat > "$work/compose.bas" <<'EOF'
 load market
 load stats
@@ -113,6 +119,7 @@ if out="$(./gbasic "$work/compose.bas" 2>&1)"; then
 else
     fail "a market frame feeds event_window with no adapter (it raised: $out)"
 fi
+fi   # build_has webclient
 
 if [[ $failures -gt 0 ]]; then
     printf 'FAIL tests/run_event_study.sh (%d of %d checks failed)\n' "$failures" "$checks"

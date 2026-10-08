@@ -69,6 +69,7 @@
 #include "eval.h"
 #include "gbasic.h"
 #include "lineedit.h"
+#include "platform.h"
 
 #define REPL_SOURCE_NAME "<prompt>"
 
@@ -295,6 +296,24 @@ static char session_cache[5120];   /* empty when there is nowhere to write one *
  * "ended without saving" rather than "crashed", which is true of each. */
 static int program_saved = 1;
 
+#ifdef _WIN32
+/* %LOCALAPPDATA%\gbasic, written with `/` like every other path gBASIC builds
+ * (make_dirs walks `/` only). 0 when the variable is unset. */
+static int windows_state_dir(char *out, size_t n) {
+    const char *base = getenv("LOCALAPPDATA");
+    if (!base || !*base) {
+        return 0;
+    }
+    snprintf(out, n, "%s/gbasic", base);
+    for (char *p = out; *p; p++) {
+        if (*p == '\\') {
+            *p = '/';
+        }
+    }
+    return 1;
+}
+#endif
+
 static void cache_dir(char *out, size_t n) {
     const char *dir = getenv("GBASIC_SESSION_DIR");
     if (dir && *dir) {
@@ -306,6 +325,16 @@ static void cache_dir(char *out, size_t n) {
         snprintf(out, n, "%s/gbasic", xdg);
         return;
     }
+#ifdef _WIN32
+    /* A Windows terminal has no HOME (measured: PowerShell and cmd leave it
+     * unset), so without this a session had NO cache -- and so no recovery,
+     * and no `spawn` at the prompt. %LOCALAPPDATA% is where per-user state
+     * belongs there; it comes before HOME so Git Bash, which does set HOME,
+     * finds the same sessions as PowerShell. */
+    if (windows_state_dir(out, n)) {
+        return;
+    }
+#endif
     const char *home = getenv("HOME");
     if (home && *home) {
         snprintf(out, n, "%s/.local/state/gbasic", home);
@@ -323,10 +352,10 @@ static int make_dirs(const char *path) {
             continue;
         }
         *p = '\0';
-        mkdir(buf, 0700);
+        gb_mkdir(buf, 0700);
         *p = '/';
     }
-    return mkdir(buf, 0700) == 0 || errno == EEXIST ? 0 : -1;
+    return gb_mkdir(buf, 0700) == 0 || errno == EEXIST ? 0 : -1;
 }
 
 static void cache_open(void) {
@@ -350,11 +379,11 @@ static void cache_write(const ReplBuffer *b) {
     }
     char tmp[5200];
     snprintf(tmp, sizeof(tmp), "%s.tmp", session_cache);
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | GB_O_BINARY, 0600);
     if (fd < 0) {
         return;
     }
-    FILE *f = fdopen(fd, "w");
+    FILE *f = fdopen(fd, "wb");
     if (!f) {
         close(fd);
         unlink(tmp);
@@ -363,13 +392,13 @@ static void cache_write(const ReplBuffer *b) {
     char *src = buffer_source(b);
     fputs(src, f);
     free(src);
-    if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
+    if (fflush(f) != 0 || gb_fsync(fileno(f)) != 0) {
         fclose(f);
         unlink(tmp);
         return;
     }
     fclose(f);
-    if (rename(tmp, session_cache) != 0) {
+    if (gb_rename_replace(tmp, session_cache) != 0) {
         unlink(tmp);
     }
 }
@@ -407,7 +436,7 @@ static char *orphan_find(size_t *count) {
         if (*session_cache && strcmp(path, session_cache) == 0) {
             continue;
         }
-        if (kill((pid_t)pid, 0) == 0 || errno == EPERM) {
+        if (gb_process_alive(pid)) {
             continue;                      /* still running: not an orphan */
         }
         struct stat st;
@@ -452,6 +481,37 @@ static char *read_line(FILE *in) {
         abort();
     }
     int c;
+    /* A UTF-8 byte-order mark opening the STREAM is not part of the first
+     * line: PowerShell puts one in front of everything it pipes to a native
+     * program, and left in, the first line's command (`quit`, `list`) was not
+     * recognised. The lexer skips one at the start of a buffer for the same
+     * reason (src/lexer.c), but the prompt reads commands before any lexing. */
+    static int stream_started = 0;
+    if (!stream_started) {
+        stream_started = 1;
+        c = fgetc(in);
+        if (c == 0xEF) {
+            int c2 = fgetc(in);
+            int c3 = c2 == 0xBB ? fgetc(in) : EOF;
+            if (!(c2 == 0xBB && c3 == 0xBF)) {
+                /* Not a mark: keep what was read as line content, and hand a
+                 * newline back to the loop below so it still ends the line. */
+                line[len++] = (char)c;
+                if (c2 == '\n') {
+                    ungetc(c2, in);
+                } else if (c2 != EOF) {
+                    line[len++] = (char)c2;
+                    if (c3 == '\n') {
+                        ungetc(c3, in);
+                    } else if (c3 != EOF) {
+                        line[len++] = (char)c3;
+                    }
+                }
+            }
+        } else if (c != EOF) {
+            ungetc(c, in);
+        }
+    }
     while ((c = fgetc(in)) != EOF) {
         if (len + 2 > cap) {
             cap *= 2;
@@ -959,6 +1019,15 @@ int repl_main(int json_diagnostics) {
     char hist_default[4096] = {0};
     if (!hist_path) {
         const char *home = getenv("HOME");
+#ifdef _WIN32
+        /* Beside the session cache, for the reason cache_dir gives. */
+        char state[4000];   /* + "/history" always fits hist_default */
+        if (windows_state_dir(state, sizeof state)) {
+            snprintf(hist_default, sizeof(hist_default), "%s/history", state);
+            hist_path = hist_default;
+            home = NULL;
+        }
+#endif
         if (home) {
             snprintf(hist_default, sizeof(hist_default), "%s/.gbasic_history", home);
             hist_path = hist_default;
@@ -972,17 +1041,12 @@ int repl_main(int json_diagnostics) {
      * prompt: a diagnostic on stderr must land between the lines that produced
      * it, not after a block buffer flushes at the end. Piped, this is also what
      * makes a golden possible. */
-    setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
+    gb_stdout_line_buffered();
 
     /* SA_RESTART so the blocking read of the next line is resumed rather than
      * failing with EINTR: a Ctrl-C at an idle prompt must do nothing, and
      * without this it would look like end-of-input and close the session. */
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = repl_on_interrupt;
-    sa.sa_flags = SA_RESTART;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGINT, &sa, NULL);
+    gb_on_signal(SIGINT, repl_on_interrupt, 1);
 
     /* Runtime errors name their source the way a script's do. `<prompt>` rather
      * than a path, and the line is the line WITHIN the chunk -- which is what a

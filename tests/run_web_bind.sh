@@ -36,6 +36,11 @@ cd "$(dirname "$0")/.."
 . "$(dirname "$0")/valgrind_tier.sh"
 
 make
+. tests/build_has.sh
+if ! build_has listen; then
+    printf 'SKIP tests/run_web_bind.sh (this platform cannot listen: webserver.listen is refused)\n'
+    exit 0
+fi
 
 port_file="tests/tmp_web_bind.txt"
 server_out="$(mktemp)"

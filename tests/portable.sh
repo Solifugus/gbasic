@@ -134,9 +134,13 @@ fi
 # Forceable (GB_PORTABLE_FORCE=noproc) for the same reason every shim here is:
 # the branch that matters runs only on a machine we do not have, and a branch
 # that has never run does not work.
+# MSYS2/Cygwin HAS a /proc, and it is the same trap one level down: it
+# describes MSYS processes, so a NATIVE interpreter's VmHWM and descriptors are
+# not in it -- xml_bigfile "never sampled VmHWM" and the fd audit would count
+# nothing. Cygwin marks its emulation with /proc/self/winpid, so that answers no.
 gb_have_proc() {
     _gb_portable_forced noproc && return 1
-    [ -r /proc/self/status ]
+    [ -r /proc/self/status ] && [ ! -e /proc/self/winpid ]
 }
 
 export GB_PORTABLE_SHIMS

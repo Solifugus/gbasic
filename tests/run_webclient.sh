@@ -15,6 +15,12 @@ fi
 
 make
 
+. tests/build_has.sh
+if ! build_has webclient; then
+    printf 'SKIP tests/webclient_integration.bas (this build has no webclient)\n'
+    exit 0
+fi
+
 ready_file="$(mktemp)"
 server_error="$(mktemp)"
 stdout_file="$(mktemp)"

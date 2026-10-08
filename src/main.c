@@ -4,6 +4,7 @@
 #include "gbasic.h"
 #include "repl.h"
 #include "lexer.h"
+#include "platform.h"
 
 #include <dirent.h>
 #include <string.h>
@@ -865,6 +866,18 @@ static int run_actor_mode(int argc, char **argv) {
     int control_fd = -1;
 
     for (int i = 4; i + 1 < argc; i += 2) {
+#ifdef _WIN32
+        /* Windows: the inbox is a PATH the child listens at, and the control
+         * pipe an inherited HANDLE (gb_actor_launch); there is no self fd,
+         * since self() is a handle to that same path. */
+        if (strcmp(argv[i], "--actor-inbox") == 0) {
+            eval_set_actor_inbox_path(argv[i + 1]);
+            inbox_fd = 0;
+            self_fd = 0;
+        } else if (strcmp(argv[i], "--actor-control") == 0) {
+            control_fd = gb_fd_from_inherited(argv[i + 1]);
+        }
+#else
         if (strcmp(argv[i], "--actor-inbox") == 0) {
             inbox_fd = atoi(argv[i + 1]);
         } else if (strcmp(argv[i], "--actor-self") == 0) {
@@ -872,6 +885,7 @@ static int run_actor_mode(int argc, char **argv) {
         } else if (strcmp(argv[i], "--actor-control") == 0) {
             control_fd = atoi(argv[i + 1]);
         }
+#endif
     }
     if (inbox_fd < 0 || self_fd < 0 || control_fd < 0) {
         fprintf(stderr, "actor: missing mailbox descriptors\n");
@@ -950,6 +964,10 @@ int main(int argc, char **argv) {
     char *const *program_args = NULL;
     size_t program_arg_count = 0;
 
+    /* Before ANY output, including an actor's: on Windows stdout starts in text
+     * mode and would turn every "\n" into "\r\n". See include/platform.h. */
+    gb_stdio_binary();
+
     if (argc >= 4 && strcmp(argv[1], "--actor") == 0) {
         return run_actor_mode(argc, argv);
     }
@@ -961,7 +979,7 @@ int main(int argc, char **argv) {
      * `input` prompt) is already fflushed explicitly, so this makes the whole
      * output surface prompt. Must run before any output. */
     if (extract_flag(&argc, argv, "--line-buffered")) {
-        setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
+        gb_stdout_line_buffered();   /* Windows cannot line-buffer: platform.h */
     }
 
     /* `--full-trace`: show every frame inside a library instead of collapsing

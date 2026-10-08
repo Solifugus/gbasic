@@ -1,0 +1,139 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "gBASIC",
+  "scopeName": "source.gbasic",
+  "comment": "The keyword, constant, word-operator and builtin lists are GENERATED from src/lexer.c and src/builtins.c by tools/sync_vscode_grammar.py; tests/run_editor_grammar.sh fails when they drift. Edit everything else by hand.",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#modifiers" },
+    { "include": "#strings" },
+    { "include": "#definitions" },
+    { "include": "#receiver" },
+    { "include": "#constants" },
+    { "include": "#keywords" },
+    { "include": "#operators" },
+    { "include": "#builtins" },
+    { "include": "#numbers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.apostrophe.gbasic",
+          "match": "'.*$"
+        }
+      ]
+    },
+    "modifiers": {
+      "comment": "A modifier clause: inline `{file}path` / `{USD}12.50`, or the assignment form `x {date}= s` / `x {split \",\"}= s`. A record literal always has a colon, so it never matches.",
+      "patterns": [
+        {
+          "name": "storage.modifier.gbasic",
+          "match": "\\{[^{}:\\n]*\\}(?=\\s*=)"
+        },
+        {
+          "name": "storage.modifier.gbasic",
+          "match": "\\{\\s*[A-Za-z_][\\w.]*\\s*\\}(?=\\S)"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.gbasic",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.unicode.gbasic",
+          "match": "\\\\u\\{[0-9A-Fa-f]+\\}"
+        },
+        {
+          "name": "constant.character.escape.gbasic",
+          "match": "\\\\[nt\\\\\"]"
+        },
+        {
+          "comment": "The parser keeps any other backslash pair as two characters and warns.",
+          "name": "invalid.illegal.escape.gbasic",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "definitions": {
+      "patterns": [
+        {
+          "match": "\\b(function|modifier)\\s+([A-Za-z_][\\w.]*)",
+          "captures": {
+            "1": { "name": "keyword.control.gbasic" },
+            "2": { "name": "entity.name.function.gbasic" }
+          }
+        },
+        {
+          "match": "\\b(program|library|server)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.control.gbasic" },
+            "2": { "name": "entity.name.type.gbasic" }
+          }
+        }
+      ]
+    },
+    "receiver": {
+      "patterns": [
+        {
+          "comment": "A method's receiver; an ordinary name everywhere else.",
+          "name": "variable.language.this.gbasic",
+          "match": "(?<![.\\w])this\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.gbasic",
+          "match": "(?<![.\\w])(@CONSTANTS@)\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "comment": "Not after a dot: `r.count`, `rule.as` and `x.end` are field names.",
+          "name": "keyword.control.gbasic",
+          "match": "(?<![.\\w])(@KEYWORDS@)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.word.gbasic",
+          "match": "(?<![.\\w])(@WORD_OPERATORS@)\\b"
+        },
+        {
+          "name": "keyword.operator.gbasic",
+          "match": "\\+=|-=|\\*=|/=|!>=|!<=|<=|>=|!=|!<|!>|[-+*/=<>]"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "comment": "Only where a call can be: not after a dot (a field), and followed by `(`.",
+          "name": "support.function.builtin.gbasic",
+          "match": "(?<![.\\w])(@BUILTINS@)(?=\\s*\\()"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.gbasic",
+          "match": "\\b0[xX][0-9A-Fa-f]+\\b"
+        },
+        {
+          "comment": "Scientific notation needs a digit after the e (`1e` is the number 1 beside a name).",
+          "name": "constant.numeric.gbasic",
+          "match": "\\b[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?\\b"
+        }
+      ]
+    }
+  }
+}

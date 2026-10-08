@@ -67,7 +67,15 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 printf '12345' > "$tmp/f"; chmod 640 "$tmp/f"
 eval "$(bash -c '. tests/portable.sh; declare -f gb_stat_size gb_stat_mode gb_stat_inode gb_stat_device')"
 is "gb_stat_size"  "$(gb_stat_size "$tmp/f")"  "5"
-is "gb_stat_mode"  "$(gb_stat_mode "$tmp/f")"  "640"
+# 640 is the premise, and chmod does not set it everywhere (under MSYS2 the
+# file stays 644). Where it did not take, the helper is held to `stat` itself,
+# which is what it wraps -- and the skipped premise is said, not passed.
+if [ "$(stat -c '%a' "$tmp/f")" = "640" ]; then
+    is "gb_stat_mode"  "$(gb_stat_mode "$tmp/f")"  "640"
+else
+    printf '  SKIP gb_stat_mode = 640 (chmod is not honoured here)\n'
+    is "gb_stat_mode agrees with stat" "$(gb_stat_mode "$tmp/f")" "$(stat -c '%a' "$tmp/f")"
+fi
 is "gb_stat_inode" "$(gb_stat_inode "$tmp/f")" "$(stat -c '%i' "$tmp/f")"
 is "gb_stat_device" "$(gb_stat_device "$tmp/f")" "$(stat -c '%d' "$tmp/f")"
 
@@ -86,7 +94,15 @@ done
 
 echo "TIER /proc is asked about, never shimmed"
 eval "$(bash -c '. tests/portable.sh; declare -f gb_have_proc')"
-if gb_have_proc; then ok "gb_have_proc is true on this machine"; else bad "gb_have_proc false on Linux"; fi
+# A real procfs answers yes; Cygwin's emulation (marked by /proc/self/winpid)
+# answers no, because it cannot see a native process (tests/portable.sh).
+if [ -e /proc/self/winpid ]; then
+    if gb_have_proc; then bad "gb_have_proc is true under Cygwin's /proc"; else ok "gb_have_proc is false under Cygwin's /proc, which cannot see a native process"; fi
+elif [ -r /proc/self/status ]; then
+    if gb_have_proc; then ok "gb_have_proc is true on this machine"; else bad "gb_have_proc false with a real /proc"; fi
+else
+    if gb_have_proc; then bad "gb_have_proc is true with no /proc"; else ok "gb_have_proc is false with no /proc"; fi
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]

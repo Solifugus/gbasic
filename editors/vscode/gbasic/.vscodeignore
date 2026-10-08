@@ -5,3 +5,10 @@ PUBLISHING.md
 .gitignore
 **/*.svg
 **/.DS_Store
+syntaxes/*.template.json
+src/**
+test/**
+node_modules/**
+.vscode-test/**
+tsconfig.json
+**/*.map

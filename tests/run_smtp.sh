@@ -59,17 +59,14 @@ if ! command -v python3 >/dev/null 2>&1; then
     printf 'SKIP tests/run_smtp.sh (python3 is needed for the sink and the oracle)\n'
     exit 0
 fi
-if printf 'program main( args )\n load smtp\nend program\n' >/tmp/.gb_smtp_probe.bas 2>/dev/null &&
-   ! GBASIC_PATH=stdlib ./gbasic /tmp/.gb_smtp_probe.bas 2>&1 | grep -q .; then
-    :
-else
-    if GBASIC_PATH=stdlib ./gbasic /tmp/.gb_smtp_probe.bas 2>&1 | grep -q "not available in this build"; then
-        rm -f /tmp/.gb_smtp_probe.bas
-        printf 'SKIP tests/run_smtp.sh (built without libcurl, so there is no smtp module)\n'
-        exit 0
-    fi
+# Asked through build_has: the inline probe it replaces wrote its program to a
+# fixed /tmp path, which a native Windows binary cannot open -- so it read
+# "could not read file", not a refusal, and ran every tier against no module.
+. tests/build_has.sh
+if ! build_has smtp; then
+    printf 'SKIP tests/run_smtp.sh (built without libcurl, so there is no smtp module)\n'
+    exit 0
 fi
-rm -f /tmp/.gb_smtp_probe.bas
 
 scratch="$(mktemp -d)"
 sinks=()
@@ -326,7 +323,9 @@ ok "reject: a refused recipient fails the whole send, in the relay's own words"
 
 # ------------------------------------------------------------------- tls
 if command -v openssl >/dev/null 2>&1; then
-    openssl req -x509 -newkey rsa:2048 -keyout "$scratch/key.pem" -out "$scratch/cert.pem" \
+    # MSYS2_ARG_CONV_EXCL: under MSYS2 a native openssl would otherwise get
+    # "/CN=127.0.0.1" rewritten as a Windows path. Meaningless anywhere else.
+    MSYS2_ARG_CONV_EXCL='*' openssl req -x509 -newkey rsa:2048 -keyout "$scratch/key.pem" -out "$scratch/cert.pem" \
         -days 2 -nodes -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" \
         >/dev/null 2>&1 || fail "tls (could not generate a certificate)"
 

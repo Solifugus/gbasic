@@ -11,9 +11,10 @@ difference between the two invocations.
 """
 import json
 import os
-import select
+import queue
 import subprocess
 import sys
+import threading
 
 flag = sys.argv[1] if len(sys.argv) > 1 else "--line-buffered"
 # How long to wait for a reply. The deadlock probe passes a short one on
@@ -26,19 +27,33 @@ env = dict(os.environ)
 env["GBASIC_PATH"] = "stdlib"
 env["MCP_PRINCIPAL"] = "alice"
 
+# BYTES, not text mode, and a READER THREAD rather than select(): both so the
+# same client runs on Windows. There select() accepts only sockets (a pipe
+# raises WinError 10093), and text mode writes "\n" as "\r\n" -- so the blank
+# line that ends a session arrived as "\r", which is not blank.
 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, text=True, bufsize=1, env=env)
+                        stderr=subprocess.PIPE, env=env)
+lines = queue.Queue()
+
+
+def pump():
+    for raw in iter(proc.stdout.readline, b""):
+        lines.put(raw.decode("utf-8"))
+    lines.put(None)                     # EOF
+
+
+threading.Thread(target=pump, daemon=True).start()
 
 
 def rpc(obj, timeout=None):
     timeout = WAIT if timeout is None else timeout
-    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.write((json.dumps(obj) + "\n").encode("utf-8"))
     proc.stdin.flush()
-    ready, _, _ = select.select([proc.stdout], [], [], timeout)
-    if not ready:
+    try:
+        line = lines.get(timeout=timeout)
+    except queue.Empty:
         return "TIMEOUT"
-    line = proc.stdout.readline()
-    if not line:
+    if line is None:
         return "EOF"
     return json.loads(line)
 
@@ -62,7 +77,7 @@ who = rpc({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
 show("principal", who)
 
 try:
-    proc.stdin.write("\n")
+    proc.stdin.write(b"\n")
     proc.stdin.flush()
     proc.wait(timeout=5)
 except Exception:

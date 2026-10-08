@@ -8769,7 +8769,8 @@ rather than linked, so it is there on every system with no extra package.
 | Ctrl-C | throw this line away |
 | Ctrl-D | end the session, when the line is empty |
 
-History is kept between sessions in `~/.gbasic_history`, readable only by you
+History is kept between sessions in `~/.gbasic_history` (on Windows,
+`%LOCALAPPDATA%\gbasic\history`), readable only by you
 because a session can contain a connection string. `GBASIC_HISTORY` names a
 different file; setting it to an empty string turns the file off without turning
 editing off.
@@ -8806,7 +8807,10 @@ what history is for, and that persists too.
 It is a **safety net, not a substitute for `save`**: it holds one program, `new`
 replaces it, and saving clears it. The file lives under `$XDG_STATE_HOME/gbasic`
 (or `~/.local/state/gbasic`), readable only by you; `GBASIC_SESSION_DIR` names a
-different place.
+different place. On Windows, where a terminal has no `HOME`, it lives under
+`%LOCALAPPDATA%\gbasic` — and when gBASIC was installed as a package (MSIX),
+Windows keeps that folder inside the package's own storage, under
+`%LOCALAPPDATA%\Packages\<package>\LocalCache\Local\gbasic`.
 
 And because there is always a file, **`spawn` works at the prompt**. A spawned
 actor is fork+exec and the child re-parses the source file; the cache is that

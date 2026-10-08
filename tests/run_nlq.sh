@@ -387,6 +387,12 @@ fi
 # them -- an empty answer is an outcome, and about one question in five is
 # unanswerable at this model size.
 printf 'TIER replay\n'
+# The replay goes through `llm`, which loads `webclient`: a build without it is
+# skipped BY NAME here, and every tier above -- which needs no model -- ran.
+. tests/build_has.sh
+if ! build_has webclient; then
+    printf '  SKIP replay (this build has no webclient, which llm loads)\n'
+else
 rp="$(timeout 200 ./gbasic tests/nlq/nlq_replay.bas 2>&1)"
 r_n="$(printf '%s\n' "$rp" | sed -n 's|^REPLAYED \([0-9]*\) .*|\1|p')"
 r_c="$(printf '%s\n' "$rp" | sed -n 's|^CLEAN \([0-9]*\) of \([0-9]*\)|\1|p')"
@@ -402,6 +408,7 @@ else
     [ "$r_missing" = "3" ] && ok "3 questions have no fixture -- their reasoning ran out of budget, which is an outcome" \
         || bad "expected 3 unrecorded questions, saw $r_missing"
 fi
+fi   # build_has webclient
 
 # --- THE VALUE TIER: the only thing here that produces a SCORE --------------
 # Runs the SQL a model wrote against a real estate and compares the NUMBER to

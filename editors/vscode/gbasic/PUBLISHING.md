@@ -6,9 +6,9 @@ runs automatically.
 
 ## One-time setup
 
-1. **Install the packaging tool**
+1. **Install the dependencies** (`vsce` is one of them, so nothing global):
    ```sh
-   npm install -g @vscode/vsce
+   npm ci
    ```
 2. **Create a publisher** at <https://marketplace.visualstudio.com/manage>.
    The `publisher` field in `package.json` is currently `tedderland` — change it
@@ -17,7 +17,7 @@ runs automatically.
    Manage*) — see <https://code.visualstudio.com/api/working-with-extensions/publishing-extension>.
    Then:
    ```sh
-   vsce login tedderland     # paste the PAT
+   npx vsce login tedderland     # paste the PAT
    ```
 
 ## Each release
@@ -25,11 +25,11 @@ runs automatically.
 ```sh
 cd editors/vscode/gbasic
 
-vsce package                 # builds gbasic-<version>.vsix (respects .vscodeignore)
+npm run package              # builds gbasic-<version>.vsix (respects .vscodeignore)
 # inspect what's bundled:
-vsce ls
+npx vsce ls --no-dependencies
 
-vsce publish                 # or: vsce publish patch|minor|major  (bumps version)
+npx vsce publish --no-dependencies   # or add patch|minor|major to bump the version
 ```
 
 Bump `version` in `package.json` and add a `CHANGELOG.md` entry each release.
@@ -44,8 +44,10 @@ ovsx publish gbasic-<version>.vsix -p <openvsx-token>
 
 ## What ships in the .vsix
 
-Included: `package.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `icon.png`,
-`language-configuration.json`, `syntaxes/`, `snippets/`.
+Included (measured with `npx vsce ls --no-dependencies`, 11 files, about 116 KB):
+`package.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `icon.png`,
+`language-configuration.json`, `syntaxes/gbasic.tmLanguage.json`, `snippets/`,
+and `dist/extension.js` (the client, with `vscode-languageclient` bundled in).
 Excluded (via `.vscodeignore`): `install.sh`, `PUBLISHING.md` source helpers,
 SVGs, dotfiles.
 

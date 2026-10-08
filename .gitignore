@@ -2,6 +2,8 @@
 *.a
 /gbasic
 /gbasic-lsp
+/gbasic.exe
+/gbasic-lsp.exe
 /libgbasic.a
 parser.tab.c
 parser.tab.h
@@ -47,3 +49,6 @@ examples/scans/
 # belong in the repository: they are reproducible from a tag and the script,
 # and committing them would grow history by a megabyte per release.
 dist/
+
+# tools/build-msix.sh output, including the TEST signing key (.pfx)
+/build/

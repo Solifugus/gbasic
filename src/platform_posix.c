@@ -19,10 +19,15 @@
 #include <limits.h>
 #include <stdint.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/file.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__linux__)
@@ -107,6 +112,113 @@ void gb_arm_parent_death(void) {
      * window and does not close it, and pretending otherwise would make
      * run_process_lifetime.sh pass while the promise it tests was unkept. */
 #endif
+}
+
+int gb_setenv(const char *name, const char *value) {
+    return setenv(name, value, 1) == 0;
+}
+
+int gb_unsetenv(const char *name) {
+    return unsetenv(name) == 0;
+}
+
+struct tm *gb_localtime(const time_t *t, struct tm *out) {
+    return localtime_r(t, out);
+}
+
+struct tm *gb_gmtime(const time_t *t, struct tm *out) {
+    return gmtime_r(t, out);
+}
+
+time_t gb_timegm(struct tm *tm) {
+    return timegm(tm);
+}
+
+time_t gb_mktime(struct tm *tm) {
+    return mktime(tm);
+}
+
+int gb_mkdir(const char *path, int mode) {
+    return mkdir(path, (mode_t)mode);
+}
+
+int gb_flock(int fd, int op) {
+    return flock(fd, op == GB_LOCK_EXCLUSIVE ? LOCK_EX : LOCK_UN);
+}
+
+char *gb_realpath(const char *path) {
+    return realpath(path, NULL);
+}
+
+int gb_file_mtime(const char *path, time_t *out) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    *out = st.st_mtime;
+    return 0;
+}
+
+int gb_set_cloexec(int fd, int on) {
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags < 0) {
+        return -1;
+    }
+    return fcntl(fd, F_SETFD, on ? (flags | FD_CLOEXEC) : (flags & ~FD_CLOEXEC));
+}
+
+int gb_fsync(int fd) {
+    return fsync(fd);
+}
+
+int gb_process_alive(long pid) {
+    return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+}
+
+int gb_on_signal(int sig, void (*handler)(int), int restart) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handler;
+    sa.sa_flags = restart ? SA_RESTART : 0;
+    sigemptyset(&sa.sa_mask);
+    return sigaction(sig, &sa, NULL);
+}
+
+int gb_secure_random(void *buf, size_t n) {
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+    size_t off = 0;
+    while (off < n) {
+        ssize_t c = read(fd, (char *)buf + off, n - off);
+        if (c < 0 && errno == EINTR) {
+            continue;
+        }
+        if (c <= 0) {
+            close(fd);
+            return -1;
+        }
+        off += (size_t)c;
+    }
+    close(fd);
+    return 0;
+}
+
+int gb_rename_replace(const char *from, const char *to) {
+    return rename(from, to);
+}
+
+void gb_stdout_line_buffered(void) {
+    setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
+}
+
+void gb_stdio_binary(void) {
+    /* POSIX has no text mode: bytes are bytes. */
+}
+
+void gb_stdin_binary(void) {
+    /* No text mode here either. */
 }
 
 int gb_net_init(void) {

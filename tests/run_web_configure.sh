@@ -88,8 +88,11 @@ else
 fi
 
 printf 'TIER the configured value is acted on\n'
+. tests/build_has.sh
 if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
     printf '  SKIP live tier (needs curl and python3)\n'
+elif ! build_has listen; then
+    printf '  SKIP live tier (this platform cannot listen: webserver.listen is refused)\n'
 else
     free_port() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'; }
     run_one() { # workers -> writes $work/w$1.out, echoes the body

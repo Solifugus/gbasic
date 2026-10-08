@@ -2,10 +2,13 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "gBASIC",
   "scopeName": "source.gbasic",
+  "comment": "The keyword, constant, word-operator and builtin lists are GENERATED from src/lexer.c and src/builtins.c by tools/sync_vscode_grammar.py; tests/run_editor_grammar.sh fails when they drift. Edit everything else by hand.",
   "patterns": [
     { "include": "#comments" },
+    { "include": "#modifiers" },
     { "include": "#strings" },
     { "include": "#definitions" },
+    { "include": "#receiver" },
     { "include": "#constants" },
     { "include": "#keywords" },
     { "include": "#operators" },
@@ -21,6 +24,19 @@
         }
       ]
     },
+    "modifiers": {
+      "comment": "A modifier clause: inline `{file}path` / `{USD}12.50`, or the assignment form `x {date}= s` / `x {split \",\"}= s`. A record literal always has a colon, so it never matches.",
+      "patterns": [
+        {
+          "name": "storage.modifier.gbasic",
+          "match": "\\{[^{}:\\n]*\\}(?=\\s*=)"
+        },
+        {
+          "name": "storage.modifier.gbasic",
+          "match": "\\{\\s*[A-Za-z_][\\w.]*\\s*\\}(?=\\S)"
+        }
+      ]
+    },
     "strings": {
       "name": "string.quoted.double.gbasic",
       "begin": "\"",
@@ -33,20 +49,25 @@
         {
           "name": "constant.character.escape.gbasic",
           "match": "\\\\[nt\\\\\"]"
+        },
+        {
+          "comment": "The parser keeps any other backslash pair as two characters and warns.",
+          "name": "invalid.illegal.escape.gbasic",
+          "match": "\\\\."
         }
       ]
     },
     "definitions": {
       "patterns": [
         {
-          "match": "\\b(function|modifier)\\s+([A-Za-z_]\\w*)",
+          "match": "\\b(function|modifier)\\s+([A-Za-z_][\\w.]*)",
           "captures": {
             "1": { "name": "keyword.control.gbasic" },
             "2": { "name": "entity.name.function.gbasic" }
           }
         },
         {
-          "match": "\\b(program|library)\\s+([A-Za-z_]\\w*)",
+          "match": "\\b(program|library|server)\\s+([A-Za-z_]\\w*)",
           "captures": {
             "1": { "name": "keyword.control.gbasic" },
             "2": { "name": "entity.name.type.gbasic" }
@@ -54,19 +75,29 @@
         }
       ]
     },
+    "receiver": {
+      "patterns": [
+        {
+          "comment": "A method's receiver; an ordinary name everywhere else.",
+          "name": "variable.language.this.gbasic",
+          "match": "(?<![.\\w])this\\b"
+        }
+      ]
+    },
     "constants": {
       "patterns": [
         {
           "name": "constant.language.gbasic",
-          "match": "\\b(true|false|nothing|unknown)\\b"
+          "match": "(?<![.\\w])(nothing|unknown|false|true)\\b"
         }
       ]
     },
     "keywords": {
       "patterns": [
         {
+          "comment": "Not after a dot: `r.count`, `rule.as` and `x.end` are field names.",
           "name": "keyword.control.gbasic",
-          "match": "\\b(program|end|library|load|use|export|from|if|then|else|for|each|to|step|while|consider|break|continue|function|return|print|dim|as|watch|without|watchers|modifier|goto|gosub|with|new|spawn|on|resume|next|stop|error|in|this|constructor)\\b"
+          "match": "(?<![.\\w])(intersecting|excluding|consider|continue|function|modifier|watchers|library|program|unwatch|without|export|return|break|error|gosub|print|spawn|until|watch|while|each|else|from|goto|load|next|step|stop|then|with|dim|end|for|new|use|as|do|if|in|on|to)\\b"
         }
       ]
     },
@@ -74,7 +105,7 @@
       "patterns": [
         {
           "name": "keyword.operator.word.gbasic",
-          "match": "\\b(and|or|not)\\b"
+          "match": "(?<![.\\w])(and|not|or)\\b"
         },
         {
           "name": "keyword.operator.gbasic",
@@ -85,16 +116,22 @@
     "builtins": {
       "patterns": [
         {
+          "comment": "Only where a call can be: not after a dot (a field), and followed by `(`.",
           "name": "support.function.builtin.gbasic",
-          "match": "\\b(read|write|compare|env|default|password_hash|password_verify|secure_token|now|string|number|boolean|array|record|replace|starts_with|ends_with|repeat|chr|code|byte_count|byte_at|from_bytes|keys|values|has|remove_key|count|type|is_string|is_number|is_boolean|is_array|is_record|is_nothing|is_unknown|lower|upper|input|encode|decode|serialize|deserialize|self|send|receive|monitor|demonitor|quote|round|len|find|contains|remove_value|find_by|join_from|first|rest|left|right|mid|trim|split|join|append|delete|copy|move|list_files|make_dir|remove_dir|overwrite|read_lines|join_path|file_name|directory_name|extension|prepend|insert|remove|take_first|take_last|reverse|unique|sort|sum|mean|median|mode|min|max)\\b"
+          "match": "(?<![.\\w])(library_collisions|password_hash_cost|base64url_decode|base64url_encode|aes_gcm_decrypt|aes_gcm_encrypt|ed25519_keypair|password_verify|atomic_replace|directory_name|ed25519_verify|json_encodable|source_outline|base32_decode|base32_encode|base64_decode|base64_encode|password_hash|ed25519_sign|random_bytes|remove_value|secure_token|zone_resolve|bytes_equal|correlation|deserialize|has_builtin|hmac_sha256|hmac_sha512|json_encode|starts_with|zone_offset|byte_count|byte_slice|covariance|file_mtime|from_bytes|from_epoch|hex_decode|hex_encode|is_boolean|is_nothing|is_unknown|list_files|percentile|random_int|read_lines|remove_dir|remove_key|take_first|try_decode|uncompress|byte_find|demonitor|ends_with|extension|file_name|file_size|file_type|from_zone|hmac_sha1|is_number|is_record|is_string|join_from|join_path|match_all|monotonic|overwrite|principal|pvariance|real_path|serialize|take_last|compress|contains|is_array|kurtosis|make_dir|quantile|skewness|to_bytes|variance|boolean|byte_at|compare|default|find_by|monitor|prepend|present|receive|replace|reverse|to_zone|append|decode|delete|encode|insert|lgamma|median|number|pstdev|random|record|remove|repeat|sha256|sha512|string|unique|values|array|count|epoch|first|floor|input|log10|lower|match|quote|range|regex|right|round|sleep|slice|split|stdev|upper|band|bnot|bxor|ceil|code|copy|erfc|exit|find|join|keys|last|left|mean|mode|move|rest|rotl|rotr|seed|self|send|sha1|sign|sort|sqrt|trim|type|abs|bor|chr|env|erf|exp|has|iqr|len|log|max|md5|mid|min|now|pow|shl|shr|sum)(?=\\s*\\()"
         }
       ]
     },
     "numbers": {
       "patterns": [
         {
+          "name": "constant.numeric.hex.gbasic",
+          "match": "\\b0[xX][0-9A-Fa-f]+\\b"
+        },
+        {
+          "comment": "Scientific notation needs a digit after the e (`1e` is the number 1 beside a name).",
           "name": "constant.numeric.gbasic",
-          "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+          "match": "\\b[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?\\b"
         }
       ]
     }

@@ -23,6 +23,11 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 command -v curl >/dev/null 2>&1 || { echo "SKIP run_web_form (no curl)"; exit 0; }
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
+. tests/build_has.sh
+if ! build_has listen; then
+    printf 'SKIP tests/run_web_form.sh (this platform cannot listen: webserver.listen is refused)\n'
+    exit 0
+fi
 
 scratch="$(mktemp -d)"
 server_pid=""

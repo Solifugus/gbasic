@@ -68,6 +68,28 @@ has to work out which half of the standard library they are in.
 `$PREFIX/share/doc/gbasic`. Apache-2.0 asks you to keep the license and the
 `NOTICE` text with any redistribution, and to state changes you made.
 
+### Third-party code in the Windows binary
+
+The Linux `gbasic` links its optional libraries dynamically, from the system.
+The **Windows `gbasic.exe` links them statically**, so it contains:
+
+- curl;
+- OpenSSL's libcrypto (Apache-2.0);
+- libxml2;
+- SQLite;
+- zlib;
+- TRE with libsystre;
+- yescrypt;
+- the mingw-w64 and GCC runtimes.
+
+Each licence is permissive, and none is copyleft. **Each still asks that its
+notice travel with the binary**, so every Windows package carries
+`licenses/THIRD-PARTY-NOTICES.txt`, with the version and full licence text of
+each component. `tools/make-notices.sh` generates it from the archives the
+linker actually used. The build fails if one of those archives has no notice,
+so the list cannot fall behind the binary. If you redistribute `gbasic.exe`,
+keep that file with it.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions are **inbound=outbound**:

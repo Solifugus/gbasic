@@ -51,6 +51,7 @@ export GBASIC_PATH=stdlib
 
 failures=0
 checks=0
+floor=38   # every tier but valgrind (39 with it, measured); see the check at the end
 pass() { checks=$((checks + 1)); printf '  ok   %s\n' "$1"; }
 fail() { checks=$((checks + 1)); failures=$((failures + 1)); printf '  FAIL %s\n' "$1"; }
 
@@ -164,13 +165,22 @@ fi
 
 GBASIC_WEB_STATIC_ROOT="$static_root/pub" ./gbasic tests/web_static_test.bas \
     >"$stdout_file" 2>"$stderr_file" || true
-if diff -u tests/web_static_test.out "$stdout_file" >/dev/null; then
+# THE PREMISE IS A SYMLINK, and `ln -s` does not make one everywhere: under
+# MSYS2 without Windows Developer Mode it silently makes a COPY, so "escape" is
+# an ordinary file inside the root and serving it is CORRECT -- the golden's 403
+# would then be asserting something false. Asked of the file, not the platform.
+if [[ ! -L "$static_root/pub/escape" ]]; then
+    printf '  SKIP web_static_test golden (ln -s made no symlink here, so the containment cases have no premise)\n'
+    floor=$((floor - 2))   # the golden and the no-mismatch check, measured
+elif diff -u tests/web_static_test.out "$stdout_file" >/dev/null; then
     pass 'web_static_test matches its golden'
 else
     fail 'web_static_test matches its golden'
     diff -u tests/web_static_test.out "$stdout_file" | head -40 || true
 fi
-if command grep -q MISMATCH "$stdout_file"; then
+if [[ ! -L "$static_root/pub/escape" ]]; then
+    :   # skipped above, by name
+elif command grep -q MISMATCH "$stdout_file"; then
     fail 'web_static_test reports no mismatch'
     command grep MISMATCH "$stdout_file" | head -10 || true
 else
@@ -224,6 +234,11 @@ check_contains() { # check_contains <label> <haystack> <needle>
     fi
 }
 
+. tests/build_has.sh
+if ! build_has listen; then
+    printf '  SKIP live (this platform cannot listen: webserver.listen is refused)\n'
+    floor=$((floor - 11))  # the live tier's checks, measured on a platform that listens
+else
 rm -f "$port_file"
 ./gbasic tests/web_routes_server.bas >"$stdout_file" 2>"$stderr_file" &
 server_pid=$!
@@ -280,6 +295,7 @@ else
         pass 'the routed server wrote nothing to stderr'
     fi
 fi
+fi   # build_has listen
 
 # ---------------------------------------------------------------- valgrind
 
@@ -295,8 +311,10 @@ else
     fi
 fi
 
-if [[ $checks -lt 38 ]]; then
-    printf 'FAIL coverage floor: only %d checks ran\n' "$checks"
+# The floor falls ONLY by the measured size of a tier that was skipped BY NAME
+# above, so a tier that quietly stopped running still trips it.
+if [[ $checks -lt $floor ]]; then
+    printf 'FAIL coverage floor: only %d checks ran (floor %d)\n' "$checks" "$floor"
     exit 1
 fi
 

@@ -7,6 +7,7 @@
 #include "rpc.h"
 #include "handlers.h"
 #include "cJSON.h"
+#include "platform.h"
 
 #include <stdlib.h>
 
@@ -23,6 +24,11 @@ static void send_parse_error(void) {
 }
 
 int main(void) {
+    /* JSON-RPC is counted in BYTES both ways; Windows' text mode rewrites
+     * line endings underneath (include/platform.h, gb_stdin_binary). */
+    gb_stdin_binary();
+    gb_stdio_binary();
+
     LspServer server;
     lsp_server_init(&server);
 

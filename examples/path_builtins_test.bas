@@ -36,7 +36,13 @@ write(note, "hi")
 append(results, check("a regular file is a file", "file", file_type("examples/tmp_pathprobe/note.txt")))
 append(results, check("a directory is a folder", "folder", file_type("examples/tmp_pathprobe/sub")))
 append(results, check("a missing path is unknown", true, is_unknown(file_type("examples/tmp_pathprobe/nope"))))
-append(results, check("and a device is neither", "other", file_type("/dev/null")))
+' The null device is /dev/null on POSIX and NUL on Windows; the claim is the
+' same on both, so the file asks for whichever this system has.
+device = "/dev/null"
+if is_unknown(file_type(device)) then
+    device = "NUL"
+end if
+append(results, check("and a device is neither", "other", file_type(device)))
 
 ' --- real_path ------------------------------------------------------------
 direct = real_path("examples/tmp_pathprobe/note.txt")
@@ -46,7 +52,9 @@ append(results, check("a .. in the middle resolves away", direct, roundabout))
 dotted = real_path("examples/./tmp_pathprobe/./note.txt")
 append(results, check("and so does a .", direct, dotted))
 
-append(results, check("the answer is absolute", true, starts_with(direct, "/")))
+' Absolute is "/..." on POSIX and "C:/..." on Windows, where real_path answers
+' with forward slashes so that file_name and friends work unchanged.
+append(results, check("the answer is absolute", true, starts_with(direct, "/") or contains(direct, regex("^[A-Za-z]:/"))))
 append(results, check("it ends at the file it names", "note.txt", file_name(direct)))
 append(results, check("a missing path is unknown", true, is_unknown(real_path("examples/tmp_pathprobe/nope"))))
 append(results, check("and so is a path under a missing directory", true, is_unknown(real_path("examples/tmp_pathprobe/nope/deeper.txt"))))

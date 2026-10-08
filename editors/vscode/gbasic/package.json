@@ -1,29 +1,54 @@
 {
   "name": "gbasic",
   "displayName": "gBASIC",
-  "description": "Syntax highlighting for the gBASIC language (.gb / .bas).",
-  "version": "0.1.0",
+  "description": "gBASIC language support: highlighting, snippets, and live errors from the gbasic-lsp server.",
+  "version": "0.2.0",
   "publisher": "tedderland",
   "license": "MIT",
   "icon": "icon.png",
-  "engines": { "vscode": "^1.60.0" },
-  "categories": ["Programming Languages"],
-  "keywords": ["gBASIC", "BASIC", "gb", "bas", "syntax highlighting"],
-  "galleryBanner": { "color": "#0f1117", "theme": "dark" },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "gBASIC",
+    "BASIC",
+    "gb",
+    "bas",
+    "syntax highlighting",
+    "language server"
+  ],
+  "galleryBanner": {
+    "color": "#0f1117",
+    "theme": "dark"
+  },
   "homepage": "https://github.com/solifugus/gbasic/tree/master/editors/vscode/gbasic",
   "repository": {
     "type": "git",
     "url": "https://github.com/solifugus/gbasic.git",
     "directory": "editors/vscode/gbasic"
   },
-  "bugs": { "url": "https://github.com/solifugus/gbasic/issues" },
+  "bugs": {
+    "url": "https://github.com/solifugus/gbasic/issues"
+  },
   "qna": false,
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:gbasic"
+  ],
   "contributes": {
     "languages": [
       {
         "id": "gbasic",
-        "aliases": ["gBASIC", "gbasic"],
-        "extensions": [".gb"],
+        "aliases": [
+          "gBASIC",
+          "gbasic"
+        ],
+        "extensions": [
+          ".gb"
+        ],
         "firstLine": "^\\s*(program\\s+[A-Za-z_]\\w*\\s*\\(|library\\s+[A-Za-z_]\\w*\\b|load\\s+\\w+\\s+from\\b|'.*\\bgbasic\\b)",
         "configuration": "./language-configuration.json"
       }
@@ -46,16 +71,47 @@
         "name": "gbasic",
         "owner": "gbasic",
         "source": "gbasic",
-        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
         "severity": "error",
         "pattern": {
-          "regexp": "^(parse error|runtime error) at (.+):(\\d+):(\\d+): (.+)$",
+          "regexp": "^(lexer error|parse error|runtime error) at (.+):(\\d+):(\\d+): (.+)$",
           "file": 2,
           "line": 3,
           "column": 4,
           "message": 5
         }
       }
-    ]
+    ],
+    "configuration": {
+      "title": "gBASIC",
+      "properties": {
+        "gbasic.lsp.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `gbasic-lsp` language server. Empty: use `gbasic-lsp` from PATH, which an installed gBASIC provides. Without a server the extension highlights only."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "typecheck": "tsc --noEmit",
+    "vscode:prepublish": "npm run typecheck && npm run build -- --minify",
+    "test": "npm run build && node test/run.js",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/vscode": "1.91.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
   }
 }

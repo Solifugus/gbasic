@@ -93,6 +93,12 @@ if ! command -v curl >/dev/null 2>&1; then
     printf 'run_web_server_block: offline cases passed\n'
     exit 0
 fi
+. tests/build_has.sh
+if ! build_has listen; then
+    printf 'SKIP tests/web_server_block live tiers (this platform cannot listen: webserver.listen is refused)\n'
+    printf 'run_web_server_block: offline cases passed\n'
+    exit 0
+fi
 
 # --- the minimal example, served -------------------------------------------
 log="$scratch/min.log"

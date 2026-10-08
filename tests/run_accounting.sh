@@ -119,7 +119,15 @@ printf 'TIER through a database and back\n'
 # rebuilt from DATABASE bytes, and must produce identical statements. Money is
 # exact and a REAL column is not -- a total off by a cent still looks like a
 # total -- so the cents are asserted as figures, not merely as self-equality.
-if GBASIC_PATH=stdlib ./gbasic tests/accounting_dbframe_test.bas >"$scratch/db" 2>"$scratch/dberr"; then
+#
+# THE SKIP WAS MATCHED ON A MESSAGE THE BUILD NO LONGER PRINTS ("library not
+# loaded: sqlite"), so on any build without sqlite this tier FAILED with "SQLite
+# support is not available in this build" -- measured on Windows. Asked of the
+# binary now, before running, by the one helper every suite shares.
+. tests/build_has.sh
+if ! build_has sqlite; then
+    pass "database round trip (SKIP: this gbasic was built without sqlite)"
+elif GBASIC_PATH=stdlib ./gbasic tests/accounting_dbframe_test.bas >"$scratch/db" 2>"$scratch/dberr"; then
     if grep -q "^mismatches: 0$" "$scratch/db"; then
         pass "the ledger round-trips through SQLite with identical statements"
     else
@@ -129,8 +137,6 @@ if GBASIC_PATH=stdlib ./gbasic tests/accounting_dbframe_test.bas >"$scratch/db" 
     command grep -Fq "ok   the awkward cents are intact" "$scratch/db" \
         && pass "asserted: the awkward cents are intact" \
         || fail "asserted: the awkward cents are intact"
-elif grep -qi "library not loaded: sqlite\|invalid function call: sqlite" "$scratch/dberr"; then
-    pass "database round trip (SKIP: no sqlite in this build)"
 else
     fail "the ledger round-trips through SQLite ($(head -1 "$scratch/dberr"))"
 fi

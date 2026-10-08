@@ -132,6 +132,10 @@ done
 # top-level walk never both run. The tier is here as the control for a case the
 # refusal must never reach, not as evidence the guard is load-bearing.
 printf 'TIER control: an actor re-registers its functions and is not a duplicate\n'
+. tests/build_has.sh
+if ! build_has actors; then
+    printf '  SKIP actor control (actors are not available on this platform)\n'
+else
 cat >"$scratch/actor.bas" <<'EOF'
 function double()
     back = receive()
@@ -158,6 +162,7 @@ if ./gbasic "$scratch/actor.bas" >"$scratch/aout" 2>"$scratch/aerr"; then
 else
     fail "a spawned actor still resolves its own top-level function ($(head -1 "$scratch/aerr"))"
 fi
+fi   # build_has actors
 
 printf 'TIER refusal: a function from ANOTHER library must be qualified\n'
 for name in negative_unqualified_library_call negative_unqualified_ambiguous; do

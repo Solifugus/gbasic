@@ -2,13 +2,16 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-
-if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists sqlite3; then
-    printf 'SKIP tests/sqlite_integration.bas (sqlite3 development files not available)\n'
-    exit 0
-fi
+. tests/build_has.sh
 
 make
+
+# Asked of the BINARY, not pkg-config: whether sqlite3 is installed is not
+# whether this gbasic was built with it (tests/build_has.sh says why).
+if ! build_has sqlite; then
+    printf 'SKIP tests/sqlite_integration.bas (this gbasic was built without sqlite)\n'
+    exit 0
+fi
 
 stdout_file="$(mktemp)"
 stderr_file="$(mktemp)"

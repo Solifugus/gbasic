@@ -52,7 +52,16 @@ run_case plat_stream_stream
 run_case plat_stream_partial
 run_case plat_stream_volume
 run_case plat_stream_json
-run_case plat_stream_signal
+# Its subject is a child that DIES BY A SIGNAL, which runs no stdio cleanup.
+# Windows has no such death -- a stopped child handles a console control event
+# and exits through cleanup, so even unflagged output survives (measured: 14
+# bytes, signal 0) -- so there the case has nothing to test, and says so.
+. tests/build_has.sh
+if build_has signals; then
+    run_case plat_stream_signal
+else
+    printf 'SKIP tests/native_platform/plat_stream_signal.bas (no POSIX signal death on this platform)\n'
+fi
 
 # --- The flag is opt-in: without it, behaviour is byte-for-byte what it was. ----
 # Same program, same bytes, three ways -- and the flag must never reach the

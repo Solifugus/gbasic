@@ -105,6 +105,78 @@ GIO_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --e
 GIO_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags gio-2.0 2>/dev/null)
 GIO_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs gio-2.0 2>/dev/null)
 
+# WINDOWS: NO OPTIONAL MODULE IS AUTO-DETECTED. An MSYS2 install carries
+# libcurl, OpenSSL, libxml2, sqlite3 and zlib as other packages' dependencies,
+# so detection finds them -- and the build then fails to LINK, because the
+# Windows binary is static (gbasic.exe must need nothing beside it) and what
+# pkg-config describes is the DLL form. Each module arrives deliberately, as its
+# milestone does (docs/windows_port_plan.md §6: M2 ODBC, M3 xlsx, M4 sqlite,
+# M5 libcurl), with its static link worked out and measured. A command-line
+# override (make LIBXML2_AVAILABLE=1) still wins over these, as it does on Linux.
+ifeq ($(OS),Windows_NT)
+GTK_AVAILABLE := 0
+LIBPQ_AVAILABLE := 0
+# M4: sqlite, STATICALLY. One library and zlib (its pkg-config Libs.private),
+# and its header declares no dllimport, so no _STATIC define is needed the way
+# libxml2's is. Unlocks dbframe, edgar and screener.
+SQLITE3_AVAILABLE := 1
+SQLITE3_CFLAGS :=
+SQLITE3_LIBS := -lsqlite3 -lz
+# ODBC IS ON, and is the one exception: its driver manager is odbc32.dll,
+# which ships WITH Windows, so linking it costs the download nothing and needs
+# nothing installed (milestone M2, docs/windows_port_plan.md §4). The drivers
+# themselves are the operator's, exactly as on Linux.
+ODBC_AVAILABLE := 1
+ODBC_CFLAGS :=
+ODBC_LIBS := -lodbc32
+LDAP_AVAILABLE := 0
+# M5: libcurl, STATICALLY, over SCHANNEL -- Windows' own TLS, which trusts the
+# Windows certificate store and needs no OpenSSL. Built by
+# tools/build-curl-windows.sh (pinned version and SHA-256) into
+# ~/gbasic-deps/curl-schannel, and switched on exactly when that library
+# exists, so a machine that has not built it still builds a gbasic.exe -- with
+# webclient/http/smtp refusing cleanly, the HAVE_* contract. Its dependencies
+# are zlib and Windows' own libraries: no LGPL (§19 of the status doc).
+CURL_WIN_PREFIX ?= $(shell cygpath -m "$$HOME/gbasic-deps/curl-schannel" 2>/dev/null)
+ifneq ($(wildcard $(CURL_WIN_PREFIX)/lib/libcurl.a),)
+LIBCURL_AVAILABLE := 1
+LIBCURL_CFLAGS := -I$(CURL_WIN_PREFIX)/include -DCURL_STATICLIB
+LIBCURL_LIBS := $(CURL_WIN_PREFIX)/lib/libcurl.a -lsecur32 -lbcrypt -ladvapi32 -lcrypt32 -lz -lws2_32 -liphlpapi
+else
+LIBCURL_AVAILABLE := 0
+endif
+LIBXCRYPT_AVAILABLE := 0
+YESCRYPT_VENDORED := 1
+# Crypto builtins over OpenSSL's libcrypto, STATICALLY -- the same code the
+# Linux build runs, Apache-2.0. MSYS2's openssl package carries the archive, so
+# nothing is downloaded. It is the largest single cost in the binary (measured
+# stripped 4.5 -> 9.3 MB, OpenSSL 3 linking its provider layer for the thirteen
+# builtins used); Windows' own CNG was the alternative and lacks Ed25519 and
+# scrypt outright (status doc §21). libssl stays off: it serves only the
+# webserver's TLS, which needs a listener this port does not have yet.
+LIBCRYPTO_AVAILABLE := 1
+LIBCRYPTO_CFLAGS :=
+LIBCRYPTO_LIBS := -lcrypto -lws2_32 -lcrypt32 -luser32 -ladvapi32 -lbcrypt
+LIBSSL_AVAILABLE := 0
+# M3: zlib + libxml2, STATICALLY, for xml and xlsx -- the headline Windows
+# feature (docs/windows_port_plan.md §4: the Linux tarballs omit xlsx because
+# libxml2's soname varies across distributions, a problem a static Windows
+# build does not have). LIBXML_STATIC is not optional: without it libxml2's
+# headers declare every function __declspec(dllimport) and the static archive
+# cannot satisfy them. The dependency list is pkg-config --static's LESS
+# -liconv: libiconv is LGPL, and the three functions libxml2 takes from it are
+# supplied by src/platform_win32.c over the Windows code pages instead, so no
+# LGPL code is linked into gbasic.exe (tests/windows/xml_encodings.bas).
+LIBXML2_AVAILABLE := 1
+LIBXML2_CFLAGS := $(shell pkg-config --cflags libxml-2.0 2>/dev/null) -DLIBXML_STATIC
+LIBXML2_LIBS := -lxml2 -lbcrypt -lz
+ZLIB_AVAILABLE := 1
+ZLIB_CFLAGS :=
+ZLIB_LIBS := -lz
+GIR_AVAILABLE := 0
+GIO_AVAILABLE := 0
+endif
+
 ifeq ($(GTK_AVAILABLE),1)
 CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
 LDLIBS += $(GTK_LIBS) -lm
@@ -158,6 +230,21 @@ else
 CFLAGS += -DHAVE_LIBXCRYPT=0
 endif
 
+# password_hash WITHOUT libxcrypt: the vendored yescrypt (third_party/yescrypt,
+# BSD-2), which produces and verifies the same `$y$` hashes libxcrypt does.
+# Only where libxcrypt is absent -- the Windows block sets it, and
+# `make YESCRYPT_VENDORED=1 LIBXCRYPT_AVAILABLE=0` builds it anywhere, which is
+# how the two are compared.
+YESCRYPT_VENDORED ?= 0
+YESCRYPT_OBJS :=
+ifeq ($(LIBXCRYPT_AVAILABLE)$(YESCRYPT_VENDORED),01)
+CFLAGS += -DHAVE_YESCRYPT=1
+YESCRYPT_OBJS := third_party/yescrypt/yescrypt-opt.o third_party/yescrypt/yescrypt-common.o \
+                 third_party/yescrypt/sha256.o third_party/yescrypt/insecure_memzero.o
+else
+CFLAGS += -DHAVE_YESCRYPT=0
+endif
+
 ifeq ($(LIBSSL_AVAILABLE),1)
 CFLAGS += -DHAVE_LIBSSL=1 $(LIBSSL_CFLAGS)
 LDLIBS += $(LIBSSL_LIBS)
@@ -205,9 +292,31 @@ endif
 # WHICH PLATFORM FILE. Overridable, because tools/cross-build-windows.sh must
 # build the Windows one or it measures the POSIX file failing to be Windows,
 # which is true and says nothing.
+#
+# NATIVE WINDOWS (an "MSYS2 UCRT64" shell, docs/windows_port_status.md §9):
+# make's own OS variable is Windows_NT there. Winsock is a library rather than
+# part of libc, and -static links libgcc/winpthread into the binary so
+# gbasic.exe needs nothing beside it -- the UCRT itself ships with Windows.
+ifeq ($(OS),Windows_NT)
+PLATFORM_OBJ ?= src/platform_win32.o
+# libsystre: the POSIX regex.h API over TRE (BSD-2), since Windows has none.
+# TRE takes its messages through gettext; that one function is supplied by
+# src/platform_win32.c, so the LGPL libintl (and the libiconv it needs) is
+# NOT linked -- gbasic.exe carries permissive-licensed code only.
+LDLIBS += -lsystre -ltre -lws2_32 -lbcrypt -static
+# AN 8 MB MAIN-THREAD STACK, the Linux default. Windows reserves 1 MB, and the
+# tree-walking evaluator and the JSON parser recurse: the parser's 10,000-level
+# nesting cap was sized for 8 MB, so on 1 MB a deep document CRASHED the
+# interpreter (STATUS_STACK_OVERFLOW, measured by run_try_decode.sh) before the
+# cap could refuse it -- the very crash the cap exists to prevent.
+LDLIBS += -Wl,--stack,8388608
+# The application manifest (UTF-8 code page): src/gbasic.manifest.
+WIN_RES := src/gbasic_win32.res.o
+endif
+WIN_RES ?=
 PLATFORM_OBJ ?= src/platform_posix.o
 
-LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o $(PLATFORM_OBJ)
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS)
 OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
@@ -231,8 +340,11 @@ dev: all gbasic-lsp
 libgbasic.a: $(LIB_OBJS)
 	$(AR) rcs $@ $(LIB_OBJS)
 
-gbasic: src/main.o src/repl.o src/lineedit.o libgbasic.a
-	$(CC) $(CFLAGS) -o $@ src/main.o src/repl.o src/lineedit.o libgbasic.a $(LDLIBS)
+gbasic: src/main.o src/repl.o src/lineedit.o libgbasic.a $(WIN_RES)
+	$(CC) $(CFLAGS) -o $@ src/main.o src/repl.o src/lineedit.o $(WIN_RES) libgbasic.a $(LDLIBS)
+
+src/gbasic_win32.res.o: src/gbasic_win32.rc src/gbasic.manifest
+	windres -i src/gbasic_win32.rc -o $@
 
 gbasic-lsp: $(LSP_OBJS) libgbasic.a
 	$(CC) $(LSP_CFLAGS) -o $@ $(LSP_OBJS) libgbasic.a $(LDLIBS)
@@ -252,6 +364,11 @@ src/lsp/lsp_position.o: src/lsp/lsp_position.c src/lsp/lsp_position.h
 third_party/cjson/cJSON.o: third_party/cjson/cJSON.c third_party/cjson/cJSON.h
 	$(CC) -std=c11 -O2 -Ithird_party/cjson -c $< -o $@
 
+# Upstream's own flags (its Makefile builds -O2 -fomit-frame-pointer); kept off
+# our -Wpedantic because the code is vendored unmodified.
+third_party/yescrypt/%.o: third_party/yescrypt/%.c third_party/yescrypt/yescrypt.h third_party/yescrypt/sha256.h third_party/yescrypt/yescrypt-platform.c
+	$(CC) -std=gnu99 -O2 -fomit-frame-pointer -Ithird_party/yescrypt -c $< -o $@
+
 src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h include/diagnostics.h include/parse_ctx.h
 	bison -d -o src/parser.tab.c src/parser.y
 
@@ -262,11 +379,11 @@ src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h in
 FORCE:
 .PHONY: FORCE
 
-src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h .stdlibdir-stamp
+src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h include/platform.h .stdlibdir-stamp
 
-src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h include/lineedit.h
+src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h include/lineedit.h include/platform.h
 
-src/lineedit.o: src/lineedit.c include/lineedit.h
+src/lineedit.o: src/lineedit.c include/lineedit.h include/platform.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/platform_posix.o: src/platform_posix.c include/platform.h
@@ -282,7 +399,7 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h .stdlibdir-stamp
+src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h .stdlibdir-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h
@@ -294,7 +411,7 @@ src/diagnostics.o: src/diagnostics.c include/diagnostics.h
 src/frontend.o: src/frontend.c include/gbasic.h include/diagnostics.h include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/actor.o: src/actor.c include/actor.h
+src/actor.o: src/actor.c include/actor.h include/platform.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 install: gbasic
@@ -327,6 +444,7 @@ uninstall:
 	@echo "Removed gbasic from $(DESTDIR)$(BINDIR), $(DESTDIR)$(DATADIR) and $(DESTDIR)$(DOCDIR)"
 
 clean:
-	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h
+	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h src/gbasic_win32.res.o
+	rm -f third_party/yescrypt/*.o
 	rm -f gbasic-lsp $(LSP_OBJS)
 	rm -f .stdlibdir-stamp
