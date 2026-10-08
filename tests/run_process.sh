@@ -236,3 +236,34 @@ if ! printf '%s' "$stdin_out" | grep -qx 'mismatches: 0'; then
 fi
 printf 'PASS plat_proc_stdin (%s checks: a two-way conversation, and the default still inherits)\n' \
     "$(printf '%s' "$stdin_out" | sed -n 's/^checks: //p')"
+
+# --- `process.wait(h, timeout)` ON A CHILD STILL PRODUCING ------------------
+#
+# The defect this pins was present from the day `process.wait` was written: the
+# wait loop polled with a 20ms tick and then did `elapsed_ms += slice`, charging
+# the full tick however long `poll` actually blocked -- and poll returns
+# IMMEDIATELY when a pipe has data. A child producing continuously therefore cost
+# microseconds of real time and 20ms of budget per iteration, so a SIXTY-SECOND
+# timeout expired in a few milliseconds. Measured at v0.5.1: 2 MB to each stream,
+# `wait(h, 60)` back in 0.02s with 568,000 of 2,000,000 bytes and `running: true`.
+#
+# WHY THIS SUITE DID NOT CATCH IT, which is the part worth keeping: the UNTIMED
+# form was always correct, and the only Linux fixture that waits on a child at all
+# (`tests/native_platform/plat_proc_basic.bas`) uses it. Nothing here waited WITH a
+# timeout on a busy child. The Windows port's own `tests/windows/process_start.bas`
+# was the first thing to do so -- a cross-platform fixture finding a Linux bug --
+# and this is the Linux-side counterpart, so the coverage does not depend on a file
+# named for another platform.
+busy_out="$(./gbasic tests/process/wait_timeout_busy_child.bas 2>&1 || true)"
+if printf '%s' "$busy_out" | grep -q MISMATCH; then
+    printf 'FAIL wait_timeout_busy_child\n'
+    printf '%s\n' "$busy_out" | grep MISMATCH
+    exit 1
+fi
+if ! printf '%s' "$busy_out" | grep -qx 'mismatches: 0'; then
+    printf 'FAIL wait_timeout_busy_child (did not finish)\n'
+    printf '%s\n' "$busy_out" | tail -3
+    exit 1
+fi
+printf 'PASS wait_timeout_busy_child (%s checks: a timed wait drains a 2MB producer, and still expires)\n' \
+    "$(printf '%s' "$busy_out" | sed -n 's/^checks: //p')"

@@ -29022,8 +29022,33 @@ static void process_try_reap(ProcessHandle *h) {
  * stranded), or until timeout_ms elapses. timeout_ms < 0 waits indefinitely.
  * Pumps throughout, which is what keeps a child writing more than a pipe buffer
  * from deadlocking against us. Returns 1 if reaped, 0 if it timed out. */
+/* WAIT FOR THE CHILD, UP TO `timeout_ms` (-1 for no limit).
+ *
+ * TIME IS MEASURED, NOT ACCUMULATED, and that is the whole correction here.
+ * This loop used to do `elapsed_ms += slice` after each `poll(…, slice)` -- it
+ * charged the full 20ms tick however long poll ACTUALLY blocked, and poll returns
+ * IMMEDIATELY when a pipe has data. So a child producing output continuously made
+ * every iteration cost microseconds of real time and 20ms of budget, and a
+ * 60-second timeout was exhausted in a few milliseconds.
+ *
+ * MEASURED, at v0.5.1 and earlier: a child writing 2 MB to each of stdout and
+ * stderr, with `process.wait(h, 60)`, returned in 0.02s having read 568,000 bytes
+ * of 2,000,000 with `running: true`. The untimed form was always correct, which is
+ * why no Linux fixture caught it -- `tests/native_platform/plat_proc_basic.bas`
+ * calls `process.wait(h)` with no timeout, and nothing on this platform waited
+ * WITH a timeout on a busy child.
+ *
+ * THE SYMPTOM IS INDISTINGUISHABLE FROM A REAL TIMEOUT, which is what made it
+ * worth fixing rather than documenting: `running: true` is this function's own
+ * contract for "the wait expired", so a caller sees a plausible timeout and partial
+ * output, and the bytes it never read are simply gone from its side of the pipe.
+ *
+ * FOUND BY THE WINDOWS PORT'S OWN FIXTURE (tests/windows/process_start.bas), which
+ * runs the same file on both platforms and is the first thing here to wait with a
+ * timeout on a 2 MB producer. A cross-platform fixture caught a Linux defect. */
 static int process_wait_until(ProcessHandle *h, long timeout_ms) {
     const long tick_ms = 20;
+    const double started = timer_now_seconds();
     long elapsed_ms = 0;
     for (;;) {
         process_pump(h);
@@ -29055,7 +29080,8 @@ static int process_wait_until(ProcessHandle *h, long timeout_ms) {
             struct timespec ts = { slice / 1000, (slice % 1000) * 1000000L };
             nanosleep(&ts, NULL);
         }
-        elapsed_ms += slice;
+        /* The CLOCK, not the sum of the slices asked for. */
+        elapsed_ms = (long)((timer_now_seconds() - started) * 1000.0);
     }
 }
 

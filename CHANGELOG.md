@@ -16,7 +16,23 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
-Nothing yet.
+### Fixed
+
+- **`process.wait(handle, timeout)` returned early on a child that was still
+  producing output.** The wait loop polled with a 20 ms tick and then charged the
+  full tick against the budget however long `poll` had actually blocked — and
+  `poll` returns immediately when a pipe has data, so a child writing
+  continuously cost microseconds of real time and 20 ms of budget per iteration.
+  A **sixty-second** timeout therefore expired in a few milliseconds. Measured: a
+  child writing 2 MB to each of stdout and stderr came back in 0.02 s with
+  568,000 bytes of 2,000,000 and `running: true` — and because `running: true` is
+  this call's own contract for "the wait expired", the caller saw a plausible
+  timeout and partial output, with the unread bytes gone from its side of the
+  pipe. The loop measures the clock now. The **untimed** form was always correct,
+  which is why nothing here caught it: the only Linux fixture that waits on a
+  child uses that form, and nothing on this platform waited *with* a timeout on a
+  busy child. Found by the Windows port's own cross-platform fixture; present
+  since `process.wait` was written.
 
 ---
 
