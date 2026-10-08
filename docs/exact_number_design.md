@@ -1,7 +1,9 @@
 # Exact numbers — design
 
-**Status: Proposal.** None of this exists. Decided 2026-10-05 after costing the
-alternatives; the costs below are measured, not estimated.
+**Status: SHIPPED, increments 1-3 (0.6.0, 2026-10-07); increments 4-5 open.**
+Decided 2026-10-05 after costing the alternatives; the costs below are measured,
+not estimated. Each section is annotated where building it contradicted what was
+written here.
 
 ## The defect, and why it is this project's problem rather than a limitation
 
@@ -180,3 +182,58 @@ pattern for proving the old format still reads.
 
 Each is separately gateable, and increment 1 is the one that decides whether the
 rest is worth it.
+
+### SHIPPED 2026-10-07 — 1, 2 AND 3, because splitting 3 off would have been worse
+
+`tests/run_exact.sh`, 50 self-checking assertions plus a python3 oracle over 183
+values, the diagnostic channels, a `sizeof` tier and valgrind. Nine perturbations
+proven red.
+
+**INCREMENT 3 WAS FOLDED IN RATHER THAN DEFERRED, and the reason is a defect the
+split would have created.** With arithmetic and comparison exact but rendering
+still showing the double view, `print x` shows `9007199254740992` while
+`x = 9007199254740993` answers `true` — so a program can **prove** a value its own
+display contradicts. That is a new silent-wrong-answer shape and worse than the
+loss it replaces, which at least had one story. The design asked for the affected
+goldens to be measured before changing rendering; measured across every `.bas`,
+`.gb` and `.out` in `examples/` and `tests/`, the integer tokens at or above 2^53
+are hex key material inside string literals, base32 secrets, money text, and
+`9007199254740994` (exactly representable, so unmoved). **Zero goldens moved.**
+
+**THE DESIGN WAS WRONG ABOUT ONE COST, and it is the one that looked free.** It
+said the 219 `as.number` reads "keep working unchanged", by overlaying a struct on
+the bare `double` in the union. C11 6.5.2.3 permits inspecting the common initial
+sequence of two **structures** in a union, and a bare scalar member is not a
+structure — so that read would have been outside what the standard promises. The
+219 sites were renamed to `as.num.value` instead, across six files, which the
+compiler verifies completely: a `double` has no `.value`, so a missed site cannot
+build. Memory cost is still zero and a tier now asserts it.
+
+**A SITE EDITED BY MISTAKE, found by probing rather than by reading.** There are
+two `case AST_EXPR_NUMBER:` in `src/eval.c` and the first version of this change
+edited the wrong one — `server_literal_value` rather than `eval_expr`. **Nothing
+failed.** Every exactness check simply stayed false, so the feature was inert and
+the fixture read as a design error rather than a wrong edit; three separate
+hypotheses were tried before instrumenting `value_is_exact` and seeing
+`is_exact=0` arrive at the evaluator.
+
+**AN EXISTING ORACLE TIER'S PREMISE WAS INVALIDATED, and it caught that itself.**
+`run_numfmt.sh` recomputes 4070 values in awk and its stated premise is that both
+languages perform the same correctly-rounded IEEE primitives and so land on the
+identical double. Exact integer multiplication broke it: the `up7` recipe
+(`y = 1`, then `y = y * 7`) became exact, so gBASIC produced the TRUE 7^19 =
+11398895185373143 where awk produced the nearest double, and the tier reported 17
+disagreements **in which gBASIC was right**. The fixture's seed is `1.0` now, with
+the reason written beside it, because that tier's subject is the double FORMATTER
+and a fraction in the seed says so. This is the gate doing its job rather than a
+regression.
+
+**The open decision on `1e20` is settled: an exponent literal is INEXACT.** The
+notation says "approximately this magnitude", and `number("...")` is how to ask
+for the integer. A perturbation making it exact is proven red.
+
+**Still open:** `pow`/`mod`/counting builtins (increment 5 — so this release does
+*not* fix the design's own headline example), `serialize`/the actor wire
+(increment 4, needing a `SER_VERSION` bump), and whether `BIGINT` columns should
+become exact numbers rather than strings, which is a visible behaviour change
+deserving its own ruling.

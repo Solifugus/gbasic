@@ -33,6 +33,58 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
+- **A GTK signal handler that needs state** — `gi.connect(w, "sig", bound(fn,
+  ctx))` *(since 0.6.0)*; same for `gi.timeout`/`gi.idle`/`gi.watch_fd`. The
+  context arrives as the handler's LAST parameter and belongs to the CONNECTION, so
+  one function can serve many widgets with different state. Do not put a GObject in
+  the context when the closure is attached to that same object — it cycles and
+  GObject cannot collect it (carry an id or ordinal instead).
+  → `tests/gi/gi_bound_context_test.bas`
+- **Large integers are exact** *(0.6.0)* — a decimal or hex integer literal that
+  fits int64 is EXACT, and `+ - *` and unary minus of two exact operands stay
+  exact, so `9007199254740992 + 1` is `9007199254740993` and prints those digits.
+  INEXACT by decision: a fraction, an EXPONENT literal (`1e16`), any mixed
+  expression, division, and `pow`/`mod` (a later increment — so `pow(2,53) + 1` is
+  still not exact). Comparison is mathematical, so
+  `9007199254740993 = 9007199254740992.0` is false. Overflow degrades with warning
+  2112 rather than refusing. → `tests/exact/exact_test.bas`
+- **An aggregate over ragged data** — `sum(rows.amount)` SKIPS absences and warns
+  (2111); `mean` divides by the PRESENT count; all-absent answers `unknown`, not
+  0; `sum([])` still raises. `count` is COUNT(*) and `count(present(x))` is
+  COUNT(col). `present(x)` is also the warning's opt-out — it leaves nothing to
+  skip, so it is silent without disabling other warnings.
+  → `tests/absence/absence_test.bas`
+- **`mode` answers a LIST** — every tied value, or `unknown` when nothing repeats.
+  It used to return the first element, which on money or any price list is always
+  "an answer". Accepts text, which is the case it is actually wanted for.
+  `first(mode(x))` if you want one. → `tests/absence/absence_test.bas`
+- **An absence sorts LAST**, and the two absences are not ordered against each
+  other (ruled 2026-10-07; `frame.sort_by` and core `sort` agree now).
+  → `tests/run_absence.sh`
+- **Set operations on lists** — `a excluding b` and `a intersecting b`, infix
+  word operators since 0.6.0 (both words are now reserved). Filters over the LEFT
+  side, so its order and duplicates survive; membership is the same `=` that
+  `contains` uses, so records compare by value. Two lists required — text is
+  refused rather than read as characters. Cost is the product of the lengths.
+  → `tests/set_ops/set_ops_test.bas`
+- **Read the end of a list / take a window** — `last(a)` (not `a[count(a) - 1]`)
+  and `slice(a, at [, count])`, 0-based like `byte_slice` and clamped past the
+  end. `take_last` pops; `last` reads. → `tests/set_ops/set_ops_test.bas`
+- **Sort a list of records** — `sort(rows, { by: "amount", descending: true })`,
+  `sort(rows, { by: ["last", "first"] })`, and `descending: ["score"]` to turn
+  only some keys around. Stable, mutates in place through an assignable path, and
+  an unknown option is refused by name. There is no comparator-function form by
+  decision; `by` covers every record sort measured in this tree.
+  → `tests/sort_records/sort_records_test.bas`
+- **Total a field across rows** — `sum(rows.amount)`, not a loop. A dotted
+  access on an array of records is a **projection**: the array of that field
+  from every element, so `sum`/`mean`/`count`/`min`/`max`/`sort` and
+  `any(rows.paid)`/`all(rows.paid)` all reach business data. Works over money
+  and durations as well as numbers. A missing field is `unknown` for that
+  element and the element is **kept**, so the projection is always the same
+  length as the array. A projection is a **value, not a place**: `append(rows.a,
+  x)` is refused by name — change the array itself, or assign the projection to
+  a name first. → `tests/projection/projection_test.bas`
 - **Display any value** — `print v` and `string(v)` use one renderer and always
   agree, so a record shows its fields (`{"a":1}`), an array its elements
   (`["a","b"]`) and a duration its units (`2 days 3 hours`). Display is total —

@@ -217,3 +217,31 @@ void gb_report(gb_diag_code code, int subcode, const char *path,
                gb_span span, const char *message) {
     gb_report_to(g_active_sink, code, subcode, path, span, message);
 }
+
+/* A WARNING, TO THE SINK AND NOWHERE ELSE.
+ *
+ * Found by tests/run_absence.sh and PRE-EXISTING for every one of the warning
+ * codes: `--json-diagnostics` emitted a warning as its plain stderr line, so any
+ * program that warned put a NON-JSON line into a JSON stream -- the defect
+ * run_parse_exit.sh exists for, one channel along, and `--json-diagnostics` is
+ * gBASIC Studio's own consumer. The `gb_diag` struct has carried
+ * GB_SEVERITY_WARNING since it was written and nothing routed a runtime warning
+ * through it.
+ *
+ * REPORTS ONLY WHEN A SINK IS SET, and with no stderr fallback, because the
+ * caller (`runtime_warn_at`) owns the text form and its format was chosen by
+ * measurement -- `warning: <msg> at <path>:<l>:<c> [<code>]`, with the code at
+ * the end so the `warning: ` prefix two shell checks grep for survived. Falling
+ * back to `gb_diag_format` here would silently rewrite that line into
+ * `warning at <path>: <msg>` for every ordinary run.
+ *
+ * Answers whether it took the diagnostic, so the caller knows not to print. */
+int gb_report_warning(int subcode, const char *path, gb_span span,
+                      const char *message) {
+    if (!g_active_sink) {
+        return 0;
+    }
+    gb_diagnostics_add(g_active_sink, GB_SEVERITY_WARNING, GB_DIAG_RUNTIME_ERROR,
+                       subcode, path, span, message);
+    return 1;
+}

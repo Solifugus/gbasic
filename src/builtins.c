@@ -116,6 +116,9 @@ int gbasic_builtin_function(const char *name) {
         "find_by",
         "join_from",
         "first",
+        "last",
+        "slice",
+        "present",
         "rest",
         "left",
         "right",
@@ -241,6 +244,8 @@ int gbasic_has_builtin(const char *name) {
         "concat",
         "key",
         "bound",
+        "any",
+        "all",
         "merge",
     };
     if (gbasic_builtin_function(name)) {

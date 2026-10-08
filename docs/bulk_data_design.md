@@ -1,12 +1,14 @@
 # Working with lists and records in bulk — 0.6.0 considerations
 
-**Status: Proposal.** None of this exists. It is a list of things to consider
-for 0.6.0, with the measurements that say which of them would actually remove
-loops *in this tree* rather than in Python.
+**Status: §2, §2a, §2b, §3, §4 and §7's library migrations SHIPPED (0.6.0
+increments 1–4 and 7, 2026-10-06/07); §5 deliberately unpriced.** The rest is a list of things to consider for 0.6.0,
+with the measurements that say which of them would actually remove loops *in
+this tree* rather than in Python.
 
 Written 2026-10-03 from a design conversation with Matthew. The prompt was list
 comprehensions; the survey below moved the answer somewhere smaller and
-cheaper.
+cheaper. Each section is annotated as it ships, including where building it
+contradicted what was written here.
 
 ---
 
@@ -103,6 +105,79 @@ all 45 filter loops. That is why the comprehension question in §5 is priced
 - **An empty list.** `[].amount` is `[]`; whether `sum([])` is `0` or a refusal
   is a separate existing question this inherits.
 
+### SHIPPED 2026-10-06 — and the one thing this section did not anticipate
+
+`tests/run_projection.sh`, 58 + 18 self-checking assertions plus shell-level
+refusals, thirteen perturbations proven red. One site in `src/eval.c`, the single
+place that raised `field access expects a record`. Every question above was
+settled as this section guessed, except assignment, which is refused by name
+(`append cannot change a projection: … change the array itself, or assign the
+projection to a name first`) rather than merely refused.
+
+**WHAT THE PLAN MISSED, AND IT WAS NOT SMALL: none of the five aggregates could
+reach money.** §1 counted loops and §2 named `sum`, `mean`, `count`, `min` and
+`max` as unlocked for nothing — and measured after projection worked, four of the
+five still refused a money array:
+
+```
+sum(invoices.total)    sum expects a numeric array
+mean(invoices.total)   mean expects a numeric array
+max(invoices.total)    max supports only scalar array values
+sort(invoices.total)   sort supports only scalar array values
+```
+
+`money` is this tree's exact business number — a loan balance, an invoice line,
+a ledger posting — so the release whose subject is business data in bulk would
+have shipped `sum(invoices.total)` refusing while the `+` operator added the same
+two values happily. That is the `web.configure` shape: a capability announced
+that does not reach the obvious case.
+
+**Fixed by taking the answer from the operators rather than inventing one**, which
+is what keeps it small. Ordering already knew what to do: `<` orders money within
+a currency and refuses across one (PLAT-EQ's rule — equality answers, ordering
+would invent a rate), and it orders exact durations and refuses month-bearing
+ones (a month has no fixed length). The sorter simply did not know the same
+things, so `value_sort_comparable` gained both kinds and
+`array_all_sort_comparable` gained the two conditional refusals **in the
+operator's own words** — in a pre-pass, because a `qsort` comparator returns an
+`int` and cannot raise. The fold is the same argument one operator along: money
+addition already refuses mixed currencies and is already overflow-checked, and
+`mean` divides through the existing `money_scale_by`, so `sum`/`mean` over money
+decide nothing new.
+
+**That produced the suite's strongest tier, which was not in the plan either:
+the `<` operator is the ORACLE for the sorter.** They are different code — a
+raising branch chain against a comparator that cannot raise — asking one
+question, so agreement is evidence rather than a second call into one place. The
+tier walks eleven pairs and requires the same verdict *and*, where both answer,
+the same direction; reverting money to its pre-0.6.0 state reddens it
+immediately. It records the one deliberate divergence as a divergence: `<`
+refuses an absence because there is no answer, while `sort` must place one and
+ranks it lowest.
+
+**`median`, `stdev`, `variance`, `percentile`, `quantile` and `correlation` stay
+numeric**, stated rather than discovered: two of them are meaningless on money
+(a variance of money is money squared) and none is among the five §1 measured.
+
+**The diagnostics were part of the work, not a polish pass.** `sum expects a
+numeric array` is true and says nothing about *which* row is wrong, and over a
+projection that is the whole question — an array of absences means a row lacks
+the field. It names the element now (`element 1 is unknown`), which also removed
+an asymmetry this increment had introduced: `[{USD}"1.00", 7]` named element 1
+while `[7, {USD}"1.00"]` answered the terse sentence. Naming a kind in a sentence
+is one helper rather than an article at each site, because two rules were being
+got wrong across three messages: "a array" and "a unknown" read as mistakes, and
+`money`, `nothing` and `unknown` take **no** article — `money` being a mass noun
+and the other two the words for having no value.
+
+**Two perturbations worth recording** because each is caught by exactly one
+check. A projection that **drops** the elements with no value leaves the sum, the
+mean, the min and the max all *correct* — it only shortens the array — so what
+catches it is the count and the absence checks, not any figure; it also flips
+`all(rows.paid)` from `false` to `true`, reporting an unpaid row as paid. And a
+`mean` over money that **rounds at the minor unit** prints `19.82`, identical to
+the right answer, so only `avg * 3` separates them: `59.46` against `59.45`.
+
 ---
 
 ## 2a. What an aggregate does with an absence — SQL's answer, and its warning
@@ -185,6 +260,45 @@ documented standard, the false-positive argument that killed the other warning
 does not apply, and it is what makes the projection useful rather than refusing
 on the first ragged row.
 
+### SHIPPED 2026-10-07 (increment 4) — all four details decided, and one was dead
+
+`tests/run_absence.sh`, 57 self-checking assertions plus the two diagnostic
+channels, the migrations, the frame goldens and valgrind. Eleven perturbations
+proven red. Warning **2111**, source `absence`.
+
+Every detail above was settled as recommended: `mean` divides by the **present**
+count (asserted by value, not assumed from SQL); all-absent answers `unknown` with
+`sum([])` still raising, and the asymmetry is stated rather than inherited;
+`count` stays `COUNT(*)` with **`present(a)`** giving `COUNT(col)` a spelling of
+its own; and the two absences are treated alike.
+
+**`present(a)` turned out to do a second job that makes the warning affordable.**
+A warning needs an opt-out that is not `on warning ignore`, which covers every
+warning in the frame — and an aggregate over `present(x)` has nothing to skip, so
+it is silent *because there is nothing to say*, with no special case anywhere. The
+remedy the warning names is therefore one the suite can run, which this tree has
+twice shipped messages that failed.
+
+**ONE OF MY OWN CHECKS COULD NOT FAIL, and a perturbation is what found it.** The
+filter was written with a `len` exemption — `len` and `count` are `COUNT(*)` and
+must keep counting rows — and the fixture asserted `len([10, unknown, 7])` is 3.
+Perturbing the exemption away left that check GREEN, because `len` and `count` are
+answered by their own branches earlier in `eval_call` and never reach the
+aggregate path at all. The exemption was DEAD CODE stating a rule a reader would
+have trusted; it is gone, and what the fixture asserts now is the **difference**
+between the two counts, which is what §2a's third detail is actually about.
+
+**A PRE-EXISTING DEFECT IN ANOTHER CHANNEL, found by this suite rather than by
+reading:** `--json-diagnostics` emitted a warning as its plain stderr line, so any
+program that warned put a **non-JSON line into a JSON stream** — the defect
+`run_parse_exit.sh` exists for, one channel along, and that stream is gBASIC
+Studio's own consumer. True of all eleven warning codes, not just 2111; the
+`gb_diag` struct has carried `GB_SEVERITY_WARNING` since it was written and
+nothing routed a runtime warning through it. Fixed in JSON mode only, because the
+text format was chosen by measurement (0 goldens contain a printed warning;
+exactly 2 shell checks grep for `warning: <message>`) and the sink's formatter
+writes a different shape.
+
 ---
 
 ## 2b. `median` and `mode` — and two defects `mode` has today
@@ -227,6 +341,28 @@ Three things to decide:
   one aggregate where text is the *common* case: the most frequent category,
   city, or status code. Numeric-only makes it nearly useless for the data people
   actually have.
+
+### SHIPPED 2026-10-07 (increment 4) — and nothing had to be migrated, nearly
+
+All three decisions went as this section argued: a tie is **reported** (every tied
+value, as a list), nothing repeating answers **`unknown`**, and **text is
+accepted**. `median`'s even-count convention is pinned at 2.5.
+
+`mode` is the only aggregate that answers a list, which is deliberate: a caller
+cannot otherwise tell a tie from a single mode, and `first(mode(x))` is the
+explicit "give me one". The tie list is **sorted** where its values are orderable,
+so the same multiset gives the same answer whatever order it arrived in — the
+defect one level up, since returning the ties in first-seen order would make
+`mode([1,1,2,2])` and `mode([2,2,1,1])` differ again. Where the values are not
+orderable (records, arrays) it is first-seen, because inventing an order over
+records is what `sort` itself refuses.
+
+**A MEASUREMENT I GOT WRONG AND CORRECTED:** I justified the return-shape change
+on "nothing in the tree calls `mode`", from a grep over `*.bas`. There is one
+caller, in `examples/parse_test.gb` — a `.gb` file, which that grep could not see.
+Both extensions are used interchangeably in this tree and the measurement had to
+cover both. The caller is a one-line demo, so the conclusion held; the method did
+not.
 
 ### "What is most typical?" — and why the midpoint of a tie is not it
 
@@ -321,6 +457,73 @@ Four ways to extend it, deliberately in this order:
    a boolean silently half-sorts. It is the escape hatch for what 1–3 cannot
    express, and if 1–3 are good it is rarely reached.
 
+### SHIPPED 2026-10-06 — items 1 and 2; 3 and 4 refused with the measurement
+
+`tests/run_sort_records.sh`, 40 self-checking assertions, eight perturbations
+proven red. `sort` takes an options record; the one-argument form is untouched.
+
+**THE MEASUREMENT CHANGED THE SHAPE, and this section had the wrong count.** It
+said `_row_key` was the case for several fields, which is true, and listed four
+ways to extend `sort` without measuring which ones the tree needs. Measured, the
+hand-rolled sorts over records are:
+
+| where | shape |
+|---|---|
+| `stdlib/frame.bas:340` | one field ascending, O(n²) insertion sort |
+| `stdlib/fundamentals.bas:183` | **two** fields, faked as `r["end"] + "|" + r["start"]` |
+| `stdlib/nlq.bas:1507` | score **descending** then id **ascending** |
+| `stdlib/stats.bas:3438, 8313` | an **index array** against a parallel column |
+
+**The third is why `descending` takes two shapes.** A plain boolean turns every
+key around, which covers frame and fundamentals and *not* nlq — whose own comment
+says why its total order matters ("or the answer depends on a driver's row
+order"). So `descending` is a boolean (every key) **or a list of field names**
+(those keys), which keeps the common case one word and makes the mixed case
+declarative and checkable: naming a field `by` does not sort on is refused.
+
+**The fourth is not a field sort at all**, and a comparator function would not
+have helped it either — what it orders is an index array against a separate
+column of eigenvalues. So the one case this section offered a comparator for
+turns out not to be a comparator case.
+
+**Item 3, a declared collation, is deferred with a measurement rather than a
+preference.** Of 73 `sort` call sites in this tree, **none** orders a lowered,
+trimmed or naturally-collated key. Its spelling is also not free, which this
+section assumed it was: a comparison lens is a **grammar** construct driven by a
+parser-triggered lexer mode, not a value, so `using: {trimmed; caseless}` cannot
+be written as an argument today, and inventing a second vocabulary on a guess
+would commit the language to a syntax nothing has asked for.
+
+**The sort is STABLE, and that is a portability requirement.** `qsort` is not
+stable and its tie order differs between implementations, so a golden pinning
+rows sorted by one field would read differently on glibc and on a BSD libc.
+Stability also pays for the one thing `descending` cannot express: sorting by the
+minor key and then by the major key gives mixed directions in two declared
+passes, and the suite asserts the two routes give the **identical** answer —
+which is also what reddens an unstable merge twice over.
+
+**MIGRATED, with goldens byte-identical:** `fundamentals._sort_rows` (its
+concatenated key was equivalent only because `end` is a fixed-width ISO date, and
+its absent `start` is defaulted to `""` one function up — the residual of the
+`fp` defect) and `nlq._by_score`. Both insertion sorts are gone, and the suite
+reads the source as well as the goldens, because a library that quietly kept its
+own sort would pass the goldens perfectly.
+
+**NOT MIGRATED, AND THIS IS A QUESTION FOR THE USER: `frame.sort_by` ranks an
+absence LAST and core `sort` ranks it FIRST.** Demonstrated, not inferred:
+
+```
+rows = [ { x: 3 }, { x: unknown }, { x: 1 } ]
+frame.sort_by(...)  ->  [{x:1}, {x:3}, {x:unknown}]
+sort(rows, {by:"x"}) -> [{x:unknown}, {x:1}, {x:3}]
+```
+
+There is no universal convention to appeal to: `ORDER BY x ASC` puts NULLs **last**
+in PostgreSQL and Oracle and **first** in MySQL and SQLite. So this is a
+convention gBASIC has to choose, which makes it a language-visible decision
+rather than this increment's to take. Both answers are **pinned** in the suite, so
+neither side can move alone and whoever rules on it has to come to that tier.
+
 ---
 
 ## 4. Set operations
@@ -340,6 +543,99 @@ compounds, so records compare by value — probably right); whether duplicates a
 preserved on the left (probably yes, since `unique` exists separately); and
 whether these are operators or functions, which is a grammar cost to measure
 rather than guess.
+
+### SHIPPED 2026-10-06 — and the conflict count said operator
+
+`tests/run_set_ops.sh`, 54 self-checking assertions plus a `contains` oracle, a
+measured cost tier, the grammar measurement and the reserved-word controls. Nine
+perturbations proven red.
+
+**THE SPELLING WAS DECIDED BY THE MEASUREMENT THIS SECTION ASKED FOR.** The infix
+word operator costs **zero** shift/reduce conflicts, at its own precedence level
+between comparison and additive — so `a excluding b` reads as English and
+`excluding(a, b)` was not needed. The suite asserts the zero, because that
+measurement is the whole reason for the shape: if it ever starts costing
+conflicts the decision has to be revisited rather than absorbed.
+
+**The price is two reserved words, measured too:** no identifier in this tree was
+named `excluding` or `intersecting` (three matches, all in prose), and the
+keyword-field rules already let `r.excluding` and `{ excluding: 1 }` work — so
+what is claimed is the name of a variable, parameter or function, which nothing
+had. Both halves are asserted, because "the words are reserved" without the
+controls would be indistinguishable from reserving them everywhere, which would
+have been too expensive to take.
+
+**Membership is `array_find_index`, the authority `contains`, `find` and
+`remove_value` already share.** PLAT-EQ's sweep established that six routes ask
+"is this value present" and must agree; these are the seventh and eighth, and they
+agree by construction rather than by a test — the only way that property survives
+an edit. The oracle asserts it anyway, through `contains`, because "by
+construction" is a claim about today's source.
+
+**Filters over the left side, so order and duplicates survive.** `unique` exists
+separately and composes; folding it in would have taken the choice away, and the
+suite pins `unique(a intersecting b)` as the composition.
+
+**The cost is the product of the two lengths, and that is documented rather than
+hidden**, because membership is `=` and for records that is deep equality — no key
+to hash, no order to binary-search. `unique` pays the same price for the same
+reason. The suite measures it as a ratio across a 2x step on both sides (4.0
+against an ideal 4.0) and is bounded **both ways**: a cost that quietly got
+cheaper would leave the reference wrong, which is how this tree's performance
+notes went stale for six weeks once already.
+
+**`last(a)` and `slice(a, at [, count])` shipped with them.** `first` had existed
+since arrays did and `last` had not, so reading the end meant `a[count(a) - 1]` —
+arithmetic on a length, and an out-of-range read rather than an answer on an empty
+list. `slice` takes `byte_slice`'s conventions exactly (0-based `at`, to the end
+with no count) because a second convention for one idea is how an off-by-one gets
+written, and it CLAMPS past the end — a window legitimately runs off the end,
+which is what the last page of a report is — while a negative index is refused,
+there being no from-the-end convention to read it as.
+
+**Deliberately not built:** `take`/`drop` (expressible as `slice`), `flatten` and
+`zip` (no measured need), and `remove_at` (not a gap — `remove(a, i)` already
+removes by index). **Not yet migrated:** the 20 measured "append if not in another
+list" loops, which belong with §7's migrations in increment 7 because their
+goldens are the slow half of this gate; what the suite asserts instead is that the
+operator and the hand-written loop AGREE on real frame data, which is the property
+a migration rests on.
+
+---
+
+## 7-as-shipped. The library migrations (increment 7, 2026-10-07)
+
+Done where the ruling unblocked it, with the goldens as the proof:
+
+- **`frame.sort_by` → core `sort`.** Needed two things, both in 0.6.0: `sort`
+  learning to take a field, and core agreeing with the library about where an
+  absence goes. **It also fixed a defect the hand-rolled version had**: `_less`
+  guarded `is_unknown`, and `is_unknown(nothing)` is `false`, so a column holding
+  `nothing` fell through to `a < b` and **raised mid-sort**. A frame built from
+  JSON, a database or `read_csv` holds `nothing` wherever a value was absent, so
+  that column could not be sorted at all. `_less` is deleted, so there is one
+  absence rule rather than two that can drift.
+- **`frame.dedupe` → core `unique`.** It deduplicated rows by **serializing each
+  one to a binary blob** and searching a growing list of blobs — `unique` written
+  out by hand with an allocation per row — and it existed only because `unique`
+  **refused records**, asking for *orderability* in order to decide *equality*.
+  Those are two different questions and `contains([{a:1}], {a:1})` had always
+  answered the second, so the refusal is gone: `unique` now asks `=`, like the
+  other five membership routes. The cost is unchanged — it was O(n²) for scalars
+  already.
+- **`fundamentals._sort_rows` and `nlq._by_score`** moved in increment 2.
+- **Seven loops onto `excluding` and `unique`**, in `discovery`, `nlq` and
+  `stats`.
+
+**AND A COUNT THIS DOCUMENT HAD WRONG.** §4 said "20 append-if-not-in-another-list
+loops". Measured by *shape* rather than by the guard, there are **12 that are a
+genuine set difference** (the haystack is a different list) and **12 that are a
+dedupe-accumulate** (the haystack *is* the list being appended to). Those are
+different operators — `excluding` and `unique` — and conflating them is how a
+migration replaces one with the other. 17 of the 24 remain, each appending a
+*transform* of the element or testing against a list holding a transform of it,
+which neither operator can express without `map` — and §5 prices `map` after this
+release deliberately.
 
 ---
 

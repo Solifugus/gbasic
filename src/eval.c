@@ -331,7 +331,33 @@ typedef struct {
 struct Value {
     ValueKind kind;
     union {
-        double number;
+        /* THE NUMERIC MEMBER, and `value` is the double every reader has always
+         * used -- 219 sites, renamed mechanically from `as.num.value` to
+         * `as.num.value` so the two extra fields have somewhere legal to live.
+         *
+         * WHY A RENAME RATHER THAN OVERLAYING A STRUCT ON THE BARE `double`:
+         * C11 6.5.2.3 permits inspecting the common initial sequence of two
+         * STRUCTURES in a union, and a bare scalar member is not a structure, so
+         * reading `num.value` after writing `number` would have been outside what
+         * the standard promises. The rename is verified by the compiler instead --
+         * a `double` has no `.value`, so a missed site cannot build.
+         *
+         * MEMORY COST IS ZERO, MEASURED: this is 24 bytes and `DateTime` in the
+         * same union is 32, so `sizeof(Value)` does not move. That matters in a
+         * release about bulk data, where a Value is every array element and every
+         * record field.
+         *
+         * `is_exact` MEANS "this is an integer the runtime holds exactly", and
+         * `value` STAYS IN SYNC as a lossy view of it, which is what lets every
+         * existing reader go on being correct for every number it could already
+         * hold. `value_number(double)` goes on meaning INEXACT -- the right
+         * default for all of its existing construction sites, so nothing had to be
+         * audited to stay correct. */
+        struct {
+            double value;
+            long long exact;
+            int is_exact;
+        } num;
         char *string;
         int boolean;
         struct {
@@ -843,6 +869,10 @@ static int lock_cleanup_registered = 0;
 static WatcherDef *watchers = NULL;
 static size_t watcher_count = 0;
 static size_t *watcher_queue = NULL;
+/* THE PRINCIPAL IN FORCE WHEN EACH ENTRY WAS QUEUED, carried beside the queue so
+ * a body that runs LATER still acts for whoever made the write. See
+ * `watcher_enqueue`. Parallel to `watcher_queue` and freed with it. */
+static Value *watcher_queue_principal = NULL;
 static size_t watcher_queue_count = 0;
 static int watcher_drain_origin_line = 0;
 static int watcher_drain_origin_column = 0;
@@ -1095,6 +1125,32 @@ static const char *value_kind_name(ValueKind kind) {
         return "workbook";
     }
     return "value";
+}
+
+/* NAMING A VALUE'S KIND IN A SENTENCE. "a array" and "a unknown" read as
+ * mistakes, which is a poor look for the message a beginner meets, and three of
+ * the kinds take no article at all: `money` is a mass noun, and `nothing` and
+ * `unknown` are the words for having no value rather than names of things.
+ * The kind names are a closed set, so both rules are a lookup, not grammar.
+ *
+ * Writes into the caller's buffer rather than a static one, so two kinds may be
+ * named in one message. */
+static const char *kind_phrase(ValueKind kind, char *buf, size_t n) {
+    const char *noun = value_kind_name(kind);
+    if (kind == VALUE_MONEY || kind == VALUE_NULL || kind == VALUE_UNKNOWN) {
+        snprintf(buf, n, "%s", noun);
+        return buf;
+    }
+    const char *article = "a";
+    switch (noun[0]) {
+    case 'a': case 'e': case 'i': case 'o': case 'u':
+        article = "an";
+        break;
+    default:
+        break;
+    }
+    snprintf(buf, n, "%s %s", article, noun);
+    return buf;
 }
 
 static char *copy_string(const char *text) {
@@ -1572,11 +1628,70 @@ static Value value_unknown(void) {
     return value;
 }
 
+/* AN INEXACT NUMBER, which is what every one of this function's existing call
+ * sites means and what every number in gBASIC was before 0.6.0. The default is
+ * deliberate: nothing had to be audited to stay correct. */
 static Value value_number(double number) {
     Value value = {0};
     value.kind = VALUE_NUMBER;
-    value.as.number = number;
+    value.as.num.value = number;
     return value;
+}
+
+/* AN EXACT INTEGER. The double is kept in sync as a LOSSY VIEW, so every reader
+ * of `as.num.value` goes on being correct for every number it could already
+ * hold, and only the places that must PRESERVE exactness consult the int64. */
+static Value value_number_exact(long long exact) {
+    Value value = {0};
+    value.kind = VALUE_NUMBER;
+    value.as.num.value = (double)exact;
+    value.as.num.exact = exact;
+    value.as.num.is_exact = 1;
+    return value;
+}
+
+static int value_is_exact(Value v) {
+    return v.kind == VALUE_NUMBER && v.as.num.is_exact;
+}
+
+/* COMPARE AN EXACT INTEGER WITH AN INEXACT DOUBLE **MATHEMATICALLY**, which is
+ * the one rule here whose failure produces no error and no visible symptom.
+ *
+ * THE OBVIOUS IMPLEMENTATION IS WRONG: `(double)exact == d` rounds the exact side
+ * first, so `9007199254740993 = 9007199254740992.0` answers TRUE -- the very
+ * defect this work exists to close, reintroduced in the comparison. The same
+ * mistake was made once already in this tree, in the precision-loss predicate
+ * that reported zero lossy operations because it compared `(double)exact` with a
+ * double result.
+ *
+ * So the DOUBLE is moved into the integer domain instead, never the reverse:
+ * a non-integral double cannot equal an integer and its fractional part decides
+ * the order, and a double outside int64's range is decided by magnitude alone.
+ * Answers -1, 0 or 1 for exact-vs-double. */
+static int exact_vs_double_compare(long long a, double b) {
+    if (b != b) {                     /* NaN: unordered, and `=` must be false */
+        return 2;
+    }
+    /* 2^63 exactly; a double at or beyond it cannot be any int64. */
+    if (b >= 9223372036854775808.0) {
+        return -1;
+    }
+    if (b < -9223372036854775808.0) {
+        return 1;
+    }
+    double floored = b < 0 ? -floor(-b) : floor(b);
+    long long bi = (long long)floored;
+    if (a != bi) {
+        return a < bi ? -1 : 1;
+    }
+    /* Equal whole parts: the fraction breaks the tie, so 3 < 3.5 and -3 > -3.5. */
+    if (b > floored) {
+        return -1;
+    }
+    if (b < floored) {
+        return 1;
+    }
+    return 0;
 }
 
 /* Binary-safe string constructor: copies `length` bytes (interior NULs allowed). */
@@ -1980,6 +2095,29 @@ static Value value_datetime(DateTime datetime) {
  * the smallest caller buffer is 32. run_numfmt.sh's WIDTH tier asserts this,
  * because the change made output longer into buffers sized for six digits.
  */
+/* RENDER AN EXACT INTEGER AS ITS OWN DIGITS.
+ *
+ * FOLDED IN FROM INCREMENT 3 RATHER THAN DEFERRED, and the reason is a defect the
+ * split would have created: without it `print x` shows the double view while
+ * `x = 9007199254740993` answers true, so the program can PROVE a value the
+ * display contradicts. That is a new silent-wrong-answer shape, and worse than
+ * the loss it replaces, which at least had one story.
+ *
+ * MEASURED BEFORE FOLDING IT IN, because the design said to: across every `.bas`,
+ * `.gb` and `.out` in `examples/` and `tests/`, the integer tokens at or above
+ * 2^53 are hex key material inside string literals, base32 secrets, money text
+ * and `9007199254740994` (which is exactly representable, so its rendering does
+ * not move). Nothing rendered differently, and the gate confirms it. */
+static void format_number(char *buf, size_t bufsize, double v);
+
+static void format_number_value(char *buf, size_t bufsize, Value v) {
+    if (v.kind == VALUE_NUMBER && v.as.num.is_exact) {
+        snprintf(buf, bufsize, "%lld", v.as.num.exact);
+        return;
+    }
+    format_number(buf, bufsize, v.as.num.value);
+}
+
 static void format_number(char *buf, size_t bufsize, double v) {
     /* Integer-valued and below 2^53: print in full, no exponent, no point, so
      * ids, epoch seconds and bitwise results read as integers. Above 2^53 the
@@ -3465,6 +3603,34 @@ static Value principal_current(void) {
     return value_copy(principal_stack[principal_depth - 1].value);
 }
 
+/* PUSH A CAPTURED PRINCIPAL, for a watcher body whose write happened earlier.
+ *
+ * Takes a BORROW and copies, so the queue entry still owns its own value and is
+ * freed once with the rest of the queue. `nothing` pushes nothing and answers 0,
+ * which is what "no principal was in force at the write" has to mean: pushing an
+ * empty entry would make `principal()` answer a record where the writer had said
+ * nobody, and distinguishing those two is the whole reason it answers `nothing`
+ * rather than `{}`. */
+static int principal_push_captured(Value captured) {
+    if (captured.kind != VALUE_RECORD) {
+        return 0;
+    }
+    PrincipalEntry *grown = realloc(principal_stack,
+                                    sizeof(PrincipalEntry) * (principal_depth + 1));
+    if (!grown) {
+        abort();
+    }
+    principal_stack = grown;
+    principal_stack[principal_depth++].value = value_copy(captured);
+    return 1;
+}
+
+static void principal_pop_captured(void) {
+    if (principal_depth > 0) {
+        value_free(principal_stack[--principal_depth].value);
+    }
+}
+
 static void principal_clear(void) {
     while (principal_depth > 0) {
         value_free(principal_stack[--principal_depth].value);
@@ -3665,8 +3831,8 @@ static void raise_trace_text(char *out, size_t size) {
         const char *nm = (nf && nf->value->kind == VALUE_STRING) ? nf->value->as.string : "?";
         const char *pa = (pf && pf->value->kind == VALUE_STRING) ? pf->value->as.string : "";
         const char *lb = (lf && lf->value->kind == VALUE_STRING) ? lf->value->as.string : "";
-        int ln = (lnf && lnf->value->kind == VALUE_NUMBER) ? (int)lnf->value->as.number : 0;
-        int cl = (cf && cf->value->kind == VALUE_NUMBER) ? (int)cf->value->as.number : 0;
+        int ln = (lnf && lnf->value->kind == VALUE_NUMBER) ? (int)lnf->value->as.num.value : 0;
+        int cl = (cf && cf->value->kind == VALUE_NUMBER) ? (int)cf->value->as.num.value : 0;
         int w;
         if (lb[0] && !trace_full) {
             /* A COLLAPSED LIBRARY LINE IS SUPPRESSED WHEN THE ERROR IS ALREADY
@@ -3919,6 +4085,27 @@ static void runtime_warn_at(const char *message, int code, const char *source,
      * warning and exactly 2 shell checks match on its text
      * (`run_inbox.sh`, `run_http.sh`), both of which grep for
      * `warning: <the message>` and survive anything appended after it. */
+    /* IN JSON MODE THE SINK TAKES IT INSTEAD. Pre-existing for every warning code
+     * and found by tests/run_absence.sh: this fprintf is not JSON, so any program
+     * that warned under `--json-diagnostics` put a non-JSON line into a JSON
+     * stream -- which is the defect run_parse_exit.sh exists for, one channel
+     * along, and that stream is gBASIC Studio's own consumer.
+     *
+     * THE TEXT PATH IS UNTOUCHED, deliberately: the format above was chosen by
+     * measurement (0 goldens contain a printed warning; exactly 2 shell checks
+     * grep for `warning: <the message>`), and the sink's own formatter writes a
+     * different shape, so routing every run through it would rewrite that line
+     * for everybody. Only the JSON consumer's stream changes. */
+    if (trace_json_mode) {
+        gb_span span = {0};
+        span.start_line = line;
+        span.start_column = column;
+        span.end_line = line;
+        span.end_column = column;
+        if (gb_report_warning(code, runtime_error_path(), span, message)) {
+            return;
+        }
+    }
     fprintf(stderr, "warning: %s at %s:%d:%d [%d]\n", message,
             runtime_error_path() ? runtime_error_path() : "?",
             line, column, code);
@@ -4427,7 +4614,7 @@ static int value_truthy(Value value, int *raised) {
     case VALUE_BOOL:
         return value.as.boolean;
     case VALUE_NUMBER:
-        return value.as.number != 0.0;
+        return value.as.num.value != 0.0;
     case VALUE_STRING:
         return value.as.string[0] != '\0';
     case VALUE_ARRAY:
@@ -4519,7 +4706,7 @@ static int value_truthy(Value value, int *raised) {
 
 static double value_number_or_zero(Value value) {
     if (value.kind == VALUE_NUMBER) {
-        return value.as.number;
+        return value.as.num.value;
     }
     if (value.kind == VALUE_BOOL) {
         return value.as.boolean ? 1.0 : 0.0;
@@ -4529,7 +4716,7 @@ static double value_number_or_zero(Value value) {
 
 static int value_number_for_arithmetic(Value value, const char *op, double *out_number) {
     if (value.kind == VALUE_NUMBER) {
-        *out_number = value.as.number;
+        *out_number = value.as.num.value;
         return 1;
     }
 
@@ -5785,7 +5972,7 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return 1;
     case VALUE_NUMBER:
         /* If NaN enters the runtime through native code, treat it as changed. */
-        return left->as.number == right->as.number;
+        return left->as.num.value == right->as.num.value;
     case VALUE_STRING:
         return string_value_equal(left->as.string, right->as.string);
     case VALUE_BOOL:
@@ -5898,8 +6085,8 @@ static int value_is_integer_number(Value value) {
     if (value.kind != VALUE_NUMBER) {
         return 0;
     }
-    double whole = (double)(int)value.as.number;
-    return value.as.number == whole;
+    double whole = (double)(int)value.as.num.value;
+    return value.as.num.value == whole;
 }
 
 static int gui_component_is_container(const char *component) {
@@ -5960,7 +6147,7 @@ static int gui_optional_int_field(Value *record, const char *name, int fallback)
         runtime_error_raise(message, 1003, "gui");
         return fallback;
     }
-    return (int)field->value->as.number;
+    return (int)field->value->as.num.value;
 }
 
 typedef enum {
@@ -6362,7 +6549,7 @@ static Value *gui_window_lookup_widget_ref(Value *window, const char *id) {
             runtime_error_raise("gui window root lookup is malformed", 1003, "gui");
             return NULL;
         }
-        int index = (int)step.as.number;
+        int index = (int)step.as.num.value;
         if (index < 0 || (size_t)index >= contains->value->as.array.store->count) {
             runtime_error_raise("gui window id lookup path is out of range", 1003, "gui");
             return NULL;
@@ -6430,8 +6617,8 @@ static Value gui_eval_window_call(AstExpr *expr) {
         return value_null();
     }
 
-    record_set(&window_meta, "width", value_number(width_value.as.number));
-    record_set(&window_meta, "height", value_number(height_value.as.number));
+    record_set(&window_meta, "width", value_number(width_value.as.num.value));
+    record_set(&window_meta, "height", value_number(height_value.as.num.value));
     record_set(&window_meta, "title", value_string(title_value.as.string));
 
     Value window_value = value_record(NULL, 0);
@@ -6514,8 +6701,8 @@ static Value gui_eval_run_call(AstExpr *expr) {
         watch_root_path = lvalue_watch_path(window_expr);
     }
     char *handle_id = gui_create_native_window(root_field->value,
-                                               (int)width_field->value->as.number,
-                                               (int)height_field->value->as.number,
+                                               (int)width_field->value->as.num.value,
+                                               (int)height_field->value->as.num.value,
                                                title_field->value->as.string,
                                                watch_root_path);
     free(watch_root_path);
@@ -7210,10 +7397,13 @@ static int date_parts_fault(DateTime dt, char *why, size_t why_size) {
 #undef DPF
 }
 
-static int valid_date_parts(DateTime dt) {
-    return date_parts_fault(dt, NULL, 0) == 0;
-}
-
+/* `valid_date_parts` WAS HERE and is removed in 0.6.0: zero callers, and the
+ * compiler had been saying `defined but not used` since the impossible-date
+ * diagnostic replaced it with `date_parts_fault`, which answers WHICH part is
+ * wrong rather than only that one is. Its own comment claimed it was kept for
+ * "ten existing callers" that no longer existed. Dead code that still compiles is
+ * how a retired rule comes back -- the argument PLAT-BRACE made for deleting the
+ * paren-clause guesser's machinery rather than leaving it parseable. */
 
 /* ISO 8601's `T` SEPARATOR AND ZONE DESIGNATOR, normalised away before the
  * strict position scanner below ever sees them.
@@ -8012,6 +8202,37 @@ static int watcher_matches_change(AstStmt *watcher, const char *changed_path) {
     return 0;
 }
 
+/* QUEUE THE BODY, AND THE IDENTITY IT IS BEING QUEUED FOR.
+ *
+ * REPORTED BY THE gbasic-books SESSION and reproduced before anything was built:
+ * `bob` makes the write, the audit line says `alice`, and nothing is raised. A
+ * watcher body reads `principal()` out of the DYNAMIC scope, which is the writer's
+ * scope only while the body runs AT the write -- and a body queued during an
+ * existing drain runs after that scope has been left.
+ *
+ *     watch(ledger)  ->  append(audit, "for " + string(principal()))
+ *     watch(trigger) ->  with principal(bob) { ledger = ... }
+ *     with principal(alice) { trigger = 1 }
+ *
+ * `ledger`'s body is queued (a drain is already running for `trigger`) and runs
+ * once bob's block has exited, so it reports ALICE for a write bob made. An audit
+ * trail that attributes one person's write to another is worse than one that says
+ * nothing, and it is silent.
+ *
+ * THE PLAN FOR THIS SAID "REFUSE IN A DEFERRED BODY", on the signal
+ * `watcher_draining`. MEASURED, that signal cannot discriminate -- it is set for
+ * all four ways a body is reached, and two of them are CORRECT today:
+ *
+ *   registration (inline)      the enclosing scope            correct
+ *   synchronous drain          the writer's principal         correct  <- common
+ *   a QUEUED body              whatever is in force at drain   WRONG
+ *   the event loop, after main `nothing`                       correct (pinned)
+ *
+ * So refusing on it would have refused the ordinary audit watcher that works, to
+ * fix the one that does not. CARRYING THE SCOPE IS WHAT THE PLAN DEFERRED and it
+ * is the smaller change of the two: one `value_copy` of a record per queue entry.
+ * NOTHING THAT WORKED MOVES, because for a body that runs at the write the
+ * captured principal IS the one the dynamic scope would have given. */
 static void watcher_enqueue(size_t index) {
     if (watchers[index].pending) {
         return;
@@ -8021,7 +8242,14 @@ static void watcher_enqueue(size_t index) {
         abort();
     }
     watcher_queue = next;
+    Value *who = realloc(watcher_queue_principal,
+                         sizeof(Value) * (watcher_queue_count + 1));
+    if (!who) {
+        abort();
+    }
+    watcher_queue_principal = who;
     watchers[index].pending = 1;
+    watcher_queue_principal[watcher_queue_count] = principal_current();
     watcher_queue[watcher_queue_count++] = index;
 }
 
@@ -8058,12 +8286,22 @@ static int watcher_drain(void) {
             ok = 0;
             break;
         }
+        size_t slot = cursor;
         size_t index = watcher_queue[cursor++];
         /* An entry can be unwatched between enqueue and drain -- it must not
          * fire one last time on the way out. */
         if (index < watcher_count && watchers[index].active) {
             watchers[index].pending = 0;
+            /* ACT FOR WHOEVER MADE THE WRITE, not for whoever happens to be in
+             * scope when the queue drains. Pushed and popped around the body, so
+             * nesting and leaving behave exactly as `with principal` does -- and
+             * popped on EVERY exit below, including a raise, which is the rule
+             * `with principal` itself follows. */
+            int pushed = principal_push_captured(watcher_queue_principal[slot]);
             EvalResult result = eval_stmt_list(watchers[index].stmt->as.watch.body);
+            if (pushed) {
+                principal_pop_captured();
+            }
             if (result.did_raise) {
                 /* A raise in a watcher body used to be DROPPED here: draining
                  * carried on, the program kept running with a watcher that had
@@ -8088,6 +8326,11 @@ static int watcher_drain(void) {
         }
     }
 
+    for (size_t i = 0; i < watcher_queue_count; i++) {
+        value_free(watcher_queue_principal[i]);
+    }
+    free(watcher_queue_principal);
+    watcher_queue_principal = NULL;
     free(watcher_queue);
     watcher_queue = NULL;
     watcher_queue_count = 0;
@@ -8206,6 +8449,70 @@ static int expr_is_lvalue_path(AstExpr *expr) {
     return expr->kind == AST_EXPR_IDENT ||
         expr->kind == AST_EXPR_FIELD ||
         expr->kind == AST_EXPR_INDEX;
+}
+
+/* IS THIS PATH A PROJECTION -- `rows.amount` -- rather than a place?
+ *
+ * `expr_is_lvalue_path` is purely SYNTACTIC (IDENT, FIELD or INDEX), which is
+ * right for assignment and wrong for a projection: `rows.amount` looks exactly
+ * like `config.amount`, and one of the two is a derived value. So
+ * `sort(rows.item)` took the in-place branch and raised `field assignment
+ * target expects a record` -- a message about assignment, for an expression
+ * nobody was assigning to.
+ *
+ * A PROJECTION IS A VALUE, NOT A PLACE: it is computed from every element, so
+ * there is nothing to sort in place and the answer must be a sorted copy.
+ *
+ * APPLIED ONLY TO THE THREE BUILTINS THAT ANSWER A VALUE -- `sort`, `reverse`,
+ * `unique`. The five that MUTATE through the path (`append`, `prepend`,
+ * `insert`, `remove`, `remove_value`, `take_last`) must go on refusing a
+ * projection, because appending to a derived array is meaningless and silently
+ * appending to a throwaway copy would be worse than the refusal.
+ *
+ * Only the BASE is evaluated, and only when the base is itself a pure read (an
+ * identifier, or a chain of field reads rooted at one), so this cannot run a
+ * call twice or create an intermediate record. */
+static int expr_is_pure_read(AstExpr *e) {
+    while (e) {
+        if (e->kind == AST_EXPR_IDENT) {
+            return 1;
+        }
+        if (e->kind != AST_EXPR_FIELD) {
+            return 0;
+        }
+        e = e->as.field.object;
+    }
+    return 0;
+}
+
+static int expr_is_array_projection(AstExpr *expr) {
+    if (!expr || expr->kind != AST_EXPR_FIELD) {
+        return 0;
+    }
+    if (!expr_is_pure_read(expr->as.field.object)) {
+        return 0;
+    }
+    Value base = eval_expr(expr->as.field.object);
+    int is_projection = !error_action_pending() && base.kind == VALUE_ARRAY;
+    value_free(base);
+    return is_projection;
+}
+
+/* A PROJECTION IS NOT A PLACE, said in those words.
+ *
+ * The five mutating builtins reached `resolve_lvalue_ref` and raised `field
+ * assignment target expects a record` for `append(rows.a, 9)` -- which names
+ * the one thing that is NOT wrong, since `rows` plainly IS an array. The
+ * refusal is correct (appending to a derived array is meaningless, and silently
+ * appending to a throwaway copy would be worse); only the sentence was about
+ * the wrong subject. */
+static void projection_not_a_place(const char *verb) {
+    char message[224];
+    snprintf(message, sizeof(message),
+             "%s cannot change a projection: it is computed from every element"
+             " of the array, so there is nothing to store into -- %s the array"
+             " itself, or assign the projection to a name first", verb, verb);
+    runtime_error_raise(message, 1003, "field access");
 }
 
 static void repl_note_effect(void);
@@ -9663,6 +9970,8 @@ static const GbCapability gb_capability_table[] = {
     { "concat",    "" },
     { "key",       "" },
     { "bound",     "" },
+    { "any",       "" },
+    { "all",       "" },
     { "merge",     "" },
     /* and the rest of the outward surface, which is neither of those lists */
     { "make_dir",       "fs:write" },
@@ -11532,22 +11841,22 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
         if (position_value.kind != VALUE_NUMBER ||
-            !isfinite(position_value.as.number) ||
-            position_value.as.number != floor(position_value.as.number)) {
+            !isfinite(position_value.as.num.value) ||
+            position_value.as.num.value != floor(position_value.as.num.value)) {
             runtime_error_raise("overwrite position must be an integer", 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
             value_free(position_value);
             return value_null();
         }
-        if (position_value.as.number < 0) {
+        if (position_value.as.num.value < 0) {
             runtime_error_raise("overwrite position must be non-negative", 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
             value_free(position_value);
             return value_null();
         }
-        if (position_value.as.number > LONG_MAX) {
+        if (position_value.as.num.value > LONG_MAX) {
             runtime_error_raise("overwrite position is beyond end of file", 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
@@ -11570,7 +11879,7 @@ static Value eval_file_call(AstExpr *expr) {
         }
         int ok = fseek(file, 0, SEEK_END) == 0;
         long size = ok ? ftell(file) : -1;
-        long position = (long)position_value.as.number;
+        long position = (long)position_value.as.num.value;
         if (!ok || size < 0) {
             fclose(file);
             char message[512];
@@ -12466,8 +12775,8 @@ static int array_index_from_value(Value index_value, const char *name, int *out_
         runtime_error_raise(message, 1003, "invalid function call");
         return 0;
     }
-    int index = (int)index_value.as.number;
-    if ((double)index != index_value.as.number) {
+    int index = (int)index_value.as.num.value;
+    if ((double)index != index_value.as.num.value) {
         value_free(index_value);
         char message[128];
         snprintf(message, sizeof(message), "%s index must be an integer", name);
@@ -12758,14 +13067,6 @@ static Value reverse_array_ref(Value *array, int *changed) {
     return value_copy(*array);
 }
 
-static int value_unique_comparable(Value value) {
-    return value.kind == VALUE_NUMBER ||
-        value.kind == VALUE_STRING ||
-        value.kind == VALUE_BOOL ||
-        value.kind == VALUE_DATETIME ||
-        value.kind == VALUE_NULL ||
-        value.kind == VALUE_UNKNOWN;
-}
 
 /* ONE DEFINITION OF EQUALITY, and `unique` used to have its own.
  *
@@ -12780,9 +13081,16 @@ static int value_unique_comparable(Value value) {
  * Callers hold BORROWED values, so both sides are copied: values_equal
  * consumes what it is given.
  *
- * The scalar refusal above it stays. Lifting it would be a feature change
- * (deep comparison of records, O(n^2) in a different sense), not part of
- * making the routes agree. */
+ * THE SCALAR REFUSAL ABOVE IT IS GONE AS OF 0.6.0, and this comment used to say
+ * it stayed -- correctly, because lifting it is a feature change rather than part
+ * of making the routes agree, and nothing had asked. `frame.dedupe` is what asked:
+ * it deduplicated rows by SERIALIZING each one to a binary blob and searching a
+ * growing list of blobs, which is `unique` written out by hand with an allocation
+ * per row, and it existed only because `unique` would not take records. What
+ * decides a duplicate is `=`, and PLAT-EQ made `=` answer deeply for records and
+ * arrays, so the refusal was asking for ORDERABILITY in order to decide EQUALITY
+ * -- two different questions, and `contains([{a:1}], {a:1})` had always answered
+ * the second. The cost is unchanged: it was O(n^2) for scalars already. */
 static int unique_values_equal(Value left, Value right) {
     return values_equal(value_copy(left), value_copy(right));
 }
@@ -12792,14 +13100,10 @@ static int array_all_unique_comparable(Value array) {
         runtime_error_raise("unique expects an array", 1003, "invalid function call");
         return 0;
     }
-    for (size_t i = 0; i < array.as.array.store->count; i++) {
-        if (!value_unique_comparable(array.as.array.store->items[i])) {
-            runtime_error_raise("unique supports only scalar array values",
-                                1003,
-                                "invalid function call");
-            return 0;
-        }
-    }
+    /* Every kind answers `=` after PLAT-EQ's three instalments, so there is
+     * nothing left to refuse here beyond "not a list". Kept as a function rather
+     * than inlined, because the shape says where the rule WAS and both call sites
+     * still need the not-a-list check. */
     return 1;
 }
 
@@ -12867,39 +13171,73 @@ static Value unique_array_ref(Value *array, int *changed) {
     return value_copy(*array);
 }
 
+/* WHERE AN ABSENCE SORTS: **LAST**, and the two absences compare EQUAL to each
+ * other.
+ *
+ * RULED 2026-10-07 by Matthew, and the question was real rather than an
+ * oversight: `ORDER BY x ASC` puts NULLs LAST in PostgreSQL and Oracle and FIRST
+ * in MySQL and SQLite, so there is no convention to appeal to. `frame.sort_by`
+ * had already chosen last, and core `sort` had chosen first, which is the
+ * disagreement increment 2's migration FOUND and pinned rather than resolved;
+ * this is the resolution, and it is what lets `frame.sort_by` be built on core
+ * `sort` at all.
+ *
+ * TWO ABSENCES COMPARE EQUAL rather than `nothing` before `unknown`. The old rank
+ * invented an order between two different ways of having no value, and §2a's rule
+ * for aggregates is to treat them alike; with a STABLE sort, equal means they keep
+ * the order they arrived in, which invents nothing. */
 static int value_sort_rank(Value value) {
-    if (value.kind == VALUE_NULL) {
-        return 0;
-    }
-    if (value.kind == VALUE_UNKNOWN) {
+    if (value.kind == VALUE_NULL || value.kind == VALUE_UNKNOWN) {
         return 1;
     }
-    return 2;
+    return 0;
 }
 
+/* WHAT HAS AN ORDER, and the answer is taken from the ORDERING OPERATOR rather
+ * than chosen here: `<` is the language's statement of what can be ordered, and
+ * a sorter that ordered something `<` refuses would be inventing an order while
+ * one that refused something `<` answers would be a second, narrower rule
+ * nobody wrote down. MONEY and DURATION were the two kinds where they disagreed
+ * -- `a.total < b.total` answered and `sort(invoices.total)` refused -- which is
+ * the hole a bulk-data release cannot ship with, money being the business value
+ * type and `max(invoices.total)` the obvious thing to write.
+ *
+ * The two conditional cases are enforced in `array_all_sort_comparable`, not
+ * here, because a qsort comparator returns an int and CANNOT raise: mixed
+ * currencies and month-bearing durations have to be refused in a pre-pass. */
 static int value_sort_comparable(Value value) {
     return value.kind == VALUE_NUMBER ||
         value.kind == VALUE_STRING ||
         value.kind == VALUE_BOOL ||
         value.kind == VALUE_DATETIME ||
+        value.kind == VALUE_MONEY ||
+        value.kind == VALUE_DURATION ||
         value.kind == VALUE_NULL ||
         value.kind == VALUE_UNKNOWN;
 }
 
-static int array_all_sort_comparable(Value array) {
-    if (array.kind != VALUE_ARRAY) {
-        runtime_error_raise("sort expects an array", 1003, "invalid function call");
-        return 0;
-    }
-
+/* THE ORDERING GATE, over a plain run of values rather than an array VALUE.
+ *
+ * Split out so `sort(rows, { by: "total" })` can put a KEY COLUMN through the
+ * identical rules -- same type among the ordinaries, one currency, no
+ * month-bearing duration -- rather than restating them. One authority for what
+ * can be ordered was the whole argument for widening it to money and duration;
+ * a second copy for keys would undo that on the first edit.
+ *
+ * `what` names the subject in the message: "sort" for an array, or
+ * "sort by `total`" for a key column, so the author is told WHICH column. */
+static int values_all_sort_comparable(const Value *items, size_t count,
+                                      const char *what) {
     ValueKind ordinary_kind = VALUE_NULL;
     int have_ordinary_kind = 0;
-    for (size_t i = 0; i < array.as.array.store->count; i++) {
-        Value item = array.as.array.store->items[i];
+    Value first_ordinary = value_null();
+    const char *verb = what;
+    for (size_t i = 0; i < count; i++) {
+        Value item = items[i];
         if (!value_sort_comparable(item)) {
-            runtime_error_raise("sort supports only scalar array values",
-                                1003,
-                                "invalid function call");
+            char m[96];
+            snprintf(m, sizeof m, "%s supports only scalar array values", verb);
+            runtime_error_raise(m, 1003, "invalid function call");
             return 0;
         }
         if (item.kind == VALUE_NULL || item.kind == VALUE_UNKNOWN) {
@@ -12908,14 +13246,56 @@ static int array_all_sort_comparable(Value array) {
         if (!have_ordinary_kind) {
             ordinary_kind = item.kind;
             have_ordinary_kind = 1;
+            first_ordinary = item;
         } else if (ordinary_kind != item.kind) {
-            runtime_error_raise("sort requires ordinary values to have the same type",
-                                1003,
-                                "invalid function call");
+            char m[128];
+            snprintf(m, sizeof m,
+                     "%s requires ordinary values to have the same type", verb);
+            runtime_error_raise(m, 1003, "invalid function call");
             return 0;
+        }
+        /* THE TWO CONDITIONAL ORDERS, refused here because the comparator
+         * cannot. Each says exactly what the `<` operator says for the same
+         * pair, so the two cannot drift: ordering money across currencies would
+         * invent a rate, and a month has no fixed length. */
+        if (item.kind == VALUE_MONEY &&
+            (item.as.money.currency != first_ordinary.as.money.currency ||
+             item.as.money.exponent != first_ordinary.as.money.exponent)) {
+            const char *la = currency_alpha_of(first_ordinary.as.money.currency);
+            const char *ra = currency_alpha_of(item.as.money.currency);
+            char m[160];
+            snprintf(m, sizeof m,
+                     "%s cannot order money in different currencies (%s and %s)",
+                     verb, la ? la : "?", ra ? ra : "?");
+            runtime_error_raise(m, 1003, "money");
+            return 0;
+        }
+        if (item.kind == VALUE_DURATION) {
+            long long months, seconds;
+            duration_totals(item.as.duration, &months, &seconds);
+            if (months != 0) {
+                char m[192];
+                snprintf(m, sizeof m,
+                         "%s cannot order a duration carrying months or years,"
+                         " because a month has no fixed length; use exact"
+                         " durations or dates.between", verb);
+                runtime_error_raise(m, 1003, "duration");
+                return 0;
+            }
         }
     }
     return 1;
+}
+
+static int array_all_sort_comparable(Value array, const char *verb) {
+    if (array.kind != VALUE_ARRAY) {
+        char m[96];
+        snprintf(m, sizeof m, "%s expects an array", verb);
+        runtime_error_raise(m, 1003, "invalid function call");
+        return 0;
+    }
+    return values_all_sort_comparable(array.as.array.store->items,
+                                      array.as.array.store->count, verb);
 }
 
 static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
@@ -12926,13 +13306,13 @@ static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
     if (left_rank != right_rank) {
         return left_rank < right_rank ? -1 : 1;
     }
-    if (left_rank < 2) {
-        return 0;
+    if (left_rank != 0) {
+        return 0;   /* both absent, and the two absences are not ordered */
     }
 
     if (left->kind == VALUE_NUMBER) {
-        if (left->as.number < right->as.number) return -1;
-        if (left->as.number > right->as.number) return 1;
+        if (left->as.num.value < right->as.num.value) return -1;
+        if (left->as.num.value > right->as.num.value) return 1;
         return 0;
     }
     if (left->kind == VALUE_STRING) {
@@ -12943,6 +13323,20 @@ static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
     }
     if (left->kind == VALUE_DATETIME) {
         return datetime_compare_exact(left->as.datetime, right->as.datetime);
+    }
+    if (left->kind == VALUE_MONEY) {
+        /* Same currency by construction -- `array_all_sort_comparable` has
+         * already refused a mixed array -- so the scaled integers compare
+         * directly, which is also what `<` does. */
+        long long a = left->as.money.units, b = right->as.money.units;
+        return (a > b) - (a < b);
+    }
+    if (left->kind == VALUE_DURATION) {
+        long long lm, ls, rm, rs;
+        duration_totals(left->as.duration, &lm, &ls);
+        duration_totals(right->as.duration, &rm, &rs);
+        (void)lm; (void)rm;   /* month-bearing durations were refused above */
+        return (ls > rs) - (ls < rs);
     }
     return 0;
 }
@@ -13014,25 +13408,334 @@ static const char *builtin_type_name(Value value) {
     return "value";
 }
 
-static Value sort_array_value(Value array) {
-    if (!array_all_sort_comparable(array)) {
+/* --- `sort(rows, { by: ..., descending: ... })` ---------------------------
+ *
+ * WHY RECORDS AND NOT A COMPARATOR FUNCTION: measured across this tree, the four
+ * hand-rolled sorts over records are
+ *
+ *   stdlib/frame.bas:340        sort_by(df, col)    one field ascending, O(n^2)
+ *   stdlib/fundamentals.bas:183 _sort_rows(rows)    TWO fields ascending, faked
+ *                                                   as r["end"] + "|" + r["start"]
+ *   stdlib/nlq.bas:1507         _by_score(rows)     score DESCENDING, id ASCENDING
+ *   stdlib/stats.bas:3438,8313  PCA ordering        indices by a PARALLEL array
+ *
+ * -- and three of the four are field sorts. The fourth is not a field sort at
+ * all and a comparator would not have helped it either, since what it orders is
+ * an index array against a separate column of eigenvalues.
+ *
+ * THE THIRD ONE IS WHY `descending` TAKES TWO SHAPES. A plain boolean turns
+ * every key around, which covers frame and fundamentals and NOT nlq, whose own
+ * comment says why its total order matters ("or the answer depends on a driver's
+ * row order"). So `descending` is either a boolean (every key) or an ARRAY OF
+ * FIELD NAMES (those keys), which keeps the common case one word and makes the
+ * mixed case declarative -- and CHECKABLE, since naming a field that is not in
+ * `by` is refused rather than ignored.
+ *
+ * A COMPARATOR FUNCTION IS REJECTED, NOT DEFERRED. Fields, several fields and
+ * per-field direction cover every measured case; a comparator is the one piece
+ * of code everyone gets wrong (`a - b` against `a < b`, and returning a boolean
+ * silently half-sorts); and it costs a gBASIC call per comparison, O(n log n)
+ * times, in a tree-walking interpreter. If a real case appears that this cannot
+ * express, that case is the argument.
+ *
+ * A DECLARED COLLATION (`using: {trimmed; caseless}`) IS DEFERRED, and the
+ * measurement is the reason: of 73 `sort` call sites in this tree, NONE orders a
+ * lowered, trimmed or naturally-collated key. Its spelling is also not free --
+ * a comparison lens is a GRAMMAR construct driven by a parser-triggered lexer
+ * mode, not a value, so there is no way to pass one as an argument today, and
+ * inventing a second vocabulary for it on a guess would commit the language to a
+ * syntax nothing has asked for. */
+#define SORT_MAX_KEYS 16
+
+typedef struct {
+    const char *keys[SORT_MAX_KEYS];
+    int descending[SORT_MAX_KEYS];
+    size_t key_count;
+    int scalar_descending;      /* no `by`: direction for the whole array */
+} SortSpec;
+
+/* Read the options record. Refuses an unknown field BY NAME -- the rule
+ * `webserver.listen` and `web.configure` already follow, because a misspelled
+ * option that is ignored leaves a program sorted the way the author did not
+ * ask for, in silence. */
+static int sort_spec_from_options(Value options, SortSpec *spec) {
+    memset(spec, 0, sizeof *spec);
+    if (options.kind == VALUE_NULL || options.kind == VALUE_UNKNOWN) {
+        return 1;
+    }
+    if (options.kind != VALUE_RECORD) {
+        char phrase[48];
+        char m[192];
+        snprintf(m, sizeof m,
+                 "sort expects an options record as its second argument, got"
+                 " %s -- sort(rows, { by: \"amount\" })",
+                 kind_phrase(options.kind, phrase, sizeof phrase));
+        runtime_error_raise(m, 1003, "invalid function call");
+        return 0;
+    }
+    for (size_t i = 0; i < options.as.record.count; i++) {
+        const char *name = options.as.record.fields[i].name;
+        if (strcmp(name, "by") != 0 && strcmp(name, "descending") != 0) {
+            char m[224];
+            snprintf(m, sizeof m,
+                     "sort: unknown option '%s' (known: by, descending)", name);
+            runtime_error_raise(m, 1003, "invalid function call");
+            return 0;
+        }
+    }
+
+    const RecordField *by = record_find_const(&options, "by");
+    if (by && by->value->kind != VALUE_NULL && by->value->kind != VALUE_UNKNOWN) {
+        const Value *v = by->value;
+        if (v->kind == VALUE_STRING) {
+            spec->keys[0] = v->as.string;
+            spec->key_count = 1;
+        } else if (v->kind == VALUE_ARRAY) {
+            size_t n = v->as.array.store ? v->as.array.store->count : 0;
+            if (n == 0) {
+                runtime_error_raise("sort: `by` is an empty list, so it names no"
+                                    " field to sort on", 1003,
+                                    "invalid function call");
+                return 0;
+            }
+            if (n > SORT_MAX_KEYS) {
+                char m[128];
+                snprintf(m, sizeof m,
+                         "sort: `by` names %zu fields; at most %d are supported",
+                         n, SORT_MAX_KEYS);
+                runtime_error_raise(m, 1003, "invalid function call");
+                return 0;
+            }
+            for (size_t i = 0; i < n; i++) {
+                Value *el = &v->as.array.store->items[i];
+                if (el->kind != VALUE_STRING) {
+                    char phrase[48];
+                    char m[192];
+                    snprintf(m, sizeof m,
+                             "sort: `by` must name fields as text; entry %zu is"
+                             " %s", i,
+                             kind_phrase(el->kind, phrase, sizeof phrase));
+                    runtime_error_raise(m, 1003, "invalid function call");
+                    return 0;
+                }
+                spec->keys[i] = el->as.string;
+            }
+            spec->key_count = n;
+        } else {
+            char phrase[48];
+            char m[192];
+            snprintf(m, sizeof m,
+                     "sort: `by` names a field or a list of fields, got %s",
+                     kind_phrase(v->kind, phrase, sizeof phrase));
+            runtime_error_raise(m, 1003, "invalid function call");
+            return 0;
+        }
+    }
+
+    const RecordField *desc = record_find_const(&options, "descending");
+    if (desc && desc->value->kind != VALUE_NULL &&
+        desc->value->kind != VALUE_UNKNOWN) {
+        const Value *v = desc->value;
+        if (v->kind == VALUE_BOOL) {
+            spec->scalar_descending = v->as.boolean;
+            for (size_t i = 0; i < spec->key_count; i++) {
+                spec->descending[i] = v->as.boolean;
+            }
+        } else if (v->kind == VALUE_ARRAY) {
+            if (spec->key_count == 0) {
+                runtime_error_raise("sort: `descending` names fields, but there"
+                                    " is no `by` to name them in -- use"
+                                    " `descending: true` to reverse a plain"
+                                    " list", 1003, "invalid function call");
+                return 0;
+            }
+            size_t n = v->as.array.store ? v->as.array.store->count : 0;
+            for (size_t i = 0; i < n; i++) {
+                Value *el = &v->as.array.store->items[i];
+                if (el->kind != VALUE_STRING) {
+                    char phrase[48];
+                    char m[192];
+                    snprintf(m, sizeof m,
+                             "sort: `descending` names fields as text; entry %zu"
+                             " is %s", i,
+                             kind_phrase(el->kind, phrase, sizeof phrase));
+                    runtime_error_raise(m, 1003, "invalid function call");
+                    return 0;
+                }
+                int found = 0;
+                for (size_t k = 0; k < spec->key_count; k++) {
+                    if (strcmp(spec->keys[k], el->as.string) == 0) {
+                        spec->descending[k] = 1;
+                        found = 1;
+                    }
+                }
+                /* NAMED BUT NOT SORTED ON is refused rather than ignored: it is
+                 * the one mistake this shape makes easy, and ignoring it leaves
+                 * the rows in ascending order with nothing said. */
+                if (!found) {
+                    char m[224];
+                    snprintf(m, sizeof m,
+                             "sort: `descending` names '%s', which `by` does not"
+                             " sort on", el->as.string);
+                    runtime_error_raise(m, 1003, "invalid function call");
+                    return 0;
+                }
+            }
+        } else {
+            char phrase[48];
+            char m[192];
+            snprintf(m, sizeof m,
+                     "sort: `descending` is true/false, or a list of the fields"
+                     " that descend, got %s",
+                     kind_phrase(v->kind, phrase, sizeof phrase));
+            runtime_error_raise(m, 1003, "invalid function call");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Every element must be a record, and each key column must pass the ordering
+ * gate -- checked BEFORE a single comparison, because the comparator cannot
+ * raise. The key array BORROWS: it holds shallow struct copies and is never
+ * freed element-wise. */
+static int sort_keys_comparable(const Value *items, size_t count,
+                                const SortSpec *spec) {
+    for (size_t i = 0; i < count; i++) {
+        if (items[i].kind != VALUE_RECORD) {
+            char phrase[48];
+            char m[224];
+            snprintf(m, sizeof m,
+                     "sort by `%s` expects every element to be a record;"
+                     " element %zu is %s", spec->keys[0], i,
+                     kind_phrase(items[i].kind, phrase, sizeof phrase));
+            runtime_error_raise(m, 1003, "invalid function call");
+            return 0;
+        }
+    }
+    if (count == 0) {
+        return 1;
+    }
+    Value *column = malloc(sizeof(Value) * count);
+    if (!column) {
+        abort();
+    }
+    int ok = 1;
+    for (size_t k = 0; k < spec->key_count && ok; k++) {
+        for (size_t i = 0; i < count; i++) {
+            const RecordField *f = record_find_const(&items[i], spec->keys[k]);
+            column[i] = f ? *f->value : value_unknown();
+        }
+        char what[160];
+        snprintf(what, sizeof what, "sort by `%s`", spec->keys[k]);
+        ok = values_all_sort_comparable(column, count, what);
+    }
+    free(column);
+    return ok;
+}
+
+static int sort_record_compare(const Value *left, const Value *right,
+                               const SortSpec *spec) {
+    for (size_t k = 0; k < spec->key_count; k++) {
+        const RecordField *lf = record_find_const(left, spec->keys[k]);
+        const RecordField *rf = record_find_const(right, spec->keys[k]);
+        Value lv = lf ? *lf->value : value_unknown();
+        Value rv = rf ? *rf->value : value_unknown();
+        int cmp = sort_value_compare(&lv, &rv);
+        if (cmp != 0) {
+            return spec->descending[k] ? -cmp : cmp;
+        }
+    }
+    return 0;
+}
+
+static int sort_spec_compare(const Value *left, const Value *right,
+                             const SortSpec *spec) {
+    if (spec->key_count > 0) {
+        return sort_record_compare(left, right, spec);
+    }
+    int cmp = sort_value_compare(left, right);
+    return spec->scalar_descending ? -cmp : cmp;
+}
+
+/* STABLE, and that is a portability requirement rather than a nicety: `qsort`
+ * is not stable and its tie order differs between implementations, so a golden
+ * pinning rows sorted by one field would read differently on glibc and on a BSD
+ * libc. Stability also makes the one thing `descending` cannot express
+ * affordable -- sorting by the minor key and then by the major key gives mixed
+ * directions in two declared passes.
+ *
+ * A bottom-up merge sort over the item structs. The structs are MOVED, never
+ * copied, so no reference count changes and nothing is freed here. */
+static void sort_values_stable(Value *items, size_t count, const SortSpec *spec) {
+    if (count < 2) {
+        return;
+    }
+    Value *scratch = malloc(sizeof(Value) * count);
+    if (!scratch) {
+        abort();
+    }
+    Value *src = items;
+    Value *dst = scratch;
+    for (size_t width = 1; width < count; width *= 2) {
+        for (size_t lo = 0; lo < count; lo += 2 * width) {
+            size_t mid = lo + width < count ? lo + width : count;
+            size_t hi = lo + 2 * width < count ? lo + 2 * width : count;
+            size_t a = lo, b = mid, o = lo;
+            while (a < mid && b < hi) {
+                /* `<= 0` takes from the LEFT run on a tie, which is what makes
+                 * the merge stable. */
+                dst[o++] = sort_spec_compare(&src[a], &src[b], spec) <= 0
+                               ? src[a++] : src[b++];
+            }
+            while (a < mid) { dst[o++] = src[a++]; }
+            while (b < hi)  { dst[o++] = src[b++]; }
+        }
+        Value *swap = src; src = dst; dst = swap;
+    }
+    if (src != items) {
+        memcpy(items, src, sizeof(Value) * count);
+    }
+    free(scratch);
+}
+
+/* The gate for whichever shape is being sorted: a key column per `by` field, or
+ * the array itself when there is none. */
+static int sort_spec_comparable(const Value *items, size_t count,
+                                const SortSpec *spec) {
+    if (spec->key_count > 0) {
+        return sort_keys_comparable(items, count, spec);
+    }
+    return values_all_sort_comparable(items, count, "sort");
+}
+
+static Value sort_array_value(Value array, const SortSpec *spec) {
+    if (array.kind != VALUE_ARRAY) {
+        runtime_error_raise("sort expects an array", 1003, "invalid function call");
+        value_free(array);
+        return value_null();
+    }
+    if (!sort_spec_comparable(array.as.array.store->items,
+                              array.as.array.store->count, spec)) {
         value_free(array);
         return value_null();
     }
     array_ensure_unique(&array);
     if (array.as.array.store->count > 1) {
-        qsort(array.as.array.store->items, array.as.array.store->count, sizeof(Value), sort_value_compare);
+        sort_values_stable(array.as.array.store->items,
+                           array.as.array.store->count, spec);
     }
     return array;
 }
 
-static Value sort_array_ref(Value *array, int *changed) {
+static Value sort_array_ref(Value *array, int *changed, const SortSpec *spec) {
     *changed = 0;
     if (!array || array->kind != VALUE_ARRAY) {
         runtime_error_raise("sort expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (!array_all_sort_comparable(*array)) {
+    if (!sort_spec_comparable(array->as.array.store->items,
+                              array->as.array.store->count, spec)) {
         return value_null();
     }
     array_ensure_unique(array);
@@ -13047,7 +13750,7 @@ static Value sort_array_ref(Value *array, int *changed) {
             abort();
         }
         memcpy(snapshot, s->items, sizeof(Value) * s->count);
-        qsort(s->items, s->count, sizeof(Value), sort_value_compare);
+        sort_values_stable(s->items, s->count, spec);
         for (size_t i = 0; i < s->count; i++) {
             if (!value_storage_equal(&snapshot[i], &s->items[i])) {
                 *changed = 1;
@@ -13211,7 +13914,7 @@ static Value builtin_string_value(Value value) {
     case VALUE_STRING:
         return value;
     case VALUE_NUMBER:
-        format_number(buffer, sizeof(buffer), value.as.number);
+        format_number_value(buffer, sizeof(buffer), value);
         value_free(value);
         return value_string(buffer);
     case VALUE_BOOL:
@@ -13437,7 +14140,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
         sb_append_text(builder, "unknown");
         return 1;
     case VALUE_NUMBER:
-        if (mode == RENDER_JSON && !isfinite(value.as.number)) {
+        if (mode == RENDER_JSON && !isfinite(value.as.num.value)) {
             runtime_error_raise("json_encode: NaN and infinity have no JSON "
                                 "representation", 1003, "serialization");
             return 0;
@@ -13460,7 +14163,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
          * "%.17g" deliberately: that is a wire format nobody reads, where
          * maximum precision is the safe default and there is no consistency
          * argument to serve. */
-        format_number(number, sizeof(number), value.as.number);
+        format_number_value(number, sizeof(number), value);
         sb_append_text(builder, number);
         return 1;
     case VALUE_STRING:
@@ -13562,7 +14265,7 @@ static int json_encodable_value(Value v, int depth) {
     case VALUE_NULL: case VALUE_BOOL: case VALUE_STRING:
         return 1;
     case VALUE_NUMBER:
-        return isfinite(v.as.number) ? 1 : 0;
+        return isfinite(v.as.num.value) ? 1 : 0;
     case VALUE_ARRAY:
         for (size_t i = 0; i < v.as.array.store->count; i++) {
             if (!json_encodable_value(v.as.array.store->items[i], depth + 1)) {
@@ -13790,7 +14493,7 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         return 1;
     case VALUE_NUMBER:
         serbuf_u8(b, SER_NUMBER);
-        serbuf_append(b, &v.as.number, sizeof v.as.number);
+        serbuf_append(b, &v.as.num.value, sizeof v.as.num.value);
         return 1;
     case VALUE_STRING:
         serbuf_u8(b, SER_STRING);
@@ -15127,7 +15830,7 @@ static Value builtin_actor_demonitor(Value ref) {
                             1003, "actor");
         return value_null();
     }
-    uint64_t id = (uint64_t)ref.as.number;
+    uint64_t id = (uint64_t)ref.as.num.value;
     value_free(ref);
     for (Monitor **pp = &monitor_head; *pp; pp = &(*pp)->next) {
         if ((*pp)->ref == id) {
@@ -15966,7 +16669,7 @@ static Value builtin_quote_value(Value value) {
         text = value;
         break;
     case VALUE_NUMBER:
-        format_number(buffer, sizeof(buffer), value.as.number);
+        format_number_value(buffer, sizeof(buffer), value);
         value_free(value);
         text = value_string(buffer);
         break;
@@ -17085,13 +17788,13 @@ static int webclient_request_from_record(Value record, WebclientRequest *request
     RecordField *timeout = record_find(&record, "timeout");
     if (timeout) {
         if (timeout->value->kind != VALUE_NUMBER ||
-            !isfinite(timeout->value->as.number) ||
-            timeout->value->as.number <= 0 ||
-            timeout->value->as.number > (double)LONG_MAX / 1000.0) {
+            !isfinite(timeout->value->as.num.value) ||
+            timeout->value->as.num.value <= 0 ||
+            timeout->value->as.num.value > (double)LONG_MAX / 1000.0) {
             webclient_raise("webclient request timeout must be a positive number");
             return 0;
         }
-        request->timeout = timeout->value->as.number;
+        request->timeout = timeout->value->as.num.value;
     }
 
     /* REDIRECTS ARE NOT ALWAYS PLUMBING. `follow: false` returns the 3xx
@@ -17501,13 +18204,13 @@ static int http_request_from_record(Value record, HttpRequest *request) {
     RecordField *timeout = record_find(&record, "timeout");
     if (timeout) {
         if (timeout->value->kind != VALUE_NUMBER ||
-            !isfinite(timeout->value->as.number) ||
-            timeout->value->as.number <= 0 ||
-            timeout->value->as.number > (double)LONG_MAX / 1000.0) {
+            !isfinite(timeout->value->as.num.value) ||
+            timeout->value->as.num.value <= 0 ||
+            timeout->value->as.num.value > (double)LONG_MAX / 1000.0) {
             http_raise("http.start: request timeout must be a positive number of seconds");
             return 0;
         }
-        request->timeout_ms = (long)ceil(timeout->value->as.number * 1000.0);
+        request->timeout_ms = (long)ceil(timeout->value->as.num.value * 1000.0);
         if (request->timeout_ms < 1) {
             request->timeout_ms = 1;
         }
@@ -17847,12 +18550,12 @@ static Value http_do_wait(AstExpr *expr) {
             value_free(owner);
             return value_null();
         }
-        if (t.kind != VALUE_NUMBER || !isfinite(t.as.number) || t.as.number < 0) {
+        if (t.kind != VALUE_NUMBER || !isfinite(t.as.num.value) || t.as.num.value < 0) {
             value_free(t);
             value_free(owner);
             return http_raise("http.wait: the timeout must be a non-negative number of seconds");
         }
-        limit = t.as.number;
+        limit = t.as.num.value;
         value_free(t);
     }
     if (expr->as.call.args.count > 2) {
@@ -18471,7 +19174,7 @@ static Value timer_make(AstExpr *expr, const char *label, int repeating) {
         snprintf(msg, sizeof(msg), "%s expects a number of seconds", label);
         return timer_raise(msg);
     }
-    double interval = v.as.number;
+    double interval = v.as.num.value;
     value_free(v);
     /* A zero or negative interval is a busy loop wearing a timer's clothes:
      * every iteration would be due, the poll timeout would fall to nothing and
@@ -18531,7 +19234,7 @@ static Value timer_do_cancel(AstExpr *expr) {
         value_free(v);
         return timer_raise("timer.cancel expects a timer from timer.every or timer.after");
     }
-    unsigned long id = (unsigned long)id_field->value->as.number;
+    unsigned long id = (unsigned long)id_field->value->as.num.value;
     value_free(v);
     TimerEntry *t = timer_find(id);
     if (!t || !t->live) {
@@ -18851,7 +19554,7 @@ static int webserver_record_id(Value *record, unsigned long *out_id) {
     if (!field || !value_is_integer_number(*field->value)) {
         return 0;
     }
-    id = (int)field->value->as.number;
+    id = (int)field->value->as.num.value;
     if (id <= 0) {
         return 0;
     }
@@ -19016,7 +19719,7 @@ static int webserver_integer(Value value, int *out) {
     if (!value_is_integer_number(value)) {
         return 0;
     }
-    *out = (int)value.as.number;
+    *out = (int)value.as.num.value;
     return 1;
 }
 
@@ -19839,19 +20542,19 @@ static int webserver_deliver_response(WebServer *server, Value response,
     RecordField *file_f = record_find(&response, "file");
     if (stream_f && stream_f->value->as.boolean) {
         webserver_send_stream_head(client,
-                                   status ? (int)status->value->as.number : 200,
+                                   status ? (int)status->value->as.num.value : 200,
                                    headers ? headers->value : NULL);
         client->streaming = 1;
         client->waiting_response = 0;
         client->length = 0;
     } else if (file_f) {
         webserver_send_file(server, client_index, file_f->value->as.string,
-                            status ? (int)status->value->as.number : 200,
+                            status ? (int)status->value->as.num.value : 200,
                             headers ? headers->value : NULL,
                             cookies ? cookies->value : NULL);
     } else {
         webserver_send(client,
-                       status ? (int)status->value->as.number : 200,
+                       status ? (int)status->value->as.num.value : 200,
                        headers ? headers->value : NULL,
                        cookies ? cookies->value : NULL,
                        body ? body->value->as.string : "",
@@ -20592,13 +21295,13 @@ static int webserver_listen_options(AstExpr *expr, char *address, size_t address
             }
             snprintf(address, address_size, "%s", field->value->as.string);
         } else if (record_name_is(field, "timeout")) {
-            if (field->value->kind != VALUE_NUMBER || field->value->as.number <= 0 ||
-                !isfinite(field->value->as.number)) {
+            if (field->value->kind != VALUE_NUMBER || field->value->as.num.value <= 0 ||
+                !isfinite(field->value->as.num.value)) {
                 value_free(options);
                 webserver_raise("webserver.listen timeout must be a positive number of seconds");
                 return 0;
             }
-            *timeout_s = field->value->as.number;
+            *timeout_s = field->value->as.num.value;
         } else if (record_name_is(field, "tls")) {
             if (field->value->kind != VALUE_RECORD) {
                 value_free(options);
@@ -20812,13 +21515,13 @@ static Value webserver_eval_inherited(AstExpr *expr) {
         for (size_t i = 0; i < options.as.record.count; i++) {
             const RecordField *field = &options.as.record.fields[i];
             if (record_name_is(field, "timeout")) {
-                if (field->value->kind != VALUE_NUMBER || field->value->as.number <= 0 ||
-                    !isfinite(field->value->as.number)) {
+                if (field->value->kind != VALUE_NUMBER || field->value->as.num.value <= 0 ||
+                    !isfinite(field->value->as.num.value)) {
                     value_free(options);
                     webserver_raise("webserver.inherited timeout must be a positive number of seconds");
                     return value_null();
                 }
-                timeout_s = field->value->as.number;
+                timeout_s = field->value->as.num.value;
             } else if (record_name_is(field, "tls")) {
                 if (field->value->kind != VALUE_RECORD) {
                     value_free(options);
@@ -21856,11 +22559,11 @@ static int sqlite_bind_value(sqlite3_stmt *statement, int index, Value value, ch
         rc = sqlite3_bind_int64(statement, index, value.as.boolean ? 1 : 0);
         break;
     case VALUE_NUMBER:
-        if (!isfinite(value.as.number)) {
+        if (!isfinite(value.as.num.value)) {
             sqlite_raise_message("SQLite number parameters must be finite");
             return 0;
         }
-        rc = sqlite3_bind_double(statement, index, value.as.number);
+        rc = sqlite3_bind_double(statement, index, value.as.num.value);
         break;
     case VALUE_STRING:
     case VALUE_DATETIME:
@@ -22748,12 +23451,12 @@ static int odbc_bind_value(SQLHSTMT statement,
         }
         return 1;
     case VALUE_NUMBER:
-        if (!isfinite(value.as.number)) {
+        if (!isfinite(value.as.num.value)) {
             odbc_raise_message("odbc number parameters must be finite");
             return 0;
         } else {
             char text[64];
-            format_number(text, sizeof(text), value.as.number);
+            format_number_value(text, sizeof(text), value);
             *owned_text = copy_string(text);
             sql_type = SQL_DOUBLE;
         }
@@ -24019,12 +24722,12 @@ static char *pg_integer_text(Value value, const char *field_name) {
         return copy_string(value.as.string);
     }
     if (value.kind == VALUE_NUMBER &&
-        isfinite(value.as.number) &&
-        floor(value.as.number) == value.as.number &&
-        value.as.number >= 0 &&
-        value.as.number <= 2147483647.0) {
+        isfinite(value.as.num.value) &&
+        floor(value.as.num.value) == value.as.num.value &&
+        value.as.num.value >= 0 &&
+        value.as.num.value <= 2147483647.0) {
         char buffer[32];
-        snprintf(buffer, sizeof(buffer), "%.0f", value.as.number);
+        snprintf(buffer, sizeof(buffer), "%.0f", value.as.num.value);
         return copy_string(buffer);
     }
     char message[256];
@@ -24211,11 +24914,11 @@ static int pg_json_append_value(StringBuilder *builder, Value value) {
         sb_append_text(builder, value.as.boolean ? "true" : "false");
         return 1;
     case VALUE_NUMBER:
-        if (!isfinite(value.as.number)) {
+        if (!isfinite(value.as.num.value)) {
             pg_raise_message("PostgreSQL JSON parameters require finite numbers");
             return 0;
         }
-        snprintf(number, sizeof(number), "%.17g", value.as.number);
+        snprintf(number, sizeof(number), "%.17g", value.as.num.value);
         sb_append_text(builder, number);
         return 1;
     case VALUE_STRING:
@@ -24324,11 +25027,11 @@ static char *pg_parameter_text(Value value) {
     case VALUE_BOOL:
         return copy_string(value.as.boolean ? "true" : "false");
     case VALUE_NUMBER:
-        if (!isfinite(value.as.number)) {
+        if (!isfinite(value.as.num.value)) {
             pg_raise_message("PostgreSQL number parameters must be finite");
             return NULL;
         }
-        snprintf(buffer, sizeof(buffer), "%.17g", value.as.number);
+        snprintf(buffer, sizeof(buffer), "%.17g", value.as.num.value);
         return copy_string(buffer);
     case VALUE_DATETIME:
         return pg_datetime_text(value.as.datetime);
@@ -25486,7 +26189,7 @@ static int bitwise_eval_args(AstExpr *expr, const char *fname, int n, double *ou
             runtime_error_raise(m, 1003, "invalid argument type");
             return 0;
         }
-        out[i] = v.as.number;
+        out[i] = v.as.num.value;
         value_free(v);
     }
     return 1;
@@ -26259,10 +26962,73 @@ static int gi_object_arg(Value v, const char *ctx, GObject **out) {
 
 /* --- signal dispatch ---------------------------------------------------- */
 
+/* WHAT A CONNECTED HANDLER NEEDS TO BE CALLED AGAIN LATER.
+ *
+ * THE NAME RATHER THAN THE `FunctionDef *`, deliberately and from the start: a
+ * handler is resolved afresh on every signal, so redefining the function at a
+ * prompt takes effect and a pointer can never dangle past a reload.
+ *
+ * AND SINCE 0.6.0 THE BOUND CONTEXT, which is `bound(fn, ctx)`'s whole point.
+ * GTK calls a handler with the arguments the SIGNAL defines and nothing else, so
+ * everything else a handler needs had to be smuggled -- through a program-global
+ * registry, or inside an object the signal happens to hand back. `gi.connect`
+ * REFUSED a bound function rather than drop its context silently, which was the
+ * right refusal and left the gap this closes.
+ *
+ * THE CONTEXT IS OWNED: a `value_copy` taken at connect time and freed with the
+ * closure. It cannot be a borrow, because the closure outlives the statement that
+ * created it by design -- that is what connecting a signal means. */
 typedef struct {
     char *name;      /* gBASIC function name */
     char *library;   /* owning library, or NULL */
+    Value context;   /* the bound context, or `nothing` when there is none */
+    int has_context;
 } GiClosureData;
+
+/* Fill in the name, library and context from a function value. Shared by the
+ * signal and event-source paths so the two cannot disagree about what a bound
+ * handler carries -- which they did while only one of them had a context. */
+static void gi_closure_data_fill(GiClosureData *d, Value fn) {
+    d->name = copy_string(fn.as.function.name);
+    d->library = fn.as.function.library ? copy_string(fn.as.function.library) : NULL;
+    if (fn.as.function.context) {
+        d->context = value_copy(*fn.as.function.context);
+        d->has_context = 1;
+    } else {
+        d->context = value_null();
+        d->has_context = 0;
+    }
+}
+
+/* Build the argument array for a handler, appending the bound context LAST when
+ * there is one -- the same position `bound` uses everywhere else, which is what
+ * lets one function serve both the plain and the bound call.
+ *
+ * EXTRA PARAMETERS GET `nothing`, as they did before, and a handler declaring
+ * FEWER parameters than the signal provides simply does not see the rest. The one
+ * new rule is that the context occupies the LAST declared parameter, so a bound
+ * handler for a 2-argument signal declares three. */
+static Value *gi_handler_args(const GiClosureData *d, AstStmt *stmt,
+                              const Value *provided, size_t nprovided,
+                              size_t *out_want) {
+    size_t want = stmt->as.function.params.count;
+    *out_want = want;
+    Value *args = want ? malloc(sizeof(Value) * want) : NULL;
+    if (want && !args) {
+        abort();
+    }
+    size_t positional = want;
+    if (d->has_context && want > 0) {
+        positional = want - 1;
+    }
+    for (size_t i = 0; i < positional; i++) {
+        args[i] = i < nprovided ? value_copy(provided[i]) : value_null();
+    }
+    if (d->has_context && want > 0) {
+        args[want - 1] = value_copy(d->context);
+    }
+    return args;
+}
 
 static void gi_closure_finalize(gpointer data, GClosure *closure) {
     (void)closure;
@@ -26272,6 +27038,7 @@ static void gi_closure_finalize(gpointer data, GClosure *closure) {
     }
     free(d->name);
     free(d->library);
+    value_free(d->context);
     free(d);
 }
 
@@ -26291,20 +27058,23 @@ static void gi_signal_marshal(GClosure *closure, GValue *return_gvalue,
         return;   /* handler function disappeared; nothing to call */
     }
 
-    size_t want = def->stmt->as.function.params.count;
-    Value *args = want ? malloc(sizeof(Value) * want) : NULL;
-    if (want && !args) {
+    /* The signal's own parameters, converted once, then handed to the shared
+     * builder which appends the bound context last if there is one. */
+    Value *provided = n_param_values ? malloc(sizeof(Value) * n_param_values) : NULL;
+    if (n_param_values && !provided) {
         abort();
     }
-    for (size_t i = 0; i < want; i++) {
-        if (i < n_param_values) {
-            if (!gi_value_from_gvalue(&param_values[i], &args[i])) {
-                args[i] = value_null();
-            }
-        } else {
-            args[i] = value_null();
+    for (guint i = 0; i < n_param_values; i++) {
+        if (!gi_value_from_gvalue(&param_values[i], &provided[i])) {
+            provided[i] = value_null();
         }
     }
+    size_t want = 0;
+    Value *args = gi_handler_args(d, def->stmt, provided, n_param_values, &want);
+    for (guint i = 0; i < n_param_values; i++) {
+        value_free(provided[i]);
+    }
+    free(provided);
 
     int saved_stopped = runtime_stopped;
     int saved_line = current_line;
@@ -27238,17 +28008,15 @@ static Value gi_do_connect(AstExpr *expr) {
         return gi_raise("gi.connect expects a function as the handler");
     }
 
-    if (bound_context_unsupported(&fv, "gi.connect")) {
-        value_free(ov); value_free(sv); value_free(fv);
-        return value_null();
-    }
-
+    /* A BOUND HANDLER IS CARRIED NOW, not refused. The refusal that stood here
+     * was correct for what the closure then held -- a name and nothing else, so a
+     * context could only have been dropped in silence, which is the failure
+     * `bound` must not introduce. The closure holds the context too now. */
     GiClosureData *data = calloc(1, sizeof(*data));
     if (!data) {
         abort();
     }
-    data->name = copy_string(fv.as.function.name);
-    data->library = fv.as.function.library ? copy_string(fv.as.function.library) : NULL;
+    gi_closure_data_fill(data, fv);
 
     GClosure *closure = g_closure_new_simple(sizeof(GClosure), data);
     g_closure_set_marshal(closure, gi_signal_marshal);
@@ -27276,7 +28044,7 @@ static Value gi_do_disconnect(AstExpr *expr) {
         value_free(ov); value_free(idv);
         return gi_raise("gi.disconnect expects a numeric handler id");
     }
-    gulong id = (gulong)idv.as.number;
+    gulong id = (gulong)idv.as.num.value;
     if (id != 0 && g_signal_handler_is_connected(obj, id)) {
         g_signal_handler_disconnect(obj, id);
     }
@@ -27410,19 +28178,16 @@ static Value gi_do_quit(AstExpr *expr) {
  * data is owned by the source and freed via gi_closure_data_free when it is
  * removed. */
 
-/* Returns NULL having RAISED when the value carries a bound context -- the
- * source keeps only the name, so carrying one is not possible here yet and
- * dropping it silently is the failure `bound` must not introduce. */
+/* A timeout, idle or tick callback, carrying its bound context like a signal
+ * handler -- the same struct and the same appending rule, so the two paths cannot
+ * disagree about what a bound handler receives. They did while only one of them
+ * had a context, which is why the fill is shared rather than written twice. */
 static GiClosureData *gi_closure_data_new(Value fn) {
-    if (bound_context_unsupported(&fn, "a gi event-source callback")) {
-        return NULL;
-    }
     GiClosureData *d = calloc(1, sizeof(*d));
     if (!d) {
         abort();
     }
-    d->name = copy_string(fn.as.function.name);
-    d->library = fn.as.function.library ? copy_string(fn.as.function.library) : NULL;
+    gi_closure_data_fill(d, fn);
     return d;
 }
 
@@ -27433,6 +28198,7 @@ static void gi_closure_data_free(gpointer data) {
     }
     free(d->name);
     free(d->library);
+    value_free(d->context);
     free(d);
 }
 
@@ -27445,14 +28211,10 @@ static gboolean gi_source_dispatch(GiClosureData *d, Value *args, size_t nargs) 
     if (!def || !def->stmt) {
         return G_SOURCE_REMOVE;   /* handler disappeared: drop the source */
     }
-    size_t want = def->stmt->as.function.params.count;
-    Value *pv = want ? malloc(sizeof(Value) * want) : NULL;
-    if (want && !pv) {
-        abort();
-    }
-    for (size_t i = 0; i < want; i++) {
-        pv[i] = (i < nargs) ? value_copy(args[i]) : value_null();
-    }
+    /* The same builder the signal path uses, so a bound source callback receives
+     * its context in the same place a bound signal handler does. */
+    size_t want = 0;
+    Value *pv = gi_handler_args(d, def->stmt, args, nargs, &want);
 
     int saved_stopped = runtime_stopped;
     int saved_line = current_line;
@@ -27525,7 +28287,7 @@ static Value gi_do_timeout(AstExpr *expr) {
         value_free(mv); value_free(fv);
         return gi_raise("gi.timeout expects a function");
     }
-    if (mv.as.number < 0) {
+    if (mv.as.num.value < 0) {
         value_free(mv); value_free(fv);
         return gi_raise("gi.timeout expects a non-negative interval");
     }
@@ -27534,7 +28296,7 @@ static Value gi_do_timeout(AstExpr *expr) {
         value_free(mv); value_free(fv);
         return value_null();
     }
-    guint id = g_timeout_add_full(G_PRIORITY_DEFAULT, (guint)mv.as.number,
+    guint id = g_timeout_add_full(G_PRIORITY_DEFAULT, (guint)mv.as.num.value,
                                   gi_timeout_cb, d, gi_closure_data_free);
     value_free(mv); value_free(fv);
     return value_number((double)id);
@@ -27570,7 +28332,7 @@ static Value gi_do_source_remove(AstExpr *expr) {
         value_free(idv);
         return gi_raise("gi.source_remove expects a numeric source id");
     }
-    guint id = (guint)idv.as.number;
+    guint id = (guint)idv.as.num.value;
     value_free(idv);
     /* Validate before g_source_remove: removing an unknown id emits a fatal GLib
      * critical under fatal-criticals, so surface it as a clean gBASIC error. */
@@ -27597,12 +28359,12 @@ static Value gi_do_watch_fd(AstExpr *expr) {
         value_free(fdv); value_free(fv);
         return gi_raise("gi.watch_fd expects a function");
     }
-    if (fdv.as.number < 0) {
+    if (fdv.as.num.value < 0) {
         value_free(fdv); value_free(fv);
         return gi_raise("gi.watch_fd expects a non-negative file descriptor");
     }
     GiClosureData *d = gi_closure_data_new(fv);
-    guint id = g_unix_fd_add_full(G_PRIORITY_DEFAULT, (int)fdv.as.number, G_IO_IN,
+    guint id = g_unix_fd_add_full(G_PRIORITY_DEFAULT, (int)fdv.as.num.value, G_IO_IN,
                                   gi_fd_cb, d, gi_closure_data_free);
     value_free(fdv); value_free(fv);
     return value_number((double)id);
@@ -27738,7 +28500,7 @@ static Value gi_do_variant_number(AstExpr *expr, const char *ctx, int kind) {
     Value a = eval_expr(expr->as.call.args.items[0]);
     if (error_action_pending()) { value_free(a); return value_null(); }
     if (a.kind != VALUE_NUMBER) { value_free(a); return gi_raisef("%s expects a number", ctx); }
-    double n = a.as.number;
+    double n = a.as.num.value;
     value_free(a);
     GVariant *v = NULL;
     switch (kind) {
@@ -28447,7 +29209,7 @@ static Value process_do_run(AstExpr *expr) {
             value_free(opts);
             return process_raise("process.run: options.timeout must be a number");
         }
-        double secs = to_f->value->as.number;
+        double secs = to_f->value->as.num.value;
         if (secs > 0) {
             timeout_ms = (long)(secs * 1000.0);
             if (timeout_ms < 1) timeout_ms = 1;
@@ -29152,7 +29914,7 @@ static int process_opt_seconds(Value *opts, const char *field, const char *label
         process_raise(msg);
         return 0;
     }
-    double secs = f->value->as.number;
+    double secs = f->value->as.num.value;
     if (secs < 0) {
         snprintf(msg, sizeof(msg), "%s: options.%s must not be negative", label, field);
         process_raise(msg);
@@ -29478,7 +30240,7 @@ static Value process_do_wait(AstExpr *expr) {
             long long ms = duration_to_ms(t.as.duration);
             timeout_ms = ms < 0 ? 0 : (long)ms;
         } else if (t.kind == VALUE_NUMBER) {
-            double secs = t.as.number;
+            double secs = t.as.num.value;
             timeout_ms = secs <= 0 ? 0 : (long)(secs * 1000.0);
         } else {
             value_free(t);
@@ -30029,7 +30791,7 @@ static Value reflect_do_element(AstExpr *expr) {
         value_free(av); value_free(iv);
         return reflect_raise("reflect.element expects an array and a numeric index");
     }
-    int idx = (int)iv.as.number;
+    int idx = (int)iv.as.num.value;
     if (idx < 0 || (size_t)idx >= av.as.array.store->count) {
         value_free(av); value_free(iv);
         return reflect_raise("reflect.element: index out of range");
@@ -30798,7 +31560,7 @@ static Value money_eval_call(AstExpr *expr) {
                 return value_null();
             }
         }
-        double e = expv.as.number;
+        double e = expv.as.num.value;
         if (!(e >= 0 && e <= 8) || e != (double)(long long)e) {
             value_free(code); value_free(expv);
             runtime_error_raise("a currency exponent is a whole number from 0 to 8",
@@ -30928,15 +31690,15 @@ static Value money_eval_call(AstExpr *expr) {
         if (expr->as.call.args.count == 2) {
             Value d = eval_expr(expr->as.call.args.items[1]);
             if (error_action_pending()) { value_free(amount); value_free(d); return value_null(); }
-            if (d.kind != VALUE_NUMBER || !isfinite(d.as.number) ||
-                d.as.number != floor(d.as.number) ||
-                d.as.number < 0 || d.as.number > 18) {
+            if (d.kind != VALUE_NUMBER || !isfinite(d.as.num.value) ||
+                d.as.num.value != floor(d.as.num.value) ||
+                d.as.num.value < 0 || d.as.num.value > 18) {
                 value_free(amount); value_free(d);
                 runtime_error_raise("money.text expects a whole number of decimal places from 0 to 18",
                                     1003, "money");
                 return value_null();
             }
-            digits = (int)d.as.number;
+            digits = (int)d.as.num.value;
             value_free(d);
         }
         char buf[64];
@@ -31010,7 +31772,7 @@ static Value money_eval_call(AstExpr *expr) {
         long long *weights = NULL;
         size_t parts = 0;
         if (spec.kind == VALUE_NUMBER) {
-            double n = spec.as.number;
+            double n = spec.as.num.value;
             if (!(n >= 1 && n <= 1000000) || n != (double)(long long)n) {
                 value_free(amount); value_free(spec);
                 runtime_error_raise("money.allocate expects a whole part count of 1 or more",
@@ -31032,15 +31794,15 @@ static Value money_eval_call(AstExpr *expr) {
             if (!weights) abort();
             for (size_t i = 0; i < parts; i++) {
                 Value w = spec.as.array.store->items[i];
-                if (w.kind != VALUE_NUMBER || w.as.number < 0 ||
-                    w.as.number != (double)(long long)w.as.number) {
+                if (w.kind != VALUE_NUMBER || w.as.num.value < 0 ||
+                    w.as.num.value != (double)(long long)w.as.num.value) {
                     free(weights);
                     value_free(amount); value_free(spec);
                     runtime_error_raise("money.allocate weights must be whole numbers of 0 or more",
                                         1003, "money");
                     return value_null();
                 }
-                weights[i] = (long long)w.as.number;
+                weights[i] = (long long)w.as.num.value;
             }
         } else {
             value_free(amount); value_free(spec);
@@ -31086,7 +31848,7 @@ static Value money_eval_call(AstExpr *expr) {
             items[i] = value_number(0);   /* placeholder, replaced below */
             assigned += share;
             /* stash the share in the placeholder's number slot */
-            items[i].as.number = (double)share;
+            items[i].as.num.value = (double)share;
         }
         unsigned long long remainder = mag - assigned;
 
@@ -31095,12 +31857,12 @@ static Value money_eval_call(AstExpr *expr) {
          * rather than always on the last part. */
         for (size_t i = 0; i < parts && remainder > 0; i++) {
             if (weights[i] == 0) continue;
-            items[i].as.number += 1.0;
+            items[i].as.num.value += 1.0;
             remainder--;
         }
 
         for (size_t i = 0; i < parts; i++) {
-            unsigned long long share = (unsigned long long)items[i].as.number;
+            unsigned long long share = (unsigned long long)items[i].as.num.value;
             long long units = 0;
             if (__builtin_mul_overflow((long long)share, guard, &units)) {
                 for (size_t j = 0; j < i; j++) value_free(items[j]);
@@ -31742,7 +32504,7 @@ static Value eval_call(AstExpr *expr) {
         RecordField *code_f = record_find(&arg, "code");
         RecordField *source_f = record_find(&arg, "source");
         int code = code_f && code_f->value->kind == VALUE_NUMBER
-            ? (int)code_f->value->as.number : 2100;
+            ? (int)code_f->value->as.num.value : 2100;
         const char *source = source_f && source_f->value->kind == VALUE_STRING
             ? source_f->value->as.string : "explicit warning";
         static const char *shape[] = {"message", "code", "source", "details",
@@ -31837,7 +32599,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("exit expects a number", 1003, "invalid function call");
             return value_null();
         }
-        double raw = code.as.number;
+        double raw = code.as.num.value;
         value_free(code);
         if (raw != (double)(long long)raw) {
             runtime_error_raise("exit expects a whole number", 1003, "invalid function call");
@@ -31934,7 +32696,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("sleep expects a number", 1003, "invalid function call");
             return value_null();
         }
-        double secs = seconds.as.number;
+        double secs = seconds.as.num.value;
         value_free(seconds);
         if (isnan(secs) || secs < 0.0) {
             runtime_error_raise("sleep expects a non-negative number", 1003, "invalid function call");
@@ -32513,7 +33275,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("from_epoch expects a number", 1003, "invalid argument type");
             return value_null();
         }
-        double sd = sv.as.number;
+        double sd = sv.as.num.value;
         value_free(sv);
         if (!isfinite(sd) || sd != floor(sd)) {
             runtime_error_raise("from_epoch expects an integer number of seconds", 1003, "invalid argument");
@@ -32552,7 +33314,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("secure_token expects a number", 1003, "invalid function call");
             return value_null();
         }
-        double length_double = length_value.as.number;
+        double length_double = length_value.as.num.value;
         value_free(length_value);
         if (!isfinite(length_double) || length_double != floor(length_double)) {
             runtime_error_raise("secure_token length must be an integer", 1003, "invalid function call");
@@ -32812,25 +33574,25 @@ static Value eval_call(AstExpr *expr) {
                 RecordField *lv = record_find(&opts, "level");
                 if (lv) {
                     if (lv->value->kind != VALUE_NUMBER ||
-                        lv->value->as.number < 0 || lv->value->as.number > 9 ||
-                        lv->value->as.number != floor(lv->value->as.number)) {
+                        lv->value->as.num.value < 0 || lv->value->as.num.value > 9 ||
+                        lv->value->as.num.value != floor(lv->value->as.num.value)) {
                         value_free(src); value_free(opts);
                         snprintf(m, sizeof(m), "compress: level must be a whole number from 0 to 9");
                         runtime_error_raise(m, 1003, "invalid argument");
                         return value_null();
                     }
-                    level = (int)lv->value->as.number;
+                    level = (int)lv->value->as.num.value;
                 }
             } else {
                 RecordField *mb = record_find(&opts, "max_bytes");
                 if (mb) {
-                    if (mb->value->kind != VALUE_NUMBER || mb->value->as.number < 1) {
+                    if (mb->value->kind != VALUE_NUMBER || mb->value->as.num.value < 1) {
                         value_free(src); value_free(opts);
                         snprintf(m, sizeof(m), "uncompress: max_bytes must be a positive number");
                         runtime_error_raise(m, 1003, "invalid argument");
                         return value_null();
                     }
-                    max_bytes = (size_t)mb->value->as.number;
+                    max_bytes = (size_t)mb->value->as.num.value;
                 }
             }
             value_free(opts);
@@ -32952,7 +33714,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("random_bytes expects a number", 1003, "invalid argument type");
             return value_null();
         }
-        double nd = nv.as.number;
+        double nd = nv.as.num.value;
         value_free(nv);
         if (!isfinite(nd) || nd != floor(nd)) {
             runtime_error_raise("random_bytes length must be an integer", 1003, "invalid argument");
@@ -33068,12 +33830,12 @@ static Value eval_call(AstExpr *expr) {
         } else if (string_length(a[1].as.string) == 0) {
             snprintf(m, sizeof(m), "%s requires a non-empty salt", fname);
             bad = 1;
-        } else if (!isfinite(a[2].as.number) || a[2].as.number != floor(a[2].as.number) ||
-                   a[2].as.number < 1 || a[2].as.number > 100000000.0) {
+        } else if (!isfinite(a[2].as.num.value) || a[2].as.num.value != floor(a[2].as.num.value) ||
+                   a[2].as.num.value < 1 || a[2].as.num.value > 100000000.0) {
             snprintf(m, sizeof(m), "%s iterations must be a whole number in [1, 100000000]", fname);
             bad = 1;
-        } else if (!isfinite(a[3].as.number) || a[3].as.number != floor(a[3].as.number) ||
-                   a[3].as.number < 1 || a[3].as.number > 1024) {
+        } else if (!isfinite(a[3].as.num.value) || a[3].as.num.value != floor(a[3].as.num.value) ||
+                   a[3].as.num.value < 1 || a[3].as.num.value > 1024) {
             snprintf(m, sizeof(m), "%s length must be a whole number of bytes in [1, 1024]", fname);
             bad = 1;
         }
@@ -33085,8 +33847,8 @@ static Value eval_call(AstExpr *expr) {
 #if HAVE_LIBCRYPTO
         {
             const EVP_MD *md = strcmp(fname, "pbkdf2_sha512") == 0 ? EVP_sha512() : EVP_sha256();
-            int iters = (int)a[2].as.number;
-            size_t outlen = (size_t)a[3].as.number;
+            int iters = (int)a[2].as.num.value;
+            size_t outlen = (size_t)a[3].as.num.value;
             unsigned char *out = malloc(outlen);
             if (!out) abort();
             int ok = PKCS5_PBKDF2_HMAC(a[0].as.string, (int)string_length(a[0].as.string),
@@ -33138,14 +33900,14 @@ static Value eval_call(AstExpr *expr) {
             bad = 1;
         }
         for (int i = 2; !bad && i < 6; i++) {
-            if (a[i].kind != VALUE_NUMBER || !isfinite(a[i].as.number) ||
-                a[i].as.number != floor(a[i].as.number) || a[i].as.number < 1) {
+            if (a[i].kind != VALUE_NUMBER || !isfinite(a[i].as.num.value) ||
+                a[i].as.num.value != floor(a[i].as.num.value) || a[i].as.num.value < 1) {
                 snprintf(m, sizeof(m), "%s expects n, r, p and length to be whole numbers >= 1", fname);
                 bad = 1;
             }
         }
         if (!bad) {
-            double n = a[2].as.number;
+            double n = a[2].as.num.value;
             /* N must be a power of two greater than 1: scrypt's cost parameter is
              * defined that way, and OpenSSL answers a bare failure otherwise --
              * which would read as "derivation failed" rather than "that is not a
@@ -33153,7 +33915,7 @@ static Value eval_call(AstExpr *expr) {
             if (n < 2 || fmod(log2(n), 1.0) != 0.0) {
                 snprintf(m, sizeof(m), "%s n must be a power of two greater than 1", fname);
                 bad = 1;
-            } else if (a[5].as.number > 1024) {
+            } else if (a[5].as.num.value > 1024) {
                 snprintf(m, sizeof(m), "%s length must be a whole number of bytes in [1, 1024]", fname);
                 bad = 1;
             }
@@ -33165,10 +33927,10 @@ static Value eval_call(AstExpr *expr) {
         }
 #if HAVE_LIBCRYPTO && OPENSSL_VERSION_NUMBER >= 0x10100000L
         {
-            uint64_t N = (uint64_t)a[2].as.number;
-            uint64_t r = (uint64_t)a[3].as.number;
-            uint64_t pp = (uint64_t)a[4].as.number;
-            size_t outlen = (size_t)a[5].as.number;
+            uint64_t N = (uint64_t)a[2].as.num.value;
+            uint64_t r = (uint64_t)a[3].as.num.value;
+            uint64_t pp = (uint64_t)a[4].as.num.value;
+            size_t outlen = (size_t)a[5].as.num.value;
             unsigned char *out = malloc(outlen);
             if (!out) abort();
             /* maxmem 0 means OpenSSL's own default ceiling (32 MB). A cost above
@@ -33786,7 +34548,7 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        double count_double = count_val.as.number;
+        double count_double = count_val.as.num.value;
         if (count_double != floor(count_double)) {
             value_free(text);
             value_free(count_val);
@@ -33848,7 +34610,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("chr: argument must be a number", 1003, "invalid argument type");
             return value_null();
         }
-        double code_double = code_val.as.number;
+        double code_double = code_val.as.num.value;
         value_free(code_val);
         if (code_double != floor(code_double)) {
             runtime_error_raise("chr: code must be an integer", 1003, "invalid argument");
@@ -33954,8 +34716,8 @@ static Value eval_call(AstExpr *expr) {
                                 1003, "invalid argument type");
             return value_null();
         }
-        double at_d = at_val.as.number;
-        double n_d = (expr->as.call.args.count == 3) ? n_val.as.number : -1;
+        double at_d = at_val.as.num.value;
+        double n_d = (expr->as.call.args.count == 3) ? n_val.as.num.value : -1;
         value_free(at_val); value_free(n_val);
         if (at_d != floor(at_d) || (n_d >= 0 && n_d != floor(n_d))) {
             value_free(text);
@@ -34007,7 +34769,7 @@ static Value eval_call(AstExpr *expr) {
                                 1003, "invalid argument type");
             return value_null();
         }
-        double from_d = (expr->as.call.args.count == 3) ? from_val.as.number : 0;
+        double from_d = (expr->as.call.args.count == 3) ? from_val.as.num.value : 0;
         value_free(from_val);
         if (from_d < 0 || from_d != floor(from_d)) {
             value_free(hay); value_free(needle);
@@ -34073,7 +34835,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("byte_at: argument must be a string and a number", 1003, "invalid argument type");
             return value_null();
         }
-        double index_double = index_val.as.number;
+        double index_double = index_val.as.num.value;
         value_free(index_val);
         if (index_double != floor(index_double)) {
             value_free(text);
@@ -34115,14 +34877,14 @@ static Value eval_call(AstExpr *expr) {
         for (size_t i = 0; i < count; i++) {
             Value item = array.as.array.store->items[i];
             if (item.kind != VALUE_NUMBER ||
-                item.as.number != floor(item.as.number) ||
-                item.as.number < 0 || item.as.number > 255) {
+                item.as.num.value != floor(item.as.num.value) ||
+                item.as.num.value < 0 || item.as.num.value > 255) {
                 free(bytes);
                 value_free(array);
                 runtime_error_raise("from_bytes: every element must be a byte value 0..255", 1003, "invalid argument");
                 return value_null();
             }
-            bytes[i] = (char)(unsigned char)item.as.number;
+            bytes[i] = (char)(unsigned char)item.as.num.value;
         }
         bytes[count] = '\0';
         Value result = value_string_n(bytes, count);
@@ -34778,7 +35540,7 @@ static Value eval_call(AstExpr *expr) {
                                 "invalid argument type");
             return value_null();
         }
-        if (b.as.number == 0.0) {
+        if (b.as.num.value == 0.0) {
             value_free(a); value_free(b);
             runtime_error_raise("mod by zero", 1002, "division");
             return value_null();
@@ -34794,8 +35556,8 @@ static Value eval_call(AstExpr *expr) {
          * under floored semantics. Matching the truncated convention would
          * silently disagree with every workaround written against the advice
          * this builtin replaces. */
-        double q = floor(a.as.number / b.as.number);
-        double r = a.as.number - q * b.as.number;
+        double q = floor(a.as.num.value / b.as.num.value);
+        double r = a.as.num.value - q * b.as.num.value;
         value_free(a); value_free(b);
         return value_number(r);
     }
@@ -34930,10 +35692,11 @@ static Value eval_call(AstExpr *expr) {
                 case VALUE_UNKNOWN:  tag = 'u'; break;
                 default: {
                     char message[192];
+                    char phrase[48];
                     snprintf(message, sizeof(message),
-                             "key cannot use a %s as part of a key -- argument"
+                             "key cannot use %s as part of a key -- argument"
                              " %zu; a key is built from scalar values",
-                             value_kind_name(v.kind), i + 1);
+                             kind_phrase(v.kind, phrase, sizeof phrase), i + 1);
                     value_free(v);
                     free(out.items);
                     runtime_error_raise(message, 1003, "invalid argument type");
@@ -35086,7 +35849,7 @@ static Value eval_call(AstExpr *expr) {
             value_free(v);
             return value_null();
         }
-        double x = v.as.number;
+        double x = v.as.num.value;
         value_free(v);
         double r;
         if (strcmp(fn, "sqrt") == 0) {
@@ -35146,7 +35909,7 @@ static Value eval_call(AstExpr *expr) {
             value_free(ex);
             return value_null();
         }
-        double r = pow(base.as.number, ex.as.number);
+        double r = pow(base.as.num.value, ex.as.num.value);
         value_free(base);
         value_free(ex);
         return value_number(r);
@@ -35164,7 +35927,7 @@ static Value eval_call(AstExpr *expr) {
             value_free(v);
             return value_null();
         }
-        double n = v.as.number;
+        double n = v.as.num.value;
         value_free(v);
         /* Reinterpret the double's bits so any seed (incl. fractional) maps to a
          * stable 64-bit value; the same number always yields the same stream. */
@@ -35210,8 +35973,8 @@ static Value eval_call(AstExpr *expr) {
             value_free(hi);
             return value_null();
         }
-        double lod = lo.as.number;
-        double hid = hi.as.number;
+        double lod = lo.as.num.value;
+        double hid = hi.as.num.value;
         value_free(lo);
         value_free(hi);
         if (lod != floor(lod) || hid != floor(hid)) {
@@ -35251,7 +36014,7 @@ static Value eval_call(AstExpr *expr) {
             value_free(cut);
             return value_null();
         }
-        double q = cut.as.number;
+        double q = cut.as.num.value;
         if (strcmp(fn, "percentile") == 0) {
             q /= 100.0;
         }
@@ -35269,7 +36032,7 @@ static Value eval_call(AstExpr *expr) {
             abort();
         }
         for (size_t i = 0; i < n; i++) {
-            sorted[i] = data.as.array.store->items[i].as.number;
+            sorted[i] = data.as.array.store->items[i].as.num.value;
         }
         qsort(sorted, n, sizeof(double), number_compare);
         double r = quantile_sorted(sorted, n, q);
@@ -35306,15 +36069,15 @@ static Value eval_call(AstExpr *expr) {
         size_t n = xs.as.array.store->count;
         double mx = 0.0, my = 0.0;
         for (size_t i = 0; i < n; i++) {
-            mx += xs.as.array.store->items[i].as.number;
-            my += ys.as.array.store->items[i].as.number;
+            mx += xs.as.array.store->items[i].as.num.value;
+            my += ys.as.array.store->items[i].as.num.value;
         }
         mx /= (double)n;
         my /= (double)n;
         double sxy = 0.0, sxx = 0.0, syy = 0.0;
         for (size_t i = 0; i < n; i++) {
-            double dx = xs.as.array.store->items[i].as.number - mx;
-            double dy = ys.as.array.store->items[i].as.number - my;
+            double dx = xs.as.array.store->items[i].as.num.value - mx;
+            double dy = ys.as.array.store->items[i].as.num.value - my;
             sxy += dx * dy;
             sxx += dx * dx;
             syy += dy * dy;
@@ -35643,6 +36406,10 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
+        if (expr_is_array_projection(array_expr)) {
+            projection_not_a_place(expr->as.call.name);
+            return value_null();
+        }
         if (expr_is_lvalue_path(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
@@ -35786,6 +36553,185 @@ static Value eval_call(AstExpr *expr) {
         return result;
     }
 
+    /* `last(a)` -- `first` has existed since arrays did and this simply did not,
+     * so reading the end of a list meant `a[count(a) - 1]`: arithmetic on a
+     * length, which is where an off-by-one lives, and which is wrong in a
+     * different way on an empty list (index -1 rather than an answer).
+     *
+     * `take_last` exists and POPS, which is a different thing; nothing read the
+     * last element without removing it. */
+    if (strcmp(expr->as.call.name, "last") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("last expects one argument", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        Value array = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        if (array.kind != VALUE_ARRAY) {
+            value_free(array);
+            runtime_error_raise("last expects an array", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        if (array.as.array.store->count == 0) {
+            /* `nothing`, exactly as `first` answers for an empty list -- and the
+             * reason a `last` builtin is worth having at all, since
+             * `a[count(a) - 1]` is an out-of-range read there. */
+            value_free(array);
+            return value_null();
+        }
+        Value result = value_copy(
+            array.as.array.store->items[array.as.array.store->count - 1]);
+        value_free(array);
+        return result;
+    }
+
+    /* `present(a)` -- the list without its absences.
+     *
+     * TWO JOBS, and the second is what makes the aggregate warning affordable.
+     *
+     * (1) SQL has TWO counts and gBASIC has one: `count([10, unknown, 7])` is 3,
+     * which is `COUNT(*)`, and `COUNT(amount)` is 2. Silently changing `count` to
+     * mean the second would move existing answers, so the second question gets its
+     * own spelling: `count(present(rows.amount))`.
+     *
+     * (2) IT IS THE WARNING'S OPT-OUT, and it needs no special case to be one --
+     * an aggregate over `present(x)` has nothing absent to skip, so it is silent
+     * because there is nothing to say. That matters because `on warning ignore` is
+     * the only other way to quiet a warning and it is a BLUNT instrument, turning
+     * off every warning in the frame; a remedy that says "I meant to skip these"
+     * at the call site is what keeps 2111 from becoming noise authors learn to
+     * disable.
+     *
+     * An absence is `nothing` or `unknown`, treated alike -- §2a's rule, because
+     * the distinction does not help here and two rules are a trap people hit once
+     * a year. */
+    if (strcmp(expr->as.call.name, "present") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("present expects one argument", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        Value array = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        if (array.kind != VALUE_ARRAY) {
+            char phrase[48];
+            char m[160];
+            snprintf(m, sizeof m,
+                     "present expects a list, got %s -- for one value, `default`"
+                     " supplies a replacement",
+                     kind_phrase(array.kind, phrase, sizeof phrase));
+            value_free(array);
+            runtime_error_raise(m, 1003, "invalid function call");
+            return value_null();
+        }
+        size_t n = array.as.array.store ? array.as.array.store->count : 0;
+        Value *items = n ? malloc(sizeof(Value) * n) : NULL;
+        if (n && !items) {
+            abort();
+        }
+        size_t kept = 0;
+        for (size_t i = 0; i < n; i++) {
+            ValueKind k = array.as.array.store->items[i].kind;
+            if (k != VALUE_NULL && k != VALUE_UNKNOWN) {
+                items[kept++] = value_copy(array.as.array.store->items[i]);
+            }
+        }
+        value_free(array);
+        return value_array(items, kept);
+    }
+
+    /* `slice(a, at [, count])` -- the same shape and the same conventions as
+     * `byte_slice(s, at [, count])`, deliberately: 0-based `at`, and to the end
+     * when no count is given. A second convention for the same idea one type
+     * along is how an off-by-one gets written.
+     *
+     * CLAMPED RATHER THAN REFUSED, because a slice is how a window over data is
+     * taken and the window legitimately runs past the end -- `slice(rows, 100, 20)`
+     * over 105 rows is the last page, not a mistake. A negative `at` IS refused,
+     * since it means the caller computed an index and the computation is wrong;
+     * there is no from-the-end convention to read it as. */
+    if (strcmp(expr->as.call.name, "slice") == 0) {
+        if (expr->as.call.args.count < 2 || expr->as.call.args.count > 3) {
+            runtime_error_raise("slice expects a list, a start and an optional"
+                                " count", 1003, "invalid function call");
+            return value_null();
+        }
+        Value array = eval_expr(expr->as.call.args.items[0]);
+        Value start = eval_expr(expr->as.call.args.items[1]);
+        Value howmany = expr->as.call.args.count == 3
+                            ? eval_expr(expr->as.call.args.items[2])
+                            : value_null();
+        if (error_action_pending()) {
+            value_free(array);
+            value_free(start);
+            value_free(howmany);
+            return value_null();
+        }
+        if (array.kind != VALUE_ARRAY) {
+            char phrase[48];
+            char m[160];
+            snprintf(m, sizeof m,
+                     "slice expects a list, got %s -- use byte_slice or mid for"
+                     " text", kind_phrase(array.kind, phrase, sizeof phrase));
+            value_free(array);
+            value_free(start);
+            value_free(howmany);
+            runtime_error_raise(m, 1003, "invalid function call");
+            return value_null();
+        }
+        if (start.kind != VALUE_NUMBER ||
+            (howmany.kind != VALUE_NULL && howmany.kind != VALUE_NUMBER)) {
+            value_free(array);
+            value_free(start);
+            value_free(howmany);
+            runtime_error_raise("slice expects whole numbers for the start and"
+                                " count", 1003, "invalid function call");
+            return value_null();
+        }
+        double sd = start.as.num.value;
+        double cd = howmany.kind == VALUE_NUMBER ? howmany.as.num.value : 0;
+        if (sd < 0 || sd != (double)(long long)sd ||
+            (howmany.kind == VALUE_NUMBER &&
+             (cd < 0 || cd != (double)(long long)cd))) {
+            value_free(array);
+            value_free(start);
+            value_free(howmany);
+            runtime_error_raise("slice expects a start and count that are whole"
+                                " numbers and not negative", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        size_t n = array.as.array.store ? array.as.array.store->count : 0;
+        size_t at = (size_t)(long long)sd;
+        size_t want = howmany.kind == VALUE_NUMBER ? (size_t)(long long)cd
+                                                   : (at < n ? n - at : 0);
+        if (at > n) {
+            at = n;
+        }
+        if (want > n - at) {
+            want = n - at;
+        }
+        Value *items = want ? malloc(sizeof(Value) * want) : NULL;
+        if (want && !items) {
+            abort();
+        }
+        for (size_t i = 0; i < want; i++) {
+            items[i] = value_copy(array.as.array.store->items[at + i]);
+        }
+        value_free(array);
+        value_free(start);
+        value_free(howmany);
+        return value_array(items, want);
+    }
+
     if (strcmp(expr->as.call.name, "rest") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("rest expects one argument", 1003, "invalid function call");
@@ -35815,7 +36761,7 @@ static Value eval_call(AstExpr *expr) {
         }
         size_t byte_len = string_length(text.as.string);
         size_t cp_len = string_cp_count(text.as.string);
-        int requested = (int)count_value.as.number;
+        int requested = (int)count_value.as.num.value;
         size_t count = requested < 0 ? 0 : (size_t)requested;
         if (count > cp_len) {
             count = cp_len;
@@ -35863,8 +36809,8 @@ static Value eval_call(AstExpr *expr) {
 
         size_t byte_len = string_length(text.as.string);
         size_t cp_len = string_cp_count(text.as.string);
-        int raw_start = (int)start_value.as.number;
-        int raw_count = (int)count_value.as.number;
+        int raw_start = (int)start_value.as.num.value;
+        int raw_count = (int)count_value.as.num.value;
         size_t start = raw_start < 0 ? 0 : (size_t)raw_start;
         size_t count = raw_count < 0 ? 0 : (size_t)raw_count;
         /* Codepoint slice bounds [start, start+count) clamped to the string. */
@@ -36029,6 +36975,10 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
+        if (expr_is_array_projection(array_expr)) {
+            projection_not_a_place(expr->as.call.name);
+            return value_null();
+        }
         if (expr_is_lvalue_path(array_expr)) {
             if (!prepend && !webserver_validate_response_append(array_expr, item)) {
                 value_free(item);
@@ -36075,6 +37025,10 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
+        if (expr_is_array_projection(array_expr)) {
+            projection_not_a_place(expr->as.call.name);
+            return value_null();
+        }
         if (expr_is_lvalue_path(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
@@ -36110,6 +37064,10 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
+        if (expr_is_array_projection(array_expr)) {
+            projection_not_a_place(expr->as.call.name);
+            return value_null();
+        }
         if (expr_is_lvalue_path(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
@@ -36142,6 +37100,10 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
+        if (expr_is_array_projection(array_expr)) {
+            projection_not_a_place(expr->as.call.name);
+            return value_null();
+        }
         if (expr_is_lvalue_path(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
@@ -36172,7 +37134,8 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (expr_is_lvalue_path(array_expr)) {
+        if (expr_is_lvalue_path(array_expr) &&
+            !expr_is_array_projection(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
                 return value_null();
@@ -36212,7 +37175,8 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (expr_is_lvalue_path(array_expr)) {
+        if (expr_is_lvalue_path(array_expr) &&
+            !expr_is_array_projection(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
                 return value_null();
@@ -36234,21 +37198,120 @@ static Value eval_call(AstExpr *expr) {
         return unique_array_value(array);
     }
 
-    if (strcmp(expr->as.call.name, "sort") == 0) {
+    /* `any(flags)` / `all(flags)` -- 19 measured loops in this tree, and
+     * NEARLY FREE ONCE PROJECTION EXISTS: the shape is `any(rows.paid)`, which
+     * needs no predicate at all, so there is nothing here about functions or
+     * callbacks.
+     *
+     * BOOLEANS ONLY, plus absences. Refusing a number is deliberately STRICTER
+     * than `if`, which accepts any truthy value: `any(rows.amount)` would
+     * otherwise quietly mean "any non-zero amount", which is a different
+     * question from the one it looks like. The motivating case is a flag
+     * column, and a flag column is boolean.
+     *
+     * AN ABSENCE IS NOT TRUE. `unknown` neither satisfies `any` nor `all`,
+     * which follows from projection yielding `unknown` for a missing field --
+     * so `all(rows.paid)` over rows where one lacks the field is false, not
+     * true, and not an error. That is the conservative reading: a row that
+     * never said it was paid has not been paid. */
+    if (strcmp(expr->as.call.name, "any") == 0 ||
+        strcmp(expr->as.call.name, "all") == 0) {
+        const char *verb = expr->as.call.name;
         if (expr->as.call.args.count != 1) {
-            runtime_error_raise("sort expects one argument", 1003, "invalid function call");
+            char message[128];
+            snprintf(message, sizeof message, "%s expects one array", verb);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        Value arg = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(arg);
+            return value_null();
+        }
+        if (arg.kind != VALUE_ARRAY) {
+            char message[160];
+            snprintf(message, sizeof message, "%s expects an array, not a %s",
+                     verb, value_kind_name(arg.kind));
+            value_free(arg);
+            runtime_error_raise(message, 1003, "invalid argument type");
+            return value_null();
+        }
+        int want_all = strcmp(verb, "all") == 0;
+        size_t n = arg.as.array.store ? arg.as.array.store->count : 0;
+        int result = want_all ? 1 : 0;
+        for (size_t i = 0; i < n; i++) {
+            Value *el = &arg.as.array.store->items[i];
+            int truth;
+            if (el->kind == VALUE_BOOL) {
+                truth = el->as.boolean ? 1 : 0;
+            } else if (el->kind == VALUE_UNKNOWN || el->kind == VALUE_NULL) {
+                truth = 0;
+            } else {
+                char message[192];
+                /* THE REMEDY NAMED HERE MUST EXIST. The first draft said
+                 * "compare it first -- any(rows.amount > 0)", and that DOES NOT
+                 * WORK: a projection is an array, and PLAT-EQ refuses ordering
+                 * on arrays ("arrays support only = and !="). Caught by running
+                 * it, which is the whole point of run_qbasic_diagnostics'
+                 * remedy tier -- web.configure shipped a refusal naming a
+                 * remedy that did not exist and that is the mistake worth not
+                 * repeating. So this names the boolean form, which works, and
+                 * states plainly that the comparison form does not. */
+                snprintf(message, sizeof message,
+                         "%s expects true or false; element %zu is a %s."
+                         " It takes a boolean field (%s(rows.paid)); comparing a"
+                         " projection is not available, since arrays support"
+                         " only = and !=",
+                         verb, i, value_kind_name(el->kind), verb);
+                value_free(arg);
+                runtime_error_raise(message, 1003, "invalid argument type");
+                return value_null();
+            }
+            if (want_all && !truth) { result = 0; break; }
+            if (!want_all && truth) { result = 1; break; }
+        }
+        value_free(arg);
+        return value_bool(result);
+    }
+
+    if (strcmp(expr->as.call.name, "sort") == 0) {
+        if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
+            runtime_error_raise("sort expects 1 to 2 arguments", 1003,
+                                "invalid function call");
             return value_null();
         }
 
+        /* THE OPTIONS ARE READ BEFORE THE ARRAY IS TOUCHED, so a misspelled
+         * option cannot leave a half-sorted array behind -- and because the
+         * refusal is then about the options rather than about whatever the
+         * ordering gate made of the data. */
+        SortSpec spec;
+        memset(&spec, 0, sizeof spec);
+        Value options = value_null();
+        if (expr->as.call.args.count == 2) {
+            options = eval_expr(expr->as.call.args.items[1]);
+            if (error_action_pending()) {
+                value_free(options);
+                return value_null();
+            }
+            if (!sort_spec_from_options(options, &spec)) {
+                value_free(options);
+                return value_null();
+            }
+        }
+
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (expr_is_lvalue_path(array_expr)) {
+        if (expr_is_lvalue_path(array_expr) &&
+            !expr_is_array_projection(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
+                value_free(options);
                 return value_null();
             }
             int changed = 0;
             repl_note_lvalue_effect(array_expr);
-            Value result = sort_array_ref(array, &changed);
+            Value result = sort_array_ref(array, &changed, &spec);
+            value_free(options);
             if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
                 return result;
             }
@@ -36258,9 +37321,12 @@ static Value eval_call(AstExpr *expr) {
         Value array = eval_expr(array_expr);
         if (error_action_pending()) {
             value_free(array);
+            value_free(options);
             return value_null();
         }
-        return sort_array_value(array);
+        Value out = sort_array_value(array, &spec);
+        value_free(options);
+        return out;
     }
 
     if (strcmp(expr->as.call.name, "len") == 0) {
@@ -36377,9 +37443,359 @@ static Value eval_call(AstExpr *expr) {
         }
 
         Value arg = eval_expr(expr->as.call.args.items[0]);
+        /* `min`/`max` OVER ANY ORDERABLE SCALAR, not just numbers.
+         *
+         * `sort` has always ordered strings and dates while `max(["a","b"])`
+         * refused as "expects a numeric array" -- one inconsistency, and the
+         * sort side is the one that is right. Projection makes it matter:
+         * `max(rows.name)` and `max(rows.due)` are ordinary questions about
+         * business data.
+         *
+         * THE SAME GATE AND THE SAME COMPARATOR AS `sort`, deliberately, so the
+         * two cannot disagree about what is orderable or how two values order
+         * -- including that MIXED ordinary types are refused, which is sort's
+         * existing rule rather than a new one. Numeric arrays keep the exact
+         * double path below untouched.
+         *
+         * Placed before the numeric gate because that gate is what refused. */
+        /* --- §2a: AN AGGREGATE SKIPS AN ABSENCE, AND SAYS IT DID ------------
+         *
+         * Every aggregate here used to REFUSE an array with a hole in it
+         * (`sum expects a numeric array`), which made projection useless on the
+         * first ragged row -- and real business data is ragged.
+         *
+         * SQL'S ANSWER, WITH SQL'S WARNING, and both halves are the standard
+         * rather than a convention: `SUM` ignores NULLs, `AVG` divides by the
+         * NON-NULL count, and the SQL standard raises SQLSTATE 01003, "null value
+         * eliminated in set function" -- class 01 being the warning class.
+         * PostgreSQL does not emit it; gBASIC does, as 2111.
+         *
+         * WHY A WARNING WORKS HERE WHEN THE SAME SHAPE FAILED ON 2026-10-03: the
+         * absence-coercion warning was recommended and then WITHDRAWN because it
+         * fired on correct code at 8 sites of 10 -- showing that something is
+         * absent is an idiom, so `print("find=" + find(f, "zz"))` is
+         * indistinguishable from the bug. There is no counterpart here. Nobody
+         * writes `sum(rows.amount)` IN ORDER TO skip nulls; they write it because
+         * they want the total, and if a row has no amount they want to know. The
+         * expected false-positive rate is near zero, which is the bar
+         * `warning_model_design.md` row 9 shipped at.
+         *
+         * THE SILENT THING IS THE DANGEROUS THING, which is §2's own steward
+         * worry: skipping WITH a warning is not silent, `on warning stop` turns it
+         * into a failure for a test run, and `present(x)` says "I meant that" at
+         * the call site without disabling anything else.
+         *
+         * `len` AND `count` DO NOT COME THROUGH HERE AT ALL, which is worth saying
+         * because the obvious implementation exempts them and that exemption would
+         * be DEAD CODE: both are answered by their own branches earlier in
+         * `eval_call` (`builtin_len_value`, and `count` at the top). They are
+         * `COUNT(*)` and must keep counting rows; `COUNT(amount)` is
+         * `count(present(x))`. A `len` guard WAS written here first and a
+         * perturbation proved it could never fire -- the check that was supposed to
+         * catch its removal stayed green -- so it is gone rather than left as a
+         * rule a reader would trust.
+         *
+         * ALL-ABSENT ANSWERS `unknown`, NOT 0 -- "there was nothing to add" is not
+         * "the total is zero". That leaves a deliberate asymmetry with `sum([])`,
+         * which still RAISES: an empty list is a programming mistake, while
+         * all-absent is a fact about the data. Decided rather than inherited.
+         *
+         * BOTH ABSENCES ARE TREATED ALIKE. `unknown` is the close match for NULL
+         * (nobody knows) and `nothing` is the program's own data saying there is
+         * no value, but the distinction does not help an aggregate and two rules
+         * here would be a trap people hit once a year. */
+        if (arg.kind == VALUE_ARRAY && arg.as.array.store) {
+            size_t n = arg.as.array.store->count;
+            size_t absent = 0;
+            for (size_t i = 0; i < n; i++) {
+                ValueKind k = arg.as.array.store->items[i].kind;
+                if (k == VALUE_NULL || k == VALUE_UNKNOWN) {
+                    absent++;
+                }
+            }
+            if (absent > 0) {
+                if (absent == n) {
+                    /* Nothing was present, so there is no answer to give -- and
+                     * `unknown` is the answer, not a refusal and not zero. Still
+                     * warned, because the caller asked for a total and got none. */
+                    warn_fmt(2111, "absence",
+                             "%s has nothing to work with: all %zu values are"
+                             " absent, so the answer is `unknown`", 
+                             expr->as.call.name, n);
+                    value_free(arg);
+                    return value_unknown();
+                }
+                warn_fmt(2111, "absence",
+                         "%s skipped %zu absent value%s of %zu, so the answer is"
+                         " over the %zu that are present -- wrap the list in"
+                         " present() to say you meant that",
+                         expr->as.call.name, absent, absent == 1 ? "" : "s", n,
+                         n - absent);
+                if (error_action_pending()) {   /* `on warning stop` escalated it */
+                    value_free(arg);
+                    return value_null();
+                }
+                Value *kept = malloc(sizeof(Value) * (n - absent));
+                if (!kept) {
+                    abort();
+                }
+                size_t k = 0;
+                for (size_t i = 0; i < n; i++) {
+                    ValueKind vk = arg.as.array.store->items[i].kind;
+                    if (vk != VALUE_NULL && vk != VALUE_UNKNOWN) {
+                        kept[k++] = value_copy(arg.as.array.store->items[i]);
+                    }
+                }
+                value_free(arg);
+                arg = value_array(kept, k);
+            }
+        }
+        /* --- `mode`: EVERY TIED VALUE, OR `unknown` -------------------------
+         *
+         * THREE DEFECTS, ALL MEASURED AND ALL SHIPPED UNTIL NOW:
+         *
+         *   mode([1,1,2,2])  answered 1   -- a tie, resolved by SOURCE ORDER
+         *   mode([2,2,1,1])  answered 2   -- the same multiset, a different answer
+         *   mode([1,2,3])    answered 1   -- there is NO mode; nothing repeats
+         *   mode(money list) answered the first element, for the same reason
+         *
+         * THE LAST ROW IS THE SHARP ONE: on continuous data -- money, measurements,
+         * any real price list -- every value is unique, so `mode` returned the
+         * first element and ALWAYS LOOKED LIKE AN ANSWER, with nothing downstream
+         * able to tell it from a real mode. SQL:2003's `MODE()` is
+         * implementation-defined on ties; this project's bar is to refuse rather
+         * than guess.
+         *
+         * SO IT ANSWERS AN ARRAY -- the only aggregate that does, and deliberately:
+         * returning one of several tied values because it came first is the thing
+         * being stopped, and a caller cannot tell a tie from a single mode unless
+         * the shape says so. `first(mode(x))` is the explicit "give me one".
+         * MEASURED BEFORE CHANGING THE SHAPE: nothing in stdlib, examples or tests
+         * calls `mode`, so the fix costs no migration.
+         *
+         * NOTHING REPEATS MEANS NO MODE: `unknown`, not the first element.
+         *
+         * TEXT IS ACCEPTED, and this is the one aggregate where text is the COMMON
+         * case -- the most frequent category, city or status code. Numeric-only
+         * made it nearly useless for the data people actually have. Equality is
+         * `values_equal`, the authority every other membership route uses, so a
+         * record counts as equal to an identical record.
+         *
+         * THE TIE LIST IS SORTED when its values are orderable, so the same
+         * multiset gives the same answer whatever order it arrived in -- which is
+         * the defect, one level up. Where they are NOT orderable (records, arrays)
+         * the list is in first-seen order; the complete answer is there either way,
+         * and inventing an order over records is what `sort` itself refuses. */
+        if (strcmp(expr->as.call.name, "mode") == 0 && arg.kind == VALUE_ARRAY) {
+            size_t n = arg.as.array.store ? arg.as.array.store->count : 0;
+            if (n == 0) {
+                runtime_error_raise("mode expects a non-empty array", 1003,
+                                    "invalid function call");
+                value_free(arg);
+                return value_null();
+            }
+            size_t *tally = malloc(sizeof(size_t) * n);
+            if (!tally) {
+                abort();
+            }
+            size_t best = 0;
+            for (size_t i = 0; i < n; i++) {
+                tally[i] = 0;
+                for (size_t j = 0; j < n; j++) {
+                    if (values_equal(value_copy(arg.as.array.store->items[i]),
+                                     value_copy(arg.as.array.store->items[j]))) {
+                        tally[i]++;
+                    }
+                    if (error_action_pending()) {
+                        free(tally);
+                        value_free(arg);
+                        return value_null();
+                    }
+                }
+                if (tally[i] > best) {
+                    best = tally[i];
+                }
+            }
+            if (best < 2) {
+                /* NOTHING REPEATS. The commonest case on continuous data, and the
+                 * one that used to return the first element with a straight face. */
+                free(tally);
+                value_free(arg);
+                return value_unknown();
+            }
+            Value *ties = malloc(sizeof(Value) * n);
+            if (!ties) {
+                abort();
+            }
+            size_t tie_count = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (tally[i] != best) {
+                    continue;
+                }
+                int already = 0;
+                for (size_t k = 0; k < tie_count; k++) {
+                    if (values_equal(value_copy(ties[k]),
+                                     value_copy(arg.as.array.store->items[i]))) {
+                        already = 1;
+                        break;
+                    }
+                }
+                if (!already) {
+                    ties[tie_count++] = value_copy(arg.as.array.store->items[i]);
+                }
+            }
+            free(tally);
+            value_free(arg);
+            int orderable = 1;
+            for (size_t i = 0; i < tie_count && orderable; i++) {
+                if (!value_sort_comparable(ties[i]) ||
+                    ties[i].kind != ties[0].kind) {
+                    orderable = 0;
+                }
+            }
+            Value out = value_array(ties, tie_count);
+            if (orderable && tie_count > 1) {
+                SortSpec plain;
+                memset(&plain, 0, sizeof plain);
+                sort_values_stable(out.as.array.store->items,
+                                   out.as.array.store->count, &plain);
+            }
+            return out;
+        }
+        if ((strcmp(expr->as.call.name, "min") == 0 ||
+             strcmp(expr->as.call.name, "max") == 0) &&
+            arg.kind == VALUE_ARRAY && !array_is_numeric(arg)) {
+            if (!array_all_sort_comparable(arg, expr->as.call.name)) {
+                value_free(arg);
+                return value_null();
+            }
+            size_t n = arg.as.array.store->count;
+            if (n == 0) {
+                char message[128];
+                snprintf(message, sizeof message, "%s expects a non-empty array",
+                         expr->as.call.name);
+                runtime_error_raise(message, 1003, "invalid function call");
+                value_free(arg);
+                return value_null();
+            }
+            int want_max = strcmp(expr->as.call.name, "max") == 0;
+            size_t best = 0;
+            for (size_t i = 1; i < n; i++) {
+                int cmp = sort_value_compare(&arg.as.array.store->items[i],
+                                             &arg.as.array.store->items[best]);
+                if (want_max ? cmp > 0 : cmp < 0) {
+                    best = i;
+                }
+            }
+            Value out = value_copy(arg.as.array.store->items[best]);
+            value_free(arg);
+            return out;
+        }
+        /* `sum` AND `mean` OVER MONEY, which completes the five aggregates §1
+         * says projection unlocks. `count` was already total, and `min`/`max`
+         * are widened above, so without these two `sum(invoices.total)` -- the
+         * most obvious expression in a business language -- would refuse in the
+         * release whose subject is business data in bulk, while
+         * `max(invoices.total)` beside it answered.
+         *
+         * NOTHING NEW IS DECIDED HERE: money addition already refuses mixed
+         * currencies, is already overflow-checked (int64 max plus one unit used
+         * to return the most NEGATIVE money value), and division by a count
+         * already rounds through `money_scale_by`. This is the fold, with the
+         * same refusals in the same words as the `+` operator so the two cannot
+         * drift -- the argument the ordering widening above rests on as well.
+         *
+         * DELIBERATELY NOT `median`, `stdev`, `variance`, `percentile`,
+         * `quantile` OR `correlation`. Two of those are meaningless on money
+         * (a variance of money is money squared) and the rest are not among the
+         * five the loop survey measured, so they stay numeric until something
+         * measures a need. */
+        if ((strcmp(expr->as.call.name, "sum") == 0 ||
+             strcmp(expr->as.call.name, "mean") == 0) &&
+            arg.kind == VALUE_ARRAY && arg.as.array.store &&
+            arg.as.array.store->count > 0 &&
+            arg.as.array.store->items[0].kind == VALUE_MONEY) {
+            size_t n = arg.as.array.store->count;
+            MoneyValue total = arg.as.array.store->items[0].as.money;
+            for (size_t i = 1; i < n; i++) {
+                Value *el = &arg.as.array.store->items[i];
+                if (el->kind != VALUE_MONEY) {
+                    char message[192];
+                    char phrase[48];
+                    snprintf(message, sizeof message,
+                             "%s over money expects every element to be money;"
+                             " element %zu is %s", expr->as.call.name, i,
+                             kind_phrase(el->kind, phrase, sizeof phrase));
+                    runtime_error_raise(message, 1003, "money");
+                    value_free(arg);
+                    return value_null();
+                }
+                if (el->as.money.currency != total.currency ||
+                    el->as.money.exponent != total.exponent) {
+                    const char *la = currency_alpha_of(total.currency);
+                    const char *ra = currency_alpha_of(el->as.money.currency);
+                    char message[160];
+                    snprintf(message, sizeof message,
+                             "cannot add money in different currencies (%s and %s)",
+                             la ? la : "?", ra ? ra : "?");
+                    runtime_error_raise(message, 1003, "money");
+                    value_free(arg);
+                    return value_null();
+                }
+                if (__builtin_add_overflow(total.units, el->as.money.units,
+                                           &total.units)) {
+                    runtime_error_raise("money value is out of range", 1003,
+                                        "money");
+                    value_free(arg);
+                    return value_null();
+                }
+            }
+            if (strcmp(expr->as.call.name, "mean") == 0) {
+                const char *merr = NULL;
+                long long scaled = 0;
+                if (!money_scale_by(total.units, (double)n, 1, &scaled, &merr)) {
+                    runtime_error_raise(merr ? merr : "invalid money operation",
+                                        1003, "money");
+                    value_free(arg);
+                    return value_null();
+                }
+                total.units = scaled;
+            }
+            value_free(arg);
+            return value_money(total);
+        }
         if (!array_is_numeric(arg)) {
+            /* NAME THE ELEMENT (DOGFOOD 41/43). `sum expects a numeric array`
+             * is true and says nothing about WHICH row is wrong, and over a
+             * projection that is the whole question -- an array of absences
+             * means a row is missing the field, and the author needs to know
+             * which. It also removed an asymmetry this increment introduced:
+             * `[{USD}"1.00", 7]` named element 1 while `[7, {USD}"1.00"]`
+             * answered the terse sentence, so the quality of the diagnostic
+             * depended on which kind happened to come first. */
             char message[256];
-            snprintf(message, sizeof(message), "%s expects a numeric array", expr->as.call.name);
+            size_t bad = 0;
+            int found = 0;
+            if (arg.kind == VALUE_ARRAY && arg.as.array.store) {
+                for (size_t i = 0; i < arg.as.array.store->count; i++) {
+                    if (arg.as.array.store->items[i].kind != VALUE_NUMBER) {
+                        bad = i;
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (found) {
+                char phrase[48];
+                snprintf(message, sizeof(message),
+                         "%s expects a numeric array; element %zu is %s",
+                         expr->as.call.name, bad,
+                         kind_phrase(arg.as.array.store->items[bad].kind,
+                                     phrase, sizeof phrase));
+            } else {
+                snprintf(message, sizeof(message), "%s expects a numeric array",
+                         expr->as.call.name);
+            }
             runtime_error_raise(message, 1003, "invalid function call");
             value_free(arg);
             return value_null();
@@ -36398,23 +37814,23 @@ static Value eval_call(AstExpr *expr) {
         return value_null();
     } else if (strcmp(name, "sum") == 0 || strcmp(name, "mean") == 0) {
         for (size_t i = 0; i < count; i++) {
-            result += arg.as.array.store->items[i].as.number;
+            result += arg.as.array.store->items[i].as.num.value;
         }
         if (strcmp(name, "mean") == 0) {
             result /= (double)count;
         }
     } else if (strcmp(name, "min") == 0) {
-        result = arg.as.array.store->items[0].as.number;
+        result = arg.as.array.store->items[0].as.num.value;
         for (size_t i = 1; i < count; i++) {
-            if (arg.as.array.store->items[i].as.number < result) {
-                result = arg.as.array.store->items[i].as.number;
+            if (arg.as.array.store->items[i].as.num.value < result) {
+                result = arg.as.array.store->items[i].as.num.value;
             }
         }
     } else if (strcmp(name, "max") == 0) {
-        result = arg.as.array.store->items[0].as.number;
+        result = arg.as.array.store->items[0].as.num.value;
         for (size_t i = 1; i < count; i++) {
-            if (arg.as.array.store->items[i].as.number > result) {
-                result = arg.as.array.store->items[i].as.number;
+            if (arg.as.array.store->items[i].as.num.value > result) {
+                result = arg.as.array.store->items[i].as.num.value;
             }
         }
     } else if (strcmp(name, "median") == 0) {
@@ -36423,7 +37839,7 @@ static Value eval_call(AstExpr *expr) {
             abort();
         }
         for (size_t i = 0; i < count; i++) {
-            sorted[i] = arg.as.array.store->items[i].as.number;
+            sorted[i] = arg.as.array.store->items[i].as.num.value;
         }
         qsort(sorted, count, sizeof(double), number_compare);
         if (count % 2 == 1) {
@@ -36432,21 +37848,10 @@ static Value eval_call(AstExpr *expr) {
             result = (sorted[count / 2 - 1] + sorted[count / 2]) / 2.0;
         }
         free(sorted);
-    } else if (strcmp(name, "mode") == 0) {
-        result = arg.as.array.store->items[0].as.number;
-        size_t best_count = 0;
-        for (size_t i = 0; i < count; i++) {
-            size_t current_count = 0;
-            for (size_t j = 0; j < count; j++) {
-                if (arg.as.array.store->items[i].as.number == arg.as.array.store->items[j].as.number) {
-                    current_count++;
-                }
-            }
-            if (current_count > best_count) {
-                best_count = current_count;
-                result = arg.as.array.store->items[i].as.number;
-            }
-        }
+    /* `mode` IS HANDLED ABOVE, before the numeric gate, because it accepts text.
+     * Its old branch lived here and answered the FIRST element on continuous data;
+     * it is removed rather than left unreachable, so nothing can quietly come back
+     * to it. */
     } else if (strcmp(name, "variance") == 0 || strcmp(name, "stdev") == 0 ||
                strcmp(name, "pvariance") == 0 || strcmp(name, "pstdev") == 0 ||
                strcmp(name, "skewness") == 0 || strcmp(name, "kurtosis") == 0) {
@@ -36464,12 +37869,12 @@ static Value eval_call(AstExpr *expr) {
         }
         double mean_v = 0.0;
         for (size_t i = 0; i < count; i++) {
-            mean_v += arg.as.array.store->items[i].as.number;
+            mean_v += arg.as.array.store->items[i].as.num.value;
         }
         mean_v /= (double)count;
         double m2 = 0.0, m3 = 0.0, m4 = 0.0;
         for (size_t i = 0; i < count; i++) {
-            double d = arg.as.array.store->items[i].as.number - mean_v;
+            double d = arg.as.array.store->items[i].as.num.value - mean_v;
             double d2 = d * d;
             m2 += d2;
             m3 += d2 * d;
@@ -36500,10 +37905,10 @@ static Value eval_call(AstExpr *expr) {
             }
         }
     } else if (strcmp(name, "range") == 0) {
-        double lo = arg.as.array.store->items[0].as.number;
+        double lo = arg.as.array.store->items[0].as.num.value;
         double hi = lo;
         for (size_t i = 1; i < count; i++) {
-            double v = arg.as.array.store->items[i].as.number;
+            double v = arg.as.array.store->items[i].as.num.value;
             if (v < lo) {
                 lo = v;
             }
@@ -36518,7 +37923,7 @@ static Value eval_call(AstExpr *expr) {
             abort();
         }
         for (size_t i = 0; i < count; i++) {
-            sorted[i] = arg.as.array.store->items[i].as.number;
+            sorted[i] = arg.as.array.store->items[i].as.num.value;
         }
         qsort(sorted, count, sizeof(double), number_compare);
         result = quantile_sorted(sorted, count, 0.75) -
@@ -37648,6 +39053,47 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          * a real coercion with 1,472 measured uses in this tree, and it is
          * unchanged. What changed is that this is no longer the branch
          * everything ELSE falls into. */
+        /* --- EXACT COMPARISON, which is where a mistake would be INVISIBLE ---
+         *
+         * exact vs exact is an integer comparison; exact vs inexact is compared
+         * MATHEMATICALLY rather than by rounding the exact side to a double. The
+         * second is the rule that matters: `9007199254740993 = 9007199254740992.0`
+         * must answer FALSE, and the obvious implementation makes it TRUE --
+         * reintroducing, inside the comparison, the exact defect this work closes.
+         *
+         * A BOOLEAN IS NEVER EXACT, so `0 = false` keeps the double path above and
+         * all 1,472 of its measured uses are untouched. */
+        if (value_is_exact(left) && value_is_exact(right)) {
+            long long x = left.as.num.exact, y = right.as.num.exact;
+            int cmp = (x > y) - (x < y);
+            result = comparison_result_from_cmp(op, cmp);
+            value_free(left);
+            value_free(right);
+            return value_bool(result);
+        }
+        if (value_is_exact(left) != value_is_exact(right) &&
+            left.kind == VALUE_NUMBER && right.kind == VALUE_NUMBER) {
+            int cmp;
+            if (value_is_exact(left)) {
+                cmp = exact_vs_double_compare(left.as.num.exact,
+                                              right.as.num.value);
+            } else {
+                cmp = -exact_vs_double_compare(right.as.num.exact,
+                                               left.as.num.value);
+            }
+            if (cmp == 2 || cmp == -2) {
+                /* NaN is unordered: `=` is false, `!=` is true, and the ordering
+                 * operators answer the way the double path answers for NaN. */
+                result = strcmp(op, "!=") == 0 || strcmp(op, "!>") == 0 ||
+                         strcmp(op, "!<") == 0 || strcmp(op, "!>=") == 0 ||
+                         strcmp(op, "!<=") == 0;
+            } else {
+                result = comparison_result_from_cmp(op, cmp);
+            }
+            value_free(left);
+            value_free(right);
+            return value_bool(result);
+        }
         double a = value_number_or_zero(left);
         double b = value_number_or_zero(right);
         if (strcmp(op, "=") == 0) result = a == b;
@@ -37724,6 +39170,94 @@ static Value eval_binary(AstExpr *expr) {
     if (expr->line > 0) {
         current_line = expr->line;
         current_column = expr->column > 0 ? expr->column : previous_column;
+    }
+
+    /* --- `a excluding b` / `a intersecting b` -------------------------------
+     *
+     * SET DIFFERENCE AND INTERSECTION, as infix word operators. MEASURED before
+     * choosing the spelling, because this project rejected `IDENT expression` as
+     * a statement form over FOUR conflicts and the design offered a function form
+     * as the fallback: the operator costs **ZERO** shift/reduce conflicts, at its
+     * own precedence level between comparison and additive. So `a excluding b`
+     * reads as English and the function form was not needed.
+     *
+     * The cost is two RESERVED WORDS, measured too: no identifier in this tree is
+     * named `excluding` or `intersecting` (three matches, all in prose comments),
+     * and the keyword-field rules already let `r.excluding` and
+     * `{ excluding: 1 }` keep working, so what is actually claimed is the name of
+     * a variable, parameter or function -- which nothing has.
+     *
+     * MEMBERSHIP IS `array_find_index`, THE SAME AUTHORITY `contains`, `find` and
+     * `remove_value` USE. PLAT-EQ's sweep established that six routes ask "is this
+     * value present" and must agree; these are the seventh and eighth, and they
+     * agree BY CONSTRUCTION rather than by a test, which is the only way that
+     * property survives an edit. So records compare by VALUE, as PLAT-EQ made
+     * them.
+     *
+     * THE LEFT SIDE'S ORDER AND DUPLICATES ARE PRESERVED. These are filters over
+     * `a`, not set-theoretic sets: `unique` exists separately and composes, so
+     * folding it in here would take away the choice. */
+    int is_excluding = strcmp(op, "excluding") == 0;
+    if (is_excluding || strcmp(op, "intersecting") == 0) {
+        Value left = eval_expr(expr->as.binary.left);
+        if (error_action_pending()) {
+            value_free(left);
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+        Value right = eval_expr(expr->as.binary.right);
+        if (error_action_pending()) {
+            value_free(left);
+            value_free(right);
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+        if (left.kind != VALUE_ARRAY || right.kind != VALUE_ARRAY) {
+            char lp[48], rp[48];
+            char message[256];
+            snprintf(message, sizeof message,
+                     "`%s` works on two lists, got %s and %s", op,
+                     kind_phrase(left.kind, lp, sizeof lp),
+                     kind_phrase(right.kind, rp, sizeof rp));
+            value_free(left);
+            value_free(right);
+            runtime_error_raise(message, 1003, "invalid operand type");
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+        size_t n = left.as.array.store ? left.as.array.store->count : 0;
+        Value *items = n ? malloc(sizeof(Value) * n) : NULL;
+        if (n && !items) {
+            abort();
+        }
+        size_t kept = 0;
+        for (size_t i = 0; i < n; i++) {
+            size_t ignored = 0;
+            int present = array_find_index(right, left.as.array.store->items[i],
+                                           &ignored);
+            if (error_action_pending()) {
+                for (size_t j = 0; j < kept; j++) {
+                    value_free(items[j]);
+                }
+                free(items);
+                value_free(left);
+                value_free(right);
+                current_line = previous_line;
+                current_column = previous_column;
+                return value_null();
+            }
+            if (present != is_excluding) {
+                items[kept++] = value_copy(left.as.array.store->items[i]);
+            }
+        }
+        value_free(left);
+        value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_array(items, kept);
     }
 
     if (strcmp(op, "and") == 0) {
@@ -37878,7 +39412,7 @@ static Value eval_binary(AstExpr *expr) {
          left.kind == VALUE_DURATION && right.kind == VALUE_NUMBER)) {
         Duration d = left.kind == VALUE_DURATION ? left.as.duration
                                                  : right.as.duration;
-        double n = left.kind == VALUE_NUMBER ? left.as.number : right.as.number;
+        double n = left.kind == VALUE_NUMBER ? left.as.num.value : right.as.num.value;
         value_free(left);
         value_free(right);
         current_line = previous_line;
@@ -37984,7 +39518,7 @@ static Value eval_binary(AstExpr *expr) {
         }
         if (left.kind == VALUE_MONEY && right.kind == VALUE_NUMBER &&
             (strcmp(op, "*") == 0 || strcmp(op, "/") == 0)) {
-            double number = right.as.number;
+            double number = right.as.num.value;
             if (strcmp(op, "/") == 0 && number == 0.0) {
                 value_free(left);
                 value_free(right);
@@ -38016,7 +39550,7 @@ static Value eval_binary(AstExpr *expr) {
             const char *merr = NULL;
             long long scaled = 0;
             MoneyValue result_money = right.as.money;
-            int ok = money_scale_by(right.as.money.units, left.as.number, 0,
+            int ok = money_scale_by(right.as.money.units, left.as.num.value, 0,
                                     &scaled, &merr);
             result_money.units = scaled;
             value_free(left);
@@ -38099,8 +39633,60 @@ static Value eval_binary(AstExpr *expr) {
         current_column = previous_column;
         return value_null();
     }
+    /* --- EXACT INTEGER ARITHMETIC ------------------------------------------
+     *
+     * `+`, `-` and `*` of two EXACT operands are exact. The point is the one the
+     * design opens with: `pow(2, 53) + 1` answered 9007199254740992 with exit 0
+     * and no diagnostic, and `run_odbc.sh`'s own exactness tier cites those two
+     * numbers to argue that a BIGINT must come back as a STRING -- so gBASIC
+     * refused to lose precision across a driver and lost it in its own
+     * arithmetic. One of those two positions was wrong.
+     *
+     * ONLY WHEN BOTH SIDES ARE EXACT. A mixed expression is inexact, because
+     * `exact + inexact` has no exact answer to give and promoting the inexact
+     * side would be inventing precision it never had. That is also why there is no
+     * promotion matrix to get wrong: one numeric kind, one rule.
+     *
+     * `/` IS DELIBERATELY ABSENT. Integer division is not integer-valued, and a
+     * rational kind is a different language; `6 / 3` is 2.0 inexact, as it always
+     * was.
+     *
+     * OVERFLOW DEGRADES RATHER THAN REFUSING, and that is a release-discipline
+     * decision rather than a mathematical one: refusing would stop a program that
+     * answers today, and "nothing that ran stops running" is the rule. Degrading
+     * keeps the old behaviour and makes the loss LOUD, which is what the warning
+     * channel is for. */
+    int exact_both = value_is_exact(left) && value_is_exact(right);
+    long long la = left.as.num.exact;
+    long long lb = right.as.num.exact;
     value_free(left);
     value_free(right);
+
+    if (exact_both && (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 ||
+                       strcmp(op, "*") == 0)) {
+        long long out = 0;
+        int overflowed = strcmp(op, "+") == 0
+            ? __builtin_add_overflow(la, lb, &out)
+            : (strcmp(op, "-") == 0 ? __builtin_sub_overflow(la, lb, &out)
+                                    : __builtin_mul_overflow(la, lb, &out));
+        if (!overflowed) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_number_exact(out);
+        }
+        /* THE RESULT IS STILL THE ONE THE PROGRAM USED TO GET -- the double
+         * arithmetic below -- so nothing stops running; it is now said out loud. */
+        warn_fmt(2112, "exactness",
+                 "this %s of two exact integers does not fit a whole number the"
+                 " runtime can hold, so the answer is approximate from here on",
+                 strcmp(op, "+") == 0 ? "sum"
+                     : (strcmp(op, "-") == 0 ? "difference" : "product"));
+        if (error_action_pending()) {   /* `on warning stop` escalated it */
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+    }
 
     if (strcmp(op, "+") == 0) {
         current_line = previous_line;
@@ -38268,7 +39854,15 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value);
 static Value eval_expr(AstExpr *expr) {
     switch (expr->kind) {
     case AST_EXPR_NUMBER:
-        return value_number(expr->as.number);
+        /* The literal carries the exactness the lexer determined from its digits.
+         * NOTE there are TWO `AST_EXPR_NUMBER` cases in this file and only this
+         * one is `eval_expr`; the other belongs to `server_literal_value`. The
+         * first version of this change edited that one by mistake, and NOTHING
+         * FAILED -- every exactness check simply stayed false, so the feature was
+         * inert and the fixture read as a design error rather than a wrong edit.
+         * Found by probing the flag at `value_is_exact`, not by reading. */
+        return expr->as.num.is_exact ? value_number_exact(expr->as.num.exact)
+                                     : value_number(expr->as.num.value);
     case AST_EXPR_STRING:
         return value_string(expr->as.string);
     case AST_EXPR_IDENT:
@@ -38392,7 +39986,7 @@ static Value eval_expr(AstExpr *expr) {
             return value_null();
         }
         if (array.kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
-            int position = (int)index.as.number;
+            int position = (int)index.as.num.value;
             if (position < 0 || (size_t)position >= array.as.array.store->count) {
                 /* A RAISE, matching the assignment path, which has always
                  * raised. Until 2026-08-23 this printed an unlocated line and
@@ -38631,6 +40225,65 @@ static Value eval_expr(AstExpr *expr) {
             runtime_error_raise(message, HTTP_ERROR_CODE, "http");
             return value_null();
         }
+        /* PROJECTION: `rows.amount` is the array of that field from every
+         * element. The blocking primitive for working with data in bulk, and
+         * smaller than `map`, `filter` or `sort`.
+         *
+         * MEASURED BEFORE BUILDING IT: of 813 `for each` loops in this tree, 22
+         * are a sum over the loop variable and EVERY ONE is `total = total +
+         * r.amount` -- summing a FIELD. `sum`, `mean`, `count`, `min` and `max`
+         * already exist and simply could not reach data, because nothing could
+         * name a field across a list. So this one case unlocks five aggregates,
+         * and `any(rows.paid)` needs no predicate at all.
+         *
+         * THE SYNTAX IS SAFE BY PROOF RATHER THAN BY SURVEY: every dotted
+         * access on an array raised here, so no working program could contain
+         * the shape and claiming it cannot change one. That is a stronger
+         * argument than the enumeration the record/modifier classifier rests
+         * on, which had to survey the record forms.
+         *
+         * A MISSING FIELD YIELDS `unknown` FOR THAT ELEMENT, matching what
+         * `r.amont` already does on a record -- the alternative, raising, would
+         * make a projection unusable on real business data, where a row
+         * legitimately lacks a value. What an aggregate then does with the
+         * absence is the aggregate's rule, not this one's.
+         *
+         * A NON-RECORD ELEMENT RAISES AND NAMES THE INDEX, because that is a
+         * shape error rather than missing data, and `rows.amount` over a list
+         * someone has accidentally built from numbers should say which element
+         * broke it. */
+        if (object.kind == VALUE_ARRAY) {
+            ArrayStorage *src = object.as.array.store;
+            size_t n = src ? src->count : 0;
+            Value *items = n ? malloc(sizeof(Value) * n) : NULL;
+            if (n && !items) {
+                abort();
+            }
+            for (size_t i = 0; i < n; i++) {
+                Value *el = &src->items[i];
+                if (el->kind != VALUE_RECORD) {
+                    char message[192];
+                    char phrase[48];
+                    snprintf(message, sizeof(message),
+                             "projection `.%s` expects every element to be a"
+                             " record; element %zu is %s",
+                             expr->as.field.field, i,
+                             kind_phrase(el->kind, phrase, sizeof phrase));
+                    for (size_t j = 0; j < i; j++) {
+                        value_free(items[j]);
+                    }
+                    free(items);
+                    value_free(object);
+                    runtime_error_raise(message, 1003, "field access");
+                    return value_null();
+                }
+                const RecordField *f =
+                    record_find_const(el, expr->as.field.field);
+                items[i] = f ? value_copy(*f->value) : value_unknown();
+            }
+            value_free(object);
+            return value_array(items, n);
+        }
         if (object.kind != VALUE_RECORD) {
             runtime_error_raise("field access expects a record", 1003, "field access");
             value_free(object);
@@ -38714,6 +40367,18 @@ static Value eval_expr(AstExpr *expr) {
                 current_line = previous_line;
                 current_column = previous_column;
                 return value_null();
+            }
+            /* NEGATION PRESERVES EXACTNESS, or `-9007199254740993` would be exact
+             * in magnitude and inexact in sign -- which is how it first behaved,
+             * printing ...992 while its positive counterpart printed ...993.
+             * `LLONG_MIN` has no positive counterpart, so it is the one value that
+             * degrades, and it degrades the same way an overflowing sum does. */
+            if (value_is_exact(value) && value.as.num.exact != LLONG_MIN) {
+                long long negated = -value.as.num.exact;
+                value_free(value);
+                current_line = previous_line;
+                current_column = previous_column;
+                return value_number_exact(negated);
             }
             value_free(value);
             current_line = previous_line;
@@ -39414,7 +41079,7 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
             ok = money_parse_decimal(value.as.string, scale,
                                      MONEY_EXCESS_REJECT, &units, &err);
         } else if (value.kind == VALUE_NUMBER) {
-            if (!isfinite(value.as.number)) {
+            if (!isfinite(value.as.num.value)) {
                 char message[128];
                 snprintf(message, sizeof(message),
                          "%s modifier expects a finite number", modifier.name);
@@ -39423,7 +41088,7 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
                 return value_null();
             }
             char rendered[64];
-            format_number(rendered, sizeof(rendered), value.as.number);
+            format_number_value(rendered, sizeof(rendered), value);
             ok = money_parse_decimal(rendered, scale,
                                      MONEY_EXCESS_ROUND, &units, &err);
         } else if (value.kind == VALUE_MONEY) {
@@ -39923,7 +41588,7 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
             return NULL;
         }
         if (container->kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
-            int position = (int)index.as.number;
+            int position = (int)index.as.num.value;
             value_free(index);
             if (position < 0 || (size_t)position >= container->as.array.store->count) {
                 runtime_error_raise("array index out of range", 1003, "assignment");
@@ -40040,7 +41705,7 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
             return LVALUE_ASSIGN_ERROR;
         }
         if (container->kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
-            int position = (int)index.as.number;
+            int position = (int)index.as.num.value;
             value_free(index);
             if (position < 0 || (size_t)position >= container->as.array.store->count) {
                 runtime_error_raise("array index out of range", 1003, "assignment");
@@ -40264,7 +41929,10 @@ static const char *server_scope_directive(AstServerItemList *items, const char *
 
 static Value server_literal_value(AstExpr *expr) {
     switch (expr->kind) {
-    case AST_EXPR_NUMBER: return value_number(expr->as.number);
+    case AST_EXPR_NUMBER:
+        /* The literal carries its own exactness, determined from its digits. */
+        return expr->as.num.is_exact ? value_number_exact(expr->as.num.exact)
+                                     : value_number(expr->as.num.value);
     case AST_EXPR_STRING: return value_string(expr->as.string);
     case AST_EXPR_BOOL:   return value_bool(expr->as.boolean);
     default:              return value_null();   /* refused at load time */
@@ -41158,9 +42826,9 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
-        double start = start_v.as.number;
-        double limit = limit_v.as.number;
-        double step = step_v.as.number;
+        double start = start_v.as.num.value;
+        double limit = limit_v.as.num.value;
+        double step = step_v.as.num.value;
         value_free(start_v); value_free(limit_v); value_free(step_v);
         /* Refused rather than run: `step 0` cannot reach any limit, so it is a
          * hang, and a hang is the least debuggable outcome available. */
@@ -41411,7 +43079,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             RecordField *line_f = record_find(&value, "line");
             RecordField *column_f = record_find(&value, "column");
             int code = code_f && code_f->value->kind == VALUE_NUMBER
-                ? (int)code_f->value->as.number : 2000;
+                ? (int)code_f->value->as.num.value : 2000;
             const char *source = source_f && source_f->value->kind == VALUE_STRING
                 ? source_f->value->as.string : "explicit error";
 
@@ -41459,9 +43127,9 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             Value trace = trace_f && trace_f->value->kind == VALUE_ARRAY
                 ? value_copy(*trace_f->value) : value_null();
             int line = line_f && line_f->value->kind == VALUE_NUMBER
-                ? (int)line_f->value->as.number : 0;
+                ? (int)line_f->value->as.num.value : 0;
             int column = column_f && column_f->value->kind == VALUE_NUMBER
-                ? (int)column_f->value->as.number : 0;
+                ? (int)column_f->value->as.num.value : 0;
             char *message = copy_string(msg->value->as.string);
             char *source_copy = copy_string(source);
             value_free(value);

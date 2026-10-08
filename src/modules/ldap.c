@@ -174,7 +174,7 @@ static Value ldap_eval_connect(AstExpr *expr) {
     Value *port_v = ldap_field(&config, "port");
     long port = is_ldaps ? 636 : 389;
     if (port_v && port_v->kind == VALUE_NUMBER) {
-        port = (long)port_v->as.number;
+        port = (long)port_v->as.num.value;
     }
 
     /* Verification is ON unless explicitly turned off. */
@@ -197,8 +197,8 @@ static Value ldap_eval_connect(AstExpr *expr) {
 
     Value *timeout_v = ldap_field(&config, "timeout");
     double timeout = 10.0;
-    if (timeout_v && timeout_v->kind == VALUE_NUMBER && timeout_v->as.number > 0) {
-        timeout = timeout_v->as.number;
+    if (timeout_v && timeout_v->kind == VALUE_NUMBER && timeout_v->as.num.value > 0) {
+        timeout = timeout_v->as.num.value;
     }
     value_free(config);
 
@@ -447,8 +447,8 @@ static Value ldap_eval_search(AstExpr *expr) {
 
     Value *limit_v = ldap_field(&spec, "limit");
     int limit = 0;
-    if (limit_v && limit_v->kind == VALUE_NUMBER && limit_v->as.number > 0) {
-        limit = (int)limit_v->as.number;
+    if (limit_v && limit_v->kind == VALUE_NUMBER && limit_v->as.num.value > 0) {
+        limit = (int)limit_v->as.num.value;
     }
     value_free(spec);
 

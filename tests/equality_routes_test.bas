@@ -95,6 +95,29 @@ check("unique folds 1 and true", count(unique([1, true])), 1)
 check("unique folds two spellings of one instant", count(unique([d1, d2])), 1)
 check("unique keeps genuinely different values", count(unique([1, 2, 3])), 3)
 check("unique keeps different instants", count(unique([d1, d3])), 2)
+
+' --- unique over COMPOUNDS, the refusal that 0.6.0 removed -------------------
+' `unique` used to require ORDERABILITY in order to decide EQUALITY -- two
+' different questions -- so `unique([[1],[1]])` was refused while
+' `contains([[1]], [1])` had always answered. That made it the one route that
+' could not be asked about a record, and `frame.dedupe` worked around it by
+' SERIALIZING every row to a binary blob and searching a growing list of blobs.
+' Now it asks `=`, like the other five routes.
+check("unique folds two equal nested arrays", count(unique([[1, 2], [1, 2]])), 1)
+check("and keeps two different ones", count(unique([[1, 2], [3]])), 2)
+check("unique folds two equal records", count(unique([{ a: 1 }, { a: 1 }])), 1)
+check("and keeps records differing deep", count(unique([{ a: { b: 1 } }, { a: { b: 2 } }])), 2)
+' THE FIRST OCCURRENCE IS KEPT, which is what a dedupe over rows relies on.
+check("the first occurrence is the one kept",
+      unique([{ a: 1, tag: "first" }, { a: 1, tag: "second" }])[0].tag, "first")
+' AND IT AGREES WITH `contains`, which is the property the whole file is about:
+' a value `unique` dropped as a duplicate must be one `contains` finds.
+folded = unique([{ a: 1 }, { a: 1 }])
+check("contains agrees it is present", contains(folded, { a: 1 }), true)
+' THE TWO ABSENCES STAY DISTINCT HERE, deliberately: §2a says an AGGREGATE treats
+' `nothing` and `unknown` alike, and `=` says they are different values. `unique`
+' follows `=`, not the aggregate rule.
+check("unknown and nothing are two values", count(unique([unknown, nothing])), 2)
 check("and the array it returns holds no duplicate by contains",
       contains(remove_value(unique([0, false]), 0), false), false)
 

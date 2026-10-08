@@ -62,7 +62,17 @@ program main(args)
     i = i + 1
   end while
 
-  y = 1
+  ' `1.0` AND NOT `1`, AND THAT IS LOAD-BEARING SINCE 0.6.0. This tier's whole
+  ' premise is that gBASIC and the awk oracle each perform the SAME sequence of
+  ' correctly-rounded IEEE primitives and therefore land on the identical double --
+  ' which is what makes awk an independent check on the FORMATTER rather than on
+  ' the arithmetic. Exact integers broke that premise: with an integer seed,
+  ' `y * 7` is EXACT integer multiplication up to 7^22, so gBASIC produced the TRUE
+  ' value (11398895185373143 for 7^19) where awk produced the nearest double
+  ' (...144), and the oracle reported 17 disagreements in which gBASIC was RIGHT.
+  ' A fraction in the seed says "this is a test of the double formatter", which is
+  ' what it always meant. Do not simplify it back.
+  y = 1.0
   i = 1
   while i <= 300
     y = y * 7

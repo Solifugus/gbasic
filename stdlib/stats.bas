@@ -7918,18 +7918,11 @@ library stats
             return { ok: false, message: "logrank group B: " + why }
         end if
 
-        all_t = []
-        for each t in _event_times(times_a, events_a)
-            if not contains(all_t, t) then
-                append(all_t, t)
-            end if
-        next t
-        for each t in _event_times(times_b, events_b)
-            if not contains(all_t, t) then
-                append(all_t, t)
-            end if
-        next t
-        all_t = sort(all_t)
+        ' `unique` over the two series joined -- what the two dedupe loops here
+        ' spelled out. Same answer: `unique` keeps the first occurrence and decides
+        ' a duplicate with `=`, which is what their `contains` asked.
+        all_t = sort(unique(concat(_event_times(times_a, events_a),
+                                   _event_times(times_b, events_b))))
 
         obs_a = 0
         exp_a = 0

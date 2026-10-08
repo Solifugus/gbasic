@@ -25,7 +25,6 @@ cases=(
     negative_compare_record_order
     negative_compare_array_scalar_order
     negative_compare_record_scalar_order
-    negative_unique_nested_array
     negative_sort_type
     negative_sort_mixed
     negative_sort_nested_array

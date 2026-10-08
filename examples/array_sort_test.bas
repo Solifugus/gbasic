@@ -14,15 +14,24 @@ print(flags[0])
 print(flags[1])
 print(flags[2])
 
+' ABSENCES SORT LAST and are NOT ordered against each other (ruled 2026-10-07).
+' This used to assert `nothing` before `unknown`, an order the comparator invented
+' between two different ways of having no value; the sort is stable, so equal means
+' they keep the order they arrived in.
 vals = [unknown, nothing, unknown]
 vals = sort(vals)
 print(len(vals))
-if vals[0] = nothing then
-    print("nothing first")
+if is_unknown(vals[0]) then
+    print("entry order kept")
 end if
-if is_unknown(vals[1]) then
-    print("unknown second")
+if vals[1] = nothing then
+    print("and nothing stayed second")
 end if
+
+' AND THEY GO AFTER EVERY ORDINARY VALUE, which is the half that matters: an
+' absence is not a small number.
+mixed = sort([3, unknown, 1, nothing])
+print(join([string(mixed[0]), string(mixed[1]), string(mixed[2]), string(mixed[3])], ","))
 
 print(join(sort(["b", "a", "c"]), ","))
 

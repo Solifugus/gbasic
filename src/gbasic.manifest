@@ -18,7 +18,7 @@
   starting at all ("side-by-side configuration is incorrect"). Measured.
 -->
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity type="win32" name="gBASIC.gbasic" version="0.5.1.0"/>
+  <assemblyIdentity type="win32" name="gBASIC.gbasic" version="0.6.0.0"/>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>

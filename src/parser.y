@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
 
 /* A keyword used as a FIELD NAME arrives as its own token, carrying no text,
  * so the spelling is supplied here. Local rather than reusing eval.c's
@@ -650,6 +652,9 @@ typedef struct {
 
 %union {
     double number;
+    /* A NUMBER LITERAL plus the exactness `yylex` determined from its digits.
+     * `number` stays for anything that only needs the double. */
+    struct { double value; long long exact; int is_exact; } numlit;
     char *text;
     AstExpr *expr;
     AstStmt *stmt;
@@ -668,7 +673,7 @@ typedef struct {
     AstServerItemList server_item_list;
 }
 
-%token <number> NUMBER
+%token <numlit> NUMBER
 %token <text> IDENT STRING LENS_CONTENT QUALIFIED_IDENT MODIFIER_PREFIX
 /* `as` reaches the parser ONLY as a field name; everywhere else it is consumed
  * by the lexer's modifier/lens modes. Declared so it can join field_name --
@@ -677,6 +682,7 @@ typedef struct {
 %token AS
 %token DIM
 %token PLUS_EQ MINUS_EQ STAR_EQ SLASH_EQ
+%token EXCLUDING INTERSECTING
 %token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
@@ -725,7 +731,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %type <server_item_list> server_item_list
 %type <name_list> server_string_list
 %type <expr> expression or_expression and_expression comparison_expression
-%type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal
+%type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal set_expression
 %type <expr_list> argument_list argument_list_opt array_argument_list
 %type <text> field_name dot_field_name
 %type <record_field_list> record_field_list
@@ -1516,11 +1522,17 @@ not_expression
     ;
 
 comparison_expression
-    : additive_expression { $$ = $1; }
-    | additive_expression comparison_operator additive_expression { $$ = expr_at(ast_binary($2, ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
-    | additive_expression comparison_lens comparison_operator additive_expression {
+    : set_expression { $$ = $1; }
+    | set_expression comparison_operator set_expression { $$ = expr_at(ast_binary($2, ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
+    | set_expression comparison_lens comparison_operator set_expression {
         $$ = expr_at(ast_binary($3, $2, $1, $4), @3.first_line, @3.first_column);
       }
+    ;
+
+set_expression
+    : additive_expression { $$ = $1; }
+    | set_expression EXCLUDING additive_expression { $$ = expr_at(ast_binary(copy_const("excluding"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
+    | set_expression INTERSECTING additive_expression { $$ = expr_at(ast_binary(copy_const("intersecting"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
     ;
 
 additive_expression
@@ -1589,7 +1601,7 @@ comparison_operator
     ;
 
 primary
-    : NUMBER { $$ = expr_at(ast_number($1), @1.first_line, @1.first_column); }
+    : NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact), @1.first_line, @1.first_column); }
     | WATCHERS LPAREN RPAREN { $$ = expr_at(ast_call(copy_const("watchers"), ast_expr_list_empty()), @1.first_line, @1.first_column); }
     | duration_terms { $$ = expr_at(ast_duration($1), @1.first_line, @1.first_column); }
     | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
@@ -1677,7 +1689,7 @@ duration_terms
     : NUMBER IDENT {
         AstDuration duration = {0};
         char *bad = NULL;
-        $$ = duration_add_unit(duration, $1, $2, &bad);
+        $$ = duration_add_unit(duration, $1.value, $2, &bad);
         if (bad) {
             duration_unit_error(ctx, bad, @2.first_line, @2.first_column,
                                 @2.last_line, @2.last_column);
@@ -1686,7 +1698,7 @@ duration_terms
       }
     | duration_terms NUMBER IDENT {
         char *bad = NULL;
-        $$ = duration_add_unit($1, $2, $3, &bad);
+        $$ = duration_add_unit($1, $2.value, $3, &bad);
         if (bad) {
             duration_unit_error(ctx, bad, @3.first_line, @3.first_column,
                                 @3.last_line, @3.last_column);
@@ -1726,9 +1738,15 @@ parameter_list_opt
  * the question does not arise. Going literal -> expression later is possible;
  * the reverse is not. */
 parameter_default
-    : NUMBER { $$ = expr_at(ast_number($1), @1.first_line, @1.first_column); }
-    | MINUS NUMBER { $$ = expr_at(ast_number(-$2), @1.first_line, @1.first_column); }
-    | PLUS NUMBER { $$ = expr_at(ast_number($2), @1.first_line, @1.first_column); }
+    : NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact), @1.first_line, @1.first_column); }
+      /* A SIGNED LITERAL NEGATES THE EXACT VALUE TOO, or `-9007199254740993`
+       * would be exact in magnitude and inexact in sign. `LLONG_MIN` has no
+       * positive counterpart, so negating it is the one case that degrades. */
+    | MINUS NUMBER { $$ = expr_at(ast_number(-$2.value,
+                                             $2.exact == LLONG_MIN ? 0 : -$2.exact,
+                                             $2.exact == LLONG_MIN ? 0 : $2.is_exact),
+                                  @1.first_line, @1.first_column); }
+    | PLUS NUMBER { $$ = expr_at(ast_number($2.value, $2.exact, $2.is_exact), @1.first_line, @1.first_column); }
     | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
     | TRUE { $$ = expr_at(ast_bool(1), @1.first_line, @1.first_column); }
     | FALSE { $$ = expr_at(ast_bool(0), @1.first_line, @1.first_column); }
@@ -2198,7 +2216,53 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
         size_t nlen = token.length < sizeof(numbuf) - 1 ? token.length : sizeof(numbuf) - 1;
         memcpy(numbuf, token.start, nlen);
         numbuf[nlen] = '\0';
-        lvalp->number = strtod(numbuf, NULL);
+        lvalp->numlit.value = strtod(numbuf, NULL);
+        /* EXACTNESS COMES FROM THE DIGITS. An integer literal the runtime can
+         * hold exactly is EXACT; everything else is inexact, which is what every
+         * number in this language was until now.
+         *
+         * DECIMAL AND HEX INTEGERS ONLY. A literal carrying a `.` or an exponent
+         * is inexact BY DESIGN rather than by omission: `1e20` is integral and
+         * exactly representable, and the notation still says "approximately this
+         * magnitude" -- `number("100000000000000000000")` is how to ask for the
+         * integer. Recorded as an open decision in the design and settled here.
+         *
+         * OUT OF `int64` RANGE IS INEXACT, not an error: the double is what the
+         * language has always given for such a literal, and refusing would stop a
+         * program that runs today. */
+        lvalp->numlit.exact = 0;
+        lvalp->numlit.is_exact = 0;
+        {
+            const char *digits = numbuf;
+            int base = 10;
+            if (numbuf[0] == '0' && (numbuf[1] == 'x' || numbuf[1] == 'X')) {
+                digits = numbuf + 2;
+                base = 16;
+            }
+            int integral = digits[0] != '\0';
+            for (const char *c = digits; *c; c++) {
+                int ok = base == 16
+                    ? ((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f') ||
+                       (*c >= 'A' && *c <= 'F'))
+                    : (*c >= '0' && *c <= '9');
+                if (!ok) {
+                    integral = 0;
+                    break;
+                }
+            }
+            if (integral) {
+                errno = 0;
+                char *end = NULL;
+                long long parsed = strtoll(digits, &end, base);
+                if (errno == 0 && end && *end == '\0') {
+                    lvalp->numlit.exact = parsed;
+                    lvalp->numlit.is_exact = 1;
+                    /* The double is kept in sync as a LOSSY VIEW, which is what
+                     * lets every existing reader of it go on being correct. */
+                    lvalp->numlit.value = (double)parsed;
+                }
+            }
+        }
         return NUMBER;
     }
     case TOKEN_STRING:
@@ -2229,6 +2293,8 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_AND: return AND;
     case TOKEN_OR: return OR;
     case TOKEN_NOT: return NOT;
+    case TOKEN_EXCLUDING: return EXCLUDING;
+    case TOKEN_INTERSECTING: return INTERSECTING;
     case TOKEN_WITH: return WITH;
     case TOKEN_NEW: return NEW;
     case TOKEN_SPAWN: return SPAWN;

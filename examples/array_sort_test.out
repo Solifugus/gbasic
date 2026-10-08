@@ -6,8 +6,9 @@ false
 true
 true
 3
-nothing first
-unknown second
+entry order kept
+and nothing stayed second
+1,3,unknown,nothing
 a,b,c
 0
 solo

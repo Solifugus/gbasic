@@ -101,17 +101,24 @@ A passage leads north."
 
 ### Reserved words
 
-Keywords are matched **case-insensitively**. There are 46, and 44 of them
+Keywords are matched **case-insensitively**. There are 48, and 46 of them
 cannot be used as a variable, parameter or function name:
 
 ```text
 and       as        break     consider  continue  dim       do        each
-else      error     export    false     for       function  gosub     goto
-if        in        library   load      modifier  new       not       nothing
-on        or        print     program   return    spawn     step      stop
-then      to        true      unknown   until     unwatch   use       watch
-watchers  while     with      without
+else      end       error     excluding export    false     for       function
+gosub     goto      if        in        intersecting        library   load
+modifier  new       next      not       nothing   on        or        print
+program   return    spawn     step      stop      then      to        true
+unknown   until     unwatch   use       watch     watchers  while     with
+without
 ```
+
+`excluding` and `intersecting` arrived in 0.6.0 as the set operators, and the
+price was measured before it was taken: no identifier anywhere in this tree was
+named either (the only three matches were in prose comments), and the infix form
+costs **zero** grammar conflicts, which is what decided it over a function form —
+this project rejected `IDENT expression` as a statement form over four.
 
 The remaining two — **`end` and `next`** — are recovered as identifiers by the
 grammar and *may* be used as ordinary names. That is why closing a `for` with
@@ -5509,11 +5516,28 @@ the call site shows. A bound value is still `type()` `"function"`, and a record
 field holding one works as a method, so two objects can share one function with
 different configuration.
 
-**Where a context cannot travel it is refused, not dropped.** `gi.connect`,
-gi's event-source callbacks and `webserver.on_request` keep only the function's
-*name*, so they raise rather than silently losing the context. `encode` refuses
-a function value as it always has; `serialize` accepts a plain one and refuses a
-bound one, because the name would travel and the context would not.
+**A GTK signal handler and a gi event-source callback carry their context**
+*(since 0.6.0)*. This is what `bound` was for: GTK calls a handler with the
+arguments the *signal* defines and nothing else, so anything else a handler needed
+had to be smuggled — through a program-global registry, or inside an object the
+signal happens to hand back.
+
+```basic
+gi.connect(factory, "bind", bound(on_bind, { gid: 3, ordinal: 1 }))
+gi.timeout(200, bound(poll, { endpoint: url }))
+```
+
+The context belongs to the **connection**, not to the object or the function, so
+one object may carry two handlers of the same function that differ only in what
+they were bound with. It is copied at connect time and freed with the closure — a
+closure outlives the statement that created it, which is what connecting a signal
+means, so it cannot be a borrow into the caller's frame.
+
+**Where a context still cannot travel it is refused, not dropped.**
+`webserver.on_request` keeps only the function's *name*, so it raises rather than
+silently losing the context. `encode` refuses a function value as it always has;
+`serialize` accepts a plain one and refuses a bound one, because the name would
+travel and the context would not.
 
 **`key(a, b, …)`** — one string that cannot collide, for use as a **composite
 record key**. Variadic, one argument or more; every argument must be a scalar
@@ -5834,14 +5858,49 @@ Access and search:
 - `remove_value(array, value)` — remove the first matching value and return the resulting array; when the first argument is an assignable path, the array is updated in place.
 - `find_by(records, field_name, value)` — the first matching record index, or `nothing`.
 - `first(array)` — the first element, or `nothing`.
+- `last(array)` — the last element, or `nothing` *(since 0.6.0)*. `first` had
+  existed since arrays did and this had not, so reading the end meant
+  `a[count(a) - 1]` — arithmetic on a length, and an out-of-range read rather
+  than an answer on an empty list. `take_last` **pops**; `last` only reads.
 - `rest(array)` — a new array without the first element.
+- `slice(array, at [, count])` — a new array of `count` elements from `at`, to
+  the end if no count is given *(since 0.6.0)*. The same shape and the same
+  **0-based** `at` as `byte_slice(s, at [, count])`, deliberately: a second
+  convention for the same idea one type along is how an off-by-one gets written.
+  **Clamped, not refused** — a window legitimately runs past the end, which is
+  what the last page of a report is — while a negative `at` or `count` *is*
+  refused, since it means a computed index is wrong and there is no
+  from-the-end convention to read it as.
+
+Set operations *(since 0.6.0)* — infix word operators, not functions:
+
+- `a excluding b` — the elements of `a` not present in `b`.
+- `a intersecting b` — the elements of `a` also present in `b`.
+
+Both are **filters over the left side**, so its order and its duplicates survive;
+`unique` exists separately and composes, so folding it in would take the choice
+away. Membership is the same question `contains`, `find` and `remove_value` ask,
+through the same code, so records compare **by value** as PLAT-EQ made them and
+`unknown` and `nothing` are ordinary values to match. Two lists are required:
+text is refused rather than treated as a list of characters, because `contains`
+on a string asks a different question with the same shape and guessing which was
+meant is how a set operation silently becomes a substring search.
+
+They bind **tighter than comparison and looser than arithmetic**, so
+`a excluding b = c` is `(a excluding b) = c` and `a excluding [1 + 1]` excludes
+`2`. The cost is the **product of the two lengths** — each element of the left is
+compared against the right until a match — because membership is `=`, which for
+records is deep equality, so there is no key to hash and no order to
+binary-search; `unique` pays the same price for the same reason. Measured as a
+ratio by `tests/run_set_ops.sh`, which is bounded both ways, since a cost that
+quietly got cheaper would leave this paragraph wrong.
 
 Mutation:
 
 - `append(array, value)` / `prepend(array, value)`
 - `insert(array, index, value)` / `remove(array, index)`
 - `take_first(array)` / `take_last(array)`
-- `reverse(array)` / `unique(array)` / `sort(array)`
+- `reverse(array)` / `unique(array)` / `sort(array [, options])`
 
 When `append`, `prepend`, `insert`, `remove`, `remove_value`, `take_first`,
 `take_last`, `reverse`, `sort`, or `unique` mutates a stored array through an
@@ -5853,11 +5912,222 @@ mutation. Mutators that leave the stored array unchanged, such as no-match
 `sort()` and `unique()` support scalar arrays. Date/time values use exact
 date/time equality and ordering, not same-day or same-month comparison.
 
+#### Sorting records — `sort(rows, { by: … })`
+
+*(since 0.6.0)* `sort` takes an optional second argument, an options record:
+
+```basic
+sort(rows, { by: "amount" })                          ' one field
+sort(rows, { by: "amount", descending: true })        ' reversed
+sort(rows, { by: ["last", "first"] })                 ' several fields, in order
+sort(rows, { by: ["score", "id"], descending: ["score"] })   ' mixed direction
+sort(xs, { descending: true })                        ' a plain list, reversed
+```
+
+- **`by`** names a field, or a list of fields compared in order. Every element
+  must then be a record, and each key column goes through the **same ordering
+  gate** the array itself goes through — so a key mixing two ordinary types, or
+  money in two currencies, is refused in the gate's own words, naming the
+  column. An element lacking the field sorts as an absence.
+- **`descending`** is `true`/`false` for every key, **or a list of the field
+  names that descend**. Naming a field `by` does not sort on is refused rather
+  than ignored, that being the one mistake this shape makes easy. With no `by`,
+  `descending: true` reverses a plain list — which previously had to be written
+  `reverse(sort(xs))`, two passes to say one thing.
+- An unknown option is refused **by name**, and the options are read **before
+  the array is touched**, so a misspelled option cannot leave a half-sorted
+  array behind.
+- `sort` still **mutates in place** through an assignable path and answers the
+  sorted array, exactly as the one-argument form does.
+
+**The sort is stable**, and that is a portability requirement rather than a
+nicety: `qsort` is not stable and its tie order differs between implementations,
+so a golden pinning rows sorted by one field would read differently on glibc and
+on a BSD libc. Stability also makes the one thing `descending` cannot express
+affordable — sorting by the minor key and then by the major key gives mixed
+directions in two declared passes, and `tests/run_sort_records.sh` asserts that
+the two routes give the identical answer.
+
+**There is no comparator-function form, and that is a decision rather than a
+gap.** Fields, several fields and per-field direction cover every record sort
+measured in this tree; a comparator is the one piece of code everyone gets wrong
+(`a - b` against `a < b`, and returning a boolean silently half-sorts); and it
+would cost an interpreted call at every comparison the merge makes, in a
+tree-walking interpreter. (No complexity is cited here because there is nothing to
+measure: the form does not exist.) A declared collation (`using: {trimmed; caseless}`) is likewise not
+here: of 73 `sort` call sites in this tree none orders a lowered, trimmed or
+naturally-collated key, and a comparison lens is a grammar construct rather than
+a value, so nothing can pass one as an argument. If a real case appears that
+`by` cannot express, that case is the argument.
+
+**An absence sorts LAST**, and the two absences are **not ordered against each
+other** *(ruled 2026-10-07)*. There is no universal convention to appeal to —
+`ORDER BY x ASC` puts NULLs last in PostgreSQL and Oracle and first in MySQL and
+SQLite — so this was a choice gBASIC had to make, and `frame.sort_by` had already
+made it. Core `sort` ranked them first until 0.6.0, which is the disagreement that
+suite found and pinned; `frame.sort_by` is now built on core `sort`, and the two
+cannot drift again. Two absences compare **equal**, so with a stable sort they
+keep the order they arrived in rather than being given an invented one. Under
+`descending: true` they come first, which is the consequence of reversing the
+comparison rather than a second rule — and is what PostgreSQL does too.
+
+**What has an order is taken from the `<` operator** *(since 0.6.0)*, not
+decided separately: numbers, strings, booleans, date/times, **money** and
+**durations**. Before 0.6.0 the two disagreed on the last two — `a.total <
+b.total` answered while `sort(invoices.total)` refused — so a sorter that
+ordered what `<` refuses would be inventing an order, and one that refused what
+`<` answers would be a second, narrower rule nobody had written down.
+
+Two orders are **conditional**, and each is refused in the same words the
+operator uses, because a comparison function cannot raise:
+
+- money in **different currencies** — ordering it would invent an exchange rate;
+- a duration carrying **months or years** — a month has no fixed length.
+
+Records, arrays and other non-scalars are refused, and so is an array mixing two
+ordinary types. An **absence** is the one deliberate divergence: `unknown < 1`
+has no answer and raises, while `sort` has to put it somewhere and ranks
+`nothing` then `unknown` below every ordinary value. Asserted in
+`tests/run_projection.sh`, whose second tier uses the operator as the oracle.
+
 Aggregates:
 
-- `len(value)` — length of an array or string.
-- `sum(array)` / `mean(array)` / `median(array)` / `mode(array)` — numeric aggregates.
-- `min(array)` / `max(array)` — extremes.
+- `len(value)` / `count(value)` — length of an array, string or record.
+- `sum(array)` / `mean(array)` — over numbers, or over **money** *(since
+  0.6.0)*, where the fold refuses mixed currencies in the same words as `+` and
+  is overflow-checked the same way. `mean` keeps the result below the minor unit
+  in money's guard digits, so the average of 32.50, 7.00 and 19.95 displays as
+  `19.82` and multiplies back by 3 to exactly `59.45`.
+- `median(array)` — the statistical convention on an even count: the mean of the
+  two middle values, so `median([4,1,2,3])` is `2.5`.
+- `mode(array)` — **every tied value, as a list**, or `unknown` when nothing
+  repeats *(changed in 0.6.0; see below)*.
+- The *Statistics* summaries below stay **numeric**. A variance of money is money
+  squared, and the rest were not among the aggregates the loop survey measured;
+  see §4 of `docs/bulk_data_design.md`.
+- `min(array)` / `max(array)` — extremes, over **anything `sort` orders**
+  *(since 0.6.0)*, so text, dates, money and durations as well as numbers. An
+  array containing an absence is still refused, consistently with `sum`, until
+  the aggregate absence rules land.
+- `any(array)` / `all(array)` — over **booleans**. `any([])` is `false` and
+  `all([])` is `true`, the usual vacuous-truth convention. An **absence is not
+  true**: a row that never said it was paid has not been paid, so
+  `all(rows.paid)` is `false` when a row lacks the field.
+
+#### An aggregate skips an absence, and says it did
+
+*(since 0.6.0)* A list with a hole in it used to make every aggregate refuse
+(`sum expects a numeric array`), which made projection useless on the first
+ragged row — and real business data is ragged. The rule is **SQL's, with SQL's
+warning**:
+
+```basic
+sum([10, unknown, 7])      ' 17        -- and warns, code 2111
+mean([10, unknown, 7])     ' 8.5       -- 17 / 2, the PRESENT count
+max([10, unknown, 7])      ' 10
+count([10, unknown, 7])    ' 3         -- COUNT(*): rows, not values
+count(present([10, unknown, 7]))  ' 2  -- COUNT(amount)
+sum([unknown, nothing])    ' unknown   -- not 0
+sum([])                    ' RAISES    -- an empty list is a mistake
+```
+
+- **`mean` divides by the number present**, not the length. Skipping the
+  absences and dividing by the full count makes every average quietly too low.
+- **All-absent answers `unknown`, not `0`.** "There was nothing to add" is not
+  "the total is zero". `sum([])` still *raises*, and the asymmetry is deliberate:
+  an empty list is a programming mistake, all-absent is a fact about the data.
+- **`nothing` and `unknown` are treated alike here.** `unknown` is the close
+  match for SQL's `NULL` and `nothing` is the program's own data saying there is
+  no value, but the distinction does not help an aggregate and two rules would be
+  a trap people hit once a year. (`=` still tells them apart, so `unique` keeps
+  them as two values.)
+- **`present(array)`** — the list without its absences. It gives SQL's second
+  count a spelling of its own instead of silently moving `count`, and it is the
+  warning's **opt-out**: an aggregate over `present(x)` has nothing to skip, so
+  it is silent because there is nothing to say. That matters because
+  `on warning ignore` is the only other way to quiet it and it covers every
+  warning in the frame.
+- **The warning is the point.** Skipping *silently* is the dangerous thing;
+  skipping with a warning is not silent, and `on warning stop` turns it into a
+  failure for a test run while production keeps the ergonomics. The SQL standard
+  raises exactly this as SQLSTATE `01003`, *"null value eliminated in set
+  function"* — class `01` being the warning class. Some engines emit it;
+  PostgreSQL does not.
+
+#### `mode` answers a list
+
+*(changed in 0.6.0)* `mode` used to return **one** value, chosen by source order,
+and that was wrong three ways at once — measured:
+
+| | answered | now |
+|---|---|---|
+| `mode([1,1,2,2])` | `1` | `[1, 2]` |
+| `mode([2,2,1,1])` | `2` | `[1, 2]` |
+| `mode([1,2,3])` | `1` | `unknown` |
+| `mode([19.95, 32.50, 7.00])` | `19.95` | `unknown` |
+
+The last row is the sharp one: **on continuous data — money, measurements, any
+real price list — every value is unique, so `mode` returned the first element and
+always looked like an answer**, with nothing downstream able to tell it from a
+real mode. SQL:2003's `MODE()` is implementation-defined on ties; this is the
+higher bar.
+
+So it answers **every tied value, as a list** — the only aggregate that answers a
+list, because a caller cannot otherwise tell a tie from a single mode, and
+returning one of several because it came first is the thing being stopped.
+`first(mode(x))` is the explicit "give me one". Nothing repeating means
+**`unknown`**, not the first element. **Text is accepted**, which is the one
+aggregate where text is the *common* case (the most frequent category, city or
+status code); equality is `=`, so an identical record counts as a repeat. The tie
+list is **sorted** where its values are orderable, so the same multiset gives the
+same answer whatever order it arrived in; where they are not (records, arrays) it
+is in first-seen order, since inventing an order over records is what `sort`
+itself refuses to do.
+
+#### Projection — one field across every row
+
+*(since 0.6.0)* A dotted access on an **array of records** answers the array of
+that field from every element:
+
+```basic
+rows = [ { item: "hammer", amount: 19.95, paid: true },
+         { item: "saw",    amount: 32.50, paid: false },
+         { item: "nails",  amount:  7.00, paid: true } ]
+
+print sum(rows.amount)      ' 59.45
+print max(rows.amount)      ' 32.5
+print rows.item             ' [hammer, saw, nails]
+print any(rows.paid)        ' true
+print all(rows.paid)        ' false
+```
+
+This is the smallest thing that makes the aggregates reach business data.
+Measured across this tree before it was built: of 813 `for each` loops, 22 are a
+sum over the loop variable and **every one** of the 22 is
+`total = total + r.amount` — summing a *field*. `sum`, `mean`, `count`, `min`
+and `max` all existed already and simply could not be pointed at data, because
+nothing in the language could name a field across a list.
+
+- **A missing field is `unknown` for that element**, matching what `r.amont`
+  already does on a record, and the element is **kept** — so the projection is
+  always the same length as the array. Raising instead would make a projection
+  unusable on real business data, where a row legitimately lacks a value; what
+  an aggregate then does with the absence is the aggregate's rule.
+- **A non-record element raises and names the index** — that is a shape error
+  rather than missing data, so a list accidentally built from numbers says which
+  element broke it.
+- **Nesting falls out of applying the rule twice**: `rows.customer.name`.
+- **A projection is a value, not a place.** It is computed from every element, so
+  there is nothing to store into: `append`, `prepend`, `insert`, `remove` and
+  `remove_value` refuse it and name both remedies — change the array itself, or
+  assign the projection to a name first. `sort`, `reverse` and `unique` *do*
+  work on one, answering a new array rather than mutating anything.
+- It is a **copy**: writing to the projection leaves the rows alone, and writing
+  to a row leaves an already-taken projection alone.
+
+A typo yields an array of absences rather than an error, which is the cost of
+matching record behaviour. The mitigation is the aggregate absence rules rather
+than a different syntax.
 
 #### Array value semantics
 
@@ -5908,6 +6178,60 @@ or out-of-range input:
 - `rotl(value, count)` / `rotr(value, count)` — 32-bit rotate left / right.
 
 ### Numbers and Comparison
+
+#### Exact integers
+
+*(since 0.6.0)* A `number` is **exact** when it is an integer the runtime holds
+exactly, and **inexact** otherwise. There is still only one numeric kind —
+`type()` answers `number` either way — and this is Scheme's exactness model and
+Lua 5.3's rather than an invention.
+
+```basic
+print 9007199254740992 + 1                      ' 9007199254740993
+print 9007199254740993 = 9007199254740992.0     ' false
+print 0.1 + 0.2                                 ' 0.30000000000000004, unchanged
+print 6 / 3                                     ' 2, inexact
+```
+
+Before this, `number` was a double and integer arithmetic went silently wrong
+above 2^53 — `pow(2, 53) + 1` answered `9007199254740992` with no diagnostic. The
+inconsistency that made it a defect is internal: `BIGINT` and `DECIMAL` columns
+come back from `odbc` and `pg` as **strings** precisely so their digits are not
+lost, so gBASIC refused to lose precision crossing a driver and lost it in its own
+arithmetic.
+
+**Where exactness comes from:** a **decimal or hexadecimal integer literal** whose
+value fits a 64-bit integer. From there `+`, `-`, `*` and unary minus of **two
+exact** operands are exact, and so is comparison.
+
+**What is inexact, each by decision rather than omission:**
+
+- a literal with a decimal point, and **a literal in exponent notation** — `1e16`
+  is integral and exactly representable, and the notation still says
+  *approximately this magnitude*; `number("10000000000000000")` asks for the
+  integer;
+- any **mixed** expression, because `exact + inexact` has no exact answer and
+  promoting the inexact side would invent precision it never had. This is also
+  why there is no promotion matrix to get wrong;
+- **division**, since integer division is not integer-valued and a rational kind
+  is a different language;
+- `pow`, `mod` and the counting builtins, which are a later increment — so the
+  design's own headline example, `pow(2, 53) + 1`, is **not** yet exact.
+
+**Comparison is mathematical, not by rounding.**
+`9007199254740993 = 9007199254740992.0` is `false`. The obvious implementation
+converts the exact side to a double first and answers `true`, reintroducing the
+defect inside the comparison; the double is moved into the integer domain
+instead. A boolean is never exact, so `0 = false` keeps its own path unchanged.
+
+**Overflow degrades rather than refusing**, with warning **2112**. The answer is
+the one the program used to get — refusing would stop a program that answers today
+— and what is new is that the loss is loud. `on warning stop` turns it into a
+failure for a test run.
+
+Memory cost is zero and `tests/run_exact.sh` asserts it: the numeric member is 24
+bytes and `DateTime` in the same union is 32, so `sizeof(Value)` does not move —
+which matters because a `Value` is every array element and every record field.
 
 **Number literals.** Decimal (`42`, `3.14`), hexadecimal (`0xFF`), and
 **scientific notation** *(since 0.2.3)* — `1e20`, `6.02e23`, `1.5e-3`, `2E10`,

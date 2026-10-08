@@ -30,7 +30,23 @@ from the design discussion; full lexical closures ("option (b)") are **deferred*
 (§13).
 
 **Invariant (load-bearing): a function value is always a reference to a registered
-function — never an anonymous, capturing closure.** Everything below depends on it,
+function — never an anonymous, capturing closure.**
+
+> **`bound(fn, ctx)` (0.5.x) and its gi path (0.6.0) do not weaken this.** A bound
+> value carries ONE named value copied at bind time, not an environment captured by
+> reference, so both properties above survive: a record is a value, so no cycle is
+> constructible, and the wire form is still the registered name — which is exactly
+> why `serialize` accepts a plain function value and refuses a bound one. As of
+> 0.6.0 `gi.connect` and the gi event sources carry that context into a native
+> closure; `webserver.on_request` still refuses one, keeping only the name.
+>
+> **THE ONE CYCLE A CALLER CAN STILL BUILD IS THEIRS, AND IT IS WORTH NAMING**: a
+> GObject placed in a context bound to a handler connected to *that same object*
+> makes object → closure → context → object, which GObject's refcounting cannot
+> collect. That is not a gBASIC cycle — the gBASIC values are all copies — and
+> nothing in the language can detect it, so `stdlib/datagrid.bas` carries a column
+> ORDINAL rather than the column record, whose `factory` field would close that
+> loop. `tests/run_datagrid.sh` asserts it structurally. Everything below depends on it,
 because it buys two properties a refcounted, manual-memory, process-isolated runtime
 needs:
 
