@@ -113,9 +113,11 @@ static AstExpr *ast_expr_new(AstExprKind kind) {
     return expr;
 }
 
-AstExpr *ast_number(double value) {
+AstExpr *ast_number(double value, long long exact, int is_exact) {
     AstExpr *expr = ast_expr_new(AST_EXPR_NUMBER);
-    expr->as.number = value;
+    expr->as.num.value = value;
+    expr->as.num.exact = exact;
+    expr->as.num.is_exact = is_exact;
     return expr;
 }
 
@@ -667,7 +669,7 @@ static void dump_expr(AstExpr *expr, int indent) {
     dump_indent(indent);
     switch (expr->kind) {
     case AST_EXPR_NUMBER:
-        printf("Number %g\n", expr->as.number);
+        printf("Number %g\n", expr->as.num.value);
         break;
     case AST_EXPR_STRING:
         printf("String \"%s\"\n", expr->as.string);

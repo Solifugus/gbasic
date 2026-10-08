@@ -33,6 +33,14 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
+- **Large integers are exact** *(0.6.0)* — a decimal or hex integer literal that
+  fits int64 is EXACT, and `+ - *` and unary minus of two exact operands stay
+  exact, so `9007199254740992 + 1` is `9007199254740993` and prints those digits.
+  INEXACT by decision: a fraction, an EXPONENT literal (`1e16`), any mixed
+  expression, division, and `pow`/`mod` (a later increment — so `pow(2,53) + 1` is
+  still not exact). Comparison is mathematical, so
+  `9007199254740993 = 9007199254740992.0` is false. Overflow degrades with warning
+  2112 rather than refusing. → `tests/exact/exact_test.bas`
 - **An aggregate over ragged data** — `sum(rows.amount)` SKIPS absences and warns
   (2111); `mean` divides by the PRESENT count; all-absent answers `unknown`, not
   0; `sum([])` still raises. `count` is COUNT(*) and `count(present(x))` is

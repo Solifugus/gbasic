@@ -202,7 +202,15 @@ struct AstExpr {
     int line;
     int column;
     union {
-        double number;
+        /* A NUMBER LITERAL, with the exactness the lexer determined. The literal
+         * is where exactness ORIGINATES, so it has to survive the parse: an
+         * `AstExpr` holding only the double would have thrown it away before
+         * evaluation ever saw it. Same shape as `Value`'s numeric member. */
+        struct {
+            double value;
+            long long exact;
+            int is_exact;
+        } num;
         char *string;
         char *ident;
         int boolean;
@@ -432,7 +440,7 @@ AstServerItem *ast_server_hook(char *word, AstStmtList body, int line, int colum
 AstStmt *ast_server(char *word, char *name, AstRecordFieldList options,
                     AstServerItemList items, char *close_word);
 
-AstExpr *ast_number(double value);
+AstExpr *ast_number(double value, long long exact, int is_exact);
 AstExpr *ast_string(char *value);
 AstExpr *ast_ident(char *name);
 AstExpr *ast_bool(int value);

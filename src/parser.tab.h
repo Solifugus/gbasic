@@ -45,7 +45,7 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 626 "src/parser.y"
+#line 628 "src/parser.y"
 
 #include "ast.h"
 #include "parse_ctx.h"
@@ -176,9 +176,12 @@ typedef struct {
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 651 "src/parser.y"
+#line 653 "src/parser.y"
 
     double number;
+    /* A NUMBER LITERAL plus the exactness `yylex` determined from its digits.
+     * `number` stays for anything that only needs the double. */
+    struct { double value; long long exact; int is_exact; } numlit;
     char *text;
     AstExpr *expr;
     AstStmt *stmt;
@@ -196,7 +199,7 @@ union YYSTYPE
     AstServerItem *server_item;
     AstServerItemList server_item_list;
 
-#line 200 "src/parser.tab.h"
+#line 203 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

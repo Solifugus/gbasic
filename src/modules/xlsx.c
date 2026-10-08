@@ -1833,7 +1833,7 @@ static const Value *xsql_lookup(const Value *rec, const char *key);
 static XlsxVal xlsx_from_gbasic(const Value *v) {
     if (!v) return xv_empty();
     switch (v->kind) {
-    case VALUE_NUMBER:  return xv_num(v->as.number);
+    case VALUE_NUMBER:  return xv_num(v->as.num.value);
     case VALUE_BOOL:    return xv_bool(v->as.boolean);
     case VALUE_STRING:  return xv_str(v->as.string ? v->as.string : "");
     case VALUE_UNKNOWN: return xv_empty();
@@ -4295,7 +4295,7 @@ static void xsql_ref(XlsxSql *g, const char *ref) {
     if (lit) {                                  /* a named constant cell */
         char buf[64];
         if (lit->kind == VALUE_NUMBER) {
-            snprintf(buf, sizeof buf, "%.15g", lit->as.number);
+            snprintf(buf, sizeof buf, "%.15g", lit->as.num.value);
             xsql_put(g, buf);
         } else {
             xsql_put(g, "'");
@@ -5666,7 +5666,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
         char buf[64];
         if (newv.kind == VALUE_NUMBER) {
             xmlUnsetProp(target, (const xmlChar *)"t");
-            snprintf(buf, sizeof buf, "%.15g", newv.as.number);
+            snprintf(buf, sizeof buf, "%.15g", newv.as.num.value);
             xmlNewChild(target, NULL, (const xmlChar *)"v", (const xmlChar *)buf);
         } else if (newv.kind == VALUE_BOOL) {
             xmlSetProp(target, (const xmlChar *)"t", (const xmlChar *)"b");
@@ -5973,7 +5973,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
          * first one it sees. */
         const Value *pin = xsql_lookup(&mv, "_row");
         if (pin && pin->kind == VALUE_NUMBER) {
-            g.row = (long)pin->as.number;
+            g.row = (long)pin->as.num.value;
             g.have_row = 1;
         }
         g.lx.p = src;

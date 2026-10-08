@@ -246,29 +246,29 @@ static Value smtp_eval_send(AstExpr *expr) {
     RecordField *port_field = record_find(&config, "port");
     if (port_field) {
         if (port_field->value->kind != VALUE_NUMBER ||
-            port_field->value->as.number < 1 ||
-            port_field->value->as.number > 65535 ||
-            port_field->value->as.number != floor(port_field->value->as.number)) {
+            port_field->value->as.num.value < 1 ||
+            port_field->value->as.num.value > 65535 ||
+            port_field->value->as.num.value != floor(port_field->value->as.num.value)) {
             value_free(config);
             value_free(message);
             smtp_raise("smtp.send: port must be a whole number from 1 to 65535");
             return value_null();
         }
-        port = (long)port_field->value->as.number;
+        port = (long)port_field->value->as.num.value;
     }
 
     double timeout = 30.0;
     RecordField *timeout_field = record_find(&config, "timeout");
     if (timeout_field) {
         if (timeout_field->value->kind != VALUE_NUMBER ||
-            !isfinite(timeout_field->value->as.number) ||
-            timeout_field->value->as.number <= 0) {
+            !isfinite(timeout_field->value->as.num.value) ||
+            timeout_field->value->as.num.value <= 0) {
             value_free(config);
             value_free(message);
             smtp_raise("smtp.send: timeout must be a positive number of seconds");
             return value_null();
         }
-        timeout = timeout_field->value->as.number;
+        timeout = timeout_field->value->as.num.value;
     }
 
     int verify = 1;

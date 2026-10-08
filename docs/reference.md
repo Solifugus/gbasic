@@ -6162,6 +6162,60 @@ or out-of-range input:
 
 ### Numbers and Comparison
 
+#### Exact integers
+
+*(since 0.6.0)* A `number` is **exact** when it is an integer the runtime holds
+exactly, and **inexact** otherwise. There is still only one numeric kind —
+`type()` answers `number` either way — and this is Scheme's exactness model and
+Lua 5.3's rather than an invention.
+
+```basic
+print 9007199254740992 + 1                      ' 9007199254740993
+print 9007199254740993 = 9007199254740992.0     ' false
+print 0.1 + 0.2                                 ' 0.30000000000000004, unchanged
+print 6 / 3                                     ' 2, inexact
+```
+
+Before this, `number` was a double and integer arithmetic went silently wrong
+above 2^53 — `pow(2, 53) + 1` answered `9007199254740992` with no diagnostic. The
+inconsistency that made it a defect is internal: `BIGINT` and `DECIMAL` columns
+come back from `odbc` and `pg` as **strings** precisely so their digits are not
+lost, so gBASIC refused to lose precision crossing a driver and lost it in its own
+arithmetic.
+
+**Where exactness comes from:** a **decimal or hexadecimal integer literal** whose
+value fits a 64-bit integer. From there `+`, `-`, `*` and unary minus of **two
+exact** operands are exact, and so is comparison.
+
+**What is inexact, each by decision rather than omission:**
+
+- a literal with a decimal point, and **a literal in exponent notation** — `1e16`
+  is integral and exactly representable, and the notation still says
+  *approximately this magnitude*; `number("10000000000000000")` asks for the
+  integer;
+- any **mixed** expression, because `exact + inexact` has no exact answer and
+  promoting the inexact side would invent precision it never had. This is also
+  why there is no promotion matrix to get wrong;
+- **division**, since integer division is not integer-valued and a rational kind
+  is a different language;
+- `pow`, `mod` and the counting builtins, which are a later increment — so the
+  design's own headline example, `pow(2, 53) + 1`, is **not** yet exact.
+
+**Comparison is mathematical, not by rounding.**
+`9007199254740993 = 9007199254740992.0` is `false`. The obvious implementation
+converts the exact side to a double first and answers `true`, reintroducing the
+defect inside the comparison; the double is moved into the integer domain
+instead. A boolean is never exact, so `0 = false` keeps its own path unchanged.
+
+**Overflow degrades rather than refusing**, with warning **2112**. The answer is
+the one the program used to get — refusing would stop a program that answers today
+— and what is new is that the loss is loud. `on warning stop` turns it into a
+failure for a test run.
+
+Memory cost is zero and `tests/run_exact.sh` asserts it: the numeric member is 24
+bytes and `DateTime` in the same union is 32, so `sizeof(Value)` does not move —
+which matters because a `Value` is every array element and every record field.
+
 **Number literals.** Decimal (`42`, `3.14`), hexadecimal (`0xFF`), and
 **scientific notation** *(since 0.2.3)* — `1e20`, `6.02e23`, `1.5e-3`, `2E10`,
 with an optional sign on the exponent. At least one digit must follow the `e`,

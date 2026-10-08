@@ -153,6 +153,146 @@ accept '  with principal({ user: "ok" })
   end with' 'a record principal'
 accept '  print(string(principal() = nothing))' 'principal() outside any block'
 
+printf 'TIER a watcher body acts for whoever made the WRITE\n'
+# REPORTED BY THE gbasic-books SESSION and reproduced before anything was built:
+# `bob` makes the write, the audit line says `alice`, and nothing is raised.
+#
+# A watcher body reads `principal()` out of the DYNAMIC scope, which is the
+# writer's scope only while the body runs AT the write. A body QUEUED during an
+# existing drain runs after that scope has been left, so it reported whoever
+# happened to be in force when the queue drained. An audit trail attributing one
+# person's write to another is worse than one that says nothing, and it was silent.
+#
+# THE REMEDY WAS CHOSEN BY MEASUREMENT, and the obvious one was wrong: refusing
+# whenever `watcher_draining` is set cannot discriminate, because that flag is set
+# for all four ways a body is reached and TWO of them are correct today --
+# registration (the enclosing scope), the synchronous drain (the writer's
+# principal, which is the ordinary audit watcher), the queued body (wrong), and the
+# event loop (`nothing`, pinned by the HANDLER tier above). Refusing on it would
+# have broken the case that works to fix the one that does not. So the write's
+# principal is CARRIED with the queue entry instead.
+#
+# ASSERTED AS A DIFFERENCE between two writes in one program, which is what makes
+# it more than "the audit says bob": the nested write is bob's and the outer one is
+# alice's, and a build that carried the wrong scope reports alice for both.
+cat >"$work/watch.bas" <<'BAS'
+function who()
+    ' `principal()` answers `nothing` when no block is open, and `nothing.name`
+    ' raises -- which is the point of answering `nothing` rather than `{}`.
+    ' Dynamically scoped, so calling it from here still sees the watcher's.
+    p = principal()
+    if p = nothing then
+        return "nobody"
+    end if
+    return p.name
+end function
+program main( args )
+    audit = []
+    trigger = 0
+    ledger = 0
+    watch(ledger)
+        append(audit, string(ledger) + "=" + who())
+    end watch
+    watch(trigger)
+        ' A nested `with` inside a watcher body. This write is QUEUED, because a
+        ' drain is already running, and its body runs after this block has exited.
+        with principal({ name: "bob" })
+            ledger = trigger * 100
+        end with
+    end watch
+    with principal({ name: "alice" })
+        trigger = 1
+    end with
+    print join(audit, " ")
+end program
+BAS
+got="$({ timeout -k 5 60 ./gbasic "$work/watch.bas" 2>&1 </dev/null || true; })"
+# `0=nobody` is the registration body (no principal yet); `100=bob` is the queued
+# one, and it is bob because bob made that write.
+if [ "$got" = "0=nobody 100=bob" ]; then
+    pass "a queued body acts for the writer, not for whoever is draining"
+else
+    printf '    want: 0=nobody 100=bob\n    got:  %s\n' "$got"
+    fail "a queued watcher body reports the wrong principal"
+fi
+# THE CONTROL, and it is the half that stops this becoming "watchers see nothing":
+# the SYNCHRONOUS case must be unchanged, including that an unscoped write still
+# reports nobody. Without it, a build where the capture always pushed `nothing`
+# would pass the check above (the registration line) and lose the feature.
+cat >"$work/watch2.bas" <<'BAS'
+function who()
+    ' `principal()` answers `nothing` when no block is open, and `nothing.name`
+    ' raises -- which is the point of answering `nothing` rather than `{}`.
+    ' Dynamically scoped, so calling it from here still sees the watcher's.
+    p = principal()
+    if p = nothing then
+        return "nobody"
+    end if
+    return p.name
+end function
+program main( args )
+    seen = []
+    bal = 0
+    watch(bal)
+        append(seen, string(bal) + "=" + who())
+    end watch
+    with principal({ name: "carol" })
+        bal = 1
+    end with
+    bal = 2
+    print join(seen, " ")
+end program
+BAS
+got2="$({ timeout -k 5 60 ./gbasic "$work/watch2.bas" 2>&1 </dev/null || true; })"
+if [ "$got2" = "0=nobody 1=carol 2=nobody" ]; then
+    pass "CONTROL: the synchronous case is unchanged, nobody included"
+else
+    printf '    want: 0=nobody 1=carol 2=nobody\n    got:  %s\n' "$got2"
+    fail "the synchronous watcher case moved"
+fi
+# AND A CAPTURED PRINCIPAL IS LEFT WHEN THE BODY ENDS, like any other: a write
+# AFTER the drain, outside every block, must report nobody rather than inheriting
+# the entry the drain pushed. A missing pop is invisible in the two checks above.
+cat >"$work/watch3.bas" <<'BAS'
+function who()
+    ' `principal()` answers `nothing` when no block is open, and `nothing.name`
+    ' raises -- which is the point of answering `nothing` rather than `{}`.
+    ' Dynamically scoped, so calling it from here still sees the watcher's.
+    p = principal()
+    if p = nothing then
+        return "nobody"
+    end if
+    return p.name
+end function
+program main( args )
+    seen = []
+    t = 0
+    led = 0
+    watch(led)
+        append(seen, string(led) + "=" + who())
+    end watch
+    watch(t)
+        with principal({ name: "bob" })
+            led = t * 100
+        end with
+    end watch
+    with principal({ name: "alice" })
+        t = 1
+    end with
+    print "after: " + who()
+    led = 999
+    print join(seen, " ")
+end program
+BAS
+got3="$({ timeout -k 5 60 ./gbasic "$work/watch3.bas" 2>&1 </dev/null || true; })"
+case "$got3" in
+    *"after: nobody"*"999=nobody"*)
+        pass "the captured principal is popped when the body ends" ;;
+    *)
+        printf '    want: after: nobody ... 999=nobody\n    got:  %s\n' "$got3"
+        fail "a captured principal outlived its watcher body" ;;
+esac
+
 printf 'TIER the grammar stayed at zero conflicts\n'
 if command -v bison >/dev/null 2>&1; then
     if bison -d src/parser.y -o "$work/p.tab.c" 2>"$work/bison.err"; then

@@ -224,7 +224,7 @@ static int rowmodel_uint_arg(Value v, const char *ctx, guint *out) {
         rowmodel_raise(msg);
         return 0;
     }
-    double d = v.as.number;
+    double d = v.as.num.value;
     if (d < 0 || d > (double)G_MAXUINT || d != (double)(guint)d) {
         char msg[160];
         snprintf(msg, sizeof(msg), "%s expects a non-negative whole number", ctx);
