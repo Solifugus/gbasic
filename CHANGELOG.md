@@ -20,6 +20,149 @@ Nothing yet.
 
 ---
 
+## 0.6.0 — 2026-10-07
+
+**Read this first.** This release is about **working with data in bulk**, and it
+is the first since 0.3.0 that **changes answers rather than only messages**. Six
+things break or move; everything else adds. If you quote a diagnostic or pin a
+golden, the last section lists what to re-capture.
+
+### What breaks or moves
+
+1. **`mode` answers a LIST.** It used to return one value chosen by **source
+   order**, which meant `mode([1,1,2,2])` was `1` and `mode([2,2,1,1])` was `2` —
+   the same multiset, two answers. Worse, on continuous data (money, measurements,
+   any real price list) every value is unique, so it returned the **first element**
+   and always looked like an answer. Now: every tied value as a list, `unknown`
+   when nothing repeats, and text accepted. `first(mode(x))` if you want one.
+2. **An absence sorts LAST.** `sort([3, unknown, 1])` was `[unknown, 1, 3]` and is
+   now `[1, 3, unknown]`. There is no universal convention — `ORDER BY x ASC` puts
+   NULLs last in PostgreSQL and Oracle and first in MySQL and SQLite — so gBASIC
+   had to choose, and `frame.sort_by` had already chosen last. The two absences now
+   compare **equal**, so a stable sort keeps the order they arrived in rather than
+   giving them an invented one.
+3. **An aggregate over a list with holes answers instead of refusing**, and warns
+   (**2111**). `sum([10, unknown, 7])` was a runtime error and is now `17`. A
+   program that used `on error` to *detect* holes will no longer see one; use
+   `count(present(x)) != count(x)`.
+4. **`excluding` and `intersecting` are reserved words.** A variable, parameter or
+   function of either name is now a parse error. Record **fields** are unaffected —
+   `r.excluding` and `{ excluding: 1 }` still work.
+5. **A large integer prints its own digits.** `9007199254740992 + 1` answered
+   `9007199254740992` and now answers and prints `9007199254740993`. A golden
+   showing an integer above 2^53 moves — to the correct value.
+6. **A queued watcher body acts for whoever made the write.** A body that ran
+   *deferred* read `principal()` out of whatever scope was in force when the queue
+   drained, so an audit line could attribute one person's write to another, in
+   silence. It now reports the writer.
+
+### Working with data in bulk
+
+- **Projection: `rows.amount`** is the array of that field from every element.
+  Measured first: of 813 `for each` loops in this tree, 22 are a sum over the loop
+  variable and **every one** of them sums a *field* — so `sum`, `mean`, `count`,
+  `min` and `max` already existed and simply could not be pointed at data. A
+  missing field is `unknown` for that element and the element is **kept**, so a
+  projection is always the same length as the array. A projection is a **value,
+  not a place**: the five mutating builtins refuse it by name.
+- **The aggregates reach `money`.** `sum`, `mean`, `min`, `max` and `sort` all
+  refused a money array, which in a release about business data would have been a
+  capability that misses invoices. Mixed currencies are refused in the same words
+  `+` uses.
+- **`min`/`max` order anything `sort` orders** — text, dates, money and durations,
+  not just numbers. What has an order is taken from the `<` **operator** rather
+  than decided separately, so the two cannot disagree.
+- **`sort(rows, { by: … })`** sorts records: one field, several fields in order, and
+  `descending` as either a boolean or **a list of the field names that descend** —
+  because "score descending, id ascending" is a real report and a boolean cannot
+  say it. **Stable**, which is a portability requirement: `qsort` is not, and its
+  tie order differs between libcs. There is no comparator-function form, by
+  decision.
+- **`a excluding b` / `a intersecting b`** — set difference and intersection as
+  infix word operators, which cost **zero** grammar conflicts (measured; that is
+  what chose them over a function form). Filters over the left side, so its order
+  and duplicates survive.
+- **`last(a)`** and **`slice(a, at [, count])`**, the latter with `byte_slice`'s
+  own 0-based conventions, clamped past the end.
+- **`present(a)`** — the list without its absences. It gives SQL's `COUNT(col)` a
+  spelling (`count(present(x))`) and is the 2111 warning's opt-out, needing no
+  special case to be one.
+- **`unique` takes records and arrays.** It had required *orderability* in order to
+  decide *equality*, which are two different questions.
+
+### Exact integers
+
+`number` is still the only numeric kind; **exactness is a property of a number**
+(Scheme's model, Lua 5.3's), so `type()` still answers `number` and there is no
+promotion matrix. A decimal or hex integer literal that fits a 64-bit integer is
+exact, and `+`, `-`, `*` and unary minus of two exact operands stay exact.
+Comparison is **mathematical**: `9007199254740993 = 9007199254740992.0` is
+`false`. Overflow **degrades** with warning **2112** rather than refusing, because
+nothing that ran should stop running.
+
+Inexact by decision, each stated rather than omitted: a fraction, an **exponent**
+literal (`1e16` — the notation says *approximately this magnitude*), any **mixed**
+expression, **division**, and `pow`/`mod`, which are a later increment — so
+`pow(2, 53) + 1` is **not** yet exact.
+
+What prompted it was internal: `BIGINT` and `DECIMAL` columns come back from
+`odbc` and `pg` as **strings** precisely so their digits survive, so gBASIC
+refused to lose precision crossing a driver and lost it in its own arithmetic.
+
+### Callbacks that carry state
+
+- **`bound(fn, context)`** — a function value carrying one named value, copied at
+  bind time and passed as the **last** argument. Not a closure: no environment, no
+  reference cycles, `encode` totality untouched.
+- **A GTK signal handler and a gi event-source callback carry it.** `gi.connect`,
+  `gi.timeout`, `gi.idle`, `gi.watch_fd` and `gi.watch_mailbox` used to refuse a
+  bound function rather than drop its context silently. The context belongs to the
+  **connection**, so one object can carry two handlers of one function differing
+  only in what they were bound with. `webserver.on_request` still refuses one.
+- **`key(a, b, …)`** — one string that cannot collide, for a composite record key.
+  It exists because concatenation with a separator is wrong two ways nothing
+  reports, and one of those was a **live defect**: in `insight`, the cells
+  `("North|East", "A")` and `("North", "East|A")` produced the identical key, so a
+  decomposition over eight distinct cells reported seven — corrupting both the
+  statistic and the search width it was judged against.
+
+### Diagnostics
+
+- **A traceback beneath the error**, naming each frame with its file and the
+  library that owns it. The rule is what it does *not* show: a library frame is
+  suppressed when the error is already reported inside that library.
+- **Every warning reaches `--json-diagnostics` as JSON.** Pre-existing for all
+  eleven warning codes: a program that warned put a **non-JSON line into a JSON
+  stream**, which is the stream gBASIC Studio consumes. The text form is
+  unchanged.
+- **New warnings:** `2111` (an aggregate skipped absent values, or found every
+  value absent) and `2112` (exact arithmetic left the range held exactly).
+- **Messages name their subject** in several places: `sum expects a numeric array`
+  now says *which element*, and a value's kind reads as `an array` / `money`
+  rather than `a array` / `a money`.
+
+### Also
+
+- `frame.sort_by` and `frame.dedupe` are built on core `sort` and `unique`;
+  `sort_by` **no longer raises** on a column holding `nothing`, which a frame from
+  JSON, a database or `read_csv` legitimately has. `fundamentals` and `nlq` lost
+  their hand-written sorts; `discovery`, `nlq` and `stats` lost seven loops.
+- `valid_date_parts` removed — zero callers.
+- **Seven suites added** (158 → 165): `run_key`, `run_bound`, `run_projection`,
+  `run_sort_records`, `run_set_ops`, `run_absence`, `run_exact` — and a third
+  valgrind policy, `vg_run_leaks_only`, for a program that pumps a GLib main loop,
+  because neither `run_gi` nor `run_datagrid` had a valgrind tier at all.
+
+### If you quote a diagnostic or pin a golden
+
+Re-capture these: `tests/negative_this_outside_method.err`,
+`tests/negative_this_read_only.err` and `tests/negative_watch_named_scope.err`
+each gained a traceback frame. These goldens moved for behaviour:
+`examples/array_sort_test.out` (absence order), `examples/parse_test.out`
+(`mode`), `tests/error_model/trace.out` (the traceback).
+
+---
+
 ## 0.5.1 — 2026-10-04
 
 **Read this first.** A patch release, and every change is a **diagnostic** — no
