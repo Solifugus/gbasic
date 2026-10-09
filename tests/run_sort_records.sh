@@ -101,11 +101,38 @@ for pair in "stdlib/fundamentals.bas:_sort_rows" "stdlib/nlq.bas:_by_score"; do
         printf 'ok   %s %s has no loop left\n' "$file" "$fn"
     fi
 done
-# nlq's own suite is the behavioural half: its ranking is what `_by_score` is for.
-if GBASIC_PATH=stdlib timeout -k 5 600 ./tests/run_nlq.sh >"$tmp/nlq.log" 2>&1; then
-    printf 'ok   run_nlq still passes with _by_score on core sort\n'
+# `_by_score` IS EXERCISED DIRECTLY, not by running nlq's whole suite.
+#
+# THIS TIER USED TO INVOKE `./tests/run_nlq.sh`, which was wrong twice over and CI
+# said so: that suite needs ODBC (it loads `discovery`), so on a build without it
+# this suite FAILED FOR A REASON WITH NOTHING TO DO WITH SORTING -- and a tier that
+# goes red because of another suite's dependency is one people learn to ignore. It
+# also made a change to nlq's grounding able to redden a suite about `sort`.
+#
+# What belongs here is the ORDER `_by_score` produces: score DESCENDING, id
+# ASCENDING, which is the shape a plain `descending: true` cannot express and the
+# reason this library was migrated at all. Its own comment says why the total order
+# matters -- "two tables on the same score must not rank by whichever the catalog
+# listed first" -- so the assertion is the TIE: two rows sharing a score must come
+# back by id, and the higher score must still lead.
+cat >"$tmp/by_score.bas" <<'BAS'
+load nlq
+program main( args )
+    rows = [ { id: "zeta",  score: 5 },
+             { id: "alpha", score: 9 },
+             { id: "beta",  score: 5 },
+             { id: "gamma", score: 9 } ]
+    out = nlq._by_score(rows)
+    print join(out.id, " ")
+end program
+BAS
+got="$({ GBASIC_PATH=stdlib timeout -k 5 60 ./gbasic "$tmp/by_score.bas" 2>&1 </dev/null || true; })"
+# 9s first and by id within each score: alpha gamma (9), then beta zeta (5).
+if [ "$got" = "alpha gamma beta zeta" ]; then
+    printf 'ok   nlq._by_score ranks score DESC then id ASC\n'
 else
-    tail -15 "$tmp/nlq.log" | sed 's/^/  /'; printf 'FAIL run_nlq\n'; status=1
+    printf 'MISMATCH nlq._by_score\n  want: alpha gamma beta zeta\n  got:  %s\n' "$got"
+    status=1
 fi
 
 echo "--- TIER 3: the disagreement this migration found, now RESOLVED ---"

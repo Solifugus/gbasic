@@ -33,6 +33,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 . "$(dirname "$0")/valgrind_tier.sh"
+. "$(dirname "$0")/build_has.sh"
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
 
 scratch="$(mktemp -d)"
@@ -43,8 +44,17 @@ checks=0; failures=0
 pass() { checks=$((checks+1)); printf '  ok   %s\n' "$1"; }
 fail() { checks=$((checks+1)); failures=$((failures+1)); printf '  FAIL %s\n' "$1"; }
 
-printf 'load ldap\nprint 1\n' > "$scratch/probe.bas"
-if ./gbasic "$scratch/probe.bas" 2>&1 | grep -q "not available in this build"; then
+# ASKED THROUGH tests/build_has.sh, WHICH IS A FIX RATHER THAN TIDYING: this
+# suite carried its own probe, `./gbasic probe.bas 2>&1 | grep -q "not available
+# in this build"`, and under the `pipefail` on line 2 THAT CONDITION COULD NEVER
+# BE TRUE -- a build refusal makes gbasic exit 1, pipefail takes the pipeline's
+# status from the last command to fail, so the `if` saw 1 EVEN WHEN grep MATCHED.
+# Measured on a build made without libldap: the skip did not fire and the suite
+# reported 10 of 11 checks FAILED, a red gate describing a correct build. It is
+# the exact trap run_http.sh records from the other direction, and a skip probe
+# is the worst place for it, being the one branch nobody watches work.
+# build_has captures into a variable, so there is no pipeline to mislead it.
+if ! build_has ldap; then
     echo "SKIP run_ldap (LDAP not in this build)"
     exit 0
 fi

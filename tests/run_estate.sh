@@ -46,6 +46,26 @@ status=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
 
+# NEEDS ODBC IN THE BUILD, AND NOT FOR A DATABASE. The offline tier is the half
+# of this suite that keeps the gate from going quiet -- spec/ddl/truth are pure
+# and `discovery.references` is a pure function of a string -- but
+# `tests/estate_test.bas` must `load discovery` to reach it, and
+# `stdlib/discovery.bas` opens with `load odbc`. `load` is a DECLARATION, so it
+# cannot be conditional: on a build made without unixODBC the fixture dies at
+# line 13 of the library with "ODBC support is not available in this build", and
+# so does the valgrind tier beside it. Measured 2026-10-09 with odbc detection
+# suppressed: 2 FAILs over a correct build, which is what CI had been reporting.
+# The shrink is named rather than hidden, and is the same one run_discovery.sh
+# records at greater length.
+. "$(dirname "$0")/build_has.sh"
+if ! build_has odbc; then
+    printf 'SKIP run_estate (no odbc in this build)\n'
+    printf '      NOTHING RAN, INCLUDING THE OFFLINE TIER, which needs no database:\n'
+    printf '      the fixture loads `discovery`, whose own `load odbc` a build\n'
+    printf '      without unixODBC refuses. Install unixodbc-dev to run it.\n'
+    exit 0
+fi
+
 printf 'TIER the declaration, and what it must and must not emit\n'
 if ! timeout -k 5 60 ./gbasic tests/estate_test.bas >"$work/out" 2>"$work/err"; then
     cat "$work/err"; fail "the fixture did not run"

@@ -25,6 +25,7 @@
 set -u
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh
+source tests/build_has.sh
 
 make >/dev/null || { printf 'FAIL build\n'; exit 1; }
 export GBASIC_PATH=stdlib
@@ -37,9 +38,26 @@ bad() { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 fixture=tests/nlq/estate_demo.json
 
 # --- SEMANTICS -------------------------------------------------------------
+# THE GATE IS ON THIS TIER, NOT ON THE SUITE, and the difference is the whole
+# point: `tests/nlq/nlq_test.bas` reaches `discovery.annotate` -- a pure
+# function over a catalog record, no database anywhere near it -- and
+# `stdlib/discovery.bas` opens with `load odbc`, which `load` being a
+# DECLARATION cannot make conditional. So on a build made without unixODBC the
+# fixture dies at line 13 of that library and this tier, plus the valgrind tier
+# that runs the same fixture, went red over a correct build (measured 2026-10-09
+# with odbc detection suppressed: `run_nlq: 2 FAILED`, which is what CI had been
+# reporting on every push). THE OTHER ELEVEN TIERS NEED NOTHING OF THE SORT --
+# recall, scoring, crowding, capability, the null region, the refusal rate and
+# the replay all read a COMMITTED JSON catalog -- so skipping the suite would
+# throw away ~90 checks to avoid one dependency two of them have. They keep
+# running, which is why the gate sits here.
 printf 'TIER semantics\n'
 out="$scratch/sem.out"
-if timeout 120 ./gbasic tests/nlq/nlq_test.bas >"$out" 2>&1; then
+if ! build_has odbc; then
+    printf '  SKIP (no odbc in this build; the fixture loads `discovery`, whose\n'
+    printf '        own `load odbc` is refused -- the eleven tiers below need\n'
+    printf '        neither and still run)\n'
+elif timeout 120 ./gbasic tests/nlq/nlq_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
     if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 91 ]; then
@@ -478,7 +496,10 @@ fi
 
 # --- VALGRIND --------------------------------------------------------------
 printf 'TIER valgrind\n'
-if vg_available; then
+# Over the SEMANTICS fixture, so it is gated on the same thing that fixture is.
+if ! build_has odbc; then
+    printf '  SKIP valgrind (no odbc in this build; its fixture loads `discovery`)\n'
+elif vg_available; then
     if vg_run ./gbasic tests/nlq/nlq_test.bas >/dev/null 2>&1; then
         ok "no definite leak or invalid access"
     else

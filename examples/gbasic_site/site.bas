@@ -276,7 +276,7 @@ server site( port: 0 )
 end server
 
 program main( args )
-    G = { version: "0.6.1", suites: "168" }
+    G = { version: "0.6.1", suites: "169" }
 
     port_file{file}= "examples/gbasic_site/tmp_port.txt"
     if exists(port_file) then delete(port_file)

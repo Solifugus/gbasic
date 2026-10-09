@@ -52,13 +52,65 @@ jobs:
             build-essential bison pkg-config \
             zlib1g-dev libxml2-dev libsqlite3-dev libpq-dev \
             libcurl4-openssl-dev libssl-dev libcrypt-dev \
-            libgtk-3-dev libgirepository-2.0-dev libglib2.0-dev
+            libgtk-3-dev libgirepository-2.0-dev libglib2.0-dev \
+            unixodbc-dev libsqliteodbc
+
+      # ODBC AND LDAP ARRIVE SEPARATELY, AND LDAP'S NAME IS ASKED FOR TWICE.
+      # This job is called "all optional modules" and until 2026-10-09 it
+      # installed NEITHER unixODBC NOR libldap, so HAVE_ODBC and HAVE_LDAP were
+      # 0 in the one job whose name promises otherwise -- and `odbc` is not a
+      # module anybody can do without here, since `stdlib/discovery.bas` opens
+      # with `load odbc` and `load` is a declaration that cannot be conditional,
+      # so run_discovery, run_estate and two tiers of run_nlq could not run AT
+      # ALL. Measured by suppressing odbc detection locally: four suites red
+      # over a correct build.
+      #
+      # libsqliteodbc is the DRIVER, not a module: without one the driver
+      # manager has nothing to reach and run_odbc's hermetic tier, the ODBC
+      # cookbook and discovery's catalog tier all skip. It is the SQLite3 ODBC
+      # driver over a scratch file -- a real driver-manager round trip needing
+      # no server.
+      #
+      # THE LDAP PACKAGE WAS RENAMED: 24.04 ships `libldap2-dev`, newer releases
+      # ship `libldap-dev`, and `ubuntu-latest` moves. A single apt-get with one
+      # bad name installs NOTHING -- the trap the comment above records for
+      # libcrypt-dev -- so each name is tried on its own and the RESULT IS
+      # CHECKED, because a quietly-missing dev package is precisely how this
+      # job's name came to be false.
+      - name: Install libldap under whichever name this release uses
+        run: |
+          sudo apt-get install -y -qq libldap-dev \
+            || sudo apt-get install -y -qq libldap2-dev
+          pkg-config --exists ldap \
+            || { echo "::error::no ldap.pc after install -- the package was renamed again"; exit 1; }
+          pkg-config --modversion ldap
 
       - name: Report what was detected
         run: ./tools/check-deps.sh
 
       - name: Build everything
         run: make dev
+
+      # AND THE DETECTION IS ASSERTED, not merely reported, which is why this
+      # sits AFTER the build and asks THE BINARY the build produced rather than
+      # pkg-config: `./tools/check-deps.sh` above PRINTS what it found, and a
+      # print is not a check. This job's whole claim is that every optional
+      # module is IN, so a dependency that silently stops being installed must
+      # redden the job rather than quietly turn tiers into skips nobody reads --
+      # which is exactly what unixODBC and libldap had been doing.
+      - name: Every optional module must really be in this build
+        run: |
+          . tests/build_has.sh
+          status=0
+          for m in sqlite pg odbc ldap http webclient smtp xml crypto gi; do
+            if build_has "$m"; then
+              printf '  ok   %s\n' "$m"
+            else
+              printf '::error::%s is NOT in this build, in the job called "all optional modules"\n' "$m"
+              status=1
+            fi
+          done
+          exit "$status"
 
       - name: Version
         run: ./gbasic --version

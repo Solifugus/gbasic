@@ -21,13 +21,31 @@ for tool in curl openssl; do
         exit 0
     fi
 done
-if ! ./gbasic tests/web_tls/negative_bad_cert.bas 2>&1 | grep -q "could not load certificate"; then
-    # a build without libssl raises "not available in this build" instead
-    if ./gbasic tests/web_tls/negative_bad_cert.bas 2>&1 | grep -q "not available in this build"; then
+# THE PROBE IS CAPTURED, NOT PIPED, AND THAT IS A FIX. This read
+#
+#     if ! ./gbasic negative_bad_cert.bas 2>&1 | grep -q "could not load..."
+#
+# and under the `pipefail` above NEITHER BRANCH COULD EVER DECIDE ANYTHING: the
+# fixture is a NEGATIVE, so gbasic exits 1 by design, and pipefail takes the
+# pipeline's status from the last command to fail -- so the condition was 1
+# whether or not grep matched. MEASURED: grep matches (the text is right there)
+# and the pipeline still reports 1, so `!` made the outer test always true and
+# the inner test always false, and a build WITHOUT libssl FAILED this suite
+# instead of skipping it. Same trap as run_ldap.sh's skip probe, found by
+# sweeping for the shape after fixing that one -- which is this tree's standing
+# lesson: a defect found in one probe is evidence about every probe.
+probe="$(./gbasic tests/web_tls/negative_bad_cert.bas 2>&1 || true)"
+case "$probe" in
+    *"could not load certificate"*) ;;                 # libssl is in: carry on
+    *"not available in this build"*)
         printf 'SKIP tests/web_tls (gbasic built without libssl)\n'
-        exit 0
-    fi
-fi
+        exit 0 ;;
+    *)
+        # NEITHER answer is a third outcome worth naming rather than guessing
+        # at: the fixture is meant to refuse for exactly one of two reasons.
+        printf 'FAIL tests/web_tls (the libssl probe said neither; got: %s)\n' "$probe"
+        exit 1 ;;
+esac
 
 export GBASIC_PATH=stdlib
 scratch="$(mktemp -d)"

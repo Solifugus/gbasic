@@ -319,7 +319,7 @@ end function
 date         payments due   mba            ots
   2026-02-02   1              dpd_30         current
   2026-03-02   2              dpd_60         current
-  2026-04-02   3              dpd_90         dpd_30
+  2026-04-02   3              dpd_90         dpd_60
   2026-04-15   3              dpd_90         dpd_60
   2026-05-15   3              dpd_90         dpd_90
 

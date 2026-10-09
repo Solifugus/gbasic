@@ -39397,10 +39397,38 @@ static Value eval_binary(AstExpr *expr) {
     if (strcmp(op, "-") == 0 &&
         left.kind == VALUE_DATETIME &&
         right.kind == VALUE_DATETIME) {
-        int ok_left = 1;
-        int ok_right = 1;
-        double ea = datetime_to_epoch(left.as.datetime, &ok_left);
-        double eb = datetime_to_epoch(right.as.datetime, &ok_right);
+        /* THE DIFFERENCE OF TWO CIVIL DATETIMES MUST NOT DEPEND ON A TIMEZONE,
+         * and it did. This used `datetime_to_epoch`, which is `mktime` with
+         * `tm_isdst = -1` -- LOCAL time -- so an interval spanning a DST
+         * transition came out an hour short or long depending on the machine's
+         * zone. A gBASIC datetime is CIVIL and carries no zone (which is why
+         * `epoch(dt, zone)` exists and takes one), so the zone had no business
+         * being consulted here at all.
+         *
+         * MEASURED, and it was a WRONG ANSWER IN A FINANCE LIBRARY:
+         *
+         *   dates.between({date}"2026-02-01", {date}"2026-04-02", "days")
+         *     EDT: 59.958333      UTC: 60
+         *
+         * `stdlib/credit.bas`'s delinquency ladder tests `days >= 60`, so in a US
+         * timezone a loan SIXTY DAYS PAST DUE was reported `dpd_30` -- one bucket
+         * too healthy, silently, and differently in different offices. Found by
+         * CI, which had been red on every push for twenty-odd runs while the
+         * local gate was green: the golden had the EDT answer baked in.
+         *
+         * `zone_timegm` is the same calendar arithmetic without the local offset.
+         * It also fixes a second defect for free: `gb_mktime` refuses every
+         * instant before 1970 on Windows, so subtracting two 1950s dates raised
+         * there and answered here (platform.h records that asymmetry); `gb_timegm`
+         * takes any year on both.
+         *
+         * `epoch()` THE BUILTIN IS UNTOUCHED: that one means "this civil time, in
+         * the local zone or the one you name", which is a genuine instant and
+         * genuinely zone-dependent. Only the civil DIFFERENCE moved. */
+        int ok_left = !left.as.datetime.time_only;
+        int ok_right = !right.as.datetime.time_only;
+        long long ea = ok_left ? zone_timegm(left.as.datetime) : 0;
+        long long eb = ok_right ? zone_timegm(right.as.datetime) : 0;
         value_free(left);
         value_free(right);
         current_line = previous_line;
@@ -39409,7 +39437,7 @@ static Value eval_binary(AstExpr *expr) {
             runtime_error_raise("a time-only value has no epoch", 1003, "datetime");
             return value_null();
         }
-        return value_duration(duration_from_totals(0, (long long)llround(ea - eb)));
+        return value_duration(duration_from_totals(0, ea - eb));
     }
 
     /* Duration algebra (§4.2): closed under + - and scaling, computed on the

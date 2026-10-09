@@ -44,6 +44,67 @@ clock-based accounting 0.6.1 added. `Sleep` really does sleep, so the error is i
 the generous direction rather than the early one, but the pump's own time is
 uncounted and the two platforms account differently.
 
+### Fixed — and the first one CHANGES ANSWERS
+
+**The difference of two datetimes consulted the machine's timezone, and must
+not have.** A gBASIC `datetime` is CIVIL and carries no zone — which is why
+`epoch(dt, zone)` exists and takes one — but `datetime - datetime` went through
+`mktime` with `tm_isdst = -1`, local time, so an interval spanning a daylight
+saving transition came out an hour short or long **depending on where the
+program ran**:
+
+```
+dates.between({date}"2026-02-01", {date}"2026-04-02", "days")
+  America/New_York: 59.958333        UTC: 60
+```
+
+This was a **wrong answer in a finance library, not a rounding curiosity**:
+`stdlib/credit.bas`'s delinquency ladder tests `days >= 60`, so in a US timezone
+a loan sixty days past due was bucketed `dpd_30` — one grade too healthy,
+silently, and differently in different offices. `examples/credit_cookbook/02_delinquency.out`
+moves for exactly that reason, and the new answer is the right one.
+
+**Anything quoting a day count, an age or a deadline has to re-check it**, and a
+passage that was written on a machine in UTC was already correct. The arithmetic
+is `timegm`-based now, which also fixes a second defect for free: `gb_mktime`
+refuses every instant before 1970 on Windows, so subtracting two 1950s dates
+raised there and answered here. `epoch()` the builtin is **untouched** — that one
+means "this civil time, in the zone you name", which is genuinely
+zone-dependent. Only the civil *difference* moved.
+
+New: `tests/run_dates.sh`, which runs the same assertions under six timezones
+and requires identical answers, plus `tests/dates/civil_difference_test.bas`.
+
+**Three test-harness defects, each of which made a green line mean nothing.**
+None changes the interpreter; all three are recorded because the shape recurs:
+
+- **`run_ldap`'s skip probe could never fire.** Written as
+  `if ./gbasic probe.bas 2>&1 | grep -q "not available in this build"`, and
+  under that suite's own `pipefail` a build refusal makes `gbasic` exit 1 — so
+  the pipeline reported failure **even when `grep` matched**. Measured on a
+  build made without libldap: the skip did not fire and 10 of 11 checks FAILED,
+  a red gate describing a correct build. Sweeping for the shape afterwards found
+  it a **second** time, in `run_web_tls`'s libssl skip, where the probe fixture
+  raises by design — so the outer test was always true and the inner always
+  false, and a build without libssl *failed* instead of skipping. Both ask
+  `tests/build_has.sh` now, which captures into a variable.
+- **`run_sort_records` invoked `run_nlq`**, so a suite about `sort` went red over
+  ODBC. It asserts `nlq._by_score`'s ordering directly.
+- **`run_discovery`, `run_estate` and two tiers of `run_nlq` cannot run without
+  ODBC in the build**, because `stdlib/discovery.bas` opens with `load odbc` and
+  `load` is a declaration that cannot be conditional. They skip now, naming what
+  did not run; `run_nlq` is gated per tier, since eleven of its thirteen read a
+  committed catalog and need nothing. **Removing that shrink needs `load` to stop
+  raising for a module compiled out, which is a language-visible decision and is
+  not taken here.**
+
+**CI's "all optional modules" job had never installed unixODBC or libldap**, so
+the one job whose name promises every module had two of them off — which is why
+none of the above showed up as a skip. It installs both now (and the SQLite3 ODBC
+driver, so the hermetic ODBC tiers stop skipping), tries the LDAP package under
+both names since 24.04 and newer disagree, and **asserts** every module is really
+in the built binary rather than only printing what `pkg-config` found.
+
 ---
 
 ## 0.6.1 — 2026-10-08

@@ -56,6 +56,34 @@ status=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
 
+# THE WHOLE SUITE NEEDS ODBC IN THE BUILD, AND THAT IS A SHRINK THIS FILE
+# ARGUES AGAINST TWO PARAGRAPHS DOWN -- so it is named rather than taken
+# quietly. `stdlib/discovery.bas` opens with `load odbc`, and `load` is a
+# DECLARATION: it is pre-registered and cannot be conditional, so on a build
+# made without unixODBC the library cannot be loaded AT ALL and every tier
+# below goes red at line 13 of it, including the three that need no database.
+# Measured 2026-10-09 on a build made with odbc detection suppressed: 3 of 4
+# tiers failed and the valgrind tier reported a missing file, a red gate
+# describing a correct build -- which is what CI had been showing on every
+# push, its "all optional modules" job having never installed unixODBC.
+#
+# WHAT IS LOST BY SKIPPING, said plainly because a bare `SKIP` reads exactly
+# like a pass in scroll-back: the SQL reader (~60 checks over references,
+# projection, predicates, explain, statements, derivations), the supplied-notes
+# tier (~24), and the no-inference tripwire -- none of which touches a
+# database. The remedy is to install unixODBC, which CI now does; removing the
+# shrink outright needs `load` to stop raising for a module that is compiled
+# out, which is a LANGUAGE-VISIBLE decision and not this suite's to take.
+. "$(dirname "$0")/build_has.sh"
+if ! build_has odbc; then
+    printf 'SKIP run_discovery (no odbc in this build)\n'
+    printf '      NOTHING RAN. stdlib/discovery.bas opens with `load odbc`, which a\n'
+    printf '      build without unixODBC refuses, so even the tiers needing no\n'
+    printf '      database are unreachable: the SQL reader, the supplied notes and\n'
+    printf '      the no-inference tripwire. Install unixodbc-dev to run them.\n'
+    exit 0
+fi
+
 # READING SQL NEEDS NO DATABASE, AND THIS TIER RUNS BEFORE THE DRIVER GATE.
 # The parser used to be exercised only from inside the catalog fixture, so on
 # a machine with no ODBC driver the whole of it -- statements, derivations,
