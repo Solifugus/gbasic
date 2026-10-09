@@ -16,6 +16,46 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### The Windows port
+
+`master` carries the Windows port, merged 2026-10-08 and **not in any tag yet** —
+0.6.0 was deliberately tagged before it, and 0.6.1 is a patch on 0.6.0 that does
+not contain it either. Written here as it landed rather than reconstructed later,
+which is what this section is for.
+
+- **`gbasic.exe`**, built statically against Schannel and libcrypto, with ODBC,
+  sqlite, xml and xlsx; no LGPL code in the binary, and third-party notices
+  generated from what the linker actually used.
+- **Actors over `AF_UNIX` streams** with a length prefix, handles as paths.
+- **`password_hash` over a vendored yescrypt**, since libxcrypt is not available.
+- **A signed MSIX** with winget manifests, release signing via Azure Artifact
+  Signing.
+- **A VS Code extension**: a grammar generated from the lexer and held to it by a
+  suite, and live errors from `gbasic-lsp`.
+- **Three suites** (165 → 168): `run_windows_suite` (which runs
+  `tests/windows/*.bas` on **every** platform — and that is how the
+  `process.wait` defect below was found, on the platform it was not written for),
+  `run_capabilities` and `run_editor_grammar`, plus `run_vscode_extension`, which
+  skips until `npm ci` has been run.
+
+**Known, and needing a Windows machine to verify:** the `_WIN32` branch of
+`process_wait_until` does `Sleep(slice); elapsed_ms += slice` and so skips the
+clock-based accounting 0.6.1 added. `Sleep` really does sleep, so the error is in
+the generous direction rather than the early one, but the pump's own time is
+uncounted and the two platforms account differently.
+
+---
+
+## 0.6.1 — 2026-10-08
+
+**Read this first.** A patch release, and it is **one fix**: nothing is added,
+nothing is removed, and no message changes. If you call `process.wait` with a
+timeout, read on; otherwise 0.6.1 is 0.6.0.
+
+**It deliberately does NOT contain the Windows port**, which is on `master` and
+belongs to its own release. 0.6.0 was tagged before the port landed so the two
+could be told apart, and bundling a platform into a patch number would undo that.
+
 ### Fixed
 
 - **`process.wait(handle, timeout)` returned early on a child that was still
