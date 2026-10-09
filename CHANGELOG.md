@@ -16,6 +16,20 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+Nothing yet.
+
+---
+
+## 0.6.1 — 2026-10-08
+
+**Read this first.** A patch release, and it is **one fix**: nothing is added,
+nothing is removed, and no message changes. If you call `process.wait` with a
+timeout, read on; otherwise 0.6.1 is 0.6.0.
+
+**It deliberately does NOT contain the Windows port**, which is on `master` and
+belongs to its own release. 0.6.0 was tagged before the port landed so the two
+could be told apart, and bundling a platform into a patch number would undo that.
+
 ### Fixed
 
 - **`process.wait(handle, timeout)` returned early on a child that was still

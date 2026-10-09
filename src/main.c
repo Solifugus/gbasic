@@ -991,7 +991,7 @@ int main(int argc, char **argv) {
         print_help(argv[0]);
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        printf("gBASIC 0.6.0\n");
+        printf("gBASIC 0.6.1\n");
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--capabilities") == 0) {
         /* WHAT THIS INTERPRETER CAN TOUCH: one name per line, tab, its labels,
