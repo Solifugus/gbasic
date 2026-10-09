@@ -11,7 +11,7 @@ covering double-entry accounting, loan servicing, deposits, credit analytics,
 securities analysis and more. A gBASIC program is meant to be a real
 application, not a demonstration.
 
-This repository holds the C implementation of gBASIC `0.6.1`. It is an **early
+This repository holds the C implementation of gBASIC `0.7.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
 **169 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
@@ -634,7 +634,7 @@ design proposal as an available feature.
 ## Version
 
 ```sh
-./gbasic --version        # gBASIC 0.6.1
+./gbasic --version        # gBASIC 0.7.0
 ```
 
 ## Contributing

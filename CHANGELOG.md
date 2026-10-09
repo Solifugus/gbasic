@@ -16,12 +16,25 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
-### The Windows port
+---
 
-`master` carries the Windows port, merged 2026-10-08 and **not in any tag yet** —
-0.6.0 was deliberately tagged before it, and 0.6.1 is a patch on 0.6.0 that does
-not contain it either. Written here as it landed rather than reconstructed later,
-which is what this section is for.
+## 0.7.0 — 2026-10-09
+
+**Read this first.** Two things in this release reach past new features.
+
+**gBASIC runs on Windows.** This is the first tag containing the port — 0.6.0 was
+deliberately tagged before it landed so the release and the platform could be
+told apart, and 0.6.1 is a patch on 0.6.0 that does not contain it either. There
+is a signed installer.
+
+**And one fix changes answers a correct program was already getting**: the
+difference of two datetimes consulted the machine's timezone. If anything you
+have written quotes a day count, an age or a deadline, re-check it — details
+under *Fixed*, and the short version is that a program run outside UTC could be
+a day out, which in one of our own libraries put a loan in the wrong
+delinquency bucket.
+
+### The Windows port
 
 - **`gbasic.exe`**, built statically against Schannel and libcrypto, with ODBC,
   sqlite, xml and xlsx; no LGPL code in the binary, and third-party notices
