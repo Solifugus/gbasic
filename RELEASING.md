@@ -43,19 +43,28 @@ the release** needs, not a list: what broke, what moved, and which of the
 entries below change what a diagnostic *says*, since anything quoting a message
 verbatim has to re-capture it.
 
-The version is stated in **six** places and guarded **three** ways. Bump all
-six; the gates catch a miss:
+The version is stated in **seven** places and guarded **four** ways. Bump all
+seven; the gates catch a miss:
 
 | Place | Guarded by |
 |---|---|
-| `src/main.c` (`printf("gBASIC …")`) | the source of truth for the two below |
+| `src/main.c` (`printf("gBASIC …")`) | the source of truth for the three below |
 | `README.md` (the `--version` code block) | `run_examples.sh` compares `--version` to it |
 | `examples/gbasic_site/site.bas` | `run_docs_gate.sh` derives the wanted version from `src/main.c` |
 | `examples/gbasic_site/site_postgres.bas` | same, and checked separately — the prototype and the deployed app can drift |
+| `src/gbasic.manifest` (`assemblyIdentity version`) | `run_windows_suite.sh` compares it to `--version`, with the Win32 fourth component appended |
 | `README.md` (the prose line) | — |
 | `CLAUDE.md` | — |
 
-A half-bumped tree cannot ship. That is the point of three independent checks.
+A half-bumped tree cannot ship. That is the point of four independent checks.
+
+**The manifest was the SEVENTH and this table said six until 2026-10-08.** The
+Windows port added `src/gbasic.manifest` and, to its credit, the guard for it in
+the same breath — which is what caught the miss: bumping the documented six left
+the manifest at `0.6.0.0` and `run_windows_suite.sh` failed with
+`says 0.6.0.0 but gbasic --version says 0.6.1`. A Win32 assembly version has
+**four** components, so the check appends `.0` rather than comparing the strings,
+and the bump is `X.Y.Z.0`.
 
 **One version string in that list is NOT the release and must not move with
 it.** `book_version()` in `examples/gbasic_site/site.bas` is the release **the
