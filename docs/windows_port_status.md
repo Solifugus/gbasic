@@ -1,8 +1,16 @@
 # Windows port: what is measured, what is built, what is next
 
-**Status: Record.** A handover for a session working on the Windows port, on the
-`windows-port` branch. gBASIC is **Linux-only** today — `README.md` says so, and
-CI builds Ubuntu 22.04/24.04/current on x86-64 and nothing else.
+**Status: Record. THE PORT SHIPPED IN 0.7.0** (merged 2026-10-08, tagged
+2026-10-09): a signed MSIX and a statically linked `gbasic.exe`. This page
+opened "gBASIC is **Linux-only** today — `README.md` says so" for as long as it
+took somebody to ask whether the documentation was current, which is the rot
+every gate in this tree exists to prevent, in a page whose own subject is what
+is built and what is next.
+
+What has NOT changed is the guarantee: CI builds Ubuntu 22.04/24.04/current on
+x86-64 **and nothing else**, so the Windows build is made and tested by hand.
+That is a weaker claim than the Linux one and is worth stating wherever Windows
+support is, rather than letting a reader infer the same footing.
 
 Everything below was run. The commands are named so the next session can
 re-measure rather than trust this page.

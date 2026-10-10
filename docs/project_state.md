@@ -1,6 +1,6 @@
 # gBASIC Project State
 
-Last updated: 2026-10-03 (0.5.0)
+Last updated: 2026-10-10 (0.7.0)
 
 This file is the compact source of truth for current implementation status.
 Detailed language behavior belongs in `docs/reference.md`; completed development
@@ -9,7 +9,7 @@ document list, with a status column, is `docs/README.md`.
 
 ## Current Version
 
-- Version: `0.5.0`
+- Version: `0.7.0`
 - Implementation: C11
 - Front end: hand-written lexer and Bison parser
 - Runtime: tree-walking evaluator

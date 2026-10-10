@@ -24,15 +24,30 @@ One part *is* still experimental and says so everywhere it appears: the
 business-automation-reasoning libraries (`reasoning`, `insight`, `decision`,
 `automation`), which are a design laboratory rather than a toolkit.
 
-**Platform: Linux.** CI builds and runs the full suite on Ubuntu 24.04 LTS and
-current Ubuntu on x86-64, builds on Ubuntu 22.04 LTS (the oldest supported
-toolchain, gcc 11), builds and tests against **musl** as a statically linked
-binary, and riscv64 is a supported target. macOS and Windows
-are **not** tested and no support for them is claimed. On Windows, WSL2 runs the
-Linux build unchanged. An on-demand `macos-exploration` job exists in CI to find
-out what a Mac build would take; it never gates, and until it has run and been
-read, "untested" is the honest word — the Linux-specific surface is three
-mechanisms in two files, listed in the reference under *Platforms*.
+**Platforms: Linux and Windows.** CI builds and runs the full suite on Ubuntu
+24.04 LTS and current Ubuntu on x86-64, builds on Ubuntu 22.04 LTS (the oldest
+supported toolchain, gcc 11), builds and tests against **musl** as a statically
+linked binary, and riscv64 is a supported target.
+
+**Windows is supported as of 0.7.0** — a signed installer and a statically
+linked `gbasic.exe` that needs nothing beside it. The distinction worth knowing
+is that it is **built and tested by hand rather than in CI**, so it is a weaker
+guarantee than the Linux figure above; `tests/run_windows_suite.sh` runs on
+*every* platform, which is how a Windows-only assumption shows up on Linux too.
+Three things are deliberately absent there and say so when called: POSIX
+signals, the prompt's line editor, and the GTK bindings. WSL2 still runs the
+Linux build unchanged if you prefer it.
+
+**macOS is not supported, and is now measured rather than untested.** The
+on-demand `macos-exploration` job has been run and read: everything compiles
+there except the actor transport, and of the three blockers it exposed two are
+fixed (a Linux-only `recvmsg` flag, and a frame-sizing call that is a Linux
+extension and *answered zero* elsewhere — which would have made every receive
+look like a clean shutdown). What remains is that `AF_UNIX` has no
+`SOCK_SEQPACKET` on macOS and the `SOCK_DGRAM` fallback has **no end-of-file**,
+so an actor whose peer exits would hang the reader; that needs the channel layer
+to carry an explicit length prefix over a stream socket, as the Windows port
+does. The reference's *Platforms* section carries the measurements.
 
 **New here?** [Tutorial](docs/tutorial.md) to learn the language ·
 [Reference](docs/reference.md) for every construct and builtin ·

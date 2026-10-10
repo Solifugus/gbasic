@@ -8609,21 +8609,55 @@ EDGAR / SEC-filings suite (governed by `docs/edgar_design.md`, with
 
 ## Platforms
 
-gBASIC is developed and tested on **Linux** (CI builds on Ubuntu 24.04 and
-latest, with every optional module and with none).
+gBASIC runs on **Linux** and, since 0.7.0, on **Windows**. CI builds on Ubuntu
+24.04 and latest, with every optional module and with none; the Windows build is
+made and tested by hand rather than in CI, which is a weaker guarantee and is
+said plainly for that reason. `tests/run_windows_suite.sh` runs its fixtures on
+*every* platform, so a Windows-only assumption fails on Linux too.
 
-**macOS and Windows are untested**, and the word is exact — nobody has built it
-there, so "it does not work" would be as much a guess as "it does". The
-Linux-specific surface is small and enumerable: three mechanisms in two files —
-`SOCK_SEQPACKET` actor mailboxes (AF_UNIX has no `SEQPACKET` on macOS;
-`SOCK_DGRAM` keeps the message boundaries the code relies on), `/proc/self/exe`
-for the re-exec path (`_NSGetExecutablePath` on macOS), and `PR_SET_PDEATHSIG`
-for "nothing this interpreter started outlives it", which has no macOS
-equivalent and would need `kqueue`'s `NOTE_EXIT`. The event loop already uses
-`poll()` rather than `epoll`, so the usual blocker is absent.
+Deliberately absent on Windows, each refusing by name when called: POSIX signals
+(`process.stop` ends a child with a console control event instead), the prompt's
+line editor, and the GTK bindings. `docs/windows_port_status.md` records what was
+measured.
 
-`.github/workflows/ci.yml` carries an on-demand macOS job to turn that list into
-a measurement. On Windows, WSL2 runs the Linux build unchanged.
+**macOS is not supported, and the honest word is now *measured* rather than
+*untested*** — this section said "nobody has built it there" until 2026-10-10,
+and by then the on-demand `macos-exploration` job had been run and read.
+Everything compiles except the actor transport. Of the three blockers it
+exposed, two are fixed:
+
+- `MSG_CMSG_CLOEXEC` does not exist outside Linux. The flag is 0 there and each
+  received descriptor is marked immediately afterwards — see
+  `include/platform.h` for the residual race that difference leaves.
+- `recv(fd, NULL, 0, MSG_PEEK | MSG_TRUNC)`, which sizes the next frame, is a
+  **Linux extension**: POSIX defines `MSG_TRUNC` only as an output flag. macOS
+  defines the constant, so that call compiles there and **answers 0** — which
+  the actor loop reads as "the peer closed", because a real frame always carries
+  a 4-byte header. Actors would have delivered nothing at all, silently. It is
+  `gb_channel_peek_len` now, and `tests/channel_peek_probe.c` compiles both
+  branches and requires them to agree.
+
+What remains is the one this section used to get backwards. `AF_UNIX` has no
+`SOCK_SEQPACKET` on macOS, and the text here said `SOCK_DGRAM` "keeps the
+message boundaries the code relies on" — it keeps the boundaries and **has no
+end-of-file**, which the code relies on just as much. Measured on Linux, where
+both types exist:
+
+```text
+SOCK_SEQPACKET   peer closes -> recv returns 0
+SOCK_DGRAM       peer closes -> recv BLOCKS FOREVER
+```
+
+So an actor whose peer exits would hang the reader rather than report a
+shutdown. The remedy is the one the Windows port needed: an explicit length
+prefix over a stream socket in the channel layer. A rework, not a flag.
+
+The other two Linux-specific mechanisms are unchanged: `/proc/self/exe` for the
+re-exec path (`_NSGetExecutablePath` on macOS), and `PR_SET_PDEATHSIG` for
+"nothing this interpreter started outlives it", which has no macOS equivalent
+and would need `kqueue`'s `NOTE_EXIT`. The event loop already uses `poll()`
+rather than `epoll`, so the usual blocker is absent. On Windows, WSL2 runs the
+Linux build unchanged if you prefer it to the native one.
 
 ## The Prompt
 

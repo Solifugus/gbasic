@@ -957,4 +957,57 @@ else
     fi
 fi
 
+# --- THE INDEX MUST AGREE WITH THE DOCUMENT IT INDEXES ----------------------
+#
+# docs/README.md gives every page a STATUS, and so does the page itself. They
+# are two statements of one fact, which is the shape this gate catches
+# everywhere else -- and nothing was checking these two against each other.
+#
+# MEASURED 2026-10-10, when Matthew asked whether the documentation was up to
+# date: the index called `bulk_data_design.md` a **Proposal** whose summary read
+# "None of it exists", TWO RELEASES AFTER 0.6.0 SHIPPED IT, and the page's own
+# header said SHIPPED. `exact_number_design.md` was the same. A reader deciding
+# what gBASIC can do reads the INDEX, so the stale half is the one that is read.
+#
+# ONE DIRECTION ONLY, deliberately. "The index says Proposal, the page says
+# shipped" is unambiguously wrong. The reverse is not: a page may legitimately
+# ship one section and remain a proposal overall -- which is exactly what
+# bulk_data_design's own header now says -- so a symmetric rule would fire on
+# correct documents and get itself turned off.
+#
+# THE FIRST VERSION OF THIS CHECK WAS VACUOUS and passed against a planted
+# disagreement: it split the row with awk and read the status from field 5,
+# where the row's shape puts it in field 6, so the comparison was always made
+# against an empty string. Found by perturbing the index rather than by reading
+# the script. It matches the row's shape explicitly now, and the ROW COUNT is
+# asserted, so a pattern that stops matching fails loudly instead of checking
+# nothing.
+idx_rows="$(sed -n 's/^| \[\([^]]*\)\]([^)]*)[[:space:]]*|[[:space:]]*\([^|]*\)|.*/\1\t\2/p' docs/README.md)"
+idx_n="$(printf '%s\n' "$idx_rows" | grep -c . || true)"
+if [ "${idx_n:-0}" -lt 100 ]; then
+    echo "FAIL doc status    only ${idx_n:-0} index rows parsed; the table's shape moved and this check is measuring nothing"
+    status=1
+else
+    idx_ok=1
+    while IFS="$(printf '\t')" read -r dpath dsaid; do
+        [ -z "$dpath" ] && continue
+        [ -f "docs/$dpath" ] || continue
+        case "$(printf '%s' "$dsaid" | tr -d '* ' | tr '[:upper:]' '[:lower:]')" in
+            proposal) ;;
+            *) continue ;;
+        esac
+        downn="$(head -20 "docs/$dpath" | sed -n 's/.*\*\*Status:[[:space:]]*\([^*]*\)\*\*.*/\1/p' | head -1)"
+        case "$(printf '%s' "$downn" | tr '[:upper:]' '[:lower:]')" in
+            *shipped*|*implemented*)
+                echo "FAIL doc status    docs/README.md calls $dpath a proposal; the page says: $downn"
+                idx_ok=0; status=1 ;;
+        esac
+    done <<EOF
+$idx_rows
+EOF
+    if [ "$idx_ok" = "1" ]; then
+        echo "PASS doc status     no index row calls a page a proposal that the page itself calls shipped ($idx_n rows)"
+    fi
+fi
+
 exit "$status"
