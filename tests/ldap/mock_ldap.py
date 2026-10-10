@@ -200,7 +200,15 @@ def main():
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certdir + "/server.crt", certdir + "/server.key")
         srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-    sys.stderr.write("ready\n"); sys.stderr.flush()
+    # THE PORT IS REPORTED, NOT ASSUMED, so the caller can pass 0 and let the
+    # OS choose. The suite used to pick 13911/13912/13999 and its own comment
+    # claimed it would "fail loudly if busy" -- nothing implemented that, so a
+    # port already bound killed this process before `ready` and the suite that
+    # waited for it carried on. A test that binds a number somebody else may
+    # hold is a test that fails for reasons unrelated to what it measures, and
+    # on a shared CI runner that is not hypothetical.
+    sys.stderr.write("ready %d\n" % srv.socket.getsockname()[1])
+    sys.stderr.flush()
     srv.serve_forever()
 
 if __name__ == "__main__":

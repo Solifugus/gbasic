@@ -62,7 +62,8 @@ command -v python3 >/dev/null || { echo "SKIP run_ldap (no python3)"; exit 0; }
 command -v openssl >/dev/null || { echo "SKIP run_ldap (no openssl)"; exit 0; }
 
 # Ports are OS-assigned nowhere here, so pick high ones and fail loudly if busy.
-PLAIN=13911; TLS=13912; DEAD=13999
+# PORTS ARE OS-ASSIGNED, and each mock reports the one it got.
+PLAIN=0; TLS=0
 
 openssl req -x509 -newkey rsa:2048 -keyout "$scratch/server.key" \
     -out "$scratch/server.crt" -days 2 -nodes -subj "/CN=127.0.0.1" \
@@ -75,10 +76,53 @@ for _ in $(seq 1 100); do
     grep -q ready "$scratch/p.err" 2>/dev/null && grep -q ready "$scratch/s.err" 2>/dev/null && break
     sleep 0.1
 done
-if ! grep -q ready "$scratch/p.err" 2>/dev/null; then
-    fail "the mock directory started"; printf '\nrun_ldap: %d checks, %d failed\n' "$checks" "$failures"; exit 1
-fi
+# BOTH MOCKS, AND NAMED SEPARATELY. The loop waited for both and the guard
+# below checked only the PLAIN one, so an LDAPS mock that never came up let the
+# suite run anyway -- and then the two checks that need a live TLS listener
+# failed as `got unreachable, want tls_failed`, which reads as a defect in the
+# reason MAPPING and is really "there was nothing to connect to". `unreachable`
+# is the CORRECT answer to a refused connection; the fixture's premise is what
+# was false.
+#
+# CAUGHT IN CI, on 2026-10-09, the first run in which this suite had ever
+# executed there (its skip probe could not fire until the same day, and CI had
+# never installed libldap). It passes on this machine and failed on the runner,
+# which is the shape a fixed port and a slow start give you.
+#
+# The STDERR of whichever mock failed is printed, because the cause is in it and
+# nowhere else -- a port already bound, or `load_cert_chain` refusing the
+# certificate, both of which kill the mock before it writes `ready`. That is
+# also where the comment above becomes TRUE: "fail loudly if busy" was a claim
+# nothing implemented, and a busy 13912 was silent.
+for pair in "plain:$scratch/p.err" "ldaps:$scratch/s.err"; do
+    which="${pair%%:*}"; log="${pair##*:}"
+    if ! grep -q '^ready ' "$log" 2>/dev/null; then
+        fail "the $which mock directory started"
+        printf '    its stderr:\n'; sed 's/^/      /' "$log" 2>/dev/null | head -20
+        printf '\nrun_ldap: %d checks, %d failed\n' "$checks" "$failures"; exit 1
+    fi
+done
 
+PLAIN="$(sed -n 's/^ready //p' "$scratch/p.err" | head -1)"
+TLS="$(sed -n 's/^ready //p' "$scratch/s.err" | head -1)"
+
+# `DEAD` MUST NOT BE LISTENING -- it is the whole `unreachable` case -- so it is
+# chosen AFTER the mocks have bound, by binding a port and letting go. Chosen
+# BEFORE them the kernel could hand that very port to one of the mocks, and the
+# tier asserting a refused connection would quietly CONNECT: the one failure
+# mode here that looks like a pass. Asserted rather than trusted, since the
+# ordering makes it unlikely and not impossible.
+DEAD="$(python3 -c 'import socket
+s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+if [ "$DEAD" = "$PLAIN" ] || [ "$TLS" = "$DEAD" ] || [ -z "$DEAD" ]; then
+    fail "the dead port ($DEAD) collides with a live mock (plain $PLAIN, ldaps $TLS)"
+    printf '\nrun_ldap: %d checks, %d failed\n' "$checks" "$failures"; exit 1
+fi
+# And it really refuses, which is the premise the `unreachable` tier rests on.
+if (exec 3<>/dev/tcp/127.0.0.1/"$DEAD") 2>/dev/null; then
+    fail "the dead port $DEAD accepted a connection; `unreachable` cannot be tested against it"
+    printf '\nrun_ldap: %d checks, %d failed\n' "$checks" "$failures"; exit 1
+fi
 export LDAP_PLAIN_PORT="$PLAIN" LDAP_TLS_PORT="$TLS" \
        LDAP_CA_FILE="$scratch/server.crt" LDAP_DEAD_PORT="$DEAD"
 

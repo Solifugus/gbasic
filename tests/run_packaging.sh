@@ -73,6 +73,51 @@ else
     fail "the lean interpreter links $libs shared libraries, expected under 20"
 fi
 
+# EVERY OPTIONAL SWITCH MUST BE DECIDED, NOT DEFAULTED. `BUILD_FLAGS` in
+# package.conf is an ENUMERATION of what to compile out, so an optional
+# dependency the Makefile gains later is ON by default in a build called lean --
+# and whether it links at all then depends on what the build machine happens to
+# have installed, which is not a property anybody declared.
+#
+# THAT IS NOT HYPOTHETICAL, it is what this check was written for. The list
+# named six switches of thirteen, and the other five were off only because CI
+# had no unixODBC or libldap. The day CI installed them the ceiling above went
+# 15 -> 23 -- but the ceiling was only catching it INCIDENTALLY, and what it was
+# incidentally catching was worse than a count: the package declared `libc6,
+# libsqlite3-0, zlib1g` while its binary linked eleven libraries, so installing
+# it on a machine without libldap, libodbc, libsasl2, libltdl, libcrypto,
+# libssl or libcrypt would have produced a service that did not start.
+#
+# So the LIST is asserted rather than its consequence: every `*_AVAILABLE` the
+# Makefile knows about must be named in BUILD_FLAGS, unless the package declares
+# it in DEPENDS. A new optional dependency then fails HERE, naming itself, until
+# somebody decides which it is -- which is the whole difference between a
+# decision and a default.
+conf="$root/packaging/example-app/package.conf"
+# shellcheck source=/dev/null
+flags="$(. "$conf" >/dev/null 2>&1; printf '%s' "$BUILD_FLAGS")"
+deps="$(. "$conf" >/dev/null 2>&1; printf '%s' "$DEPENDS")"
+undecided=""
+for sw in $(command grep -oE '^[A-Z0-9_]+_AVAILABLE' "$root/Makefile" | sort -u); do
+    case " $flags " in *" $sw=0 "*) continue ;; esac
+    # Kept on purpose: the switch's library must be one DEPENDS names. The map is
+    # short and explicit, because "SQLITE3" and "libsqlite3-0" are not the same
+    # string and guessing between them is how a check like this goes quietly
+    # wrong in the permissive direction.
+    keep=0
+    case "$sw" in
+        SQLITE3_AVAILABLE) printf '%s' "$deps" | command grep -q 'libsqlite3' && keep=1 ;;
+        ZLIB_AVAILABLE)    printf '%s' "$deps" | command grep -q 'zlib1g'     && keep=1 ;;
+    esac
+    [ "$keep" = "1" ] && continue
+    undecided="$undecided $sw"
+done
+if [ -z "$undecided" ]; then
+    pass "every optional switch is either compiled out or declared in DEPENDS"
+else
+    fail "BUILD_FLAGS decides neither way about:$undecided -- a lean build must not inherit a dependency from the build machine"
+fi
+
 printf 'TIER structure\n'
 ctl="$(dpkg-deb -I "$DEB" 2>/dev/null)"
 for field in "Package: notesd" "Architecture:" "Depends:" "Maintainer:"; do
