@@ -405,6 +405,21 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     continue-on-error: true
+    # BOUNDED, BECAUSE THE FIRST RUN THAT GOT PAST THE BUILD COULD NOT FINISH.
+    # Measured 2026-10-10: it ran 3h16m and was still inside `Every suite`,
+    # against a Linux gate that completes in under an hour. The cause is known
+    # and is not slowness -- macOS has no SOCK_SEQPACKET on AF_UNIX, the
+    # SOCK_DGRAM fallback has NO END-OF-FILE, and src/actor.c reads a
+    # zero-length frame as "the peer closed", so an actor whose peer exits
+    # BLOCKS THE READER FOREVER. 22 suites touch actors and run_all gives each
+    # one an hour, so the work is ~22 hours against GitHub's 6-hour job cap:
+    # the job could only ever be killed by the limit, reporting a timeout and
+    # nothing else.
+    #
+    # A HANG IS NOT A FAILURE, which is this tree's own standing lesson applied
+    # to its own CI. An exploration job exists to PRODUCE A REPORT, so it is
+    # given a bound it can finish inside.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -443,5 +458,41 @@ jobs:
       - name: The prompt
         run: printf 'x = 2\nprint x * 21\nquit\n' | ./gbasic --repl
 
+      # SUITE_TIMEOUT IS DELIBERATELY LOW, AND THE COST IS STATED: at 240s the
+      # handful of genuinely slow suites are mislabelled -- run_ari_discover
+      # takes ~35 MINUTES on Linux AND PASSES, so it will read here as a
+      # timeout. That trade is right for this job and would be wrong for the
+      # gate: the question macOS exploration answers is WHICH SUITES HANG, and
+      # "140 pass, 22 hang" is worth far more than one suite's true runtime.
+      # Raise it when the actor channel is fixed and the answer changes.
+      #
+      # `|| true` because this step must reach the summary below even when
+      # suites fail -- the summary IS the deliverable, and the job carries
+      # continue-on-error anyway so it never gates.
       - name: Every suite
-        run: ./tests/run_all.sh
+        run: SUITE_TIMEOUT=240 ./tests/run_all.sh | tee "$RUNNER_TEMP/macos-suites.log" || true
+
+      # THE REPORT, which is the whole point of an exploration job and which the
+      # unbounded version never reached. Printed to the step summary so it is
+      # readable without opening the log.
+      - name: What macOS actually did
+        if: always()
+        run: |
+          log="$RUNNER_TEMP/macos-suites.log"
+          [ -f "$log" ] || { echo "the suite step produced no log"; exit 0; }
+          {
+            echo '## macOS exploration'
+            echo
+            echo '```'
+            tail -5 "$log"
+            echo '```'
+            echo
+            echo '### Suites that did not pass'
+            echo
+            echo '```'
+            grep -E '^\S+ +(FAIL|TIMEOUT)' "$log" | head -40 || echo '(none)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          tail -5 "$log"
+          echo '--- did not pass ---'
+          grep -E '^\S+ +(FAIL|TIMEOUT)' "$log" | head -40 || true
