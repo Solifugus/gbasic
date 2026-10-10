@@ -67,6 +67,27 @@ check("an unreachable directory does not bind", down.ok, false)
 check("  and is NOT reported as a bad password", down.reason, "unreachable")
 check("so the two failures are distinguishable", bad.reason != down.reason, true)
 
+' AND A DEAD HOST OVER TLS IS STILL `unreachable`, WHICH IS THE CONTROL ON HOW
+' tls_failed IS DECIDED. The reason is no longer read out of libldap's English
+' -- the wording belongs to whichever TLS library the distribution built it
+' against, and Ubuntu 24.04's GnuTLS build said nothing the test matched, so an
+' untrusted certificate came back `unreachable` there and the module's whole
+' claim failed on one build of one distribution. The fallback asks the NETWORK
+' instead: if TLS was wanted and the port accepts a connection, the host is up
+' and the failure is above the transport.
+'
+' THAT NEEDS A NEGATIVE OR IT IS UNFALSIFIABLE. The case above declares
+' `plain`, so it never exercises the probe at all; this one wants TLS against a
+' port nothing is listening on, where the probe must FAIL and the answer must
+' stay `unreachable`. Without it a probe that always said "accepted" would
+' report every unreachable directory as a certificate problem -- sending an
+' operator to look at certificates during an outage -- and every check in this
+' file would still pass.
+dead_tls = ldap.connect({ host: "127.0.0.1", port: dead_port, security: "ldaps" })
+down_tls = ldap.bind(dead_tls, alice, "correct horse")
+check("a dead host over TLS does not bind", down_tls.ok, false)
+check("  and is `unreachable`, not a certificate problem", down_tls.reason, "unreachable")
+
 untrusted = ldap.connect({ host: "127.0.0.1", port: ldaps_port, security: "ldaps" })
 tls = ldap.bind(untrusted, alice, "correct horse")
 check("an untrusted certificate does not bind", tls.ok, false)

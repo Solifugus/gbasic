@@ -92,6 +92,34 @@ let-it-crash rule, so a directory with an expired certificate would crash a
 worker on **every login attempt** instead of showing "sign-in is unavailable".
 It also left `tls_failed` documented but unreachable from StartTLS.
 
+**`tls_failed` is decided by asking the network, not by reading libldap's
+English** — a second correction, and this one came from CI rather than from a
+user. libldap returns `LDAP_SERVER_DOWN` for a refused connection *and* for a
+failed handshake, so the two had been separated by looking for `SSL`, `TLS` or
+`certificate` in the diagnostic. That text belongs to whichever TLS library the
+**distribution** built OpenLDAP against, and Debian and Ubuntu have changed
+their mind about which: 24.04 ships a GnuTLS build, newer releases are back on
+OpenSSL now that its licence is Apache-2.0. Measured 2026-10-09 — the suite
+passed on a machine linking `libssl.so.3` and failed on 24.04, reporting
+`unreachable` for an untrusted certificate. So the claim this module exists to
+make held on one build of one distribution and not another, which is the worst
+shape a portability defect can take: invisible wherever it was developed.
+
+The fallback is a plain TCP connect to the same host and port, run only when
+TLS was requested and the text said nothing. If something accepts, the host is
+up and answering, so a `SERVER_DOWN` can only have come from above the
+transport. If nothing accepts, it is `unreachable`. That is a fact about the
+world rather than a library's phrasing, and it cannot rot the next time a
+distribution switches backend. The string test is kept and still runs first,
+being precise and free where it matches; the probe is bounded, because a
+classifier that can hang is worse than one that guesses.
+
+**The control is a dead host over TLS**, which must still answer `unreachable`.
+Without it the rule is unfalsifiable: a probe that always claimed "accepted"
+would report every outage as a certificate problem — sending an operator to
+look at certificates while the directory is simply down — and every other check
+in the suite would still pass.
+
 An application cannot accidentally conflate them, because it has to read
 `reason` to learn anything at all. Following `market`'s treatment of a dead
 network and `try_decode`'s of malformed input: failure is a value where failure

@@ -42,11 +42,57 @@ static void ldap_raise(const char *message) {
  * for a TLS failure and is NULL for a refused connection. Measured, both ways,
  * before this was written.
  *
- * That makes the detection a string test, which is fragile in the usual way --
- * it depends on OpenSSL's wording. It is used only to pick between two reasons
- * that are both failures, so the worst case is a TLS problem reported as
- * `unreachable`, never a failure reported as success. */
-static const char *ldap_reason_for(int rc, const char *diag) {
+ * THE STRING TEST WAS NOT ENOUGH, AND THE REASON IS A PLATFORM SPLIT NOBODY
+ * COULD GUESS AT. The wording belongs to whichever TLS library the
+ * DISTRIBUTION built libldap against, and Debian and Ubuntu have changed their
+ * mind about that: Ubuntu 24.04 ships an OpenLDAP built on GnuTLS, while newer
+ * releases are back on OpenSSL now that its licence is Apache-2.0. Measured
+ * 2026-10-09 -- this test passed on a developer machine linking libssl.so.3 and
+ * FAILED in CI on 24.04, reporting `unreachable` for an untrusted certificate.
+ * The claim this module exists to make, that an operator can tell a
+ * certificate problem from a restart, was therefore true on one build of the
+ * same distribution and false on another.
+ *
+ * SO THE FALLBACK ASKS THE NETWORK INSTEAD OF READING ENGLISH. When TLS was
+ * requested and the text says nothing, a plain TCP connect to the same host and
+ * port settles it: if something accepts, the host is up and answering, so a
+ * `SERVER_DOWN` can only have come from the layer ABOVE the transport. If
+ * nothing accepts, it is unreachable. That is a fact about the world rather
+ * than about a library's phrasing, and it cannot rot when a distribution
+ * changes its TLS backend again.
+ *
+ * The string test is kept and still goes FIRST, because where it matches it is
+ * precise and costs nothing. The probe runs only on an already-failing bind,
+ * sends no bytes, and is bounded -- a classifier that could hang would be worse
+ * than one that guesses. */
+static int ldap_port_accepts(const char *host, int port) {
+    if (!host || port <= 0) return 0;
+    char service[16];
+    snprintf(service, sizeof(service), "%d", port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, service, &hints, &res) != 0 || !res) return 0;
+    int accepted = 0;
+    for (struct addrinfo *ai = res; ai && !accepted; ai = ai->ai_next) {
+        int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) continue;
+        /* BOUNDED, because this runs inside a bind a caller is waiting on. A
+         * blocking connect to a dropped packet waits for the kernel's own SYN
+         * retry budget, which is over two minutes on Linux. */
+        struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) accepted = 1;
+        close(fd);
+    }
+    freeaddrinfo(res);
+    return accepted;
+}
+
+static const char *ldap_reason_for_conn(int rc, const char *diag,
+                                        const LdapConnectionValue *conn) {
     switch (rc) {
     case LDAP_SUCCESS:              return "";
     case LDAP_INVALID_CREDENTIALS:
@@ -58,6 +104,10 @@ static const char *ldap_reason_for(int rc, const char *diag) {
                      || strstr(diag, "certificate"))) {
             return "tls_failed";
         }
+        if (conn && conn->wants_tls
+            && ldap_port_accepts(conn->probe_host, conn->probe_port)) {
+            return "tls_failed";
+        }
         return "unreachable";
     case LDAP_UNAVAILABLE:
     case LDAP_BUSY:                 return "unreachable";
@@ -65,6 +115,12 @@ static const char *ldap_reason_for(int rc, const char *diag) {
     case LDAP_TIMELIMIT_EXCEEDED:   return "timeout";
     default:                        return "server_error";
     }
+}
+
+/* The connectionless form, for the one caller that is classifying a result code
+ * with no handle in hand. It cannot probe, so it answers exactly as before. */
+static const char *ldap_reason_for(int rc, const char *diag) {
+    return ldap_reason_for_conn(rc, diag, NULL);
 }
 
 static LdapConnectionValue *ldap_conn_arg(AstExpr *expr, size_t index,
@@ -276,8 +332,6 @@ static Value ldap_eval_connect(AstExpr *expr) {
         }
     }
 
-    free(host); free(security); free(ca_file);
-
     LdapConnectionValue *conn = calloc(1, sizeof(LdapConnectionValue));
     if (!conn) {
         ldap_unbind_ext_s(ld, NULL, NULL);
@@ -288,6 +342,14 @@ static Value ldap_eval_connect(AstExpr *expr) {
     conn->fail_reason = fail_reason;
     conn->fail_message = fail_message;
     conn->fail_code = fail_code;
+    /* Kept for the reachability probe in ldap_reason_for. `is_starttls` is not
+     * included: that path already KNOWS the handshake failed and says so
+     * outright, which is why it never needed a guess. */
+    conn->probe_host = copy_string(host);
+    conn->probe_port = (int)port;
+    conn->wants_tls = (is_ldaps || is_starttls) ? 1 : 0;
+
+    free(host); free(security); free(ca_file);
     return value_ldap_connection(conn);
 }
 
@@ -359,7 +421,7 @@ static Value ldap_eval_bind(AstExpr *expr) {
         conn->bound = 1;
         out = ldap_bind_result(1, "", rc, "");
     } else {
-        out = ldap_bind_result(0, ldap_reason_for(rc, diag), rc,
+        out = ldap_bind_result(0, ldap_reason_for_conn(rc, diag, conn), rc,
                                (diag && diag[0]) ? diag : ldap_err2string(rc));
     }
     if (diag) {

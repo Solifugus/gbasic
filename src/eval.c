@@ -453,6 +453,13 @@ struct LdapConnectionValue {
     char *fail_reason;
     char *fail_message;
     int fail_code;
+    /* WHERE THIS CONNECTION POINTS, and whether TLS was asked for. Kept so a
+     * failed bind can tell a certificate problem from an unreachable host by
+     * ASKING THE NETWORK rather than by reading libldap's English -- see
+     * ldap_reason_for in modules/ldap.c for why the text cannot be trusted. */
+    char *probe_host;
+    int probe_port;
+    int wants_tls;
 };
 
 /* A compiled regular expression (docs/text_design.md §3, decision §13.D).
@@ -4462,6 +4469,7 @@ static void value_free(Value value) {
 #endif
             free(connection->fail_reason);
             free(connection->fail_message);
+            free(connection->probe_host);
             free(connection);
         }
     } else if (value.kind == VALUE_ODBC_CONNECTION) {
