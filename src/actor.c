@@ -940,16 +940,44 @@ int channel_recv(int read_fd, void **out, size_t *out_len) {
     return rc;
 }
 
+/* CLOSE-ON-EXEC ON A RECEIVED DESCRIPTOR, which is a security property and not
+ * bookkeeping: a descriptor that survives exec is handed to every child this
+ * interpreter spawns, and `spawn` is fork+exec.
+ *
+ * Linux buys it atomically with MSG_CMSG_CLOEXEC, set as the descriptors are
+ * installed, so there is no window. macOS and the BSDs have no such flag --
+ * this was the ONE compile error standing between gBASIC and a macOS build --
+ * so there the flag is 0 and each descriptor is marked immediately after
+ * recvmsg returns.
+ *
+ * THE DIFFERENCE IS A RACE AND IT IS STATED RATHER THAN GLOSSED: between the
+ * recvmsg and the fcntl, a concurrent fork+exec would inherit the descriptor.
+ * It is NOT reachable in gBASIC today -- the actor path is the main thread, and
+ * the only other threads this interpreter starts are frontend parsers, which
+ * never exec -- but it is a real difference in the guarantee, and a future
+ * thread that execs would reopen it on macOS and not on Linux. */
+#ifdef MSG_CMSG_CLOEXEC
+#define GB_MSG_CMSG_CLOEXEC MSG_CMSG_CLOEXEC
+#define GB_CMSG_CLOEXEC_IS_ATOMIC 1
+#else
+#define GB_MSG_CMSG_CLOEXEC 0
+#define GB_CMSG_CLOEXEC_IS_ATOMIC 0
+#endif
+
 int channel_recv_fds(int read_fd, void **out, size_t *out_len,
                      int **out_fds, size_t *out_nfds) {
     *out_fds = NULL;
     *out_nfds = 0;
     for (;;) {
-        /* Peek the exact next-frame size without consuming it (MSG_TRUNC on a
-         * datagram socket reports the true length). Frames always carry the
-         * serializer's 4-byte header, so a length of 0 unambiguously means the
-         * peer closed -- never an empty frame. */
-        ssize_t need = recv(read_fd, NULL, 0, MSG_PEEK | MSG_TRUNC);
+        /* Peek the exact next-frame size without consuming it. Frames always
+         * carry the serializer's 4-byte header, so a length of 0 unambiguously
+         * means the peer closed -- never an empty frame.
+         *
+         * THROUGH THE PLATFORM LAYER, because the obvious one-liner --
+         * `recv(fd, NULL, 0, MSG_PEEK | MSG_TRUNC)` -- is a LINUX EXTENSION
+         * that compiles elsewhere and answers 0, which the check below would
+         * read as a clean shutdown. See include/platform.h. */
+        ssize_t need = gb_channel_peek_len(read_fd);
         if (need < 0) {
             if (errno == EINTR) {
                 continue;
@@ -976,7 +1004,7 @@ int channel_recv_fds(int read_fd, void **out, size_t *out_len,
         msg.msg_control = cbuf;
         msg.msg_controllen = sizeof cbuf;
 
-        ssize_t n = recvmsg(read_fd, &msg, MSG_CMSG_CLOEXEC);
+        ssize_t n = recvmsg(read_fd, &msg, GB_MSG_CMSG_CLOEXEC);
         if (n < 0) {
             free(buf);
             if (errno == EINTR) {
@@ -1010,6 +1038,13 @@ int channel_recv_fds(int read_fd, void **out, size_t *out_len,
             fds = grown;
             memcpy(fds + nfds, src, sizeof(int) * count);
             nfds += count;
+        }
+
+        /* Where the kernel could not do it atomically, do it now. */
+        if (!GB_CMSG_CLOEXEC_IS_ATOMIC) {
+            for (size_t i = 0; i < nfds; i++) {
+                gb_set_cloexec(fds[i], 1);
+            }
         }
 
         *out = buf;

@@ -226,6 +226,53 @@ else
     cat "$work/f36o.err"; fail "2110 fires outside a watcher"
 fi
 
+# THE CHANNEL'S PLATFORM LAYER, in C, because the half that matters is the half
+# this machine does not run. `gb_channel_peek_len` sizes the next frame, and
+# Linux does it with one zero-byte `recv(MSG_PEEK|MSG_TRUNC)` -- its own
+# extension. POSIX defines MSG_TRUNC only as an OUTPUT flag, so that call
+# COMPILES on macOS and answers 0, which src/actor.c reads as "the peer closed":
+# actors would have delivered NOTHING, silently, on the first platform to try.
+#
+# Compiled BOTH ways and required to agree, which makes the Linux implementation
+# an ORACLE for the portable one rather than two things nobody compared. Without
+# the forced build the portable branch is unreachable from any machine here, and
+# an unreachable branch in a message transport is how a port ships broken.
+printf 'TIER the channel peek, both branches\n'
+if ! command -v cc >/dev/null 2>&1; then
+    pass "SKIP (no C compiler)"
+else
+    for mode in native portable; do
+        flag=""
+        [ "$mode" = portable ] && flag="-DGB_FORCE_PORTABLE_PEEK=1"
+        # shellcheck disable=SC2086
+        if ! cc -std=c11 -Wall -Wextra -Iinclude $flag \
+                -o "$work/peek_$mode" tests/channel_peek_probe.c src/platform_posix.c \
+                2>"$work/peek_$mode.cc"; then
+            cat "$work/peek_$mode.cc"; fail "the $mode peek probe did not compile"
+            continue
+        fi
+        # BOUNDED, and that is not boilerplate here: this probe measures closure
+        # semantics, and the defect it found is a reader that BLOCKS FOREVER.
+        if timeout -k 5 60 "$work/peek_$mode" >"$work/peek_$mode.out" 2>&1; then
+            n=$(grep -c '^  ok' "$work/peek_$mode.out" || true)
+            if [ "${n:-0}" -lt 10 ]; then
+                cat "$work/peek_$mode.out"; fail "$mode peek: only ${n:-0} checks ran"
+            else
+                pass "$mode peek branch ($n checks)"
+            fi
+        else
+            cat "$work/peek_$mode.out"; fail "$mode peek probe"
+        fi
+    done
+    # AND THEY MUST AGREE, which is the point: one is the oracle for the other.
+    if diff -q "$work/peek_native.out" "$work/peek_portable.out" >/dev/null 2>&1; then
+        pass "the two branches size every frame identically"
+    else
+        diff "$work/peek_native.out" "$work/peek_portable.out" | head -10
+        fail "the portable peek disagrees with the Linux one"
+    fi
+fi
+
 printf 'TIER valgrind\n'
 if vg_available; then
     if vg_run ./gbasic tests/inbox_test.bas >/dev/null 2>"$work/vg.err"; then

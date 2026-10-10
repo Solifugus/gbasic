@@ -91,15 +91,86 @@ int gb_channel_socketpair(int sv[2]) {
      * relied on -- see the header. */
     return socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) == 0;
 #elif defined(__APPLE__)
-    /* UNVERIFIED. AF_UNIX has no SOCK_SEQPACKET here. SOCK_DGRAM preserves
-     * boundaries, which is the framing property; whether its send is
-     * all-or-nothing for the sizes this tree uses is a SEPARATE question and is
-     * unmeasured. A partial send that reported success would hand a reader half a
-     * frame, and nothing downstream could tell. */
+    /* NOT SUFFICIENT, AND NOW MEASURED RATHER THAN "UNVERIFIED". AF_UNIX has no
+     * SOCK_SEQPACKET here. SOCK_DGRAM preserves boundaries, which is the framing
+     * property -- but it HAS NO END-OF-FILE, and src/actor.c reads a
+     * zero-length frame as "the peer closed". Measured on Linux, where both
+     * types exist (tests/channel_peek_probe.c): closing the peer gives recv 0 on
+     * SEQPACKET and BLOCKS FOREVER on DGRAM. So an actor whose peer exits would
+     * hang the reader here instead of reporting a shutdown.
+     *
+     * Left in place deliberately: it is the closest thing the platform offers,
+     * it makes the rest of the port buildable and testable, and the real remedy
+     * is the one Windows needed -- a STREAM socket with an explicit length
+     * prefix in the channel layer. See include/platform.h. */
     return socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) == 0;
 #else
     (void)sv;
     return 0;
+#endif
+}
+
+ssize_t gb_channel_peek_len(int fd) {
+/* GB_FORCE_PORTABLE_PEEK SELECTS THE NON-LINUX BRANCH ON LINUX, which is the
+ * only way this code can be tested at all from here: the branch below exists
+ * for macOS and the BSDs, no such machine is reachable, and an untested branch
+ * in the actor transport is how a platform ships with actors that silently
+ * deliver nothing. tests/channel_peek_probe.c compiles with it and asserts the
+ * sizing against a real socketpair. */
+#if defined(__linux__) && !defined(GB_FORCE_PORTABLE_PEEK)
+    /* One zero-byte read answers it: MSG_TRUNC as an input flag is Linux's own
+     * extension and reports the datagram's true length. */
+    return recv(fd, NULL, 0, MSG_PEEK | MSG_TRUNC);
+#else
+    /* THE PORTABLE FORM, and it exists because the Linux one COMPILES
+     * ELSEWHERE AND LIES. POSIX defines MSG_TRUNC only as an output flag, so
+     * macOS answers 0 to the call above -- which src/actor.c reads as "the peer
+     * closed", since a real frame always carries a 4-byte header. Actors would
+     * have delivered nothing, silently.
+     *
+     * So the question is asked with only what POSIX guarantees: peek into a
+     * buffer and grow while the kernel reports the data was truncated. MSG_PEEK
+     * does not consume, so retrying is free of side effects.
+     *
+     * The control byte buffer is NOT supplied deliberately -- this call is only
+     * sizing the payload, and asking for the descriptors here would receive
+     * them twice. */
+    size_t cap = 4096;
+    for (;;) {
+        char *probe = malloc(cap);
+        if (!probe) {
+            errno = ENOMEM;
+            return -1;
+        }
+        struct iovec iov;
+        iov.iov_base = probe;
+        iov.iov_len = cap;
+        struct msghdr msg;
+        memset(&msg, 0, sizeof msg);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        ssize_t n = recvmsg(fd, &msg, MSG_PEEK);
+        if (n < 0) {
+            int saved = errno;
+            free(probe);
+            errno = saved;
+            return -1;
+        }
+        int truncated = (msg.msg_flags & MSG_TRUNC) != 0;
+        free(probe);
+        if (!truncated) {
+            return n;
+        }
+        /* It did not fit. A frame is bounded by the socket's own buffer, so this
+         * cannot grow without end, but the ceiling is explicit rather than
+         * trusted -- an unbounded doubling driven by a peer is a denial of
+         * service, not a loop. */
+        if (cap >= (size_t)16 * 1024 * 1024) {
+            errno = EMSGSIZE;
+            return -1;
+        }
+        cap *= 2;
+    }
 #endif
 }
 

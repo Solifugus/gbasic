@@ -70,9 +70,21 @@ int gb_exe_path(char *buf, size_t size);
  *   all-or-nothing. The GI bridge's mailbox source and the `watch(inbox.messages)`
  *   delivery path both rest on it; without it a reader can see half a message and
  *   nothing says so.
- * macOS: has no SOCK_SEQPACKET on AF_UNIX. SOCK_DGRAM is the candidate because it
- *   also preserves boundaries -- BUT THAT MUST BE MEASURED, not assumed, and the
- *   all-or-nothing send property measured separately from the framing one.
+ * macOS: has no SOCK_SEQPACKET on AF_UNIX, and SOCK_DGRAM -- which this file
+ *   called "the candidate" until 2026-10-10 -- IS NOT ONE. It preserves
+ *   boundaries, which is the framing property, and it DOES NOT HAVE
+ *   END-OF-FILE. Measured on Linux, where both types exist, by
+ *   tests/channel_peek_probe.c:
+ *
+ *       SOCK_SEQPACKET   peer closes -> recv returns 0
+ *       SOCK_DGRAM       peer closes -> recv BLOCKS FOREVER
+ *
+ *   src/actor.c reads a zero-length frame as "the peer closed" -- sound only on
+ *   a socket with EOF semantics -- so over SOCK_DGRAM an actor whose peer exits
+ *   would leave the reader blocked instead of reporting a clean shutdown. A
+ *   HANG, not a failure, which is the one outcome a suite cannot tell from slow.
+ *   So macOS needs what Windows needed: a STREAM socket with an explicit length
+ *   prefix in the channel layer. That is a rework, not a flag.
  * Windows: AF_UNIX is stream-only, so the property cannot be bought from the
  *   socket at all and the channel layer needs an explicit length prefix, which
  *   src/actor.c does not have today.
@@ -80,6 +92,26 @@ int gb_exe_path(char *buf, size_t size);
  * Returns 1 on success, 0 on failure.
  */
 int gb_channel_socketpair(int sv[2]);
+
+/* How long is the next whole frame on a channel socket, WITHOUT consuming it.
+ *
+ * LINUX: recv(fd, NULL, 0, MSG_PEEK | MSG_TRUNC). Linux extends recv so that
+ *   MSG_TRUNC as an INPUT flag means "tell me the datagram's real length", which
+ *   lets a reader size its buffer exactly with a zero-byte read.
+ * EVERYWHERE ELSE: that is a Linux extension, and POSIX defines MSG_TRUNC only
+ *   as an OUTPUT flag in msg_flags. macOS defines the constant, so
+ *   `recv(fd, NULL, 0, MSG_PEEK | MSG_TRUNC)` COMPILES THERE AND ANSWERS 0 --
+ *   and src/actor.c reads 0 as "the peer closed", because a real frame always
+ *   carries the serializer's 4-byte header. So every receive would have looked
+ *   like a clean shutdown: actors would simply never deliver a message, with
+ *   nothing raised and nothing to grep for. The portable form peeks with a real
+ *   buffer and grows while msg_flags reports MSG_TRUNC, which asks the same
+ *   question using only what POSIX guarantees.
+ *
+ * Returns the length, 0 if the peer closed, or -1 with errno set (EINTR is the
+ * caller's to retry).
+ */
+ssize_t gb_channel_peek_len(int fd);
 
 /* Arm "this process dies when its parent does", at the kernel level.
  *
