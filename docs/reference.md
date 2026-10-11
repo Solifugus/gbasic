@@ -6767,6 +6767,7 @@ missing until 0.7.1 was anywhere to look it up *before* reaching it. These
 21 of the 66 standard libraries need an optional dependency; every
 other one is pure gBASIC over the core and works on any build.
 
+<!--LIBNEEDS:loads-->
 | library | needs installed |
 | --- | --- |
 | `agent` | libcurl |
@@ -6790,6 +6791,7 @@ other one is pure gBASIC over the core and works on any build.
 | `retrieval` | libpq |
 | `screener` | libsqlite3 |
 | `sourceeditor` | GObject-Introspection |
+<!--LIBNEEDS:end-->
 
 **The column is what to install, not what the error says.** The modules refuse
 in their own words, and *WebClient*, *HTTP* and *SMTP* are three faces of
@@ -6815,31 +6817,49 @@ table above misses and the worse half, because the failure is deferred to the
 call. These 3 call a **builtin** whose availability moves with the build, so
 nothing in their `load` lines gives them away:
 
+<!--LIBNEEDS:calls-->
 | library | loads anywhere, but its functions need |
 | --- | --- |
 | `crypto` | libcrypto |
 | `gpdf` | zlib |
 | `otp` | libcrypto |
+<!--LIBNEEDS:end-->
 
-Measured on the published lean archive: `load crypto` and `load otp` both
-succeed, and then every function of either answers *HMAC requires OpenSSL
-(libcrypto); rebuild with it installed*. `gpdf` needs zlib only for a
-compressed stream, so it is the one of the three that is partly usable.
+Measured on the 0.7.0 lean archive: `load crypto` and `load otp` both succeed,
+and then every function of either answers *HMAC requires OpenSSL (libcrypto);
+rebuild with it installed*. Both work on `-full`. **`gpdf` works on both archives the
+release build now produces**, zlib having become static — it is listed here
+because the dependency is real and a build without zlib still has it.
 
 This list is derived too — from `src/builtins.c`'s own `#if` guards, so a
 builtin that becomes optional, or stops being, moves it without an edit.
 
-**What the published downloads carry.** The `-full` archive can run **8** of
-these 21 — the libcurl and libsqlite3 rows — and the lean archive **none** of
-them, so **13** of the libraries inside the `-full` tarball cannot be
-loaded by the binary shipped beside it. Anything needing libxml2 or
-GObject-Introspection means building from source, and that is a measured
-decision rather than an oversight: `tools/build-release-tarball.sh` records
-that libxml2's soname is `.so.2` across most of the supported range and
-`.so.16` from libxml2 2.14, and libpq, unixODBC, OpenLDAP and GTK are simply
-absent from an ordinary machine — in every one of those cases a linked binary
-**does not start at all**, which is strictly worse than a library that refuses
-with a message naming what to install.
+**What the downloads carry.** `tools/build-release-tarball.sh` links **libxml2
+and zlib statically** into both tiers, so every library in the libxml2 rows
+works on *either* archive, and so do `xlsx` and `compress`/`uncompress`. Static
+linking leaves no soname to vary and no library to be absent, which is why it
+reaches a case `dlopen` cannot — the XML reader depends on libxml2's struct
+layout, and a soname bump is precisely the announcement that a layout moved.
+
+| | can load | cannot |
+| --- | --- | --- |
+| lean (`libc`, `libm` only) | 50 of 66 | **16** — the libcurl, libsqlite3, libpq, unixODBC and GObject-Introspection rows |
+| `-full` (+ sqlite3, libcurl, libssl, libcrypto) | 60 of 66 | **6** — `discovery` (unixODBC), `retrieval` (libpq), and the four GObject-Introspection libraries |
+
+**The 0.7.0 archives predate this** and carry 44 and 52 of 65 respectively,
+with libxml2 in neither; the figures above describe what the release build
+produces now. Both numbers are asserted by the build itself, which sweeps every
+library against the binary it just made and refuses to publish an archive whose
+unloadable set is not what the derivation above predicts.
+
+What is left needs a build from source, and that is a measured decision rather
+than an oversight. libpq, unixODBC and GTK are **not installed on an ordinary
+machine**, and a linked binary that cannot find one does not start at all — a
+library refusing with a message naming what to install is strictly better.
+GObject-Introspection additionally needs runtime data a binary cannot carry
+(typelibs, icon themes, GSettings schemas, a display), so neither linking nor
+`dlopen` reaches it; `tools/build-deb.sh` is the route there. The reasoning and
+the measurements are in `docs/dependency_linking_design.md`.
 
 General-purpose:
 

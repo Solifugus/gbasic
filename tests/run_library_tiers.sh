@@ -130,15 +130,22 @@ fi
 # ---------------------------------------------------------------------------
 printf 'TIER the reference table agrees with the derivation, both directions\n'
 # The table rows: | `lib` | Caps, Caps |
-# THE RANGE ENDS AT THE NEXT HEADING, not at `General-purpose:`. It used to run
-# to the latter, and adding the call-time table BETWEEN the two swept its three
-# rows into the load-time comparison -- which failed loudly rather than quietly,
-# but a range bounded by something far away is a range that will do it again.
-sed -n '/^### Which libraries need something from the build/,/^### And three that load/p' "$REF" \
+# THE TABLES ARE MARKER-DELIMITED, which is the third shape of the same bug and
+# the reason to stop using prose as a boundary. First the range ran to
+# `General-purpose:`, far below, and adding the call-time table between the two
+# swept its rows into the load-time comparison. Then it ran to a heading, and
+# rewording the paragraph after the table broke it again. `<!--LIBNEEDS:loads-->`
+# to `<!--LIBNEEDS:end-->` is a region an edit to the surrounding words cannot
+# move -- the same device `tools/sync_xlsx_cookbook.sh` uses on the cookbook
+# pages, for the same reason.
+sed -n '/^<!--LIBNEEDS:loads-->/,/^<!--LIBNEEDS:end-->/p' "$REF" \
   | awk -F'|' '/^\| `/ { gsub(/[` ]/, "", $2); gsub(/^ +| +$/, "", $3); gsub(/, /, ",", $3); print $2, $3 }' \
   | sort > "$work/declared"
 awk 'NF>1' "$work/derived" > "$work/derived_dep"
 
+if [ "$(command grep -c '^<!--LIBNEEDS:' "$REF")" != "4" ]; then
+    fail "expected 4 LIBNEEDS markers in $REF, found $(command grep -c '^<!--LIBNEEDS:' "$REF") -- a missing marker makes both comparisons read an empty region"
+fi
 if [ ! -s "$work/declared" ]; then
     fail "no table rows found in $REF -- the section or its format has moved"
 else
@@ -198,7 +205,7 @@ else
     pass "$n_calls libraries load anywhere and need something at call time"
 fi
 
-sed -n '/^### And three that load, then fail/,/^\*\*What the published downloads carry/p' "$REF" \
+sed -n '/^<!--LIBNEEDS:calls-->/,/^<!--LIBNEEDS:end-->/p' "$REF" \
   | awk -F'|' '/^\| `/ { gsub(/[` ]/, "", $2); gsub(/^ +| +$/, "", $3); gsub(/, /, ",", $3); print $2, $3 }' \
   | sort > "$work/calls_declared"
 if [ ! -s "$work/calls_declared" ]; then

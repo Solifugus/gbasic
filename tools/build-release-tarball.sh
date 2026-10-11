@@ -23,16 +23,55 @@
 #   TIER=lean (default)  libm and libc, nothing else. Extract and run, on any
 #                        machine at or above the glibc floor, with no
 #                        dependency a reader has to satisfy or even read about.
-#   TIER=full            + sqlite3, zlib, libcrypto/libssl, libcurl.
+#                        AND IT NOW CARRIES xml AND xlsx, because libxml2 and
+#                        zlib are linked STATICALLY -- see the next block.
+#   TIER=full            + sqlite3, libcrypto/libssl, libcurl, dynamically.
 #                        The database, internet and AI chapters of the beginner
 #                        book all need one of those, and with the lean download
 #                        none of them can be followed (DOGFOOD 44).
-#                        NOT libxml2, which this line used to claim while
-#                        TIER_PACKAGES and EXPECTED_NEEDED both excluded it and
-#                        the paragraph 40 lines below said so outright -- one
-#                        file disagreeing with itself about what it ships. The
-#                        exclusion is deliberate and the soname table below is
-#                        the reason: `xml` and `xlsx` are in NEITHER tier.
+#
+# libxml2 AND zlib ARE LINKED STATICALLY INTO BOTH TIERS, which is a correction
+# made 2026-10-11 rather than a new idea: the WINDOWS build has done exactly
+# this since M3, and windows_port_plan.md §4 called it "the strongest single
+# argument for a Windows build existing" ON THE GROUNDS THAT THE LINUX TARBALLS
+# CANNOT. The premise was sound and the conclusion did not follow -- nothing
+# about static linking is Windows-specific, and the Linux exclusion was reasoned
+# from DYNAMIC linking and then never re-asked. All four copies of that claim
+# are struck; see docs/dependency_linking_design.md.
+#
+# WHAT IT BUYS, MEASURED: lean goes 820K -> 2.2M binary and ~800K -> 1.5M
+# tarball, DT_NEEDED STAYS libc AND libm -- libz.so.1 LEFT the list rather than
+# joining it -- the glibc floor stays 2.34, and `xlsx`, `xml` and
+# compress/uncompress work on a bare ubuntu:22.04 or debian:12 with no packages
+# installed. Seven libraries that could not load on EITHER published archive now
+# load: ownership, finio_all, finio_camt, finio_iso20022, finio_pain001 (and on
+# the full tier, insiders and mdna). xlsx is the highest-value capability in the
+# optional set, spreadsheets being a business staple.
+#
+# WHY STATIC AND NOT dlopen, WHICH WAS THE OTHER CANDIDATE: the XML reader does
+# 36 STRUCT FIELD READS (node->children, ->next, ->name, ->type), and dlsym
+# hands back function pointers while struct offsets still come from the headers
+# at compile time -- so a layout that moved between versions would be read with
+# the wrong offsets, which is a crash or silent garbage rather than an error. A
+# soname bump from .so.2 to .so.16 is precisely the announcement that something
+# in the ABI changed. Static linking removes the soname question, the presence
+# question AND the ABI question at once.
+#
+# UBUNTU'S OWN libxml2.a WILL NOT DO, which is why this builds from source: it
+# is compiled against ICU, and `encoding.o` -- which any parse needs -- refers to
+# ucnv_*, so the linker drags in ICU, whose data alone is ~30 MB. Built
+# --without-icu --without-lzma the archive needs only -lm -lz.
+#
+# THE VERSION IS PINNED AND THE CHECKSUM VERIFIED, and pinning is a GAIN rather
+# than a cost: the dev machine builds against 2.15.2 and Windows already pins
+# 2.15.4, while a release built against the container's packages would have used
+# ubuntu 22.04's 2.9.13 -- so the three builds disagreed about which libxml2
+# gBASIC's goldens describe. They agree now.
+#
+# THE OBLIGATION THIS TAKES ON, stated because it is the strongest argument
+# against the whole arrangement: building libxml2 ourselves means a security fix
+# in it becomes OURS to pick up rather than apt's. LIBXML2_VERSION below is the
+# one place to change, and it wants watching.
 #
 # WHY NOT ONE FULLER DOWNLOAD. A container fixes the GLIBC version; it does not
 # fix the other libraries, and a DT_NEEDED on a soname the machine does not have
@@ -70,11 +109,15 @@
 #
 # WHAT THE full TIER COSTS AND BUYS, stated plainly because a reader deserves
 # to know which download they took: it loses `password_hash`/`password_verify`
-# (libxcrypt) and `xml` and `xlsx` (libxml2). It gains `sqlite`, `webclient`,
-# `http`, `smtp` and the libcrypto builtins -- which is exactly the database,
-# internet and AI chapters DOGFOOD 44 is about. libpq, unixODBC, OpenLDAP, GTK
-# and GObject-Introspection stay out; those are the ~50, and the argument
-# against them is unchanged.
+# (libxcrypt, whose soname is the other one that varies -- and which is two
+# symbols and the cheapest place to prove dlopen, per the design note). It
+# gains `sqlite`, `webclient`, `http`, `smtp` and the libcrypto builtins --
+# exactly the database, internet and AI chapters DOGFOOD 44 is about. `xml` and
+# `xlsx` are no longer on that list: BOTH tiers have them, statically.
+# libpq, unixODBC, OpenLDAP, GTK and GObject-Introspection stay out. The first
+# two are candidates for dlopen if a consumer asks; GTK and GI are refused by
+# BOTH techniques and that is the answer rather than a gap, because they need
+# runtime data a binary cannot carry (typelibs, themes, schemas, a display).
 #
 # THE LINK SET IS ASSERTED, not counted. `ldd | wc -l < 20` would have passed a
 # binary carrying libcrypt, which is what happened while measuring: a count
@@ -105,20 +148,65 @@ OUT="${OUT:-dist}"
 PREFIX_IN_TARBALL="/usr/local"
 TIER="${TIER:-lean}"
 
+# THE ONE PLACE libxml2'S VERSION IS WRITTEN, and the checksum is verified
+# against GNOME's own published .sha256sum rather than trusted from the
+# download. 2.15.4 matches what the Windows build already pins and is the same
+# branch the development machine builds against, so all three agree about which
+# libxml2 the goldens describe.
+LIBXML2_VERSION="2.15.4"
+LIBXML2_SHA256="98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821"
+LIBXML2_SERIES="${LIBXML2_VERSION%.*}"
+
+# WHAT BOTH TIERS GET: libxml2 and zlib, statically, from the build below.
+# `-Wl,-Bstatic -lz -Wl,-Bdynamic` rather than a path, so it does not hardcode
+# the multiarch directory; it is passed once, inside LIBXML2_LIBS, because the
+# Makefile puts both LIBXML2_LIBS and ZLIB_LIBS on one link line and two
+# -Bstatic/-Bdynamic pairs for the same archive is one more thing to get wrong.
+STATIC_XML="LIBXML2_AVAILABLE=1 LIBXML2_CFLAGS=-I/opt/xml2/include/libxml2"
+STATIC_XML_LIBS="/opt/xml2/lib/libxml2.a -Wl,-Bstatic -lz -Wl,-Bdynamic -lm"
+
+# WHAT IS SATISFIED WITHOUT APPEARING IN EXPECTED_NEEDED, which the library
+# sweep below needs told because a static library leaves no trace in the link
+# set -- that is the whole point of it.
+#
+# THE SWEEP CAUGHT THIS ITSELF, which is worth recording as the one time a
+# tripwire here fired on a GOOD change: with libxml2 made static and this line
+# missing, the lean build measured 16 libraries unloadable against 21
+# predicted, named the five it had over-predicted (ownership, finio_all,
+# finio_camt, finio_iso20022, finio_pain001 -- exactly the libxml2-only ones)
+# and REFUSED TO PUBLISH. A declaration that had not caught up with the build
+# is the same failure as a build that had not caught up with the declaration,
+# and the sweep cannot tell which it is -- so it stops.
+TIER_STATIC_CAPS="libxml2"
+
 case "$TIER" in
     lean)
-        # pkg-config is deliberately absent: without it the Makefile disables
-        # every optional module, which is the leanest configuration anyone can
-        # build and exactly what this tier ships.
-        TIER_PACKAGES=""
-        TIER_MAKE_ARGS=""
+        # EVERY EXCLUSION IS EXPLICIT, which is a change: this tier used to rely
+        # on pkg-config being ABSENT so the Makefile's probes all failed. That
+        # is the arrangement that let libxcrypt in without being asked for (see
+        # the header), and libxml2's own ./configure wants pkg-config, so the
+        # absence trick is no longer available even if it were wise. Naming the
+        # switches means a NEW optional module defaults to off here rather than
+        # to whatever the build image happens to carry -- and
+        # tests/run_packaging.sh already fails if a switch exists that nothing
+        # names.
+        TIER_PACKAGES="pkg-config zlib1g-dev"
+        TIER_MAKE_ARGS="GIO_AVAILABLE=0 GIR_AVAILABLE=0 GTK_AVAILABLE=0 \
+            LDAP_AVAILABLE=0 LIBCRYPTO_AVAILABLE=0 LIBCURL_AVAILABLE=0 \
+            LIBPQ_AVAILABLE=0 LIBSSL_AVAILABLE=0 LIBXCRYPT_AVAILABLE=0 \
+            ODBC_AVAILABLE=0 SQLITE3_AVAILABLE=0 ZLIB_AVAILABLE=1"
         EXPECTED_NEEDED="libc.so.6 libm.so.6"
         TIER_SUFFIX=""
         ;;
     full)
         TIER_PACKAGES="pkg-config libsqlite3-dev zlib1g-dev libssl-dev libcurl4-openssl-dev"
-        TIER_MAKE_ARGS="LIBXCRYPT_AVAILABLE=0 LIBXML2_AVAILABLE=0"
-        EXPECTED_NEEDED="libc.so.6 libcrypto.so.3 libcurl.so.4 libm.so.6 libsqlite3.so.0 libssl.so.3 libz.so.1"
+        # libz.so.1 is GONE from the link set: zlib is static now, in both
+        # tiers, so the full tier links one FEWER shared library than it did
+        # while gaining xml and xlsx.
+        TIER_MAKE_ARGS="LIBXCRYPT_AVAILABLE=0 GIO_AVAILABLE=0 GIR_AVAILABLE=0 \
+            GTK_AVAILABLE=0 LDAP_AVAILABLE=0 LIBPQ_AVAILABLE=0 ODBC_AVAILABLE=0 \
+            ZLIB_AVAILABLE=1"
+        EXPECTED_NEEDED="libc.so.6 libcrypto.so.3 libcurl.so.4 libm.so.6 libsqlite3.so.0 libssl.so.3"
         TIER_SUFFIX="-full"
         ;;
     *)
@@ -143,11 +231,33 @@ rm -f "$OUT/${name}.tar.gz" "$OUT/${name}.tar.gz.sha256"
 "$runtime" run --rm -v "$PWD":/src:ro -v "$PWD/$OUT":/out:Z "$IMAGE" bash -euo pipefail -c "
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
-apt-get install -y -qq build-essential bison $TIER_PACKAGES >/dev/null
+apt-get install -y -qq build-essential bison curl ca-certificates xz-utils $TIER_PACKAGES >/dev/null
+
+# libxml2, PINNED AND CHECKSUMMED, built static. A downloaded dependency with
+# no checksum is a supply chain somebody else controls, and this one ends up
+# inside a binary people are asked to trust.
+cd /tmp
+curl -sfLO https://download.gnome.org/sources/libxml2/${LIBXML2_SERIES}/libxml2-${LIBXML2_VERSION}.tar.xz \
+    || { echo 'FAIL: could not fetch libxml2 ${LIBXML2_VERSION}'; exit 1; }
+printf '%s  %s\n' '${LIBXML2_SHA256}' 'libxml2-${LIBXML2_VERSION}.tar.xz' | sha256sum -c - \
+    || { echo 'FAIL: libxml2 tarball does not match the pinned checksum -- NOT building'; exit 1; }
+tar xf libxml2-${LIBXML2_VERSION}.tar.xz
+cd libxml2-${LIBXML2_VERSION}
+# --without-icu is the load-bearing flag: with it, encoding.o pulls ICU into
+# the link and the binary grows by tens of megabytes of locale data.
+./configure --prefix=/opt/xml2 --enable-static --disable-shared \
+    --without-icu --without-lzma --without-python --without-http \
+    --without-legacy --without-debug --with-zlib >/tmp/xml2conf.log 2>&1 \
+    || { echo 'FAIL: libxml2 configure'; tail -20 /tmp/xml2conf.log; exit 1; }
+make -j\$(nproc) >/tmp/xml2make.log 2>&1 && make install >>/tmp/xml2make.log 2>&1 \
+    || { echo 'FAIL: libxml2 build'; tail -20 /tmp/xml2make.log; exit 1; }
+echo \"libxml2 ${LIBXML2_VERSION} static: \$(du -h /opt/xml2/lib/libxml2.a | cut -f1) archive\"
 
 mkdir -p /work && cp -r /src /work/gbasic && cd /work/gbasic
 make clean >/dev/null 2>&1 || true
-make $TIER_MAKE_ARGS >/tmp/build.log 2>&1 || { echo 'FAIL: build'; tail -20 /tmp/build.log; exit 1; }
+make $TIER_MAKE_ARGS $STATIC_XML 'LIBXML2_LIBS='\"$STATIC_XML_LIBS\" \
+     ZLIB_CFLAGS= 'ZLIB_LIBS=-Wl,-Bstatic -lz -Wl,-Bdynamic' \
+     >/tmp/build.log 2>&1 || { echo 'FAIL: build'; tail -20 /tmp/build.log; exit 1; }
 
 # Staged with the SAME install target the project ships, so the tarball layout
 # and an installed tree cannot drift apart.
@@ -268,8 +378,13 @@ while read -r lib caps; do
     # rather than in a release.
     for c in $(printf '%s' "$caps" | tr ',' ' '); do
         have=0
+        # Linked dynamically: it appears in the declared link set.
         for n in $EXPECTED_NEEDED; do
             case "$n" in "$c"*) have=1 ;; esac
+        done
+        # Linked statically: it appears nowhere, so the tier declares it.
+        for n in $TIER_STATIC_CAPS; do
+            [ "$n" = "$c" ] && have=1
         done
         [ "$have" = 1 ] || ok_all=0
     done

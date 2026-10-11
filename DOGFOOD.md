@@ -35,6 +35,20 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
+-4.5. ~~**xlsx and xml are in NEITHER published download.**~~ **CLOSED
+   2026-10-11** by linking libxml2 and zlib STATICALLY into both release tiers,
+   which is what the Windows build has done since M3. `windows_port_plan.md` §4
+   called that "the strongest single argument for a Windows build existing" on
+   the grounds that the Linux tarballs cannot — and nothing about static linking
+   is Windows-specific; the Linux exclusion was reasoned from DYNAMIC linking
+   and never re-asked. Measured: lean goes 820K -> 2.2M binary and ~800K -> 1.5M
+   tarball, `DT_NEEDED` STAYS `libc`/`libm` (libz.so.1 *left* it), glibc floor
+   stays 2.34, and the unloadable set goes **21 -> 16 on lean and 13 -> 6 on
+   full**. Verified by extracting the real artifacts on bare ubuntu:22.04,
+   debian:12 and fedora:41 and parsing XML, opening a workbook and
+   round-tripping compression with no packages installed. All four copies of the
+   §4 claim are struck. See `docs/dependency_linking_design.md`.
+
 -4. ~~**13 of 65 libraries cannot be loaded on the published `-full` archive.**~~
    **CLOSED 2026-10-11.** Confirmed exactly (21 on lean), the per-library
    dependency is now derived from the libraries' own `load` lines, declared in
@@ -12175,3 +12189,79 @@ so a zero there means the scan broke rather than the tree improving.
 - **Workaround:** none needed; resolved. The books' table is still worth
   carrying, and it can now be generated from `tools/library-needs.sh` (and
   `--calls`) rather than transcribed.
+
+---
+
+## 2026-10-11 — CC — static libxml2 and zlib in both release tiers
+
+- **Type:** missing-feature
+- **Severity:** medium
+- **Status:** RESOLVED. `xlsx` and `xml` now work on every Linux download.
+
+**What changed.** `tools/build-release-tarball.sh` builds libxml2 from a
+**pinned, checksum-verified** source tarball (2.15.4, matching the Windows pin
+and the development machine's branch) with `--without-icu --without-lzma`, and
+links it and zlib **statically** into both tiers.
+
+**Measured, lean tier:**
+
+```
+                       binary   tarball   DT_NEEDED
+before                   820K     ~800K   libm libcrypt libz libc
+after                    2.2M      1.5M   libm libc
+```
+
+`libz.so.1` **left** the dependency list rather than joining it, and the glibc
+floor stayed 2.34 against the 2.35 the tier promises. The unloadable set went
+**21 → 16 on lean and 13 → 6 on full**. Both artifacts were extracted on bare
+`ubuntu:22.04`, `debian:12` and `fedora:41` and asked to parse XML, open a real
+workbook and round-trip compression with no packages installed; all three
+identical.
+
+**Why static rather than `dlopen`.** The XML reader does 36 struct field reads
+(`node->children`, `->next`, `->name`, `->type`), and `dlsym` returns function
+pointers while struct offsets still come from the headers at compile time — so a
+layout that moved between versions would be read with the wrong offsets, which
+is a crash or silent garbage rather than an error. A soname bump from `.so.2` to
+`.so.16` is precisely the announcement that a layout moved. Static linking
+removes the soname question, the presence question *and* the ABI question.
+
+**Ubuntu's own `libxml2.a` will not do**, which is why it is built from source:
+it is compiled against ICU, and `encoding.o` — needed by any parse — refers to
+`ucnv_*`, so the linker drags in ICU and its ~30 MB of locale data.
+
+**Three things worth keeping from doing it.**
+
+1. **THE RELEASE SWEEP CAUGHT MY OWN CHANGE AND REFUSED TO PUBLISH**, which is
+   the one time a tripwire here has fired on a *good* change. With libxml2 made
+   static and the tier's static-capability declaration missing, the lean build
+   measured 16 unloadable against 21 predicted, **named the five it had
+   over-predicted** (`ownership`, `finio_all`, `finio_camt`, `finio_iso20022`,
+   `finio_pain001` — exactly the libxml2-only ones) and stopped. A declaration
+   that has not caught up with the build is the same failure as a build that has
+   not caught up with the declaration, and the sweep cannot tell which it is.
+
+2. **THE LEAN TIER'S EXCLUSIONS ARE EXPLICIT NOW.** It used to rely on
+   pkg-config being *absent* so every probe failed — the arrangement that let
+   libxcrypt in without being asked for — and libxml2's own `./configure` wants
+   pkg-config, so the absence trick stopped being available. Every switch is
+   named, so a new optional module defaults to off there rather than to whatever
+   the build image carries.
+
+3. **A PROSE BOUNDARY BROKE A GATE TWICE** before I stopped using one. The
+   reference's table was extracted by a `sed` range ending at `General-purpose:`
+   (far below, so a new table in between was swallowed), then at a heading (so
+   rewording the following paragraph broke it). Both tables are
+   `<!--LIBNEEDS:...-->` delimited now — the device
+   `tools/sync_xlsx_cookbook.sh` already uses — and the gate asserts all four
+   markers exist, since a missing one makes both comparisons read an empty
+   region.
+
+**The obligation this takes on**, recorded because it is the strongest argument
+against the whole arrangement: building libxml2 ourselves means a security fix
+in it becomes **ours** to pick up rather than `apt`'s. `LIBXML2_VERSION` in the
+release script is the one place to change, and it wants watching.
+
+- **Not done:** `password_hash` is still in neither download — libxcrypt is
+  `.so.1` on Debian and `.so.2` on RHEL, and at two symbols it is the cheapest
+  place to prove `dlopen`. Next on the design note's list.

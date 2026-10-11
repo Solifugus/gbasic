@@ -52,3 +52,4 @@ dist/
 
 # tools/build-msix.sh output, including the TEST signing key (.pfx)
 /build/
+.buildswitch-stamp

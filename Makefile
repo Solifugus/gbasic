@@ -384,39 +384,59 @@ src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h in
 FORCE:
 .PHONY: FORCE
 
-src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h include/platform.h .stdlibdir-stamp
+# THE SAME DEVICE FOR THE OPTIONAL-DEPENDENCY SWITCHES, and it closes a trap
+# this file used to document rather than fix. No object depended on these
+# values, so `make LIBCURL_AVAILABLE=0` after an ordinary build rebuilt
+# NOTHING -- hence CLAUDE.md's advice to write `make clean && make
+# LIBCURL_AVAILABLE=0`, which is a workaround for a missing prerequisite.
+#
+# IT BECAME WORSE THAN A STALE FEATURE ON 2026-10-11. `src/builtins.c`'s
+# registry is now compiled conditionally so that `has_builtin` answers for THIS
+# BUILD; a stale `builtins.o` therefore makes `has_builtin` LIE ABOUT THE
+# BINARY IT IS IN, which is the exact defect that change was made to remove.
+# Measured: after `make LIBCRYPTO_AVAILABLE=0 ZLIB_AVAILABLE=0` with no clean,
+# `has_builtin("sha256")` and `("compress")` both still answered true.
+#
+# So the switches get a stamp, and every object compiled with CFLAGS depends on
+# it. The cost is that changing a switch rebuilds the tree, which is what
+# correctness here means.
+BUILD_SWITCH_SIG := $(GIO_AVAILABLE)|$(GIR_AVAILABLE)|$(GTK_AVAILABLE)|$(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_AVAILABLE)|$(YESCRYPT_VENDORED)
+.buildswitch-stamp: FORCE
+	@printf '%s' '$(BUILD_SWITCH_SIG)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(BUILD_SWITCH_SIG)' > $@
 
-src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h include/lineedit.h include/platform.h
+src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h include/platform.h .stdlibdir-stamp .buildswitch-stamp
 
-src/lineedit.o: src/lineedit.c include/lineedit.h include/platform.h
+src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h include/lineedit.h include/platform.h .buildswitch-stamp
+
+src/lineedit.o: src/lineedit.c include/lineedit.h include/platform.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/platform_posix.o: src/platform_posix.c include/platform.h
+src/platform_posix.o: src/platform_posix.c include/platform.h .buildswitch-stamp
 
-src/platform_win32.o: src/platform_win32.c include/platform.h
+src/platform_win32.o: src/platform_win32.c include/platform.h .buildswitch-stamp
 
-src/lexer.o: src/lexer.c include/lexer.h
+src/lexer.o: src/lexer.c include/lexer.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.h include/diagnostics.h include/parse_ctx.h
+src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.h include/diagnostics.h include/parse_ctx.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c src/parser.tab.c -o $@
 
-src/ast.o: src/ast.c include/ast.h
+src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h .stdlibdir-stamp
+src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/builtins.o: src/builtins.c include/builtins.h
+src/builtins.o: src/builtins.c include/builtins.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/diagnostics.o: src/diagnostics.c include/diagnostics.h
+src/diagnostics.o: src/diagnostics.c include/diagnostics.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/frontend.o: src/frontend.c include/gbasic.h include/diagnostics.h include/ast.h
+src/frontend.o: src/frontend.c include/gbasic.h include/diagnostics.h include/ast.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/actor.o: src/actor.c include/actor.h include/platform.h
+src/actor.o: src/actor.c include/actor.h include/platform.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 install: gbasic
@@ -452,4 +472,4 @@ clean:
 	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h src/gbasic_win32.res.o
 	rm -f third_party/yescrypt/*.o
 	rm -f gbasic-lsp $(LSP_OBJS)
-	rm -f .stdlibdir-stamp
+	rm -f .stdlibdir-stamp .buildswitch-stamp
