@@ -6742,6 +6742,23 @@ General-purpose:
 - `schedule` — packing events into working days: `schedule.slots` (appointment
   grids) and `schedule.layout` (ordered sessions into business days around
   immovable breaks, with the unplaceable reported by name). Same two documents.
+- `rules` — **business rules as data**, first increment. Typed conditions and
+  **ordered overrides** over **named targets**: *when this condition holds,
+  replace this target with this expression; otherwise keep its preceding
+  result* — which is what lets a contract amendment replace one component (a
+  cap, a rate) rather than a whole decision. A stack can be `condense`d into
+  one expression per target and `expand`ed back, and the two must decide
+  identically.
+  **Its absence semantics deliberately differ from the core language**, and
+  anyone reading rule output needs to know which they are looking at: a missing
+  fact propagates and the result reports what it is waiting for, where gBASIC
+  raises; equality against a missing fact is unresolved, where gBASIC answers
+  `false`. What does *not* differ is invalidity — a mixed-currency comparison
+  is still an error, and is reported as one rather than as a missing fact.
+  Both `validate` and `evaluate` answer as **values**, never raises. A rule can
+  call only `rules.registry()`'s whitelist and read only the context it was
+  handed, so it cannot name anything in gBASIC.
+  Proposal and full API: `docs/gbasic-rules-library-proposal.md`.
 - `matrix` — minimal vector/matrix primitives (`docs/statistics_design.md` §8).
 - `frame` — a structural data-frame layer (`docs/statistics_design.md` §4).
 - `stats` — higher-level statistical compositions built on `matrix`/`frame`

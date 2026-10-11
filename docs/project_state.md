@@ -431,6 +431,19 @@ document list, with a status column, is `docs/README.md`.
   returns a winner whether or not there is anything there, so acceptance
   criteria 1-9 are all satisfiable by a confident guesser and criterion 10 is
   the only one that is not.
+- **business rules as data** — `rules`, first increment and a vertical slice:
+  builders, validation, a typed evaluator, condensation, exact and equivalent
+  expansion, dependency discovery, rendering and a decision explanation drawn
+  from the evaluator's own walk. The subject is ORDERED OVERRIDES -- *when this
+  condition holds, replace this target with this expression, otherwise keep what
+  came before* -- over NAMED targets, so a contract amendment can replace one
+  component. Absence propagates and reports what it waits for while invalidity
+  stays an error, which is a deliberate divergence from the host on both
+  counts: gBASIC raises on five of those cases and answers plain false on a
+  sixth.
+  A rule reaches only a registered whitelist and only the context it was handed.
+  Deferred: the textual authoring layer, live variable bindings, persistence,
+  controlled English templates.
 - **a textual form that keeps every gBASIC type** — `notation`, the gap between
   the JSON dialect (readable, and refuses a date, money, a duration or a file)
   and the binary serializer (keeps every type, opaque). Neither can be reviewed by

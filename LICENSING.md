@@ -14,7 +14,7 @@ Copyright 2026 Matthew C. Tedder.
 **Write gBASIC programs, embed the interpreter, build a product on any of it,
 ship it closed-source — nothing here restricts you.** That covers the language,
 the `gbasic` binary, every C module compiled into it — including the whole xlsx
-engine — and all 65 standard libraries.
+engine — and all 66 standard libraries.
 
 There is no copyleft library in this tree, no commercial license to buy, and no
 part of the standard library that reaches into your program's licensing.
@@ -28,7 +28,7 @@ Everything:
   (the ZIP container, formula evaluator and recalculation engine),
   `src/modules/xml.c`, `src/modules/smtp.c`, `src/modules/ldap.c` and
   `src/modules/rowmodel.c`
-- All 65 standard libraries in `stdlib/`:
+- All 66 standard libraries in `stdlib/`:
 
   `accounting` `agent` `ari_advisor` `ari` `ari_discover` `automation`
   `chart` `consolidate` `credit` `crypto` `datagrid` `dates` `dbframe`
@@ -38,7 +38,7 @@ Everything:
   `finio_watch` `forensics` `frame` `fundamentals` `gpdf` `gpdf_metrics`
   `grid` `gtk` `gtkui` `gui` `insiders` `insight` `lending` `llm` `mail`
   `market` `matrix` `mcp` `mdna` `nlq` `notation` `ocr` `otp` `ownership`
-  `persist` `reasoning` `retrieval` `schedule` `scoring` `screener`
+  `persist` `reasoning` `retrieval` `rules` `schedule` `scoring` `screener`
   `sourceeditor` `stats` `tools` `web`
 
 ## Why there is only one license

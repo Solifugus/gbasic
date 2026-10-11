@@ -35,6 +35,16 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
+0. **A deeply nested VALUE segfaults the interpreter at teardown** — measured
+   2026-10-11: a record nested 22 000 deep (40 000 for arrays) builds fine, the
+   program prints its answer and succeeds, and then exit 139 on the way out.
+   Recursive `value_free` over the structure, almost certainly. The reason it is
+   ranked rather than filed under "measured, no action": it is the one depth
+   limit a program **cannot** defend against, because every refusal a library
+   can issue happens after the value exists and the crash is in letting it go.
+   Any reader building a value from untrusted input must bound depth *while
+   parsing*. See the 2026-10-11 entry.
+
 -3. ~~**`xml.parse` gives a node no POSITION.**~~ **CLOSED 2026-09-20.** A node
    now carries an exact `line` and a `byte_start`/`byte_end` range under
    `xml.parse(text, { positions: true })`, and the streaming reader's `line` --
@@ -11563,3 +11573,464 @@ Worth noting too that the aggregate rules a few pages earlier deliberately merge
 `nothing` and `unknown` while `key` deliberately separates them -- a real seam,
 crossed by anyone who groups with `key` and then aggregates, and the `key`
 paragraph is the place to say so.
+
+## From the books session generating Volume 2's Appendix A — 2026-10-11
+
+Volume 2 had no Appendix A. Generating one meant running Volume 1's generator
+against 0.7.0, and the generator asked a question nobody reading had thought to
+ask of these lists: *is this all of them?* Three times the answer was no.
+
+All measured against the published `gbasic-0.7.0-linux-x86_64-full.tar.gz`
+(sha256 `49ee5494…`), never a build.
+
+### `has_builtin` denies four functions the same binary runs
+
+`has_builtin` exists so a program can degrade gracefully on an older release.
+On the published archive it answers **false** for four documented functions:
+
+```
+pbkdf2_sha256   false   pbkdf2_sha256("pw","saltsaltsaltsalt",1000,32)  -> 32 bytes
+pbkdf2_sha512   false                                                    -> 64 bytes
+scrypt          false   scrypt("pw","saltsalt",16384,8,1,32)             -> 32 bytes
+warning         false   warning("a message of my own")  -> [2100] on stderr, run continues
+```
+
+All four work in 0.3.0 too, so this is not a regression.
+
+**This is DOGFOOD 47 again.** That item reported `mod`, `concat` and `merge`
+answering false while being callable. All three answer **true** at 0.7.0 --
+thank you. These four were not caught, and the reason looks structural rather
+than careless: `gbasic_builtin_function()` in `src/builtins.c` is a
+hand-maintained array of string literals parallel to the dispatch that actually
+resolves a call. Nothing holds the two together, so a fix goes name by name and
+the names nobody reported stay wrong.
+
+**The three KDFs are the ones that matter.** The whole point of guarding a call
+with `has_builtin` is to take a safe path when the function is absent, so a
+program that does the careful thing --
+
+```basic
+if has_builtin("pbkdf2_sha256") then
+    key = pbkdf2_sha256(passphrase, salt, 600000, 32)
+else
+    ' something weaker
+end if
+```
+
+-- takes the weaker branch **on a release that has the stronger one**. The
+reference's own worked example for `aes_gcm_encrypt` derives its key with
+`pbkdf2_sha256`. Silent, in the security path, and the more carefully a program
+is written the more certainly it hits it.
+
+Suggested fix is not the four names: derive that array from the dispatch, or
+hold the two to each other with a tripwire of the kind `tests/run_docs_gate.sh`
+already runs for `builtin_type_name` -- which is this same problem solved
+properly, one file over.
+
+### No section of `reference.md` enumerates the builtins, and one looks like it does
+
+Volume 1's Appendix A promises *every function that is there without loading
+anything* and is **thirty-five short**. The generator read its candidates from
+`## Core Builtin Functions`, whose heading reads as an enumeration. What that
+section does not carry:
+
+| documented under | builtins |
+|---|---|
+| `## Types` | `byte_slice`, `byte_find`, `to_bytes` |
+| security | `sha256`, `sha512`, `sha1`, `md5`, `hmac_sha256`, `hmac_sha512`, `hmac_sha1`, `ed25519_keypair`, `ed25519_sign`, `ed25519_verify`, `aes_gcm_encrypt`, `aes_gcm_decrypt`, `random_bytes`, `bytes_equal`, `password_hash_cost` |
+| encodings | `base64_encode`/`_decode`, `base64url_encode`/`_decode`, `hex_encode`/`_decode`, `base32_encode`/`_decode` |
+| compression | `compress`, `uncompress` |
+| the actor model | `send`, `receive`, `self`, `monitor`, `demonitor`, `watchers` |
+| `with principal` | `principal` |
+
+All thirty-five need no `load`, all answer `has_builtin` true, all run on the
+published archive.
+
+**Not a request to reorganise the reference.** The crypto functions are better
+documented together than scattered alphabetically, and the actor functions
+belong with the actor model. What is missing is a machine-readable roll-up --
+exactly what `<!--TYPEKINDS-->` already is for `type`. One fenced block of every
+builtin name, gated against the dispatch, would make every downstream claim
+about "all the builtins" checkable instead of plausible. This book is one
+downstream consumer; `has_builtin` is another.
+
+### The `## Types` bullets say twelve; `TYPEKINDS` says twenty-seven
+
+Four thousand lines apart, and nothing on the first says it is a subset.
+
+The twelve are a real list -- the kinds a program **writes**, as a literal or
+through a modifier. The twenty-seven are what `type` answers. Both correct;
+neither says which it is. **This is the same defect that was already found and
+fixed once**: Chapter 2 of Volume 2 printed twelve because it read the bullets,
+and the fix was the `TYPEKINDS` table and its tripwire -- which is excellent,
+and which left the bullet list exactly where it was, still looking like the
+answer to "what kinds of value are there". Volume 1's Appendix A reads it and
+prints twelve under *The kinds of value*.
+
+One sentence under the bullets closes it: *these are the kinds a program writes
+for itself; `type` answers for more than these -- see Type Inspection.*
+
+Incidentally: `gvariant` is behind `#if HAVE_GIR`, so no published build can
+produce one. Same compile-time switch as the GUI finding, turning up in a second
+place.
+
+### Findings 39 and 40 re-measured, since the changelogs are silent
+
+Both filed 2026-10-05, absent from every changelog 0.5.1 through 0.7.0. **Both
+reproduce exactly at 0.7.0** -- measured, not inferred from the silence.
+
+- **2101's justification clause.** `touch(p)` still warns *a gBASIC function
+  cannot change its caller* on a run where `p.shared` becomes `TOUCHED`.
+- **`link` crossing an argument copy.** Unchanged, and the reference's `link`
+  row is unchanged with it: *a write through the prototype, instance, or any
+  sibling is visible to all*. A parameter is not a sibling, and a reader
+  holding the argument rule has no reason to think that row is about them.
+
+**The book half of 40 is closed** -- Chapter 9 now measures it and says it in
+so many words -- so the book is no longer waiting on a fix. What remains is one
+request wearing two hats: the single exception to the language's most-repeated
+promise is stated nowhere that promise is stated, and one shipped diagnostic
+asserts its opposite.
+
+Finding 41 needs no re-measurement. It was about the book, not the language --
+Chapter 11 overreached where the reference was careful -- and it was fixed when
+the chapter was.
+
+### `encode(error)` logs the error and loses it
+
+Same session, found while re-checking finding 40.
+
+`error` hands back an object on its first bare read and `false` after --
+documented and deliberate. `encode(error)` is a bare read, so the obvious way
+to log a failure is also the way to discard it, and neither placement works:
+
+```basic
+on error goto next
+x = number("nope")
+print "logged: " + encode(error)       ' the whole nine-field object
+if error then
+    print "the check fired"
+else
+    print "the check did not fire"     ' <-- this is what runs
+end if
+```
+
+**Rule 2 defeated by a `print`.** An error that cannot be dropped
+unacknowledged was acknowledged by something whose name says it only reads.
+Put the log inside the block instead -- what every other language wants -- and
+`encode(error)` answers `false`, because the condition claimed it on the way
+in. No diagnostic either way.
+
+**The semantics are right and I am not asking for them to change.** `e = error`
+is the correct idiom and the book teaches it; `error.field` never touches the
+flag. Two things make the wrong guess likelier:
+
+- `type(error)` answers `"boolean"` and `is_record(error)` is `false`, both
+  while a bare read is handing back a nine-field record. A reader who checks
+  what they are holding concludes there is no object to serialise.
+- `encode` is the one bare read that reads as an inspection. `e = error` looks
+  like taking a copy; `if error then` looks like a question that consumes;
+  `encode(error)` looks like neither.
+
+A warning on a bare `error` in a call argument would catch both. Whether that
+earns a code is your call -- but a clause beside *the error object once,
+`false` thereafter* saying **every** bare read claims it, `encode` included,
+costs nothing.
+
+**Incidentally**: `error` carries nine fields, not the eight our Chapter 13
+listed. The ninth is `severity`, which reads `"error"`; `warning.severity`
+answers `nothing`, so the two objects genuinely differ. Our chapter was wrong,
+is fixed, and the list is now measured rather than typed.
+
+## Status: the reserved-word fix is adopted, and the lean checksum checks out three ways
+
+Not findings. Two loops closed, recorded because both were collaborative.
+
+**`a7bcc8c` is now the books' `docs_commit` for Volume 2.** Verified before
+taking rather than after: it descends from `v0.7.0`, `src/lexer.c` and
+`src/parser.y` are byte-identical across the range so the corrected text
+describes exactly the pinned binary, and the only other `reference.md` commit
+in range is `f63132a` (the EDGAR platform claims, nothing the book gates).
+`src/eval.c` does differ in range, and the two tools that read it -- the
+modifier enumeration and the `type`-answer cross-check -- read it AT THE TAG,
+so the binary-derived surface stays pinned to the binary.
+
+It cost one line on our side and the way it cost it is worth a sentence: the
+sentence changed from *"and 46 of them cannot be used"* to *"and these 46
+cannot be used"*, and our extractor matched only the old phrasing -- so it
+would have refused the very correction the mechanism exists to accept. A
+pattern written against one wording rejects the fix. It reads both now.
+
+Appendix A is byte-identical afterwards, which is the right outcome: the
+correction fixed a document, not a claim the book was making.
+
+**The lean 0.3.0 checksum printed on page 9 is correct**, checked against the
+published site rather than against the book:
+
+```
+printed on page 9    4a5bdf1ee22e7a01...1183a3d6
+the site's sidecar   4a5bdf1ee22e7a01...1183a3d6     .tar.gz.sha256
+the file served      4a5bdf1ee22e7a01...1183a3d6     797557 bytes, hashed
+```
+
+Three-way agreement, and the `-full` sidecar agrees with the pin as well. First
+time anybody has looked since the book was set. `.gbasic-version` now records
+`package_lean` / `sha256_lean` / `source_lean` and `check-version.py` accepts
+any `sha256*` key the pin names, so a printed claim is a checked one -- which
+was your point, and it was right.
+
+Re-fetching stays out of the book's build on purpose: a gate must not depend on
+the network. The build holds the page to the pin; the pin records what the
+world said when somebody went and asked. Your deploy-time check over the five
+files is the other half and the two do not overlap -- you hold the archive to
+its sidecar, we hold the printed page to the pin, and the printed page is the
+one that cannot be corrected. Recorded in our manifest as REPORTED rather than
+verified, since no such check is visible at `master` from here.
+
+## Thirteen of the sixty-five libraries cannot be loaded on the published `-full` archive
+
+Found while gathering facts for Volume 2's Getting Started -- the page that has
+to tell a reader which download to take and what it will do.
+
+**This is the GUI finding again, nine libraries wider.** That one reported
+`load gtk` failing on every published build. Sweeping all sixty-five against
+both published 0.7.0 archives, one `load` per process, probe file kept out of
+the extracted trees so nothing resolved to the wrong stdlib:
+
+| | `-full` | lean |
+|---|---|---|
+| **do not load** | **13 of 65** | **21 of 65** |
+
+On `-full`, the tier the book is pinned to and recommends:
+
+| cause | libraries |
+|---|---|
+| `gobject-introspection support is unavailable` | `gtk`, `gtkui`, `datagrid`, `sourceeditor` |
+| `XML support is not available in this build` | `finio_all`, `finio_camt`, `finio_iso20022`, `finio_pain001`, `insiders`, `mdna`, `ownership` |
+| `ODBC support is not available in this build` | `discovery` |
+| `PostgreSQL support is not available in this build` | `retrieval` |
+
+The lean tier adds SQLite (`dbframe`, `edgar`, `screener`) and WebClient
+(`llm`, `market`, `mcp`, `agent`).
+
+**The diagnostics are good** -- each names the missing dependency, three of the
+four say what to do, and they fire at load time rather than at the first call.
+No complaint about the messages. The gap is that nothing connects them to the
+catalogue: our `check-libraries.py` holds Chapter 15's list to `stdlib/` at the
+pinned tag in both directions and is right about every file. It never asks
+whether the published binary can load them.
+
+Third instance of the same gap -- the stale pin, the GUI, now this. The files
+are in the archive; four subsystems were compiled out of the binary beside
+them.
+
+**What would you like to be true?** Four options as we see them, and the choice
+is yours, not ours:
+
+1. The release builds with XML, ODBC and PostgreSQL on, and the archive matches
+   its own library tree.
+2. The download page says which tier carries what, so a reader can choose
+   knowingly.
+3. The libraries that cannot work in a given build are not shipped in it.
+4. Nothing changes and the books carry the table.
+
+We are doing 4 regardless, because a reader who follows Chapter 15's catalogue
+to `load ownership` currently gets a runtime error on line 1 with nothing wrong
+with what they typed.
+
+### And `has_builtin` is tier-blind, which is finding 46 inverted
+
+On the lean archive:
+
+```
+has_builtin("sha256")          true    sha256("abc")   -> hashing requires OpenSSL (libcrypto); rebuild with it installed
+has_builtin("aes_gcm_encrypt") true    aes_gcm_encrypt -> AES-GCM requires OpenSSL ...
+has_builtin("password_hash")   true    password_hash   -> Password hashing support is not available in this build
+has_builtin("compress")        true    compress        -> unknown function: compress
+```
+
+`has_builtin` affirms `compress` while the same binary calls it **unknown
+function**. 46 reported the registry denying four callable builtins; this is the
+registry affirming ones the build cannot run, and it is worse: 46 made a careful
+program take a weaker path, this makes a careful program crash on the branch it
+checked for.
+
+One fix for both, and it is the one 46 already asked for: derive
+`gbasic_builtin_function` from what the build actually has rather than from a
+hand-maintained array of string literals. `has_builtin` is documented as the way
+to degrade gracefully across releases, and on two of the three published
+artifacts it cannot answer the question it exists for.
+
+## `notation` round-trips three of six datetime precisions — with the two-line fix, measured
+
+The author asked whether this was worth fixing in gBASIC now. We think yes, and
+it is smaller than it looks. Measured against the published 0.7.0 `-full`
+archive.
+
+`notation` picks a datetime's modifier tag from its printed form, and the
+choice is wrong for half the precisions the language has:
+
+| precision | `string(v)` | tag written | read back as | |
+|---|---|---|---|---|
+| year | `2026` | `{time}` | **raises** *time modifier expects an ISO-like time string* | ✗ |
+| month | `2026-03` | `{date}` | `2026-03` | ✓ |
+| day | `2026-03-15` | `{date}` | `2026-03-15` | ✓ |
+| hour | `2026-03-15 12` | `{datetime}` | **`2026-03-15 12:00:00`** | ✗ |
+| minute | `2026-03-15 12:05` | `{datetime}` | **`2026-03-15 12:05:00`** | ✗ |
+| second | `2026-03-15 12:05:03` | `{datetime}` | `2026-03-15 12:05:03` | ✓ |
+
+Our Chapter 16 filed only the year case, because it is the one that raises.
+**The hour and minute cases are worse**: they come back as second-precision
+values that compare unequal to what was written, with no diagnostic anywhere. A
+program that stores an appointment to the minute and reads it back has a
+different value and nothing tells it so.
+
+### Cause: `_tag_of` in `stdlib/notation.bas`
+
+```basic
+if t = "datetime" then
+    s = string(v)
+    if not contains(s, "-") then
+        return "time"              ' a bare year has no hyphen either
+    end if
+    if contains(s, " ") then
+        return "datetime"          ' but {datetime} forces seconds on read
+    end if
+    return "date"
+end if
+```
+
+*No hyphen* is read as *this is a time of day*, which a bare year satisfies. And
+`{datetime}` is chosen for anything with a space, while `{datetime}` is
+documented to force second precision -- so it is only safe for a value that
+already has seconds.
+
+### Fix
+
+**`{date}` takes its precision from the string** -- your own Chapter 4 rule, and
+what makes this cheap. It accepts all six shapes and returns each unchanged, so
+the writer never needs `{datetime}` except where it is harmless:
+
+```basic
+            s = string(v)
+            if contains(s, ":") and not contains(s, "-") then
+                return "time"
+            end if
+            if count(split(s, ":")) = 3 then
+                return "datetime"
+            end if
+            return "date"
+```
+
+Two changed lines. **Tested, not proposed**: a copy of `notation.bas` patched in
+a scratch directory and loaded beside the probe, against the pinned binary.
+
+```
+year     { v {date}: "2026" }                     round-trips true
+month    { v {date}: "2026-03" }                  round-trips true
+day      { v {date}: "2026-03-15" }               round-trips true
+hour     { v {date}: "2026-03-15 12" }            round-trips true
+minute   { v {date}: "2026-03-15 12:05" }         round-trips true
+second   { v {datetime}: "2026-03-15 12:05:03" }  round-trips true
+time     { v {time}: "12:05:03" }                 round-trips true
+```
+
+Seven of seven, where the stock library raises on the first and silently loses
+two more. The same patched library was then run over money, duration, `{file}`,
+`{dir}`, a nested dated record, scalars and both absences -- all unchanged, so
+the change is confined to the datetime branch. Control: the identical program
+with the stock library raises at `notation.bas:649`.
+
+The second condition keeps `{datetime}` on the common full-precision case
+instead of writing `{date}` for everything -- which also round-trips, but puts
+`{date}` on a value carrying a clock time. That one is readability. **The first
+condition is the fix.**
+
+### And one that is already fixed, with thanks
+
+A function value no longer degrades silently to a string. It refuses with
+*notation: a function value cannot be written as text (<function greet>) -- it
+is a live handle rather than data, and writing it would read back as a string*,
+which is a message that explains itself. Our Chapter 16 carries it verbatim.
+
+### Also answered by a release: `compare modifier not found`
+
+We filed that `("10"{number}= 10)` reported a modifier that plainly exists as
+missing, and guessed a missing branch. It was supplied somewhere between 0.3.0
+and 0.7.0:
+
+```
+("10"{number}= 10)    0.3.0  raises compare modifier not found: number
+                      0.7.0  true
+("10"{number}= 11)    0.7.0  false
+(" 10 "{trim}= "10")  0.7.0  true
+```
+
+Chapter 8 teaches and measures the fixed behaviour, so nothing is owed. The two
+messages that remain are both right: `{caseless}` in assignment position gives
+the good mirror message, and a name that does not exist still gives *compare
+modifier not found: xyzzy*. Closing it on our side.
+
+---
+
+## 2026-10-11 — CC — while: building `stdlib/rules.bas` (the rules library, increment 1)
+
+- **Type:** bug
+- **Severity:** medium
+- **What:** **A deeply nested value segfaults the interpreter at TEARDOWN,
+  after the program has printed its answer and succeeded.** No library
+  involved, no recursion in the gBASIC program — the nesting is built by an
+  ordinary `while` loop:
+
+  ```basic
+  program main(args)
+    n = number(args[0])
+    e = { kind: "leaf" }
+    i = 0
+    while i < n
+      e = { kind: "node", args: [e] }
+      i = i + 1
+    end while
+    print "built " + string(n) + " deep, kind " + e.kind
+  end program
+  ```
+
+  Measured on an 8 MB stack, bisected:
+
+  | nesting | depth that works | depth that crashes |
+  | --- | --- | --- |
+  | record in a record (via a one-element array) | 21 000 | 22 000 |
+  | array in an array | 40 000 | 60 000 |
+
+  The crash is **after** the program's own work: `built 22000 deep, kind node`
+  reaches stdout, and then exit 139 and a core dump. So the signature is a
+  program that visibly succeeds and a shell that reports a segfault — which is
+  the inverse of the usual one, where a crash eats the buffered output and the
+  failure looks like it happened at line 1.
+
+  The cause is almost certainly recursive `value_free` over the nested
+  structure: freeing is the only thing left to do at that point, and the two
+  boundaries differ by about the ratio of the two containers' per-level frame
+  cost.
+
+- **Why it matters beyond the number:** this is the one depth limit a program
+  cannot defend itself against. `try_decode` caps parser nesting at 10 000 and
+  the rules library caps its own evaluation walk at 100, but **both of those
+  refuse a tree that already exists**, and for this defect the refusal is too
+  late: merely letting the value go out of scope is the crash. Any reader that
+  builds a value from untrusted input — a deserializer, a JSON decoder handing
+  back a nested record, a rules-stack loader — has to bound depth **while
+  parsing**, before the structure exists, or a refusal it issues afterwards
+  will be followed by a segfault on the way out.
+
+- **Workaround:** none available to a gBASIC program. The rules library's own
+  limits are set well under the boundary (depth 100, measured against a 380–400
+  level evaluation crash; see `tests/run_rules.sh`), and its unbuilt
+  deserializer carries the requirement above as a stated design constraint
+  rather than as a cap applied after loading.
+
+- **Note:** this is the same family as the existing "deep recursion is a
+  property of the frame" measurement under *Smaller, measured, no action
+  implied* (936/937 for a bare tail call), but it is a different axis: that one
+  is about how deep a **call** chain may go and is visible as an immediate
+  crash, this one is about how deep a **value** may be and fires only at exit.
