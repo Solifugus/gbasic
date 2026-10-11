@@ -40,9 +40,30 @@ set -euo pipefail
 #   <!--needs-context-->    must PARSE; excused from RUN. For a snippet that
 #                           names something defined in the prose around it, or
 #                           wants a file, a database or stdin.
+#   <!--needs-network-->    must PARSE; excused from RUN. For a block that
+#                           reaches the PUBLIC INTERNET.
 #
-# Headless, no network, never skips. GBASIC_PATH points at the source stdlib so
-# `load`-bearing examples resolve.
+# THE NETWORK MARKER EARNS ITSELF DIFFERENTLY, and the asymmetry is the whole
+# reason it is a separate marker rather than a reuse of needs-context. Every
+# other exemption must be earned BY FAILING -- a needs-context block that runs
+# clean is a stale marker, which is what stops the list becoming where broken
+# samples go to be forgotten. A network block CANNOT be held to that: it
+# succeeds when the internet is there and fails when it is not.
+#
+# MEASURED 2026-10-10: the tutorial's `webclient.get("https://example.com")`
+# failed TWO RUNS IN THREE with "Recv failure: Connection reset by peer", so
+# this suite -- whose own header read "no network" -- was red about two thirds
+# of the time for a reason that has nothing to do with gBASIC. A gate that goes
+# red because a stranger's web server rate-limited you is a gate people learn
+# to turn off, which is the failure this tree keeps writing down.
+#
+# So the earning test is STRUCTURAL instead: the block must actually contain a
+# call that goes out (`webclient.`, `http.`, `smtp.` or `ldap.`). That cannot be
+# satisfied by a block that merely broke, so the marker still cannot become a
+# dumping ground.
+#
+# Headless, never skips, and makes no network request of its own. GBASIC_PATH
+# points at the source stdlib so `load`-bearing examples resolve.
 
 cd "$(dirname "$0")/.."
 root="$PWD"
@@ -106,13 +127,15 @@ for i, m in enumerate(re.finditer(r'```basic\n(.*?)```', src, re.S)):
             marker = "fragment"
         elif t == "<!--needs-context-->":
             marker = "needs-context"
+        elif t == "<!--needs-network-->":
+            marker = "needs-network"
     path = os.path.join(work, f"block_{i:03d}.bas")
     open(path, "w", encoding="utf-8", newline="").write(m.group(1))
     manifest.append(f"{i:03d}\t{line}\t{marker}")
 open(os.path.join(work, "manifest"), "w", newline="").write("\n".join(manifest) + "\n")
 PY
 
-total=0; parsed=0; ran=0; fragments=0; contextual=0
+total=0; parsed=0; ran=0; fragments=0; contextual=0; networked=0
 parse_bad=(); run_bad=(); unearned=(); unbuilt=()
 
 while IFS=$'\t' read -r idx line marker; do
@@ -165,6 +188,15 @@ while IFS=$'\t' read -r idx line marker; do
         fi
         continue
     fi
+    if [[ "$marker" == "needs-network" ]]; then
+        networked=$((networked + 1))
+        # EARNED STRUCTURALLY, not by failing -- see the header. A block that
+        # reaches nothing out of the process has no business carrying this.
+        if ! command grep -qE '(webclient|http|smtp|ldap)\.' "$src"; then
+            unearned+=("$DOC:$line  marked needs-network but makes no outgoing call")
+        fi
+        continue
+    fi
 
     if [[ $rc -ne 0 ]]; then
         reason="$(head -1 "$work/rerr" | sed 's/^[a-z ]*error at [^ ]*: //')"
@@ -205,7 +237,8 @@ else
     fail "every self-contained block runs to exit 0 (${#run_bad[@]} failed)"
     printf '    %s\n' "${run_bad[@]}"
     printf '    (if the block genuinely needs surrounding context, mark it\n'
-    printf '     <!--needs-context--> on the line above its fence)\n'
+    printf '     <!--needs-context--> on the line above its fence, or\n'
+    printf '     <!--needs-network--> if it reaches the public internet)\n'
 fi
 if [[ ${#unbuilt[@]} -gt 0 ]]; then
     printf '  SKIP %d block(s) not runnable in THIS build (not counted as run):\n' "${#unbuilt[@]}"

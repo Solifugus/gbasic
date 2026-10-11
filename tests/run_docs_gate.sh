@@ -957,6 +957,57 @@ else
     fi
 fi
 
+# --- THE RESERVED-WORD LIST, PLUS ITS EXCEPTIONS, MUST BE THE LEXER'S --------
+#
+# docs/reference.md prints the words that CANNOT be names as a fenced block,
+# names the two that can underneath it, and states a total. `src/lexer.c`
+# matches the real set one `keyword_equals` at a time. Four statements of one
+# fact, kept in step by hand -- and two of them had drifted apart by 0.6.0.
+#
+# WHAT HAPPENED, because it decides what this tier checks. The list held the
+# words that cannot be names from the day it was written (44 at 0.5.1, with
+# `end` and `next` correctly absent). 0.6.0 added two operators and the edit put
+# FOUR words in, so the page listed 48 under a sentence about 46 and
+# simultaneously said two of them may be names. Reported by the session
+# re-pinning Volume 2, whose appendix generator compares the STATED count with
+# the LISTED words and refused to run. Not found by reading: the sentence and
+# the list are each plausible on their own, and only counting them disagrees.
+#
+# SO THE PROPERTY IS THE UNION, not the list. list + exceptions == the lexer's
+# keywords catches a keyword missing from both, a keyword in the wrong one, and
+# an exception that stops being one. Checking the list alone against the lexer
+# would FAIL CORRECT DOCUMENTATION, since the list is deliberately 46 of 48 --
+# measured, that is exactly the mistake my first version of this tier made.
+#
+# The stated TOTAL is checked too, which is the books session's own check and
+# the one that found this.
+kw_cannot="$(awk '/^Keywords are matched/{f=1} f&&/^```text$/{g=1;next} g&&/^```$/{exit} g{print}' docs/reference.md \
+             | tr -s ' ' '\n' | grep . | LC_ALL=C sort -u)"
+kw_except="$(sed -n 's/.*\*\*`\(end\)` and `\(next\)`\*\*.*/\1\n\2/p' docs/reference.md | head -2)"
+kw_src="$(grep -oE 'keyword_equals\(start, length, "[a-z_]+"' src/lexer.c \
+          | grep -oE '"[a-z_]+"' | tr -d '"' | LC_ALL=C sort -u)"
+kw_union="$(printf '%s\n%s\n' "$kw_cannot" "$kw_except" | grep . | LC_ALL=C sort -u)"
+kw_cn="$(printf '%s\n' "$kw_cannot" | grep -c . || true)"
+kw_en="$(printf '%s\n' "$kw_except" | grep -c . || true)"
+kw_sn="$(printf '%s\n' "$kw_src" | grep -c . || true)"
+# The page's own arithmetic: "There are N, and these M cannot be used".
+kw_said_total="$(sed -n 's/.*There are \([0-9]*\), and these [0-9]* cannot.*/\1/p' docs/reference.md | head -1)"
+kw_said_cannot="$(sed -n 's/.*There are [0-9]*, and these \([0-9]*\) cannot.*/\1/p' docs/reference.md | head -1)"
+if [ "${kw_cn:-0}" -lt 40 ] || [ "${kw_sn:-0}" -lt 40 ] || [ "${kw_en:-0}" -ne 2 ]; then
+    echo "FAIL keywords      read ${kw_cn:-0} listed, ${kw_en:-0} exceptions and ${kw_sn:-0} from the lexer; a pattern stopped matching and this check is measuring nothing"
+    status=1
+elif [ -z "$kw_said_total" ] || [ "$kw_said_total" != "$kw_sn" ] || [ "$kw_said_cannot" != "$kw_cn" ]; then
+    echo "FAIL keywords      the page says $kw_said_total keywords of which $kw_said_cannot cannot be names; it lists $kw_cn and the lexer matches $kw_sn"
+    status=1
+elif [ "$kw_union" = "$kw_src" ]; then
+    echo "PASS keywords       the page's $kw_cn reserved names plus its $kw_en exceptions are exactly the $kw_sn keywords src/lexer.c matches"
+else
+    echo "FAIL keywords      docs/reference.md and src/lexer.c disagree about the keyword set:"
+    diff <(printf '%s\n' "$kw_src") <(printf '%s\n' "$kw_union") \
+        | sed -e 's/^< /      only in the lexer: /' -e 's/^> /      only on the page:  /' | grep 'only in' || true
+    status=1
+fi
+
 # --- THE INDEX MUST AGREE WITH THE DOCUMENT IT INDEXES ----------------------
 #
 # docs/README.md gives every page a STATUS, and so does the page itself. They

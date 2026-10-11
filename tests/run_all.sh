@@ -41,7 +41,24 @@ filter="${1:-}"
 # people learn to turn off, which is the failure this file exists to prevent.
 # 3600 still bounds a genuinely hung suite; override for a slower host.
 timeout_s="${SUITE_TIMEOUT:-3600}"
-logdir="$(mktemp -d)"
+# WHERE THE PER-SUITE LOGS GO. `RUN_ALL_LOGDIR` lets a caller name it, which
+# exists because CI could not retrieve them: the macOS exploration job reported
+# WHICH suites failed and never why, since this directory is a random mktemp
+# path inside a runner that is then destroyed. A tally without causes is a
+# measurement nobody can act on.
+#
+# A CALLER-SUPPLIED DIRECTORY IS NEVER DELETED. The cleanup below is an
+# `rm -rf`, and running that over a path somebody else named -- who may have
+# pointed it at a directory with other things in it -- is not a risk worth
+# taking for a tidier temp dir. It is removed only when this script created it.
+if [ -n "${RUN_ALL_LOGDIR:-}" ]; then
+    logdir="$RUN_ALL_LOGDIR"
+    mkdir -p "$logdir" || { printf 'cannot create RUN_ALL_LOGDIR %s\n' "$logdir" >&2; exit 1; }
+    logdir_ours=0
+else
+    logdir="$(mktemp -d)"
+    logdir_ours=1
+fi
 
 # Excluded unless RUN_MANUAL=1, and NAMED when excluded rather than quietly
 # dropped: run_xml_bigfile generates a >=100 MB document and is documented as a
@@ -194,5 +211,6 @@ if [ "$fail" -gt 0 ]; then
     exit 1
 fi
 
-rm -rf "$logdir"
+# Only if we made it -- see the note where $logdir is chosen.
+[ "$logdir_ours" = "1" ] && rm -rf "$logdir"
 exit 0

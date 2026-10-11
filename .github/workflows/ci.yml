@@ -470,7 +470,24 @@ jobs:
       # suites fail -- the summary IS the deliverable, and the job carries
       # continue-on-error anyway so it never gates.
       - name: Every suite
-        run: SUITE_TIMEOUT=240 ./tests/run_all.sh | tee "$RUNNER_TEMP/macos-suites.log" || true
+        run: |
+          SUITE_TIMEOUT=240 RUN_ALL_LOGDIR="$RUNNER_TEMP/suitelogs" \
+            ./tests/run_all.sh | tee "$RUNNER_TEMP/macos-suites.log" || true
+
+      # THE LOGS, WITHOUT WHICH THE TALLY IS UNACTIONABLE. The first bounded run
+      # reported 78 OK, 17 FAIL, 9 TIMEOUT and could not say WHY any of them
+      # failed: run_all.sh writes per-suite detail into a mktemp directory, and
+      # the runner is destroyed with it. A list of names tells you macOS has
+      # problems; these files tell you which ones, and several are expected to
+      # be BSD-versus-GNU tooling rather than gBASIC at all.
+      - name: Upload the per-suite logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-suite-logs
+          path: ${{ runner.temp }}/suitelogs
+          if-no-files-found: warn
+          retention-days: 14
 
       # THE REPORT, which is the whole point of an exploration job and which the
       # unbounded version never reached. Printed to the step summary so it is
@@ -492,6 +509,12 @@ jobs:
             echo '```'
             grep -E '^\S+ +(FAIL|TIMEOUT)' "$log" | head -40 || echo '(none)'
             echo '```'
+            echo
+            echo 'Per-suite detail is in the **macos-suite-logs** artifact on this run.'
+            echo
+            echo 'NOTE the 240s cap is deliberately tight for exploration, so the'
+            echo 'genuinely slow suites read as TIMEOUT rather than hanging --'
+            echo 'run_ari_discover takes ~35 minutes on Linux and passes.'
           } >> "$GITHUB_STEP_SUMMARY"
           tail -5 "$log"
           echo '--- did not pass ---'

@@ -11364,3 +11364,202 @@ scope that did not make the write.
   modes it could disturb cannot be run on either test machine.
 - **Status:** BY DESIGN (2026-10-03, Matthew): `load` hoists like a declaration,
   not a statement. Not a defect; struck from the open ledger (item 51).
+
+## From the books session re-pinning Volume 2 to 0.7.0 — 2026-10-10
+
+One finding. Filed the same sitting it was written, which is the books
+session's rule now rather than its aspiration.
+
+### 42. `docs/reference.md` lists `end` and `next` as words that cannot be names, two paragraphs above saying they can
+
+**Where.** `docs/reference.md` at `v0.7.0`, the *Lexical Rules* section,
+line 104 onward.
+
+The block is introduced with:
+
+> Keywords are matched **case-insensitively**. There are 48, and 46 of them
+> cannot be used as a variable, parameter or function name:
+
+The fenced list under it holds **48** words, not 46. The two extra are
+`end` and `next`. Two paragraphs further down the same page:
+
+> The remaining two — **`end` and `next`** — are recovered as identifiers by
+> the grammar and *may* be used as ordinary names. That is why closing a
+> `for` with `next` costs no reserved word (see Statements).
+
+**The binary agrees with the prose, not the list.** Measured against the
+published 0.7.0 archive
+(`49ee549432999c707bef7a609e870f24e82543c36bf1f41a4f340a69b8d822c8`):
+
+```
+program main(args)
+    next = 5
+    end = 7
+    print string(next + end)
+end program
+```
+```
+12
+```
+
+And the control, so this is not a claim that nothing is reserved:
+
+```
+program main(args)
+    excluding = 1
+end program
+```
+```
+parse error at excl.bas:2:5: syntax error, unexpected EXCLUDING --
+'excluding' is a reserved word and cannot be used as a name
+```
+
+That diagnostic is good and is not what this is about.
+
+**What happened, as far as the tags show.** At `v0.5.0` the sentence read
+*"There are 46, and 44 of them cannot be used"* and the list held 44,
+omitting `end` and `next` — consistent. At `v0.7.0` the sentence was
+correctly updated to 48/46 for `excluding` and `intersecting`, but the list
+gained **four** words rather than two. The arithmetic in the sentence is
+right; the list is what drifted.
+
+**Suggested fix:** drop `end` and `next` from the fenced list, leaving 46.
+The sentence and the grammar are both already correct, so nothing else
+moves.
+
+- **Status:** FIXED 2026-10-10 (platform session), and the suggested fix was
+  RIGHT about the list -- verified against the tags before taking it, because
+  "delete two words from a list of keywords" could as easily have been the
+  wrong half. It is not: at v0.5.1 the sentence read 46/44, the list held 44,
+  and `end`/`next` were absent, so the list has meant *the words that cannot be
+  names* since it was written and 0.6.0's edit added four words where two
+  belonged. The list is 46 again.
+
+  **A SECOND DEFECT CAME OUT OF CHECKING, pointing the other way**, which is why
+  the one-line fix alone would have left the page wrong. The exception prose said
+  `end` and `next` "may be used as ordinary names", and measured in all four
+  positions they may not:
+
+  | | variable | record field | parameter | function name |
+  |---|---|---|---|---|
+  | `end` | yes | yes | **no** | **no** |
+  | `next` | yes | yes | **no** | **no** |
+
+  `function end(a)` answers *`'end'` is a reserved word and cannot be used as a
+  name* -- the page contradicted at the one place a reader acts on it. So both
+  halves were wrong, in OPPOSITE directions, and each needed a different method
+  to find: counting for the list, running the binary for the sentence.
+
+  **And the comparison is now in gBASIC's CI**, which the entry offers and is
+  worth having: `tests/run_docs_gate.sh` checks the page's stated total against
+  what it lists (the books generator's own check, and the one that found this)
+  AND the listed words plus the two named exceptions against `src/lexer.c` as a
+  set. THE UNION IS THE PROPERTY, not the list -- a tier comparing the list
+  alone to the lexer would fail correct documentation, since the list is
+  deliberately 46 of 48, and that is exactly the mistake the first draft of the
+  tier made. Four perturbations proven red, including the 0.6.0 defect itself.
+
+**How it was found, which may be the more useful part.** Not by reading the
+page — by a cross-check in the books repo. `tools/build-appendix.py` reads
+this reference at the pinned tag to generate Volume 1's appendix, and it
+compares the count the page *states* against the words the page *lists*,
+because those are two independent statements of one fact. It refused to
+generate:
+
+```
+build-appendix: the reference says 46 keywords cannot be used as names
+and lists 48
+```
+
+Worth noting against the previous commit here (*"the documentation was NOT
+up to date, and the stale parts were where 0.7.0 would put them"*): this is
+one more of those, in the same release, and it is the kind that a docs
+readthrough is poorly suited to catching — the sentence and the list are
+both individually plausible, and only counting them finds the disagreement.
+If that comparison is worth having in gBASIC's own CI, it is about fifteen
+lines, and the books repo will keep running it either way.
+
+## No published 0.7.0 package can run a GUI, and the stdlib says it can
+
+**Status: reported by the books session, 2026-10-10. Not a language defect --
+a release-build configuration one, and the most consequential thing the book
+has found in this release.**
+
+Found while writing `bound` into Chapters 9 and 18. The books repo verifies
+against the PUBLISHED archive rather than a build, which is the only reason it
+was visible: a build from this tree has gobject-introspection and works.
+
+```
+$ gbasic gui.bas            # load gtk / program main(args) / print "a window"
+runtime error at .../share/gbasic/stdlib/gtk.bas:1:1: gobject-introspection
+support is unavailable; install libgirepository-2.0-dev (GLib >= 2.80) and
+rebuild
+```
+
+**Read the last two words.** A binary release telling its user to rebuild is a
+compile-time option that was off when the artifacts were built. Measured in
+every position reachable from here, because one position is what made the
+previous finding half wrong:
+
+| position | result |
+|---|---|
+| `-linux-x86_64-full.tar.gz` | ships `gtk.bas`, `gtkui.bas`, `gtksourceview/`; `load gtk` refuses |
+| `-linux-x86_64.tar.gz` (base tier) | identical stdlib listing, 66 entries; refuses identically |
+| `ldd` on both binaries | zero `girepository` or `gtk` links |
+| this host's girepository | `pkg-config --modversion girepository-2.0` -> **2.88.0**, past the stated 2.80 |
+| `-x64.msix` (Windows) | carries `gtk.bas`, `gtkui.bas`, `gtksourceview/gbasic.lang`, **zero DLLs** |
+| `-gui`, `-desktop`, `-min`, `-core`, `-slim`, `-base`, `-runtime` | 404; only `-full` and the base tier exist |
+
+The dependency is present on this machine and the binary is not linked against
+it, so this is the build, not the environment.
+
+**Why it is worse than an absent library.** Every other signal says the feature
+shipped. The two stdlib files are in the package, `load gtk` finds them, and the
+refusal arrives from inside a file the reader can open. A reader concludes their
+system is wrong and goes looking for a package to install -- and installing it
+changes nothing, because the binary was already built without it.
+
+**The ask, either way round**: build the release artifacts with
+gobject-introspection, or leave `gtk.bas` and `gtkui.bas` out of packages that
+cannot run them and say so on the download page. Shipping the library without
+the support is the one combination that misleads.
+
+**What it cost the book.** Chapter 18 said *"The GTK bindings exist and work, on
+Linux"*. That is now a measured block showing the refusal, plus the honest
+statement: at 0.7.0 a GUI means building the interpreter yourself. The verdict
+was already *not yet*; the reason is narrower and harder than a platform count.
+
+### And two smaller ones from the same sitting
+
+**The two GUI documents a reader is told to read first never mention `bound`.**
+`docs/gui_cookbook.md` §2 (*"State in callbacks -- read this one first"*, "The
+single biggest trap") and `docs/gui_tutorial.md` §3 (*"The thing that will bite
+you: no closures"*, "Read this before writing a single handler") contain zero
+occurrences of `bound(`, while `docs/reference.md` says plainly: *"A GTK signal
+handler and a gi event-source callback carry their context (since 0.6.0). This
+is what `bound` was for."* Same shape as the acknowledged `docs/tutorial.md`
+gap, but sharper -- these two do not merely omit the feature, they teach a
+workaround for the trap it removes. A reader following the project's own
+first-read advice writes the registry-smuggling pattern and never learns there
+is an alternative.
+
+**`key`'s absence rule is described as SQL's, and SQL has one NULL.** The page
+says absences *"group together (as SQL's `GROUP BY` does with `NULL`)"*.
+Measured in four positions:
+
+```
+key(nothing) = key(nothing)     ->  true
+key(unknown) = key(unknown)     ->  true
+key(nothing) = key(unknown)     ->  false      <-- the sentence reads as true
+key(nothing) = key("nothing")   ->  false      <-- this half is right
+encode(key(nothing))            ->  "z:"
+encode(key(unknown))            ->  "u:"
+```
+
+Two absence groups, not SQL's one. The behaviour is consistent with `=` and with
+`unique` and I am not asking for it to change; the prose is what invites the
+wrong reading, because a reader who knows `GROUP BY` concludes the false thing.
+Worth noting too that the aggregate rules a few pages earlier deliberately merge
+`nothing` and `unknown` while `key` deliberately separates them -- a real seam,
+crossed by anyone who groups with `key` and then aggregates, and the `key`
+paragraph is the place to say so.

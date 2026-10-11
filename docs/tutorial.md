@@ -1371,6 +1371,7 @@ avoid precision loss; JSON results decode to gBASIC values. Errors carry
 
 With libcurl available, `load webclient` for synchronous outgoing HTTP/HTTPS.
 
+<!--needs-network-->
 ```basic
 load webclient
 

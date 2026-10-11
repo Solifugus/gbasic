@@ -101,14 +101,14 @@ A passage leads north."
 
 ### Reserved words
 
-Keywords are matched **case-insensitively**. There are 48, and 46 of them
-cannot be used as a variable, parameter or function name:
+Keywords are matched **case-insensitively**. There are 48, and these 46 cannot
+be used as a variable, parameter or function name:
 
 ```text
 and       as        break     consider  continue  dim       do        each
-else      end       error     excluding export    false     for       function
+else      error     excluding export    false     for       function
 gosub     goto      if        in        intersecting        library   load
-modifier  new       next      not       nothing   on        or        print
+modifier  new       not       nothing   on        or        print
 program   return    spawn     step      stop      then      to        true
 unknown   until     unwatch   use       watch     watchers  while     with
 without
@@ -120,9 +120,36 @@ named either (the only three matches were in prose comments), and the infix form
 costs **zero** grammar conflicts, which is what decided it over a function form —
 this project rejected `IDENT expression` as a statement form over four.
 
-The remaining two — **`end` and `next`** — are recovered as identifiers by the
-grammar and *may* be used as ordinary names. That is why closing a `for` with
-`next` costs no reserved word (see Statements). `loop` is not in either list:
+The other two of the 48 — **`end` and `next`** — are recovered as identifiers by
+the grammar where a *name being read or assigned* is expected, so they may be
+used as **variables**. That is why closing a `for` with `next` costs no reserved
+word (see Statements).
+
+**They may not be a parameter or a function name.** That sentence used to read
+"may be used as ordinary names", which is the broader claim and is false.
+Measured against 0.7.0, both words in all four positions:
+
+| | variable | record field | parameter | function name |
+|---|---|---|---|---|
+| `end` | yes | yes | **no** | **no** |
+| `next` | yes | yes | **no** | **no** |
+
+`function end(a)` answers *`'end'` is a reserved word and cannot be used as a
+name* — the page contradicted at the one place a reader would act on it. The
+record-field column is not special to these two: every keyword is legal there,
+as the paragraph after the next one says.
+
+Both halves of this were wrong at 0.6.0 and 0.7.0, in opposite directions, and
+each was found by a different route. The LIST had drifted: it held the 46 that
+cannot be names from the day it was written (44 at 0.5.1, and `end`/`next`
+absent), and 0.6.0's edit added **four** words for two new operators, so it
+listed 48 under a sentence about 46. Found by the session re-pinning *Volume 2*,
+whose appendix generator compares the count the page STATES against the words it
+LISTS and refused to run — not by reading, because the sentence and the list are
+each plausible alone. The SENTENCE about the exception was separately too broad,
+which only measuring all four positions shows. `tests/run_docs_gate.sh` now
+checks the list plus the two exceptions against `src/lexer.c` as a set, so
+neither can drift again. `loop` is not in either list:
 it stopped being a keyword entirely when `do … loop while` was removed, and is
 now an ordinary identifier.
 
