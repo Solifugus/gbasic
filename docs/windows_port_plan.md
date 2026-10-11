@@ -79,7 +79,27 @@ exist on Windows.** `tools/build-release-tarball.sh` excludes them because
 libxml2's soname differs across distributions (`.so.2` for most of the range,
 `.so.16` from 2.14) — a problem Windows does not have. Statically linked, a
 Windows build can ship the spreadsheet engine that the Linux downloads cannot.
-**That is the strongest single argument for a Windows build existing.**
+~~**That is the strongest single argument for a Windows build existing.**~~
+
+> **CORRECTED 2026-10-11, and the correction is against this paragraph rather
+> than a detail in it.** The premise is sound and the conclusion does not
+> follow: *nothing about static linking is Windows-specific*. The Linux
+> exclusion was reasoned from **dynamic** linking — a soname that varies is
+> fatal — and then never re-asked for the static case, which removes the soname
+> question entirely on Linux exactly as it does here.
+>
+> Measured on `ubuntu:22.04`: the lean tier plus statically linked libxml2 and
+> zlib is a 2.2 MB binary and a 1.5 MB tarball whose `DT_NEEDED` is still
+> **`libc` and `libm` only** — `libz.so.1` *left* the list — at a glibc floor of
+> 2.34, under the 2.35 that tier promises. Extracted on bare `ubuntu:22.04` and
+> `debian:12` with no packages installed it parses XML, opens a real workbook
+> and round-trips compression. So the Linux download that promises to run
+> anywhere can carry the spreadsheet engine too, for about 700 KB.
+>
+> This does not weaken the case for Windows — §1's argument that Windows is
+> where the business data is stands on its own, and the two INVERSIONS above
+> reduce to one. See `docs/dependency_linking_design.md`, which this correction
+> came out of.
 
 ## 5. What is deliberately out, and why saying so now is the point
 
@@ -111,8 +131,11 @@ third-party dependency. This is the release that proves the product exists.
 **M2 — ODBC.** Cheapest-per-value if §4 holds. SQL Server and Access reach the
 §1 audience directly, and it is the Windows answer to "where is my data".
 
-**M3 — zlib + libxml2, for `xlsx`.** The headline Windows feature, and the one
-the Linux downloads cannot offer. zlib is small and gBASIC already hand-wrote
+**M3 — zlib + libxml2, for `xlsx`.** The headline Windows feature. ~~And the
+one the Linux downloads cannot offer~~ — struck 2026-10-11 with §4's
+correction: measured, a statically linked Linux build offers it too, at
+`DT_NEEDED` of `libc`/`libm` and about 700 KB. The milestone is unaffected;
+only its claim to exclusivity is. zlib is small and gBASIC already hand-wrote
 its own ZIP container, so only deflate is needed.
 
 **M4 — sqlite.** A single amalgamation file that builds anywhere; cheap, and it

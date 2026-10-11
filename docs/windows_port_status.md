@@ -476,7 +476,11 @@ already names it, so the new IM002 message never fires there.
 imports only Windows' own DLLs. `LIBXML_STATIC` is required, or libxml2's
 headers declare every function dllimport. This is the plan's §4 argument made
 real: the Linux tarballs omit xlsx because libxml2's soname varies across
-distributions, a problem a static Windows build does not have.
+distributions, a problem a static Windows build does not have. *(The
+measurement stands; the INFERENCE drawn from it in the plan does not, and §4 is
+corrected 2026-10-11 — a static LINUX build does not have that problem either,
+measured at `DT_NEEDED` of `libc`/`libm` and ~700 KB. See
+`docs/dependency_linking_design.md`.)*
 
 **Measured on Windows:** all 10 xlsx and 8 xml examples pass (run_examples'
 list: 203 of 235); run_xlsx passes EVERY tier but one -- the reader discards

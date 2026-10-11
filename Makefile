@@ -161,7 +161,12 @@ LIBSSL_AVAILABLE := 0
 # M3: zlib + libxml2, STATICALLY, for xml and xlsx -- the headline Windows
 # feature (docs/windows_port_plan.md §4: the Linux tarballs omit xlsx because
 # libxml2's soname varies across distributions, a problem a static Windows
-# build does not have). LIBXML_STATIC is not optional: without it libxml2's
+# build does not have). THAT PARENTHESIS IS HALF TRUE AND §4 IS CORRECTED:
+# the soname does vary, and NOTHING ABOUT STATIC LINKING IS WINDOWS-SPECIFIC --
+# measured 2026-10-11, a static LINUX build ships xml and xlsx at a DT_NEEDED
+# of libc and libm for about 700 KB, and the Linux exclusion was reasoned from
+# DYNAMIC linking and never re-asked. See docs/dependency_linking_design.md.
+# The Windows flags below are unaffected; only the claim to exclusivity is. LIBXML_STATIC is not optional: without it libxml2's
 # headers declare every function __declspec(dllimport) and the static archive
 # cannot satisfy them. The dependency list is pkg-config --static's LESS
 # -liconv: libiconv is LGPL, and the three functions libxml2 takes from it are
