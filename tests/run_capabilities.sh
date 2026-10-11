@@ -182,6 +182,133 @@ for mod in $mod_list; do
     esac
 done
 
+# ---------------------------------------------------------------------------
+# `has_builtin` MUST ANSWER FOR THIS BUILD, which until 0.7.1 it did not.
+#
+# THE DEFECT, MEASURED ON THE PUBLISHED 0.7.0 ARTIFACTS. `has_builtin` is
+# documented as the way a program degrades gracefully across releases, and on
+# two of the three published artifacts it could not answer the question it
+# exists for: it affirmed `password_hash`, `sha256` and `compress` on builds
+# that cannot run any of them. So a program that CHECKED FIRST and then called
+# crashed on the branch it had checked for -- which is worse than DOGFOOD 46,
+# the same defect inverted, where a careful program merely took a weaker path.
+# `compress` was the sharpest: `has_builtin` said true and the same binary
+# answered `unknown function: compress`, because zlib was the one optional
+# builtin family whose NAME TEST sat inside its `#if`, so the function vanished
+# rather than refusing. Reported by the books session.
+#
+# THE INVARIANT IS BUILD-AGNOSTIC, which is what makes it testable here rather
+# than only in a release: for every builtin that can depend on the build,
+# `has_builtin(n)` is true EXACTLY WHEN calling it does not refuse for
+# unavailability. That holds on a full build, a lean one and everything
+# between, so this tier does not need a second compile to be meaningful -- and
+# it fails in both directions, which matters because the two defects above
+# point opposite ways.
+#
+# WHAT THIS TIER DOES NOT COVER, AND SAYS SO: it runs against whatever binary
+# this suite built, and the suite builds everything, so on this machine every
+# probe answers "available and has_builtin agrees". That is still a real check
+# -- the invariant fails in both directions and a regression in either shows up
+# here -- but the case the defect SHIPPED IN is a build with the dependency
+# absent, and only a lean build exercises it. That half is measured by
+# tools/build-release-tarball.sh's library sweep and by run_platform's lean
+# build; the perturbations were proven against a real lean compile by hand:
+# unguarding the registry reproduces `has_builtin` affirming all three, and
+# moving zlib's name test back inside its `#if` reproduces `compress`
+# vanishing. The vanishing diagnostic ends with "has_builtin(\"compress\") asks
+# without raising", which on the shipped binary answered TRUE -- the message
+# pointed at the probe that was lying.
+#
+# THE ARITY TABLE IS HAND-WRITTEN AND THE COVERAGE CHECK IS WHAT KEEPS IT
+# HONEST: a probe needs a call the arity check will let through, and a table
+# kept only for this purpose is a list that rots -- this suite's own header
+# says so. So every name guarded in src/builtins.c must appear below, and a new
+# optional builtin cannot be added to the registry without a probe for it.
+printf '\n'
+probe_dir="$tmp/hb"; mkdir -p "$probe_dir"
+hb_probe() {   # $1 = name, $2 = argument list
+    printf 'on error goto next\nx = %s(%s)\nif error then\n  print error.message\n  error.clear()\nelse\n  print "WORKS"\nend if\n' "$1" "$2" > "$probe_dir/c.bas"
+    GBASIC_PATH=stdlib ./gbasic "$probe_dir/c.bas" 2>&1 | head -1
+}
+hb_says() {
+    printf 'print string(has_builtin("%s"))\n' "$1" > "$probe_dir/h.bas"
+    GBASIC_PATH=stdlib ./gbasic "$probe_dir/h.bas" 2>&1 | head -1
+}
+
+# name:arguments -- one row per builtin whose availability depends on the build
+HB_TABLE='
+sha256:"abc"
+sha512:"abc"
+sha1:"abc"
+md5:"abc"
+hmac_sha256:"k","m"
+hmac_sha1:"k","m"
+hmac_sha512:"k","m"
+aes_gcm_encrypt:"0123456789abcdef0123456789abcdef","0123456789ab","p","a"
+aes_gcm_decrypt:"0123456789abcdef0123456789abcdef","0123456789ab","c","a"
+ed25519_keypair:
+ed25519_sign:"sk","m"
+ed25519_verify:"pk","m","sig"
+pbkdf2_sha256:"p","s",1000,16
+pbkdf2_sha512:"p","s",1000,16
+scrypt:"p","s",16384,8,1,32
+password_hash:"pw"
+password_verify:"pw","$y$j9T$x$y"
+password_hash_cost:
+compress:"hello"
+uncompress:"hello"
+'
+hb_checked=0
+for row in $HB_TABLE; do
+    nm="${row%%:*}"
+    args="${row#*:}"
+    msg="$(hb_probe "$nm" "$args")"
+    says="$(hb_says "$nm")"
+    case "$msg" in
+        *"requires OpenSSL"*|*"requires zlib"*|*"not available in this build"*|*"support is unavailable"*|*"rebuild with it installed"*)
+            unavailable=1 ;;
+        *"unknown function"*|*"undefined function"*)
+            # THE SELF-CONTRADICTION THIS TIER WAS WRITTEN FOR. A name the
+            # dispatch does not know is not a clean refusal, whatever
+            # has_builtin says, so it fails outright rather than being
+            # classified.
+            bad "$nm vanished from the dispatch instead of refusing" "$msg"
+            hb_checked=$((hb_checked + 1)); continue ;;
+        *) unavailable=0 ;;
+    esac
+    hb_checked=$((hb_checked + 1))
+    if [ "$unavailable" = 1 ] && [ "$says" = "true" ]; then
+        bad "has_builtin($nm) says true on a build that refuses it" "$msg"
+    elif [ "$unavailable" = 0 ] && [ "$says" != "true" ]; then
+        bad "has_builtin($nm) says $says on a build that runs it" "$msg"
+    else
+        ok "has_builtin($nm) = $says, and the call agrees"
+    fi
+done
+if [ "$hb_checked" -lt 18 ]; then
+    bad "only $hb_checked optional builtins were probed" "the table has shrunk; it is measuring almost nothing"
+fi
+
+# COVERAGE, BOTH DIRECTIONS, against the registry's own guards.
+guarded="$(awk '
+  /^#if +(HAVE_LIBCRYPTO|HAVE_ZLIB|HAVE_LIBXCRYPT|HAVE_LIBXCRYPT \|\| HAVE_YESCRYPT)/ { on=1; next }
+  /^#endif/ { on=0; next }
+  on && match($0, /"[a-z_0-9]+"/) { print substr($0, RSTART+1, RLENGTH-2) }
+' src/builtins.c | sort -u)"
+if [ -z "$guarded" ]; then
+    bad "read no guarded names out of src/builtins.c" "the registry's guards or this scan have moved"
+else
+    uncovered=""
+    for g in $guarded; do
+        printf '%s' "$HB_TABLE" | command grep -q "^$g:" || uncovered="$uncovered $g"
+    done
+    if [ -n "$uncovered" ]; then
+        bad "guarded in the registry with no probe here:$uncovered" "add a row to HB_TABLE"
+    else
+        ok "every one of the $(printf '%s\n' $guarded | wc -l | tr -d ' ') registry-guarded builtins has a probe"
+    fi
+fi
+
 printf '\nchecks: %d\n' "$checks"
 if [ "$status" = 0 ]; then printf 'mismatches: 0\n'; else printf 'FAILED\n'; fi
 exit "$status"

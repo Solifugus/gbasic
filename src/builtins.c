@@ -9,8 +9,20 @@ int gbasic_builtin_function(const char *name) {
         "default",
         "has_builtin",
         "sleep",
+        /* THE REGISTRY ANSWERS FOR THIS BUILD, which it did not until 0.7.1.
+         * `has_builtin` is documented as the way to degrade gracefully across
+         * releases, and on two of the three published 0.7.0 artifacts it could
+         * not answer the question it exists for: it affirmed `password_hash`,
+         * `sha256` and `compress` on builds that cannot run any of them, so a
+         * program that CHECKED FIRST then called crashed on the branch it had
+         * checked for. Reported by the books session, and the inverse was
+         * already open as DOGFOOD 46. A probe that can be wrong is worse than
+         * none -- which is this file's own comment, thirty lines down, about a
+         * narrower case. */
+#if HAVE_LIBXCRYPT || HAVE_YESCRYPT
         "password_hash",
         "password_verify",
+#endif
         "secure_token",
         "epoch",
         "from_epoch",
@@ -27,13 +39,16 @@ int gbasic_builtin_function(const char *name) {
         "base64url_decode",
         "hex_encode",
         "hex_decode",
+#if HAVE_ZLIB
         "compress",
         "uncompress",
+#endif
         "byte_slice",
         "byte_find",
         "to_bytes",
         "random_bytes",
         "bytes_equal",
+#if HAVE_LIBCRYPTO
         "sha256",
         "sha512",
         "sha1",
@@ -41,6 +56,16 @@ int gbasic_builtin_function(const char *name) {
         "hmac_sha256",
         "hmac_sha1",
         "hmac_sha512",
+        /* THREE THE REGISTRY HAD NEVER HELD, which is the DOGFOOD 46 direction
+         * of the same defect: the dispatch knows all three and `has_builtin`
+         * answered FALSE for them, so a probing program took its fallback path
+         * for a key-derivation function the build could run. Found by probing
+         * every registry name against the published lean archive and then
+         * asking what the archive could do that the registry denied. */
+        "pbkdf2_sha256",
+        "pbkdf2_sha512",
+        "scrypt",
+#endif
         "band",
         "bor",
         "bxor",
@@ -49,11 +74,13 @@ int gbasic_builtin_function(const char *name) {
         "shr",
         "rotl",
         "rotr",
-        "aes_gcm_encrypt",
+#if HAVE_LIBCRYPTO
+                "aes_gcm_encrypt",
         "aes_gcm_decrypt",
         "ed25519_keypair",
         "ed25519_sign",
         "ed25519_verify",
+#endif
         "exit",
         "now",
         "string",
@@ -141,7 +168,9 @@ int gbasic_builtin_function(const char *name) {
         "join_path",
         "library_collisions",
         "principal",
+#if HAVE_LIBXCRYPT || HAVE_YESCRYPT
         "password_hash_cost",
+#endif
         "real_path",
         "file_type",
         "file_name",

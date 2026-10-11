@@ -228,6 +228,85 @@ printf 'print 2 + 3\n' > "$work/smoke.bas"
 got="$( cd "$work" && env -u GBASIC_PATH "$root/bin/gbasic" "$work/smoke.bas" 2>&1 || true )"
 [ "$got" = "5" ] && ok "it runs a program" || bad "it did not run a program: $got"
 
+# EVERY LIBRARY IN THE ARCHIVE, AGAINST THE BINARY SHIPPED BESIDE IT.
+#
+# THIS CHECK EXISTS BECAUSE ITS ABSENCE SHIPPED. Of the 65 libraries in the
+# 0.7.0 `-full` tarball, 13 could not be `load`ed by the binary next to them --
+# seven needing libxml2, four GObject-Introspection, one unixODBC, one libpq --
+# and 21 on the lean one. The tier design above is why, and it is sound; what
+# was missing is that nothing connected the two, so a reader following the
+# library catalogue to `load ownership` met a runtime error on line 1 with
+# nothing wrong with what they typed. Reported from outside, three times for
+# three different sets (a stale version pin, then the GUI libraries, then this).
+#
+# IT IS NOT A LIST OF EXPECTED FAILURES. tools/library-needs.sh derives what
+# each library needs from its own `load` lines, transitively; a need is
+# satisfied when EXPECTED_NEEDED -- the link set this tier already declares --
+# carries a soname beginning with it. So the PREDICTION follows the tier
+# automatically: add libxml2 to a tier and the seven XML libraries move from
+# unloadable to loadable with no second edit, and the measurement below either
+# agrees or the archive is not published.
+#
+# THE PROBE LIVES OUTSIDE THE EXTRACTED TREE, which cost a measurement to
+# learn: with the probe above the stdlib, run_library_depth's rule fires --
+# a library may be BESIDE the loading file and never below it -- and all 65
+# report a failure that has nothing to do with the build.
+echo
+probe="$(mktemp -d)"
+needs_file="$work/needs"
+./tools/library-needs.sh > "$needs_file"
+predicted="$work/predicted"; : > "$predicted"
+while read -r lib caps; do
+    [ -n "${caps:-}" ] || continue
+    ok_all=1
+    # COMMAS TO SPACES RATHER THAN `IFS=,`, which cost a measurement: setting
+    # IFS for the outer split leaks into the INNER loop, so $EXPECTED_NEEDED
+    # stops splitting on whitespace, arrives as one long word, matches nothing,
+    # and every dependent library is predicted unloadable -- 21 where the truth
+    # is 13. A prediction that is wrong in the pessimistic direction still
+    # fails the comparison, which is the only reason this was caught here
+    # rather than in a release.
+    for c in $(printf '%s' "$caps" | tr ',' ' '); do
+        have=0
+        for n in $EXPECTED_NEEDED; do
+            case "$n" in "$c"*) have=1 ;; esac
+        done
+        [ "$have" = 1 ] || ok_all=0
+    done
+    [ "$ok_all" = 1 ] || printf '%s\n' "$lib" >> "$predicted"
+done < "$needs_file"
+
+measured="$work/measured"; : > "$measured"
+swept=0
+for f in "$root"/share/gbasic/stdlib/*.bas; do
+    lib="$(basename "$f" .bas)"
+    swept=$((swept + 1))
+    printf 'load %s\nprint "loaded"\n' "$lib" > "$probe/p.bas"
+    # stdout only: a machine with gBASIC already installed emits a
+    # resolved-twice WARNING on stderr for several libraries, which is a fact
+    # about that machine and not about this archive.
+    got="$( cd "$probe" && env -u GBASIC_PATH timeout -k 2 30 "$root/bin/gbasic" p.bas 2>/dev/null || true )"
+    [ "$got" = "loaded" ] || printf '%s\n' "$lib" >> "$measured"
+done
+rm -rf "$probe"
+sort -o "$predicted" "$predicted"
+sort -o "$measured" "$measured"
+n_pred=$(wc -l < "$predicted" | tr -d ' ')
+n_meas=$(wc -l < "$measured" | tr -d ' ')
+
+if [ "$swept" -lt 40 ]; then
+    bad "the library sweep only tried $swept libraries -- it is measuring almost nothing"
+elif cmp -s "$predicted" "$measured"; then
+    ok "$swept libraries swept; exactly the $n_meas the derivation predicts cannot load on $TIER"
+    [ "$n_meas" -gt 0 ] && printf '     cannot load: %s\n' "$(tr '\n' ' ' < "$measured")"
+else
+    bad "the libraries that cannot load are not the ones predicted ($n_meas measured, $n_pred predicted)"
+    printf '     only measured:  %s\n' "$(comm -13 "$predicted" "$measured" | tr '\n' ' ')"
+    printf '     only predicted: %s\n' "$(comm -23 "$predicted" "$measured" | tr '\n' ' ')"
+    printf '     Either a library gained or lost a dependency, or this tier'"'"'s link set changed.\n'
+    printf '     Fix docs/reference.md via tools/library-needs.sh -- do not pad the prediction.\n'
+fi
+
 # THE RELOCATION PROPERTY, which is what makes this a download and not an
 # installer. Run from an unrelated directory, environment cleared, resolving a
 # stdlib library -- with the tree at a path no build ever knew about.

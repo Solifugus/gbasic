@@ -4909,6 +4909,31 @@ else
 end if
 ```
 
+**It answers for THIS BUILD, not for the version** *(corrected in 0.7.1)*.
+A builtin that needs an optional dependency is in the table only when the
+dependency was compiled in, so on a build without OpenSSL
+`has_builtin("sha256")` is **false** and on one without zlib
+`has_builtin("compress")` is **false**. That is the answer a program probing in
+order to degrade needs: before 0.7.1 all three of `sha256`, `password_hash` and
+`compress` answered **true** on published artifacts that cannot run them, so a
+program which checked first and then called crashed on the branch it had
+checked for.
+
+The twenty names that move with the build are the hash, HMAC, AES-GCM, Ed25519
+and key-derivation families (libcrypto), `password_hash`/`password_verify`/
+`password_hash_cost` (libxcrypt or the vendored backend), and
+`compress`/`uncompress` (zlib). Everything else answers the same on every
+build. `base64_*`, `hex_*`, `base32_*`, `random_bytes` and `secure_token` are
+deliberately **not** on that list — they are implemented here rather than
+delegated, and work on the leanest build there is.
+
+**A false answer and a refusal to run are two different things, and both are
+honest.** Where the dependency is absent, `has_builtin` says `false` *and*
+calling the function raises a message naming what to install —
+*compression requires zlib; rebuild with it installed* — rather than
+`undefined function`. `tests/run_capabilities.sh` asserts that pairing for
+every one of the twenty, in both directions.
+
 ### Timing
 
 **`sleep(seconds)`** - Blocks the current program for at least `seconds`, and
@@ -6726,6 +6751,95 @@ pointing at the library directory (or resolved from the install path after
 `make install`). This is a catalog; each toolkit's full API lives in its own
 document, which is the single source of truth for it — the entries below only say
 what each is and where to read it.
+
+### Which libraries need something from the build
+
+**A library is shipped whether or not the binary beside it can run it**, and
+`load` says so at once rather than failing at the first call:
+
+```text
+load ownership
+-> XML support is not available in this build
+```
+
+That is the right moment to be told and the message names the cause. What was
+missing until 0.7.1 was anywhere to look it up *before* reaching it. These
+21 of the 66 standard libraries need an optional dependency; every
+other one is pure gBASIC over the core and works on any build.
+
+| library | needs installed |
+| --- | --- |
+| `agent` | libcurl |
+| `ari_advisor` | libcurl |
+| `datagrid` | GObject-Introspection |
+| `dbframe` | libsqlite3 |
+| `discovery` | unixODBC |
+| `edgar` | libcurl, libsqlite3 |
+| `finio_all` | libxml2 |
+| `finio_camt` | libxml2 |
+| `finio_iso20022` | libxml2 |
+| `finio_pain001` | libxml2 |
+| `gtk` | GObject-Introspection |
+| `gtkui` | GObject-Introspection |
+| `insiders` | libcurl, libsqlite3, libxml2 |
+| `llm` | libcurl |
+| `market` | libcurl |
+| `mcp` | libcurl |
+| `mdna` | libcurl, libxml2 |
+| `ownership` | libxml2 |
+| `retrieval` | libpq |
+| `screener` | libsqlite3 |
+| `sourceeditor` | GObject-Introspection |
+
+**The column is what to install, not what the error says.** The modules refuse
+in their own words, and *WebClient*, *HTTP* and *SMTP* are three faces of
+libcurl — a table in those terms would tell a reader three things are missing
+where one is.
+
+**The dependency is transitive, which is why some rows are surprising.**
+`finio_all` contains no XML of its own; it loads `finio_camt`, which loads
+`xml`. `ari_advisor` needs libcurl because it loads `llm`. A scan of either
+library's own `load` lines reports it as needing nothing.
+
+**This table is derived, not maintained.** `tools/library-needs.sh` computes it
+from the `load` lines in `stdlib/*.bas`, `tests/run_library_tiers.sh` requires
+the two to agree in both directions, and `tools/build-release-tarball.sh`
+refuses to publish an archive whose unloadable set is not exactly what the
+derivation predicts. So a new library, a new dependency and a change of build
+tier each move all three together.
+
+### And three that load, then fail
+
+**A library can `load` perfectly and still not work**, which is the half the
+table above misses and the worse half, because the failure is deferred to the
+call. These 3 call a **builtin** whose availability moves with the build, so
+nothing in their `load` lines gives them away:
+
+| library | loads anywhere, but its functions need |
+| --- | --- |
+| `crypto` | libcrypto |
+| `gpdf` | zlib |
+| `otp` | libcrypto |
+
+Measured on the published lean archive: `load crypto` and `load otp` both
+succeed, and then every function of either answers *HMAC requires OpenSSL
+(libcrypto); rebuild with it installed*. `gpdf` needs zlib only for a
+compressed stream, so it is the one of the three that is partly usable.
+
+This list is derived too — from `src/builtins.c`'s own `#if` guards, so a
+builtin that becomes optional, or stops being, moves it without an edit.
+
+**What the published downloads carry.** The `-full` archive can run **8** of
+these 21 — the libcurl and libsqlite3 rows — and the lean archive **none** of
+them, so **13** of the libraries inside the `-full` tarball cannot be
+loaded by the binary shipped beside it. Anything needing libxml2 or
+GObject-Introspection means building from source, and that is a measured
+decision rather than an oversight: `tools/build-release-tarball.sh` records
+that libxml2's soname is `.so.2` across most of the supported range and
+`.so.16` from libxml2 2.14, and libpq, unixODBC, OpenLDAP and GTK are simply
+absent from an ordinary machine — in every one of those cases a linked binary
+**does not start at all**, which is strictly worse than a library that refuses
+with a message naming what to install.
 
 General-purpose:
 

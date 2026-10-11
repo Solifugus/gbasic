@@ -35,6 +35,24 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
+-4. ~~**13 of 65 libraries cannot be loaded on the published `-full` archive.**~~
+   **CLOSED 2026-10-11.** Confirmed exactly (21 on lean), the per-library
+   dependency is now derived from the libraries' own `load` lines, declared in
+   `docs/reference.md`, gated both directions by
+   `tests/run_library_tiers.sh`, and MEASURED by the release build, which
+   refuses to publish an archive whose unloadable set is not what the
+   derivation predicts. Rebuilding the release with those libraries on was
+   refused with a measurement: libpq, unixODBC, OpenLDAP and GTK are absent
+   from an ordinary machine, and a `DT_NEEDED` on an absent library means the
+   binary does not start at all.
+
+-3.5. ~~**`has_builtin` is tier-blind.**~~ **CLOSED 2026-10-11.** The registry
+   is compiled conditionally, so it answers for THIS build; three
+   key-derivation builtins it had never held were added (DOGFOOD 46's
+   direction); and `compress`/`uncompress` now refuse cleanly instead of
+   vanishing, zlib having been the one optional family whose name test sat
+   inside its own `#if`.
+
 0. **A deeply nested VALUE segfaults the interpreter at teardown** — measured
    2026-10-11: a record nested 22 000 deep (40 000 for arrays) builds fine, the
    program prints its answer and succeeds, and then exit 139 on the way out.
@@ -12034,3 +12052,126 @@ modifier not found: xyzzy*. Closing it on our side.
   implied* (936/937 for a bare tail call), but it is a different axis: that one
   is about how deep a **call** chain may go and is visible as an immediate
   crash, this one is about how deep a **value** may be and fires only at exit.
+
+---
+
+## 2026-10-11 — CC — answering the thirteen-libraries report, and the `has_builtin` one
+
+- **Type:** doc-gap, bug
+- **Severity:** medium
+- **Status:** RESOLVED for 0.7.1 (option 2 plus a gate; options 1 and 3 refused, with reasons)
+
+**The numbers are confirmed, exactly.** Swept both published 0.7.0 archives
+independently: **13 of 65 on `-full`, 21 of 65 on lean**, and the same libraries
+library-for-library. One correction to the method rather than the result — the
+first sweep put the probe file in a directory with both extracted trees *below*
+it, and `run_library_depth`'s rule (a library may be beside the loading file and
+never below it) then refused all 65. Three libraries also report a
+resolved-twice **warning** on a machine with gBASIC already installed, which is
+a fact about that machine; comparing stdout rather than stderr separates them.
+
+**Of the four options offered, the answer is 2 — and 1 and 3 are refused.**
+
+**Option 1 (build the release with XML, ODBC and PostgreSQL on) is not
+available, and the reason is stronger than the soname argument already in
+`tools/build-release-tarball.sh`.** That script argues from soname *spelling*
+(libxml2 is `.so.2` across most of the range and `.so.16` from 2.14). The
+binding constraint is *presence*: libpq, unixODBC, OpenLDAP and GTK are simply
+not installed on an ordinary machine, and a `DT_NEEDED` on a library that is
+absent means the binary does not start at all. Measured in bare containers —
+`ubuntu:22.04`, `ubuntu:24.04`, `debian:12` — where even the **existing**
+`-full` archive fails to start, because `libsqlite3.so.0` and `libcurl.so.4`
+are not in a bare base image either. Installing `curl`, `git` and `python3`
+brings them in and it starts fine, so `-full` is sound for its real audience;
+but the tier's promise is "a machine with the usual runtime libraries", not
+lean's "anywhere at or above the glibc floor", and adding libpq would move that
+line much further.
+
+**Option 3 (do not ship libraries a build cannot run) is refused on the
+diagnostic.** Today `load ownership` answers *XML support is not available in
+this build* — it names the cause and implies the fix. Removed from the archive
+it would answer *library not found: ownership*, which names nothing and reads
+like a typo. It would also make the two archives' `stdlib/` trees differ, so
+"the standard library" stops being one thing, and a reader who later installs
+libxml2 and rebuilds would have to re-fetch seven files.
+
+**What was built instead, all four parts:**
+
+1. **`tools/library-needs.sh`** derives what each library needs from its own
+   `load` lines, **transitively** — which is most of the interesting answer:
+   `finio_all` contains no XML and cannot load without libxml2 because it loads
+   `finio_camt`. The label is the dependency **to install**, not the module's
+   refusal wording, because *WebClient*, *HTTP* and *SMTP* are three faces of
+   libcurl and a table in those terms says three things are missing where one
+   is.
+2. **`docs/reference.md` carries the table**, and
+   **`tests/run_library_tiers.sh`** holds the two to each other in both
+   directions, with the comparison perturbed three ways so it cannot pass
+   vacuously.
+3. **`tools/build-release-tarball.sh` now sweeps every library against the
+   binary it just built** and refuses to publish if the unloadable set is not
+   exactly what the derivation predicts for that tier's declared link set. So
+   the prediction follows the tier automatically: add libxml2 to a tier and
+   seven libraries move from unloadable to loadable with no second edit.
+   Validated against both published archives — **derived == measured, both
+   tiers, library for library**.
+4. **The download page names the three groups** and links to the table. Its
+   existing counts (44 of 65 either way, 52 of 65 on `-full`) were already
+   right; what was missing was *which*.
+
+**`has_builtin` is fixed, and it was two defects pointing opposite ways.**
+The registry is now compiled conditionally, so on a build without the
+dependency `has_builtin("sha256")`, `("password_hash")` and `("compress")` all
+answer **false** — the answer a program probing in order to degrade needs.
+Twenty names move with the build; `base64_*`, `hex_*`, `base32_*`,
+`random_bytes` and `secure_token` deliberately do not, having been measured to
+work on the leanest build there is. And the inverse, which is DOGFOOD 46's
+direction: **`pbkdf2_sha256`, `pbkdf2_sha512` and `scrypt` were never in the
+registry at all**, so `has_builtin` denied three key-derivation functions the
+build could run. Found by probing every registry name against the published
+lean archive and then asking what that archive could do which the registry
+denied.
+
+**And `compress` was the sharpest case for a reason worth keeping.** zlib was
+the **one** optional builtin family whose *name test* sat inside its `#if`, so
+the function vanished from the dispatch entirely rather than refusing — which
+is the inverse of this project's own stated convention, that a missing
+dependency turns the affected feature into a clean runtime error. Hence
+`has_builtin("compress")` true and `unknown function: compress` from the same
+binary. The name test is outside the guard now and it answers
+*compression requires zlib; rebuild with it installed*, like every other
+optional builtin. Worth noting what the old message ended with:
+*`has_builtin("compress")` asks without raising* — the diagnostic pointed at
+the probe that was lying.
+
+`tests/run_capabilities.sh` asserts the pairing for all twenty in both
+directions, as a **build-agnostic invariant**: `has_builtin(n)` is true exactly
+when calling `n` does not refuse for unavailability. Both perturbations were
+proven red against a real lean compile — unguarding the registry reproduces all
+three false affirmations, and moving zlib's name test back inside its `#if`
+reproduces the vanishing.
+
+**AND A THIRD CATEGORY THE REPORT DID NOT REACH, which is the worst of the
+three.** A library can `load` perfectly and still not work, because it calls a
+BUILTIN whose availability moves with the build — so nothing in its `load`
+lines gives it away. Measured on the published lean archive:
+
+```
+load crypto          succeeds
+crypto.sign_cookie   -> HMAC requires OpenSSL (libcrypto); rebuild with it installed
+load otp             succeeds
+otp.totp             -> HMAC requires OpenSSL (libcrypto); rebuild with it installed
+```
+
+`gpdf` is the third, needing zlib for a compressed stream, and is the one of
+the three that is partly usable. **The failure is deferred to the call**, which
+is worse than a refusal at `load`: a program gets past its imports and fails in
+the middle of doing something. `tools/library-needs.sh --calls` derives this
+list from `src/builtins.c`'s own `#if` guards, `docs/reference.md` carries it as
+a second table, and `tests/run_library_tiers.sh` holds the two together with a
+floor of one — `crypto` cannot stop needing libcrypto while remaining `crypto`,
+so a zero there means the scan broke rather than the tree improving.
+
+- **Workaround:** none needed; resolved. The books' table is still worth
+  carrying, and it can now be generated from `tools/library-needs.sh` (and
+  `--calls`) rather than transcribed.

@@ -33534,9 +33534,19 @@ static Value eval_call(AstExpr *expr) {
      * an out-of-memory. The cap is generous and can be raised by name; the
      * refusal says which limit was hit rather than reporting corruption.
      */
-#if HAVE_ZLIB
+    /* THE NAME TEST IS OUTSIDE THE GUARD, which it was not until 0.7.1, and
+     * zlib was the ONE optional builtin family that broke the project's own
+     * convention: a missing dependency must turn the affected feature into a
+     * clean runtime error, not remove it. With `#if HAVE_ZLIB` ahead of the
+     * strcmp, `compress` vanished from the dispatch entirely on a build without
+     * zlib -- so the published lean archive answered `has_builtin("compress")`
+     * TRUE and then `unknown function: compress` for the same name in the same
+     * binary. Every other optional builtin (sha256, password_hash) says what is
+     * missing and what to do; this one said the function did not exist, which
+     * sends an author looking for a typo. Reported by the books session. */
     if (strcmp(expr->as.call.name, "compress") == 0 ||
         strcmp(expr->as.call.name, "uncompress") == 0) {
+#if HAVE_ZLIB
         const char *fname = expr->as.call.name;
         int is_compress = (strcmp(fname, "compress") == 0);
         char m[192];
@@ -33700,8 +33710,12 @@ static Value eval_call(AstExpr *expr) {
         Value r = value_string_n((char *)out, have);
         free(out);
         return r;
-    }
+#else
+        runtime_error_raise("compression requires zlib; rebuild with it installed",
+                            1003, "unsupported");
+        return value_null();
 #endif
+    }
     if (strcmp(expr->as.call.name, "hex_encode") == 0) {
         Value s;
         if (!crypto_one_string(expr, "hex_encode", &s)) return value_null();
