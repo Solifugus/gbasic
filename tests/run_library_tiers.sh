@@ -235,5 +235,86 @@ else
     fail "the release build does not use the derivation, so nothing measures the claim"
 fi
 
+# ---------------------------------------------------------------------------
+# EVERY make IN THE RELEASE BUILD MUST CARRY THE SAME SWITCHES, and this tier
+# exists because the opposite SHIPPED in a0514d0.
+#
+# `install` depends on `gbasic`, and since the .buildswitch-stamp landed every
+# object depends on the switch signature -- so `make install` without the
+# tier's switches recomputes that signature from whatever pkg-config finds,
+# rewrites the stamp, REBUILDS THE WHOLE TREE WITH THE WRONG SWITCHES and then
+# stages that binary. Measured: a lean artifact at 832K carrying libcrypt.so.1
+# and libz.so.1, with no xml, no sqlite and no static zlib, from a script whose
+# tier definition named every one of those switches correctly.
+#
+# THE TWO HALVES WERE EACH VERIFIED AND THE COMBINATION WAS NOT: the stamp and
+# the static link went in as ONE COMMIT, the release measurements were taken
+# before the stamp existed, and no gate builds a release tarball -- so nothing
+# ran them together. This is the cheap structural stand-in for that: it reads
+# the source rather than building, because a tier that compiles eval.c twice is
+# one nobody runs.
+printf 'TIER every make in the release build carries the tier switches
+'
+rel=tools/build-release-tarball.sh
+# MARKER-DELIMITED, not a regex over the file: the dependency builds above run
+# their own `make` and `make install` with none of these switches, and the
+# first draft of this tier reported libxml2's install as the defect.
+nmark=$(grep -c 'GBASIC-MAKE:\(begin\|end\)' "$rel" || true)
+region="$(sed -n '/GBASIC-MAKE:begin/,/GBASIC-MAKE:end/p' "$rel")"
+mk="$(printf '%s\n' "$region" | grep -nE '^make( |$)' || true)"
+bare="$(printf '%s\n' "$mk" | grep -v 'args\[@\]' | grep -v 'make clean' || true)"
+if [ "${nmark:-0}" -ne 2 ]; then
+    fail "expected both GBASIC-MAKE markers in $rel, found $nmark -- the region would read as empty"
+elif [ -z "$(printf '%s' "$mk" | tr -d '[:space:]')" ]; then
+    fail "no make invocation inside the marked region -- this tier has stopped reading anything"
+elif [ -z "$(printf '%s' "$bare" | tr -d '[:space:]')" ]; then
+    pass "every make invocation uses the shared switch list"
+else
+    fail "a make invocation in $rel does not carry the tier switches:"
+    printf '%s\n' "$bare" | sed 's/^/       /'
+fi
+
+# THE CONTROL, without which the check above is satisfied by a script that has
+# stopped invoking make at all: the build and the install must BOTH be there,
+# and both must use the list.
+n_shared="$(printf '%s\n' "$region" | grep -cE '^make .*args\[@\]' || true)"
+if [ "${n_shared:-0}" -ge 2 ] && printf '%s\n' "$region" | grep -qE '^make install .*args\[@\]'; then
+    pass "the build and the install are both present and both use it"
+else
+    fail "expected a build AND an install sharing the switch list; found $n_shared line(s)"
+fi
+
+# ---------------------------------------------------------------------------
+# NO UNESCAPED BACKTICK IN THE CONTAINER SCRIPT, which is a tripwire rather
+# than a style rule because the release build runs what it finds there.
+#
+# The container script is a DOUBLE-QUOTED HOST STRING, so a backtick inside it
+# is command substitution the HOST performs before podman ever starts. That has
+# now happened THREE TIMES: once quoting 'cp -r' (executed on every release
+# build, harmless by luck), once in the very comment written to document the
+# fix, and once in a comment of mine quoting 'make install' -- which ran
+# `make install` ON THE HOST with no DESTDIR, i.e. a full host build followed by
+# an attempt to write into /usr/local/bin. It failed only because the release
+# is not built as root; as root it would have overwritten the system install as
+# a side effect of a COMMENT, and the script would have said nothing.
+#
+# The existing guard was a paragraph saying "single quotes only, in every
+# comment from here to the end of the string". It was correct, it was fifteen
+# lines away, and it did not stop the third instance -- which is the argument
+# for checking it mechanically instead.
+printf 'TIER the container script has no unescaped backtick\n'
+cstr="$(awk '/bash -euo pipefail -c "/,/^"$/' "$rel")"
+if [ -z "$(printf '%s' "$cstr" | tr -d '[:space:]')" ]; then
+    fail "read no container script out of $rel -- this tier is measuring nothing"
+else
+    loose="$(printf '%s\n' "$cstr" | grep -n '`' | grep -v '\\`' || true)"
+    if [ -z "$(printf '%s' "$loose" | tr -d '[:space:]')" ]; then
+        pass "every backtick in the container script is escaped"
+    else
+        fail "an unescaped backtick in the container script -- the HOST will run it:"
+        printf '%s\n' "$loose" | sed 's/^/       /'
+    fi
+fi
+
 [ "$status" -ne 0 ] && exit 1
 printf 'PASS tests/run_library_tiers.sh\n'

@@ -140,7 +140,11 @@ its own ZIP container, so only deflate is needed.
 
 **M4 — sqlite.** A single amalgamation file that builds anywhere; cheap, and it
 unlocks `dbframe` and `screener`. Placed after M3 only because ODBC already
-answers "a database" for this audience.
+answers "a database" for this audience. *(The Linux release build now links
+sqlite statically too, from a pinned amalgamation — 3.54.0, measured at +1.2 MB
+of binary — so when this milestone arrives the two platforms should pin the
+same version and the same compile options, as they already do for libxml2.
+`tools/build-release-tarball.sh` has both lists.)*
 
 **M5 — libcurl.** `webclient`/`http`/`smtp`, and with them `llm`, `mcp`,
 `edgar`, `market`. Use **Schannel** for TLS rather than OpenSSL, which removes a

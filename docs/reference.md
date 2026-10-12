@@ -2229,8 +2229,15 @@ Diagnostic positions — `error.line`/`error.column` and the `line:column` in er
 
 ## SQLite Module
 
-SQLite support is available when gBASIC is built with sqlite3. Load the
-compiled standard module before using its qualified API:
+SQLite support is available when gBASIC is built with sqlite3, and **both
+published downloads carry it** — sqlite 3.54.0, linked statically, so there is
+nothing to install and no version to wonder about. The build options are
+matched against what a distribution's own libsqlite3 enables, since this module
+hands a program arbitrary SQL: FTS5, R-Tree, the SQL maths functions, JSON,
+`soundex`, `delete ... limit`, `file:` URIs and the raised parameter limit all
+work. The one option deliberately dropped is extension loading, which gBASIC
+never enabled and which both builds refuse. Load the compiled standard module
+before using its qualified API:
 
 ```basic
 load sqlite
@@ -6834,17 +6841,22 @@ because the dependency is real and a build without zlib still has it.
 This list is derived too — from `src/builtins.c`'s own `#if` guards, so a
 builtin that becomes optional, or stops being, moves it without an edit.
 
-**What the downloads carry.** `tools/build-release-tarball.sh` links **libxml2
-and zlib statically** into both tiers, so every library in the libxml2 rows
-works on *either* archive, and so do `xlsx` and `compress`/`uncompress`. Static
-linking leaves no soname to vary and no library to be absent, which is why it
+**What the downloads carry.** `tools/build-release-tarball.sh` links **libxml2,
+zlib and sqlite3 statically** into both tiers, so every library in the libxml2
+and libsqlite3 rows works on *either* archive, and so do `xlsx`,
+`compress`/`uncompress` and `sqlite`. A dependency-free download therefore
+carries a real embedded SQL database, with FTS5 and R-Tree, which is what takes
+`dbframe` and `screener` onto the lean tier; `edgar` and `insiders` stay off it
+because they also need libcurl. The cost is size: the lean tarball is 2.1 MB
+where 0.7.0's was 828 KB. Static linking leaves no soname to vary and no
+library to be absent, which is why it
 reaches a case `dlopen` cannot — the XML reader depends on libxml2's struct
 layout, and a soname bump is precisely the announcement that a layout moved.
 
 | | can load | cannot |
 | --- | --- | --- |
-| lean (`libc`, `libm` only) | 50 of 66 | **16** — the libcurl, libsqlite3, libpq, unixODBC and GObject-Introspection rows |
-| `-full` (+ sqlite3, libcurl, libssl, libcrypto) | 60 of 66 | **6** — `discovery` (unixODBC), `retrieval` (libpq), and the four GObject-Introspection libraries |
+| lean (`libc`, `libm` only) | 52 of 66 | **14** — the libcurl, libpq, unixODBC and GObject-Introspection rows |
+| `-full` (+ libcurl, libssl, libcrypto) | 60 of 66 | **6** — `discovery` (unixODBC), `retrieval` (libpq), and the four GObject-Introspection libraries |
 
 **The 0.7.0 archives predate this** and carry 44 and 52 of 65 respectively,
 with libxml2 in neither; the figures above describe what the release build

@@ -23,16 +23,17 @@
 #   TIER=lean (default)  libm and libc, nothing else. Extract and run, on any
 #                        machine at or above the glibc floor, with no
 #                        dependency a reader has to satisfy or even read about.
-#                        AND IT NOW CARRIES xml AND xlsx, because libxml2 and
-#                        zlib are linked STATICALLY -- see the next block.
-#   TIER=full            + sqlite3, libcrypto/libssl, libcurl, dynamically.
+#                        AND IT NOW CARRIES xml, xlsx AND sqlite, because
+#                        libxml2, zlib and sqlite3 are linked STATICALLY --
+#                        see the next block.
+#   TIER=full            + libcrypto/libssl and libcurl, dynamically.
 #                        The database, internet and AI chapters of the beginner
 #                        book all need one of those, and with the lean download
 #                        none of them can be followed (DOGFOOD 44).
 #
-# libxml2 AND zlib ARE LINKED STATICALLY INTO BOTH TIERS, which is a correction
-# made 2026-10-11 rather than a new idea: the WINDOWS build has done exactly
-# this since M3, and windows_port_plan.md §4 called it "the strongest single
+# libxml2, zlib AND sqlite3 ARE LINKED STATICALLY INTO BOTH TIERS, which is a
+# correction made 2026-10-11 rather than a new idea: the WINDOWS build has done
+# exactly this since M3 (and declares sqlite static at M4), and windows_port_plan.md §4 called it "the strongest single
 # argument for a Windows build existing" ON THE GROUNDS THAT THE LINUX TARBALLS
 # CANNOT. The premise was sound and the conclusion did not follow -- nothing
 # about static linking is Windows-specific, and the Linux exclusion was reasoned
@@ -47,6 +48,38 @@
 # load: ownership, finio_all, finio_camt, finio_iso20022, finio_pain001 (and on
 # the full tier, insiders and mdna). xlsx is the highest-value capability in the
 # optional set, spreadsheets being a business staple.
+#
+# SQLITE IS THE SAME ARGUMENT AND IT RUNS THE OTHER WAY TOO: static linking
+# REMOVES a DT_NEEDED entry, so the full tier links one fewer shared library
+# than it did while the lean tier gains `dbframe`, `screener` and `edgar`
+# without gaining a dependency. sqlite is public domain and ships as an
+# AMALGAMATION -- one .c file, upstream's own recommended way to embed it -- so
+# there is no licence obligation and nothing to configure.
+#
+# THE COMPILE OPTIONS ARE MEASURED AGAINST THE BUILD THEY REPLACE, NOT CHOSEN.
+# `PRAGMA compile_options` on ubuntu 22.04's libsqlite3 names 13 features, and
+# the `sqlite` module hands a gBASIC program ARBITRARY SQL -- so an option a
+# program can reach has to be matched or the static build is a QUIETLY REDUCED
+# one, which is the defect class this whole exercise started from. Matched:
+# FTS5, RTREE, MATH_FUNCTIONS (sqrt/log in SQL), STMTVTAB,
+# UPDATE_DELETE_LIMIT, SOUNDEX, SECURE_DELETE, USE_URI,
+# LIKE_DOESNT_MATCH_BLOBS and the two raised limits. Two of those were nearly
+# missed by reading the list rather than classifying it:
+# LIKE_DOESNT_MATCH_BLOBS changes what `LIKE` ANSWERS, and
+# MAX_VARIABLE_NUMBER=250000 is 7x the default, which a wide bulk insert can
+# reach. DROPPED, each with a reason: PREUPDATE_HOOK, SESSION and
+# UNLOCK_NOTIFY are C-API only and unreachable from the 22 sqlite3_* calls in
+# src/eval.c; LOAD_EXTENSION is dropped DELIBERATELY and measured
+# behaviour-neutral -- both builds refuse `select load_extension(...)`, because
+# gBASIC never calls sqlite3_enable_load_extension, so omitting it changes
+# nothing a program could do while closing the door if that call is ever added.
+#
+# THE VERSION JUMP WAS MEASURED RATHER THAN ASSUMED, because it is the real
+# risk here: the published release linked ubuntu 22.04's 3.37.2 and the dev
+# machine has 3.46.1, so a golden relying on row order without ORDER BY could
+# move under a different query planner. run_sqlite, run_dbframe, run_compile,
+# run_string_nul, run_xlsx_cookbook, run_examples and run_negative all pass
+# against 3.54.0 statically linked, with no golden moved.
 #
 # WHY STATIC AND NOT dlopen, WHICH WAS THE OTHER CANDIDATE: the XML reader does
 # 36 STRUCT FIELD READS (node->children, ->next, ->name, ->type), and dlsym
@@ -85,6 +118,10 @@
 #
 #                  22.04  24.04  Deb12  Deb13  Rocky9  F41  F43  Ubuntu 26.04
 #   libsqlite3.so.0   .0     .0     .0     .0     .0     .0   .0      .0
+#     ^ kept as the measurement it was; libsqlite3 is STATIC now and so is in
+#       neither tier's link set. Its soname never varied -- what static linking
+#       buys here is PRESENCE (a bare base image has no libsqlite3.so.0, which
+#       is why the full archive would not start on one) and one fewer entry.
 #   libcurl.so.4      .4     .4     .4     .4     .4     .4   .4      .4
 #   libssl.so.3       .3     .3     .3     .3     .3     .3   .3      .3
 #   libcrypto.so.3    .3     .3     .3     .3     .3     .3   .3      .3
@@ -157,6 +194,31 @@ LIBXML2_VERSION="2.15.4"
 LIBXML2_SHA256="98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821"
 LIBXML2_SERIES="${LIBXML2_VERSION%.*}"
 
+# THE ONE PLACE SQLITE'S VERSION IS WRITTEN. sqlite.org publishes a SHA3-256
+# for every download (the fifth field of the PRODUCT line in download.html) and
+# that is what is verified, rather than a SHA-256 computed here -- so the chain
+# of trust ends at upstream rather than at whoever edited this file. Same
+# ongoing obligation as libxml2: a security fix becomes ours to pick up.
+SQLITE_VERSION="3.54.0"
+SQLITE_ZIP="sqlite-amalgamation-3540000"
+SQLITE_YEAR="2026"
+SQLITE_SHA3="7b670a62fdfbd672b75fef004cb703c8a3e87d3a5cc7d675b4a08337004a2d93"
+
+# EVERY FLAG HERE MUST APPEAR IN `PRAGMA compile_options`, asserted against the
+# staged binary below. That is not a restatement of the build: it is what
+# catches a flag upstream has RETIRED, which is not hypothetical -- the first
+# draft of this list carried -DSQLITE_ENABLE_JSON1, matching the distro, and
+# the assertion found it absent because JSON became unconditional in 3.38 and
+# the option was removed. A dead flag in a list like this reads exactly like a
+# live one. JSON is asserted behaviourally instead, by calling json_extract.
+SQLITE_OPTS="-DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS \
+    -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_STMTVTAB \
+    -DSQLITE_ENABLE_UPDATE_DELETE_LIMIT -DSQLITE_SOUNDEX \
+    -DSQLITE_SECURE_DELETE -DSQLITE_USE_URI \
+    -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DSQLITE_MAX_VARIABLE_NUMBER=250000 \
+    -DSQLITE_MAX_DEFAULT_PAGE_SIZE=32768 -DSQLITE_THREADSAFE=1 \
+    -DSQLITE_OMIT_LOAD_EXTENSION"
+
 # WHAT BOTH TIERS GET: libxml2 and zlib, statically, from the build below.
 # `-Wl,-Bstatic -lz -Wl,-Bdynamic` rather than a path, so it does not hardcode
 # the multiarch directory; it is passed once, inside LIBXML2_LIBS, because the
@@ -164,6 +226,7 @@ LIBXML2_SERIES="${LIBXML2_VERSION%.*}"
 # -Bstatic/-Bdynamic pairs for the same archive is one more thing to get wrong.
 STATIC_XML="LIBXML2_AVAILABLE=1 LIBXML2_CFLAGS=-I/opt/xml2/include/libxml2"
 STATIC_XML_LIBS="/opt/xml2/lib/libxml2.a -Wl,-Bstatic -lz -Wl,-Bdynamic -lm"
+STATIC_SQLITE="SQLITE3_AVAILABLE=1 SQLITE3_CFLAGS=-I/opt/sqlite SQLITE3_LIBS=/opt/sqlite/libsqlite3.a"
 
 # WHAT IS SATISFIED WITHOUT APPEARING IN EXPECTED_NEEDED, which the library
 # sweep below needs told because a static library leaves no trace in the link
@@ -177,7 +240,7 @@ STATIC_XML_LIBS="/opt/xml2/lib/libxml2.a -Wl,-Bstatic -lz -Wl,-Bdynamic -lm"
 # and REFUSED TO PUBLISH. A declaration that had not caught up with the build
 # is the same failure as a build that had not caught up with the declaration,
 # and the sweep cannot tell which it is -- so it stops.
-TIER_STATIC_CAPS="libxml2"
+TIER_STATIC_CAPS="libxml2 libsqlite3"
 
 case "$TIER" in
     lean)
@@ -194,19 +257,22 @@ case "$TIER" in
         TIER_MAKE_ARGS="GIO_AVAILABLE=0 GIR_AVAILABLE=0 GTK_AVAILABLE=0 \
             LDAP_AVAILABLE=0 LIBCRYPTO_AVAILABLE=0 LIBCURL_AVAILABLE=0 \
             LIBPQ_AVAILABLE=0 LIBSSL_AVAILABLE=0 LIBXCRYPT_AVAILABLE=0 \
-            ODBC_AVAILABLE=0 SQLITE3_AVAILABLE=0 ZLIB_AVAILABLE=1"
+            ODBC_AVAILABLE=0 ZLIB_AVAILABLE=1"
         EXPECTED_NEEDED="libc.so.6 libm.so.6"
         TIER_SUFFIX=""
         ;;
     full)
-        TIER_PACKAGES="pkg-config libsqlite3-dev zlib1g-dev libssl-dev libcurl4-openssl-dev"
-        # libz.so.1 is GONE from the link set: zlib is static now, in both
-        # tiers, so the full tier links one FEWER shared library than it did
-        # while gaining xml and xlsx.
+        # No libsqlite3-dev: sqlite comes from the pinned amalgamation now, in
+        # both tiers, so the package would only invite the Makefile's probe to
+        # find a DIFFERENT sqlite than the one being linked.
+        TIER_PACKAGES="pkg-config zlib1g-dev libssl-dev libcurl4-openssl-dev"
+        # libz.so.1 AND libsqlite3.so.0 are both GONE from the link set, so the
+        # full tier links TWO FEWER shared libraries than it did while gaining
+        # xml and xlsx.
         TIER_MAKE_ARGS="LIBXCRYPT_AVAILABLE=0 GIO_AVAILABLE=0 GIR_AVAILABLE=0 \
             GTK_AVAILABLE=0 LDAP_AVAILABLE=0 LIBPQ_AVAILABLE=0 ODBC_AVAILABLE=0 \
             ZLIB_AVAILABLE=1"
-        EXPECTED_NEEDED="libc.so.6 libcrypto.so.3 libcurl.so.4 libm.so.6 libsqlite3.so.0 libssl.so.3"
+        EXPECTED_NEEDED="libc.so.6 libcrypto.so.3 libcurl.so.4 libm.so.6 libssl.so.3"
         TIER_SUFFIX="-full"
         ;;
     *)
@@ -231,7 +297,7 @@ rm -f "$OUT/${name}.tar.gz" "$OUT/${name}.tar.gz.sha256"
 "$runtime" run --rm -v "$PWD":/src:ro -v "$PWD/$OUT":/out:Z "$IMAGE" bash -euo pipefail -c "
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
-apt-get install -y -qq build-essential bison curl ca-certificates xz-utils $TIER_PACKAGES >/dev/null
+apt-get install -y -qq build-essential bison curl ca-certificates xz-utils unzip openssl $TIER_PACKAGES >/dev/null
 
 # libxml2, PINNED AND CHECKSUMMED, built static. A downloaded dependency with
 # no checksum is a supply chain somebody else controls, and this one ends up
@@ -253,15 +319,51 @@ make -j\$(nproc) >/tmp/xml2make.log 2>&1 && make install >>/tmp/xml2make.log 2>&
     || { echo 'FAIL: libxml2 build'; tail -20 /tmp/xml2make.log; exit 1; }
 echo \"libxml2 ${LIBXML2_VERSION} static: \$(du -h /opt/xml2/lib/libxml2.a | cut -f1) archive\"
 
+# sqlite, from the AMALGAMATION -- upstream's own recommended way to embed it,
+# one .c file with no build system to argue with. Verified against the SHA3-256
+# sqlite.org publishes, not a hash computed on this machine.
+cd /tmp
+curl -sfLO https://sqlite.org/${SQLITE_YEAR}/${SQLITE_ZIP}.zip \
+    || { echo 'FAIL: could not fetch ${SQLITE_ZIP}'; exit 1; }
+got3=\$(openssl dgst -sha3-256 -r ${SQLITE_ZIP}.zip | cut -d' ' -f1)
+[ \"\$got3\" = '${SQLITE_SHA3}' ] \
+    || { echo \"FAIL: ${SQLITE_ZIP}.zip SHA3-256 is \$got3, not the pinned ${SQLITE_SHA3} -- NOT building\"; exit 1; }
+unzip -q ${SQLITE_ZIP}.zip
+mkdir -p /opt/sqlite
+cc -O2 -c /tmp/${SQLITE_ZIP}/sqlite3.c -o /tmp/sqlite3.o $SQLITE_OPTS \
+    || { echo 'FAIL: sqlite compile'; exit 1; }
+ar rcs /opt/sqlite/libsqlite3.a /tmp/sqlite3.o
+cp /tmp/${SQLITE_ZIP}/sqlite3.h /tmp/${SQLITE_ZIP}/sqlite3ext.h /opt/sqlite/
+echo \"sqlite ${SQLITE_VERSION} static: \$(du -h /opt/sqlite/libsqlite3.a | cut -f1) archive\"
+
 mkdir -p /work && cp -r /src /work/gbasic && cd /work/gbasic
 make clean >/dev/null 2>&1 || true
-make $TIER_MAKE_ARGS $STATIC_XML 'LIBXML2_LIBS='\"$STATIC_XML_LIBS\" \
-     ZLIB_CFLAGS= 'ZLIB_LIBS=-Wl,-Bstatic -lz -Wl,-Bdynamic' \
-     >/tmp/build.log 2>&1 || { echo 'FAIL: build'; tail -20 /tmp/build.log; exit 1; }
+
+# ONE ARGUMENT LIST FOR BOTH make INVOCATIONS, AND IT HAS TO BE ONE RATHER THAN
+# TWO COPIES. \`install\` depends on \`gbasic\`, and since 2026-10-11 every object
+# depends on .buildswitch-stamp -- so an install invoked WITHOUT these switches
+# recomputes the signature from whatever pkg-config happens to find, rewrites
+# the stamp, REBUILDS THE WHOLE TREE WITH THE WRONG SWITCHES and stages that
+# binary. MEASURED, because this shipped: the lean artifact came out at 832K
+# with libcrypt.so.1 and libz.so.1 in its link set and no xml, no sqlite and no
+# static zlib, and the switches the tier had carefully named were all ignored.
+# Caught by the link-set check below, which is what it is for.
+#
+# An ARRAY rather than a string, because LIBXML2_LIBS and ZLIB_LIBS each hold
+# spaces and a flat \$args would word-split them into separate make arguments.
+# GBASIC-MAKE:begin -- the region tests/run_library_tiers.sh reads. A marker
+# rather than a regex over the whole file, because the dependency builds above
+# run their OWN make and 'make install' legitimately, with none of these
+# switches: a tripwire that reports libxml2's install as the defect is one
+# somebody turns off.
+args=($TIER_MAKE_ARGS $STATIC_XML $STATIC_SQLITE)
+args+=(\"LIBXML2_LIBS=$STATIC_XML_LIBS\" 'ZLIB_CFLAGS=' 'ZLIB_LIBS=-Wl,-Bstatic -lz -Wl,-Bdynamic')
+make \"\${args[@]}\" >/tmp/build.log 2>&1 || { echo 'FAIL: build'; tail -20 /tmp/build.log; exit 1; }
 
 # Staged with the SAME install target the project ships, so the tarball layout
 # and an installed tree cannot drift apart.
-make install PREFIX='$PREFIX_IN_TARBALL' DESTDIR=/work/stage >/dev/null
+make install \"\${args[@]}\" PREFIX='$PREFIX_IN_TARBALL' DESTDIR=/work/stage >/dev/null
+# GBASIC-MAKE:end
 
 stage=/work/stage$PREFIX_IN_TARBALL
 strip \"\$stage/bin/gbasic\"
@@ -337,6 +439,50 @@ fi
 printf 'print 2 + 3\n' > "$work/smoke.bas"
 got="$( cd "$work" && env -u GBASIC_PATH "$root/bin/gbasic" "$work/smoke.bas" 2>&1 || true )"
 [ "$got" = "5" ] && ok "it runs a program" || bad "it did not run a program: $got"
+
+# THE STATIC SQLITE IS THE ONE THIS SCRIPT ASKED FOR, both ways round.
+#
+# WHY THIS IS NOT A RESTATEMENT OF THE BUILD: a -D flag the compiler accepted
+# proves only that it was PASSED. sqlite reports what it was actually built
+# with, so comparing the two catches a flag upstream has RETIRED -- which is
+# not hypothetical, it caught -DSQLITE_ENABLE_JSON1 on the first draft of the
+# list. Every flag must be reported; there is no exemption list, because an
+# exemption is where a dead flag would go to be forgotten.
+#
+# THE BEHAVIOURAL HALF IS SEPARATE AND BOTH ARE NEEDED: compile_options is
+# sqlite's own report about itself, so it cannot tell you the feature WORKS
+# through this binary -- and the capability a reader came for is `xlsx`-shaped,
+# a real query, not a pragma. So FTS5 is MATCHED against, maths is COMPUTED,
+# and json_extract is called because JSON carries no option to assert.
+printf 'load sqlite\ndb = sqlite.connect(":memory:")\nfor each o in sqlite.query(db, "pragma compile_options")\n  print o.compile_options\nnext\n' > "$work/sqopts.bas"
+sqopts="$( cd "$work" && env -u GBASIC_PATH "$root/bin/gbasic" "$work/sqopts.bas" 2>&1 || true )"
+missing=""
+for f in $SQLITE_OPTS; do
+    t="${f#-DSQLITE_}"
+    printf '%s\n' "$sqopts" | grep -qx "$t" || missing="$missing $t"
+done
+if [ -z "$missing" ] && printf '%s\n' "$sqopts" | grep -q .; then
+    ok "static sqlite reports every option this script asked for"
+else
+    bad "static sqlite is not built as asked -- missing:${missing:- (it reported nothing at all)}"
+fi
+
+cat > "$work/sqcap.bas" <<'SQCAP'
+load sqlite
+db = sqlite.connect(":memory:")
+r = sqlite.query(db, "select sqlite_version() as v, sqrt(16) as s, soundex('Robert') as x, json_extract('{\"a\":7}', '$.a') as j")
+sqlite.exec(db, "create virtual table ft using fts5(body)")
+sqlite.exec(db, "insert into ft(body) values ('statically linked')")
+sqlite.exec(db, "create virtual table rt using rtree(id, x0, x1)")
+m = sqlite.query(db, "select count(*) as n from ft where body match 'statically'")
+print r[0].v + " " + string(r[0].s) + " " + r[0].x + " " + string(r[0].j) + " " + string(m[0].n)
+SQCAP
+got="$( cd "$work" && env -u GBASIC_PATH "$root/bin/gbasic" "$work/sqcap.bas" 2>&1 || true )"
+if [ "$got" = "$SQLITE_VERSION 4 R163 7 1" ]; then
+    ok "sqlite $SQLITE_VERSION answers a query, and FTS5, RTREE, maths and JSON all work"
+else
+    bad "the sqlite capability probe did not answer as expected: $got"
+fi
 
 # EVERY LIBRARY IN THE ARCHIVE, AGAINST THE BINARY SHIPPED BESIDE IT.
 #
