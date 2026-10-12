@@ -2,7 +2,7 @@
 
 All notable changes to the gBASIC VS Code extension are documented here.
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-10-12
 
 ### Added
 - **Live errors as you type**, from the `gbasic-lsp` language server: found

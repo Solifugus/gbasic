@@ -3,6 +3,9 @@
 gBASIC language support: syntax highlighting, snippets, and **errors underlined
 as you type**, from the `gbasic-lsp` language server.
 
+gBASIC itself is a separate download: <https://gbasic.tedderland.com>, or the
+releases at <https://github.com/solifugus/gbasic/releases>.
+
 ## Live errors (the language server)
 
 The extension starts `gbasic-lsp` when a gBASIC file opens, and the server's
@@ -30,8 +33,7 @@ three layers:
 1. **`.gb` is claimed outright.** gBASIC's own extension is effectively unique, so
    `.gb` files highlight as gBASIC everywhere.
 2. **`.bas` is opted in per workspace.** Add this to a project's
-   `.vscode/settings.json` (already done for the `gbasic` and `tedderland`
-   repos):
+   `.vscode/settings.json`:
    ```json
    { "files.associations": { "*.bas": "gbasic" } }
    ```
@@ -45,38 +47,31 @@ three layers:
 You can always set the language by hand: click the language indicator in the
 status bar → **gBASIC**, or *Change Language Mode* (Ctrl+K M).
 
-## Install (local, no packaging)
-
-```sh
-./install.sh
-```
-
-Then *Developer: Reload Window*. Open a `.gb` file (or a `.bas` file inside a
-workspace that has the association above).
-
-## Install (packaged .vsix)
-
-```sh
-npm install -g @vscode/vsce
-vsce package          # produces gbasic-0.1.0.vsix
-code --install-extension gbasic-0.1.0.vsix
-```
-
 ## Running & clickable errors
 
 The extension contributes a `$gbasic` **problem matcher** that parses gBASIC's
 diagnostics (`parse error at FILE:LINE:COL: …` / `runtime error at FILE:LINE:COL:
-…`) into clickable in-editor squiggles. Each gBASIC workspace ships a
-`.vscode/tasks.json` wired to it:
+…`) into clickable in-editor squiggles. To run the open file with
+**Ctrl+Shift+B**, add a `.vscode/tasks.json` like this to your project:
 
-- **gbasic repo** — *Run current gBASIC file* (default build task, **Ctrl+Shift+B**)
-  runs `./gbasic ${relativeFile}`; plus a *make* task to build the interpreter.
-- **tedderland repo** — *Build site (build.bas)* (default) and *Run current
-  gBASIC file*, both using `../gbasic/gbasic` with `GBASIC_PATH` set.
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run current gBASIC file",
+      "type": "shell",
+      "command": "gbasic",
+      "args": ["${file}"],
+      "problemMatcher": "$gbasic",
+      "group": { "kind": "build", "isDefault": true }
+    }
+  ]
+}
+```
 
-Run via **Ctrl+Shift+B**, or *Terminal → Run Task…*. Errors appear in the
-Problems panel and as squiggles; click to jump to the line. The matcher is
-reusable in your own tasks as `"problemMatcher": "$gbasic"`.
+Errors appear in the Problems panel and as squiggles; click one to jump to the
+line.
 
 ## Snippets
 
@@ -122,6 +117,8 @@ npm run package        # gbasic-<version>.vsix
 
 `tests/run_vscode_extension.sh` runs the in-VS Code test from the repository
 root (it needs Node.js and `npm ci`, and skips naming which is missing).
+For a local install without packaging, `./install.sh` copies the extension into
+`~/.vscode/extensions`; then run *Developer: Reload Window*.
 
 The Kate definition (`editors/kate/gbasic.xml`) still carries hand-copied
 lists and is not checked.
