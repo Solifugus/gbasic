@@ -240,6 +240,11 @@ fi
 printf 'TIER the channel peek, both branches\n'
 if ! command -v cc >/dev/null 2>&1; then
     pass "SKIP (no C compiler)"
+elif case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) true ;; *) false ;; esac; then
+    # Windows does not build src/platform_posix.c: its actor transport frames
+    # every message with a length prefix (src/actor.c's _WIN32 half), so there
+    # is no frame to peek at and this function is not in the binary.
+    printf '  SKIP the channel peek (POSIX transport only; Windows frames by length prefix)\n'
 else
     for mode in native portable; do
         flag=""
