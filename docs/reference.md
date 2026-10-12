@@ -4376,7 +4376,10 @@ When gBASIC is built with libcrypto (OpenSSL), a family of cryptographic builtin
 is always available — no `load` is required. They operate on strings; hash, HMAC,
 AEAD, and random outputs are **binary strings** (raw bytes), which you render with
 `hex_encode`/`base64_encode` when you need text. `secure_token`, `password_hash`,
-and `password_verify` are documented under [Core Builtin Functions](#core-builtin-functions).
+and `password_verify` are documented under [Core Builtin Functions](#core-builtin-functions)
+— and they are **not** part of this family: `secure_token` needs nothing beyond
+the leanest build, and `password_hash` has its own backend (libxcrypt, or the
+vendored yescrypt), so a build without libcrypto still has all three.
 
 Encoding:
 
@@ -4402,8 +4405,8 @@ Hashing and HMAC:
 
 - `password_hash_cost()` -> `{ ms, prefix }` — what one password hash costs
   **on this machine**, measured by performing one, plus the algorithm and
-  parameter field libxcrypt embedded (`$y$j9T$` is yescrypt at its default
-  cost). `password_hash` takes no options, so this is how a deployment states
+  parameter field the backend embedded (`$y$j9T$` is yescrypt at its default
+  cost, which is what both backends write). `password_hash` takes no options, so this is how a deployment states
   its KDF posture rather than assuming it. It takes as long as a hash — a
   diagnostic, not a per-request call.
 - `sha256(s)`, `sha512(s)`, `sha1(s)` — message digests.
@@ -5266,10 +5269,13 @@ wall-clock elapsed.
 
 ### Password Hashing
 
-**`password_hash(password)`** - Hashes a password string using the platform's
-preferred libxcrypt password-hashing method. The returned string contains the
-algorithm, parameters, salt, and hash, so it can be stored directly in an
-application user table.
+**`password_hash(password)`** - Hashes a password string at the backend's
+default cost, writing `$y$j9T$` — yescrypt with N=4096, r=32, p=1 over 16 bytes
+of salt. That is unconditional with the vendored backend, and was measured to be
+libxcrypt's own default on every version from 4.4.27 to 4.5.2. The returned
+string contains the algorithm, parameters, salt, and hash, so it can be stored
+directly in an application user table. A password containing a NUL is refused rather than
+truncated, because `crypt(3)` takes a C string.
 
 **`password_verify(password, hash)`** - Returns `true` when the password string
 matches a stored hash from `password_hash()`, and `false` otherwise. Verification
@@ -5281,6 +5287,31 @@ if password_verify("candidate password", stored_hash) then
     print("ok")
 end if
 ```
+
+**There are two backends and one contract, and the contract is what matters:**
+`crypt(3)` through libxcrypt where the build found it, and the vendored
+yescrypt (`third_party/yescrypt`, BSD-2) otherwise — which is what **both
+downloads and the Windows build** use. A hash is data, written by one machine
+and checked by another, so both write `$y$j9T$` with 16 bytes of salt and
+either reads the other's output. That is asserted rather than claimed:
+`tests/windows/password_interop.bas` carries one hash made by each backend and
+requires whichever is running to accept both, and the release build makes the
+staged binary read a hash libxcrypt actually wrote.
+
+**Where they differ is reading a hash gBASIC did not write.** libxcrypt also
+reads the legacy `crypt(3)` schemes; the vendored backend reads `$y$` and `$7$`
+only, and **refuses the rest by name** rather than answering `false`:
+
+```
+password_verify: this build verifies yescrypt ($y$) and scrypt ($7$) hashes; this one is $6$
+```
+
+A `false` there would say the *password* was wrong, locking out a real user with
+nothing reported — so migrating an existing `$6$`, `$2b$` or `$1$` user table
+onto a download means re-hashing on next login, and the refusal says so at the
+point it matters. `has_builtin("password_hash")` answers for the build in hand,
+and `password_hash_cost()` reports the posture it hashes at — both described
+under `Environment` above.
 
 ### Type Inspection
 
@@ -6852,6 +6883,17 @@ where 0.7.0's was 828 KB. Static linking leaves no soname to vary and no
 library to be absent, which is why it
 reaches a case `dlopen` cannot — the XML reader depends on libxml2's struct
 layout, and a soname bump is precisely the announcement that a layout moved.
+
+**Password hashing is in both downloads too, by a third route.**
+`password_hash`/`password_verify`/`password_hash_cost` were in *neither* 0.7.0
+archive, because libxcrypt's soname is `libcrypt.so.1` on the Debian family and
+`libcrypt.so.2` on the RHEL family — so the downloads ship the **vendored
+yescrypt** (`third_party/yescrypt`, BSD-2) instead, which the Windows build
+already used and which writes the same `$y$j9T$` hashes libxcrypt's default
+writes. It adds 44 KB and no `DT_NEEDED` entry. The one difference is reading a
+hash gBASIC did not write: legacy `crypt(3)` schemes (`$6$`, `$2b$`, `$1$`) are
+**refused by name** rather than answered `false` — see
+[Password Hashing](#password-hashing).
 
 | | can load | cannot |
 | --- | --- | --- |

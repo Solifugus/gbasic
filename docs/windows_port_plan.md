@@ -229,10 +229,22 @@ Windows, and the cheapest honest something is a `.bas` file that checks itself.
 
 It will load fewer libraries, refuse actors, have no GUI and no server. The
 honest framing is not "incomplete" but **scoped**: a business and spreadsheet
-language for Windows, with the finance platform intact and `xlsx` available
-where even the Linux downloads omit it.
+language for Windows, with the finance platform intact ~~and `xlsx` available
+where even the Linux downloads omit it~~ — *struck 2026-10-11: the Linux
+downloads carry `xlsx` now, and `password_hash`, and both by techniques this
+port chose first. The scoping argument is unaffected; the comparison was.*
+
+**Two of this port's own decisions turned out to be Linux decisions**, and that
+is the durable lesson rather than either detail. M3 chose static libxml2
+because Windows has no soname problem; the Linux exclusion had been reasoned
+from *dynamic* linking and never re-asked (§4). §21's ruling chose the vendored
+yescrypt because libxcrypt is LGPL; the Linux downloads had no `password_hash`
+at all, for an unrelated soname reason, and the same code answers it. Neither
+was noticed from this side. When a decision here is driven by a property
+Windows *lacks*, it is worth asking whether Linux wants the same answer for a
+different reason.
 
 The release tiers are soname-asserted and glibc-specific
 (`tools/build-release-tarball.sh`), so Windows needs its own tier definition and
 its own floor assertion — and a Windows tarball should state which libraries it
-loads, measured the same way the Linux page states 44 and 52.
+loads, measured the same way the Linux page states 52 and 60.

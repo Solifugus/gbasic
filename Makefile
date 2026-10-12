@@ -237,9 +237,21 @@ endif
 
 # password_hash WITHOUT libxcrypt: the vendored yescrypt (third_party/yescrypt,
 # BSD-2), which produces and verifies the same `$y$` hashes libxcrypt does.
-# Only where libxcrypt is absent -- the Windows block sets it, and
-# `make YESCRYPT_VENDORED=1 LIBXCRYPT_AVAILABLE=0` builds it anywhere, which is
-# how the two are compared.
+# Only where libxcrypt is absent -- so `make YESCRYPT_VENDORED=1
+# LIBXCRYPT_AVAILABLE=0` is how the two are compared, and that is also exactly
+# how BOTH RELEASE TIERS ARE NOW BUILT (2026-10-11).
+#
+# IT WAS WINDOWS-ONLY FOR EIGHT DAYS AND NOBODY ASKED WHETHER LINUX WANTED IT.
+# The Windows block set it because libxcrypt is LGPL and gbasic.exe links no
+# LGPL code; the Linux downloads, meanwhile, had `password_hash` in NEITHER
+# tier, for an unrelated reason -- libxcrypt's soname is `.so.1` on the Debian
+# family and `.so.2` on the RHEL family, so a DT_NEEDED on either one is a
+# binary that does not start on the other half of the range. Measured on eight
+# base images. Two problems, one answer sitting in the tree already, and
+# third_party/yescrypt/README.md said "Linux builds are unchanged" the whole
+# time. Same shape as the static-linking correction in
+# docs/dependency_linking_design.md, which is what prompted looking.
+# Measured cost: +44 KB of stripped binary, and DT_NEEDED does not move.
 YESCRYPT_VENDORED ?= 0
 YESCRYPT_OBJS :=
 ifeq ($(LIBXCRYPT_AVAILABLE)$(YESCRYPT_VENDORED),01)
@@ -400,7 +412,19 @@ FORCE:
 # So the switches get a stamp, and every object compiled with CFLAGS depends on
 # it. The cost is that changing a switch rebuilds the tree, which is what
 # correctness here means.
-BUILD_SWITCH_SIG := $(GIO_AVAILABLE)|$(GIR_AVAILABLE)|$(GTK_AVAILABLE)|$(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_AVAILABLE)|$(YESCRYPT_VENDORED)
+# EVERY NAME HERE MUST BE A SWITCH THAT EXISTS, and one did not. This line
+# carried $(YESCRYPT_AVAILABLE), which is assigned NOWHERE -- so it expanded to
+# the empty string and tracked nothing, while reading exactly like the thirteen
+# live names beside it. Measured 2026-10-11: the signature was
+# `1|1|0|1|1|1|1|1|1|1|1|1|1||0`, with an empty field where a switch should be.
+# Same class as the -DSQLITE_ENABLE_JSON1 flag the sqlite work found retired
+# upstream: a dead entry in a derivation is worse than a missing one, because
+# it answers the question "is that tracked?" with a yes.
+# run_packaging.sh's switch-list check cannot see it -- that one greps
+# `^[A-Z0-9_]+_AVAILABLE` from COLUMN ONE, and a name used only inside this
+# variable never appears there -- so tests/run_library_tiers.sh asserts the
+# names in this line are all assigned, which catches the NEXT one.
+BUILD_SWITCH_SIG := $(GIO_AVAILABLE)|$(GIR_AVAILABLE)|$(GTK_AVAILABLE)|$(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)
 .buildswitch-stamp: FORCE
 	@printf '%s' '$(BUILD_SWITCH_SIG)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(BUILD_SWITCH_SIG)' > $@
 

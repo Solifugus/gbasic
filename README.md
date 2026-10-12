@@ -439,7 +439,7 @@ On Linux, with a C11 compiler, `make` and `bison`. Everything else is optional:
 | zlib | `compress` / `uncompress` builtins, `xlsx`, compressed PDF streams |
 | libcrypto (OpenSSL) | cryptography builtins, `load crypto` |
 | libssl | TLS in the WebServer |
-| libxcrypt | `password_hash` / `password_verify` (the Windows build uses the vendored yescrypt instead, `third_party/yescrypt`, which writes and reads the same `$y$` hashes) |
+| libxcrypt | `password_hash` / `password_verify` — **optional**: where it is absent the vendored yescrypt (`third_party/yescrypt`) provides them instead, writing and reading the same `$y$` hashes. That is what the Windows build and **both Linux downloads** use; a from-source build prefers libxcrypt when it finds it. The one difference is that only libxcrypt reads the legacy `$6$`/`$2b$` schemes, and the vendored backend refuses them by name rather than answering `false` |
 | GTK 3 | `load gui` |
 | libgirepository-2.0 (GLib ≥ 2.80) | `load gi`, and the GTK 4 libraries above |
 

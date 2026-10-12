@@ -316,5 +316,126 @@ else
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# EVERY TIER DECLARES A PASSWORD BACKEND, which exists because the opposite
+# shipped: `password_hash` and `password_verify` were in NEITHER published
+# download, and the reason was never a decision about password hashing. Both
+# tiers set LIBXCRYPT_AVAILABLE=0 because libxcrypt's soname is `.so.1` on the
+# Debian family and `.so.2` on the RHEL family, and a DT_NEEDED on either is a
+# binary that does not start on the other half of the range. Correct, and it
+# took two builtins with it silently.
+#
+# The rule is DERIVED rather than a literal: a tier that turns libxcrypt OFF
+# must turn the vendored yescrypt ON, or it has no `crypt(3)` at all. A new
+# tier then fails here, naming itself, rather than quietly shipping without
+# password hashing -- the same argument run_packaging.sh makes about a switch
+# nobody decided either way.
+printf 'TIER every release tier declares a password backend\n'
+# Continuations joined first: TIER_MAKE_ARGS spans three lines.
+joined="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "$rel")"
+targs="$(printf '%s\n' "$joined" | grep -E '^[[:space:]]*TIER_MAKE_ARGS=' || true)"
+n_tiers="$(printf '%s\n' "$targs" | grep -c . || true)"
+if [ "${n_tiers:-0}" -lt 2 ]; then
+    fail "read $n_tiers tier argument list(s) out of $rel -- expected one per tier, so this tier is measuring nothing"
+else
+    # EVERY TIER MUST NAME A BACKEND, and a tier naming NEITHER switch fails
+    # too. That third case is not pedantry: an unnamed LIBXCRYPT_AVAILABLE is
+    # decided by whatever pkg-config finds on the build machine, which is
+    # precisely how libxcrypt got into an earlier measurement WITHOUT BEING
+    # ASKED FOR -- the release script says so in its own header. "Whatever was
+    # installed" is not a decision anybody made.
+    undeclared=""
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        case "$line" in
+            *YESCRYPT_VENDORED=1*|*LIBXCRYPT_AVAILABLE=1*) ;;
+            *LIBXCRYPT_AVAILABLE=0*) undeclared="$undeclared
+       libxcrypt off, no replacement named: $line" ;;
+            *) undeclared="$undeclared
+       names neither switch, so the backend comes from the build machine: $line" ;;
+        esac
+    done <<EOF
+$targs
+EOF
+    if [ -z "$(printf '%s' "$undeclared" | tr -d '[:space:]')" ]; then
+        pass "every tier names a password backend ($n_tiers tiers read)"
+    else
+        fail "a tier would ship with no password hashing, or with whatever the build machine had:$undeclared"
+    fi
+fi
+
+# AND THE BEHAVIOURAL CHECK MUST STILL BE THERE. The declaration above says
+# what was asked for; only the probe says the artifact does it -- and the half
+# that matters is reading a hash LIBXCRYPT WROTE, since a backend hashing with
+# anything at all satisfies "password_hash works" while producing a download
+# whose hashes nothing else can read.
+if grep -q 'LIBXCRYPT_WROTE' "$rel" && grep -q 'this one is \$6\$' "$rel"; then
+    pass "the release build still proves interoperability and names what it cannot read"
+else
+    fail "the password probe is gone from $rel -- the tier declaration alone does not measure the artifact"
+fi
+
+# THE THIRD-PARTY NOTICES ARE BOUNDED, and this guards a defect that SHIPPED
+# PAST EVERY OTHER CHECK. Static linking makes a download a redistribution of
+# libxml2 (MIT) and yescrypt (BSD-2), both of which require their notice to
+# travel with the binary, so the release build generates one and refuses to
+# publish without it. The absence guards there ask WHETHER each component was
+# carried. Nothing asked whether what was carried was PLAUSIBLE -- and an
+# extraction that runs away yields a file that is complete, correct at the top,
+# and 9 MB. Measured: an interval expression (`{4,}`) in the SQLite extraction
+# is correct in gawk, which this machine has, and matches NOTHING in mawk,
+# which the ubuntu:22.04 release image provides, so the whole amalgamation went
+# into the notices file and every check in the release script passed.
+#
+# So the bound is asserted to EXIST, both ends of it, since a bound nobody
+# checks is one a later edit removes silently.
+if grep -q 'no licence text is that long' "$rel" && grep -q 'too short to carry four licences' "$rel"; then
+    pass "the notices file is bounded at both ends, so a runaway extraction cannot ship"
+else
+    fail "the size bound on THIRD-PARTY-NOTICES.txt is gone from $rel -- an absence guard is not a plausibility guard"
+fi
+
+# ---------------------------------------------------------------------------
+# EVERY NAME IN BUILD_SWITCH_SIG IS A SWITCH THAT EXISTS.
+#
+# That signature is what makes changing a switch rebuild the tree, so a name in
+# it that is assigned NOWHERE expands to the empty string and tracks nothing --
+# while reading exactly like the live names beside it. Measured 2026-10-11: it
+# carried $(YESCRYPT_AVAILABLE), assigned nowhere, giving
+# `1|1|0|1|1|1|1|1|1|1|1|1|1||0` with an empty field in the middle. Same class
+# as the -DSQLITE_ENABLE_JSON1 flag found retired upstream, and the reason
+# there is no exemption list in either place: a dead entry answers "is that
+# tracked?" with a yes.
+#
+# run_packaging.sh's switch-list check structurally cannot see this -- it greps
+# `^[A-Z0-9_]+_AVAILABLE` from COLUMN ONE, and a name used only inside this one
+# variable never appears there. Hence a check here, in a suite that never
+# skips, rather than beside it in one that needs dpkg-deb.
+printf 'TIER every name in BUILD_SWITCH_SIG is an assigned switch\n'
+sig="$(grep -E '^BUILD_SWITCH_SIG[[:space:]]*:?=' Makefile || true)"
+# `|| true` is not decoration: with $sig empty this grep matches nothing and
+# exits 1, pipefail gives the pipeline that status, and `set -e` ends the suite
+# SILENTLY -- printing the tier header and then nothing, with no FAIL line in a
+# scrollback that looks green. Measured while perturbing this very tier, which
+# is the fourth instance of that trap here (run_ldap's skip probe, run_web_tls's,
+# run_rules' scanner) and the first one inside a VACUITY GUARD -- the branch
+# whose whole job is to say "this measured nothing", and the one branch nobody
+# ever watches work.
+names="$(printf '%s\n' "$sig" | grep -oE '\$\([A-Z0-9_]+\)' | tr -d '$()' | sort -u || true)"
+n_names="$(printf '%s\n' "$names" | grep -c . || true)"
+if [ "${n_names:-0}" -lt 10 ]; then
+    fail "read $n_names name(s) out of BUILD_SWITCH_SIG -- expected the full switch list, so this tier is measuring nothing"
+else
+    dead=""
+    for n in $names; do
+        grep -qE "^[[:space:]]*$n[[:space:]]*[:?+]?=" Makefile || dead="$dead $n"
+    done
+    if [ -z "$dead" ]; then
+        pass "all $n_names names in the build signature are assigned somewhere in the Makefile"
+    else
+        fail "BUILD_SWITCH_SIG names a switch the Makefile never assigns, so it tracks nothing:$dead"
+    fi
+fi
+
 [ "$status" -ne 0 ] && exit 1
 printf 'PASS tests/run_library_tiers.sh\n'

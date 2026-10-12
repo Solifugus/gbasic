@@ -127,6 +127,12 @@
 #   libcrypto.so.3    .3     .3     .3     .3     .3     .3   .3      .3
 #   libz.so.1         .1     .1     .1     .1     .1     .1   .1      .1
 #   libcrypt          .1     .1     .1     .1   **.2**  **.2** **.2**  .1
+#     ^ kept as the measurement it was, and it is the row that MOTIVATED
+#       this table. libcrypt is in neither tier's link set now -- not
+#       because the soname stopped varying, but because `password_hash`
+#       no longer asks a system library at all: the VENDORED yescrypt
+#       (third_party/yescrypt, BSD-2) is the backend in both tiers, so
+#       the varying soname is simply not consulted. See the note below.
 #   libxml2           .2     .2     .2     .2     .2     .2   .2    **.16**
 #
 # SEVEN OF NINE ARE IDENTICAL EVERYWHERE, AND TWO ARE NOT, and both of the two
@@ -144,13 +150,53 @@
 # pkg-config enables every probe in the Makefile -- and a dependency nobody
 # chose is one nobody will think to check.
 #
+# PASSWORD HASHING IS IN BOTH TIERS NOW, AND NOT BY THE ROUTE THE DESIGN NOTE
+# PLANNED. `docs/dependency_linking_design.md` step 3 proposed reaching
+# libxcrypt by `dlopen`, on the argument that it is two symbols and the cheapest
+# place to prove that pattern. The tree already held a better answer: the
+# vendored yescrypt (third_party/yescrypt, BSD-2), written for Windows because
+# libxcrypt is LGPL, producing and verifying the SAME `$y$` hashes libxcrypt's
+# default produces. It was Windows-only for eight days because nobody re-asked
+# whether Linux wanted it -- the same omission, in the same tree, that the
+# static-linking correction is about.
+#
+# Measured before choosing, because `dlopen` was not obviously worse:
+#   * libcrypt is PRESENT on all eight base images (ubuntu 22.04/24.04/26.04,
+#     debian 12/13, fedora 41/43, rocky 9) with NO packages installed, and
+#     `readelf --dyn-syms` shows all four of crypt/crypt_r/crypt_ra/
+#     crypt_gensalt_ra exported on every one -- so dlopen would in fact have
+#     worked. That is the OPPOSITE of what was expected (the guess was that a
+#     bare image would lack it, which would have settled the question outright)
+#     and it is the reason it was measured rather than argued. The same run
+#     confirms the soname split this table records: `.so.1` on all five
+#     Debian-family images, `.so.2` on all three RHEL-family ones;
+#   * libxcrypt's own default is `$y$j9T$` at both ends of the range in the
+#     build images -- 4.4.27 on ubuntu 22.04 and 4.5.2 on fedora 41, each
+#     measured by building gBASIC against it IN that image and asking -- so the
+#     written scheme would have agreed. (Rocky 9, in the middle at 4.4.18, was
+#     NOT measured for this: its dnf hung with no output and the probe was
+#     killed rather than guessed at.)
+#   * vendoring costs +44 KB of stripped binary and does not move DT_NEEDED.
+# So the choice is not about whether dlopen works. It is that vendoring makes
+# the soname question, the presence question and the dlsym-returns-NULL failure
+# mode all ABSENT rather than handled -- the same three rows static linking won
+# on for libxml2 -- for 44 KB. "Present on the eight images we looked at" is the
+# argument this script already rejected when it chose to assert a link set
+# rather than count one.
+#
+# THE ONE THING IT COSTS IS STATED, because it is a real behavioural
+# difference: the vendored backend reads `$y$` and `$7$` and NOT the legacy
+# crypt(3) schemes, so a `$6$` or `$2b$` hash from an existing user table is
+# REFUSED BY NAME ("this build verifies yescrypt ($y$) and scrypt ($7$) hashes;
+# this one is $6$") rather than answered false -- a false there would tell a
+# caller the PASSWORD was wrong and lock a real user out silently. A
+# from-source build on a machine with libxcrypt still reads every scheme.
+#
 # WHAT THE full TIER COSTS AND BUYS, stated plainly because a reader deserves
-# to know which download they took: it loses `password_hash`/`password_verify`
-# (libxcrypt, whose soname is the other one that varies -- and which is two
-# symbols and the cheapest place to prove dlopen, per the design note). It
-# gains `sqlite`, `webclient`, `http`, `smtp` and the libcrypto builtins --
-# exactly the database, internet and AI chapters DOGFOOD 44 is about. `xml` and
-# `xlsx` are no longer on that list: BOTH tiers have them, statically.
+# to know which download they took: it gains `sqlite`, `webclient`, `http`,
+# `smtp` and the libcrypto builtins -- exactly the database, internet and AI
+# chapters DOGFOOD 44 is about. `xml`, `xlsx` and `password_hash` are no longer
+# on the cost side: BOTH tiers have them.
 # libpq, unixODBC, OpenLDAP, GTK and GObject-Introspection stay out. The first
 # two are candidates for dlopen if a consumer asks; GTK and GI are refused by
 # BOTH techniques and that is the answer rather than a gap, because they need
@@ -241,6 +287,12 @@ STATIC_SQLITE="SQLITE3_AVAILABLE=1 SQLITE3_CFLAGS=-I/opt/sqlite SQLITE3_LIBS=/op
 # is the same failure as a build that had not caught up with the declaration,
 # and the sweep cannot tell which it is -- so it stops.
 TIER_STATIC_CAPS="libxml2 libsqlite3"
+# The third-party code compiled INTO the binary, which is what the notices file
+# must name. SEPARATE FROM TIER_STATIC_CAPS ABOVE, which is a list of `load`-able
+# CAPABILITIES: yescrypt provides no module and so is absent there, while being
+# exactly the kind of redistribution a licence cares about. Both tiers carry the
+# same four, because all four are static in both.
+NOTICE_STATIC="libxml2 zlib sqlite yescrypt"
 
 case "$TIER" in
     lean)
@@ -257,7 +309,7 @@ case "$TIER" in
         TIER_MAKE_ARGS="GIO_AVAILABLE=0 GIR_AVAILABLE=0 GTK_AVAILABLE=0 \
             LDAP_AVAILABLE=0 LIBCRYPTO_AVAILABLE=0 LIBCURL_AVAILABLE=0 \
             LIBPQ_AVAILABLE=0 LIBSSL_AVAILABLE=0 LIBXCRYPT_AVAILABLE=0 \
-            ODBC_AVAILABLE=0 ZLIB_AVAILABLE=1"
+            ODBC_AVAILABLE=0 ZLIB_AVAILABLE=1 YESCRYPT_VENDORED=1"
         EXPECTED_NEEDED="libc.so.6 libm.so.6"
         TIER_SUFFIX=""
         ;;
@@ -271,7 +323,7 @@ case "$TIER" in
         # xml and xlsx.
         TIER_MAKE_ARGS="LIBXCRYPT_AVAILABLE=0 GIO_AVAILABLE=0 GIR_AVAILABLE=0 \
             GTK_AVAILABLE=0 LDAP_AVAILABLE=0 LIBPQ_AVAILABLE=0 ODBC_AVAILABLE=0 \
-            ZLIB_AVAILABLE=1"
+            ZLIB_AVAILABLE=1 YESCRYPT_VENDORED=1"
         EXPECTED_NEEDED="libc.so.6 libcrypto.so.3 libcurl.so.4 libm.so.6 libssl.so.3"
         TIER_SUFFIX="-full"
         ;;
@@ -366,6 +418,187 @@ make install \"\${args[@]}\" PREFIX='$PREFIX_IN_TARBALL' DESTDIR=/work/stage >/d
 # GBASIC-MAKE:end
 
 stage=/work/stage$PREFIX_IN_TARBALL
+
+# THIRD-PARTY NOTICES, AND THE OBLIGATION IS DERIVED FROM THE BINARY.
+#
+# THIS WAS MISSING AND THE OMISSION WAS MINE. Until static linking landed it
+# would have been unnecessary: 'the Linux gbasic links its optional libraries
+# dynamically, from the system' is what LICENSING.md said, and a dynamically
+# linked binary redistributes nothing. Linking libxml2, zlib and sqlite
+# statically, and compiling in the vendored yescrypt, makes every download a
+# REDISTRIBUTION of that code -- and libxml2's MIT licence and yescrypt's BSD-2
+# each require their notice to travel with a binary. Nothing non-compliant has
+# been published: the 0.7.0 archives predate all of it. This is the step that
+# makes the three static ones shippable.
+#
+# WHAT SHIPS IS ASKED OF THE LINKER RATHER THAN OF A LIST. A third-party symbol
+# DEFINED in our binary means we carry that code; one left UNDEFINED means the
+# system supplies it at load time and we redistribute nothing. That is the line
+# the licences draw, so it is the line this draws -- read from the UNSTRIPPED
+# binary, before the strip below takes the symbol table away.
+#
+# AND IT IS CHECKED IN BOTH DIRECTIONS, because each direction fails
+# differently and the first draft of this had only one. Deriving alone catches a
+# component that gained static linking with no notice; it CANNOT catch a probe
+# symbol that is simply wrong, which silently omits a required notice instead.
+# That is not hypothetical: the first draft probed 'zlibVersion' and
+# 'sqlite3_open', NEITHER OF WHICH gBASIC CALLS -- and a static archive
+# contributes only what is referenced, so zlib's notice would have been left out
+# in silence. So the expected set is declared as well, and the two must agree.
+# Every probe below is one measured to appear in this binary's symbol table.
+nm --defined-only /work/gbasic/gbasic | awk '{print \$NF}' | sort -u > /tmp/defined.txt
+nm --undefined-only /work/gbasic/gbasic | awk '{print \$NF}' | sed 's/@.*//' | sort -u > /tmp/undefined.txt
+have() { grep -qx \"\$1\" /tmp/defined.txt; }
+dynamic() { grep -qx \"\$1\" /tmp/undefined.txt; }
+
+notices=\$stage/share/doc/gbasic/THIRD-PARTY-NOTICES.txt
+mkdir -p \"\$(dirname \"\$notices\")\"
+{
+    echo 'gBASIC for Linux -- third-party notices'
+    echo '======================================='
+    echo
+    echo 'gBASIC itself is under the Apache License 2.0; see LICENSE and NOTICE.'
+    echo 'The components below are compiled INTO bin/gbasic, so this download is a'
+    echo 'redistribution of each, and each is listed with its version and the full'
+    echo 'text of its licence. Anything the binary LOADS from the system at run'
+    echo 'time is deliberately not here: it is not redistributed, and it carries'
+    echo 'its own notice on the machine that provides it.'
+    echo
+    echo 'Generated by tools/build-release-tarball.sh from the sources it compiled,'
+    echo 'for the components whose symbols it found defined in the binary.'
+    echo
+} > \"\$notices\"
+
+emit() {
+    printf -- '-------------------------------------------------------------------------------\n' >> \"\$notices\"
+    printf '%s\n' \"\$1\" >> \"\$notices\"
+    printf -- '-------------------------------------------------------------------------------\n\n' >> \"\$notices\"
+    cat >> \"\$notices\"
+    printf '\n\n' >> \"\$notices\"
+}
+
+carried=''
+missing=''
+# libxml2 -- MIT. The licence text comes from the PINNED tarball just compiled,
+# not from a copy in this repository, so it describes what actually shipped.
+if have xmlCtxtReadMemory; then
+    # BOTH SPELLINGS ARE TRIED RATHER THAN ONE GUESSED. Upstream has called this
+    # file 'Copyright' historically and distributions package it as 'COPYING';
+    # which one a given tarball carries is a fact about that tarball, and the
+    # only honest options are to look or to fail naming what was looked for.
+    xmltext=''
+    for cand in Copyright COPYING LICENSE; do
+        if [ -s /tmp/libxml2-${LIBXML2_VERSION}/\$cand ]; then xmltext=/tmp/libxml2-${LIBXML2_VERSION}/\$cand; break; fi
+    done
+    if [ -n \"\$xmltext\" ]; then
+        emit 'libxml2 ${LIBXML2_VERSION}   Licence: MIT' < \"\$xmltext\"
+        carried=\"\$carried libxml2\"
+    else
+        missing=\"\$missing libxml2(no Copyright/COPYING/LICENSE in the tarball)\"
+    fi
+fi
+# zlib -- the distribution's static libz.a. Its terms live in zlib.h's own
+# header comment, which zlib1g-dev installs.
+if have inflateEnd; then
+    zver=\$(sed -n 's/^#define ZLIB_VERSION \"\\(.*\\)\"/\\1/p' /usr/include/zlib.h | head -1)
+    ztext=\$(awk '/^  Copyright/,/^\\*\\//' /usr/include/zlib.h | sed 's,^\\*/,,')
+    if [ -n \"\$ztext\" ]; then
+        printf '%s\n' \"\$ztext\" | emit \"zlib \${zver:-unknown}   Licence: Zlib\"
+        carried=\"\$carried zlib\"
+    else
+        missing=\"\$missing zlib(no-text)\"
+    fi
+fi
+# SQLite -- public domain, so no notice is REQUIRED. Stated anyway, because a
+# reader asking what is inside the binary deserves the whole list and not only
+# the parts with a legal obligation attached.
+if have sqlite3_open_v2; then
+    # ANCHORED ON THE SENTENCE, not on line numbers: the amalgamation opens with
+    # a comment carrying upstream's dedication, and a line-counted slice would
+    # quietly produce the wrong text if that header is ever reformatted. The
+    # dedication is also the only part that matters, SQLite being public domain
+    # and so requiring no notice at all -- this entry exists because a reader
+    # asking what is inside the binary deserves the whole list.
+    # FIRST MATCH ONLY, and that correction came from running it: the
+    # amalgamation embeds the header of every file it was built from, so a plain
+    # awk RANGE matched all ~300 of them and produced 36 KB of the same blessing
+    # repeated. A synthetic one-header fixture passed; only the real file showed
+    # it.
+    #
+    # AND THE DIVIDER IS FOUR LITERAL ASTERISKS, NOT AN INTERVAL EXPRESSION.
+    # The first fix wrote /^\\*{4,}/, which is correct in gawk -- the dev
+    # machine's awk -- and matches NOTHING in mawk, which is what this base
+    # image provides. So the exit never fired, the whole 9 MB amalgamation went
+    # into the notices file, and EVERY CHECK IN THIS SCRIPT STILL PASSED: the
+    # component was carried, so the declared-vs-derived comparison was happy.
+    # Measured, not reasoned: mawk matches the literal form and not the
+    # interval. Same shape as the libcurl floor defect -- the development
+    # machine is the newest and most capable thing in the room, and the RELEASE
+    # CONTAINER is the environment that decides. Hence the size bound below.
+    sqtext=\$(awk '/disclaims copyright/{f=1} f{print} f && /^\\*\\*\\*\\*/{exit}' /tmp/${SQLITE_ZIP}/sqlite3.c | sed -e 's/^\\*\\*//' -e '/^\\*\\*\\*\\*/d')
+    if [ -n \"\$(printf '%s' \"\$sqtext\" | tr -d '[:space:]')\" ]; then
+        printf '%s\n' \"\$sqtext\" | emit 'SQLite ${SQLITE_VERSION}   Licence: public domain (no notice required; stated for completeness)'
+        carried=\"\$carried sqlite\"
+    else
+        missing=\"\$missing sqlite(no dedication found in sqlite3.c)\"
+    fi
+fi
+# yescrypt -- BSD-2. The release carries no licence FILE, so the terms are each
+# source file's header; quote the header of every file compiled, deduplicated.
+# Same rule tools/make-notices.sh uses on Windows, so the two platforms agree.
+if have yescrypt_r; then
+    yver=\$(sed -n -E 's/^- \\*\\*Version:\\*\\* ([0-9][0-9.]*[0-9]).*/\\1/p' /work/gbasic/third_party/yescrypt/README.md | head -1)
+    ytext=\$(for f in yescrypt-opt.c yescrypt-platform.c yescrypt-common.c sha256.c insecure_memzero.c; do
+                awk 'NR==1 && !/^\\/\\*/ {exit} {print} /\\*\\// {exit}' /work/gbasic/third_party/yescrypt/\$f; echo
+            done | awk 'BEGIN{RS=\"\"; ORS=\"\n\n\"} !seen[\$0]++')
+    if [ -n \"\$ytext\" ] && [ -n \"\$yver\" ]; then
+        printf '%s\n' \"\$ytext\" | emit \"yescrypt \$yver   Licence: BSD-2-Clause\"
+        carried=\"\$carried yescrypt\"
+    else
+        missing=\"\$missing yescrypt(no-text)\"
+    fi
+fi
+
+# NO LICENCE TEXT IS MEGABYTES, and this bound exists because a silently
+# OVERSIZED notice passed every other check here. The absence guards above ask
+# whether a component was carried; nothing asked whether what was carried was
+# plausible, and an extraction that runs away produces a file that is complete,
+# correct at the top, and 9 MB. A licence is a page or two; 256 KB is generous
+# for every component in the table and still catches a runaway by three orders
+# of magnitude.
+nbytes=\$(wc -c < \"\$notices\")
+[ \"\$nbytes\" -le 262144 ] \
+    || { echo \"FAIL: THIRD-PARTY-NOTICES.txt is \$nbytes bytes -- no licence text is that long, so an extraction has run away\"; exit 1; }
+[ \"\$nbytes\" -ge 1024 ] \
+    || { echo \"FAIL: THIRD-PARTY-NOTICES.txt is only \$nbytes bytes -- too short to carry four licences\"; exit 1; }
+
+got_notices=\$(printf '%s\n' \$carried | sort | tr '\n' ' ' | sed 's/ \$//')
+want_notices=\$(printf '%s\n' $NOTICE_STATIC | sort | tr '\n' ' ' | sed 's/ \$//')
+[ -z \"\$missing\" ] \
+    || { echo \"FAIL: compiled into the binary with no licence text to ship:\$missing\"; exit 1; }
+[ \"\$got_notices\" = \"\$want_notices\" ] \
+    || { echo \"FAIL: the notices carry [\$got_notices] where this tier declares [\$want_notices] -- a missing name means either a component lost its notice or its probe symbol is wrong\"; exit 1; }
+
+# THE CONTROL, and it is what keeps this honest as the tiers change: a
+# component the binary LOADS must still be loaded rather than carried. If a
+# later change links libcrypto or libcurl statically, a new redistribution
+# obligation appears with nothing to announce it. The second branch is the
+# VACUITY guard: a symbol that is neither defined NOR undefined means the probe
+# name is wrong, so for the tier that really links the library it must be
+# present as an undefined reference -- otherwise this loop proves nothing.
+for pair in 'EVP_PKEY_free libcrypto.so.3' 'curl_easy_init libcurl.so.4'; do
+    sym=\${pair%% *}; soname=\${pair##* }
+    if have \"\$sym\"; then
+        echo \"FAIL: \$soname is compiled INTO the binary (\$sym is defined), so it is redistributed and needs a notice here\"
+        exit 1
+    fi
+    case ' $EXPECTED_NEEDED ' in
+        *\" \$soname \"*)
+            dynamic \"\$sym\" || { echo \"FAIL: this tier links \$soname but \$sym is neither defined nor undefined -- the probe name is wrong and this control is vacuous\"; exit 1; } ;;
+    esac
+done
+echo \"notices: \$got_notices\"
+
 strip \"\$stage/bin/gbasic\"
 cp /work/gbasic/README.md \"\$stage/\"
 # REPRODUCIBLE, because a checksum nobody can reproduce cannot be checked
@@ -482,6 +715,58 @@ if [ "$got" = "$SQLITE_VERSION 4 R163 7 1" ]; then
     ok "sqlite $SQLITE_VERSION answers a query, and FTS5, RTREE, maths and JSON all work"
 else
     bad "the sqlite capability probe did not answer as expected: $got"
+fi
+
+# PASSWORD HASHING, AND THE HALF THAT MATTERS IS INTEROPERABILITY.
+#
+# "password_hash works" is the easy claim and the uninteresting one: a backend
+# that hashed with anything at all would satisfy it, and the result would be a
+# download whose hashes nothing else can read. A PASSWORD HASH IS DATA -- made
+# on one machine, checked on another, years apart -- so the load-bearing check
+# is that this binary verifies a hash LIBXCRYPT ACTUALLY WROTE. The vector is
+# the one tests/windows/password_interop.bas carries, written by libxcrypt
+# 4.5.1 and independently checked from outside gBASIC by perl's crypt() over
+# the system libxcrypt.
+#
+# AND THE REFUSAL IS ASSERTED, not just the success, because the dangerous
+# direction is the quiet one. The vendored backend cannot read the legacy
+# crypt(3) schemes, and if a `$6$` hash were answered FALSE the caller would be
+# told the PASSWORD was wrong -- locking a real user out with nothing said,
+# which is strictly worse than refusing. So a $6$ hash must RAISE and name the
+# scheme, and must never come back true or false.
+cat > "$work/pwcap.bas" <<'PWCAP'
+' A hash libxcrypt wrote, on a machine that has no libxcrypt.
+LIBXCRYPT_WROTE = "$y$j9T$fGpSWSCTrdZaMT69NAhOq1$5HH7Q2Qs8VNW63J3cYrSvAiaznpE6uh9Zp/oPFIHGE1"
+SHA512CRYPT = "$6$gbasicvector$y.ijOURDub5b/769rTfMphR8BpM7c62qzp9U.YKfrmDnbEemgudN0R9y9LDSFWNDR7o7F179EZa5nYAdwyCsV/"
+PW = "correct horse battery staple"
+
+h = password_hash(PW)
+out = left(h, 7)
+out = out + " " + string(password_verify(PW, h))
+out = out + " " + string(password_verify("Correct horse battery staple", h))
+out = out + " " + string(password_verify(PW, LIBXCRYPT_WROTE))
+out = out + " " + password_hash_cost().prefix
+
+on error goto next
+legacy = password_verify(PW, SHA512CRYPT)
+if error then
+    if contains(error.message, "this one is $6$") then
+        out = out + " named"
+    else
+        out = out + " WRONG-REASON"
+    end if
+    error.clear()
+else
+    ' Either answer here is a defect, and they are different defects.
+    out = out + " ANSWERED-" + string(legacy)
+end if
+print out
+PWCAP
+got="$( cd "$work" && env -u GBASIC_PATH "$root/bin/gbasic" "$work/pwcap.bas" 2>&1 || true )"
+if [ "$got" = "\$y\$j9T\$ true false true \$y\$j9T\$ named" ]; then
+    ok "password hashing works, reads a hash libxcrypt wrote, and names what it cannot read"
+else
+    bad "the password probe did not answer as expected: $got"
 fi
 
 # EVERY LIBRARY IN THE ARCHIVE, AGAINST THE BINARY SHIPPED BESIDE IT.

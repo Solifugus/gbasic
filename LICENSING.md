@@ -68,10 +68,42 @@ has to work out which half of the standard library they are in.
 `$PREFIX/share/doc/gbasic`. Apache-2.0 asks you to keep the license and the
 `NOTICE` text with any redistribution, and to state changes you made.
 
+### Third-party code in the Linux downloads
+
+~~The Linux `gbasic` links its optional libraries dynamically, from the
+system.~~ **That was true until 2026-10-11 and is now only half true**, and the
+half that changed creates an obligation that did not exist before. A build from
+source still links everything dynamically, and redistributes nothing. **The
+published tarballs no longer do**: `tools/build-release-tarball.sh` compiles
+four things *into* `bin/gbasic`, so each download is a redistribution of each
+of them.
+
+| component | licence | why it is inside |
+| --- | --- | --- |
+| libxml2 | MIT | soname varies across distributions (`.so.2`, `.so.16` from 2.14) |
+| zlib | Zlib | ditto in effect, and tiny |
+| SQLite | public domain | removes a `DT_NEEDED` entry rather than adding one |
+| yescrypt | BSD-2-Clause | libxcrypt's soname is `.so.1` on Debian, `.so.2` on RHEL |
+
+libxml2's MIT licence and yescrypt's BSD-2 **both require their notice to
+travel with a binary**, so every tarball now carries
+`share/doc/gbasic/THIRD-PARTY-NOTICES.txt` with the version and full licence
+text of each. The release build generates it from the sources it actually
+compiled and **refuses to publish** an archive missing one — and it decides
+which components need an entry by asking whether their symbols are *defined* in
+the binary (we carry it) or *undefined* (the system supplies it), which is the
+same line the licences draw. libcurl, libssl and libcrypto in the `-full` tier
+stay dynamic and are deliberately absent from that file, with a check that they
+have not quietly become static.
+
+**Nothing non-compliant was published.** The static linking is committed and
+unreleased; the 0.7.0 archives predate all of it. The reasoning is in
+`docs/dependency_linking_design.md`.
+
 ### Third-party code in the Windows binary
 
-The Linux `gbasic` links its optional libraries dynamically, from the system.
-The **Windows `gbasic.exe` links them statically**, so it contains:
+The **Windows `gbasic.exe` links them statically** as well, and more of them,
+so it contains:
 
 - curl;
 - OpenSSL's libcrypto (Apache-2.0);

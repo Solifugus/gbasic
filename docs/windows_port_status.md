@@ -112,9 +112,14 @@ Windows transport does not use a pair.)**
    what the ratchet measures.
 2. **Which libraries ship?** The release tiers are built for glibc and asserted
    against sonames (`tools/build-release-tarball.sh`). A Windows tarball needs
-   its own tier definition and its own floor assertion, and `xlsx`/`xml`/
+   its own tier definition and its own floor assertion. ~~and `xlsx`/`xml`/
    `password_hash` are excluded from BOTH Linux tiers already because libxml2 and
-   libxcrypt sonames differ across distributions.
+   libxcrypt sonames differ across distributions.~~ **Struck 2026-10-11: all
+   three are in both Linux tiers now.** The soname argument was sound and
+   applied to *dynamic* linking only; libxml2 and zlib are linked statically
+   and `password_hash` uses the vendored yescrypt — in both cases the technique
+   this port chose first, re-asked for Linux. See
+   `docs/dependency_linking_design.md`.
 
 ## 8. House rules that apply here especially
 
@@ -777,7 +782,13 @@ Linux uses libxcrypt, which is LGPL and therefore excluded by §19. OpenSSL has
 no yescrypt. Openwall's yescrypt 1.1.0 is vendored unmodified in
 third_party/yescrypt (BSD-2; provenance and SHA-256 in its README). Every
 vendored file is byte-identical between openwall.com and the GitHub tag. It is
-built only where libxcrypt is absent (`HAVE_YESCRYPT`), so Linux is unchanged.
+built only where libxcrypt is absent (`HAVE_YESCRYPT`). ~~so Linux is
+unchanged.~~ **Struck 2026-10-11: both Linux release tiers build it too**, for
+an unrelated reason it answers anyway — libxcrypt's soname is `.so.1` on the
+Debian family and `.so.2` on the RHEL family, so the downloads had no
+`password_hash` at all. A from-source Linux build on a machine with libxcrypt
+is still unchanged. This ruling therefore turned out to decide the Linux
+downloads as well as Windows, which nobody noticed for eight days.
 Both backends sit behind one pair of helpers in src/eval.c, so each call site
 has a single path. Its `SHA256_*` symbols are renamed `libcperciva_*` and do not
 collide with OpenSSL's in the same static link.

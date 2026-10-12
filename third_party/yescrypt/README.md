@@ -17,10 +17,20 @@
 
 ## Why it's here
 
-`password_hash` and `password_verify` are `crypt(3)` on Linux, through
-libxcrypt. libxcrypt is LGPL, and the Windows `gbasic.exe` links no LGPL code
+`password_hash` and `password_verify` are `crypt(3)` where libxcrypt is
+available. libxcrypt is LGPL, and the Windows `gbasic.exe` links no LGPL code
 (docs/windows_port_status.md §19). This is the same algorithm from its
 authors, under a permissive licence.
+
+**And since 2026-10-11 it is the backend in both LINUX RELEASE TIERS too, for
+an unrelated reason that this code answers anyway.** The published downloads
+had `password_hash` in *neither* tier — not over licensing, but because
+libxcrypt's soname is `libcrypt.so.1` on the Debian family and
+`libcrypt.so.2` on the RHEL family, so a `DT_NEEDED` on either one is a binary
+that does not start on the other half of the supported range. Two unrelated
+problems, one answer already sitting in the tree. `docs/dependency_linking_design.md`
+step 3 has the measurements and why this was chosen over reaching libxcrypt by
+`dlopen`.
 
 It has to be the same algorithm, because a password hash is DATA. It is written
 by one machine and checked by another, so a hash made on Linux must verify on
@@ -31,8 +41,35 @@ evidence. It verifies a hash that libxcrypt wrote, so that test runs on both
 backends.
 
 The build uses this code only where libxcrypt is absent (`HAVE_YESCRYPT`, set
-in the Makefile's Windows block, or `make YESCRYPT_VENDORED=1` elsewhere).
-Linux builds are unchanged.
+in the Makefile's Windows block, by `YESCRYPT_VENDORED=1` in both release
+tiers, or by `make YESCRYPT_VENDORED=1 LIBXCRYPT_AVAILABLE=0` anywhere, which
+is how the two backends are compared). **A from-source Linux build on a machine
+that has libxcrypt still uses libxcrypt**, so that remains the default here.
+
+~~Linux builds are unchanged.~~ *Struck 2026-10-11, and the striking is the
+point rather than a detail: that sentence was true when written and stayed in
+place for eight days while being the reason nobody asked whether Linux wanted
+this code. Nothing in the gate reads this file — `run_docs_gate.sh` reads
+`docs/` — so it rotted in exactly the way the gates exist to prevent.*
+
+## What it cannot do, which is a behavioural difference and not an omission
+
+It reads `$y$` (yescrypt) and `$7$` (scrypt) and **not** the legacy `crypt(3)`
+schemes — `$6$` sha512crypt, `$2b$` bcrypt, `$1$` md5crypt — which libxcrypt
+does read. So a hash from an existing user table may be unreadable by a
+download.
+
+`password_verify` therefore **refuses, naming the scheme**, rather than
+answering `false`:
+
+```
+password_verify: this build verifies yescrypt ($y$) and scrypt ($7$) hashes; this one is $6$
+```
+
+A `false` there would tell the caller the *password* was wrong and lock a real
+user out with nothing said, which is strictly worse than a refusal naming what
+to do. `tests/windows/password_interop.bas` asserts this on both backends, and
+the release build asserts it on the staged artifact.
 
 `sha256.h` renames its functions to `libcperciva_*`, so they cannot collide
 with OpenSSL's `SHA256_Init` and friends in the same static link.
