@@ -18,6 +18,141 @@ reader sees.
 
 ---
 
+## 0.8.0 — 2026-10-12
+
+**Read this first.** This release is mostly about the **downloads** rather than
+the language, and the headline is that they carry far more than they did.
+`0.7.0`'s archives shipped a standard library the binary beside them could not
+run: of 65 libraries, **13 could not be `load`ed on `-full` and 21 on lean**.
+Both numbers are now **6 and 14**, and `xlsx`, `xml`, `sqlite`, compression and
+password hashing are in **both** archives.
+
+**Three things change answers a program was already getting**, and all three
+were wrong before:
+
+- **`has_builtin` now answers for the build it is in.** On the published `0.7.0`
+  artifacts it affirmed `sha256`, `password_hash` and `compress` on builds that
+  cannot run any of them — so a program that checked first and then called
+  crashed on the branch it had checked for. Twenty names move with the build now.
+  It also *denied* three it could run (`pbkdf2_sha256`, `pbkdf2_sha512`,
+  `scrypt`), which were never in the registry at all.
+- **`number("…")` and `{number}` are exact on decimal integer text.**
+  `number("9007199254740992") + 1` answered `…992`; it answers `…993`.
+  **Below 2^53 nothing observable changes** — exact and inexact integers render
+  identically — so the only outputs that move are ones that were wrong.
+- **`ldap` tells a TLS failure from an outage by asking the network**, not by
+  reading libldap's diagnostic text. That text belongs to whichever TLS library
+  the distribution built OpenLDAP against, so the module's central claim was true
+  on a developer's machine and false on Ubuntu 24.04's GnuTLS build.
+
+**One diagnostic changed its text**, and it is the one to re-capture if you quote
+messages verbatim: on a build without zlib, `compress` said
+**`unknown function: compress`** and now says
+**`compression requires zlib; rebuild with it installed`**. `zlib` was the one
+optional builtin family whose *name test* sat inside its `#if`, so the function
+vanished from the dispatch rather than refusing. `tools/since-release.sh` reports
+no changed diagnostics for this release, correctly — it sees only messages a
+golden pins, and no golden can pin a message that needs a zlib-less build to
+appear.
+
+**Why this is `0.8.0` and not a patch.** `0.6.1` set the standard for a patch
+here — *"nothing is added, nothing is removed, and no message changes"* — and
+this release adds a standard library, adds three builtins to the registry, adds
+four capabilities to both downloads, and changes a message.
+
+### Added
+
+- **`rules` — typed business rules as data** (`stdlib/rules.bas`,
+  `docs/gbasic-rules-library-proposal.md`). First increment, built as a vertical
+  slice rather than a layer: the record schemas and the stack-versus-condensed
+  agreement property, which the proposal sequenced first and fifth, are both
+  here, because a schema chosen before a real rule has been encoded through it is
+  a guess. Not built, and said so: the textual authoring layer, live variable
+  bindings, persistence, and the controlled-English templates.
+- **`xlsx`, `xml` and compression in both downloads.** libxml2 and zlib are
+  linked **statically** from a pinned, checksum-verified source tarball, so
+  `DT_NEEDED` stays `libc`/`libm` on the lean tier and `libz.so.1` *left* the
+  full tier's link set. The exclusion had been reasoned from *dynamic* linking —
+  libxml2's soname is `.so.2` across most of the range and `.so.16` from 2.14 —
+  and never re-asked for the static case.
+- **`sqlite` in both downloads**, from the pinned 3.54.0 amalgamation, verified
+  against the SHA3-256 sqlite.org publishes. It *removes* a `DT_NEEDED` entry, so
+  the full tier links **two fewer** shared libraries than `0.7.0` while gaining
+  xml and xlsx. Compile options are matched against the distribution build being
+  replaced rather than chosen, because the module hands a program arbitrary SQL;
+  FTS5, R-Tree, maths and JSON all work. Takes `dbframe` and `screener` onto the
+  lean tier.
+- **`password_hash`, `password_verify` and `password_hash_cost` in both
+  downloads**, from the vendored yescrypt (`third_party/yescrypt`, BSD-2) that
+  the Windows build already used. They were in *neither* `0.7.0` archive, for a
+  reason that was never about password hashing: libxcrypt's soname is `.so.1` on
+  the Debian family and `.so.2` on the RHEL family. **One behavioural
+  difference**: the vendored backend reads `$y$` and `$7$` and **refuses the
+  legacy `crypt(3)` schemes by name** rather than answering `false`, so migrating
+  an existing `$6$`/`$2b$`/`$1$` user table means re-hashing on next login. A
+  `false` there would say the *password* was wrong and lock a real user out
+  silently.
+- **`share/doc/gbasic/THIRD-PARTY-NOTICES.txt` in both downloads.** Static
+  linking makes a download a redistribution of libxml2 (MIT) and yescrypt
+  (BSD-2), both of which require their notice to travel with the binary. The
+  release build generates it from the sources it compiled and refuses to publish
+  an archive missing one.
+
+### Changed
+
+- The lean tarball is **2.1 MB** where `0.7.0`'s was 828 KB, and the full tarball
+  likewise 2.1 MB. That is the price of the four capabilities above; the glibc
+  floor is unchanged at 2.34, under the 2.35 the tier promises.
+- `docs/exact_number_design.md` closes its open question on `BIGINT` columns as
+  **no**: they stay text. Nothing is lost converting one now, but identifiers are
+  not numbers, `type()` stability matters, and measured, returning a number would
+  flip `row.id = "9007199254740993"` from true to **false**.
+
+### Fixed
+
+- **`has_builtin` lied on published artifacts** — see *Read this first*.
+- **`number("…")` was not a source of exactness** although the design named it as
+  the remedy for an exponent literal — see *Read this first*.
+- **`ldap`'s `tls_failed`** — see *Read this first*.
+- **The reserved-word list in `docs/reference.md` was wrong in both
+  directions**, reported by the books session: it listed `end` and `next` as
+  words that cannot be names and then said they can.
+- **CI was green on two things it was not checking**: a readiness guard that
+  waited for half of what it claimed, and a "lean build" that was not lean.
+  `run_ldap.sh`'s skip probe had never once fired — under `pipefail` a build
+  refusal makes `gbasic` exit 1, so the condition could not become true, and on a
+  build without libldap the suite reported 10 failures against a correct build.
+  The same shape was then found in `run_web_tls.sh`.
+
+### Documentation
+
+- `docs/dependency_linking_design.md` is new: how a download reaches its optional
+  libraries, with the measurements. It also corrects
+  `docs/windows_port_plan.md` §4, which called static linking *"the strongest
+  single argument for a Windows build existing"* — the premise was sound and the
+  conclusion did not follow, nothing about static linking being Windows-specific.
+- **README claimed macOS and Windows were untested** in the same release that
+  ships a signed Windows installer. macOS is still not supported, and the
+  exploration found **three** blockers rather than the one that was reported —
+  the gate cannot complete there, because macOS has no `SOCK_SEQPACKET` on
+  `AF_UNIX` and the `SOCK_DGRAM` fallback has no end-of-file, so an actor whose
+  peer exits blocks its reader.
+- `tests/run_exact.sh` had no entry in `CLAUDE.md` or `AGENTS.md`. The gate ran
+  it by glob discovery, as designed; the list a contributor reads to learn what
+  exists had nothing on core numeric exactness.
+
+### Still open, and named rather than implied
+
+`pow`, `mod` and the counting builtins are not yet exact, so the exact-number
+design's own headline example, `pow(2, 53) + 1`, is **not** fixed — and
+`mod(9007199254740993, 2)` answers `0`, which is a wrong answer rather than lost
+precision. `serialize` and the actor wire do not carry exactness. `libcurl` and
+`libcrypto` are still dynamic, so the two download tiers still exist; GUI needs a
+distribution package rather than a tarball, and that is the answer rather than a
+gap.
+
+---
+
 ## 0.7.0 — 2026-10-09
 
 **Read this first.** Two things in this release reach past new features.
