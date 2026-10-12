@@ -71,6 +71,37 @@ program main( args )
     ' `pow(2, 53) + 1`, is NOT fixed by this increment.
     check("pow is still inexact     ", pow(2, 53) + 1 = 9007199254740993, false)
 
+    print "-- `number(\"...\")` IS A SOURCE OF EXACTNESS, which it was not until now"
+    ' THE DESIGN NAMED THIS REMEDY AND NOTHING IMPLEMENTED IT. "Where exactness
+    ' comes from" lists `number("...")` on integer text, and the settled ruling on
+    ' `1e20` points at it in as many words -- the comment thirty lines above says
+    ' so. Measured 2026-10-12: only LITERALS shipped, so the remedy a settled
+    ' decision names handed back an inexact number and
+    ' `number("9007199254740992") + 1` answered ...992. The fixture stated the
+    ' remedy in a COMMENT and never asserted it, which is how it survived.
+    '
+    ' ASSERTED AS ARITHMETIC, NOT AS A VALUE, and that is load-bearing: below
+    ' 2^53 an exact and an inexact integer render identically through `string`
+    ' and `encode` (measured), so `string(number("5"))` passes on both builds.
+    ' Only carrying the value through `+ 1` can tell them apart.
+    check("integer text is exact    ", number("9007199254740992") + 1, 9007199254740993)
+    check("and compares exactly     ", number("9007199254740993") = 9007199254740992.0, false)
+    check("negative integer text    ", number("-9007199254740993"), -9007199254740993)
+    ' BOTH DOORS, because there are two independent string-to-number paths -- the
+    ' call and the `{number}` modifier -- and they were two separate copies of
+    ' `strtod`. A fix reaching one is the read-and-write-halves-disagree shape.
+    from_modifier = {number}"9007199254740992"
+    check("the modifier agrees      ", from_modifier + 1, 9007199254740993)
+    ' THE CONTROLS, without which "integer text is exact" is satisfied by a
+    ' conversion that calls everything exact. Each is a settled decision:
+    ' exponent notation means "approximately this magnitude" WHICHEVER DOOR it
+    ' comes through, so text is judged the same way a literal is.
+    check("exponent text inexact    ", number("1e16") + 1 = 10000000000000001, false)
+    check("fraction text inexact    ", number("0.5") + 0.25, 0.75)
+    check("hex text inexact         ", number("0x10") + 1, 17)
+    ' OUT OF int64 RANGE DEGRADES rather than raising, as the literal rule has it.
+    check("past int64 degrades      ", number("99999999999999999999") > 1e19, true)
+
     print "-- NEGATION preserves exactness, in sign as well as magnitude"
     ' It did not, at first: `-9007199254740993` printed ...992 while its positive
     ' counterpart printed ...993, because unary minus went through the double.

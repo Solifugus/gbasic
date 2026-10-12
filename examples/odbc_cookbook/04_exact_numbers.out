@@ -1,8 +1,9 @@
 id type   : string
 id exact  : 9007199254740993
-id doubled: 9007199254740992   <- one less, silently
+id number : 9007199254740993   <- exact, since 0.7.1
 
 amount    : 12345678901234.5678 (string)
+amount num: 12345678901234.568   <- a digit gone, silently
 
 money in, text out: 1234.56
 

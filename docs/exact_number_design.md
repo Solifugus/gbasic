@@ -1,6 +1,7 @@
 # Exact numbers — design
 
-**Status: SHIPPED, increments 1-3 (0.6.0, 2026-10-07); increments 4-5 open.**
+**Status: SHIPPED, increments 1-3 (0.6.0, 2026-10-07), plus `number("…")` as a
+source of exactness (2026-10-12); increments 4-5 open.**
 Decided 2026-10-05 after costing the alternatives; the costs below are measured,
 not estimated. Each section is annotated where building it contradicted what was
 written here.
@@ -106,12 +107,42 @@ reference or tripwire churn.
 
 ### Where exactness comes from
 
-- An integer **literal** whose digits round-trip: the lexer parses to `int64`
-  and confirms the text matches. `10000000000000001` becomes exact; `0.1` does
-  not; `1e20` is a judgement recorded as open below.
-- Builtins that **count**: `len`, `count`, `byte_count`, a found index, `epoch`.
-  These are integers by nature and are exact for free.
-- `number("…")` on integer text that fits.
+**This section is the design, and for a while it was read as the status.** Of
+the four sources below, increment 1 shipped **one**. Each now carries what it
+actually does, because a list that mixes shipped and unshipped reads as neither.
+
+- **SHIPPED.** An integer **literal** whose digits round-trip: the lexer parses
+  to `int64` and confirms the text matches. `10000000000000001` becomes exact;
+  `0.1` does not; `1e20` is settled below as **inexact**.
+- **NOT SHIPPED — increment 5.** Builtins that **count**: `len`, `count`,
+  `byte_count`, a found index, `epoch`. These are integers by nature and would be
+  exact for free. Measured 2026-10-12: `len("ab") + 9007199254740991` answers
+  ...992.
+- **SHIPPED 2026-10-12**, and it was not before. `number("…")` on integer text
+  that fits, and the `{number}` modifier with it. **This one is worth a
+  paragraph**, because the gap was not merely an unfinished increment: the
+  settled ruling on `1e20` below names `number("...")` as *the* way to ask for an
+  exact integer, so a settled decision pointed at a remedy that silently handed
+  back an inexact number — `number("9007199254740992") + 1` answered ...992.
+  `tests/exact/exact_test.bas` even *stated* the remedy, in a comment, beside the
+  exponent case, and asserted nothing about it. Found while checking a book
+  chapter's claim against the tree rather than by any gate.
+
+  Two things made it survive and both are recorded elsewhere in this project as
+  lessons. **Below 2^53 it is invisible**: an exact and an inexact integer render
+  identically through `string` and `encode`, so every value check passes on the
+  broken build and only carrying the number through `+ 1` separates them — the
+  fixture asserts arithmetic for that reason. And **there were two doors**: the
+  `number()` call and the `{number}` modifier were two independent copies of
+  `strtod`, so they now share one helper, and a tier asserts the modifier agrees.
+  A fix reaching one door is the shape `webclient`'s read and write halves had.
+
+  Narrower than `strtod`, each narrowing keeping a settled decision rather than
+  being caution: decimal only (an exponent means "approximately this magnitude"
+  whichever door it arrives through, which is the `1e20` ruling; `0x` is a C
+  quirk of `strtod` that nothing documents), no whitespace tolerance beyond what
+  each door already had, and out of `int64` range is inexact rather than an
+  error, exactly as the literal rule has it.
 - **Not** database columns yet. `BIGINT` returning a string is load-bearing
   today and changing it to a number is a separate, behaviour-visible decision.
 
@@ -165,9 +196,45 @@ pattern for proving the old format still reads.
 - **`1e20`** is integral and exactly representable. Is a literal in exponent
   notation exact? Leaning no — the notation says "approximately this
   magnitude", and `number("100000000000000000000")` is the way to ask for exact.
-- **Should `BIGINT` columns become exact numbers** rather than strings? It would
-  make the two halves of the tree agree, and it is a visible behaviour change
-  that belongs to its own increment with its own ruling.
+- ~~**Should `BIGINT` columns become exact numbers** rather than strings?~~
+  **CLOSED, 2026-10-12: no.** Matthew's ruling, and the argument is worth keeping
+  because the question looked *more* open for an hour and was in fact answered.
+
+  `BIGINT` came back as text so its digits were not lost, and the evidence was
+  that `number(the_string)` dropped the last one — `tests/odbc_test.bas` asserted
+  exactly that, as the control proving the text return was not vacuous. With
+  `number("…")` exact, every value a `BIGINT` can hold converts exactly, int64
+  max included. So that half of the rationale is gone, and the first draft of
+  this note said the decision had therefore got more live. **That was the wrong
+  reading, in two ways.**
+
+  **It mistook the demonstration for the reason.** This document's own
+  "doing nothing is more defensible than it first looks" already says why the
+  text return exists: *the things needing exact large integers in business code
+  are mostly identifiers, an identifier is not a number you do arithmetic on,
+  and that is already why ODBC hands back strings.* Precision loss was how that
+  was demonstrated, never the argument. The argument is untouched.
+
+  **And changing it would be a silent wrong answer in user code**, which is the
+  class this whole document exists to close. Measured: `type(row.id)` moving from
+  `string` to `number` flips `row.id = "9007199254740993"` from **true to false**
+  — PLAT-EQ deliberately makes number-versus-string equality answer false rather
+  than coerce — and turns `row.id > "…"` from a working comparison into a raise.
+  A release that did that to fix a precision loss nobody now suffers would be a
+  bad trade.
+
+  **The better reading is that the arrangement was COMPLETED rather than
+  weakened.** The string used to be a cage: faithful digits you could not get out
+  without losing one. It is now a faithful representation *with a lossless door
+  beside it*, and the conversion is the caller's explicit decision — right, since
+  only the caller knows whether they hold an identifier or a quantity. That is
+  the shape `money` reached by the same route, where fixing the entrance exposed
+  the exit and `money.text` was added as it.
+
+  Three independent reasons to keep text, then: `type()` stability, identifiers
+  are not numbers, and `DECIMAL`/`NUMERIC` must stay text regardless — so
+  converting `BIGINT` alone would make the module's rule *less* uniform, not
+  more.
 - **`mod` on a degraded operand** — the result is already wrong before `mod`
   sees it. Probably nothing to do beyond the warning at the degrade site.
 
@@ -237,3 +304,11 @@ for the integer. A perturbation making it exact is proven red.
 (increment 4, needing a `SER_VERSION` bump), and whether `BIGINT` columns should
 become exact numbers rather than strings, which is a visible behaviour change
 deserving its own ruling.
+
+**And `mod` is sharper than "still open" suggests.** Measured 2026-10-12:
+`mod(9007199254740993, 2)` answers **0**. That is not lost precision, it is a
+*wrong answer* — the exact odd literal degrades to a double before `mod` sees
+it, and the double is even. The design table above says `mod` preserves
+exactness; it does not yet, and the failure is the kind a reader would print in
+a table without blinking. It is the strongest argument for increment 5 going
+next, ahead of increments 4's serialization.

@@ -144,10 +144,20 @@ run_fixture tests/odbc_test.bas 57 'odbc_test'
 
 # Named individually so deleting one shrinks the suite loudly rather than
 # quietly. These are the claims that make this more than a smoke test.
+#
+# ONE OF THEM WAS REPLACED RATHER THAN REMOVED, 2026-10-12, and this list is
+# what forced the replacement to be deliberate. 'through a double it would not
+# have' asserted that `number(a_bigint_string)` LOST the last digit -- the
+# control proving the text return was not vacuous. `number("...")` became a
+# source of exactness that day, so the claim became false, and deleting it would
+# have left the text return asserted by nothing. The pair that replaces it says
+# what is now true: the bigint converts exactly, and a FRACTIONAL decimal still
+# cannot, which is where the loss that forces text actually lives.
 for label in \
     'bigint beyond 2\^53 survives exactly' \
-    'through a double it would not have' \
+    'and converting it is exact now' \
     'an exact decimal survives to the last digit' \
+    'a fractional decimal still cannot convert' \
     'and is byte-identical, not merely the right length' \
     'money keeps its cents through a bound parameter' \
     'pasted, the payload matches every row' \

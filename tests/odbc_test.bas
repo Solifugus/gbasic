@@ -118,20 +118,35 @@ check("second row reads back", second_row.name, "bob")
 
 ' ------------------------------------------------------------- exactness
 ' THE TIER THIS MODULE EXISTS FOR. 9007199254740993 is 2^53+1: the smallest
-' positive integer a double cannot hold. Round-tripped through a double it
-' comes back 9007199254740992 -- off by one, entirely plausible, and silent.
-' The module answers BIGINT, DECIMAL and NUMERIC as STRINGS for this reason,
-' which is also what `pg` already does with oids 20 and 1700.
+' positive integer a double cannot hold, so a column holding one had to come
+' back as TEXT or arrive off by one -- plausible, and silent. The module answers
+' BIGINT, DECIMAL and NUMERIC as STRINGS for that reason, as `pg` already does
+' with oids 20 and 1700.
+'
+' AND HALF OF THAT REASON STOPPED BEING TRUE, which is a change in the world
+' rather than in this test. A gBASIC `number` is exact for integers it can hold
+' (0.6.0), and `number("...")` became a source of exactness on 2026-10-12 -- so
+' `number(a_bigint_string)` now carries every value a BIGINT can hold, int64 max
+' included. This check used to assert the LOSS, as the control proving the text
+' return was not vacuous; asserting it still would assert something false.
 check("bigint beyond 2^53 is a string", type(first_row.big), "string")
 check("bigint beyond 2^53 survives exactly", first_row.big, "9007199254740993")
 check("a negative bigint survives exactly", second_row.big, "-9007199254740993")
-check("through a double it would not have", string(number(first_row.big)), "9007199254740992")
+' The improvement, asserted so nothing quietly puts the digit back.
+check("and converting it is exact now", string(number(first_row.big)), "9007199254740993")
+check("int64 max converts exactly too", string(number("9223372036854775807")), "9223372036854775807")
 
 ' The same property one step further out: eighteen significant digits of
 ' decimal, held in a column the engine will not "helpfully" make numeric.
 check("an exact decimal is a string", type(first_row.exact), "string")
 check("an exact decimal survives to the last digit", first_row.exact, "12345678901234.5678")
 check("a small negative decimal survives", second_row.exact, "-0.05")
+' THE CONTROL LIVES HERE NOW, because this is where the loss is still real: a
+' FRACTIONAL decimal has no exact `number` to become, so converting it drops a
+' digit -- 12345678901234.5678 comes back ...568. Without this the text return
+' would be asserted by nothing at all, and "it is a string" is satisfied by a
+' module that needlessly stringifies everything.
+check("a fractional decimal still cannot convert", string(number(first_row.exact)), "12345678901234.568")
 
 ' ----------------------------------------------------------- size and shape
 ' A column is read back with SQLGetData in 1KB pieces, so a value longer than

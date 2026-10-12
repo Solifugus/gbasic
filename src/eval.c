@@ -1661,6 +1661,67 @@ static int value_is_exact(Value v) {
     return v.kind == VALUE_NUMBER && v.as.num.is_exact;
 }
 
+/* INTEGER TEXT -> AN EXACT int64, or 0 and nothing written.
+ *
+ * `docs/exact_number_design.md` lists `number("...")` under "Where exactness
+ * comes from", and the settled ruling on `1e20` names it as THE way to ask for
+ * an exact integer -- "the notation says approximately this magnitude;
+ * `number("...")` is how to ask for the integer". MEASURED 2026-10-12: it was
+ * never implemented. Of the four sources that section names, only literals
+ * shipped, so the remedy a settled decision points at silently handed back an
+ * inexact number: `number("9007199254740992") + 1` answered ...92.
+ *
+ * ONE HELPER FOR BOTH DOORS, because there are two independent string-to-number
+ * paths -- the `number()` call and the `{number}` modifier -- and they were
+ * already two copies of `strtod`. A rule re-established at two call sites is one
+ * a third site silently leaves out, which is how this tree's read and write
+ * halves came to disagree about what a string was.
+ *
+ * DELIBERATELY NARROWER THAN strtod, and each narrowing keeps a settled
+ * decision rather than being caution for its own sake:
+ *   - DECIMAL ONLY. An exponent is inexact wherever it appears, because the
+ *     notation means "approximately this magnitude" whichever door it came
+ *     through, and that is the `1e20` ruling. `0x` likewise: a hex LITERAL is
+ *     exact because the lexer has a token to inspect, and `number("0x10")`
+ *     reaching strtod's hex-float handling is a C quirk nothing documents.
+ *   - NO WHITESPACE. This answers only about the digits, so each door keeps the
+ *     whitespace behaviour it already had -- `number()` leans on strtod's
+ *     leading skip, the modifier trims first and passes the trimmed text. The
+ *     cost is a narrow asymmetry (`number(" 9007199254740993")` stays inexact)
+ *     and the alternative was ACCEPTING TEXT THAT CURRENTLY RAISES, since
+ *     `number("5 ")` is an error today and must stay one.
+ *   - OUT OF int64 RANGE IS INEXACT, not an error, exactly as the literal rule
+ *     has it: the double is what the language has always given.
+ *
+ * Below 2^53 this changes nothing observable -- an exact and an inexact integer
+ * render identically through `string` and `encode`, measured -- so the only
+ * outputs that move are the ones that were wrong. */
+static int exact_from_integer_text(const char *text, long long *out) {
+    if (!text || !out) {
+        return 0;
+    }
+    const char *digits = text;
+    if (*digits == '+' || *digits == '-') {
+        digits++;
+    }
+    if (*digits == '\0') {
+        return 0;
+    }
+    for (const char *c = digits; *c; c++) {
+        if (*c < '0' || *c > '9') {
+            return 0;
+        }
+    }
+    errno = 0;
+    char *end = NULL;
+    long long parsed = strtoll(text, &end, 10);
+    if (errno != 0 || !end || *end != '\0') {
+        return 0;
+    }
+    *out = parsed;
+    return 1;
+}
+
 /* COMPARE AN EXACT INTEGER WITH AN INEXACT DOUBLE **MATHEMATICALLY**, which is
  * the one rule here whose failure produces no error and no visible symptom.
  *
@@ -13800,6 +13861,17 @@ static Value builtin_number_modifier_value(Value value) {
     }
     memcpy(trimmed, start, (size_t)(end - start));
     trimmed[end - start] = '\0';
+
+    /* THE SAME EXACTNESS RULE AS THE `number()` CALL, through the same helper:
+     * two doors into one conversion must not disagree about what a string is.
+     * Applied to the TRIMMED text, which is this door's existing whitespace
+     * behaviour rather than a new one. */
+    long long whole = 0;
+    if (exact_from_integer_text(trimmed, &whole)) {
+        free(trimmed);
+        value_free(value);
+        return value_number_exact(whole);
+    }
 
     errno = 0;
     char *parse_end = NULL;
@@ -34172,6 +34244,15 @@ static Value eval_call(AstExpr *expr) {
             return value;
         }
         if (value.kind == VALUE_STRING) {
+            /* INTEGER TEXT IS EXACT -- the design's own named remedy; see
+             * exact_from_integer_text. Tried FIRST because strtod would answer
+             * the same digits as a lossy double and nothing downstream could
+             * tell. */
+            long long whole = 0;
+            if (exact_from_integer_text(value.as.string, &whole)) {
+                value_free(value);
+                return value_number_exact(whole);
+            }
             char *end;
             double result = strtod(value.as.string, &end);
             if (*end != '\0' || value.as.string[0] == '\0') {

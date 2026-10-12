@@ -6291,15 +6291,22 @@ lost, so gBASIC refused to lose precision crossing a driver and lost it in its o
 arithmetic.
 
 **Where exactness comes from:** a **decimal or hexadecimal integer literal** whose
-value fits a 64-bit integer. From there `+`, `-`, `*` and unary minus of **two
-exact** operands are exact, and so is comparison.
+value fits a 64-bit integer, and *(since 0.7.1)* **`number("…")` and `{number}`
+on decimal integer text** that fits one. From there `+`, `-`, `*` and unary minus
+of **two exact** operands are exact, and so is comparison.
+
+Text is judged the way a literal is, with one difference worth knowing: only
+**decimal** text becomes exact, so `number("0x10")` is inexact although the
+literal `0x10` is exact. A hex literal is a token the lexer can inspect; hex
+reaching `number()` relies on a C library quirk that nothing here documents.
 
 **What is inexact, each by decision rather than omission:**
 
 - a literal with a decimal point, and **a literal in exponent notation** — `1e16`
   is integral and exactly representable, and the notation still says
   *approximately this magnitude*; `number("10000000000000000")` asks for the
-  integer;
+  integer. The same reading applies to *text*, so `number("1e16")` is inexact
+  too: the notation means what it means whichever way the value arrives;
 - any **mixed** expression, because `exact + inexact` has no exact answer and
   promoting the inexact side would invent precision it never had. This is also
   why there is no promotion matrix to get wrong;
