@@ -107,9 +107,23 @@ asserts its own floor, its exact library set, that it runs, and that it finds it
 stdlib after being moved. The build refuses rather than shipping an artifact
 whose floor has risen.
 
-`xlsx`, `xml` and `password_hash` are in **neither** tier, deliberately —
+~~`xlsx`, `xml` and `password_hash` are in **neither** tier, deliberately —
 libxml2 and libxcrypt are the two libraries whose soname differs across
-distributions.
+distributions.~~
+
+**Struck at 0.8.0: all three are in BOTH tiers now.** The soname argument was
+right and applied only to *dynamic* linking. libxml2, zlib and sqlite are linked
+statically from pinned, checksum-verified sources, and `password_hash` uses the
+vendored yescrypt — so the varying soname is never consulted. What each tier
+*does* still exclude is libpq, unixODBC, OpenLDAP and GObject-Introspection, and
+the lean tier additionally libcurl, libssl and libcrypto. See
+`docs/dependency_linking_design.md`.
+
+Each tier now also asserts, on the artifact rather than in a suite, that
+**`has_builtin` agrees with what the binary can actually do** — the one check
+`run_capabilities.sh` says it cannot make, because this machine builds
+everything and the defect it guards only exists in a build with the dependency
+absent.
 
 ## 5. Verify by running the artifact, not by reading the log
 
