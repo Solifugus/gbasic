@@ -395,6 +395,32 @@ else
     fail "the size bound on THIRD-PARTY-NOTICES.txt is gone from $rel -- an absence guard is not a plausibility guard"
 fi
 
+# AND THE RELEASE BUILD MEASURES `has_builtin` ON THE ARTIFACT, which is the one
+# check run_capabilities.sh states it cannot make: it runs against the binary
+# this suite built, and this suite builds everything, so a build with the
+# dependency ABSENT -- the configuration the defect shipped in -- is only
+# reachable from a lean compile. The release container is that compile.
+#
+# THE TABLE MUST BE DERIVED, NOT COPIED. Two representations of one list drift,
+# and the direction that drifts silently is a builtin added to
+# run_capabilities.sh and not to the release script: the sweep would go on
+# passing while saying nothing about the new name. So the release script is
+# required to read `HB_TABLE` out of run_capabilities.sh by name.
+if grep -q "HB_TABLE" "$rel" && grep -q "run_capabilities.sh" "$rel" \
+   && grep -q 'has_builtin agrees with what this artifact' "$rel"; then
+    pass "the release build measures has_builtin on the artifact, from run_capabilities.sh's own table"
+else
+    fail "the artifact's has_builtin sweep is gone from $rel, or no longer derives its table from run_capabilities.sh"
+fi
+# The table it derives from must still be there to derive, and big enough to mean
+# something -- without this the grep above is satisfied by a mention.
+hb_n="$(sed -n "/^HB_TABLE='/,/^'\$/p" tests/run_capabilities.sh | sed '1d;$d' | grep -c . || true)"
+if [ "${hb_n:-0}" -ge 15 ]; then
+    pass "run_capabilities.sh still holds the optional-builtin table ($hb_n rows)"
+else
+    fail "run_capabilities.sh's HB_TABLE reads as $hb_n rows -- the release build's sweep would measure nothing"
+fi
+
 # ---------------------------------------------------------------------------
 # EVERY NAME IN BUILD_SWITCH_SIG IS A SWITCH THAT EXISTS.
 #

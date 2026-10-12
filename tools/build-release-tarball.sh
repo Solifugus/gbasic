@@ -853,6 +853,72 @@ else
     printf '     Fix docs/reference.md via tools/library-needs.sh -- do not pad the prediction.\n'
 fi
 
+# `has_builtin` TELLS THE TRUTH ABOUT **THIS** ARTIFACT.
+#
+# THE ONE CHECK run_capabilities.sh SAYS IT CANNOT MAKE. Its own words: "it runs
+# against the binary this suite built and the suite builds everything, so the
+# case the defect SHIPPED IN -- a build with the dependency absent -- is only
+# reachable from a lean compile." This is that compile, so the artifact is the
+# only place the invariant can be measured -- and the defect was MEASURED ON THE
+# PUBLISHED 0.7.0 ARTIFACTS: has_builtin affirmed `sha256`, `password_hash` and
+# `compress` on builds that cannot run any of them, so a program that probed
+# before calling crashed on the branch it had checked for, and it DENIED three it
+# could run. has_builtin is documented as how a program degrades gracefully
+# across releases; on two of three published artifacts it could not answer the
+# question it exists for.
+#
+# THE INVARIANT IS BUILD-AGNOSTIC, which is what lets one rule serve both tiers:
+# has_builtin(n) is true EXACTLY WHEN calling n does not refuse for
+# unavailability. It fails in BOTH directions, which matters because the two
+# defects point opposite ways.
+#
+# THE TABLE IS READ OUT OF run_capabilities.sh RATHER THAN COPIED, because two
+# representations of one list drift and the direction that drifts SILENTLY is a
+# builtin added there and not here -- this would go on passing while saying
+# nothing about the new name. The row count is floored for the same reason: an
+# extraction that breaks must fail rather than sweep nothing.
+hb_table="$(sed -n "/^HB_TABLE='/,/^'\$/p" tests/run_capabilities.sh | sed '1d;$d' | grep . || true)"
+hb_rows="$(printf '%s\n' "$hb_table" | grep -c . || true)"
+hbp="$(mktemp -d)"
+if [ "${hb_rows:-0}" -lt 15 ]; then
+    bad "read $hb_rows rows out of run_capabilities.sh's HB_TABLE -- expected the optional-builtin list, so this check is measuring nothing"
+else
+    hb_bad=""
+    hb_n=0
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        nm="${row%%:*}"
+        hbargs="${row#*:}"
+        printf 'on error goto next\nx = %s(%s)\nif error then\n  print error.message\n  error.clear()\nelse\n  print "WORKS"\nend if\n' "$nm" "$hbargs" > "$hbp/call.bas"
+        msg="$( cd "$hbp" && env -u GBASIC_PATH "$root/bin/gbasic" call.bas 2>&1 | head -1 )"
+        printf 'print string(has_builtin("%s"))\n' "$nm" > "$hbp/says.bas"
+        says="$( cd "$hbp" && env -u GBASIC_PATH "$root/bin/gbasic" says.bas 2>&1 | head -1 )"
+        hb_n=$((hb_n + 1))
+        case "$msg" in
+            *'requires OpenSSL'*|*'requires zlib'*|*'not available in this build'*|*'support is unavailable'*|*'rebuild with it installed'*)
+                [ "$says" = "true" ] && hb_bad="$hb_bad
+       $nm: refuses as unavailable, yet has_builtin says true" ;;
+            *'unknown function'*|*'undefined function'*)
+                # Not a clean refusal at all, whatever has_builtin says: the name
+                # left the dispatch instead of degrading. That is how `compress`
+                # failed, its name test having sat inside its own '#if'.
+                hb_bad="$hb_bad
+       $nm: vanished from the dispatch instead of refusing -- $msg" ;;
+            *)
+                [ "$says" = "true" ] || hb_bad="$hb_bad
+       $nm: works, yet has_builtin says $says" ;;
+        esac
+    done <<HBROWS
+$hb_table
+HBROWS
+    if [ -z "$(printf '%s' "$hb_bad" | tr -d '[:space:]')" ]; then
+        ok "has_builtin agrees with what this artifact can do ($hb_n optional builtins probed)"
+    else
+        bad "has_builtin disagrees with this artifact:$hb_bad"
+    fi
+fi
+rm -rf "$hbp"
+
 # THE RELOCATION PROPERTY, which is what makes this a download and not an
 # installer. Run from an unrelated directory, environment cleared, resolving a
 # stdlib library -- with the tree at a path no build ever knew about.
