@@ -12140,10 +12140,39 @@ static Value eval_dir_call(AstExpr *expr) {
         return value_null();
     }
 
+    /* A DIRECTORY THAT CANNOT BE READ IS NOT AN EMPTY ONE (DOGFOOD, 2026-10-12).
+     *
+     * Every `opendir` failure used to become an empty array, so a listing could
+     * not be told from a refusal -- and for permissions that is UNDETECTABLE
+     * from the outside: `chmod 000` a directory holding a file and `exists`
+     * answers true, `file_type` answers folder, and `count(list(d))` answers 0,
+     * which is exactly what a genuinely empty directory answers. Restore the
+     * mode and the same call lists the file.
+     *
+     * THE COST LANDS WHERE IT IS DEAREST: a program walking a tree to back it
+     * up, sync it, index it or count it concludes `nothing here` and moves on,
+     * with no flag, no warning and no second return value. Success over an
+     * empty directory and failure over a full one were the same value.
+     *
+     * So it raises, which is the answer run_silent_traps.sh already established
+     * for this family -- a failure that reports a plausible value with no
+     * diagnostic becomes a located raise. PLAT-ERR is what makes that
+     * affordable: a caller that genuinely wants "empty when I cannot read it"
+     * says so with `on error goto next`, which is one line and is a DECLARATION
+     * rather than an inherited silence. stdlib/filetree.bas is the one consumer
+     * in this tree that wants it, and it now declares it.
+     *
+     * The reason is NAMED rather than classified: ENOENT, EACCES and ENOTDIR
+     * want different fixes from the person reading the message, and strerror
+     * already distinguishes them. */
     DIR *dir = opendir(dir_path);
     if (!dir) {
+        char message[512];
+        snprintf(message, sizeof(message), "%s could not read directory: %s (%s)",
+                 name, dir_path, strerror(errno));
+        runtime_error_raise(message, 1004, "file operation");
         value_free(dir_value);
-        return value_array(NULL, 0);
+        return value_null();
     }
 
     Value *items = NULL;

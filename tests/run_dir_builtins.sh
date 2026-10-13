@@ -68,6 +68,62 @@ else
     fi
 fi
 
+printf 'TIER a directory that cannot be READ is not an empty one\n'
+# THE DEFECT, AND IT IS THE DEAREST SHAPE THIS PROJECT HAS A NAME FOR. Every
+# `opendir` failure used to become an EMPTY ARRAY, so `list` could not tell a
+# refusal from a listing -- and for permissions that is undetectable from
+# outside: `chmod 000` a directory holding a file and `exists` answers true,
+# `file_type` answers folder, and `count(list(d))` answers 0, which is exactly
+# what a genuinely empty directory answers. A program walking a tree to back it
+# up, sync it or index it concluded `nothing here` and moved on.
+#
+# It raises now, which is what run_silent_traps.sh established for this family.
+# THE CONTROLS ARE WHAT KEEP THAT FROM MEANING "list refuses things": a readable
+# directory must still list, and the tolerant caller must still be tolerant.
+if [ "$(id -u)" = "0" ]; then
+    pass "SKIP (running as root, which can read anything -- the tier would measure nothing)"
+else
+    mkdir -p "$work/locked" "$work/open"
+    printf 'x\n' > "$work/locked/secret.txt"
+    printf 'x\n' > "$work/open/a.txt"
+    chmod 000 "$work/locked"
+    if [ -r "$work/locked" ]; then
+        pass "SKIP (the directory stayed readable after chmod 000 -- nothing to measure)"
+    else
+        printf 'on error goto next\nr = list({dir}"%s/locked")\nif error then\n  print "RAISED " + error.message\n  error.clear()\nelse\n  print "answered " + string(count(r))\nend if\n' "$work" > "$work/d1.bas"
+        got=$(./gbasic "$work/d1.bas" 2>&1)
+        case "$got" in
+            *"RAISED"*"could not read directory"*"locked"*)
+                pass "an unreadable directory raises, naming the path and the reason" ;;
+            *"answered 0"*)
+                fail "an unreadable directory still reads as EMPTY -- the silent wrong answer is back" ;;
+            *)  fail "unexpected answer for an unreadable directory: $got" ;;
+        esac
+        # THE CONTROL. Without it the check above is satisfied by a `list` that
+        # refuses every directory, which is worse than the defect.
+        printf 'print count(list({dir}"%s/open"))\n' "$work" > "$work/d2.bas"
+        got2=$(./gbasic "$work/d2.bas" 2>&1)
+        if [ "$got2" = "1" ]; then
+            pass "CONTROL: a readable directory still lists its entries"
+        else
+            fail "a readable directory did not list (got: $got2)"
+        fi
+        # AND THE SECOND CONTROL: the one consumer in this tree that WANTS to
+        # carry on past an unreadable folder must still do so -- a tree view
+        # should render it as empty rather than take the pane down. It now
+        # DECLARES that with `on error goto next` instead of inheriting it from
+        # a primitive that could not tell the difference.
+        printf 'load filetree\nprint count(filetree.scan("%s/locked", []))\n' "$work" > "$work/d3.bas"
+        got3=$(GBASIC_PATH=stdlib ./gbasic "$work/d3.bas" 2>&1)
+        if [ "$got3" = "0" ]; then
+            pass "CONTROL: filetree still walks past one, by declaration"
+        else
+            fail "filetree no longer tolerates an unreadable folder (got: $got3)"
+        fi
+    fi
+    chmod 755 "$work/locked" 2>/dev/null || true
+fi
+
 printf 'TIER unreadable: exists means EXISTS, not "can I open it"\n'
 if [ "$(id -u)" = "0" ]; then
     pass "SKIP (running as root, which can read anything -- the tier would measure nothing)"

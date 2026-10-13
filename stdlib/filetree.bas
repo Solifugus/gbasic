@@ -33,11 +33,27 @@ library filetree
 
     ' Build the sorted child nodes of `dir_path`, recursing into directories whose
     ' path is present in `expanded`. Missing/unreadable dir -> empty (no raise).
+    '
+    ' THAT TOLERANCE IS NOW DECLARED RATHER THAN INHERITED. `list` used to answer
+    ' an empty array for every failure, so this contract cost nothing to write
+    ' and nothing to get wrong; as of 0.8.1 it raises, because a caller who
+    ' cannot tell a locked directory from an empty one has no way to notice the
+    ' difference (DOGFOOD, 2026-10-12). A tree view genuinely wants to carry on
+    ' -- an unreadable folder should render as a folder with nothing under it,
+    ' not take the whole pane down -- so it says so here, in one line, at the one
+    ' place that wants it.
     function _entries(dir_path, expanded)
         folder_names = []
         file_names = []
         d{dir} = dir_path
-        for each e in list(d)
+        entries = []
+        on error goto next
+        entries = list(d)
+        if error then
+            error.clear()
+            entries = []
+        end if
+        for each e in entries
             if e.type = "folder" then
                 folder_names = append(folder_names, e.name)
             else
