@@ -40,10 +40,18 @@ below holds 52 items of which **50 are struck**, so "the part you act on" had
 become 800 lines of archive with the live items buried in it — and one of the two
 that still read as open had in fact been fixed.
 
-**Items 2, 3 and 4 were closed on 2026-10-13/14**, so **one remains** — the
-deep-nesting teardown segfault, which is the hardest of the four and arguably
-wants a parse-time depth cap and a documented limit rather than an iterative
-`value_free`. Its "where" column pointed
+**Items 2, 3 and 4 were closed on 2026-10-13/14**, and **assessing item 1 turned
+up a fifth that is sharper than any of them** — `DECODE_MAX_DEPTH` is above the
+stack's real limit below ~2.5 MB, which is a REMOTE crash, demonstrated. So the
+live list is:
+
+| | what | where |
+|---|---|---|
+| 1 | **A deeply nested value segfaults at teardown** — see above. Narrowed by measurement: every path that READS a value is already bounded well clear of it (`decode` 10 000, `serialize`/`deserialize` 256, `rules` 100), so only a program's own construction loop can reach it. | ranked item 0 |
+| 5 | **`DECODE_MAX_DEPTH` is unsafe below a ~2.5 MB stack**, and a request body is decoded eagerly, so a 20 KB POST segfaults a gBASIC server at `ulimit -s 2048`. The cap's own comment claims it holds "on a stack a quarter the size"; measured, it does not. | 2026-10-14 entry |
+
+The two are one disease seen from both ends: recursion depth bounded by constants
+chosen against one machine's `ulimit -s`. Its "where" column pointed
 at a *2026-10-12 entry* in this file that **did not exist** — that measurement was
 recorded in `docs/exact_number_design.md` and never logged here, so the index
 built to stop live items going stale shipped with a dangling pointer of its own.
@@ -12479,3 +12487,107 @@ release script is the one place to change, and it wants watching.
   precisions AND the tag each gets — the second because the round trip alone
   passes on a writer that tags a bare clock `{date}` too, which is the
   over-correction, and both directions are proven red.
+
+---
+
+## 2026-10-14 — CC — while: assessing OPEN NOW item 1 (the deep-nesting segfault)
+- **Type:** bug
+- **Severity:** high
+- **What:** Item 1 is about a crash at **teardown**. Chasing its boundaries found
+  a second crash at **parse** time which is far sharper, because it is reachable
+  from **untrusted input over the network** and needs no cooperation from the
+  program.
+
+  `DECODE_MAX_DEPTH` is 10 000, and its comment states the reasoning:
+
+  > *10 000 is chosen to sit ~4.5x below the observed crash point (so it holds on
+  > a stack a quarter the size)*
+
+  **That guarantee is false, measured.** A quarter of 8 MB is 2 MB, and at 2 MB
+  the parse of a 9 999-deep document segfaults. The margin was taken in *levels*
+  while the thing being conserved is *stack*, and the two are linear — about
+  **4.15 levels per KB**, ~247 bytes of C stack per nesting level:
+
+  | `ulimit -s` | deepest JSON that parses |
+  |---|---|
+  | 8 MB (glibc default) | > 20 000 — the cap is safe |
+  | 2 MB | **~8 495 — the cap is above the crash** |
+  | 1 MB | ~4 142 |
+  | 512 KB | ~1 965 |
+
+  **THE DIAGNOSIS WAS ALREADY IN THIS TREE, WRITTEN DURING THE WINDOWS PORT**,
+  which is the part worth keeping. `Makefile`, in the Windows branch:
+
+  > *AN 8 MB MAIN-THREAD STACK, the Linux default. Windows reserves 1 MB, and the
+  > tree-walking evaluator and the JSON parser recurse: the parser's 10,000-level
+  > nesting cap was sized for 8 MB, so on 1 MB a deep document CRASHED the
+  > interpreter (STATUS_STACK_OVERFLOW, measured by run_try_decode.sh) before the
+  > cap could refuse it — the very crash the cap exists to prevent.*
+
+  Every word of that is this defect, and it was fixed **as a Windows linker
+  flag** (`-Wl,--stack,8388608`) rather than recognised as a property of the cap.
+  A linker flag works on Windows because the build owns the stack there. **On
+  Linux the stack is `ulimit -s` — the user's, not the build's** — so the same
+  crash is live and nobody re-asked. gBASIC's recorded pattern is that a
+  Windows-port decision turned out to be Linux's answer too, three times
+  (`docs/dependency_linking_design.md`); this is the **fourth, running the other
+  way**: a Windows FIX that was never re-asked for Linux.
+
+  **And it is the morning's own lesson, unapplied.** The audit of item 1 the same
+  day concluded that *no depth in that entry is a property of gBASIC; a figure
+  quoted without its `ulimit -s` says nothing* — and `DECODE_MAX_DEPTH` is a
+  figure quoted without its `ulimit -s`, in a comment that claims to have
+  accounted for it.
+
+  **IT IS A REMOTE CRASH, DEMONSTRATED END TO END rather than reasoned.** A
+  request body is decoded **eagerly** in `webserver_build_request` — every
+  request with a non-empty, NUL-free body, whether or not the handler ever reads
+  `req.json` — through the same parser and the same cap. A 20 KB POST of
+  `[[[…1…]]]`:
+
+  ```
+  server under ulimit -s 8192 : deep body -> HTTP 200, follow-up 200   (control)
+  server under ulimit -s 2048 : connection dies, server exit=139 (core dumped),
+                                follow-up fails -- THE LISTENER IS GONE
+  ```
+
+  The 8 MB control is what says this is the stack and not the payload. At the
+  default `workers: 1` there is no supervisor, so the listener does not come
+  back; `workers: 2` would respawn the worker, which `run_web_handler_errors`
+  already asserts, so the pool turns a kill into a hiccup — but that is a
+  deployment choice, not a defence the language provides.
+
+  2 MB is not exotic: it is a common container and hardened-host `ulimit -s`, and
+  musl's default thread stack is smaller still. 8 MB is the glibc default, which
+  is why nobody saw it.
+
+  **Every OTHER external path is already bounded well clear of trouble**, which
+  is worth recording because it narrows item 1 at the same time: `serialize` and
+  `deserialize` cap at **256** (`SER_MAX_DEPTH`, and `serialize` refuses rather
+  than writing), and `rules` caps at **100**. So nothing a program *reads* can
+  reach item 1's ~50 000 teardown crash — only something it *builds* can, in a
+  loop of its own. The two items are one disease seen from both ends: recursion
+  depth bounded by constants chosen on one machine's stack.
+- **Workaround:** none applied; filed for a ruling, because the obvious fix
+  changes a documented limit. **The recommended fix is to DERIVE the cap** from
+  `getrlimit(RLIMIT_STACK)` rather than fix it as a constant —
+  `min(10000, stack_KB * 2)` keeps **10 000 exactly as it is at the 8 MB
+  default**, so no documented behaviour moves on an ordinary machine, and gives
+  ~4 000 at 2 MB and ~1 000 at 512 KB, each about 2x inside the measured crash
+  depth. A refusal is already the designed outcome there (`decode` raises,
+  `try_decode` reports), so this converts a segfault into the error the cap
+  exists to produce. The alternative — lowering the constant to ~1 000 for
+  everyone — is one line but refuses documents that work today, and still
+  guesses at a stack it has not asked about. Deriving it would also let the
+  Windows linker flag become a belt-and-braces measure rather than the only thing
+  standing between a 1 MB default stack and the crash.
+
+  **AND THE TIER THAT GUARDS THE CAP CANNOT SEE THIS, which is why it survived.**
+  `run_try_decode.sh`'s depth tier feeds **100 000** levels — ten times the cap —
+  so at the 8 MB default it refuses at 10 000 and never goes near the stack. It
+  can fail only if the cap is REMOVED, never if the cap is TOO HIGH FOR THE
+  MACHINE, which is the whole defect. The tier to add with the fix is the
+  negative control: under a reduced `ulimit -s`, a document **at** the cap must
+  still refuse rather than crash — red today, green after. It wants the same
+  shape `run_dir_builtins.sh` uses for its unreadable-directory tier, which
+  changes the environment from outside and skips with a reason when it cannot.
