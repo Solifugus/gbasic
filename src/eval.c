@@ -16893,15 +16893,60 @@ static Value builtin_quote_value(Value value) {
 
 /* PLAT-JSON: the value parser recurses per nesting level, so without a bound a
  * deeply nested document overruns the C stack and takes the whole interpreter
- * down. Measured on an 8 MB stack: depth 40 000 parsed, depth 50 000 segfaulted.
- * A non-raising decode whose failure mode is a crash would be worthless, so the
- * depth is capped for BOTH entry points -- decode raises, try_decode reports.
+ * down. A non-raising decode whose failure mode is a crash would be worthless,
+ * so the depth is capped for BOTH entry points -- decode raises, try_decode
+ * reports.
  *
- * 10 000 is chosen to sit ~4.5x below the observed crash point (so it holds on a
- * stack a quarter the size) while still accepting every depth that works today up
- * to it. Real documents nest a few dozen levels; anything past this is a bug or an
- * attack, not data. */
+ * THE CEILING IS 10 000 AND THE BOUND IS DERIVED FROM THE STACK, which is a
+ * correction: the cap was this constant alone, with a comment claiming 10 000
+ * sat "~4.5x below the observed crash point (so it holds on a stack a quarter
+ * the size)". MEASURED 2026-10-14, IT DID NOT. A quarter of 8 MB is 2 MB, and at
+ * 2 MB a 9 999-deep document SEGFAULTED -- the margin was taken in LEVELS while
+ * the thing being conserved is STACK, and the two are linear:
+ *
+ *     ulimit -s     deepest document that parses
+ *      8 MB          > 20 000      (so the ceiling is safe here)
+ *      2 MB            ~8 495      (BELOW the cap -- the crash came first)
+ *      1 MB            ~4 142
+ *    512 KB            ~1 965
+ *
+ * about 4.15 levels per KB, ~247 bytes of C stack per level.
+ *
+ * IT WAS A REMOTE CRASH, NOT A CURIOSITY: `webserver_build_request` decodes a
+ * request body EAGERLY, for every request with a non-empty NUL-free body,
+ * whether or not the handler ever reads `req.json`. Demonstrated end to end -- a
+ * 20 KB POST of `[[[...1...]]]` against a loopback server at `ulimit -s 2048`
+ * killed it (exit 139, core dumped, listener gone) while the same server at 8 MB
+ * answered 200. The 8 MB run is the control that says this is the stack and not
+ * the payload.
+ *
+ * `stack_KB * 2` KEEPS THE MEASURED ~2x HEADROOM AT EVERY SIZE ABOVE, and the
+ * `min` with the ceiling means **nothing moves at the 8 MB default**: 8192 * 2
+ * is 16 384, so the bound is still 10 000 there and every document that worked
+ * yesterday works today. Below ~2.5 MB the bound drops instead of the process,
+ * which is the outcome the cap exists to produce.
+ *
+ * A STACK IT CANNOT LEARN leaves the ceiling in force (`gb_stack_limit_kb`
+ * answers 0 for `RLIM_INFINITY` and on failure), because deriving a bound from a
+ * number that is not one would be worse than the constant it replaced. */
 #define DECODE_MAX_DEPTH 10000
+
+static int decode_depth_limit(void) {
+    static int cached = 0;
+    if (cached) {
+        return cached;
+    }
+    long kb = gb_stack_limit_kb();
+    long derived = kb > 0 ? kb * 2 : DECODE_MAX_DEPTH;
+    if (derived > DECODE_MAX_DEPTH) {
+        derived = DECODE_MAX_DEPTH;
+    }
+    if (derived < 1) {
+        derived = 1;
+    }
+    cached = (int)derived;
+    return cached;
+}
 
 typedef struct {
     const char *text;
@@ -17313,7 +17358,7 @@ static Value decode_parse_value(DecodeParser *parser) {
     }
     if (ch == '[' || ch == '{') {
         /* Only the container branches recurse, so the depth is charged here. */
-        if (parser->depth >= DECODE_MAX_DEPTH) {
+        if (parser->depth >= decode_depth_limit()) {
             decode_error(parser, "maximum nesting depth exceeded");
             return value_null();
         }

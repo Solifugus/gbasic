@@ -1412,6 +1412,15 @@ int gb_rename_replace(const char *from, const char *to) {
 }
 
 /* _IONBF, not _IOLBF: see the header -- Windows' _IOLBF is full buffering. */
+/* The reserve the Makefile's `-Wl,--stack,8388608` sets. Windows' own default is
+ * 1 MB, which is why that flag exists: the 10 000-level decode cap was sized for
+ * 8 MB and on 1 MB a deep document crashed the interpreter before the cap could
+ * refuse it. Reported rather than queried, because what the caller needs is the
+ * reserve the BUILD asked for, and this build asks for exactly this. */
+long gb_stack_limit_kb(void) {
+    return 8192;
+}
+
 void gb_stdout_line_buffered(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 }

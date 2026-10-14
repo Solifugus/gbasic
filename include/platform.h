@@ -473,6 +473,28 @@ void gb_stdin_binary(void);
  * that asked for the flag. */
 void gb_stdout_line_buffered(void);
 
+/* HOW MUCH C STACK THIS PROCESS HAS, in KB, or 0 when it cannot be known.
+ *
+ * WHY THE RUNTIME NEEDS TO ASK. Two things here recurse per level of a nested
+ * value -- the JSON parser and the tree-walking evaluator -- so a depth bound is
+ * really a STACK bound wearing a count. `DECODE_MAX_DEPTH` was 10 000 with a
+ * comment claiming that sat "~4.5x below the observed crash point (so it holds
+ * on a stack a quarter the size)", and MEASURED 2026-10-14 it does not: a
+ * quarter of 8 MB is 2 MB and at 2 MB a 9 999-deep document segfaults, because
+ * the margin was taken in LEVELS while the thing being conserved is STACK. The
+ * two are linear, at about 4.15 levels per KB.
+ *
+ * THE SAME DEFECT WAS ALREADY DIAGNOSED ONCE, during the Windows port, and fixed
+ * as a LINKER FLAG (`-Wl,--stack,8388608`, see the Makefile, whose comment
+ * describes exactly this crash). That works on Windows because the build owns
+ * the stack there. On POSIX the stack is `ulimit -s` -- the operator's, not the
+ * build's -- so the only way to be right is to ask at run time.
+ *
+ * POSIX: `getrlimit(RLIMIT_STACK)`, answering 0 for `RLIM_INFINITY` so the
+ * caller keeps its own ceiling rather than deriving a bound from a number that
+ * is not one. WINDOWS: the reserve the build sets, which it does know. */
+long gb_stack_limit_kb(void);
+
 /* Which platform the bodies above came from, for diagnostics and for the tests
  * that need to say why a tier does not apply. */
 const char *gb_platform_name(void);

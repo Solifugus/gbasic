@@ -16,6 +16,34 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### A deeply nested JSON body could crash the interpreter on a small stack
+
+**Read this if you deploy in a container or on a hardened host.** The JSON
+parser's nesting limit was a flat 10 000 levels, chosen against an 8 MB stack.
+A nesting limit is really a *stack* limit wearing a count — about 240 bytes per
+level — so on a **2 MB** stack the deepest document that parses is around 8 500,
+and a 9 999-deep one **segfaulted before the limit could refuse it**: exactly the
+crash the limit exists to prevent.
+
+It was reachable from the network. A request body is decoded as the request
+record is built, for every request with a body, whether or not the handler ever
+reads `req.json` — so a 20 KB `POST` of `[[[…]]]` killed a gBASIC server running
+at `ulimit -s 2048`, and at the default `workers: 1` the listener did not come
+back. Demonstrated, with an 8 MB control answering `200` to the same request.
+
+The limit is now **derived from the stack**: `min(10 000, ulimit -s × 2)`. At the
+8 MB default that is 10 000, so **nothing a program sees changes on an ordinary
+machine**; below about 2.5 MB the limit drops instead of the process, and
+`decode` raises and `try_decode` reports, as they were always meant to.
+
+Two notes for the record. The same diagnosis was already in the tree — the
+Windows build forces an 8 MB stack with a linker flag precisely because Windows
+reserves 1 MB and this cap crashed there — and it was never re-asked for Linux,
+where the stack belongs to the operator rather than the build. And the test that
+guarded the cap could not see this: it fed 100 000 levels, ten times the cap, so
+it could fail only if the cap were *removed*, never if the cap were *too high for
+the machine*.
+
 ### Two silent-wrong-answer fixes from the friction ledger
 
 **`has_builtin("warning")` answered `false` while `warning` ran.** A program that

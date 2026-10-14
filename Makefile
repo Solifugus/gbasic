@@ -326,6 +326,16 @@ LDLIBS += -lsystre -ltre -lws2_32 -lbcrypt -static
 # nesting cap was sized for 8 MB, so on 1 MB a deep document CRASHED the
 # interpreter (STATUS_STACK_OVERFLOW, measured by run_try_decode.sh) before the
 # cap could refuse it -- the very crash the cap exists to prevent.
+#
+# AND THAT DIAGNOSIS WAS RIGHT ABOUT MORE THAN WINDOWS, which nobody re-asked
+# for two months. The cap is stack-dependent on EVERY platform; a linker flag can
+# only fix it where the BUILD owns the stack, and on POSIX the stack is
+# `ulimit -s`. Measured 2026-10-14: at 2 MB a 9 999-deep document segfaulted on
+# Linux, remotely, through an eagerly-decoded request body. The cap is DERIVED
+# from the stack now (`gb_stack_limit_kb`, src/eval.c's decode_depth_limit), so
+# this flag is belt-and-braces rather than the only thing standing between a
+# 1 MB default and the crash -- and `gb_stack_limit_kb` on Windows reports the
+# reserve this line asks for, so the two cannot disagree.
 LDLIBS += -Wl,--stack,8388608
 # The application manifest (UTF-8 code page): src/gbasic.manifest.
 WIN_RES := src/gbasic_win32.res.o

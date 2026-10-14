@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <sys/file.h>
 #include <sys/socket.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <time.h>
@@ -278,6 +279,17 @@ int gb_secure_random(void *buf, size_t n) {
 
 int gb_rename_replace(const char *from, const char *to) {
     return rename(from, to);
+}
+
+long gb_stack_limit_kb(void) {
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_STACK, &rl) != 0) {
+        return 0;
+    }
+    if (rl.rlim_cur == RLIM_INFINITY) {
+        return 0;          /* unbounded: the caller keeps its own ceiling */
+    }
+    return (long)(rl.rlim_cur / 1024);
 }
 
 void gb_stdout_line_buffered(void) {

@@ -5828,10 +5828,24 @@ A *non-string* argument still raises (`try_decode expects a string`): that is a 
 in the caller, not malformed data. `try_decode` reports on the **content** of a
 string; it is not a type-checking wrapper.
 
-**Nesting is bounded.** Both entry points refuse documents nested deeper than
-10 000 levels — `decode` raises, `try_decode` reports. Before this limit existed,
-the parser's recursion overran the C stack and segfaulted at around 45 000 levels;
-a non-raising decode whose failure mode is a crash would be worthless.
+**Nesting is bounded, and the bound is a function of the stack** *(0.8.1)*. Both
+entry points refuse documents nested deeper than **10 000 levels, or `ulimit -s`
+× 2, whichever is smaller** — `decode` raises, `try_decode` reports. At the 8 MB
+default that is 10 000, so the limit a program sees is unchanged; below about
+2.5 MB it is lower. Before any limit existed the parser's recursion overran the C
+stack and segfaulted; a non-raising decode whose failure mode is a crash would be
+worthless.
+
+**Why the bound is derived rather than a constant** is a correction worth knowing
+if you deploy on a small stack. It *was* a flat 10 000, justified as sitting far
+enough below the crash to "hold on a stack a quarter the size" — and measured, it
+did not: the margin was counted in *levels* while the thing conserved is *stack*,
+and the two are linear at roughly 240 bytes per level. On a 2 MB stack the
+deepest document that parses is about 8 500, so a 9 999-deep one crashed the
+interpreter *before the limit could refuse it*. That is reachable from the
+network, because a request body is decoded as the request record is built,
+whether or not the handler reads `req.json`. A 2 MB `ulimit -s` is ordinary in
+containers and on hardened hosts.
 
 **Why it matters for performance.** Pre-validating in gBASIC was measured at
 16 KB: 1 s; 64 KB: 16 s; 128 KB: 69 s; 256 KB: 291 s — plainly quadratic, and the

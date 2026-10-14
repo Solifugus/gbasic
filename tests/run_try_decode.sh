@@ -126,6 +126,49 @@ else
     status=1
 fi
 
+# --- Tier 3b-ii: THE CAP MUST BE REACHABLE BEFORE THE STACK IS --------------
+#
+# WHY THE TIER ABOVE CANNOT SEE THIS. It feeds 100 000 levels -- ten times the
+# cap -- so at this machine's 8 MB default it refuses at the cap and never goes
+# near the stack. It can fail only if the cap is REMOVED, never if the cap is TOO
+# HIGH FOR THE MACHINE, and the second is the defect that shipped: measured
+# 2026-10-14, `DECODE_MAX_DEPTH` was a flat 10 000 while the deepest document a
+# 2 MB stack survives is ~8 495, so a 9 999-deep document SEGFAULTED -- and a
+# request body is decoded EAGERLY, so a 20 KB POST killed a gBASIC server.
+#
+# ASSERTED AS A DIFFERENCE BETWEEN TWO STACKS, which is the only shape that
+# works: "it refuses at 2 MB" alone passes on a build that refuses everything,
+# and "it accepts at 8 MB" alone passes on the broken build. The SAME DOCUMENT
+# must be accepted at 8 MB (nothing moved at the default) and REFUSED at 2 MB
+# (the bound dropped instead of the process), and neither run may crash.
+#
+# The stack is changed from OUTSIDE, since a program cannot raise its own -- the
+# device run_dir_builtins.sh uses for its unreadable-directory tier -- and the
+# tier SKIPS WITH A REASON when the shell cannot set it, because a tier that
+# cannot create its own premise must say so rather than pass.
+printf 'r = try_decode(repeat("[", 9999) + "1" + repeat("]", 9999))\nprint "ok=" + r.ok\n' \
+    >"$work/at_cap.bas"
+if ! ( ulimit -s 2048 ) 2>/dev/null; then
+    printf 'SKIP decode_cap_vs_stack (this shell cannot set ulimit -s; NOTHING was\n'
+    printf '     checked about the cap being reachable before the stack)\n'
+else
+    deep_at() {   # $1 = ulimit -s in KB -> the fixture's answer, or CRASH
+        local out rc
+        out=$( ( ulimit -s "$1"; timeout 120 ./gbasic --line-buffered "$work/at_cap.bas" \
+                 2>/dev/null </dev/null ) ); rc=$?
+        if [ "$rc" -ne 0 ]; then printf 'CRASH(exit %s)' "$rc"; else printf '%s' "$out"; fi
+    }
+    big="$(deep_at 8192)"
+    small="$(deep_at 2048)"
+    if [ "$big" = "ok=true" ] && [ "$small" = "ok=false" ]; then
+        printf 'PASS decode_cap_vs_stack (8MB accepts 9999 deep, 2MB refuses it, neither crashes)\n'
+    else
+        printf 'FAIL decode_cap_vs_stack (8MB=<%s> want ok=true; 2MB=<%s> want ok=false)\n' \
+            "$big" "$small"
+        status=1
+    fi
+fi
+
 # --- Tier 3c: invalid UTF-8 and NUL bytes are data, not a crash ----------------
 # The parser is byte-oriented; malformed UTF-8 inside a string must come back as
 # bytes rather than being rejected, re-encoded, or truncated at a NUL.

@@ -48,10 +48,13 @@ live list is:
 | | what | where |
 |---|---|---|
 | 1 | **A deeply nested value segfaults at teardown** — see above. Narrowed by measurement: every path that READS a value is already bounded well clear of it (`decode` 10 000, `serialize`/`deserialize` 256, `rules` 100), so only a program's own construction loop can reach it. | ranked item 0 |
-| 5 | **`DECODE_MAX_DEPTH` is unsafe below a ~2.5 MB stack**, and a request body is decoded eagerly, so a 20 KB POST segfaults a gBASIC server at `ulimit -s 2048`. The cap's own comment claims it holds "on a stack a quarter the size"; measured, it does not. | 2026-10-14 entry |
+| 5 | ~~**`DECODE_MAX_DEPTH` is unsafe below a ~2.5 MB stack**~~ **CLOSED 2026-10-14** — the bound is DERIVED from `getrlimit(RLIMIT_STACK)` now, `min(10000, stack_KB * 2)`, so it is unchanged at the 8 MB default and drops instead of the process below ~2.5 MB. The remote demonstration re-run against the fix: HTTP 200 and the listener alive at `ulimit -s 2048`. | 2026-10-14 entry |
 
-The two are one disease seen from both ends: recursion depth bounded by constants
-chosen against one machine's `ulimit -s`. Its "where" column pointed
+The two were one disease seen from both ends — recursion depth bounded by
+constants chosen against one machine's `ulimit -s` — and item 5 is now fixed at
+the root by asking the machine instead of guessing. **Item 1 is the only thing
+left on this list**, and what remains of it is narrow: nothing a program READS
+can reach it, so it takes a construction loop of the program's own. Its "where" column pointed
 at a *2026-10-12 entry* in this file that **did not exist** — that measurement was
 recorded in `docs/exact_number_design.md` and never logged here, so the index
 built to stop live items going stale shipped with a dangling pointer of its own.
@@ -12568,8 +12571,19 @@ release script is the one place to change, and it wants watching.
   reach item 1's ~50 000 teardown crash — only something it *builds* can, in a
   loop of its own. The two items are one disease seen from both ends: recursion
   depth bounded by constants chosen on one machine's stack.
-- **Workaround:** none applied; filed for a ruling, because the obvious fix
-  changes a documented limit. **The recommended fix is to DERIVE the cap** from
+- **Workaround:** **RESOLVED the same day** (and filed first, so the measurement
+  survives the fix). `gb_stack_limit_kb()` is a new platform function --
+  `getrlimit(RLIMIT_STACK)` on POSIX, answering 0 for `RLIM_INFINITY` so the
+  ceiling stays in force rather than being derived from a number that is not
+  one; on Windows it reports the reserve the Makefile's `-Wl,--stack` sets, so
+  the two cannot disagree. `decode_depth_limit()` is `min(10000, stack_KB * 2)`,
+  cached. Re-measured after: no crash at 8192, 2048, 1024 or 512 KB, 9 999 levels
+  still accepted at 8 MB, and the end-to-end server demonstration now answers
+  HTTP 200 with the listener alive at 2 MB. The tier is the negative control the
+  old one could not be -- the SAME document accepted at 8 MB and refused at 2 MB,
+  because "it refuses at 2 MB" alone passes on a build that refuses everything
+  and "it accepts at 8 MB" alone passes on the broken build; both perturbations
+  proven red, the revert as `CRASH(exit 139)`. **The fix was to DERIVE the cap** from
   `getrlimit(RLIMIT_STACK)` rather than fix it as a constant —
   `min(10000, stack_KB * 2)` keeps **10 000 exactly as it is at the 8 MB
   default**, so no documented behaviour moves on an ordinary machine, and gives

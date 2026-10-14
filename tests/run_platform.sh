@@ -80,12 +80,37 @@ if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
     else
         bad "src/platform_win32.c: $(head -1 /tmp/gb_win32.log)"
     fi
-    # every function the header declares must HAVE a Windows body, or the port
-    # discovers the gap on a machine we are borrowing.
-    for want in gb_exe_path gb_channel_socketpair gb_arm_parent_death gb_net_init \
-                gb_sock_close gb_sock_set_blocking gb_platform_name; do
-        grep -q "$want" src/platform_win32.c && ok "win32: $want" || bad "win32: $want has no body"
+    # EVERY function the header declares must HAVE a Windows body, or the port
+    # discovers the gap on a machine we are borrowing -- and that sentence is now
+    # TRUE, which it was not. This was a hand-written list of SEVEN names under
+    # that same comment, so a function added to the header was covered only if
+    # somebody remembered to add it here, and `gb_stack_limit_kb` (2026-10-14)
+    # was not. The names are DERIVED from include/platform.h now, which is this
+    # tree's own rule: a list kept only for this purpose is a list that rots.
+    #
+    # ONE DECLARED EXCEPTION, named with its reason rather than left as a gap:
+    # `gb_channel_peek_len` is POSIX-only by design -- Windows does not build
+    # src/platform_posix.c and frames its actor transport differently (see
+    # run_inbox.sh's channel-peek tier, which skips on Windows for that reason).
+    # The exception list is asserted to be exactly that, so a SECOND gap cannot
+    # hide inside it.
+    win_decls="$(grep -oE '^[a-z_]+ \*?gb_[a-z0-9_]+\(|^const char \*gb_[a-z0-9_]+\(' \
+                   include/platform.h | grep -oE 'gb_[a-z0-9_]+' | sort -u)"
+    win_count="$(printf '%s\n' "$win_decls" | grep -c . || true)"
+    # A floor, because a scraper that matched nothing would report a clean run --
+    # the failure mode every derive-from-source check in this tree defends against.
+    [ "${win_count:-0}" -ge 30 ] \
+        && ok "platform.h declares $win_count functions (floor 30)" \
+        || bad "the declaration scraper found only $win_count -- it stopped matching"
+    win_missing=""
+    for want in $win_decls; do
+        grep -q "\b$want\b" src/platform_win32.c || win_missing="$win_missing $want"
     done
+    if [ "$win_missing" = " gb_channel_peek_len" ]; then
+        ok "win32: all $win_count declared functions have a body bar the one declared exception"
+    else
+        bad "win32 bodies missing:$win_missing" "every function include/platform.h declares needs a Windows body, or a stated reason here"
+    fi
 else
     printf '  SKIP Windows bodies (no x86_64-w64-mingw32-gcc; apt install gcc-mingw-w64-x86-64)\n'
 fi
