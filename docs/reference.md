@@ -5836,6 +5836,19 @@ default that is 10 000, so the limit a program sees is unchanged; below about
 stack and segfaulted; a non-raising decode whose failure mode is a crash would be
 worthless.
 
+**A value's own depth has a separate, larger limit, and it is the stack's too.**
+Releasing a value recurses the same way building it does — roughly three C frames
+per level — so a value nested past about **43,000 levels** segfaults *when it is
+released*, which is the line that lets it go rather than the line that built it.
+Measured at a pinned 8 MB stack, where records and arrays behave identically; at
+64 MB a 60,000-deep value releases cleanly, so the number is a fact about
+`ulimit -s` and not about gBASIC. Nothing a program *reads* can reach it — the
+decode bound above, `serialize`/`deserialize` at 256 levels, `rules` at 100 — so
+it takes a construction loop of your own (`v = [v]`, tens of thousands of times).
+It is an accepted limitation, listed in `DOGFOOD.md` and checked by
+`tests/run_limitations.sh`; the remedy if you need the depth is a larger
+`ulimit -s`.
+
 **Why the bound is derived rather than a constant** is a correction worth knowing
 if you deploy on a small stack. It *was* a flat 10 000, justified as sitting far
 enough below the crash to "hold on a stack a quarter the size" — and measured, it

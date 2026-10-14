@@ -93,6 +93,7 @@ unnormalized_load_path|print the load path unnormalized
 gi_emit|No \`gi.emit\`
 spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
+deep_value_teardown|segfaults when it is RELEASED
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -106,6 +107,44 @@ nul_string_literal|is refused in a string literal
 NOT_MECHANICAL="
 vg_riscv|valgrind does not exist for riscv64|a fact about another architecture, unobservable from this one
 "
+
+probe_deep_value_teardown() {
+    # THE DEPTH IS A PROPERTY OF THE STACK, NOT OF THE LANGUAGE, so this probe is
+    # a PAIR and neither half means anything alone. At a PINNED 8 MB stack a
+    # 60,000-deep value must die releasing itself (the limitation still holds);
+    # at 64 MB the SAME program must exit 0 (which is what makes the claim "your
+    # stack decides" rather than "gBASIC cannot do this"). Pinning is the lesson
+    # this bullet was re-measured for: the ledger's old figures were taken on an
+    # unpinned stack and the array one was out by more than 2x.
+    #
+    # THE CONTROL ALSO STOPS THE PROBE PASSING FOR THE WRONG REASON. "exit 139 at
+    # 8 MB" is equally satisfied by a fixture that cannot run at all -- a typo in
+    # the path, a stdlib that will not load -- and a crash is exactly the shape
+    # that hides such a thing. The 64 MB run has to SUCCEED, and it prints, so
+    # the program is known to work.
+    printf 'program main(args)\n  v = 1\n  i = 0\n  while i < 60000\n    v = { inner: v }\n    i = i + 1\n  end while\n  print "built"\n  v = 0\n  print "released"\nend program\n' \
+        > "$WORK/deep.bas"
+    if ! ( ulimit -s 65536 ) 2>/dev/null; then
+        skipped "deep value teardown (this shell cannot raise ulimit -s to 64 MB, so the"
+        printf '     CONTROL half is unavailable and the crash half alone proves nothing)\n'
+        return
+    fi
+    local small large
+    ( ulimit -s 8192;  GBASIC_PATH=stdlib timeout -k 5 180 ./gbasic --line-buffered \
+        "$WORK/deep.bas" >/dev/null 2>&1 ); small=$?
+    ( ulimit -s 65536; GBASIC_PATH=stdlib timeout -k 5 180 ./gbasic --line-buffered \
+        "$WORK/deep.bas" >/dev/null 2>&1 ); large=$?
+    if [ "$large" -ne 0 ]; then
+        fail "deep value teardown: the 64 MB CONTROL did not succeed (exit $large), so"
+        printf '     nothing was established -- the fixture itself may not be running\n'
+        return
+    fi
+    if [ "$small" -eq 139 ]; then
+        ok "60,000 deep still dies releasing itself at 8 MB, and still survives at 64 MB"
+    else
+        fixed "a 60,000-deep value now releases cleanly at an 8 MB stack (exit $small)"
+    fi
+}
 
 probe_nul_string_literal() {
     # A program can HOLD an interior NUL and cannot SPELL one. Both halves are

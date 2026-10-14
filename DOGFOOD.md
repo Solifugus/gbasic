@@ -47,14 +47,17 @@ live list is:
 
 | | what | where |
 |---|---|---|
-| 1 | **A deeply nested value segfaults at teardown** — see above. Narrowed by measurement: every path that READS a value is already bounded well clear of it (`decode` 10 000, `serialize`/`deserialize` 256, `rules` 100), so only a program's own construction loop can reach it. | ranked item 0 |
+| — | ~~**A deeply nested value segfaults at teardown**~~ **DOCUMENTED AS AN ACCEPTED LIMITATION 2026-10-14**, with the numbers re-measured at a PINNED stack: ~43,000 levels at 8 MB, records and arrays alike, and 60,000 releases cleanly at 64 MB — so it is a fact about `ulimit -s`. It has a probe in `run_limitations.sh` now, with the 64 MB run as the control, so it goes red if anybody fixes it. | accepted limitations |
 | 5 | ~~**`DECODE_MAX_DEPTH` is unsafe below a ~2.5 MB stack**~~ **CLOSED 2026-10-14** — the bound is DERIVED from `getrlimit(RLIMIT_STACK)` now, `min(10000, stack_KB * 2)`, so it is unchanged at the 8 MB default and drops instead of the process below ~2.5 MB. The remote demonstration re-run against the fix: HTTP 200 and the listener alive at `ulimit -s 2048`. | 2026-10-14 entry |
 
 The two were one disease seen from both ends — recursion depth bounded by
-constants chosen against one machine's `ulimit -s` — and item 5 is now fixed at
-the root by asking the machine instead of guessing. **Item 1 is the only thing
-left on this list**, and what remains of it is narrow: nothing a program READS
-can reach it, so it takes a construction loop of the program's own. Its "where" column pointed
+constants chosen against one machine's `ulimit -s`. Item 5 is fixed at the root
+by asking the machine instead of guessing, and item 1 is **documented rather than
+fixed**: nothing a program READS can reach it, so it takes a construction loop of
+the program's own, and making the release iterative is surgery on the runtime's
+most ownership-sensitive function. **So this index is now EMPTY**, which is the
+first time since it was written. The accepted-limitations section below is where
+item 1 lives, and it is machine-checked there. Its "where" column pointed
 at a *2026-10-12 entry* in this file that **did not exist** — that measurement was
 recorded in `docs/exact_number_design.md` and never logged here, so the index
 built to stop live items going stale shipped with a dangling pointer of its own.
@@ -947,6 +950,36 @@ what proves the live probes are running anything at all.
   spelling, not capability, and the record-name work is the standing warning
   that every `free()` on a buffer which has quietly become header-prefixed is a
   heap corruption rather than a wrong answer.
+
+- **A value nested past about 43,000 levels segfaults when it is RELEASED**, not
+  when it is built: `v = { inner: v }` 60,000 times prints its own success and
+  then dies at `exit 139` on the line that lets the value go. The recursion is
+  `value_free` -> `array_storage_release`/`cell_release` -> `value_free`, roughly
+  three C frames per level, so **the depth is a property of `ulimit -s` and not
+  of the language** — measured 2026-10-14 at a PINNED 8 MB stack, records and
+  arrays behave identically (survive ~42,500, crash ~43,750), and at 64 MB a
+  60,000-deep value releases cleanly. That pinning is the whole point of
+  re-measuring: the ledger previously carried "~50,000 for a record, ~100,000 for
+  an array", and the array figure was out by more than 2x because the stack had
+  not been held still.
+
+  **WHY IT IS ACCEPTED RATHER THAN FIXED.** Nothing a program *reads* can reach
+  it: `decode`/`try_decode` are bounded by the stack itself since 0.8.1
+  (`min(10000, ulimit -s × 2)`), `serialize`/`deserialize` cap at 256, and
+  `rules` at 100. So the only way in is a construction loop of the program's own
+  — `v = [v]` tens of thousands of times — which no business program writes by
+  accident. Against that, making the release iterative means an explicit worklist
+  inside the runtime's most ownership-sensitive function, where a `Value` is both
+  owner and borrow with nothing in the type to say which; this tree already
+  records a double-free from detaching one level too early (`record_find`, which
+  killed the webserver on its third request). The trade is a crash nobody has hit
+  in real code against a refactor whose failure mode is heap corruption.
+
+  **THE REMEDY, for an author who really needs the depth**, is `ulimit -s`: the
+  limit is the stack's, so raising it raises the depth proportionally. A
+  parse-time or construction-time cap is NOT available, because computing a
+  value's depth on every `append` would be O(depth) per call and quadratic
+  overall.
 
 - `spawn` resolves a bare function **name**, not an expression, so it takes
   neither a qualified name nor a function value: `spawn lib.worker(x)` is a
