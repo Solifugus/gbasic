@@ -33,6 +33,28 @@ resolving one strikes it and adds a RESOLVED note at the entry. Entries not
 listed here are resolved or absorbed into doctrine (UNLEARN/ERRORS/reference),
 and the stale-looking ones carry a Status line saying what overtook them.
 
+### OPEN NOW — the whole of it, 2026-10-13
+
+Audited by MEASURING every live claim rather than reading it. The ranked list
+below holds 52 items of which **50 are struck**, so "the part you act on" had
+become 800 lines of archive with the live items buried in it — and one of the two
+that still read as open had in fact been fixed.
+
+| | what | where |
+|---|---|---|
+| 1 | **A deeply nested value segfaults at teardown** — ~50 000 for a record, ~100 000 for an array, *at an 8 MB stack*; it exits 0 at 64 MB, so the depth is a property of the stack and not of the language. The one depth a program cannot defend against, because the crash is in letting the value go. | ranked item 0 |
+| 2 | **Exactness stops at the operators.** `min max abs floor ceil round sum pow mod` all collapse an exact integer; `mod(9007199254740993, 2)` answers **0**, which is a wrong answer rather than lost precision. `first`/`last`/`sort` preserve, which is the rule: a function that *picks* a value keeps it, one that *calculates* does not. | 2026-10-12 entry |
+| 3 | **`has_builtin("warning")` is false** though `warning` works — one name, the last of a group of four. | 2026-10-11 entry |
+| 4 | **`notation` loses datetime precision** on 3 of 6 precisions, hour and minute silently. A two-line fix was identified against 0.7.0 and **not re-measured since**, so measure before acting. | 2026-10-11 entry |
+
+Two more are decisions rather than work: the **absence-coercion warning** is
+measured and deliberately unshipped pending a ruling, and **`{trimmed,upper}=`**
+is answered — a clause chains with `;` and has since 2026-10-03.
+
+Everything else in this file is history, and deliberately so. The eight bullets
+under *accepted limitations* are machine-checked by `tests/run_limitations.sh`,
+which goes RED when one gets fixed, so they cannot go stale unnoticed.
+
 ### Open — worth fixing (ranked)
 
 -4.5. ~~**xlsx and xml are in NEITHER published download.**~~ **CLOSED
@@ -67,9 +89,20 @@ and the stale-looking ones carry a Status line saying what overtook them.
    vanishing, zlib having been the one optional family whose name test sat
    inside its own `#if`.
 
-0. **A deeply nested VALUE segfaults the interpreter at teardown** — measured
-   2026-10-11: a record nested 22 000 deep (40 000 for arrays) builds fine, the
-   program prints its answer and succeeds, and then exit 139 on the way out.
+0. **A deeply nested VALUE segfaults the interpreter at teardown** — the one
+   item in this list still open. First measured 2026-10-11: a record nested
+   22 000 deep (40 000 for arrays) builds fine, the program prints its answer and
+   succeeds, and then exit 139 on the way out.
+
+   **RE-MEASURED 2026-10-13, and the NUMBERS were stale while the defect was
+   not.** On this machine 22 000 (record) and 40 000 (array) now exit 0; a record
+   needs ~50 000 and an array ~100 000 to crash. The signature is unchanged — the
+   answer is printed, then 139 on the way out. **And the threshold is a fact
+   about the STACK, not about gBASIC**: the identical 50 000-deep record exits
+   139 at the default 8 MB `ulimit -s` and **0 at 64 MB**. So no depth in this
+   entry is a property of the language, and a figure quoted without its stack
+   limit says nothing — which is why the original numbers drifted without
+   anything changing in the interpreter.
    Recursive `value_free` over the structure, almost certainly. The reason it is
    ranked rather than filed under "measured, no action": it is the one depth
    limit a program **cannot** defend against, because every refusal a library
@@ -770,7 +803,13 @@ and the stale-looking ones carry a Status line saying what overtook them.
     by reading. Fixed with a version shim whose fallback keeps the restriction
     rather than dropping it; guarded by `tests/run_libcurl_floor.sh`.
 
-49. **`mode()` answers the FIRST ELEMENT when there is no mode.** `mode([1,2,3])`
+49. ~~**`mode()` answers the FIRST ELEMENT when there is no mode.**~~ **RESOLVED,
+   and this line was stale — measured 2026-10-13, all three asks are done:
+   `mode([1,2,3])` answers `unknown`, `mode([1,2,2,3])` answers `[2]` (every tied
+   value, as an array, rather than one chosen by source order) and
+   `mode(["a","b","b"])` answers `["b"]`, so text is accepted. Found by auditing
+   this section rather than by anything failing, which is the point of auditing
+   it.** ~~`mode([1,2,3])`
     is `1`, `mode([9,8,7])` is `9`, and `mode([19.95, 32.50, 7.00])` is `19.95`
     — so **on continuous data, where every value is unique, `mode` always
     returns the first element and always looks like an answer**, with the result
@@ -10688,6 +10727,33 @@ discovery pass that SHRINKS, a fixture that HANGS) were already named in
 exits 0, and the gate reports `FAIL (said FAIL, exited 0)` and names the line.
 
 ## Asked 2026-10-02 — can a clause carry several modifiers, like `{trimmed,upper}=`?
+
+> **STATUS, 2026-10-13: the "No in the clause" half was overtaken the NEXT DAY
+> and this entry never said so.** A clause chains with a **semicolon**, added
+> 2026-10-03 and documented in `docs/reference.md` under *Inline type
+> modifiers*: `clean {trimmed; upper}= raw`, applied **left to right**, to any
+> depth — `csv {trimmed; split ","; join "-"}= line`.
+>
+> **This entry cost a wasted parser change.** Asked to make a clause carry
+> several, I measured the three spellings below, reproduced every one of their
+> findings exactly, concluded the capability was missing, and built
+> `{a}{b}=` — zero grammar conflicts, tests, the lot. All of that measurement
+> was true and none of it was sufficient: I measured what the entry told me to
+> look at instead of asking the reference what the language does. Reverted
+> unpushed.
+>
+> **And the thing built was worse than redundant.** Semicolons read left to
+> right; adjacent braces must read rightmost-first to match the inline form. So
+> `{trimmed; number}=` and `{number}{trimmed}=` would have done the same work in
+> OPPOSITE orders — two clause spellings with reversed readings, which is the
+> exact trap the entry below warns about. There was no version worth keeping:
+> matching the semicolon's order would have made `{a}{b}=` contradict
+> `{a}{b}expr`, which look identical.
+>
+> The lesson is the one this ledger already carries about itself: a dated
+> finding is evidence about the day it was filed. `run_limitations.sh` exists
+> because five of fourteen bullets were false; this entry is the same shape one
+> section down, where nothing checks it.
 
 **No in the clause, YES inline, and the inline half had no test and no sentence
 in the reference.** Measured rather than recalled, which is how the second half
