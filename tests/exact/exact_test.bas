@@ -66,10 +66,13 @@ program main( args )
     ' a rational kind is a different language.
     check("division is inexact      ", 6 / 3, 2)
     check("and 1/3 unchanged        ", round(1 / 3, 6), 0.333333)
-    ' `pow` IS INEXACT UNTIL ITS OWN INCREMENT, stated so the gap is a recorded
-    ' decision rather than a surprise: the design's own headline example,
-    ' `pow(2, 53) + 1`, is NOT fixed by this increment.
-    check("pow is still inexact     ", pow(2, 53) + 1 = 9007199254740993, false)
+    ' `pow` WAS THE RECORDED GAP AND IT IS CLOSED (increment 5, 2026-10-13). This
+    ' line asserted the LIMITATION -- "pow is still inexact" -- and went red the
+    ' moment it stopped being true, naming itself as the thing to update. That is
+    ' the negative-control pattern working, and the replacement is the opposite
+    ' claim: the design's own HEADLINE EXAMPLE, the first line of
+    ' exact_number_design.md, now answers.
+    check("THE headline example     ", pow(2, 53) + 1, 9007199254740993)
 
     print "-- `number(\"...\")` IS A SOURCE OF EXACTNESS, which it was not until now"
     ' THE DESIGN NAMED THIS REMEDY AND NOTHING IMPLEMENTED IT. "Where exactness
@@ -152,6 +155,201 @@ program main( args )
     check("0 = false                ", 0 = false, true)
     check("1 = true                 ", 1 = true, true)
     check("0 != true                ", 0 = true, false)
+
+    print "-- INCREMENT 5: exactness past the operators"
+    ' ONE RULE, AND IT PREDICTS EVERY LINE BELOW: a function that **picks** a
+    ' value preserves exactness; one that **calculates** is exact when both
+    ' operands are exact and the answer is an integer the runtime holds. An
+    ' inexact operand never yields an exact answer, which is not new policy --
+    ' it is what `+` `-` `*` already do.
+    '
+    ' MEASURED BEFORE THE CHANGE, every one of these answering ...92 with exit 0
+    ' and no diagnostic, and `mod(b, 2)` answering **0** -- not lost precision
+    ' but a WRONG ANSWER, since the exact odd literal had become an even double
+    ' before `mod` saw it. A parity test is the commonest thing anyone asks
+    ' `mod`, and it reported the opposite of the truth.
+    b = 9007199254740993
+
+    print "-- a selector PICKS, so it returns the author's own value"
+    ' THE ARGUMENT THAT THE OLD CODE WAS A DEFECT AND NOT A DECISION IS THE
+    ' NEIGHBOURING INCONSISTENCY: `min`/`max` over text already returned the
+    ' element, and only the numeric path recomputed a double. So `max(["b","a"])`
+    ' gave back what the author wrote and `max([b, b])` gave a rounded view of it.
+    check("min picks                ", min([b, b]), b)
+    check("max picks                ", max([b, b]), b)
+    check("min over three           ", min([b, b + 1, b - 1]), b - 1)
+    check("max over three           ", max([b, b + 1, b - 1]), b + 1)
+    check("median of an odd count   ", median([b, b, b]), b)
+    check("percentile on a point    ", percentile([b, b, b], 50), b)
+    check("quantile on a point      ", quantile([b, b, b], 0.5), b)
+
+    print "-- and `sort` ORDERS them, which it could not do at all"
+    ' A SECOND ROUTE TO ONE QUESTION, FOUND BY MEASURING RATHER THAN BY READING.
+    ' The exactness-aware comparison shipped in increment 2 reached `=` and `>`
+    ' and NEVER REACHED `sort`, whose comparator compared doubles -- so two exact
+    ' integers that round to the same double TIED, and a stable sort left them as
+    ' it found them. `b > b - 1` answered true while `sort` put `b` first: two
+    ' routes disagreeing, which is the shape PLAT-EQ needed three instalments to
+    ' close for the KINDS and which had now happened once more for EXACTNESS.
+    ' There is ONE comparison now and both routes go through it.
+    pair = [b, b - 1]
+    sort(pair)
+    check("sort orders exactly      ", pair[0], b - 1)
+    check("and the larger is second ", pair[1], b)
+
+    print "-- exact in, exact out: abs, floor, ceil, round, sign"
+    ' `floor` AND `ceil` ARE THE IDENTITY HERE and that is the whole fix: an
+    ' exact integer is already its own floor, and the only reason it came back
+    ' changed is that it was rounded to a double on the way in.
+    check("abs                      ", abs(b), b)
+    check("abs of a negative        ", abs(0 - b), b)
+    check("floor is the identity    ", floor(b), b)
+    check("ceil is the identity     ", ceil(b), b)
+    check("round, no places         ", round(b), b)
+    check("round with places        ", round(b, 2), b)
+    check("sign                     ", sign(b), 1)
+
+    print "-- `mod` on exact operands, which was a WRONG answer"
+    check("parity of an odd integer ", mod(b, 2), 1)
+    check("and of its neighbour     ", mod(b - 1, 2), 0)
+    ' STILL FLOORED: the remainder takes the sign of the DIVISOR. Asserted on
+    ' exact operands as well as the inexact ones in the controls below, because
+    ' the two now take different code paths and a sign rule honoured on one is
+    ' not evidence about the other.
+    check("floored, negative left   ", mod(0 - 7, 3), 2)
+    check("floored, negative right  ", mod(7, 0 - 3), -2)
+    check("a divisor of -1          ", mod(b, 0 - 1), 0)
+
+    print "-- `pow`, exact by repeated multiplication"
+    check("past 2^53                ", pow(3, 34), 16677181699666569)
+    check("2^62                     ", pow(2, 62), 4611686018427387904)
+    check("a zero exponent          ", pow(7, 0), 1)
+    check("a negative base          ", pow(0 - 2, 3), -8)
+    ' SQUARE AND MULTIPLY, NOT A LOOP OVER THE EXPONENT: the exponent is an
+    ' int64, so a loop would make this run for a thousand years instead of
+    ' answering 1.
+    check("a huge exponent of one   ", pow(1, number("1000000000000000000")), 1)
+
+    print "-- `sum` is the fold of `+`, so it agrees with `+`"
+    check("sum of one               ", sum([b]), b)
+    check("sum carries the digit    ", sum([b, 1]), 9007199254740994)
+    check("sum of many              ", sum([b, b, 0 - b]), b)
+
+    print "-- the counting builtins are integers BY NATURE"
+    ' ASSERTED AS ARITHMETIC, NOT AS A VALUE, and here that is forced rather than
+    ' preferred: a count is small, so an exact 3 and an inexact 3 render
+    ' IDENTICALLY and every value check passes on both builds. Only carrying the
+    ' count into exact arithmetic separates them.
+    '
+    ' AND THE COUNT ITSELF HAS TO BE CHOSEN, which cost a perturbation to learn.
+    ' Above 2^53 doubles step in TWOS, so adding 3 to the double view of b lands
+    ' on the same answer the exact arithmetic gives -- `len([1,2,3]) + b` is
+    ' ...996 on both builds. The first version of this tier used three-element
+    ' lists and `"abc"` throughout and was therefore VACUOUS: reverting `len` to
+    ' a double left every check green. It uses counts of ONE and TWO now, where
+    ' the two arithmetics part company, which is the same lesson this file
+    ' already records one section up -- assert the thing that DIFFERS, not the
+    ' thing that looks like the subject.
+    check("len of one               ", len([1]) + b, 9007199254740994)
+    check("len of two               ", len([1, 2]) + b, 9007199254740995)
+    check("len of a one-char string ", len("a") + b, 9007199254740994)
+    check("count of a string        ", count("ab") + b, 9007199254740995)
+    check("count of an array        ", count([1]) + b, 9007199254740994)
+    check("count of a record        ", count({ x: 1, y: 2 }) + b, 9007199254740995)
+    check("byte_count               ", byte_count("a") + b, 9007199254740994)
+    check("a found index            ", find([7, 8], 8) + b, 9007199254740994)
+    check("a found string index     ", find("abc", "c") + b, 9007199254740995)
+    ' epoch IS THE ONE THAT MOTIVATES THE RULE: `epoch(b) - epoch(a)` is an
+    ' interval a program does arithmetic with, so an inexact second count poisons
+    ' every expression it reaches.
+    ' THE ZONE IS NAMED, because the one-argument form reads the machine's local
+    ' time and a constant written against it is a fact about this machine. 1791849600
+    ' is 2026-10-13T00:00:00Z computed OUTSIDE gBASIC, in python's datetime.
+    d {datetime}= "2026-10-13 00:00:00"
+    check("epoch is exact           ", epoch(d, "UTC") + b, 9007201046590593)
+    check("and differences are too  ", (epoch(d, "UTC") + b) - epoch(d, "UTC"), b)
+    ' ALL THREE OF epoch's DOORS, because it has three return paths -- the
+    ' CLOCK, a datetime in LOCAL time, and a datetime in a NAMED zone -- and a
+    ' perturbation of the local one left this tier green while only the named one
+    ' was asserted. Three paths, three checks, which is the rule this tree
+    ' already applies to the two string-to-number doors.
+    '
+    ' THE OTHER TWO CANNOT BE PINNED BY VALUE: the clock moves and the local one
+    ' is a fact about this machine's zone. So they are asserted as a DIFFERENCE,
+    ' and DOUBLED first on purpose -- an even operand is representable above
+    ' 2^53, so the broken arithmetic lands on ...992 whatever second it is run,
+    ' where a bare `epoch()` would make the check depend on the parity of the
+    ' current second and fail half the time.
+    clock = epoch()
+    check("the clock door is exact  ", (2 * clock + b) - 2 * clock, b)
+    local = epoch(d)
+    check("the local door is exact  ", (2 * local + b) - 2 * local, b)
+
+    print "-- `decode` IS THE THIRD STRING-TO-NUMBER DOOR, and it was left behind"
+    ' THE LESSON WAS ALREADY WRITTEN DOWN, one section up: "a rule re-established
+    ' at two call sites is one a third site silently leaves out." `number("...")`
+    ' and `{number}` were the two; this is the third. MEASURED 2026-10-13:
+    ' `encode` wrote 9007199254740993 and `decode` read back ...992, so a value
+    ' could be written to a file and could NOT BE READ BACK.
+    '
+    ' THE SHARPEST EVIDENCE THAT IT WAS A DEFECT rather than a decision:
+    ' `stdlib/notation.bas` is pure gBASIC, parses its numbers with
+    ' `number("...")`, and ROUND-TRIPPED THIS CORRECTLY THE WHOLE TIME. The
+    ' library got it right by using the language's own door while the language's
+    ' own decoder did not.
+    check("the round trip holds     ", decode(encode(b)), b)
+    check("and through an array     ", decode(encode([b]))[0], b)
+    check("and through a record     ", decode(encode({ n: b })).n, b)
+    check("decode of bare text      ", decode("9007199254740993"), b)
+    check("a negative               ", decode("-9007199254740993"), 0 - b)
+    check("try_decode agrees        ", try_decode("9007199254740993").value, b)
+    ' EVERY NARROWING FALLS OUT OF THE SHARED HELPER rather than being restated,
+    ' which is the whole reason for sharing it -- so each of these controls is a
+    ' settled decision this door inherits rather than one it chose.
+    check("an exponent stays inexact", decode("1e16") + 1 = 10000000000000001, false)
+    check("a fraction stays inexact ", decode("0.5") + 0.25, 0.75)
+    check("past int64 degrades      ", decode("99999999999999999999") > 0, true)
+    check("and a string is a string ", decode("\"9007199254740993\""), "9007199254740993")
+    ' `serialize` IS INCREMENT 4 AND STILL OPEN -- a NEGATIVE CONTROL, so it goes
+    ' red when that increment lands and names itself as the line to update. It
+    ' needs a SER_VERSION bump, the payload carrying only the double today.
+    check("serialize still loses it ", deserialize(serialize(b)) = b, false)
+
+    print "-- CONTROLS, each a settled decision rather than caution"
+    ' WITHOUT THESE, "exactness reaches the builtins" is satisfied by calling
+    ' everything exact -- which would be the same defect pointing the other way,
+    ' since an inexact value claiming to be exact is a false claim about
+    ' precision rather than a lost one.
+    '
+    ' `mean` DIVIDES, and `/` is always inexact -- including `6 / 3`. So mean is
+    ' inexact by the rule already in force rather than by omission, and the same
+    ' reading governs the EVEN case of `median`, which is the mean of two values.
+    ' THESE TWO ARE NEGATIVE CONTROLS: they go red if anybody makes them exact,
+    ' naming the decision to revisit.
+    check("mean stays inexact       ", mean([b, b]) = b, false)
+    check("an even median likewise  ", median([b, b]) = b, false)
+    check("so does division         ", (b / 1) = b, false)
+    ' AN INEXACT OPERAND CANNOT PRODUCE AN EXACT ANSWER, which is the half of the
+    ' rule that stops exactness being invented.
+    check("mixed min is inexact     ", min([b, b + 0.0]) = b, false)
+    check("mod with an inexact side ", mod(b, 2.0) = 1, false)
+    check("pow with a fraction      ", pow(2, 0.5), 1.4142135623730951)
+    check("pow with a negative      ", pow(2, 0 - 1), 0.5)
+    ' ROOTS AND LOGARITHMS ARE INEXACT BY NATURE and are deliberately untouched:
+    ' `sqrt(4)` is 2 and detecting a perfect square is a different builtin.
+    check("sqrt is untouched        ", sqrt(4), 2)
+    check("log10 is untouched       ", log10(100), 2)
+    ' AND THE ORDINARY ANSWERS DID NOT MOVE.
+    check("ordinary min             ", min([3, 1, 2]), 1)
+    check("ordinary max             ", max([3, 1, 2]), 3)
+    check("ordinary median          ", median([4, 1, 2, 3]), 2.5)
+    check("ordinary percentile      ", percentile([10, 20, 30], 75), 25)
+    check("ordinary sum             ", sum([1, 2, 3]), 6)
+    check("ordinary mean            ", mean([2, 4]), 3)
+    check("a fractional floor       ", floor(0 - 2.1), -3)
+    check("a fractional round       ", round(3.14159, 2), 3.14)
+    check("round still rounds halves", round(2.5), 3)
+    check("text min still picks     ", min(["b", "a"]), "a")
 
     print "-- CONTROLS: ordinary arithmetic is where it was"
     check("2 + 2                    ", 2 + 2, 4)

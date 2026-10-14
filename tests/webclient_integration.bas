@@ -28,6 +28,16 @@ print(json_response.json.name)
 print(json_response.json.active)
 print(is_nothing(json_response.json.optional))
 
+' A BIG INTEGER CROSSING THE WIRE KEEPS ITS DIGITS. An HTTP body is read by the
+' STRICT JSON parser, a different branch from the one `decode()` uses, so this is
+' the only place that door is asserted. Checked as ARITHMETIC, not as a value --
+' `+ 1` is what separates an exact integer from a double that renders the same
+' way below 2^53 -- with the control that a FRACTION is still inexact, since
+' "the wire is exact" must not become "everything from the wire is exact".
+exact_body = webclient.get(base + "/exact")
+print(exact_body.json.n + 1)
+print(exact_body.json.f + 0.25)
+
 invalid_json = webclient.get(base + "/invalid-json")
 print(is_unknown(invalid_json["json"]))
 

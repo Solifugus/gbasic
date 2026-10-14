@@ -48,6 +48,19 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps({"name": "Ada", "active": True, "optional": None}),
                 "application/json",
             )
+        elif self.path == "/exact":
+            # THE WIRE PARSER'S OWN DOOR. An HTTP body goes through the STRICT
+            # JSON parser (`json_only`), which is a separate branch from the one
+            # `decode()` takes, so exactness there is asserted here or nowhere.
+            # Written as TEXT rather than through json.dumps, because python
+            # would hand back the same digits either way and what is under test
+            # is what gBASIC makes of them: 9007199254740993 is 2^53+1, the
+            # smallest positive integer a double cannot hold.
+            self.send_payload(
+                200,
+                '{"n": 9007199254740993, "f": 0.5}',
+                "application/json",
+            )
         elif self.path == "/nul":
             # THE READ DIRECTION ALONE. A response body is bytes: an image, a
             # PDF, a zip. `webclient` used to raise `binary responses are not

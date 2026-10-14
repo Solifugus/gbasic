@@ -40,14 +40,22 @@ for error handling, `ERRORS.md`.
   the context when the closure is attached to that same object — it cycles and
   GObject cannot collect it (carry an id or ordinal instead).
   → `tests/gi/gi_bound_context_test.bas`
-- **Large integers are exact** *(0.6.0)* — a decimal or hex integer literal that
-  fits int64 is EXACT, and `+ - *` and unary minus of two exact operands stay
-  exact, so `9007199254740992 + 1` is `9007199254740993` and prints those digits.
+- **Large integers are exact** *(0.6.0; completed 0.8.1)* — a decimal or hex
+  integer literal that fits int64 is EXACT, and so is `number("…")` on integer
+  text and a count from `len`/`count`/`byte_count`/`find`/`epoch`. ONE RULE
+  carries it: a function that **picks** a value preserves exactness, one that
+  **calculates** is exact when both operands are exact and the answer is an
+  integer that fits. So `+ - *`, unary minus, `sum`, `pow` (non-negative
+  exponent) and `mod` are exact; `min`, `max`, an odd `median` and a
+  `percentile` on a data point hand back **your own element**; `abs`, `floor`,
+  `ceil`, `round` and `sign` are the identity on an integer; and `sort` ORDERS
+  two exact integers that round to the same double.
   INEXACT by decision: a fraction, an EXPONENT literal (`1e16`), any mixed
-  expression, division, and `pow`/`mod` (a later increment — so `pow(2,53) + 1` is
-  still not exact). Comparison is mathematical, so
-  `9007199254740993 = 9007199254740992.0` is false. Overflow degrades with warning
-  2112 rather than refusing. → `tests/exact/exact_test.bas`
+  expression, and **anything that divides** — `/`, `mean`, an even `median`, an
+  interpolated `percentile` — plus the roots and logarithms. Comparison is
+  mathematical, so `9007199254740993 = 9007199254740992.0` is false. Overflow
+  degrades with warning 2112 rather than refusing.
+  → `tests/exact/exact_test.bas`
 - **An aggregate over ragged data** — `sum(rows.amount)` SKIPS absences and warns
   (2111); `mean` divides by the PRESENT count; all-absent answers `unknown`, not
   0; `sum([])` still raises. `count` is COUNT(*) and `count(present(x))` is

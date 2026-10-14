@@ -5703,14 +5703,22 @@ count({})                      ' 0
 - `string(value)` - canonical string conversion for any value
 - `encode(value)` - gBASIC's **JSON-like dialect** for structured data (see below)
 - `decode(text)` - parses JSON *and* the dialect back into values; **raises** on
-  malformed input
+  malformed input. An integer that fits 64 bits comes back **exact**
+  *(0.8.1)*, so `decode(encode(x))` is `x`; before that `encode` wrote every
+  digit and `decode` read a double, and the round trip lost the value above
+  2^53. A fraction and an exponent stay inexact, by the same rules
+  `number("…")` follows
 - `try_decode(text)` - the same parse, reporting failure as a **value** instead of
   raising (see below)
 - `json_encode(value)` - **standards-compliant JSON (RFC 8259)** for external
   interchange: HTTP APIs, LLM providers, anything outside gBASIC
 - `json_encodable(value)` - preflight predicate: would `json_encode` succeed?
 - `quote(value)` - gBASIC source code literal with escaping
-- `serialize(value)` - exact binary round-trip serialization (see below)
+- `serialize(value)` - exact binary round-trip serialization (see below).
+  **"Exact" here means every TYPE survives, not every digit:** a `number`'s
+  exactness is *not* yet carried, so an exact integer above 2^53 comes back
+  inexact. Closing that needs a `SER_VERSION` bump and is the one open increment
+  of `docs/exact_number_design.md`
 - `deserialize(bytes)` - reconstruct a value from `serialize` output
 
 ### Four serializers, four jobs
@@ -6002,6 +6010,12 @@ mutation. Mutators that leave the stored array unchanged, such as no-match
 `sort()` and `unique()` support scalar arrays. Date/time values use exact
 date/time equality and ordering, not same-day or same-month comparison.
 
+`sort` orders two **exact** integers that round to the same double *(0.8.1)*.
+Before that its comparator compared doubles, so `sort([9007199254740993,
+9007199254740992])` left the array as it found it — the pair tied and the sort is
+stable — while `a > b` on the same two values answered correctly. Both routes go
+through one comparison now.
+
 #### Sorting records — `sort(rows, { by: … })`
 
 *(since 0.6.0)* `sort` takes an optional second argument, an options record:
@@ -6085,18 +6099,24 @@ Aggregates:
 - `len(value)` / `count(value)` — length of an array, string or record.
 - `sum(array)` / `mean(array)` — over numbers, or over **money** *(since
   0.6.0)*, where the fold refuses mixed currencies in the same words as `+` and
-  is overflow-checked the same way. `mean` keeps the result below the minor unit
+  is overflow-checked the same way. Over numbers `sum` is the fold of `+` and
+  agrees with it about exactness *(0.8.1)*; `mean` divides, and so does not. `mean` keeps the result below the minor unit
   in money's guard digits, so the average of 32.50, 7.00 and 19.95 displays as
   `19.82` and multiplies back by 3 to exactly `59.45`.
 - `median(array)` — the statistical convention on an even count: the mean of the
-  two middle values, so `median([4,1,2,3])` is `2.5`.
+  two middle values, so `median([4,1,2,3])` is `2.5`. An **odd** count returns
+  one of your own values and so keeps its exactness; an even one divides and does
+  not.
 - `mode(array)` — **every tied value, as a list**, or `unknown` when nothing
   repeats *(changed in 0.6.0; see below)*.
 - The *Statistics* summaries below stay **numeric**. A variance of money is money
   squared, and the rest were not among the aggregates the loop survey measured;
   see §4 of `docs/bulk_data_design.md`.
 - `min(array)` / `max(array)` — extremes, over **anything `sort` orders**
-  *(since 0.6.0)*, so text, dates, money and durations as well as numbers. An
+  *(since 0.6.0)*, so text, dates, money and durations as well as numbers. They
+  return **the element**, not a recomputed one, so an exact integer comes back as
+  you wrote it *(0.8.1; before that the numeric path recomputed a double and the
+  text path did not, which is what made it a defect rather than a decision)*. An
   array containing an absence is still refused, consistently with `sum`, until
   the aggregate absence rules land.
 - `any(array)` / `all(array)` — over **booleans**. `any([])` is `false` and
@@ -6291,9 +6311,25 @@ lost, so gBASIC refused to lose precision crossing a driver and lost it in its o
 arithmetic.
 
 **Where exactness comes from:** a **decimal or hexadecimal integer literal** whose
-value fits a 64-bit integer, and *(since 0.7.1)* **`number("…")` and `{number}`
-on decimal integer text** that fits one. From there `+`, `-`, `*` and unary minus
-of **two exact** operands are exact, and so is comparison.
+value fits a 64-bit integer; *(since 0.7.1)* **`number("…")` and `{number}`
+on decimal integer text** that fits one; and *(since 0.8.1)* the **counting
+builtins** — `len`, `count`, `byte_count`, a found index from `find`, and
+`epoch` — whose answers are integers by nature, plus **`decode`, `try_decode`
+and a JSON HTTP body**, so `decode(encode(x))` is `x`. That round trip did not
+hold before 0.8.1: `encode` wrote all the digits and `decode` read back a double,
+so a value could be written to a file and could not be read from it.
+
+**How it travels, and the rule is one sentence** *(completed in 0.8.1)*: a
+function that **picks** a value preserves its exactness, and one that
+**calculates** is exact when both operands are exact and the answer is an integer
+the runtime holds. An inexact operand never yields an exact answer.
+
+| | |
+|---|---|
+| picks | `min`, `max`, `median` of an odd count, `percentile`/`quantile` landing on a data point, and `sort`, which now **orders** two exact integers that round to the same double |
+| calculates, exactly | `+` `-` `*`, unary minus, `sum` (the fold of `+`), `pow` with a non-negative exponent, `mod` |
+| the identity on an integer | `abs`, `floor`, `ceil`, `round`, `sign` |
+| never exact | `/`, `mean`, an even `median`, an interpolated `percentile` — all of them divide — and the roots, logarithms and transcendentals |
 
 Text is judged the way a literal is, with one difference worth knowing: only
 **decimal** text becomes exact, so `number("0x10")` is inexact although the
@@ -6310,10 +6346,23 @@ reaching `number()` relies on a C library quirk that nothing here documents.
 - any **mixed** expression, because `exact + inexact` has no exact answer and
   promoting the inexact side would invent precision it never had. This is also
   why there is no promotion matrix to get wrong;
-- **division**, since integer division is not integer-valued and a rational kind
-  is a different language;
-- `pow`, `mod` and the counting builtins, which are a later increment — so the
-  design's own headline example, `pow(2, 53) + 1`, is **not** yet exact.
+- **anything that divides**, since integer division is not integer-valued and a
+  rational kind is a different language: `/` itself — even `6 / 3` — and with it
+  `mean`, the **even** case of `median` (which is the mean of the two middle
+  values), and a `percentile` landing *between* two data points. So
+  `mean([x, x])` is inexact where `sum([x, x])` is exact, which is the division
+  rule rather than an oversight;
+- **roots, logarithms and the transcendentals** — `sqrt(4)` is `2` and detecting
+  a perfect square is a different function, and `pow(x, 0.5)` is already a root.
+
+`pow` and `mod` were a later increment and arrived in **0.8.1**, so the design's
+own headline example, `pow(2, 53) + 1`, answers `9007199254740993` from that
+release and answered `9007199254740992` before it. Measured in 0.8.0, with
+`b = 9007199254740993`: `min`, `max`, `sum`, `median`, `abs`, `floor`, `ceil`,
+`round` and `pow` each dropped the last digit, and **`mod(b, 2)` answered `0`** —
+not lost precision but a wrong answer, the exact odd value having become an even
+double before `mod` saw it. `sort([b, b - 1])` did not sort at all, the comparator
+having compared doubles so that the two tied.
 
 **Comparison is mathematical, not by rounding.**
 `9007199254740993 = 9007199254740992.0` is `false`. The obvious implementation
@@ -6347,16 +6396,23 @@ units that exist. `number("1e20")` still builds a value from text.
   deliberate: gBASIC had no modulo, so the documented workaround was
   `a - floor(a/b)*b` — floored — and the libraries written against that advice
   depend on it (`stdlib/forensics.bas`'s civil-date algorithm is correct for
-  negative years only under floored semantics). `mod(a, 0)` raises. There is no
+  negative years only under floored semantics). Two exact operands give an exact
+  remainder *(0.8.1; before that `mod(9007199254740993, 2)` answered `0`, the
+  exact odd value having become an even double first)*. `mod(a, 0)` raises. There is no
   infix `%`; and `7 mod 2` is duration syntax, not modulo — `mod` is a call.
 - `round(number [, places])` — round to a number of decimal places. `places`
-  is optional and defaults to 0, so `round(3.7)` is `4`. Halves round away from
+  is optional and defaults to 0, so `round(3.7)` is `4`. Rounding an exact
+  integer to any number of decimal places is that integer *(0.8.1)*. Halves round away from
   zero: `round(2.5)` is `3` and `round(-2.5)` is `-3`.
 - `compare(a, operator, b)` — compare two values using an operator named as a
   string (the general form behind the comparison operators and modifiers).
 
 Rounding and sign:
 
+- Each of these is the **identity** on an exact integer *(0.8.1)* — an exact
+  integer is already its own floor — so the digits survive; on an inexact one they
+  answer as they always did. `abs` of int64's minimum has no exact magnitude,
+  int64 being asymmetric, so that one value degrades and warns (2112).
 - `abs(x)` — magnitude. `floor(x)` — largest integer **not greater** than `x`,
   so `floor(-2.1)` is `-3`. `ceil(x)` — smallest integer not less than `x`, so
   `ceil(-2.1)` is `-2`. Note `floor` rounds toward negative infinity while
@@ -6385,7 +6441,10 @@ Powers, roots and logarithms. Each raises rather than returning `nan` or
 
 - `sqrt(x)` — square root; raises `sqrt of a negative number`.
 - `pow(base, exponent)` — `pow(2, 10)` is `1024`, and a fractional exponent is
-  a root: `pow(2, 0.5)` is √2.
+  a root: `pow(2, 0.5)` is √2. Two exact integers with a **non-negative**
+  exponent give an exact answer, by repeated multiplication *(0.8.1)*, so
+  `pow(2, 53) + 1` is `9007199254740993`; a negative exponent is a fraction and
+  is not exact.
 - `log(x)` — **natural** logarithm; `log10(x)` — base 10. Both raise
   `log of a non-positive number` for `x <= 0`.
 - `erf(x)` / `erfc(x)` — the error function and its complement.

@@ -276,6 +276,29 @@ int gbasic_has_builtin(const char *name) {
         "any",
         "all",
         "merge",
+        /* `warning` IS A SOFT NAME AND THAT IS WHY IT WAS LEFT UNTIL LAST.
+         *
+         * It was the fourth of the four names the thirteen-libraries report
+         * measured as denied-but-callable on the published 0.7.0 archive; the
+         * other three (`pbkdf2_sha256`, `pbkdf2_sha512`, `scrypt`) were fixed on
+         * 2026-10-11 by adding them to the REGISTRY above, and this one could
+         * not follow them there. PLAT-WARN's whole design rests on `warning`
+         * resolving AFTER the environment walk, which is what lets a variable
+         * shadow it and `r.warning` parse -- the single placement decision that
+         * bought the entire warning channel ZERO reserved words, and
+         * `examples/edgar/monitor_harness_test.bas` uses `board.warning` five
+         * times without noticing. Registering the name would take that away.
+         *
+         * `dispatch_only[]` is read by `gbasic_has_builtin` AND BY NOTHING ELSE
+         * -- it is local to this function -- so a name here is answered for
+         * without becoming a name the parser knows. Measured before the change:
+         * `has_builtin("warning")` was false while `warning()` answered
+         * "warning expects one argument (a message or a record)", an ARITY
+         * error, which proves it was in the dispatch and callable. That is the
+         * worse direction of the two this invariant can fail in: a program that
+         * CHECKED FIRST and then called took its fallback path for a function
+         * the binary runs. */
+        "warning",
     };
     if (gbasic_builtin_function(name)) {
         return 1;

@@ -40,12 +40,21 @@ below holds 52 items of which **50 are struck**, so "the part you act on" had
 become 800 lines of archive with the live items buried in it — and one of the two
 that still read as open had in fact been fixed.
 
+**Items 2, 3 and 4 were closed on 2026-10-13/14**, so **one remains** — the
+deep-nesting teardown segfault, which is the hardest of the four and arguably
+wants a parse-time depth cap and a documented limit rather than an iterative
+`value_free`. Its "where" column pointed
+at a *2026-10-12 entry* in this file that **did not exist** — that measurement was
+recorded in `docs/exact_number_design.md` and never logged here, so the index
+built to stop live items going stale shipped with a dangling pointer of its own.
+A pointer in a table is only as good as the thing it names.
+
 | | what | where |
 |---|---|---|
 | 1 | **A deeply nested value segfaults at teardown** — ~50 000 for a record, ~100 000 for an array, *at an 8 MB stack*; it exits 0 at 64 MB, so the depth is a property of the stack and not of the language. The one depth a program cannot defend against, because the crash is in letting the value go. | ranked item 0 |
-| 2 | **Exactness stops at the operators.** `min max abs floor ceil round sum pow mod` all collapse an exact integer; `mod(9007199254740993, 2)` answers **0**, which is a wrong answer rather than lost precision. `first`/`last`/`sort` preserve, which is the rule: a function that *picks* a value keeps it, one that *calculates* does not. | 2026-10-12 entry |
-| 3 | **`has_builtin("warning")` is false** though `warning` works — one name, the last of a group of four. | 2026-10-11 entry |
-| 4 | **`notation` loses datetime precision** on 3 of 6 precisions, hour and minute silently. A two-line fix was identified against 0.7.0 and **not re-measured since**, so measure before acting. | 2026-10-11 entry |
+| 2 | ~~**Exactness stops at the operators.**~~ **CLOSED 2026-10-13** — increment 5 shipped: `pow mod sum min max median percentile quantile abs floor ceil round sign` and the counting builtins, plus `sort`, which turned out not to ORDER two exact integers at all. The rule in this line is the one that was implemented, and it found nine sites the increment's own list had missed. | 2026-10-13 entry |
+| 3 | ~~**`has_builtin("warning")` is false**~~ **CLOSED 2026-10-14** — answered from `dispatch_only[]`, which only `gbasic_has_builtin` reads, so the name is answered for WITHOUT the parser learning it. That is why this one could not follow the other three into the registry: registering it would cost `warning` its soft name, and the soft name is what bought the whole warning channel zero reserved words. | 2026-10-11 entry |
+| 4 | ~~**`notation` loses datetime precision**~~ **CLOSED 2026-10-14** — re-measured first, as this line said to, and the defect reproduced exactly on 0.8.0: 3 of 6, the year raising and hour/minute silent. The report's two-line fix is what shipped. **My first re-measurement said all six were fine** — it built its probes with `{datetime}`, which forces second precision at construction, so the input had already lost the thing the probe was looking for. | 2026-10-11 entry |
 
 Two more are decisions rather than work: the **absence-coercion warning** is
 measured and deliberately unshipped pending a ruling, and **`{trimmed,upper}=`**
@@ -12331,3 +12340,142 @@ release script is the one place to change, and it wants watching.
 - **Not done:** `password_hash` is still in neither download — libxcrypt is
   `.so.1` on Debian and `.so.2` on RHEL, and at two symbols it is the cheapest
   place to prove `dlopen`. Next on the design note's list.
+
+---
+
+## 2026-10-13 — CC — while: closing OPEN NOW item 2, exactness past the operators
+- **Type:** bug
+- **Severity:** high
+- **What:** `docs/exact_number_design.md` increment 5 named three things —
+  exact `pow`, exact `mod`, and the counting builtins. Measured with
+  `b = 9007199254740993`, **nine more** were wrong, and one of them was not an
+  arithmetic defect at all:
+
+  ```
+  mod(b, 2)                 0                   <- a WRONG ANSWER, not lost precision
+  min([b,b])  max([b,b])    9007199254740992    <- a selector returning a rounded view
+  sum([b])    median([b,b,b])                   <- of the author's own value
+  percentile([b,b,b], 50)   quantile(..., 0.5)
+  abs(b) floor(b) ceil(b) round(b) round(b, 2)
+  pow(2, 53) + 1            9007199254740992    <- the design's own headline example
+  sort([b, b - 1])          UNSORTED            <- the comparator compared doubles
+  ```
+
+  **THE RULE IS WHAT FOUND THE NINE**, and it came from the gbasic-books session
+  rather than from the design: *a function that **picks** a value preserves
+  exactness; one that **calculates** does not.* The design's propagation table
+  was an **enumeration of operations**, and an enumeration is a list a new
+  builtin silently stays off — which is exactly what had happened to `min`,
+  `max`, `median`, `percentile` and `sort`. The table is rewritten as that rule's
+  consequences.
+
+  **`min`/`max` WERE A DEFECT RATHER THAN A DECISION, and the proof is the
+  neighbour**: over text they already returned `value_copy(items[best])` — they
+  *picked* — and only the numeric path recomputed a double. So `max(["b","a"])`
+  gave back what the author wrote and `max([b, b])` gave a rounded view of it,
+  two halves of one builtin disagreeing about what it does.
+
+  **AND `sort` HAD NEVER HEARD OF EXACTNESS**, which nothing had filed. Increment
+  2 wrote the mathematical comparison into `eval_comparison` and
+  `sort_value_compare` compared `as.num.value`, so two exact integers rounding to
+  the same double **tied** and a stable sort left them alone: `b > b - 1`
+  answered correctly while `sort` put `b` first. **Two routes to one question
+  disagreeing** — the shape PLAT-EQ needed three instalments to close for the
+  value KINDS, happening once more for exactness. A rule re-established at a
+  second call site is one a third site silently leaves out. There is ONE
+  comparison now and both routes go through it.
+- **Workaround:** resolved. `src/eval.c`: `number_compare_exactly` extracted and
+  shared; selectors return the element; `sum` folds exactly with the same 2112
+  overflow warning `+` uses; `abs`/`floor`/`ceil`/`round`/`sign` are the identity
+  on an exact integer; `mod` is an exact floored remainder; `pow` is square-and-
+  multiply (not a loop — the exponent is an int64, and `pow(1, 1e18)` must answer
+  1 rather than run for a thousand years); `len`/`count`/`byte_count`/a found
+  index/`epoch` are exact. `tests/run_exact.sh` 50 → 119 assertions, oracle 183 →
+  407 values, ten perturbations proven red.
+
+  **THE LINE UNDER THE COUNTING BUILTINS IS STATED RATHER THAN LEFT TO INFERENCE:**
+  there are **86** `value_number((double)…)` sites in `src/eval.c` and five are
+  now exact. The line is *quantities a program does arithmetic with* — a length,
+  a count, an index, an epoch get summed and differenced, while a module handle,
+  an HTTP status and a diagnostic column are identifiers and coordinates. A
+  blanket sweep would make 86 new claims for no measured need.
+
+  **AND A THIRD DOOR FOUND BY PROBING EVERY DOOR RATHER THAN READING:** `decode`.
+  `encode` wrote `9007199254740993` and `decode` read back `...992`, so **a value
+  could be written to a file and not read back from it**. The 2026-10-12 fix to
+  `number("…")`/`{number}` recorded the lesson *a rule re-established at two call
+  sites is one a third site silently leaves out* — and this was the third site.
+  The sharpest evidence it was a defect: `stdlib/notation.bas`, pure gBASIC,
+  parses its numbers with `number("…")` and round-tripped it correctly the whole
+  time. Two branches (the lenient one `decode()` takes, the strict one an HTTP
+  body takes), asserted separately, the wire one in `run_webclient.sh` where that
+  door lives. `serialize` is left alone deliberately — increment 4, needing a
+  `SER_VERSION` bump — and is now a **negative control** so it goes red when that
+  lands.
+
+  **TWO WEAK ASSERTIONS OF MY OWN, both found by perturbation, both the same
+  shape, and the first is embarrassing in a useful way.** The counting tier used
+  three-element lists — and **above 2^53 doubles step in twos**, so
+  `len([1,2,3]) + b` lands on the same answer either way; reverting `len` to a
+  double left every check green. I had written *into the comment above that very
+  check* that `len([1,2,3]) + b` read correctly by luck while `find` did not, and
+  then wrote the tier into the trap anyway. Counts of one and two now. Second:
+  `epoch` has **three** return paths (clock, local datetime, named zone) and only
+  one was asserted, so perturbing another was not caught; the two that cannot be
+  pinned by value are asserted as a difference with the operand **doubled**
+  first, because an even operand is representable above 2^53 where a bare
+  `epoch()` would make the check depend on the parity of the current second.
+
+---
+
+## 2026-10-14 — CC — while: closing OPEN NOW items 3 and 4
+- **Type:** bug
+- **Severity:** medium
+- **What:** Two small items, and each had a trap in it that is worth more than
+  the fix.
+
+  **`has_builtin("warning")` answered false while `warning` ran.** It was the
+  fourth of the four names the thirteen-libraries report measured as
+  denied-but-callable on the published 0.7.0 archive, and the only one left: the
+  other three (`pbkdf2_sha256`, `pbkdf2_sha512`, `scrypt`) were fixed on
+  2026-10-11 by adding them to the name REGISTRY, **and this one could not follow
+  them there.** PLAT-WARN's entire design rests on `warning` resolving AFTER the
+  environment walk — that single placement is what lets a variable shadow it and
+  `r.warning` parse, and it is why the warning channel needed ZERO reserved
+  words. Registering the name takes that away. It is answered from
+  `dispatch_only[]` instead, which `gbasic_has_builtin` reads **and nothing else
+  does**, so the name is answered for without the parser learning it. The
+  assertion went into `tests/warning_model/soft_name.bas` deliberately, because
+  the four lines already in that fixture (a local shadowing it, a record field,
+  a field array) are the CONTROL on the new one: if the fix had been done the
+  obvious way, they would all have broken.
+
+  Confirmed the right way before touching anything: `warning()` answered
+  *"warning expects one argument"* — an **arity** error, not "unknown function" —
+  which proves it was in the dispatch the whole time. That is the worse of the
+  two directions this invariant fails in, because a program that CHECKED FIRST
+  and then called took its fallback path for a function the binary runs, which is
+  the one thing `has_builtin` exists to prevent.
+
+  **`notation` lost 3 of 6 datetime precisions**, and the ledger line said to
+  re-measure before acting. I did, and **my first re-measurement was wrong**: it
+  built its probes with `{datetime}`, which forces second precision at
+  CONSTRUCTION, so every input had already lost the thing the probe was looking
+  for and all six reported fine. Rebuilt with `{date}` — which takes its
+  precision from the string — the reported defect reproduced exactly on 0.8.0:
+  the year case writes `{time}` and **raises** on read, while hour and minute
+  write `{datetime}`, which is documented to force seconds, and come back
+  **silently** at second precision. An appointment stored to the minute reads
+  back as a different value with nothing said.
+
+  **And the fixture tier that should have caught it was built on the three
+  precisions that worked** — day, second and time. That is the same shape as the
+  weak assertions in the exactness work the day before: the tier looked like it
+  covered the subject and could not fail on it.
+- **Workaround:** resolved. `src/builtins.c` gains one name in `dispatch_only[]`;
+  `stdlib/notation.bas`'s `_tag_of` takes the report's two-line fix (`{date}` is
+  the default, `{time}` only for a clock with no date, `{datetime}` only where
+  seconds are already present). `tests/notation_test.bas` asserts all six
+  precisions AND the tag each gets — the second because the round trip alone
+  passes on a writer that tags a bare clock `{date}` too, which is the
+  over-correction, and both directions are proven red.

@@ -49,7 +49,7 @@ run() {   # run <fixture> <min-ok> <label>
 }
 
 echo "--- TIER 1: arithmetic, comparison, negation, rendering, overflow ---"
-run tests/exact/exact_test.bas 50 "exact semantics"
+run tests/exact/exact_test.bas 128 "exact semantics"
 
 echo "--- TIER 2: THE ORACLE -- python3 computes the same integers exactly ---"
 # THE TIER THAT CATCHES AN IMPLEMENTATION WHICH IS SELF-CONSISTENTLY WRONG. Tier 1
@@ -88,7 +88,33 @@ program main( args )
         print "sum " + string(i) + "\t" + string(_sum(i))
         i = i + 1
     end while
+    ' INCREMENT 5. The recipes above drive `*` and `+` only, so the new exact
+    ' operations had no oracle at all -- and `pow` is where one would hide, since
+    ' SQUARE AND MULTIPLY is the only part of this increment whose answer is not
+    ' obvious by eye. `mod` is recomputed by python's own `%`, which is ALREADY
+    ' FLOORED and so is a genuinely independent statement of the same convention
+    ' rather than a copy of ours.
+    e = 0
+    while e <= 38
+        print "powb 3 " + string(e) + "\t" + string(pow(3, e))
+        print "powb 7 " + string(e) + "\t" + string(pow(7, e))
+        print "powb -3 " + string(e) + "\t" + string(pow(0 - 3, e))
+        e = e + 1
+    end while
+    i = 0
+    while i <= 40
+        print "mod " + string(_offset(i)) + " 7\t" + string(mod(_offset(i), 7))
+        print "mod " + string(_offset(i)) + " -7\t" + string(mod(_offset(i), 0 - 7))
+        print "absv " + string(_offset(i)) + "\t" + string(abs(_offset(i)))
+        i = i + 1
+    end while
 end program
+
+function _offset(i)
+    ' Straddles zero and reaches past 2^53, so the sign rules and the precision
+    ' are exercised by the same recipe list.
+    return 9007199254740990 + i - 20
+end function
 
 function _up(base, n)
     ' Stops multiplying once it would overflow, so the dump holds only values the
@@ -137,7 +163,7 @@ BAS
     GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic "$tmp/dump.bas" >"$tmp/dump.txt" 2>"$tmp/dump.err" </dev/null || true
     lines="$(wc -l <"$tmp/dump.txt" | tr -d ' ')"
     # A COVERAGE FLOOR, because an oracle over an empty dump agrees perfectly.
-    if [ "${lines:-0}" -lt 150 ]; then
+    if [ "${lines:-0}" -lt 400 ]; then
         printf 'FAIL oracle (dump holds only %s lines; the recipes did not run)\n' "$lines"
         head -5 "$tmp/dump.err" | sed 's/^/  /'
         status=1
@@ -151,6 +177,8 @@ for raw in open(sys.argv[1]):
         continue
     recipe, got = raw.rstrip("\n").split("\t", 1)
     op, _, arg = recipe.partition(" ")
+    if op not in ("pow7", "pow2", "fact", "sum"):
+        continue        # the increment-5 recipes take two arguments; second pass
     n = int(arg)
     if op == "pow7":
         # Recomputed the way gBASIC does: stop before the step that would leave
@@ -183,12 +211,40 @@ for raw in open(sys.argv[1]):
         bad += 1
         if bad <= 8:
             print("  %-12s gbasic [%s]  python [%s]" % (recipe, got, v))
+    continue
+for raw in open(sys.argv[1]):
+    if "\t" not in raw:
+        continue
+    recipe, got = raw.rstrip("\n").split("\t", 1)
+    parts = recipe.split(" ")
+    op = parts[0]
+    # INCREMENT 5. python's `%` is ALREADY FLOORED, so `mod` is checked against an
+    # independent statement of the convention rather than a transcription of ours;
+    # `pow` is where a square-and-multiply bug would live, and nothing else in this
+    # file could see one.
+    if op == "powb":
+        base, e = int(parts[1]), int(parts[2])
+        v = base ** e
+        if abs(v) > 2**63 - 1:
+            continue            # degraded and warned; the double is not the claim
+    elif op == "mod":
+        a, m = int(parts[1]), int(parts[2])
+        v = a % m
+    elif op == "absv":
+        v = abs(int(parts[1]))
+    else:
+        continue
+    checked += 1
+    if str(v) != got:
+        bad += 1
+        if bad <= 8:
+            print("  %-12s gbasic [%s]  python [%s]" % (recipe, got, v))
 print("checked %d, disagreements %d" % (checked, bad))
 PY
         tail -1 "$tmp/oracle.txt"
         agreed="$(sed -n 's/^checked \([0-9]*\), disagreements \([0-9]*\)$/\1 \2/p' "$tmp/oracle.txt")"
         ncheck="${agreed%% *}"; nbad="${agreed##* }"
-        if [ -z "$agreed" ] || [ "${ncheck:-0}" -lt 150 ]; then
+        if [ -z "$agreed" ] || [ "${ncheck:-0}" -lt 400 ]; then
             cat "$tmp/oracle.txt" | sed 's/^/  /'
             printf 'FAIL oracle (only %s values cross-checked)\n' "${ncheck:-0}"; status=1
         elif [ "${nbad:-1}" -ne 0 ]; then
@@ -249,6 +305,38 @@ if printf '%s' "$json" | grep -q '"subcode":2112' && printf '%s' "$json" | grep 
 else
     printf 'MISMATCH --json-diagnostics\n  got: %s\n' "$json"; status=1
 fi
+
+# THE THREE NEW OVERFLOW SITES (increment 5), each beside its control. A warning
+# channel gains credibility from the silence as much as from the noise, and these
+# three could each have been written to fire on every call.
+want 'sum overflow warns'      'print sum([9000000000000000000, 9000000000000000000])' '[2112]'
+want 'and names the sum'       'print sum([9000000000000000000, 9000000000000000000])' 'sum'
+want 'pow overflow warns'      'print pow(3, 50)'                                      '[2112]'
+want 'and names the power'     'print pow(3, 50)'                                      'power'
+# int64 IS ASYMMETRIC -- its minimum is one greater in magnitude than its maximum --
+# so this single value has no exact magnitude and must say so rather than answer.
+want 'abs of int64 min warns'  'print abs(number("-9223372036854775808"))'              '[2112]'
+want 'and names the magnitude' 'print abs(number("-9223372036854775808"))'              'magnitude'
+for quiet in 'print sum([1, 2, 3])' 'print pow(3, 2)' 'print abs(0 - 5)' \
+             'print mod(7, 3)' 'print min([1, 2])' 'print round(2.5)'; do
+    printf '%s\n' "$quiet" >"$tmp/c.bas"
+    got="$({ ./gbasic "$tmp/c.bas" 2>&1 >/dev/null </dev/null || true; })"
+    if [ -z "$got" ]; then
+        printf 'ok   CONTROL: %s is silent\n' "$quiet"
+    else
+        printf 'MISMATCH %s warned\n  got: %s\n' "$quiet" "$got"; status=1
+    fi
+done
+# AND `on warning stop` ESCALATES EACH OF THEM, which is what makes the degradation
+# a choice the caller can refuse rather than something they merely hear about.
+for esc in 'print sum([9000000000000000000, 9000000000000000000])' 'print pow(3, 50)'; do
+    printf 'on warning stop\n%s\n' "$esc" >"$tmp/e.bas"
+    if ./gbasic "$tmp/e.bas" >/dev/null 2>&1 </dev/null; then
+        printf 'MISMATCH `on warning stop` did not stop: %s\n' "$esc"; status=1
+    else
+        printf 'ok   `on warning stop` escalates it\n'
+    fi
+done
 
 echo "--- TIER 4: sizeof(Value) did not move ---"
 # THE DESIGN'S ZERO-MEMORY-COST CLAIM, asserted rather than trusted. A Value is

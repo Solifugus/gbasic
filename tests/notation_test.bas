@@ -74,6 +74,32 @@ rt("empty record", {})
 rt("empty array", [])
 rt("scalars", { n: 1, f: 0.1, big: number("1e20"), t: true, no: false, s: "hi", z: nothing, u: unknown })
 rt("date / datetime / time", { a: dt, b: pt, c: tt })
+' ALL SIX PRECISIONS A DATETIME CAN CARRY, and this tier is why the defect
+' survived: the three values above are DAY, SECOND and TIME -- which happen to be
+' exactly the three that worked. Measured against 0.7.0 and again on 0.8.0, the
+' other three failed, and they failed in two different ways: the YEAR case wrote
+' `{time}` and RAISED on read, while HOUR and MINUTE wrote `{datetime}` -- which
+' forces second precision -- and came back SILENTLY changed, so a program storing
+' an appointment to the minute read back a different value with nothing said.
+'
+' CONSTRUCTED WITH `{date}`, WHICH IS LOAD-BEARING: `{datetime}` forces second
+' precision at CONSTRUCTION, so a probe built with it has already lost whatever
+' this tier is looking for and passes on the broken library. The first
+' re-measurement of this defect did exactly that and reported all six as fine.
+y_p {date}= "2026"
+m_p {date}= "2026-03"
+h_p {date}= "2026-03-15 12"
+i_p {date}= "2026-03-15 12:05"
+rt("precision: year", { v: y_p })
+rt("precision: month", { v: m_p })
+rt("precision: hour", { v: h_p })
+rt("precision: minute", { v: i_p })
+' AND THE TAG EACH ONE GETS, asserted because the round trip alone would pass on
+' a library that wrote `{date}` for a bare clock time too -- `{time}` is the one
+' narrow case that still needs its own tag, and losing it would be invisible here.
+check("a bare clock keeps {time}", contains(notation.to_text({ v: tt }), "v {time}:"), true)
+check("a full datetime keeps it ", contains(notation.to_text({ v: pt }), "v {datetime}:"), true)
+check("and a partial one is date", contains(notation.to_text({ v: i_p }), "v {date}:"), true)
 rt("money at four precisions", { a: usd, b: sub, c: neg, d: jpy, e: kwd })
 rt("file, dir, duration", { a: fl, b: dr, c: dur })
 rt("nesting", { a: { b: { c: [ 1, [ 2, [ 3 ] ] ] } } })

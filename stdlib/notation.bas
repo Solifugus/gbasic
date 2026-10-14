@@ -138,12 +138,30 @@ library notation
             return money.currency(v)
         end if
         if t = "datetime" then
+            ' WHICH TAG A DATETIME GETS, and this was WRONG FOR HALF THE
+            ' PRECISIONS the language has. Measured against 0.7.0 and again on
+            ' 0.8.0: of the six, the YEAR case wrote `{time}` and RAISED on read
+            ' ("time modifier expects an ISO-like time string"), while the HOUR
+            ' and MINUTE cases wrote `{datetime}` and came back SILENTLY at
+            ' second precision -- so a program that stored an appointment to the
+            ' minute read back a different value with no diagnostic anywhere.
+            '
+            ' THE TWO OLD TESTS WERE EACH READ AS SOMETHING THEY DO NOT MEAN.
+            ' "No hyphen" was read as "this is a time of day", which a bare year
+            ' satisfies; and "contains a space" chose `{datetime}`, which is
+            ' DOCUMENTED TO FORCE SECOND PRECISION and so is only safe for a
+            ' value that already carries seconds.
+            '
+            ' `{date}` TAKES ITS PRECISION FROM THE STRING -- measured, all six
+            ' shapes in and the same six back -- which is what makes the fix two
+            ' lines rather than a new tag. So `{date}` is the default and the
+            ' other two are the narrow cases that need them.
             s = string(v)
-            if not contains(s, "-") then
-                return "time"
+            if contains(s, ":") and not contains(s, "-") then
+                return "time"          ' a clock with no date: 12:05:03
             end if
-            if contains(s, " ") then
-                return "datetime"
+            if count(split(s, ":")) = 3 then
+                return "datetime"      ' already second-precision, nothing to lose
             end if
             return "date"
         end if

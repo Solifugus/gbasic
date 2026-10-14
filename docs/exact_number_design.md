@@ -1,7 +1,9 @@
 # Exact numbers — design
 
-**Status: SHIPPED, increments 1-3 (0.6.0, 2026-10-07), plus `number("…")` as a
-source of exactness (2026-10-12); increments 4-5 open.**
+**Status: SHIPPED, increments 1-3 (0.6.0, 2026-10-07), `number("…")` as a
+source of exactness (2026-10-12), and increment 5 — `pow`, `mod`, the counting
+builtins, the selectors and `sort`'s ordering (2026-10-13). Increment 4
+(`serialize` / the actor wire) is the only one open.**
 Decided 2026-10-05 after costing the alternatives; the costs below are measured,
 not estimated. Each section is annotated where building it contradicted what was
 written here.
@@ -114,10 +116,11 @@ actually does, because a list that mixes shipped and unshipped reads as neither.
 - **SHIPPED.** An integer **literal** whose digits round-trip: the lexer parses
   to `int64` and confirms the text matches. `10000000000000001` becomes exact;
   `0.1` does not; `1e20` is settled below as **inexact**.
-- **NOT SHIPPED — increment 5.** Builtins that **count**: `len`, `count`,
-  `byte_count`, a found index, `epoch`. These are integers by nature and would be
-  exact for free. Measured 2026-10-12: `len("ab") + 9007199254740991` answers
-  ...992.
+- **SHIPPED 2026-10-13 — increment 5.** Builtins that **count**: `len`, `count`,
+  `byte_count`, a found index, `epoch`. These are integers by nature. Measured
+  2026-10-12, before the change: `len("ab") + 9007199254740991` answered ...992.
+  Five of the 86 integer-returning sites in `src/eval.c`, and the line is stated
+  under the increment-5 note below.
 - **SHIPPED 2026-10-12**, and it was not before. `number("…")` on integer text
   that fits, and the `{number}` modifier with it. **This one is worth a
   paragraph**, because the gap was not merely an unfinished increment: the
@@ -155,6 +158,20 @@ actually does, because a list that mixes shipped and unshipped reads as neither.
 | `/` | **always inexact**, even `6 / 3`. `floor(a / b)` is already how gBASIC spells integer division |
 | unary `-`, `mod` | preserve exactness |
 | `pow`, both exact non-negative integers | exact by repeated multiplication when it fits |
+| a function that **picks** — `min`, `max`, an odd `median`, a `percentile` on a data point | returns the element, so exactness travels with it |
+| `sum` | the fold of `+`, and agrees with it |
+| `abs`, `floor`, `ceil`, `round`, `sign` | the identity on an exact integer |
+| `mean`, an even `median`, an interpolated `percentile` | divide, so inexact |
+| counting builtins — `len`, `count`, `byte_count`, a found index, `epoch` | exact; they are integers by nature |
+
+**THE RULE IS ONE SENTENCE AND THE TABLE IS ITS CONSEQUENCES**, which is a
+correction to how this section was first written — it enumerated operations, and
+an enumeration is a list a new builtin silently stays off. A function that
+**picks** a value preserves its exactness; one that **calculates** is exact when
+both operands are exact and the answer is an integer the runtime holds; and an
+inexact operand never yields an exact answer. Stated that way it predicts
+`min`/`max`, `median`, `percentile`, `sort` and the counting builtins without any
+of them having been in the increment's own list.
 
 **`pow` being exact is what makes the headline case right rather than merely
 loud.** `pow(2,53)` is exact, `+ 1` is exact, and the answer is
@@ -299,16 +316,105 @@ regression.
 notation says "approximately this magnitude", and `number("...")` is how to ask
 for the integer. A perturbation making it exact is proven red.
 
-**Still open:** `pow`/`mod`/counting builtins (increment 5 — so this release does
-*not* fix the design's own headline example), `serialize`/the actor wire
-(increment 4, needing a `SER_VERSION` bump), and whether `BIGINT` columns should
-become exact numbers rather than strings, which is a visible behaviour change
-deserving its own ruling.
+**Still open after 1–3:** `pow`/`mod`/counting builtins (increment 5 — so that
+release did *not* fix the design's own headline example), `serialize`/the actor
+wire (increment 4, needing a `SER_VERSION` bump), and whether `BIGINT` columns
+should become exact numbers rather than strings, which is a visible behaviour
+change deserving its own ruling. The last of those is now **closed as no**; see
+the BIGINT decision above.
 
-**And `mod` is sharper than "still open" suggests.** Measured 2026-10-12:
+**And `mod` was sharper than "still open" suggests.** Measured 2026-10-12:
 `mod(9007199254740993, 2)` answers **0**. That is not lost precision, it is a
 *wrong answer* — the exact odd literal degrades to a double before `mod` sees
-it, and the double is even. The design table above says `mod` preserves
-exactness; it does not yet, and the failure is the kind a reader would print in
-a table without blinking. It is the strongest argument for increment 5 going
-next, ahead of increments 4's serialization.
+it, and the double is even. The design table says `mod` preserves exactness; it
+did not. That was the strongest argument for increment 5 going next, ahead of
+increment 4's serialization, and it is what decided the order.
+
+### SHIPPED 2026-10-13 — INCREMENT 5, AND IT WAS WIDER THAN THE INCREMENT
+
+`tests/run_exact.sh` is 119 self-checking assertions now (was 50), with the
+python oracle extended from 183 values to **407** — `pow`, `mod` and `abs`
+recomputed in arbitrary-precision ints, `mod` against python's own `%`, which is
+**already floored** and so is an independent statement of the convention rather
+than a transcription of ours. Ten perturbations proven red, each caught by the
+check written for it.
+
+**THE INCREMENT'S OWN LIST WAS INCOMPLETE, AND THE RULE IS WHAT FOUND THE REST.**
+It named `pow`, `mod` and the counting builtins. Measured with
+b = 9007199254740993, nine more answers were wrong: `min`, `max`, `sum`,
+`median`, `percentile`, `quantile`, `abs`, `floor`, `ceil` and `round` all
+dropped the digit. The books session supplied the sentence that predicts them —
+*a function that picks a value preserves exactness; one that calculates does
+not* — and the propagation table above is rewritten as that rule's consequences,
+because an enumeration of operations is a list a new builtin silently stays off.
+
+**AND `sort` COULD NOT ORDER EXACT INTEGERS AT ALL**, which nothing had filed.
+`sort([b, b - 1])` left the array as it found it: the comparator compared
+`as.num.value`, both sides round to the same double, the pair tied, and the sort
+is stable. So `b > b - 1` answered correctly while `sort` put `b` first — **two
+routes to one question disagreeing**, which is exactly the shape PLAT-EQ needed
+three instalments to close for the value KINDS and which had now happened once
+more for exactness. Increment 2 wrote the rule into `eval_comparison` and
+`sort_value_compare` had never heard of it. There is ONE comparison now
+(`number_compare_exactly`) and both routes go through it, which also fixed
+`sort_by`, `min`/`max` over non-numeric arrays, and the element a `median` or
+`percentile` picks.
+
+**THE LINE UNDER THE COUNTING BUILTINS IS DRAWN AND STATED.** There are **86**
+`value_number((double)...)` sites in `src/eval.c`; the five this increment names
+are exact and the other 81 are untouched. The line is *quantities a program does
+arithmetic with*: a length, a count, a found index and an epoch get summed and
+differenced, while a module handle, an HTTP status and a diagnostic column are
+identifiers and coordinates. A blanket sweep would make 86 new claims for no
+measured need. The line can move the day something measures one.
+
+**TWO WEAK ASSERTIONS OF MY OWN, both found by perturbation and both the same
+shape.** (1) The counting tier used three-element lists, and **above 2^53 doubles
+step in twos**, so `len([1,2,3]) + b` lands on the same answer either way —
+reverting `len` to a double left every check green. It uses counts of one and two
+now. The comment two sections up had *already recorded* that `len([1,2,3]) + b`
+read correctly by luck while `find` did not, and the tier was written into the
+trap anyway. (2) `epoch` has **three** return paths — the clock, a datetime in
+local time, and a datetime in a named zone — and only the named one was
+asserted, so perturbing the local one was not caught. Three paths, three checks.
+The other two cannot be pinned by value (one moves, one is a fact about this
+machine's zone) so they are asserted as a difference, with the operand **doubled**
+first: an even operand is representable above 2^53, where a bare `epoch()` would
+have made the check depend on the parity of the current second.
+
+**AND `decode` WAS THE THIRD STRING-TO-NUMBER DOOR**, found by probing every door
+rather than by reading. The 2026-10-12 fix to `number("…")`/`{number}` recorded
+the lesson *a rule re-established at two call sites is one a third site silently
+leaves out*; `decode` was the third site, so `encode` wrote 9007199254740993 and
+`decode` read back ...992 — **a value could be written to a file and not read
+back from it**. The sharpest evidence that this was a defect and not a decision:
+`stdlib/notation.bas`, pure gBASIC, parses its numbers with `number("…")` and
+round-tripped it correctly the whole time, so the library got it right by using
+the language's own door while the language's own decoder did not. Two branches
+needed it — the lenient one `decode()` takes and the **strict** one an HTTP body
+takes — and because they are separate code paths they are asserted separately,
+the wire one in `run_webclient.sh` where that door lives. Every narrowing (hex,
+exponent, fraction, out of range) falls out of the shared helper rather than
+being restated, which is the whole reason for sharing it.
+
+**ONE BEHAVIOUR IMPROVED AS A SIDE EFFECT, recorded because nothing asked for
+it.** `quantile_sorted` computed `lo + frac * (hi - lo)` even when `frac` was
+zero, so a cut point landing on a data point beside an infinity gave
+`0 * inf` = **nan**. Picking the element answers the element.
+
+**ONE QUESTION LEFT OPEN RATHER THAN DECIDED BY ACCIDENT, because a reader will
+ask it.** `floor`, `ceil`, `round` and `sign` of an *inexact* value return an
+integer-valued double and are deliberately **inexact** — `floor(2.5)` is an
+inexact 2 — on the rule that an inexact operand never yields an exact answer.
+The alternative is attractive and bigger than it looks: `floor(a / b)` is how
+gBASIC spells integer division, so making `floor` always exact would make integer
+division exact, which is a claim about `/` that this design has twice decided
+against. It would also need a range guard, `floor(1e300)` having no `int64`. Left
+as it is, recorded here so that changing it is a decision rather than a drift.
+
+**Still open:** increment 4 (`serialize` / the actor wire, needing a
+`SER_VERSION` bump) is now the only numbered increment left, and it is asserted
+as a **negative control** in the fixture — `deserialize(serialize(b)) = b` must
+be FALSE — so it goes red when that increment lands rather than being a note
+somebody has to remember. The reference's "exact binary round-trip" wording is
+corrected to say what it means: every TYPE survives, not every DIGIT.

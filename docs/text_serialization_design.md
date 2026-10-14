@@ -307,6 +307,24 @@ file      /etc/hostname            dir   /tmp
 number    0.30000000000000004      inf   nan
 ```
 
+**WHICH TAG A DATETIME GETS IS NOT A COSMETIC CHOICE, and this table's three
+examples are exactly the three precisions that happened to work.** A gBASIC
+datetime carries one of **six** precisions and the writer picks its tag from the
+printed form, so the rule has to be right for all six. Measured against 0.7.0 and
+again on 0.8.0: the *year* case wrote `{time}` and **raised** on read, and the
+*hour* and *minute* cases wrote `{datetime}` — which is documented to force
+second precision — and came back **silently** changed, so a program that stored
+an appointment to the minute read back a different value with no diagnostic
+anywhere.
+
+The fix is that **`{date}` takes its precision from the string** (all six shapes
+in, the same six out), so `{date}` is the default and the other two tags are kept
+only for the narrow cases that need them: `{time}` for a clock with no date, and
+`{datetime}` where the value already carries seconds and so has nothing to lose.
+Shipped 2026-10-14; `tests/notation_test.bas` asserts all six precisions and the
+tag each one gets, the second being needed because the round trip alone passes on
+a writer that tags a bare clock time `{date}` as well.
+
 **4. gBASIC record literals need commas and reject a trailing one.**
 
 ```basic

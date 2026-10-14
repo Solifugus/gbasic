@@ -16,6 +16,85 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Two silent-wrong-answer fixes from the friction ledger
+
+**`has_builtin("warning")` answered `false` while `warning` ran.** A program that
+checked before calling took its fallback path for a function the binary has. It
+was the last of four names measured as denied-but-callable on the 0.7.0 archive;
+the other three were fixed in 0.8.0 and this one needed a different route,
+because `warning` is deliberately a *soft* name — a variable may shadow it and
+`r.warning` must parse — so it is answered for without the parser learning it.
+
+**`notation` lost 3 of a datetime's 6 precisions.** Writing a year-precision
+value produced a document that **raised** when read back, and hour- and
+minute-precision values came back **silently** at second precision — so a program
+that stored an appointment to the minute read a different value, with no
+diagnostic anywhere. All six round-trip now.
+
+### Exactness reaches past the operators
+
+`pow(2, 53) + 1` answers **9007199254740993**. It answered `9007199254740992`
+in every release up to and including 0.8.0 — with exit 0 and no diagnostic — and
+it is the first line of `docs/exact_number_design.md`, so the design's own
+headline example was the thing still broken.
+
+**Twelve answers change, and each one only above 2^53**, which is why this can
+land in a patch release: below that limit an exact and an inexact integer are
+indistinguishable in every rendering, so the only outputs that move are the ones
+that were wrong.
+
+| | before | now |
+|---|---|---|
+| `mod(9007199254740993, 2)` | `0` | `1` |
+| `min`, `max`, `median`, `percentile`, `quantile` | a rounded view of the value | **the element you put in** |
+| `sum` | collapsed past 2^53 | the fold of `+`, agreeing with it |
+| `abs`, `floor`, `ceil`, `round`, `sign` | collapsed | the identity on an integer |
+| `pow` with a non-negative integer exponent | double arithmetic | exact by repeated multiplication |
+| `len`, `count`, `byte_count`, a found index, `epoch` | inexact | exact — they are integers by nature |
+| `sort([9007199254740993, 9007199254740992])` | **unsorted** | sorted |
+| `decode(encode(x))` | lost the value above 2^53 | is `x` |
+
+`mod` is the sharp one: `0` is not lost precision but a **wrong answer**, the
+exact odd value having become an even double before `mod` saw it — and a parity
+test is the commonest thing anyone asks `mod`.
+
+**`decode` was the third string-to-number door.** `number("…")` and `{number}`
+became exact in 0.7.1, with the lesson written down that *a rule re-established
+at two call sites is one a third site silently leaves out* — and `decode` was the
+third site. So `encode` wrote every digit and `decode` read back a double: a
+program could write a value to a file and not read it back. The sharpest evidence
+that this was a defect is that `stdlib/notation.bas` — pure gBASIC, parsing its
+numbers with `number("…")` — round-tripped the same value correctly the whole
+time. A JSON HTTP body reads exactly too, which is a separate parser branch.
+
+**`serialize` still does not carry exactness** and that is the one open
+increment: "exact binary round-trip" means every *type* survives, not every
+*digit*, and closing it needs a `SER_VERSION` bump.
+
+`sort` is the one nothing had filed. Its comparator compared doubles, so two
+exact integers that round to the same double **tied** and a stable sort left them
+as it found them — while `a > b` on the same pair answered correctly. Two routes
+to one question disagreeing; there is one comparison now and both go through it.
+
+**What stays inexact, by the rule rather than by omission:** anything that
+divides — `/`, `mean`, an even `median`, an interpolated `percentile` — and the
+roots and logarithms. The rule in one sentence: *a function that picks a value
+preserves exactness; one that calculates is exact when both operands are exact
+and the answer is an integer the runtime holds; an inexact operand never yields
+an exact answer.*
+
+Overflow still degrades rather than refusing, with warning **2112**, now also
+from `sum`, `pow` and `abs` (of int64's minimum, which has no exact magnitude).
+`on warning stop` turns any of them into a failure.
+
+**One new diagnostic on a previously silent path**, measured and recorded because
+it is the only way this reaches a program working below 2^53: arithmetic on a
+*decoded* huge integer can now warn where it used to be silent —
+`decode("9000000000000000000") * 2` prints `1.8e+19` either way, and now says
+that the answer went approximate. The value does not change; the silence does.
+It is the same warning the equivalent literal has produced since 0.6.0, so what
+changed is that the two spellings agree.
+
 ---
 
 ## 0.8.0 — 2026-10-12

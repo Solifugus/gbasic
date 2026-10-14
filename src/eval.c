@@ -1762,6 +1762,54 @@ static int exact_vs_double_compare(long long a, double b) {
     return 0;
 }
 
+/* COMPARE TWO NUMBERS RESPECTING EXACTNESS -- ONE implementation, because six
+ * routes in this language ask about order and sameness and each of them must
+ * give the same answer.
+ *
+ * WHY THIS IS AN EXTRACTION RATHER THAN A NEW RULE: the rule was already
+ * written, in `eval_comparison`, and `sort` HAD NEVER HEARD OF IT. Measured
+ * 2026-10-13, `sort([9007199254740993, 9007199254740992])` leaves the array
+ * UNSORTED -- the comparator below compared `as.num.value`, both sides round to
+ * the same double, the two tie, and a stable sort keeps the order it was given.
+ * So `a > c` answered TRUE while `sort` put `a` first, two routes to one
+ * question disagreeing, which is exactly the shape PLAT-EQ needed three
+ * instalments to close for the KINDS and which has now happened once more for
+ * EXACTNESS. A rule re-established at a second call site is one a third call
+ * site silently leaves out.
+ *
+ * Answers -1, 0 or 1, and **2 when either side is NaN**, which is unordered and
+ * is not the same as equal -- every caller has to decide what to do with that,
+ * and a caller that cannot say "unordered" would answer `=` TRUE for NaN.
+ *
+ * WHAT IT IS NOT ASKED ABOUT, stated so the claim above is exactly true rather
+ * than roughly: `eval_comparison` routes here whenever EITHER side is exact, and
+ * keeps its own double comparison for the other two cases. One is `0 = false`, a
+ * real coercion with 1,472 measured uses that must not become an integer
+ * comparison; the other is plain double-against-double, where the IEEE operators
+ * answer NaN correctly for all ten spellings (`!>=` and the rest) and a -1/0/1
+ * cannot. `sort` has no such cases -- it never sees a boolean beside a number,
+ * `array_all_sort_comparable` having refused a mixed array -- so it routes
+ * everything here. */
+static int number_compare_exactly(const Value *left, const Value *right) {
+    int le = left->as.num.is_exact, re = right->as.num.is_exact;
+    if (le && re) {
+        long long x = left->as.num.exact, y = right->as.num.exact;
+        return (x > y) - (x < y);
+    }
+    if (le) {
+        return exact_vs_double_compare(left->as.num.exact, right->as.num.value);
+    }
+    if (re) {
+        int cmp = exact_vs_double_compare(right->as.num.exact, left->as.num.value);
+        return cmp == 2 ? 2 : -cmp;
+    }
+    double a = left->as.num.value, b = right->as.num.value;
+    if (a != a || b != b) {
+        return 2;
+    }
+    return (a > b) - (a < b);
+}
+
 /* Binary-safe string constructor: copies `length` bytes (interior NULs allowed). */
 static Value value_string_n(const char *bytes, size_t length) {
     Value value = {0};
@@ -10030,11 +10078,14 @@ static const GbCapability gb_capability_table[] = {
     { "list",      "fs:read" },
     { "files",     "fs:read" },
     { "folders",   "fs:read" },
-    /* ...and the three value functions that also live in dispatch_only[] but
-       touch nothing. Classified rather than omitted: this tier's whole job is
-       that an unclassified name FAILS instead of scanning as harmless, so
-       "harmless" has to be something the table says out loud. The coverage
-       check found these three the first time it ran. */
+    /* ...and the value functions that also live in dispatch_only[] but touch
+       nothing. Classified rather than omitted: this tier's whole job is that an
+       unclassified name FAILS instead of scanning as harmless, so "harmless"
+       has to be something the table says out loud. The coverage check found the
+       first three the first time it ran -- and it has found one on every
+       subsequent addition to `dispatch_only[]`, including `warning` below,
+       which is the evidence that deriving this list beats maintaining it.
+       (This comment said "the three" while listing seven, for four additions.) */
     { "mod",       "" },
     { "concat",    "" },
     { "key",       "" },
@@ -10042,6 +10093,13 @@ static const GbCapability gb_capability_table[] = {
     { "any",       "" },
     { "all",       "" },
     { "merge",     "" },
+    /* `warning` RAISES A DIAGNOSTIC AND REACHES NOTHING OUTWARD. It writes to
+       stderr, which is the program's own channel and is not a capability any
+       more than `print` is -- neither is in this table. It is here because it
+       joined `dispatch_only[]` on 2026-10-14 so that `has_builtin` would answer
+       for it, and this tier correctly refused to let a new name in that list
+       scan as harmless without the table saying so. */
+    { "warning",   "" },
     /* and the rest of the outward surface, which is neither of those lists */
     { "make_dir",       "fs:write" },
     { "atomic_replace", "fs:write" },
@@ -12602,16 +12660,33 @@ static int values_equal(Value left, Value right) {
     return equal;
 }
 
+/* A COUNT IS AN INTEGER BY NATURE, so it is EXACT (exact_number_design.md
+ * increment 5). Saying a count is inexact is not conservative, it is false:
+ * "inexact" means "this may not be the value", and a length is the value.
+ *
+ * WHY THESE FIVE AND NOT EVERY INTEGER THE RUNTIME HANDS BACK. Measured
+ * 2026-10-13, there are 86 `value_number((double)...)` sites in this file, and
+ * most of them are identifiers and coordinates -- a module handle, an HTTP
+ * status, a diagnostic column -- that no program does arithmetic with. The five
+ * the design names (`len`, `count`, `byte_count`, a found index, `epoch`) are the
+ * ones that get summed, differenced and multiplied, which is the only way
+ * exactness is observable at all. A blanket sweep would make 86 new claims for
+ * no measured need; this line can move the day something measures one.
+ *
+ * MEASURED, AND IT IS NOT ACADEMIC: `find([7,8], 8) + 9007199254740993` answered
+ * ...92 where the answer is ...94, while `len([1,2,3]) + 9007199254740993`
+ * happened to be RIGHT -- the double rounding landed on it by luck. One of those
+ * reading correctly is what makes the other hard to find. */
 static Value builtin_len_value(Value value) {
     if (value.kind == VALUE_ARRAY) {
-        double count = (double)value.as.array.store->count;
+        size_t count = value.as.array.store->count;
         value_free(value);
-        return value_number(count);
+        return value_number_exact((long long)count);
     }
     if (value.kind == VALUE_STRING) {
-        double count = (double)string_cp_count(value.as.string);
+        size_t count = string_cp_count(value.as.string);
         value_free(value);
-        return value_number(count);
+        return value_number_exact((long long)count);
     }
     value_free(value);
     runtime_error_raise("len expects string or array", 1003, "invalid function call");
@@ -13409,9 +13484,14 @@ static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
     }
 
     if (left->kind == VALUE_NUMBER) {
-        if (left->as.num.value < right->as.num.value) return -1;
-        if (left->as.num.value > right->as.num.value) return 1;
-        return 0;
+        /* EXACTNESS-AWARE, through the one shared comparison, because this
+         * comparator compared DOUBLES and so could not order two exact integers
+         * that round to the same double -- `sort` left them as it found them.
+         * An unordered pair (NaN) is reported as a tie here, which is what the
+         * double comparison already did, since `<` and `>` are both false for
+         * it; a sort has no third answer to give. */
+        int cmp = number_compare_exactly(left, right);
+        return cmp == 2 ? 0 : cmp;
     }
     if (left->kind == VALUE_STRING) {
         return string_value_compare(left->as.string, right->as.string);
@@ -17158,6 +17238,34 @@ static Value decode_parse_number(DecodeParser *parser) {
         char *end = NULL;
         double number = strtod(number_text, &end);
         int valid = errno != ERANGE && end && *end == '\0';
+        /* THE THIRD STRING-TO-NUMBER DOOR, and it was the one left behind.
+         *
+         * `number("...")` and the `{number}` modifier became sources of
+         * exactness on 2026-10-12, and the lesson written down beside that fix
+         * was that "a rule re-established at two call sites is one a third site
+         * silently leaves out". This is the third site. MEASURED 2026-10-13:
+         * `encode` wrote 9007199254740993 and `decode` read back ...992, so a
+         * value could be written to a file and could not be read back -- the
+         * same shape as the non-finite spellings the comment below this function
+         * records, where one half of a round trip was right and the other was
+         * not.
+         *
+         * THE SHARPEST EVIDENCE THAT IT WAS A DEFECT: `stdlib/notation.bas`,
+         * which is pure gBASIC and parses its numbers with `number("...")`,
+         * ROUND-TRIPS 2^53+1 CORRECTLY. The library got it right by using the
+         * language's own door while the language's own decoder did not.
+         *
+         * EVERY NARROWING FALLS OUT OF THE SHARED HELPER rather than being
+         * restated here, which is the whole reason for sharing it: hex stays
+         * inexact (the `number("0x10")` ruling), exponent text stays inexact
+         * (the `1e20` ruling -- and JSON's own grammar lets `1e16` through this
+         * branch), a fraction stays inexact, and out of int64 range degrades to
+         * the double rather than raising. */
+        long long whole = 0;
+        if (valid && exact_from_integer_text(number_text, &whole)) {
+            free(number_text);
+            return value_number_exact(whole);
+        }
         free(number_text);
         if (!valid) {
             decode_error(parser, "invalid JSON number");
@@ -17175,6 +17283,25 @@ static Value decode_parse_number(DecodeParser *parser) {
         return value_null();
     }
     parser->pos += (size_t)(end - start);
+    /* THE LENIENT BRANCH TOO, and it is the one that matters most: `json_only`
+     * is the WIRE parser, so plain `decode()` -- what a program calls -- comes
+     * through here. strtod has already found the end of the token, so the span
+     * it consumed is the text to judge, by the same rule. */
+    {
+        size_t span = (size_t)(end - start);
+        char *token = malloc(span + 1);
+        if (!token) {
+            abort();
+        }
+        memcpy(token, start, span);
+        token[span] = '\0';
+        long long whole = 0;
+        int is_exact = exact_from_integer_text(token, &whole);
+        free(token);
+        if (is_exact) {
+            return value_number_exact(whole);
+        }
+    }
     return value_number(number);
 }
 
@@ -33298,7 +33425,11 @@ static Value eval_call(AstExpr *expr) {
                 runtime_error_raise("could not read the current time", 1003, "clock");
                 return value_null();
             }
-            return value_number((double)raw);
+            /* A WHOLE NUMBER OF SECONDS IS EXACT, which is the whole point for
+             * this one: `epoch(b) - epoch(a)` is an interval a program then does
+             * arithmetic with, and an inexact second count poisons every
+             * expression it reaches. */
+            return value_number_exact((long long)raw);
         }
         Value when = eval_expr(expr->as.call.args.items[0]);
         if (error_action_pending()) {
@@ -33325,7 +33456,7 @@ static Value eval_call(AstExpr *expr) {
                                     1003, "datetime");
                 return value_null();
             }
-            return value_number((double)e);
+            return value_number_exact(e);
         }
         Value zv = eval_expr(expr->as.call.args.items[1]);
         if (error_action_pending()) {
@@ -33353,7 +33484,7 @@ static Value eval_call(AstExpr *expr) {
          * DST gap or repeat resolves identically whichever door you came in. */
         zone_resolve_instants(dt, zone, &chosen, &earlier, &later);
         free(zone);
-        return value_number((double)chosen);
+        return value_number_exact(chosen);
     }
 
     /* Elapsed-interval clock. Seconds as a floating-point number, from an
@@ -34829,9 +34960,9 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("byte_count: argument must be a string", 1003, "invalid argument type");
             return value_null();
         }
-        double count = (double)string_length(text.as.string);
+        size_t count = string_length(text.as.string);
         value_free(text);
-        return value_number(count);
+        return value_number_exact((long long)count);   /* a count is exact */
     }
 
     /* --- the byte-oriented family ------------------------------------------
@@ -35261,7 +35392,7 @@ static Value eval_call(AstExpr *expr) {
         }
 
         value_free(value);
-        return value_number((double)result);
+        return value_number_exact((long long)result);   /* a count is exact */
     }
 
     if (strcmp(expr->as.call.name, "type") == 0) {
@@ -35663,6 +35794,21 @@ static Value eval_call(AstExpr *expr) {
             value_free(value); value_free(places);
             return value_null();
         }
+        /* ROUNDING AN EXACT INTEGER TO ANY NUMBER OF DECIMAL PLACES IS THE
+         * INTEGER, so this is the identity and the only reason it was not was
+         * the double it passed through. MEASURED: `round(9007199254740993)`
+         * answered ...92, and so did `round(9007199254740993, 2)`.
+         *
+         * THE GUARD A FUTURE CHANGE NEEDS: `places` BELOW ZERO is not "round to
+         * hundreds" here -- measured, the scaling loop below simply does not
+         * run, so a negative is today the same as zero. If that ever becomes a
+         * real mode, this early return has to learn about it. */
+        if (value_is_exact(value)) {
+            long long whole = value.as.num.exact;
+            value_free(value);
+            value_free(places);
+            return value_number_exact(whole);
+        }
         double scale = 1.0;
         int n = (int)value_number_or_zero(places);
         for (int i = 0; i < n; i++) {
@@ -35714,6 +35860,31 @@ static Value eval_call(AstExpr *expr) {
          * under floored semantics. Matching the truncated convention would
          * silently disagree with every workaround written against the advice
          * this builtin replaces. */
+        /* EXACT OPERANDS GIVE AN EXACT REMAINDER, and this is the sharpest case
+         * in the increment because the old answer was not imprecise, it was
+         * WRONG: `mod(9007199254740993, 2)` answered **0**. The exact odd
+         * literal became an even double before `mod` saw it, so a parity test
+         * -- the commonest thing anybody asks `mod` -- reported the opposite of
+         * the truth, with no diagnostic and exit 0. The design's own
+         * propagation table has said `mod` preserves exactness since it was
+         * written; it did not.
+         *
+         * STILL FLOORED, by the same C-level dance the double path does: the
+         * remainder takes the sign of the DIVISOR, so `mod(-7, 3)` is 2. */
+        if (value_is_exact(a) && value_is_exact(b)) {
+            long long la = a.as.num.exact, lb = b.as.num.exact;
+            value_free(a); value_free(b);
+            if (lb == -1) {
+                /* `la % -1` is undefined in C for LLONG_MIN and is 0 for every
+                 * other value, floored included: q = -la, r = la - (-la)(-1). */
+                return value_number_exact(0);
+            }
+            long long r = la % lb;
+            if (r != 0 && ((r < 0) != (lb < 0))) {
+                r += lb;
+            }
+            return value_number_exact(r);
+        }
         double q = floor(a.as.num.value / b.as.num.value);
         double r = a.as.num.value - q * b.as.num.value;
         value_free(a); value_free(b);
@@ -36008,7 +36179,45 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         double x = v.as.num.value;
+        /* EXACT IN, EXACT OUT, for the four of these eleven whose answer is an
+         * integer whenever the argument is one: `abs`, `floor`, `ceil` and
+         * `sign`. The other seven are roots, logarithms and transcendentals,
+         * which are inexact by nature -- `sqrt(4)` is 2 and detecting perfect
+         * squares is a different builtin, and `pow(x, 0.5)` is already
+         * documented as a root.
+         *
+         * `floor` AND `ceil` ARE THE IDENTITY ON AN EXACT VALUE, which is the
+         * whole fix: an exact integer is already its own floor, and the only
+         * reason it came back changed is that it was rounded to a double on the
+         * way in. */
+        int x_exact = value_is_exact(v);
+        long long xe = v.as.num.exact;
         value_free(v);
+        if (x_exact) {
+            if (strcmp(fn, "floor") == 0 || strcmp(fn, "ceil") == 0) {
+                return value_number_exact(xe);
+            }
+            if (strcmp(fn, "sign") == 0) {
+                return value_number_exact((xe > 0) - (xe < 0));
+            }
+            if (strcmp(fn, "abs") == 0) {
+                if (xe != LLONG_MIN) {
+                    return value_number_exact(xe < 0 ? -xe : xe);
+                }
+                /* int64 IS ASYMMETRIC: its minimum is one greater in magnitude
+                 * than its maximum, so this one value has no exact magnitude.
+                 * It degrades and says so, like every other overflow here --
+                 * the same asymmetry that printed `--92233720368547758.-8`
+                 * from money's formatter before it was fixed. */
+                warn_fmt(2112, "exactness",
+                         "the magnitude of this exact integer does not fit a"
+                         " whole number the runtime can hold, so the answer is"
+                         " approximate from here on");
+                if (error_action_pending()) {
+                    return value_null();
+                }
+            }
+        }
         double r;
         if (strcmp(fn, "sqrt") == 0) {
             if (x < 0.0) {
@@ -36066,6 +36275,57 @@ static Value eval_call(AstExpr *expr) {
             value_free(base);
             value_free(ex);
             return value_null();
+        }
+        /* EXACT BY REPEATED MULTIPLICATION, which is what makes the design's own
+         * HEADLINE EXAMPLE right rather than merely loud. `pow(2, 53) + 1`
+         * answering 9007199254740992 with exit 0 and no diagnostic is the first
+         * line of exact_number_design.md, and every increment so far left it
+         * broken: `pow` produced an inexact double, so the `+ 1` beside it had
+         * nothing exact to add to.
+         *
+         * SQUARE AND MULTIPLY, not a loop over the exponent, because the
+         * exponent is an int64 and `pow(1, 1000000000000)` must not take a
+         * thousand years to answer 1. No square is computed that the result does
+         * not need: the squaring is guarded on another bit remaining, and the
+         * highest bit is always set, so an intermediate square that overflows
+         * means the result overflows too.
+         *
+         * A NEGATIVE EXPONENT IS A FRACTION and falls through to the double,
+         * which is the same reading `/` gets: `pow(2, -1)` is 0.5 and no integer
+         * answer exists. */
+        if (value_is_exact(base) && value_is_exact(ex) &&
+            ex.as.num.exact >= 0) {
+            long long b_acc = base.as.num.exact;
+            long long e = ex.as.num.exact;
+            long long acc = 1;
+            int overflowed = 0;
+            while (e > 0) {
+                if (e & 1) {
+                    if (__builtin_mul_overflow(acc, b_acc, &acc)) {
+                        overflowed = 1;
+                        break;
+                    }
+                }
+                e >>= 1;
+                if (e && __builtin_mul_overflow(b_acc, b_acc, &b_acc)) {
+                    overflowed = 1;
+                    break;
+                }
+            }
+            if (!overflowed) {
+                value_free(base);
+                value_free(ex);
+                return value_number_exact(acc);
+            }
+            warn_fmt(2112, "exactness",
+                     "this power of two exact integers does not fit a whole"
+                     " number the runtime can hold, so the answer is approximate"
+                     " from here on");
+            if (error_action_pending()) {   /* `on warning stop` escalated it */
+                value_free(base);
+                value_free(ex);
+                return value_null();
+            }
         }
         double r = pow(base.as.num.value, ex.as.num.value);
         value_free(base);
@@ -36184,20 +36444,41 @@ static Value eval_call(AstExpr *expr) {
             value_free(cut);
             return value_null();
         }
+        /* A CUT POINT THAT LANDS ON A DATA POINT IS A PICK, and between two is an
+         * interpolation. So the first preserves exactness and the second does
+         * not, which is `median`'s rule one function along -- and without this
+         * `median(xs)` and `quantile(xs, 0.5)` would answer the same question
+         * with different precision, the neighbouring inconsistency that made
+         * `min`/`max` a defect rather than a decision.
+         *
+         * THE SORT IS OVER VALUES for the second reason as well: a double sort
+         * cannot order two exact integers above 2^53, so the element at the cut
+         * would be whichever the tie left there. */
         size_t n = data.as.array.store->count;
-        double *sorted = malloc(sizeof(double) * n);
-        if (!sorted) {
+        Value *ordered = malloc(sizeof(Value) * n);
+        if (!ordered) {
             abort();
         }
         for (size_t i = 0; i < n; i++) {
-            sorted[i] = data.as.array.store->items[i].as.num.value;
+            ordered[i] = data.as.array.store->items[i];   /* borrowed */
         }
-        qsort(sorted, n, sizeof(double), number_compare);
-        double r = quantile_sorted(sorted, n, q);
-        free(sorted);
+        qsort(ordered, n, sizeof(Value), sort_value_compare);
+        double h = (double)(n - 1) * q;
+        double lo = floor(h);
+        size_t at = (size_t)lo;
+        Value out;
+        if (n == 1 || at + 1 >= n || h == lo) {
+            size_t pick = n == 1 ? 0 : (at + 1 >= n ? n - 1 : at);
+            out = value_copy(ordered[pick]);
+        } else {
+            double a_lo = ordered[at].as.num.value;
+            double a_hi = ordered[at + 1].as.num.value;
+            out = value_number(a_lo + (h - lo) * (a_hi - a_lo));
+        }
+        free(ordered);
         value_free(data);
         value_free(cut);
-        return value_number(r);
+        return out;
     }
 
     /* correlation(xs, ys) / covariance(xs, ys) — paired numeric arrays of equal
@@ -36452,8 +36733,10 @@ static Value eval_call(AstExpr *expr) {
             size_t nlen = string_length(target.as.string);
             long off = string_find_bytes(value.as.string, hlen, target.as.string, nlen);
             /* Report the match as a codepoint index, not a byte offset. */
+            /* AN INDEX IS EXACT, like a count. `nothing` on a miss is unchanged. */
             Value result = off >= 0
-                ? value_number((double)string_cp_index_at_byte(value.as.string, (size_t)off))
+                ? value_number_exact((long long)string_cp_index_at_byte(
+                      value.as.string, (size_t)off))
                 : value_null();
             value_free(value);
             value_free(target);
@@ -36465,7 +36748,7 @@ static Value eval_call(AstExpr *expr) {
                 if (values_equal(value_copy(value.as.array.store->items[i]), value_copy(target))) {
                     value_free(value);
                     value_free(target);
-                    return value_number((double)i);
+                    return value_number_exact((long long)i);   /* an index is exact */
                 }
                 if (error_action_pending()) {
                     value_free(value);
@@ -37962,8 +38245,119 @@ static Value eval_call(AstExpr *expr) {
     size_t count = arg.as.array.store->count;
     double result = 0.0;
 
+    /* --- EXACTNESS THROUGH THE AGGREGATES (exact_number_design.md increment 5)
+     *
+     * THE RULE IS ONE SENTENCE AND IT PREDICTS EVERY CASE HERE: a function that
+     * **picks** a value preserves exactness; a function that **calculates** one
+     * is exact when both its operands are exact and the answer is an integer the
+     * runtime holds. An INEXACT operand can never yield an exact answer, which is
+     * not a new policy -- it is the rule `+` `-` `*` already follow.
+     *
+     * SO `min` AND `max` RETURN THE ELEMENT, and the strongest argument that the
+     * old code was a defect rather than a decision is the NEIGHBOURING
+     * INCONSISTENCY: `min`/`max` over anything non-numeric already answer
+     * `value_copy(items[best])` a few dozen lines up -- they pick. Only the
+     * numeric path recomputed a double, so `max(["b","a"])` returned the author's
+     * own value and `max([b, b])` returned a rounded view of it.
+     *
+     * MEASURED BEFORE THE CHANGE, with b = 2^53+1: min, max, sum, median, abs,
+     * floor, ceil, round, mod and pow each answered 9007199254740992 -- the digit
+     * gone, no diagnostic, exit 0. `mod(b, 2)` answered **0**, which is not lost
+     * precision but a WRONG ANSWER, the odd literal having become an even double
+     * before `mod` saw it. */
+    if (count > 0 && (strcmp(name, "min") == 0 || strcmp(name, "max") == 0)) {
+        int want_max = strcmp(name, "max") == 0;
+        size_t best = 0;
+        for (size_t i = 1; i < count; i++) {
+            int cmp = number_compare_exactly(&arg.as.array.store->items[i],
+                                             &arg.as.array.store->items[best]);
+            /* A NaN is unordered, so it never displaces the incumbent -- which is
+             * what the double comparisons here did, `<` and `>` both being false
+             * for it. */
+            if (cmp != 2 && (want_max ? cmp > 0 : cmp < 0)) {
+                best = i;
+            }
+        }
+        Value out = value_copy(arg.as.array.store->items[best]);
+        value_free(arg);
+        return out;
+    }
+
+    /* `sum` IS THE FOLD OF `+`, so it must agree with `+` about exactness or the
+     * two spellings of one arithmetic differ. Overflow DEGRADES and warns in the
+     * same words and with the same code (2112) the operator uses, for the same
+     * release-discipline reason: nothing that answers today stops answering.
+     *
+     * `mean` IS DELIBERATELY ABSENT. It divides, and `/` is always inexact --
+     * including `6 / 3` -- so `mean` is inexact by the rule already in force
+     * rather than by omission. The same reading governs the EVEN case of
+     * `median`, which is the mean of two values. */
+    if (count > 0 && strcmp(name, "sum") == 0) {
+        int all_exact = 1;
+        for (size_t i = 0; i < count; i++) {
+            if (!arg.as.array.store->items[i].as.num.is_exact) {
+                all_exact = 0;
+                break;
+            }
+        }
+        if (all_exact) {
+            long long total = 0;
+            int overflowed = 0;
+            for (size_t i = 0; i < count; i++) {
+                if (__builtin_add_overflow(total,
+                                           arg.as.array.store->items[i].as.num.exact,
+                                           &total)) {
+                    overflowed = 1;
+                    break;
+                }
+            }
+            if (!overflowed) {
+                value_free(arg);
+                return value_number_exact(total);
+            }
+            warn_fmt(2112, "exactness",
+                     "this sum of exact integers does not fit a whole number the"
+                     " runtime can hold, so the answer is approximate from here on");
+            if (error_action_pending()) {   /* `on warning stop` escalated it */
+                value_free(arg);
+                return value_null();
+            }
+        }
+    }
+
+    /* THE MEDIAN OF AN ODD COUNT IS A PICK -- it is one of the author's own
+     * values -- and of an EVEN count is the mean of two, which divides. So the
+     * odd case preserves exactness and the even case does not, which is the rule
+     * applied rather than two rules.
+     *
+     * THE SORT IS OVER VALUES, not over a copied `double` array as it was: above
+     * 2^53 two distinct exact integers round to the SAME double, so a double sort
+     * cannot order them and the "middle" element would be whichever the tie
+     * happened to leave there. */
+    if (count > 0 && strcmp(name, "median") == 0) {
+        Value *ordered = malloc(sizeof(Value) * count);
+        if (!ordered) {
+            abort();
+        }
+        for (size_t i = 0; i < count; i++) {
+            ordered[i] = arg.as.array.store->items[i];   /* borrowed, not copied */
+        }
+        qsort(ordered, count, sizeof(Value), sort_value_compare);
+        Value out;
+        if (count % 2 == 1) {
+            out = value_copy(ordered[count / 2]);
+        } else {
+            out = value_number((ordered[count / 2 - 1].as.num.value +
+                                ordered[count / 2].as.num.value) / 2.0);
+        }
+        free(ordered);
+        value_free(arg);
+        return out;
+    }
+
     if (strcmp(name, "len") == 0) {
-        result = (double)count;
+        value_free(arg);
+        return value_number_exact((long long)count);   /* a count is exact */
     } else if (count == 0) {
         char message[256];
         snprintf(message, sizeof(message), "%s expects a non-empty array", name);
@@ -37977,39 +38371,14 @@ static Value eval_call(AstExpr *expr) {
         if (strcmp(name, "mean") == 0) {
             result /= (double)count;
         }
-    } else if (strcmp(name, "min") == 0) {
-        result = arg.as.array.store->items[0].as.num.value;
-        for (size_t i = 1; i < count; i++) {
-            if (arg.as.array.store->items[i].as.num.value < result) {
-                result = arg.as.array.store->items[i].as.num.value;
-            }
-        }
-    } else if (strcmp(name, "max") == 0) {
-        result = arg.as.array.store->items[0].as.num.value;
-        for (size_t i = 1; i < count; i++) {
-            if (arg.as.array.store->items[i].as.num.value > result) {
-                result = arg.as.array.store->items[i].as.num.value;
-            }
-        }
-    } else if (strcmp(name, "median") == 0) {
-        double *sorted = malloc(sizeof(double) * count);
-        if (!sorted) {
-            abort();
-        }
-        for (size_t i = 0; i < count; i++) {
-            sorted[i] = arg.as.array.store->items[i].as.num.value;
-        }
-        qsort(sorted, count, sizeof(double), number_compare);
-        if (count % 2 == 1) {
-            result = sorted[count / 2];
-        } else {
-            result = (sorted[count / 2 - 1] + sorted[count / 2]) / 2.0;
-        }
-        free(sorted);
-    /* `mode` IS HANDLED ABOVE, before the numeric gate, because it accepts text.
-     * Its old branch lived here and answered the FIRST element on continuous data;
-     * it is removed rather than left unreachable, so nothing can quietly come back
-     * to it. */
+    /* `min`, `max` AND `median` ARE HANDLED ABOVE, before this chain, because they
+     * PICK one of the author's own values and so must preserve its exactness.
+     * Their double-accumulating branches lived here and are REMOVED rather than
+     * left unreachable, the treatment `mode`'s old branch got for the same reason:
+     * dead code that still compiles is how a retired answer comes back.
+     *
+     * `mode` is handled earlier still, before the numeric gate, because it accepts
+     * text. */
     } else if (strcmp(name, "variance") == 0 || strcmp(name, "stdev") == 0 ||
                strcmp(name, "pvariance") == 0 || strcmp(name, "pstdev") == 0 ||
                strcmp(name, "skewness") == 0 || strcmp(name, "kurtosis") == 0) {
@@ -38076,6 +38445,14 @@ static Value eval_call(AstExpr *expr) {
         }
         result = hi - lo;
     } else if (strcmp(name, "iqr") == 0) {
+        /* THIS ONE SORTS DOUBLES AND THAT IS CORRECT HERE, which is worth saying
+         * because `median` and `percentile` beside it had to stop doing so. An
+         * `iqr` is a DIFFERENCE of two quantiles, so it calculates and is
+         * inexact by the division rule -- and the misordering a double sort can
+         * produce is UNOBSERVABLE in the answer: two values that a double sort
+         * confuses are values that round to the SAME double, so whichever of
+         * them the quartile picks, the subtraction below sees identical operands.
+         * The same reading covers `range` above. */
         double *sorted = malloc(sizeof(double) * count);
         if (!sorted) {
             abort();
@@ -39221,25 +39598,10 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          *
          * A BOOLEAN IS NEVER EXACT, so `0 = false` keeps the double path above and
          * all 1,472 of its measured uses are untouched. */
-        if (value_is_exact(left) && value_is_exact(right)) {
-            long long x = left.as.num.exact, y = right.as.num.exact;
-            int cmp = (x > y) - (x < y);
-            result = comparison_result_from_cmp(op, cmp);
-            value_free(left);
-            value_free(right);
-            return value_bool(result);
-        }
-        if (value_is_exact(left) != value_is_exact(right) &&
+        if ((value_is_exact(left) || value_is_exact(right)) &&
             left.kind == VALUE_NUMBER && right.kind == VALUE_NUMBER) {
-            int cmp;
-            if (value_is_exact(left)) {
-                cmp = exact_vs_double_compare(left.as.num.exact,
-                                              right.as.num.value);
-            } else {
-                cmp = -exact_vs_double_compare(right.as.num.exact,
-                                               left.as.num.value);
-            }
-            if (cmp == 2 || cmp == -2) {
+            int cmp = number_compare_exactly(&left, &right);
+            if (cmp == 2) {
                 /* NaN is unordered: `=` is false, `!=` is true, and the ordering
                  * operators answer the way the double path answers for NaN. */
                 result = strcmp(op, "!=") == 0 || strcmp(op, "!>") == 0 ||
