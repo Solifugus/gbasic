@@ -16,6 +16,35 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `gtkui` works over any backend; GTK is one of them
+
+The declarative reconciler no longer knows what a widget is. `stdlib/gtkui.bas`
+reconciles a record tree and `stdlib/gtkui_gtk.bas` — new — is the GTK 4 backend.
+A backend is a record of twelve function values, and **only `mount` changed
+shape**:
+
+```basic
+load gtkui
+load gtkui_gtk
+h = gtkui.mount(gtkui_gtk.backend(), window, desc)   ' was gtkui.mount(window, desc)
+```
+
+`update`, `unmount`, `root` and `lookup` are untouched — the handle carries the
+backend. Of the 58 `gtkui.*` call sites in the tree, 8 are `mount`.
+
+**Why**, from `docs/gui_addressability_design.md` §0.3: a second backend is
+foreseeable, and backend independence is the one thing the old shape could not
+offer. **The container kinds are now the seam's vocabulary** — `box`, `single`,
+`paned`, `leaf` — and which GTK types answer to each is the backend's business,
+so the reconciler never sees a GTK type name.
+
+**The reconciler also has no `load` of its own now, and that is the half that
+makes this real rather than tidy.** `load` is a declaration and cannot be
+conditional, so while `gtkui.bas` carried `load gi` it could not run at all
+without GObject-Introspection, whatever backend you gave it — `tests/run_gtkui.sh`
+skipped in full, including the tier that needs no widgets. That tier runs
+unconditionally now, verified on a build made without GIR.
+
 ### A deeply nested JSON body could crash the interpreter on a small stack
 
 **Read this if you deploy in a container or on a hardened host.** The JSON

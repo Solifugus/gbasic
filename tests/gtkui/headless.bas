@@ -4,13 +4,19 @@
 ' compatibility test (type-based branch), and the record-field default helper.
 load gi
 load gtkui
+load gtkui_gtk
 
-' container-kind classification
-print gtkui._kind("Gtk.Box")
-print gtkui._kind("Gtk.ScrolledWindow")
-print gtkui._kind("Gtk.Window")
-print gtkui._kind("Gtk.Paned")
-print gtkui._kind("Gtk.Button")
+' Container-kind classification. THIS MOVED TO THE BACKEND on 2026-10-14 and the
+' move is the point: a table of GTK type names was living inside a reconciler
+' whose subject is records, which was the clearest single piece of evidence that
+' a seam belonged there. The four kinds are still the seam's vocabulary; which
+' GTK types answer to each is now GTK's business, so this reads it from the
+' backend.
+print gtkui_gtk.kind("Gtk.Box")
+print gtkui_gtk.kind("Gtk.ScrolledWindow")
+print gtkui_gtk.kind("Gtk.Window")
+print gtkui_gtk.kind("Gtk.Paned")
+print gtkui_gtk.kind("Gtk.Button")
 
 ' all-keyed predicate: keyed matching only when every child carries a key
 olds = [ {native:false, type:"Gtk.Label", key:"a"}, {native:false, type:"Gtk.Label", key:"b"} ]

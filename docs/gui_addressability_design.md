@@ -186,8 +186,55 @@ itself prefers.
 4. ~~**Close the unknown-field hole** before `action:` ships.~~ **Done**
    2026-09-29 — see §0.4.
 5. **§2–§4** against the decided layer, with the flat `win.<id>` grammar its
-   identity rules allow — and the renderer seam, which is the part an SVG
-   backend needs and which §0.3 measured at 21 GTK types / 70 `gi.*` sites.
+   identity rules allow — and ~~the renderer seam, which is the part an SVG
+   backend needs and which §0.3 measured at 21 GTK types / 70 `gi.*` sites.~~
+   **The renderer seam is BUILT, 2026-10-14.**
+
+> **THE SEAM, SHIPPED.** `stdlib/gtkui.bas` is backend-agnostic and
+> `stdlib/gtkui_gtk.bas` is the GTK 4 backend. A backend is a record of twelve
+> function values; `gtkui.mount(backend, parent, desc)` takes it and the handle
+> carries it, so `update`/`unmount`/`root`/`lookup` are unchanged — of the 58
+> `gtkui.*` call sites in the tree only the 8 `mount` sites moved.
+>
+> **The measurement held.** §0.3 priced this at 21 types / 70 `gi.*` sites and
+> called it "a small job, not a port"; re-derived while doing it, the four
+> libraries make **10 distinct `gi.*` calls over 72 sites and construct 19
+> types**, and the reconciler's own contact surface came to **ten operations**.
+>
+> **TWO THINGS THE PRICING DID NOT SEE, both found by doing it.**
+>
+> *The `load` was half the problem.* `load` is a DECLARATION — pre-registered,
+> so it cannot be conditional — and while the reconciler carried `load gi` it
+> could not run **at all** without GObject-Introspection, whatever backend it
+> was handed. So a seam that moved only the calls would have been tidy and not
+> true. Measured: `tests/run_gtkui.sh` exited 0 with one SKIP line when the
+> libgirepository *development* files were absent, including the tier that needs
+> no widgets. The dependency is in the backend now and the seam tier runs on a
+> binary built with `GIR_AVAILABLE=0` — verified.
+>
+> *The reconciler was not using its own adapters.* It already had `_attach` and
+> `_detach` dispatching on container kind, and **eleven** of its twenty-six raw
+> widget calls went around them — `container.set_child(nothing)` and
+> `container.append(...)` written inline in the single and box reconcilers. A
+> second backend would have worked for mount and broken on reconcile. The seam
+> routes all of them, so that is fixed by construction rather than by noticing.
+>
+> **A SEAM WITH ONE IMPLEMENTATION IS INDISTINGUISHABLE FROM NO SEAM**, which is
+> why `tests/gtkui/seam.bas` exists: it drives the reconciler over a RECORDING
+> backend defined in the fixture — no `load gi`, no typelib, no display, no
+> widget — and asserts the reconciler's own promises (instance reuse on a
+> property change, replacement on a type change, keyed insert/remove/reorder,
+> one connection per signal) plus that every one of the ten operations was
+> actually reached. Reverting a single seam call to `gi.new` makes that fixture
+> unable to run, which is the perturbation that proves the tier.
+>
+> **What this does NOT do.** The addressable layer itself (§2–§4, `win.<id>`,
+> `gui`'s identity rules over this mechanism) is untouched; this is only the
+> backend boundary underneath it. A widget here is still whatever the backend
+> says it is, so the recording backend uses integer ids into a store — a gBASIC
+> record is a value, and a backend handing back records could not mutate what
+> the reconciler holds, which is a constraint any non-object backend (an SVG
+> document, a remote surface) meets the same way.
 
 ---
 

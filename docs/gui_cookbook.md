@@ -328,6 +328,7 @@ destroyed       : true
 ' gtkui for the list-shaped parts, not for the frame around them.
 load gi
 load gtkui
+load gtkui_gtk
 
 gi.require("Gtk", "4.0")
 gi.invoke("Gtk.init")
@@ -339,7 +340,7 @@ first = { type: "Gtk.Box", props: { orientation: 1, spacing: 4 }, children: [
     { type: "Gtk.Label", key: "a", props: { label: "alpha" } },
     { type: "Gtk.Label", key: "b", props: { label: "beta" } }
 ] }
-h = gtkui.mount(win, first)
+h = gtkui.mount(gtkui_gtk.backend(), win, first)
 alpha = gtkui.lookup(h, "a")
 alpha.set_name("original-instance")
 print "mounted    : " + gtkui.lookup(h, "a").get_label() + ", " + gtkui.lookup(h, "b").get_label()

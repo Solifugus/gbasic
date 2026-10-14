@@ -25,16 +25,42 @@ cd "$(dirname "$0")/.."
 export G_DEBUG="${G_DEBUG:+$G_DEBUG,}fatal-criticals"
 export GBASIC_PATH="stdlib"
 
-if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists girepository-2.0; then
-    printf 'SKIP tests/gtkui (libgirepository-2.0 development files not available)\n'
-    exit 0
-fi
-
 make >/dev/null
 
 stdout_file="$(mktemp)"
 stderr_file="$(mktemp)"
 trap 'rm -f "$stdout_file" "$stderr_file"' EXIT
+
+. "$(dirname "$0")/build_has.sh"
+# ASK THE BINARY, NOT THE MACHINE. This asked `pkg-config --exists
+# girepository-2.0`, which answers whether the DEV FILES are installed -- a
+# different question from whether THIS gbasic was built with `gi`, and the two
+# part company exactly where it matters. Measured 2026-10-14 on
+# `make GIR_AVAILABLE=0` with the dev files present: pkg-config said yes, the
+# tiers ran, and they FAILED with "gobject-introspection support is
+# unavailable" -- a red gate describing a correct build. That is the trap
+# run_ldap.sh and run_web_tls.sh each had to fix, and build_has.sh exists
+# because of it; its comment even records `gi`'s own wording.
+have_gir=1
+build_has gi || have_gir=0
+
+run_selfchecking() {   # run <name> <min-ok>: a fixture that states its own answers
+    local name="$1" floor="$2" out bad ok
+    out="$({ timeout 60 ./gbasic "tests/gtkui/$name.bas" 2>&1 </dev/null || true; })"
+    bad="$(printf '%s\n' "$out" | grep -c '^MISMATCH' || true)"
+    ok="$(printf '%s\n' "$out" | grep -c '^ok  ' || true)"
+    if [ "${bad:-0}" -ne 0 ]; then
+        printf '%s\n' "$out" | grep '^MISMATCH' | sed 's/^/  /'
+        printf 'FAIL tests/gtkui/%s.bas\n' "$name"; exit 1
+    fi
+    if [ "${ok:-0}" -lt "$floor" ]; then
+        printf 'FAIL tests/gtkui/%s.bas (only %s checks ran; at least %s expected)\n' \
+            "$name" "$ok" "$floor"
+        printf '%s\n' "$out" | tail -3 | sed 's/^/  /'
+        exit 1
+    fi
+    printf 'PASS tests/gtkui/%s.bas (%s checks)\n' "$name" "$ok"
+}
 
 run_golden() {
     local name="$1"
@@ -62,7 +88,32 @@ run_golden() {
     fi
 }
 
-# --- Headless tier (always) ------------------------------------------------
+# --- SEAM tier: THE RECONCILER WITH NO GTK AT ALL, and it runs FIRST ---------
+#
+# A SEAM WITH ONE IMPLEMENTATION IS INDISTINGUISHABLE FROM NO SEAM. The
+# reconciler could call `b.create` instead of `gi.new` and still be welded to GTK
+# in a dozen hidden ways, and both tiers below would stay green. So this one
+# drives `gtkui` end to end over a RECORDING backend defined in the fixture
+# itself: no `load gi`, no typelib, no display, no widget.
+#
+# IT NEEDS NO GIR GATE, AND THAT IS A GATE SHRINK REPAIRED RATHER THAN A
+# CONVENIENCE. Until 2026-10-14 this whole suite exited 0 with one SKIP line when
+# the libgirepository DEVELOPMENT files were absent -- including the tier that
+# needs no widgets -- because `stdlib/gtkui.bas` opened with `load gi` and `load`
+# is a declaration that cannot be conditional. The reconciler has no `load` now,
+# so on a machine with no GObject-Introspection at all this tier still runs and
+# the suite still asserts something. "A gate you can turn off by not installing
+# something is a gate that shrinks" is this tree's own rule.
+run_selfchecking seam 20
+
+if [ "$have_gir" -eq 0 ]; then
+    printf 'SKIP tests/gtkui headless+display (no `gi` in THIS build) -- the SEAM\n'
+    printf '     tier above still ran its 23 checks, which is the half that needs no\n'
+    printf '     GTK. Before 2026-10-14 the whole suite went quiet here.\n'
+    exit 0
+fi
+
+# --- Headless tier (needs the gi module built) ------------------------------
 run_golden headless
 
 # --- Display tier: needs the GTK 4 typelib AND a display -------------------

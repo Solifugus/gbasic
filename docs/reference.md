@@ -3958,9 +3958,9 @@ the `.lang` installs alongside the rest of the stdlib.
 
 ### `gtkui` — declarative widget-tree reconciler (`load gtkui`)
 
-A **pure-gBASIC** dynamic reconciler over the `gi` bridge (needs `load gi`; GTK 4
-must be initialized before widgets are built). You describe a UI as a tree of
-records; `gtkui` builds the real GTK 4 widget tree and, on each `update`, mutates
+A **pure-gBASIC** dynamic reconciler over a **backend you supply** *(since
+0.8.1; before that it was welded to GTK)*. You describe a UI as a tree of
+records; `gtkui` builds the real widget tree and, on each `update`, mutates
 the *existing* widgets in place — changing only the properties that changed,
 inserting/removing/reordering children, and replacing a widget only when its type
 or identity changes. This is the dynamic tree mutation the old GTK 3 `gui` module
@@ -3969,26 +3969,74 @@ object you can reach and mix with hand-built widgets.
 
 **Node schema** (a record; every field optional except one of `type`/`widget`):
 
-- `type` — GI type name (`"Gtk.Button"`); built generically with `gi.new`, so any
-  introspected widget works with no new code.
+- `type` — a **type name the backend understands** (`"Gtk.Button"` with the GTK
+  backend); built generically, so any type the backend can make works with no new
+  code here.
 - `widget` — an already-created GObject: the **native escape hatch**. `gtkui`
   parents it and (optionally) connects its signals, but does not manage its props
   or children — use it to embed a manual `GtkGrid`, a `sourceeditor` view, or any
   other component the reconciler did not build.
 - `key` — stable identity string within a sibling list.
-- `props` — record of property → value (`gi.set`; enums as ints via `gi.enum`).
+- `props` — record of property → value (with the GTK backend, `gi.set`; enums as
+  ints via `gi.enum`).
 - `signals` — record of signal-name → handler function.
 - `children` — array of child nodes.
 
 **API:**
 
-- `gtkui.mount(parent, desc)` → a handle; builds `desc` and attaches its root to
-  the existing `parent` container.
+- `gtkui.mount(backend, parent, desc)` → a handle; builds `desc` and attaches its
+  root to the existing `parent` container. **Only `mount` takes the backend** —
+  the handle carries it, so the four calls below are unchanged.
 - `gtkui.update(handle, desc)` → **a new handle**; reconciles and returns the
   updated handle (records are copy-on-write, so reassign: `h = gtkui.update(h, d)`).
 - `gtkui.unmount(handle)` — detach the root and disconnect every handler.
-- `gtkui.root(handle)` → the root GTK widget (raw, for interop).
-- `gtkui.lookup(handle, key)` → the GTK widget for a keyed node, or `nothing`.
+- `gtkui.root(handle)` → the root widget (raw, for interop).
+- `gtkui.lookup(handle, key)` → the widget for a keyed node, or `nothing`.
+
+### `gtkui_gtk` — the GTK 4 backend for `gtkui` (`load gtkui_gtk`)
+
+*(since 0.8.1)* The half that knows what a widget is. `gtkui` reconciles a record
+tree; this library creates GTK widgets, sets their properties, connects their
+signals and parents their children.
+
+```basic
+load gtkui
+load gtkui_gtk
+h = gtkui.mount(gtkui_gtk.backend(), window, desc)
+```
+
+- `gtkui_gtk.backend()` → the backend record `gtkui.mount` takes. The twelve
+  entries are `name`, `create`, `set_prop`, `connect`, `disconnect`, `kind`,
+  `attach`, `detach`, `reorder_after`, `parent_attach`, `parent_detach` and
+  `describe`; each is a function value, and the individual functions below are
+  public so a backend can be assembled or wrapped.
+- `gtkui_gtk.kind(type)` → `"box"`, `"single"`, `"paned"` or `"leaf"` — how that
+  GTK type parents children. **The four kinds are the seam's vocabulary, not
+  GTK's**; a backend maps its own types onto them, which is why the reconciler
+  never learns a GTK type name.
+- `gtkui_gtk.create(type)` → a widget. `gtkui_gtk.set_prop(w, name, value)`,
+  `gtkui_gtk.connect(w, signal, handler)` → a handler id, and
+  `gtkui_gtk.disconnect(w, id)` — one widget at a time, over `gi`.
+- `gtkui_gtk.attach(container, kind, child, key)` and
+  `gtkui_gtk.detach(container, kind, child, key)` add and remove a child;
+  `gtkui_gtk.reorder_after(container, child, prev)` places one after another
+  (`nothing` means first).
+- `gtkui_gtk.parent_attach(parent, child)` and
+  `gtkui_gtk.parent_detach(parent, child)` handle the **foreign** container a
+  tree is mounted into. These dispatch on the *object* (`gi.is_a`) rather than a
+  declared type, because that container was built by the caller and the
+  reconciler never saw it made.
+- `gtkui_gtk.describe(w)` → the GTK type name, for diagnostics.
+
+**Why the split exists.** `docs/gui_addressability_design.md` §0.3 decided
+(2026-09-29) on "`gui`'s identity rules, `gtkui`'s mechanism, GTK behind a seam",
+because a second backend is foreseeable. The reconciler has **no `load` of its
+own**, and that is what makes the seam real rather than tidy: `load` is a
+declaration and cannot be conditional, so while the reconciler carried `load gi`
+it could not run at all without GObject-Introspection, whatever backend it was
+given. `tests/gtkui/seam.bas` drives it over a recording backend with no GTK, no
+typelib and no display — a seam with one implementation is indistinguishable from
+no seam.
 
 **Identity.** When *every* child in a sibling list carries a `key`, children are
 matched by key — enabling insert, remove, and **reorder** with the same widget
@@ -6912,7 +6960,7 @@ other one is pure gBASIC over the core and works on any build.
 | `finio_iso20022` | libxml2 |
 | `finio_pain001` | libxml2 |
 | `gtk` | GObject-Introspection |
-| `gtkui` | GObject-Introspection |
+| `gtkui_gtk` | GObject-Introspection |
 | `insiders` | libcurl, libsqlite3, libxml2 |
 | `llm` | libcurl |
 | `market` | libcurl |

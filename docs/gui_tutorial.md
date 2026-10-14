@@ -26,7 +26,7 @@ because the error messages come from different places.
 | **`gi`** | The GObject-Introspection bridge. Any GObject library on the machine — GTK, Gio, GtkSource — reachable by name, with no binding code written for it. |
 | **`gtk`** | About a dozen constructors over `gi` for the widgets an application reaches for constantly. |
 | **`sourceeditor`, `datagrid`** | Two complex widgets packaged as units: a GtkSourceView editor, and a virtualizing table. |
-| **`gtkui`** | A declarative reconciler: describe the widget tree you want, and it computes the minimum set of operations to get there. |
+| **`gtkui`** | A declarative reconciler: describe the widget tree you want, and it computes the minimum set of operations to get there. It is backend-agnostic *(since 0.8.1)*, so it is loaded with **`gtkui_gtk`**, the GTK backend, and `mount` takes that backend. |
 
 **Start with `gtk` and `gi`.** That is not a hedge — it is what gBASIC Studio,
 the largest application written in gBASIC, actually does: 86 `gtk.` calls, 72
@@ -202,7 +202,7 @@ desc = { type: "Gtk.Box", props: { orientation: 1, spacing: 4 }, children: [
     { type: "Gtk.Label", key: "a", props: { label: "alpha" } },
     { type: "Gtk.Label", key: "b", props: { label: "beta" } }
 ] }
-h = gtkui.mount(parent, desc)
+h = gtkui.mount(gtkui_gtk.backend(), parent, desc)
 h = gtkui.update(h, next_desc)
 ```
 

@@ -758,6 +758,16 @@ if [ -f "$LIC" ]; then
     done
     grep -qF "all $n_files standard libraries" "$LIC" \
         || { echo "FAIL licence count  $LIC does not say \"all $n_files standard libraries\" (measured from the SPDX headers)"; lic_ok=0; status=1; }
+    # EVERY mention has to agree, not just the lower-case one. The line above
+    # matches `all N standard libraries`; the page also opens the LIST with
+    # `- All N standard libraries in stdlib/:`, which is this check's own awk
+    # ANCHOR -- so its number was never read and sat at 66 while the list beside
+    # it was right, found 2026-10-14 by adding a library. A count in an anchor is
+    # still a count a reader believes.
+    for stale in $(grep -oE '[0-9]+ standard libraries' "$LIC" | grep -oE '^[0-9]+' | sort -u); do
+        [ "$stale" = "$n_files" ] \
+            || { echo "FAIL licence count  $LIC says \"$stale standard libraries\" somewhere; the tree has $n_files"; lic_ok=0; status=1; }
+    done
     # The page must still SAY it is single-licence, or a reader is left guessing.
     grep -qF "under **one** license" "$LIC" \
         || { echo "FAIL licence claim  $LIC no longer states that gBASIC is under one licence"; lic_ok=0; status=1; }

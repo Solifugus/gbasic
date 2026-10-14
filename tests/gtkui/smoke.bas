@@ -5,6 +5,7 @@
 ' G_DEBUG=fatal-criticals; widgets are built but never shown (no UI needed).
 load gi
 load gtkui
+load gtkui_gtk
 
 gi.require("Gtk", "4.0")
 gi.invoke("Gtk.init")
@@ -22,7 +23,7 @@ desc1 = { type: "Gtk.Box", props: { orientation: VBOX, spacing: 6 }, children: [
     { type: "Gtk.Label", key: "greet", props: { label: "hello" } },
     { type: "Gtk.Button", key: "go", props: { label: "Go" } }
 ] }
-h = gtkui.mount(win, desc1)
+h = gtkui.mount(gtkui_gtk.backend(), win, desc1)
 root = gtkui.root(h)
 print "root type: " + gi.type_name(root)
 greet = gtkui.lookup(h, "greet")
@@ -112,7 +113,7 @@ descN = { type: "Gtk.Box", props: { orientation: VBOX }, children: [
         ] }
     ] }
 ] }
-hn = gtkui.mount(win2, descN)
+hn = gtkui.mount(gtkui_gtk.backend(), win2, descN)
 deepw = gtkui.lookup(hn, "deep")
 print "deep label: " + deepw.get_label()
 sww = gtkui.lookup(hn, "sw")
@@ -128,7 +129,7 @@ descE = { type: "Gtk.Box", props: { orientation: VBOX }, children: [
     { type: "Gtk.Label", key: "lab", props: { label: "form" } },
     { widget: native_entry, key: "entry" }
 ] }
-he = gtkui.mount(win3, descE)
+he = gtkui.mount(gtkui_gtk.backend(), win3, descE)
 embedded = gtkui.lookup(he, "entry")
 print "native embedded name: " + embedded.get_name()
 print "native is same object: " + string(embedded = native_entry)
@@ -139,7 +140,7 @@ win4 = gi.new("Gtk.Window")
 descS = { type: "Gtk.Box", props: { orientation: VBOX }, children: [
     { type: "Gtk.Button", key: "b", props: { label: "x" }, signals: { activate: bump } }
 ] }
-hs = gtkui.mount(win4, descS)
+hs = gtkui.mount(gtkui_gtk.backend(), win4, descS)
 hs = gtkui.update(hs, descS)
 hs = gtkui.update(hs, descS)
 print "activating once (expect a single bump):"

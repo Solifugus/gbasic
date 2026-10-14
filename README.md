@@ -6,7 +6,7 @@ gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
 databases, a hardened web server, spreadsheets, statistics, charts, PDF
-documents, native GUI and an AI stack — and sixty-six pure-gBASIC libraries
+documents, native GUI and an AI stack — and sixty-seven pure-gBASIC libraries
 covering double-entry accounting, loan servicing, deposits, credit analytics,
 securities analysis and more. A gBASIC program is meant to be a real
 application, not a demonstration.
@@ -195,7 +195,7 @@ Two of these deserve a sentence more than a table row:
 
 ### The standard library
 
-Sixty-six pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
+Sixty-seven pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
 because they are not at the same maturity and a uniform list would imply they
 are.
 
@@ -315,7 +315,7 @@ are.
 - **fabricated data** (`fake`) — realistic populations that are pure functions
   of (seed, index), so a fixture cannot silently rot, plus `fake.plant` for a
   clean population with a known defect in a known place.
-- **GUI toolkits** (`gtk`, `gtkui`, `datagrid`, `sourceeditor`, `gui`) — a
+- **GUI toolkits** (`gtk`, `gtkui`, `gtkui_gtk`, `datagrid`, `sourceeditor`, `gui`) — a
   declarative widget-tree reconciler, a virtualized data grid, and a
   syntax-highlighting editor over `gi`; `gui` is the older GTK 3 proof of
   concept. [Tutorial](docs/gui_tutorial.md)

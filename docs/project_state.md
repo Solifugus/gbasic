@@ -502,7 +502,7 @@ document list, with a status column, is `docs/README.md`.
   `insiders` and `ownership` (Form 4 / 13F / 13D-G), `mdna` (MD&A + LLM panel),
   `llm` (chat client), and `screener` (whole-market scoring). See
   `docs/edgar_tutorial.md` and `docs/edgar_reference.md`.
-- **application platform** — `web` (routing), `gtk`/`gtkui`/`datagrid`/
+- **application platform** — `web` (routing), `gtk`/`gtkui`/`gtkui_gtk`/`datagrid`/
   `sourceeditor` (GTK 4 over `gi`), `filetree`, `persist` (crash-safe versioned
   storage), `dates`/`schedule` (business calendars, appointment slots), `ari`
   (anchor-relative report parsing), `matrix`, `crypto` (JWT, CSRF, signed

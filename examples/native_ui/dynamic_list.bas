@@ -19,6 +19,7 @@
 load gi
 load gtk
 load gtkui
+load gtkui_gtk
 
 ' All mutable state lives in ONE global record: gBASIC handlers can persist a
 ' record-field write (state.x = ...) but not a bare scalar-global rebind, so the
@@ -89,7 +90,7 @@ function on_activate(a)
 
     content = gtk.box("v", 8)
     win.set_child(content)
-    state.handle = gtkui.mount(content, render())
+    state.handle = gtkui.mount(gtkui_gtk.backend(), content, render())
     win.present()
 end function
 
