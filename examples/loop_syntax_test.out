@@ -35,6 +35,8 @@ ok   a find hit is kept
 ok   false is a value
 ok   zero is a value
 ok   the empty string is a value
+ok   break NAME leaves a named `for each`
+ok   continue NAME resumes a named `for each`
 
-checks: 30
+checks: 32
 mismatches: 0

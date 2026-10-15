@@ -43493,8 +43493,24 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
             if ((result.did_break || result.did_continue) &&
                 !loop_claims_flow(result, stmt->as.for_each.name)) {
-                /* Named a loop further out: keep travelling. */
+                /* Named a loop further out: keep travelling -- and RELEASE THE
+                 * ITERABLE on the way, which this path did not. Measured
+                 * 2026-10-15: `break row` from a loop nested inside
+                 * `for each row in outer` leaked 112 bytes (32 direct, 80
+                 * indirect), definitely lost, once per occurrence.
+                 *
+                 * WHY IT SURVIVED, and it is the useful half: named break IS
+                 * covered, by examples/loop_syntax_test.bas under run_examples'
+                 * valgrind tier -- but only over COUNTED loops (`for x = 1 to
+                 * 3`), which hold no iterable and so cannot exhibit it. The one
+                 * loop form that can leak was the one form the coverage did not
+                 * use. A `for each` case is in that fixture now.
+                 *
+                 * Found by reading this function before adding a streaming file
+                 * to it, where the same path would have leaked an open FILE
+                 * handle rather than an array reference. */
                 loop_depth--;
+                value_free(iterable);
                 current_line = previous_line;
                 current_column = previous_column;
                 return result;

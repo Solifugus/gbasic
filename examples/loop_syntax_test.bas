@@ -168,6 +168,31 @@ append(results, check("false is a value", false, default(false, "gave")))
 append(results, check("zero is a value", 0, default(0, "gave")))
 append(results, check("the empty string is a value", "", default("", "gave")))
 
+' NAMED BREAK AND CONTINUE OVER `for each`, which is the form that can LEAK.
+' The cases above use counted loops (`for x = 1 to 3`), and a counted loop holds
+' no iterable -- so the one loop form whose outward-travelling break had to
+' release something was the one form this fixture did not exercise, and it leaked
+' 112 bytes per occurrence from the day named break shipped until 2026-10-15.
+' This fixture runs under run_examples' valgrind tier, which is what makes these
+' four lines worth more than the assertion they carry.
+pairs = ""
+for each x in [1, 2, 3]
+    for each y in [1, 2, 3]
+        if x = 2 and y = 2 then break x
+        pairs += string(x) + string(y) + " "
+    end for
+end for
+append(results, check("break NAME leaves a named `for each`", "11 12 13 21 ", pairs))
+
+pairs = ""
+for each x in [1, 2, 3]
+    for each y in [1, 2, 3]
+        if y = 2 then continue x
+        pairs += string(x) + string(y) + " "
+    end for
+end for
+append(results, check("continue NAME resumes a named `for each`", "11 21 31 ", pairs))
+
 bad = 0
 for each verdict in results
     if not verdict then
