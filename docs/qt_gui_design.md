@@ -286,16 +286,36 @@ data-driven lists. The builder's surface is not designed here.
 
 ## 5. What must be measured before any code is written
 
-**A Qt signal reaching a gBASIC function value.** The probe's relay called a C
-function pointer. Every `on` handler in this document depends on a Qt signal
-invoking a gBASIC *function value*, and that path is **unproven**. It is the
-first experiment, not a detail of the implementation.
+**CORRECTED 2026-10-14, BEFORE ANY CODE WAS WRITTEN AGAINST IT.** This section
+said the first experiment was "a Qt signal reaching a gBASIC function value,
+unproven". That overstated the risk, and the evidence was already in the tree:
+**`gi_signal_marshal` in `src/eval.c` does exactly this for GTK and has
+shipped.** A native toolkit signal arrives, the handler is resolved
+(`function_resolve`), the signal's own parameters are converted to gBASIC
+`Value`s, `invoke_function` is called — and it handles the part this document had
+not even listed, which is what happens when the handler **raises** at a native
+boundary: the raise is reported, the outer error/stop state is restored, and the
+loop that pumped the handler keeps running.
 
-Then, in order:
+So re-entry into gBASIC from a native signal is a **solved problem with a
+reusable pattern**, not an open question. Two things remain, and they are
+narrower:
+
+- **The handler is resolved BY NAME**, not held as a function value —
+  `GiClosureData` stores a library and a name. That is fine for this design,
+  whose `on save.clicked` handlers are named in the declaration. Carrying a
+  function *value* instead is a separate, already-identified increment (the
+  `bound()` work, which would also retire `datagrid`'s program-global registry).
+- **Doing it from a C++ translation unit with `moc`** inside this build, which is
+  the genuinely new part.
+
+So the first experiment is the one that was ranked second:
 
 1. **Event-loop integration** — `QApplication::exec()` against gBASIC's own loop,
    which already serves `webserver`, `timer`, `http` and `inbox`. Expected to be
-   the hardest piece; the probe says nothing about it.
+   the hardest piece; the probe says nothing about it, and `gi`'s answer does not
+   transfer because GTK's loop is GLib's, which gBASIC's event sources already
+   plug into.
 2. **The grammar cost** of `window NAME( … )` and of a bare modifier in option
    position, in bison conflicts, against a standard of zero.
 3. **A `QMetaType` marshaller** for method and signal arguments; the probe used
