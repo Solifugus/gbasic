@@ -16,6 +16,32 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+---
+
+## 0.9.0 — 2026-10-14
+
+**Read this first.** Two things here change what a program gets, and one of them
+is reachable from the network.
+
+**A deeply nested JSON body could crash the interpreter on a small stack.** If
+you run a gBASIC server in a container or on a hardened host — anywhere
+`ulimit -s` is around 2 MB rather than the usual 8 — a single 20 KB request body
+could kill it. Fixed, and the limit is now derived from the stack rather than
+guessed. Nothing changes at the 8 MB default.
+
+**Exactness now reaches past the operators.** `mod(9007199254740993, 2)`
+answered `0`; `min`, `max`, `sum`, `median`, `abs`, `floor`, `ceil`, `round` and
+`pow` all dropped a digit above 2^53; `sort` could not order two exact integers
+at all; and `decode(encode(x))` lost the value. All fixed. Below 2^53 nothing
+moves, so an ordinary program sees no difference.
+
+**And this is a MINOR release rather than a patch for one reason**: `gtkui.mount`
+takes a backend argument now. That is the only breaking change, it affects 8 call
+sites in this repository and none outside it, and the rest of the release would
+have qualified as a patch under the rule 0.6.1 set — *nothing is added, nothing
+is removed, and no message changes*. A library was added and a signature moved,
+so the label follows.
+
 ### `gtkui` works over any backend; GTK is one of them
 
 The declarative reconciler no longer knows what a widget is. `stdlib/gtkui.bas`
