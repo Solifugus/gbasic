@@ -10788,58 +10788,175 @@ static char *read_whole_file(const char *path, long *out_size) {
     return text;
 }
 
+/* THE LINE RULE, in one place: split on `\n`, drop ONE trailing `\r` so a CRLF
+ * file needs no mode, and a final line with no newline is still a line.
+ *
+ * A LINE IS COUNTED BYTES, NOT A C STRING, and that is a correction. Each line
+ * was built as a malloc'd NUL-terminated copy handed to `value_string`, so a
+ * line containing an interior NUL was TRUNCATED AT IT -- measured 2026-10-15,
+ * `a\0b` came back as ONE byte while `read(f)` on the same file returned all
+ * nine. Two routes to "the contents of this file" disagreeing about what a byte
+ * is, which is the exact shape PLAT-NUL exists to close, and its standing lesson
+ * is that a truncation found in one place is evidence about every place that
+ * reads a string. It matters for ETL rather than in the abstract: an embedded
+ * NUL in an extract is why `COPY` refuses such files, so they are precisely the
+ * ones that arrive needing to be read and reported on.
+ *
+ * `value_string_n` takes the span directly, so the intermediate copy is gone
+ * too -- the fix is smaller than what it replaces. */
 static Value lines_from_text(const char *text, size_t size) {
     Value *items = NULL;
     size_t count = 0;
     size_t start = 0;
 
-    for (size_t i = 0; i < size; i++) {
-        if (text[i] != '\n') {
+    for (size_t i = 0; i <= size; i++) {
+        /* The final iteration (i == size) closes an unterminated last line and
+         * is skipped when the file ended on a newline. */
+        if (i < size && text[i] != '\n') {
             continue;
+        }
+        if (i == size && start >= size) {
+            break;
         }
         size_t line_length = i - start;
         if (line_length > 0 && text[start + line_length - 1] == '\r') {
             line_length--;
         }
-        char *line = malloc(line_length + 1);
-        if (!line) {
-            abort();
-        }
-        memcpy(line, text + start, line_length);
-        line[line_length] = '\0';
-
         Value *next = realloc(items, sizeof(Value) * (count + 1));
         if (!next) {
             abort();
         }
         items = next;
-        items[count++] = value_string(line);
-        free(line);
+        items[count++] = value_string_n(text + start, line_length);
         start = i + 1;
     }
 
-    if (start < size) {
-        size_t line_length = size - start;
-        if (line_length > 0 && text[start + line_length - 1] == '\r') {
-            line_length--;
-        }
-        char *line = malloc(line_length + 1);
-        if (!line) {
-            abort();
-        }
-        memcpy(line, text + start, line_length);
-        line[line_length] = '\0';
-
-        Value *next = realloc(items, sizeof(Value) * (count + 1));
-        if (!next) {
-            abort();
-        }
-        items = next;
-        items[count++] = value_string(line);
-        free(line);
-    }
-
     return value_array(items, count);
+}
+
+/* ---- STREAMING A FILE BY LINES (docs/etl_files_design.md §2) --------------
+ *
+ * WHY THIS EXISTS. Every file read in gBASIC was whole-file, and MEASURED that
+ * costs about 4.5x the file size: a 200,000-line, 7.6 MB CSV through
+ * `read_lines` takes 48.7 MB resident against a 13.8 MB baseline, which is 179
+ * bytes a line. So a 1 GB extract needed ~4.5 GB and a 10 GB one was impossible
+ * rather than slow -- a wall, in the one area the next book is about.
+ *
+ * NOT `getline`. It is glibc-only: MEASURED with the cross compiler, MinGW
+ * reports `implicit declaration of function 'getline'`, and src/eval.c is
+ * compiled for Windows too. A buffered reader is a few dozen lines, portable,
+ * and gives the control the next paragraph needs anyway.
+ *
+ * A LINE IS COUNTED BYTES. The buffer is scanned with `memchr` and the line is
+ * handed out as a span, so an interior NUL is content -- which is not optional:
+ * `read_lines` truncated at one until this was written (measured, `a\0b` came
+ * back as one byte while `read(f)` returned all nine), and a stream that
+ * repeated that mistake would put the two routes back into disagreement.
+ *
+ * MEMORY IS THE LONGEST LINE, NOT THE FILE. The buffer holds only unconsumed
+ * bytes, compacted as they are taken, and grows only when a single line does not
+ * fit. */
+#define GB_LINE_BUF_START 65536
+
+typedef struct {
+    FILE *fp;
+    char *buf;
+    size_t cap;      /* allocated */
+    size_t pos;      /* first unconsumed byte */
+    size_t len;      /* one past the last byte read */
+    int at_eof;      /* the underlying file reported end of input */
+    int failed;      /* a read error: the caller must raise, not stop quietly */
+} GbLineReader;
+
+static int gb_line_reader_open(GbLineReader *r, const char *path) {
+    memset(r, 0, sizeof *r);
+    r->fp = fopen(path, "rb");
+    if (!r->fp) {
+        return 0;
+    }
+    r->cap = GB_LINE_BUF_START;
+    r->buf = malloc(r->cap);
+    if (!r->buf) {
+        abort();
+    }
+    return 1;
+}
+
+static void gb_line_reader_close(GbLineReader *r) {
+    if (r->fp) {
+        fclose(r->fp);
+        r->fp = NULL;
+    }
+    free(r->buf);
+    r->buf = NULL;
+}
+
+/* Fill from the file, compacting first so a long line can keep growing. */
+static void gb_line_reader_fill(GbLineReader *r) {
+    if (r->pos > 0) {
+        memmove(r->buf, r->buf + r->pos, r->len - r->pos);
+        r->len -= r->pos;
+        r->pos = 0;
+    }
+    if (r->len == r->cap) {
+        size_t next = r->cap * 2;
+        char *grown = realloc(r->buf, next);
+        if (!grown) {
+            abort();
+        }
+        r->buf = grown;
+        r->cap = next;
+    }
+    size_t got = fread(r->buf + r->len, 1, r->cap - r->len, r->fp);
+    r->len += got;
+    if (got == 0) {
+        if (ferror(r->fp)) {
+            r->failed = 1;
+        }
+        r->at_eof = 1;
+    }
+}
+
+/* The next line as a span into the reader's own buffer, valid until the next
+ * call. Answers 0 at end of input. The line rule is the one `lines_from_text`
+ * applies to a whole buffer -- split on `\n`, drop ONE trailing `\r` -- and the
+ * two are asserted to AGREE rather than sharing code, which is the stronger
+ * check: two implementations of one rule that agree on every shape, including a
+ * NUL and a file that does not end in a newline. */
+static int gb_line_reader_next(GbLineReader *r, const char **out, size_t *out_len) {
+    for (;;) {
+        if (r->pos < r->len) {
+            char *nl = memchr(r->buf + r->pos, '\n', r->len - r->pos);
+            if (nl) {
+                size_t line_len = (size_t)(nl - (r->buf + r->pos));
+                if (line_len > 0 && r->buf[r->pos + line_len - 1] == '\r') {
+                    line_len--;
+                }
+                *out = r->buf + r->pos;
+                *out_len = line_len;
+                r->pos += (size_t)(nl - (r->buf + r->pos)) + 1;
+                return 1;
+            }
+        }
+        if (r->at_eof) {
+            if (r->pos < r->len) {
+                /* A last line with no newline is still a line. */
+                size_t line_len = r->len - r->pos;
+                if (line_len > 0 && r->buf[r->pos + line_len - 1] == '\r') {
+                    line_len--;
+                }
+                *out = r->buf + r->pos;
+                *out_len = line_len;
+                r->pos = r->len;
+                return 1;
+            }
+            return 0;
+        }
+        gb_line_reader_fill(r);
+        if (r->failed) {
+            return 0;
+        }
+    }
 }
 
 static const char *file_target_path(Value value) {
@@ -43470,8 +43587,107 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
+        if (iterable.kind == VALUE_FILE) {
+            /* --- STREAMING A FILE, LINE BY LINE ----------------------------
+             *
+             * `for each line in f` where `f` is a file reference. This PARSED
+             * before and raised here, measured -- one site, one diagnostic -- so
+             * no working program contained the shape and nothing can change
+             * meaning. The same proof the array-projection work rested on, and
+             * it is why this needed no grammar change and so cost no bison
+             * conflicts.
+             *
+             * THE LOOP OWNS THE HANDLE, which is the reason not to expose
+             * open/read_line/close instead: it is closed on normal end, on
+             * `break`, on a `break` or `continue` NAMING AN OUTER LOOP, on a
+             * `return`, and on a raise -- every exit below does it. An author
+             * cannot forget, and there is no EOF sentinel to misread, which
+             * `input()` already proves is a real trap (it answers "" for both a
+             * blank line and end of input).
+             *
+             * A READ ERROR RAISES. A short read that looked like end of input
+             * would be the file-reading form of "a directory that cannot be
+             * read is not an empty one", fixed two days before this.
+             *
+             * `for_each_check_dead_write` IS DELIBERATELY NOT CALLED HERE. Its
+             * message names the remedy `list[i] = item`, and a stream has no
+             * `list` to write back to -- so the advice would be impossible to
+             * follow. The policy this warning already carries settles it: a
+             * missed dead write costs nothing, a false one costs the channel its
+             * credibility. */
+            GbLineReader reader;
+            if (!gb_line_reader_open(&reader, iterable.as.file_path)) {
+                char message[512];
+                snprintf(message, sizeof message,
+                         "could not read file: %s (%s)",
+                         iterable.as.file_path, strerror(errno));
+                runtime_error_raise(message, 1004, "file operation");
+                value_free(iterable);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            loop_depth++;
+            const char *line = NULL;
+            size_t line_len = 0;
+            size_t index = 0;
+            EvalResult out = eval_no_result();
+            int returning = 0;
+            while (gb_line_reader_next(&reader, &line, &line_len)) {
+                env_set(stmt->as.for_each.name, value_string_n(line, line_len));
+                if (stmt->as.for_each.index_name) {
+                    /* The LINE NUMBER, which is what an ETL job reports when a
+                     * row will not parse. Exact, like every other count. */
+                    env_set(stmt->as.for_each.index_name,
+                            value_number_exact((long long)index));
+                }
+                index++;
+                EvalResult result = eval_stmt_list(stmt->as.for_each.body);
+                if ((result.did_break || result.did_continue) &&
+                    !loop_claims_flow(result, stmt->as.for_each.name)) {
+                    out = result;
+                    returning = 1;
+                    break;
+                }
+                if (result.did_break) {
+                    value_free(result.value);
+                    break;
+                }
+                if (result.did_continue) {
+                    value_free(result.value);
+                    continue;
+                }
+                if (eval_result_exits_block(result)) {
+                    out = result;
+                    returning = 1;
+                    break;
+                }
+            }
+            int read_failed = reader.failed;
+            gb_line_reader_close(&reader);
+            loop_depth--;
+            if (read_failed && !returning) {
+                char message[512];
+                snprintf(message, sizeof message,
+                         "could not read file: %s (%s)",
+                         iterable.as.file_path, strerror(errno));
+                runtime_error_raise(message, 1004, "file operation");
+                value_free(iterable);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            value_free(iterable);
+            current_line = previous_line;
+            current_column = previous_column;
+            if (returning) {
+                return out;
+            }
+            break;
+        }
         if (iterable.kind != VALUE_ARRAY) {
-            runtime_error_raise("for in expects an array", 1003, "invalid operation");
+            runtime_error_raise("for in expects an array or a file", 1003,
+                                "invalid operation");
             value_free(iterable);
             current_line = previous_line;
             current_column = previous_column;

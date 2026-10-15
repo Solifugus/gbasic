@@ -1,7 +1,8 @@
 # Files and folders for ETL — design
 
-**Status: Proposal. None of this exists.** No streaming read, no glob, no
-`modified`, no `intake` library. Do not code against it.
+**Status: Partial.** §2, the streaming read, **shipped 2026-10-15** — see the
+note at the end of that section. The glob, `modified`, path splitting, temp files
+and the `intake` library do not exist. Do not code against those.
 
 **Provenance.** Where this says *measured* it means a command was run on
 2026-10-14/15 and the number is quoted. The requirements come from Matthew's own
@@ -112,6 +113,47 @@ and for fixed-width records. `with` is the right shape, since it already
 guarantees unwinding — but `with open(f) as h` needs an `as` binding that
 `with lock(...)` and `with principal(...)` do not have, so that is new grammar
 and must be priced before it is promised.
+
+### SHIPPED 2026-10-15
+
+`for each line in f` streams. **Measured on the same 161 MB, 4-million-line CSV:
+13.3 MB resident streaming against 750 MB for `read_lines`** — 56x less, and
+flat across a 21x range of input where the whole-file route is proportional.
+
+**It needed no grammar change at all**, which this section had not predicted:
+`for each line in f` already PARSED and raised at ONE runtime site, so the whole
+feature is a runtime change and §6's bison-conflict measurement was answered
+before it was taken. `getline` was not used — measured, MinGW reports an implicit
+declaration and `src/eval.c` is compiled for Windows too — so the reader is a
+portable buffered one, which the NUL handling wanted anyway.
+
+**TWO DEFECTS CAME OUT OF READING THE CODE BEFORE WRITING IN IT**, both
+pre-existing and neither found by a test:
+
+- **`break` out of a named `for each` leaked the iterable** — 112 bytes,
+  definitely lost, once per occurrence. Named break *is* covered, but every case
+  used a COUNTED loop, which holds no iterable and cannot exhibit it. Fixed
+  first, because the streaming loop would have leaked an open FILE handle on that
+  same path, and a leaked descriptor is a limit a long ETL run reaches.
+- **`read_lines` truncated a line at an interior NUL** — measured, `a\0b` came
+  back as one byte while `read(f)` on the same file returned all nine. Each line
+  was built as a C string. Fixed, and the fix is smaller than what it replaced.
+  This is PLAT-NUL's standing lesson holding again: a truncation found in one
+  place is evidence about every place that reads a string.
+
+`tests/run_file_stream.sh` has four tiers and none is a golden. The load-bearing
+one is **AGREEMENT**: streaming and `read_lines` are two independent
+implementations of one line rule, so their agreeing over twelve shapes — an
+interior NUL, a CRLF file, a line longer than the read buffer, a file not ending
+in a newline — is evidence where a golden of either alone is a transcript. The
+**MEMORY** tier is a ratio across a 10x step, never an absolute, **with
+`read_lines` as the control**: it must EXCEED the gate, or "streaming is flat" is
+being asserted by a harness that cannot tell flat from proportional. Four
+perturbations proven red, each caught by its own tier.
+
+**Still open from this section**: an explicit handle for seeking and interleaving
+(`with open(f) as h` needs an `as` binding `with` does not have), and
+`for each chunk in chunks(f, n)` for binary input.
 
 ## 3. Finding files: extend `files`, do not add a name
 

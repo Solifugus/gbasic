@@ -464,7 +464,51 @@ next item
 for each item, i in items          ' the element AND its position, 0-based
     items[i] = tagged(item)
 end for
+
+for each line in extract            ' a FILE: streamed, one line at a time
+    take(line)
+end for
 ```
+
+#### Streaming a file — `for each line in f`
+
+*(since 0.9.1)* When the thing iterated is a **file reference**, the loop
+**streams** it: one line at a time, holding only the longest line rather than
+the file. Measured on a 161 MB, 4-million-line CSV — **13.3 MB** resident
+streaming it against **750 MB** for `read_lines` over the same file, and flat
+across a 21× range of input where the whole-file route is proportional. A 10 GB
+extract is ordinary rather than impossible.
+
+```basic
+for each line, n in extract         ' `n` is the LINE NUMBER, 0-based
+    if not parses(line) then
+        print to error "line " + string(n) + " will not parse"
+    end if
+end for
+```
+
+**The loop owns the handle**, which is why there is no `open`/`close` to pair up.
+It is closed when the loop ends, on `break`, on a `break` or `continue` naming an
+*outer* loop, on a `return` from inside it, and when a raise passes through — all
+six asserted under `valgrind --track-fds`. And there is no end-of-input sentinel
+to misread, which is a real trap in this language: `input()` answers `""` for
+both a blank line and end of input with no way to tell them apart.
+
+**A read error raises** rather than ending the loop. A truncated read reported as
+end-of-file is the file-reading form of *"a directory that cannot be read is not
+an empty one"*, and for an ETL job it is the difference between a failed load and
+a silently short one. An absent file raises too.
+
+**A line is the same line `read_lines` would give** — split on `\n`, one trailing
+`\r` dropped so a CRLF file needs no mode, and a final line without a newline is
+still a line. The two are independent implementations and
+`tests/run_file_stream.sh` asserts they agree over twelve shapes, including an
+interior NUL and a line longer than the read buffer.
+
+Writing to the element is **not** reported here as it is for an array
+(warning `2107`), because that warning's remedy is `list[i] = item` and a stream
+has no `list` to write back to — advice that cannot be followed is worse than
+silence.
 
 **`for each item, i in list` gives you the index**, and it is what makes a
 write-back expressible. gBASIC has no references, so the loop variable is a
@@ -6678,7 +6722,12 @@ File functions (see also the file/directory value types):
   multibyte file — every value check in the file is also satisfied by a build
   where they are one function.
 - `read_lines(f)` — the file's lines as an array of **strings**, without their
-  line endings. `lines(f)` counts them; this returns them.
+  line endings. `lines(f)` counts them; this returns them. It holds the whole
+  file: for a large one use `for each line in f`, which streams. A line is
+  **counted bytes**, so an interior NUL is content *(fixed in 0.9.1; before that
+  each line was built as a C string and truncated at the first NUL, while
+  `read(f)` on the same file returned every byte — two routes to one question
+  disagreeing)*.
 - `overwrite(f, text, position)` — write `text` **in place** at a byte offset,
   leaving the rest of the file alone. Three arguments, not two: it is not a
   whole-file replace, which is what `write` does. `overwrite(f, "XYZ", 3)` over

@@ -9,6 +9,36 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Large files: `for each line in f` streams
+
+A file read no longer has to fit in memory. Iterating a **file reference** walks
+it a line at a time, holding only the longest line:
+
+```basic
+for each line, n in extract
+    if not parses(line) then
+        print to error "line " + string(n) + " will not parse"
+    end if
+end for
+```
+
+Measured on a 161 MB, 4-million-line CSV: **13.3 MB resident, against 750 MB for
+`read_lines` over the same file** — 56× less, and flat across a 21× range of
+input where the whole-file route is proportional. A 10 GB extract is ordinary
+rather than impossible.
+
+The loop owns the handle, so there is no `open`/`close` to pair: it closes when
+the loop ends, on `break`, on a `break` naming an outer loop, on a `return` from
+inside it, and when a raise passes through. A **read error raises** rather than
+ending the loop quietly — a truncated read reported as end-of-file is the
+difference between a failed load and a silently short one.
+
+**`read_lines` was truncating a line at an interior NUL**, while `read(f)` on the
+same file returned every byte. Lines are counted bytes now, so the two agree.
+
+**And `break` out of a named `for each` leaked its iterable** — 112 bytes per
+occurrence. Found by reading the loop before adding a file to it.
+
 Kept current as work lands, so a book revising against the next release has the
 list already written rather than reconstructed. `./tools/since-release.sh`
 reports the mechanical half of this — which pinned diagnostics and goldens moved
