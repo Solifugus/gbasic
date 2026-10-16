@@ -274,6 +274,24 @@ int gb_file_mtime(const char *path, time_t *out) {
     return 0;
 }
 
+/* A reparse point is a symlink, a directory junction or a mount point, and all
+ * three can point at an ancestor -- which is the cycle gb_is_symlink exists to
+ * stop a recursive walk falling into. GetFileAttributesW does NOT follow the
+ * link, which is the whole requirement; an unreadable path answers 0, matching
+ * the POSIX body's lstat failure. */
+int gb_is_symlink(const char *path) {
+    WCHAR *wpath = utf8_to_wide(path);
+    if (!wpath) {
+        return 0;
+    }
+    DWORD attrs = GetFileAttributesW(wpath);
+    free(wpath);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        return 0;
+    }
+    return (attrs & FILE_ATTRIBUTE_REPARSE_POINT) ? 1 : 0;
+}
+
 int gb_set_cloexec(int fd, int on) {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h == INVALID_HANDLE_VALUE) {

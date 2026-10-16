@@ -6787,47 +6787,106 @@ Listing a directory — two functions, and the difference matters:
   and the rest. It does **not** recurse, and it does **not** report
   subdirectories at all, so it cannot by itself drive a walk: a directory is
   invisible to it.
-- `list(d)` — every entry of a directory, as `{name, path, type}` records
-  where `type` is `"file"` or `"folder"`. `name` is the bare entry name and
-  `path` is the path to it. Takes a **plain string path or a `{dir}`
-  reference** (*since 0.1.0-rc9*), so the `d {dir}= p` line in front of a
-  listing is no longer needed — `{dir}=` labels a path, it does not check one,
-  and it accepts a missing path or a file's path just the same. This is the
-  one to build a recursive walk on, because it is the one that can see a
-  subdirectory:
+- `list(d [, pattern])` — every entry of a directory, as
+  `{name, path, type, size, modified}` records where `type` is `"file"` or
+  `"folder"`. `name` is the bare entry name and `path` is the path to it.
+  Takes a **plain string path or a `{dir}` reference** (*since 0.1.0-rc9*), so
+  the `d {dir}= p` line in front of a listing is no longer needed — `{dir}=`
+  labels a path, it does not check one, and it accepts a missing path or a
+  file's path just the same.
+
+  `size` is the entry's byte count, and is **`unknown` for a folder** — never
+  `0` — because a directory's stat size is the platform's own bookkeeping and
+  not the bytes under it, the same reason `file_size` refuses one outright.
+  `modified` is its mtime as a `datetime`, exactly what `file_mtime` answers.
+  Both are `unknown` when the entry could not be stat'd — a broken symlink, or
+  an entry removed between the listing and the stat, which a long walk does
+  meet. **Neither costs anything**: the listing already stat'd every entry to
+  decide `type`, and used to throw the rest away. Reading `e.size` is a field
+  read where `file_size({file}e.path)` is a call, which matters when the
+  decision to process a file is a filter over thousands of them.
+
+  Because `modified` is a `datetime`, **an entry does not go through `encode`**,
+  which refuses typed values. Use `notation.to_text`, which keeps every type and
+  round-trips a whole entry, or `epoch(e.modified)` for a number. (It is a
+  `datetime` rather than an epoch number so that it agrees with `file_mtime`,
+  and because `if e.modified > last_run` is what an incremental load asks.)
+
+  **The entries come back sorted by `path`** (*since 0.9.1*). `readdir` order
+  is the directory hash's — neither alphabetical nor stable across machines —
+  so every caller had to sort, and a recursive walk interleaves depth-first in
+  an order nobody can predict.
+
+- `files(d [, pattern])` / `folders(d [, pattern])` — the same records,
+  filtered to one kind. `files(d)` is `list(d)` minus the subdirectories.
+
+  **With no pattern all three list one level.** With one they walk, and the
+  pattern is matched against the path **relative to `d`**:
 
   ```basic
-  pending = [root]
-  found = []
-  while len(pending) > 0
-      here = take_last(pending)
-      for each e in list(here)
-          if e.type = "folder" then
-              pending = append(pending, e.path)
-          else
-              found = append(found, e.path)
-          end if
-      end for
-  end while
+  files(d)                            ' one level, every file
+  files(d, "*.xlsx")                  ' one level, matching
+  files(d, "**/*.xlsx")               ' any depth
+  files(d, "2026/*/vendor_*.xlsx")    ' a year, every quarter under it
+  files(d, "**/vendor_*.xlsx")        ' and when the folder shape changes
   ```
 
-  Use `e.path` rather than reassembling `here + "/" + e.name` by hand — the
-  record already carries it.
+  The language is **glob**, as a shell with `globstar` means it:
 
-- `files(d)` / `folders(d)` — the same records as `list`, filtered to one
-  kind, and they take a string path or a `{dir}` reference too. `files(d)` is
-  `list(d)` minus the subdirectories.
+  - `*` matches any run of characters **within one segment**, `?` matches one,
+    and `[abc]` / `[a-z]` / `[!a-z]` are character classes. An unclosed `[` is
+    a literal `[`, not an error, because a filename may contain one.
+  - `**` matches **zero or more whole segments**, so a leading `**` finds a
+    file at the top level as well as one three deep. It is the one thing that
+    descends, and it is what makes a pattern indifferent to folder structures
+    that change.
+  - **A leading `.` must be matched explicitly.** `*.json` does not return
+    `.intake.json` and `**` does not walk into `.git`; `.*` returns them. With
+    **no** pattern, every entry including dotfiles comes back, which is `ls`
+    against `ls *`. For a job importing a directory this is the rule that stops
+    a glob feeding an import ledger kept beside the data back to itself.
+  - **A pattern that matches nothing is an empty array, never an error** — a
+    run with no new files is a normal day, and the alternative puts a handler
+    around the ordinary case.
+  - The walk is **pruned by the pattern**: `files(d, "2026/*/*.xlsx")` opens
+    that year's folders, not the estate.
 
-  **The two families differ on a directory that cannot be opened, and the
-  difference is deliberate.** `list_files` **raises** (`could not list files:
-  <path>`); `list`, `files` and `folders` return an **empty array**, which is
-  indistinguishable from a genuinely empty directory. That is what a tree
-  browser wants — a subdirectory you lack permission to read should not end a
-  walk, and `stdlib/filetree.bas` relies on it — but if you need to know the
-  difference, ask `file_type(p)` first.
+  A pattern that cannot be *meant* is refused rather than left to match
+  nothing, because a pattern usually arrives from configuration and "found
+  nothing" hides a typo: an empty pattern, one beginning with `/` (it is
+  relative to `d`), one with an empty segment (`a//b`, `a/`), and one
+  containing `.` or `..`.
 
-  Order is the filesystem's, not sorted — `sort` it if you need a stable one.
-  `stdlib/filetree.bas` is this walk with expand/collapse state on top.
+  **The walk does not follow symlinks to directories.** A symlink can point at
+  its own ancestor, and `ln -s .. loop` would make a recursive walk run
+  forever — a hang reports nothing at all. So a `/data/current -> /data/2026-Q2`
+  arrangement is reached by naming the link **as the directory**
+  (`files({dir}"/data/current", "*.csv")`, which does follow it) or by
+  resolving it with `real_path`, and not by globbing through it. A symlink to a
+  **file** is an ordinary entry.
+
+  **An unreadable directory raises at the top level and warns below it.** If
+  the directory you *named* cannot be read you got none of what you asked for,
+  so `list`, `files` and `folders` raise (`could not read directory: <path>
+  (<reason>)`), naming the OS reason because ENOENT, EACCES and ENOTDIR want
+  different fixes. A subdirectory reached by a recursive pattern is different:
+  one locked folder must not throw away a scan of ten thousand files, so it
+  emits **warning `2113`** naming the path and the reason and the walk
+  continues. `on warning ignore` silences it for a walk that expects it, and
+  `on warning stop` turns it back into an error for a job that needs
+  completeness.
+
+  A caller that wants "empty when I cannot read it" says so in one line:
+
+  ```basic
+  entries = []
+  on error goto next
+  entries = list(d)
+  if error then error.clear()
+  ```
+
+  `stdlib/filetree.bas` is a tree browser built this way, with expand/collapse
+  state on top.
 
 File metadata and atomic replacement:
 
@@ -6967,9 +7026,12 @@ end consider
 
 Directory functions:
 
-- `list(folder)` / `files(folder)` / `folders(folder)` — directory entries.
+- `list(folder [, pattern])` / `files(folder [, pattern])` /
+  `folders(folder [, pattern])` — directory entries. With a glob pattern they
+  walk; see the listing section above for the pattern language.
 
-Directory entries are records with `name`, `path`, and `type`.
+Directory entries are records with `name`, `path`, `type`, `size` and
+`modified`, sorted by `path`.
 
 ## Standard Library
 

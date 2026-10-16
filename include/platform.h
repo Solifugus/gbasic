@@ -261,6 +261,22 @@ char *gb_realpath(const char *path);
  * time honoured TZ correctly. Windows keeps the real UTC time; this reads it. */
 int gb_file_mtime(const char *path, time_t *out);
 
+/* Is this path a SYMLINK (or, on Windows, any reparse point -- a symlink,
+ * a directory junction or a mount point)? 1 yes, 0 no, and 0 also when the
+ * path cannot be interrogated at all, because a caller that cannot read it is
+ * not going to walk into it either.
+ *
+ * WHY IT IS A PLATFORM FUNCTION. The one caller is the recursive glob, which
+ * must not descend through a link: `ln -s .. loop` makes a walk run forever,
+ * and a HANG reports nothing at all. `lstat`/`S_ISLNK` would have been two
+ * lines, and both are POSIX -- absent on MinGW, where `src/eval.c` is also
+ * compiled, which is the same wall that ruled out `getline` for the streaming
+ * read. Windows is NOT the no-op case here either: a directory junction is
+ * exactly the cycle this exists to refuse, and `C:\Users\All Users` is one by
+ * default, so the Windows body tests the reparse-point attribute rather than
+ * returning 0. */
+int gb_is_symlink(const char *path);
+
 /* Set (on=1) or clear (on=0) close-on-exec / non-inheritance on an fd.
  * Windows: SetHandleInformation(HANDLE_FLAG_INHERIT) on the fd's OS handle.
  * Returns 0 / -1. */

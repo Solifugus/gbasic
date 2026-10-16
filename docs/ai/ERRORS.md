@@ -174,6 +174,7 @@ scope — so it is not a reserved word and `r.warning` still parses.
 | 2110 | an indefinite `receive()` in a watcher body that fired at REGISTRATION, with nothing left to send | `actor` |
 | 2111 | an aggregate SKIPPED one or more absent values, or found every value absent | `absence` |
 | 2112 | a sum, difference or product of two EXACT integers left the range the runtime holds exactly, so the answer degraded to an approximation | `exactness` |
+| 2113 | a SUBDIRECTORY reached by a recursive `list`/`files`/`folders` pattern could not be read, and the walk continued without it (the directory you NAMED still raises) | `directory` |
 
 **This table stops where the source does**, checked by `tests/run_docs_gate.sh`
 against the codes `src/eval.c` actually emits — it had stopped at 2104 while

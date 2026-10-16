@@ -2185,6 +2185,34 @@ static Value value_datetime(DateTime datetime) {
     return value;
 }
 
+/* A file's modification time as a gBASIC `datetime`, or `unknown` when the
+ * conversion fails. st_mtime is whole seconds since the epoch and gBASIC's
+ * DateTime has second precision, so any sub-second st_mtim.tv_nsec is
+ * intentionally dropped -- we do not fabricate precision the value model
+ * cannot hold. Local time, mirroring from_epoch().
+ *
+ * SHARED BY `file_mtime` AND THE DIRECTORY ENTRY'S `modified` FIELD. The two
+ * answer the same question by two routes, and two copies of this construction
+ * are two things that can disagree about the zone or the precision -- the
+ * failure shape run_exact.sh records for `sort` and `=` having each been given
+ * exactness separately. */
+static Value value_datetime_from_epoch_local(time_t raw) {
+    struct tm local;
+    if (!gb_localtime(&raw, &local)) {
+        return value_unknown();
+    }
+    DateTime dt = {0};
+    dt.year = local.tm_year + 1900;
+    dt.month = local.tm_mon + 1;
+    dt.day = local.tm_mday;
+    dt.hour = local.tm_hour;
+    dt.minute = local.tm_min;
+    dt.second = local.tm_sec;
+    dt.time_only = 0;
+    dt.precision = PREC_SECOND;
+    return value_datetime(dt);
+}
+
 /* User-facing number formatting. Integer-valued doubles that are exactly
  * representable (|v| < 2^53) print in full with no exponent — so epoch seconds,
  * 32-bit bitwise results, and large ids read correctly — while everything else
@@ -11717,25 +11745,15 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(file_value);
             return value_null();
         }
-        struct tm local;
-        if (!gb_localtime(&raw, &local)) {
+        value_free(file_value);
+        Value when = value_datetime_from_epoch_local(raw);
+        if (when.kind == VALUE_UNKNOWN) {
             runtime_error_raise("file_mtime could not convert the file time",
                                 1004,
                                 "file operation");
-            value_free(file_value);
             return value_null();
         }
-        value_free(file_value);
-        DateTime dt = {0};
-        dt.year = local.tm_year + 1900;
-        dt.month = local.tm_mon + 1;
-        dt.day = local.tm_mday;
-        dt.hour = local.tm_hour;
-        dt.minute = local.tm_min;
-        dt.second = local.tm_sec;
-        dt.time_only = 0;
-        dt.precision = PREC_SECOND;
-        return value_datetime(dt);
+        return when;
     }
 
     if (strcmp(name, "atomic_replace") == 0) {
@@ -12239,7 +12257,305 @@ static Value eval_file_call(AstExpr *expr) {
     return value_null();
 }
 
-static Value make_dir_entry(const char *folder, const char *name, const char *type) {
+/* ---- glob: the optional pattern of `list`, `files` and `folders` ----------
+ *
+ * WHY THE PATTERN IS A SECOND ARGUMENT AND NOT A NEW BUILTIN: `find` is already
+ * taken (it searches an array or a string), and these three already answer
+ * "what is in this directory" and already return `{name, path, type}` records.
+ * A pattern narrows that answer; it does not ask a different question. So there
+ * is no new name to learn and no second record shape to read.
+ *
+ * THE PATTERN LANGUAGE IS GLOB because that is what people already know and
+ * what reads well in a configuration file, and `**` is what makes it answer the
+ * requirement this was built for -- "folder structures that can and will
+ * change" -- since a pattern of `**` followed by `vendor_*.xlsx` is anchored
+ * at the top and at the filename and indifferent to everything in between.
+ *
+ * A SEGMENT IS MATCHED BY A SMALL MATCHER WRITTEN HERE RATHER THAN BY `regex`,
+ * which docs/etl_files_design.md §3 had proposed. Three reasons, measured
+ * rather than preferred: `**` has no regular-expression spelling that survives
+ * translation (it is a rule about PATH SEGMENTS, not about characters, and the
+ * naive `.*` crosses separators where `*` must not); a glob-to-ERE translator
+ * has to escape every metacharacter of the TARGET language, so a filename
+ * containing `.` or `+` becomes a wildcard in silence; and libc's POSIX ERE is
+ * one more thing whose behaviour differs across the platforms this file is
+ * compiled for. `fnmatch` was rejected for the same portability reason -- it is
+ * absent on MinGW, and `src/eval.c` is compiled for Windows.
+ *
+ * FOUR RULES THE SHELL ALREADY SETTLED, kept because departing from them would
+ * make every pattern anyone already knows wrong:
+ *
+ *   - `*` and `?` do NOT cross `/`. Only `**` descends.
+ *   - A LEADING DOT MUST BE MATCHED EXPLICITLY. `*.json` does not return
+ *     `.intake.json`, and `**` does not walk into `.git`. For ETL this is not
+ *     tidiness: an import ledger commonly lives in the directory being
+ *     imported, and a glob that swept it up would feed the ledger to itself.
+ *   - An unclosed `[` is a literal `[`, not an error, because a filename may
+ *     contain one.
+ *   - `**` matches ZERO or more segments, so a leading `**` finds a file at the
+ *     top level as well as one three deep.
+ *
+ * AND ONE THE SHELL DOES NOT SETTLE FOR US: a pattern that matches nothing is
+ * an EMPTY ARRAY, never an error. A run with no new files is a normal Tuesday,
+ * and the alternative makes every incremental load carry a handler for its own
+ * ordinary case. The refusals below are all about a pattern that cannot be
+ * meant rather than one that found nothing. */
+
+#define GLOB_MAX_DEPTH 256
+
+static int glob_is_hidden(const char *name) {
+    return name[0] == '.';
+}
+
+/* A bracket expression at `p[0] == '['`. Returns 1/0 for membership and sets
+ * `*p_out` past the closing `]`; returns -1 for an unclosed `[`, which the
+ * caller then treats as a literal character. `]` immediately after `[` or `[!`
+ * is itself a literal, as in the shell. */
+static int glob_class(const char *p, char c, const char **p_out) {
+    const char *scan = p + 1;
+    int negate = 0;
+    if (*scan == '!' || *scan == '^') {
+        negate = 1;
+        scan++;
+    }
+    int matched = 0;
+    int first = 1;
+    while (*scan && (*scan != ']' || first)) {
+        first = 0;
+        if (scan[1] == '-' && scan[2] && scan[2] != ']') {
+            unsigned char lo = (unsigned char)scan[0];
+            unsigned char hi = (unsigned char)scan[2];
+            unsigned char uc = (unsigned char)c;
+            if (lo <= uc && uc <= hi) {
+                matched = 1;
+            }
+            scan += 3;
+        } else {
+            if (*scan == c) {
+                matched = 1;
+            }
+            scan++;
+        }
+    }
+    if (*scan != ']') {
+        return -1;
+    }
+    *p_out = scan + 1;
+    return negate ? !matched : matched;
+}
+
+/* One pattern segment against one path segment. Iterative with a single
+ * backtrack point, so a pattern of many stars costs no recursion. */
+static int glob_segment(const char *pat, const char *name) {
+    if (name[0] == '.' && pat[0] != '.') {
+        return 0;
+    }
+    const char *p = pat;
+    const char *n = name;
+    const char *star_p = NULL;
+    const char *star_n = NULL;
+    for (;;) {
+        if (*n) {
+            if (*p == '*') {
+                star_p = ++p;
+                star_n = n;
+                continue;
+            }
+            if (*p == '?') {
+                p++;
+                n++;
+                continue;
+            }
+            if (*p == '[') {
+                const char *after = NULL;
+                int in = glob_class(p, *n, &after);
+                if (in == 1) {
+                    p = after;
+                    n++;
+                    continue;
+                }
+                if (in == 0) {
+                    goto backtrack;
+                }
+                /* -1: unclosed, fall through to the literal comparison */
+            }
+            if (*p == *n) {
+                p++;
+                n++;
+                continue;
+            }
+            goto backtrack;
+        }
+        /* The path segment is exhausted; what is left of the pattern can only
+         * be stars. */
+        while (*p == '*') {
+            p++;
+        }
+        return *p == '\0';
+    backtrack:
+        if (!star_p) {
+            return 0;
+        }
+        n = ++star_n;
+        p = star_p;
+    }
+}
+
+/* Does the whole pattern match this relative path, segment for segment? */
+static int glob_match(char **pat, size_t np, const char **seg, size_t ns) {
+    if (np == 0) {
+        return ns == 0;
+    }
+    if (strcmp(pat[0], "**") == 0) {
+        if (glob_match(pat + 1, np - 1, seg, ns)) {
+            return 1;
+        }
+        for (size_t k = 0; k < ns; k++) {
+            /* `**` will not absorb a hidden segment: see the leading-dot rule
+             * above. A hidden directory is still reachable by naming it. */
+            if (glob_is_hidden(seg[k])) {
+                return 0;
+            }
+            if (glob_match(pat + 1, np - 1, seg + k + 1, ns - k - 1)) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    if (ns == 0) {
+        return 0;
+    }
+    if (!glob_segment(pat[0], seg[0])) {
+        return 0;
+    }
+    return glob_match(pat + 1, np - 1, seg + 1, ns - 1);
+}
+
+/* Could anything UNDER this relative path still match? This is the prune, and
+ * it is what makes a pattern naming one year and every quarter under it read
+ * that year's folders instead of the whole estate: without it the walk would be recursive whatever
+ * the pattern said, and the only thing the pattern would save is the output. */
+static int glob_prefix(char **pat, size_t np, const char **seg, size_t ns) {
+    if (np == 0) {
+        return 0;
+    }
+    if (ns == 0) {
+        return 1;
+    }
+    if (strcmp(pat[0], "**") == 0) {
+        if (glob_prefix(pat + 1, np - 1, seg, ns)) {
+            return 1;
+        }
+        for (size_t k = 0; k < ns; k++) {
+            if (glob_is_hidden(seg[k])) {
+                return 0;
+            }
+            if (glob_prefix(pat + 1, np - 1, seg + k + 1, ns - k - 1)) {
+                return 1;
+            }
+        }
+        /* `**` absorbed every segment and is still open: a `**` anywhere in a
+         * pattern leaves every depth below it reachable. */
+        return 1;
+    }
+    if (!glob_segment(pat[0], seg[0])) {
+        return 0;
+    }
+    return glob_prefix(pat + 1, np - 1, seg + 1, ns - 1);
+}
+
+/* Split a pattern on `/`. Refuses the shapes that cannot be meant rather than
+ * silently matching nothing, because in ETL a pattern usually arrives from
+ * configuration and "matched nothing" is indistinguishable from a quiet day.
+ * The caller frees `*out` and its members. */
+static int glob_split_pattern(const char *name, const char *pattern,
+                              char ***out, size_t *out_count) {
+    *out = NULL;
+    *out_count = 0;
+    if (pattern[0] == '\0') {
+        char message[192];
+        snprintf(message, sizeof(message),
+                 "%s: the pattern is empty; omit it to list every entry", name);
+        runtime_error_raise(message, 1003, "invalid function call");
+        return 0;
+    }
+    if (pattern[0] == '/') {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "%s: the pattern is relative to the directory, so it may not "
+                 "begin with '/': %s", name, pattern);
+        runtime_error_raise(message, 1003, "invalid function call");
+        return 0;
+    }
+
+    char **segs = NULL;
+    size_t count = 0;
+    const char *start = pattern;
+    for (;;) {
+        const char *slash = strchr(start, '/');
+        size_t len = slash ? (size_t)(slash - start) : strlen(start);
+        if (len == 0) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "%s: the pattern has an empty segment: %s", name, pattern);
+            runtime_error_raise(message, 1003, "invalid function call");
+            goto fail;
+        }
+        if ((len == 1 && start[0] == '.') ||
+            (len == 2 && start[0] == '.' && start[1] == '.')) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "%s: the pattern may not contain '.' or '..': %s",
+                     name, pattern);
+            runtime_error_raise(message, 1003, "invalid function call");
+            goto fail;
+        }
+        if (count + 1 > GLOB_MAX_DEPTH) {
+            char message[192];
+            snprintf(message, sizeof(message),
+                     "%s: the pattern is deeper than %d segments",
+                     name, GLOB_MAX_DEPTH);
+            runtime_error_raise(message, 1003, "invalid function call");
+            goto fail;
+        }
+        char **next = realloc(segs, sizeof(char *) * (count + 1));
+        if (!next) {
+            abort();
+        }
+        segs = next;
+        segs[count] = malloc(len + 1);
+        if (!segs[count]) {
+            abort();
+        }
+        memcpy(segs[count], start, len);
+        segs[count][len] = '\0';
+        count++;
+        if (!slash) {
+            break;
+        }
+        start = slash + 1;
+    }
+    *out = segs;
+    *out_count = count;
+    return 1;
+
+fail:
+    for (size_t i = 0; i < count; i++) {
+        free(segs[i]);
+    }
+    free(segs);
+    return 0;
+}
+
+typedef struct {
+    const char *name;       /* "list", "files" or "folders", for diagnostics */
+    char **pat;             /* NULL when no pattern was given */
+    size_t np;
+    Value *items;
+    size_t count;
+} GlobWalk;
+
+static char *path_join_alloc(const char *folder, const char *name) {
     size_t folder_len = strlen(folder);
     size_t name_len = strlen(name);
     int needs_slash = folder_len > 0 && folder[folder_len - 1] != '/';
@@ -12253,27 +12569,164 @@ static Value make_dir_entry(const char *folder, const char *name, const char *ty
     }
     memcpy(path + folder_len + (size_t)needs_slash, name, name_len);
     path[folder_len + (size_t)needs_slash + name_len] = '\0';
+    return path;
+}
 
-    RecordField *fields = calloc(3, sizeof(RecordField));
+/* `{name, path, type, size, modified}`.
+ *
+ * SIZE AND MODIFIED RIDE ALONG FOR NOTHING: the listing already calls `stat` on
+ * every entry to decide `type`, and used to throw the rest of the result away.
+ * That matters beyond tidiness -- deciding whether a file is worth processing is
+ * a filter over thousands of them, and `file_size`/`file_mtime` per candidate is
+ * a call per file where this is a field read.
+ *
+ * `size` IS `unknown` FOR A FOLDER, never 0, following `file_size`'s own
+ * refusal: a directory's stat size is the platform's bookkeeping, not the bytes
+ * under it, and a 0 there reads as an empty tree. Both are `unknown` when the
+ * stat failed -- a broken symlink, or an entry removed between readdir and
+ * stat, which a long walk really does meet. */
+static Value make_dir_entry(const char *path, const char *name,
+                            const char *type, const struct stat *st) {
+    RecordField *fields = calloc(5, sizeof(RecordField));
     if (!fields) {
         abort();
     }
-
-    fields[0].name = field_name_new("name");
-    fields[0].value = cell_alloc();
-    fields[1].name = field_name_new("path");
-    fields[1].value = cell_alloc();
-    fields[2].name = field_name_new("type");
-    fields[2].value = cell_alloc();
-    if (!fields[0].value || !fields[1].value || !fields[2].value) {
-        abort();
+    static const char *names[5] = { "name", "path", "type", "size", "modified" };
+    for (size_t i = 0; i < 5; i++) {
+        fields[i].name = field_name_new(names[i]);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
     }
 
     *fields[0].value = value_string(name);
     *fields[1].value = value_string(path);
     *fields[2].value = value_string(type);
-    free(path);
-    return value_record(fields, 3);
+    if (!st) {
+        *fields[3].value = value_unknown();
+        *fields[4].value = value_unknown();
+    } else {
+        *fields[3].value = S_ISDIR(st->st_mode) ? value_unknown()
+                                                : value_number((double)st->st_size);
+        /* Read through gb_file_mtime, NOT st->st_mtime: on Windows the C
+         * runtime shifts that field whenever TZ differs from the system zone,
+         * which is the correction `file_mtime` already carries. */
+        time_t raw;
+        if (gb_file_mtime(path, &raw) == 0) {
+            *fields[4].value = value_datetime_from_epoch_local(raw);
+        } else {
+            *fields[4].value = value_unknown();
+        }
+    }
+    return value_record(fields, 5);
+}
+
+static int dir_entry_compare(const void *a, const void *b) {
+    const Value *left = (const Value *)a;
+    const Value *right = (const Value *)b;
+    /* Both are records this function built, so field 1 is `path` and is a
+     * string; no lookup and no kind test is needed. */
+    return strcmp(left->as.record.fields[1].value->as.string,
+                  right->as.record.fields[1].value->as.string);
+}
+
+/* One directory. `segs[0..depth)` is the path from the directory the caller
+ * named, which is what the pattern is matched against.
+ *
+ * AN UNREADABLE SUBDIRECTORY WARNS AND THE WALK CONTINUES, where an unreadable
+ * TOP-LEVEL directory still raises (the caller's own opendir, below). The split
+ * is not a hedge: if the directory you NAMED cannot be read you got none of what
+ * you asked for, and a raise is the only honest answer -- but one locked folder
+ * three levels down must not throw away a scan of ten thousand files, which in
+ * ETL is a job that fails nightly for a reason nobody can see. The warning
+ * channel is exactly what makes that affordable: it names the path and the
+ * reason, `on warning ignore` silences it for a walk that expects it, and
+ * `on warning stop` turns it back into an error for a job that needs
+ * completeness. */
+static void glob_walk(GlobWalk *w, const char *dir_path,
+                      const char **segs, size_t depth) {
+    DIR *dir = opendir(dir_path);
+    if (!dir) {
+        /* DEPTH 0 IS THE DIRECTORY THE CALLER NAMED, and it raises -- which is
+         * also why there is no separate probe above: opening the top level
+         * twice would leave a window in which the directory vanishes between
+         * the probe and the walk, and the same failure would then come back as
+         * a WARNING instead of the raise this family has promised since
+         * 2026-10-12. One open, one answer. */
+        char message[512];
+        snprintf(message, sizeof(message), "%s could not read directory: %s (%s)",
+                 w->name, dir_path, strerror(errno));
+        if (depth == 0) {
+            runtime_error_raise(message, 1004, "file operation");
+        } else {
+            warn_fmt(2113, "directory", "%s", message);
+        }
+        return;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        char *path = path_join_alloc(dir_path, entry->d_name);
+
+        struct stat st;
+        int have_stat = stat(path, &st) == 0;
+        const char *type = (have_stat && S_ISDIR(st.st_mode)) ? "folder" : "file";
+
+        segs[depth] = entry->d_name;
+        size_t ns = depth + 1;
+
+        int wanted = 1;
+        if (strcmp(w->name, "files") == 0 && strcmp(type, "file") != 0) {
+            wanted = 0;
+        }
+        if (strcmp(w->name, "folders") == 0 && strcmp(type, "folder") != 0) {
+            wanted = 0;
+        }
+        if (wanted && w->pat && !glob_match(w->pat, w->np, segs, ns)) {
+            wanted = 0;
+        }
+
+        if (wanted) {
+            Value *next = realloc(w->items, sizeof(Value) * (w->count + 1));
+            if (!next) {
+                abort();
+            }
+            w->items = next;
+            w->items[w->count++] = make_dir_entry(path, entry->d_name, type,
+                                                  have_stat ? &st : NULL);
+        }
+
+        /* DESCEND ONLY WITH A PATTERN, so the unpatterned call is exactly the
+         * one-level listing it has always been.
+         *
+         * AND NEVER THROUGH A SYMLINK. A symlink can point at its own ancestor,
+         * and `ln -s .. loop` makes a recursive walk run forever -- a HANG,
+         * which this tree treats as worse than a failure because it reports
+         * nothing at all. The cost is stated rather than discovered: a
+         * symlinked subdirectory is not walked, so a `/data/current ->
+         * /data/2026-Q2` arrangement is reached by naming it as the DIRECTORY
+         * (`files({dir}"/data/current", "*.csv")`, which opendir follows) or by
+         * resolving it with `real_path`, and not by globbing through it. */
+        if (w->pat && strcmp(type, "folder") == 0 && ns < GLOB_MAX_DEPTH &&
+            glob_prefix(w->pat, w->np, segs, ns)) {
+            if (!gb_is_symlink(path)) {
+                glob_walk(w, path, segs, ns);
+            }
+        }
+
+        free(path);
+        if (error_action_pending()) {
+            /* `on warning stop` escalated one of the warnings above. */
+            break;
+        }
+    }
+
+    closedir(dir);
 }
 
 /* `list`, `files` and `folders`. Both refusals below used to be a bare
@@ -12287,14 +12740,19 @@ static Value make_dir_entry(const char *folder, const char *name, const char *ty
  * signature on 2026-08-27 found these three and only these three. */
 static Value eval_dir_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
-    if (expr->as.call.args.count != 1) {
-        char message[128];
-        snprintf(message, sizeof(message), "%s expects one directory argument", name);
+    if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
+        char message[160];
+        snprintf(message, sizeof(message),
+                 "%s expects a directory and an optional pattern", name);
         runtime_error_raise(message, 1003, "invalid function call");
         return value_null();
     }
 
     Value dir_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(dir_value);
+        return value_null();
+    }
     /* A plain string path is accepted as well as a `{dir}` reference, matching
      * `list_files`, which has always taken either. Requiring the modifier here
      * bought nothing: `{dir}=` is a LABELLING operation, not a validation --
@@ -12313,6 +12771,32 @@ static Value eval_dir_call(AstExpr *expr) {
         runtime_error_raise(message, 1003, "invalid function call");
         value_free(dir_value);
         return value_null();
+    }
+
+    char **pat = NULL;
+    size_t np = 0;
+    Value pattern_value = value_null();
+    if (expr->as.call.args.count == 2) {
+        pattern_value = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(pattern_value);
+            value_free(dir_value);
+            return value_null();
+        }
+        if (pattern_value.kind != VALUE_STRING) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "%s expects a text pattern as its second argument", name);
+            runtime_error_raise(message, 1003, "invalid function call");
+            value_free(pattern_value);
+            value_free(dir_value);
+            return value_null();
+        }
+        if (!glob_split_pattern(name, pattern_value.as.string, &pat, &np)) {
+            value_free(pattern_value);
+            value_free(dir_value);
+            return value_null();
+        }
     }
 
     /* A DIRECTORY THAT CANNOT BE READ IS NOT AN EMPTY ONE (DOGFOOD, 2026-10-12).
@@ -12339,64 +12823,51 @@ static Value eval_dir_call(AstExpr *expr) {
      *
      * The reason is NAMED rather than classified: ENOENT, EACCES and ENOTDIR
      * want different fixes from the person reading the message, and strerror
-     * already distinguishes them. */
-    DIR *dir = opendir(dir_path);
-    if (!dir) {
-        char message[512];
-        snprintf(message, sizeof(message), "%s could not read directory: %s (%s)",
-                 name, dir_path, strerror(errno));
-        runtime_error_raise(message, 1004, "file operation");
-        value_free(dir_value);
+     * already distinguishes them.
+     *
+     * THE TOP LEVEL IS THE ONLY LEVEL THAT RAISES; a subdirectory reached by a
+     * recursive pattern warns instead. See glob_walk. */
+
+    GlobWalk walk = {0};
+    walk.name = name;
+    walk.pat = pat;
+    walk.np = np;
+    const char *segs[GLOB_MAX_DEPTH];
+    glob_walk(&walk, dir_path, segs, 0);
+
+    for (size_t i = 0; i < np; i++) {
+        free(pat[i]);
+    }
+    free(pat);
+    value_free(pattern_value);
+    value_free(dir_value);
+
+    /* A raise from the walk -- the top level could not be opened, or
+     * `on warning stop` escalated a subdirectory's warning -- discards the
+     * partial result rather than handing back half a listing that looks whole. */
+    if (error_action_pending()) {
+        for (size_t i = 0; i < walk.count; i++) {
+            value_free(walk.items[i]);
+        }
+        free(walk.items);
         return value_null();
     }
 
-    Value *items = NULL;
-    size_t count = 0;
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-
-        size_t folder_len = strlen(dir_path);
-        size_t name_len = strlen(entry->d_name);
-        int needs_slash = folder_len > 0 && dir_path[folder_len - 1] != '/';
-        char *path = malloc(folder_len + (size_t)needs_slash + name_len + 1);
-        if (!path) {
-            abort();
-        }
-        memcpy(path, dir_path, folder_len);
-        if (needs_slash) {
-            path[folder_len] = '/';
-        }
-        memcpy(path + folder_len + (size_t)needs_slash, entry->d_name, name_len);
-        path[folder_len + (size_t)needs_slash + name_len] = '\0';
-
-        struct stat st;
-        const char *type = "file";
-        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
-            type = "folder";
-        }
-        free(path);
-
-        if (strcmp(name, "files") == 0 && strcmp(type, "file") != 0) {
-            continue;
-        }
-        if (strcmp(name, "folders") == 0 && strcmp(type, "folder") != 0) {
-            continue;
-        }
-
-        Value *next = realloc(items, sizeof(Value) * (count + 1));
-        if (!next) {
-            abort();
-        }
-        items = next;
-        items[count++] = make_dir_entry(dir_path, entry->d_name, type);
+    /* SORTED BY PATH, which readdir is not.
+     *
+     * readdir order is the filesystem's hash order, so it is neither
+     * alphabetical nor stable across machines, and nothing about it is
+     * documented to be relied on. Every consumer therefore has to sort:
+     * stdlib/filetree.bas does it by hand, which is the same "a library should
+     * not hand-roll what a primitive can give it" argument that moved `sort`
+     * and `key` into core. And a recursive walk makes it sharper -- depth-first
+     * readdir order is an interleaving nobody can predict, while ETL routinely
+     * wants its inputs in order. One qsort over the result costs nothing beside
+     * the stat per entry that has already been paid. */
+    if (walk.count > 1) {
+        qsort(walk.items, walk.count, sizeof(Value), dir_entry_compare);
     }
-
-    closedir(dir);
-    value_free(dir_value);
-    return value_array(items, count);
+    return value_array(walk.items, walk.count);
 }
 
 /* Run a user function body with its parameters bound to the already-evaluated

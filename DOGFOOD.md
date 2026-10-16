@@ -70,6 +70,13 @@ A pointer in a table is only as good as the thing it names.
 | 3 | ~~**`has_builtin("warning")` is false**~~ **CLOSED 2026-10-14** — answered from `dispatch_only[]`, which only `gbasic_has_builtin` reads, so the name is answered for WITHOUT the parser learning it. That is why this one could not follow the other three into the registry: registering it would cost `warning` its soft name, and the soft name is what bought the whole warning channel zero reserved words. | 2026-10-11 entry |
 | 4 | ~~**`notation` loses datetime precision**~~ **CLOSED 2026-10-14** — re-measured first, as this line said to, and the defect reproduced exactly on 0.8.0: 3 of 6, the year raising and hour/minute silent. The report's two-line fix is what shipped. **My first re-measurement said all six were fine** — it built its probes with `{datetime}`, which forces second precision at construction, so the input had already lost the thing the probe was looking for. | 2026-10-11 entry |
 
+One item was filed on **2026-10-15** while building the recursive glob and is
+live:
+
+| | what | where |
+|---|---|---|
+| 6 | **A directory entry has no path relative to the directory listed.** With `files(d, "**/*.xlsx")` the record carries `name` (the basename, which collides across subdirectories) and `path` (the whole path), and the thing an archive step needs — the path *under* `d`, to mirror a source tree — has to be recovered by string surgery against `d`, which breaks on a trailing slash. | 2026-10-15 entry |
+
 Two more are decisions rather than work: the **absence-coercion warning** is
 measured and deliberately unshipped pending a ruling, and **`{trimmed,upper}=`**
 is answered — a clause chains with `;` and has since 2026-10-03.
@@ -12638,3 +12645,27 @@ release script is the one place to change, and it wants watching.
   still refuse rather than crash — red today, green after. It wants the same
   shape `run_dir_builtins.sh` uses for its unreadable-directory tier, which
   changes the environment from outside and skips with a reason when it cannot.
+
+## 2026-10-15 — CC — while: building the recursive glob (etl_files_design §3)
+
+- **Type:** missing-feature
+- **Severity:** low
+- **What:** A directory entry record is `{name, path, type, size, modified}`.
+  For a one-level listing that is everything there is; for a **recursive** glob
+  it is missing the one field the walk already knows — the path relative to the
+  directory that was listed. `name` is the basename, so it collides across
+  subdirectories (`2026/Q1/vendor.xlsx` and `2026/Q2/vendor.xlsx` are both
+  `vendor.xlsx`), and `path` is the whole path. Mirroring a source tree into an
+  archive tree — which is exactly §4's `intake.archive` step — needs the part in
+  between.
+- **Workaround:** `replace(r.path, root + "/", "")`, which is what two of this
+  increment's own test fixtures do. It is wrong if `root` ends in a `/`, and
+  wrong again if the relative path happens to contain the root string. Both are
+  silent.
+- **Why it is filed rather than fixed:** the walk holds the segments while it is
+  running, so adding the field is a few lines, and adding a field cannot break a
+  reader. What is missing is a CONSUMER: §4 is designed and not built, so a
+  field added now would be a guess at what it wants (relative path with or
+  without the filename? as text or as a segment array?), and a field nobody uses
+  rots. The two uses so far are test fixtures, which is a weak measurement. When
+  `intake` is built this is decided with evidence.

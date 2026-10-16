@@ -59,7 +59,7 @@ fatal watch_body.bas "undefined variable: undefined_in_body"
 # argument -- and both returned `nothing` with exit 0. They were the ONLY three
 # builtins left with the shape; the sweep is what makes that a measurement
 # rather than a hope.
-fatal dir_arity.bas "list expects one directory argument"
+fatal dir_arity.bas "list expects a directory and an optional pattern"
 fatal dir_type.bas  "files expects a string or directory reference"
 
 # --- catchable, which the printed line never was --------------------------

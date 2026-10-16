@@ -39,6 +39,84 @@ same file returned every byte. Lines are counted bytes now, so the two agree.
 **And `break` out of a named `for each` leaked its iterable** — 112 bytes per
 occurrence. Found by reading the loop before adding a file to it.
 
+### Finding files: `files(d, "**/vendor_*.xlsx")`
+
+`list`, `files` and `folders` take an optional **glob pattern**. With no pattern
+they list one level, exactly as before; with one they walk, and the pattern is
+matched against the path relative to the directory:
+
+```basic
+for each f in files({dir}"/data", "**/vendor_*.xlsx")
+    load_workbook(f.path)
+end for
+```
+
+The language is glob as a shell with `globstar` means it — `*` and `?` within a
+segment, `[a-z]` classes, and `**` for zero or more whole segments. **Verified
+against `bash`**, not against a golden of our own output: twelve patterns over
+one tree, expanded by both, required to agree exactly.
+
+- A **pattern that matches nothing is an empty array**, never an error. A run
+  with no new files is a normal day.
+- A **leading `.` must be matched explicitly**: `*.json` does not return
+  `.intake.json`, and `**` does not walk into `.git`. With no pattern every
+  entry comes back, dotfiles included — `ls` against `ls *`.
+- The walk is **pruned by the pattern**, so `files(d, "2026/*/*.xlsx")` opens
+  that year's folders rather than the estate.
+- The walk **does not follow symlinks to directories**, because `ln -s .. loop`
+  would make it run forever and a hang reports nothing at all. Name the link as
+  the directory, or resolve it with `real_path`. A symlink to a **file** is an
+  ordinary entry.
+- A pattern that cannot be *meant* is **refused** rather than left to match
+  nothing — empty, absolute, an empty segment, or containing `.` or `..` —
+  because a pattern usually comes from configuration, where "found nothing"
+  hides a typo.
+
+### Directory entries carry `size` and `modified`
+
+The listing record is now `{name, path, type, size, modified}`. **Both were
+already being paid for**: the listing stat'd every entry to decide `type` and
+threw the rest of the result away. Reading `e.size` is a field read where
+`file_size({file}e.path)` is a call, which is what an incremental load needs
+when the decision to process a file is a filter over thousands of them.
+
+`size` is **`unknown` for a folder** — never `0`, which would read as an empty
+tree — following `file_size`'s own refusal. Both fields are `unknown` when the
+entry could not be stat'd, which a long walk does meet.
+
+**One thing this takes away:** because `modified` is a `datetime`, an entry no
+longer goes through `encode`, which refuses typed values. It is kept a datetime
+so that it agrees with `file_mtime` — two routes to one question disagreeing
+about the type is the defect, not the convenience — and because
+`if e.modified > last_run` is the whole of an incremental load. Use
+`notation.to_text`, which round-trips a whole entry including the datetime, or
+`epoch(e.modified)` for a number.
+
+### Listings come back sorted by path
+
+`readdir` order is the directory hash's: neither alphabetical nor stable across
+machines. Every caller had to sort (`stdlib/filetree.bas` did it by hand), and a
+recursive walk interleaves depth-first in an order nobody can predict.
+
+### An unreadable subdirectory warns instead of ending the walk
+
+A directory you **named** that cannot be read still raises — you got none of
+what you asked for. A subdirectory reached by a recursive pattern is different:
+one locked folder must not throw away a scan of ten thousand files, so it emits
+**warning `2113`** naming the path and the OS reason, and the walk continues.
+`on warning ignore` silences it; `on warning stop` turns it back into an error
+for a job that needs completeness.
+
+### `file_mtime` was already there
+
+The ETL design listed `modified` as missing. It is not: `file_mtime(f)` has
+answered this for months, as a `datetime`, in local time, on directories as well
+as files, with a Windows body that reads through `gb_file_mtime` so a TZ
+difference cannot shift it. Found by looking at the platform layer before
+writing the easy half of an increment. It is documented, and the design doc now
+carries the correction — a list of what is missing is a claim about the tree, and
+one that nothing runs rots like any other.
+
 Kept current as work lands, so a book revising against the next release has the
 list already written rather than reconstructed. `./tools/since-release.sh`
 reports the mechanical half of this — which pinned diagnostics and goldens moved

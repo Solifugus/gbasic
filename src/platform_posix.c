@@ -231,6 +231,14 @@ int gb_file_mtime(const char *path, time_t *out) {
     return 0;
 }
 
+int gb_is_symlink(const char *path) {
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        return 0;
+    }
+    return S_ISLNK(st.st_mode) ? 1 : 0;
+}
+
 int gb_set_cloexec(int fd, int on) {
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags < 0) {

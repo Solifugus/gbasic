@@ -1,8 +1,9 @@
 # Files and folders for ETL — design
 
-**Status: Partial.** §2, the streaming read, **shipped 2026-10-15** — see the
-note at the end of that section. The glob, `modified`, path splitting, temp files
-and the `intake` library do not exist. Do not code against those.
+**Status: Partial.** §2 (the streaming read) and §3 (the recursive glob) both
+**shipped 2026-10-15** — see the note at the end of each. `modified` turned out
+to **already exist** under the name `file_mtime`; see §1. Path splitting, temp
+files and the `intake` library do not exist. Do not code against those.
 
 **Provenance.** Where this says *measured* it means a command was run on
 2026-10-14/15 and the number is quoted. The requirements come from Matthew's own
@@ -42,12 +43,36 @@ join_path extension file_size` — 23 operations. `copy`, `move`, `remove_dir`,
 `atomic_replace` and `lock` are all there, which covers more of the ETL cycle
 than one would guess.
 
-What is absent, in priority order for this book: **streaming**, `modified`
-(mtime), a **recursive glob**, path splitting (`basename`/`dirname`/`stem`),
-temp files, and `chmod`. `chmod` is cited three times in `DOGFOOD.md` — including
-that *"a credential store cannot be created 0600 from gBASIC"*, which bent
-Studio's design — so it is real, but it belongs to the credentials story rather
-than to this one.
+What is absent, in priority order for this book: **streaming**, a **recursive
+glob**, path splitting (`basename`/`dirname`/`stem`), temp files, and `chmod`.
+`chmod` is cited three times in `DOGFOOD.md` — including that *"a credential
+store cannot be created 0600 from gBASIC"*, which bent Studio's design — so it
+is real, but it belongs to the credentials story rather than to this one.
+
+### A correction: `modified` was never missing
+
+The first draft of this list named `modified` (mtime) second, and said of it
+that `gb_file_mtime` was already in the platform layer so *"the platform work is
+done; a Windows body is needed"*. **Both halves were wrong.** `file_mtime(f)` is
+a registered builtin, has been for months, returns a `datetime` in local time at
+second precision, works on a directory as well as a file, reads through
+`gb_file_mtime` precisely so a Windows TZ shift cannot move it, has a Windows
+body already, and is documented in `docs/reference.md`. It was found by going to
+look at the platform layer before writing the easy half of an increment.
+
+The reason it reads as absent is the **name**: nothing in this document, and
+nothing in the brief it came from, would lead anyone to `file_mtime` — it was
+read as a sibling of `file_size`, which it is, rather than as the answer to
+"when did this change", which it also is. That is a real cost and it is the one
+§3 pays off rather than this correction: a *field on the listing record* is where
+an incremental load actually wants it, because deciding whether to process a file
+is a filter over thousands of them and a builtin call per candidate is a call per
+candidate.
+
+The lesson is the one this tree keeps relearning from the other direction. A
+list of what is missing is a claim about the tree, and a claim about the tree
+that nothing runs rots exactly like the performance claims `run_docs_gate.sh`
+was built for.
 
 ## 2. Streaming: `for each line in f`
 
@@ -97,16 +122,22 @@ and `bytes` is the one that has to say so. Binary says so too:
 already in the language:
 
 ```basic
-for each file in files({dir}"/data", "**/vendor_*.xlsx")
-    for each line in file
+for each f in files({dir}"/data", "**/vendor_*.xlsx")
+    for each line in {file}f.path
         if malformed(line) then
-            report(file.path)
-            break file                 ' abandon this input, take the next
+            report(f.path)
+            break f                    ' abandon this input, take the next
         end if
-        load(line)
+        take(line)
     end for
 end for
 ```
+
+**The `{file}` is load-bearing and this example did not have it until the two
+halves were run together.** §3's listing yields a *record*, so the inner loop
+needs a file reference built from its `path` — written `for each line in f`, the
+inner loop raises `for in expects an array or a file`, correctly, about a
+record. Found by running the shape rather than by reading it.
 
 **An explicit handle is still wanted** for seeking, for interleaving two files
 and for fixed-width records. `with` is the right shape, since it already
@@ -184,13 +215,93 @@ filename, indifferent to what is in between.
 so this is an extension rather than a new API — and it matters for more than
 tidiness: deciding whether to process a file is a filter over thousands of them,
 and a `stat` per candidate from gBASIC would be a call per file.
-`gb_file_mtime` already exists in `include/platform.h` and
-`src/platform_posix.c`, so the platform work is done; a Windows body is needed,
-and `run_platform.sh`'s derived tripwire (2026-10-14) now fails if one is
-missing.
+`gb_file_mtime` already exists in `include/platform.h`, `src/platform_posix.c`
+**and `src/platform_win32.c`**, so there is no platform work at all — the
+"a Windows body is needed" in the first draft of this paragraph was wrong, and
+`run_platform.sh`'s derived tripwire (2026-10-14) would have failed if it were
+true.
 
 Glob is implemented over `regex`, which already exists. The pattern *language*
 is glob because that is what people know and what reads well in a config file.
+
+### SHIPPED 2026-10-15
+
+`list`, `files` and `folders` take an optional glob pattern, the record carries
+`size` and `modified`, and `tests/run_glob.sh` has ten tiers.
+
+**`regex` WAS THE WRONG SUBSTRATE AND THAT WAS DECIDED BY TRYING TO USE IT.**
+The sentence above is struck: the matcher is ~120 lines written here instead,
+for three reasons none of which is preference. `**` has no regular-expression
+spelling that survives translation, because it is a rule about **path
+segments** and not about characters — the naive `.*` crosses separators where
+`*` must not. A glob-to-ERE translator has to escape every metacharacter of the
+*target* language, so a filename containing `.` or `+` becomes a wildcard in
+silence, which is the "plausible wrong answer" class this whole tree is
+organised against. And libc's POSIX ERE is one more thing whose behaviour
+differs across the platforms `src/eval.c` is compiled for. `fnmatch` was
+rejected for the same portability reason that ruled out `getline` in §2 — absent
+on MinGW.
+
+**THE LOAD-BEARING TIER IS bash.** The claim "the pattern language is glob
+because that is what people already know" is only worth making if it is true, so
+twelve patterns are expanded over one tree by gBASIC and by `bash` with
+`shopt -s globstar`, and the two must agree exactly. bash is an independent
+implementation written by somebody else and it is the implementation the claim
+is *about*, where a golden of our own output would be a transcript.
+
+**Three decisions the design did not contain, each with a consequence:**
+
+- **A leading `.` must be matched explicitly**, as in every shell. This is not
+  tidiness here: §4's ledger lives at `/data/.intake.json`, so without the rule
+  `files(d, "**/*.json")` would feed the ledger to itself, and `**` would walk
+  into `.git`.
+- **An unreadable subdirectory WARNS (`2113`) and the walk continues**, where an
+  unreadable *top-level* directory still raises. If the directory you named
+  cannot be read you got none of what you asked for; but one locked folder three
+  levels down must not throw away a scan of ten thousand files, which in ETL is
+  a job that fails nightly for a reason nobody can see. This is the first row of
+  §5's table reached, and the warning channel is what makes it affordable —
+  `on warning ignore` for a walk that expects it, `on warning stop` for a job
+  that needs completeness.
+- **The walk does not follow symlinks to directories**, because `ln -s .. loop`
+  makes a recursive walk run forever and a **hang reports nothing at all**. The
+  cost is stated rather than discovered and is asserted as a tier: a
+  `/data/current -> /data/2026-Q2` arrangement is reached by naming the link as
+  the directory, or through `real_path`, and not by globbing through it.
+
+**ONE THING THIS TOOK AWAY, and it is stated rather than discovered.** An entry
+used to be three strings and went through `encode` like any record; `modified`
+is a `datetime`, and `encode` deliberately refuses typed values because a lossy
+token yields text `decode` cannot read back. It is kept a datetime anyway, for
+the same reason `file_mtime` is one — two routes to a question that disagree
+about the TYPE are exactly the defect the shared-helper refactor above removed,
+and `if f.modified > last_run` is the whole of an incremental-load predicate.
+The two routes out are asserted beside the refusal: `notation` keeps every type
+and round-trips a whole entry, and `epoch(f.modified)` is the number for a
+caller that wants `encode`. §4's ledger stores its own records rather than raw
+entries, so this does not reach it.
+
+**The result is sorted by path.** readdir order is the directory hash's, so it
+is neither alphabetical nor stable across machines; every consumer had to sort
+(`stdlib/filetree.bas` does it by hand) and a depth-first walk interleaves in an
+order nobody can predict, while ETL routinely wants its inputs in order.
+
+**TWO DEFECTS OF MINE, both found by running rather than by reading, and both
+the same class as the ones §2 records.** Perturbing the sort away left **every
+check green**: the order tier asked "is the result sorted" over a nine-entry
+directory whose readdir order happened to be alphabetical. It now establishes
+its own premise twice — structurally, with a directory `b` beside a file
+`b-x.txt` whose sorted order and depth-first order differ in *both* readdir
+orders, and over sixty files whose readdir order is asserted to be scrambled
+before the check is believed. And the arity check hit `pipefail` for the fifth
+recorded time in this tree: `./gbasic ... | grep -q` takes gbasic's status, and
+the fixture is *meant* to exit nonzero, so it reported "a third argument was
+accepted" against a binary that had just refused it — in a branch whose helper
+two lines above already captured into a variable.
+
+**Still open from this section**: a relative path on the entry record (filed in
+`DOGFOOD.md`), which §4's archive step will want and which can be decided with
+that evidence rather than guessed at here.
 
 ## 4. `intake`: what is new, what was taken, what to keep
 
