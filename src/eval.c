@@ -11082,6 +11082,32 @@ static Value eval_path_call(AstExpr *expr) {
         return value_null();
     }
 
+    /* An interior NUL is refused for EVERY name here, not just the two that
+     * touch the filesystem. The argument real_path and file_type already made
+     * is a fact about what a path IS, not about which call is looking at one:
+     * a path crosses into the system as a NUL-terminated C string, so a name
+     * split out of `"/a/b\0x/c.txt"` describes a path that CANNOT be opened,
+     * and every one of these answers is used to build another path. Measured
+     * before the refusal was widened: file_name of that string answered "b"
+     * (the basename of `/a/b`), directory_name answered "/a", and
+     * join_path("/a\0b", "c") answered "/a/c" -- three plausible paths, none
+     * of them about the path the program was holding. PLAT-NUL's rule picks
+     * refuse over repair by asking the FAR SIDE whether it takes a byte count,
+     * and `open` does not. Both arguments are checked: join_path has two. */
+    for (size_t i = 0; i < expected_count; i++) {
+        Value subject = i == 0 ? first : second;
+        if (subject.kind == VALUE_STRING &&
+            memchr(subject.as.string, '\0', string_length(subject.as.string)) != NULL) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "%s: a path cannot contain an interior NUL byte", name);
+            runtime_error_raise(message, 1004, "path operation");
+            value_free(first);
+            value_free(second);
+            return value_null();
+        }
+    }
+
     Value result = value_null();
     if (strcmp(name, "real_path") == 0 || strcmp(name, "file_type") == 0) {
         /* PLAT-WEB-1 Gap B. Both answer questions gBASIC could not ask at all,
@@ -11103,19 +11129,6 @@ static Value eval_path_call(AstExpr *expr) {
          * Both report a missing path as `unknown` rather than raising: the
          * caller is by definition holding a path it does not trust, and being
          * told "no" is the normal case, not an exceptional one. */
-        if (first.kind == VALUE_STRING &&
-            memchr(first.as.string, '\0', string_length(first.as.string)) != NULL) {
-            /* Refused rather than truncated: everything below this line works
-             * on a NUL-terminated C string, so a path with an interior NUL
-             * would be CHECKED as one path and could be OPENED as another. */
-            char message[128];
-            snprintf(message, sizeof(message),
-                     "%s: a path cannot contain an interior NUL byte", name);
-            runtime_error_raise(message, 1004, "path operation");
-            value_free(first);
-            value_free(second);
-            return value_null();
-        }
         if (strcmp(name, "real_path") == 0) {
             char *resolved = gb_realpath(first_path);
             if (!resolved) {
@@ -11154,17 +11167,44 @@ static Value eval_path_call(AstExpr *expr) {
             }
         }
 
-        if (strcmp(name, "file_name") == 0) {
-            const char *base = slash ? slash + 1 : first_path;
-            size_t base_length = length - (size_t)(base - first_path);
-            char *text = malloc(base_length + 1);
-            if (!text) {
-                abort();
+        /* `extension` and `stem` are two halves of ONE cut, so they read the
+         * same scan rather than each finding the dot for themselves: two
+         * routes to one question that can disagree is the defect this tree
+         * has recorded repeatedly (`sort` against `>` on exact integers,
+         * `unique` against `contains`). The invariant that falls out is what
+         * the suite asserts -- with an extension, stem + "." + extension is
+         * file_name; without one, stem IS file_name. That is also the answer
+         * to "what is stem of `a.`": the extension is empty, so nothing is
+         * stripped and the answer is `a.`, which looks odd and is the only
+         * answer that keeps the two agreeing about where the boundary is. */
+        const char *base = slash ? slash + 1 : first_path;
+        size_t base_length = length - (size_t)(base - first_path);
+        const char *dot = NULL;
+        for (size_t i = base_length; i > 1; i--) {
+            if (base[i - 1] == '.') {
+                dot = base + i - 1;
+                break;
             }
-            memcpy(text, base, base_length);
-            text[base_length] = '\0';
-            result = value_string(text);
-            free(text);
+        }
+        if (dot && (size_t)(dot - base) == base_length - 1) {
+            /* A TRAILING dot is not an extension boundary, and writing `stem`
+             * against this scan is what found that `extension` answers "" for
+             * two DIFFERENT reasons: no dot at all, and a dot with nothing
+             * after it. Only the first means "nothing to strip". Without this
+             * line the scan is shared and the two still disagree -- `stem("a.")`
+             * answered "a" while `extension("a.")` answered "", and `stem("..")`
+             * answered "." for a name whose extension is nothing, both of them
+             * perfectly plausible strings. `extension` is UNCHANGED by it,
+             * having already answered "" in both cases, which is why no
+             * existing golden moves. */
+            dot = NULL;
+        }
+
+        if (strcmp(name, "file_name") == 0) {
+            result = value_string_n(base, base_length);
+        } else if (strcmp(name, "stem") == 0) {
+            size_t stem_length = dot ? (size_t)(dot - base) : base_length;
+            result = value_string_n(base, stem_length);
         } else if (strcmp(name, "directory_name") == 0) {
             if (!slash) {
                 result = value_string(".");
@@ -11182,27 +11222,10 @@ static Value eval_path_call(AstExpr *expr) {
                 free(text);
             }
         } else {
-            const char *base = slash ? slash + 1 : first_path;
-            size_t base_length = length - (size_t)(base - first_path);
-            const char *dot = NULL;
-            for (size_t i = base_length; i > 1; i--) {
-                if (base[i - 1] == '.') {
-                    dot = base + i - 1;
-                    break;
-                }
-            }
             if (!dot) {
                 result = value_string("");
             } else {
-                size_t extension_length = base_length - (size_t)(dot + 1 - base);
-                char *text = malloc(extension_length + 1);
-                if (!text) {
-                    abort();
-                }
-                memcpy(text, dot + 1, extension_length);
-                text[extension_length] = '\0';
-                result = value_string(text);
-                free(text);
+                result = value_string_n(dot + 1, base_length - (size_t)(dot + 1 - base));
             }
         }
     }
@@ -38416,7 +38439,8 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "directory_name") == 0 ||
         strcmp(expr->as.call.name, "real_path") == 0 ||
         strcmp(expr->as.call.name, "file_type") == 0 ||
-        strcmp(expr->as.call.name, "extension") == 0) {
+        strcmp(expr->as.call.name, "extension") == 0 ||
+        strcmp(expr->as.call.name, "stem") == 0) {
         return eval_path_call(expr);
     }
 

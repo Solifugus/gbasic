@@ -190,7 +190,13 @@ problem, and Notepad has handled LF since 2018.
 filesystem. Everything in §7 of `library_distribution_design.md` and every
 `{file}`/`{dir}`/`make_dir`/`real_path` call touches it — including `load`'s
 beside-the-file rule, where case-insensitivity means two libraries that differ
-only in case become one.
+only in case become one. **And the four splitters, which this list did not
+name**: `file_name`, `directory_name`, `extension` and `stem` (added
+2026-10-15) scan for `/` and nothing else, so on Windows
+`file_name("C:\data\x.csv")` answers the whole string rather than `x.csv`.
+They are pure string functions with no platform body at all, which is why they
+were missed — there was no `#if` to notice them. The behaviour follows from
+reading them: there is no separator table to consult.
 
 **3. No `fork`.** `process.run`/`start` need `CreateProcess`, and the two pipe
 polls need overlapped I/O or `PeekNamedPipe` (two functions, not the loop —

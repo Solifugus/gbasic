@@ -6749,7 +6749,13 @@ File functions (see also the file/directory value types):
   contents. `read`, `lock` and the rest of that family still take a file
   reference only. It answers by `stat`, so a file that exists but is not
   readable reports as **present**.
-- `lock(f)` / `unlock(f)` — advisory locks (see `with lock`). Taking a lock
+- `lock(f)` / `unlock(f)` — advisory locks (see `with lock`). **`lock` waits.**
+  If another process holds the lock the call blocks until that process releases
+  it or dies — measured at 2.91 seconds against a holder that held for three —
+  and there is **no non-blocking form**, so a program cannot ask whether a file
+  is in use without committing to wait for the answer. A lock held by something
+  that never finishes is therefore a hang with no diagnostic. Reading is
+  unaffected: the lock is advisory, so `read` ignores it. Taking a lock
   installs a cleanup handler for `SIGINT`, `SIGTERM` and `SIGHUP`, and
   **that does not change how the process dies**: after releasing, it re-raises
   the signal with the default disposition, so a supervisor still sees a death
@@ -6767,7 +6773,30 @@ plain string alike, so a value straight out of a listing needs no conversion:
   `"a/b"`, and a bare name gives `"."`.
 - `extension(p)` — the last suffix, **without** the dot: `extension("c.tar.gz")`
   is `"gz"`, not `"tar.gz"`. A name with no dot gives `""`, and so does a
-  dotfile like `".hidden"` — a leading dot is not an extension.
+  dotfile like `".hidden"` — a leading dot is not an extension — and so does a
+  **trailing** dot, since `"a."` has nothing after it to be a suffix.
+- `stem(p)` — the last component with that suffix taken off (*since 0.9.1*):
+  `stem("/data/vendor_2026-03.csv")` is `"vendor_2026-03"`, which is usually the
+  business key a filename carries. It is the other half of one cut, so it and
+  `extension` always agree about where the boundary is:
+
+  ```
+  extension(p) = ""  →  stem(p) is file_name(p)
+  otherwise          →  stem(p) + "." + extension(p) is file_name(p)
+  ```
+
+  Everything that is not an extension therefore stays: `stem(".bashrc")` is
+  `".bashrc"`, `stem("..")` is `".."`, `stem("a.")` is `"a."`, and
+  `stem("archive.tar.gz")` is `"archive.tar"` — the *last* suffix comes off, not
+  the first. Python's `splitext` differs on one of those, answering `"a"` for
+  `"a."`, because its extension keeps the dot and so can be `"."` alone; ours
+  cannot, and the invariant above is what decides the rest.
+
+  To change a file's suffix, which is what this exists for:
+
+  ```basic
+  done = join_path(directory_name(p), stem(p) + ".done")
+  ```
 - `join_path(a, b)` — joins exactly **two** components with a single separator,
   whatever slashes they already carry. Note it always joins: `join_path("a",
   "/b")` is `"a/b"`, not `"/b"`, so an absolute second argument does not replace
@@ -6777,6 +6806,13 @@ plain string alike, so a value straight out of a listing needs no conversion:
   resolve `directory_name(p)` instead.
 - `file_type(p)` — `"file"`, `"folder"` or `"other"`, and `unknown` when
   nothing is there.
+
+All seven **refuse a path containing an interior NUL byte** rather than
+splitting it, because a path crosses into the system as a NUL-terminated C
+string: a name split out of `"/a/b" + chr(0) + "x/c.txt"` describes a path that
+cannot be opened, and every answer here is used to build another path. Before
+0.9.1 only `real_path` and `file_type` refused, and the other five truncated —
+`file_name` of that string answered `"b"`, the basename of `/a/b`.
 
 Listing a directory — two functions, and the difference matters:
 

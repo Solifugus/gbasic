@@ -1,8 +1,11 @@
 # Files and folders for ETL — design
 
 **Status: Partial.** §2 (the streaming read) and §3 (the recursive glob) both
-**shipped 2026-10-15** — see the note at the end of each. `modified` turned out
-to **already exist** under the name `file_mtime`; see §1. Path splitting, temp
+**shipped 2026-10-15** — see the note at the end of each. **Two of the five
+items this document called absent were already shipped under other names**:
+`modified` is `file_mtime`, and `basename`/`dirname`/`extension` are
+`file_name`/`directory_name`/`extension` — see the two corrections in §1. Of
+path splitting only `stem` was missing, and it **shipped 2026-10-15** too. Temp
 files and the `intake` library do not exist. Do not code against those.
 
 **Provenance.** Where this says *measured* it means a command was run on
@@ -44,7 +47,8 @@ join_path extension file_size` — 23 operations. `copy`, `move`, `remove_dir`,
 than one would guess.
 
 What is absent, in priority order for this book: **streaming**, a **recursive
-glob**, path splitting (`basename`/`dirname`/`stem`), temp files, and `chmod`.
+glob**, ~~path splitting (`basename`/`dirname`/`stem`)~~ — **two thirds of which
+already existed; see the second correction below** — temp files, and `chmod`.
 `chmod` is cited three times in `DOGFOOD.md` — including that *"a credential
 store cannot be created 0600 from gBASIC"*, which bent Studio's design — so it
 is real, but it belongs to the credentials story rather than to this one.
@@ -73,6 +77,59 @@ The lesson is the one this tree keeps relearning from the other direction. A
 list of what is missing is a claim about the tree, and a claim about the tree
 that nothing runs rots exactly like the performance claims `run_docs_gate.sh`
 was built for.
+
+### A second correction: two thirds of path splitting existed too
+
+**SHIPPED 2026-10-15.** `basename` is `file_name(p)`, `dirname` is
+`directory_name(p)`, and `extension(p)` reports the suffix — all three builtins,
+all three documented in `docs/reference.md`, all three taking a plain string or
+a file or directory reference. The list above was written from the *names* this
+brief uses, which are POSIX's; the tree spells them in words. Only **`stem`**
+was genuinely missing, and it is a builtin now
+(`tests/run_path_split.sh`, 34 checks).
+
+That is **two of five** items in one list that turned out already shipped, which
+makes the lesson above a measurement rather than a remark: of the things this
+document called absent, 40% were present under a different name. The remedy is
+not better reading — both were found by *running* a probe — it is that a gap
+list must be executable, the shape `run_limitations.sh` gives `DOGFOOD.md`'s
+ledger, where every live entry is a negative control that goes red when the
+limitation is fixed.
+
+Three things came out of building `stem` that reading the design would not
+have produced:
+
+1. **`stem` and `extension` are two halves of one cut**, so what the suite
+   asserts is an invariant rather than a list of values — with an extension,
+   `stem(p) + "." + extension(p)` is `file_name(p)`; without one, `stem(p)` *is*
+   `file_name(p)`.
+2. **That invariant found a real boundary question.** `extension` answers `""`
+   for two *different* reasons — no dot at all, and a dot with nothing after it
+   — and only the first means "nothing to strip". Sharing one scan between the
+   two was necessary and not sufficient: before the trailing-dot rule,
+   `stem("a.")` answered `"a"` while `extension("a.")` answered `""`, and
+   `stem("..")` answered `"."`. Both are perfectly ordinary filenames, which is
+   why the tier is an invariant and the fixture is self-checking rather than a
+   golden. `extension` is unchanged by the rule, having already answered `""` in
+   both cases, so no existing golden moved.
+3. **The interior-NUL refusal had been written for two of six names in the same
+   function.** `real_path` and `file_type` refused a path containing a NUL, with
+   the argument stated three lines above the branches that did not: a path
+   crosses into the system as a NUL-terminated C string, so one with a NUL
+   inside would be *checked* as one path and *opened* as another. That argument
+   is about what a path is, not about which call is holding one. Measured before
+   widening it, with `p = "/a/b" + chr(0) + "x/c.txt"`: `file_name(p)` answered
+   `"b"` — the basename of `/a/b` — `directory_name(p)` answered `"/a"`, and
+   `join_path("/a" + chr(0) + "b", "c")` answered `"/a/c"`. Three plausible
+   paths, none of them about the path the program held. All seven refuse now,
+   both arguments of `join_path` included, and PLAT-NUL's rule picked *refuse*
+   over *repair* by asking the far side whether it takes a byte count, which
+   `open` does not.
+
+`stdlib/edgar.bas` hand-rolled `directory_name` as a 17-line segment walk and is
+the citation under §7's path-splitting entry; it is one call now. Measured over
+nine cache-path shapes the walk and the builtin agree on eight, differing only
+on a trailing slash, and all 252 example goldens stayed byte-identical.
 
 ## 2. Streaming: `for each line in f`
 
@@ -387,14 +444,95 @@ hits weekly. It needs a decision rather than a default: **stability window**, or
 
 ## 7. Open questions
 
-- **Partial-upload detection**: stability window, sentinel file, or both. The
-  one robustness row with no precedent here.
+- ~~**Partial-upload detection**: stability window, sentinel file, or both.~~
+  **MEASURED AND SETTLED 2026-10-15** — see *The partial-upload row, measured*
+  below. A stability window is not a check but a race, and it loses at ordinary
+  speeds; the readiness rule will be **declared**, with no default that guesses.
 - **`with open(f) as h`** needs an `as` binding `with` does not have. Price it.
 - **Library name.** `intake` describes arrival and not archival or purge. `files`
   is taken; `ingest`, `pipeline` and `etl` are candidates.
 - **Does `purge` delete, or report what it would delete?** Deleting data is the
   one operation here that cannot be undone, and the `--dry-run` habit of
   `deploy.sh` suggests the answer is both, with the reporting form the default.
-- **Path splitting** (`basename`, `dirname`, `stem`) is listed in §1 and not
-  designed here. Measured: the stdlib already hand-rolls it with
-  `split(p, "/")` in `web.bas`, `edgar.bas` and `insiders.bas`.
+- ~~**Path splitting** (`basename`, `dirname`, `stem`)~~ — **SETTLED
+  2026-10-15.** `file_name`, `directory_name` and `extension` already existed;
+  `stem` is a builtin now. See §1's second correction. The three hand-rolled
+  `split(p, "/")` sites this entry cited were re-read, and only *one* was a
+  path split: `edgar._parent_dir` was `directory_name` written out, and is one
+  call now. The other two are not — `web._segments` and
+  `edgar._url_to_fixture` need the segment *array* (`contains(parts,
+  "submissions")` asks whether a word appears anywhere in a URL), which
+  basename and dirname cannot express and which `split` already does. So the
+  measurement that motivated the entry was two thirds wrong in the same
+  direction as the entry itself.
+
+### The partial-upload row, measured
+
+This was the one robustness row with no precedent in the tree, and it was left
+as a choice between a *stability window* (the file has not changed for N
+seconds, so it must be finished) and a *sentinel file* (the writer says when it
+is done). Three measurements were taken against a writer appending 207 bytes
+every 250 ms for eight rows, with a reader sampling `file_size` and `file_mtime`
+every 200 ms.
+
+**1. A stability window is not a check, it is a race — and it loses at
+ordinary speeds.** The size was *unchanged between consecutive samples three
+times while the file was still being written*:
+
+```
+3 size=621   4 size=828   5 size=828   6 size=1035   ...
+8 size=1449  9 size=1449  10 size=1656 11 size=1656  (final)
+```
+
+Samples 4→5, 8→9 and 10→11 are indistinguishable from the end of the upload. A
+reader applying "unchanged since the last look ⇒ take it" would have taken a
+**40%-complete file** and reported a successful load — the ordinary-looking
+wrong answer this document's §5 exists to prevent, and in ETL it is a short load
+that nothing raises about.
+
+**2. `mtime` cannot break the tie, because the clock stops at seconds.**
+Samples 4, 5, 6 and 7 all carry mtime `1792111513`. gBASIC's datetime is
+second-resolution by design — a business decision recorded elsewhere and not one
+to reopen here — so an mtime-based window cannot be shorter than about two
+seconds *and still mean anything*, which is slower than the writer it is trying
+to outlast.
+
+**3. The one sound mechanism exists and cannot be used as a probe.** An advisory
+lock really is visible across processes: with a second process provably holding
+`lock(f)` (gate-file synchronised, not slept at), the reader's `lock(f)`
+**blocked for 2.91 seconds** and acquired it only when the holder released. That
+is correct `flock` behaviour and it is exactly what a readiness check wants to
+ask — *is someone writing this?* — except that **there is no way to ask without
+waiting**: `lock` has no non-blocking form, so a scan over a thousand files
+stalls on the first one still being written. Filed in `DOGFOOD.md`.
+
+*A correction worth keeping, because it was nearly a false defect report:* the
+first run of that experiment concluded a writer's lock was **not** visible, on
+the strength of the reader printing `lock acquired`. The probe's own message was
+a lie it had no way to detect, having never looked at the clock. The
+discriminator was elapsed time, and the second run — same code, one `date` on
+each side — reversed the finding. Same shape as the `ldap` TLS episode: a
+symptom reproduced is not a cause found.
+
+**So the ruling.** `intake` will take a **declared** readiness rule, with no
+default that guesses:
+
+- `ready: "sentinel"` — the writer publishes `<name>.done`; the ledger takes a
+  file only when its sentinel is there, and the sentinel is removed with it.
+  Sound, and the writer's half is one `write`.
+- `ready: "renamed"` — the writer builds the file elsewhere and renames it into
+  the intake directory. Sound, and `atomic_replace` is already the writer's half
+  of it; nothing is needed from this library but to document that appearing *is*
+  the signal.
+- `ready: { stable_for: 30 seconds }` — the fallback for a writer that will not
+  cooperate, which is a real situation (an SFTP drop from a counterparty), and
+  it is offered **with the race named in the reference** rather than as a
+  default. A window has to be longer than the writer's longest pause, which the
+  reader cannot know, so what the number buys is a smaller probability and never
+  a guarantee.
+
+A fourth is deliberately **not** offered: *detecting an open writer without any
+cooperation.* On Linux that means reading `/proc/*/fd`, which is not portable,
+needs the writer to be the same user, and would be the only thing in this
+library that cannot work on Windows at all. The honest position is that the
+sound answers are cooperative and the uncooperative one is a probability.

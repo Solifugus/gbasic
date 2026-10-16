@@ -117,6 +117,64 @@ writing the easy half of an increment. It is documented, and the design doc now
 carries the correction — a list of what is missing is a claim about the tree, and
 one that nothing runs rots like any other.
 
+### Taking a path apart: `stem`, and two thirds that were already there
+
+`stem(p)` is the last component with its extension taken off — the business key
+a filename usually carries:
+
+```basic
+for each f in files({dir}"/data/intake", "**/*.csv")
+    key = stem(f.path)                                  ' vendor_2026-03
+    done = join_path(directory_name(f.path), key + ".done")
+end for
+```
+
+It is the other half of one cut, so it and `extension` always agree about where
+the boundary is: with an extension, `stem(p) + "." + extension(p)` is
+`file_name(p)`; without one, `stem(p)` *is* `file_name(p)`. Everything that is
+not an extension therefore stays — `stem(".bashrc")` is `".bashrc"`, `stem("..")`
+is `".."`, `stem("a.")` is `"a."`, and `stem("archive.tar.gz")` is
+`"archive.tar"`, the last suffix coming off rather than the first.
+
+**That invariant is what found the only real design question in it.**
+`extension` answers `""` for two different reasons — no dot at all, and a dot
+with nothing after it — and only the first means "nothing to strip". Before the
+trailing-dot rule, `stem("a.")` answered `"a"` while `extension("a.")` answered
+`""`, and `stem("..")` answered `"."`: two ordinary-looking filenames that a
+golden would have recorded as expected. `extension` is unchanged, having already
+answered `""` in both cases, so no golden moved. Checked against python3's
+`posixpath.splitext` over the same battery, an independent implementation: 17 of
+18 agree, and the one that differs is `"a."`, where python can answer `"."`
+because its extension keeps the dot and ours is documented as dropping it.
+
+**The rest of path splitting already existed.** The ETL design listed
+`basename`, `dirname` and `stem` as missing; `file_name`, `directory_name` and
+`extension` have been builtins for months, documented, taking a plain string or
+a file or directory reference alike. That is the **second** item in that one
+list to turn out already shipped — `modified` was the first — and the design doc
+now carries both corrections. `stdlib/edgar.bas` hand-rolled `directory_name` as
+a 17-line segment walk; it is one call now, with all 252 example goldens
+byte-identical.
+
+### Every path builtin refuses an interior NUL
+
+`real_path` and `file_type` have refused a path containing a NUL byte since they
+shipped. The other five in the same function did not, and the argument for the
+refusal was written three lines above the branches that ignored it: a path
+crosses into the system as a NUL-terminated C string, so one with a NUL inside
+would be **checked as one path and opened as another**.
+
+Measured with `p = "/a/b" + chr(0) + "x/c.txt"` before the refusal was widened:
+`file_name(p)` answered `"b"` — the basename of `/a/b` — `directory_name(p)`
+answered `"/a"`, and `join_path("/a" + chr(0) + "b", "c")` answered `"/a/c"`.
+Three plausible paths, none of them about the path the program was holding, and
+nothing raised. All seven refuse now, including **both** arguments of
+`join_path`, since a rule applied to the first alone is one a caller walks around
+by swapping them.
+
+If you were relying on the truncation — you were not; it answered about a
+different path — the explicit spelling is to split the text yourself.
+
 Kept current as work lands, so a book revising against the next release has the
 list already written rather than reconstructed. `./tools/since-release.sh`
 reports the mechanical half of this — which pinned diagnostics and goldens moved

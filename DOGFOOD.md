@@ -77,6 +77,18 @@ live:
 |---|---|---|
 | 6 | **A directory entry has no path relative to the directory listed.** With `files(d, "**/*.xlsx")` the record carries `name` (the basename, which collides across subdirectories) and `path` (the whole path), and the thing an archive step needs — the path *under* `d`, to mirror a source tree — has to be recovered by string surgery against `d`, which breaks on a trailing slash. | 2026-10-15 entry |
 
+A second was filed the same day while writing the `stem` fixture:
+
+| | what | where |
+|---|---|---|
+| 7 | **A VB/QBasic trailing-underscore continuation is diagnosed by naming the next line's token.** `a = [ "x", _` / `"y" ]` reports *unexpected STRING*, which is about the one token that is not the problem; neither message mentions `_`, and inside brackets the remedy is to delete it because the newline already continues. Needs its controls measured, since `_` is a legal identifier. | 2026-10-15 entry |
+
+A third was filed the same day while settling §7's partial-upload question:
+
+| | what | where |
+|---|---|---|
+| 8 | **`lock(f)` has no non-blocking form**, so a program cannot ask *"is another process writing this?"* without committing to wait — measured, a reader blocked **2.91 s** against a holder that held for three. That is the only sound readiness check for a file still arriving (a stability window is a race, measured losing three times in one 2.8 s upload), and as a probe it is unusable: a scan of a thousand dropped files stalls on the first one. The reference also did not say `lock` waits at all, which made a hang the undocumented outcome; that sentence is added. | 2026-10-15 entry |
+
 Two more are decisions rather than work: the **absence-coercion warning** is
 measured and deliberately unshipped pending a ruling, and **`{trimmed,upper}=`**
 is answered — a clause chains with `;` and has since 2026-10-03.
@@ -12669,3 +12681,69 @@ release script is the one place to change, and it wants watching.
   without the filename? as text or as a segment array?), and a field nobody uses
   rots. The two uses so far are test fixtures, which is a weak measurement. When
   `intake` is built this is decided with evidence.
+
+## 2026-10-15 — CC — while: writing the `stem` fixture (etl_files_design §7)
+
+- **Type:** doc-gap (diagnostic)
+- **Severity:** low
+- **What:** I typed VB/QBasic's trailing-underscore line continuation inside a
+  multi-line array literal — the habit the dialect gBASIC descends from trains —
+  and the message named the one token on the line that is **not** the problem:
+
+  ```
+  a = [ "x", _
+    "y" ]
+  → parse error at :2:3: syntax error, unexpected STRING, expecting RBRACKET or NEWLINE
+  ```
+
+  Outside brackets it is the same shape one token along
+  (`x = 1 + _` / `2` → *unexpected NUMBER, expecting end of file*). Neither
+  message mentions `_`, and the remedy is not guessable from either: inside
+  brackets the newline **already** continues the statement, so the `_` is simply
+  deleted, and outside them the expression is wrapped in parentheses. PLAT-CONT
+  made the second half true in 2026-09 and the first half has always been true;
+  what is missing is the sentence.
+- **Workaround:** deleted the `_`. One `sed`, once I knew.
+- **Why it is filed rather than fixed:** the fix is a NOTE in the shape
+  `run_negative.sh`'s reserved-word tier already uses — on a parse error, if the
+  previous line's last token is an identifier spelled exactly `_`, say so — and
+  it needs its controls measured first, because **`_` is a legal identifier in
+  gBASIC**: measured, `_ = 5` then `print _` prints `5`, and a name merely
+  *ending* in an underscore (`my_ = 3`) is ordinary. So the note must fire on a
+  trailing `_` at end of line *followed by a parse error* and stay silent on
+  both of those, which is the same rule that file's own comment insists on —
+  "a diagnostic that is sometimes a lie is worse than a terse one". A diagnostic
+  increment of its own rather than a line added to a path-splitting one.
+
+## 2026-10-15 — CC — while: settling §7's partial-upload question (etl_files_design)
+
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** `lock(f)` has **no non-blocking form**, so a program cannot ask
+  *"is another process writing this file?"* without committing to wait for the
+  answer. Measured, with the holder gate-file synchronised rather than slept at:
+  a second process provably holding the lock made the reader's `lock(f)` **block
+  for 2.91 seconds** and acquire it only on release. That is correct `flock`
+  behaviour and exactly the question an intake readiness check wants to ask —
+  and the only sound mechanism for it, since a stability window is a race (same
+  session measured a file's size unchanged across consecutive samples three
+  times *while it was still being written*). As a probe it is unusable: a scan
+  over a thousand dropped files stalls on the first one still arriving, and a
+  stall reports nothing at all.
+- **Workaround:** none in-language. §7's ruling is therefore a *declared*
+  readiness rule — sentinel file, rename-into-place, or an explicitly stated
+  stability window — and the lock-based form cannot be offered at all.
+- **Also a doc gap, and the sharper half:** `docs/reference.md` does not say
+  `lock` blocks. A program that locks a file another process holds **hangs**,
+  with no diagnostic and no timeout, and nothing on the page warns of it. One
+  sentence, added with this entry.
+- **Shape of the fix:** `flock`'s own `LOCK_NB`, surfaced as an option on the
+  existing call (`lock(f, { wait: false })`, answering `false` rather than
+  raising, since "someone else has it" is an ordinary outcome and not a
+  failure) — `gb_flock` already takes an op parameter, and `GB_LOCK_EXCLUSIVE`
+  would gain a non-blocking sibling. The Windows body needs the matching
+  `LOCKFILE_FAIL_IMMEDIATELY`, which `LockFileEx` takes, so it is two platform
+  bodies rather than a POSIX-only addition. Its tier is the one
+  `run_dir_builtins.sh`'s mutex tier already shows how to write: two processes,
+  a gate file, and **exactly one** winner — plus the control that the blocking
+  form still blocks, or "non-blocking" is satisfied by breaking the lock.

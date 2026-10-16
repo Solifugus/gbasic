@@ -66,24 +66,18 @@ library edgar
     end function
 
     ' --- cache DB -----------------------------------------------------------
+    ' A 17-line segment walk until 2026-10-15, and the walk was cited in
+    ' docs/etl_files_design.md as evidence that path splitting was missing from
+    ' the language. It was not: `directory_name` has been a builtin for months.
+    ' Measured against the walk over nine cache-path shapes, the two agree on
+    ' eight; they differ on a path with a TRAILING SLASH, where the walk
+    ' answered "/tmp/edgar" for "/tmp/edgar/" and the builtin answers "/tmp",
+    ' having trimmed the slash first so that the name it is the directory OF is
+    ' `edgar`. The builtin's answer is the documented one and agrees with
+    ' `file_name`; the input is in any case a malformed cache path, a cache
+    ' FILE being what `cache(e, path)` names.
     function _parent_dir(path)
-        parts = split(path, "/")
-        if count(parts) <= 1 then
-            return "."
-        end if
-        out = ""
-        i = 0
-        while i < count(parts) - 1
-            if i > 0 then
-                out = out + "/"
-            end if
-            out = out + parts[i]
-            i = i + 1
-        end while
-        if out = "" then
-            return "/"
-        end if
-        return out
+        return directory_name(path)
     end function
 
     function _open_cache(e)

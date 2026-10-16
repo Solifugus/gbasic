@@ -176,6 +176,7 @@ int gbasic_builtin_function(const char *name) {
         "file_name",
         "directory_name",
         "extension",
+        "stem",
         "prepend",
         "insert",
         "remove",
