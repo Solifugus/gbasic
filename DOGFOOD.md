@@ -89,6 +89,13 @@ A third was filed the same day while settling §7's partial-upload question:
 |---|---|---|
 | 8 | **`lock(f)` has no non-blocking form**, so a program cannot ask *"is another process writing this?"* without committing to wait — measured, a reader blocked **2.91 s** against a holder that held for three. That is the only sound readiness check for a file still arriving (a stability window is a race, measured losing three times in one 2.8 s upload), and as a probe it is unusable: a scan of a thousand dropped files stalls on the first one. The reference also did not say `lock` waits at all, which made a hang the undocumented outcome; that sentence is added. | 2026-10-15 entry |
 
+Two were filed on **2026-10-15** while building `intake` and are live:
+
+| | what | where |
+|---|---|---|
+| 9 | **`lock(f)` has no non-blocking form** — see item 8; `intake` is one run at a time because of it, and a queue of workers over one ledger is not expressible. | 2026-10-15 entry |
+| 10 | **A qualified call into a library that is not in scope says the library "does not define" the function.** It does; it is not visible from there. The message sends the reader to the innocent file, and the shape that produces it — a library whose own `load` sits at the top level instead of inside its block — WORKS for any caller that happens to load the same dependency. | 2026-10-15 entry |
+
 Two more are decisions rather than work: the **absence-coercion warning** is
 measured and deliberately unshipped pending a ruling, and **`{trimmed,upper}=`**
 is answered — a clause chains with `;` and has since 2026-10-03.
@@ -12747,3 +12754,87 @@ release script is the one place to change, and it wants watching.
   `run_dir_builtins.sh`'s mutex tier already shows how to write: two processes,
   a gate file, and **exactly one** winner — plus the control that the blocking
   form still blocks, or "non-blocking" is satisfied by breaking the lock.
+
+## 2026-10-15 — CC — while: building `intake` increment 1 (docs/intake_design.md)
+
+- **Type:** bug
+- **Severity:** high
+- **What:** `read({file}"/some/directory")` **aborted the interpreter** —
+  `SIGABRT`, exit 134, core dumped — and so did `read_lines`, `lines`, `chars`
+  and `bytes`, which share one reader. On Linux `fopen(path, "rb")` on a
+  directory SUCCEEDS, `fseek(SEEK_END)` succeeds, and `ftell` answers
+  **9223372036854775807** (measured, `LONG_MAX`), which is positive, so the
+  `size < 0` guard did not fire; `malloc` of it then failed and the next line
+  was `abort()`. The crash took block-buffered stdout with it, so a program
+  printing its progress printed **nothing at all** and the failure read as line
+  1 of the file.
+  `file_size` on the same path has always answered `not a regular file`, which
+  is what makes this a defect rather than a limit: two builtins in the same
+  family, one naming the problem and one killing the process.
+- **Found by:** an `intake` tier that put a directory where a ledger file should
+  be — a shape no test had tried, and the first thing a program does with a path
+  a user supplied.
+- **Workaround:** none needed; **resolved** the same day in `read_whole_file`
+  (an `fstat` on the OPEN handle, so there is no window between the check and
+  the read, refusing only `S_ISDIR` and setting `EISDIR` so the caller reports
+  *Is a directory*). Narrowed to a directory on purpose: a FIFO must keep
+  raising `Illegal seek` and anything in /proc must keep answering, both of
+  which a blanket `S_ISREG` test would change. Pinned as
+  `tests/negative_read_directory.bas`, and `for each line in f` was never
+  affected — a read error there has always raised rather than looking like
+  end-of-file.
+
+## 2026-10-15 — CC — while: the same increment
+
+- **Type:** bug
+- **Severity:** medium
+- **What:** `persist.read_status(path)` **raised** on a path that is a
+  directory, in the one function in this tree whose entire contract is that it
+  does not: *"READ never raises … report one of three states as a VALUE —
+  missing, corrupt, or loaded. The caller owns the recovery policy."* `exists`
+  answers **true** for a directory (it asks `stat` about a path, deliberately,
+  since 0.2.3), so the existence check passed and the `read` below it raised.
+  Before the runtime fix above, the same call **aborted the process**.
+  A file the process may not read (mode 000) arrives the same way.
+- **Workaround:** none needed; **resolved** the same day. The read is armed with
+  `on error goto next` and an unreadable store is reported as `corrupt` with the
+  reason in its `message` — not a fourth state, because the three are what a
+  caller BRANCHES on and a directory where a store should be is unusable in
+  exactly the way a truncated file is.
+- **The lesson is about where it was found.** `persist` has its own suite and
+  four cases covering missing, corrupt and loaded; none of them pointed the
+  reader at something that exists and cannot be read, because the three states
+  were written from the shape of a FILE. It took a different library putting a
+  directory where a file goes.
+
+## 2026-10-15 — CC — while: the same increment
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** a library's own dependency must be `load`ed **inside its `library`
+  block**. A top-level `load` in the same file registers the dependency's NAME
+  and leaves its functions out of that library's scope, and the failure mode is
+  the worst available: measured, with `load dep` at the top level of a file
+  declaring `library outer`, `outer.ask()` **fails** for a caller that did not
+  also `load dep` and **works** for one that did. So the author tests from a
+  program that loads both, sees it work, and ships a library that fails for
+  somebody else.
+  **And the diagnostic names the wrong file**: `undefined function: dep.answer
+  -- 'dep' does not define 'answer'`, which is false — `dep.bas` defines
+  `answer` perfectly well, the mistake is one line in `outer.bas`, and the
+  message sends the reader to read the innocent file. `dep` is registered as a
+  name holding no functions, which is why it is phrased that way.
+- **Workaround:** `load persist from "persist.bas"` inside the block, which is
+  what `grid.bas`, `consolidate.bas`, `dbframe.bas` and `stats.bas` all do —
+  and `grid.bas` has a comment above its own `load` saying exactly this. I did
+  not read it, which is the half that is my fault; the half that is not is that
+  **`docs/reference.md` said the opposite in as many words** — *"`load` is a
+  declaration, and either position works"* — true of a `program` block and
+  silent on a library. That paragraph now states the library rule, with the
+  measurement.
+- **Why the diagnostic is filed rather than fixed:** the message is generated
+  where a qualified call fails to resolve, and the fix is to distinguish "that
+  library has no such function" from "that library is not in scope here", which
+  needs its control (a genuinely missing function must still say so) and a tier
+  of its own. A one-sentence improvement with a real false-positive risk, in the
+  shape `run_negative.sh`'s reserved-word tier already uses.

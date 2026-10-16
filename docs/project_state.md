@@ -504,7 +504,8 @@ document list, with a status column, is `docs/README.md`.
   `docs/edgar_tutorial.md` and `docs/edgar_reference.md`.
 - **application platform** — `web` (routing), `gtk`/`gtkui`/`gtkui_gtk`/`datagrid`/
   `sourceeditor` (GTK 4 over `gi`), `filetree`, `persist` (crash-safe versioned
-  storage), `dates`/`schedule` (business calendars, appointment slots), `ari`
+  storage), `intake` (what arrived, what was taken, what to keep),
+  `dates`/`schedule` (business calendars, appointment slots), `ari`
   (anchor-relative report parsing), `matrix`, `crypto` (JWT, CSRF, signed
   cookies), `mail` (RFC 5322 composition, for the native SMTP transport), and
   the GTK 3 `gui` proof of concept.

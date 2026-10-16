@@ -85,7 +85,7 @@ export GBASIC_PATH="$root/stdlib"
 #           nothing useful; parsing them catches every defect that has actually
 #           occurred here -- `#` comments, an invented `try` keyword, a retired
 #           modifier spelling -- at a cost of one marker per real fragment.
-DOCS="docs/tutorial.md:run README.md:run docs/reference.md:parse docs/webclient_design.md:parse"
+DOCS="docs/tutorial.md:run README.md:run docs/reference.md:parse docs/webclient_design.md:parse docs/intake_design.md:parse"
 
 failures=0
 checks=0

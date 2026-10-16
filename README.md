@@ -6,14 +6,14 @@ gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
 databases, a hardened web server, spreadsheets, statistics, charts, PDF
-documents, native GUI and an AI stack — and sixty-seven pure-gBASIC libraries
+documents, native GUI and an AI stack — and sixty-eight pure-gBASIC libraries
 covering double-entry accounting, loan servicing, deposits, credit analytics,
 securities analysis and more. A gBASIC program is meant to be a real
 application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.9.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**174 test suites** gate every change, goldens are byte-exact, and the claims in
+**175 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -195,7 +195,7 @@ Two of these deserve a sentence more than a table row:
 
 ### The standard library
 
-Sixty-seven pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
+Sixty-eight pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
 because they are not at the same maturity and a uniform list would imply they
 are.
 
@@ -409,7 +409,8 @@ are.
   planted, and **refuses with a reason** on a single-page report, where a header
   cannot be told from a first heading.
 - **odds and ends** — `web` (routing), `frame` (data frames), `matrix`,
-  `persist` (crash-safe versioned storage), `filetree`, `crypto`, `mail`.
+  `persist` (crash-safe versioned storage), `intake` (idempotent file intake —
+  what arrived, what was taken), `filetree`, `crypto`, `mail`.
 
 A worked AI application lives in
 [examples/steward](examples/steward/steward.bas): one route per thing a user
@@ -520,7 +521,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 174 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 175 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite

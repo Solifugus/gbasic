@@ -238,6 +238,7 @@ cases=(
     negative_path_unary_missing
     negative_path_join_too_many
     negative_path_unary_too_many
+    negative_read_directory
     negative_stem_arity
     negative_stem_type
     negative_path_split_nul

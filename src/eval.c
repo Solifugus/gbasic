@@ -10780,6 +10780,36 @@ static char *read_whole_file(const char *path, long *out_size) {
     if (!file) {
         return NULL;
     }
+    /* A DIRECTORY IS REFUSED HERE, AND IT USED TO ABORT THE PROCESS. On Linux
+     * `fopen("rb")` on a directory SUCCEEDS, `fseek(SEEK_END)` succeeds, and
+     * `ftell` answers LONG_MAX -- measured, 9223372036854775807 -- which is
+     * positive, so the `size < 0` guard below does not fire; `malloc` of it
+     * then fails and the next line is `abort()`. So `read({file}"/some/dir")`
+     * ended the interpreter with SIGABRT and a core dump, taking block-buffered
+     * stdout with it, so a program tracing its own progress printed NOTHING and
+     * the failure read as the first line of the file.
+     *
+     * `file_size` on the same path has always answered `not a regular file`,
+     * which is the inconsistency that makes this a defect rather than a limit:
+     * two file builtins, one naming the problem and one killing the process.
+     *
+     * NARROWED TO A DIRECTORY ON PURPOSE. A FIFO must keep raising `Illegal
+     * seek` from the `fseek` below and anything in /proc must keep answering,
+     * both of which the `bytes` shortcut above deliberately preserves; a
+     * blanket `S_ISREG` test here would change both. `fstat` on the OPEN
+     * handle rather than `stat` on the path, so there is no window between the
+     * check and the read. EISDIR is what the caller then reports, and reads as
+     * the truth: `could not read file: /x (Is a directory)`.
+     *
+     * Found 2026-10-15 by an `intake` tier that put a directory where a ledger
+     * file should be -- a shape no test had tried, and the first thing a
+     * program does with a path a user supplied. */
+    struct stat opened;
+    if (fstat(fileno(file), &opened) == 0 && S_ISDIR(opened.st_mode)) {
+        fclose(file);
+        errno = EISDIR;
+        return NULL;
+    }
     /* ERRNO DESCRIBES THE FAILURE ON EVERY PATH OUT OF HERE, which is what
      * lets a caller say WHY rather than only WHICH FILE (DOGFOOD 35). `fclose`
      * may set its own, so the real one is carried across it. */

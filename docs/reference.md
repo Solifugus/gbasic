@@ -1745,6 +1745,28 @@ If a `program` block exists, only that program executes. If no `program` block e
 at the top level or inside the `program` block; both are registered before
 anything runs.
 
+**That holds for a program and NOT for a library.** A dependency a *library*
+uses goes **inside its own `library` block**; a top-level `load` in the same
+file registers the name and leaves the functions out of that library's scope:
+
+```basic
+library outer
+    load dep from "dep.bas"      ' inside: `dep.answer()` resolves
+    function ask()
+        return dep.answer()
+    end function
+end library
+```
+
+Measured, and the reason this is worth a paragraph rather than a footnote: with
+the `load` at the top level instead, `outer.ask()` fails for a caller that did
+**not** also load `dep`, and **works** for one that did. So the author tests it
+from a program that loads both, sees it work, and ships a library that fails for
+somebody else. The diagnostic compounds it — `undefined function: dep.answer --
+'dep' does not define 'answer'` — which is **false**: `dep` defines `answer`
+perfectly well, and the mistake is one line in `outer.bas` rather than anything
+in `dep.bas` that the message sends you to read.
+
 ```basic
 load xml                  ' both of these work
 program main()
@@ -6749,6 +6771,15 @@ File functions (see also the file/directory value types):
   contents. `read`, `lock` and the rest of that family still take a file
   reference only. It answers by `stat`, so a file that exists but is not
   readable reports as **present**.
+- Every reader — `read`, `read_lines`, `lines`, `chars`, `bytes` — **refuses a
+  directory** (*since 0.9.1*), reporting `could not read file: <path> (Is a
+  directory)`. Before that it **aborted the interpreter**: on Linux `fopen` on a
+  directory succeeds, `ftell` answers `LONG_MAX`, and the allocation of that
+  fails, so the process died with `SIGABRT` and a core dump — which takes
+  block-buffered stdout with it, so a program printing its own progress printed
+  nothing at all and the failure read as line 1. `for each line in f` was never
+  affected: a read error there has always raised rather than looking like
+  end-of-file.
 - `lock(f)` / `unlock(f)` — advisory locks (see `with lock`). **`lock` waits.**
   If another process holds the lock the call blocks until that process releases
   it or dies — measured at 2.91 seconds against a holder that held for three —
@@ -7140,7 +7171,7 @@ tier each move all three together.
 
 **A library can `load` perfectly and still not work**, which is the half the
 table above misses and the worse half, because the failure is deferred to the
-call. These 3 call a **builtin** whose availability moves with the build, so
+call. These 4 call a **builtin** whose availability moves with the build, so
 nothing in their `load` lines gives them away:
 
 <!--LIBNEEDS:calls-->
@@ -7148,6 +7179,7 @@ nothing in their `load` lines gives them away:
 | --- | --- |
 | `crypto` | libcrypto |
 | `gpdf` | zlib |
+| `intake` | libcrypto |
 | `otp` | libcrypto |
 <!--LIBNEEDS:end-->
 
@@ -8792,6 +8824,43 @@ whole program without needing a call site.
   parents and is **idempotent**. Since 0.2.3 that is one call to
   `make_dir(path, { parents: true })` rather than a hand-rolled segment walk;
   bare `make_dir` still raises on a directory that already exists, deliberately.
+- `intake` — what arrived, what was taken, what to keep: the half of an ETL
+  cycle that needs **state** (`docs/intake_design.md`). `intake.open(file,
+  options)` yields a ledger, `intake.arrived(ledger, dir, pattern)` lists every
+  file matching the glob that this ledger has not recorded *and* that is
+  finished arriving, and `intake.taken(ledger, entry, meta)` records one —
+  **returning the new ledger**, like `accounting.post`, because a record is a
+  value and a mutate-in-place API here would silently import everything twice.
+  `intake.close(ledger)` folds and unlocks.
+
+  Two options are **required with no default**, because each is correct for one
+  kind of source and wrong for the others, and being wrong looks exactly like
+  success. `identity:` says what makes two files the same file — `"path"`,
+  `"stamp"` (path, size and modified time, which the listing already carries, so
+  it costs nothing) or `"content"` (sha256, which **loads the whole file**:
+  measured at just over twice the file in resident memory, refused above
+  `max_hash:` and refused outright on a build without libcrypto). `ready:` says
+  when a file has finished arriving — `"renamed"`, `"sentinel"` (take `x` once
+  `x.done` appears) or `{ stable_for: 30 seconds }`, which is **a probability
+  and not a guarantee**: measured, a file's size held still across consecutive
+  samples three times while it was still being written.
+
+  Also `intake.seen(ledger, entry)` for the same question about one file,
+  `intake.count_taken(ledger)`, and `intake.entry_for(ledger, identity)`, which
+  returns the recorded entry **with its times as datetimes** — the ledger file
+  has to store epochs, because strict JSON refuses a `datetime`, and the library
+  converts at its edge so a caller never sees the number.
+
+  Durability is per file, not per run: `taken` appends one line to a journal
+  beside the snapshot and `open` replays it, because rewriting the snapshot each
+  time is quadratic in the ledger. Measured through the library at a
+  20,000-entry ledger, taking 120 files costs 322 ms by journal against 2041 ms
+  by rewrite — 6.3×, and 13 KB written against 266 MB; `tests/run_intake.sh`
+  asserts that difference, implementing the rewrite in the tier as a second
+  implementation. The per-file cost is still **linear in the ledger** whichever
+  way it is written, because a ledger is a value and `taken` writes to a copy —
+  which is what `purge` bounds. One run at a time: `open` takes a lock, and
+  since `lock` has no non-blocking form a second run **waits**.
 - `filetree` — a directory as a value tree, with expand/collapse state carried
   in the nodes. `filetree.visible_count(nodes)` counts currently-visible rows,
   and `filetree.dump(nodes)` renders the visible tree as deterministic,

@@ -175,6 +175,84 @@ by swapping them.
 If you were relying on the truncation — you were not; it answered about a
 different path — the explicit spelling is to split the text yourself.
 
+### `intake`: what arrived, what was taken
+
+The half of an ETL cycle that needs **state**. Everything else the file work
+added was a primitive, because it was a thing the language could not do; *"have
+I already imported this?"* is different in kind — a program could always answer
+it, and had to write the answer itself, every time, differently.
+
+```basic
+load intake
+
+ledger = intake.open({file}"/data/.intake.json",
+                     { identity: "content", ready: "renamed" })
+
+for each f in intake.arrived(ledger, {dir}"/data", "**/*.xlsx")
+    rows = read_vendor(f.path)
+    ledger = intake.taken(ledger, f, { rows: count(rows) })
+end for
+
+intake.close(ledger)
+```
+
+**Two options are required with no default**, because each is correct for one
+kind of source and wrong for the others — and being wrong looks exactly like
+success. `identity:` says what makes two files the same file: `"path"`,
+`"stamp"` (path, size and modified time, which a listing already carries, so it
+costs nothing) or `"content"` (sha256, which loads the whole file — just over
+twice the file in resident memory, so it is refused above `max_hash:` and
+refused outright at *open* time on a build without libcrypto, rather than
+failing at the first file hours into a run). `ready:` says when a file has
+finished arriving: `"renamed"`, `"sentinel"` (take `x` once `x.done` appears),
+or `{ stable_for: 30 seconds }` — which is **a probability and not a
+guarantee**, and the reference says so: measured, a file's size held still
+across consecutive samples *three times* while it was still being written.
+
+`intake.taken` **returns the ledger**, like `accounting.post` and
+`lending.apply`, because a record is a value — a mutate-in-place API here would
+silently do nothing, and nothing means every file is imported again next run.
+Durability is per file: `taken` appends one line to a journal beside the
+snapshot and `open` replays it through `for each line in f`, so the recovery
+path is the streaming read that shipped in this same release. Measured against
+the snapshot-rewrite design it replaced, at a 20,000-entry ledger: **322 ms
+against 2041 ms, and 13 KB written against 266 MB.**
+
+`archive` and `purge` are designed and **not** built: `copy`, `move` and
+`delete` already work unaided, and `purge` *deletes*, which earns its own suite
+and its own dry-run decision rather than riding in on another increment.
+
+### `read` on a directory aborted the interpreter
+
+`read`, `read_lines`, `lines`, `chars` and `bytes` on a path that is a directory
+ended the process with **SIGABRT and a core dump**. On Linux `fopen` on a
+directory succeeds, `ftell` answers `LONG_MAX`, and the allocation of that
+fails. The crash took block-buffered stdout with it, so a program printing its
+own progress printed *nothing*, and the failure read as line 1 of the file.
+They refuse by name now — `could not read file: <path> (Is a directory)` —
+which is what `file_size` on the same path has always done. `for each line in f`
+was never affected.
+
+**And `persist.read_status` raised on the same path**, in the one function whose
+whole contract is that it reports missing, corrupt or loaded as a **value**:
+`exists` answers true for a directory, so the existence check passed and the
+read raised underneath it. An unreadable store is `corrupt` with the reason in
+its message now. Both were found by an `intake` tier that put a directory where
+a ledger file should be — the first thing a program does with a path a user
+supplied.
+
+### A library's own dependencies go inside its `library` block
+
+`docs/reference.md` said *"`load` is a declaration, and either position
+works"*. That is true of a `program` block and false of a library, and the
+failure mode is the worst available: measured, a library whose `load` sits at
+the top level **works** for a caller that loads the same dependency and
+**fails** for one that does not — so the author tests it from a program that
+loads both and ships something that fails for somebody else. The reference now
+states the rule with that measurement, and notes that the diagnostic names the
+wrong file: `'dep' does not define 'answer'` when `dep` defines it perfectly and
+the mistake is one line in the *other* file.
+
 Kept current as work lands, so a book revising against the next release has the
 list already written rather than reconstructed. `./tools/since-release.sh`
 reports the mechanical half of this — which pinned diagnostics and goldens moved

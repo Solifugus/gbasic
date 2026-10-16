@@ -104,7 +104,28 @@ library persist
         if not present then
             return { status: "missing", value: nothing, message: "" }
         end if
+        ' THE READ CAN FAIL AND THE PROMISE ABOVE SAYS IT MUST NOT RAISE.
+        ' `exists` answers TRUE for a path that is a DIRECTORY (it asks `stat`
+        ' about a path, deliberately, since 0.2.3), so a directory where a store
+        ' should be got past the check above and raised out of `read` -- in the
+        ' one function whose whole contract is that a caller is told about an
+        ' unreadable store as a VALUE. Before 2026-10-15 it was worse: `read`
+        ' on a directory ABORTED the interpreter with a core dump, which is
+        ' fixed in the runtime now and is the reason this was found. A file the
+        ' process may not read (mode 000) arrives here the same way.
+        '
+        ' REPORTED AS `corrupt`, not a fourth state: the three states are what
+        ' a caller BRANCHES on -- nothing there, something unusable, or the
+        ' value -- and a path holding a directory is unusable in exactly the way
+        ' a truncated file is. The MESSAGE carries the difference, which is what
+        ' the message is for.
+        on error goto next
         text = read(ref)
+        if error then
+            why = error.message
+            error.clear()
+            return { status: "corrupt", value: nothing, message: why }
+        end if
         r = try_decode(text)
         if not r.ok then
             return { status: "corrupt", value: nothing,
