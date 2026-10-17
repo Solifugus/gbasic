@@ -303,13 +303,41 @@ program main(args)
     ' keeps the backslash -- two implementations chosen by platform, not a
     ' conversion at the door. Measured 2026-10-17.
     '
-    ' The WINDOWS half cannot be asserted from here and is not guessed at: it
-    ' is reported by tests/windows/scratch_metadata.bas, which runs on both.
-    check("a backslash does not split a name", file_name("we\\ird.txt"), "we\\ird.txt")
-    check("...even after a real separator",
-          file_name("dir/we\\ird.txt"), "we\\ird.txt")
-    check("...and does not end a directory", directory_name("a\\b/c.txt"), "a\\b")
-    check("join_path keeps it too", join_path("a\\b", "c"), "a\\b/c")
+    ' BOTH HALVES ARE ASSERTED, by asking which platform this is. The first
+    ' version of this block asserted the POSIX answer unconditionally and said
+    ' the Windows half "cannot be asserted from here" -- which was true of the
+    ' VALUES and false of the file, since this fixture runs on Windows too
+    ' (through MSYS bash) and failed there, correctly, reported from a Windows
+    ' run 2026-10-17. A fixture that is wrong on one platform is worse than one
+    ' that skips, and asking is better than either: `platform()` exists for
+    ' exactly this, and asserting the Windows answer HERE means the rule is
+    ' covered on the machine that implements it rather than only reported.
+    ' THE WINDOWS BRANCH ASSERTS THE RULE, NOT VALUES I CANNOT MEASURE. The
+    ' first draft of it asserted `join_path("a\\", "c")` is "a\\c", which is
+    ' FALSE -- join_path READS both separators and always WRITES "/", so the
+    ' answer there is "a/c". Asserting an unverified value about a platform this
+    ' machine cannot run is the very mistake the Windows report caught in the
+    ' draft above it, so what is asserted here is what follows from
+    ' `path_is_sep` with certainty: a backslash either separates or it does not.
+    if platform() = "windows" then
+        check("a backslash DOES split a name there",
+              file_name("we\\ird.txt") != "we\\ird.txt", true)
+        check("...and names a parent", directory_name("a\\b\\c.txt") != ".", true)
+    else
+        check("a backslash does not split a name", file_name("we\\ird.txt"), "we\\ird.txt")
+        check("...even after a real separator",
+              file_name("dir/we\\ird.txt"), "we\\ird.txt")
+        check("...and does not end a directory", directory_name("a\\b/c.txt"), "a\\b")
+        check("join_path keeps it too", join_path("a\\b", "c"), "a\\b/c")
+        check("...and a trailing one is not trimmed", join_path("a\\", "c"), "a\\/c")
+        check("a path with no separator has no parent",
+              directory_name("a\\b\\c.txt"), ".")
+    end if
+    ' PLATFORM-INVARIANT, and asserted on both sides of the branch rather than
+    ' inside it: whatever join_path READS, it WRITES a forward slash. That is
+    ' the half of the rule that makes `gb_realpath`'s normalisation and the temp
+    ' bodies' join consistent with each other.
+    check("join_path always writes a forward slash", join_path("a", "b"), "a/b")
     ' THE CONTROL that keeps the four above from being satisfied by splitters
     ' that stopped splitting: a real separator still cuts.
     check("CONTROL: a forward slash still splits", file_name("a/b.txt"), "b.txt")

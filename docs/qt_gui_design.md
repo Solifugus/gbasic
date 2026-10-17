@@ -9,6 +9,44 @@ means Matthew ruled on it in conversation that day. Everything else is argument.
 
 ---
 
+## 0. TWO THINGS DECIDED 2026-10-17, before anything is built
+
+**Qt SQL is NOT part of this, and the question was measured rather than
+argued.** Asked whether Qt could give gBASIC better database connectivity than
+it has: no, it would be a step backwards. Measured on the development machine,
+Qt 6.10.2's own driver packages depend on the client libraries this tree
+already links — `libqt6sql6-psql` → **libpq5** (what `pg` uses),
+`-mysql` → libmysqlclient24, `-odbc` → **libodbc2** (what `odbc` uses),
+`-ibase` → libfbclient2 — and the distribution ships exactly one driver,
+`libqsqlite.so`. So Qt SQL is a plugin wrapper over the same dependencies: it
+removes none of them, adds a C++ layer, and would give the language **two
+incompatible ways to reach a database**, which is the shape this tree puts
+tripwires against elsewhere. Oracle and DB2 are worse, those plugins not being
+packaged at all.
+
+What a "Go-like" connectivity story actually rests on is **pure wire-protocol
+clients** — `pgx`, `go-sql-driver/mysql` and `go-mssqldb` speak the protocols
+directly with no C client library, which is why they need nothing installed and
+cross-compile; Oracle's `godror` needs the Instant Client and is the exception
+that proves it. That is a separate piece of work, unscoped and unstarted, and it
+would extend the property the lean build already has (sqlite, libxml2, zlib and
+yescrypt are statically linked so the binary starts on a bare machine) to
+databases, where `pg` needs libpq installed, `odbc` needs unixODBC plus a vendor
+driver, and MySQL has no path except ODBC. **A GUI decision must not drag a
+database layer in behind it.**
+
+**And the licence cost this document did not state: Qt cannot be statically
+linked.** §1's licence strategy establishes that the LGPL-3 set is usable and
+which modules to avoid; what follows from LGPL-3 is that the toolkit must be
+**dynamically linked** unless the relink obligation is met, so a gBASIC GUI
+application always depends on an installed Qt. That is acceptable for a desktop
+application — a desktop has a toolkit — and it is a genuine divergence from the
+direction the Linux releases took, which was to link statically precisely so a
+download starts on a machine with nothing installed. It belongs in the trade
+rather than discovered during packaging.
+
+---
+
 ## 1. Why Qt, and what changed
 
 Qt was rejected as a GUI backend on 2026-09-27 on measured grounds, and that

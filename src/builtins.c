@@ -176,6 +176,7 @@ int gbasic_builtin_function(const char *name) {
         "read_lines",
         "join_path",
         "library_collisions",
+        "platform",
         "principal",
 #if HAVE_LIBXCRYPT || HAVE_YESCRYPT
         "password_hash_cost",

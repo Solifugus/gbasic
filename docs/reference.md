@@ -7177,6 +7177,19 @@ File metadata and atomic replacement:
 
 Path questions about what is really there:
 
+- `platform()` -> `"linux"`, `"windows"`, `"macos"` or `"posix"`
+  *(since 0.11.0)* — which platform this binary was **built** for. It answers
+  what the build knows: there is one body per platform file and each returns its
+  own name, so it cannot drift from the bodies it describes.
+
+  It exists because **a few behaviours genuinely differ and a program may have
+  to ask**. The path splitters are the first: a backslash separates on Windows
+  and is an ordinary filename character on POSIX, so a test that runs on both
+  platforms — which is how the Windows suite is written — otherwise has to
+  choose between asserting something false on one side and asserting nothing on
+  either. Prefer a question about the *thing* where one exists (`is_symlink`,
+  `permissions`, `has_builtin`); reach for this when the difference really is
+  the platform.
 - `library_collisions()` -> array of `{ name, libraries }` — every public name
   defined by **more than one loaded library**. The override warning cannot
   answer this: it lives in the unqualified-lookup path, so it is

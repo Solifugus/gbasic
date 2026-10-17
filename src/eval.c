@@ -39429,6 +39429,32 @@ static Value eval_call(AstExpr *expr) {
         return eval_dir_call(expr);
     }
 
+    if (strcmp(expr->as.call.name, "platform") == 0) {
+        /* WHICH PLATFORM THIS BINARY WAS BUILT FOR -- "linux", "windows",
+         * "macos", or "posix" for a POSIX family nobody has named yet.
+         *
+         * `gb_platform_name` has existed since the port and `include/platform.h`
+         * says it is there "for diagnostics and for the tests that need to say
+         * why a tier does not apply" -- and nothing exposed it, so no gBASIC
+         * program could ask. That became a gap rather than an omission when the
+         * path splitters gained a platform rule (a backslash separates on
+         * Windows and is an ordinary filename character on POSIX): the
+         * tests/windows suite is the SAME FILE on both platforms by design, so
+         * until now it could only assert INVARIANTS, and a fixture meeting the
+         * first genuinely divergent behaviour had to choose between asserting
+         * something false on one side and asserting nothing on either.
+         *
+         * It answers what the BUILD knows, not what it is running under: there
+         * is one body per platform file and each returns its own name, so this
+         * cannot drift from the bodies it describes. */
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("platform expects no arguments", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        return value_string(gb_platform_name());
+    }
+
     if (strcmp(expr->as.call.name, "watchers") == 0) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("watchers expects no arguments", 1003,
