@@ -1300,6 +1300,35 @@ behavioural tier. Windows is the only place it can be observed at all — and if
 it does **not** fire there, something is wrong with the `dropped` out-parameter
 rather than with the warning.
 
+### THE LINUX BASELINE, so the comparison needs nothing else
+
+Run on Linux at the commit that added this section, as an ordinary user. Every
+`ok` line passed and 24 checks ran; these are the eleven `REPORT` lines:
+
+```
+REPORT the system temporary directory: /tmp
+REPORT temp file mode: 0600
+REPORT temp dir mode: 0700
+REPORT temp file path (run icacls on this): /tmp/gbwin-x5U1x1/stage-jqQk2d
+REPORT executable (unknown on Windows, a boolean on POSIX): false
+REPORT mode after chmod(f, "0600"): 0600
+REPORT mode after chmod(f, "0400"): 0400
+REPORT writable after chmod 0400: false
+REPORT remove_tree over a read-only file: true
+REPORT the tree is gone: true
+REPORT remove_tree over a directory link: true
+```
+
+The last three are the ones to watch. On POSIX a read-only FILE is removed
+happily — it is the DIRECTORY's write permission that governs — and a symlink
+to a directory is unlinked without being followed, so all three answer `true`
+and the target's content survives. Both Windows predictions above say those are
+where it parts company.
+
+`executable: false` rather than a mode question: the file is 0644 there, and
+Windows should answer `unknown` instead, which is asserted in the fixture's
+sibling suite rather than reported.
+
 ### Anything else Windows is needed for
 
 Beyond this increment, and unchanged from §7 of `windows_port_plan.md`: **the
