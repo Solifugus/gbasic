@@ -1337,3 +1337,169 @@ scan for `/` and nothing else, so `file_name("C:\\data\\x.csv")` answers the
 whole string. That needs a **decision** rather than a measurement — whether a
 backslash is a separator everywhere, or only on Windows, and what that does to
 byte-exact goldens — and it is the largest user-visible gap left.
+
+## 28. §27 ANSWERED, from a Windows run (2026-10-17)
+
+Windows 11 Pro 10.0.26200, MSYS2 UCRT64 build of `5f51a42` (0.10.0 plus four
+commits), run as an ordinary user with **Developer Mode off**. The elevated run
+is still outstanding (see the end). Everything below was run, not reasoned.
+
+### The fixture, unelevated
+
+`tests\windows\scratch_metadata.bas` ran **15 checks, 0 mismatches**, and
+printed `BROKEN: only 15 checks ran`: the symlink-dependent checks could not
+run without the privilege, as §27 said. Two things about the fixture itself:
+
+- **`BROKEN` exits 0**, so `run_windows_suite.sh` reports the file as
+  `PASS (15)`. The floor is printed, not enforced.
+- **It cannot clean up after itself on Windows.** Its final `remove_tree(work)`
+  meets the read-only file that prediction 1 plants, so every run leaves a
+  `gbwin-*` directory in `%TEMP%`. That goes away when prediction 1 is fixed.
+
+The REPORT lines, run from PowerShell so `TEMP` is the real per-user one
+(under MSYS bash it is `C:\msys64\tmp`):
+
+```
+REPORT the system temporary directory: .
+REPORT temp file mode: 0666
+REPORT temp dir mode: 0777
+REPORT temp file path (run icacls on this): C:\Users\matth\AppData\Local\Temp\gbwin-19a65ecb27b505df\stage-65e4cddb03249aa0
+REPORT executable (unknown on Windows, a boolean on POSIX): unknown
+REPORT mode after chmod(f, "0600"): 0666
+REPORT mode after chmod(f, "0400"): 0444
+REPORT writable after chmod 0400: false
+REPORT symlink refused: ... Windows requires the SeCreateSymbolicLinkPrivilege, which means Developer Mode or an elevated process
+REPORT remove_tree over a read-only file REFUSED: remove_tree: could not remove ...\tree/readonly.txt (Permission denied)
+REPORT the tree is gone: false
+```
+
+plus `could not create the directory link, so this case was NOT measured` and
+the same for the dangling link. Warning **2114 fired twice**, for `0600` and
+`0644`, so the `dropped` out-parameter works.
+
+**`the system temporary directory: .` is a defect, not a temp directory.** The
+fixture computes it as `directory_name(work)`, and `directory_name` splits only
+on `/`. See "the path splitters bite the new API" below.
+
+### The claims table
+
+| claim | result |
+|---|---|
+| `temp_file`/`temp_dir` unique and CREATED | **confirmed** (the `ok` lines) |
+| only the mode diverges | **false**: the path does too, see below |
+| `is_symlink`, `set_mtime` identical | `set_mtime` **confirmed**; `is_symlink` only on a regular file, the link cases need the elevated run |
+| `symlink` names the privilege | **confirmed**, `SeCreateSymbolicLinkPrivilege` by name |
+| `executable` is `unknown`, never `false` | **confirmed** |
+| mode is `_wstat`'s synthesis (`0444` / `0666`) | **confirmed**; `0777` for a directory |
+| `chmod` applies the owner write bit and warns | **confirmed**, warning 2114 both times |
+
+### THE icacls QUESTION: inheritance holds on a default profile, and fails twice
+
+`icacls` on the fixture's workspace, under the real `%TEMP%`:
+
+```
+...\Temp\gbwin-19a65ecb27b505df S-1-5-21-1250913521-2328658486-1253217251-363904532:(I)(OI)(CI)(RX,W)
+                                NT AUTHORITY\SYSTEM:(I)(OI)(CI)(F)
+                                BUILTIN\Administrators:(I)(OI)(CI)(F)
+                                LAPHOPPER\matth:(I)(OI)(CI)(F)
+```
+
+No `Users`, `Authenticated Users` or `Everyone`, so on a **default** profile a
+temp file is private by inheritance, as §27 hoped. **But this machine carries an
+extra grant.** The first SID is an EXPLICIT (not inherited) ACE on `%TEMP%`
+itself; it does not resolve, and its domain prefix is not this machine's
+(`S-1-5-21-3214489156-...`). It belongs to an account that no longer exists
+here, plausibly from a migrated profile, and every temp file inherits it. So an
+inherited ACL is only as private as whatever has been done to `%TEMP%`, and the
+first machine measured already has something done to it.
+
+**Under a redirected `TEMP` the promise is broken outright.** With `TEMP` and
+`TMP` pointed at `C:\Users\Public\gbtemp-probe`, a `temp_file()` with
+`"secret"` written to it:
+
+```
+C:\Users\Public\gbtemp-probe\gbasic-978748dced76d2b7 BUILTIN\Administrators:(I)(F)
+                                                     LAPHOPPER\matth:(I)(F)
+                                                     NT AUTHORITY\SYSTEM:(I)(F)
+                                                     NT AUTHORITY\INTERACTIVE:(I)(M,DC)
+                                                     NT AUTHORITY\SERVICE:(I)(M,DC)
+                                                     NT AUTHORITY\BATCH:(I)(M,DC)
+```
+
+**Any interactively signed-in user can read and modify it**, as can services
+and batch jobs, while `permissions` reports `0666`. By §27's own criterion that
+is the "ACL support has a real reason" branch. The honest minimum is an explicit
+owner-only DACL **at creation** (a `SECURITY_ATTRIBUTES` passed to
+`CreateFileW`/`CreateDirectoryW`), not a sentence of documentation. Creating it
+with the DACL, rather than `chmod`-ing afterwards, closes the window in which
+the file exists with the inherited ACL.
+
+### Prediction 1 (read-only file): CONFIRMED
+
+`remove_tree: could not remove ...\tree/readonly.txt (Permission denied)`, and
+the tree is still there. Loud and wrong, as predicted: clear the attribute and
+retry once, in the platform layer.
+
+### Prediction 2 (directory link): NOT MEASURED YET
+
+Needs the privilege; see the end.
+
+### THREE THINGS §27 DID NOT PREDICT
+
+**1. `read_at` and `overwrite` refused every file over 2 GB. FIXED in
+`3c527fd`.** Both capped their arguments at `LONG_MAX` and positioned with
+`fseek`/`ftell`, and `long` is 32 bits on Windows. On a 3 GB sparse file
+`read_at(f, 0, 4)` raised `(Invalid argument)`, at ZERO, because both ask the
+file's size first. Fixed with `gb_fseek`/`gb_ftell`/`GB_OFF_MAX` in the platform
+layer (`_fseeki64`/`_ftelli64` on Windows; the unchanged calls on POSIX). A tier
+in `run_windows_suite.sh` runs on every platform over a sparse 3 GB file: red
+without the fix on Windows, green with it, green on Linux (WSL), where
+`run_read_at` and `run_file_stream` also pass. The two whole-file readers have
+the same `ftell` and were left alone on purpose: they hand the size back through
+a `long *` and load the whole file into memory, which is a different problem
+from seeking.
+
+**2. The path splitters bite the new API itself.** On Windows `temp_file` and
+`temp_dir` build their path with a backslash, and `file_name`/`directory_name`
+split only on `/`, so the increment disagrees with itself.
+`file_name(temp_file({prefix: "vendor-"}))` answers the whole path (so
+`starts_with(..., "vendor-")` is false), and `directory_name` of a temp file
+made `in:` a directory answers that directory's PARENT. Those are three of
+`run_scratch`'s four semantic mismatches, and the fixture's `.` above. This is
+§27's path-splitter decision arriving early: either the temp functions join with
+`/` (which Windows accepts), or the splitters learn `\`.
+
+**3. `remove_tree` stops at MAX_PATH, not at its depth bound.** `run_scratch`'s
+300-deep tree failed about 260 characters in with `Directory not empty`: the
+narrow CRT calls cannot see deeper entries, so the 256-level bound never fired.
+It removed nothing below and failed loudly, which is the acceptable direction,
+but the message names the wrong cause.
+
+### The new suites on Windows, triaged
+
+Passed: `run_path_split`, `run_dir_builtins`, `run_platform`,
+`run_windows_suite`, `run_silent_traps`, `run_exact`.
+
+Failed, and what each failure actually measured:
+
+| suite | real defect | harness that cannot run on Windows |
+|---|---|---|
+| `run_read_at` | the 2 GB cap (now fixed) | the memory tier uses `/usr/bin/time` |
+| `run_scratch` | path splitters ×3; MAX_PATH | symlink tiers use MSYS `ln -s`, **which copies**; the mode tier asserts 0600/0700 |
+| `run_metadata` | none | `stat -c`, `mkfifo`, POSIX mode asserts; the fixture **raises** on the refused `symlink` instead of skipping |
+| `run_glob` | none | every failure rests on `chmod 000` (no effect) or `ln -s` (copies) |
+| `run_intake` | none | `ln -s` fails outright under MSYS |
+| `run_file_stream` | none | the CONTROL uses `/usr/bin/time` |
+| `run_try_decode`, `run_limitations` | none | `ulimit -s` (the Windows stack is the linker's) |
+
+So the harness failures measured nothing about Windows in either direction. Two
+are worth fixing first because they hide real coverage: **MSYS `ln -s` copies by
+default** (`MSYS=winsymlinks:nativestrict` makes real links where the privilege
+exists), and `metadata_test.bas` should report a refused `symlink` the way
+`scratch_metadata.bas` does, rather than raise.
+
+### Still to run
+
+The elevated run of `tests\windows\scratch_metadata.bas`: prediction 2, the
+`is_symlink` checks and the dangling-link listing agreement. To be appended
+here.
