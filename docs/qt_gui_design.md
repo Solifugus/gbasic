@@ -552,9 +552,32 @@ this tree keeps finding drifts. Matthew's reasoning, and the one exception
 argues the same way — currencies are never strings, but TYPE NAMES already are:
 `consolidate` takes `kind: "money"` and `kind: "percent"`, and a cookbook recipe
 teaches it. So `type: "USD"` would not have been a lone oddity, it would have
-joined an existing wart. **`kind: {USD}` would improve `consolidate` too**, and
-that is the natural follow-on if this form proves itself — noting that the
-vocabulary does not map one-to-one, since `percent` is not a gBASIC modifier.
+joined an existing wart. **`kind: {USD}` would improve `consolidate` too** — but
+**not under this decision, and the first draft of this paragraph was wrong to
+imply otherwise.** `consolidate`'s spec is an ordinary record a PROGRAM BUILDS
+AT RUNTIME, not a declaration, so a declaration-only form can never reach it;
+that improvement needs the bare modifier to be a real value. The benefit was
+cited for the option that was NOT taken.
+
+**SO WHY IS THIS STILL THE RIGHT FIRST STEP?** Not because a modifier value is
+wrong — the objection above is weaker than it reads, since
+`exact_number_design.md`'s "promotion matrix" argument came from a genuinely
+harder case, two NUMERIC kinds meeting in arithmetic, and a modifier value is
+**inert**: `type()` answers one more word, `print` shows `{USD}`, `encode`
+refuses as it already does for a function, a regex and a file, and comparison is
+by name. Four short answers, not a hazard.
+
+The reason is that **this is a strict subset which the fuller form widens
+without changing a single program.** `type: {USD}` parses identically either
+way, so going from declaration-only to a real value later adds a production and
+breaks nothing.
+
+**AND THE CASE THAT WOULD DECIDE THE FULLER FORM ALREADY EXISTS**, which §5.2
+first described as something to watch for: `frame`, `consolidate` and `dbframe`
+all name column types as STRINGS today. That is a wart with a queue behind it
+rather than a hypothetical, and typed columns — not a GUI option — are what it
+should be chosen on. Note the vocabulary does not map one-to-one: `percent` is
+not a gBASIC modifier.
 
 **This is a design measurement and not yet a gate.** When the grammar lands, the
 zero becomes an assertion in its suite — the way `run_optparams`,
