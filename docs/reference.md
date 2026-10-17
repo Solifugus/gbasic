@@ -6867,10 +6867,12 @@ File functions (see also the file/directory value types):
   ```
 
   On POSIX the file arrives with mode **0600** and the directory **0700**,
-  which is what lets a program hold a secret in one — gBASIC has no `chmod`, so
-  there is no way to narrow it afterwards. **On Windows it inherits the
-  directory's ACL and that promise cannot be made**; the divergence is the mode,
-  not the uniqueness.
+  which is what lets a program hold a secret in one. **On Windows the same
+  promise is kept by ACL**: both are created granting the current user alone,
+  rather than inheriting the folder's permissions — measured, an inherited ACL
+  let any signed-in user read and change the file once `TEMP` pointed at a
+  shared folder. What `permissions` *reports* on Windows still differs (`0666`),
+  because it reads the file's attributes, not its ACL.
 
   **Nothing is removed automatically**, deliberately: in the pattern above the
   temp file is *meant* to outlive the call that made it, since it becomes the

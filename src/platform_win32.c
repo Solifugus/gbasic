@@ -16,6 +16,7 @@
 
 #include <windows.h>
 #include <bcrypt.h>
+#include <sddl.h>
 #include <direct.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -1781,10 +1782,8 @@ char *libintl_gettext(const char *msgid) {
  * creation is the test -- Windows has no `mkstemp`, and asking "does this name
  * exist" before creating it is the race these functions exist to avoid.
  *
- * THE DIVERGENCE IS THE MODE, NOT THE RACE: the POSIX body gets 0600 from
- * `mkstemp` and this one inherits whatever the directory's ACL says. Stated in
- * include/platform.h beside the declaration and in docs/windows_port_plan.md
- * §7, rather than papered over here. */
+ * The POSIX body gets 0600 from `mkstemp`; the callers below pass an
+ * owner-only security descriptor for the same promise (owner_only_attributes). */
 static int win32_temp_name(const char *dir, const char *prefix,
                            char *out, size_t out_size) {
     char root[MAX_PATH * 4];
@@ -1836,56 +1835,123 @@ static int win32_temp_name(const char *dir, const char *prefix,
     return 0;
 }
 
+/* OWNER-ONLY, AT CREATION -- the Windows half of mkstemp's 0600 (§29 item 2).
+ * MEASURED 2026-10-17 (§28): an inherited ACL is private only as far as the
+ * parent folder is. On a default profile %TEMP% grants just the owner, SYSTEM
+ * and Administrators; the first machine measured also carried an explicit grant
+ * to an account that no longer exists; and with TEMP pointed at a shared folder
+ * a temp file holding a secret was readable and modifiable by INTERACTIVE,
+ * SERVICE and BATCH while `permissions` reported 0666.
+ *
+ * So the file is created WITH a protected DACL granting the current user full
+ * access and nobody else -- in the CreateFileW / CreateDirectoryW call itself,
+ * so there is no moment at which it exists with the inherited ACL, which a
+ * chmod afterwards would leave. `P` blocks inheritance from the parent; on a
+ * directory OI/CI carry the grant down to what is created inside it, which is
+ * what 0700 means in practice. If the descriptor cannot be built, creation
+ * FAILS: a temp file that is silently not private breaks the promise this
+ * exists to keep. Administrators can still take ownership, as root can read a
+ * 0600 file. */
+static int owner_only_attributes(int for_dir, SECURITY_ATTRIBUTES *sa) {
+    HANDLE token = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return -1;
+    }
+    DWORD need = 0;
+    GetTokenInformation(token, TokenUser, NULL, 0, &need);
+    TOKEN_USER *user = need ? malloc(need) : NULL;
+    LPWSTR sid = NULL;
+    int ok = user && GetTokenInformation(token, TokenUser, user, need, &need) &&
+             ConvertSidToStringSidW(user->User.Sid, &sid);
+    CloseHandle(token);
+    free(user);
+    if (!ok) {
+        return -1;
+    }
+    WCHAR sddl[256];
+    _snwprintf(sddl, sizeof sddl / sizeof sddl[0],
+               for_dir ? L"D:P(A;OICI;FA;;;%ls)" : L"D:P(A;;FA;;;%ls)", sid);
+    sddl[sizeof sddl / sizeof sddl[0] - 1] = L'\0';
+    LocalFree(sid);
+    PSECURITY_DESCRIPTOR sd = NULL;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1,
+                                                              &sd, NULL)) {
+        return -1;
+    }
+    sa->nLength = sizeof *sa;
+    sa->lpSecurityDescriptor = sd;   /* the caller LocalFree()s it */
+    sa->bInheritHandle = FALSE;
+    return 0;
+}
+
 int gb_make_temp_file(const char *dir, const char *prefix, char *out, size_t out_size) {
+    SECURITY_ATTRIBUTES sa;
+    if (owner_only_attributes(0, &sa) != 0) {
+        errno = EACCES;
+        return -1;
+    }
+    int rc = -1;
+    errno = EEXIST;
     for (int attempt = 0; attempt < 64; attempt++) {
         if (win32_temp_name(dir, prefix, out, out_size) != 0) {
-            return -1;
+            break;
         }
         WCHAR *wpath = utf8_to_wide(out);
         if (!wpath) {
             errno = ENOMEM;
-            return -1;
+            break;
         }
-        HANDLE h = CreateFileW(wpath, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+        HANDLE h = CreateFileW(wpath, GENERIC_WRITE, 0, &sa, CREATE_NEW,
                                FILE_ATTRIBUTE_NORMAL, NULL);
         DWORD err = (h == INVALID_HANDLE_VALUE) ? GetLastError() : 0;
         free(wpath);
         if (h != INVALID_HANDLE_VALUE) {
             CloseHandle(h);
-            return 0;
+            rc = 0;
+            break;
         }
         if (err != ERROR_FILE_EXISTS) {
             errno = EACCES;
-            return -1;
+            break;
         }
+        errno = EEXIST;
     }
-    errno = EEXIST;
-    return -1;
+    LocalFree(sa.lpSecurityDescriptor);
+    return rc;
 }
 
 int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_size) {
+    SECURITY_ATTRIBUTES sa;
+    if (owner_only_attributes(1, &sa) != 0) {
+        errno = EACCES;
+        return -1;
+    }
+    int rc = -1;
+    errno = EEXIST;
     for (int attempt = 0; attempt < 64; attempt++) {
         if (win32_temp_name(dir, prefix, out, out_size) != 0) {
-            return -1;
+            break;
         }
         WCHAR *wpath = utf8_to_wide(out);
         if (!wpath) {
             errno = ENOMEM;
-            return -1;
+            break;
         }
-        BOOL ok = CreateDirectoryW(wpath, NULL);
+        BOOL ok = CreateDirectoryW(wpath, &sa);
         DWORD err = ok ? 0 : GetLastError();
         free(wpath);
         if (ok) {
-            return 0;
+            rc = 0;
+            break;
         }
         if (err != ERROR_ALREADY_EXISTS) {
             errno = EACCES;
-            return -1;
+            break;
         }
+        errno = EEXIST;
     }
-    errno = EEXIST;
-    return -1;
+    LocalFree(sa.lpSecurityDescriptor);
+    return rc;
 }
 
 int gb_permissions(const char *path, GbPermissions *out) {

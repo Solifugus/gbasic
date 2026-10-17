@@ -320,7 +320,10 @@ PLATFORM_OBJ ?= src/platform_win32.o
 # TRE takes its messages through gettext; that one function is supplied by
 # src/platform_win32.c, so the LGPL libintl (and the libiconv it needs) is
 # NOT linked -- gbasic.exe carries permissive-licensed code only.
-LDLIBS += -lsystre -ltre -lws2_32 -lbcrypt -static
+# advapi32 for the owner-only security descriptor temp_file/temp_dir create
+# with: named rather than left to MinGW's default library list, since only the
+# optional curl and crypto lines named it before.
+LDLIBS += -lsystre -ltre -lws2_32 -lbcrypt -ladvapi32 -static
 # AN 8 MB MAIN-THREAD STACK, the Linux default. Windows reserves 1 MB, and the
 # tree-walking evaluator and the JSON parser recurse: the parser's 10,000-level
 # nesting cap was sized for 8 MB, so on 1 MB a deep document CRASHED the

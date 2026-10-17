@@ -168,6 +168,50 @@ BAS
     fi
 fi
 
+# A TEMP FILE IS OWNER-ONLY ON WINDOWS TOO (§29 item 2). MEASURED 2026-10-17
+# (§28): created with the inherited ACL, a temp file under a shared TEMP was
+# readable and modifiable by INTERACTIVE, SERVICE and BATCH. The folder here is
+# made deliberately LEAKY -- BUILTIN\Users granted Modify, inheritable -- and a
+# temp_file and a temp_dir made `in:` it must each carry exactly ONE access
+# entry, for the current user. The premise is asserted too: a plain file
+# created in that folder must show the Users grant, or the folder was never
+# leaky and the check would pass on a build that changed nothing.
+if command -v icacls >/dev/null 2>&1 && command -v cygpath >/dev/null 2>&1; then
+    ad="$(mktemp -d)"
+    adw="$(cygpath -w "$ad")"
+    icacls "$adw" //grant '*S-1-5-32-545:(OI)(CI)M' >/dev/null 2>&1
+    printf 'x' >"$ad/plain.txt"
+    aprog="$(mktemp --suffix=.bas)"
+    cat >"$aprog" <<BAS
+f = temp_file({ in: "$(cygpath -m "$ad")" })
+d = temp_dir({ in: "$(cygpath -m "$ad")" })
+print string(f)
+print string(d)
+BAS
+    aout="$(./gbasic "$aprog" 2>&1)"
+    rm -f "$aprog"
+    me="$(whoami)"
+    # icacls prints the path, then one ACE per line; the last two lines are a
+    # blank and the "Successfully processed" summary.
+    aces() { icacls "$(cygpath -w "$1")" 2>/dev/null | head -n -2 | sed "s|^.*$(basename "$1") *||; s|^ *||" | grep -v '^$'; }
+    premise="$(aces "$ad/plain.txt" | grep -ci 'BUILTIN\\Users')"
+    tf="$(printf '%s\n' "$aout" | sed -n 1p)"
+    td="$(printf '%s\n' "$aout" | sed -n 2p)"
+    fa="$(aces "$tf")"; da="$(aces "$td")"
+    if [ "${premise:-0}" -lt 1 ]; then
+        printf 'FAIL the folder was not leaky (no Users grant on a plain file), so NOTHING was measured\n'
+        status=1
+    elif [ "$(printf '%s\n' "$fa" | wc -l)" -eq 1 ] && printf '%s' "$fa" | grep -qi "\\\\$me:" &&
+         [ "$(printf '%s\n' "$da" | wc -l)" -eq 1 ] && printf '%s' "$da" | grep -qi "\\\\$me:"; then
+        printf 'PASS temp_file and temp_dir are owner-only even in a folder that grants Users\n'
+    else
+        printf 'FAIL temp_file/temp_dir are not owner-only:\n  file: %s\n  dir:  %s\n  (gbasic said: %s)\n' \
+            "$(printf '%s' "$fa" | tr '\n' ';')" "$(printf '%s' "$da" | tr '\n' ';')" "$aout"
+        status=1
+    fi
+    rm -rf "$ad"
+fi
+
 # THE WINDOWS FILE VERSION MUST BE THE BINARY'S VERSION. src/gbasic.manifest
 # carries one by hand (it is what Windows shows in a file's Properties, and the
 # MSIX build reads `gbasic --version` instead); it sat at 0.4.0.0 while the

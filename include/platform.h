@@ -553,13 +553,14 @@ int gb_secure_random(void *buf, size_t n);
  * `prefix` is a hint for whoever reads a directory listing later; NULL or ""
  * gives a default.
  *
- * POSIX creates the file with mode 0600, which `mkstemp` guarantees -- the
- * reason a program can hold a secret in one, this language having no `chmod`.
- * WINDOWS CANNOT PROMISE THE MODE: it inherits the directory's ACL, so the
- * divergence is the mode and not the uniqueness, which is stated in
- * docs/reference.md beside the call and in docs/windows_port_plan.md §7 beside
- * the other path divergences. Returns 0 on success with the path in `out`, -1
- * otherwise with errno set. */
+ * POSIX creates the file with mode 0600 (`mkstemp`) and the directory 0700 --
+ * the reason a program can hold a secret in one. WINDOWS KEEPS THE SAME
+ * PROMISE BY ACL: both are created with a protected DACL granting the current
+ * user alone, in the creating call itself, because MEASURED (§28) an inherited
+ * ACL was readable by any signed-in user once TEMP pointed at a shared folder.
+ * What still diverges is what `permissions` REPORTS, which is _wstat's
+ * synthesis (0666) rather than the ACL. Returns 0 on success with the path in
+ * `out`, -1 otherwise with errno set. */
 int gb_make_temp_file(const char *dir, const char *prefix, char *out, size_t out_size);
 int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_size);
 
