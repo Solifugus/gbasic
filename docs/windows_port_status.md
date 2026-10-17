@@ -1727,3 +1727,15 @@ skip for libraries this build lacks) and on Linux.
    already has.
 2. The rest of the Windows harness gaps §28 listed are unchanged: `chmod 000`,
    `stat -c`, `mkfifo`, `/usr/bin/time` and `ulimit -s` measure nothing here.
+
+> **BOTH ANSWERED 2026-10-17.** (1) `path_split_test.bas` asks `platform()`,
+> which is a builtin now — `gb_platform_name()` had existed since the port with
+> `include/platform.h` saying it was for "the tests that need to say why a tier
+> does not apply", and nothing exposed it — and it asserts BOTH halves of the
+> separator rule rather than skipping one. (2) The harness gaps are closed by
+> `tests/premise.sh`: the four sites that had missed the guard now probe the
+> machine and **skip naming what went unmeasured**, with the treatment decided
+> by which way a broken premise fails — `run_scratch` must FAIL (a copy
+> satisfies its conclusion) and `run_glob` must SKIP (a copy makes it report a
+> false failure about gBASIC). Everything else §28 listed was already guarded,
+> including `run_repl`'s whole interrupt tier behind `has_cap signals`.

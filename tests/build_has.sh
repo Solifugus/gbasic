@@ -16,6 +16,13 @@
 # SQLITE3_AVAILABLE=0`). tests/run_finio_camt.sh already asked the binary; this
 # is that answer, shared.
 #
+# NOT THE SAME QUESTION AS tests/premise.sh, and the two must not be
+# merged. This file asks what THE BINARY can do; that one asks what THE MACHINE
+# AND ITS FILESYSTEM can demonstrate -- whether `chmod` governs reading, whether
+# there is a `mkfifo`, a peak-RSS meter or a real symlink -- which is a fact
+# about neither the binary nor the language. A tier often needs both: one to
+# know the feature exists, the other to know its premise can be built.
+#
 # THE RULE: run a probe that touches MODULE; it is ABSENT only when the binary
 # answers with a BUILD REFUSAL -- "... not available in this build", or
 # "... requires OpenSSL" for the libcrypto builtins, or the platform's own

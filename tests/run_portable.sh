@@ -93,7 +93,13 @@ for forced in sha256sum; do
 done
 
 echo "TIER /proc is asked about, never shimmed"
-eval "$(bash -c '. tests/portable.sh; declare -f gb_have_proc')"
+# BOTH FUNCTIONS, because `gb_have_proc` CALLS the other one. Extracted alone
+# it printed `_gb_portable_forced: command not found` on every run and then
+# answered correctly BY LUCK -- the missing call returns 127, the `&&`
+# short-circuits, and the real test below it runs. So the answer was right, the
+# noise was real, and `GB_PORTABLE_FORCE=noproc` could not be exercised here at
+# all, which is the half this tier would have needed to check the Cygwin branch.
+eval "$(bash -c '. tests/portable.sh; declare -f gb_have_proc _gb_portable_forced')"
 # A real procfs answers yes; Cygwin's emulation (marked by /proc/self/winpid)
 # answers no, because it cannot see a native process (tests/portable.sh).
 if [ -e /proc/self/winpid ]; then
@@ -102,6 +108,85 @@ elif [ -r /proc/self/status ]; then
     if gb_have_proc; then ok "gb_have_proc is true on this machine"; else bad "gb_have_proc false with a real /proc"; fi
 else
     if gb_have_proc; then bad "gb_have_proc is true with no /proc"; else ok "gb_have_proc is false with no /proc"; fi
+fi
+# AND NOW THE FORCE CAN BE EXERCISED, which is what the missing helper cost:
+# the Cygwin branch above only runs on Cygwin, so without this the "answers no"
+# half of gb_have_proc is unreachable on every machine in the gate.
+if ( GB_PORTABLE_FORCE=noproc; gb_have_proc ); then
+    bad "GB_PORTABLE_FORCE=noproc did not make gb_have_proc answer no"
+else
+    ok "GB_PORTABLE_FORCE=noproc makes it answer no, so the no-/proc branch is reachable here"
+fi
+
+# --- tests/premise.sh: the OTHER harness file, and the hazard it adds ----
+#
+# `portable.sh` supplies a missing TOOL; `premise.sh` answers whether this
+# machine can DEMONSTRATE a premise (does `chmod` govern reading, is there a
+# `mkfifo`, a peak-RSS meter, a real symlink, a settable stack). It exists
+# because six suites failed on Windows for reasons that were facts about the
+# harness and not about gBASIC (docs/windows_port_status.md §30), and a suite
+# that fails for the wrong reason is one people learn to ignore.
+#
+# THE HAZARD IS THE REASON THESE CHECKS ARE HERE, and it is a SILENT SHRINK
+# rather than a failure: a suite that CALLS a probe without SOURCING the file
+# gets 127, which `if ! premise_x` reads as "cannot", so every guarded tier SKIPS
+# and the suite stays GREEN while measuring nothing. Demonstrated, not reasoned.
+. "$(dirname "$0")/premise.sh"
+
+for p in premise_mode_bits premise_rss_meter premise_fifo premise_real_symlink premise_stack_limit; do
+    if ! command -v "$p" >/dev/null 2>&1; then
+        bad "$cap is not defined by premise.sh"
+    fi
+done
+ok "premise.sh defines all five probes"
+
+# EVERY CALLER MUST SOURCE IT. The grep is for a CALL in command position, so a
+# mention in a comment does not count.
+#
+# IT CAUGHT ITS OWN STALE PATTERN WITHIN THE HOUR, which is the best
+# endorsement available: the file was renamed from `capabilities.sh` and the
+# sweep that renamed every reference could not match THIS line, the filename
+# being spelled `premise\.sh` inside a regex. So the one place the rename
+# missed was the check, and the check reported it by name.
+missing=""
+for f in tests/run_*.sh; do
+    if grep -qE '^[[:space:]]*(if ! |if |elif ! |elif )?premise_[a-z_]+' "$f" \
+       && ! grep -q 'premise\.sh' "$f"; then
+        missing="$missing $f"
+    fi
+done
+if [ -n "$missing" ]; then
+    bad "these suites call a probe without sourcing premise.sh:$missing"
+else
+    ok "every suite that calls a probe sources premise.sh"
+fi
+# ITS VACUITY CONTROL: a scanner that matched nothing would pass that too.
+probe_dir="$(mktemp -d)"
+printf 'if ! premise_mode_bits; then
+  :
+fi
+' > "$probe_dir/run_planted.sh"
+if grep -qE '^[[:space:]]*(if ! |if |elif ! |elif )?premise_[a-z_]+' "$probe_dir/run_planted.sh"; then
+    ok "CONTROL: the scanner really does match a planted call"
+else
+    bad "the scanner found nothing even in a planted file"
+fi
+rm -rf "$probe_dir"
+
+# ON A FULL MACHINE EVERY PROBE ANSWERS YES, so nothing here is silently
+# skipping. If one of these goes to SKIP on this machine, a suite somewhere has
+# quietly stopped measuring something and this is where it shows.
+for p in premise_mode_bits premise_rss_meter premise_fifo premise_real_symlink premise_stack_limit; do
+    if $p; then ok "$p answers yes here"; else printf '  SKIP %s answers no on this machine -- the tiers resting on it measure NOTHING here\n' "$p"; fi
+done
+
+# THE FORCING SEAM, which is how a skip path gets proven at all: on a machine
+# where every probe answers yes, every skip is UNREACHABLE and therefore
+# untested. Each probe reads its cache from the environment.
+if ( _premise_mode_bits=no; premise_mode_bits ); then
+    bad "the forcing seam does not work, so no skip path can be proven"
+else
+    ok "a probe can be forced to no, which is how each skip was checked to say the right thing"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

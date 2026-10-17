@@ -47,6 +47,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh
+. "$(dirname "$0")/premise.sh"   # what this machine can demonstrate
 make >/dev/null
 
 work="$(mktemp -d)"
@@ -76,6 +77,9 @@ else
 fi
 
 printf 'TIER oracle: stat(1) against permissions().mode\n'
+if ! premise_mode_bits; then
+    skipped "the mode oracle: chmod does not govern reading here, so stat(1) and permissions() are both reading one synthesised pair and agreeing with each other proves nothing"
+else
 # A SECOND IMPLEMENTATION, not a second call into ours. `chmod` then
 # `permissions` round-trips on any consistently wrong rendering -- the decimal
 # 420 where 0644 belongs reads as an answer and agrees with itself.
@@ -101,8 +105,12 @@ for m in 600 644 640 755 444; do
 done
 chmod 644 "$work/or/f"
 [ "$oracle_ok" = 1 ] && pass "five modes agree with stat(1)"
+fi   # premise_mode_bits
 
 printf 'TIER access: what the file says against what this process can do\n'
+if ! premise_mode_bits; then
+    skipped "mode-versus-access: chmod does not govern reading here, so a 0000 file is readable for a reason that has nothing to do with the question"
+else
 rm -rf "$work/ac"; mkdir -p "$work/ac"
 printf 'x' > "$work/ac/f"
 chmod 000 "$work/ac/f"
@@ -130,6 +138,7 @@ else
         fail "expected '0000 false false', got '$got'"
     fi
 fi
+fi   # premise_mode_bits
 
 printf 'TIER other: a FIFO, the file kind gBASIC cannot create\n'
 rm -rf "$work/ot"; mkdir -p "$work/ot"

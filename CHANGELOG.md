@@ -16,6 +16,55 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `tests/premise.sh`: a tier that cannot build its premise says so
+
+Six suites failed on Windows for reasons that were facts about the **harness**
+and not about gBASIC (`docs/windows_port_status.md` §30): `chmod 000` does not
+bite where permissions are ACLs, `mkfifo` does not exist, `/usr/bin/time -f %M`
+is not installed, and the stack size is the linker's rather than `ulimit`'s. A
+suite that fails for the wrong reason is one people learn to ignore.
+
+Most of the tree already had the discipline — `run_dir_builtins`,
+`run_finio_nacha`, `run_web_routes`, `run_repl` and `run_file_stream` each
+guard their own premise, one of them in the words *"Asked of the FILE, not the
+platform"* — and four sites had missed it. They are guarded now, and the shared
+probes have a home.
+
+**The probes ask the machine, not `platform()`**, which is stronger rather than
+lazier: `chmod 000` also fails to bite on a Linux FAT or CIFS mount and under
+any root shell, a container may ship no `/usr/bin/time`, and MSYS `ln -s`
+silently makes a **copy** — so a test on the platform *name* would be right
+about Windows and wrong about all four. `platform()` is for the language's own
+divergences; a harness probes the capability.
+
+**Which way a broken premise fails decides the treatment**, and both cases are
+in the tree. In `run_scratch` a copy-instead-of-link *satisfies* the conclusion
+— deleting a copy leaves the original alone, which is exactly what that tier
+concludes — so a failed premise must **fail**. In `run_glob` the same copy makes
+`through=` answer 1 and the tier reports that the walk *does* follow links, a
+false failure about gBASIC from a fact about `ln -s` — so there it must **skip**.
+
+**The hazard it adds is a silent shrink**, which is why the tripwire is in
+`run_portable.sh`: a suite that calls a probe without sourcing the file gets
+127, which `if ! premise_x` reads as "cannot", so every guarded tier skips and
+the suite stays **green** while measuring nothing. Demonstrated, not reasoned,
+with a vacuity control on the scanner — and it caught its own stale pattern
+within the hour, the rename sweep being unable to match the filename spelled
+`premise\.sh` inside a regex.
+
+**And the skips are provable.** On a full machine every probe answers yes, so
+every skip is unreachable and therefore untested; each probe reads its cache
+from the environment (`_premise_rss=no ./tests/run_read_at.sh`), which is how
+each one was checked to say the right thing rather than merely to compile.
+
+It also fixed a pre-existing defect of exactly its own class: `run_portable`'s
+`/proc` tier extracted `gb_have_proc` with `declare -f` but not the helper it
+calls, so it printed `_gb_portable_forced: command not found` on every run and
+then answered **correctly by luck** — the missing call returns 127, the `&&`
+short-circuits, and the real test below it runs. That also meant
+`GB_PORTABLE_FORCE=noproc` could not be exercised, leaving the answers-no half
+of that function unreachable on every machine in the gate.
+
 ### Paths read either separator on Windows, and `read_at` reaches past 2 GB
 
 Both came from a **Windows run** of the metadata increment

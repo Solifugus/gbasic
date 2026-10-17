@@ -68,6 +68,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh
+. "$(dirname "$0")/premise.sh"   # what this machine can demonstrate
 make >/dev/null
 export GBASIC_PATH=stdlib
 export TZ=UTC                      # `modified` renders local time; pin it
@@ -316,11 +317,41 @@ printf 'x' > "$D/good/vendor_one.xlsx"
 printf 'x' > "$D/locked/inner/vendor_hidden.xlsx"
 printf 'x' > "$D/prune/a/b/vendor_two.xlsx"
 printf 'x' > "$D/target.xlsx"
-ln -s target.xlsx "$D/alias.xlsx"
-ln -s ../good "$D/prune/linked"
+# MADE BY gBASIC AND THE PREMISE ASKED OF THE LINK. `ln -s` is not a portable
+# way to get one: MSYS COPIES by default, and here a copy does not give a
+# vacuous pass -- it gives a FALSE FAILURE, since `prune/linked` would be a real
+# directory holding a real file and `through=` would answer 1. That is the
+# opposite shape to run_scratch's symlink tier, where a copy satisfies the
+# conclusion, and it decides the treatment: a vacuous pass must FAIL and a false
+# failure must SKIP, because the tier simply cannot run.
+cat > "$work/mklinks.bas" <<'EOF'
+program main( args )
+    on error goto next
+    d = args[0]
+    symlink("target.xlsx", d + "/alias.xlsx")
+    if error then
+        error.clear()
+    end if
+    symlink("../good", d + "/prune/linked")
+    if error then
+        error.clear()
+    end if
+    print "alias=" + string(is_symlink(d + "/alias.xlsx"))
+    print "linked=" + string(is_symlink(d + "/prune/linked"))
+end program
+EOF
+./gbasic "$work/mklinks.bas" "$D" > "$work/mklinks.out" 2>&1 || true
+have_links=no
+if grep -qx 'alias=true' "$work/mklinks.out" \
+   && grep -qx 'linked=true' "$work/mklinks.out"; then
+    have_links=yes
+fi
 chmod 000 "$D/locked" "$D/prune/a/b/locked"
 
 printf 'TIER unreadable: a locked subdirectory warns and the walk continues\n'
+if ! premise_mode_bits; then
+    pass "SKIP: chmod does not govern reading here, so no folder could be made unreadable and warn-and-continue was NOT measured"
+else
 cat > "$work/warn.bas" <<'EOF'
 program main( args )
     d {dir}= args[0]
@@ -371,8 +402,17 @@ if grep -qx 'escalated severity=warning' "$work/stop.out"; then
 else
     cat "$work/stop.out"; fail "escalation did not reach the walk"
 fi
+fi   # premise_mode_bits -- the three warn tiers all rest on an unreadable folder
 
 printf 'TIER symlink: a symlinked directory is not walked\n'
+if [ "$have_links" != yes ]; then
+    # A SKIP RATHER THAN A FAILURE, and the reason is the shape: without a real
+    # link `prune/linked` is a real directory holding a real file, so `through=`
+    # answers 1 and the tier reports that the walk DOES follow links -- a false
+    # failure about gBASIC from a fact about `ln -s`. Where a broken premise
+    # would instead give a vacuous PASS, as in run_scratch's tier, it must fail.
+    pass "SKIP: no real symlink could be made here (needs the privilege on Windows), so the do-not-follow rule was NOT measured"
+else
 # THE STATED COST. A symlink can point at its own ancestor, so a recursive walk
 # through one can run forever -- and a HANG reports nothing at all, which this
 # tree treats as worse than a failure (run_string_nul.sh had to defend against
@@ -395,8 +435,12 @@ if grep -qx 'through=0' "$work/link.out" \
 else
     cat "$work/link.out"; fail "the symlink rule did not hold"
 fi
+fi   # have_links
 
 printf 'TIER prune: a pattern with no ** does not open what it cannot match\n'
+if ! premise_mode_bits; then
+    pass "SKIP: the pruning is OBSERVED THROUGH AN ABSENCE of permission errors, and chmod does not govern reading here, so there would be none either way"
+else
 # OBSERVED THROUGH AN ABSENCE, which needs its control in the same breath: the
 # locked folder sits at prune/a/b/locked, so a two-segment pattern cannot reach
 # it and must produce NO warning, while `**` over the same tree must.
@@ -423,6 +467,7 @@ else
     printf '    deep stderr   : %s\n' "$(cat "$work/p2.err")"
     fail "the walk is not pruned by the pattern"
 fi
+fi   # premise_mode_bits
 
 printf 'TIER order: sorted by path, which readdir is not\n'
 # PERTURBATION 5 FOUND THIS TIER MEASURING NOTHING. The first draft asked "is

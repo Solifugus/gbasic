@@ -45,6 +45,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh
+. "$(dirname "$0")/premise.sh"   # what this machine can demonstrate
 make >/dev/null
 
 work="$(mktemp -d)"
@@ -103,6 +104,13 @@ end program
 BAS
 
 printf 'TIER binary: the file the streaming loop reads whole however you write it\n'
+if ! premise_rss_meter; then
+    # NAME THE CLAIM THAT WENT UNMEASURED. A program cannot watch its own peak
+    # resident size, so without a meter outside it the headline figure -- 14.8 MB
+    # chunked against 115 MB by line -- is not checked by anything.
+    pass "SKIP: /usr/bin/time is absent, so the BOUNDED-MEMORY claim was NOT measured (the reassembly below still is)"
+fi
+if premise_rss_meter; then
 # 50 MB with no 0x0a in it. The line loop's `break` fires only AFTER a line is
 # materialised, so there is no way to bound it from inside the language.
 head -c 52428800 /dev/zero > "$work/zeros.bin"
@@ -126,7 +134,9 @@ else
         fail "${c_rss} KB chunked against ${l_rss} KB by line -- only $(( ratio10 / 10 )).$(( ratio10 % 10 ))x, so the chunked read is not bounded"
     fi
 fi
-# AND IT MUST REASSEMBLE. "Bounded" is worthless if the bytes are wrong, and a
+fi   # premise_rss_meter
+# AND IT MUST REASSEMBLE, WITH OR WITHOUT A METER. "Bounded" is worthless if the
+# bytes are wrong, and a
 # 50 MB file is where an off-by-one at a chunk boundary would hide.
 cat > "$work/rebuild.bas" <<'BAS'
 program main(args)
@@ -156,6 +166,9 @@ else
 fi
 
 printf 'TIER shape: the memory is constant in the FILE, not proportional\n'
+if ! premise_rss_meter; then
+    pass "SKIP: /usr/bin/time is absent, so CONSTANT-IN-THE-FILE was NOT measured -- which is the only way to tell a bounded reader from one that happens to fit"
+else
 # The claim is bounded, and the only way to tell a bounded reader from one that
 # merely fits is to grow the file and watch the reader stay still. 4x step,
 # asserted as a RATIO, never an absolute size.
@@ -174,6 +187,7 @@ if [ "$ratio10" -le 13 ]; then
 else
     fail "32 MB reads in ${s_rss} KB and 128 MB in ${l2_rss} KB -- $(( ratio10 / 10 )).$(( ratio10 % 10 ))x, so the reader grows with the file"
 fi
+fi   # premise_rss_meter
 
 printf 'TIER reopen: the cost this builtin has, stated as a number\n'
 # `read_at` is POSITIONAL AND STATELESS, so it opens the file on every call --
