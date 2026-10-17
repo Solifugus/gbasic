@@ -218,9 +218,57 @@ path is the streaming read that shipped in this same release. Measured against
 the snapshot-rewrite design it replaced, at a 20,000-entry ledger: **322 ms
 against 2041 ms, and 13 KB written against 266 MB.**
 
-`archive` and `purge` are designed and **not** built: `copy`, `move` and
-`delete` already work unaided, and `purge` *deletes*, which earns its own suite
-and its own dry-run decision rather than riding in on another increment.
+### `intake.archive` and `intake.purge`
+
+```basic
+ledger = intake.archive(ledger, f, { to: {dir}"/data/archive", keep: 180 days })
+
+r = intake.purge(ledger)                      ' reports; deletes nothing
+r = intake.purge(ledger, { dry_run: false })  ' and this deletes
+ledger = r.ledger
+```
+
+**Archive mirrors the tree the file came from**, so `2026/Q1/vendor.xlsx` lands
+under `2026/Q1` — which is what the `relative` field is for, two files in
+different quarters having the same `name`. Within one filesystem it is a single
+rename, **asserted by inode** rather than by a stopwatch, because an
+optimisation nothing measures can quietly stop happening. Across filesystems it
+copies, **checks the byte count**, and only then deletes, so a copy that
+reported success and wrote short leaves the original where it was. `move` is
+deliberately not used: its cross-device fallback is copy-then-unlink with no
+check between them.
+
+Nothing here `fsync`s, so this is **not** a durability claim — the same caveat
+`atomic_replace` already carries. What is promised is narrower and testable: the
+archive exists with the source's byte count before the original is removed.
+
+An **existing target is refused**, naming both paths, because `copy` overwrites
+in silence and under `identity: "content"` a corrected re-drop has the same
+relative path as the file it corrects. `{ on_collision: "replace" }` says
+otherwise. And `keep:` must have a **fixed length**, so `180 days` is accepted
+and `6 months` is refused — months and years vary, and a retention stored as
+seconds cannot carry one.
+
+**`purge` reports and deletes nothing by default.** Deleting data is the one
+operation here that cannot be undone, so `dry_run` is true unless you say
+otherwise, and both runs return the same shape: `{ dry_run, considered, due,
+purged, bytes, items, ledger }`. Two rules it will not break — nothing is
+deleted that the ledger does not record as **archived**, however old it is; and
+the **entry outlives the file**, marked purged with its `meta` dropped, because
+an entry removed with its file makes that file newly arrived the next time a
+counterparty re-drops it. `{ as_of: datetime }` asks what a purge would do at
+another moment.
+
+**Three things were wrong and running it found them**, each now carried by a
+tier: `purge` returned the report alone, so a real purge deleted the files and
+handed the caller nothing to rebind (the report carries the new ledger now, and
+`close` replays the journal before compacting, so dropping it is wasteful rather
+than destructive); and `keep: 6 months` **archived the file and then refused**,
+because the months check lived in a conversion that ran last — a refusal after
+an irreversible act is not a refusal. That conversion was also computing 180
+days through **local time**, which across a DST boundary is an hour short; the
+suite pins `TZ=UTC`, where the wrong arithmetic gives the right answer, so that
+claim has a tier which states the timezone.
 
 ### `read` on a directory aborted the interpreter
 

@@ -8845,6 +8845,35 @@ whole program without needing a call site.
   and not a guarantee**: measured, a file's size held still across consecutive
   samples three times while it was still being written.
 
+  `intake.archive(ledger, entry, { to: dir, keep: 180 days })` moves a taken
+  file into an archive, **mirroring the tree it came from** — `2026/Q1/vendor.xlsx`
+  lands under `2026/Q1`, which is what `relative` is for, since two files in
+  different quarters have the same `name`. On one filesystem it is a single
+  rename (asserted by inode, so the optimisation cannot quietly stop); across
+  filesystems it copies, **checks the byte count**, and only then deletes, so a
+  copy that reported success and wrote short leaves the original where it was.
+  `move` is deliberately not used: its cross-device fallback is copy-then-unlink
+  with no check between. Nothing here `fsync`s, so this is not a durability
+  claim — the same caveat `atomic_replace` carries. An **existing target is
+  refused**, naming both paths, because `copy` overwrites in silence and a
+  corrected re-drop has the same relative path as the file it corrects; pass
+  `{ on_collision: "replace" }` to say that is what you want. `keep:` must be a
+  duration with a **fixed length**, so `6 months` is refused and `180 days` is
+  not — months and years vary, and a retention stored as seconds cannot carry
+  one.
+
+  `intake.purge(ledger)` **reports and deletes nothing**: deleting data is the
+  one thing here that cannot be undone, so `dry_run` defaults to true and the
+  answer is `{ dry_run, considered, due, purged, bytes, items, ledger }`.
+  `{ dry_run: false }` does it, and the report's **`ledger` field is the new
+  ledger** — rebind it, as with `taken` and `archive`. Two rules it will not
+  break: nothing is deleted that the ledger does not record as **archived**,
+  however old it is; and the **entry outlives the file**, marked purged with its
+  `meta` dropped, because an entry removed with its file makes that file newly
+  arrived the next time it is re-dropped. `{ as_of: datetime }` asks what a
+  purge would do at another moment. Empty directories are left behind: purge
+  removes files, not the folders that held them.
+
   Also `intake.seen(ledger, entry)` for the same question about one file,
   `intake.count_taken(ledger)`, and `intake.entry_for(ledger, identity)`, which
   returns the recorded entry **with its times as datetimes** — the ledger file

@@ -290,6 +290,229 @@ program main(args)
     intake.close(ok4)
     intake.close(tled)
 
+    print "-- archive: the tree is mirrored and the original moves"
+    adir = root + "/archive"
+    aled = intake.open({file}(root + "/arch.json"),
+                       { identity: "content", ready: "renamed" })
+    acand = intake.arrived(aled, {dir}data, "**/vendor.csv")
+    check("two files to archive", count(acand), 2)
+    for each f in acand
+        aled = intake.taken(aled, f, { rows: 1 })
+        aled = intake.archive(aled, f, { to: {dir}adir, keep: 180 days })
+    end for
+    ' THE RELATIVE PATH IS WHAT THE MIRROR NEEDS: both files are `vendor.csv`,
+    ' so a mirror built from `name` would put one on top of the other.
+    check("Q1 landed under its own folder",
+          exists({file}(adir + "/2026/Q1/vendor.csv")), true)
+    check("and Q2 under its own",
+          exists({file}(adir + "/2026/Q2/vendor.csv")), true)
+    check("the original is gone", exists({file}(data + "/2026/Q1/vendor.csv")), false)
+    ' `copy` does not create parents and `archive` does -- without that the
+    ' mirror is impossible and nothing else here would work.
+    check("the mirrored folder was created", file_type(adir + "/2026/Q2"), "folder")
+    arow = intake.entry_for(aled, acand[0].identity)
+    check("the entry records where it went", arow.archived_to,
+          adir + "/2026/Q1/vendor.csv")
+    check("and when, as a datetime", type(arow.archived), "datetime")
+    check("and the retention, as a duration", type(arow.keep), "duration")
+    ' 180 days is 15552000 seconds EXACTLY. The first implementation computed
+    ' it as `epoch(from_epoch(0) + d)`, which is local-time arithmetic across a
+    ' DST boundary and answered 15548400 -- an hour short, and a plausible
+    ' number nobody would question.
+    check("retention is exact, with no calendar in it",
+          arow.keep.total_seconds, 15552000)
+
+    print "-- purge reports by default and deletes only when told"
+    ' Nothing is due for 180 days, so the bare call must find nothing.
+    r1 = intake.purge(aled)
+    check("the default run is a dry run", r1.dry_run, true)
+    check("nothing is due yet", r1.due, 0)
+    check("and it considered both entries", r1.considered, 2)
+    ' `as_of` states a moment rather than sleeping through one.
+    r2 = intake.purge(aled, { as_of: now() + 200 days })
+    check("past the retention they are due", r2.due, 2)
+    check("the report names the bytes", r2.bytes, 13)
+    check("and lists the items", count(r2.items), 2)
+    check("each item carries where the file went",
+          contains(r2.items[0].archived_to, "/2026/Q"), true)
+    check("and when it was archived, as a datetime",
+          type(r2.items[0].archived), "datetime")
+    ' THE LOAD-BEARING HALF: a dry run DELETED NOTHING. A report is only worth
+    ' having if the files are still there after it.
+    check("a dry run purged nothing", r2.purged, 0)
+    check("and the archived file is still there",
+          exists({file}(adir + "/2026/Q1/vendor.csv")), true)
+
+    r3 = intake.purge(aled, { as_of: now() + 200 days, dry_run: false })
+    check("the real run purged them", r3.purged, 2)
+    check("the file is gone", exists({file}(adir + "/2026/Q1/vendor.csv")), false)
+    ' RULE 2: THE ENTRY OUTLIVES THE FILE. Removed with it, the file would be
+    ' NEWLY ARRIVED the next time it is re-dropped -- which under "path"
+    ' identity means importing it again once a cycle, for ever.
+    aled = r3.ledger
+    check("the entry survives the file", intake.count_taken(aled), 2)
+    prow = intake.entry_for(aled, acand[0].identity)
+    check("marked purged", type(prow.purged), "datetime")
+    check("and its meta is dropped -- the one field a caller sizes",
+          count(keys(prow.meta)), 0)
+    ' And a second purge finds nothing: a purged entry is not a candidate.
+    r4 = intake.purge(aled, { as_of: now() + 400 days })
+    check("a purged entry is not due again", r4.due, 0)
+    intake.close(aled)
+
+    print "-- purge may not touch what was never archived"
+    ' RULE 1, and it is asserted as a DIFFERENCE: an entry taken and never
+    ' archived is not a candidate HOWEVER OLD, while the archived one beside it
+    ' is. Either half alone passes on a purge that always answers one way.
+    ndir = root + "/never"
+    make_dir(ndir, { parents: true })
+    n1 {file}= ndir + "/kept.csv"
+    n2 {file}= ndir + "/moved.csv"
+    write(n1, "never archived
+")
+    write(n2, "archived
+")
+    nled = intake.open({file}(root + "/never.json"),
+                       { identity: "path", ready: "renamed" })
+    for each f in intake.arrived(nled, {dir}ndir, "*.csv")
+        nled = intake.taken(nled, f, {})
+        if f.name = "moved.csv" then
+            nled = intake.archive(nled, f, { to: {dir}(root + "/never_arch"),
+                                             keep: 1 second })
+        end if
+    end for
+    rn = intake.purge(nled, { as_of: now() + 10 years, dry_run: false })
+    nled = rn.ledger
+    check("only the archived one was purged", rn.purged, 1)
+    check("CONTROL: the file that was never archived is untouched",
+          exists(n1), true)
+    intake.close(nled)
+
+    print "-- the archive refusals, each beside the call that must still work"
+    on error goto next
+
+    xdir = root + "/x"
+    make_dir(xdir, { parents: true })
+    x1 {file}= xdir + "/one.csv"
+    write(x1, "one
+")
+    xled = intake.open({file}(root + "/x.json"),
+                       { identity: "path", ready: "renamed" })
+    xcand = intake.arrived(xled, {dir}xdir, "*.csv")
+
+    r = intake.archive(xled, xcand[0], { to: {dir}(root + "/xa"), keep: 1 day })
+    refused("archive before taken is refused", error, "")
+    if error then
+        mx = error.message
+        error.clear()
+        check("and the message names the order", contains(mx, "intake.taken"), true)
+    end if
+
+    xled = intake.taken(xled, xcand[0], {})
+    r = intake.archive(xled, xcand[0], { to: {dir}(root + "/xa") })
+    refused("keep: is required", error, "")
+    if error then
+        error.clear()
+    end if
+
+    r = intake.archive(xled, xcand[0], { keep: 1 day })
+    refused("to: is required", error, "")
+    if error then
+        error.clear()
+    end if
+
+    r = intake.archive(xled, xcand[0], { to: {dir}(root + "/xa"), keep: 30 })
+    refused("keep: must be a duration, not a bare number", error, "")
+    if error then
+        error.clear()
+    end if
+
+    ' MONTHS AND YEARS HAVE NO FIXED LENGTH, so they cannot be stored as
+    ' seconds without inventing one. Refused by name, with the remedy.
+    r = intake.archive(xled, xcand[0], { to: {dir}(root + "/xa"), keep: 6 months })
+    refused("keep: 6 months is refused -- no fixed length", error, "")
+    if error then
+        mm = error.message
+        error.clear()
+        check("and it says to use days", contains(mm, "180 days"), true)
+    end if
+    ' A REFUSED ARCHIVE LEAVES THE FILE WHERE IT WAS, and this check is here
+    ' because the months refusal originally ran AFTER the move: the file was
+    ' archived and then the call raised, leaving it in the archive with no
+    ' ledger record of it -- so the next run could find neither. Nothing
+    ' asserted it until the refusal order was fixed.
+    check("a refused archive moved nothing", exists(x1), true)
+    check("and created nothing in the archive",
+          is_unknown(file_type(root + "/xa/one.csv")), true)
+
+    r = intake.archive(xled, xcand[0], { to: {dir}(root + "/xa"), keep: 1 day,
+                                         keepp: 2 })
+    refused("an unknown archive option is refused by name", error, "")
+    if error then
+        error.clear()
+    end if
+
+    ' THE COLLISION. `copy` overwrites in silence, and under identity "content"
+    ' a corrected re-drop has the SAME relative path as the file it corrects --
+    ' so a second archive would destroy the first with nothing said.
+    xled = intake.archive(xled, xcand[0], { to: {dir}(root + "/xa"), keep: 1 day })
+    write(x1, "one again
+")
+    x2led = intake.open({file}(root + "/x2.json"),
+                        { identity: "content", ready: "renamed" })
+    x2cand = intake.arrived(x2led, {dir}xdir, "*.csv")
+    x2led = intake.taken(x2led, x2cand[0], {})
+    r = intake.archive(x2led, x2cand[0], { to: {dir}(root + "/xa"), keep: 1 day })
+    refused("an existing archive target is refused", error, "")
+    if error then
+        mc = error.message
+        error.clear()
+        check("and the message offers on_collision", contains(mc, "on_collision"), true)
+    end if
+    check("CONTROL: the first archived file is still intact",
+          read({file}(root + "/xa/one.csv")), "one
+")
+
+    r = intake.archive(x2led, x2cand[0], { to: {dir}(root + "/xa"), keep: 1 day,
+                                           on_collision: "whatever" })
+    refused("an unknown on_collision value is refused", error, "")
+    if error then
+        error.clear()
+    end if
+
+    ' AND THE CONTROL FOR THE COLLISION RULE: declared, it replaces.
+    x2led = intake.archive(x2led, x2cand[0], { to: {dir}(root + "/xa"),
+                                               keep: 1 day,
+                                               on_collision: "replace" })
+    check("CONTROL: on_collision replace does what it says",
+          read({file}(root + "/xa/one.csv")), "one again
+")
+
+    ' Archiving twice would move a file that is no longer there.
+    r = intake.archive(x2led, x2cand[0], { to: {dir}(root + "/xa"), keep: 1 day,
+                                           on_collision: "replace" })
+    refused("archiving the same entry twice is refused", error, "")
+    if error then
+        error.clear()
+    end if
+
+    r = intake.purge(xled, { dry_run: "yes" })
+    refused("purge dry_run must be a boolean", error, "")
+    if error then
+        error.clear()
+    end if
+
+    r = intake.purge(xled, { when: now() })
+    refused("an unknown purge option is refused by name", error, "")
+    if error then
+        error.clear()
+    end if
+
+    pc = intake.purge(xled)
+    check("CONTROL: a bare purge still reports", pc.dry_run, true)
+    intake.close(xled)
+    intake.close(x2led)
+
     print "checks: " + string(tally.checks)
     print "mismatches: " + string(tally.mismatches)
 end program

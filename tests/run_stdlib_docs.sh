@@ -117,16 +117,10 @@ DELIBERATE = {
     # whole reason the API is pure functions of (seed, index).
     'fake.stream':
         'named as the shape gBASIC cannot express; generators are (seed, index)',
-    # intake_design.md is Partial for the same reason fake_data_design.md is:
-    # increment 1 (open/arrived/taken/close) ships and section 6 does not.
-    # `archive` and `purge` are named in the design because the design is where
-    # scope is argued -- and `purge` DELETES, which is why it was held back for
-    # a suite and a dry-run decision of its own rather than riding in on
-    # another increment.
-    'intake.archive':
-        'intake_design.md section 6, increment 2, not built',
-    'intake.purge':
-        'intake_design.md section 6, increment 2, not built',
+    # intake.archive and intake.purge were allowlisted here for one day, while
+    # increment 1 shipped and section 6 did not. Both STRUCK 2026-10-16 when
+    # increment 2 landed -- and this tier is what said so, refusing to let an
+    # entry outlive the gap it describes.
 }
 # A document the index marks **Proposal** is EXEMPT from this tier, and only
 # this one. "Proposal" is defined in docs/README.md as "describes work that

@@ -452,6 +452,323 @@ else
     printf '%s\n' "$cout2"; fail "an ordinary file stopped reading"
 fi
 
+printf 'TIER cross-device archive: the path that must not lose the original\n'
+# THE CASE THE WHOLE ARCHIVE MECHANISM IS SHAPED BY, and the fixture cannot
+# reach it: on one filesystem `atomic_replace` is a single rename and nothing
+# can be lost, while ACROSS filesystems it refuses and the library falls back to
+# copy, check the byte count, delete. An archive on another mount is the
+# ordinary ETL arrangement, so this is not a corner.
+#
+# /dev/shm is a tmpfs on every Linux, which is why it is the second filesystem
+# here; the tier SKIPS WITH A REASON if it is not one, rather than passing while
+# measuring a same-filesystem move twice.
+shm=""
+if [ -d /dev/shm ] && [ "$(stat -f -c %T /dev/shm 2>/dev/null)" = "tmpfs" ]; then
+    shm="/dev/shm/gbintake.$$"
+fi
+if [ -z "$shm" ]; then
+    fail "no second filesystem available (/dev/shm is not tmpfs) -- the cross-device path was NOT measured"
+else
+    mkdir -p "$shm"
+    d="$work/xdev"; mkdir -p "$d/data/2026/Q1"
+    printf 'across devices\n' > "$d/data/2026/Q1/vendor.csv"
+    cat > "$work/xdev.bas" <<'BAS'
+load intake
+program main(args)
+    led = intake.open({file}(args[0] + "/l.json"),
+                      { identity: "content", ready: "renamed" })
+    for each f in intake.arrived(led, {dir}(args[0] + "/data"), "**/*.csv")
+        led = intake.taken(led, f, {})
+        led = intake.archive(led, f, { to: {dir}args[1], keep: 1 day })
+        print "archived " + f.relative
+    end for
+    intake.close(led)
+end program
+BAS
+    set +e
+    xout=$(./gbasic "$work/xdev.bas" "$d" "$shm" 2>&1); xrc=$?
+    set -e
+    if [ "$xrc" != "0" ]; then
+        printf '%s\n' "$xout"; fail "the cross-device archive failed (exit $xrc)"
+    elif [ -f "$shm/2026/Q1/vendor.csv" ] && [ ! -f "$d/data/2026/Q1/vendor.csv" ]; then
+        bytes=$(wc -c < "$shm/2026/Q1/vendor.csv")
+        want=$(printf 'across devices\n' | wc -c)
+        if [ "$bytes" = "$want" ]; then
+            pass "copied across filesystems with the tree mirrored, original removed, $bytes bytes intact"
+        else
+            fail "the archived file is $bytes bytes, wanted $want -- the copy was not checked"
+        fi
+    else
+        ls -R "$shm" "$d/data" 2>&1 | head -10
+        fail "the file did not cross the filesystem boundary"
+    fi
+    rm -rf "$shm"
+fi
+
+printf 'TIER fast path: a same-filesystem archive RENAMES, by inode\n'
+# AN OPTIMISATION NOTHING MEASURES IS ONE THAT CAN QUIETLY STOP HAPPENING, and
+# the first draft of this tier measured the wrong thing: it timed a 64 MB
+# archive within one filesystem against the same across two and reported 1.3x,
+# because the second filesystem is tmpfs -- copying 64 MB into RAM from page
+# cache is barely slower than a rename, so the ratio could not discriminate and
+# said so.
+#
+# THE INODE IS EXACT AND COSTS NOTHING. A rename keeps it; a copy cannot. So the
+# claim is asserted as an IDENTITY rather than as a speed, and a 3-byte file
+# measures it as well as a large one. The discriminator in the library is a
+# MESSAGE match (`atomic_replace` naming "same filesystem"), and if that
+# sentence is ever reworded this is the tier that notices -- everything would
+# still be correct and merely slower, which is the safe direction and the reason
+# the match is acceptable at all.
+d="$work/fast"; mkdir -p "$d/data"
+printf 'rename me\n' > "$d/data/one.csv"
+src_inode=$(stat -c %i "$d/data/one.csv")
+./gbasic "$work/xdev.bas" "$d" "$d/arch" >/dev/null 2>&1
+if [ ! -f "$d/arch/one.csv" ]; then
+    ls -R "$d" 2>&1 | head -5
+    fail "the same-filesystem archive did not happen -- this tier measured nothing"
+elif [ -f "$d/data/one.csv" ]; then
+    fail "the original is still there, so nothing was archived"
+else
+    dst_inode=$(stat -c %i "$d/arch/one.csv")
+    if [ "$src_inode" = "$dst_inode" ]; then
+        pass "inode $src_inode is unchanged -- it was renamed, not copied"
+    else
+        fail "inode $src_inode became $dst_inode -- the file was COPIED within one filesystem, so the rename path is gone (has the atomic_replace message been reworded?)"
+    fi
+fi
+# THE CONTROL, and it is what stops "the inodes matched" from being a fact about
+# `stat` rather than about the library: across filesystems the same program must
+# produce a DIFFERENT inode, because a rename is impossible there.
+if [ -z "$shm" ]; then
+    fail "no second filesystem available -- the control for the inode check was NOT measured"
+else
+    shm2="/dev/shm/gbintake-ctl.$$"
+    mkdir -p "$shm2"
+    d2="$work/fastx"; mkdir -p "$d2/data"
+    printf 'copy me\n' > "$d2/data/one.csv"
+    src2=$(stat -c %i "$d2/data/one.csv")
+    ./gbasic "$work/xdev.bas" "$d2" "$shm2" >/dev/null 2>&1
+    if [ ! -f "$shm2/one.csv" ]; then
+        fail "the cross-filesystem control did not archive anything"
+    else
+        dst2=$(stat -c %i "$shm2/one.csv")
+        if [ "$src2" != "$dst2" ]; then
+            pass "CONTROL: across filesystems the inode changes ($src2 -> $dst2), so the check above is about the library"
+        else
+            fail "the inode survived a cross-filesystem move, which is impossible -- the tier is comparing the wrong files"
+        fi
+    fi
+    rm -rf "$shm2"
+fi
+
+printf 'TIER retention has no calendar in it, under a timezone that has DST\n'
+# THE BUG THIS TIER EXISTS FOR WAS MINE, and the suite as a whole cannot see it:
+# `keep: 180 days` was first turned into seconds as `epoch(from_epoch(0) + d)`,
+# which is datetime arithmetic in LOCAL time, so adding 180 days across a DST
+# boundary answered 15548400 -- an hour short of 15552000, a plausible number
+# nobody would question. Every other tier runs under the `TZ=UTC` this file
+# exports for determinism, where there is no DST and the wrong arithmetic gives
+# the right answer.
+#
+# So this tier states the timezone itself, and asserts the figure is the SAME in
+# both -- which is what "no calendar in it" means.
+cat > "$work/retention.bas" <<'BAS'
+load intake
+program main(args)
+    led = intake.open({file}(args[0] + "/l.json"),
+                      { identity: "path", ready: "renamed" })
+    f {file}= args[0] + "/one.csv"
+    write(f, "x\n")
+    c = intake.arrived(led, {dir}args[0], "*.csv")
+    led = intake.taken(led, c[0], {})
+    led = intake.archive(led, c[0], { to: {dir}(args[0] + "/a"), keep: 180 days })
+    row = intake.entry_for(led, c[0].identity)
+    print string(row.keep.total_seconds)
+    intake.close(led)
+end program
+BAS
+r_utc=""; r_dst=""
+for tz in UTC America/New_York; do
+    d="$work/ret-$(printf '%s' "$tz" | tr / -)"; mkdir -p "$d"
+    set +e
+    got=$(TZ="$tz" ./gbasic "$work/retention.bas" "$d" 2>&1 | tail -1); grc=$?
+    set -e
+    if [ "$grc" != "0" ]; then
+        printf '%s\n' "$got"; fail "the retention probe did not run under TZ=$tz"
+        got="failed"
+    fi
+    if [ "$tz" = "UTC" ]; then r_utc=$got; else r_dst=$got; fi
+done
+# 180 * 24 * 3600, computed here rather than copied, so the expectation cannot
+# drift from its own arithmetic.
+want=$(( 180 * 24 * 3600 ))
+if [ "$r_utc" = "$want" ] && [ "$r_dst" = "$want" ]; then
+    pass "180 days is $want seconds under UTC and under a DST timezone alike"
+elif [ "$r_utc" = "$want" ]; then
+    fail "180 days is $want under UTC but $r_dst under America/New_York -- the retention is going through local time"
+else
+    fail "180 days measured $r_utc under UTC, wanted $want"
+fi
+
+printf 'TIER tripwire: archive may not reach for `move`\n'
+# THE ONE CLAIM NO BEHAVIOURAL TEST IN THIS FILE CAN REACH, and it was proven
+# unreachable rather than assumed: a perturbation replacing the whole
+# atomic_replace/copy-check-delete dance with a single `move` left EVERY OTHER
+# TIER GREEN -- including the inode check, because `move` renames on one
+# filesystem too. Of course it did: `move` produces the right outcome whenever
+# nothing goes wrong, and what the split buys only shows on a filesystem that
+# reports a successful `fclose` without writing the bytes.
+#
+# So the instrument is the SOURCE, the way run_discovery.sh's no-inference
+# tripwire reads the source because its fixture cannot see the difference.
+# `move`'s cross-device fallback is copy-then-unlink with NO CHECK BETWEEN, so
+# using it here would remove the original before anything had looked at what
+# landed -- and the ledger would hold no record, leaving the next run with
+# neither the file nor a note of it.
+intake_src=stdlib/intake.bas
+if grep -nE '^[^'"'"']*\bmove\(' "$intake_src" >/dev/null 2>&1; then
+    grep -nE '^[^'"'"']*\bmove\(' "$intake_src"
+    fail "intake calls move() -- the archive step must copy, CHECK THE BYTE COUNT, then delete"
+else
+    pass "no move() anywhere in the library"
+fi
+# AND THE TWO HALVES THAT REPLACE IT MUST BOTH BE THERE, since "no move" is
+# equally satisfied by a copy with no check after it.
+if grep -q 'atomic_replace(entry.path, target)' "$intake_src" \
+   && grep -q 'if after != before then' "$intake_src"; then
+    pass "the rename attempt and the byte-count check are both present"
+else
+    fail "the archive step is missing either the rename attempt or the size check"
+fi
+# THE VACUITY CONTROL: "no offenders" is equally satisfied by a scanner that
+# read nothing, so the same scan must FLAG a planted call.
+planted="$work/planted.bas"
+printf 'library x\n    function f(a, b)\n        move(a, b)\n    end function\nend library\n' > "$planted"
+if grep -nE '^[^'"'"']*\bmove\(' "$planted" >/dev/null 2>&1; then
+    pass "CONTROL: the same scan flags a planted move()"
+else
+    fail "the scan does not flag a planted move() -- it is measuring nothing"
+fi
+# AND THAT THE SCAN READS CODE RATHER THAN PROSE: this library's comments
+# discuss `move` at length, and a scanner that read them would report the
+# ARGUMENT for the rule as a breach of it -- the mistake run_libcurl_floor.sh
+# records from its own first draft.
+commented="$work/commented.bas"
+printf 'library x\n    %s `move` is deliberately not used here.\n    function f()\n        return 1\n    end function\nend library\n' "'" > "$commented"
+if grep -nE '^[^'"'"']*\bmove\(' "$commented" >/dev/null 2>&1; then
+    fail "the scan reads comments -- it would report the reason for the rule as a breach of it"
+else
+    pass "CONTROL: a comment mentioning move() is not a call"
+fi
+
+printf 'TIER purge survives a kill, and a dropped ledger is not destructive\n'
+# Two claims the fixture cannot make. A purge is journaled per entry, so a run
+# killed in the middle must come back saying exactly which files are gone --
+# and a caller who throws away the ledger `purge` returns (the easiest mistake
+# this API offers, and one I made in its own worked example) must lose nothing,
+# because `close` replays the journal before it compacts.
+d="$work/purgekill"; mkdir -p "$d/data"
+for i in 1 2 3 4; do printf 'p %d\n' "$i" > "$d/data/p$i.csv"; done
+cat > "$work/setup.bas" <<'BAS'
+load intake
+program main(args)
+    led = intake.open({file}(args[0] + "/l.json"),
+                      { identity: "path", ready: "renamed" })
+    for each f in intake.arrived(led, {dir}(args[0] + "/data"), "*.csv")
+        led = intake.taken(led, f, { n: 1 })
+        led = intake.archive(led, f, { to: {dir}(args[0] + "/arch"), keep: 1 second })
+    end for
+    print "archived " + string(intake.count_taken(led))
+    intake.close(led)
+end program
+BAS
+cat > "$work/dropped.bas" <<'BAS'
+load intake
+program main(args)
+    led = intake.open({file}(args[0] + "/l.json"),
+                      { identity: "path", ready: "renamed" })
+    ' THE MISTAKE, on purpose: the returned ledger is thrown away.
+    rep = intake.purge(led, { as_of: now() + 1 hour, dry_run: false })
+    print "purged " + string(rep.purged)
+    intake.close(led)
+end program
+BAS
+cat > "$work/after_purge.bas" <<'BAS'
+load intake
+program main(args)
+    led = intake.open({file}(args[0] + "/l.json"),
+                      { identity: "path", ready: "renamed" })
+    marked = 0
+    for each id in keys(led.taken)
+        if led.taken[id].purged_at != nothing then
+            marked = marked + 1
+        end if
+    next
+    print "entries " + string(intake.count_taken(led)) + " marked " + string(marked)
+    ' And nothing is due a second time.
+    r = intake.purge(led, { as_of: now() + 10 years })
+    print "due again " + string(r.due)
+    intake.close(led)
+end program
+BAS
+./gbasic "$work/setup.bas" "$d" >/dev/null
+dout=$(./gbasic "$work/dropped.bas" "$d" 2>&1)
+aout=$(./gbasic "$work/after_purge.bas" "$d" 2>&1)
+if [ "$dout" != "purged 4" ]; then
+    printf '%s\n' "$dout"; fail "the purge did not run ($dout)"
+elif [ "$(ls -1 "$d/arch" 2>/dev/null | wc -l)" != "0" ]; then
+    ls -la "$d/arch"; fail "the archived files were not deleted"
+elif printf '%s\n' "$aout" | grep -qx "entries 4 marked 4" && printf '%s\n' "$aout" | grep -qx "due again 0"; then
+    pass "all 4 purges survived a ledger the caller dropped, and none is due again"
+else
+    printf '%s\n' "$aout"
+    fail "a dropped ledger lost the purge record -- close compacted over the journal"
+fi
+
+printf 'TIER purge refuses to touch what was never archived, under a kill\n'
+# RULE 1 as a DIFFERENCE, across processes: one file archived, one taken and
+# never archived, and a purge of everything older than ten years must take
+# exactly one of them. The fixture asserts this in-process; here it is asserted
+# through the LEDGER FILE, which is what a later run actually reads.
+d="$work/rule1"; mkdir -p "$d/data"
+printf 'archived\n' > "$d/data/moved.csv"
+printf 'never\n' > "$d/data/kept.csv"
+cat > "$work/rule1.bas" <<'BAS'
+load intake
+program main(args)
+    led = intake.open({file}(args[0] + "/l.json"),
+                      { identity: "path", ready: "renamed" })
+    for each f in intake.arrived(led, {dir}(args[0] + "/data"), "*.csv")
+        led = intake.taken(led, f, {})
+        if f.name = "moved.csv" then
+            led = intake.archive(led, f, { to: {dir}(args[0] + "/arch"), keep: 1 second })
+        end if
+    end for
+    intake.close(led)
+end program
+BAS
+./gbasic "$work/rule1.bas" "$d" >/dev/null
+# CAPTURED WITH `set -e` OFF, and that is not caution: under `set -euo pipefail`
+# a command substitution whose program exits nonzero ENDS THE SUITE SILENTLY --
+# no FAIL line, mid-tier, with a green-looking scrollback. Measured here rather
+# than feared: the perturbation that drops the archived-only rule makes this
+# program RAISE (it tries to delete an entry whose archived path is `nothing`),
+# and the first draft of this tier took the whole run down with it instead of
+# reporting. Sixth instance of this trap in this tree.
+set +e
+rout=$(./gbasic "$work/dropped.bas" "$d" 2>&1); rrc=$?
+set -e
+if [ "$rrc" != "0" ]; then
+    printf '%s\n' "$rout"
+    fail "the purge did not complete (exit $rrc) -- an entry that was never archived reached the delete"
+elif [ "$rout" = "purged 1" ] && [ -f "$d/data/kept.csv" ]; then
+    pass "exactly the archived one was purged; the file never archived is untouched"
+else
+    printf '%s\n' "$rout"; ls -la "$d/data"
+    fail "purge did not respect the archived-only rule across a process boundary"
+fi
+
 printf 'TIER shape: the journal against the snapshot rewrite it replaced\n'
 # THE MEASUREMENT THAT CHOSE THE DESIGN, asserted as a DIFFERENCE BETWEEN TWO
 # IMPLEMENTATIONS rather than as a property of one -- because the first two

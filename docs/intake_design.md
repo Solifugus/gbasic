@@ -1,9 +1,10 @@
 # `intake` — what arrived, what was taken, what to keep
 
-**Status: Partial.** **Increment 1 — `open`, `arrived`, `taken`, `close`, `seen`,
-`entry_for` — shipped 2026-10-15** (`stdlib/intake.bas`,
-`tests/run_intake.sh`); `archive` and `purge` (§6) do not exist, and §13's open
-questions are open. Designed against measurements taken the same day, every one
+**Status: Shipped.** **Increment 1 — `open`, `arrived`, `taken`, `close`,
+`seen`, `entry_for` — shipped 2026-10-15, and increment 2 — `archive`, `purge`
+— on 2026-10-16** (`stdlib/intake.bas`, `tests/run_intake.sh`). §13's open
+questions are still open, and forgetting an entry outright is deliberately not
+built. Designed against measurements taken the same day, every one
 of which is quoted where it is used and repeated in §12; where this says
 *measured* a command was run and the number is the number it printed. Three of
 those measurements **contradicted what this document first said**, and each
@@ -266,12 +267,17 @@ thousand dropped files would stall on the first one still arriving. Filed.
 Reading `/proc/*/fd` is the other route and is not portable, needs the writer to
 be the same user, and would be the only thing here that cannot work on Windows.
 
-## 6. `archive` and `purge` — increment 2, designed here
+## 6. `archive` and `purge` — shipped 2026-10-16
 
-<!--fragment: increment 2; these two functions do not exist yet-->
+**Measured before any code**, and two of the things this section said first were
+wrong. Marked where they sit rather than quietly edited. **Three more things
+were wrong and were found by running it**, recorded at the end of this section.
+
+
 ```basic
 ledger = intake.archive(ledger, f, { to: {dir}"/data/archive", keep: 180 days })
-report = intake.purge(ledger, { dry_run: true })
+report = intake.purge(ledger)                     ' reports; deletes nothing
+report = intake.purge(ledger, { dry_run: false }) ' and this deletes
 ```
 
 **`keep: 180 days` is native syntax, and that is measured**: a duration literal
@@ -279,7 +285,64 @@ is a legal record option value, `type()` answers `duration`, and `now() - keep`
 is a `datetime`. So retention is unit-safe in a way `days_retention=180` is
 not — there is no unit to misread and no arithmetic to get wrong. It is stored
 in the ledger as a number of seconds, because strict JSON refuses a duration
-(§3), and converted back on the way out.
+(§3), and converted back on the way out. **`keep:` belongs to `archive`, not to
+`purge`**, so retention travels with the file: two feeds into one archive can
+keep their files for different lengths of time, and the figure is declared where
+the decision about that file is being made.
+
+### What archive does, and the correction
+
+The first draft of this section said *"copy, verify, then delete — never `move`
+first"*. **The second half is too strong, and `move`'s own code says so**: on
+the same filesystem `move` is a single `rename`, which is atomic — the file is
+either at the old path or the new one and can never be at neither — and that is
+strictly safer *and* free where copy-then-delete reads and writes every byte.
+
+But the first half is right for the other case, and that is why the rule existed:
+across filesystems `move` falls back to `copy` then `unlink` **with no check
+between them**. Read: `copy_file_path` does catch a short `fwrite`, a read error
+and a failing `fclose`, which is where a full disk surfaces — but nothing
+`fsync`s, and if a filesystem reports success at close and has not written the
+bytes, `move` removes the original and the archive is short. The ledger would
+record nothing, so the next run finds no original and no record: **the file is
+silently lost**, which is the one outcome this step exists to prevent.
+
+**So the two cases are told apart before acting**, and the discriminator is
+`atomic_replace`, which is same-filesystem **only** and says so by name:
+
+| | |
+|---|---|
+| same filesystem | `atomic_replace` — one atomic rename, nothing copied |
+| different filesystem | it refuses, naming *"same filesystem"*; then `copy`, **verify the size**, `delete` |
+
+Measured: `atomic_replace` renames onto a **missing** target happily (so a fresh
+archive path needs no destination to exist), and across devices it refuses with
+*`atomic_replace requires source and destination on the same filesystem …
+(Invalid cross-device link)`* **leaving the source in place**. `copy` and `move`
+both cross devices; `copy` **preserves the modified time** (measured, the same
+epoch on both sides), so an archived file keeps the arrival time a `"stamp"`
+identity would compute.
+
+**Matching on a message is brittle and the brittleness is in the safe
+direction**, which is why it is acceptable: if that sentence is ever reworded,
+every archive falls back to copy-verify-delete and becomes *slower*, never less
+safe. A tier asserts the optimisation is real as a **difference** — the same
+file archived within one filesystem against across two — because an
+optimisation nothing measures is one that can quietly stop happening.
+
+**`copy` overwrites an existing target in silence** (measured), and that is the
+sharpest hazard here: under `identity: "content"` a corrected re-drop has the
+same `relative` path as the file it corrects, so a second archive would
+overwrite the first and the earlier version would be gone with nothing said.
+**An existing target is refused**, naming both paths, unless the caller declares
+`{ on_collision: "replace" }` — the rule `make_dir` follows in refusing a
+directory that exists rather than being quietly idempotent.
+
+**Nothing here `fsync`s, and this section does not claim durability.** The
+reference already states it for `atomic_replace` — *"this guarantees atomic
+visibility, not crash durability"* — and the same is true of every path above.
+What is promised is narrower and testable: the archive exists with the source's
+byte count before the original is removed.
 
 **Archive mirrors the source tree, using a field the platform does not have.**
 `DOGFOOD.md` item 6 filed that a listing record has no path *relative* to the
@@ -288,25 +351,97 @@ and `2026/Q2/vendor.xlsx` are both `vendor.xlsx`) and `path` is absolute — and
 left it until a consumer existed. This is the consumer, and **the answer is that
 the field belongs here and not in the platform**: the library knows the root it
 was given, and `directory_name(join_path(root, "x"))` normalises any spelling of
-it — measured over `/data`, `/data/`, `/data//`, `.`, `/` and a `{dir}`
-reference. `arrived` therefore attaches `relative`, derived once, and the
-platform record stays as it is. A field added to the listing would be a guess at
-what a consumer wants; this is the consumer, and what it wants is the path under
-the root *including* the filename.
+it. `arrived` attaches `relative`, derived once, and the platform record stays
+as it is. `copy` does **not** create missing parents (measured), so `archive`
+makes them with `make_dir(…, { parents: true })`.
 
-**`purge` reports by default and deletes when told.** Deleting data is the one
+**An entry must be `taken` before it can be archived.** Not ceremony: `purge`'s
+first rule is that nothing is deleted which the ledger does not record as
+archived, and an archive with no ledger entry behind it has no anchor for that
+rule. The refusal names the order, and the control is that an entry straight
+from `taken` is accepted.
+
+### What purge does
+
+**It reports by default and deletes when told.** Deleting data is the one
 operation here that cannot be undone, so `dry_run` defaults to **true** and the
-answer is a record naming what would go. Two rules it may not break:
+answer is a record naming what would go:
 
-- nothing is deleted that the ledger does not record as **archived** — the
+```
+{ dry_run: true, considered: 412, due: 38, purged: 0, bytes: 194511, items: [...] }
+```
+
+with each item carrying the identity, the archived path, the bytes and the
+`datetime` it was archived. `purged` is 0 under a dry run and equals `due`
+otherwise, which is what makes the two runs comparable rather than two shapes.
+
+Two rules it may not break:
+
+- **nothing is deleted that the ledger does not record as archived** — the
   site's `pinned:` rule, *"a published release a book is based on is never
-  removed"*, in another costume;
-- the ledger entry outlives the file it describes, marked `purged`, because an
-  entry removed with its file makes the file **newly arrived** the next time a
-  counterparty re-drops it.
+  removed"*, in another costume. An entry that was taken and never archived is
+  not a purge candidate however old it is, and neither is one whose archived
+  file has already gone.
+- **the ledger entry outlives the file it describes, marked `purged`**, because
+  an entry removed with its file makes that file **newly arrived** the next time
+  a counterparty re-drops it — which under `"path"` identity means importing it
+  again for ever, once a cycle.
 
-That second rule is why purge shrinks the ledger less than it shrinks the disk,
-and it bounds how much: a purged entry keeps its identity and drops its `meta`.
+That second rule is why purge shrinks the disk and not the ledger, and it bounds
+how much: a purged entry keeps its identity and its archived path and **drops
+its `meta`**, which is the only field a caller controls the size of. Forgetting
+an entry outright is a different decision — it re-opens the door the rule above
+closes — and is §13's, not increment 2's.
+
+### Three corrections from building it
+
+1. **`purge` had to return the ledger.** It returned the report alone, so a real
+   purge deleted the files, journaled the change, and handed the caller nothing
+   to rebind — and `close` then wrote a snapshot from the stale value it still
+   held. A record is a value; `taken` and `archive` return the ledger for
+   exactly this reason, and `purge` cannot return two things, so the report
+   *carries* it as `report.ledger`. **I made this mistake in this document's own
+   worked example**, which is the argument for the field name being the obvious
+   one.
+
+2. **`close` now replays the journal before compacting**, which came out of that
+   bug rather than from the design. It makes the journal the source of truth and
+   the in-memory ledger an accelerator, so a caller who drops a returned ledger
+   loses *nothing* — the mistake becomes wasteful instead of destructive, and a
+   tier asserts it across two processes.
+
+3. **The retention refusal ran after the file had moved.** `keep: 6 months` is
+   refused because months have no fixed length — and that check lived in the
+   conversion, which happened at the *end*, so the call archived the file and
+   *then* raised: the file in the archive, no ledger record of it, and the next
+   run able to find neither. **A refusal after an irreversible act is not a
+   refusal.** The retention is resolved before anything moves, and the fixture
+   asserts a refused archive moved nothing — which nothing had.
+
+   The conversion itself was wrong too, and in a way the suite could not see:
+   `epoch(from_epoch(0) + d)` is datetime arithmetic in **local time**, so 180
+   days across a DST boundary came out as 15548400 seconds — an hour short, and
+   a plausible number. `d.total_seconds` has no calendar in it. The suite pins
+   `TZ=UTC` for determinism, where the wrong arithmetic gives the right answer,
+   so that claim gets a tier that **states the timezone** and requires both to
+   agree.
+
+**One claim here is not testable behaviourally, and that was proven rather than
+assumed.** A perturbation replacing the whole rename/copy-check-delete dance
+with a single `move` left **every other tier green**, including the inode check,
+because `move` renames on one filesystem too and produces the right outcome
+whenever nothing goes wrong. What the split buys only appears on a filesystem
+that reports a successful `fclose` without writing the bytes. So the instrument
+is a **source tripwire** — the library may not call `move`, and both halves that
+replace it must be present — with two controls: the scan must flag a planted
+call, and must *not* flag this library's own comments about `move`, which
+discuss it at length.
+
+**Every state change is journaled, like `taken`.** A run killed halfway through
+a purge must come back saying exactly which files are gone, for the same reason
+and by the same mechanism: one appended line per entry, replayed on `open`. The
+new fields are **optional on read**, so a ledger written by increment 1 opens
+unchanged and reads as "nothing archived yet" rather than needing a version bump.
 
 ## 7. Two loads at once
 

@@ -286,9 +286,7 @@ library intake
         for each line in j
             if line != "" then
                 e = decode(line)
-                led.taken[e.id] = { at: e.at, path: e.path, relative: e.relative,
-                                    size: e.size, modified: e.modified,
-                                    meta: e.meta }
+                led.taken[e.id] = _entry_from(e)
                 n = n + 1
             end if
         end for
@@ -302,6 +300,16 @@ library intake
     ' the archive step follows for a file.
     function close(led)
         if led.replayed > 0 then
+            ' REPLAYED FIRST, SO THE JOURNAL IS THE SOURCE OF TRUTH and this
+            ' in-memory copy is only an accelerator. Without it, a caller who
+            ' dropped a returned ledger -- which is the easiest mistake this
+            ' API offers, and one I made writing its own worked example --
+            ' would have `close` write a snapshot from the stale value and then
+            ' DELETE the journal holding the facts it is missing. Replaying
+            ' makes that mistake merely wasteful instead of destructive: the
+            ' last line for an id wins, so anything journaled and not in hand
+            ' is folded in rather than lost.
+            led = _replay(led)
             _compact(led)
         end if
         lockfile {file}= led.path + ".lock"
@@ -469,18 +477,54 @@ library intake
                    relative: entry.relative,
                    size: entry.size,
                    modified: _epoch_or_nothing(entry.modified),
-                   meta: meta }
-        j {file}= led.journal
-        append(j, json_encode({ id: entry.identity,
-                                at: record.at,
-                                path: record.path,
-                                relative: record.relative,
-                                size: record.size,
-                                modified: record.modified,
-                                meta: record.meta }) + "\n")
+                   meta: meta,
+                   archived_at: nothing,
+                   archived_to: nothing,
+                   keep_seconds: nothing,
+                   purged_at: nothing }
+        _journal(led, entry.identity, record)
         led.taken[entry.identity] = record
         led.replayed = led.replayed + 1
         return led
+    end function
+
+    ' ONE READER FOR A LEDGER ROW, shared by the journal replay and the snapshot,
+    ' so the two cannot disagree about what a row holds -- the defect this tree
+    ' has recorded for `sort` against `>` and for `unique` against `contains`.
+    '
+    ' THE ARCHIVE FIELDS ARE OPTIONAL ON READ, which is what lets a ledger
+    ' written before `archive` existed open unchanged and read as "nothing
+    ' archived yet" rather than needing a version bump. `nothing` and absent are
+    ' deliberately the same answer here: strict JSON writes a missing value as
+    ' null and reads it back as `nothing`, so distinguishing them would be a
+    ' distinction the file cannot carry.
+    function _entry_from(e)
+        row = { at: e.at, path: e.path, relative: e.relative,
+                size: e.size, modified: e.modified, meta: e.meta,
+                archived_at: nothing, archived_to: nothing,
+                keep_seconds: nothing, purged_at: nothing }
+        if has(e, "archived_at") then
+            row.archived_at = e.archived_at
+        end if
+        if has(e, "archived_to") then
+            row.archived_to = e.archived_to
+        end if
+        if has(e, "keep_seconds") then
+            row.keep_seconds = e.keep_seconds
+        end if
+        if has(e, "purged_at") then
+            row.purged_at = e.purged_at
+        end if
+        return row
+    end function
+
+    ' ONE WRITER, for the same reason. Every state change -- taken, archived,
+    ' purged -- is one appended line carrying the whole row, so a replay needs
+    ' no notion of a delta and the last line for an id wins.
+    function _journal(led, id, row)
+        j {file}= led.journal
+        append(j, json_encode(merge({ id: id }, row)) + "\n")
+        return nothing
     end function
 
     function _epoch_or_nothing(when)
@@ -488,6 +532,331 @@ library intake
             return nothing
         end if
         return epoch(when)
+    end function
+
+    ' ---- archiving ---------------------------------------------------------
+
+    function _archive_options()
+        return ["to", "keep", "on_collision"]
+    end function
+
+    function _check_archive_options(opts)
+        if type(opts) != "record" then
+            error { message: "intake.archive expects an options record, for"
+                             + " example { to: {dir}\"/data/archive\","
+                             + " keep: 180 days }",
+                    code: 1004, source: "intake" }
+        end if
+        for each k in keys(opts)
+            if not contains(_archive_options(), k) then
+                error { message: "intake.archive: unknown option '" + k + "'."
+                                 + " Known options: "
+                                 + join(_archive_options(), ", "),
+                        code: 1004, source: "intake" }
+            end if
+        next
+        if not has(opts, "to") then
+            error { message: "intake.archive: to: is required -- the directory"
+                             + " the file is moved into. Its tree is mirrored"
+                             + " from the directory that was scanned, so"
+                             + " 2026/Q1/vendor.xlsx lands under 2026/Q1.",
+                    code: 1004, source: "intake" }
+        end if
+        if not has(opts, "keep") then
+            error { message: "intake.archive: keep: is required -- how long the"
+                             + " archived file is kept, as a duration, for"
+                             + " example 180 days. `purge` reads it from the"
+                             + " entry, so retention travels with the file and"
+                             + " two feeds into one archive may differ.",
+                    code: 1004, source: "intake" }
+        end if
+        if type(opts.keep) != "duration" then
+            error { message: "intake.archive: keep: must be a duration, for"
+                             + " example 180 days or 12 hours, not "
+                             + type(opts.keep) + ". A bare number has no unit,"
+                             + " which is the mistake a duration literal makes"
+                             + " impossible.",
+                    code: 1004, source: "intake" }
+        end if
+        ' Wrapped in parentheses because a line break continues a statement
+        ' only INSIDE brackets (PLAT-CONT) -- there is no trailing marker.
+        if (has(opts, "on_collision") and opts.on_collision != "replace"
+            and opts.on_collision != "refuse") then
+            error { message: "intake.archive: on_collision must be \"refuse\""
+                             + " (the default) or \"replace\", not "
+                             + string(opts.on_collision),
+                    code: 1004, source: "intake" }
+        end if
+        return nothing
+    end function
+
+    ' Move the file into the archive, mirroring the tree it came from, and
+    ' record where it went and how long it is kept.
+    '
+    ' THE ORIGINAL MUST NOT BE LOST, which is the whole job, and the two cases
+    ' are told apart BEFORE acting rather than hoped about:
+    '
+    '   same filesystem -- `atomic_replace` is one rename. The file is either
+    '   at the old path or the new one and can never be at neither, nothing is
+    '   copied, and no verification is possible or needed.
+    '
+    '   across filesystems -- it refuses, naming "same filesystem", and leaves
+    '   the source in place. Then copy, CHECK THE BYTE COUNT, and only then
+    '   delete, so a copy that reported success and wrote short leaves the
+    '   original where it was.
+    '
+    ' `move` is deliberately not used for the second case although it crosses
+    ' devices: its fallback is copy-then-unlink with NO CHECK BETWEEN, so a
+    ' filesystem that lies at `fclose` loses the file and the ledger records
+    ' nothing -- the next run then finds neither the file nor a record of it.
+    '
+    ' MATCHING ON A MESSAGE IS BRITTLE AND THE BRITTLENESS IS SAFE: if that
+    ' sentence is ever reworded every archive takes the copy path and becomes
+    ' SLOWER, never less safe. A tier asserts the fast path is real as a
+    ' difference, because an optimisation nothing measures can quietly stop.
+    '
+    ' NOTHING HERE fsyncs, and this does not claim durability -- the reference
+    ' says the same of `atomic_replace`. What is promised is narrower: the
+    ' archive exists with the source's byte count before the original goes.
+    function archive(led, entry, opts)
+        _check_archive_options(opts)
+        if type(entry) != "record" or not has(entry, "identity") then
+            error { message: "intake.archive expects an entry from"
+                             + " intake.arrived.",
+                    code: 1004, source: "intake" }
+        end if
+        if not has(led.taken, entry.identity) then
+            error { message: "intake.archive: " + entry.path + " has not been"
+                             + " taken yet. Call intake.taken first: purge will"
+                             + " not delete anything the ledger does not record"
+                             + " as archived, and an archive with no entry"
+                             + " behind it has nothing to record it in.",
+                    code: 1004, source: "intake" }
+        end if
+        ' THE RETENTION IS RESOLVED BEFORE ANYTHING MOVES, and that ordering is
+        ' a correction found by the fixture rather than by reading: months and
+        ' years are refused inside `_seconds_in`, which was called at the END,
+        ' so `keep: 6 months` MOVED THE FILE and then raised -- leaving the file
+        ' in the archive, the ledger with no record of it, and the next run
+        ' unable to find either. A refusal after an irreversible act is not a
+        ' refusal.
+        keep_seconds = _seconds_in(opts.keep)
+
+        row = led.taken[entry.identity]
+        if row.archived_at != nothing then
+            error { message: "intake.archive: " + entry.path + " was already"
+                             + " archived to " + string(row.archived_to)
+                             + ". Archiving twice would move a file that is no"
+                             + " longer there and overwrite the record of where"
+                             + " it went.",
+                    code: 1004, source: "intake" }
+        end if
+
+        root = directory_name(join_path(opts.to, "x"))
+        target = join_path(root, entry.relative)
+        collide = "refuse"
+        if has(opts, "on_collision") then
+            collide = opts.on_collision
+        end if
+        ' `copy` OVERWRITES AN EXISTING TARGET IN SILENCE (measured), and under
+        ' identity "content" a corrected re-drop has the same relative path as
+        ' the file it corrects -- so the second archive would destroy the first
+        ' with nothing said. Refused by naming both paths; `make_dir` refuses an
+        ' existing directory for the same reason rather than being quietly
+        ' idempotent.
+        existing {file}= target
+        if exists(existing) and collide = "refuse" then
+            error { message: "intake.archive: " + target + " already exists, so"
+                             + " archiving " + entry.path + " would overwrite"
+                             + " it. Pass { on_collision: \"replace\" } to say"
+                             + " that is what you want.",
+                    code: 1004, source: "intake" }
+        end if
+
+        source {file}= entry.path
+        if not exists(source) then
+            error { message: "intake.archive: " + entry.path + " is no longer"
+                             + " there. Nothing was archived and the ledger is"
+                             + " unchanged.",
+                    code: 1004, source: "intake" }
+        end if
+        before = file_size(source)
+        make_dir(directory_name(target), { parents: true })
+
+        on error goto next
+        atomic_replace(entry.path, target)
+        if error then
+            why = error.message
+            error.clear()
+            if not contains(why, "same filesystem") then
+                error { message: "intake.archive: could not move " + entry.path
+                                 + " to " + target + " (" + why + ")."
+                                 + " Nothing was archived.",
+                        code: 1004, source: "intake" }
+            end if
+            ' ACROSS FILESYSTEMS. Copy, check, then delete -- in that order, so
+            ' a short copy leaves the original where it was.
+            copy(source, target)
+            landed {file}= target
+            after = file_size(landed)
+            if after != before then
+                error { message: "intake.archive: " + target + " is "
+                                 + string(after) + " bytes where "
+                                 + entry.path + " is " + string(before)
+                                 + ". The original has NOT been removed.",
+                        code: 1004, source: "intake" }
+            end if
+            delete(source)
+        end if
+
+        row.archived_at = epoch(now())
+        row.archived_to = target
+        row.keep_seconds = keep_seconds
+        _journal(led, entry.identity, row)
+        led.taken[entry.identity] = row
+        led.replayed = led.replayed + 1
+        return led
+    end function
+
+    ' A duration in seconds, which is what the ledger file can hold. `keep` is
+    ' authored as `180 days` and stored as 15552000 -- the unit is checked at
+    ' the door and then there is no unit left to misread.
+    '
+    ' THE FIRST VERSION OF THIS WAS `epoch(from_epoch(0) + d)` AND IT WAS WRONG
+    ' BY AN HOUR: `from_epoch(0)` is a datetime in LOCAL time, and adding 180
+    ' days to it crosses a DST boundary, so wall-clock arithmetic answered
+    ' 15548400 -- 3600 short, which is a plausible number and the kind that is
+    ' never noticed. `total_seconds` asks the duration itself and has no
+    ' calendar in it.
+    '
+    ' AND IT RAISES FOR MONTHS AND YEARS, which is right rather than
+    ' inconvenient: those have no fixed length, so `keep: 6 months` cannot be
+    ' stored as a number of seconds without inventing one. Re-raised in this
+    ' library's own words, naming the remedy, because the bare message is about
+    ' durations in general and the reader is holding a retention policy.
+    function _seconds_in(d)
+        on error goto next
+        total = d.total_seconds
+        if error then
+            error.clear()
+            error { message: "intake.archive: keep: " + string(d) + " has no"
+                             + " fixed length, because months and years vary."
+                             + " Say it in days, hours, minutes or seconds --"
+                             + " 180 days rather than 6 months.",
+                    code: 1004, source: "intake" }
+        end if
+        return total
+    end function
+
+    ' ---- purging -----------------------------------------------------------
+
+    function _purge_options()
+        return ["dry_run", "as_of"]
+    end function
+
+    ' What would go, or what went. REPORTS BY DEFAULT: deleting data is the one
+    ' thing here that cannot be undone, so `dry_run` is true unless the caller
+    ' says otherwise, and the two runs return the SAME SHAPE so they can be
+    ' compared rather than read differently.
+    ' `opts` DEFAULTS TO `nothing`, so `intake.purge(ledger)` is the reporting
+    ' call -- which is the safe default made visible rather than merely
+    ' documented. A record default is a parse error by design (PLAT-OPTPARAM
+    ' admits literals only, deliberately: gBASIC has no closures, so an
+    ' arbitrary default expression would need a scope to be evaluated in), and
+    ' `nothing` is the one literal that reads as "none given".
+    function purge(led, opts = nothing)
+        if opts = nothing then
+            opts = { dry_run: true }
+        end if
+        if type(opts) != "record" then
+            error { message: "intake.purge expects an options record, for"
+                             + " example { dry_run: false }",
+                    code: 1004, source: "intake" }
+        end if
+        for each k in keys(opts)
+            if not contains(_purge_options(), k) then
+                error { message: "intake.purge: unknown option '" + k + "'."
+                                 + " Known options: "
+                                 + join(_purge_options(), ", "),
+                        code: 1004, source: "intake" }
+            end if
+        next
+        dry = true
+        if has(opts, "dry_run") then
+            if type(opts.dry_run) != "boolean" then
+                error { message: "intake.purge: dry_run must be true or false,"
+                                 + " not " + type(opts.dry_run),
+                        code: 1004, source: "intake" }
+            end if
+            dry = opts.dry_run
+        end if
+        ' `as_of` exists so a test can state a moment rather than sleep through
+        ' one; a caller may use it to ask what a purge would do next month.
+        as_of = now()
+        if has(opts, "as_of") then
+            if type(opts.as_of) != "datetime" then
+                error { message: "intake.purge: as_of must be a datetime, not "
+                                 + type(opts.as_of),
+                        code: 1004, source: "intake" }
+            end if
+            as_of = opts.as_of
+        end if
+        cutoff = epoch(as_of)
+
+        ' THE REPORT CARRIES THE LEDGER, and this is a correction found by
+        ' running it: the first version returned the report alone, so a real
+        ' purge deleted the files, journaled the change, and handed the caller
+        ' nothing to rebind -- `close` then wrote a snapshot from the stale
+        ' value it still held. A gBASIC record is a VALUE; `taken` and
+        ' `archive` return the ledger for exactly this reason and `purge`
+        ' cannot return two things, so it returns ONE record holding both.
+        ' Naming the field `ledger` is what makes the rebinding visible:
+        '
+        '     r = intake.purge(led, { dry_run: false })
+        '     led = r.ledger
+        '
+        ' On a dry run `r.ledger` is the same ledger, unchanged, so the two
+        ' calls have one shape and one usage.
+        report = { dry_run: dry, considered: 0, due: 0, purged: 0,
+                   bytes: 0, items: [], ledger: led }
+        for each id in keys(led.taken)
+            row = led.taken[id]
+            report.considered = report.considered + 1
+            ' RULE 1: nothing goes that the ledger does not record as ARCHIVED.
+            ' An entry taken and never archived is not a candidate however old
+            ' it is, and neither is one already purged.
+            if row.archived_at != nothing and row.purged_at = nothing then
+                if row.archived_at + row.keep_seconds <= cutoff then
+                    report.due = report.due + 1
+                    report.bytes = report.bytes + row.size
+                    append(report.items, { identity: id,
+                                           archived_to: row.archived_to,
+                                           relative: row.relative,
+                                           size: row.size,
+                                           archived: from_epoch(row.archived_at) })
+                    if not dry then
+                        f {file}= row.archived_to
+                        if exists(f) then
+                            delete(f)
+                        end if
+                        ' RULE 2: THE ENTRY OUTLIVES THE FILE. An entry removed
+                        ' with its file makes that file NEWLY ARRIVED the next
+                        ' time it is re-dropped, which under "path" identity
+                        ' means importing it again once a cycle, for ever. So
+                        ' the row keeps its identity and its archived path and
+                        ' drops `meta`, the one field whose size a caller
+                        ' controls.
+                        row.purged_at = epoch(now())
+                        row.meta = {}
+                        _journal(led, id, row)
+                        led.taken[id] = row
+                        report.purged = report.purged + 1
+                    end if
+                end if
+            end if
+        next
+        report.ledger = led
+        return report
     end function
 
     ' ---- reading the ledger back -------------------------------------------
@@ -513,11 +882,30 @@ library intake
         end if
         e = led.taken[id]
         out = { path: e.path, relative: e.relative, size: e.size,
-                meta: e.meta, at: from_epoch(e.at) }
+                meta: e.meta, at: from_epoch(e.at),
+                archived_to: e.archived_to,
+                archived: unknown, keep: unknown, purged: unknown }
         if e.modified = nothing then
             out.modified = unknown
         else
             out.modified = from_epoch(e.modified)
+        end if
+        ' The ledger file holds epochs and a count of seconds, because strict
+        ' JSON refuses a datetime and a duration; the conversion back belongs
+        ' here, at the edge, so a caller never sees the numbers.
+        if e.archived_at != nothing then
+            out.archived = from_epoch(e.archived_at)
+        end if
+        if e.purged_at != nothing then
+            out.purged = from_epoch(e.purged_at)
+        end if
+        if e.keep_seconds != nothing then
+            ' THE ONLY ROUTE FROM A NUMBER OF SECONDS BACK TO A DURATION, and
+            ' it is multiplication: `n seconds` does not parse with a variable
+            ' `n` (a duration literal takes a literal), and there is no
+            ' `{duration}` modifier beside `{date}`, `{datetime}` and `{time}`.
+            ' Measured, and filed. `(1 second) * 15552000` renders `180 days`.
+            out.keep = (1 second) * e.keep_seconds
         end if
         return out
     end function

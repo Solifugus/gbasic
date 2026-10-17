@@ -96,6 +96,12 @@ Two were filed on **2026-10-15** while building `intake` and are live:
 | 9 | **`lock(f)` has no non-blocking form** — see item 8; `intake` is one run at a time because of it, and a queue of workers over one ledger is not expressible. | 2026-10-15 entry |
 | 10 | **A qualified call into a library that is not in scope says the library "does not define" the function.** It does; it is not visible from there. The message sends the reader to the innocent file, and the shape that produces it — a library whose own `load` sits at the top level instead of inside its block — WORKS for any caller that happens to load the same dependency. | 2026-10-15 entry |
 
+One was filed on **2026-10-16** while building `intake` increment 2:
+
+| | what | where |
+|---|---|---|
+| 11 | **No way into a `duration` from a computed number of seconds.** `n seconds` with a variable is a parse error and there is no `{duration}` modifier, though `{date}`, `{datetime}`, `{time}`, `{file}`, `{dir}` and `{USD}` all exist — a hole in the typed-modifier family exactly where a value arrives as a number out of storage. `(1 second) * n` works and nobody would guess it. | 2026-10-16 entry |
+
 Two more are decisions rather than work: the **absence-coercion warning** is
 measured and deliberately unshipped pending a ruling, and **`{trimmed,upper}=`**
 is answered — a clause chains with `;` and has since 2026-10-03.
@@ -12838,3 +12844,27 @@ release script is the one place to change, and it wants watching.
   needs its control (a genuinely missing function must still say so) and a tier
   of its own. A one-sentence improvement with a real false-positive risk, in the
   shape `run_negative.sh`'s reserved-word tier already uses.
+
+## 2026-10-16 — CC — while: building `intake` increment 2 (archive/purge)
+
+- **Type:** missing-feature
+- **Severity:** low
+- **What:** there is **no way to build a `duration` from a computed number of
+  seconds** except by multiplying a unit duration. A ledger has to store a
+  retention as a number (strict JSON refuses a `duration`), so converting back
+  is an ordinary need, and both obvious spellings fail: `n seconds` with a
+  variable `n` is a **parse error** (`unexpected IDENT`, since a duration
+  literal takes a literal), and there is **no `{duration}` modifier** —
+  `d {duration}= n` answers `assign modifier not found: duration`, while
+  `{date}`, `{datetime}`, `{time}`, `{file}`, `{dir}` and `{USD}` all exist. So
+  the typed-value modifier family has a hole exactly where a value most often
+  arrives as a number from storage.
+- **Workaround:** `(1 second) * n`, which works and renders correctly —
+  `(1 second) * 15552000` prints `180 days` and reports `total_seconds`
+  15552000. It is in `intake.entry_for` with a comment, because nobody would
+  guess it.
+- **Shape of the fix:** a `{duration}` modifier taking a number of seconds (and
+  text, like `{USD}`), which would make the family complete. `dur.total_seconds`
+  already exists as the way out, so this is the missing way IN. Its refusal is
+  already decided by that function's own rule: a value in seconds can only ever
+  produce the fixed-length components, so the round trip cannot invent months.
