@@ -28,6 +28,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/time.h>   /* utimes, for gb_set_mtime */
+#include <dirent.h>
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
@@ -255,6 +256,36 @@ int gb_remove_file(const char *path) { return unlink(path); }
 int gb_remove_link(const char *path) { return unlink(path); }
 
 int gb_remove_dir(const char *path) { return rmdir(path); }
+
+struct GbDir {
+    DIR *d;
+};
+
+GbDir *gb_opendir(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) {
+        return NULL;
+    }
+    GbDir *dir = malloc(sizeof *dir);
+    if (!dir) {
+        closedir(d);
+        errno = ENOMEM;
+        return NULL;
+    }
+    dir->d = d;
+    return dir;
+}
+
+const char *gb_readdir(GbDir *dir) {
+    struct dirent *entry = readdir(dir->d);
+    return entry ? entry->d_name : NULL;
+}
+
+int gb_closedir(GbDir *dir) {
+    int rc = closedir(dir->d);
+    free(dir);
+    return rc;
+}
 
 int gb_set_cloexec(int fd, int on) {
     int flags = fcntl(fd, F_GETFD, 0);

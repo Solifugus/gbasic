@@ -379,16 +379,16 @@ static void scan_dir_for_provider(AddUsesContext *ctx,
                                   const char *context,
                                   int is_modifier,
                                   int require_provider_filename) {
-    DIR *dir = opendir(dir_path);
+    GbDir *dir = gb_opendir(dir_path);
     if (!dir) {
         return;
     }
-    struct dirent *entry = NULL;
-    while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+    const char *entry = NULL;
+    while ((entry = gb_readdir(dir)) != NULL) {
+        if (strcmp(entry, ".") == 0 || strcmp(entry, "..") == 0) {
             continue;
         }
-        char *path = join_path_main(dir_path, entry->d_name);
+        char *path = join_path_main(dir_path, entry);
         struct stat st;
         if (stat(path, &st) == 0) {
             if (S_ISREG(st.st_mode)) {
@@ -399,7 +399,7 @@ static void scan_dir_for_provider(AddUsesContext *ctx,
         }
         free(path);
     }
-    closedir(dir);
+    gb_closedir(dir);
 }
 
 static void scan_gbasic_path_for_provider(AddUsesContext *ctx,

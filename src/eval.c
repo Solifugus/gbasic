@@ -9737,23 +9737,23 @@ static void search_directory_for_library(const char *dir_path,
                                          int exact_filename,
                                          LibraryMatch **matches,
                                          size_t *match_count) {
-    DIR *dir = opendir(dir_path);
+    GbDir *dir = gb_opendir(dir_path);
     if (!dir) {
         return;
     }
 
     char *expected_filename = exact_filename ? library_filename(name) : NULL;
-    struct dirent *entry = NULL;
-    while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+    const char *entry = NULL;
+    while ((entry = gb_readdir(dir)) != NULL) {
+        if (strcmp(entry, ".") == 0 || strcmp(entry, "..") == 0) {
             continue;
         }
 
-        char *path = join_path(dir_path, entry->d_name);
+        char *path = join_path(dir_path, entry);
         struct stat st;
         if (gb_stat(path, &st) == 0) {
             if (S_ISREG(st.st_mode)) {
-                if (!exact_filename || strcmp(entry->d_name, expected_filename) == 0) {
+                if (!exact_filename || strcmp(entry, expected_filename) == 0) {
                     search_file_for_library(path, name, matches, match_count);
                 }
                 if (error_action_pending()) {
@@ -9772,7 +9772,7 @@ static void search_directory_for_library(const char *dir_path,
     }
 
     free(expected_filename);
-    closedir(dir);
+    gb_closedir(dir);
 }
 
 /* THE STDLIB THAT SHIPPED WITH THIS BINARY.
@@ -11497,20 +11497,20 @@ static int remove_tree_path(const char *path, const char *top, int depth,
                  " depth was removed", top);
         return -1;
     }
-    DIR *dir = opendir(path);
+    GbDir *dir = gb_opendir(path);
     if (!dir) {
         snprintf(why, why_size, "remove_tree: could not read %s (%s)",
                  path, strerror(errno));
         return -1;
     }
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+    const char *entry;
+    while ((entry = gb_readdir(dir)) != NULL) {
+        if (strcmp(entry, ".") == 0 || strcmp(entry, "..") == 0) {
             continue;
         }
-        char *child = join_path(path, entry->d_name);
+        char *child = join_path(path, entry);
         if (!child) {
-            closedir(dir);
+            gb_closedir(dir);
             snprintf(why, why_size, "remove_tree: out of memory under %s", path);
             return -1;
         }
@@ -11527,7 +11527,7 @@ static int remove_tree_path(const char *path, const char *top, int depth,
             } else if (S_ISDIR(info.st_mode)) {
                 if (remove_tree_path(child, top, depth + 1, why, why_size) != 0) {
                     free(child);
-                    closedir(dir);
+                    gb_closedir(dir);
                     return -1;
                 }
                 failed = 0;
@@ -11539,12 +11539,12 @@ static int remove_tree_path(const char *path, const char *top, int depth,
             snprintf(why, why_size, "remove_tree: could not remove %s (%s)",
                      child, strerror(errno));
             free(child);
-            closedir(dir);
+            gb_closedir(dir);
             return -1;
         }
         free(child);
     }
-    closedir(dir);
+    gb_closedir(dir);
     if (gb_remove_dir(path) != 0) {
         snprintf(why, why_size, "remove_tree: could not remove %s (%s)",
                  path, strerror(errno));
@@ -12059,7 +12059,7 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
 
-        DIR *dir = opendir(path);
+        GbDir *dir = gb_opendir(path);
         if (!dir) {
             char message[512];
             snprintf(message, sizeof(message), "could not list files: %s (%s)",
@@ -12074,15 +12074,15 @@ static Value eval_file_call(AstExpr *expr) {
         int read_failed = 0;
         for (;;) {
             errno = 0;
-            struct dirent *entry = readdir(dir);
+            const char *entry = gb_readdir(dir);
             if (!entry) {
                 read_failed = errno != 0;
                 break;
             }
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            if (strcmp(entry, ".") == 0 || strcmp(entry, "..") == 0) {
                 continue;
             }
-            char *entry_path = join_path(path, entry->d_name);
+            char *entry_path = join_path(path, entry);
             struct stat st;
             if (gb_stat(entry_path, &st) == 0 && S_ISREG(st.st_mode)) {
                 Value *next = realloc(items, sizeof(Value) * (count + 1));
@@ -12094,7 +12094,7 @@ static Value eval_file_call(AstExpr *expr) {
             }
             free(entry_path);
         }
-        if (closedir(dir) != 0 || read_failed) {
+        if (gb_closedir(dir) != 0 || read_failed) {
             for (size_t i = 0; i < count; i++) {
                 value_free(items[i]);
             }
@@ -13578,7 +13578,7 @@ static int dir_entry_compare(const void *a, const void *b) {
  * completeness. */
 static void glob_walk(GlobWalk *w, const char *dir_path,
                       const char **segs, size_t depth) {
-    DIR *dir = opendir(dir_path);
+    GbDir *dir = gb_opendir(dir_path);
     if (!dir) {
         /* DEPTH 0 IS THE DIRECTORY THE CALLER NAMED, and it raises -- which is
          * also why there is no separate probe above: opening the top level
@@ -13597,13 +13597,13 @@ static void glob_walk(GlobWalk *w, const char *dir_path,
         return;
     }
 
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+    const char *entry;
+    while ((entry = gb_readdir(dir)) != NULL) {
+        if (strcmp(entry, ".") == 0 || strcmp(entry, "..") == 0) {
             continue;
         }
 
-        char *path = path_join_alloc(dir_path, entry->d_name);
+        char *path = path_join_alloc(dir_path, entry);
 
         struct stat st;
         int have_stat = gb_stat(path, &st) == 0;
@@ -13624,7 +13624,7 @@ static void glob_walk(GlobWalk *w, const char *dir_path,
                            : S_ISREG(st.st_mode)  ? "file"
                                                   : "other";
 
-        segs[depth] = entry->d_name;
+        segs[depth] = entry;
         size_t ns = depth + 1;
 
         int wanted = 1;
@@ -13656,7 +13656,7 @@ static void glob_walk(GlobWalk *w, const char *dir_path,
                 abort();
             }
             w->items = next;
-            w->items[w->count++] = make_dir_entry(path, entry->d_name, type,
+            w->items[w->count++] = make_dir_entry(path, entry, type,
                                                   have_stat ? &st : NULL);
         }
 
@@ -13685,7 +13685,7 @@ static void glob_walk(GlobWalk *w, const char *dir_path,
         }
     }
 
-    closedir(dir);
+    gb_closedir(dir);
 }
 
 /* `list`, `files` and `folders`. Both refusals below used to be a bare

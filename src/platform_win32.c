@@ -356,6 +356,135 @@ static int remove_clearing_readonly(const char *path, int (*rm)(const char *)) {
     return -1;
 }
 
+/* The `\\?\` form of `path`'s full path with `suffix` appended, which every
+ * wide Win32 call accepts at any length regardless of LongPathsEnabled.
+ * GetFullPathNameW resolves `.`/`..` and turns '/' into '\\', both of which
+ * the prefix requires; a UNC path takes the `\\?\UNC\` form. */
+static WCHAR *long_wide_path(const char *path, const WCHAR *suffix) {
+    WCHAR *wpath = utf8_to_wide(path);
+    if (!wpath) {
+        return NULL;
+    }
+    DWORD need = GetFullPathNameW(wpath, 0, NULL, NULL);
+    WCHAR *full = need ? malloc((size_t)need * sizeof(WCHAR)) : NULL;
+    DWORD got = full ? GetFullPathNameW(wpath, need, full, NULL) : 0;
+    free(wpath);
+    if (got == 0 || got >= need) {
+        free(full);
+        return NULL;
+    }
+    const WCHAR *lead;
+    const WCHAR *rest = full;
+    if (wcsncmp(full, L"\\\\?\\", 4) == 0) {
+        lead = L"";
+    } else if (wcsncmp(full, L"\\\\", 2) == 0) {
+        lead = L"\\\\?\\UNC\\";
+        rest = full + 2;
+    } else {
+        lead = L"\\\\?\\";
+    }
+    size_t rlen = wcslen(rest);
+    while (rlen > 0 && rest[rlen - 1] == L'\\' && !(rlen == 3 && rest[1] == L':')) {
+        rlen--;               /* "C:\" keeps its root separator, others lose a trailing one */
+    }
+    size_t total = wcslen(lead) + rlen + wcslen(suffix) + 1;
+    WCHAR *out = malloc(total * sizeof(WCHAR));
+    if (out) {
+        wcscpy(out, lead);
+        wcsncat(out, rest, rlen);
+        if (suffix[0] == L'\\' && rlen > 0 && rest[rlen - 1] == L'\\') {
+            suffix++;         /* "C:\" + "\*" must not become "C:\\*" */
+        }
+        wcscat(out, suffix);
+    }
+    free(full);
+    return out;
+}
+
+struct GbDir {
+    HANDLE h;
+    WIN32_FIND_DATAW data;
+    int pending;      /* `data` holds an entry not yet handed out */
+    char *name;
+};
+
+GbDir *gb_opendir(const char *path) {
+    WCHAR *plain = long_wide_path(path, L"");
+    if (!plain) {
+        errno = ENOENT;
+        return NULL;
+    }
+    DWORD attrs = GetFileAttributesW(plain);
+    DWORD aerr = attrs == INVALID_FILE_ATTRIBUTES ? GetLastError() : 0;
+    free(plain);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        errno = errno_from_win(aerr);
+        return NULL;
+    }
+    if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        errno = ENOTDIR;
+        return NULL;
+    }
+    WCHAR *pattern = long_wide_path(path, L"\\*");
+    if (!pattern) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    GbDir *dir = calloc(1, sizeof *dir);
+    if (!dir) {
+        free(pattern);
+        errno = ENOMEM;
+        return NULL;
+    }
+    dir->h = FindFirstFileExW(pattern, FindExInfoBasic, &dir->data,
+                              FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
+    DWORD ferr = dir->h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+    free(pattern);
+    if (dir->h == INVALID_HANDLE_VALUE) {
+        if (ferr == ERROR_FILE_NOT_FOUND) {
+            return dir;       /* nothing matched: a drive root with no entries */
+        }
+        free(dir);
+        errno = errno_from_win(ferr);
+        return NULL;
+    }
+    dir->pending = 1;
+    return dir;
+}
+
+const char *gb_readdir(GbDir *dir) {
+    if (dir->h == INVALID_HANDLE_VALUE) {
+        return NULL;
+    }
+    if (!dir->pending) {
+        if (!FindNextFileW(dir->h, &dir->data)) {
+            DWORD e = GetLastError();
+            if (e != ERROR_NO_MORE_FILES) {
+                errno = errno_from_win(e);
+            }
+            return NULL;
+        }
+    }
+    dir->pending = 0;
+    free(dir->name);
+    dir->name = wide_to_utf8(dir->data.cFileName);
+    if (!dir->name) {
+        errno = ENOMEM;
+    }
+    return dir->name;
+}
+
+int gb_closedir(GbDir *dir) {
+    int rc = 0;
+    if (dir->h != INVALID_HANDLE_VALUE && !FindClose(dir->h)) {
+        errno = EIO;
+        rc = -1;
+    }
+    free(dir->name);
+    free(dir);
+    return rc;
+}
+
 int gb_remove_file(const char *path) { return remove_clearing_readonly(path, _unlink); }
 
 int gb_remove_dir(const char *path) { return remove_clearing_readonly(path, _rmdir); }

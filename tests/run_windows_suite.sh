@@ -212,6 +212,46 @@ BAS
     rm -rf "$ad"
 fi
 
+# A LONG PATH IS NOT AN EMPTY ONE (§29 item 5). MEASURED 2026-10-17: past 260
+# characters MinGW's readdir returned NOTHING and said nothing, while make_dir,
+# exists, write and read all worked at the same depth -- so `list()` called a
+# folder holding a file empty, and remove_tree then failed at rmdir with
+# "Directory not empty". The listing is what is asserted, because a silently
+# empty answer is the worse half; the premise (the file really is there, by
+# `exists`) is asserted beside it. Runs on every platform: the property is
+# general and the depth is legal everywhere.
+lp="$(mktemp -d)"
+lpm="$(cygpath -m "$lp" 2>/dev/null || printf '%s' "$lp")"
+lprog="$(mktemp --suffix=.bas)"
+cat >"$lprog" <<BAS
+p = "$lpm"
+for i = 1 to 9
+    p = p + "/abcdefghijklmnopqrstuvwxyz0123456789"
+end for
+deep {dir}= p
+make_dir(deep, { parents: true })
+f {file}= p + "/x.txt"
+write(f, "deep")
+print "premise " + string(len(p) > 300) + " " + string(exists(f))
+d {dir}= p
+names = []
+for each e in list(d)
+    append(names, e.name)
+end for
+print "listed " + join(names, ",")
+top {dir}= "$lpm"
+print "removed " + string(remove_tree(top)) + " " + string(not exists(top))
+BAS
+lout="$(./gbasic "$lprog" 2>&1)"
+rm -f "$lprog"
+rm -rf "$lp" 2>/dev/null
+if [ "$lout" = "$(printf 'premise true true\nlisted x.txt\nremoved true true')" ]; then
+    printf 'PASS a folder past 260 characters lists its file, and remove_tree removes it\n'
+else
+    printf 'FAIL a long path:\n%s\n' "$lout"
+    status=1
+fi
+
 # THE WINDOWS FILE VERSION MUST BE THE BINARY'S VERSION. src/gbasic.manifest
 # carries one by hand (it is what Windows shows in a file's Properties, and the
 # MSIX build reads `gbasic --version` instead); it sat at 0.4.0.0 while the

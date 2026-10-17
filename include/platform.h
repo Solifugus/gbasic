@@ -362,6 +362,26 @@ int gb_stat(const char *path, struct stat *out);
 int gb_remove_file(const char *path);
 int gb_remove_link(const char *path);
 
+/* READING A DIRECTORY. MEASURED 2026-10-17: past 260 characters MinGW's
+ * opendir/readdir return an EMPTY listing with no error, though make_dir,
+ * exists, write and read all work at that depth on the same machine (manifest
+ * longPathAware, LongPathsEnabled=1). So `list()` answered "nothing here" for a
+ * folder holding a file, and remove_tree, seeing it empty, failed at rmdir with
+ * "Directory not empty" -- the §28 depth case, which never reached its bound.
+ *
+ * POSIX: opendir/readdir/closedir. WINDOWS: FindFirstFileExW on the `\\?\`
+ * form of the full path, so the limit is gone whether or not the system has
+ * long paths enabled. Names are UTF-8. `.` and `..` are reported where the
+ * filesystem has them, as readdir does, so callers keep skipping them.
+ *
+ * gb_readdir answers the next name, or NULL: at the end with errno UNTOUCHED
+ * (as readdir), on a read error with errno set. The name is valid until the
+ * next call on the same handle. */
+typedef struct GbDir GbDir;
+GbDir *gb_opendir(const char *path);
+const char *gb_readdir(GbDir *dir);
+int gb_closedir(GbDir *dir);
+
 /* An EMPTY directory, with gb_remove_file's read-only retry. MEASURED
  * 2026-10-17: Windows rmdir refuses a directory carrying
  * FILE_ATTRIBUTE_READONLY with EACCES -- and that is not exotic, since Windows

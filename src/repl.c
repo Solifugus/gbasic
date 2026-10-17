@@ -419,20 +419,20 @@ static char *orphan_find(size_t *count) {
     if (!*dir) {
         return NULL;
     }
-    DIR *d = opendir(dir);
+    GbDir *d = gb_opendir(dir);
     if (!d) {
         return NULL;
     }
     char *newest = NULL;
     time_t newest_at = 0;
-    struct dirent *e;
-    while ((e = readdir(d))) {
+    const char *e;
+    while ((e = gb_readdir(d))) {
         long pid;
-        if (sscanf(e->d_name, "session-%ld.bas", &pid) != 1) {
+        if (sscanf(e, "session-%ld.bas", &pid) != 1) {
             continue;
         }
         char path[4600];
-        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, e);
         if (*session_cache && strcmp(path, session_cache) == 0) {
             continue;
         }
@@ -451,7 +451,7 @@ static char *orphan_find(size_t *count) {
             newest_at = st.st_mtime;
         }
     }
-    closedir(d);
+    gb_closedir(d);
     return newest;
 }
 
