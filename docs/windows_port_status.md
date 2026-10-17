@@ -1341,8 +1341,8 @@ byte-exact goldens — and it is the largest user-visible gap left.
 ## 28. §27 ANSWERED, from a Windows run (2026-10-17)
 
 Windows 11 Pro 10.0.26200, MSYS2 UCRT64 build of `5f51a42` (0.10.0 plus four
-commits), run as an ordinary user with **Developer Mode off**. The elevated run
-is still outstanding (see the end). Everything below was run, not reasoned.
+commits), run as an ordinary user with **Developer Mode off**, then once elevated (at the
+end). Everything below was run, not reasoned, unless it says otherwise.
 
 ### The fixture, unelevated
 
@@ -1387,7 +1387,7 @@ on `/`. See "the path splitters bite the new API" below.
 |---|---|
 | `temp_file`/`temp_dir` unique and CREATED | **confirmed** (the `ok` lines) |
 | only the mode diverges | **false**: the path does too, see below |
-| `is_symlink`, `set_mtime` identical | `set_mtime` **confirmed**; `is_symlink` only on a regular file, the link cases need the elevated run |
+| `is_symlink`, `set_mtime` identical | **confirmed**, `is_symlink` in the elevated run; but see the dangling-link defect there |
 | `symlink` names the privilege | **confirmed**, `SeCreateSymbolicLinkPrivilege` by name |
 | `executable` is `unknown`, never `false` | **confirmed** |
 | mode is `_wstat`'s synthesis (`0444` / `0666`) | **confirmed**; `0777` for a directory |
@@ -1440,11 +1440,9 @@ the file exists with the inherited ACL.
 the tree is still there. Loud and wrong, as predicted: clear the attribute and
 retry once, in the platform layer.
 
-### Prediction 2 (directory link): NOT MEASURED YET
+### Prediction 2 (directory link): CONFIRMED in the elevated run, at the end
 
-Needs the privilege; see the end.
-
-### THREE THINGS §27 DID NOT PREDICT
+### THREE THINGS §27 DID NOT PREDICT (a fourth is in the elevated run)
 
 **1. `read_at` and `overwrite` refused every file over 2 GB. FIXED in
 `3c527fd`.** Both capped their arguments at `LONG_MAX` and positioned with
@@ -1498,8 +1496,42 @@ default** (`MSYS=winsymlinks:nativestrict` makes real links where the privilege
 exists), and `metadata_test.bas` should report a refused `symlink` the way
 `scratch_metadata.bas` does, rather than raise.
 
-### Still to run
+### The elevated run (same day, administrator PowerShell)
 
-The elevated run of `tests\windows\scratch_metadata.bas`: prediction 2, the
-`is_symlink` checks and the dangling-link listing agreement. To be appended
-here.
+**24 checks, 3 mismatches.** Every symlink check passes: `symlink creates
+one`, `...and it IS one`, `reading through it gives the target's bytes`,
+`deleting the link leaves the target`.
+
+**Prediction 2 (directory link): CONFIRMED, in the good direction.**
+
+```
+REPORT remove_tree over a directory link REFUSED: remove_tree: could not remove ...\tree2/dir_link (Permission denied)
+ok   the link's target and its content survived
+```
+
+The walk did not descend into the link. It called `unlink` on a directory
+reparse point and failed loudly, which is the acceptable outcome §27 named;
+`RemoveDirectoryW` on the link is what would make it succeed.
+
+**A DEFECT §27 DID NOT PREDICT: a dangling link reads as an existing file.**
+
+```
+ok   a dangling link is a symlink
+MISMATCH ...and exists() denies it: got true, want false
+MISMATCH file_type says unknown: got file, want unknown
+MISMATCH the listing agrees: got file, want unknown
+```
+
+`is_symlink` is right, and everything that asks *what is at this path* answers
+about the **link** rather than its target, so a link to nothing passes
+`exists()`. The likely mechanism, NOT verified: Windows `_wstat64` does not
+follow a symlink the way POSIX `stat` does, so it reports on the reparse point
+itself. If that is right, it is not only the dangling case: `file_type`,
+`file_size` and `permissions` of a LIVE link would describe the link and not
+its target. That needs the privilege to measure (the fix is `CreateFileW`
+without `FILE_FLAG_OPEN_REPARSE_POINT`, then `GetFileInformationByHandle`, in
+the platform layer). `exists()` answering true for a target that does not exist
+is the sharper half, since a program checks `exists()` before it reads.
+
+The workspace was again left behind (the read-only file), this time holding a
+directory link. It was removed with `rmdir /s /q`, which does not follow links.
