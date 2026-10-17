@@ -147,7 +147,7 @@ socket. A `window` block should be that same answer rather than a new idea.
 
 ```basic
 window customer( title: "Customer", width: 480 )
-    column margin: 8, spacing: 8
+    column( margin: 8, spacing: 8 )
 
         form to edit cust
             field id(    label: "Account", show: cust.id )
@@ -164,7 +164,7 @@ window customer( title: "Customer", width: 480 )
         end group
 
         row
-            stretch
+            stretch()
             button save(   text: "Save", default: true )
             button cancel( text: "Cancel" )
         end row
@@ -176,6 +176,15 @@ window customer( title: "Customer", width: 480 )
     end on
 end window
 ```
+
+**Two details above are forced by the grammar rather than chosen** — see §5.2,
+where seven shapes were measured against bison. Options are **always
+parenthesised**, including `column( margin: 8 )`, because an unparenthesised
+field list has no closing token and the parser cannot tell where a value
+expression ends. And `stretch()` carries its parentheses because a body-less
+bare word would collide with `row`, a body-bearing one: **every head shape must
+decide on its own whether a body follows**, which is the discipline that makes
+the `server` block cost zero.
 
 ### 2.1 Nothing pollutes the namespace — and perhaps nothing is reserved
 
@@ -416,8 +425,9 @@ So the first experiment is the one that was ranked second:
    §5.1.** It was expected to be the hardest piece and it is settled: Qt owns
    the loop, and gBASIC's sources become `QSocketNotifier`s. The other shape
    fails, and fails only where nobody is watching.
-2. **The grammar cost** of `window NAME( … )` and of a bare modifier in option
-   position, in bison conflicts, against a standard of zero.
+2. ~~**The grammar cost** of `window NAME( … )`~~ — **MEASURED AND ANSWERED
+   2026-10-17. See §5.2.** Zero is reachable, and getting there CHANGED TWO
+   THINGS IN §2's example.
 3. **A `QMetaType` marshaller** for method and signal arguments; the probe used
    compile-time `Q_ARG` and its relay carried no arguments.
 4. **C++ and `moc` in a C11 build**, behind `#if HAVE_QT`, degrading to a clean
@@ -426,6 +436,98 @@ So the first experiment is the one that was ranked second:
 Testing has a free advantage: the installed Qt runtime carries
 `libqoffscreen.so`, so `QT_QPA_PLATFORM=offscreen` runs real widgets with no
 display — which is how the probe ran.
+
+### 5.2 THE GRAMMAR, ANSWERED BY MEASUREMENT (2026-10-17)
+
+Seven shapes were put through bison against the real `src/parser.y`, whose
+baseline is **zero** conflicts. Reproduce any of them by copying the grammar,
+adding the productions and running `bison -Wcounterexamples -d -o /tmp/x.c
+copy.y`.
+
+| | shape | conflicts |
+|---|---|---|
+| — | the baseline, `src/parser.y` untouched | **0** |
+| A | a window body grammar of its own, sharing the server block's head | 5 S/R + 4 R/R |
+| B | one head, the window's shapes added to `server_item` | 4 R/R, and one rule **useless in parser** |
+| C | its own opener token, the body as §2 sketches it | 5 + 5 |
+| D | C, with a container's body required to be non-empty | 7 + 1 |
+| E | C, with the server block's own head discipline | 5 + 1 |
+| **F** | **E, with options ALWAYS parenthesised** | **0** |
+| G | F, but sharing the server's head instead of its own token | 2 R/R |
+| H | F, plus `on save.clicked` — a DOTTED handler name, which the example uses and F had not covered | **0** |
+
+**WHAT MAKES THE SERVER BLOCK FREE IS A DISCIPLINE, NOT LUCK**, and it is the
+whole answer: every one of its item shapes is decided by **what follows the
+first identifier** — a string list, a `STRING(`, or an `IDENT(` — so no two
+shapes share a prefix while differing in **whether a body follows**. A window
+must obey the same rule, and then its words need not be reserved and its
+vocabulary can grow.
+
+**TWO THINGS IN §2's EXAMPLE HAVE TO CHANGE, and neither is a preference.**
+
+- **`column margin: 8` becomes `column( margin: 8 )`.** Every conflict in E was
+  *inside a record field's value expression* — `• MINUS`, `• LPAREN`,
+  `• LBRACKET` — and not in the body question at all: an unparenthesised field
+  list has no closing token, so the parser cannot tell where a value ends.
+  Parenthesising it costs two characters and matches the window head and the
+  leaf form, so the rule becomes "options go in parens, everywhere".
+- **`stretch` becomes `stretch()`.** A body-LESS bare word collides with `row`,
+  a body-BEARING bare word, which is the discipline above stated in the
+  negative. Two characters again.
+
+**THE OPENER NEEDS ITS OWN TOKEN FROM THE LEXER, and that costs no reserved
+word.** G measures the alternative: sharing the server block's `IDENT IDENT (`
+head costs **2 reduce/reduce**, because after `IDENT IDENT ( … ) NEWLINE` the
+parser cannot tell which body is coming — the counterexample names exactly that.
+The lexer recognises `window` only in `window IDENT (` at statement start, which
+is the technique that already won for keyword field names and for inline
+modifiers, and `window` stays an ordinary identifier everywhere else (measured
+in §2.1: 8 bare uses and 25 field or qualified ones).
+
+**The shape that measures zero, in full:**
+
+```
+window_item
+    : IDENT LPAREN RPAREN NEWLINE                                   /* stretch()            */
+    | IDENT IDENT LPAREN record_field_list RPAREN NEWLINE           /* field id( … )        */
+    | IDENT NEWLINE … END IDENT NEWLINE                             /* row                  */
+    | IDENT LPAREN record_field_list RPAREN NEWLINE … END IDENT NEWLINE   /* column( … )    */
+    | IDENT STRING NEWLINE … END IDENT NEWLINE                      /* group "Credit"       */
+    | IDENT IDENT IDENT IDENT NEWLINE … END IDENT NEWLINE           /* form to edit cust    */
+    | ON IDENT NEWLINE statement_list END ON NEWLINE                /* on save.clicked      */
+    ;
+```
+
+**AND `type: {USD}` DOES NOT PARSE TODAY, which §5 item 2 flagged as the other
+half of this question.** Measured: `r = { label: "Limit", type: {USD} }` is a
+syntax error at the closing brace — a bare modifier is not a value, it needs
+something to apply to (`{USD}0` answers `0.00`). So §2's example contained a
+construct that could not be built, and the fix was priced rather than guessed:
+
+| | cost |
+|---|---|
+| admit a bare `MODIFIER_PREFIX` as a primary expression | **4 S/R** |
+| let the **lexer** decide, and give the bare form its own token | **0** |
+
+Four is exactly the number that got `IDENT expression` rejected as a statement
+form, and the cause is inherent: after `{USD}` the parser cannot tell a bare
+modifier from one applied to what follows — `{USD} -5` is the discriminating
+case. **The lexer can, and that is the technique which already won twice here**
+(keyword field names, and the inline modifier itself): `{IDENT}` is already ONE
+token, the lexer may look past the `}` as far as it likes, and what follows
+settles it — a `,`, a `)` or a newline means the modifier is a VALUE, anything
+else means it is applied to what comes next. Two distinct tokens, so the grammar
+never has to choose.
+
+That is a **language addition rather than a window feature**, since a modifier
+as a value is useful wherever a type needs naming, and it should be decided as
+one.
+
+**This is a design measurement and not yet a gate.** When the grammar lands, the
+zero becomes an assertion in its suite — the way `run_optparams`,
+`run_for_each_index` and `run_principal` each assert bison still reports zero,
+which is not decoration in a project that rejected `IDENT expression` as a
+statement form over four measured conflicts.
 
 ### 5.1 THE LOOP, ANSWERED BY MEASUREMENT (2026-10-17)
 

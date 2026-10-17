@@ -55,6 +55,44 @@ two defects in the suite's own parsing: a whole-value extractor that reported
 the definition **missing on a correct run**, and then a first-token one that
 truncated a list at `Normal Text`. Two shapes of value, two extractors.
 
+### The Qt `window` grammar, priced in bison conflicts
+
+No grammar ships — `src/parser.y` is untouched and still reports **zero**.
+`docs/qt_gui_design.md` §5 listed the grammar cost of `window customer( … )` as
+the second thing that had to be measured before any Qt code is written, against
+a standard of zero. Ten shapes were put through bison; §5.2 records all of them.
+
+**Zero is reachable, and getting there changed two things in the design's own
+example** — which is the reason for measuring rather than reasoning:
+
+- **`column margin: 8` becomes `column( margin: 8 )`.** Every conflict in the
+  near-miss shape was *inside a record field's value expression*, not in the
+  body question at all: an unparenthesised field list has no closing token, so
+  the parser cannot tell where a value ends. Options go in parens everywhere.
+- **`stretch` becomes `stretch()`.** A body-less bare word collides with `row`,
+  a body-bearing one.
+
+Behind both is the discipline that makes the existing `server` block free, and
+it is not luck: **every item shape is decided by what follows the first
+identifier**, so no two shapes share a prefix while differing in whether a body
+follows. A window obeying that rule needs no reserved words and can grow its
+vocabulary.
+
+**The opener needs its own token from the lexer**, which costs no reserved word:
+sharing the `server` block's `IDENT IDENT (` head measures **2 reduce/reduce**,
+because after `IDENT IDENT ( … ) NEWLINE` the parser cannot tell which body is
+coming.
+
+**And `type: {USD}` does not parse today** — measured, a bare modifier is not a
+value; it needs something to apply to. Admitting one as a primary expression
+costs **4 shift/reduce**, which is exactly the count that got `IDENT expression`
+rejected as a statement form, and the cause is inherent (`{USD} -5` is the
+discriminating case). **Letting the lexer decide costs zero**: `{IDENT}` is
+already one token, the lexer may look past the `}`, and a `,`, `)` or newline
+means *value* while anything else means *applied*. That is a language addition
+rather than a window feature, since a modifier as a value is useful wherever a
+type needs naming, and it should be decided as one.
+
 ### The Qt event loop, answered by measurement
 
 No Qt code ships here — this is the **experiment** `docs/qt_gui_design.md` §5
