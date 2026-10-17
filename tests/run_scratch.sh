@@ -82,12 +82,40 @@ printf 'TIER symlink: the link goes, the target stays\n'
 rm -rf "$work/sl"; mkdir -p "$work/sl/tree/a" "$work/sl/precious"
 echo 'do not lose me' > "$work/sl/precious/keep.txt"
 echo 'ordinary'       > "$work/sl/tree/a/plain.txt"
-ln -s "$work/sl/precious"           "$work/sl/tree/a/dir_link"
-ln -s "$work/sl/precious/keep.txt"  "$work/sl/tree/file_link"
-ln -s "$work/sl/precious"           "$work/sl/top_link"
 cat > "$work/sl.bas" <<'BAS'
 program main(args)
     on error goto next
+    ' THE LINKS ARE MADE HERE, by gBASIC, and the premise is asserted before
+    ' anything is removed. MSYS `ln -s` COPIES by default, so built in bash this
+    ' tier made three copies on Windows and passed VACUOUSLY -- deleting a copy
+    ' leaves the original alone, which is precisely what the tier concludes.
+    ' Making them with `symlink()` would inherit the same hazard, a symlink that
+    ' copied passing just as well, so what removes the hazard is not WHICH tool
+    ' makes them but asking `is_symlink` whether it worked.
+    root = args[0]
+    ' ONE CHECK PER CALL, not one for the three: PLAT-ERR rule 1 says a second
+    ' raise while one is PENDING escapes the frame, so batching them killed the
+    ' fixture before it could report which link failed -- measured, with a
+    ' perturbed `symlink` the tier said "the fixture did not run" rather than
+    ' naming the premise.
+    symlink(root + "/precious", root + "/tree/a/dir_link")
+    if error then
+        print "PREMISE FAILED (dir_link): " + error.message
+        error.clear()
+    end if
+    symlink(root + "/precious/keep.txt", root + "/tree/file_link")
+    if error then
+        print "PREMISE FAILED (file_link): " + error.message
+        error.clear()
+    end if
+    symlink(root + "/precious", root + "/top_link")
+    if error then
+        print "PREMISE FAILED (top_link): " + error.message
+        error.clear()
+    end if
+    print "premise dir_link:  " + string(is_symlink(root + "/tree/a/dir_link"))
+    print "premise file_link: " + string(is_symlink(root + "/tree/file_link"))
+    print "premise top_link:  " + string(is_symlink(root + "/top_link"))
     t {dir}= args[0] + "/tree"
     print "tree: " + string(remove_tree(t))
     if error then
@@ -110,6 +138,13 @@ sl_rc=$?
 set -e
 if [ "$sl_rc" -ne 0 ]; then
     cat "$work/sl.out"; fail "the symlink fixture did not run"
+elif ! grep -qx 'premise dir_link:  true' "$work/sl.out" \
+     || ! grep -qx 'premise file_link: true' "$work/sl.out" \
+     || ! grep -qx 'premise top_link:  true' "$work/sl.out"; then
+    # A LINK-MAKER THAT COPIES SATISFIES EVERY CONCLUSION BELOW, so the premise
+    # is a failure rather than a skip: the tier would otherwise report that
+    # remove_tree does not follow links having never been given one.
+    cat "$work/sl.out"; fail "the links are not links, so this tier measured nothing"
 else
     if [ -d "$work/sl/tree" ]; then
         fail "the tree was not removed"
@@ -264,10 +299,13 @@ printf 'TIER valgrind\n'
 if vg_available; then
     rm -rf "$work/vg"; mkdir -p "$work/vg/tree/a/b"
     echo x > "$work/vg/tree/a/b/f.txt"
-    ln -s "$work/vg" "$work/vg/tree/a/loop_link"
     cat > "$work/vg.bas" <<'BAS'
 program main(args)
     on error goto next
+    symlink(args[0], args[0] + "/tree/a/loop_link")
+    if error then
+        error.clear()
+    end if
     t {dir}= args[0] + "/tree"
     print string(remove_tree(t))
     f = temp_file({ in: {dir}args[0], prefix: "vg-" })

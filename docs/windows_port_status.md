@@ -1247,6 +1247,14 @@ icacls <the path temp_file printed>
 - If that shows only the owner, SYSTEM and Administrators, **the promise is
   already kept** and what is needed is one sentence of documentation, not a
   DACL. Say so and the ACL question closes.
+
+  > **ANSWERED, AND THIS BRANCH IS DEAD** — see §28 and §29. A default profile
+  > does inherit a private ACL, but the first machine measured already carried
+  > an **explicit alien ACE** on `%TEMP%` from a migrated profile, and under a
+  > redirected `TEMP` the file grants `INTERACTIVE`, `SERVICE` and `BATCH`
+  > modify while `permissions` reports `0666`. An inherited ACL is only as
+  > private as whatever has been done to `%TEMP%`, so it is not a promise this
+  > language can make. The fix is an explicit owner-only DACL **at creation**.
 - If it shows `Users`, `Authenticated Users` or `Everyone`, ACL support has a
   real reason, and the honest minimum is `chmod(f, "0600")` building an explicit
   DACL with `SetNamedSecurityInfoW` granting the owner alone.
@@ -1535,3 +1543,124 @@ is the sharper half, since a program checks `exists()` before it reads.
 
 The workspace was again left behind (the read-only file), this time holding a
 directory link. It was removed with `rmdir /s /q`, which does not follow links.
+
+---
+
+## 29. §28 ANSWERED FROM THE LINUX SIDE, and what goes back (2026-10-17)
+
+§28 reported seven things. Four were mine to fix and are fixed; three are
+`src/platform_win32.c` and go back, because nothing here can run them.
+
+`read_at`/`overwrite` past 2 GB (§28's own fix, `3c527fd`) is **merged to
+master and re-verified on real Linux**, not only under WSL: the 3 GB sparse-file
+tier passes, `run_read_at` passes, no golden moved.
+
+### THE SEPARATOR DECISION, which §28 forced early
+
+§27 listed the four path splitters as *"a decision rather than a measurement"*
+and §28 showed the increment disagreeing with itself: `temp_file` built its path
+with a backslash while the splitters scanned for `/` only, so
+`file_name(temp_file({prefix: "vendor-"}))` answered the whole path and
+`directory_name` of a file made `in:` a directory answered that directory's
+**parent**.
+
+**The rule is not a translation and must not become one.** Measured 2026-10-17:
+`\` is a **legal filename character** on Linux (`touch "we\ird.txt"` succeeds on
+ext4), so normalising at the door would corrupt real files. Python is the
+nearest precedent and does **not** translate either — `os.path` *is* `ntpath` on
+Windows, a second implementation that reads both separators, while
+`posixpath.basename("weird\\name.txt")` keeps the backslash. Two
+implementations chosen by platform.
+
+And this tree had **already decided it three times** without applying it in the
+splitters: `path_is_absolute`, `last_path_separator` and `path_is_sep` each read
+both separators under `#ifdef _WIN32`, and `path_is_sep` carries the argument
+verbatim — *"Windows accepts both, and a path reaches gBASIC either way (typed,
+or from the shell); on POSIX a backslash is an ordinary filename character and
+must not split a name."* `gb_realpath` and `gb_exe_path` normalise to `/` on the
+way out of a Windows API for the same reason. So:
+
+- **gBASIC speaks `/`, and the platform layer normalises at the boundary.**
+  `gb_make_temp_file`/`gb_make_temp_dir` now join with `/`, which is
+  conformance to an existing rule rather than a new decision — Windows accepts
+  `/` everywhere a path is handed back to it.
+- **A path arriving from OUTSIDE gBASIC is read with either separator, on
+  Windows only.** `file_name`, `directory_name`, `extension`, `stem` and
+  `join_path` read `path_is_sep` now; `join_path` still *writes* `/`.
+- **Nothing changes on POSIX**, which is what `tests/path_split_test.bas`
+  asserts: a backslash does not split a name, does not end a directory and
+  survives `join_path`, with the control that a forward slash still does split.
+  The Windows half is **reported** by `tests/windows/scratch_metadata.bas`
+  rather than guessed at, and the invariant that holds on both platforms —
+  a prefix reaches the NAME, and `directory_name` of a file made `in: d` is
+  `d` — is asserted there.
+
+### The fixture defects §28 found, fixed
+
+- **`BROKEN` exited 0**, so `run_windows_suite` reported `PASS (15)` over a file
+  that had just called itself broken. The runner's contract is that the LAST
+  line is `mismatches: 0`, and the fixture printed `BROKEN` and then the tally.
+  `BROKEN` is the last line now, and **the floor knows why it is low**: without
+  the symlink privilege five checks legitimately cannot run, so a fixed floor
+  would either fail a correct run or pass a broken one.
+- **It could not clean up after itself**, because its own prediction-1
+  provocation leaves a read-only file that `remove_tree` will not remove. It
+  clears the attribute and retries now — which is also the fix prediction 1
+  asks of the platform layer, done by hand so the tier can keep provoking the
+  defect without accumulating a `gbwin-*` directory per run.
+- **`metadata_test.bas` raised on a refused `symlink`** where the sibling
+  fixture reported. It skips by name now, so on a machine without the privilege
+  it measures the other 50 checks instead of nothing.
+
+### `ln -s` IS NOT A PORTABLE WAY TO GET A SYMLINK, and the premise is the fix
+
+§28's sharpest harness finding: **MSYS `ln -s` copies by default**, so
+`run_scratch`'s symlink tier built three *copies* on Windows and **passed
+vacuously** — deleting a copy leaves the original alone, which is exactly what
+that tier concludes.
+
+`MSYS=winsymlinks:nativestrict` would fix that invocation, and it is the wrong
+fix: making the links with gBASIC's own `symlink()` **inherits the same
+hazard**, since a `symlink` that copied would pass just as well. What removes
+the hazard is not which tool makes the link but **asking whether it worked**.
+So those tiers now build their links with `symlink()` *and* assert
+`is_symlink()` on each one before anything is removed, and a failed premise is a
+**failure** rather than a skip — the tier would otherwise report that
+`remove_tree` does not follow links having never been given one. Proven by
+perturbing `symlink` into a hard link: the tier names which link is not a link.
+
+`run_intake`'s vanished-file tier moved for a sharper reason: `ln -s` **fails
+outright** under MSYS for a dangling target, and a copy of a nonexistent file
+cannot be made at all, so that tier had no premise on Windows and would have
+reported that a withdrawn file was not announced.
+
+`run_web_routes`'s containment tier needed nothing: it already asks
+`[[ -L ... ]]` and skips by name with its floor lowered. `run_glob` is left
+alone deliberately — §28 is right that its failures rest on `chmod 000` having
+no effect, which is a fact about Windows ACLs rather than about the suite.
+
+### WHAT GOES BACK, in priority order
+
+All five are `src/platform_win32.c`, all unverifiable from Linux.
+
+1. **`exists()` on a dangling link answers `true`** (§28, elevated run). The
+   sharpest, because a program checks `exists()` before it reads, and the
+   mechanism §28 suspects would also make `file_type`, `file_size` and
+   `permissions` of a **live** link describe the link rather than its target.
+   `CreateFileW` *without* `FILE_FLAG_OPEN_REPARSE_POINT`, then
+   `GetFileInformationByHandle`.
+2. **An owner-only DACL at creation** for `temp_file`/`temp_dir`, via
+   `SECURITY_ATTRIBUTES` on `CreateFileW`/`CreateDirectoryW` — not a `chmod`
+   afterwards, which leaves a window where the file exists with the inherited
+   ACL. §27's documentation branch is struck above.
+3. **`remove_tree`: clear `FILE_ATTRIBUTE_READONLY` and retry once.** Prediction
+   1, confirmed. The fixture now does this by hand to clean up, which is the
+   shape the platform fix should take.
+4. **`remove_tree`: `RemoveDirectoryW` for a directory reparse point.**
+   Prediction 2, confirmed in the good direction — it refused rather than
+   descending, and the target survived.
+5. **MAX_PATH**, which currently reports `Directory not empty` for a tree the
+   256-level bound never got to judge. Wide calls or the `\\?\` prefix.
+
+Nothing in 1–5 can be red-proofed from here, so each should arrive with the
+measurement that showed it, the way §28 did.

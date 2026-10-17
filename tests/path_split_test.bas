@@ -289,6 +289,31 @@ program main(args)
           file_name(real_path(".")) != "", true)
     check("CONTROL: file_type still answers for one that exists", file_type("."), "folder")
 
+    print "-- a backslash is a CHARACTER here, and a separator on Windows"
+
+    ' THE POSIX HALF OF A PLATFORM RULE, and the only half this machine can
+    ' prove. The splitters read `path_is_sep`, which answers both separators on
+    ' Windows and only `/` here -- because on Linux a backslash is an ORDINARY
+    ' FILENAME CHARACTER and splitting on it would cut a real name in half.
+    ' Measured: `touch "we\ird.txt"` succeeds on ext4.
+    '
+    ' The rule is not a translation and must not become one. Python is the
+    ' nearest precedent and does the same thing: `os.path` IS `ntpath` on
+    ' Windows, which reads both, while `posixpath.basename("weird\\name.txt")`
+    ' keeps the backslash -- two implementations chosen by platform, not a
+    ' conversion at the door. Measured 2026-10-17.
+    '
+    ' The WINDOWS half cannot be asserted from here and is not guessed at: it
+    ' is reported by tests/windows/scratch_metadata.bas, which runs on both.
+    check("a backslash does not split a name", file_name("we\\ird.txt"), "we\\ird.txt")
+    check("...even after a real separator",
+          file_name("dir/we\\ird.txt"), "we\\ird.txt")
+    check("...and does not end a directory", directory_name("a\\b/c.txt"), "a\\b")
+    check("join_path keeps it too", join_path("a\\b", "c"), "a\\b/c")
+    ' THE CONTROL that keeps the four above from being satisfied by splitters
+    ' that stopped splitting: a real separator still cuts.
+    check("CONTROL: a forward slash still splits", file_name("a/b.txt"), "b.txt")
+
     print "checks: " + string(tally.checks)
     print "mismatches: " + string(tally.mismatches)
 end program

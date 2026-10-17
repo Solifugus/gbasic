@@ -9883,7 +9883,8 @@ static int same_file_path(const char *a, const char *b) {
  * This is the same notion of "local library" the loader already uses: beside
  * the loading file, never below it (run_library_depth.sh). */
 /* The last directory separator in a CANONICAL path (gb_realpath's output).
- * Windows: gb_realpath answers with backslashes, and `/` is accepted there too.
+ * Windows: gb_realpath NORMALISES its answer to `/` (it says so, and says why),
+ * so this reads both only for a path that reached here some other way.
  * POSIX: only `/` -- a backslash is an ordinary filename character, and
  * treating it as a separator would cut a name in half. */
 static char *last_path_separator(char *path) {
@@ -11046,20 +11047,38 @@ static const char *directory_path(Value value) {
     return file_target_path(value);
 }
 
+/* A path separator. Windows accepts both, and a path reaches gBASIC either way
+ * (typed, or from the shell); on POSIX a backslash is an ordinary filename
+ * character and must not split a name. */
+static int path_is_sep(char c) {
+#ifdef _WIN32
+    return c == '/' || c == '\\';
+#else
+    return c == '/';
+#endif
+}
+
+/* THE SEPARATOR IS READ AS EITHER AND WRITTEN AS '/'. That asymmetry is the
+ * rule this tree already follows at three other sites (`path_is_absolute`,
+ * `last_path_separator`, `gb_realpath`/`gb_exe_path`, which normalise on the
+ * way out of a Windows API): gBASIC speaks '/', and a path arriving from
+ * OUTSIDE it -- argv, an environment variable, a person typing `C:\data\x.csv`
+ * -- arrives however Windows spells it. Reported from a Windows run
+ * 2026-10-17, where it had never been applied here. */
 static char *join_path_utility(const char *left, const char *right) {
     size_t left_len = strlen(left);
-    while (left_len > 1 && left[left_len - 1] == '/') {
+    while (left_len > 1 && path_is_sep(left[left_len - 1])) {
         left_len--;
     }
 
     const char *right_start = right;
     if (left_len > 0) {
-        while (*right_start == '/') {
+        while (path_is_sep(*right_start)) {
             right_start++;
         }
     }
     size_t right_len = strlen(right_start);
-    int needs_slash = left_len > 0 && right_len > 0 && left[left_len - 1] != '/';
+    int needs_slash = left_len > 0 && right_len > 0 && !path_is_sep(left[left_len - 1]);
 
     char *result = malloc(left_len + (size_t)needs_slash + right_len + 1);
     if (!result) {
@@ -11076,7 +11095,7 @@ static char *join_path_utility(const char *left, const char *right) {
 
 static size_t path_length_without_trailing_separators(const char *path) {
     size_t length = strlen(path);
-    while (length > 1 && path[length - 1] == '/') {
+    while (length > 1 && path_is_sep(path[length - 1])) {
         length--;
     }
     return length;
@@ -11203,7 +11222,7 @@ static Value eval_path_call(AstExpr *expr) {
         size_t length = path_length_without_trailing_separators(first_path);
         const char *slash = NULL;
         for (size_t i = length; i > 0; i--) {
-            if (first_path[i - 1] == '/') {
+            if (path_is_sep(first_path[i - 1])) {
                 slash = first_path + i - 1;
                 break;
             }
@@ -11378,17 +11397,6 @@ static int file_value_compare(const void *left, const void *right) {
  * value reported BY NAME. Writes through a private copy of the path, so the
  * caller's string is untouched. Returns 0 on success; on failure `why` holds a
  * message and the path it is about. */
-/* A path separator. Windows accepts both, and a path reaches gBASIC either way
- * (typed, or from the shell); on POSIX a backslash is an ordinary filename
- * character and must not split a name. */
-static int path_is_sep(char c) {
-#ifdef _WIN32
-    return c == '/' || c == '\\';
-#else
-    return c == '/';
-#endif
-}
-
 /* How much of `path` is ROOT -- the part a `mkdir -p` walk must not try to
  * create. POSIX: the walk starts at index 1, which already steps over a
  * leading `/`, so nothing more. Windows: a drive ("C:", then its separator)

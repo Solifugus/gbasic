@@ -16,6 +16,55 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Paths read either separator on Windows, and `read_at` reaches past 2 GB
+
+Both came from a **Windows run** of the metadata increment
+(`docs/windows_port_status.md` §28, answered in §29), which is the only thing
+that can execute `src/platform_win32.c` — the cross-compile ratchet proves it
+compiles and nothing more.
+
+**`read_at` and `overwrite` refused every file over 2 GB on Windows.** Both
+positioned with `fseek`/`ftell`, whose `long` is 32 bits there even in a 64-bit
+build, and capped their arguments at `LONG_MAX`. Measured on a 3 GB sparse file,
+`read_at(f, 0, 4)` raised `(Invalid argument)` **at zero**, because both ask the
+file's size first — so the two functions that exist for large files refused
+every large file. `gb_fseek`/`gb_ftell`/`GB_OFF_MAX` are in the platform layer
+now (`_fseeki64`/`_ftelli64` on Windows, the same calls as before on POSIX,
+where `long` is already 64 bits). A tier runs on every platform over a 3 GB
+sparse file.
+
+**`temp_file` built its path with a backslash while the four path splitters
+scanned for `/` only**, so the increment disagreed with itself:
+`file_name(temp_file({prefix: "vendor-"}))` answered the whole path and
+`directory_name` of a file made `in:` a directory answered that directory's
+**parent**.
+
+Two fixes, and **neither is a translation**. `\` is a **legal filename
+character** on Linux — measured, `touch "we\ird.txt"` succeeds on ext4 — so
+normalising at the door would corrupt real files. Python does not translate
+either: `os.path` *is* `ntpath` on Windows, a second implementation reading both
+separators, while `posixpath` keeps the backslash.
+
+- **gBASIC speaks `/` and the platform layer normalises at the boundary**, which
+  is the rule `gb_realpath` and `gb_exe_path` already followed with the argument
+  written beside them. The temp bodies join with `/` now — conformance, not a
+  new decision.
+- **A path arriving from outside gBASIC is read with either separator, on
+  Windows only.** `file_name`, `directory_name`, `extension`, `stem` and
+  `join_path` read `path_is_sep` — which already existed, carrying this exact
+  argument, and had simply never been applied here. `join_path` still *writes*
+  `/`. **Nothing changes on POSIX**, which `tests/path_split_test.bas` now
+  asserts with its control.
+
+**`ln -s` is not a portable way to get a symlink, and the premise is the fix.**
+MSYS `ln -s` **copies** by default, so `run_scratch`'s symlink tier built three
+copies on Windows and **passed vacuously** — deleting a copy leaves the original
+alone, which is exactly what that tier concludes. Making the links with
+gBASIC's own `symlink()` inherits the same hazard, so what removes it is
+**asking whether it worked**: those tiers assert `is_symlink()` on each link
+before anything is removed, and a failed premise is a *failure*, not a skip.
+Proven by perturbing `symlink` into a hard link.
+
 ### Metadata: `permissions`, `chmod`, `set_mtime`, `is_symlink`, `symlink`
 
 `chmod` was the last outstanding item of the five

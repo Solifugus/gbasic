@@ -37,7 +37,7 @@ end function
 
 program main(args)
 
-    tally = { checks: 0, mismatches: 0 }
+    tally = { checks: 0, mismatches: 0, no_symlinks: false }
 
     ' THE FIXTURE USES THE FEATURE TO GET ITS OWN WORKSPACE, which it could not
     ' do before today: this file runs from the repository root and must leave
@@ -56,6 +56,28 @@ program main(args)
     ok("two calls give two names", string(t) != string(t2), true)
     write(t, "payload")
     ok("it is writable", read(t), "payload")
+
+    ' THE INCREMENT MUST AGREE WITH ITSELF ABOUT SEPARATORS, which is a claim
+    ' independent of which separator the platform uses -- and it FAILED on
+    ' Windows (§28): the temp body joined with a backslash while the four path
+    ' splitters scanned for '/' only, so `file_name` answered the WHOLE PATH
+    ' and `directory_name` of a file made `in:` a directory answered that
+    ' directory's PARENT. Two fixes landed for it: the temp body now joins with
+    ' '/' (the rule `gb_realpath` and `gb_exe_path` already follow), and the
+    ' splitters read `path_is_sep`, which accepts both on Windows.
+    named = temp_file({ in: work, prefix: "vendor-" })
+    ok("a prefix reaches the NAME, not the whole path",
+       starts_with(file_name(named), "vendor-"), true)
+    ok("...and the name is not the whole path",
+       byte_count(file_name(named)) < byte_count(string(named)), true)
+    ok("directory_name of a file made `in:` d IS d",
+       directory_name(named), string(work))
+    report("a path this build produced", string(named))
+    ' THE PLATFORM HALF, reported rather than asserted: on Windows a backslash
+    ' IS a separator and on POSIX it is an ordinary filename character, so this
+    ' line is expected to differ and `tests/path_split_test.bas` asserts the
+    ' POSIX side.
+    report("file_name(\"C:\\data\\x.csv\")", file_name("C:\\data\\x.csv"))
 
     ' THE MEASUREMENT THAT DECIDES WHETHER ACL WORK IS NEEDED AT ALL. POSIX
     ' gets 0600 from mkstemp, which is what lets a program hold a secret in one.
@@ -137,6 +159,7 @@ program main(args)
         ' permission. Reported rather than asserted, since whether the
         ' privilege is held is a fact about the machine.
         report("symlink refused", error.message)
+        tally.no_symlinks = true
         error.clear()
     else
         ok("symlink creates one", made, true)
@@ -227,15 +250,58 @@ program main(args)
     ' CLEAN UP AFTER ITSELF, which this suite's whole family requires: nothing
     ' is removed automatically, and a gate that leaves temp directories behind
     ' accumulates them.
+    ' THE PROVOCATION ABOVE MUST NOT COST A CLEAN EXIT. Prediction 1 leaves a
+    ' read-only file behind on Windows, so the first version of this left a
+    ' `gbwin-*` directory in %TEMP% on every run (§28) -- a fixture that
+    ' accumulates state is the shape run_repl.sh had to fix after greeting
+    ' somebody with "5721 previous sessions ended without saving". The
+    ' attribute is cleared and the removal retried, which is also the FIX
+    ' prediction 1 asks of the platform layer, done here by hand.
+    if exists(ro) then
+        chmod(ro, "0644")
+        if error then
+            error.clear()
+        end if
+    end if
     cleaned = remove_tree(work)
     if error then
         report("the fixture could not remove its own workspace", error.message)
         error.clear()
+        ' SECOND ATTEMPT, after clearing every read-only file the walk met.
+        for each e in files(work, "**/*")
+            chmod(e.path, "0644")
+            if error then
+                error.clear()
+            end if
+        end for
+        cleaned = remove_tree(work)
+        if error then
+            report("...and could not after clearing read-only attributes either",
+                   error.message)
+            error.clear()
+        else
+            report("...but could once the read-only attributes were cleared", "true")
+        end if
     end if
 
-    if tally.checks < 20 then
-        print "BROKEN: only " + string(tally.checks) + " checks ran"
+    ' THE FLOOR KNOWS WHY IT IS LOW. Without the symlink privilege five checks
+    ' legitimately cannot run (§28: 15 of 24 on Windows with Developer Mode
+    ' off), so a fixed floor would either fail a correct run or pass a broken
+    ' one. `tally.no_symlinks` is set where the privilege is refused.
+    '
+    ' AND `BROKEN` IS THE LAST LINE, because run_windows_suite.sh passes a file
+    ' whose last line is `mismatches: 0` -- so the first version printed BROKEN
+    ' and then the tally, and the runner reported PASS (15) over a file that had
+    ' just called itself broken. Measured on Windows.
+    floor = 24
+    if tally.no_symlinks then
+        floor = 14
     end if
     print "checks: " + string(tally.checks)
-    print "mismatches: " + string(tally.mismatches)
+    if tally.checks < floor then
+        print("BROKEN: only " + string(tally.checks) + " checks ran, wanted "
+              + string(floor))
+    else
+        print "mismatches: " + string(tally.mismatches)
+    end if
 end program

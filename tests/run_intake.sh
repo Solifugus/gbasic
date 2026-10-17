@@ -175,7 +175,20 @@ printf 'TIER vanished: a file in the listing that is not there to read\n'
 # to write it -- a real mid-scan deletion is a race with another process.
 d="$work/vanish"; mkdir -p "$d"
 printf 'real\n' > "$d/real.csv"
-ln -s /nonexistent/gone.csv "$d/gone.csv"
+# MADE BY gBASIC, with the premise asserted. `ln -s` is not a portable way to
+# get a symlink: under MSYS2 it FAILS OUTRIGHT for this shape (reported from a
+# Windows run 2026-10-17), and where it does not fail it silently makes a COPY
+# unless MSYS=winsymlinks:nativestrict -- and a copy of a nonexistent target
+# cannot be made at all, so the tier would have no dangling entry and would
+# report that one was not announced. `symlink` is a builtin since 0.11.0.
+printf 'symlink("/nonexistent/gone.csv", "%s/gone.csv")\nprint is_symlink("%s/gone.csv")\n' \
+    "$d" "$d" > "$work/mklink.bas"
+if [ "$(./gbasic "$work/mklink.bas" 2>&1 | tail -1)" != "true" ]; then
+    # A FAILURE, NOT A SKIP: without a dangling entry this tier asserts that a
+    # withdrawn file is announced while never withdrawing one, which is the
+    # vacuous pass the whole tier exists to rule out.
+    fail "could not create a dangling symlink, so the vanished tier has no premise"
+fi
 set +e
 out=$(./gbasic "$work/scan.bas" "$d" led content renamed 2>&1); rc=$?
 set -e

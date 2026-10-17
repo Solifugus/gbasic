@@ -45,7 +45,7 @@ end function
 program main(args)
 
     root = args[0]
-    tally = { checks: 0, mismatches: 0 }
+    tally = { checks: 0, mismatches: 0, no_symlinks: false }
     work {dir}= root
 
     f {file}= join_path(root, "subject.txt")
@@ -107,7 +107,18 @@ program main(args)
     check("a directory is not a symlink", is_symlink(d), false)
 
     link {file}= join_path(root, "link.txt")
-    check("symlink creates one", symlink(f, link), true)
+    on error goto next
+    made = symlink(f, link)
+    if error then
+        ' Reported, not asserted: whether the privilege is held is a fact about
+        ' the machine. Everything below that needs a link is skipped by name so
+        ' the gap is visible rather than silent.
+        print "SKIP symlink: " + error.message
+        tally.no_symlinks = true
+        error.clear()
+    end if
+    if not tally.no_symlinks then
+    check("symlink creates one", made, true)
     check("...and it IS one", is_symlink(link), true)
     ' `file_type` FOLLOWS a link -- measured, which is exactly why `is_symlink`
     ' had to exist: the one call that could have answered reports the TARGET.
@@ -120,6 +131,7 @@ program main(args)
     delete(link)
     check("delete removes the link", exists(link), false)
     check("...and the target survives", read(f), "subject")
+    end if
 
     print "-- the correction: file_type and the LISTING must agree"
 
@@ -130,6 +142,7 @@ program main(args)
     ' there is no file there. `if e.type = "file" then read(e.path)` raises on
     ' the first and BLOCKS FOREVER on the second.
     dangling {file}= join_path(root, "dangling")
+    if not tally.no_symlinks then
     symlink(join_path(root, "no-such-target"), dangling)
     check("a dangling link IS a symlink", is_symlink(dangling), true)
     check("...and exists() denies it", exists(dangling), false)
@@ -155,6 +168,7 @@ program main(args)
     ' that labels everything unknown.
     check("CONTROL: an ordinary file is still file", seen.subject, "file")
     check("CONTROL: a directory is still folder", seen.sub, "folder")
+    end if
 
     ' AND `files()` MUST STILL RETURN THEM, which is the check that would have
     ' caught the mistake this correction made on its first attempt. The glob
@@ -163,6 +177,7 @@ program main(args)
     ' file report rests on the entry still being reported, so the silence that
     ' tier exists to prevent came straight back. `files` excludes FOLDERS now.
     found = { dangling: false, subject: false, sub: false }
+    if not tally.no_symlinks then
     for each e in files(work, "*")
         if e.name = "dangling" then
             found.dangling = true
@@ -177,6 +192,7 @@ program main(args)
     check("files() still returns a dangling link", found.dangling, true)
     check("CONTROL: ...and an ordinary file", found.subject, true)
     check("CONTROL: ...and still excludes a directory", found.sub, false)
+    end if
 
     print "-- refusals, each beside its nearest legal neighbour"
 
@@ -281,11 +297,13 @@ program main(args)
     check("CONTROL: chmod still works", chmod(f, "0640"), true)
     check("CONTROL: permissions still answers", permissions(f).mode, "0640")
     check("CONTROL: set_mtime still works", set_mtime(f, when), true)
-    ahead {file}= join_path(root, "ahead")
-    check("CONTROL: a link to something that does not exist YET is allowed",
-          symlink(join_path(root, "arrives-later"), ahead), true)
-    check("...which is how a link is written before its target arrives",
-          is_symlink(ahead), true)
+    if not tally.no_symlinks then
+        ahead {file}= join_path(root, "ahead")
+        check("CONTROL: a link to something that does not exist YET is allowed",
+              symlink(join_path(root, "arrives-later"), ahead), true)
+        check("...which is how a link is written before its target arrives",
+              is_symlink(ahead), true)
+    end if
 
     print "checks: " + string(tally.checks)
     print "mismatches: " + string(tally.mismatches)

@@ -1728,8 +1728,18 @@ static int win32_temp_name(const char *dir, const char *prefix,
         }
     }
     size_t len = strlen(root);
+    /* JOIN WITH A FORWARD SLASH, which is the rule `gb_realpath` and
+     * `gb_exe_path` already follow and which this body broke: gBASIC speaks
+     * '/' and the platform layer normalises at the boundary, because the four
+     * path splitters scan for '/' and nothing else. MEASURED on Windows
+     * 2026-10-17 -- with a backslash here, `file_name(temp_file({prefix:
+     * "vendor-"}))` answered the WHOLE PATH and `directory_name` of a file made
+     * `in:` a directory answered that directory's PARENT, so the increment
+     * disagreed with itself. Windows accepts '/' everywhere a path is handed
+     * back to it, and a backslash cannot be part of a Windows file name, so
+     * nothing is lost. */
     const char *sep = (len > 0 && (root[len - 1] == '\\' || root[len - 1] == '/'))
-                          ? "" : "\\";
+                          ? "" : "/";
     unsigned char rnd[8];
     if (gb_secure_random(rnd, sizeof rnd) != 0) {
         errno = EIO;
