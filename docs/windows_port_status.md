@@ -1664,3 +1664,66 @@ All five are `src/platform_win32.c`, all unverifiable from Linux.
 
 Nothing in 1–5 can be red-proofed from here, so each should arrive with the
 measurement that showed it, the way §28 did.
+
+## 30. §29's five items, FIXED on Windows (2026-10-17)
+
+All five are done, each in its own commit with a tier in
+`tests/run_windows_suite.sh` that was **red without the fix and green with it**
+on Windows. Every new platform function is the old call on POSIX, and Linux was
+checked as a DIFFERENCE: the same fourteen suites built at `439e87f` and at
+`e72d65c` in WSL gave **identical results suite by suite** (`run_examples` and
+`run_intake` fail on both sides there, for WSL's leaner build).
+
+The tiers use **directory junctions**, which need no privilege, so they run on
+any Windows machine rather than skipping without Developer Mode.
+
+| §29 item | commit | what it was | the fix |
+|---|---|---|---|
+| 1. dangling link "exists" | `b33426a` | MEASURED with a C probe: Windows' C-runtime `stat` answers rc=0 on a **dangling junction**, while opening the same path (which follows) fails | `gb_stat`: a reparse point is resolved with `gb_realpath` and its target stat'ed; no target is ENOENT. The 16 `stat` calls in `src/eval.c` go through it |
+| 2. owner-only temp | `14d0836` | §28's measurement, plus one the red half of the tier found: `C:\msys64\tmp` grants **Authenticated Users Modify** by default, so from an MSYS shell every temp file was writable by any signed-in user | created **with** a protected DACL granting the current user alone, in the `CreateFileW`/`CreateDirectoryW` call; the directory's grant is inheritable, so what is written inside is owner-only too. Creation **fails** if the descriptor cannot be built |
+| 3. read-only file | `a7667c3` | §28 prediction 1 | `gb_remove_file`: clear `FILE_ATTRIBUTE_READONLY` and retry once, restoring it if the retry fails |
+| 3b. read-only **folder** | `a7667c3` | NOT in §29 — measured while fixing 3: `rmdir` refuses one too, and Windows sets the attribute on any folder with a customised icon | `gb_remove_dir`, the same helper |
+| 4. directory link | `a7667c3` | §28 prediction 2 | `gb_remove_link`: `RemoveDirectoryW` for a directory reparse point, `DeleteFileW` for a file link; never followed. The tier asserts the target's **content** survives |
+| 5. MAX_PATH | `e72d65c` | **sharper than §28 said.** This machine has `longPathAware` in the manifest AND `LongPathsEnabled=1`, and at 351 characters `make_dir`, `exists`, `write` and `read` all worked — but MinGW's `readdir` returned an **empty listing with no error**. So `list()` called a folder holding a file empty, and `remove_tree` failed at `rmdir` | `gb_opendir`/`gb_readdir`/`gb_closedir`: `FindFirstFileExW` over the `\\?\` form of the full path, so it works whether or not long paths are enabled. All six readers use it (library search, `remove_tree`, `list_files`, the glob walk behind `list()`/`files()`, `main.c`'s provider scan, the REPL's session-cache scan). `run_scratch`'s 256-level depth bound now fires on Windows |
+
+The `owner_only_attributes` DACL is `D:P(A;;FA;;;<user SID>)` for a file and
+`D:P(A;OICI;FA;;;<user SID>)` for a directory. Measured after, under the real
+`%TEMP%` and under `C:\Users\Public`: the file, the directory and a file written
+inside the directory each carry exactly **one** ACE, the user's — and the grant
+to a deleted account on this machine's `%TEMP%` no longer reaches them.
+`permissions(f).mode` still reports `0666`, because it reads attributes, not the
+ACL; `docs/reference.md` now says that instead of saying the promise cannot be
+kept.
+
+### One more, found on the way: `read` on a directory said "Permission denied"
+
+`0e13c88`. Opening a directory fails on Windows with `EACCES`, where POSIX opens
+it and the caller reports `EISDIR`. `path_open_errno`, which already corrected
+Windows' `ENOENT` into `ENOTDIR`, now turns an `EACCES` on a path that IS a
+directory into `EISDIR`. Fixes `negative_read_directory` and `run_intake`'s
+directory tier on Windows.
+
+**That let `run_negative` run further on Windows than it ever had**, since it
+stops at its first failure: 139 cases had never been reached here. The next
+one, `negative_remove_tree_file`, named `/etc/hostname`, which Windows does not
+have, so it answered "No such file or directory" and never reached the refusal
+it pins. It now names the test file itself — a **deliberate rebaseline** of its
+`.err`. `run_negative` now passes **end to end on Windows** (362 cases; the rest
+skip for libraries this build lacks) and on Linux.
+
+### What is NOT verified
+
+- **File symlinks**, as opposed to junctions. `gb_stat` and `gb_remove_link`
+  have file-symlink branches (`DeleteFileW`) that only an elevated or Developer
+  Mode run can exercise. Junctions cover the directory branch and the
+  "follow-or-ENOENT" logic, which is shared.
+- **A non-default `TEMP` on another volume or a network share** for the DACL.
+
+### Back to the Linux side
+
+1. **`run_path_split` fails on Windows by design.** It asserts on every
+   platform that a backslash does not split a name, which §29 made untrue on
+   Windows on purpose. It needs the platform guard `scratch_metadata.bas`
+   already has.
+2. The rest of the Windows harness gaps §28 listed are unchanged: `chmod 000`,
+   `stat -c`, `mkfifo`, `/usr/bin/time` and `ulimit -s` measure nothing here.
