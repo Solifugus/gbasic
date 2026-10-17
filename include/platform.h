@@ -261,6 +261,58 @@ char *gb_realpath(const char *path);
  * time honoured TZ correctly. Windows keeps the real UTC time; this reads it. */
 int gb_file_mtime(const char *path, time_t *out);
 
+/* A file's PERMISSIONS, which are two different questions and both are
+ * answered because conflating them is the classic bug.
+ *
+ * `mode` is WHAT THE FILE SAYS: the permission bits, 0..07777. `readable` /
+ * `writable` / `executable` are WHAT THIS PROCESS CAN DO, from access(2) --
+ * root reads a file whose mode is 0000, and a 0644 file on a read-only mount
+ * is not writable, so a program asking "can I read this?" must not be handed
+ * the bits. `executable` is -1 for UNKNOWN rather than 0, which is the Windows
+ * answer: there is no execute bit there and executability is decided by the
+ * file's extension, so reporting `false` would be a claim nothing supports.
+ *
+ * Windows `mode` comes from _wstat, which SYNTHESISES 0666 or 0444 from the
+ * read-only attribute -- it is what the platform can say, and the reference
+ * says so beside the call rather than presenting it as POSIX bits. 0 / -1. */
+typedef struct {
+    unsigned mode;
+    int readable;
+    int writable;
+    int executable;   /* 1 yes, 0 no, -1 unknown */
+} GbPermissions;
+int gb_permissions(const char *path, GbPermissions *out);
+
+/* chmod(path, mode). POSIX honours every bit.
+ *
+ * WINDOWS HAS ONE BIT OF THE TWELVE: `*dropped` is set when bits could not be
+ * expressed, so the caller can WARN rather than refuse -- the ruling being to
+ * keep the divergence minimal and NAMED rather than to refuse the operation, so
+ * a program hardening a file on Windows still gets the one bit Windows has
+ * (the read-only attribute, from the owner write bit). NO ACL IS ATTEMPTED:
+ * src/platform_win32.c is syntax-checked against real windows.h and executed
+ * by nothing in this gate, and ACL code that is subtly wrong about permissions
+ * is worse than an honest warning. 0 / -1 with errno set. */
+int gb_chmod(const char *path, unsigned mode, int *dropped);
+
+/* Set a file's last-modification time, SECONDS SINCE THE EPOCH, UTC -- the
+ * write half of `gb_file_mtime`, which has been readable since the port and
+ * which `copy` does not preserve. Windows: SetFileTime on an opened handle,
+ * for the reason `gb_file_mtime` gives at length -- the C runtime's st_mtime
+ * is COMPUTED through two timezone conversions, so the epoch it reports is
+ * shifted whenever TZ names a zone other than the system one. Second
+ * resolution, because a gBASIC `datetime` has no sub-second field and
+ * inventing one would be fabricating precision. 0 / -1. */
+int gb_set_mtime(const char *path, time_t when);
+
+/* Create a SYMLINK at `path` pointing at `target`. `why` names the reason on
+ * failure, which matters here more than elsewhere: on Windows creating one
+ * needs SeCreateSymbolicLinkPrivilege, held by an elevated process or under
+ * Developer Mode, and the bare "permission denied" that comes back sends an
+ * author to look at the filesystem rather than at Windows policy -- so the
+ * message NAMES the privilege. 0 / -1. */
+int gb_symlink(const char *target, const char *path, char *why, size_t why_size);
+
 /* Is this path a SYMLINK (or, on Windows, any reparse point -- a symlink,
  * a directory junction or a mount point)? 1 yes, 0 no, and 0 also when the
  * path cannot be interrogated at all, because a caller that cannot read it is

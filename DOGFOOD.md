@@ -1134,8 +1134,16 @@ what proves the live probes are running anything at all.
   that guarded each level through a FILE reference to a path that is not a file
   — is one call now, and its `_last` helper went with it.
 - `atomic_replace` gives dest the temp's inode (perms reset, symlinks
-  replaced); no `chmod`/`lstat` to compose the safe form — Studio writes
-  source files in place because of this.
+  replaced); ~~no `chmod`/`lstat` to compose the safe form~~ — Studio writes
+  source files in place because of this. **THE SECOND HALF IS RESOLVED
+  2026-10-16**: `chmod(f, "0640")` sets a mode, `permissions(f)` reads one, and
+  `is_symlink(p)` is the `lstat` question (`file_type` follows a link, which is
+  why it could not answer it). So the safe form is composable now —
+  read the destination's mode and link-ness, write the temp, replace, restore —
+  and `run_limitations.sh` went red naming this bullet, which is what that
+  suite is for. **The first half stands and is still probed**: `atomic_replace`
+  itself does not preserve them, deliberately, since it is one `rename(2)` and
+  anything else would stop being atomic.
 - ~~No line continuation; multi-line array literals and `join` are the
   idioms.~~ **RESOLVED by PLAT-CONT** (struck 2026-09-01). A newline inside an
   unclosed `(`, `[` or `{` continues the statement — no new syntax and no
@@ -3357,15 +3365,19 @@ local stays silent.
      This shaped Studio's design away from a key file entirely (the key now comes
      from the environment and is never written), so the outcome is better — but a
      program that must write a private file has no way to say so.
-     **PARTLY RESOLVED 2026-10-16.** `temp_file` creates its file with mode
-     **0600** (POSIX `mkstemp` guarantees it), and `atomic_replace` hands the
-     destination the temp file's inode — which `run_limitations.sh` already
-     measures from the other direction — so a private file at a chosen path is
-     now writable: `temp_file({ in: here })`, `write`, `atomic_replace`,
-     measured at `600` on the result. What is still absent is **changing** an
-     existing file's mode, which is the `chmod` this bullet is named for, and
-     the Windows half cannot make the 0600 promise at all (it inherits the
-     directory's ACL).
+     **RESOLVED 2026-10-16, in two steps the same day.** First `temp_file`
+     created its file at mode **0600** (POSIX `mkstemp` guarantees it) and
+     `atomic_replace` hands the destination the temp file's inode, so a private
+     file at a chosen path became writable without any `chmod` at all —
+     measured at `600` on the result. Then `chmod(f, "0640")` and
+     `permissions(f)` shipped, so **changing** an existing file's mode works
+     too. THE MODE IS TEXT and that is forced rather than chosen: this language
+     has no octal literal, measured — `0o600` is a parse error and `0600` is
+     the number six hundred, which is a perfectly good `mode_t` and would have
+     set bits nobody asked for AND SUCCEEDED, so a number is refused by name
+     with the arithmetic in the message. The Windows half is honest about what
+     it cannot do: one bit of the twelve (read-only, from the owner write bit)
+     and a warning naming the rest.
   3. **No password-based key derivation.** `crypto` has sha256/hmac/aes-gcm but
      no PBKDF2/scrypt/argon2, so there is no safe way to turn a passphrase into a
      key. Studio declines to offer passphrases rather than ship a single-round
@@ -3491,8 +3503,10 @@ new cases), process suite green, pre-registration tripwire green.
 Still open from the 2026-08-22 entries: the `string(number)` precision skew
 (needs a decision about which rendering is intended before either build
 changes), the global-rebind-becomes-local silence (a parse-time warning is the
-right shape; not attempted in this pass), the `gi` static-class-call gap, no
-`chmod`, and no PBKDF2.
+right shape; not attempted in this pass), the `gi` static-class-call gap, ~~no
+`chmod`~~ (shipped 2026-10-16), and ~~no PBKDF2~~ (`pbkdf2_sha256`,
+`pbkdf2_sha512` and `scrypt` exist; the 2026-10-11 capabilities work found them
+missing from the registry rather than missing from the build).
 
 ## 2026-08-22 — CC — while: PLAT-WEB-4, composing a `web.static` response with a request id
 - **Type:** language-surprise

@@ -247,6 +247,8 @@ cases=(
     negative_temp_file_option
     negative_temp_file_prefix_path
     negative_temp_file_bare
+    negative_chmod_number
+    negative_set_mtime_number
     negative_stem_arity
     negative_stem_type
     negative_path_split_nul

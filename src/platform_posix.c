@@ -27,6 +27,7 @@
 #include <sys/socket.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/time.h>   /* utimes, for gb_set_mtime */
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
@@ -374,4 +375,52 @@ int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_
     }
     /* mkdtemp creates it 0700. */
     return mkdtemp(out) ? 0 : -1;
+}
+
+int gb_permissions(const char *path, GbPermissions *out) {
+    struct stat info;
+    if (stat(path, &info) != 0) {
+        return -1;
+    }
+    out->mode = (unsigned)(info.st_mode & 07777);
+    /* access(2), NOT the bits: this is the "can I" question, and the two
+     * genuinely differ -- as root every mode is readable, and on a read-only
+     * mount a 0644 file is not writable. */
+    out->readable = access(path, R_OK) == 0;
+    out->writable = access(path, W_OK) == 0;
+    out->executable = access(path, X_OK) == 0;
+    return 0;
+}
+
+int gb_chmod(const char *path, unsigned mode, int *dropped) {
+    if (dropped) {
+        *dropped = 0;   /* POSIX honours every bit; nothing to report. */
+    }
+    return chmod(path, (mode_t)(mode & 07777));
+}
+
+int gb_set_mtime(const char *path, time_t when) {
+    /* The ACCESS time is preserved rather than stamped: an archive step cares
+     * about when the data was written, and rewriting atime as a side effect
+     * would destroy information the caller did not offer. */
+    struct stat info;
+    struct timeval times[2];
+    if (stat(path, &info) == 0) {
+        times[0].tv_sec = info.st_atime;
+    } else {
+        times[0].tv_sec = when;
+    }
+    times[0].tv_usec = 0;
+    times[1].tv_sec = when;
+    times[1].tv_usec = 0;
+    return utimes(path, times);
+}
+
+int gb_symlink(const char *target, const char *path, char *why, size_t why_size) {
+    if (symlink(target, path) == 0) {
+        return 0;
+    }
+    snprintf(why, why_size, "could not create symlink %s -> %s (%s)",
+             path, target, strerror(errno));
+    return -1;
 }

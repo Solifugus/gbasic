@@ -1190,3 +1190,121 @@ all work without.
 - `make install` does not install `gbasic-lsp`;
 - the Kate definition still has hand-copied lists;
 - the server reports parse errors only.
+
+---
+
+## 27. ASKED, NOT MEASURED: the file-metadata increment (requested 2026-10-16)
+
+Every other section here records what a Windows session RAN. This one is the
+other direction — what the Linux session wrote and **cannot** test, written down
+before anybody runs it so the answers can be checked against the claims rather
+than reconciled afterwards. Matthew offered a Windows session for exactly this.
+
+**Run this TWICE — once ordinarily, once elevated:**
+
+```
+gbasic tests\windows\scratch_metadata.bas
+```
+
+Both runs are needed and they measure different things. **Unelevated** is the
+only one that can confirm `symlink` NAMES the privilege rather than reporting a
+bare "permission denied" — and if the privilege is not held, the three symlink
+checks and the directory-reparse-point prediction measure nothing, which the
+file says in its own output rather than passing quietly. **Elevated** (or with
+Developer Mode on) is the only run that exercises them at all.
+
+It is self-checking, like the rest of `tests/windows/`, and it does two jobs.
+The `ok` lines assert what must be **identical on both platforms** and a
+`MISMATCH` names both sides. The `REPORT` lines print what is **expected to
+diverge** — those are the measurements, and pasting them back is the whole ask.
+
+### What has never executed
+
+| function | what it does on Windows | never run |
+|---|---|---|
+| `gb_make_temp_file` / `_dir` | `GetTempPathW` + `gb_secure_random` + `CREATE_NEW`, retried | ✔ |
+| `gb_permissions` | `_wstat64` mode, `_waccess`, `executable` = unknown | ✔ |
+| `gb_chmod` | owner write bit → `FILE_ATTRIBUTE_READONLY`, rest reported dropped | ✔ |
+| `gb_set_mtime` | `SetFileTime` on a `FILE_WRITE_ATTRIBUTES` handle | ✔ |
+| `gb_symlink` | `CreateSymbolicLinkW`, naming the privilege when refused | ✔ |
+| `remove_tree`'s walk | `opendir`/`readdir`/`unlink`/`rmdir` in `src/eval.c` | ✔ |
+
+### THE QUESTION THAT MAY REMOVE WORK RATHER THAN ADD IT
+
+`temp_file` gets mode **0600** from `mkstemp` on POSIX — the reason a program
+can hold a secret in one, this language having no `chmod` until today. The
+Windows body cannot promise a mode, and `include/platform.h` and
+`docs/reference.md` both say so.
+
+**But that may be the wrong hedge.** `GetTempPathW` normally answers
+`C:\Users\<user>\AppData\Local\Temp`, which is already per-user, so the file may
+be private **by inheritance**:
+
+```
+icacls <the path temp_file printed>
+```
+
+- If that shows only the owner, SYSTEM and Administrators, **the promise is
+  already kept** and what is needed is one sentence of documentation, not a
+  DACL. Say so and the ACL question closes.
+- If it shows `Users`, `Authenticated Users` or `Everyone`, ACL support has a
+  real reason, and the honest minimum is `chmod(f, "0600")` building an explicit
+  DACL with `SetNamedSecurityInfoW` granting the owner alone.
+
+Also worth running under a **redirected** `TMP`/`TEMP` (a shared or root
+directory), since an operator can point them anywhere and the inheritance
+argument then does not hold.
+
+### TWO DEFECTS PREDICTED IN `remove_tree`, both unreachable from Linux
+
+The walk is POSIX calls that MinGW provides, so it compiles. It is expected to
+be **wrong twice**, and the fixture provokes both:
+
+1. **A read-only file.** Windows `unlink`/`_unlink` fails with `EACCES` on
+   `FILE_ATTRIBUTE_READONLY`, so a tree holding one should stop part-way with
+   `remove_tree: could not remove <path> (Permission denied)`. That diagnostic
+   is correct and the behaviour is not: `rm -rf`'s Windows equivalents clear the
+   attribute first. If confirmed, the fix is clear-and-retry-once, and it
+   belongs in the platform layer rather than in the walk.
+2. **A directory junction or directory symlink inside the tree.**
+   `gb_is_symlink` answers 1 for any reparse point — deliberately, it is the
+   glob's cycle guard — and the walk then calls `unlink(child)`, which cannot
+   remove a directory reparse point; `RemoveDirectoryW` is needed. Failing is
+   the GOOD outcome here; the bad one is descending into it, which would remove
+   the target's contents. `C:\Users\All Users` is a junction by default, so this
+   is ordinary rather than exotic.
+
+Both are cases where **failing loudly is acceptable and succeeding wrongly is
+not**, so the fixture asserts that the link's target survives and reports what
+the call answered.
+
+### WHAT THE DIVERGENCES ARE CLAIMED TO BE
+
+The ruling is that differences be **minimal and named** rather than refused or
+papered over. Each row below is a claim this increment makes; a Windows run
+either confirms it or turns it into a defect:
+
+| claim | how to falsify it |
+|---|---|
+| `temp_file`/`temp_dir` are unique and CREATED, as on POSIX | two calls, two paths, both `exists` |
+| only the **mode** diverges | the `icacls` question above |
+| `is_symlink` and `set_mtime` are identical | the `ok` lines; both are asserted, not reported |
+| `symlink` names the **privilege** when it is not held | run unelevated with Developer Mode off |
+| `permissions.executable` is `unknown`, never `false` | asserted |
+| `permissions.mode` is `_wstat`'s synthesis (`0444` read-only, else `0666`) | REPORT line, against `icacls` |
+| `chmod` applies the owner write bit and **warns** about the rest | REPORT line plus stderr; warning **2114** |
+
+Warning 2114 is **unreachable on POSIX**, where every bit is honoured, so on
+Linux it is carried by a source tripwire in `tests/run_metadata.sh` and by no
+behavioural tier. Windows is the only place it can be observed at all — and if
+it does **not** fire there, something is wrong with the `dropped` out-parameter
+rather than with the warning.
+
+### Anything else Windows is needed for
+
+Beyond this increment, and unchanged from §7 of `windows_port_plan.md`: **the
+four path splitters**. `file_name`, `directory_name`, `extension` and `stem`
+scan for `/` and nothing else, so `file_name("C:\\data\\x.csv")` answers the
+whole string. That needs a **decision** rather than a measurement — whether a
+backslash is a separator everywhere, or only on Windows, and what that does to
+byte-exact goldens — and it is the largest user-visible gap left.

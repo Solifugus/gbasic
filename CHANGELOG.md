@@ -16,6 +16,72 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Metadata: `permissions`, `chmod`, `set_mtime`, `is_symlink`, `symlink`
+
+`chmod` was the last outstanding item of the five
+`docs/etl_files_design.md` §1 called absent — and **measuring around it found
+three defects rather than one gap**.
+
+- **`file_type` follows a symlink**, so nothing could ask whether a path *is*
+  one. Measured: a link to a file answers `file`, a link to a directory answers
+  `folder`. `gb_is_symlink` had been in the platform layer since the recursive
+  glob needed a cycle guard, exposed by nothing — and `remove_tree` had just
+  made the distinction user-visible (*"is a symlink, not a tree"*).
+- **Nothing could create one.** Three runners build links with `ln -s`, and
+  `tests/run_scratch.sh` states that its load-bearing tier lives in bash
+  because gBASIC could not make a symlink.
+- **The listing disagreed with `file_type`.** It fell back to `"file"` for
+  anything that was not a directory, so a **dangling symlink, a FIFO, a socket
+  and a device all arrived labelled `file`** while `file_type` said `unknown` or
+  `other`. Two routes to one question disagreeing, and the listing held the
+  wrong one: there is no file there. `if e.type = "file" then read(e.path)`
+  raises on the first and **blocks forever** on the second, and
+  `files(d, "**/*")` shares the code.
+
+`permissions(p)` answers **two different questions on purpose**: `mode` is what
+the file says, `readable`/`writable`/`executable` are what *this process* can do
+(`access(2)`). Root reads a `0000` file and a `0644` file on a read-only mount
+is not writable, so conflating them is the classic bug. **The mode is text and
+that is forced**: gBASIC has no octal literal — `0o600` is a parse error, `0600`
+is the number six hundred — so `chmod` refuses a number **by name**, with the
+arithmetic in the message, because six hundred is a perfectly good `mode_t` that
+would set bits nobody asked for *and succeed*.
+
+`set_mtime(f, when)` is the write half of `file_mtime`; `copy` does not preserve
+a timestamp, so an archive step that keeps the source's own time had no
+spelling. A number is refused naming `from_epoch(n)`, and a time-only
+`datetime` is refused because it names no instant.
+
+**Windows**, under the ruling that a divergence be minimal and named rather than
+refused: `is_symlink` and `set_mtime` are identical; `symlink` names
+`SeCreateSymbolicLinkPrivilege` when it is not held, because "permission
+denied" sends an author to the filesystem for a policy decision;
+`permissions.executable` is **`unknown`**, Windows deciding by extension rather
+than by a bit; and `chmod` applies the owner write bit as
+`FILE_ATTRIBUTE_READONLY` and **warns** (`2114`) about the eleven bits it cannot
+express. No ACL is attempted — `src/platform_win32.c` is syntax-checked against
+real `windows.h` and executed by nothing here, so ACL code would be a claim with
+no evidence. `tests/windows/scratch_metadata.bas` and
+`docs/windows_port_status.md` §27 hand that measurement over.
+
+`tests/run_metadata.sh` — 57 fixture checks plus the tiers a fixture cannot
+hold: `stat -c %a` as an **oracle** for the mode (`chmod` then `permissions` is
+two calls into one implementation and passes on any self-consistently wrong
+rendering — the decimal 420 for 0644 reads as an answer), the mode-versus-access
+question answered **either way round** (as an ordinary user a `0000` file is
+unreadable and the two agree; **as root** it is readable while the mode still
+says `0000`, which is the divergence itself), a **FIFO** — the one file kind
+gBASIC cannot create and the one that makes the old `"file"` label dangerous
+rather than merely wrong — and a source tripwire for warning 2114, which is
+unreachable on POSIX where every bit is honoured.
+
+Seven perturbations proven red, and one of them found **two checks of mine that
+could never have failed**: passing `error` to the `refused()` helper *claims* it,
+so the `if error then` immediately after was false and the two message
+assertions inside it never ran. Caught by disabling the numeric-mode refusal and
+watching the file stay green — falling through to the ordinary type check still
+refuses the call, while naming nothing a reader can act on.
+
 ### Scratch space: `temp_file`, `temp_dir`, `remove_tree`
 
 Three builtins for one job — make somewhere to work, and get rid of it

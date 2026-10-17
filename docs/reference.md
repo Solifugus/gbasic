@@ -6906,6 +6906,76 @@ File functions (see also the file/directory value types):
   lock reported `exit 143` where an unlocked one reports `signal 15` — and a
   supervisor could not tell it from a program that chose to exit 143.
 
+**What a file says about itself, and changing it** *(since 0.11.0)*:
+
+- `permissions(p)` -> `{ mode, readable, writable, executable }`. **Two
+  different questions, both answered, because conflating them is the classic
+  bug.** `mode` is what the **file** says — the permission bits as text,
+  `"0640"`. `readable` / `writable` / `executable` are what **this process** can
+  do, from `access(2)`: root reads a file whose mode is `0000`, and a `0644`
+  file on a read-only mount is not writable. A program asking *"can I read
+  this?"* wants the second; one auditing a credential store wants the first.
+
+  **The mode is text and that is forced, not a preference**: gBASIC has no
+  octal literal — measured, `0o600` is a parse error (the lexer reads it as a
+  duration unit) and `0600` is the number six hundred — so a numeric mode could
+  not be written correctly even if it were offered. `"0640"` is also the
+  spelling every author already knows from `chmod(1)`.
+
+  `executable` answers **`unknown`**, never `false`, on a platform that has no
+  execute bit: Windows decides executability by the file's extension, so
+  `false` would be a claim nothing supports. There, `mode` is what `_stat`
+  synthesises — `0444` when the read-only attribute is set, `0666` otherwise.
+- `chmod(f, "0640")` — set the permission bits. Up to four octal digits, so
+  `"755"` and `"0755"` are the same mode.
+
+  **A number is refused by name**, with the arithmetic in the message:
+  `chmod(f, 0600)` is the mistake every author makes once, and six hundred is a
+  perfectly good `mode_t` — it would set bits nobody asked for **and succeed**.
+
+  **On Windows only the owner write bit is expressible** (it becomes
+  `FILE_ATTRIBUTE_READONLY`, which applies to everybody), and the call **warns**
+  — `2114` — naming what it could not do rather than refusing outright, so a
+  program hardening a file still gets the one bit Windows has. No ACL is
+  attempted.
+- `set_mtime(f, when)` — stamp a file's last-modification time from a
+  `datetime`. The write half of `file_mtime`, and `copy` does not preserve a
+  timestamp, so an archive step that keeps the source's own time had no
+  spelling. The **access** time is left alone: rewriting it as a side effect
+  would destroy information the caller never offered.
+
+  **A number is refused**, naming `from_epoch(n)`. A ledger that stores epochs
+  (strict JSON refuses a `datetime`, so several do) would otherwise pass one and
+  the call would work — until the day somebody passed milliseconds and the file
+  was stamped in the year 56000. A **time-only** `datetime` is refused too: it
+  names no instant.
+- `is_symlink(p)` — is this path a symlink? **`file_type` cannot answer it**,
+  because `file_type` *follows* a link: measured, a link to a file answers
+  `file` and a link to a directory answers `folder`. On Windows this is true of
+  any reparse point — a symlink, a directory junction or a mount point.
+- `symlink(target, path)` — create a symlink at `path` pointing at `target`.
+  **The target need not exist**: a dangling link is a legitimate thing to make
+  (it is how a link is written before the file it points at arrives), and
+  refusing one would make the commonest ordering impossible.
+
+  On Windows this needs `SeCreateSymbolicLinkPrivilege` — Developer Mode or an
+  elevated process — and the refusal **names the privilege**, because a bare
+  "permission denied" sends an author to look at the filesystem, where there is
+  nothing to find: this is a policy decision, not a file permission.
+
+**A correction that came with them** *(0.11.0)*: a listing's `type` now answers
+what `file_type` answers — `file`, `folder`, `other`, and `unknown` when the
+path cannot be `stat`ed. It used to fall back to `"file"` for anything that was
+not a directory, so a **dangling symlink, a FIFO, a socket and a device all
+arrived labelled `file`** while `file_type` on the same path said `unknown` or
+`other` — two routes to one question disagreeing, and the listing held the
+wrong one, there being no file there. `if e.type = "file" then read(e.path)`
+raises on the first and **blocks forever** on the second. The entries are still
+**reported** — `files(d, pattern)` excludes folders rather than requiring the
+exact word `file`, because a file withdrawn between the listing and the read is
+a real event and dropping it silently is what `intake`'s vanished-file report
+exists to prevent — so only the label changed.
+
 **Taking a path apart.** These work on a file or directory reference and on a
 plain string alike, so a value straight out of a listing needs no conversion:
 

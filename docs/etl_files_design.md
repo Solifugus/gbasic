@@ -1,15 +1,17 @@
 # Files and folders for ETL — design
 
-**Status: Partial** — everything but `chmod`. §2 (the streaming read) and §3 (the recursive glob) both
+**Status: Shipped.** §2 (the streaming read) and §3 (the recursive glob) both
 **shipped 2026-10-15**, §4's `intake` on 2026-10-15/16, and §8's scratch space on
 2026-10-16 — see the note at the end of each. **Two of the five
 items this document called absent were already shipped under other names**:
 `modified` is `file_mtime`, and `basename`/`dirname`/`extension` are
 `file_name`/`directory_name`/`extension` — see the two corrections in §1. Of
 path splitting only `stem` was missing, and it **shipped 2026-10-15** too.
-`read_at` (the bounded binary reader), the `intake` library and **temp files**
-all shipped after this document was written — see §8 and `docs/intake_design.md`
-— so nothing in §1's list of five is outstanding except `chmod`.
+`read_at` (the bounded binary reader), the `intake` library, **temp files** and
+**`chmod`** all shipped after this document was written — see §8, §9 and
+`docs/intake_design.md`. **Nothing in §1's list of five is outstanding**, and
+measuring around the last of them found three defects rather than one absence
+(§9).
 
 **Provenance.** Where this says *measured* it means a command was run on
 2026-10-14/15 and the number is quoted. The requirements come from Matthew's own
@@ -601,3 +603,128 @@ next touches that library.
 **What is still absent from §1's list:** `chmod`, which remains the credentials
 story rather than this one, and which the Windows divergence above now has a
 shape for.
+# Increment 3 — metadata: what a file says about itself
+
+## The remaining gap, measured
+
+`chmod` is the one item of §1's five still outstanding, and measuring around it
+found four more things in the same place, three of them defects rather than
+absences.
+
+### 1. `file_type` FOLLOWS a symlink, and the LISTING disagrees with it
+
+Measured 2026-10-16:
+
+| path | `file_type(p)` | `list(d)`'s `e.type` |
+|---|---|---|
+| link to a file | `file` | `file` |
+| link to a directory | `folder` | `folder` |
+| **dangling link** | **`unknown`** | **`file`** |
+
+`file_type` asks `stat` and answers `unknown` when it fails; the listing asks
+`stat` and falls back to `"file"` for anything that is not a directory, so a
+dangling link, a FIFO, a socket and a device all arrive labelled `file`. Two
+routes to one question disagreeing is the shape this tree keeps finding
+(`contains`/`ends_with` on a NUL, `sort`/`=` on an exact integer), and here the
+listing's answer is the wrong one: there is no file there. A program writing
+`if e.type = "file" then read(e.path)` raises on a dangling link and **blocks
+forever** on a FIFO.
+
+The glob shares that code, so `files(d, "**/*")` reports them as files too.
+
+**Fix:** the listing answers what `file_type` answers — `file`, `folder`,
+`other`, and `unknown` when `stat` fails. The entry is still *reported* (the
+`intake` suite's vanished-file tier depends on a dangling link appearing in the
+listing while `exists` denies it); only its label becomes honest. Measured
+in-tree: `filetree.bas` is the only consumer and compares against `"folder"`.
+
+### 2. There is no way to ask whether something IS a link
+
+`gb_is_symlink` has been in the platform layer since the glob needed a cycle
+guard, and nothing exposes it. `remove_tree` has just made the distinction
+user-visible — *"is a symlink, not a tree"* — so a program that wants to check
+before calling has no way to ask.
+
+### 3. Nothing can create one
+
+Three suites build symlinks with `ln -s` in bash, and `tests/run_scratch.sh`
+says in as many words that its load-bearing tier lives in the runner because
+*"gBASIC cannot create a symlink, so the one behaviour separating a correct
+recursive delete from a destructive one cannot be written in the language it is
+a property of"*.
+
+### 4. `file_mtime` reads and nothing writes
+
+An archive step that preserves the source timestamp is ordinary — the Python
+class §1 is designed against copies metadata — and `copy` does not preserve it.
+
+## What ships
+
+- `permissions(p)` -> `{ mode, readable, writable, executable }`
+- `chmod(f, "0640")`
+- `set_mtime(f, when)`
+- `is_symlink(p)`
+- `symlink(target, path)`
+- the listing's type, corrected
+
+### `permissions` reports TWO different things, named so they cannot be confused
+
+`mode` is **what the file says**: the permission bits as TEXT, `"0640"`.
+`readable` / `writable` / `executable` are **what this process can do**, from
+`access(2)`.
+
+They are not the same question and conflating them is the classic bug: root can
+read a file whose mode is `0000`, and a file on a read-only mount is `0644` and
+not writable. A program asking "can I read this?" wants the second; one
+auditing a credential store wants the first.
+
+**The mode is TEXT and that is forced**: gBASIC has no octal literal. Measured —
+`0o600` is a parse error and `0600` is the number six hundred — so a numeric
+mode could not be written correctly even if it were offered.
+
+### `chmod` refuses a number BY NAME
+
+`chmod(f, 0600)` is the mistake every author will make once, and six hundred is
+a perfectly good `mode_t`: it would set bits nobody asked for and succeed. So a
+number is refused with the arithmetic in the message rather than silently
+applied.
+
+### Windows: the divergence is named, and no ACL is attempted
+
+Under the ruling that differences be minimal and named:
+
+| call | Windows |
+|---|---|
+| `is_symlink` | identical (`FILE_ATTRIBUTE_REPARSE_POINT`) |
+| `set_mtime` | identical (`SetFileTime`) |
+| `symlink` | `CreateSymbolicLinkW`; without the privilege it refuses **naming it** (Developer Mode or an elevated process), because "permission denied" sends an author to the filesystem |
+| `permissions` | `mode` from `_stat`, which synthesises `0666`/`0444` from the read-only attribute; `executable` is **`unknown`**, Windows deciding by extension rather than by a bit |
+| `chmod` | honours the owner **write** bit via `FILE_ATTRIBUTE_READONLY` and **warns** about every bit it cannot express |
+
+A warning rather than a refusal, because the ruling is to minimise divergence
+rather than to refuse the operation — and a program hardening a file on Windows
+should still get the one bit Windows has.
+
+**No ACL.** `src/platform_win32.c` is syntax-checked against real `windows.h`
+and executed by nothing in this gate, so an ACL implementation would be a claim
+with no evidence behind it — and ACL code that is subtly wrong on permissions is
+worse than an honest warning.
+
+## How it is tested
+
+`tests/run_metadata.sh`, and the shape follows from what can be observed:
+
+- **the fixture** states the values: mode text round-tripping through
+  `chmod`/`permissions`, `set_mtime` read back by `file_mtime`, `is_symlink`
+  both ways, a symlink that `read` follows, refusals (a numeric mode, a bad mode
+  string, a missing file) each beside the call that must still work.
+- **the runner** holds the two halves a fixture cannot: `stat -c %a` as an
+  ORACLE for the mode (so the claim is not `permissions` agreeing with
+  `chmod` — two calls into one implementation), and the `access(2)`-versus-mode
+  difference, which needs a file whose mode says one thing and whose
+  accessibility says another. As root both collapse, so that tier **skips with
+  its reason**.
+- **the correction** is a difference: `file_type` and the listing must agree
+  about a dangling link, with the CONTROL that an ordinary file is still `file`
+  and a directory still `folder` — or "they agree" is satisfied by a listing
+  that labels everything `unknown`.

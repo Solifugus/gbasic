@@ -1791,3 +1791,137 @@ int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_
     errno = EEXIST;
     return -1;
 }
+
+int gb_permissions(const char *path, GbPermissions *out) {
+    WCHAR *wpath = utf8_to_wide(path);
+    if (!wpath) {
+        errno = ENOMEM;
+        return -1;
+    }
+    struct _stat64 info;
+    int rc = _wstat64(wpath, &info);
+    if (rc != 0) {
+        free(wpath);
+        return -1;
+    }
+    /* _wstat SYNTHESISES these: 0444 when the read-only attribute is set,
+     * 0666 otherwise, with 0111 added for a directory. It is what the platform
+     * can say, and the reference says so beside the call. */
+    out->mode = (unsigned)(info.st_mode & 07777);
+    out->readable = _waccess(wpath, 4) == 0;
+    out->writable = _waccess(wpath, 2) == 0;
+    /* UNKNOWN, not false: Windows has no execute bit and decides by extension,
+     * so `false` would be a claim nothing here supports. */
+    out->executable = -1;
+    free(wpath);
+    return 0;
+}
+
+int gb_chmod(const char *path, unsigned mode, int *dropped) {
+    WCHAR *wpath = utf8_to_wide(path);
+    if (!wpath) {
+        errno = ENOMEM;
+        return -1;
+    }
+    DWORD attrs = GetFileAttributesW(wpath);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        free(wpath);
+        errno = ENOENT;
+        return -1;
+    }
+    /* THE ONE BIT WINDOWS HAS. The owner write bit becomes the read-only
+     * attribute, which applies to everybody; every other bit is dropped and
+     * REPORTED rather than silently ignored. */
+    if (mode & 0200u) {
+        attrs &= ~(DWORD)FILE_ATTRIBUTE_READONLY;
+    } else {
+        attrs |= (DWORD)FILE_ATTRIBUTE_READONLY;
+    }
+    BOOL ok = SetFileAttributesW(wpath, attrs);
+    free(wpath);
+    if (!ok) {
+        errno = EACCES;
+        return -1;
+    }
+    if (dropped) {
+        /* Anything beyond the owner read/write pair could not be expressed. */
+        *dropped = (mode & 07577u) != (mode & 0600u) ? 1 : 0;
+    }
+    return 0;
+}
+
+int gb_set_mtime(const char *path, time_t when) {
+    WCHAR *wpath = utf8_to_wide(path);
+    if (!wpath) {
+        errno = ENOMEM;
+        return -1;
+    }
+    HANDLE h = CreateFileW(wpath, FILE_WRITE_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    free(wpath);
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = ENOENT;
+        return -1;
+    }
+    /* FILETIME is 100-nanosecond ticks since 1601-01-01; the offset to the
+     * Unix epoch is 11644473600 seconds. Set directly rather than through the
+     * C runtime, for the reason gb_file_mtime gives: _utime goes through two
+     * timezone conversions and shifts the epoch whenever TZ disagrees with
+     * the system zone. */
+    unsigned long long ticks =
+        ((unsigned long long)when + 11644473600ULL) * 10000000ULL;
+    FILETIME ft;
+    ft.dwLowDateTime = (DWORD)(ticks & 0xFFFFFFFFULL);
+    ft.dwHighDateTime = (DWORD)(ticks >> 32);
+    BOOL ok = SetFileTime(h, NULL, NULL, &ft);
+    CloseHandle(h);
+    if (!ok) {
+        errno = EACCES;
+        return -1;
+    }
+    return 0;
+}
+
+int gb_symlink(const char *target, const char *path, char *why, size_t why_size) {
+    WCHAR *wtarget = utf8_to_wide(target);
+    WCHAR *wpath = utf8_to_wide(path);
+    if (!wtarget || !wpath) {
+        free(wtarget);
+        free(wpath);
+        snprintf(why, why_size, "out of memory creating symlink %s", path);
+        errno = ENOMEM;
+        return -1;
+    }
+    DWORD flags = 0;
+    DWORD attrs = GetFileAttributesW(wtarget);
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        flags |= 0x1;   /* SYMBOLIC_LINK_FLAG_DIRECTORY */
+    }
+    /* ALLOW_UNPRIVILEGED_SYMLINK_CREATE: under Developer Mode this is all that
+     * is needed, and on an older build the flag is ignored rather than fatal. */
+    flags |= 0x2;
+    BOOL ok = CreateSymbolicLinkW(wpath, wtarget, flags);
+    DWORD err = ok ? 0 : GetLastError();
+    free(wtarget);
+    free(wpath);
+    if (ok) {
+        return 0;
+    }
+    if (err == ERROR_PRIVILEGE_NOT_HELD) {
+        /* NAME THE PRIVILEGE. "Permission denied" sends an author to look at
+         * the filesystem, where there is nothing to find: creating a symlink
+         * on Windows is a POLICY decision, not a file permission. */
+        snprintf(why, why_size,
+                 "could not create symlink %s -> %s: Windows requires the"
+                 " SeCreateSymbolicLinkPrivilege, which means Developer Mode"
+                 " or an elevated process", path, target);
+        errno = EPERM;
+    } else {
+        snprintf(why, why_size,
+                 "could not create symlink %s -> %s (Windows error %lu)",
+                 path, target, (unsigned long)err);
+        errno = EACCES;
+    }
+    return -1;
+}

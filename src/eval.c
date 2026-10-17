@@ -12171,6 +12171,333 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
+    if (strcmp(name, "permissions") == 0) {
+        /* TWO DIFFERENT QUESTIONS, BOTH ANSWERED, because conflating them is
+         * the classic bug. `mode` is what the FILE says; `readable`/`writable`/
+         * `executable` are what THIS PROCESS can do, from access(2) -- root
+         * reads a file whose mode is 0000, and a 0644 file on a read-only
+         * mount is not writable.
+         *
+         * THE MODE IS TEXT AND THAT IS FORCED rather than chosen: gBASIC has
+         * no octal literal. Measured -- `0o600` is a parse error (the lexer
+         * reads it as a duration unit) and `0600` is the number six hundred --
+         * so a numeric mode could not be written correctly even if it were
+         * offered, and "0640" is also the spelling every author already knows
+         * from `chmod`. */
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("permissions expects one path argument", 1004,
+                                "file operation");
+            return value_null();
+        }
+        Value path_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            return value_null();
+        }
+        if (!path_string_reject_nul(name, path_value)) {
+            value_free(path_value);
+            return value_null();
+        }
+        const char *path = directory_path(path_value);
+        if (!path) {
+            runtime_error_raise("permissions expects a string, file reference, or"
+                                " directory reference", 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        GbPermissions perms;
+        if (gb_permissions(path, &perms) != 0) {
+            char message[PATH_MAX + 128];
+            snprintf(message, sizeof(message),
+                     "permissions could not read %s (%s)", path, strerror(errno));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        char mode_text[8];
+        snprintf(mode_text, sizeof(mode_text), "%04o", perms.mode & 07777u);
+        Value result = value_record(NULL, 0);
+        record_set(&result, "mode", value_string(mode_text));
+        record_set(&result, "readable", value_bool(perms.readable));
+        record_set(&result, "writable", value_bool(perms.writable));
+        /* UNKNOWN, not false: on Windows there is no execute bit and
+         * executability is decided by the extension, so `false` would be a
+         * claim nothing supports -- the rule `materiality` already follows. */
+        record_set(&result, "executable",
+                   perms.executable < 0 ? value_unknown()
+                                        : value_bool(perms.executable));
+        value_free(path_value);
+        return result;
+    }
+
+    if (strcmp(name, "chmod") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("chmod expects a path and a mode, as in"
+                                " chmod(f, \"0600\")", 1004, "file operation");
+            return value_null();
+        }
+        Value path_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            return value_null();
+        }
+        Value mode_value = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            value_free(mode_value);
+            return value_null();
+        }
+        if (!path_string_reject_nul(name, path_value)) {
+            value_free(path_value);
+            value_free(mode_value);
+            return value_null();
+        }
+        const char *path = directory_path(path_value);
+        if (!path) {
+            runtime_error_raise("chmod expects a string, file reference, or"
+                                " directory reference", 1004, "file operation");
+            value_free(path_value);
+            value_free(mode_value);
+            return value_null();
+        }
+        /* A NUMBER IS REFUSED BY NAME, with the arithmetic in the message.
+         * `chmod(f, 0600)` is the mistake every author makes once and six
+         * hundred is a perfectly good mode_t -- 0o1130 -- so it would set bits
+         * nobody asked for AND SUCCEED. The language has no octal literal to
+         * offer instead (`0o600` is a parse error), which is exactly why the
+         * mode is text. */
+        if (mode_value.kind == VALUE_NUMBER) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "chmod: the mode must be TEXT, as in chmod(f, \"0600\")."
+                     " gBASIC has no octal literal, so %g is the decimal number"
+                     " it looks like and would set bits you did not ask for",
+                     mode_value.as.num.value);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            value_free(mode_value);
+            return value_null();
+        }
+        if (mode_value.kind != VALUE_STRING) {
+            runtime_error_raise("chmod: the mode must be text, as in"
+                                " chmod(f, \"0600\")", 1004, "file operation");
+            value_free(path_value);
+            value_free(mode_value);
+            return value_null();
+        }
+        const char *text = mode_value.as.string ? mode_value.as.string : "";
+        size_t length = mode_value.as.string ? string_length(mode_value.as.string) : 0u;
+        unsigned mode = 0;
+        int bad = (length == 0 || length > 4);
+        for (size_t i = 0; !bad && i < length; i++) {
+            if (text[i] < '0' || text[i] > '7') {
+                bad = 1;
+            } else {
+                mode = mode * 8u + (unsigned)(text[i] - '0');
+            }
+        }
+        if (bad) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "chmod: '%s' is not a mode. It is up to four octal digits,"
+                     " as in \"0600\" or \"755\"", text);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            value_free(mode_value);
+            return value_null();
+        }
+        int dropped = 0;
+        if (gb_chmod(path, mode, &dropped) != 0) {
+            char message[PATH_MAX + 128];
+            snprintf(message, sizeof(message), "chmod could not set %04o on %s (%s)",
+                     mode, path, strerror(errno));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            value_free(mode_value);
+            return value_null();
+        }
+        if (dropped) {
+            /* A WARNING RATHER THAN A REFUSAL, under the ruling that a Windows
+             * divergence be kept minimal and NAMED: the one bit Windows has
+             * (read-only, from the owner write bit) is applied, and the rest is
+             * reported rather than silently ignored. Unreachable on POSIX,
+             * where every bit is honoured, so the metadata suite carries a
+             * SOURCE TRIPWIRE for it instead of a behavioural tier. */
+            warn_fmt(2114, "file operation",
+                     "chmod: this platform could only apply the owner write bit"
+                     " of %04o; the rest was not expressible", mode);
+        }
+        value_free(path_value);
+        value_free(mode_value);
+        return value_bool(1);
+    }
+
+    if (strcmp(name, "set_mtime") == 0) {
+        /* The WRITE half of `file_mtime`, which has been readable since the
+         * port. `copy` does not preserve a timestamp, so an archive step that
+         * keeps the source's own time -- ordinary in ETL -- had no spelling. */
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("set_mtime expects a path and a datetime", 1004,
+                                "file operation");
+            return value_null();
+        }
+        Value path_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            return value_null();
+        }
+        Value when_value = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            value_free(when_value);
+            return value_null();
+        }
+        if (!path_string_reject_nul(name, path_value)) {
+            value_free(path_value);
+            value_free(when_value);
+            return value_null();
+        }
+        const char *path = directory_path(path_value);
+        if (!path) {
+            runtime_error_raise("set_mtime expects a string, file reference, or"
+                                " directory reference", 1004, "file operation");
+            value_free(path_value);
+            value_free(when_value);
+            return value_null();
+        }
+        /* A NUMBER IS REFUSED BY NAME rather than read as an epoch. A ledger
+         * that stores epochs (strict JSON refuses a datetime, so several do)
+         * would otherwise pass one here and the call would work -- until the
+         * day somebody passed a duration's seconds, or milliseconds, and the
+         * file was stamped in 1970 or in the year 56000. `from_epoch(n)` is
+         * one call and says which it is. */
+        if (when_value.kind == VALUE_NUMBER) {
+            runtime_error_raise("set_mtime: the time must be a datetime."
+                                " A number is ambiguous -- wrap it with"
+                                " from_epoch(n) to say it is an epoch", 1004,
+                                "file operation");
+            value_free(path_value);
+            value_free(when_value);
+            return value_null();
+        }
+        if (when_value.kind != VALUE_DATETIME) {
+            runtime_error_raise("set_mtime: the time must be a datetime", 1004,
+                                "file operation");
+            value_free(path_value);
+            value_free(when_value);
+            return value_null();
+        }
+        /* A TIME-ONLY value has no epoch, which is the one shape `datetime`
+         * holds that cannot be a file's timestamp -- reported rather than
+         * stamped at whatever today happens to be. */
+        int epoch_ok = 0;
+        double epoch = datetime_to_epoch(when_value.as.datetime, &epoch_ok);
+        if (!epoch_ok) {
+            runtime_error_raise("set_mtime: that datetime carries no date, so it"
+                                " names no instant to stamp", 1004,
+                                "file operation");
+            value_free(path_value);
+            value_free(when_value);
+            return value_null();
+        }
+        time_t when = (time_t)epoch;
+        if (gb_set_mtime(path, when) != 0) {
+            char message[PATH_MAX + 128];
+            snprintf(message, sizeof(message),
+                     "set_mtime could not stamp %s (%s)", path, strerror(errno));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            value_free(when_value);
+            return value_null();
+        }
+        value_free(path_value);
+        value_free(when_value);
+        return value_bool(1);
+    }
+
+    if (strcmp(name, "is_symlink") == 0) {
+        /* `file_type` FOLLOWS a link -- measured, a link to a file answers
+         * "file" -- so it cannot answer this, and `remove_tree` has just made
+         * the distinction user-visible ("is a symlink, not a tree"). The
+         * platform body has existed since the glob needed a cycle guard;
+         * nothing exposed it. */
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("is_symlink expects one path argument", 1004,
+                                "file operation");
+            return value_null();
+        }
+        Value path_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            return value_null();
+        }
+        if (!path_string_reject_nul(name, path_value)) {
+            value_free(path_value);
+            return value_null();
+        }
+        const char *path = directory_path(path_value);
+        if (!path) {
+            runtime_error_raise("is_symlink expects a string, file reference, or"
+                                " directory reference", 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        int answer = gb_is_symlink(path);
+        value_free(path_value);
+        return value_bool(answer);
+    }
+
+    if (strcmp(name, "symlink") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("symlink expects a target and the path to create,"
+                                " as in symlink(target, link)", 1004,
+                                "file operation");
+            return value_null();
+        }
+        Value target_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(target_value);
+            return value_null();
+        }
+        Value link_value = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(target_value);
+            value_free(link_value);
+            return value_null();
+        }
+        if (!path_string_reject_nul(name, target_value)
+            || !path_string_reject_nul(name, link_value)) {
+            value_free(target_value);
+            value_free(link_value);
+            return value_null();
+        }
+        const char *target = directory_path(target_value);
+        const char *link = directory_path(link_value);
+        if (!target || !link) {
+            runtime_error_raise("symlink expects two strings, file references, or"
+                                " directory references", 1004, "file operation");
+            value_free(target_value);
+            value_free(link_value);
+            return value_null();
+        }
+        /* THE TARGET IS NOT REQUIRED TO EXIST, which is not laxity: a dangling
+         * link is a legitimate thing to create (it is how a link is written
+         * before the file it points at arrives) and refusing one would make
+         * the commonest ordering impossible. The LINK's own path must be free,
+         * which the platform call enforces for us. */
+        char why[PATH_MAX + 256];
+        why[0] = '\0';
+        if (gb_symlink(target, link, why, sizeof(why)) != 0) {
+            runtime_error_raise(why, 1004, "file operation");
+            value_free(target_value);
+            value_free(link_value);
+            return value_null();
+        }
+        value_free(target_value);
+        value_free(link_value);
+        return value_bool(1);
+    }
+
     if (strcmp(name, "temp_file") == 0 || strcmp(name, "temp_dir") == 0) {
         /* A TEMPORARY FILE THAT ALREADY EXISTS. The platform layer owns the
          * creation (`gb_make_temp_file` / `gb_make_temp_dir`) and the comment
@@ -12263,6 +12590,24 @@ static Value eval_file_call(AstExpr *expr) {
                 if (w < 0 || (size_t)w >= sizeof(where)) {
                     char message[256];
                     snprintf(message, sizeof(message), "%s: 'in' path is too long", name);
+                    runtime_error_raise(message, 1004, "file operation");
+                    value_free(options);
+                    return value_null();
+                }
+                /* A PATH THAT EXISTS AND IS NOT A DIRECTORY is refused with the
+                 * remedy, because `in: dest` reads as "beside dest" and `dest`
+                 * is usually the FILE being replaced. Meaning the containing
+                 * directory would be guessing; without this the call reaches
+                 * mkstemp and fails with "(Not a directory)", which is true
+                 * and names no fix. A path that does not exist AT ALL is left
+                 * to the platform call, whose errno says so already. */
+                struct stat in_info;
+                if (stat(where, &in_info) == 0 && !S_ISDIR(in_info.st_mode)) {
+                    char message[PATH_MAX + 256];
+                    snprintf(message, sizeof(message),
+                             "%s: 'in' names %s, which is not a directory."
+                             " For a temp file beside it, use"
+                             " directory_name(...)", name, where);
                     runtime_error_raise(message, 1004, "file operation");
                     value_free(options);
                     return value_null();
@@ -13254,13 +13599,40 @@ static void glob_walk(GlobWalk *w, const char *dir_path,
 
         struct stat st;
         int have_stat = stat(path, &st) == 0;
-        const char *type = (have_stat && S_ISDIR(st.st_mode)) ? "folder" : "file";
+        /* THE LISTING ANSWERS WHAT `file_type` ANSWERS. This used to fall back
+         * to "file" for anything that was not a directory, so a DANGLING
+         * SYMLINK, a FIFO, a socket and a device all arrived labelled `file`
+         * while `file_type` on the same path said `unknown` or `other` --
+         * measured 2026-10-16, two routes to one question disagreeing, and the
+         * listing held the wrong one: there is no file there. A program
+         * writing `if e.type = "file" then read(e.path)` raises on the first
+         * and BLOCKS FOREVER on the second.
+         *
+         * The entry is still REPORTED -- `intake`'s vanished-file tier rests on
+         * a dangling link appearing in the listing while `exists` denies it --
+         * and only the label changes. */
+        const char *type = !have_stat             ? "unknown"
+                           : S_ISDIR(st.st_mode)  ? "folder"
+                           : S_ISREG(st.st_mode)  ? "file"
+                                                  : "other";
 
         segs[depth] = entry->d_name;
         size_t ns = depth + 1;
 
         int wanted = 1;
-        if (strcmp(w->name, "files") == 0 && strcmp(type, "file") != 0) {
+        /* `files` EXCLUDES FOLDERS rather than requiring the exact word
+         * "file", and that distinction became load-bearing the moment the type
+         * stopped being a two-way guess: a dangling symlink, a FIFO, a socket
+         * and a device are now labelled honestly, and `strcmp(type,"file")`
+         * would have DROPPED all four from the listing.
+         *
+         * Dropping them is the worse answer and `intake` is the proof: a file
+         * withdrawn between the listing and the read is a real event, its whole
+         * vanished-file report rests on the entry still being reported, and
+         * removing it put back exactly the silence that tier exists to prevent
+         * -- which is how this was caught. A caller that cares now has `e.type`
+         * to ask with, where before the label said `file` and lied. */
+        if (strcmp(w->name, "files") == 0 && strcmp(type, "folder") == 0) {
             wanted = 0;
         }
         if (strcmp(w->name, "folders") == 0 && strcmp(type, "folder") != 0) {
@@ -39012,6 +39384,11 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "make_dir") == 0 ||
         strcmp(expr->as.call.name, "remove_dir") == 0 ||
         strcmp(expr->as.call.name, "remove_tree") == 0 ||
+        strcmp(expr->as.call.name, "permissions") == 0 ||
+        strcmp(expr->as.call.name, "chmod") == 0 ||
+        strcmp(expr->as.call.name, "set_mtime") == 0 ||
+        strcmp(expr->as.call.name, "is_symlink") == 0 ||
+        strcmp(expr->as.call.name, "symlink") == 0 ||
         strcmp(expr->as.call.name, "temp_file") == 0 ||
         strcmp(expr->as.call.name, "temp_dir") == 0 ||
         strcmp(expr->as.call.name, "file_size") == 0 ||

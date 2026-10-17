@@ -249,16 +249,29 @@ probe_atomic_replace_inode() {
     after_inode=$(gb_stat_inode "$WORK/ar/dest")
     after_perm=$(gb_stat_mode "$WORK/ar/dest")
 
-    # The bullet also claims there is no chmod/lstat to compose the safe form.
-    printf 'print has_builtin("chmod")\nprint has_builtin("lstat")\n' > "$WORK/q.bas"
+    # THE BULLET IS NOW HALF STRUCK, so this probe carries both answers.
+    #
+    # The FIRST half is live: atomic_replace is one rename(2) and does not
+    # preserve the destination's inode or mode -- deliberately, since anything
+    # else would stop being atomic.
+    #
+    # The SECOND half -- "no chmod/lstat to compose the safe form" -- was
+    # RESOLVED 2026-10-16, and this probe is what reported it: `chmod` arrived
+    # and the suite went red naming the bullet. It is the CONTROL now, which
+    # the COVER tier requires of a struck claim: the capability must be
+    # provably THERE, or striking it is just deleting it. `lstat` is spelled
+    # `is_symlink` in this language (`file_type` follows a link, which is why
+    # it could not answer the question), so the probe asks for the pair that
+    # actually composes the safe form.
+    printf 'print has_builtin("chmod")\nprint has_builtin("permissions")\nprint has_builtin("is_symlink")\n' > "$WORK/q.bas"
     local composable
     composable=$(run "$WORK/q.bas" | grep -c true)
 
     if [ "$after_inode" = "$temp_inode" ] && [ "$after_perm" != "$before_perm" ] \
-       && [ "$composable" = 0 ]; then
-        ok "atomic_replace still hands dest the temp's inode ($before_inode -> $after_inode, perms $before_perm -> $after_perm) and there is still no chmod/lstat"
-    elif [ "$composable" != 0 ]; then
-        fixed "chmod/lstat now exist, so the safe form is composable"
+       && [ "$composable" = 3 ]; then
+        ok "atomic_replace still hands dest the temp's inode ($before_inode -> $after_inode, perms $before_perm -> $after_perm), and chmod/permissions/is_symlink now compose the safe form"
+    elif [ "$composable" != 3 ]; then
+        bad "the safe form is not composable: chmod/permissions/is_symlink do not all answer has_builtin ($composable of 3)"
     else
         fixed "atomic_replace now preserves dest's inode or permissions"
     fi
