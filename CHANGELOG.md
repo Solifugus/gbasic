@@ -16,6 +16,62 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### The Qt event loop, answered by measurement
+
+No Qt code ships here — this is the **experiment** `docs/qt_gui_design.md` §5
+named as the one thing that had to be measured before any was written, now
+`tests/run_qt_loop.sh` over `tests/qt/` so the answer stays measurable instead
+of being written down once.
+
+**The question is whose loop waits.** gBASIC's own is a single `poll()` over the
+webserver's descriptors, libcurl's descriptors and the root mailbox, with timers
+riding the timeout. Qt has a loop of its own and needs to be the one waiting,
+because it watches the keyboard and the mouse — and because Qt opens **nested**
+loops: a modal dialog, `QMessageBox`, `QMenu::exec()`, drag-and-drop and
+`QProgressDialog` each run an event loop inside the first.
+
+| | ordinary | with a modal dialog up |
+|---|---|---|
+| **B** — gBASIC owns, Qt pumped | 30 polls, 15 Qt ticks, worst gap **52 ms** | 18 polls, worst gap **651 ms** over a 600 ms dialog |
+| **A** — Qt owns, gBASIC source as `QSocketNotifier` | 4 of 4 served | **4 of 4**, three *during* the dialog |
+
+Same on the offscreen platform and on a real display. **Direction A is the
+architecture and B is ruled out by measurement** — B is flawless until something
+opens a nested loop, and then a webserver stops answering and every timer misses
+for as long as a message box is up. A `form` that validates its input will want
+a message box.
+
+**Both shapes are measured on purpose, because the one that fails does not fail
+in ordinary operation**, and the B tier asserts the *starvation* — so it goes
+red if a future Qt makes the nested loop cooperative, which would reopen a
+decision taken on this measurement.
+
+**A finding §5 did not predict, now a stated contract:** a `QSocketNotifier` is
+level-triggered, so the first version of the probe — which never read its pipe —
+fired **545,066 times for one byte**. Same defect class PLAT-HTTP already
+recorded. Every gBASIC source registered with Qt must be drained by its handler,
+and the tier asserts a ceiling on the activation count rather than merely that
+the source was served.
+
+**What it does not answer, stated rather than implied:** re-entry into the
+evaluator (the probe proves a real Qt signal reaches a C callback through a
+`moc` translation unit; `invoke_function` from there is inferred from
+`gi_signal_marshal`, which ships it for GTK), and Windows, where
+`QSocketNotifier` works on **sockets only** so direction A will need
+`QWinEventNotifier` for anything else.
+
+**For an author, nothing changes**: a GUI stays one optional part of a program.
+A program with no window is untouched; one with a window hands the thread to
+`QApplication::exec()` and everything else carries on being served. The change
+is inside the interpreter, not in the language.
+
+Three design questions were also settled (§7): `field` keeps `type:` rather than
+gaining a directive per kind; `column`/`row` stay the layout pair and a table's
+parts are `field`; and a `window` may carry the subject as a shorthand, which a
+`form` shadows and a `table` never inherits — a table wants a list and a
+window's subject is one record, so inheriting there would be a guess dressed as
+a shorthand.
+
 ### `tests/premise.sh`: a tier that cannot build its premise says so
 
 Six suites failed on Windows for reasons that were facts about the **harness**

@@ -47,6 +47,39 @@ rather than discovered during packaging.
 
 ---
 
+## 0.1 THE DECLARED CONSUMER: gBASIC Studio (2026-10-17)
+
+**Matthew: Studio is to be converted from GTK to this, once it is ready.** That
+is a scope input and it changes what "ready" means, so it is recorded here
+rather than discovered later.
+
+Studio lives in its own project (`~/development/gbasic-studio`) and its surface
+is **much larger than a `form`**: a source editor with syntax highlighting, a
+data grid over a virtualised model, trees, and the `gi`/`gtk`/`sourceeditor`
+libraries it consumes from this repo. So §2's `window`/`form` is the first
+increment of this design and nowhere near the whole of what Studio needs.
+
+**The one piece with no direct Qt counterpart is the editor.** GTK's answer is
+`GtkSourceView` plus a `gbasic.lang` XML file, which this repo already ships and
+`tests/run_native_editor.sh` already gates. Qt has **no equivalent widget**: the
+nearest thing is `QSyntaxHighlighter`, a base class you implement against
+`QPlainTextEdit`. That is a real difference and arguably in Qt's favour — a
+highlighter written in the host language is inspectable and testable where an
+XML language file is neither — but it is **work rather than a swap**, and the
+existing `gbasic.lang` does not carry over. Qt Creator uses KSyntaxHighlighting
+(KDE Frameworks, LGPL) for this and that is worth pricing before writing one.
+
+**The grid is the opposite case**: `datagrid` is already a reconciler over a
+native row model, `QTableView`/`QTreeView` with a `QAbstractItemModel` is the
+same architecture, and `run_datagrid.sh`'s 1M-row virtualisation proof is the
+kind of claim that should transfer unchanged.
+
+**Nothing here is blocked on Studio** — the increments stand on their own — but
+"ready" means ready for Studio, which means the editor question gets answered
+before anyone promises a date.
+
+---
+
 ## 1. Why Qt, and what changed
 
 Qt was rejected as a GUI backend on 2026-09-27 on measured grounds, and that
@@ -349,11 +382,10 @@ narrower:
 
 So the first experiment is the one that was ranked second:
 
-1. **Event-loop integration** — `QApplication::exec()` against gBASIC's own loop,
-   which already serves `webserver`, `timer`, `http` and `inbox`. Expected to be
-   the hardest piece; the probe says nothing about it, and `gi`'s answer does not
-   transfer because GTK's loop is GLib's, which gBASIC's event sources already
-   plug into.
+1. ~~**Event-loop integration**~~ — **MEASURED AND ANSWERED 2026-10-17. See
+   §5.1.** It was expected to be the hardest piece and it is settled: Qt owns
+   the loop, and gBASIC's sources become `QSocketNotifier`s. The other shape
+   fails, and fails only where nobody is watching.
 2. **The grammar cost** of `window NAME( … )` and of a bare modifier in option
    position, in bison conflicts, against a standard of zero.
 3. **A `QMetaType` marshaller** for method and signal arguments; the probe used
@@ -364,6 +396,63 @@ So the first experiment is the one that was ranked second:
 Testing has a free advantage: the installed Qt runtime carries
 `libqoffscreen.so`, so `QT_QPA_PLATFORM=offscreen` runs real widgets with no
 display — which is how the probe ran.
+
+### 5.1 THE LOOP, ANSWERED BY MEASUREMENT (2026-10-17)
+
+`tests/run_qt_loop.sh` over `tests/qt/`, which **links no gBASIC code** — the
+question is answerable in isolation, because gBASIC's loop is one `poll()` over
+the webserver's descriptors, libcurl's descriptors and the root mailbox with
+timers riding the timeout (`webserver_run_event_loop`), so every source is a
+descriptor or a deadline and a stand-in needs only a real poll over a real
+descriptor. Keeping the interpreter out means the answer cannot be confounded,
+and the probe stays buildable as the interpreter changes.
+
+There are exactly two shapes and **both were measured**, because the one that
+fails does not fail in ordinary operation:
+
+| | ordinary | with a modal dialog up |
+|---|---|---|
+| **B** — gBASIC owns, Qt pumped with `processEvents()` | 30 polls, 15 Qt ticks, worst gBASIC gap **52 ms** | 18 polls, worst gap **651 ms** over a 600 ms dialog |
+| **A** — Qt owns, a gBASIC source is a `QSocketNotifier` | 4 of 4 source events, 15 Qt ticks | **4 of 4**, three of them *during* the dialog |
+
+Same answer on the offscreen platform and on a real Wayland display.
+
+**DIRECTION A IS THE ARCHITECTURE AND B IS RULED OUT BY MEASUREMENT.** Under B
+both loops run at full fidelity right up until something opens a **nested** Qt
+loop — and those are ordinary, not exotic: a modal dialog, `QMessageBox`,
+`QMenu::exec()`, drag-and-drop, `QProgressDialog`. While one is up, gBASIC's
+poll never runs: a webserver stops answering and every timer misses. A `form`
+that validates its input will want a message box, so this is the common case
+rather than a corner.
+
+**A FINDING THIS SECTION DID NOT PREDICT, and it has to be a stated contract
+rather than something each source rediscovers:** a `QSocketNotifier` is
+**level-triggered**, so a handler that does not consume the bytes is re-entered
+for as long as they sit there. The first version of the probe, which never read
+its pipe, fired **545,066 times for one byte**. That is the same defect class
+PLAT-HTTP already recorded — *"the first delivery loop re-reported undrained
+bytes EVERY iteration ... a loop that never went idle"* — so **every gBASIC
+source registered with Qt must be drained by its handler**, and the suite
+asserts a ceiling on the activation count rather than merely that the source was
+served.
+
+**What this does NOT answer**, stated rather than implied:
+
+- **Re-entry into the evaluator.** The probe proves a real Qt signal reaches a C
+  callback through a `moc` translation unit, via one generic relay — the shape
+  above. Calling `invoke_function` from there is still inferred from
+  `gi_signal_marshal`, which ships it for GTK.
+- **Windows.** `QSocketNotifier` there works on **sockets only**, not arbitrary
+  handles, so direction A will need `QWinEventNotifier` for any source that is
+  not a socket. Named now rather than discovered during the port.
+- Threads, actors, and more than one window.
+
+**What it costs the interpreter, which is a note and not a decision:** a program
+with a `window` hands the thread to `QApplication::exec()`, so the post-`main`
+loop becomes a *client* of Qt's rather than the owner. A program with no window
+is untouched. Nothing in the language or in how programs are written changes —
+**a GUI stays one optional part of a program**, which is the shape Matthew asked
+for and the shape the measurement supports.
 
 ## 6. What to install
 
@@ -394,15 +483,55 @@ qt6-networkauth-dev        # OAuth: use gBASIC's own webclient/crypto
 
 ## 7. Open questions
 
-- **`column` is overloaded** — a layout column and a table's column. A `table`
-  directive needs different words.
+**THREE WERE DECIDED 2026-10-17** and are struck below with the ruling.
+
+### Decided: `field` keeps `type:`, and there is no directive per type
+
+`field limit( label: "Limit", type: {USD} )`, not `money limit( … )`. One
+directive for every field with the kind as an option, so a kind with no word of
+its own still has somewhere to go, and the validation comes from gBASIC's own
+modifiers — which is why a currency is sayable at all. The alternative reads
+better in the common case and costs a new word per kind plus a second way to
+say the same thing; rejected for that.
+
+### Decided: the window may carry the subject, and a `form` shadows it
+
+`window customer( … ) to edit cust` is allowed as a shorthand, because the
+single-record dialog is the commonest window there is and repeating the subject
+on its one form is noise.
+
+**The ambiguity that shorthand creates is settled by a rule rather than left
+open.** A window's subject is a **default**, not a binding:
+
+- a `form` with **no** subject inherits the window's;
+- a `form` **with** one shadows it, for that form only — the way a nested
+  `with principal(p)` shadows and then restores;
+- a **`table` always names its own** and never inherits. A table wants a list
+  and a window's subject is one record, so inheriting it there would be a guess
+  dressed as a shorthand, which is the one thing this design refuses everywhere
+  else.
+- A window with **no** subject and a bare `form` is refused at load time,
+  naming both — the author wrote a form about nothing.
+
+### Decided: layout keeps `column`, and a table's parts are `field`
+
+`column` and `row` stay the layout pair, because layout appears in every window
+and a table does not. A table's parts are therefore `field`, the same word a
+form uses for the same idea — *one value of the subject* — which is a saving
+rather than a workaround:
+
+```basic
+column margin: 8
+    table orders to show lines
+        field placed( label: "Date" )
+        field total(  label: "Total", type: {USD} )
+    end table
+end column
+```
+
+### Still open
+
 - **`grow` as a bare option** is an option with no value, which is new grammar in
   the head; `grow: true` avoids it and reads slightly worse.
-- **Where the subject may be declared**: on the `form` (assumed here) or also on
-  the `window` (`window customer( … ) to edit cust`), which reads well for a
-  single-record dialog and badly for a screen showing one record and listing
-  another.
-- **Whether `field` should split by type** (`money limit( … )`) instead of
-  carrying `type:`. Decided for `type:`, but a directive per type reads better
-  and would make the modifier unnecessary.
+
 - **Qt Charts' licence** is unverified locally (§3).
