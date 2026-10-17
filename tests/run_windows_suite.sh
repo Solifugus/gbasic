@@ -77,6 +77,50 @@ else
 fi
 rm -f "$big"
 
+# A LINK TO NOTHING IS NOT THERE. Windows' C-runtime stat does not follow a
+# reparse point, so MEASURED 2026-10-17 `exists()` answered true for a dangling
+# link and `file_type` and the listing called it a file (§28); gb_stat now
+# follows. Tested with a DIRECTORY JUNCTION because a junction needs no
+# privilege -- a symlink needs Developer Mode or elevation, so a tier built on
+# one would skip on most machines. Windows only: `mklink` is cmd's.
+if command -v cmd >/dev/null 2>&1 && command -v cygpath >/dev/null 2>&1; then
+    jd="$(mktemp -d)"
+    mkdir -p "$jd/target"
+    printf 'hello' >"$jd/target/f.txt"
+    cmd //c "mklink /J $(cygpath -w "$jd")\\live $(cygpath -w "$jd")\\target" >/dev/null 2>&1
+    cmd //c "mklink /J $(cygpath -w "$jd")\\dangling $(cygpath -w "$jd")\\nowhere" >/dev/null 2>&1
+    jm="$(cygpath -m "$jd")"
+    jprog="$(mktemp --suffix=.bas)"
+    cat >"$jprog" <<BAS
+w {dir}= "$jm"
+dl {dir}= "$jm/dangling"
+lv {dir}= "$jm/live"
+inner {file}= "$jm/live/f.txt"
+print "premise " + string(is_symlink(dl)) + " " + string(is_symlink(lv))
+print "dangling " + string(exists(dl)) + " " + string(file_type(dl))
+print "live " + string(exists(lv)) + " " + string(file_type(lv)) + " " + read(inner)
+for each e in list(w)
+    if e.name = "dangling" then
+        print "listed " + string(e.type)
+    end if
+end for
+BAS
+    jout="$(./gbasic "$jprog" 2>&1)"
+    rm -f "$jprog"
+    cmd //c "rmdir $(cygpath -w "$jd")\\live & rmdir $(cygpath -w "$jd")\\dangling" >/dev/null 2>&1
+    rm -rf "$jd"
+    jwant="$(printf 'premise true true\ndangling false unknown\nlive true folder hello\nlisted unknown')"
+    if [ "$jout" = "$jwant" ]; then
+        printf 'PASS a dangling junction does not exist; a live one is its target\n'
+    elif printf '%s\n' "$jout" | grep -qx 'premise true true'; then
+        printf 'FAIL links are not followed:\n%s\n' "$jout"
+        status=1
+    else
+        printf 'FAIL the junctions were not created, so NOTHING was measured:\n%s\n' "$jout"
+        status=1
+    fi
+fi
+
 # THE WINDOWS FILE VERSION MUST BE THE BINARY'S VERSION. src/gbasic.manifest
 # carries one by hand (it is what Windows shows in a file's Properties, and the
 # MSIX build reads `gbasic --version` instead); it sat at 0.4.0.0 while the

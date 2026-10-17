@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 const char *gb_platform_name(void) { return "windows"; }
@@ -297,6 +298,22 @@ int gb_is_symlink(const char *path) {
         return 0;
     }
     return (attrs & FILE_ATTRIBUTE_REPARSE_POINT) ? 1 : 0;
+}
+
+int gb_stat(const char *path, struct stat *out) {
+    if (!gb_is_symlink(path)) {
+        return stat(path, out);
+    }
+    char *target = gb_realpath(path);
+    if (!target) {
+        errno = ENOENT;   /* a link whose target cannot be opened is not there */
+        return -1;
+    }
+    int rc = stat(target, out);
+    int e = errno;
+    free(target);
+    errno = e;
+    return rc;
 }
 
 int gb_set_cloexec(int fd, int on) {

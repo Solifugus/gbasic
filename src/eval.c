@@ -2343,7 +2343,7 @@ static int zone_name_valid(const char *zone) {
     char path[512];
     snprintf(path, sizeof(path), "/usr/share/zoneinfo/%s", zone);
     struct stat st;
-    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+    return gb_stat(path, &st) == 0 && S_ISREG(st.st_mode);
 #endif
 }
 
@@ -9751,7 +9751,7 @@ static void search_directory_for_library(const char *dir_path,
 
         char *path = join_path(dir_path, entry->d_name);
         struct stat st;
-        if (stat(path, &st) == 0) {
+        if (gb_stat(path, &st) == 0) {
             if (S_ISREG(st.st_mode)) {
                 if (!exact_filename || strcmp(entry->d_name, expected_filename) == 0) {
                     search_file_for_library(path, name, matches, match_count);
@@ -9826,7 +9826,7 @@ const char *gb_exe_relative_stdlib(void) {
     }
 
     struct stat st;
-    if (stat(candidate, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    if (gb_stat(candidate, &st) != 0 || !S_ISDIR(st.st_mode)) {
         return NULL;
     }
     memcpy(resolved, candidate, (size_t)written + 1);
@@ -11200,7 +11200,7 @@ static Value eval_path_call(AstExpr *expr) {
             }
         } else {
             struct stat info;
-            if (stat(first_path, &info) != 0) {
+            if (gb_stat(first_path, &info) != 0) {
                 result = value_unknown();
             } else if (S_ISREG(info.st_mode)) {
                 result = value_string("file");
@@ -11339,7 +11339,7 @@ static int copy_file_path(const char *source_path, const char *target_path) {
     }
 
     struct stat source_stat;
-    int has_source_stat = stat(source_path, &source_stat) == 0;
+    int has_source_stat = gb_stat(source_path, &source_stat) == 0;
     FILE *target = fopen(target_path, "wb");
     if (!target) {
         fclose(source);
@@ -11449,7 +11449,7 @@ static int path_open_errno(const char *path, int err) {
         memcpy(prefix, path, i);
         prefix[i] = '\0';
         struct stat st;
-        if (stat(prefix, &st) != 0) {
+        if (gb_stat(prefix, &st) != 0) {
             break;                       /* missing: ENOENT was right */
         }
         if (!S_ISDIR(st.st_mode)) {
@@ -11520,7 +11520,7 @@ static int remove_tree_path(const char *path, const char *top, int depth,
             failed = unlink(child) != 0;
         } else {
             struct stat info;
-            if (stat(child, &info) != 0) {
+            if (gb_stat(child, &info) != 0) {
                 /* Vanished while we walked -- somebody else removed it, which
                  * is the outcome we wanted anyway. */
                 failed = (errno != ENOENT);
@@ -11585,7 +11585,7 @@ static int make_dir_parents(const char *path, char *why, size_t why_size) {
                  * hands the caller a path whose next write fails somewhere
                  * else entirely. */
                 struct stat info;
-                if (stat(work, &info) != 0 || !S_ISDIR(info.st_mode)) {
+                if (gb_stat(work, &info) != 0 || !S_ISDIR(info.st_mode)) {
                     snprintf(why, why_size,
                              "could not create directory: %s exists and is not a directory",
                              work);
@@ -11683,7 +11683,7 @@ static Value eval_file_call(AstExpr *expr) {
              * `exists({file}"/etc")` was already true, and a file that exists
              * but is not readable was reported ABSENT. */
             struct stat info;
-            int exists = stat(directory_path(file_value), &info) == 0;
+            int exists = gb_stat(directory_path(file_value), &info) == 0;
             value_free(file_value);
             return value_bool(exists);
         }
@@ -11719,7 +11719,7 @@ static Value eval_file_call(AstExpr *expr) {
              * asks `stat` rather than opening, for the neighbouring reason:
              * ask the question you mean. */
             struct stat info;
-            if (stat(file_value.as.file_path, &info) == 0 &&
+            if (gb_stat(file_value.as.file_path, &info) == 0 &&
                 S_ISREG(info.st_mode)) {
                 value_free(file_value);
                 return value_number((double)info.st_size);
@@ -11854,7 +11854,7 @@ static Value eval_file_call(AstExpr *expr) {
         /* One stat() serves both: no read of file contents, so size is exact and
          * cheap even for huge files, and mtime carries no locale/string coercion. */
         struct stat st;
-        if (stat(file_value.as.file_path, &st) != 0) {
+        if (gb_stat(file_value.as.file_path, &st) != 0) {
             char message[512];
             snprintf(message,
                      sizeof(message),
@@ -12084,7 +12084,7 @@ static Value eval_file_call(AstExpr *expr) {
             }
             char *entry_path = join_path(path, entry->d_name);
             struct stat st;
-            if (stat(entry_path, &st) == 0 && S_ISREG(st.st_mode)) {
+            if (gb_stat(entry_path, &st) == 0 && S_ISREG(st.st_mode)) {
                 Value *next = realloc(items, sizeof(Value) * (count + 1));
                 if (!next) {
                     abort();
@@ -12151,7 +12151,7 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
         struct stat info;
-        if (stat(path, &info) != 0) {
+        if (gb_stat(path, &info) != 0) {
             char message[512];
             snprintf(message, sizeof(message), "remove_tree: could not remove %s (%s)",
                      path, strerror(errno));
@@ -12610,7 +12610,7 @@ static Value eval_file_call(AstExpr *expr) {
                  * and names no fix. A path that does not exist AT ALL is left
                  * to the platform call, whose errno says so already. */
                 struct stat in_info;
-                if (stat(where, &in_info) == 0 && !S_ISDIR(in_info.st_mode)) {
+                if (gb_stat(where, &in_info) == 0 && !S_ISDIR(in_info.st_mode)) {
                     char message[PATH_MAX + 256];
                     snprintf(message, sizeof(message),
                              "%s: 'in' names %s, which is not a directory."
@@ -13606,7 +13606,7 @@ static void glob_walk(GlobWalk *w, const char *dir_path,
         char *path = path_join_alloc(dir_path, entry->d_name);
 
         struct stat st;
-        int have_stat = stat(path, &st) == 0;
+        int have_stat = gb_stat(path, &st) == 0;
         /* THE LISTING ANSWERS WHAT `file_type` ANSWERS. This used to fall back
          * to "file" for anything that was not a directory, so a DANGLING
          * SYMLINK, a FIFO, a socket and a device all arrived labelled `file`
@@ -32231,7 +32231,7 @@ static Value process_do_release(AstExpr *expr) {
  * to settle. */
 static int process_is_executable(const char *path) {
     struct stat st;
-    if (stat(path, &st) != 0) {
+    if (gb_stat(path, &st) != 0) {
         return 0;
     }
     if (!S_ISREG(st.st_mode)) {

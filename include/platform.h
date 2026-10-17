@@ -331,6 +331,20 @@ int gb_symlink(const char *target, const char *path, char *why, size_t why_size)
  * returning 0. */
 int gb_is_symlink(const char *path);
 
+/* `stat`, FOLLOWING A LINK TO ITS TARGET -- which is what every caller in
+ * src/eval.c assumes and what POSIX stat does. Windows' C-runtime stat does
+ * NOT: MEASURED 2026-10-17, it answers rc=0 on a DANGLING directory junction,
+ * while opening the same path (which follows) fails. So `exists()` answered
+ * true for a link to nothing, and `file_type`, the listing and `file_size` of
+ * any link described the link rather than what it points at
+ * (docs/windows_port_status.md §28-§29).
+ *
+ * POSIX: stat. WINDOWS: for a reparse point, resolve it with gb_realpath (which
+ * opens it, following) and stat the target; a link whose target cannot be
+ * opened is ENOENT, as on POSIX. Not a reparse point: stat, unchanged. */
+struct stat;
+int gb_stat(const char *path, struct stat *out);
+
 /* Set (on=1) or clear (on=0) close-on-exec / non-inheritance on an fd.
  * Windows: SetHandleInformation(HANDLE_FLAG_INHERIT) on the fd's OS handle.
  * Returns 0 / -1. */
