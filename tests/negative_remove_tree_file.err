@@ -1,1 +1,1 @@
-runtime error at tests/negative_remove_tree_file.bas:2:1: remove_tree: /etc/hostname is not a directory; use delete() for a file
+runtime error at tests/negative_remove_tree_file.bas:5:1: remove_tree: tests/negative_remove_tree_file.bas is not a directory; use delete() for a file

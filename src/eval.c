@@ -11434,6 +11434,18 @@ static size_t path_root_length(const char *path) {
  * directory is the ENOTDIR it is. Unchanged on POSIX. */
 static int path_open_errno(const char *path, int err) {
 #ifdef _WIN32
+    /* A DIRECTORY IS NOT A PERMISSION PROBLEM. Opening one fails on Windows
+     * with EACCES, where POSIX opens it and the caller then reports EISDIR --
+     * so `read({file}"stdlib")` said "Permission denied" (measured 2026-10-17,
+     * negative_read_directory and run_intake), pointing the reader at
+     * permissions that were never the problem. */
+    if (err == EACCES) {
+        struct stat st;
+        if (gb_stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            return EISDIR;
+        }
+        return err;
+    }
     if (err != ENOENT) {
         return err;
     }
