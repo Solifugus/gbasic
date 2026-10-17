@@ -552,6 +552,300 @@ static void srv_refuse_nested(SrvCheck *chk, const AstStmtList *list, const char
     }
 }
 
+/* ---- load-time validation of `window` declarative blocks --------------------
+ *
+ * The same treatment the `server` block gets, in the same pass and the same
+ * sink, which is what puts every refusal into --json-diagnostics and an
+ * editor's error list for nothing. It is also what makes the whole declarative
+ * surface testable WITH NO DISPLAY -- the property that let `web.routes` be
+ * proven with no socket, and the reason this increment ships before any Qt.
+ *
+ * THE VOCABULARY IS CLOSED AND THAT IS THE POINT. A misspelled directive is a
+ * widget nobody sees: it would lay out, draw nothing an author recognises, and
+ * raise nothing. Closed, it is a located refusal naming the nearest real word.
+ *
+ * WHAT IS DELIBERATELY NOT CHECKED, said here rather than discovered: a LEAF's
+ * options. Those are widget properties and Qt exposes 75 on a button alone, so
+ * the set cannot be closed without Qt in the build -- the head's options can
+ * and are. */
+typedef struct {
+    gb_diagnostics *diags;
+    const char *path;
+    int errors;
+} WinCheck;
+
+static void win_error(WinCheck *chk, int line, int column, const char *fmt, ...) {
+    char message[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+    gb_span span = {line, column, line, column};
+    gb_report_to(chk->diags, GB_DIAG_WINDOW_BLOCK, 0, chk->path, span, message);
+    chk->errors++;
+}
+
+/* CONTAINERS TAKE A BODY AND LEAVES DO NOT, which is not a taxonomy but the
+ * grammar's own discipline: every head shape decides its own body-ness, which
+ * is what makes the block cost zero bison conflicts. `table` is deliberately
+ * ABSENT until it exists, so a `table` written today is refused as an unknown
+ * word rather than silently accepted and ignored. */
+static const char *win_container_words[] = {"row", "column", "form", "group", NULL};
+static const char *win_leaf_words[] = {"field", "button", "check", "stretch", NULL};
+
+static int win_in(const char *const *set, const char *word) {
+    for (size_t i = 0; set[i]; i++) {
+        if (strcmp(set[i], word) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The nearest real word: one substitution, one insertion, one deletion -- OR
+ * ONE TRANSPOSITION, which is the correction that matters.
+ *
+ * `colunm` for `column` is a transposition, and so are `feild`, `recieve` and
+ * most of what fingers actually do; under a plain one-edit rule it needs TWO
+ * edits and no suggestion is offered. Measured by writing the test first and
+ * watching it miss the exact example the comment claimed to catch -- the
+ * commonest typo there is was the one case the first version could not see.
+ *
+ * Still short of a Levenshtein table nobody would maintain, and it answers
+ * NULL when nothing is close, because a suggestion that is sometimes nonsense
+ * is worse than none. */
+static const char *win_nearest(const char *word) {
+    static const char *all[] = {"row", "column", "form", "group",
+                                "field", "button", "check", "stretch", NULL};
+    size_t len = strlen(word);
+    for (size_t i = 0; all[i]; i++) {
+        size_t other = strlen(all[i]);
+        if (other + 1 < len || len + 1 < other) {
+            continue;
+        }
+        /* ONE TRANSPOSITION: equal length, and exactly two adjacent positions
+         * swapped. Checked first because it is the common case. */
+        if (other == len) {
+            size_t diff = 0, first = 0;
+            for (size_t k = 0; k < len; k++) {
+                if (word[k] != all[i][k]) {
+                    if (diff == 0) { first = k; }
+                    diff++;
+                }
+            }
+            if (diff == 0) {
+                return all[i];
+            }
+            if (diff == 2 && first + 1 < len &&
+                word[first] == all[i][first + 1] &&
+                word[first + 1] == all[i][first] &&
+                word[first + 1] != all[i][first + 1]) {
+                return all[i];
+            }
+        }
+        size_t a = 0, b = 0, edits = 0;
+        while (a < len && b < other && edits <= 1) {
+            if (word[a] == all[i][b]) {
+                a++; b++;
+                continue;
+            }
+            edits++;
+            if (len > other)       { a++; }
+            else if (other > len)  { b++; }
+            else                   { a++; b++; }
+        }
+        edits += (len - a) + (other - b);
+        if (edits <= 1) {
+            return all[i];
+        }
+    }
+    return NULL;
+}
+
+static void win_check_items(WinCheck *chk, const AstWindowItemList *items,
+                            const char *window_subject,
+                            const char **names, size_t *name_count,
+                            size_t name_cap);
+
+/* One item, and the window's subject so a bare `form` can inherit it. */
+static void win_check_item(WinCheck *chk, const AstWindowItem *item,
+                           const char *window_subject,
+                           const char **names, size_t *name_count,
+                           size_t name_cap) {
+    if (item->kind == AST_WINDOW_HANDLER) {
+        return;   /* its target is checked once the whole window is known */
+    }
+    const char *word = item->word ? item->word : "";
+    int is_container = win_in(win_container_words, word);
+    int is_leaf = win_in(win_leaf_words, word);
+
+    if (!is_container && !is_leaf) {
+        const char *near = win_nearest(word);
+        if (near) {
+            win_error(chk, item->line, item->column,
+                      "window: unknown directive '%s' -- did you mean '%s'?",
+                      word, near);
+        } else {
+            win_error(chk, item->line, item->column,
+                      "window: unknown directive '%s'. The containers are row, "
+                      "column, form and group; the parts are field, button, "
+                      "check and stretch", word);
+        }
+        return;
+    }
+
+    /* THE WORD AND THE SHAPE MUST AGREE. The grammar decides shape from the
+     * head alone, so `field x` with a body parses perfectly as a container --
+     * and would lay out a field containing other things, which is not a thing. */
+    if (is_leaf && item->kind == AST_WINDOW_CONTAINER) {
+        win_error(chk, item->line, item->column,
+                  "window: '%s' takes no body -- write `%s name( ... )` on one line",
+                  word, word);
+        return;
+    }
+    if (is_container && item->kind == AST_WINDOW_LEAF) {
+        win_error(chk, item->line, item->column,
+                  "window: '%s' is a container and needs a body ending `end %s`",
+                  word, word);
+        return;
+    }
+
+    if (item->kind == AST_WINDOW_CONTAINER) {
+        if (item->close_word && strcmp(item->close_word, word) != 0) {
+            win_error(chk, item->line, item->column,
+                      "window: '%s' is closed by `end %s`, not `end %s`",
+                      word, word, item->close_word);
+        }
+        /* A `form` NAMES ITS SUBJECT OR INHERITS THE WINDOW'S, and a window
+         * with neither is a form about nothing. The window's subject is a
+         * DEFAULT a form may shadow -- the rule a nested `with principal(p)`
+         * already follows. */
+        if (strcmp(word, "form") == 0) {
+            if (item->subject_direction &&
+                strcmp(item->subject_direction, "edit") != 0 &&
+                strcmp(item->subject_direction, "show") != 0) {
+                win_error(chk, item->line, item->column,
+                          "window: a form is `to edit` or `to show`, not `to %s`",
+                          item->subject_direction);
+            }
+            if (!item->subject && !window_subject) {
+                win_error(chk, item->line, item->column,
+                          "window: this form names no subject and the window has "
+                          "none to inherit -- write `form to edit <record>`");
+            }
+        } else if (item->subject) {
+            win_error(chk, item->line, item->column,
+                      "window: only a form carries a subject, not '%s'", word);
+        }
+        win_check_items(chk, &item->entries, window_subject, names, name_count,
+                        name_cap);
+        return;
+    }
+
+    /* A LEAF'S NAME IS WHAT A HANDLER AND A BINDING ADDRESS, so `field()` with
+     * none is refused -- except `stretch`, which is pure space and names
+     * nothing. */
+    if (strcmp(word, "stretch") == 0) {
+        if (item->name) {
+            win_error(chk, item->line, item->column,
+                      "window: stretch is space and takes no name");
+        }
+        return;
+    }
+    if (!item->name) {
+        win_error(chk, item->line, item->column,
+                  "window: '%s' needs a name -- `%s id( ... )` -- because that is "
+                  "what a handler and a binding address", word, word);
+        return;
+    }
+    for (size_t i = 0; i < *name_count; i++) {
+        if (strcmp(names[i], item->name) == 0) {
+            win_error(chk, item->line, item->column,
+                      "window: '%s' is declared twice, so `on %s.<signal>` could "
+                      "not say which", item->name, item->name);
+            return;
+        }
+    }
+    if (*name_count < name_cap) {
+        names[*name_count] = item->name;
+        *name_count = *name_count + 1;
+    }
+}
+
+static void win_check_items(WinCheck *chk, const AstWindowItemList *items,
+                            const char *window_subject,
+                            const char **names, size_t *name_count,
+                            size_t name_cap) {
+    for (size_t i = 0; i < items->count; i++) {
+        win_check_item(chk, items->items[i], window_subject, names, name_count,
+                       name_cap);
+    }
+}
+
+/* Every handler in the tree, checked against the names the window declares.
+ * THIS IS THE REFUSAL LOAD-TIME VALIDATION EXISTS FOR: `on save.clicked` with
+ * no `button save` is a handler that can never fire, and nothing at run time
+ * would ever say so -- the button is simply not there to connect. */
+static void win_check_handlers(WinCheck *chk, const AstWindowItemList *items,
+                               const char **names, size_t name_count) {
+    for (size_t i = 0; i < items->count; i++) {
+        const AstWindowItem *item = items->items[i];
+        if (item->kind == AST_WINDOW_HANDLER) {
+            int found = 0;
+            for (size_t j = 0; j < name_count; j++) {
+                if (item->event_target && strcmp(names[j], item->event_target) == 0) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                win_error(chk, item->line, item->column,
+                          "window: `on %s.%s` names nothing in this window, so it "
+                          "could never fire",
+                          item->event_target ? item->event_target : "?",
+                          item->event_signal ? item->event_signal : "?");
+            }
+        } else if (item->kind == AST_WINDOW_CONTAINER) {
+            win_check_handlers(chk, &item->entries, names, name_count);
+        }
+    }
+}
+
+static void win_check_window(WinCheck *chk, const AstStmt *stmt) {
+    /* THE HEAD'S OPTIONS ARE CLOSED, unlike a leaf's: these are the window's
+     * own, not a widget's, so the set is knowable without Qt. A misspelling
+     * that was ignored would leave an author believing they had asked for
+     * something -- the rule `make_dir` and `webserver.listen` already follow. */
+    static const char *head[] = {"title", "width", "height", NULL};
+    for (size_t i = 0; i < stmt->as.window.options.count; i++) {
+        const AstRecordField *field = &stmt->as.window.options.items[i];
+        if (!win_in(head, field->name)) {
+            win_error(chk, stmt->line, stmt->column,
+                      "window '%s': unknown option '%s' (the options are title, "
+                      "width and height)", stmt->as.window.name, field->name);
+        }
+    }
+    if (stmt->as.window.subject_direction &&
+        strcmp(stmt->as.window.subject_direction, "edit") != 0 &&
+        strcmp(stmt->as.window.subject_direction, "show") != 0) {
+        win_error(chk, stmt->line, stmt->column,
+                  "window '%s': the shorthand is `to edit` or `to show`, not `to %s`",
+                  stmt->as.window.name, stmt->as.window.subject_direction);
+    }
+    if (stmt->as.window.close_word &&
+        strcmp(stmt->as.window.close_word, "window") != 0) {
+        win_error(chk, stmt->line, stmt->column,
+                  "window '%s' is closed by `end window`, not `end %s`",
+                  stmt->as.window.name, stmt->as.window.close_word);
+    }
+
+    const char *names[256];
+    size_t name_count = 0;
+    win_check_items(chk, &stmt->as.window.items, stmt->as.window.subject,
+                    names, &name_count, 256);
+    win_check_handlers(chk, &stmt->as.window.items, names, name_count);
+}
+
 static void srv_walk(SrvCheck *chk, const AstStmtList *list, int top_level,
                      const char ***names, size_t *name_count) {
     for (size_t i = 0; i < list->count; i++) {
@@ -587,6 +881,14 @@ static void srv_walk(SrvCheck *chk, const AstStmtList *list, int top_level,
                     }
                 }
             }
+            break;
+        }
+        case AST_STMT_WINDOW: {
+            /* Checked in the SAME walk, so one file reports every problem in
+             * both kinds of block at once rather than stopping at the first. */
+            WinCheck wchk = {chk->diags, chk->path, 0};
+            win_check_window(&wchk, stmt);
+            chk->errors += wchk.errors;
             break;
         }
         case AST_STMT_PROGRAM:

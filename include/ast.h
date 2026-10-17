@@ -44,7 +44,8 @@ typedef enum {
     AST_STMT_CONSIDER,
     AST_STMT_BREAK,
     AST_STMT_CONTINUE,
-    AST_STMT_SERVER
+    AST_STMT_SERVER,
+    AST_STMT_WINDOW
 } AstStmtKind;
 
 typedef enum {
@@ -162,6 +163,54 @@ struct AstServerItem {
     AstStmt *fn_stmt;        /* handler/hook: the synthesized function node the registry
                               * holds. A SHELL over this item's params/body (shared, not
                               * copied), so the item frees those and nothing frees this. */
+    int line;
+    int column;
+};
+
+/* A `window` BLOCK'S ITEMS. The same treatment the server block gets -- parsed
+ * into data, validated in one load-time pass, introspectable with no display --
+ * and the three kinds are the three HEAD SHAPES bison measures at zero
+ * conflicts (docs/qt_gui_design.md §5.2), not a taxonomy chosen for tidiness:
+ *
+ *   LEAF       `stretch()`, `field id( label: "Account" )`   -- no body
+ *   CONTAINER  `row`, `column( margin: 8 )`, `group "Credit"`,
+ *              `form to edit cust`                          -- a body
+ *   HANDLER    `on save.clicked ... end on`
+ *
+ * WHAT MAKES THAT FREE is the discipline the server block already follows:
+ * every head shape decides on its own whether a body follows, so no two share
+ * a prefix and differ in body-ness. It is why `stretch()` carries parentheses
+ * (a body-less bare word would collide with `row`, a body-bearing one) and why
+ * options are ALWAYS parenthesised (an unparenthesised field list has no
+ * closing token, so the parser cannot tell where a value ends -- every
+ * conflict in the near-miss shape was inside one). */
+typedef enum {
+    AST_WINDOW_LEAF,
+    AST_WINDOW_CONTAINER,
+    AST_WINDOW_HANDLER
+} AstWindowItemKind;
+
+typedef struct AstWindowItem AstWindowItem;
+
+typedef struct {
+    AstWindowItem **items;
+    size_t count;
+} AstWindowItemList;
+
+struct AstWindowItem {
+    AstWindowItemKind kind;
+    char *word;              /* field / button / row / column / form / group / stretch */
+    char *name;              /* leaf: the declared name (`field id` -> "id") */
+    char *label;             /* container: a string literal (`group "Credit"`) */
+    char *subject_verb;      /* form: the word after the directive, which must be `to` */
+    char *subject_direction; /* form: `edit` or `show` -- the INFINITIVE carries it */
+    char *subject;           /* form: the record being edited or shown */
+    char *close_word;        /* container/handler: the word after `end` */
+    char *event_target;      /* handler: `save` in `on save.clicked` */
+    char *event_signal;      /* handler: `clicked` */
+    AstRecordFieldList options;
+    AstWindowItemList entries;
+    AstStmtList body;        /* handler */
     int line;
     int column;
 };
@@ -406,6 +455,15 @@ struct AstStmt {
             AstStmtList else_body;
         } consider;
         struct {
+            char *name;          /* the declared name bound in the enclosing scope */
+            char *close_word;    /* the word after the closing `end` */
+            char *subject_verb;      /* `window c( ... ) to edit cust` -- the shorthand */
+            char *subject_direction;
+            char *subject;
+            AstRecordFieldList options;
+            AstWindowItemList items;
+        } window;
+        struct {
             char *word;          /* the block kind word; "server" is the only one today */
             char *name;          /* the declared name bound in the enclosing scope */
             char *close_word;    /* the word after the closing `end` */
@@ -428,6 +486,24 @@ AstNameList ast_name_list_empty(void);
 AstNameList ast_name_list_append(AstNameList list, char *name);
 AstNameList ast_name_list_append_default(AstNameList list, char *name,
                                          AstExpr *default_value);
+
+AstWindowItemList ast_window_item_list_empty(void);
+AstWindowItemList ast_window_item_list_append(AstWindowItemList list, AstWindowItem *item);
+AstWindowItem *ast_window_leaf(char *word, char *name, AstRecordFieldList options,
+                               int line, int column);
+AstWindowItem *ast_window_container(char *word, char *label, AstRecordFieldList options,
+                                    AstWindowItemList entries, char *close_word,
+                                    int line, int column);
+AstWindowItem *ast_window_form(char *word, char *verb, char *direction, char *subject,
+                               AstWindowItemList entries, char *close_word,
+                               int line, int column);
+AstWindowItem *ast_window_handler(char *target, char *signal, AstStmtList body,
+                                  int line, int column);
+AstStmt *ast_window(char *name, AstRecordFieldList options, AstWindowItemList items,
+                    char *close_word, char *verb, char *direction, char *subject,
+                    int line, int column);
+
+void ast_free_window_item_list(AstWindowItemList list);
 
 AstServerItemList ast_server_item_list_empty(void);
 AstServerItemList ast_server_item_list_append(AstServerItemList list, AstServerItem *item);

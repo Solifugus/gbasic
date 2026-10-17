@@ -81,6 +81,7 @@ const char *gb_diag_code_str(gb_diag_code code) {
     case GB_DIAG_PARSE_ERROR:    return "GB_DIAG_PARSE_ERROR";
     case GB_DIAG_STRING_LITERAL: return "GB_DIAG_STRING_LITERAL";
     case GB_DIAG_SERVER_BLOCK:   return "GB_DIAG_SERVER_BLOCK";
+    case GB_DIAG_WINDOW_BLOCK:   return "GB_DIAG_WINDOW_BLOCK";
     case GB_DIAG_RUNTIME_ERROR:  return "GB_DIAG_RUNTIME_ERROR";
     }
     return "GB_DIAG_UNKNOWN";
@@ -116,6 +117,10 @@ const char *gb_diag_kind_str(gb_diag_code code) {
     case GB_DIAG_LEX_ERROR:      return "lexer error";
     case GB_DIAG_PARSE_ERROR:
     case GB_DIAG_SERVER_BLOCK:   return "parse error";
+    /* A load-time refusal is reported where a parse error is, because to an
+     * author it is the same thing: the file did not load and the position says
+     * why. The server block set that precedent. */
+    case GB_DIAG_WINDOW_BLOCK:   return "parse error";
     case GB_DIAG_LEX_DETAIL:
     case GB_DIAG_STRING_LITERAL:
     case GB_DIAG_RUNTIME_ERROR:  return "runtime error";

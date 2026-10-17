@@ -55,6 +55,64 @@ two defects in the suite's own parsing: a whole-value extractor that reported
 the definition **missing on a correct run**, and then a first-token one that
 truncated a list at `Normal Text`. Two shapes of value, two extractors.
 
+### The `window` block: parsed, validated, and no Qt
+
+The declarative half of `docs/qt_gui_design.md`, built on the measurements §5.2
+and §5.1 record. **No Qt, deliberately** — a declaration is *data*, and
+everything decidable about it is decidable without the thing it eventually
+drives. That's the `web.routes` bet: a route table proven with no socket. So
+the whole surface — every refusal, every position, the JSON — is gated
+headless, on every platform, before a widget exists.
+
+**Two lexer tokens and nothing reserved.** `window` is still an ordinary
+identifier — a variable, a record key, a field, arithmetic — because the opener
+fires only on the exact three-token shape `window IDENT (`, measured safe at
+**153 uses of the word in the tree and zero instances of that shape**. The
+other token is a bare `{IDENT}` where a `,`, `)` or newline follows, which is
+how `type: {USD}` names a type at zero conflicts; `=` and `}` are deliberately
+not in that set, so `x {date}= s` is untouched and a bare modifier inside a
+*record literal* still refuses.
+
+**`type: {USD}` works inside a declaration and `m = {USD}` is a located parse
+error** naming the two spellings that do work — the declaration-only decision
+enforced where an author can see it rather than when the line runs.
+
+**Fifteen load-time refusals**, in the same pass and sink the `server` block
+uses, so they reach `--json-diagnostics` and an editor's error list for nothing.
+The sharpest is the one load-time validation exists for: **`on cancel.clicked`
+with no `cancel`** is a handler that can never fire, and nothing at run time
+would ever say so — the button simply isn't there to connect. The vocabulary is
+closed, because a misspelled directive is a widget nobody sees; `table` is
+**absent until it exists**, so writing one today is refused rather than silently
+ignored. What is *not* checked says so: a leaf's options are widget properties
+and Qt exposes 75 on a button alone, so that set cannot be closed without Qt.
+
+**The near-miss hint had to learn transpositions**, and the lesson is that the
+first version could not see the example its own comment claimed to catch:
+`colunm` for `column` is a transposition, like `feild` and most of what fingers
+do, and needs two edits under a plain one-edit rule.
+
+**Evaluating a window block refuses** — "declared but not yet executable" — and
+the suite asserts that, because a block which parsed, bound nothing and raised
+nothing would read as a working window. That tier goes red when the Qt backend
+lands, which is the correct way for it to end.
+
+**Three defects caught inside the increment, all by building it:**
+
+- The refusal first landed in `outline_walk`, the walker behind
+  `source_outline`, where it would have made **an editor's outline fail on any
+  file containing a window block**. A window is a structural node and belongs
+  *in* the outline, which is what it now gets.
+- The new parse-context counter read as **garbage** — `gb_parse_ctx` is
+  initialised field by field with no `memset`. The symptom was the giveaway:
+  `type: {USD}` refused *inside* a declaration while `m = {USD}` succeeded
+  *outside* one. Wrong in both directions at once is an uninitialised read, not
+  inverted logic.
+- Two of the suite's own premises were wrong: `field a` followed by a body is no
+  production at all, and nor is a container word with options and no body — the
+  grammar refuses both before the checker sees them, which is the zero-conflict
+  discipline working rather than a gap.
+
 ### The Qt `window` grammar, priced in bison conflicts
 
 No grammar ships — `src/parser.y` is untouched and still reports **zero**.

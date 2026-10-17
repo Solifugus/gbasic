@@ -33057,6 +33057,16 @@ static void outline_walk_stmt(OutlineCtx *c, AstStmt *stmt, int parent_id) {
         outline_walk_list(c, stmt->as.with_lock.body, id);
         break;
     }
+    /* A `window` IS A STRUCTURAL NODE and belongs in an editor's outline like
+     * any other block -- which is also why the "not yet executable" refusal is
+     * NOT here: this walker serves `source_outline`, and an outline that
+     * refused a file would be the last thing anybody wants. */
+    case AST_STMT_WINDOW: {
+        int id = outline_emit(c, stmt, "window", stmt->as.window.name, 1, 0, 0,
+                              parent_id);
+        (void)id;
+        break;
+    }
     case AST_STMT_SERVER: {
         int id = outline_emit(c, stmt, "server", stmt->as.server.name, 1, 0, 0,
                               parent_id);
@@ -45269,6 +45279,20 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             return eval_error_result();
         }
         break;
+    /* A `window` DECLARATION PARSES AND IS VALIDATED, AND IS NOT YET
+     * EXECUTABLE -- and it says so rather than doing nothing. Silent success is
+     * the shape this tree distrusts most: a block that parsed, bound nothing
+     * and raised nothing would read as a working window to whoever wrote one.
+     * Binding and introspection are the next increment; the Qt backend the one
+     * after. tests/run_window.sh asserts this refusal, so that tier goes RED
+     * when the backend lands, which is the correct way for it to end. */
+    case AST_STMT_WINDOW:
+        runtime_error_raise("a `window` block is declared but not yet executable: "
+                            "it parses and is validated, and nothing renders it "
+                            "(see docs/qt_gui_design.md)", 1004, "not implemented");
+        current_line = previous_line;
+        current_column = previous_column;
+        return eval_error_result();
     case AST_STMT_SERVER:
         server_register(stmt);
         if (error_action_pending()) {

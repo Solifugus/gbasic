@@ -384,6 +384,36 @@ static Token identifier_token(Lexer *lexer, const char *start, int line, int col
         type = TOKEN_IDENT;
     }
 
+    /* THE `window` BLOCK'S OPENER, and nothing is reserved to get it.
+     *
+     * Fired only for the exact three-token shape `window IDENT (`. MEASURED
+     * 2026-10-17 across every .bas and .gb in the tree: 153 uses of the word
+     * and ZERO instances of that shape, so no existing program changes
+     * meaning -- which is the same safety argument the inline modifier rested
+     * on (`{IDENT}` meant nothing before).
+     *
+     * IT NEEDS ITS OWN TOKEN rather than riding the `server` block's
+     * `IDENT IDENT (` head: sharing that costs 2 reduce/reduce, because after
+     * `IDENT IDENT ( ... ) NEWLINE` the parser cannot tell which body is
+     * coming, and bison's counterexample names exactly that. With its own
+     * token the window block measures ZERO. See docs/qt_gui_design.md §5.2.
+     *
+     * NO STATEMENT-START TEST IS NEEDED, and the lexer has no state for one:
+     * the three-token shape is not legal gBASIC in any other position, so
+     * firing wherever it appears turns no working program into a different
+     * one. After a DOT the rule above has already made this an IDENT. */
+    if (type == TOKEN_IDENT && keyword_equals(start, (int)(lexer->current - start), "window")) {
+        const char *probe = lexer->current;
+        while (*probe == ' ' || *probe == '\t') probe++;
+        if (isalpha((unsigned char)*probe) || *probe == '_') {
+            while (isalnum((unsigned char)*probe) || *probe == '_') probe++;
+            while (*probe == ' ' || *probe == '\t') probe++;
+            if (*probe == '(') {
+                type = TOKEN_WINDOW_OPEN;
+            }
+        }
+    }
+
     if (type != TOKEN_IDENT && lexer_in_brace(lexer)) {
         const char *saved_current = lexer->current;
         int saved_line = lexer->line;
@@ -650,7 +680,25 @@ Token lexer_next(Lexer *lexer) {
             while (*after == ' ' || *after == '\t') after++;
             if (*after == '}' && name_len > 0) {
                 Token t;
-                t.type = TOKEN_MODIFIER_PREFIX;
+                /* NAMING A TYPE, OR APPLYING TO SOMETHING? What follows the
+                 * `}` settles it, and only the lexer can ask: a `,`, a `)` or
+                 * a newline means the modifier is being NAMED (`type: {USD}`),
+                 * anything else means it applies to what comes next
+                 * (`{USD}19.99`, `x {date}= s`).
+                 *
+                 * `=` IS DELIBERATELY NOT IN THE SET, because `x {date}= s` is
+                 * the commonest clause in the language and must keep arriving
+                 * as MODIFIER_PREFIX. Nor is `}`, so a bare modifier inside a
+                 * RECORD LITERAL still refuses -- a record is built at run time
+                 * and a type name belongs to a declaration (the decision in
+                 * docs/qt_gui_design.md §5.2). */
+                const char *tail = after + 1;
+                while (*tail == ' ' || *tail == '\t') tail++;
+                int names_a_type = (*tail == ',' || *tail == ')' ||
+                                    *tail == '\n' || *tail == '\r' ||
+                                    *tail == '\0');
+                t.type = names_a_type ? TOKEN_MODIFIER_VALUE
+                                      : TOKEN_MODIFIER_PREFIX;
                 /* The span is the NAME, not the braces: it is what the parser
                  * copies and what a diagnostic has to point at. */
                 t.start = name_start;
@@ -868,6 +916,8 @@ const char *token_type_name(TokenType type) {
     case TOKEN_LBRACKET: return "LBRACKET";
     case TOKEN_RBRACKET: return "RBRACKET";
     case TOKEN_MODIFIER_PREFIX: return "MODIFIER_PREFIX";
+    case TOKEN_MODIFIER_VALUE: return "MODIFIER_VALUE";
+    case TOKEN_WINDOW_OPEN: return "WINDOW_OPEN";
     case TOKEN_LBRACE: return "LBRACE";
     case TOKEN_RBRACE: return "RBRACE";
     case TOKEN_COMMA: return "COMMA";

@@ -432,6 +432,97 @@ AstStmt *ast_watch(char *name, AstNameList names, AstStmtList body) {
     return stmt;
 }
 
+AstWindowItemList ast_window_item_list_empty(void) {
+    AstWindowItemList list = {NULL, 0};
+    return list;
+}
+
+AstWindowItemList ast_window_item_list_append(AstWindowItemList list, AstWindowItem *item) {
+    AstWindowItem **items = realloc(list.items, sizeof(*items) * (list.count + 1));
+    if (!items) {
+        abort();
+    }
+    items[list.count] = item;
+    list.items = items;
+    list.count = list.count + 1;
+    return list;
+}
+
+static AstWindowItem *window_item_new(AstWindowItemKind kind, int line, int column) {
+    AstWindowItem *item = calloc(1, sizeof(*item));
+    if (!item) {
+        abort();
+    }
+    item->kind = kind;
+    item->options = ast_record_field_list_empty();
+    item->entries = ast_window_item_list_empty();
+    item->body = ast_stmt_list_empty();
+    item->line = line;
+    item->column = column;
+    return item;
+}
+
+AstWindowItem *ast_window_leaf(char *word, char *name, AstRecordFieldList options,
+                               int line, int column) {
+    AstWindowItem *item = window_item_new(AST_WINDOW_LEAF, line, column);
+    item->word = word;
+    item->name = name;
+    item->options = options;
+    return item;
+}
+
+AstWindowItem *ast_window_container(char *word, char *label, AstRecordFieldList options,
+                                    AstWindowItemList entries, char *close_word,
+                                    int line, int column) {
+    AstWindowItem *item = window_item_new(AST_WINDOW_CONTAINER, line, column);
+    item->word = word;
+    item->label = label;
+    item->options = options;
+    item->entries = entries;
+    item->close_word = close_word;
+    return item;
+}
+
+AstWindowItem *ast_window_form(char *word, char *verb, char *direction, char *subject,
+                               AstWindowItemList entries, char *close_word,
+                               int line, int column) {
+    AstWindowItem *item = window_item_new(AST_WINDOW_CONTAINER, line, column);
+    item->word = word;
+    item->subject_verb = verb;
+    item->subject_direction = direction;
+    item->subject = subject;
+    item->entries = entries;
+    item->close_word = close_word;
+    return item;
+}
+
+AstWindowItem *ast_window_handler(char *target, char *signal, AstStmtList body,
+                                  int line, int column) {
+    AstWindowItem *item = window_item_new(AST_WINDOW_HANDLER, line, column);
+    item->event_target = target;
+    item->event_signal = signal;
+    item->body = body;
+    return item;
+}
+
+AstStmt *ast_window(char *name, AstRecordFieldList options, AstWindowItemList items,
+                    char *close_word, char *verb, char *direction, char *subject,
+                    int line, int column) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    memset(stmt, 0, sizeof(*stmt));
+    stmt->kind = AST_STMT_WINDOW;
+    stmt->as.window.name = name;
+    stmt->as.window.options = options;
+    stmt->as.window.items = items;
+    stmt->as.window.close_word = close_word;
+    stmt->as.window.subject_verb = verb;
+    stmt->as.window.subject_direction = direction;
+    stmt->as.window.subject = subject;
+    stmt->line = line;
+    stmt->column = column;
+    return stmt;
+}
+
 AstServerItemList ast_server_item_list_empty(void) {
     AstServerItemList list = {NULL, 0};
     return list;
@@ -829,6 +920,38 @@ static void dump_server_items(AstServerItemList items, int indent) {
     }
 }
 
+static void dump_stmt(AstStmt *stmt, int indent);
+
+static void dump_window_items(AstWindowItemList items, int indent) {
+    for (size_t i = 0; i < items.count; i++) {
+        AstWindowItem *item = items.items[i];
+        dump_indent(indent);
+        switch (item->kind) {
+        case AST_WINDOW_LEAF:
+            printf("Leaf %s%s%s\n", item->word, item->name ? " " : "",
+                   item->name ? item->name : "");
+            break;
+        case AST_WINDOW_CONTAINER:
+            printf("Container %s", item->word);
+            if (item->label) {
+                printf(" \"%s\"", item->label);
+            }
+            if (item->subject) {
+                printf(" to %s %s", item->subject_direction, item->subject);
+            }
+            printf("\n");
+            dump_window_items(item->entries, indent + 1);
+            break;
+        case AST_WINDOW_HANDLER:
+            printf("Handler %s.%s\n", item->event_target, item->event_signal);
+            for (size_t j = 0; j < item->body.count; j++) {
+                dump_stmt(item->body.items[j], indent + 1);
+            }
+            break;
+        }
+    }
+}
+
 static void dump_stmt(AstStmt *stmt, int indent) {
     dump_indent(indent);
     switch (stmt->kind) {
@@ -991,6 +1114,15 @@ static void dump_stmt(AstStmt *stmt, int indent) {
     case AST_STMT_SERVER:
         printf("Server %s \"%s\"\n", stmt->as.server.word, stmt->as.server.name);
         dump_server_items(stmt->as.server.items, indent + 1);
+        break;
+    case AST_STMT_WINDOW:
+        printf("Window \"%s\"", stmt->as.window.name);
+        if (stmt->as.window.subject) {
+            printf(" to %s %s", stmt->as.window.subject_direction,
+                   stmt->as.window.subject);
+        }
+        printf("\n");
+        dump_window_items(stmt->as.window.items, indent + 1);
         break;
     case AST_STMT_ON_ERROR_GOTO:
         printf("OnErrorGoto %s\n", stmt->as.on_error_label);
@@ -1372,9 +1504,42 @@ static void free_stmt(AstStmt *stmt) {
         ast_free_record_field_list(stmt->as.server.options);
         ast_free_server_item_list(stmt->as.server.items);
         break;
+    /* EVERY FIELD, AND THE LESSON IS WHY THIS IS WRITTEN OUT RATHER THAN
+     * SKIMMED: PLAT-OPTPARAM's per-parameter-list array had to be freed in SIX
+     * places and missing three turned 22 SUITES RED on their own valgrind
+     * tiers -- a few bytes per parse, invisible to every functional test. */
+    case AST_STMT_WINDOW:
+        free(stmt->as.window.name);
+        free(stmt->as.window.close_word);
+        free(stmt->as.window.subject_verb);
+        free(stmt->as.window.subject_direction);
+        free(stmt->as.window.subject);
+        ast_free_record_field_list(stmt->as.window.options);
+        ast_free_window_item_list(stmt->as.window.items);
+        break;
     }
 
     free(stmt);
+}
+
+void ast_free_window_item_list(AstWindowItemList list) {
+    for (size_t i = 0; i < list.count; i++) {
+        AstWindowItem *item = list.items[i];
+        free(item->word);
+        free(item->name);
+        free(item->label);
+        free(item->subject_verb);
+        free(item->subject_direction);
+        free(item->subject);
+        free(item->close_word);
+        free(item->event_target);
+        free(item->event_signal);
+        ast_free_record_field_list(item->options);
+        ast_free_window_item_list(item->entries);
+        ast_free_program(item->body);
+        free(item);
+    }
+    free(list.items);
 }
 
 void ast_free_server_item_list(AstServerItemList list) {

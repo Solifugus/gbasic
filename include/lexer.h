@@ -89,6 +89,26 @@ typedef enum {
      * at their THIRD token and LALR(1) cannot see that far from the brace.
      * The token's span is the NAME. */
     TOKEN_MODIFIER_PREFIX,
+    /* `{IDENT}` where what follows the `}` says the modifier NAMES A TYPE
+     * rather than applying to something -- a `,`, a `)` or a newline. The
+     * LEXER decides, which is what makes it free: admitting a bare modifier as
+     * a primary expression in the grammar costs FOUR shift/reduce conflicts
+     * (measured 2026-10-17, the count that got `IDENT expression` rejected as a
+     * statement form), because after `{USD}` the parser cannot tell a bare
+     * modifier from one applied to what follows -- `{USD} -5` is the
+     * discriminating case. The lexer may look past the `}` as far as it likes,
+     * so it costs zero. See docs/qt_gui_design.md §5.2. */
+    TOKEN_MODIFIER_VALUE,
+    /* The opener of a `window` block, emitted only for the exact three-token
+     * shape `window IDENT (`. NOTHING IS RESERVED: `window` stays an ordinary
+     * identifier everywhere else, measured at 153 uses across the tree with
+     * ZERO instances of that shape, so no existing program changes meaning.
+     *
+     * It needs its own token because sharing the `server` block's
+     * `IDENT IDENT (` head costs 2 reduce/reduce -- after
+     * `IDENT IDENT ( ... ) NEWLINE` the parser cannot tell which body is
+     * coming (measured; bison's counterexample names exactly that). */
+    TOKEN_WINDOW_OPEN,
     TOKEN_LBRACE,
     TOKEN_RBRACE,
     TOKEN_COMMA,

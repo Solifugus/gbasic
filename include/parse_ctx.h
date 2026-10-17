@@ -68,6 +68,20 @@ typedef struct {
     char            bad_block_word[40];
     int             bad_block_line;
     int             bad_block_column;
+
+    /* HOW DEEP INSIDE A `window` DECLARATION THE PARSER IS, which is what makes
+     * `type: {USD}` a declaration-only form rather than a new value kind
+     * (docs/qt_gui_design.md §5.2, decided 2026-10-17).
+     *
+     * A bare modifier naming a type is a MODIFIER_VALUE token from the lexer,
+     * admitted as a primary expression at zero grammar conflicts -- but it is
+     * refused unless it appears inside a declaration, so `m = {USD}` is still
+     * a located PARSE error rather than something that fails later at run time.
+     * The alternative was a 28th value kind, with answers owed for rendering,
+     * `encode` and comparison; this costs one counter.
+     *
+     * A DEPTH RATHER THAN A FLAG, because a window's items nest. */
+    int             window_depth;
 } gb_parse_ctx;
 
 #endif

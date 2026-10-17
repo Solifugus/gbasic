@@ -671,10 +671,19 @@ typedef struct {
     char op_char;   /* compound-assignment operator: + - * / */
     AstServerItem *server_item;
     AstServerItemList server_item_list;
+    AstWindowItem *window_item;
+    AstWindowItemList window_item_list;
 }
 
 %token <numlit> NUMBER
 %token <text> IDENT STRING LENS_CONTENT QUALIFIED_IDENT MODIFIER_PREFIX
+/* A modifier NAMING A TYPE rather than applying to something -- the lexer
+ * decides, which is what makes it free (docs/qt_gui_design.md §5.2). */
+%token <text> MODIFIER_VALUE
+/* The `window` block's opener, for the exact shape `window IDENT (`. It needs
+ * its own token because sharing the server block's `IDENT IDENT (` head costs
+ * 2 reduce/reduce; with it, the block measures ZERO. Nothing is reserved. */
+%token WINDOW_OPEN
 /* `as` reaches the parser ONLY as a field name; everywhere else it is consumed
  * by the lexer's modifier/lens modes. Declared so it can join field_name --
  * before this it fell through to the token mapper's default arm and was
@@ -726,6 +735,9 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
 %type <text> for_end
 %type <op_char> compound_op
+%type <window_item> window_item
+%type <window_item_list> window_item_list
+%type <stmt> window_block
 %type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement unwatch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement server_statement
 %type <server_item> server_item
 %type <server_item_list> server_item_list
@@ -796,6 +808,7 @@ statement
     | print_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | call_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | with_lock_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | window_block { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | for_each_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | while_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | do_loop_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -1093,6 +1106,7 @@ consider_body_statement
     | print_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | call_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | with_lock_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | window_block { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | for_each_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | while_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | do_loop_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -1282,6 +1296,84 @@ server_statement
       server_item_list END IDENT NEWLINE {
         ctx->bad_block_word[0] = '\0';
         $$ = ast_server($1, $2, ast_record_field_list_empty(), $7, $9);
+      }
+    ;
+
+/* THE `window` BLOCK. Parsed into data and validated in one load-time pass,
+ * the treatment the `server` block already gets -- so the whole declarative
+ * surface is testable with no display, which is what let `web.routes` be proven
+ * with no socket.
+ *
+ * EVERY HEAD SHAPE DECIDES ON ITS OWN WHETHER A BODY FOLLOWS. That is the
+ * discipline that makes the server block cost zero conflicts, and obeying it is
+ * why `stretch()` carries parentheses and why options are always parenthesised.
+ * Ten shapes were measured; see docs/qt_gui_design.md §5.2 for all of them. */
+window_block
+    : WINDOW_OPEN IDENT LPAREN record_field_list RPAREN NEWLINE window_item_list END IDENT NEWLINE {
+        ctx->window_depth--;
+        $$ = ast_window($2, $4, $7, $9, NULL, NULL, NULL, @1.first_line, @1.first_column);
+      }
+    | WINDOW_OPEN IDENT LPAREN RPAREN NEWLINE window_item_list END IDENT NEWLINE {
+        ctx->window_depth--;
+        $$ = ast_window($2, ast_record_field_list_empty(), $6, $8, NULL, NULL, NULL,
+                        @1.first_line, @1.first_column);
+      }
+    /* THE SUBJECT SHORTHAND: `window customer( ... ) to edit cust`. A window's
+     * subject is a DEFAULT a `form` may shadow, never a binding, and a `table`
+     * never inherits it -- a table wants a list where this is one record, so
+     * inheriting there would be a guess dressed as a shorthand. Validation
+     * owns that rule; the grammar only carries the words. */
+    | WINDOW_OPEN IDENT LPAREN record_field_list RPAREN TO IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE {
+        ctx->window_depth--;
+        $$ = ast_window($2, $4, $10, $12, copy_const("to"), $7, $8,
+                        @1.first_line, @1.first_column);
+      }
+    ;
+
+window_item_list
+    : %empty { $$ = ast_window_item_list_empty(); }
+    | window_item_list NEWLINE { $$ = $1; }
+    | window_item_list window_item { $$ = ast_window_item_list_append($1, $2); }
+    ;
+
+window_item
+    /* LEAF, no options:         stretch()                          */
+    : IDENT LPAREN RPAREN NEWLINE {
+        $$ = ast_window_leaf($1, NULL, ast_record_field_list_empty(),
+                             @1.first_line, @1.first_column);
+      }
+    /* LEAF, named with options: field id( label: "Account" )        */
+    | IDENT IDENT LPAREN record_field_list RPAREN NEWLINE {
+        $$ = ast_window_leaf($1, $2, $4, @1.first_line, @1.first_column);
+      }
+    /* CONTAINER, bare:          row ... end row                     */
+    | IDENT NEWLINE window_item_list END IDENT NEWLINE {
+        $$ = ast_window_container($1, NULL, ast_record_field_list_empty(), $3, $5,
+                                  @1.first_line, @1.first_column);
+      }
+    /* CONTAINER with options:   column( margin: 8 ) ... end column   */
+    | IDENT LPAREN record_field_list RPAREN NEWLINE window_item_list END IDENT NEWLINE {
+        $$ = ast_window_container($1, NULL, $3, $6, $8, @1.first_line, @1.first_column);
+      }
+    /* CONTAINER with a label:   group "Credit" ... end group         */
+    | IDENT STRING NEWLINE window_item_list END IDENT NEWLINE {
+        $$ = ast_window_container($1, $2, ast_record_field_list_empty(), $4, $6,
+                                  @1.first_line, @1.first_column);
+      }
+    /* CONTAINER with a subject: form to edit cust ... end form
+     *
+     * `to` IS A RESERVED WORD already (`for i = 1 to 10`), so this is
+     * `IDENT TO IDENT IDENT` rather than four bare identifiers -- which is
+     * better rather than worse: the shape is unmistakable and cannot collide
+     * with a leaf or a container head. The infinitive carries the DIRECTION
+     * (`edit` or `show`), which is the decision §2.2 records. */
+    | IDENT TO IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE {
+        $$ = ast_window_form($1, copy_const("to"), $3, $4, $6, $8,
+                             @1.first_line, @1.first_column);
+      }
+    /* HANDLER:                  on save.clicked ... end on           */
+    | ON IDENT DOT IDENT NEWLINE statement_list END ON NEWLINE {
+        $$ = ast_window_handler($2, $4, $6, @1.first_line, @1.first_column);
       }
     ;
 
@@ -1601,7 +1693,25 @@ comparison_operator
     ;
 
 primary
-    : NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact), @1.first_line, @1.first_column); }
+    : MODIFIER_VALUE {
+        /* A DECLARATION IS NOT AN EXPRESSION CONTEXT, which is the line the
+         * `server` block's literal-only head already draws. `type: {USD}`
+         * names a type inside a `window`; `m = {USD}` is refused here rather
+         * than becoming a 28th value kind with answers owed for rendering,
+         * `encode` and comparison. See docs/qt_gui_design.md §5.2. */
+        if (ctx->window_depth <= 0) {
+            report_syntax_error(ctx, @1.first_line, @1.first_column,
+                                @1.last_line, @1.last_column,
+                                "a modifier names a type only inside a declaration; "
+                                "apply it to something (`{USD}19.99`) or use a clause "
+                                "(`x {USD}= 19.99`)");
+            free($1);
+            $1 = NULL;
+            YYERROR;
+        }
+        $$ = expr_at(ast_string($1), @1.first_line, @1.first_column);
+      }
+    | NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact), @1.first_line, @1.first_column); }
     | WATCHERS LPAREN RPAREN { $$ = expr_at(ast_call(copy_const("watchers"), ast_expr_list_empty()), @1.first_line, @1.first_column); }
     | duration_terms { $$ = expr_at(ast_duration($1), @1.first_line, @1.first_column); }
     | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
@@ -1925,6 +2035,13 @@ int parse_source_reentrant_at(const char *source, const char *path,
                               int first_line,
                               gb_diagnostics *diags, AstStmtList *out_program) {
     gb_parse_ctx ctx;
+    /* EVERY FIELD IS SET BY HAND HERE, with no memset, so a new one that is not
+     * listed carries whatever was on the stack. Measured the hard way: the
+     * window depth below was read as garbage, which made `type: {USD}` refuse
+     * INSIDE a declaration and `m = {USD}` succeed outside one -- wrong in both
+     * directions at once, which is the signature of an uninitialised read
+     * rather than of inverted logic. */
+    ctx.window_depth = 0;
     ctx.active_lexer = NULL;
     ctx.lexer_error_reported = 0;
     ctx.active_parse_path = path;
@@ -2358,6 +2475,18 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_MODIFIER_PREFIX:
         lvalp->text = copy_text(token.start, token.length);
         return MODIFIER_PREFIX;
+    case TOKEN_MODIFIER_VALUE:
+        lvalp->text = copy_text(token.start, token.length);
+        return MODIFIER_VALUE;
+    case TOKEN_WINDOW_OPEN:
+        /* RAISED HERE RATHER THAN IN A MID-RULE ACTION, which measured 4
+         * conflicts: a mid-rule action is an empty nonterminal, and three
+         * alternatives sharing `WINDOW_OPEN <action>` make the parser choose
+         * before it has seen enough. This token appears nowhere but a window
+         * head, so raising the depth as it is produced has the same effect and
+         * costs nothing. It is lowered at each block's reduction. */
+        ctx->window_depth++;
+        return WINDOW_OPEN;
     case TOKEN_LBRACE: return LBRACE;
     case TOKEN_RBRACE: return RBRACE;
     case TOKEN_DOT: return DOT;

@@ -671,6 +671,7 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
 
 static void analyze_stmt_list(AddUsesContext *ctx, AstStmtList list);
 static void analyze_server_items(AddUsesContext *ctx, AstServerItemList items);
+static void analyze_window_items(AddUsesContext *ctx, AstWindowItemList items);
 
 static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     switch (stmt->kind) {
@@ -711,6 +712,12 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
          * call into libraries; the block itself implies `load web`. */
         analyze_server_items(ctx, stmt->as.server.items);
         break;
+    case AST_STMT_WINDOW:
+        /* A window's HANDLER bodies are ordinary statements and may call into
+         * libraries, exactly as a server block's do -- so `--add-loads` has to
+         * walk them or it would miss an import a window needs. */
+        analyze_window_items(ctx, stmt->as.window.items);
+        break;
     case AST_STMT_ERROR:
         analyze_expr(ctx, stmt->as.error_message);
         break;
@@ -747,6 +754,19 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     case AST_STMT_ON_ERROR_GOTO_NEXT:
     case AST_STMT_ON_ERROR_STOP:
         break;
+    }
+}
+
+static void analyze_window_items(AddUsesContext *ctx, AstWindowItemList items) {
+    for (size_t i = 0; i < items.count; i++) {
+        AstWindowItem *item = items.items[i];
+        /* An option VALUE is an ordinary expression and may call a library
+         * function, so it is walked the same way a record literal's is. */
+        for (size_t j = 0; j < item->options.count; j++) {
+            analyze_expr(ctx, item->options.items[j].value);
+        }
+        analyze_window_items(ctx, item->entries);
+        analyze_stmt_list(ctx, item->body);
     }
 }
 
