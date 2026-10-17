@@ -316,6 +316,68 @@ int gb_stat(const char *path, struct stat *out) {
     return rc;
 }
 
+static int errno_from_win(DWORD e) {
+    switch (e) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND: return ENOENT;
+    case ERROR_ACCESS_DENIED:  return EACCES;
+    case ERROR_DIR_NOT_EMPTY:  return ENOTEMPTY;
+    case ERROR_SHARING_VIOLATION: return EBUSY;
+    default:                   return EIO;
+    }
+}
+
+/* Remove with `rm`; on EACCES over a READ-ONLY item, clear the attribute and
+ * retry once, putting it back if the retry fails too. */
+static int remove_clearing_readonly(const char *path, int (*rm)(const char *)) {
+    if (rm(path) == 0) {
+        return 0;
+    }
+    if (errno != EACCES) {
+        return -1;
+    }
+    WCHAR *wpath = utf8_to_wide(path);
+    DWORD attrs = wpath ? GetFileAttributesW(wpath) : INVALID_FILE_ATTRIBUTES;
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_READONLY) ||
+        !SetFileAttributesW(wpath, attrs & ~(DWORD)FILE_ATTRIBUTE_READONLY)) {
+        free(wpath);
+        errno = EACCES;   /* not the read-only case: the original refusal stands */
+        return -1;
+    }
+    if (rm(path) == 0) {
+        free(wpath);
+        return 0;
+    }
+    int e = errno;
+    SetFileAttributesW(wpath, attrs);   /* a refusal leaves the item as it was */
+    free(wpath);
+    errno = e;
+    return -1;
+}
+
+int gb_remove_file(const char *path) { return remove_clearing_readonly(path, _unlink); }
+
+int gb_remove_dir(const char *path) { return remove_clearing_readonly(path, _rmdir); }
+
+int gb_remove_link(const char *path) {
+    WCHAR *wpath = utf8_to_wide(path);
+    if (!wpath) {
+        errno = ENOMEM;
+        return -1;
+    }
+    DWORD attrs = GetFileAttributesW(wpath);
+    BOOL ok = (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY))
+                  ? RemoveDirectoryW(wpath)
+                  : DeleteFileW(wpath);
+    DWORD e = ok ? 0 : GetLastError();
+    free(wpath);
+    if (!ok) {
+        errno = errno_from_win(e);
+        return -1;
+    }
+    return 0;
+}
+
 int gb_set_cloexec(int fd, int on) {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h == INVALID_HANDLE_VALUE) {

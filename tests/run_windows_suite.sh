@@ -121,6 +121,53 @@ BAS
     fi
 fi
 
+# remove_tree OVER WHAT WINDOWS GUARDS DIFFERENTLY (§28 predictions 1 and 2,
+# §29 items 3 and 4). A READ-ONLY FILE and a READ-ONLY DIRECTORY stopped the
+# walk with EACCES, where POSIX removes both; a DIRECTORY JUNCTION inside the
+# tree was refused, because `unlink` cannot remove a directory reparse point.
+# The junction case asserts the TARGET'S CONTENT survives, since descending
+# into the link would empty it -- the outcome that must never happen. Windows
+# only, for `mklink`.
+if command -v cmd >/dev/null 2>&1 && command -v cygpath >/dev/null 2>&1; then
+    rd="$(mktemp -d)"
+    mkdir -p "$rd/precious" "$rd/jtree" "$rd/dtree/inner"
+    printf 'keep' >"$rd/precious/keep.txt"
+    cmd //c "mklink /J $(cygpath -w "$rd")\\jtree\\jlink $(cygpath -w "$rd")\\precious" >/dev/null 2>&1
+    rm_="$(cygpath -m "$rd")"
+    rprog="$(mktemp --suffix=.bas)"
+    cat >"$rprog" <<BAS
+on warning ignore
+ftree {dir}= "$rm_/ftree"
+make_dir(ftree)
+ro {file}= "$rm_/ftree/readonly.txt"
+write(ro, "locked")
+chmod(ro, "0400")
+print "premise file " + string(not permissions(ro).writable)
+print "file " + string(remove_tree(ftree)) + " " + string(not exists(ftree))
+inner {dir}= "$rm_/dtree/inner"
+chmod(inner, "0400")
+dtree {dir}= "$rm_/dtree"
+print "dir " + string(remove_tree(dtree)) + " " + string(not exists(dtree))
+jl {dir}= "$rm_/jtree/jlink"
+print "premise link " + string(is_symlink(jl))
+jtree {dir}= "$rm_/jtree"
+print "junction " + string(remove_tree(jtree)) + " " + string(not exists(jtree))
+keep {file}= "$rm_/precious/keep.txt"
+print "target " + read(keep)
+BAS
+    rout="$(./gbasic "$rprog" 2>&1)"
+    rm -f "$rprog"
+    attrib -r "$(cygpath -w "$rd")\\*" //s //d >/dev/null 2>&1
+    cmd //c "rmdir /s /q $(cygpath -w "$rd")" >/dev/null 2>&1
+    rwant="$(printf 'premise file true\nfile true true\ndir true true\npremise link true\njunction true true\ntarget keep')"
+    if [ "$rout" = "$rwant" ]; then
+        printf 'PASS remove_tree clears read-only files and folders, and removes a junction without following it\n'
+    else
+        printf 'FAIL remove_tree over read-only items and a junction:\n%s\n' "$rout"
+        status=1
+    fi
+fi
+
 # THE WINDOWS FILE VERSION MUST BE THE BINARY'S VERSION. src/gbasic.manifest
 # carries one by hand (it is what Windows shows in a file's Properties, and the
 # MSIX build reads `gbasic --version` instead); it sat at 0.4.0.0 while the

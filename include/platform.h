@@ -345,6 +345,29 @@ int gb_is_symlink(const char *path);
 struct stat;
 int gb_stat(const char *path, struct stat *out);
 
+/* REMOVING A FILE, AND REMOVING A LINK, for `remove_tree`'s walk. Both are
+ * `unlink` on POSIX, where a read-only FILE is removed happily (the
+ * directory's write permission governs) and a link is removed without being
+ * followed. Windows differs on both, MEASURED 2026-10-17 (§28):
+ *
+ *   gb_remove_file -- `unlink` fails with EACCES on FILE_ATTRIBUTE_READONLY,
+ *   so a tree holding one stopped part-way. Clear the attribute and retry ONCE,
+ *   as `rd /s` and PowerShell's -Force do; if the retry fails too the
+ *   attribute is put back, so a refusal leaves the file as it was.
+ *
+ *   gb_remove_link -- a DIRECTORY reparse point (a directory symlink or a
+ *   junction) is a directory to Windows: `unlink` refuses it and
+ *   RemoveDirectoryW removes the link without touching the target. A file
+ *   symlink is DeleteFileW. Never followed, on either platform. */
+int gb_remove_file(const char *path);
+int gb_remove_link(const char *path);
+
+/* An EMPTY directory, with gb_remove_file's read-only retry. MEASURED
+ * 2026-10-17: Windows rmdir refuses a directory carrying
+ * FILE_ATTRIBUTE_READONLY with EACCES -- and that is not exotic, since Windows
+ * sets the attribute on any folder with a customised icon. POSIX: rmdir. */
+int gb_remove_dir(const char *path);
+
 /* Set (on=1) or clear (on=0) close-on-exec / non-inheritance on an fd.
  * Windows: SetHandleInformation(HANDLE_FLAG_INHERIT) on the fd's OS handle.
  * Returns 0 / -1. */

@@ -250,6 +250,12 @@ int gb_is_symlink(const char *path) {
 
 int gb_stat(const char *path, struct stat *out) { return stat(path, out); }
 
+int gb_remove_file(const char *path) { return unlink(path); }
+
+int gb_remove_link(const char *path) { return unlink(path); }
+
+int gb_remove_dir(const char *path) { return rmdir(path); }
+
 int gb_set_cloexec(int fd, int on) {
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags < 0) {

@@ -11517,7 +11517,7 @@ static int remove_tree_path(const char *path, const char *top, int depth,
         int failed = 0;
         if (gb_is_symlink(child)) {
             /* The LINK goes; whatever it points at is none of our business. */
-            failed = unlink(child) != 0;
+            failed = gb_remove_link(child) != 0;
         } else {
             struct stat info;
             if (gb_stat(child, &info) != 0) {
@@ -11532,7 +11532,7 @@ static int remove_tree_path(const char *path, const char *top, int depth,
                 }
                 failed = 0;
             } else {
-                failed = unlink(child) != 0;
+                failed = gb_remove_file(child) != 0;
             }
         }
         if (failed) {
@@ -11545,7 +11545,7 @@ static int remove_tree_path(const char *path, const char *top, int depth,
         free(child);
     }
     closedir(dir);
-    if (rmdir(path) != 0) {
+    if (gb_remove_dir(path) != 0) {
         snprintf(why, why_size, "remove_tree: could not remove %s (%s)",
                  path, strerror(errno));
         return -1;
