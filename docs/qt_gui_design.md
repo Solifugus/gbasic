@@ -519,9 +519,42 @@ settles it — a `,`, a `)` or a newline means the modifier is a VALUE, anything
 else means it is applied to what comes next. Two distinct tokens, so the grammar
 never has to choose.
 
-That is a **language addition rather than a window feature**, since a modifier
-as a value is useful wherever a type needs naming, and it should be decided as
-one.
+**DECIDED 2026-10-17: the lexer token, and a DECLARATION-ONLY form.** Two quite
+different changes hide behind the same syntax, and only the narrower one is
+taken:
+
+- **Not** a bare modifier as a *value* — assignable, passable, printable. That
+  is a **28th value kind**, and this tree gates that: `type()`'s answers are
+  checked against `docs/reference.md` in both directions, so every kind must
+  decide what it renders as, what `encode` does with it and whether
+  `{USD} = {USD}`. `docs/exact_number_design.md` rejected a second numeric type
+  partly on that very argument — "a 28th kind and a promotion matrix to get
+  wrong".
+- **Yes** to the lexer emitting the distinct token, with the `window` block's
+  option parser accepting it as a **type name recorded in the declaration**.
+  No new value kind, nothing to print, nothing to compare. The precedent is in
+  hand: the `server` block's head options are literals validated at load time,
+  and §2 says the window head is the same.
+
+**THE COST, STATED RATHER THAN DISCOVERED:** `type: {USD}` works inside a
+`window` while `m = {USD}` still does not. That is the line the `server` block
+already draws — **a declaration is not an expression context** — and the
+refusal must say so in as many words rather than leaving an author to guess.
+
+**It forecloses nothing.** The token exists either way, so admitting a bare
+modifier as a primary is a one-line addition if a real case turns up — and the
+case to watch for is a function that *takes* a type, which is a feature worth
+choosing on its own merits rather than inheriting from a GUI option.
+
+**WHY NOT A STRING**, which was the cheap alternative: a currency is `{USD}`
+everywhere else in gBASIC, and a second spelling for one concept is the thing
+this tree keeps finding drifts. Matthew's reasoning, and the one exception
+argues the same way — currencies are never strings, but TYPE NAMES already are:
+`consolidate` takes `kind: "money"` and `kind: "percent"`, and a cookbook recipe
+teaches it. So `type: "USD"` would not have been a lone oddity, it would have
+joined an existing wart. **`kind: {USD}` would improve `consolidate` too**, and
+that is the natural follow-on if this form proves itself — noting that the
+vocabulary does not map one-to-one, since `percent` is not a gBASIC modifier.
 
 **This is a design measurement and not yet a gate.** When the grammar lands, the
 zero becomes an assertion in its suite — the way `run_optparams`,
@@ -660,6 +693,15 @@ column margin: 8
     end table
 end column
 ```
+
+### Decided: `type: {USD}` is a declaration-only form, from the lexer
+
+See §5.2. `{USD}` is the spelling, because a currency is written that way
+everywhere else in gBASIC and a second spelling for one concept drifts; the
+lexer supplies the token at **zero** conflicts where the grammar would cost
+four; and it is recorded as a **type name in the declaration** rather than
+becoming a 28th value kind. `m = {USD}` still does not parse, which is the line
+the `server` block's literal-only head already draws.
 
 ### Still open
 
