@@ -10775,6 +10775,19 @@ static int array_is_numeric(Value array) {
     return 1;
 }
 
+/* Is this open stream a DIRECTORY? Asked of the OPEN HANDLE rather than of the
+ * path, so there is no window between the check and the read.
+ *
+ * SHARED BECAUSE A RULE RE-ESTABLISHED AT A SECOND CALL SITE IS ONE A THIRD
+ * SILENTLY LEAVES OUT -- which this tree has recorded for the first-raise-wins
+ * rule across two hundred builtins and for the interior-NUL refusal that was
+ * written for two of six names in one function. `read_at` is that third caller
+ * and was written the day after the second. */
+static int stream_is_directory(FILE *file) {
+    struct stat opened;
+    return fstat(fileno(file), &opened) == 0 && S_ISDIR(opened.st_mode);
+}
+
 static char *read_whole_file(const char *path, long *out_size) {
     FILE *file = fopen(path, "rb");
     if (!file) {
@@ -10804,8 +10817,7 @@ static char *read_whole_file(const char *path, long *out_size) {
      * Found 2026-10-15 by an `intake` tier that put a directory where a ledger
      * file should be -- a shape no test had tried, and the first thing a
      * program does with a path a user supplied. */
-    struct stat opened;
-    if (fstat(fileno(file), &opened) == 0 && S_ISDIR(opened.st_mode)) {
+    if (stream_is_directory(file)) {
         fclose(file);
         errno = EISDIR;
         return NULL;
@@ -12244,6 +12256,194 @@ static Value eval_file_call(AstExpr *expr) {
         value_free(text_value);
         value_free(position_value);
         return value_bool(1);
+    }
+
+    if (strcmp(name, "read_at") == 0) {
+        /* THE OTHER HALF OF A DOOR THAT ONLY OPENED ONE WAY. `overwrite(f,
+         * text, position)` has written at a byte offset since it shipped and
+         * NOTHING COULD READ AT ONE -- so a program could modify the middle of
+         * a file it had no way to inspect, and the only reader was whole-file.
+         *
+         * That is also the gap that made binary input unstreamable: `for each
+         * line in f` is the only bounded reader and a line is unbounded --
+         * measured, a 50 MB file with no newline byte in it yields one 50 MB
+         * "line" -- so a zip, an image or a 10 GB extract had no chunked route
+         * at all. With this, the loop is three lines and the bound is the
+         * caller's.
+         *
+         * ONE DELIBERATE ASYMMETRY WITH `overwrite`, and it is not an
+         * oversight: writing PAST the end is refused there, because it would
+         * have to invent the bytes in between, and reading past the end
+         * answers "" here, because that is how a reader TERMINATES. Refusing
+         * would make every loop ask `bytes(f)` first, which is the
+         * check-then-act shape that goes wrong the moment the file is still
+         * growing. */
+        if (expr->as.call.args.count != 3) {
+            runtime_error_raise("read_at expects file, position, and count arguments",
+                                1004,
+                                "file operation");
+            return value_null();
+        }
+        Value file_value = eval_expr(expr->as.call.args.items[0]);
+        Value position_value = eval_expr(expr->as.call.args.items[1]);
+        Value count_value = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(file_value);
+            value_free(position_value);
+            value_free(count_value);
+            return value_null();
+        }
+        if (file_value.kind != VALUE_FILE) {
+            runtime_error_raise("read_at expects a file reference", 1004, "file operation");
+            value_free(file_value);
+            value_free(position_value);
+            value_free(count_value);
+            return value_null();
+        }
+        const char *which[2] = { "position", "count" };
+        Value numbers[2] = { position_value, count_value };
+        for (int i = 0; i < 2; i++) {
+            if (numbers[i].kind != VALUE_NUMBER ||
+                !isfinite(numbers[i].as.num.value) ||
+                numbers[i].as.num.value != floor(numbers[i].as.num.value)) {
+                char message[128];
+                snprintf(message, sizeof(message), "read_at %s must be an integer",
+                         which[i]);
+                runtime_error_raise(message, 1004, "file operation");
+                value_free(file_value);
+                value_free(position_value);
+                value_free(count_value);
+                return value_null();
+            }
+            if (numbers[i].as.num.value < 0) {
+                char message[128];
+                snprintf(message, sizeof(message), "read_at %s must be non-negative",
+                         which[i]);
+                runtime_error_raise(message, 1004, "file operation");
+                value_free(file_value);
+                value_free(position_value);
+                value_free(count_value);
+                return value_null();
+            }
+            if (numbers[i].as.num.value > LONG_MAX) {
+                char message[128];
+                snprintf(message, sizeof(message), "read_at %s is too large", which[i]);
+                runtime_error_raise(message, 1004, "file operation");
+                value_free(file_value);
+                value_free(position_value);
+                value_free(count_value);
+                return value_null();
+            }
+        }
+
+        FILE *file = fopen(file_value.as.file_path, "rb");
+        if (!file) {
+            char message[512];
+            snprintf(message, sizeof(message), "could not read file: %s (%s)",
+                     file_value.as.file_path,
+                     strerror(path_open_errno(file_value.as.file_path, errno)));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(position_value);
+            value_free(count_value);
+            return value_null();
+        }
+        if (stream_is_directory(file)) {
+            fclose(file);
+            char message[512];
+            snprintf(message, sizeof(message), "could not read file: %s (%s)",
+                     file_value.as.file_path, strerror(EISDIR));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(position_value);
+            value_free(count_value);
+            return value_null();
+        }
+
+        long position = (long)position_value.as.num.value;
+        size_t want = (size_t)count_value.as.num.value;
+        /* THE ALLOCATION IS BOUNDED BY THE FILE, NOT BY THE ARGUMENT, so
+         * `read_at(f, 0, 1000000000)` on a ten-byte file allocates eleven
+         * bytes rather than a gigabyte -- which is what lets a caller pass a
+         * generous count without having to ask the size first. */
+        if (fseek(file, 0, SEEK_END) != 0) {
+            int e = errno;
+            fclose(file);
+            char message[512];
+            snprintf(message, sizeof(message), "could not read file: %s (%s)",
+                     file_value.as.file_path, strerror(e));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(position_value);
+            value_free(count_value);
+            return value_null();
+        }
+        long size = ftell(file);
+        if (size < 0) {
+            int e = errno;
+            fclose(file);
+            char message[512];
+            snprintf(message, sizeof(message), "could not read file: %s (%s)",
+                     file_value.as.file_path, strerror(e));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(position_value);
+            value_free(count_value);
+            return value_null();
+        }
+        if (position >= size || want == 0) {
+            /* At or past the end, or asked for nothing: the empty string,
+             * which is how a reader stops. */
+            fclose(file);
+            value_free(file_value);
+            value_free(position_value);
+            value_free(count_value);
+            return value_string("");
+        }
+        size_t available = (size_t)(size - position);
+        if (want > available) {
+            want = available;
+        }
+        char *buffer = malloc(want);
+        if (!buffer) {
+            abort();
+        }
+        if (fseek(file, position, SEEK_SET) != 0) {
+            int e = errno;
+            free(buffer);
+            fclose(file);
+            char message[512];
+            snprintf(message, sizeof(message), "could not read file: %s (%s)",
+                     file_value.as.file_path, strerror(e));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(position_value);
+            value_free(count_value);
+            return value_null();
+        }
+        size_t got = fread(buffer, 1, want, file);
+        if (ferror(file)) {
+            int e = errno;
+            free(buffer);
+            fclose(file);
+            char message[512];
+            snprintf(message, sizeof(message), "could not read file: %s (%s)",
+                     file_value.as.file_path, strerror(e));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(position_value);
+            value_free(count_value);
+            return value_null();
+        }
+        fclose(file);
+        /* COUNTED BYTES, like `read` since PLAT-NUL: a chunk of a zip or an
+         * image is full of NULs and a C string would stop at the first one. */
+        Value result = value_string_n(buffer, got);
+        free(buffer);
+        value_free(file_value);
+        value_free(position_value);
+        value_free(count_value);
+        return result;
     }
 
     if (strcmp(name, "write") == 0 || strcmp(name, "append") == 0) {
@@ -38489,6 +38689,7 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "file_mtime") == 0 ||
         strcmp(expr->as.call.name, "atomic_replace") == 0 ||
         strcmp(expr->as.call.name, "overwrite") == 0 ||
+        strcmp(expr->as.call.name, "read_at") == 0 ||
         strcmp(expr->as.call.name, "lock") == 0 ||
         strcmp(expr->as.call.name, "unlock") == 0 ||
         strcmp(expr->as.call.name, "bytes") == 0 ||

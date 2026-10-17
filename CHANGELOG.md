@@ -16,6 +16,41 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `read_at(f, position, count)` — the other half of `overwrite`'s offset
+
+`overwrite(f, text, position)` has written at a byte offset since it shipped and
+**nothing could read at one**, so a program could rewrite the middle of a file
+it had no way to inspect and the only reader was whole-file.
+
+That asymmetry also made **binary input unstreamable**: `for each line in f` is
+the only other bounded reader and a line is unbounded, so a file with no newline
+byte in it is read whole however the loop is written. Measured on 50 MB of such
+a file — **14.8 MB resident chunked against 115 MB by line**, and flat across a
+4× change in file size.
+
+```basic
+pos = 0
+while true
+    chunk = read_at(f, pos, 65536)
+    if chunk = "" then break
+    handle(chunk)
+    pos = pos + byte_count(chunk)      ' NOT len(chunk)
+end while
+```
+
+**Advance by `byte_count`, never `len`** — a position is bytes and `len` is
+codepoints. On text they agree; on anything else the loop advances short,
+re-reads what it already had, and reassembles a longer corrupted copy in
+silence. Measured, a 65,536-byte chunk of random bytes has `len` 62,800. The
+suite's own 3 MB reassembly tier found this; its 50 MB tier could not, because
+NUL is a single-byte codepoint and comfortable data hid it.
+
+A count past the end is clamped and **the allocation follows the file rather
+than the argument**, so a generous chunk size costs nothing and needs no
+size check first. At or past the end the answer is `""`, because that is how a
+reader terminates — `overwrite` refuses past the end for the opposite and
+equally good reason: writing there would have to invent the bytes in between.
+
 ---
 
 ## 0.10.0 — 2026-10-16

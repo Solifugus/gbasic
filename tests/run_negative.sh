@@ -239,6 +239,10 @@ cases=(
     negative_path_join_too_many
     negative_path_unary_too_many
     negative_read_directory
+    negative_read_at_arity
+    negative_read_at_type
+    negative_read_at_negative
+    negative_read_at_fractional
     negative_stem_arity
     negative_stem_type
     negative_path_split_nul

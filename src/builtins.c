@@ -164,6 +164,7 @@ int gbasic_builtin_function(const char *name) {
         "file_mtime",
         "atomic_replace",
         "overwrite",
+        "read_at",
         "read_lines",
         "join_path",
         "library_collisions",

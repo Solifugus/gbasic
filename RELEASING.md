@@ -58,6 +58,16 @@ seven; the gates catch a miss:
 
 A half-bumped tree cannot ship. That is the point of four independent checks.
 
+**Also re-check every `(*since X.Y.Z*)` label added since the last tag.** They
+are written while an increment is landing, which is before anybody has decided
+what the next version is called, and nothing guards them: four said `0.9.1`
+when 0.10.0 shipped, because the work that produced them had assumed a patch and
+the rule above makes a release that ADDS something a minor. `git diff
+<last-tag>..HEAD -- docs/reference.md | grep -n 'since '` is the whole check.
+(A marker the release replaces mechanically — the device the cookbook syncs
+already use — would remove the step rather than remind anybody of it; that is
+not built.)
+
 **The manifest was the SEVENTH and this table said six until 2026-10-08.** The
 Windows port added `src/gbasic.manifest` and, to its credit, the guard for it in
 the same breath — which is what caught the miss: bumping the documented six left
