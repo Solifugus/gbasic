@@ -16,6 +16,45 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Studio's editor on Qt: the definition this repo already ships works
+
+No Qt code ships. `docs/qt_gui_design.md` §0.1 records that Studio is to move
+from GTK to Qt, and called its **editor** the one piece with no Qt counterpart —
+GTK's answer being `GtkSourceView` plus a language file. **Measured, that was
+wrong in the helpful direction**, and the correction is recorded rather than
+quietly edited, because the paragraph said the existing language file *"does not
+carry over"* and it does.
+
+The nearest Qt answer is KDE's **KSyntaxHighlighting**, which *is* the extracted
+Kate highlighting engine — and this repo already ships `editors/kate/gbasic.xml`,
+whose own header reads *"Kate / KSyntaxHighlighting definition for gBASIC"*.
+
+| | measured against libkf6syntaxhighlighting 6.24.0 |
+|---|---|
+| **Licence** | **MIT** (`Files: *`). The GPL-2.0-only items are one bundled definition, a test fixture and Debian packaging — so **unlike Qt itself it is statically linkable** and Apache-2.0 compatible |
+| **Weight** | one 2 MB `.so`; libc, Qt6 Core/Gui/Network, libstdc++. No KDE desktop, no KParts. The `-data` package is only translations |
+| **Our file** | **loads unchanged** — 20 formats over five lines |
+| **Needs a widget?** | **No.** `AbstractHighlighter` is a pure callback interface, so highlighting is testable **headlessly** — better than GtkSourceView, where the equivalent needs a widget |
+
+**A trap that does not announce itself:** `*.bas` is claimed by **two**
+definitions at the same priority — the bundled FreeBASIC one and ours — and
+lookup *by extension* picks FreeBASIC. No error; just *plausible but wrong*
+highlighting, FreeBASIC being a near neighbour. A host must ask **by name**.
+
+`tests/run_ksyntax.sh` keeps all of it measurable, and is **live** on the
+development machine. It still skips cleanly where the library is absent, saying
+the definition went unchecked.
+
+The figures were *first* taken against an extracted package through a
+`KSYNTAX_INCLUDE`/`KSYNTAX_LIB` override — which exists so the live path could
+be **run before being committed**, a tier whose only exercised branch is its
+skip being the green line that measures nothing — and the installed run then
+reported **the same numbers**, which is what makes that method trustworthy
+rather than merely convenient. The override earned its place at once, exposing
+two defects in the suite's own parsing: a whole-value extractor that reported
+the definition **missing on a correct run**, and then a first-token one that
+truncated a list at `Normal Text`. Two shapes of value, two extractors.
+
 ### The Qt event loop, answered by measurement
 
 No Qt code ships here — this is the **experiment** `docs/qt_gui_design.md` §5

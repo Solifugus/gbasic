@@ -24,6 +24,23 @@ Then fully restart Kate (close all windows). Open a `.bas` or `.gb` file — it
 should auto-detect as **gBASIC**. If not, set it via
 *Tools → Highlighting → Sources → gBASIC*.
 
+**Why it may not auto-detect, measured rather than guessed.**
+KSyntaxHighlighting ships a **FreeBASIC** definition that also claims `*.bas`,
+at the same priority as this one — measured against 6.24.0 — and which of two
+equal claims wins is not something either file decides. So a `.bas` file may
+open as FreeBASIC, and because FreeBASIC is a near neighbour of gBASIC the
+result **looks like it worked**: most keywords colour, and the differences are
+quiet ones. If you would rather this definition win outright, add a priority to
+your copy:
+
+```xml
+<language name="gBASIC" version="1" kateversion="5.0" priority="5" … >
+```
+
+That is a local preference and is deliberately **not** shipped: a higher
+priority wins for *every* `.bas` file on the machine, including anyone's
+FreeBASIC. `.gb` is unambiguous and needs none of this.
+
 > Older KDE installs may use `~/.local/share/katepart5/syntax/` instead. If the
 > path above doesn't take effect, try copying there as well. The install script
 > writes to both.

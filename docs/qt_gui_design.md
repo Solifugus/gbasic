@@ -59,24 +59,54 @@ data grid over a virtualised model, trees, and the `gi`/`gtk`/`sourceeditor`
 libraries it consumes from this repo. So §2's `window`/`form` is the first
 increment of this design and nowhere near the whole of what Studio needs.
 
-**The one piece with no direct Qt counterpart is the editor.** GTK's answer is
-`GtkSourceView` plus a `gbasic.lang` XML file, which this repo already ships and
-`tests/run_native_editor.sh` already gates. Qt has **no equivalent widget**: the
-nearest thing is `QSyntaxHighlighter`, a base class you implement against
-`QPlainTextEdit`. That is a real difference and arguably in Qt's favour — a
-highlighter written in the host language is inspectable and testable where an
-XML language file is neither — but it is **work rather than a swap**, and the
-existing `gbasic.lang` does not carry over. Qt Creator uses KSyntaxHighlighting
-(KDE Frameworks, LGPL) for this and that is worth pricing before writing one.
+**The editor was called the one piece with no Qt counterpart. MEASURED
+2026-10-17, THAT WAS WRONG IN THE HELPFUL DIRECTION** — and the correction is
+recorded rather than quietly edited, because this paragraph said the existing
+language file "does not carry over" and it does.
+
+GTK's answer is `GtkSourceView` plus a `.lang` XML file. The nearest Qt answer
+is KDE's **KSyntaxHighlighting**, which *is* the extracted Kate highlighting
+engine — and **this repo already ships `editors/kate/gbasic.xml`**, written for
+Kate, whose own header says "Kate / KSyntaxHighlighting definition for gBASIC".
+So the input format is already in hand. `tests/run_ksyntax.sh` over
+`tests/qt/ksyntax_probe.cpp` keeps the measurement:
+
+| | measured against libkf6syntaxhighlighting 6.24.0 |
+|---|---|
+| **Licence** | **MIT** for the project (`Files: *` in its own copyright). The GPL-2.0-only items are one bundled definition (nesC), a test fixture and the Debian packaging — so, unlike Qt itself, it is **statically linkable** and Apache-2.0 compatible |
+| **Weight** | one 2 MB `.so`; runtime deps are libc, Qt6 Core/Gui/Network, libstdc++. No KDE desktop, no KParts. The `-data` package is **only translations** — definitions and themes are baked into the `.so` |
+| **Our file** | **loads unchanged**: 20 formats over five lines, classifying Comment, Keyword, Number, String, Symbol |
+| **Needs a widget?** | **No.** `AbstractHighlighter` is a pure callback interface, so highlighting is testable **headlessly and deterministically** — better than GtkSourceView, where the equivalent needs a widget |
+
+**And a trap that does not announce itself:** `*.bas` is claimed by **two**
+definitions at the same priority — the bundled FreeBASIC one and ours — and
+lookup **by extension picks FreeBASIC**. There is no error; there is *plausible
+but wrong* highlighting, FreeBASIC being a near neighbour (it classifies a
+`Functions` kind where gBASIC classifies `Symbol`). **A host must ask by name**,
+or `gbasic.xml` must declare a higher `priority`. The suite asserts both halves,
+since "gBASIC was found" alone passes on an engine that happens to lack
+FreeBASIC.
+
+**That suite is live on the development machine**, the library having been
+installed the same day. The figures above were *first* taken against an
+extracted package through its `KSYNTAX_INCLUDE`/`KSYNTAX_LIB` override — which
+exists so the live path could be RUN before being committed, a tier whose only
+exercised branch is its skip being the green line this tree distrusts — and the
+installed run then reported **the same numbers**, which is what makes that
+method trustworthy rather than merely convenient. The override earned its place
+immediately by exposing two defects in the suite's own parsing, one of which
+reported the definition as *missing* on a correct run.
 
 **The grid is the opposite case**: `datagrid` is already a reconciler over a
 native row model, `QTableView`/`QTreeView` with a `QAbstractItemModel` is the
 same architecture, and `run_datagrid.sh`'s 1M-row virtualisation proof is the
 kind of claim that should transfer unchanged.
 
-**Nothing here is blocked on Studio** — the increments stand on their own — but
-"ready" means ready for Studio, which means the editor question gets answered
-before anyone promises a date.
+**Nothing here is blocked on Studio** — the increments stand on their own — and
+the editor question, which was the one that looked like it could move a date, is
+answered: the definition carries over, the engine is MIT and light, and the
+highlighting is gateable without a display. What remains for Studio is widgets
+and the data grid, which is ordinary work rather than an open question.
 
 ---
 
