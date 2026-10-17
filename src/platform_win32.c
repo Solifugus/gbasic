@@ -1690,3 +1690,104 @@ size_t libiconv(void *handle, char **inbuf, size_t *inleft, char **outbuf, size_
 char *libintl_gettext(const char *msgid) {
     return (char *)msgid;
 }
+
+/* The system temp directory plus a random name, created with CREATE_NEW so the
+ * creation is the test -- Windows has no `mkstemp`, and asking "does this name
+ * exist" before creating it is the race these functions exist to avoid.
+ *
+ * THE DIVERGENCE IS THE MODE, NOT THE RACE: the POSIX body gets 0600 from
+ * `mkstemp` and this one inherits whatever the directory's ACL says. Stated in
+ * include/platform.h beside the declaration and in docs/windows_port_plan.md
+ * §7, rather than papered over here. */
+static int win32_temp_name(const char *dir, const char *prefix,
+                           char *out, size_t out_size) {
+    char root[MAX_PATH * 4];
+    if (dir && dir[0] != '\0') {
+        int w = snprintf(root, sizeof root, "%s", dir);
+        if (w < 0 || (size_t)w >= sizeof root) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+    } else {
+        WCHAR wtmp[MAX_PATH + 1];
+        DWORD n = GetTempPathW(MAX_PATH + 1, wtmp);
+        if (n == 0 || n > MAX_PATH) {
+            errno = EIO;
+            return -1;
+        }
+        if (!WideCharToMultiByte(CP_UTF8, 0, wtmp, -1, root, sizeof root, NULL, NULL)) {
+            errno = EIO;
+            return -1;
+        }
+    }
+    size_t len = strlen(root);
+    const char *sep = (len > 0 && (root[len - 1] == '\\' || root[len - 1] == '/'))
+                          ? "" : "\\";
+    unsigned char rnd[8];
+    if (gb_secure_random(rnd, sizeof rnd) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    const char *use = (prefix && prefix[0] != '\0') ? prefix : "gbasic-";
+    int w = snprintf(out, out_size,
+                     "%s%s%s%02x%02x%02x%02x%02x%02x%02x%02x",
+                     root, sep, use, rnd[0], rnd[1], rnd[2], rnd[3],
+                     rnd[4], rnd[5], rnd[6], rnd[7]);
+    if (w < 0 || (size_t)w >= out_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+int gb_make_temp_file(const char *dir, const char *prefix, char *out, size_t out_size) {
+    for (int attempt = 0; attempt < 64; attempt++) {
+        if (win32_temp_name(dir, prefix, out, out_size) != 0) {
+            return -1;
+        }
+        WCHAR *wpath = utf8_to_wide(out);
+        if (!wpath) {
+            errno = ENOMEM;
+            return -1;
+        }
+        HANDLE h = CreateFileW(wpath, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                               FILE_ATTRIBUTE_NORMAL, NULL);
+        DWORD err = (h == INVALID_HANDLE_VALUE) ? GetLastError() : 0;
+        free(wpath);
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+            return 0;
+        }
+        if (err != ERROR_FILE_EXISTS) {
+            errno = EACCES;
+            return -1;
+        }
+    }
+    errno = EEXIST;
+    return -1;
+}
+
+int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_size) {
+    for (int attempt = 0; attempt < 64; attempt++) {
+        if (win32_temp_name(dir, prefix, out, out_size) != 0) {
+            return -1;
+        }
+        WCHAR *wpath = utf8_to_wide(out);
+        if (!wpath) {
+            errno = ENOMEM;
+            return -1;
+        }
+        BOOL ok = CreateDirectoryW(wpath, NULL);
+        DWORD err = ok ? 0 : GetLastError();
+        free(wpath);
+        if (ok) {
+            return 0;
+        }
+        if (err != ERROR_ALREADY_EXISTS) {
+            errno = EACCES;
+            return -1;
+        }
+    }
+    errno = EEXIST;
+    return -1;
+}

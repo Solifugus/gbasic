@@ -446,6 +446,32 @@ int gb_fd_from_inherited(const char *spec);
  * otherwise; never a partial fill reported as success. */
 int gb_secure_random(void *buf, size_t n);
 
+/* Create a TEMPORARY FILE or DIRECTORY and report its path. It is CREATED, not
+ * merely named, and that is the whole reason these live in the platform layer:
+ * a function that hands back an unused name hands back a RACE, which is why
+ * `mkstemp` exists at all rather than a "pick me a name" call.
+ *
+ * `dir` is where it goes. NULL means the system temp directory -- POSIX
+ * honours TMPDIR and falls back to /tmp, Windows asks GetTempPathW, the same
+ * source `mailbox_new_path` already uses for actor sockets. A CALLER OFTEN
+ * WANTS A SPECIFIC DIRECTORY rather than the system one, because
+ * `gb_atomic_replace` is same-filesystem only: the safe-write pattern needs
+ * the temp file BESIDE its destination, and the system temp directory is
+ * routinely on another filesystem.
+ *
+ * `prefix` is a hint for whoever reads a directory listing later; NULL or ""
+ * gives a default.
+ *
+ * POSIX creates the file with mode 0600, which `mkstemp` guarantees -- the
+ * reason a program can hold a secret in one, this language having no `chmod`.
+ * WINDOWS CANNOT PROMISE THE MODE: it inherits the directory's ACL, so the
+ * divergence is the mode and not the uniqueness, which is stated in
+ * docs/reference.md beside the call and in docs/windows_port_plan.md §7 beside
+ * the other path divergences. Returns 0 on success with the path in `out`, -1
+ * otherwise with errno set. */
+int gb_make_temp_file(const char *dir, const char *prefix, char *out, size_t out_size);
+int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_size);
+
 /* rename(from, to), REPLACING `to` if it exists, atomically on one volume --
  * which is what atomic_replace promises a reader ("the whole old file or the
  * whole new one"). POSIX rename does exactly that. Windows' C-runtime rename

@@ -1,0 +1,1 @@
+runtime error at tests/negative_temp_file_bare.bas:2:1: temp_file options must be a record, as in temp_file({ in: d, prefix: "stage-" })

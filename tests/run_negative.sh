@@ -243,6 +243,10 @@ cases=(
     negative_read_at_type
     negative_read_at_negative
     negative_read_at_fractional
+    negative_remove_tree_file
+    negative_temp_file_option
+    negative_temp_file_prefix_path
+    negative_temp_file_bare
     negative_stem_arity
     negative_stem_type
     negative_path_split_nul

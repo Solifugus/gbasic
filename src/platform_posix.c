@@ -328,3 +328,50 @@ int gb_sock_set_blocking(int fd, int blocking) {
     int next = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
     return fcntl(fd, F_SETFL, next) == 0;
 }
+
+/* The system temp directory, honouring TMPDIR. */
+static const char *posix_temp_root(void) {
+    const char *dir = getenv("TMPDIR");
+    if (dir && dir[0] != '\0') {
+        return dir;
+    }
+    return "/tmp";
+}
+
+static int posix_temp_template(const char *dir, const char *prefix,
+                               char *out, size_t out_size) {
+    const char *root = (dir && dir[0] != '\0') ? dir : posix_temp_root();
+    size_t len = strlen(root);
+    const char *sep = (len > 0 && root[len - 1] == '/') ? "" : "/";
+    const char *use = (prefix && prefix[0] != '\0') ? prefix : "gbasic-";
+    int w = snprintf(out, out_size, "%s%s%sXXXXXX", root, sep, use);
+    if (w < 0 || (size_t)w >= out_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+int gb_make_temp_file(const char *dir, const char *prefix, char *out, size_t out_size) {
+    if (posix_temp_template(dir, prefix, out, out_size) != 0) {
+        return -1;
+    }
+    /* `mkstemp` creates it with O_EXCL and mode 0600 -- the atomicity is the
+     * point, and the mode is why a program can hold a secret in a temp file
+     * before any chmod exists. The descriptor is closed: this answers a PATH,
+     * and the race was already won by creating the name. */
+    int fd = mkstemp(out);
+    if (fd < 0) {
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_size) {
+    if (posix_temp_template(dir, prefix, out, out_size) != 0) {
+        return -1;
+    }
+    /* mkdtemp creates it 0700. */
+    return mkdtemp(out) ? 0 : -1;
+}

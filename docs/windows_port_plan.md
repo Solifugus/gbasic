@@ -198,6 +198,19 @@ They are pure string functions with no platform body at all, which is why they
 were missed — there was no `#if` to notice them. The behaviour follows from
 reading them: there is no separator table to consult.
 
+**And a path divergence that IS in the platform layer, added 2026-10-16**:
+`gb_make_temp_file` / `gb_make_temp_dir` (behind `temp_file` / `temp_dir`).
+POSIX gets the file at mode **0600** from `mkstemp`, which is what lets a
+program hold a secret in one — gBASIC has no `chmod`. The Windows body creates
+it with `GetTempPathW` plus `gb_secure_random` and `CREATE_NEW`, so the
+*creation* is still the test and the uniqueness guarantee is identical; what it
+cannot promise is the **mode**, inheriting the directory's ACL instead. That is
+the one divergence, it is stated in `include/platform.h` beside the functions
+and in `docs/reference.md` beside the call, and no ACL is attempted — §7's
+ruling that differences be minimal and named rather than papered over, and
+`src/platform_win32.c` is syntax-checked against real `windows.h` and executed
+by nothing here, so untested ACL code would be a claim with no evidence.
+
 **3. No `fork`.** `process.run`/`start` need `CreateProcess`, and the two pipe
 polls need overlapped I/O or `PeekNamedPipe` (two functions, not the loop —
 measured). `spawn` refuses.

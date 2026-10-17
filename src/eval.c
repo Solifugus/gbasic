@@ -11456,6 +11456,95 @@ static int path_open_errno(const char *path, int err) {
     return err;
 }
 
+/* Remove a directory AND EVERYTHING IN IT. The mirror of `make_dir_parents`,
+ * and it gets its own builtin name rather than an option on `remove_dir`
+ * because that was already decided, in the comment above `remove_dir`: the
+ * option it would be offered is a recursive delete, which "belongs to a
+ * decision nobody should make by passing a flag".
+ *
+ * A SYMLINK IS UNLINKED, NEVER DESCENDED. A recursive delete that follows a
+ * link deletes somebody else's data, and the question is already answered in
+ * the platform layer -- `gb_is_symlink` was added for the glob's cycle guard,
+ * which is the same hazard read the other way round.
+ *
+ * DEPTH IS BOUNDED at the glob's 256. Anything deeper is reported rather than
+ * recursed into, because a link-free tree can still be deep enough to exhaust
+ * the stack, and this walk runs with a DIR handle open at every level.
+ *
+ * Returns 0 on success. On failure `why` names the path it stopped at, which
+ * matters more here than anywhere else in this file: by then it has already
+ * removed things, so a bare false would leave a half-removed tree
+ * indistinguishable from a removed one. */
+static int remove_tree_path(const char *path, const char *top, int depth,
+                            char *why, size_t why_size) {
+    if (depth > 256) {
+        /* NAME THE TOP, NOT THE BOTTOM. The path 256 levels down is 512 bytes
+         * of separators and says nothing a reader can act on -- and it does not
+         * fit in the message, so the first version of this reported a path
+         * truncated mid-way with its reason cut off the end. What the author
+         * needs is which tree and how deep this goes. */
+        snprintf(why, why_size,
+                 "remove_tree: %s is nested more than 256 directories deep, which"
+                 " is further than remove_tree will descend; nothing below that"
+                 " depth was removed", top);
+        return -1;
+    }
+    DIR *dir = opendir(path);
+    if (!dir) {
+        snprintf(why, why_size, "remove_tree: could not read %s (%s)",
+                 path, strerror(errno));
+        return -1;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        char *child = join_path(path, entry->d_name);
+        if (!child) {
+            closedir(dir);
+            snprintf(why, why_size, "remove_tree: out of memory under %s", path);
+            return -1;
+        }
+        int failed = 0;
+        if (gb_is_symlink(child)) {
+            /* The LINK goes; whatever it points at is none of our business. */
+            failed = unlink(child) != 0;
+        } else {
+            struct stat info;
+            if (stat(child, &info) != 0) {
+                /* Vanished while we walked -- somebody else removed it, which
+                 * is the outcome we wanted anyway. */
+                failed = (errno != ENOENT);
+            } else if (S_ISDIR(info.st_mode)) {
+                if (remove_tree_path(child, top, depth + 1, why, why_size) != 0) {
+                    free(child);
+                    closedir(dir);
+                    return -1;
+                }
+                failed = 0;
+            } else {
+                failed = unlink(child) != 0;
+            }
+        }
+        if (failed) {
+            snprintf(why, why_size, "remove_tree: could not remove %s (%s)",
+                     child, strerror(errno));
+            free(child);
+            closedir(dir);
+            return -1;
+        }
+        free(child);
+    }
+    closedir(dir);
+    if (rmdir(path) != 0) {
+        snprintf(why, why_size, "remove_tree: could not remove %s (%s)",
+                 path, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
 static int make_dir_parents(const char *path, char *why, size_t why_size) {
     size_t len = strlen(path);
     if (len == 0) {
@@ -12014,6 +12103,243 @@ static Value eval_file_call(AstExpr *expr) {
         }
         value_free(path_value);
         return value_array(items, count);
+    }
+
+    if (strcmp(name, "remove_tree") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("remove_tree expects one path argument", 1004,
+                                "file operation");
+            return value_null();
+        }
+        Value path_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            return value_null();
+        }
+        if (!path_string_reject_nul(name, path_value)) {
+            value_free(path_value);
+            return value_null();
+        }
+        const char *path = directory_path(path_value);
+        if (!path) {
+            runtime_error_raise("remove_tree expects a string, file reference, or"
+                                " directory reference",
+                                1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        /* A SYMLINK GIVEN AS THE TOP PATH IS REFUSED, naming it. `rm -rf` on a
+         * link removes the link and stops, which is safe and silent -- and a
+         * function called `remove_tree` answering "done" having removed no
+         * tree is worse than a refusal. `delete()` already removes a link. */
+        if (gb_is_symlink(path)) {
+            char message[512];
+            snprintf(message, sizeof(message),
+                     "remove_tree: %s is a symlink, not a tree. Following it would"
+                     " remove whatever it points at; use delete() to remove the"
+                     " link itself.", path);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        struct stat info;
+        if (stat(path, &info) != 0) {
+            char message[512];
+            snprintf(message, sizeof(message), "remove_tree: could not remove %s (%s)",
+                     path, strerror(errno));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        if (!S_ISDIR(info.st_mode)) {
+            char message[512];
+            snprintf(message, sizeof(message),
+                     "remove_tree: %s is not a directory; use delete() for a file",
+                     path);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        char why[512];
+        why[0] = '\0';
+        if (remove_tree_path(path, path, 0, why, sizeof(why)) != 0) {
+            runtime_error_raise(why, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        value_free(path_value);
+        return value_bool(1);
+    }
+
+    if (strcmp(name, "temp_file") == 0 || strcmp(name, "temp_dir") == 0) {
+        /* A TEMPORARY FILE THAT ALREADY EXISTS. The platform layer owns the
+         * creation (`gb_make_temp_file` / `gb_make_temp_dir`) and the comment
+         * there carries the argument: a function that hands back an unused
+         * NAME hands back a race, which is why `mkstemp` exists rather than a
+         * "pick me a name" call. On POSIX it arrives with mode 0600, so a
+         * program can hold a secret in one BEFORE any chmod exists.
+         *
+         * IT ANSWERS A REFERENCE, not a path string, so the next thing a
+         * caller wants composes with no modifier: `write(t, text)` then
+         * `atomic_replace(t, dest)` for a file, `files(d, "*.csv")` and
+         * `remove_tree(d)` for a directory. `string(t)` still gives the path.
+         *
+         * `in:` IS WHAT MAKES IT USABLE FOR A SAFE WRITE, and it was MEASURED
+         * rather than guessed: `atomic_replace` is same-filesystem only, and
+         * the system temp directory is routinely on another filesystem, so a
+         * temp file in /tmp cannot be swapped onto a destination under the
+         * home directory. `temp_file({ in: directory_name(dest) })` can. That
+         * is the collision `persist.bas` still has -- it writes `path + ".tmp"`
+         * beside the destination, so two writers of one file share one temp
+         * name -- and the whole reason the option exists.
+         *
+         * NOTHING IS REMOVED AUTOMATICALLY, deliberately: in the safe-write
+         * pattern the temp file is MEANT to outlive the call that made it, it
+         * becomes the destination. An interpreter that swept temp files at exit
+         * would break exactly that. A temp directory is cleaned with
+         * `remove_tree`, which is why the two shipped together. */
+        int want_dir = strcmp(name, "temp_dir") == 0;
+        if (expr->as.call.args.count > 1) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "%s expects an optional options record and nothing else", name);
+            runtime_error_raise(message, 1004, "file operation");
+            return value_null();
+        }
+        char prefix[128];
+        prefix[0] = '\0';
+        char where[PATH_MAX];
+        where[0] = '\0';
+        int have_where = 0;
+        if (expr->as.call.args.count == 1) {
+            Value options = eval_expr(expr->as.call.args.items[0]);
+            if (error_action_pending()) {
+                value_free(options);
+                return value_null();
+            }
+            if (options.kind != VALUE_RECORD) {
+                char message[256];
+                snprintf(message, sizeof(message),
+                         "%s options must be a record, as in %s({ in: d, prefix: \"stage-\" })",
+                         name, name);
+                runtime_error_raise(message, 1004, "file operation");
+                value_free(options);
+                return value_null();
+            }
+            /* An unknown field is refused BY NAME, the rule `make_dir` and
+             * `webserver.listen` already follow: a misspelled option that was
+             * ignored would leave the caller believing it had asked for
+             * something -- here, for a temp file on the right filesystem. */
+            for (size_t i = 0; i < options.as.record.count; i++) {
+                const char *field = options.as.record.fields[i].name;
+                if (strcmp(field, "in") != 0 && strcmp(field, "prefix") != 0) {
+                    char message[256];
+                    snprintf(message, sizeof(message),
+                             "%s: unknown option '%s' (the options are 'in' and 'prefix')",
+                             name, field);
+                    runtime_error_raise(message, 1004, "file operation");
+                    value_free(options);
+                    return value_null();
+                }
+            }
+            RecordField *in_field = record_find(&options, "in");
+            if (in_field && in_field->value && in_field->value->kind != VALUE_NULL) {
+                Value target = *in_field->value;
+                if (!path_string_reject_nul(name, target)) {
+                    value_free(options);
+                    return value_null();
+                }
+                const char *dir = directory_path(target);
+                if (!dir) {
+                    char message[256];
+                    snprintf(message, sizeof(message),
+                             "%s: 'in' must be a directory reference, file reference,"
+                             " or path string", name);
+                    runtime_error_raise(message, 1004, "file operation");
+                    value_free(options);
+                    return value_null();
+                }
+                int w = snprintf(where, sizeof(where), "%s", dir);
+                if (w < 0 || (size_t)w >= sizeof(where)) {
+                    char message[256];
+                    snprintf(message, sizeof(message), "%s: 'in' path is too long", name);
+                    runtime_error_raise(message, 1004, "file operation");
+                    value_free(options);
+                    return value_null();
+                }
+                have_where = 1;
+            }
+            RecordField *prefix_field = record_find(&options, "prefix");
+            if (prefix_field && prefix_field->value
+                && prefix_field->value->kind != VALUE_NULL) {
+                Value hint = *prefix_field->value;
+                if (hint.kind != VALUE_STRING) {
+                    char message[256];
+                    snprintf(message, sizeof(message),
+                             "%s: 'prefix' must be text", name);
+                    runtime_error_raise(message, 1004, "file operation");
+                    value_free(options);
+                    return value_null();
+                }
+                const char *text = hint.as.string ? hint.as.string : "";
+                size_t length = hint.as.string ? string_length(hint.as.string) : 0u;
+                /* A PREFIX IS A NAME HINT, NOT A PATH, and the refusals say so
+                 * by name. A separator would let `prefix: "../secrets/x"` put
+                 * the file somewhere the caller did not name, which is the one
+                 * thing they cannot see from what they asked for; an interior
+                 * NUL would be CHECKED as one name and CREATED as another, the
+                 * rule every path builtin in this file already follows. */
+                if (length >= sizeof(prefix)) {
+                    char message[256];
+                    snprintf(message, sizeof(message),
+                             "%s: 'prefix' must be shorter than %zu bytes",
+                             name, sizeof(prefix));
+                    runtime_error_raise(message, 1004, "file operation");
+                    value_free(options);
+                    return value_null();
+                }
+                for (size_t i = 0; i < length; i++) {
+                    if (text[i] == '\0') {
+                        char message[256];
+                        snprintf(message, sizeof(message),
+                                 "%s: 'prefix' contains a NUL byte", name);
+                        runtime_error_raise(message, 1004, "file operation");
+                        value_free(options);
+                        return value_null();
+                    }
+                    if (text[i] == '/' || text[i] == '\\') {
+                        char message[256];
+                        snprintf(message, sizeof(message),
+                                 "%s: 'prefix' is a name, not a path, so it may not"
+                                 " contain a path separator -- use 'in' to choose"
+                                 " the directory", name);
+                        runtime_error_raise(message, 1004, "file operation");
+                        value_free(options);
+                        return value_null();
+                    }
+                }
+                memcpy(prefix, text, length);
+                prefix[length] = '\0';
+            }
+            value_free(options);
+        }
+        char path[PATH_MAX];
+        path[0] = '\0';
+        const char *dir = have_where ? where : NULL;
+        int made = want_dir ? gb_make_temp_dir(dir, prefix, path, sizeof(path))
+                            : gb_make_temp_file(dir, prefix, path, sizeof(path));
+        if (made != 0) {
+            /* The path is PATH_MAX, so the message has to be able to hold one. */
+            char message[PATH_MAX + 256];
+            snprintf(message, sizeof(message),
+                     "%s: could not create a temporary %s in %s (%s)",
+                     name, want_dir ? "directory" : "file",
+                     have_where ? where : "the system temporary directory",
+                     strerror(errno));
+            runtime_error_raise(message, 1004, "file operation");
+            return value_null();
+        }
+        return want_dir ? value_dir(path) : value_file(path);
     }
 
     if (strcmp(name, "make_dir") == 0 || strcmp(name, "remove_dir") == 0) {
@@ -38685,6 +39011,9 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "list_files") == 0 ||
         strcmp(expr->as.call.name, "make_dir") == 0 ||
         strcmp(expr->as.call.name, "remove_dir") == 0 ||
+        strcmp(expr->as.call.name, "remove_tree") == 0 ||
+        strcmp(expr->as.call.name, "temp_file") == 0 ||
+        strcmp(expr->as.call.name, "temp_dir") == 0 ||
         strcmp(expr->as.call.name, "file_size") == 0 ||
         strcmp(expr->as.call.name, "file_mtime") == 0 ||
         strcmp(expr->as.call.name, "atomic_replace") == 0 ||

@@ -3353,10 +3353,19 @@ local stays silent.
      function". Instance methods resolve fine. Studio installs its CSS provider
      per widget via `w.get_style_context().add_provider(...)` instead — which is
      better scoping, but was not a choice.
-  2. **No `chmod`.** A credential store cannot be created 0600 from gBASIC. This
-     shaped Studio's design away from a key file entirely (the key now comes from
-     the environment and is never written), so the outcome is better — but a
+  2. **No `chmod`.** ~~A credential store cannot be created 0600 from gBASIC.~~
+     This shaped Studio's design away from a key file entirely (the key now comes
+     from the environment and is never written), so the outcome is better — but a
      program that must write a private file has no way to say so.
+     **PARTLY RESOLVED 2026-10-16.** `temp_file` creates its file with mode
+     **0600** (POSIX `mkstemp` guarantees it), and `atomic_replace` hands the
+     destination the temp file's inode — which `run_limitations.sh` already
+     measures from the other direction — so a private file at a chosen path is
+     now writable: `temp_file({ in: here })`, `write`, `atomic_replace`,
+     measured at `600` on the result. What is still absent is **changing** an
+     existing file's mode, which is the `chmod` this bullet is named for, and
+     the Windows half cannot make the 0600 promise at all (it inherits the
+     directory's ACL).
   3. **No password-based key derivation.** `crypto` has sha256/hmac/aes-gcm but
      no PBKDF2/scrypt/argon2, so there is no safe way to turn a passphrase into a
      key. Studio declines to offer passphrases rather than ship a single-round

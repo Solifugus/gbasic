@@ -6805,6 +6805,78 @@ File functions (see also the file/directory value types):
   processes without one, and an existing directory has to stay an error for
   that to keep working. The two spellings answer two different questions —
   *create this* and *make sure this exists*.
+- `remove_tree(d)` — remove a directory **and everything in it**
+  *(since 0.11.0)*. `remove_dir` removes only an empty one, so until this
+  nothing in the language could remove a tree it had just built.
+
+  **Its own name rather than an option on `remove_dir`**, because the option it
+  would be offered is a recursive delete and that belongs to a decision nobody
+  should make by passing a flag. The two calls are two different acts.
+
+  - **A symlink inside the tree is unlinked, never followed.** A recursive
+    delete that descends a link removes somebody else's data while reporting
+    success, so the link goes and whatever it points at is left alone — the
+    load-bearing property of the whole call, and the reason its suite builds a
+    tree containing a link to a directory outside it.
+  - **A symlink given as the top path is refused, naming it.** `rm -rf` on a
+    link removes the link and stops, which is safe and silent; a function
+    called `remove_tree` answering "done" having removed no tree is worse than
+    a refusal. Use `delete(p)` to remove a link.
+  - **A file is refused** (use `delete`), and so is a missing path, with the
+    OS reason.
+  - **Depth is bounded at 256 directories**, the same bound the glob uses: a
+    link-free tree can still be deep enough to exhaust the stack, and this walk
+    holds an open directory handle at every level. Past that it refuses,
+    naming the **top** of the tree and the bound — not the 512-byte path 256
+    levels down, which says nothing a reader can act on — and nothing below
+    the bound is removed.
+  - **A failure may leave the tree partly removed**, which is why the message
+    names the path it stopped at. By the time anything can go wrong it has
+    already removed things, so a bare `false` would leave a half-removed tree
+    indistinguishable from a removed one.
+- `temp_file([options])` / `temp_dir([options])` — a temporary file or
+  directory that **already exists** *(since 0.11.0)*. It is **created, not
+  merely named**: a function that hands back an unused name hands back a race,
+  where two programs asking at the same moment are told the same name and the
+  second overwrites the first. Answers a **file** or **directory reference**,
+  so `write`, `read`, `atomic_replace`, `files` and `remove_tree` compose with
+  no modifier; `string(t)` gives the path.
+
+  Options, both optional, each refused by name if misspelled:
+
+  - `in:` — the directory to create it in; a directory reference, a file
+    reference or a path string. The default is the system temporary directory
+    (`TMPDIR` or `/tmp`; `GetTempPath` on Windows).
+  - `prefix:` — a name hint, so a listing later says which program left it.
+    It is a **name, not a path**: a path separator is refused, because a prefix
+    that could climb out would put the file somewhere the caller did not name,
+    and an interior NUL is refused like any other path.
+
+  **Use `in:` for the safe-write pattern**, and that is a measurement rather
+  than a preference: `atomic_replace` is same-filesystem only, and the system
+  temporary directory is routinely on another filesystem — measured here, `/tmp`
+  is tmpfs while the repository is on ext4, so a temp file in `/tmp` **cannot**
+  be swapped onto a destination beside the program's own data. It fails
+  cleanly, naming the requirement, rather than degrading to a copy.
+
+  ```basic
+  here {dir}= directory_name(dest)
+  t = temp_file({ in: here, prefix: "stage-" })
+  write(t, text)
+  atomic_replace(t, dest)          ' the temp file BECOMES the destination
+  ```
+
+  On POSIX the file arrives with mode **0600** and the directory **0700**,
+  which is what lets a program hold a secret in one — gBASIC has no `chmod`, so
+  there is no way to narrow it afterwards. **On Windows it inherits the
+  directory's ACL and that promise cannot be made**; the divergence is the mode,
+  not the uniqueness.
+
+  **Nothing is removed automatically**, deliberately: in the pattern above the
+  temp file is *meant* to outlive the call that made it, since it becomes the
+  destination. A program that made one in the system directory is the only
+  thing that knows when it is finished with it — `delete(t)` for a file,
+  `remove_tree(d)` for a directory, which is why the two shipped together.
 - `exists(ref)` accepts a **directory** reference as well as a file one
   *(since 0.2.3)*, because it asks about a **path** rather than about a file's
   contents. `read`, `lock` and the rest of that family still take a file

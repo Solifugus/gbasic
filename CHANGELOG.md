@@ -16,6 +16,68 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Scratch space: `temp_file`, `temp_dir`, `remove_tree`
+
+Three builtins for one job — make somewhere to work, and get rid of it
+afterwards — and before them a program had **neither end**. There was no way to
+ask for a unique name, so `persist.bas` writes `path + ".tmp"` beside its
+destination and two writers of one file share one temp name; and `remove_dir`
+removes only an *empty* directory, so nothing in the language could remove a
+tree it had just built.
+
+`temp_file([options])` and `temp_dir([options])` **create** the file or
+directory rather than naming one, because a function that answers an unused
+name hands back a race. Both answer a reference, so `write`, `read`,
+`atomic_replace`, `files` and `remove_tree` compose with no modifier. Options
+are `in:` (which directory) and `prefix:` (a name hint), each refused by name
+if misspelled; a prefix containing a path separator is refused, since one that
+could climb out would put the file somewhere the caller did not name.
+
+**`in:` exists because of a measurement, not a preference.** The brief for a
+temp file is the safe-write pattern — write a temp, swap it in — and written
+the obvious way *that does not work*: `atomic_replace` is same-filesystem only,
+and the system temporary directory is routinely on another filesystem. Measured
+here, `/tmp` is tmpfs against the repository's ext4, so a temp file in `/tmp`
+cannot be swapped onto a destination beside the program's own data. With
+`in: directory_name(dest)` it can.
+
+On POSIX the file arrives at **0600** and the directory at **0700**, which is
+what lets a program hold a secret in one — gBASIC has no `chmod`, so there is
+no narrowing it afterwards. On Windows it inherits the directory's ACL and that
+promise cannot be made; the divergence is the mode, not the uniqueness.
+**Nothing is removed automatically**, deliberately: in the safe-write pattern
+the temp file is *meant* to outlive the call that made it.
+
+`remove_tree(d)` removes a directory and everything in it. It gets its own name
+rather than an option on `remove_dir`, which was already decided in the comment
+above `remove_dir`: the option it would be offered is a recursive delete, and
+that "belongs to a decision nobody should make by passing a flag".
+
+- **A symlink inside the tree is unlinked, never followed** — the load-bearing
+  property, and the one its own fixture cannot assert, gBASIC being unable to
+  create a symlink. The suite builds a tree holding a link to a directory
+  outside it and requires the target to survive *with its content*; the
+  perturbation that descends the link destroys it while still reporting success.
+- **A symlink given as the top path is refused, naming it.** `rm -rf` on a link
+  removes the link and stops, which is safe and silent — and a function called
+  `remove_tree` answering "done" having removed no tree is worse than a refusal.
+- **Depth is bounded at 256**, the glob's bound, and the refusal names the
+  **top** of the tree: the first version named the path 256 levels down, 512
+  bytes of separators that did not fit in the message, so it reported a
+  truncated path with its reason cut off the end.
+- A failure may leave the tree **partly removed**, which is why the message
+  names the path it stopped at.
+
+`tests/run_scratch.sh` — 39 fixture checks plus the four tiers the fixture
+cannot reach (the symlinks, the 0600/0700 modes read with `stat`, the
+cross-device difference, the depth bound with its control). Seven perturbations
+proven red, each by the tier written for it. Two defects in the runner found by
+those perturbations and both worth recording: a fixture that *died* reported only
+the death and swallowed the `MISMATCH` it had already printed, and
+`fmode=$(stat ...)` on a file a perturbation never created ended the suite
+**silently** under `set -e` — the seventh instance of that trap in this tree, in
+the one tier whose whole job is to notice a missing file.
+
 ### `read_at(f, position, count)` — the other half of `overwrite`'s offset
 
 `overwrite(f, text, position)` has written at a byte offset since it shipped and

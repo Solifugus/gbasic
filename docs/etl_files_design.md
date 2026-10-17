@@ -1,12 +1,15 @@
 # Files and folders for ETL — design
 
-**Status: Partial.** §2 (the streaming read) and §3 (the recursive glob) both
-**shipped 2026-10-15** — see the note at the end of each. **Two of the five
+**Status: Partial** — everything but `chmod`. §2 (the streaming read) and §3 (the recursive glob) both
+**shipped 2026-10-15**, §4's `intake` on 2026-10-15/16, and §8's scratch space on
+2026-10-16 — see the note at the end of each. **Two of the five
 items this document called absent were already shipped under other names**:
 `modified` is `file_mtime`, and `basename`/`dirname`/`extension` are
 `file_name`/`directory_name`/`extension` — see the two corrections in §1. Of
-path splitting only `stem` was missing, and it **shipped 2026-10-15** too. Temp
-files and the `intake` library do not exist. Do not code against those.
+path splitting only `stem` was missing, and it **shipped 2026-10-15** too.
+`read_at` (the bounded binary reader), the `intake` library and **temp files**
+all shipped after this document was written — see §8 and `docs/intake_design.md`
+— so nothing in §1's list of five is outstanding except `chmod`.
 
 **Provenance.** Where this says *measured* it means a command was run on
 2026-10-14/15 and the number is quoted. The requirements come from Matthew's own
@@ -536,3 +539,65 @@ cooperation.* On Linux that means reading `/proc/*/fd`, which is not portable,
 needs the writer to be the same user, and would be the only thing in this
 library that cannot work on Windows at all. The honest position is that the
 sound answers are cooperative and the uncooperative one is a probability.
+
+---
+
+## 8. Scratch space: temp files and removing a tree — SHIPPED 2026-10-16
+
+§1's list named **temp files** as the fourth absent item. Building them made the
+list one item short, because a temp *directory* is only useful if something can
+remove it, and `remove_dir` removes an empty one — so nothing in the language
+could remove a tree it had just built. `remove_tree(d)`, `temp_file([options])`
+and `temp_dir([options])` shipped together for that reason.
+
+**The measurement that shaped the API.** The brief for a temp file is the
+safe-write pattern — write a temp, swap it in — and written the obvious way
+*that pattern does not work*: `atomic_replace` is same-filesystem only and says
+so by name, and the system temporary directory is routinely on another
+filesystem. Measured here, `/tmp` is tmpfs while the repository is on ext4, so
+
+```
+atomic_replace requires source and destination on the same filesystem:
+/tmp/gbasic-jWApZv -> .../crossdev.txt (Invalid cross-device link)
+```
+
+A temp file in the system directory therefore cannot be swapped onto a
+destination beside the program's own data. Hence `in:`, which is the option the
+pattern is actually built on, and hence an **options record** rather than a
+positional prefix: `temp_file({ in: here, prefix: "stage-" })` names both, and
+an unknown field is refused by name.
+
+**It also subsumes what `persist.bas` does by hand.** `persist` writes
+`path + ".tmp"` beside its destination — correct about the filesystem, and a
+collision as soon as two writers touch one file, since they share one temp
+name. `temp_file({ in: directory_name(path) })` is the same place with a unique
+name. `persist` is **not** migrated here: its goldens would not move, so the
+change would be unverifiable from the outside, and it belongs with whatever
+next touches that library.
+
+**What the decisions were.**
+
+- **It is created, not named.** A function that answers an unused name hands
+  back a race. POSIX gets that from `mkstemp`, which also makes the file 0600 —
+  so a program can hold a secret in one *before* `chmod` exists in this
+  language, which is the `DOGFOOD` entry §1 cites about a credential store.
+  Windows uses `GetTempPath` plus `gb_secure_random` and `CREATE_NEW`, so the
+  creation is still the test; **the divergence is the mode, not the race**, and
+  it is documented beside `chmod`'s rather than papered over.
+- **Nothing is removed automatically.** In the safe-write pattern the temp file
+  is *meant* to outlive the call that made it — it becomes the destination — so
+  an interpreter that swept temp files at exit would break the main use.
+- **A symlink inside a tree is unlinked, never descended**, which is the
+  load-bearing property of `remove_tree` and the one its own fixture cannot
+  assert, gBASIC being unable to create a symlink. A link given as the *top*
+  path is refused instead of silently removing just the link, because a function
+  called `remove_tree` answering "done" having removed no tree is worse than a
+  refusal.
+- **Depth is bounded at 256**, the glob's bound, and the refusal names the
+  **top** of the tree: the first version named the path 256 levels down, which
+  is 512 bytes of separators that did not fit in the message, so it reported a
+  truncated path with its reason cut off the end.
+
+**What is still absent from §1's list:** `chmod`, which remains the credentials
+story rather than this one, and which the Windows divergence above now has a
+shape for.
