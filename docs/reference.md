@@ -472,7 +472,7 @@ end for
 
 #### Streaming a file — `for each line in f`
 
-*(since 0.9.1)* When the thing iterated is a **file reference**, the loop
+*(since 0.10.0)* When the thing iterated is a **file reference**, the loop
 **streams** it: one line at a time, holding only the longest line rather than
 the file. Measured on a 161 MB, 4-million-line CSV — **13.3 MB** resident
 streaming it against **750 MB** for `read_lines` over the same file, and flat
@@ -6772,7 +6772,7 @@ File functions (see also the file/directory value types):
   reference only. It answers by `stat`, so a file that exists but is not
   readable reports as **present**.
 - Every reader — `read`, `read_lines`, `lines`, `chars`, `bytes` — **refuses a
-  directory** (*since 0.9.1*), reporting `could not read file: <path> (Is a
+  directory** (*since 0.10.0*), reporting `could not read file: <path> (Is a
   directory)`. Before that it **aborted the interpreter**: on Linux `fopen` on a
   directory succeeds, `ftell` answers `LONG_MAX`, and the allocation of that
   fails, so the process died with `SIGABRT` and a core dump — which takes
@@ -6806,7 +6806,7 @@ plain string alike, so a value straight out of a listing needs no conversion:
   is `"gz"`, not `"tar.gz"`. A name with no dot gives `""`, and so does a
   dotfile like `".hidden"` — a leading dot is not an extension — and so does a
   **trailing** dot, since `"a."` has nothing after it to be a suffix.
-- `stem(p)` — the last component with that suffix taken off (*since 0.9.1*):
+- `stem(p)` — the last component with that suffix taken off (*since 0.10.0*):
   `stem("/data/vendor_2026-03.csv")` is `"vendor_2026-03"`, which is usually the
   business key a filename carries. It is the other half of one cut, so it and
   `extension` always agree about where the boundary is:
@@ -6879,7 +6879,7 @@ Listing a directory — two functions, and the difference matters:
   `datetime` rather than an epoch number so that it agrees with `file_mtime`,
   and because `if e.modified > last_run` is what an incremental load asks.)
 
-  **The entries come back sorted by `path`** (*since 0.9.1*). `readdir` order
+  **The entries come back sorted by `path`** (*since 0.10.0*). `readdir` order
   is the directory hash's — neither alphabetical nor stable across machines —
   so every caller had to sort, and a recursive walk interleaves depth-first in
   an order nobody can predict.

@@ -9,6 +9,41 @@ language surface may still change between releases.
 
 ## Unreleased
 
+Kept current as work lands, so a book revising against the next release has the
+list already written rather than reconstructed. `./tools/since-release.sh`
+reports the mechanical half of this — which pinned diagnostics and goldens moved
+since the last tag — and is a floor on what changed, never a ceiling: it sees
+only messages a golden pins. This section is the curated half and is the one a
+reader sees.
+
+---
+
+## 0.10.0 — 2026-10-16
+
+**Read this first.** This release is the **file substrate an ETL job needs**,
+and three things in it change what an existing program gets.
+
+**Two diagnostics were reworded**, so anything quoting one verbatim — a book
+passage, a test, a support note — has to re-capture it:
+
+| was | is |
+|---|---|
+| `for in expects an array` | `for in expects an array or a file` |
+| `list/files/folders expects one directory argument` | `list expects a directory and an optional pattern` |
+
+**Five path builtins now refuse a path containing an interior NUL** where they
+used to truncate it. This is the one change that can stop a program that used to
+run — and the answer it used to give was about a different path: `file_name` of
+`"/a/b" + chr(0) + "x/c.txt"` answered `"b"`, the basename of `/a/b`. `read`,
+`read_lines`, `lines`, `chars` and `bytes` **on a directory** likewise refuse by
+name rather than, as before, ending the process with `SIGABRT` and a core dump.
+
+**And this is a MINOR release**, by the rule 0.6.1 set and 0.9.0 restated: a
+patch is *nothing is added, nothing is removed, and no message changes*. This
+adds a builtin (`stem`), a library (`intake`), an optional pattern argument to
+three builtins and two fields to the listing record — and two messages moved.
+Nothing is removed.
+
 ### Large files: `for each line in f` streams
 
 A file read no longer has to fit in memory. Iterating a **file reference** walks
@@ -301,12 +336,17 @@ states the rule with that measurement, and notes that the diagnostic names the
 wrong file: `'dep' does not define 'answer'` when `dep` defines it perfectly and
 the mistake is one line in the *other* file.
 
-Kept current as work lands, so a book revising against the next release has the
-list already written rather than reconstructed. `./tools/since-release.sh`
-reports the mechanical half of this — which pinned diagnostics and goldens moved
-since the last tag — and is a floor on what changed, never a ceiling: it sees
-only messages a golden pins. This section is the curated half and is the one a
-reader sees.
+### Also in this release
+
+**`list`, `files` and `folders` take a plain string path** as well as a `{dir}`
+reference, so the `d {dir}= p` line in front of a listing is no longer needed.
+
+**`read_lines` was truncating a line at an interior NUL** while `read(f)` on the
+same file returned every byte — two routes to one question disagreeing. Lines
+are counted bytes now.
+
+**`break` out of a named `for each` leaked its iterable**, 112 bytes per
+occurrence. Found by reading the loop before adding a file to it.
 
 ---
 
