@@ -48,6 +48,14 @@ const char *gb_platform_name(void) {
 #endif
 }
 
+/* `long` is already 64 bits on every 64-bit POSIX ABI, so these are the calls
+ * the callers made before the platform layer had them. */
+int gb_fseek(FILE *file, gb_off_t offset, int whence) {
+    return fseek(file, (long)offset, whence);
+}
+
+gb_off_t gb_ftell(FILE *file) { return (gb_off_t)ftell(file); }
+
 int gb_exe_path(char *buf, size_t size) {
     if (!buf || size == 0) {
         return 0;

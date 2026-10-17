@@ -12854,7 +12854,7 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(position_value);
             return value_null();
         }
-        if (position_value.as.num.value > LONG_MAX) {
+        if (position_value.as.num.value > GB_OFF_MAX) {
             runtime_error_raise("overwrite position is beyond end of file", 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
@@ -12875,9 +12875,9 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(position_value);
             return value_null();
         }
-        int ok = fseek(file, 0, SEEK_END) == 0;
-        long size = ok ? ftell(file) : -1;
-        long position = (long)position_value.as.num.value;
+        int ok = gb_fseek(file, 0, SEEK_END) == 0;
+        gb_off_t size = ok ? gb_ftell(file) : -1;
+        gb_off_t position = (gb_off_t)position_value.as.num.value;
         if (!ok || size < 0) {
             fclose(file);
             char message[512];
@@ -12903,7 +12903,7 @@ static Value eval_file_call(AstExpr *expr) {
         }
 
         size_t text_size = string_length(text_value.as.string);
-        ok = fseek(file, position, SEEK_SET) == 0;
+        ok = gb_fseek(file, position, SEEK_SET) == 0;
         if (ok && text_size > 0) {
             ok = fwrite(text_value.as.string, 1, text_size, file) == text_size;
         }
@@ -12996,7 +12996,7 @@ static Value eval_file_call(AstExpr *expr) {
                 value_free(count_value);
                 return value_null();
             }
-            if (numbers[i].as.num.value > LONG_MAX) {
+            if (numbers[i].as.num.value > GB_OFF_MAX) {
                 char message[128];
                 snprintf(message, sizeof(message), "read_at %s is too large", which[i]);
                 runtime_error_raise(message, 1004, "file operation");
@@ -13031,13 +13031,13 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
 
-        long position = (long)position_value.as.num.value;
+        gb_off_t position = (gb_off_t)position_value.as.num.value;
         size_t want = (size_t)count_value.as.num.value;
         /* THE ALLOCATION IS BOUNDED BY THE FILE, NOT BY THE ARGUMENT, so
          * `read_at(f, 0, 1000000000)` on a ten-byte file allocates eleven
          * bytes rather than a gigabyte -- which is what lets a caller pass a
          * generous count without having to ask the size first. */
-        if (fseek(file, 0, SEEK_END) != 0) {
+        if (gb_fseek(file, 0, SEEK_END) != 0) {
             int e = errno;
             fclose(file);
             char message[512];
@@ -13049,7 +13049,7 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(count_value);
             return value_null();
         }
-        long size = ftell(file);
+        gb_off_t size = gb_ftell(file);
         if (size < 0) {
             int e = errno;
             fclose(file);
@@ -13079,7 +13079,7 @@ static Value eval_file_call(AstExpr *expr) {
         if (!buffer) {
             abort();
         }
-        if (fseek(file, position, SEEK_SET) != 0) {
+        if (gb_fseek(file, position, SEEK_SET) != 0) {
             int e = errno;
             free(buffer);
             fclose(file);

@@ -31,7 +31,9 @@
 #ifndef GBASIC_PLATFORM_H
 #define GBASIC_PLATFORM_H
 
+#include <limits.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <time.h>
 #include <fcntl.h>
@@ -588,6 +590,27 @@ void gb_stdout_line_buffered(void);
  * caller keeps its own ceiling rather than deriving a bound from a number that
  * is not one. WINDOWS: the reserve the build sets, which it does know. */
 long gb_stack_limit_kb(void);
+
+/* A BYTE OFFSET INTO A FILE, which is not a `long` everywhere. `read_at` and
+ * `overwrite` sized and positioned with fseek/ftell, which take a `long`, and
+ * on Windows a `long` is 32 bits even in a 64-bit build. MEASURED 2026-10-17 on
+ * a 3 GB sparse file: `read_at(f, 0, 4)` raised `could not read file ...
+ * (Invalid argument)` -- not past 2 GB but AT ZERO, because both functions ask
+ * the file's size first and `ftell` cannot answer it. So on Windows the two
+ * functions that exist for large files refused every large file.
+ *
+ * POSIX: fseek/ftell, exactly as before -- `long` is 64 bits on every 64-bit
+ * POSIX ABI, so this changes nothing there. WINDOWS: _fseeki64/_ftelli64.
+ * GB_OFF_MAX is the largest offset the platform's calls accept, which is the
+ * bound the argument checks use. */
+typedef long long gb_off_t;
+#ifdef _WIN32
+#define GB_OFF_MAX LLONG_MAX
+#else
+#define GB_OFF_MAX LONG_MAX
+#endif
+int gb_fseek(FILE *file, gb_off_t offset, int whence);
+gb_off_t gb_ftell(FILE *file);
 
 /* Which platform the bodies above came from, for diagnostics and for the tests
  * that need to say why a tier does not apply. */

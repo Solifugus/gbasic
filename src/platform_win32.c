@@ -30,6 +30,13 @@
 
 const char *gb_platform_name(void) { return "windows"; }
 
+/* 64-bit offsets: Windows' fseek/ftell take a 32-bit `long`. */
+int gb_fseek(FILE *file, gb_off_t offset, int whence) {
+    return _fseeki64(file, offset, whence);
+}
+
+gb_off_t gb_ftell(FILE *file) { return _ftelli64(file); }
+
 /* GetModuleFileNameW with a NULL module is the running .exe. WIDE, then UTF-8:
  * the ANSI form goes through the process code page, so a path containing any
  * character outside it comes back MANGLED rather than failing -- a wrong path

@@ -42,6 +42,41 @@ for f in tests/windows/*.bas; do
     fi
 done
 
+# PAST 2 GB. `read_at` and `overwrite` positioned with fseek/ftell, whose
+# `long` is 32 bits on Windows, so MEASURED 2026-10-17 both refused EVERY file
+# over 2 GB -- even `read_at(f, 0, 4)`, because each asks the file's size
+# first and ftell could not answer it. The file is SPARSE (fsutil marks it on
+# Windows; truncate makes one natively on Linux), so 3 GB costs no disk and the
+# write at 2.5 GB does not zero-fill the gap. Runs on every platform: the
+# failure was Windows-only and the property is not.
+big="$(mktemp)"
+: >"$big"
+if command -v fsutil >/dev/null 2>&1; then
+    fsutil sparse setflag "$(cygpath -w "$big")" >/dev/null 2>&1 || true
+fi
+if truncate -s 3G "$big" 2>/dev/null; then
+    big_prog="$(mktemp --suffix=.bas)"
+    cat >"$big_prog" <<BAS
+f {file}= "$(cygpath -m "$big" 2>/dev/null || printf '%s' "$big")"
+print "start " + string(len(read_at(f, 0, 4)))
+print "write " + string(overwrite(f, "MARKER", 2500000000))
+print "past2g " + read_at(f, 2500000000, 6)
+print "end [" + read_at(f, 3221225472, 4) + "]"
+BAS
+    big_out="$(./gbasic "$big_prog" 2>&1)"
+    rm -f "$big_prog"
+    big_want="$(printf 'start 4\nwrite true\npast2g MARKER\nend []')"
+    if [ "$big_out" = "$big_want" ]; then
+        printf 'PASS read_at and overwrite reach past 2 GB in a 3 GB file\n'
+    else
+        printf 'FAIL read_at/overwrite past 2 GB:\n%s\n' "$big_out"
+        status=1
+    fi
+else
+    printf 'SKIP the past-2-GB tier: could not make a 3 GB sparse file here, so NOTHING was measured about it\n'
+fi
+rm -f "$big"
+
 # THE WINDOWS FILE VERSION MUST BE THE BINARY'S VERSION. src/gbasic.manifest
 # carries one by hand (it is what Windows shows in a file's Properties, and the
 # MSIX build reads `gbasic --version` instead); it sat at 0.4.0.0 while the
