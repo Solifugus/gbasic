@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-SCOPE: whole-tree -- compares the documented library surface against stdlib/ in both directions
 set -uo pipefail
 
 # Every PUBLIC function in stdlib/*.bas must be documented somewhere.

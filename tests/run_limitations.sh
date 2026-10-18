@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-SCOPE: whole-tree -- probes every live bullet of DOGFOOD.md, which is a claim about the whole tree
 # DOGFOOD.md's accepted-limitations ledger, held to the truth by RUNNING it.
 #
 # WHY THIS EXISTS. On 2026-09-01 five of the fourteen bullets under "Open --

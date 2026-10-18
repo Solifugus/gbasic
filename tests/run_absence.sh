@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-SCOPE: whole-tree -- counts hand-rolled set-union loops ACROSS THE WHOLE STDLIB BY SHAPE, and holds the tree to a measured bound
 # §2a and §2b of docs/bulk_data_design.md: WHAT AN AGGREGATE DOES WITH AN ABSENCE,
 # `present(a)`, the three defects `mode` shipped with, and where an absence SORTS.
 #

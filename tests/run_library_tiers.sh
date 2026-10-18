@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-SCOPE: whole-tree -- derives every library's dependencies from its own `load` lines and holds the reference table to them
 # WHICH LIBRARIES THE BINARY BESIDE THEM CAN ACTUALLY RUN.
 #
 # THE DEFECT THIS EXISTS FOR, MEASURED ON A PUBLISHED ARTIFACT. Of the 65

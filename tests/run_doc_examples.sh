@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-SCOPE: whole-tree -- runs every ```basic block on five pages, so a language change anywhere can break one
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 

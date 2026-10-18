@@ -89,7 +89,15 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-filter="${1:-}"
+filter=""
+changed_mode=0
+for arg in "$@"; do
+    case "$arg" in
+        --changed) changed_mode=1 ;;
+        --*) printf 'unknown option %s\n' "$arg" >&2; exit 1 ;;
+        *) filter="$arg" ;;
+    esac
+done
 # THE PER-SUITE CAP IS A HANG-GUARD AND ITS OLD 1800 WAS AN IDLE-MACHINE
 # NUMBER. This host runs several gBASIC sessions at once; measured 2026-09-23 at
 # load average 45, run_ari_discover takes 35 minutes and passes -- five minutes
@@ -160,9 +168,106 @@ if ! make >/dev/null; then
     exit 1
 fi
 
+# ---------------------------------------------------------------- --changed
+# THE LESSER GATE, and the one rule that matters is that it is DERIVED. The
+# three suites that sat broken from rc6 to rc7 were missed because "every gate
+# anyone ran was a hand-maintained list that did not happen to name them", so a
+# second gate built from a list would reintroduce exactly the defect this file
+# exists to prevent. This one computes its membership from `git diff`.
+#
+# IT IS CALIBRATED ON A REAL MISS. On 2026-10-18 a change that looked entirely
+# Qt-local broke run_regex and run_packaging -- through the MAKEFILE, which
+# run_regex copies into a second tree and run_packaging greps for switches.
+# Measured afterwards: a scan for "which suites NAME a changed path" selects
+# both. That is why the selection is by content rather than by directory, and
+# it is also why the substrate rule below is absolute rather than cautious.
+#
+# WHAT IT CANNOT DO, said plainly because the next person will want to trust it
+# further than it goes: it is a heuristic about BLAST RADIUS. run_regex's
+# dependency on that change was "it copies a partial tree and runs make", which
+# no file-name reasoning would have derived -- it worked because the suite
+# happens to name the files. So this narrows the gate for ITERATION; the full
+# gate is what gates a push.
+if [ "$changed_mode" = "1" ]; then
+    # WHAT CHANGED: the working tree AND whatever is not yet upstream, because
+    # "what should I run" means both in the loop this exists for.
+    # GATE_BASE EXISTS SO THE NARROWING PATH CAN BE EXERCISED. Against the
+    # upstream branch a session's own work usually includes the substrate, so
+    # the escalation fires and the selection below is never reached -- a branch
+    # nobody runs is a green line that measures nothing, which is the failure
+    # this gate's own header is about. `GATE_BASE=HEAD` means "just my
+    # uncommitted work", which is also the narrower question somebody iterating
+    # actually wants.
+    base="${GATE_BASE:-}"
+    if [ -z "$base" ]; then
+        for cand in '@{upstream}' origin/master master; do
+            if git rev-parse --verify --quiet "$cand" >/dev/null 2>&1; then base="$cand"; break; fi
+        done
+    fi
+    changed="$( { git status --porcelain 2>/dev/null | sed 's/^...//' | sed 's/.* -> //'
+                  [ -n "$base" ] && [ "$base" != "HEAD" ] \
+                      && git diff --name-only "$base"...HEAD 2>/dev/null
+                } | sed '/^$/d' | sort -u )"
+    if [ -z "$changed" ]; then
+        printf 'nothing has changed against %s -- there is nothing to gate\n' "${base:-HEAD}"
+        exit 0
+    fi
+    n_changed=$(printf '%s\n' "$changed" | wc -l | tr -d ' ')
+    printf -- '-- %s changed file(s) against %s --\n' "$n_changed" "${base:-HEAD}"
+
+    # THE SUBSTRATE. A change here has EVERY suite as a dependent and no content
+    # scan can honestly narrow it: src/eval.c IS the runtime, every suite runs
+    # ./gbasic, and the shared harnesses are sourced by most of them. Measured
+    # rather than assumed -- both of the 2026-10-18 misses came in through the
+    # Makefile.
+    substrate="$(printf '%s\n' "$changed" | grep -E \
+        '^(Makefile|src/|include/|third_party/|tests/(run_all|portable|premise|build_has|valgrind_tier|cookbook_harness)\.sh$)' \
+        || true)"
+    if [ -n "$substrate" ]; then
+        printf 'the substrate changed, so this is the FULL gate:\n'
+        printf '%s\n' "$substrate" | sed 's/^/    /'
+        changed_mode=0   # fall through to the ordinary partition
+    fi
+fi
+
+# SELECTION, for a change that is not substrate. Three sources, each derived:
+#
+#   1. the suite's OWN FILE changed
+#   2. the suite NAMES a changed path -- the rule calibrated on the real miss
+#   3. the suite declares `# GATE-SCOPE: whole-tree`, meaning it reads the
+#      whole tree and so is affected by any change at all. A MARKER rather
+#      than a list here, for the same reason the lanes use one: the knowledge
+#      belongs beside the suite, and a list is what a new tripwire silently
+#      stays out of.
+#
+# PLUS A LIBRARY'S DEPENDENTS. A change to stdlib/X.bas reaches any suite whose
+# fixtures `load X`, and any library that loads X -- so the scan follows one hop
+# through `load`, which is cheap and is what a library change actually means.
+selects_changed() {
+    local path="$1" f lib
+    grep -qE "^# *GATE-SCOPE: *whole-tree" "$path" 2>/dev/null && return 0
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        [ "tests/$(basename "$path")" = "$f" ] && return 0
+        command grep -qF -- "$f" "$path" 2>/dev/null && return 0
+        case "$f" in
+            stdlib/*.bas)
+                lib="$(basename "$f" .bas)"
+                # the suite loads it, or names a library that does
+                command grep -qE "(load|\\b)$lib\\b" "$path" 2>/dev/null && return 0
+                for d in $(command grep -rlE "^[[:space:]]*load +$lib\\b" stdlib/*.bas 2>/dev/null); do
+                    command grep -qF -- "$(basename "$d" .bas)" "$path" 2>/dev/null && return 0
+                done
+                ;;
+        esac
+    done <<< "$changed"
+    return 1
+}
+
 # ---------------------------------------------------------------- partition
 par=(); ser=(); exc=()
 excluded=0
+narrowed=0
 malformed=()
 for path in tests/run_*.sh; do
     name="$(basename "$path")"
@@ -173,6 +278,10 @@ for path in tests/run_*.sh; do
     if is_manual "$name" && [ "${RUN_MANUAL:-0}" != "1" ]; then
         printf '%-32s MANUAL (excluded; RUN_MANUAL=1 to include)\n' "${name%.sh}"
         excluded=$((excluded + 1))
+        continue
+    fi
+    if [ "$changed_mode" = "1" ] && ! selects_changed "$path"; then
+        narrowed=$((narrowed + 1))
         continue
     fi
     case "$(lane_of "$path")" in
@@ -428,6 +537,11 @@ fi
 if [ "$lane_rot" != "0" ]; then
     fail=$((fail + 1))
     failed_names+=("gate-lanes")
+fi
+
+if [ "$narrowed" -gt 0 ]; then
+    printf '\n*** THIS IS NOT THE GATE: %d suite(s) were not run, selected from what changed.\n' "$narrowed"
+    printf '*** Run tests/run_all.sh with no --changed before pushing.\n'
 fi
 
 printf '\n%d passed, %d failed, %d skipped entirely' "$pass" "$fail" "$skip"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-SCOPE: whole-tree -- checks the generated VS Code grammar against the interpreter's own keyword and builtin lists
 # The VS Code extension's grammar (editors/vscode/gbasic), held to the language.
 #
 # Two tiers, because a grammar fails in two ways and neither is visible to any

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-SCOPE: whole-tree -- sweeps docs/ against the tree in both directions, so any change can falsify a page
 # Executable-docs gate (PLAN.md Phase D3, deliverable 4).
 #
 # The AI cookbook (docs/ai/COOKBOOK.md) promises that every idiom points at a

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-SCOPE: whole-tree -- parses every program in five example directories by GLOB, so a new or edited one is in scope without being named
 # Parse-only headless smoke for the display examples (PLAN.md Phase D0.6, B6).
 #
 # examples/gui/ (GTK 3) and examples/gi/ (GObject-Introspection / GTK 4) can only
