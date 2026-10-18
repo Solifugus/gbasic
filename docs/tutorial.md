@@ -1458,6 +1458,154 @@ See [`web_routing.md`](web_routing.md).
 > watched storage; `take_first`/`append` notify watchers once after the mutation
 > completes. One reactive model serves local state and network I/O alike.
 
+## Windows (Qt)
+
+A window is **declared**, not assembled. The declaration says what is on screen
+and what to call when something happens; nothing in it is a coordinate.
+
+```basic
+window greeter( title: "Greeter", width: 360, height: 160 )
+    column( margin: 10, spacing: 8 )
+        field who( label: "Your name" )
+        row
+            stretch()
+            button hello( text: "Say hello" )
+        end row
+        text said( label: "" )
+    end column
+
+    on hello.clicked
+        qt.write(greeter, "said", "Hello, " + qt.read(greeter, "who") + "!")
+    end on
+end window
+```
+
+That block **binds a name to a record** and does nothing else — it costs no
+display and no Qt, which is why the whole declaration can be checked on a
+text-only machine. `qt.check(greeter)` applies its rules and answers `true` or
+refuses with the first problem; `qt.open` runs the same check before it builds
+anything.
+
+To put it on screen, open it and hand Qt the thread:
+
+<!--needs-context-->
+```basic
+program main(args)
+    if not qt.can_display() then
+        print "No display, so there is no window to open."
+        return
+    end if
+    qt.open(greeter)
+    qt.run()
+end program
+```
+
+**`qt.can_display()` answers rather than raising**, including on a build with no
+Qt at all — so a program degrades instead of dying, and that guard is the
+idiom rather than a nicety. With no display, Qt itself would abort
+uncatchably.
+
+`qt.run()` hands the thread to Qt and returns when `qt.stop()` is called.
+gBASIC's own work is still serviced while it holds it: a `timer`, a webserver
+and an actor mailbox all keep running.
+
+### Reading and writing, and the parts you address
+
+Every named part is reachable by name: `qt.read(win, "who")` gives what it
+shows, `qt.write(win, "who", value)` puts a value in it (rendered exactly as
+`print` would), and `qt.read(win, "who", "readOnly")` reads **any Qt property**
+of that widget — in the kind Qt declares it, so `readOnly` answers a boolean.
+A property the widget does not carry is refused **by name**, which matters
+because Qt's own `setProperty` succeeds on a name nothing reads.
+
+### A form is bound to a record
+
+Most business screens are a record on screen. Say so, and nothing populates a
+widget by hand:
+
+```basic
+window customer( title: "Customer", width: 420, height: 220 )
+    form to edit cust
+        field name( label: "Name" )
+        field limit( label: "Credit limit", type: {USD} )
+        check hold( label: "On hold" )
+    end form
+    on hold.toggled
+        qt.set(customer, "limit", "enabled", not qt.read(customer, "hold"))
+    end on
+end window
+```
+
+`form to edit cust` takes `cust` from the frame that opens the window and fills
+every part from the matching field. `qt.subject(customer, "cust")` reads the
+widgets **at the moment you ask** and folds them back into that record, keeping
+each field's kind — `limit` comes back as money because the field declared it.
+`form to show cust` is the same thing one way: the parts are read-only and the
+record never follows.
+
+### Where a handler keeps state
+
+gBASIC has no closures, and a handler fires beneath `qt.run()`. It **can read**
+a variable in `main`, and it **cannot rebind** one — assigning to a plain
+variable there silently makes a handler-local instead, and warning 2104 says so
+and names the remedy. So a stateful window keeps its state in **one record**
+and handlers mutate its fields:
+
+```basic
+window counter( title: "Counter", width: 240, height: 120 )
+    column( margin: 10 )
+        text shown( label: "0" )
+        button bump( text: "Add one" )
+    end column
+    on bump.clicked
+        g.count = g.count + 1
+        qt.write(counter, "shown", g.count)
+    end on
+end window
+```
+
+<!--needs-context-->
+```basic
+program main(args)
+    g = { count: 0 }
+    if not qt.can_display() then
+        print "No display."
+        return
+    end if
+    qt.open(counter)
+    qt.run()
+    print "clicked " + string(g.count) + " times"
+end program
+```
+
+`g.count = ...` reaches `main`'s record because a field write resolves through
+the frame chain. A bare `count = count + 1` would not, and would warn.
+
+### Trying it without a screen
+
+Every example in `examples/qt/` takes a `check` argument: it opens the window,
+prints what the program can observe about it, and exits — which is how to
+verify a Qt install without looking at anything, and how the suites gate the
+whole surface. The same trick works for your own programs, and it is worth
+writing as you go rather than afterwards.
+
+```sh
+QT_QPA_PLATFORM=offscreen ./gbasic mywindow.bas check
+```
+
+That platform is not a test-only arrangement: it is how a gBASIC GUI program
+renders on a headless server.
+
+### Where to go next
+
+`examples/qt/` has eleven programs, the first seven taking one aspect each —
+layout, tabs, properties, theming, a timer on the loop, menus, and a code
+editor — and the last four combining them into a bound form, a table feeding a
+form, a menu-driven screen and a window built from data. `docs/reference.md`'s
+Qt section is the surface; `docs/qt_gui_design.md` is why it has the shape it
+has. A `table`, a `tabs`, a `cells` grid, a `choice` dropdown, menus, theming
+and a `source` code editor are all part of the same vocabulary.
+
 ## Security helpers: passwords and tokens
 
 Two builtins cover the common application-security primitives:
