@@ -389,8 +389,8 @@ fi
 # A COVERAGE FLOOR. The fixture asserts most of its own claims, so the one
 # thing the runner must add is that it really ran them -- a fixture that
 # stopped early satisfies "0 mismatches" by saying nothing.
-if [ "${bchecks:-0}" -ge 25 ]; then
-    pass "and it really ran them ($bchecks >= 25)"
+if [ "${bchecks:-0}" -ge 30 ]; then
+    pass "and it really ran them ($bchecks >= 30)"
 else
     fail "only $bchecks binding checks ran -- the fixture stopped early"
 fi

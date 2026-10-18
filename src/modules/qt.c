@@ -510,13 +510,26 @@ static int qt_bind_form(void *root, Value *form, const char *window_name) {
         }
         RecordField *field = record_find(slot, name);
         if (!field || !field->value) {
-            /* AN ABSENT FIELD LEAVES THE PART EMPTY AND DOES NOT RAISE, which
-             * is the same answer `r.missing` gives on a record -- and it is
-             * what a "new customer" form needs, every field there being
-             * legitimately absent until somebody types. THE COST IS REAL AND
-             * IS NOT PAPERED OVER: a MISSPELLED part name inside a form is
-             * therefore not caught, and the refusal that would catch it is the
-             * one that breaks the new-record case. */
+            /* AN ABSENT FIELD LEAVES THE PART EMPTY AND DOES NOT RAISE,
+             * because for `to edit` the form's job is to PRODUCE the record: a
+             * field absent at open is the ordinary state of a form being
+             * filled in, and the fold adds it, so by the time anybody reads
+             * the record it is there. A "new customer" form has every field
+             * absent until somebody types.
+             *
+             * NOT because it matches the language -- a claim written here
+             * first and MEASURED FALSE: `r.missing` on a record RAISES
+             * `unknown record field`, it does not answer `unknown`.
+             *
+             * THE COST IS SHARPER THAN "NOT CAUGHT" AND IS PINNED BY A CHECK
+             * IN THE FIXTURE: a MISSPELLED part name leaves the intended field
+             * holding its CAPTURED value and adds a second field named after
+             * the typo, so typing into that part changes nothing the author
+             * meant and nothing says so -- the same silent-discard class that
+             * `to show`'s read-only exists to prevent, arriving by another
+             * door. The refusal that would catch it is the one that breaks the
+             * new-record case, so what it wants is an opt-in from the author
+             * (a form declaring its subject's fields fixed), not a rule. */
             continue;
         }
         /* THROUGH THE ONE RENDERER (PLAT-RENDER), so money, a date and a

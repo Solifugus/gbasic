@@ -113,14 +113,22 @@ program main()
     back = qt.subject(customer, "cust")
     check("a field untouched by the fold keeps its captured value", back.id, "A-1000")
     check("the first form's field follows the widget", back.name, "Ada Lovelace")
-    check("the SECOND form's field follows too", string(back.limit), "1250.50")
+    ' GUARDED WITH `has`, because a fold that visited only the FIRST form
+    ' leaves `limit` absent -- and `back.limit` on a record that lacks it
+    ' RAISES, which would kill the fixture and hide the mismatch that had
+    ' already named the problem. run_discovery.sh records that exact trap.
+    check("the SECOND form's field follows too",
+          has(back, "limit") and string(back.limit) = "1250.50", true)
     ' THE KIND IS KEPT, which the obvious implementation gets wrong: a widget
     ' holds TEXT, so folding back blindly makes `limit` a string that still
     ' PRINTS as 1250.50 -- which is why the check is on `type` and not only on
     ' the digits, the same trap the finio amount tripwire records.
-    check("and `type: {USD}` folds back AS money", type(back.limit), "money")
-    check("a check box folds back as a boolean", type(back.hold), "boolean")
-    check("with the state it is actually in", back.hold, true)
+    check("and `type: {USD}` folds back AS money",
+          has(back, "limit") and type(back.limit) = "money", true)
+    check("a check box folds back as a boolean",
+          has(back, "hold") and type(back.hold) = "boolean", true)
+    check("with the state it is actually in",
+          has(back, "hold") and back.hold = true, true)
 
     ' THE SIGNAL. `click` is invoked BY NAME through QMetaObject, which emits
     ' the real `clicked` signal through the real connection -- so what is being

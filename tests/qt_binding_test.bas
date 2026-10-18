@@ -46,6 +46,15 @@ window fresh_form( title: "New" )
     end form
 end window
 
+' A MISSPELLED PART NAME. This window exists to PIN A COST rather than to show
+' a feature working, the way run_for_each_index.sh pins what its narrowing gave
+' up: `emial` names no field of the record, and nothing catches it.
+window typo( title: "Typo" )
+    form to edit who
+        field emial( label: "Email" )
+    end form
+end window
+
 window orphan( title: "Orphan" )
     form to edit nowhere
         field a( label: "A" )
@@ -136,11 +145,15 @@ program main()
           "Ada Lovelace")
 
     ' ------------------------------------------------------- THE NEW-RECORD CASE
-    ' AN ABSENT FIELD LEAVES THE PART EMPTY AND DOES NOT RAISE, the same answer
-    ' `r.missing` gives on a record. THE COST IS STATED RATHER THAN HIDDEN: a
-    ' MISSPELLED part name inside a form is therefore not caught either, and
-    ' the refusal that would catch it is the one that breaks this case -- a
-    ' form filling in a new record has every field absent until somebody types.
+    ' AN ABSENT FIELD LEAVES THE PART EMPTY AND DOES NOT RAISE, because for
+    ' `to edit` the form's job is to PRODUCE the record -- a field absent at
+    ' open is the ordinary state of a form being filled in, and the fold adds
+    ' it. A new-customer form has every field absent until somebody types.
+    '
+    ' NOT because it matches the language. That claim was written first and
+    ' MEASURED FALSE: `r.missing` on a record RAISES `unknown record field`, it
+    ' does not answer `unknown` -- which is also why the gather checks in
+    ' qt_window_test.bas are guarded with `has`.
     blank = {}
     check("a form over an empty record opens", qt.open(fresh_form), true)
     check("and its parts are empty", qt.read(fresh_form, "name"), "")
@@ -149,6 +162,29 @@ program main()
     check("a field absent at open is present after an edit", made.name, "Grace")
     check("one nobody typed in is present and empty", made.town, "")
     check("so the record gained both parts", len(keys(made)), 2)
+
+    ' ----------------------------------------------------- THE COST, PINNED
+    ' WHAT BINDING DOES NOT CATCH, asserted rather than left in a comment. A
+    ' misspelled part name is not caught at open, and the consequence is worse
+    ' than "no diagnostic": the intended field keeps its CAPTURED value, the
+    ' record gains a second field named after the typo, and so typing into that
+    ' part changes nothing the author meant -- the same silent-discard class
+    ' that `to show`'s read-only exists to prevent, arriving by another door.
+    '
+    ' PINNED SO THAT ANYONE CLOSING THIS IS TOLD WHAT THEY ARE CHANGING. The
+    ' refusal that would catch it is the one that breaks the new-record case
+    ' above, so what it wants is an opt-in from the author -- a form declaring
+    ' its subject's fields fixed -- and not a rule.
+    who = { email: "ada@example.org" }
+    check("a form with a misspelled part still opens", qt.open(typo), true)
+    check("and the part is empty, having matched no field",
+          qt.read(typo, "emial"), "")
+    w = qt.write(typo, "emial", "typed into the wrong name")
+    slip = qt.subject(typo, "who")
+    check("COST: the intended field keeps its captured value", slip.email,
+          "ada@example.org")
+    check("COST: and the record gained a field named after the typo",
+          has(slip, "emial"), true)
 
     ' ------------------------------------------------------------- REFUSALS
     on error goto next

@@ -299,13 +299,31 @@ in `if qt.read(f, "readOnly")`.
 
 ### What binding does NOT catch, and why the refusal was not written
 
-A **misspelled part name inside a form** is not caught. A field whose name the
-record lacks is left empty rather than refused, because the refusal that would
-catch the typo is the same refusal that breaks a form filling in a **new**
-record, where every field is legitimately absent until somebody types. Being
-absent is also the answer `r.missing` already gives on a record, so the quiet
-behaviour is the consistent one; the cost is real and is stated rather than
-discovered.
+A **misspelled part name inside a form** is not caught, and the consequence is
+worse than "no diagnostic". A field whose name the record lacks is left empty
+rather than refused, because for `to edit` the form's job is to *produce* the
+record: a field absent at open is the ordinary state of a form being filled in,
+and the fold adds it. A form filling in a **new** record has every field absent
+until somebody types, so the refusal that would catch the typo is the one that
+breaks that case.
+
+But a misspelled part leaves the intended field holding its **captured** value
+and adds a second field named after the typo — so typing into that part changes
+nothing the author meant, and nothing says so. That is the same silent-discard
+class `to show`'s read-only exists to prevent, arriving by another door, and it
+is **pinned by a check** in `tests/qt_binding_test.bas` rather than left here as
+prose, so anyone closing it is told what they are changing. What it wants is an
+opt-in from the author — a form declaring its subject's fields fixed — not a
+rule.
+
+**A correction worth keeping**, because it was written into the code and the
+docs before being measured: the quiet behaviour was justified as "the same
+answer `r.missing` gives on a record". It is not. `r.missing` **raises**
+`unknown record field`; it does not answer `unknown`. The behaviour is right for
+the reason above and not for that one — and the same measurement is why the
+fixture's gather checks are guarded with `has`, since a fold that visited only
+the first form would leave a field absent and raise, killing the fixture and
+hiding the mismatch that had already named the problem.
 
 A `type:` that refuses what was typed reports **the modifier's own sentence**,
 which is the cause, and that sentence **does not name the part** — so with

@@ -3855,7 +3855,10 @@ named `email` takes `cust.email` — so there is nothing to look up and nothing 
 wire. The subject is read from the frame that calls `qt.open`, so `cust` must be
 in scope there; a form naming a subject that is not is refused rather than
 opening quietly and showing nothing. A field the record does not have is left
-empty rather than refused, which is what a form filling in a *new* record needs.
+empty rather than refused, which is what a form filling in a *new* record needs
+— the fold adds it. The cost is that a **misspelled** part name is not caught:
+the field the author meant keeps its captured value, so typing into the
+misspelled part changes nothing.
 
 `to show` and `to edit` differ in two ways. A `show` form's parts take no
 typing — a field is read-only, a check box disabled — because the alternative is
