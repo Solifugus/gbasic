@@ -519,6 +519,42 @@ else
     fail "the emptied-number refusal: $(grep EMPTYNUMBER "$work/t.out" || echo 'never fired')"
 fi
 
+# ----------------------------------------------------------------------- CELLS
+
+printf 'TIER cells: tabular placement, asserted by asking the LAYOUT where things are\n'
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
+    tests/qt_cells_test.bas > "$work/c.out" 2> "$work/c.err"
+c_rc=$?
+set -e
+if [ "$c_rc" != "0" ]; then
+    printf '    %s\n' "$(tail -5 "$work/c.err")"
+    fail "the cells fixture exited $c_rc"
+fi
+cchecks=$(grep -c '^ok   ' "$work/c.out" || true)
+if grep -q MISMATCH "$work/c.out"; then
+    grep MISMATCH "$work/c.out" | while read -r line; do printf '    %s\n' "$line"; done
+    fail "$(grep -c MISMATCH "$work/c.out") mismatches in the cells fixture"
+elif [ "${cchecks:-0}" = "0" ]; then
+    fail "no cells checks ran at all, so '0 mismatches' would mean nothing"
+else
+    pass "$cchecks checks, 0 mismatches"
+fi
+if [ "${cchecks:-0}" -ge 18 ]; then
+    pass "and it really ran them ($cchecks >= 18)"
+else
+    fail "only $cchecks cells checks ran -- the fixture stopped early"
+fi
+# `qt.at` ASKS THE LAYOUT, walking up from the widget rather than from any
+# record of where we put it -- a remembered position would agree with a
+# placement that was wrong, which is no oracle. A part in no grid is refused
+# rather than answering a position, since every number would be a lie.
+if grep -q "NOTINGRID: qt.at: \`ok\` is not in a \`cells\`" "$work/c.out"; then
+    pass "a part outside any cells is refused rather than given a position"
+else
+    fail "the not-in-a-grid refusal: $(grep NOTINGRID "$work/c.out" || echo 'never fired')"
+fi
+
 # ------------------------------------------------------------------------ TABS
 
 printf 'TIER tabs: a book of pages, and qt.set -- the write half of the route\n'
@@ -814,9 +850,13 @@ else
     vg_menu_only_rc=$?
     QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
         tests/qt_tabs_test.bas > "$work/vgb2.out" 2> "$work/vgtb.err"
-    vg_tabs_rc=$?
+    vg_tabs_only_rc=$?
+    QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
+        tests/qt_cells_test.bas > "$work/vgc.out" 2> "$work/vgc.err"
+    vg_cells_rc=$?
     set -e
     vg_menu_rc=$vg_menu_only_rc
+    vg_tabs_rc=$vg_tabs_only_rc
     # THE WORST OF THE THREE, so a clean run of one fixture cannot hide a
     # defect in another -- a form, a table and a menu allocate differently.
     vg_rc=$vg_bind_rc
@@ -832,6 +872,10 @@ else
         vg_rc=$vg_tabs_rc
         cp "$work/vgtb.err" "$work/vgb.err"
     fi
+    if [ "$vg_cells_rc" != "0" ]; then
+        vg_rc=$vg_cells_rc
+        cp "$work/vgc.err" "$work/vgb.err"
+    fi
     # COMPARED AGAINST $VG_EXIT, which the shared policy exposes for exactly
     # this: the fixture itself can fail for its own reasons, and reading that
     # as a valgrind objection prints FAIL over a report saying zero errors --
@@ -843,7 +887,7 @@ else
         printf '    %s\n' "$(tail -3 "$work/vgb.err")"
         fail "the fixture exited $vg_rc under valgrind, which is not a valgrind objection"
     else
-        pass "no invalid access or uninitialised read across open, fold and teardown -- form, table, menu and tabs"
+        pass "no invalid access or uninitialised read across open, fold and teardown -- form, table, menu, tabs and cells"
     fi
 fi
 

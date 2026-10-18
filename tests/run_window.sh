@@ -407,6 +407,50 @@ end window
 EOF
 refuse "a NAMED form is refused, saying which containers may be named" "a table and a \`tabs\` are named"
 
+# ------------------------------------------------------------------- CELLS
+# `cells` NEEDED NO NEW WORD EITHER, and that is the design: a grid IS rows of
+# cells, so `row` is reused -- refined inside `cells` to mean a row whose
+# columns ALIGN with the rows above, where a `row` elsewhere is a box that does
+# not. The alternative was a new word per axis or a position option, and the
+# measurement said neither was necessary.
+src cells_ok <<'EOF'
+window w( title: "x" )
+    column
+        cells( spacing: 6 )
+            row
+                field first( label: "First" )
+                field last( label: "Last" )
+            end row
+            row
+                field notes( label: "Notes", across: 3 )
+            end row
+        end cells
+    end column
+end window
+program main()
+    print "ACCEPTED"
+end program
+EOF
+got=$(out_of "$written")
+if printf '%s' "$got" | grep -qF 'ACCEPTED'; then
+    pass "CONTROL: cells holding rows of cells, with a span, is accepted"
+else
+    printf '    %s\n' "$(printf '%s' "$got" | head -2)"
+    fail "a valid cells was refused"
+fi
+
+# A PART DIRECTLY INSIDE `cells` HAS NO ROW TO GO IN, so it is refused rather
+# than placed at whatever position happened to be current -- a widget
+# appearing somewhere nobody asked for.
+src cells_bare_field <<'EOF'
+window w( title: "x" )
+    cells
+        field a( label: "A" )
+    end cells
+end window
+EOF
+refuse "a part directly inside cells is refused, naming the remedy" "put it inside a row"
+
 # -------------------------------------------------------------------- TABS
 # `tabs` / `tab "Name"` JOINED 2026-10-18 AND COST NO GRAMMAR EITHER: both ride
 # productions that already existed (the bare container, and the
@@ -703,7 +747,7 @@ refuse "a misspelled table is named, and the suggestion is the real word" "did y
 # list rather than the one-word answer, for the newest word in the language.
 # Two representations of one list drift. It is derived from the two tables now,
 # and this loop fails the next time a word is added to one and not the other.
-for w in row column form group table menu tabs field button check stretch item separator; do
+for w in row column form group table menu tabs cells field button check stretch item separator; do
     # ONE TRANSPOSITION of the last two letters, which is what fingers actually
     # do and is the shape the finder had to learn (`colunm`, `feild`).
     typo=$(printf '%s' "$w" | sed -E 's/(.)(.)$/\2\1/')
@@ -802,6 +846,12 @@ window customer( title: "C", width: 300, height: 200 ) to show cust
                 field note( label: "Note" )
             end tab
         end tabs
+        cells( spacing: 4 )
+            row
+                field left_c( label: "Left" )
+                field right_c( label: "Right", across: 2 )
+            end row
+        end cells
         row
             stretch()
             button save( text: "Save" )
