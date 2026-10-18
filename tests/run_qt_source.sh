@@ -232,6 +232,56 @@ else
     fi
 fi
 
+# --------------------------------------------------------------- RELOCATED
+# A DOWNLOAD IS NOT AN INSTALL, and the obvious implementation gets that wrong
+# in a way nothing else here could see. tools/build-release-tarball.sh says in
+# as many words that the tree is "relocatable by construction" and runs where
+# it is unpacked -- which works because the stdlib is found RELATIVE TO THE
+# BINARY rather than at the absolute path baked in at build time. A baked-in
+# path alone pointed a download at /usr/local/share/gbasic/syntax-highlighting,
+# a directory that does not exist where a tarball is extracted, so the
+# definition was IN THE ARCHIVE and unreachable by the binary beside it. That
+# exact shape has been reported from OUTSIDE this project three times, which
+# run_library_tiers.sh records; it was looked for here rather than discovered,
+# and it was real -- measured both ways before this tier was written.
+#
+# THE ENVIRONMENT IS STRIPPED, which is the whole point: no
+# GBASIC_SYNTAX_PATH, since this suite exports one and a download has none; and
+# an empty XDG_DATA_HOME, since a developer's own hand-installed copy is
+# exactly what made the original trap invisible.
+printf 'TIER relocated: a moved tree finds its own definition, with no environment\n'
+relo="$work/relo"
+if ! make install PREFIX=/usr/local DESTDIR="$relo" >/dev/null 2>&1; then
+    fail "make install into a scratch DESTDIR did not work"
+else
+    moved="$work/moved"
+    mv "$relo/usr/local" "$moved"
+    if [ ! -f "$moved/share/gbasic/syntax-highlighting/syntax/gbasic.xml" ]; then
+        fail "install did not carry the syntax definition at all"
+    else
+        pass "install carries the definition into share/gbasic/syntax-highlighting"
+        set +e
+        ( cd "$work" && env -u GBASIC_SYNTAX_PATH \
+            XDG_DATA_HOME="$work/empty-home" QT_QPA_PLATFORM=offscreen \
+            timeout -k 5 60 "$moved/bin/gbasic" --line-buffered \
+            "$work/whence.bas" > "$work/relo.out" 2>"$work/relo.err" )
+        relo_rc=$?
+        set -e
+        got=$(sed -n 's/^from=//p' "$work/relo.out" | head -1)
+        want="$moved/share/gbasic/syntax-highlighting/syntax/gbasic.xml"
+        if grep -q nodisplay "$work/relo.out"; then
+            printf '  SKIP (no display -- relocation was NOT measured)\n'
+        elif [ "$relo_rc" != "0" ]; then
+            cat "$work/relo.err"; fail "the moved binary exited $relo_rc"
+        elif [ "$got" = "$want" ]; then
+            pass "and the moved binary found it, relative to itself"
+        else
+            cat "$work/relo.out"
+            fail "a moved tree reported '$got' -- a download would highlight nothing"
+        fi
+    fi
+fi
+
 # ------------------------------------------------------------------ WARNING
 # A MISSING DEFINITION IS A WARNING AND NOT A RAISE, which is the decision
 # that makes the whole feature affordable: the editor is built, editable and

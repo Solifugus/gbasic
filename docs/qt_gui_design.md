@@ -1715,6 +1715,25 @@ runs with `XDG_DATA_HOME` moved aside and requires the file to be **ours**.
 `editor.bas` with no path set and reported clean stderr — on this machine only;
 pointed at an empty `XDG_DATA_HOME` it fails. The suite exports the path now.
 
+### A download is not an install
+
+The path above was baked in at build time, and **that alone would have shipped
+a download whose editor highlighted nothing.**
+`tools/build-release-tarball.sh` says the tree is *relocatable by
+construction* and runs where it is unpacked — which works because the stdlib is
+resolved **relative to the binary**, not at the absolute path compiled in. So a
+tarball would have looked in `/usr/local/share/gbasic/syntax-highlighting`, a
+directory that is not there: **the file in the archive, unreachable by the
+binary beside it**, which is the shape reported from outside this project three
+times and the reason `run_library_tiers.sh` exists.
+
+Measured by installing to a scratch `DESTDIR` and **moving** the tree somewhere
+no build knew about, with no `GBASIC_SYNTAX_PATH` and an empty
+`XDG_DATA_HOME`: `gBASIC` from its own path with the resolver, `applied=none`
+without it. The walk is **shared** with the stdlib's rather than copied —
+`gb_exe_relative_share(subdir)` — because two representations of one layout
+drift. `run_qt_source.sh`'s `relocated` tier keeps it.
+
 ### "It highlights" is two claims in two places
 
 Neither is sufficient alone, and the second is the one gBASIC cannot make:
