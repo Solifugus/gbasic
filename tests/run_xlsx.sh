@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: serial -- a 40k-row sheet must evaluate under a 1200ms CEILING, chosen over a ratio because an 8x ratio gate PASSED on the unfixed build
 # xlsx Stages 1-2 — ZIP container, part tree, cells, write + round-trip
 # (docs/xlsx_design.md).
 #

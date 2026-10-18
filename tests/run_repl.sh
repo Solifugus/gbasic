@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: serial -- drives a real pty whose fallback for a line printing no prompt is a quiet window, which is a guess about how fast the machine is
 # The gBASIC prompt (src/repl.c over the session split in src/eval.c).
 #
 # WHY THIS SUITE IS SELF-CHECKING RATHER THAN A GOLDEN. Every defect a prompt

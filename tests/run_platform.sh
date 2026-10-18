@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: exclusive -- runs `make clean` and rebuilds with each optional dependency switched OFF, so a suite beside it would test a different binary
 # The PLATFORM LAYER (include/platform.h, src/platform_posix.c) and the build
 # configurations that reach it.
 #

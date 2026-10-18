@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: serial -- a 115KB/240-record index must open in under 5s, against the 92s the pure-gBASIC validator took
 # persist — crash-safe, versioned persistence (stdlib/persist.bas).
 #
 # These cases came from Studio's STU-STORE tier and stayed behind when Studio

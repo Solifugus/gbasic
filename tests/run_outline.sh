@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: serial -- the large-file tier carries a timing ceiling
 # PLAT-OUTLINE platform suite: the general in-process source_outline(text) builtin.
 #
 # Tiers (all headless, GI-independent, path-free goldens):

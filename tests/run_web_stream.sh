@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: serial -- runs a server at `timeout: 1` and waits 2.2s to prove a stream outlives it
 # PLAT-WEB-4 Gap E — streaming responses: an SSE handler that emits from
 # inside its own handler, a parked stream poked from another request, the
 # timeout exemption (a stream is not a slow response), file responses that

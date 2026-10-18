@@ -435,8 +435,6 @@ LSP_OBJS := src/lsp/main.o src/lsp/rpc.o src/lsp/handlers.o src/lsp/lsp_position
 
 .PHONY: all dev clean install uninstall
 
-all: libgbasic.a gbasic $(SYNTAX_LAYOUT)
-
 # ONLY IF THE DEFINITION IS THERE, and that is not caution -- it is a fact
 # about how this tree gets copied. run_regex.sh builds a SECOND tree to force
 # the no-REG_STARTEND path through a real compile, and it copies
@@ -451,6 +449,16 @@ all: libgbasic.a gbasic $(SYNTAX_LAYOUT)
 # that an interpreter should still build in a tree that carries no editor
 # integrations, which is the right priority when somebody asked for make.
 SYNTAX_LAYOUT := $(if $(wildcard editors/kate/gbasic.xml),editors/kate/syntax/gbasic.xml,)
+
+# AND IT IS ASSIGNED ABOVE THE RULE DELIBERATELY. A rule's prerequisites are
+# expanded WHEN THE RULE IS READ, so assigning this below `all:` expanded it to
+# EMPTY there -- which did not make the build tolerant, it silently dropped the
+# layout from the default build. `make -p` reported `all: libgbasic.a gbasic`
+# with the prerequisite simply absent, while the variable itself was set
+# correctly; the file survived only as stale state until the next `make clean`,
+# which is why a serial gate could not see it and the parallel one could.
+
+all: libgbasic.a gbasic $(SYNTAX_LAYOUT)
 
 # Build every binary in the tree, including the ones kept out of `all` (the LSP
 # server). This is the routine developer/CI entry point: it guarantees gbasic-lsp

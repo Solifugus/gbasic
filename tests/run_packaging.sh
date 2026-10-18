@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: exclusive -- runs packaging/build-deb.sh, which does `make clean` and a LEAN rebuild IN THIS TREE, so every other suite's plain `make` then relinks the binary back under it
 set -uo pipefail
 
 # The shipping path: source -> lean interpreter -> .deb -> a running service.

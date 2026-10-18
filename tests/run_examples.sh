@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: exclusive -- runs `make clean && make`, which removes ./gbasic while another suite may be running it
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

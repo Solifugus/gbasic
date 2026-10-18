@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: serial -- carries one generous ABSOLUTE ceiling beside its ratio tiers
 # PLAT-STRIDX: string access that is not quadratic in the string's size.
 #
 # gBASIC strings are codepoint-indexed, so a codepoint index has to be

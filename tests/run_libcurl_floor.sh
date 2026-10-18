@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: exclusive -- runs `make clean` to build against the 22.04 libcurl floor
 set -uo pipefail
 
 # gBASIC MUST COMPILE AGAINST THE libcurl OF THE PLATFORM IT SHIPS FOR.

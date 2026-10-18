@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: serial -- measures ticks against a KNOWN 0.80s schedule from outside, so being descheduled reads as coalescing
 # `timer` -- periodic work on the event loop (docs/timer_design.md).
 #
 # WHY IT EXISTS: every other source the loop polls is request-, reply- or

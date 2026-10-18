@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: serial -- holds a server to request and idle-read timeouts on a 1s budget, so a stall becomes a 504 the suite did not ask for
 # PLAT-WEB-3 hardening — the pieces §6 said "actually bite": request and
 # idle-read timeouts (a slow client cannot hold a worker), and
 # smuggling-resistant parsing (a framing this server does not speak is
