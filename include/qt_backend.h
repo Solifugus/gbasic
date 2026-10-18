@@ -357,6 +357,66 @@ int gb_qt_highlight(void *window, const char *name, const char *language,
 char *gb_qt_highlight_language(void *window, const char *name);
 char *gb_qt_highlight_file(void *window, const char *name);
 
+/* ---- DIALOGS (docs/qt_gui_design.md §0.15) ---------------------------------
+ *
+ * A DIALOG OPENS A NESTED EVENT LOOP, which is the entire reason this backend
+ * is arranged the way it is. §5.1 measured both directions and ruled one out
+ * ON THIS CASE: under direction B, gBASIC's own poll does not run for the
+ * dialog's whole life -- a 651 ms gap over a 600 ms dialog, which is a
+ * webserver answering nothing -- while under direction A the sources are served
+ * throughout (4 of 4, three of them during it). So the hazard was priced before
+ * any dialog existed, and `tests/run_qt_loop.sh` keeps that measurement live.
+ *
+ * BUT THE CLAIM IS NARROWER THAN IT READS, and this was measured rather than
+ * assumed. §5.1 is about QT'S loop surviving the nested one, which it does: a
+ * C++ probe in gBASIC's exact arrangement shows the tick firing during a modal
+ * QMessageBox (3 of 3) and able to press its button. WHAT CANNOT HAPPEN is
+ * gBASIC re-entering while the interpreter is suspended inside its own
+ * handler. So:
+ *
+ *   dialog opened OUTSIDE a handler   gBASIC's sources keep running -- a
+ *                                     `timer` fires and can answer the box
+ *   dialog opened FROM a handler      they are SUSPENDED until it is answered
+ *
+ * MEASURED BOTH WAYS through the interpreter: a `timer.every` answers a
+ * confirm raised from `main`, and a `server` block on an OS-assigned port
+ * does NOT answer a request while a confirm raised from a button handler is
+ * up. A modal dialog is therefore modal to the whole PROGRAM and not only to
+ * the window -- which is defensible for a desktop application and surprising
+ * for one that is also a server, so it is stated rather than left to be found.
+ *
+ * THE CONSEQUENCE FOR `gb_qt_answer` IS REAL: it can answer a dialog raised
+ * outside a handler (a timeout, an unattended run, a suite) and CANNOT answer
+ * one raised from a handler, where a person is the only answer.
+ *
+ * THE BOX IS PARENTED TO A WINDOW so Qt centres it there and treats it as modal
+ * to that window, which is why every verb takes one.
+ */
+int gb_qt_dialog_depth(void);
+
+/* A STATEMENT, with one button. Returns 0 and sets `err` only when it could
+ * not be shown at all. */
+int gb_qt_inform(void *window, const char *text, char *err, size_t err_size);
+
+/* A QUESTION, with two. `*answer` is 1 for yes and 0 for no -- a BOOLEAN
+ * rather than a button code, because two buttons is the whole of what this
+ * verb offers and anything richer is a window shown modally, which is a
+ * different thing with its own layout. */
+int gb_qt_confirm(void *window, const char *text, int *answer,
+                  char *err, size_t err_size);
+
+/* ANSWER THE DIALOG THAT IS OPEN, from the program rather than from a person.
+ *
+ * NOT A TEST HOOK, though it is what lets a suite drive one: a dialog that
+ * times out ("closing in ten seconds"), one dismissed because the data under
+ * it changed, and an unattended run all need exactly this -- and `qt.invoke`
+ * is already here on the same argument, exercising a real signal through the
+ * real connection rather than around it.
+ *
+ * REFUSES WHEN NOTHING IS OPEN. The alternative is a silent no-op, which is
+ * the failure class this whole backend is tested against. */
+int gb_qt_answer(int value, char *err, size_t err_size);
+
 void gb_qt_show(void *window);
 
 /* Hands the thread to QApplication::exec(). `tick_ms` is how often gBASIC's

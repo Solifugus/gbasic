@@ -57,6 +57,9 @@
 #include <QTableWidget>
 #include <QFontDatabase>
 #include <QFontMetricsF>
+#include <QMessageBox>
+#include <QPointer>
+#include <QAbstractButton>
 #if HAVE_KSYNTAX
 #include <KSyntaxHighlighting/Definition>
 #include <KSyntaxHighlighting/Repository>
@@ -1657,6 +1660,108 @@ extern "C" int gb_qt_set_display_only(void *window, const char *name, int on,
     return set_property(w, "enabled", QVariant(on == 0), err, err_size);
 }
 
+/* ---- DIALOGS ---------------------------------------------------------------
+ *
+ * ONE STACK, because a dialog can legitimately open over another: a handler
+ * fired from a timer during the first one may ask its own question. Refusing
+ * the second would be a rule about this backend rather than about dialogs.
+ */
+static QVector<QMessageBox *> g_dialogs;   /* innermost last */
+
+/* Defined with `gb_qt_run`, which is the other caller. Declared here because a
+ * dialog arms the same pump and sits above it in the file. */
+static void pump_arm(int tick_ms);
+static void pump_disarm(void);
+
+extern "C" int gb_qt_dialog_depth(void) { return g_dialogs.size(); }
+
+/* The window a box hangs off, or null for an application-level one. Checked
+ * rather than assumed: a caller that passed something else gets a sentence
+ * instead of a box parented to nothing. */
+static QWidget *dialog_parent(void *window, char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !root->widget) {
+        say(err, err_size, "that is not an open window");
+        return nullptr;
+    }
+    return root->widget;
+}
+
+static int show_box(void *window, const char *text, bool ask, int *answer,
+                    char *err, size_t err_size) {
+    QWidget *parent = dialog_parent(window, err, err_size);
+    if (!parent) {
+        return 0;
+    }
+    /* ON THE HEAP AND HELD BY A QPointer, not on the stack. A stack-allocated
+     * QObject GIVEN A PARENT is a double free waiting to happen: the parent
+     * deletes its children, and then the stack unwinds and destroys it again.
+     * The parent is wanted (Qt centres the box on it and makes it modal to
+     * that window), so the ownership has to be the other way round -- and the
+     * QPointer is how we find out whether the parent took it while `exec()`
+     * was running, rather than assuming it did not. */
+    QPointer<QMessageBox> box = new QMessageBox(
+        ask ? QMessageBox::Question : QMessageBox::Information,
+        parent->windowTitle(), QString::fromUtf8(text ? text : ""),
+        ask ? (QMessageBox::Yes | QMessageBox::No) : QMessageBox::Ok,
+        parent);
+    if (ask) {
+        /* THE SAFE ONE IS THE DEFAULT. A question reached by pressing Return
+         * without reading should not be the destructive answer. */
+        box->setDefaultButton(QMessageBox::No);
+    }
+    g_dialogs.append(box.data());
+    /* 50ms IS gBASIC'S OWN POLL TIMEOUT, not a number chosen here: a source
+     * serviced on this timer is serviced exactly as often as it would be with
+     * Qt out of the picture. Harmless when `qt.run()` already armed one -- the
+     * count simply goes deeper. */
+    pump_arm(50);
+    int rc = box->exec();                   /* NESTED EVENT LOOP */
+    pump_disarm();
+    g_dialogs.removeAll(box.data());
+    if (answer) {
+        *answer = (rc == QMessageBox::Yes) ? 1 : 0;
+    }
+    /* ONLY IF IT IS STILL THERE. */
+    if (box) {
+        delete box;
+    }
+    return 1;
+}
+
+extern "C" int gb_qt_inform(void *window, const char *text, char *err,
+                            size_t err_size) {
+    return show_box(window, text, false, nullptr, err, err_size);
+}
+
+extern "C" int gb_qt_confirm(void *window, const char *text, int *answer,
+                             char *err, size_t err_size) {
+    return show_box(window, text, true, answer, err, err_size);
+}
+
+extern "C" int gb_qt_answer(int value, char *err, size_t err_size) {
+    if (g_dialogs.isEmpty()) {
+        say(err, err_size, "no dialog is open");
+        return 0;
+    }
+    QMessageBox *box = g_dialogs.last();
+    /* CLICK THE REAL BUTTON rather than calling done() with a code: the button
+     * is what a person presses, so pressing it exercises the same path and
+     * cannot drift from what the box actually offers. A box with no such
+     * button (an `inform` answered `false`) falls back to its only one, since
+     * "answer it" is the request either way. */
+    QAbstractButton *b = box->button(value ? QMessageBox::Yes : QMessageBox::No);
+    if (!b) {
+        b = box->button(QMessageBox::Ok);
+    }
+    if (!b) {
+        say(err, err_size, "the open dialog has no button to press");
+        return 0;
+    }
+    b->click();
+    return 1;
+}
+
 extern "C" void gb_qt_show(void *window) {
     GbQtNode *n = (GbQtNode *)window;
     if (n && n->widget) {
@@ -1664,27 +1769,54 @@ extern "C" void gb_qt_show(void *window) {
     }
 }
 
+/* gBASIC'S SOURCES RIDE A QT TIMER. Qt owns the wait, so they cannot have a
+ * poll of their own; a Qt timer is serviced inside a NESTED Qt loop exactly as
+ * a QSocketNotifier is, which is the property that makes direction A survive a
+ * modal dialog. Only armed when there is something to service.
+ *
+ * REFERENCE-COUNTED, AND THAT IS NOT TIDINESS -- it is what makes the promise
+ * UNIFORM. The pump used to live inside `gb_qt_run`, so a dialog opened
+ * BEFORE the program handed over the thread had no pump at all: `exec()`
+ * opened a nested loop with nothing servicing gBASIC, so a timer could not
+ * fire and a program could not answer its own dialog. MEASURED -- the first
+ * `qt.confirm` written outside `qt.run()` hung until a 30s timeout. A dialog
+ * arms it too now, so "gBASIC's own work keeps running while a box is up" is
+ * true wherever the box was opened from, rather than only in the arrangement
+ * the pump happened to be written for. */
+static GbQtRelay *g_pump = nullptr;
+static int g_pump_depth = 0;
+
+static void pump_arm(int tick_ms) {
+    if (g_pump_depth++ > 0) {
+        return;                      /* already running, inner loop or dialog */
+    }
+    if (!g_tick || tick_ms <= 0 || !g_app) {
+        return;
+    }
+    g_pump = new GbQtRelay();
+    g_pump->setParent(g_app);
+    QTimer *t = new QTimer(g_pump);
+    QObject::connect(t, &QTimer::timeout, g_pump, &GbQtRelay::tick);
+    t->start(tick_ms);
+}
+
+static void pump_disarm(void) {
+    if (--g_pump_depth > 0) {
+        return;
+    }
+    if (g_pump) {
+        delete g_pump;
+        g_pump = nullptr;
+    }
+}
+
 extern "C" int gb_qt_run(int tick_ms) {
     if (!g_app) {
         return -1;
     }
-    /* gBASIC'S SOURCES RIDE A QT TIMER. Qt owns the wait, so they cannot have
-     * a poll of their own; a Qt timer is serviced inside a NESTED Qt loop
-     * exactly as a QSocketNotifier is, which is the property that makes
-     * direction A survive a modal dialog. Only armed when there is something
-     * to service. */
-    GbQtRelay *pump = nullptr;
-    if (g_tick && tick_ms > 0) {
-        pump = new GbQtRelay();
-        pump->setParent(g_app);
-        QTimer *t = new QTimer(pump);
-        QObject::connect(t, &QTimer::timeout, pump, &GbQtRelay::tick);
-        t->start(tick_ms);
-    }
+    pump_arm(tick_ms);
     int rc = g_app->exec();
-    if (pump) {
-        delete pump;
-    }
+    pump_disarm();
     return rc;
 }
 

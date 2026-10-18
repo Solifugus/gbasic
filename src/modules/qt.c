@@ -2917,6 +2917,123 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
+    /* ---- DIALOGS (§0.15) --------------------------------------------------
+     *
+     * A DIALOG HANGS OFF A WINDOW, which is why each takes one: Qt centres the
+     * box on it and treats it as modal to that window, and a box parented to
+     * nothing appears wherever the platform feels like putting it.
+     *
+     * THE NESTED EVENT LOOP IS THE WHOLE HAZARD AND IT WAS PRICED BEFORE ANY
+     * DIALOG EXISTED. §5.1 ruled out direction B on exactly this case --
+     * gBASIC's own poll does not run for the dialog's life, measured at a
+     * 651ms gap over a 600ms dialog, which is a webserver answering nothing --
+     * while direction A serves the sources throughout. So a `timer`, a
+     * webserver and an actor mailbox all keep running while a box is up, and
+     * that is asserted through the interpreter rather than taken on trust.
+     */
+    if (strcmp(verb, "inform") == 0 || strcmp(verb, "confirm") == 0) {
+        int asking = strcmp(verb, "confirm") == 0;
+        if (argc != 2) {
+            snprintf(message, sizeof(message),
+                     "qt.%s expects a window and a message", verb);
+            qt_raise(message);
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value text = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(text);
+            return value_null();
+        }
+        if (!qt_window_record(&win, verb) || text.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                snprintf(message, sizeof(message),
+                         "qt.%s expects a window and the message as text", verb);
+                qt_raise(message);
+            }
+            value_free(win); value_free(text);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            /* A BOX NEEDS A WINDOW TO HANG OFF, so "window `x` is not open" is
+             * usually the fact to act on -- but NOT when the reason it is not
+             * open is that there is no display, which is the commonest way to
+             * arrive here and the one case where that sentence names the wrong
+             * cause. This tree has recorded that class five times; it costs
+             * three lines to avoid. */
+            if (!gb_qt_can_display()) {
+                snprintf(message, sizeof(message),
+                         "no display is available, so qt.%s has no window to "
+                         "put a dialog on. Guard with qt.can_display()", verb);
+            } else {
+                snprintf(message, sizeof(message), "window `%s` is not open",
+                         wname ? wname : "");
+            }
+            qt_raise(message);
+            value_free(win); value_free(text);
+            return value_null();
+        }
+        err[0] = '\0';
+        int answered = 0;
+        int ok = asking
+            ? gb_qt_confirm(root, text.as.string, &answered, err, sizeof(err))
+            : gb_qt_inform(root, text.as.string, err, sizeof(err));
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.%s: %s", verb,
+                     err[0] ? err : "the dialog could not be shown");
+            qt_raise(message);
+            value_free(win); value_free(text);
+            return value_null();
+        }
+        value_free(win); value_free(text);
+        /* A BOOLEAN, NOT A BUTTON CODE. Two buttons is the whole of what
+         * `confirm` offers; anything richer is a window shown modally, which
+         * is a different thing with a layout of its own. */
+        return asking ? value_bool(answered) : value_bool(1);
+    }
+
+    /* ANSWER THE DIALOG THAT IS OPEN, from the program rather than a person.
+     * Not a test hook, though it is what lets a suite drive one without a
+     * human: a dialog that times out, one dismissed because the data under it
+     * changed, and an unattended run all need it -- and `qt.invoke` is already
+     * here on the same argument. It is only reachable from a `watch` body or a
+     * handler, because that is the only code that runs while a box is up. */
+    if (strcmp(verb, "answer") == 0) {
+        if (argc != 1) {
+            qt_raise("qt.answer expects one value -- true or false");
+            return value_null();
+        }
+        Value v = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(v);
+            return value_null();
+        }
+        /* `value_truthy` REPORTS A REFUSAL rather than guessing: gBASIC
+         * raises on `not unknown` and friends, so a value that has no truth
+         * must say so here instead of being silently read as `false` -- which
+         * on a confirm would be the safe answer by accident rather than by
+         * decision. */
+        int refused = 0;
+        int yes = value_truthy(v, &refused);
+        value_free(v);
+        if (refused || error_action_pending()) {
+            if (!error_action_pending()) {
+                qt_raise("qt.answer expects true or false");
+            }
+            return value_null();
+        }
+        err[0] = '\0';
+        if (!gb_qt_answer(yes, err, sizeof(err))) {
+            snprintf(message, sizeof(message), "qt.answer: %s",
+                     err[0] ? err : "the dialog could not be answered");
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
     if (strcmp(verb, "heading") == 0) {
         if (argc != 3) {
             qt_raise("qt.heading expects a window, a table and a column name");
