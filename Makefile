@@ -435,7 +435,22 @@ LSP_OBJS := src/lsp/main.o src/lsp/rpc.o src/lsp/handlers.o src/lsp/lsp_position
 
 .PHONY: all dev clean install uninstall
 
-all: libgbasic.a gbasic editors/kate/syntax/gbasic.xml
+all: libgbasic.a gbasic $(SYNTAX_LAYOUT)
+
+# ONLY IF THE DEFINITION IS THERE, and that is not caution -- it is a fact
+# about how this tree gets copied. run_regex.sh builds a SECOND tree to force
+# the no-REG_STARTEND path through a real compile, and it copies
+# `src include Makefile stdlib tests third_party` and NOT `editors`; making
+# `all` depend unconditionally on a file under `editors/` meant that tree could
+# not build at all, and the suite reported `the no-REG_STARTEND path does not
+# BUILD` -- a true sentence about something entirely unrelated to regex.
+#
+# NOTHING IS HIDDEN BY THIS. `install` names editors/kate/gbasic.xml directly
+# and fails loudly if it is absent, and run_qt_source.sh's `layout` tier
+# requires the generated copy to exist and to match. What the guard says is
+# that an interpreter should still build in a tree that carries no editor
+# integrations, which is the right priority when somebody asked for make.
+SYNTAX_LAYOUT := $(if $(wildcard editors/kate/gbasic.xml),editors/kate/syntax/gbasic.xml,)
 
 # Build every binary in the tree, including the ones kept out of `all` (the LSP
 # server). This is the routine developer/CI entry point: it guarantees gbasic-lsp
