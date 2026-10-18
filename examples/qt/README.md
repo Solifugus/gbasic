@@ -6,7 +6,7 @@ every `qt.*` verb but `qt.can_display()` raises a clean runtime error, and
 
 | | |
 |---|---|
-| `customer.bas` | the form §2 of `docs/qt_gui_design.md` draws: a `form to edit`, a titled group, and two buttons pushed right by a `stretch` |
+| `customer.bas` | the form §2 of `docs/qt_gui_design.md` draws: a `form to edit` bound to a record **by name**, a titled group, and two buttons pushed right by a `stretch`. Nothing populates a widget and nothing reads one back part by part — the form takes `cust` from the frame that opens it, and the handler asks `qt.subject` for the whole record, with `limit` still money because the field declares `type: {USD}` |
 
 **Running them without a display.** The whole of this works on the offscreen
 platform, which is what `tests/run_qt_backend.sh` uses:

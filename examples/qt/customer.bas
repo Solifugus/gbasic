@@ -39,15 +39,17 @@ window customer( title: "Customer", width: 420 )
 
     end column
 
-    ' A handler is ordinary gBASIC. `qt.read` answers what the widget is
-    ' showing right now, so this is the one place the form's state is read.
+    ' A handler is ordinary gBASIC. `qt.subject` answers the WHOLE record the
+    ' form is working on, read from the widgets at this moment -- so a handler
+    ' says `saving` once rather than naming every part it wants back.
     on save.clicked
+        edited = qt.subject(customer, "cust")
         print "saving:"
-        print "  account " + qt.read(customer, "id")
-        print "  name    " + qt.read(customer, "name")
-        print "  email   " + qt.read(customer, "email")
-        print "  limit   " + qt.read(customer, "limit")
-        print "  on hold " + qt.read(customer, "hold")
+        print "  account " + edited.id
+        print "  name    " + edited.name
+        print "  email   " + edited.email
+        print "  limit   " + string(edited.limit) + " (" + type(edited.limit) + ")"
+        print "  on hold " + string(edited.hold) + " (" + type(edited.hold) + ")"
         qt.stop()
     end on
 
@@ -65,23 +67,19 @@ program main()
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
     else
+        ' THE SUBJECT, AND NOTHING ELSE TO WIRE. Both forms above say
+        ' `form to edit cust`, and a field named `email` takes `cust.email` --
+        ' the binding IS the name. `qt.open` reads `cust` from this frame, so
+        ' the record only has to be in scope here.
+        '
+        ' NOTE `limit` IS MONEY, not text: the field declares `type: {USD}`, so
+        ' it is shown in gBASIC's own words and comes back as money rather than
+        ' as the digits somebody typed.
         cust = { id: "A-1041", name: "Ada Lovelace",
-                 email: "ada@example.com", limit: "2500.00", hold: false }
+                 email: "ada@example.com", limit: {USD}"2500.00",
+                 hold: false }
 
         qt.open(customer)
-
-        ' POPULATION IS THE PROGRAM'S, for now. `show:`/`edit:` name a place to
-        ' read in the frame where the subject lives, so the declaration records
-        ' them by name and not by value -- which means a backend cannot read
-        ' them out of the record. The watcher pair that makes `form to edit`
-        ' genuinely two-way is the next increment; see
-        ' docs/qt_gui_design.md §0.4.
-        qt.write(customer, "id",    cust.id)
-        qt.write(customer, "name",  cust.name)
-        qt.write(customer, "email", cust.email)
-        qt.write(customer, "limit", cust.limit)
-        qt.write(customer, "hold",  cust.hold)
-
         qt.run()
     end if
 end program
