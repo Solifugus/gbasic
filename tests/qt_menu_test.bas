@@ -87,6 +87,23 @@ program main()
     check("a boolean reads back AS a boolean",
           type(qt.read(app, "wrap_it", "checked")), "boolean")
 
+    ' ------------------------------------------------- THE NESTING ORACLE
+    ' AN ITEM KEEPS ITS NAME WHEREVER ITS MENU ENDS UP, so every check above
+    ' passes on a backend that hung `Recent` off the BAR instead of off `File`
+    ' -- measured, that perturbation produced ZERO mismatches and nothing in
+    ' this file could tell `File > Recent` from `File` and `Recent` side by
+    ' side. The bar's own captions are the only thing that can.
+    '
+    ' AS A LIST, so it pins the COUNT and the ORDER too: a submenu that escaped
+    ' appears as a third entry, and two menus that swapped appear reordered.
+    bar = qt.menus(app)
+    check("the bar holds exactly the two menus declared at the top level",
+          len(bar), 2)
+    check("in declaration order", bar[0], "File")
+    check("and the second is its own", bar[1], "Edit")
+    check("a SUBMENU is not on the bar, which is what says it is nested",
+          contains(bar, "Recent"), false)
+
     ' -------------------------------------------------------- THE MENU BAR
     ' A MENU IS NOT LAID OUT, so a window holding only menus and a column must
     ' still lay the column out -- the bar is inserted at the top of the

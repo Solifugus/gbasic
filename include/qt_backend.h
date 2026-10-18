@@ -168,6 +168,16 @@ void *gb_qt_menu_item(void *window, void *menu, const char *name,
                       const char *label, char *err, size_t err_size);
 int gb_qt_menu_separator(void *menu, char *err, size_t err_size);
 
+/* THE BAR'S OWN TOP-LEVEL MENUS. THE REASON IS AN ORACLE: without it, SUBMENU
+ * NESTING IS UNASSERTABLE. An item keeps its name wherever its menu ends up, so
+ * a submenu hung off the BAR instead of off its parent passes every check there
+ * is -- measured, that perturbation produced ZERO mismatches. The captions are
+ * the only thing that can tell `File > Recent` from `File` and `Recent` side by
+ * side, and they pin the ORDER too. Same shape as the table's heading oracle,
+ * found the same way. */
+int gb_qt_menu_count(void *window);
+char *gb_qt_menu_title(void *window, int index);
+
 /* A TABLE. ITS PARTS ARE COLUMNS, NOT WIDGETS (§7), so it is built in ONE call
  * from the declaration's whole `field` list rather than by the part walk that
  * every other container uses -- a column has no widget of its own, and handing

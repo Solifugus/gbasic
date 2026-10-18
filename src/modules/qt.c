@@ -1431,6 +1431,61 @@ static Value qt_eval_call(AstExpr *expr) {
      * is the signature of a check that cannot separate them. If both were
      * permuted the same way, every value would sit under the wrong heading and
      * nothing would notice. Agreement is not correctness (PLAT-NUMFMT). */
+    /* THE MENU BAR'S OWN TOP-LEVEL CAPTIONS, as a list. THE REASON IS AN
+     * ORACLE and it was found by perturbation rather than by design: an item
+     * keeps its name wherever its menu ends up, so a SUBMENU hung off the bar
+     * instead of off its parent passed EVERY check in the fixture -- measured,
+     * zero mismatches. Nothing could tell `File > Recent` from `File` and
+     * `Recent` side by side.
+     *
+     * THE CAPTIONS ARE WHAT DISTINGUISHES THEM, and as a list they pin the
+     * COUNT and the ORDER as well -- a submenu that escaped shows up as a
+     * third entry, and two menus that swapped show up reordered. Same shape as
+     * `qt.heading` one directive over, found the same way. */
+    if (strcmp(verb, "menus") == 0) {
+        if (argc != 1) {
+            qt_raise("qt.menus expects a window");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(win);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "menus")) {
+            value_free(win);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win);
+            return value_null();
+        }
+        value_free(win);
+        int n = gb_qt_menu_count(root);
+        if (n < 0) {
+            qt_raise("qt.menus: that window has no menu bar to read");
+            return value_null();
+        }
+        /* AN EMPTY ARRAY FOR A WINDOW WITH NO MENUS, not a refusal: a window
+         * without a menu bar is ordinary, and "there are none" is the honest
+         * answer to the question that was asked. */
+        Value *titles = n ? malloc(sizeof(Value) * (size_t)n) : NULL;
+        if (n && !titles) {
+            abort();
+        }
+        for (int i = 0; i < n; i++) {
+            char *t = gb_qt_menu_title(root, i);
+            titles[i] = value_string(t ? t : "");
+            free(t);
+        }
+        return value_array(titles, (size_t)n);
+    }
+
     /* THE APPLICATION'S THEME. One argument SETS it, none READS it back.
      *
      * PER-WIDGET STYLING ALREADY WORKED and this is deliberately not that:

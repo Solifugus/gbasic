@@ -828,6 +828,39 @@ extern "C" int gb_qt_menu_separator(void *menu, char *err, size_t err_size) {
     return 1;
 }
 
+extern "C" int gb_qt_menu_count(void *window) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !root->widget) {
+        return -1;
+    }
+    QMenuBar *bar = root->widget->findChild<QMenuBar *>(
+        QString(), Qt::FindDirectChildrenOnly);
+    if (!bar) {
+        return 0;   /* a window with no menus has a bar with none, not an error */
+    }
+    return (int)bar->actions().size();
+}
+
+extern "C" char *gb_qt_menu_title(void *window, int index) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !root->widget) {
+        return nullptr;
+    }
+    QMenuBar *bar = root->widget->findChild<QMenuBar *>(
+        QString(), Qt::FindDirectChildrenOnly);
+    if (!bar || index < 0 || index >= bar->actions().size()) {
+        return nullptr;
+    }
+    QByteArray bytes = bar->actions().at(index)->text().toUtf8();
+    char *out = (char *)malloc((size_t)bytes.size() + 1);
+    if (!out) {
+        return nullptr;
+    }
+    memcpy(out, bytes.constData(), (size_t)bytes.size());
+    out[bytes.size()] = '\0';
+    return out;
+}
+
 extern "C" void *gb_qt_table(void *parent, const char *name,
                              const char *const *headers, int columns,
                              char *err, size_t err_size) {

@@ -524,8 +524,8 @@ if grep -q MISMATCH "$work/m.out"; then
 else
     pass "$mchecks checks, 0 mismatches"
 fi
-if [ "${mchecks:-0}" -ge 15 ]; then
-    pass "and it really ran them ($mchecks >= 15)"
+if [ "${mchecks:-0}" -ge 19 ]; then
+    pass "and it really ran them ($mchecks >= 19)"
 else
     fail "only $mchecks menu checks ran -- the fixture stopped early"
 fi
