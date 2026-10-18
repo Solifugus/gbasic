@@ -6448,11 +6448,19 @@ sum over the loop variable and **every one** of the 22 is
 and `max` all existed already and simply could not be pointed at data, because
 nothing in the language could name a field across a list.
 
-- **A missing field is `unknown` for that element**, matching what `r.amont`
-  already does on a record, and the element is **kept** — so the projection is
-  always the same length as the array. Raising instead would make a projection
-  unusable on real business data, where a row legitimately lacks a value; what
-  an aggregate then does with the absence is the aggregate's rule.
+- **A missing field is `unknown` for that element**, and the element is **kept**
+  — so the projection is always the same length as the array. Raising instead
+  would make a projection unusable on real business data, where a row
+  legitimately lacks a value; what an aggregate then does with the absence is
+  the aggregate's rule.
+
+  **This is not what a scalar read does, and the difference is deliberate.**
+  A scalar `r.amont` *raises* `unknown record field` — naming one field of one
+  record is a specific claim about a specific record, so being wrong about it
+  is a mistake, where reading one field across a thousand rows is bulk access
+  over data that legitimately has holes. (This bullet claimed the two matched
+  until 2026-10-18, when the claim was measured while building Qt form
+  binding, which had copied it.)
 - **A non-record element raises and names the index** — that is a shape error
   rather than missing data, so a list accidentally built from numbers says which
   element broke it.

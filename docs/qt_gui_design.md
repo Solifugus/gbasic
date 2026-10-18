@@ -318,12 +318,25 @@ rule.
 
 **A correction worth keeping**, because it was written into the code and the
 docs before being measured: the quiet behaviour was justified as "the same
-answer `r.missing` gives on a record". It is not. `r.missing` **raises**
-`unknown record field`; it does not answer `unknown`. The behaviour is right for
-the reason above and not for that one — and the same measurement is why the
-fixture's gather checks are guarded with `has`, since a fold that visited only
-the first form would leave a field absent and raise, killing the fixture and
-hiding the mismatch that had already named the problem.
+answer `r.missing` gives on a record". It is not — `r.missing` **raises**
+`unknown record field`.
+
+What it does match is a **projection**: `rows.amount` answers `unknown` for a
+row that lacks the field, because raising would make projection unusable on real
+business data, which legitimately has holes. A form populating a dozen fields is
+that situation, not the scalar one. So the behaviour is right and the analogy
+was simply pointed at the wrong half of the language.
+
+**The same false sentence was already in the tree**, in `eval.c`'s own
+projection comment and in `docs/reference.md`'s projection bullet — "matching
+what `r.amont` already does on a record" — where it had sat since projection
+shipped. Both corrected, and `run_projection.sh` now asserts the difference as a
+pair, so it cannot drift back.
+
+And the same measurement is why this increment's gather checks are guarded with
+`has`: a fold that visited only the first of two forms leaves a field absent,
+and reading it raises — killing the fixture and hiding the mismatch it had
+already computed.
 
 A `type:` that refuses what was typed reports **the modifier's own sentence**,
 which is the cause, and that sentence **does not name the part** — so with

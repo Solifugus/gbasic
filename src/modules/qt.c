@@ -517,9 +517,16 @@ static int qt_bind_form(void *root, Value *form, const char *window_name) {
              * the record it is there. A "new customer" form has every field
              * absent until somebody types.
              *
-             * NOT because it matches the language -- a claim written here
+             * NOT because it matches a SCALAR read -- a claim written here
              * first and MEASURED FALSE: `r.missing` on a record RAISES
-             * `unknown record field`, it does not answer `unknown`.
+             * `unknown record field`. What it does match is a PROJECTION,
+             * where `rows.amount` answers `unknown` for a row that lacks the
+             * field, for the reason stated there: raising would make it
+             * unusable on real business data, which legitimately has holes.
+             * A form populating a dozen fields is that situation and not the
+             * scalar one. (The same false sentence was in `eval.c`'s own
+             * projection comment and in the reference; both corrected, and
+             * run_projection.sh now asserts the difference.)
              *
              * THE COST IS SHARPER THAN "NOT CAUGHT" AND IS PINNED BY A CHECK
              * IN THE FIXTURE: a MISSPELLED part name leaves the intended field

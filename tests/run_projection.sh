@@ -79,6 +79,24 @@ want() {
 # one that broke it.
 want 'non-record element named' 'rows = [ { a: 1 }, 7 ]
 print rows.a'                   'element 1 is a number'
+# A PROJECTION IS LENIENT WHERE A SCALAR READ IS NOT, asserted as a DIFFERENCE
+# because the comment above this function and the reference bullet beside it
+# BOTH claimed the two matched -- "a missing field is unknown for that element,
+# matching what `r.amont` already does on a record" -- which is false, and was
+# false in writing for as long as projection has existed. A scalar read RAISES.
+#
+# THE BEHAVIOUR WAS NEVER WRONG, only its justification, and the distinction is
+# worth keeping: naming ONE field of ONE record is a specific claim about a
+# specific record, so being wrong about it is a mistake, where reading one field
+# across a thousand rows is bulk access over data that legitimately has holes.
+#
+# PINNED HERE SO THE CLAIM CANNOT DRIFT BACK. Measured 2026-10-18 while
+# building Qt form binding, which had copied the same false sentence into its
+# own code, its design doc and a commit message.
+want 'a scalar read of an absent field RAISES' 'r = { a: 1 }
+print r.b'                      'unknown record field: b'
+want 'CONTROL: the same absence in a projection does NOT' 'rows = [ { a: 1 }, { z: 9 } ]
+print is_unknown(rows.a[1])'    'true'
 # THE FIVE MUTATORS STILL REFUSE, and the sentence is about the right subject:
 # before this they reached `resolve_lvalue_ref` and said `field assignment
 # target expects a record`, naming the one thing that is NOT wrong, since `rows`

@@ -42514,11 +42514,20 @@ static Value eval_expr(AstExpr *expr) {
          * argument than the enumeration the record/modifier classifier rests
          * on, which had to survey the record forms.
          *
-         * A MISSING FIELD YIELDS `unknown` FOR THAT ELEMENT, matching what
-         * `r.amont` already does on a record -- the alternative, raising, would
-         * make a projection unusable on real business data, where a row
-         * legitimately lacks a value. What an aggregate then does with the
-         * absence is the aggregate's rule, not this one's.
+         * A MISSING FIELD YIELDS `unknown` FOR THAT ELEMENT, because the
+         * alternative -- raising -- would make a projection unusable on real
+         * business data, where a row legitimately lacks a value. What an
+         * aggregate then does with the absence is the aggregate's rule, not
+         * this one's.
+         *
+         * NOT because it matches a scalar read. This comment said "matching
+         * what `r.amont` already does on a record" and that is FALSE, measured
+         * 2026-10-18: a scalar `r.amont` RAISES `unknown record field`. The
+         * two DIFFER, deliberately and for a reason worth keeping -- naming
+         * ONE field of ONE record is a specific claim about a specific record,
+         * so being wrong about it is a mistake, where reading one field across
+         * a thousand rows is bulk access over data that legitimately has
+         * holes. The behaviour here is right; the justification was not.
          *
          * A NON-RECORD ELEMENT RAISES AND NAMES THE INDEX, because that is a
          * shape error rather than missing data, and `rows.amount` over a list
