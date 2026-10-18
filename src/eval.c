@@ -9791,13 +9791,16 @@ static void search_directory_for_library(const char *dir_path,
  *
  * Computed once. The answer cannot change during a run: /proc/self/exe is
  * fixed at exec, and a spawned actor re-execs and computes its own. */
-const char *gb_exe_relative_stdlib(void) {
-    static char resolved[PATH_MAX];
-    static int computed = 0;
-    if (computed) {
-        return resolved[0] ? resolved : NULL;
-    }
-    computed = 1;
+/* <prefix>/bin/gbasic -> <prefix>/share/gbasic/<subdir>, if it is a directory.
+ *
+ * SHARED BY TWO CALLERS, and that is the point rather than tidiness: the
+ * stdlib found its way here first, and when the Qt `source` widget needed the
+ * same answer for its syntax definitions the obvious move was a second copy of
+ * this walk -- two representations of one layout, which drift, and which this
+ * tree tripwires against wherever it has them. One walk, a subdirectory
+ * argument, a cache per caller. */
+static const char *gb_exe_relative_share(const char *subdir, char *resolved,
+                                         size_t resolved_size) {
     resolved[0] = '\0';
 
     char exe[PATH_MAX];
@@ -9820,9 +9823,10 @@ const char *gb_exe_relative_stdlib(void) {
     *slash = '\0';
 
     char candidate[PATH_MAX];
-    int written = snprintf(candidate, sizeof candidate,
-                           "%s/share/gbasic/stdlib", exe);
-    if (written < 0 || (size_t)written >= sizeof candidate) {
+    int written = snprintf(candidate, sizeof candidate, "%s/share/gbasic/%s",
+                           exe, subdir);
+    if (written < 0 || (size_t)written >= sizeof candidate ||
+        (size_t)written >= resolved_size) {
         return NULL;
     }
 
@@ -9832,6 +9836,40 @@ const char *gb_exe_relative_stdlib(void) {
     }
     memcpy(resolved, candidate, (size_t)written + 1);
     return resolved;
+}
+
+const char *gb_exe_relative_stdlib(void) {
+    static char resolved[PATH_MAX];
+    static int computed = 0;
+    if (!computed) {
+        computed = 1;
+        gb_exe_relative_share("stdlib", resolved, sizeof resolved);
+    }
+    return resolved[0] ? resolved : NULL;
+}
+
+/* THE SAME ANSWER FOR SYNTAX DEFINITIONS, and it exists because of what a
+ * RELEASE ARTIFACT is: tools/build-release-tarball.sh says in as many words
+ * that the tree is "relocatable by construction" and runs where it is
+ * unpacked, which works because the stdlib is found relative to the binary
+ * rather than at the absolute path baked in at build time. A baked-in
+ * GBASIC_DEFAULT_SYNTAX alone would have pointed a download at
+ * /usr/local/share/gbasic/syntax-highlighting -- a path that does not exist
+ * where the tarball was extracted -- so the file would have been IN THE
+ * ARCHIVE and unreachable by the binary beside it. MEASURED both ways: a moved
+ * tree answers `gBASIC` from its own path with this, and `applied=none` with
+ * it removed. That exact shape has been reported from outside this project
+ * three times (run_library_tiers.sh's own note), which is why it was looked
+ * for here rather than discovered. */
+const char *gb_exe_relative_syntax(void) {
+    static char resolved[PATH_MAX];
+    static int computed = 0;
+    if (!computed) {
+        computed = 1;
+        gb_exe_relative_share("syntax-highlighting", resolved,
+                              sizeof resolved);
+    }
+    return resolved[0] ? resolved : NULL;
 }
 
 /* ARE THESE TWO PATHS THE SAME FILE? Not the same STRING -- one route to a

@@ -2196,6 +2196,15 @@ static Value qt_eval_call(AstExpr *expr) {
             if (syn && *syn) {
                 gb_qt_syntax_path(syn);
             }
+            /* RELATIVE TO THE BINARY BEFORE THE BAKED-IN PATH, which is
+             * what a DOWNLOAD needs: a release tarball is relocatable and runs
+             * where it is unpacked, so the absolute path compiled in at build
+             * time names a directory that is not there. Same resolver the
+             * stdlib uses, for the same reason. */
+            const char *near = gb_exe_relative_syntax();
+            if (near) {
+                gb_qt_syntax_path(near);
+            }
 #ifdef GBASIC_DEFAULT_SYNTAX
             gb_qt_syntax_path(GBASIC_DEFAULT_SYNTAX);
 #endif
