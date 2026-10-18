@@ -142,8 +142,30 @@ program main()
     check("and the second's is its own", qt.heading(ledger, "orders", "who"),
           "Customer")
     check("and the third's", qt.heading(ledger, "orders", "total"), "Total")
-    ' THE PAIRING IS THE ASSERTION: the caption over the column that holds
-    ' `who` must be `who`'s label, which a permuted mapping cannot satisfy.
+    ' AND THE TWO WAYS OF ASKING MUST AGREE, which is the half that makes this
+    ' an oracle rather than a restatement. By NAME the caption is found through
+    ' the same resolution `qt.cell` uses, so a PERMUTED resolution answers both
+    ' consistently and neither can witness it; by POSITION the header is read
+    ' in the order the declaration wrote it. Requiring agreement pins the
+    ' name-to-column mapping against something that does not depend on it.
+    '
+    ' MEASURED: with only the by-name form, the two perturbations above gave
+    ' identical output and this tier added nothing.
+    check("asking by name and by position agree for column 0",
+          qt.heading(ledger, "orders", "placed") = qt.heading(ledger, "orders", 0),
+          true)
+    check("and for column 1",
+          qt.heading(ledger, "orders", "who") = qt.heading(ledger, "orders", 1),
+          true)
+    check("and for column 2",
+          qt.heading(ledger, "orders", "total") = qt.heading(ledger, "orders", 2),
+          true)
+    ' AND THE CAPTIONS COME FROM THE DECLARATION ITSELF, read back as data --
+    ' so the expected text is not a literal somebody could edit to match.
+    cols = ledger.items[0].items[0].items
+    check("the captions are the declaration's own labels, in its own order",
+          qt.heading(ledger, "orders", 0) = cols[0].options.label and
+          qt.heading(ledger, "orders", 2) = cols[2].options.label, true)
     check("so `Customer` sits over the customer, not over the date",
           qt.heading(ledger, "orders", "who") = "Date", false)
 

@@ -3841,6 +3841,10 @@ end program
 | `qt.read(win, name)` | the text a part is showing (`"true"`/`"false"`for a check box) |
 | `qt.read(win, name, property)` | one named Qt property of that part, **in the kind Qt declares it** — `readOnly` answers a boolean, `maxLength` a number. A property the widget does not carry is refused by name, as it is when set |
 | `qt.write(win, name, value)` | show a value, rendered exactly as `print` would render it |
+| `qt.selected(win, table)` | which row a person has chosen, as an **index** so it composes with the list the program holds; `unknown` when none is — not `-1` and not `0`, both of which are valid-looking indices |
+| `qt.select(win, table, row)` | choose a row from the program, for a window that opens with one highlighted; `unknown` chooses nothing |
+| `qt.cell(win, table, row, column)` | one cell, addressed by the **column's own name** rather than its position |
+| `qt.heading(win, table, column)` | a column's caption, by its name **or** its position |
 | `qt.subject(win, name)` | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
 | `qt.invoke(win, name, method)` | call a widget method by name — `click`, `clear`, `setFocus` |
 | `qt.run()` | hand the thread to Qt's event loop. gBASIC's own sources (a webserver, transfers, timers, the actor inbox) keep being serviced |
@@ -3864,6 +3868,25 @@ misspelled part changes nothing.
 typing — a field is read-only, a check box disabled — because the alternative is
 a silent discard: someone types, nothing complains, and nothing ever reports it.
 And only an `edit` form's record follows its widgets through `qt.subject`.
+
+**A table shows a list.** `table orders to show lines` takes an array of
+records; each `field` is a *column* read from every element, captioned by its
+`label:`. A table is **named** where a form is not, because a form's parts are
+addressed by their own names while a table shows many rows — so the table itself
+is what a handler and `qt.selected` address. Its parts are therefore all
+`field`, and anything else is refused.
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+table orders to show lines
+    field placed( label: "Date" )
+    field total(  label: "Total", type: {USD} )
+end table
+```
+
+`to show` makes the cells uneditable while leaving the table **selectable** —
+choosing a row is reading, not editing. An element that is not a record is
+refused and the index named, the same way a projection reports it.
 
 **The fold keeps each field's kind.** A widget holds text, so folding back
 blindly would turn `{ id: 42 }` into `{ id: "42" }`. The kind comes from

@@ -236,8 +236,9 @@ the **import**, taking the whole program with it — the shrink
   recorded by name and not by value (§0.2), so it cannot be acted on. What
   shipped is the **form-level** binding, which needs no value from the
   declaration because the binding is the *name*.
-- **`tabs`, `cells` and `table`** are not in the validated vocabulary, so there
-  is nothing to render; and the **data-driven builder** (§4) is unstarted.
+- **`tabs` and `cells`** are not in the validated vocabulary, so there is
+  nothing to render; and the **data-driven builder** (§4) is unstarted.
+  (`table` shipped 2026-10-18 — §0.6.)
 - **A nested container inside a form does not bind.** A `form` holding a `row`
   holding fields binds only the form's direct children, deliberately: binding
   through the layout would make the record's shape depend on how the form is
@@ -355,6 +356,68 @@ argument is that an access-only tier must not become "valgrind is off". The
 gBASIC-side allocations this increment adds (the handler shells and their minted
 names) **are** covered, by `run_window.sh`'s existing valgrind tier, which
 parses every window fixture without opening one.
+
+## 0.6 `table` (2026-10-18)
+
+Shipped: `table orders to show lines`, §7's own spelling, with `qt.selected`,
+`qt.select`, `qt.cell` and `qt.heading`.
+
+**The spelling was priced before it was built**, which is what let the design's
+wording be used rather than a nameless `table to show lines`. A *named*
+container carrying a subject is new grammar and costs **zero conflicts** — `TO`
+is a hard keyword, so after `IDENT IDENT` one token of lookahead separates it
+from the named leaf's `LPAREN`. Measured before and after, against this
+project's standing assertion of zero.
+
+**A table is named and a form is not**, refused both ways. The difference is
+real rather than a spelling: a form's parts are addressed by their own names,
+where a table shows many rows, so `qt.read(win, "placed")` could not say which.
+The table itself is what a handler and `qt.selected` address — which also meant
+widening the load-time **name registry**, since only leaves registered a name
+and `on orders.<signal>` on a perfectly real table was refused as naming
+nothing in the window.
+
+**A show table needs a third answer for display-only.** A `QTableWidget` has no
+`readOnly`, and *disabling* it would stop a person choosing a row — which is
+reading, not editing. `editTriggers` says exactly what is meant.
+
+### The oracle, and the reversal that produced it
+
+Two perturbations — "every column reads the first field" and "a cell ignores the
+column name and reads column 0" — produced **identical output**, which is the
+signature of checks that cannot separate two defects. Population and `qt.cell`
+both map a column to a name, and every check read cells through the same by-name
+route that wrote them; permute both the same way and every value sits under the
+wrong heading with nothing to notice. *Agreement is not correctness.*
+
+The caption is the independent oracle, because it comes from `label:` while a
+cell's data comes from `name` — two different sources in the declaration. So
+`qt.heading` exists, which **reverses a decision taken an hour earlier**: a
+heading reader was rejected on the grounds that a program which set a caption
+already knows it. That was the wrong test to apply.
+
+It is only an oracle because it can be asked **by position as well as by name**.
+Asked by name it goes through the same resolution `qt.cell` uses, so a permuted
+resolution answers both consistently; asked by position it reads the header in
+declaration order. Requiring the two to agree is what pins the mapping — and
+with only the by-name form, the two perturbations above still gave identical
+output.
+
+**It caught a real defect on its first run.** A leaf's `label:` lives in
+`options`, where the top-level `label` field carries the `group "Credit"` string
+form instead, so the header extraction read the wrong place and silently fell
+back to the field's *name*: the table was captioned `placed`/`who`/`total`
+rather than `Date`/`Customer`/`Total`. A plausible header row, and every other
+check passed.
+
+### Known costs, stated
+
+`QTableWidget` materialises every row, so this is not the path for the
+million-row case `run_datagrid.sh` proves with a native row model — that is a
+model behind `QTableView`, not a bigger version of this. Click-to-sort is off
+deliberately: sorting the view while the subject keeps its own order would make
+one row index mean two different rows. A row cannot be added or removed from the
+view, so the fold writes over the capture row for row.
 
 ---
 

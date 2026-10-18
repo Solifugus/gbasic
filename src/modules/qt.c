@@ -1356,10 +1356,10 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         if (!qt_window_record(&win, "heading") || which.kind != VALUE_STRING ||
-            colv.kind != VALUE_STRING) {
+            (colv.kind != VALUE_STRING && colv.kind != VALUE_NUMBER)) {
             if (!error_action_pending()) {
-                qt_raise("qt.heading expects the table's name and the column's "
-                         "name as text");
+                qt_raise("qt.heading expects the table's name as text and the "
+                         "column's name, or its position as a number");
             }
             value_free(win); value_free(which); value_free(colv);
             return value_null();
@@ -1380,11 +1380,24 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win); value_free(which); value_free(colv);
             return value_null();
         }
-        int col = qt_table_column(table, colv.as.string);
+        /* BY NAME **OR** BY POSITION, and the second form is what makes the
+         * first an oracle rather than a restatement. Asked by NAME this goes
+         * through `qt_table_column`, which is the same resolution `qt.cell`
+         * uses -- so a PERMUTED resolution answers both consistently and
+         * neither can witness it. Asked by POSITION it reads the header
+         * directly, in the order the declaration wrote it, so requiring the
+         * two forms to AGREE for every column pins the name-to-column mapping
+         * against something that does not depend on it. MEASURED: with only
+         * the by-name form, two different perturbations gave identical output
+         * and the tier added nothing. */
+        int col = (colv.kind == VALUE_NUMBER)
+                      ? (int)colv.as.num.value
+                      : qt_table_column(table, colv.as.string);
         if (col < 0) {
             snprintf(message, sizeof(message),
                      "qt.heading: table `%s` has no `%s` column",
-                     which.as.string, colv.as.string);
+                     which.as.string,
+                     colv.kind == VALUE_STRING ? colv.as.string : "that");
             qt_raise(message);
             value_free(win); value_free(which); value_free(colv);
             return value_null();

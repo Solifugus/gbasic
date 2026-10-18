@@ -774,24 +774,6 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
                       "window: '%s' takes no name; only a table is named, "
                       "because its parts are columns rather than widgets", word);
         }
-        /* A TABLE'S PARTS ARE COLUMNS, so every one must be a `field` -- §7's
-         * own decision, and the saving is that `field` already means "one value
-         * of the subject". A `button` among them would be a widget in a place
-         * that holds values, which lays out as nothing an author recognises. */
-        if (strcmp(word, "table") == 0) {
-            for (size_t i = 0; i < item->entries.count; i++) {
-                const AstWindowItem *part = item->entries.items[i];
-                if (part->kind == AST_WINDOW_HANDLER) {
-                    continue;
-                }
-                if (!part->word || strcmp(part->word, "field") != 0) {
-                    win_error(chk, part->line, part->column,
-                              "window: a table's parts are columns, so they are "
-                              "all `field` -- '%s' is not one",
-                              part->word ? part->word : "?");
-                }
-            }
-        }
         /* A NAMED CONTAINER REGISTERS ITS NAME TOO. Only leaves did, so
          * `on orders.activated` on a perfectly real table would have been
          * refused as naming nothing in the window -- the refusal that exists
@@ -810,6 +792,59 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
                 names[*name_count] = item->name;
                 *name_count = *name_count + 1;
             }
+        }
+        /* A TABLE'S PARTS ARE COLUMNS, so every one must be a `field` -- §7's
+         * own decision, and the saving is that `field` already means "one value
+         * of the subject". A `button` among them would be a widget in a place
+         * that holds values, which lays out as nothing an author recognises.
+         *
+         * AND A COLUMN'S NAME BELONGS TO ITS TABLE, NOT TO THE WINDOW, which
+         * is a correction the first runnable example produced immediately: a
+         * screen listing orders and showing the chosen one is the commonest
+         * shape there is, and BOTH want a `who` and a `total` -- the list's
+         * are columns, the form's are widgets. With the columns registered
+         * window-wide that example was refused as declaring `who` twice, which
+         * is a true sentence about a program with nothing wrong with it.
+         *
+         * So the columns are checked HERE (named, unique within their own
+         * table) and the recursion that would register them window-wide is
+         * skipped. `qt.cell(win, "orders", r, "who")` addresses one, which is
+         * a column of a named table rather than a thing in the window. */
+        if (strcmp(word, "table") == 0) {
+            const char *seen[64];
+            size_t seen_count = 0;
+            for (size_t i = 0; i < item->entries.count; i++) {
+                const AstWindowItem *part = item->entries.items[i];
+                if (part->kind == AST_WINDOW_HANDLER) {
+                    continue;
+                }
+                if (!part->word || strcmp(part->word, "field") != 0) {
+                    win_error(chk, part->line, part->column,
+                              "window: a table's parts are columns, so they are "
+                              "all `field` -- '%s' is not one",
+                              part->word ? part->word : "?");
+                    continue;
+                }
+                if (!part->name) {
+                    win_error(chk, part->line, part->column,
+                              "window: a table's column needs a name -- it is "
+                              "the field of the subject this column shows");
+                    continue;
+                }
+                for (size_t j = 0; j < seen_count; j++) {
+                    if (strcmp(seen[j], part->name) == 0) {
+                        win_error(chk, part->line, part->column,
+                                  "window: table '%s' shows '%s' twice, so two "
+                                  "columns would hold one field", item->name,
+                                  part->name);
+                        break;
+                    }
+                }
+                if (seen_count < 64) {
+                    seen[seen_count++] = part->name;
+                }
+            }
+            return;   /* columns are not window-wide names */
         }
         win_check_items(chk, &item->entries, window_subject, names, name_count,
                         name_cap);

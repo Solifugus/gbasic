@@ -421,6 +421,69 @@ end window
 EOF
 refuse "a part that is not a field is refused inside a table" "a table's parts are columns"
 
+# A COLUMN'S NAME BELONGS TO ITS TABLE, NOT TO THE WINDOW -- a correction the
+# first runnable example produced immediately, and the control matters more than
+# the refusal here. A screen that LISTS orders and SHOWS the chosen one is the
+# commonest shape there is, and both halves want a `who` and a `total`: the
+# list's are columns, the form's are widgets. With columns registered
+# window-wide that program was refused as declaring `who` twice, which is a
+# true sentence about a program with nothing wrong with it.
+src table_column_scope <<'EOF'
+window w( title: "x" )
+    column
+        table lines_view to show lines
+            field who(   label: "Customer" )
+            field total( label: "Total" )
+        end table
+        form to show chosen
+            field who(   label: "Customer" )
+            field total( label: "Total" )
+        end form
+    end column
+    on lines_view.itemSelectionChanged
+        print "chosen"
+    end on
+end window
+program main()
+    print "ACCEPTED"
+end program
+EOF
+got=$(out_of "$written")
+if printf '%s' "$got" | grep -qF 'ACCEPTED'; then
+    pass "CONTROL: a table and a form may show the same field names"
+else
+    printf '    %s\n' "$(printf '%s' "$got" | head -2)"
+    fail "a table's column names leaked into the window's namespace"
+fi
+
+# AND THE TABLE'S OWN NAME IS STILL WINDOW-WIDE, which the control above also
+# proves (its handler resolves) -- asserted separately because scoping the
+# columns is one `return` away from scoping the table with them, and that makes
+# every table handler unreachable.
+src table_handler_unknown <<'EOF'
+window w( title: "x" )
+    table lines_view to show lines
+        field who( label: "Customer" )
+    end table
+    on who.itemSelectionChanged
+        print "no"
+    end on
+end window
+EOF
+refuse "a handler naming a COLUMN is refused, since a column is not addressable" "names nothing in this window"
+
+# TWO COLUMNS SHOWING ONE FIELD is a mistake with no sensible reading: both
+# would hold the same value and `qt.cell` could not say which was meant.
+src table_dup_column <<'EOF'
+window w( title: "x" )
+    table lines_view to show lines
+        field who( label: "Customer" )
+        field who( label: "Also customer" )
+    end table
+end window
+EOF
+refuse "a table showing one field twice is refused" "shows 'who' twice"
+
 src table_direction <<'EOF'
 window w( title: "x" )
     table orders to view lines
