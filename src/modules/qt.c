@@ -1510,9 +1510,15 @@ static Value qt_eval_call(AstExpr *expr) {
             abort();
         }
         for (int i = 0; i < n; i++) {
-            char *t = (which < 0) ? gb_qt_menu_title(root, i)
-                                  : gb_qt_menu_entry_title(root, which, i);
-            titles[i] = value_string(t ? t : "");
+            int is_sep = 0;
+            char *t = (which < 0)
+                          ? gb_qt_menu_title(root, i)
+                          : gb_qt_menu_entry_title(root, which, i, &is_sep);
+            /* A SEPARATOR ANSWERS `unknown`, NOT "". It HAS no caption, where
+             * `item x( label: "" )` has an empty one -- the absent/empty
+             * distinction this language makes everywhere else, and the only
+             * thing that tells a real line from an item that lost its text. */
+            titles[i] = is_sep ? value_unknown() : value_string(t ? t : "");
             free(t);
         }
         return value_array(titles, (size_t)n);

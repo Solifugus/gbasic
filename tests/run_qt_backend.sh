@@ -545,8 +545,8 @@ elif [ "${mchecks:-0}" = "0" ]; then
 else
     pass "$mchecks checks, 0 mismatches"
 fi
-if [ "${mchecks:-0}" -ge 26 ]; then
-    pass "and it really ran them ($mchecks >= 26)"
+if [ "${mchecks:-0}" -ge 27 ]; then
+    pass "and it really ran them ($mchecks >= 27)"
 else
     fail "only $mchecks menu checks ran -- the fixture stopped early"
 fi

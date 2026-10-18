@@ -183,7 +183,15 @@ char *gb_qt_menu_title(void *window, int index);
  * nothing else can see it. A separator's caption is empty, which is how a line
  * shows up in the list at all. */
 int gb_qt_menu_entry_count(void *window, int index);
-char *gb_qt_menu_entry_title(void *window, int index, int entry);
+/* `is_separator` IS NOT THE SAME AS AN EMPTY CAPTION, and conflating them cost
+ * a perturbation: skipping the separator branch let a separator FALL THROUGH
+ * and be added as an action with empty text, which an empty-caption check
+ * cannot tell from a real line. A separator HAS no caption where an
+ * `item x( label: "" )` has an empty one -- the absent/empty distinction this
+ * language makes everywhere else -- so the caller answers `unknown` for one
+ * and "" for the other. */
+char *gb_qt_menu_entry_title(void *window, int index, int entry,
+                             int *is_separator);
 
 /* A TABLE. ITS PARTS ARE COLUMNS, NOT WIDGETS (§7), so it is built in ONE call
  * from the declaration's whole `field` list rather than by the part walk that

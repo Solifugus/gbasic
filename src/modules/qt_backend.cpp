@@ -881,14 +881,23 @@ extern "C" int gb_qt_menu_entry_count(void *window, int index) {
     return m ? (int)m->actions().size() : -1;
 }
 
-extern "C" char *gb_qt_menu_entry_title(void *window, int index, int entry) {
+extern "C" char *gb_qt_menu_entry_title(void *window, int index, int entry,
+                                        int *is_separator) {
+    if (is_separator) {
+        *is_separator = 0;
+    }
     QMenu *m = bar_menu_at(window, index);
     if (!m || entry < 0 || entry >= m->actions().size()) {
         return nullptr;
     }
-    /* A SEPARATOR'S TEXT IS EMPTY, which is how a line appears in the list
-     * rather than being invisible -- the only way a declared `separator()`
-     * can be seen to have arrived at all. */
+    /* ASKED OF QT WHETHER IT IS A LINE, rather than inferred from an empty
+     * caption. Those are different things: a separator HAS no caption where
+     * `item x( label: "" )` has an empty one -- and a perturbation that let a
+     * separator fall through and be added as an empty-texted ACTION was
+     * invisible to a caption check, which is how this was found. */
+    if (is_separator && m->actions().at(entry)->isSeparator()) {
+        *is_separator = 1;
+    }
     QByteArray bytes = m->actions().at(entry)->text().toUtf8();
     char *out = (char *)malloc((size_t)bytes.size() + 1);
     if (!out) {

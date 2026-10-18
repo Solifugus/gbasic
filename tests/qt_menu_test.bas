@@ -115,11 +115,16 @@ program main()
     check("the first is the first item declared", file_menu[0], "Open...")
     check("the second is the SUBMENU, as an entry of File", file_menu[1],
           "Recent")
-    ' A SEPARATOR HAS NO CAPTION, which is the only way a declared one can be
-    ' seen to have arrived at all -- and it is the reason the list is asserted
-    ' rather than just the count: a missing line and a missing item both make
-    ' the count 3.
-    check("the third is the separator, which has no caption", file_menu[2], "")
+    ' A SEPARATOR ANSWERS `unknown`, NOT "", AND THE DIFFERENCE IS LOAD-BEARING.
+    ' It HAS no caption where `item x( label: "" )` has an empty one -- and that
+    ' is not pedantry: a perturbation that skipped the separator branch let it
+    ' FALL THROUGH and be added as an ACTION with empty text, which an
+    ' empty-caption check could not tell from a real line, so the check passed
+    ' over a menu with no separator in it. Qt is asked `isSeparator()` now.
+    check("the third is the separator, which HAS no caption",
+          is_unknown(file_menu[2]), true)
+    check("and that is different from an empty one",
+          string(file_menu[2]) = "", false)
     check("and the last item follows it", file_menu[3], "Quit")
     ' THE OTHER MENU IS SEPARATE, or "File has four entries" is satisfied by a
     ' backend that put every item in the first menu it made.
