@@ -383,6 +383,13 @@ bchecks=$(grep -c '^ok   ' "$work/b.out" || true)
 if grep -q MISMATCH "$work/b.out"; then
     grep MISMATCH "$work/b.out" | while read -r line; do printf '    %s\n' "$line"; done
     fail "$(grep -c MISMATCH "$work/b.out") mismatches in the binding fixture"
+elif [ "${bchecks:-0}" = "0" ]; then
+    # NEVER "0 mismatches" OVER A FIXTURE THAT RAN NOTHING. A perturbation that
+    # makes the fixture DIE leaves no MISMATCH lines at all, so the plain
+    # report printed `ok 0 checks, 0 mismatches` -- a green line above the two
+    # FAILs that actually named the problem. Caught by the floor below either
+    # way; the point is that the line itself must not read as a pass.
+    fail "no binding checks ran at all, so '0 mismatches' would mean nothing"
 else
     pass "$bchecks checks, 0 mismatches"
 fi
@@ -449,6 +456,13 @@ tchecks=$(grep -c '^ok   ' "$work/t.out" || true)
 if grep -q MISMATCH "$work/t.out"; then
     grep MISMATCH "$work/t.out" | while read -r line; do printf '    %s\n' "$line"; done
     fail "$(grep -c MISMATCH "$work/t.out") mismatches in the table fixture"
+elif [ "${tchecks:-0}" = "0" ]; then
+    # NEVER "0 mismatches" OVER A FIXTURE THAT RAN NOTHING. A perturbation that
+    # makes the fixture DIE leaves no MISMATCH lines at all, so the plain
+    # report printed `ok 0 checks, 0 mismatches` -- a green line above the two
+    # FAILs that actually named the problem. Caught by the floor below either
+    # way; the point is that the line itself must not read as a pass.
+    fail "no table checks ran at all, so '0 mismatches' would mean nothing"
 else
     pass "$tchecks checks, 0 mismatches"
 fi
@@ -521,11 +535,18 @@ mchecks=$(grep -c '^ok   ' "$work/m.out" || true)
 if grep -q MISMATCH "$work/m.out"; then
     grep MISMATCH "$work/m.out" | while read -r line; do printf '    %s\n' "$line"; done
     fail "$(grep -c MISMATCH "$work/m.out") mismatches in the menu fixture"
+elif [ "${mchecks:-0}" = "0" ]; then
+    # NEVER "0 mismatches" OVER A FIXTURE THAT RAN NOTHING. A perturbation that
+    # makes the fixture DIE leaves no MISMATCH lines at all, so the plain
+    # report printed `ok 0 checks, 0 mismatches` -- a green line above the two
+    # FAILs that actually named the problem. Caught by the floor below either
+    # way; the point is that the line itself must not read as a pass.
+    fail "no menu checks ran at all, so '0 mismatches' would mean nothing"
 else
     pass "$mchecks checks, 0 mismatches"
 fi
-if [ "${mchecks:-0}" -ge 19 ]; then
-    pass "and it really ran them ($mchecks >= 19)"
+if [ "${mchecks:-0}" -ge 26 ]; then
+    pass "and it really ran them ($mchecks >= 26)"
 else
     fail "only $mchecks menu checks ran -- the fixture stopped early"
 fi

@@ -177,6 +177,13 @@ int gb_qt_menu_separator(void *menu, char *err, size_t err_size);
  * found the same way. */
 int gb_qt_menu_count(void *window);
 char *gb_qt_menu_title(void *window, int index);
+/* THE ENTRIES OF ONE TOP-LEVEL MENU, by that menu's position on the bar. The
+ * same oracle one level in, and it closes the case that is structurally worse
+ * than a missing separator: an item added to the WRONG menu keeps its name, so
+ * nothing else can see it. A separator's caption is empty, which is how a line
+ * shows up in the list at all. */
+int gb_qt_menu_entry_count(void *window, int index);
+char *gb_qt_menu_entry_title(void *window, int index, int entry);
 
 /* A TABLE. ITS PARTS ARE COLUMNS, NOT WIDGETS (§7), so it is built in ONE call
  * from the declaration's whole `field` list rather than by the part walk that

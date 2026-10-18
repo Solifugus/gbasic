@@ -104,6 +104,28 @@ program main()
     check("a SUBMENU is not on the bar, which is what says it is nested",
           contains(bar, "Recent"), false)
 
+    ' AND ONE LEVEL IN, which closes the case that is structurally worse than a
+    ' missing separator: AN ITEM ADDED TO THE WRONG MENU KEEPS ITS NAME, so
+    ' nothing else in this file could see it. The entries pin the count, the
+    ' order, and that `Recent` is an entry OF File rather than a menu beside
+    ' it.
+    file_menu = qt.menus(app, 0)
+    check("File holds four entries: two items, a submenu and a line",
+          len(file_menu), 4)
+    check("the first is the first item declared", file_menu[0], "Open...")
+    check("the second is the SUBMENU, as an entry of File", file_menu[1],
+          "Recent")
+    ' A SEPARATOR HAS NO CAPTION, which is the only way a declared one can be
+    ' seen to have arrived at all -- and it is the reason the list is asserted
+    ' rather than just the count: a missing line and a missing item both make
+    ' the count 3.
+    check("the third is the separator, which has no caption", file_menu[2], "")
+    check("and the last item follows it", file_menu[3], "Quit")
+    ' THE OTHER MENU IS SEPARATE, or "File has four entries" is satisfied by a
+    ' backend that put every item in the first menu it made.
+    check("the second menu holds only its own", len(qt.menus(app, 1)), 2)
+    check("and they are its own", qt.menus(app, 1)[0], "Undo")
+
     ' -------------------------------------------------------- THE MENU BAR
     ' A MENU IS NOT LAID OUT, so a window holding only menus and a column must
     ' still lay the column out -- the bar is inserted at the top of the

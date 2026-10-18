@@ -1443,8 +1443,14 @@ static Value qt_eval_call(AstExpr *expr) {
      * third entry, and two menus that swapped show up reordered. Same shape as
      * `qt.heading` one directive over, found the same way. */
     if (strcmp(verb, "menus") == 0) {
-        if (argc != 1) {
-            qt_raise("qt.menus expects a window");
+        /* ONE ARGUMENT gives the BAR's captions; TWO gives the ENTRIES of the
+         * menu at that position -- the same oracle one level in, which closes
+         * the case that is structurally worse than a missing separator: an
+         * item added to the WRONG menu keeps its name, so nothing else in the
+         * fixture can see it. */
+        if (argc != 1 && argc != 2) {
+            qt_raise("qt.menus expects a window, and optionally which menu's "
+                     "entries to read");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -1465,10 +1471,35 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win);
             return value_null();
         }
+        int which = -1;
+        if (argc == 2) {
+            Value idx = eval_expr(expr->as.call.args.items[1]);
+            if (error_action_pending()) {
+                value_free(win);
+                value_free(idx);
+                return value_null();
+            }
+            if (idx.kind != VALUE_NUMBER) {
+                qt_raise("qt.menus expects the menu's position as a number");
+                value_free(win);
+                value_free(idx);
+                return value_null();
+            }
+            which = (int)idx.as.num.value;
+            value_free(idx);
+        }
         value_free(win);
-        int n = gb_qt_menu_count(root);
+        int n = (which < 0) ? gb_qt_menu_count(root)
+                            : gb_qt_menu_entry_count(root, which);
         if (n < 0) {
-            qt_raise("qt.menus: that window has no menu bar to read");
+            if (which < 0) {
+                qt_raise("qt.menus: that window has no menu bar to read");
+            } else {
+                snprintf(message, sizeof(message),
+                         "qt.menus: this window has no menu at position %d",
+                         which);
+                qt_raise(message);
+            }
             return value_null();
         }
         /* AN EMPTY ARRAY FOR A WINDOW WITH NO MENUS, not a refusal: a window
@@ -1479,7 +1510,8 @@ static Value qt_eval_call(AstExpr *expr) {
             abort();
         }
         for (int i = 0; i < n; i++) {
-            char *t = gb_qt_menu_title(root, i);
+            char *t = (which < 0) ? gb_qt_menu_title(root, i)
+                                  : gb_qt_menu_entry_title(root, which, i);
             titles[i] = value_string(t ? t : "");
             free(t);
         }

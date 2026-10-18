@@ -861,6 +861,44 @@ extern "C" char *gb_qt_menu_title(void *window, int index) {
     return out;
 }
 
+/* THE MENU AT ONE POSITION ON THE BAR. Its own QMenu hangs off the bar's
+ * action, which is how a top-level entry is both an action and a menu. */
+static QMenu *bar_menu_at(void *window, int index) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !root->widget) {
+        return nullptr;
+    }
+    QMenuBar *bar = root->widget->findChild<QMenuBar *>(
+        QString(), Qt::FindDirectChildrenOnly);
+    if (!bar || index < 0 || index >= bar->actions().size()) {
+        return nullptr;
+    }
+    return bar->actions().at(index)->menu();
+}
+
+extern "C" int gb_qt_menu_entry_count(void *window, int index) {
+    QMenu *m = bar_menu_at(window, index);
+    return m ? (int)m->actions().size() : -1;
+}
+
+extern "C" char *gb_qt_menu_entry_title(void *window, int index, int entry) {
+    QMenu *m = bar_menu_at(window, index);
+    if (!m || entry < 0 || entry >= m->actions().size()) {
+        return nullptr;
+    }
+    /* A SEPARATOR'S TEXT IS EMPTY, which is how a line appears in the list
+     * rather than being invisible -- the only way a declared `separator()`
+     * can be seen to have arrived at all. */
+    QByteArray bytes = m->actions().at(entry)->text().toUtf8();
+    char *out = (char *)malloc((size_t)bytes.size() + 1);
+    if (!out) {
+        return nullptr;
+    }
+    memcpy(out, bytes.constData(), (size_t)bytes.size());
+    out[bytes.size()] = '\0';
+    return out;
+}
+
 extern "C" void *gb_qt_table(void *parent, const char *name,
                              const char *const *headers, int columns,
                              char *err, size_t err_size) {
