@@ -1,0 +1,4 @@
+code sits at row 0, column 1
+qty  sits at row 0, column 3
+note sits at row 1, column 1 and spans 3
+a labelled field takes two cells, which is why code is at column 1

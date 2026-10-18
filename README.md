@@ -13,7 +13,7 @@ application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.10.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**185 test suites** gate every change, goldens are byte-exact, and the claims in
+**186 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -523,7 +523,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 185 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 186 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite
@@ -566,7 +566,7 @@ index, or if the index links to something that is not there.
 **Cookbooks** — task-oriented, with runnable examples. Every code block and
 every output block on these pages is owned by a file that is executed by the
 test suite and compared byte for byte, so a page cannot drift from the product
-without a test going red. Sixteen of them:
+without a test going red. Seventeen of them:
 
 *Money and business*
 
@@ -606,8 +606,11 @@ without a test going red. Sixteen of them:
 
 *Applications and analysis*
 
-- [GUI](docs/gui_tutorial.md) and its [cookbook](docs/gui_cookbook.md) — native
-  GTK 4 applications
+- [Windows with Qt](docs/qt_cookbook.md) — a declarative `window` block
+  rendered with Qt 6: a form bound to a record, a list feeding it, menus,
+  layout, a code editor, and a window built from data
+- [GUI with GTK](docs/gui_tutorial.md) and its [cookbook](docs/gui_cookbook.md)
+  — the older GTK 4 path, built as a record tree rather than a declaration
 - [EDGAR securities analysis](docs/edgar_tutorial.md) — build a forensic
   dossier on a filer
 - Statistics: [social & behavioral](docs/cookbook_social_behavioral.md) ·

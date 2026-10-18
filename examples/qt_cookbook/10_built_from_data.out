@@ -1,0 +1,6 @@
+the built record passes qt.check: true
+it generated 3 rows
+row 0 shows:  Consulting
+row 2 holds:  12
+q3 sits at row 2, column 1
+a part with no name is refused: window: 'field' needs a name -- `field id( ... )` -- because that is what a handler and a binding address (at column[0] > field[0])

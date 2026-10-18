@@ -1,0 +1,7 @@
+the bar:        ["File","View"]
+File holds:     ["New","Open",unknown,"Save"]
+View holds:     ["Wrap long lines","Theme"]
+entry 2 of File is a separator: true
+Save's shortcut: Ctrl+S
+Save enabled:    false
+after typing:    true

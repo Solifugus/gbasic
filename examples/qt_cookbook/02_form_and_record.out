@@ -1,0 +1,9 @@
+the form filled itself:
+  name:    Ada Lovelace
+  limit:   2500.00
+  on hold: false
+after editing:
+  limit:   4000.00  (type money)
+  on hold: true  (type boolean)
+  notes:   Pays on time.
+  and `cust` itself still says 2500.00
