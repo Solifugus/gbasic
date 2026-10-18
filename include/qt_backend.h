@@ -120,6 +120,25 @@ int gb_qt_layout_number(void *container, const char *prop, long value,
                         char *err, size_t err_size);
 int gb_qt_grow(void *widget, long weight, char *err, size_t err_size);
 
+/* A CELL THAT COVERS MORE THAN ONE COLUMN OR ROW -- `across:` and `down:`
+ * inside `cells`, which is the half of tabular placement a box layout cannot
+ * do at all. Applied AFTER construction, like `grow:`, because the options are
+ * read after the widget exists -- so the widget is re-added at the position it
+ * already has with the span attached. Refused outside a `cells`, since in a box
+ * layout there is nothing to span. */
+int gb_qt_span(void *widget, long across, long down, char *err,
+               size_t err_size);
+
+/* WHERE A NAMED PART SITS IN ITS GRID. THE REASON IS AN ORACLE and it is built
+ * before the fixture this time, the pattern having cost two increments: every
+ * part reads back BY NAME, so a widget placed in the wrong cell -- or with the
+ * wrong span, which is the whole point of `cells` -- is invisible to every
+ * other check there is. The table's captions and the menu bar's entries were
+ * the same problem; here it is the POSITION, which only the layout knows.
+ * 1 when the part is in a grid, 0 when it is not. */
+int gb_qt_cell_of(void *window, const char *name, int *row, int *col,
+                  int *across, int *down);
+
 int gb_qt_connect(void *window, const char *target, const char *signal,
                   const char *handler, char *err, size_t err_size);
 

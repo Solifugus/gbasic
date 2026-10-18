@@ -253,7 +253,8 @@ static const char *qt_record_text(Value *record, const char *field) {
  * properties, and a table of them would be bindings forever. */
 static int qt_structural_option(const char *name) {
     static const char *structural[] = {
-        "label", "margin", "spacing", "grow", "show", "edit", "type", NULL
+        "label", "margin", "spacing", "grow", "show", "edit", "type",
+        "across", "down", NULL
     };
     for (size_t i = 0; structural[i]; i++) {
         if (strcmp(name, structural[i]) == 0) {
@@ -311,6 +312,36 @@ static int qt_apply_options(void *node, Value *options, const char *word,
                 snprintf(message, sizeof(message), "window: %s", err);
                 qt_raise(message);
                 return 0;
+            }
+            continue;
+        }
+        if (strcmp(f->name, "across") == 0 || strcmp(f->name, "down") == 0) {
+            /* HANDLED TOGETHER, so `across: 2, down: 2` is one call rather
+             * than two re-adds -- and so the second does not have to undo the
+             * first. Whichever name arrives first reads the other out of the
+             * same options record. */
+            RecordField *af = record_find(options, "across");
+            RecordField *df = record_find(options, "down");
+            long across = 1, down = 1;
+            if (af && af->value && af->value->kind == VALUE_NUMBER) {
+                across = (long)af->value->as.num.value;
+            } else if (af) {
+                qt_raise("window: `across:` must be a number of columns");
+                return 0;
+            }
+            if (df && df->value && df->value->kind == VALUE_NUMBER) {
+                down = (long)df->value->as.num.value;
+            } else if (df) {
+                qt_raise("window: `down:` must be a number of rows");
+                return 0;
+            }
+            if (strcmp(f->name, "across") == 0 || !af) {
+                if (!gb_qt_span(node, across, down, err, sizeof(err))) {
+                    snprintf(message, sizeof(message), "window: %s",
+                             err[0] ? err : "that span was refused");
+                    qt_raise(message);
+                    return 0;
+                }
             }
             continue;
         }
@@ -443,8 +474,28 @@ static int qt_build_item(void *parent, Value *item, void *root) {
     }
     const char *word = qt_record_text(item, "word");
     const char *name = qt_record_text(item, "name");
-    const char *label = qt_record_text(item, "label");
     RecordField *opts = record_find(item, "options");
+    /* THE CAPTION IS IN `options` FOR A LEAF AND AT THE TOP LEVEL FOR A
+     * LABELLED CONTAINER, and reading only the second meant `label:` REACHED
+     * NOTHING -- shipped in the first backend commit and alive through four
+     * increments. `field who( label: "Customer" )` in a form got
+     * `addRow(QString(), w)`, an EMPTY label, and `check hold( label: "On
+     * hold" )` rendered with no text at all. Nothing caught it because every
+     * check in every fixture read a VALUE or some other property, and an
+     * unlabelled widget raises nothing.
+     *
+     * THE SAME DEFECT WAS FOUND AND FIXED LOCALLY FOR A TABLE'S COLUMN
+     * HEADERS an hour earlier, and I did not sweep -- which is PLAT-NUL's
+     * standing lesson, that a defect found in one place is evidence about
+     * every place that reads the same thing. One lookup here now serves every
+     * word, and the menu and table paths read the same way. */
+    const char *label = NULL;
+    if (opts && opts->value && opts->value->kind == VALUE_RECORD) {
+        label = qt_record_text(opts->value, "label");
+    }
+    if (!label) {
+        label = qt_record_text(item, "label");
+    }
     err[0] = '\0';
 
     if (strcmp(kind, "container") == 0 && word && strcmp(word, "menu") == 0) {
@@ -1442,6 +1493,69 @@ static Value qt_eval_call(AstExpr *expr) {
      * COUNT and the ORDER as well -- a submenu that escaped shows up as a
      * third entry, and two menus that swapped show up reordered. Same shape as
      * `qt.heading` one directive over, found the same way. */
+    /* WHERE A PART SITS IN ITS GRID -- `{ row, column, across, down }`.
+     *
+     * THE REASON IS AN ORACLE, built before the fixture because the pattern
+     * has now cost two increments: every part reads back BY NAME, so a widget
+     * in the wrong CELL, or with the wrong SPAN, is invisible to every other
+     * check -- and placement is the entire point of `cells`. The table's
+     * captions and the menu bar's entries were the same problem.
+     *
+     * ASKED OF THE LAYOUT, walking up from the widget rather than from our own
+     * record of where we put it: a remembered position would agree with a
+     * placement that was wrong, which is no oracle at all. */
+    if (strcmp(verb, "at") == 0) {
+        if (argc != 2) {
+            qt_raise("qt.at expects a window and a part's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "at") || which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.at expects the part's name as text");
+            }
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        int row = 0, col = 0, across = 0, down = 0;
+        int ok = gb_qt_cell_of(root, which.as.string, &row, &col, &across,
+                               &down);
+        if (!ok) {
+            snprintf(message, sizeof(message),
+                     "qt.at: `%s` is not in a `cells` in window `%s`",
+                     which.as.string, wname ? wname : "");
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        value_free(win);
+        value_free(which);
+        Value out = value_record(NULL, 0);
+        record_set(&out, "row", value_number(row));
+        record_set(&out, "column", value_number(col));
+        record_set(&out, "across", value_number(across));
+        record_set(&out, "down", value_number(down));
+        return out;
+    }
+
     /* SET ONE PROPERTY BY NAME -- the write half of the route `qt.read(win,
      * part, prop)` opened, and it was left out when that shipped.
      *

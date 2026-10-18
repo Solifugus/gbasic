@@ -87,6 +87,22 @@ program main()
     ' reached the widget from one we merely remembered.
     check("a button's text reached the widget", qt.read(customer, "save"), "Save")
 
+    ' `label:` REACHES THE WIDGET, which it did NOT for the first four
+    ' increments of this backend: the option lives in `options` and
+    ' construction read the TOP-LEVEL `label`, which only a labelled CONTAINER
+    ' (`group "Credit"`) ever sets -- so every form row was unlabelled and
+    ' every check box was blank. Nothing caught it because every check in every
+    ' fixture read a VALUE or some other property, and an unlabelled widget
+    ' raises nothing.
+    '
+    ' A CHECK IS WHERE IT IS VISIBLE: its caption IS its `text`, so the
+    ' property read says whether the label arrived. A field's label becomes a
+    ' separate QLabel, which has no name and so cannot be read back -- stated
+    ' here rather than left as a silent gap, and the `cells` tier asserts the
+    ' field case through GEOMETRY instead, a label taking a column of its own.
+    check("a check box's `label:` reached it as its text",
+          qt.read(customer, "hold", "text"), "On hold")
+
     ' AN ABSENT FIELD LEAVES THE PART EMPTY and does not raise -- the same
     ' answer `r.missing` gives on a record, and what a form filling in a NEW
     ' record needs, every field there being absent until somebody types.

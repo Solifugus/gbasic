@@ -51,6 +51,7 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
+#include <QGridLayout>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QFormLayout>
@@ -172,6 +173,16 @@ struct GbQtNode {
      * door that needs a real widget keeps a type that says so and cannot be
      * handed an action by accident. */
     QObject *object = nullptr;
+    /* A `row` INSIDE `cells` IS NOT A WIDGET EITHER: it is a ROW OF THE GRID,
+     * so it has no box of its own and its children go into the parent's
+     * QGridLayout at (grid_row, grid_col++). `grid_row` is -1 on everything
+     * that is not one, which is how a leaf written directly inside `cells` --
+     * where there is no row to put it in -- is refused rather than placed at
+     * some default position. `grid_next_row` belongs to the `cells` node and
+     * is what makes each `row` the next one down. */
+    int grid_row = -1;
+    int grid_col = 0;
+    int grid_next_row = 0;
     GbQtNode *root = nullptr;
     bool is_form = false;
     /* ADDRESSED BY NAME, AND NOT EVERY NAMED THING IS A WIDGET: a menu `item`
@@ -301,6 +312,19 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
     GbQtNode *n = node_new();
     n->root = p->root;
 
+    QGridLayout *parent_grid = qobject_cast<QGridLayout *>(p->layout);
+    if (parent_grid && strcmp(word, "row") == 0 && p->grid_row < 0) {
+        /* A ROW OF THE GRID, not a box. It is NOT a widget: its children are
+         * placed straight into the parent's QGridLayout, which is the whole
+         * point -- a row of boxes would not align its columns with the row
+         * above, which is the one thing `cells` exists to do. The grid is
+         * shared as this node's `layout` so `gb_qt_part` finds it, and
+         * `grid_row` is what says which row it is. */
+        n->layout = parent_grid;
+        n->grid_row = p->grid_next_row++;
+        n->grid_col = 0;
+        return n;
+    }
     if (strcmp(word, "row") == 0 || strcmp(word, "column") == 0) {
         QWidget *host = new QWidget(p->widget);
         QLayout *box = (strcmp(word, "row") == 0)
@@ -324,6 +348,17 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
         QVBoxLayout *inner = new QVBoxLayout(box);
         n->widget = box;
         n->layout = inner;
+    } else if (strcmp(word, "cells") == 0) {
+        /* TABULAR PLACEMENT WITH SPANS (§2.5), and it holds `row`s -- which is
+         * the decision worth naming: a grid IS rows of cells, so reusing `row`
+         * costs no vocabulary and reads as what it does. The refinement is
+         * that inside `cells` a row's columns ALIGN with the rows above it,
+         * where a `row` elsewhere is a box that does not. */
+        QWidget *host = new QWidget(p->widget);
+        QGridLayout *grid = new QGridLayout(host);
+        grid->setContentsMargins(0, 0, 0, 0);
+        n->widget = host;
+        n->layout = grid;
     } else if (strcmp(word, "tabs") == 0) {
         /* A QTabWidget HAS NO LAYOUT OF ITS OWN -- its children are PAGES,
          * added with addTab. So the node carries no `layout`, which is what
@@ -381,6 +416,17 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
     }
     QBoxLayout *pb = qobject_cast<QBoxLayout *>(p->layout);
     QFormLayout *pf = qobject_cast<QFormLayout *>(p->layout);
+    QGridLayout *pg = qobject_cast<QGridLayout *>(p->layout);
+    /* A GRID PARENT MUST BE A ROW OF ONE. A leaf written directly inside
+     * `cells`, where there is no row to put it in, would otherwise be placed
+     * at whatever position happened to be current -- a widget appearing
+     * somewhere nobody asked for. The load-time pass refuses it first; this is
+     * the floor under that, and says the same thing. */
+    if (pg && p->grid_row < 0) {
+        say(err, err_size,
+            QByteArray("`") + word + "` needs a `row` inside `cells`");
+        return nullptr;
+    }
 
     if (strcmp(word, "stretch") == 0) {
         /* A spacer absorbs the leftover space and is the reason the
@@ -428,7 +474,24 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
      * `form` it is the row's label, which is the whole of what QFormLayout
      * does; anywhere else a `field` would otherwise lose its caption
      * silently, so one is placed beside it. */
-    if (strcmp(word, "field") == 0 && pf) {
+    if (pg) {
+        /* ONE CELL, AND THE LABEL GOES IN ITS OWN CELL BEFORE IT -- which is
+         * what a form does with a QFormLayout and what an author writing a
+         * labelled grid expects. It costs a column, which is why a `field`
+         * with no label takes one cell and one with a label takes two. */
+        if (strcmp(word, "field") == 0 && label && *label) {
+            pg->addWidget(new QLabel(QString::fromUtf8(label), p->widget),
+                          p->grid_row, p->grid_col++);
+        }
+        /* THE GRID AND THE POSITION ARE KEPT ON THE PART, because that is
+         * what `across:`/`down:` need to re-add it -- and a part whose
+         * `grid_row` is -1 is one that is not in a grid at all, which is how
+         * those options are refused outside `cells` rather than ignored. */
+        n->layout = pg;
+        n->grid_row = p->grid_row;
+        n->grid_col = p->grid_col;
+        pg->addWidget(w, p->grid_row, p->grid_col++);
+    } else if (strcmp(word, "field") == 0 && pf) {
         pf->addRow(label && *label ? QString::fromUtf8(label) : QString(), w);
     } else if (pf) {
         pf->addRow(w);
@@ -561,6 +624,66 @@ extern "C" int gb_qt_grow(void *widget, long weight, char *err,
  * signature-exact lookup for `clicked()` finds nothing, which is a wrong
  * answer about a real signal. A name that is not a signal at all is still
  * refused, naming the class. */
+extern "C" int gb_qt_span(void *widget, long across, long down, char *err,
+                          size_t err_size) {
+    GbQtNode *n = (GbQtNode *)widget;
+    if (!n || !n->widget) {
+        say(err, err_size, "there is nothing there to span");
+        return 0;
+    }
+    QGridLayout *g = qobject_cast<QGridLayout *>(n->layout);
+    if (!g || n->grid_row < 0) {
+        say(err, err_size,
+            "`across:` and `down:` only mean something inside `cells`");
+        return 0;
+    }
+    if (across < 1 || down < 1) {
+        say(err, err_size, "a span covers at least one cell");
+        return 0;
+    }
+    /* RE-ADDED AT THE POSITION IT ALREADY HAS. QGridLayout has no way to
+     * change an existing item's span, so the widget is removed and put back
+     * with one -- which is safe because nothing else has been added to those
+     * cells yet: options are applied immediately after the part is built. */
+    g->removeWidget(n->widget);
+    g->addWidget(n->widget, n->grid_row, n->grid_col, (int)down, (int)across);
+    return 1;
+}
+
+extern "C" int gb_qt_cell_of(void *window, const char *name, int *row,
+                             int *col, int *across, int *down) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    QWidget *w = qobject_cast<QWidget *>(o);
+    if (!w) {
+        return 0;
+    }
+    /* ASKED OF THE LAYOUT THE WIDGET IS ACTUALLY IN, found by walking up from
+     * the widget rather than from our own record of where we put it -- which
+     * is what makes this an oracle: a position we remembered would agree with
+     * a placement that was wrong. */
+    QWidget *host = w->parentWidget();
+    QGridLayout *g = host ? qobject_cast<QGridLayout *>(host->layout())
+                          : nullptr;
+    if (!g) {
+        return 0;
+    }
+    for (int i = 0; i < g->count(); i++) {
+        if (g->itemAt(i)->widget() != w) {
+            continue;
+        }
+        int r = 0, c = 0, rs = 0, cs = 0;
+        g->getItemPosition(i, &r, &c, &rs, &cs);
+        *row = r;
+        *col = c;
+        *down = rs;
+        *across = cs;
+        return 1;
+    }
+    return 0;
+}
+
 extern "C" int gb_qt_connect(void *window, const char *target,
                              const char *signal, const char *handler,
                              char *err, size_t err_size) {

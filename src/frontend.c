@@ -592,7 +592,7 @@ static void win_error(WinCheck *chk, int line, int column, const char *fmt, ...)
  * word rather than silently accepted and ignored. */
 static const char *win_container_words[] = {"row", "column", "form", "group",
                                             "table", "menu", "tabs", "tab",
-                                            NULL};
+                                            "cells", NULL};
 static const char *win_leaf_words[] = {"field", "button", "check", "stretch",
                                        "item", "separator", NULL};
 
@@ -710,9 +710,9 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
         } else {
             win_error(chk, item->line, item->column,
                       "window: unknown directive '%s'. The containers are row, "
-                      "column, form, group, table, menu, tabs and tab; the "
-                      "parts are field, button, check, stretch, item and "
-                      "separator", word);
+                      "column, form, group, table, menu, tabs, tab and "
+                      "cells; the parts are field, button, check, stretch, "
+                      "item and separator", word);
         }
         return;
     }
@@ -844,6 +844,25 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
                     win_error(chk, part->line, part->column,
                               "window: `tabs` holds `tab` pages -- '%s' is not "
                               "one; put it inside a tab", part->word);
+                }
+            }
+        }
+        /* `cells` HOLDS ROWS OF CELLS, which is also why it needed no new
+         * word: a grid IS rows, so `row` is reused -- refined inside `cells`
+         * to mean a row whose columns ALIGN with the rows above, where a `row`
+         * elsewhere is a box that does not. Anything else directly inside
+         * `cells` has no row to go in, so it is refused rather than placed at
+         * whatever position happened to be current. */
+        if (strcmp(word, "cells") == 0) {
+            for (size_t i = 0; i < item->entries.count; i++) {
+                const AstWindowItem *part = item->entries.items[i];
+                if (part->kind == AST_WINDOW_HANDLER || !part->word) {
+                    continue;
+                }
+                if (strcmp(part->word, "row") != 0) {
+                    win_error(chk, part->line, part->column,
+                              "window: `cells` holds `row`s of cells -- '%s' "
+                              "is not one; put it inside a row", part->word);
                 }
             }
         }
