@@ -1,12 +1,29 @@
 #!/usr/bin/env bash
-# GATE-SCOPE: whole-tree -- checks the generated VS Code grammar against the interpreter's own keyword and builtin lists
-# The VS Code extension's grammar (editors/vscode/gbasic), held to the language.
+# GATE-SCOPE: whole-tree -- checks all three generated editor definitions against the interpreter's own keyword and builtin lists
+# The editor definitions, held to the language. THREE OF THEM SINCE 2026-10-18:
+# the VS Code grammar (editors/vscode/gbasic), the Kate/KSyntaxHighlighting
+# definition (editors/kate/gbasic.xml) and the GtkSourceView one
+# (stdlib/gtksourceview/gbasic.lang) all come from one generator, and `--check`
+# covers all three -- proven red for each by name.
+#
+# THE TWO HAND-COPIED ONES HAD ROTTED EXACTLY AS THIS SUITE'S OWN HEADER
+# PREDICTED, in both directions: five keywords behind the lexer (`do`, `until`,
+# `unwatch`, and 0.6.0's `excluding`/`intersecting`), 105 registry builtins
+# missing from Kate, and `resume`/`this`/`constructor` COLOURED AS KEYWORDS
+# when the language has none of them -- which is the worse direction, since a
+# program may legally name a variable `resume`. The VS Code grammar had that
+# defect too, before it was generated; that is the argument for generating the
+# other two rather than correcting them.
+#
+# AND THE KATE FILE IS LOAD-BEARING NOW, not a convenience: §0.14 made it the
+# definition the Qt `source` widget loads at RUN TIME, so it is what a gBASIC
+# editor highlights with. run_ksyntax.sh checks it still loads and classifies.
 #
 # Two tiers, because a grammar fails in two ways and neither is visible to any
 # other suite -- the result of both is a WRONG COLOUR in somebody's editor:
 #
 #   DRIFT  the keyword, constant, word-operator and builtin lists are GENERATED
-#          from src/lexer.c and src/builtins.c (tools/sync_vscode_grammar.py),
+#          from src/lexer.c and src/builtins.c (tools/sync_editor_grammars.py),
 #          and this fails when the shipped grammar is not what they produce.
 #          The hand-copied list it replaced had fallen three keywords behind
 #          the lexer (do, until, unwatch) and still coloured `resume`, which the
@@ -37,7 +54,7 @@ if [ -z "$py" ]; then
 fi
 
 status=0
-if out="$("$py" tools/sync_vscode_grammar.py --check 2>&1)"; then
+if out="$("$py" tools/sync_editor_grammars.py --check 2>&1)"; then
     printf 'PASS drift: %s\n' "$out"
 else
     printf 'FAIL drift: %s\n' "$out"

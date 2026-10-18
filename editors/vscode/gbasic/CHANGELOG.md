@@ -12,7 +12,7 @@ All notable changes to the gBASIC VS Code extension are documented here.
 
 ### Changed
 - The grammar's keyword, constant, word-operator and builtin lists are now
-  GENERATED from the interpreter (`tools/sync_vscode_grammar.py`), and
+  GENERATED from the interpreter (`tools/sync_editor_grammars.py`), and
   `tests/run_editor_grammar.sh` fails when they drift. They had fallen behind:
   `do`, `until` and `unwatch` were not highlighted, and `resume` (an ordinary
   name) was.

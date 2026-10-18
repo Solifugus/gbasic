@@ -67,7 +67,7 @@
           }
         },
         {
-          "match": "\\b(program|library|server)\\s+([A-Za-z_]\\w*)",
+          "match": "\\b(program|library|server|window)\\s+([A-Za-z_]\\w*)",
           "captures": {
             "1": { "name": "keyword.control.gbasic" },
             "2": { "name": "entity.name.type.gbasic" }

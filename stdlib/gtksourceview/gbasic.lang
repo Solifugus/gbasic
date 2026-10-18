@@ -63,8 +63,8 @@
     <!-- true/false are the boolean literals; nothing/unknown are the nullish
          literals (distinct style). -->
     <context id="boolean" style-ref="boolean">
-      <keyword>true</keyword>
       <keyword>false</keyword>
+      <keyword>true</keyword>
     </context>
 
     <context id="constant" style-ref="constant">
@@ -74,51 +74,54 @@
 
     <!-- Declaration/structure keywords. -->
     <context id="declarations" style-ref="declaration">
-      <keyword>program</keyword>
-      <keyword>library</keyword>
-      <keyword>function</keyword>
-      <keyword>modifier</keyword>
-      <keyword>load</keyword>
-      <keyword>use</keyword>
       <keyword>export</keyword>
+      <keyword>function</keyword>
+      <keyword>library</keyword>
+      <keyword>load</keyword>
+      <keyword>modifier</keyword>
+      <keyword>program</keyword>
+      <keyword>use</keyword>
     </context>
 
     <!-- Control-flow and remaining keywords (case-insensitive). -->
     <context id="keywords" style-ref="keyword">
-      <keyword>if</keyword>
-      <keyword>then</keyword>
+      <keyword>and</keyword>
+      <keyword>as</keyword>
+      <keyword>break</keyword>
+      <keyword>consider</keyword>
+      <keyword>continue</keyword>
+      <keyword>dim</keyword>
+      <keyword>do</keyword>
+      <keyword>each</keyword>
       <keyword>else</keyword>
       <keyword>end</keyword>
-      <keyword>for</keyword>
-      <keyword>to</keyword>
-      <keyword>while</keyword>
-      <keyword>consider</keyword>
-      <keyword>break</keyword>
-      <keyword>continue</keyword>
-      <keyword>return</keyword>
-      <keyword>print</keyword>
-      <keyword>watch</keyword>
-      <keyword>without</keyword>
-      <keyword>watchers</keyword>
-      <keyword>goto</keyword>
-      <keyword>gosub</keyword>
-      <keyword>with</keyword>
-      <keyword>new</keyword>
-      <keyword>spawn</keyword>
-      <keyword>on</keyword>
-      <keyword>resume</keyword>
-      <keyword>next</keyword>
-      <keyword>stop</keyword>
       <keyword>error</keyword>
-      <keyword>and</keyword>
-      <keyword>or</keyword>
-      <keyword>not</keyword>
+      <keyword>excluding</keyword>
+      <keyword>for</keyword>
+      <keyword>gosub</keyword>
+      <keyword>goto</keyword>
+      <keyword>if</keyword>
       <keyword>in</keyword>
-      <keyword>each</keyword>
-      <!-- reserved but not yet parsed (TOKENS.md) -->
-      <keyword>dim</keyword>
-      <keyword>as</keyword>
+      <keyword>intersecting</keyword>
+      <keyword>new</keyword>
+      <keyword>next</keyword>
+      <keyword>not</keyword>
+      <keyword>on</keyword>
+      <keyword>or</keyword>
+      <keyword>print</keyword>
+      <keyword>return</keyword>
+      <keyword>spawn</keyword>
       <keyword>step</keyword>
+      <keyword>stop</keyword>
+      <keyword>then</keyword>
+      <keyword>to</keyword>
+      <keyword>until</keyword>
+      <keyword>unwatch</keyword>
+      <keyword>watch</keyword>
+      <keyword>watchers</keyword>
+      <keyword>while</keyword>
+      <keyword>with</keyword>
+      <keyword>without</keyword>
     </context>
 
     <context id="gbasic" class="no-spell-check">

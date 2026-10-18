@@ -101,7 +101,7 @@ like the Kate setup (keywords blue, literals forest green), add to your VS Code
 The grammar's keyword, constant, word-operator and builtin lists are
 **generated** from the interpreter (`src/lexer.c`, `src/builtins.c`): edit
 `syntaxes/gbasic.tmLanguage.template.json`, then run
-`python3 tools/sync_vscode_grammar.py` from the repository root.
+`python3 tools/sync_editor_grammars.py` from the repository root.
 `tests/run_editor_grammar.sh` fails when they drift, checks every snippet
 parses, and asserts how real lines are coloured.
 
@@ -120,5 +120,9 @@ root (it needs Node.js and `npm ci`, and skips naming which is missing).
 For a local install without packaging, `./install.sh` copies the extension into
 `~/.vscode/extensions`; then run *Developer: Reload Window*.
 
-The Kate definition (`editors/kate/gbasic.xml`) still carries hand-copied
-lists and is not checked.
+The Kate definition (`editors/kate/gbasic.xml`) and the GtkSourceView one
+(`stdlib/gtksourceview/gbasic.lang`) are **generated from the same source** as
+this grammar since 2026-10-18, and `tests/run_editor_grammar.sh` checks all
+three. They were hand-copied until then, and that note said so without
+preventing it: measured, Kate was **five keywords and 105 builtins** behind and
+coloured `resume`, `this` and `constructor` — words the language does not have.
