@@ -669,6 +669,27 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
     return 1;
 }
 
+extern "C" int gb_qt_set_display_only(void *window, const char *name, int on,
+                                      char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QWidget *w = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!w) {
+        say(err, err_size, QByteArray("this window has no `") + name + "`");
+        return 0;
+    }
+    /* `readOnly` WHERE IT EXISTS, because it leaves the text selectable and
+     * copyable, which is what a display form is for; `enabled` otherwise,
+     * since a QCheckBox has no readOnly and a disabled box is the honest
+     * rendering of "you cannot change this". Asked of the metaobject rather
+     * than of the declaration's word, so a widget kind added later gets the
+     * better of the two without a second table. */
+    if (w->metaObject()->indexOfProperty("readOnly") >= 0) {
+        return set_property(w, "readOnly", QVariant(on != 0), err, err_size);
+    }
+    return set_property(w, "enabled", QVariant(on == 0), err, err_size);
+}
+
 extern "C" void gb_qt_show(void *window) {
     GbQtNode *n = (GbQtNode *)window;
     if (n && n->widget) {

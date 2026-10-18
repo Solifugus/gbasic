@@ -231,17 +231,89 @@ the **import**, taking the whole program with it — the shrink
 
 ### What is declared and not yet acted on, said out loud
 
-- **`type: {USD}`** is carried by the declaration and the backend does not use
-  it. A field is a plain text editor; nothing is damaged, and parsing through
-  the modifier arrives with the binding increment.
-- **`show:` / `edit:` cannot be acted on from the record at all**, and that is a
-  property of the declaration rather than an omission: a non-literal option is
-  recorded **by name and not by value** (§0.2), because `show: cust.id` names a
-  place to read in the frame where the subject lives. So population is the
-  program's — `qt.write(customer, "name", cust.name)` — and the watcher pair
-  that makes `form to edit` genuinely two-way is the next increment.
-- **`tabs`, `cells` and `table`** are not in the validated vocabulary either, so
-  there is nothing to render; and the **data-driven builder** (§4) is unstarted.
+- **`show:` / `edit:` in OPTION position** — the per-widget override that may
+  name a different source (`field balance( show: acct.balance )`) — is still
+  recorded by name and not by value (§0.2), so it cannot be acted on. What
+  shipped is the **form-level** binding, which needs no value from the
+  declaration because the binding is the *name*.
+- **`tabs`, `cells` and `table`** are not in the validated vocabulary, so there
+  is nothing to render; and the **data-driven builder** (§4) is unstarted.
+- **A nested container inside a form does not bind.** A `form` holding a `row`
+  holding fields binds only the form's direct children, deliberately: binding
+  through the layout would make the record's shape depend on how the form is
+  arranged. The remedy, if a real case wants it, is already spelled — the inner
+  container says whose subject it serves.
+
+## 0.5 BINDING (2026-10-17): `form to show` and `form to edit`
+
+Shipped, with `type:` and a property reader. Four things are worth recording
+because three of them correct this document.
+
+**§2.2's mechanism was half right.** It says binding is "a watcher per field in
+each direction". The first direction needs no watcher at all — a form populates
+once, at open. The second **cannot** be a watcher: a widget's signal fires
+inside `QApplication::exec()` beneath `qt.run()`, so the frame current at signal
+time is whichever one called `qt.run` and not reliably the one that called
+`qt.open`. There is no frame to write back into, and carrying one would mean
+capturing scope across the Qt queue.
+
+What replaces it is smaller than a watcher and is the language's own rule: **a
+record is a value**, so `qt.subject(win, "cust")` reads the widgets *at the
+moment it is asked* and folds them into the record the form captured at open.
+Nothing is tracked between the two, so no change signal can be missed, and the
+caller's own record is untouched — the fold returns a new one.
+
+**The fold has to keep each field's kind**, which the obvious implementation
+gets wrong. A widget holds text, so folding back blindly turns `{ id: 42 }` into
+`{ id: "42" }` — a record whose shape silently changed and which still prints
+the same digits. The kind comes from `type:` where the author declared one, from
+the captured field otherwise, and from a check box being a check box. This is
+why `type: {USD}` was done here rather than later: it is the declaration's own
+answer to that question, and applying it is one call into the machinery an
+assignment clause already uses.
+
+**A one-way form takes no typing**, and not for neatness. The alternative is a
+silent discard — somebody types into a display form, nothing complains, and
+`qt.subject` never reports it, which is the class warning 2107 exists for one
+level up. Which property says so is a fact about the widget: a `QLineEdit` gets
+`readOnly`, which still allows selecting and copying (what a reader of a display
+form wants), while a `QCheckBox` has no such property and is disabled instead.
+
+**The subject must exist.** `form to edit cust` has named a subject since the
+declaration shipped and nothing required one to be there, so a form bound to
+nothing opened quietly and could never populate — the "silently does nothing"
+class the closed vocabulary exists to prevent one level up. It is read from the
+frame that calls `qt.open`, which is what §0.2 means by "a place to read in the
+frame where the subject lives", and a missing one is refused with a message
+naming the form, the direction and where the subject is looked for.
+
+### A property reads back, which is what made the by-name route assertable
+
+`qt.read(win, part, property)` was built with binding because the tier arguing
+the by-name property route works could not see half of its own claim: it
+asserted that `text: "Go", enabled: false` was **accepted** and nothing more, so
+a backend that took every option and applied none passed it. The kind comes from
+the `QVariant` rather than from the caller, because every non-empty string is
+true in gBASIC — a boolean answered as the text `"false"` would read *backwards*
+in `if qt.read(f, "readOnly")`.
+
+### What binding does NOT catch, and why the refusal was not written
+
+A **misspelled part name inside a form** is not caught. A field whose name the
+record lacks is left empty rather than refused, because the refusal that would
+catch the typo is the same refusal that breaks a form filling in a **new**
+record, where every field is legitimately absent until somebody types. Being
+absent is also the answer `r.missing` already gives on a record, so the quiet
+behaviour is the consistent one; the cost is real and is stated rather than
+discovered.
+
+A `type:` that refuses what was typed reports **the modifier's own sentence**,
+which is the cause, and that sentence **does not name the part** — so with
+several `type:` fields in one form the author is told `money text is not a
+number` and must work out which. Naming it means adding context to a raise
+already in flight, which nothing in this tree does and which touches
+`raise_in_flight`; getting that wrong makes an error *vanish*, the one failure
+the error model exists to prevent. So it waits for a helper with its own tier.
 
 ### What the suite cannot assert, and why
 
@@ -384,9 +456,13 @@ Rejected on the way: `form bind: record` — `bind` is programmer jargon and
 `record` is also a gBASIC *type* name, so it reads as binding to the idea of a
 record.
 
-**Binding needs no new runtime machinery.** Watchers already observe record
-fields — measured, `watch(G.total)` fires on every write — so binding is a
-watcher per field in each direction.
+**Binding needs no new runtime machinery** — which held, by a different
+mechanism than this paragraph predicted. It said watchers: "`watch(G.total)`
+fires on every write, so binding is a watcher per field in each direction".
+**Measured when built, the second direction cannot work that way at all**: a
+widget's signal fires inside `QApplication::exec()` beneath `qt.run()`, so there
+is no caller's frame to write back into. A record being a *value* is what makes
+it work instead — `qt.subject` reads the widgets on demand. See §0.5.
 
 ### 2.3 Types are gBASIC's own modifiers
 
@@ -399,7 +475,10 @@ field due(   label: "Due",   type: {date} )
 ```
 
 Validation and parsing come free from the existing modifier, and it can say
-*which currency*, which a `type: "money"` string cannot. **Measured cost:** a
+*which currency*, which a `type: "money"` string cannot. **Shipped 2026-10-17**
+(§0.5): the declaration records the modifier's *name*, so applying it is one
+call into the machinery an assignment clause already uses — and it is what keeps
+a folded-back value money rather than text. **Measured cost:** a
 bare `{USD}` is not an expression today (`t = {date}` is a parse error), so the
 block head must accept a modifier token specially. The no-new-grammar alternative
 is a string, consistent with what `type()` answers, at the price of currency.

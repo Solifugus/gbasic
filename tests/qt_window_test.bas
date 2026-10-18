@@ -67,15 +67,31 @@ program main()
     check("and the handler carries something callable",
           type(customer.items[1].handler), "function")
 
+    ' THE SUBJECT MUST EXIST, and that is new: `form to edit cust` has named a
+    ' subject since the declaration shipped and nothing required one to be
+    ' there, so a form bound to nothing opened quietly and could never
+    ' populate. It is read from the frame that calls `qt.open` -- "a place to
+    ' read in the frame where the subject lives" (§0.2), that frame being
+    ' exactly the one asking.
+    cust = { id: "A-1000" }
+
     check("qt.open answers", qt.open(customer), true)
     print "opened"
+
+    ' POPULATION, which is the binding's first direction: a field named `id`
+    ' takes `cust.id` because THE BINDING IS THE NAME (§2.2).
+    check("a field bound by name is filled in", qt.read(customer, "id"), "A-1000")
 
     ' A PROPERTY SET AT CONSTRUCTION, read back THROUGH QT rather than from our
     ' own record -- which is the only thing that distinguishes a property that
     ' reached the widget from one we merely remembered.
     check("a button's text reached the widget", qt.read(customer, "save"), "Save")
 
-    check("a field starts empty", qt.read(customer, "name"), "")
+    ' AN ABSENT FIELD LEAVES THE PART EMPTY and does not raise -- the same
+    ' answer `r.missing` gives on a record, and what a form filling in a NEW
+    ' record needs, every field there being absent until somebody types.
+    check("a field whose name the record lacks starts empty",
+          qt.read(customer, "name"), "")
     check("writing reaches it", qt.write(customer, "name", "Ada Lovelace"), true)
     check("and reads back", qt.read(customer, "name"), "Ada Lovelace")
 
@@ -88,6 +104,23 @@ program main()
     check("a check box starts clear", qt.read(customer, "hold"), "false")
     check("and can be set", qt.write(customer, "hold", true), true)
     check("reading a box answers its state", qt.read(customer, "hold"), "true")
+
+    ' THE RECORD FOLLOWS THE WIDGETS, GATHERED FROM BOTH FORMS. `cust` is
+    ' edited by two forms here -- one in the column, one inside the `group` --
+    ' which is how a long form is laid out, and the fold must therefore visit
+    ' every form carrying that subject rather than the first. Nothing above
+    ' this point would notice if it visited only one.
+    back = qt.subject(customer, "cust")
+    check("a field untouched by the fold keeps its captured value", back.id, "A-1000")
+    check("the first form's field follows the widget", back.name, "Ada Lovelace")
+    check("the SECOND form's field follows too", string(back.limit), "1250.50")
+    ' THE KIND IS KEPT, which the obvious implementation gets wrong: a widget
+    ' holds TEXT, so folding back blindly makes `limit` a string that still
+    ' PRINTS as 1250.50 -- which is why the check is on `type` and not only on
+    ' the digits, the same trap the finio amount tripwire records.
+    check("and `type: {USD}` folds back AS money", type(back.limit), "money")
+    check("a check box folds back as a boolean", type(back.hold), "boolean")
+    check("with the state it is actually in", back.hold, true)
 
     ' THE SIGNAL. `click` is invoked BY NAME through QMetaObject, which emits
     ' the real `clicked` signal through the real connection -- so what is being

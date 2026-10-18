@@ -45,18 +45,29 @@
 #                `qt.can_display()` still ANSWERS rather than raising, which is
 #                what lets a program degrade gracefully.
 #
-# WHAT IS NOT ASSERTED HERE AND SAYS SO: valgrind. Qt's platform plugins,
-# font configuration and QApplication statics are not freed by design, so a
-# leak tier over this would be a suppression file describing Qt rather than a
-# check on us -- and run_valgrind_policy.sh's whole argument is that an
-# access-only tier must not become "valgrind is off". The gBASIC-side
-# allocations this increment adds (the handler shells and their names) ARE
-# covered, by run_window.sh's existing valgrind tier, which parses every window
-# fixture without opening one.
+#   VALGRIND     ACCESS ONLY, and the split is the whole reason there is a tier
+#                here at all. Qt's platform plugins, font configuration and
+#                QApplication statics are not freed by design, so a LEAK claim
+#                over an opened window would be a suppression file describing
+#                Qt rather than a check on us -- which is run_odbc's position
+#                on its driver, reached for the same reason. An ACCESS claim
+#                costs nothing and is worth making, and run_valgrind_policy.sh
+#                pins the one axis the two policies differ on, so access-only
+#                cannot quietly become "valgrind is off".
+#
+# A NOTE HERE USED TO SAY the gBASIC-side allocations were covered by
+# run_window.sh's valgrind tier, "which parses every window fixture without
+# opening one". THAT WAS FALSE TWICE OVER: that tier parses ONE fixture it
+# generates itself, not the Qt ones -- and the allocations binding adds (a
+# form's captured record, its subject and direction) happen at OPEN, which no
+# parse-only tier can reach however many fixtures it reads. Measured before
+# writing the tier: zero invalid accesses and zero uninitialised reads over the
+# binding fixture under real Qt, so the claim is available rather than assumed.
 . "$(dirname "$0")/portable.sh"
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/valgrind_tier.sh
 make >/dev/null
 
 work="$(mktemp -d)"
@@ -356,6 +367,72 @@ else
     fail "an absent part was not distinguished: $(tr '\n' '|' < "$work/pr.out")"
 fi
 
+# --------------------------------------------------------------------- BINDING
+
+printf 'TIER binding: `form to show` and `form to edit` differ, and the record follows\n'
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
+    tests/qt_binding_test.bas > "$work/b.out" 2> "$work/b.err"
+b_rc=$?
+set -e
+if [ "$b_rc" != "0" ]; then
+    printf '    %s\n' "$(tail -5 "$work/b.err")"
+    fail "the binding fixture exited $b_rc"
+fi
+bchecks=$(grep -c '^ok   ' "$work/b.out" || true)
+if grep -q MISMATCH "$work/b.out"; then
+    grep MISMATCH "$work/b.out" | while read -r line; do printf '    %s\n' "$line"; done
+    fail "$(grep -c MISMATCH "$work/b.out") mismatches in the binding fixture"
+else
+    pass "$bchecks checks, 0 mismatches"
+fi
+# A COVERAGE FLOOR. The fixture asserts most of its own claims, so the one
+# thing the runner must add is that it really ran them -- a fixture that
+# stopped early satisfies "0 mismatches" by saying nothing.
+if [ "${bchecks:-0}" -ge 25 ]; then
+    pass "and it really ran them ($bchecks >= 25)"
+else
+    fail "only $bchecks binding checks ran -- the fixture stopped early"
+fi
+# THE FOUR REFUSALS ARE PINNED HERE RATHER THAN IN THE FIXTURE, because each is
+# a SENTENCE and the fixture can only say whether something raised. A refusal
+# that fired with the wrong words is the reports-the-wrong-cause class, which
+# this backend has already produced once.
+#
+# THE SUBJECT MUST EXIST, and the message has to name the FORM: `env_get` would
+# say `undefined variable: nowhere`, which is true and says nothing about the
+# declaration that wanted it or about where qt.open looks.
+if grep -q 'NOSUBJECT: window `orphan`: `form to edit nowhere` found no `nowhere`' "$work/b.out"; then
+    pass "a form bound to a name that is not in scope is refused, naming the form"
+else
+    fail "the absent-subject refusal: $(grep NOSUBJECT "$work/b.out" || echo 'never fired')"
+fi
+if grep -q 'NOTARECORD: .*needs a record, and `astring` holds string' "$work/b.out"; then
+    pass "a subject that is not a record is refused, naming what it holds instead"
+else
+    fail "the wrong-kind refusal: $(grep NOTARECORD "$work/b.out" || echo 'never fired')"
+fi
+if grep -q 'NOSUCHFORM: window `editor` has no form bound to `nosuchsubject`' "$work/b.out"; then
+    pass "qt.subject on a name no form binds is refused"
+else
+    fail "the unbound-name refusal: $(grep NOSUCHFORM "$work/b.out" || echo 'never fired')"
+fi
+# A `type:` MUST REFUSE WHAT IS NOT OF THAT TYPE. The sentence is the
+# MODIFIER'S OWN and is the cause, so it propagates untouched -- PLAT-ERR's
+# first-raise-wins rule exists because replacing a cause with a symptom is how
+# a diagnostic comes to name the one thing that is not at fault.
+#
+# WHAT IT DOES NOT SAY IS ASSERTED AS A KNOWN COST rather than left to be
+# discovered: it does not name the PART, so with several `type:` fields in one
+# form the author must work out which. Naming it means adding context to a
+# raise already in flight, which nothing here does and which can make an error
+# VANISH if done wrongly, so it waits for a helper with its own tier.
+if grep -q 'BADVALUE: money text is not a number' "$work/b.out"; then
+    pass "text that is not money is refused by the modifier's own sentence"
+else
+    fail "the bad-value refusal: $(grep BADVALUE "$work/b.out" || echo 'never fired')"
+fi
+
 # --------------------------------------------------------------------- LOOP
 printf 'TIER loop: Qt owns the thread and gBASIC is still serviced\n'
 if ! command -v curl >/dev/null 2>&1; then
@@ -406,6 +483,47 @@ else
 fi
 
 # -------------------------------------------------------------------- BUILD
+printf 'TIER valgrind: no invalid access while a real window is bound and folded\n'
+# ACCESS ONLY. The leak half is unavailable -- Qt does not free its platform
+# plugin, its font configuration or its QApplication statics -- so what is
+# claimed here is exactly what can be claimed: nothing in this increment reads
+# or writes memory it does not own. That is not a weak claim for the code under
+# test: a form's capture is a `Value` COPY held in a registry across the whole
+# life of the window and freed in two places (a failed open, and teardown), and
+# the fold reads it again on every `qt.subject` -- which is a refcounted value
+# surviving calls, the shape PLAT-RECIDX's two real defects had and neither of
+# which produced a wrong answer.
+if ! vg_available; then
+    printf '  SKIP (valgrind unavailable -- memory access while a window is bound was NOT measured)\n'
+else
+    set +e
+    # NO `timeout` IN FRONT OF IT, which the first draft had and which cannot
+    # work: `vg_run_access_only` is a shell FUNCTION and timeout execs a
+    # program, so it reported exit 127 -- the same trap run_odbc.sh records
+    # from its own first draft, where `sh -c "exec vg_run ..."` printed `ok`
+    # over `vg_run: not found`. Here it FAILED LOUDLY instead, because this
+    # tier compares against $VG_EXIT rather than against zero. The hang guard
+    # is run_all.sh's per-suite cap, which is what every other valgrind tier in
+    # this tree relies on.
+    QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
+        tests/qt_binding_test.bas > "$work/vgb.out" 2> "$work/vgb.err"
+    vg_rc=$?
+    set -e
+    # COMPARED AGAINST $VG_EXIT, which the shared policy exposes for exactly
+    # this: the fixture itself can fail for its own reasons, and reading that
+    # as a valgrind objection prints FAIL over a report saying zero errors --
+    # the reports-the-wrong-cause class run_repl.sh's own tier produced.
+    if [ "$vg_rc" = "$VG_EXIT" ]; then
+        printf '    %s\n' "$(grep -E 'Invalid|uninitialised' "$work/vgb.err" | head -3)"
+        fail "valgrind reported an invalid access while a form was bound"
+    elif [ "$vg_rc" != "0" ]; then
+        printf '    %s\n' "$(tail -3 "$work/vgb.err")"
+        fail "the fixture exited $vg_rc under valgrind, which is not a valgrind objection"
+    else
+        pass "no invalid access or uninitialised read across open, fold and teardown"
+    fi
+fi
+
 printf 'TIER degrading: `qt.can_display` ANSWERS where everything else refuses\n'
 # THE SHAPE `has_builtin` ALREADY HAS, and the reason is the same: a program
 # asking whether it may open a window is degrading gracefully, and "this build

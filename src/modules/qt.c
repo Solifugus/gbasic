@@ -56,9 +56,34 @@ static void qt_raise(const char *message) {
 /* ONE OPEN WINDOW PER DECLARED NAME. A declaration's name is unique in its
  * scope by construction, so it is a key that cannot collide -- which is what
  * lets the record be the address. */
+/* WHAT A FORM CAPTURED WHEN THE WINDOW OPENED. The declaration names the
+ * subject (`form to edit cust` records subject "cust"), and its VALUE is read
+ * from the frame that called `qt.open` -- which is what §0.2 means by "a place
+ * to read in the frame where the subject lives", that frame being exactly the
+ * one doing the asking.
+ *
+ * THE RECORD IS KEPT RATHER THAN RE-READ, and that is forced rather than
+ * preferred. §2.2 proposed "a watcher per field in each direction"; the first
+ * direction works that way and THE SECOND CANNOT, because a widget's signal
+ * fires inside QApplication::exec() beneath `qt.run()`, so the frame current
+ * at signal time is whichever one called `qt.run` and not reliably the one
+ * that called `qt.open`. There is no frame to write back into.
+ *
+ * What replaces it is smaller than a watcher, and it is the language's own
+ * rule: a record is a VALUE, so `qt.subject` reads the widgets AT THE MOMENT
+ * IT IS ASKED and folds them into this capture. Nothing has to be tracked
+ * between the two, which also means no change signal can be missed. */
+typedef struct {
+    char *subject;
+    char *direction;   /* "show" or "edit" */
+    Value record;      /* the value read at open */
+} QtBinding;
+
 typedef struct {
     char *name;
     void *node;      /* the backend's window node */
+    QtBinding *bindings;
+    size_t binding_count;
 } QtOpenWindow;
 
 static QtOpenWindow *qt_windows = NULL;
@@ -84,7 +109,76 @@ static void qt_window_remember(const char *name, void *node) {
     qt_windows = grown;
     qt_windows[qt_window_count].name = copy_string(name);
     qt_windows[qt_window_count].node = node;
+    qt_windows[qt_window_count].bindings = NULL;
+    qt_windows[qt_window_count].binding_count = 0;
     qt_window_count++;
+}
+
+/* UNREMEMBER A WINDOW whose open did not finish. Binding needs the registry
+ * entry (that is where a form's capture lives), so the entry is made before
+ * the last step that can fail -- and a declaration left registered after a
+ * failed open would meet the author's retry with "already open", which is a
+ * second message about the first mistake. */
+static void qt_window_forget(const char *name) {
+    for (size_t i = 0; i < qt_window_count; i++) {
+        if (strcmp(qt_windows[i].name, name) != 0) {
+            continue;
+        }
+        free(qt_windows[i].name);
+        for (size_t b = 0; b < qt_windows[i].binding_count; b++) {
+            free(qt_windows[i].bindings[b].subject);
+            free(qt_windows[i].bindings[b].direction);
+            value_free(qt_windows[i].bindings[b].record);
+        }
+        free(qt_windows[i].bindings);
+        for (size_t j = i + 1; j < qt_window_count; j++) {
+            qt_windows[j - 1] = qt_windows[j];
+        }
+        qt_window_count--;
+        return;
+    }
+}
+
+static QtOpenWindow *qt_window_entry(const char *name) {
+    for (size_t i = 0; i < qt_window_count; i++) {
+        if (strcmp(qt_windows[i].name, name) == 0) {
+            return &qt_windows[i];
+        }
+    }
+    return NULL;
+}
+
+/* WHICH WORDS BIND. `field` and `check` carry a value a person can change;
+ * `button` and `stretch` do not, so a button named `save` inside a form is not
+ * a binding that failed to find a field -- it is a button. Without this
+ * distinction the refusal below would fire on the commonest form there is. */
+static int qt_bindable_word(const char *word) {
+    return word && (strcmp(word, "field") == 0 || strcmp(word, "check") == 0);
+}
+
+/* THE SUBJECT, WITHOUT RAISING. `env_get` raises `undefined variable: cust`,
+ * which is true and says nothing about the form that wanted it -- so the walk
+ * is done here and the message names the declaration. */
+static Value *qt_subject_slot(const char *name) {
+    for (Env *env = current_env; env; env = env->parent) {
+        Symbol *symbol = env_find_in_frame(env, name);
+        if (symbol) {
+            return &symbol->value;
+        }
+    }
+    return NULL;
+}
+
+/* A FIELD'S TYPE IS gBASIC'S OWN MODIFIER (§2.3), recorded by the declaration
+ * as the modifier's NAME -- `type: {USD}` arrives as the text "USD" -- so
+ * applying it is one call into the machinery an assignment clause already
+ * uses. Nothing here reimplements parsing or validation, which is the whole
+ * argument for `type:` being a modifier rather than a string. */
+static Value qt_apply_type(const char *modifier_name, Value value) {
+    AstModifierUse use;
+    memset(&use, 0, sizeof(use));
+    use.name = (char *)modifier_name;
+    return apply_assignment_modifier(use, value);
 }
 
 /* RE-ENTRY INTO THE EVALUATOR FROM A NATIVE SIGNAL. This is the pattern
@@ -319,6 +413,274 @@ static int qt_build_items(void *parent, Value *items, void *root) {
     return 1;
 }
 
+/* BINDING IN A PASS OF ITS OWN, after the whole tree exists. Not for symmetry
+ * with the handler pass: a form must be able to populate its parts, and the
+ * build walk hands one widget at a time to the backend with no place to carry
+ * a record down -- so threading the subject through `qt_build_items` would
+ * change a signature every container shares in order to serve the one kind
+ * that has a subject.
+ *
+ * ONLY A FORM'S DIRECT CHILDREN BIND. A `form` may hold a `row` holding
+ * fields, and binding those would make the record's shape depend on the
+ * LAYOUT -- so a nested container is walked for a form of its OWN and
+ * otherwise left alone. That is a stated limit rather than a gap: the fix, if
+ * a real case wants it, is for the inner container to say whose subject it
+ * serves, which is what `form to edit` already spells. */
+static int qt_bind_form(void *root, Value *form, const char *window_name) {
+    char err[QT_ERRBUF];
+    char message[512];
+    const char *subject = qt_record_text(form, "subject");
+    const char *direction = qt_record_text(form, "direction");
+    if (!subject || !direction) {
+        return 1;
+    }
+    Value *slot = qt_subject_slot(subject);
+    if (!slot) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `form to %s %s` found no `%s` -- qt.open reads "
+                 "the subject from the frame that calls it",
+                 window_name, direction, subject, subject);
+        qt_raise(message);
+        return 0;
+    }
+    if (slot->kind != VALUE_RECORD) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `form to %s %s` needs a record, and `%s` holds "
+                 "%s", window_name, direction, subject, subject,
+                 value_kind_name(slot->kind));
+        qt_raise(message);
+        return 0;
+    }
+    QtOpenWindow *entry = qt_window_entry(window_name);
+    /* ONE CAPTURE PER SUBJECT, not per form. Two forms may edit one record --
+     * the fixture's own `cust` is split across a column and a group, which is
+     * how a long form is laid out -- and a second capture of the same variable
+     * would be a second answer to `qt.subject`. The FOLD still visits every
+     * form carrying that subject, so a record spread over several groups is
+     * gathered back whole. */
+    int already = 0;
+    for (size_t i = 0; entry && i < entry->binding_count; i++) {
+        if (strcmp(entry->bindings[i].subject, subject) == 0) {
+            already = 1;
+            break;
+        }
+    }
+    if (entry && !already) {
+        QtBinding *grown = realloc(entry->bindings,
+                                   sizeof(*entry->bindings) *
+                                       (entry->binding_count + 1));
+        if (!grown) {
+            abort();
+        }
+        entry->bindings = grown;
+        entry->bindings[entry->binding_count].subject = copy_string(subject);
+        entry->bindings[entry->binding_count].direction = copy_string(direction);
+        entry->bindings[entry->binding_count].record = value_copy(*slot);
+        entry->binding_count++;
+    }
+    RecordField *entries = record_find(form, "items");
+    if (!entries || !entries->value || entries->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    size_t count = entries->value->as.array.store
+                       ? entries->value->as.array.store->count : 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *part = &entries->value->as.array.store->items[i];
+        if (part->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *word = qt_record_text(part, "word");
+        const char *name = qt_record_text(part, "name");
+        if (!qt_bindable_word(word) || !name) {
+            continue;
+        }
+        /* A `show` FORM'S PARTS TAKE NO TYPING. Done before the value is
+         * written, so even a part with nothing to show is still display only
+         * -- otherwise an absent field would be the one place a one-way form
+         * silently accepted an edit. */
+        if (strcmp(direction, "show") == 0) {
+            err[0] = '\0';
+            if (!gb_qt_set_display_only(root, name, 1, err, sizeof(err))) {
+                snprintf(message, sizeof(message), "window `%s`: %s",
+                         window_name, err[0] ? err : "that part could not be "
+                                                      "made display only");
+                qt_raise(message);
+                return 0;
+            }
+        }
+        RecordField *field = record_find(slot, name);
+        if (!field || !field->value) {
+            /* AN ABSENT FIELD LEAVES THE PART EMPTY AND DOES NOT RAISE, which
+             * is the same answer `r.missing` gives on a record -- and it is
+             * what a "new customer" form needs, every field there being
+             * legitimately absent until somebody types. THE COST IS REAL AND
+             * IS NOT PAPERED OVER: a MISSPELLED part name inside a form is
+             * therefore not caught, and the refusal that would catch it is the
+             * one that breaks the new-record case. */
+            continue;
+        }
+        /* THROUGH THE ONE RENDERER (PLAT-RENDER), so money, a date and a
+         * duration reach the widget in the words the language itself uses.
+         * `builtin_string_value` CONSUMES its argument, so the copy handed to
+         * it is not freed here. */
+        Value text = builtin_string_value(value_copy(*field->value));
+        if (text.kind != VALUE_STRING) {
+            value_free(text);
+            continue;
+        }
+        err[0] = '\0';
+        int ok = gb_qt_write(root, name, text.as.string, err, sizeof(err));
+        value_free(text);
+        if (!ok) {
+            snprintf(message, sizeof(message),
+                     "window `%s`: `%s` could not be shown -- %s", window_name,
+                     name, err[0] ? err : "the part refused that value");
+            qt_raise(message);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* READ THE WIDGETS BACK INTO THE RECORD. Walks the same shape the bind pass
+ * walks and for the same reason: only a form's DIRECT children bind, so only
+ * they fold back, and the record's shape therefore does not depend on the
+ * layout.
+ *
+ * WHAT DECIDES THE KIND, in order: a declared `type:` (the author said so), a
+ * `check` (a box is boolean whatever the record held), then the CAPTURED
+ * field's own kind, then text. Without that last chain `{ id: 42 }` comes back
+ * as `{ id: "42" }` and every comparison against it changes answer. */
+static int qt_fold_form(void *root, Value *form, Value *out,
+                        const char *window_name) {
+    char message[512];
+    RecordField *entries = record_find(form, "items");
+    if (!entries || !entries->value || entries->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    size_t count = entries->value->as.array.store
+                       ? entries->value->as.array.store->count : 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *part = &entries->value->as.array.store->items[i];
+        if (part->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *word = qt_record_text(part, "word");
+        const char *name = qt_record_text(part, "name");
+        if (!qt_bindable_word(word) || !name) {
+            continue;
+        }
+        char *text = gb_qt_read(root, name);
+        if (!text) {
+            continue;
+        }
+        RecordField *opts = record_find(part, "options");
+        const char *declared = NULL;
+        if (opts && opts->value && opts->value->kind == VALUE_RECORD) {
+            declared = qt_record_text(opts->value, "type");
+        }
+        RecordField *was = record_find(out, name);
+        Value folded;
+        if (strcmp(word, "check") == 0) {
+            folded = value_bool(strcmp(text, "true") == 0);
+        } else if (declared) {
+            folded = qt_apply_type(declared, value_string(text));
+        } else if (was && was->value && was->value->kind == VALUE_NUMBER) {
+            folded = qt_apply_type("number", value_string(text));
+        } else {
+            folded = value_string(text);
+        }
+        free(text);
+        /* A `type:` OR A NUMERIC FIELD CAN REFUSE WHAT WAS TYPED -- "abc" is
+         * not money -- and the modifier's own sentence is the CAUSE, so it
+         * propagates untouched: PLAT-ERR's first-raise-wins rule exists
+         * because replacing a cause with a symptom is how a diagnostic comes
+         * to name the one thing that is not at fault.
+         *
+         * WHAT IS MISSING IS STATED RATHER THAN GUESSED AT: the message does
+         * not name the PART, so with several `type:` fields in one form the
+         * author is told `money text is not a number` and must work out which.
+         * Naming it means ADDING CONTEXT to a raise already in flight, which
+         * no module here does and which touches `raise_in_flight` -- and
+         * getting that wrong makes an error VANISH, the one failure the whole
+         * error model is built to prevent. So it waits for a helper of its own
+         * with its own tier, rather than being improvised here. */
+        if (error_action_pending()) {
+            value_free(folded);
+            return 0;
+        }
+        if (folded.kind == VALUE_NULL) {
+            snprintf(message, sizeof(message),
+                     "window `%s`: `%s` does not hold a %s", window_name, name,
+                     declared ? declared : "number");
+            qt_raise(message);
+            value_free(folded);
+            return 0;
+        }
+        record_set(out, name, folded);
+    }
+    return 1;
+}
+
+static int qt_fold_items(void *root, Value *items, const char *subject,
+                         Value *out, const char *window_name) {
+    size_t count = items->as.array.store ? items->as.array.store->count : 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *entry = &items->as.array.store->items[i];
+        if (entry->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *kind = qt_record_text(entry, "kind");
+        if (!kind || strcmp(kind, "container") != 0) {
+            continue;
+        }
+        const char *has = qt_record_text(entry, "subject");
+        if (has) {
+            if (strcmp(has, subject) == 0) {
+                if (!qt_fold_form(root, entry, out, window_name)) {
+                    return 0;
+                }
+            }
+            continue;
+        }
+        RecordField *nested = record_find(entry, "items");
+        if (nested && nested->value && nested->value->kind == VALUE_ARRAY) {
+            if (!qt_fold_items(root, nested->value, subject, out,
+                               window_name)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int qt_bind_items(void *root, Value *items, const char *window_name) {
+    size_t count = items->as.array.store ? items->as.array.store->count : 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *entry = &items->as.array.store->items[i];
+        if (entry->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *kind = qt_record_text(entry, "kind");
+        if (!kind || strcmp(kind, "container") != 0) {
+            continue;
+        }
+        if (qt_record_text(entry, "subject")) {
+            if (!qt_bind_form(root, entry, window_name)) {
+                return 0;
+            }
+            continue;
+        }
+        RecordField *entries = record_find(entry, "items");
+        if (entries && entries->value && entries->value->kind == VALUE_ARRAY) {
+            if (!qt_bind_items(root, entries->value, window_name)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 /* HANDLERS IN A SECOND PASS, because `on save.clicked` may be written above
  * the `save` it names -- the declaration is a declaration, so source order is
  * not build order. The load-time pass already refused a target that does not
@@ -376,6 +738,12 @@ static void qt_shutdown(void) {
 #if HAVE_QT
     for (size_t i = 0; i < qt_window_count; i++) {
         free(qt_windows[i].name);
+        for (size_t b = 0; b < qt_windows[i].binding_count; b++) {
+            free(qt_windows[i].bindings[b].subject);
+            free(qt_windows[i].bindings[b].direction);
+            value_free(qt_windows[i].bindings[b].record);
+        }
+        free(qt_windows[i].bindings);
     }
     free(qt_windows);
     qt_windows = NULL;
@@ -509,20 +877,109 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         void *root = gb_qt_window(title ? title : (name ? name : ""),
                                   (int)width, (int)height);
+        /* REMEMBERED BEFORE BINDING, because a form's capture is kept on the
+         * registry entry; forgotten again if binding refuses, so a failed
+         * open leaves nothing behind. */
+        if (name) {
+            qt_window_remember(name, root);
+        }
         RecordField *items = record_find(&win, "items");
         if (items && items->value && items->value->kind == VALUE_ARRAY) {
             if (!qt_build_items(root, items->value, root) ||
-                !qt_connect_items(root, items->value)) {
+                !qt_connect_items(root, items->value) ||
+                !qt_bind_items(root, items->value, name ? name : "")) {
+                if (name) {
+                    qt_window_forget(name);
+                }
                 value_free(win);
                 return value_null();
             }
         }
+        /* SHOWN LAST, so a bound form appears filled in rather than appearing
+         * empty and then populating. */
         gb_qt_show(root);
-        if (name) {
-            qt_window_remember(name, root);
-        }
         value_free(win);
         return value_bool(1);
+    }
+
+    /* THE RECORD THE FORM IS WORKING ON. For `to edit` the widgets are read AT
+     * THIS MOMENT and folded into the capture, which is what makes `form to
+     * edit cust` genuinely two-way (§2.2); for `to show` the capture is
+     * returned untouched, because a one-way form is display only and a record
+     * that followed it would mean the direction said nothing.
+     *
+     * THE FOLD-BACK KEEPS THE FIELD'S KIND, and that is the part that would be
+     * wrong in the obvious implementation: a widget holds TEXT, so folding
+     * back blindly turns `{ id: 42 }` into `{ id: "42" }` -- a record whose
+     * shape silently changed, which PLAT-EQ's own history says nothing
+     * downstream would notice. So the kind comes from `type:` where the author
+     * declared one, from the CAPTURED field otherwise, and from a check being
+     * a check in the one case where the widget decides. */
+    if (strcmp(verb, "subject") == 0) {
+        if (argc != 2) {
+            qt_raise("qt.subject expects a window and the subject's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "subject") || which.kind != VALUE_STRING) {
+            if (which.kind != VALUE_STRING && !error_action_pending()) {
+                qt_raise("qt.subject expects the subject's name as text");
+            }
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        QtOpenWindow *entry = wname ? qt_window_entry(wname) : NULL;
+        if (!entry) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        QtBinding *binding = NULL;
+        for (size_t i = 0; i < entry->binding_count; i++) {
+            if (strcmp(entry->bindings[i].subject, which.as.string) == 0) {
+                binding = &entry->bindings[i];
+                break;
+            }
+        }
+        if (!binding) {
+            snprintf(message, sizeof(message),
+                     "window `%s` has no form bound to `%s`", wname,
+                     which.as.string);
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        Value out = value_copy(binding->record);
+        if (strcmp(binding->direction, "edit") != 0) {
+            value_free(win);
+            value_free(which);
+            return out;
+        }
+        RecordField *items = record_find(&win, "items");
+        if (items && items->value && items->value->kind == VALUE_ARRAY) {
+            if (!qt_fold_items(entry->node, items->value, which.as.string,
+                               &out, wname)) {
+                value_free(out);
+                value_free(win);
+                value_free(which);
+                return value_null();
+            }
+        }
+        value_free(win);
+        value_free(which);
+        return out;
     }
 
     if (strcmp(verb, "read") == 0 || strcmp(verb, "write") == 0) {

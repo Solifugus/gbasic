@@ -30753,6 +30753,14 @@ static Value gi_eval_call(AstExpr *expr) {
 #include "modules/xlsx.c"
 /* AFTER the event loop, deliberately: the Qt tick calls
  * webserver_run_event_loop_once, which is defined above. */
+/* `type: {USD}` ON A FIELD IS gBASIC'S OWN MODIFIER (qt_gui_design.md §2.3),
+ * and the declaration records it as the modifier's NAME, so the Qt module
+ * applies it through the same machinery an assignment clause uses. Declared
+ * here because that applier is defined below this include and the module needs
+ * it: the alternative is a second parser for types inside the backend, which
+ * is the thing `type:` being a modifier exists to avoid. */
+static Value apply_assignment_modifier(AstModifierUse modifier, Value value);
+
 #include "modules/qt.c"
 
 /* ===================== process.run (NAP-6) ==============================

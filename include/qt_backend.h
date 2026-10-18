@@ -129,6 +129,21 @@ int gb_qt_write(void *window, const char *name, const char *text,
 int gb_qt_get(void *window, const char *name, const char *prop, char *kind,
               double *num, char **text, char *err, size_t err_size);
 
+/* A `form to show` IS DISPLAY ONLY, so its parts must not take typing -- not
+ * for neatness but because the alternative is a SILENT DISCARD: someone types
+ * into a one-way form, nothing complains, and `qt.subject` never reports it.
+ * That is the class warning 2107 exists for one level up.
+ *
+ * WHICH PROPERTY IS A FACT ABOUT THE WIDGET and so is decided here rather than
+ * by the caller: a QLineEdit has `readOnly`, which still allows selecting and
+ * COPYING the text -- what a reader of a display form wants -- while a
+ * QCheckBox has no such property at all, so it is disabled instead. Keeping
+ * the policy in one place is what stops the C side guessing from the
+ * declaration's word.
+ */
+int gb_qt_set_display_only(void *window, const char *name, int on, char *err,
+                           size_t err_size);
+
 void gb_qt_show(void *window);
 
 /* Hands the thread to QApplication::exec(). `tick_ms` is how often gBASIC's

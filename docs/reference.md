@@ -3822,10 +3822,12 @@ window customer( title: "Customer", width: 480 )
 end window
 
 program main()
+    cust = { name: "Ada Lovelace" }
     if qt.can_display() then
         qt.open(customer)
-        qt.write(customer, "name", "Ada Lovelace")
         qt.run()
+        cust = qt.subject(customer, "cust")
+        print "the person typed " + cust.name
     else
         print "no display -- nothing to open"
     end if
@@ -3837,7 +3839,9 @@ end program
 | `qt.can_display()` | whether a window can be opened at all. **Answers rather than raising**, including on a build with no Qt — a program asking this is degrading gracefully, and "this build has no Qt" is one of the answers |
 | `qt.open(win)` | build and show the declaration. Refuses, naming **a display**, when there is none |
 | `qt.read(win, name)` | the text a part is showing (`"true"`/`"false"`for a check box) |
+| `qt.read(win, name, property)` | one named Qt property of that part, **in the kind Qt declares it** — `readOnly` answers a boolean, `maxLength` a number. A property the widget does not carry is refused by name, as it is when set |
 | `qt.write(win, name, value)` | show a value, rendered exactly as `print` would render it |
+| `qt.subject(win, name)` | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
 | `qt.invoke(win, name, method)` | call a widget method by name — `click`, `clear`, `setFocus` |
 | `qt.run()` | hand the thread to Qt's event loop. gBASIC's own sources (a webserver, transfers, timers, the actor inbox) keep being serviced |
 | `qt.stop()` | end that loop; ordinarily called from a handler |
@@ -3845,6 +3849,23 @@ end program
 **A window is addressed by its declaration**, not by a handle: `qt.open(customer)`
 and `qt.read(customer, "name")` both take the record the `window` block bound,
 the same way `web.routes(app)` takes a server record.
+
+**A form binds by name.** `form to edit cust` names its subject, and a field
+named `email` takes `cust.email` — so there is nothing to look up and nothing to
+wire. The subject is read from the frame that calls `qt.open`, so `cust` must be
+in scope there; a form naming a subject that is not is refused rather than
+opening quietly and showing nothing. A field the record does not have is left
+empty rather than refused, which is what a form filling in a *new* record needs.
+
+`to show` and `to edit` differ in two ways. A `show` form's parts take no
+typing — a field is read-only, a check box disabled — because the alternative is
+a silent discard: someone types, nothing complains, and nothing ever reports it.
+And only an `edit` form's record follows its widgets through `qt.subject`.
+
+**The fold keeps each field's kind.** A widget holds text, so folding back
+blindly would turn `{ id: 42 }` into `{ id: "42" }`. The kind comes from
+`type:` where the field declares one, from the captured field otherwise, and
+from a check box being a check box.
 
 **No `load` is needed.** A `window` block implies no import, so neither does
 rendering one.
