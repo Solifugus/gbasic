@@ -541,6 +541,14 @@ extern "C" int gb_qt_invoke(void *window, const char *target,
     return 0;
 }
 
+/* NULL MEANS TWO THINGS HERE AND TODAY THAT IS SAFE -- a note for whoever adds
+ * the next widget kind. The caller turns NULL into "this window has no part
+ * named X", which is true for an absent part and would be FALSE for a part
+ * that is there and carries no readable property. It cannot happen yet because
+ * every one of the three leaf words maps to a widget with `text` or `checked`.
+ * A widget without either needs the two answers separated, or the message
+ * becomes a lie about a part the author can see on the screen -- the
+ * reports-the-wrong-cause class. */
 extern "C" char *gb_qt_read(void *window, const char *name) {
     GbQtNode *root = (GbQtNode *)window;
     if (!root) {

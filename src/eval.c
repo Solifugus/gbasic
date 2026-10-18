@@ -46048,6 +46048,12 @@ static void runtime_teardown(void) {
     http_library_loaded = 0;
     http_shutdown();
     timer_shutdown();
+    /* A live QApplication and an open window would otherwise outlive the
+     * program that asked for them -- and at a prompt, meet the next `qt.open`
+     * in the same process as a SECOND QApplication, which Qt does not allow.
+     * run_repl.sh's note is the general form: a module forgotten here does not
+     * leak, it leaves something BOUND after the session ended. */
+    qt_shutdown();
     if (webclient_curl_initialized) {
 #if HAVE_LIBCURL
         curl_global_cleanup();

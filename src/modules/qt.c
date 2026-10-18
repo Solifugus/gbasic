@@ -362,6 +362,34 @@ static int qt_connect_items(void *root, Value *items) {
     return 1;
 }
 
+#endif /* HAVE_QT */
+
+/* TEARDOWN, which is a requirement rather than tidiness. run_repl.sh's note
+ * says why in as many words: the session teardown is EXTRACTED so a module
+ * cannot be forgotten, and a forgotten one does not leak -- it leaves
+ * something BOUND after the session ended. Here that something is a live
+ * QApplication and an open window, which would outlive the program that asked
+ * for it and meet the next `qt.open` in the same process as a second
+ * QApplication, which Qt does not allow. Called from runtime_teardown beside
+ * http_shutdown and timer_shutdown. */
+static void qt_shutdown(void) {
+#if HAVE_QT
+    for (size_t i = 0; i < qt_window_count; i++) {
+        free(qt_windows[i].name);
+    }
+    free(qt_windows);
+    qt_windows = NULL;
+    qt_window_count = 0;
+    if (qt_begun) {
+        gb_qt_end();
+        qt_begun = 0;
+    }
+    qt_callbacks_set = 0;
+#endif
+}
+
+#if HAVE_QT
+
 static int qt_window_record(Value *v, const char *verb) {
     char message[256];
     if (v->kind != VALUE_RECORD) {

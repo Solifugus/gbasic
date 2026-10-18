@@ -309,7 +309,8 @@ case "$TIER" in
         TIER_MAKE_ARGS="GIO_AVAILABLE=0 GIR_AVAILABLE=0 GTK_AVAILABLE=0 \
             LDAP_AVAILABLE=0 LIBCRYPTO_AVAILABLE=0 LIBCURL_AVAILABLE=0 \
             LIBPQ_AVAILABLE=0 LIBSSL_AVAILABLE=0 LIBXCRYPT_AVAILABLE=0 \
-            ODBC_AVAILABLE=0 ZLIB_AVAILABLE=1 YESCRYPT_VENDORED=1"
+            ODBC_AVAILABLE=0 QT_AVAILABLE=0 ZLIB_AVAILABLE=1 \
+            YESCRYPT_VENDORED=1"
         EXPECTED_NEEDED="libc.so.6 libm.so.6"
         TIER_SUFFIX=""
         ;;
@@ -321,9 +322,20 @@ case "$TIER" in
         # libz.so.1 AND libsqlite3.so.0 are both GONE from the link set, so the
         # full tier links TWO FEWER shared libraries than it did while gaining
         # xml and xlsx.
+        # QT_AVAILABLE=0 FOR A REASON THE OTHER ZEROES DO NOT SHARE, and it is
+        # not "Qt is not installed in this image". Qt is LGPL-3, so it must be
+        # DYNAMICALLY linked unless the relink obligation is met
+        # (docs/qt_gui_design.md §0) -- which is the opposite of what both
+        # tiers do with libxml2, sqlite, zlib and yescrypt, and it would put a
+        # DT_NEEDED on an installed Qt into a download whose whole promise is
+        # that it starts on a bare machine. A GUI gBASIC program is built or
+        # installed where a toolkit lives; a download is not that place. Named
+        # rather than left to detection for the reason the paragraph above
+        # gives: a new optional module must default to OFF here rather than to
+        # whatever the build image happens to carry.
         TIER_MAKE_ARGS="LIBXCRYPT_AVAILABLE=0 GIO_AVAILABLE=0 GIR_AVAILABLE=0 \
             GTK_AVAILABLE=0 LDAP_AVAILABLE=0 LIBPQ_AVAILABLE=0 ODBC_AVAILABLE=0 \
-            ZLIB_AVAILABLE=1 YESCRYPT_VENDORED=1"
+            QT_AVAILABLE=0 ZLIB_AVAILABLE=1 YESCRYPT_VENDORED=1"
         EXPECTED_NEEDED="libc.so.6 libcrypto.so.3 libcurl.so.4 libm.so.6 libssl.so.3"
         TIER_SUFFIX="-full"
         ;;
