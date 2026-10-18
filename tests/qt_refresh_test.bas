@@ -49,6 +49,22 @@ window board( title: "Board", width: 420, height: 320 )
         table sheet to edit rows
             field a( label: "A" )
         end table
+        ' A FORM, for the OTHER half of the same gap: a form populates at open
+        ' and nothing could re-show it from its subject either, which is what
+        ' writing BAG's editor found -- choosing a row has to show that area.
+        form to edit cur
+            field title( label: "Title" )
+            memo body(   label: "Body" )
+        end form
+        ' AND THE SAME SUBJECT SPLIT ACROSS TWO FORMS, which is how a long
+        ' form is laid out (§0.5's own fixture does it): re-showing must visit
+        ' BOTH, or the two directions disagree about what a subject reaches
+        ' since `qt.subject` already folds across all of them.
+        group "More of the same record"
+            form to edit cur
+                field extra( label: "Extra" )
+            end form
+        end group
     end column
 end window
 
@@ -63,6 +79,19 @@ window plain( title: "Plain" )
     end column
 end window
 
+' A WINDOW WHERE ONE WORD MEANS TWO THINGS, for the ambiguity refusal: a
+' table NAMED `thing` and a form bound to a SUBJECT called `thing`.
+window both( title: "Ambiguous" )
+    column
+        table thing to show listing
+            field n( label: "N" )
+        end table
+        form to edit thing
+            field q( label: "Q" )
+        end form
+    end column
+end window
+
 window shut( title: "Never opened" )
     column
         field unused( label: "Unused" )
@@ -73,6 +102,7 @@ program main()
     jobs = [ { who: "ada",   state: "waiting" },
              { who: "grace", state: "waiting" } ]
     rows = [ { a: "one" } ]
+    cur = { title: "first", body: "one line", extra: "x" }
 
     if not qt.can_display() then
         print "SKIP no display"
@@ -80,6 +110,9 @@ program main()
     end if
     qt.open(board)
     qt.open(plain)
+    listing = [ { n: "1" } ]
+    thing = { q: "q" }
+    qt.open(both)
 
     print "-- what the table showed at open"
     check("two rows at open", qt.read(board, "queue", "rowCount"), 2)
@@ -139,6 +172,22 @@ program main()
     ' a plausible result assembled from two different moments.
     check("and a fold sees the NEW list, not the captured one", len(back), 2)
 
+    print "-- A FORM re-shows from its SUBJECT, which has no other name"
+    ' §0.6 refused a form a NAME both ways, so the one thing it can be
+    ' addressed by is the subject it declares -- and this verb takes either
+    ' rather than growing a second one.
+    check("it populated at open", qt.read(board, "title"), "first")
+    cur = { title: "second", body: "two" + chr(10) + "lines", extra: "y" }
+    check("changing the subject alone does NOTHING",
+          qt.read(board, "title"), "first")
+    drew = qt.refresh(board, "cur")
+    check("re-showing fills it", qt.read(board, "title"), "second")
+    check("including a memo", len(split(qt.read(board, "body"), chr(10))), 2)
+    ' BOTH FORMS, which is the check that separates visiting the subject from
+    ' visiting the first form that mentions it.
+    check("and the OTHER form on the same subject", qt.read(board, "extra"), "y")
+    check("it answers how many parts it drew", drew, 3)
+
     print "-- refusals, each beside its nearest legal neighbour"
     check("a window with no such table says so",
           contains(refused(board, "nope"), "declares no table named `nope`"),
@@ -149,6 +198,15 @@ program main()
     ' different problem with a different fix.
     check("a window that is not open says THAT",
           contains(refused(shut, "queue"), "is not open"), true)
+    ' AND A NAME THAT MEANS TWO THINGS IS REFUSED RATHER THAN RESOLVED. A
+    ' table called `x` beside a form `to edit x` is a window where the word is
+    ' ambiguous, and picking one silently is how a program refreshes something
+    ' other than what the author named.
+    check("an ambiguous name is refused, naming both",
+          contains(refused(both, "thing"), "means two things here"), true)
+    ' THE CONTROL: each on its own still works in that same window.
+    check("CONTROL: the unambiguous table in it still refreshes",
+          qt.refresh(both, "listing") >= 0, true)
     qt.stop()
 end program
 

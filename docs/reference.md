@@ -3847,7 +3847,7 @@ end program
 | `qt.cell(win, table, row, column)` | one cell, addressed by the **column's own name** rather than its position |
 | `qt.heading(win, table, column)` | a column's caption, by its name **or** its position |
 | `qt.options(win, part, list)` | fill a `choice`'s list from data, answering how many items it put in. Clearing **resets the selection**, deliberately: a list that has changed may not contain what was chosen, and an index into a list that has moved is how a form reports a value nobody picked |
-| `qt.refresh(win, table)` | show the list **as it is now**, answering how many rows it drew. A `table to show` reads its subject when the window OPENS and does not follow it afterwards, so this is what makes a changing list visible — the symmetric half of `qt.subject`, which reads the widgets at the moment asked. The subject is re-read from the frame that calls this, and the table grows, shrinks and redraws changed cells |
+| `qt.refresh(win, what)` | show a subject **as it is now**, answering how many rows or parts it drew. `what` is a **table's name** or a **form's subject** — a form has no name, so the subject is the only thing that addresses one, and a name meaning both is refused rather than resolved. A table grows, shrinks and redraws changed cells; a form fills every part, across **all** the forms carrying that subject. The symmetric half of `qt.subject`, which reads the widgets at the moment asked |
 | `qt.set(win, part, property, value)` | set one named Qt property at run time — the write half of `qt.read(win, part, property)`. The only other way to set one is the declaration, which is written before anything has happened |
 | `qt.at(win, part)` | where a part sits in its `cells`: `{ row, column, across, down }`, asked of the layout |
 | `qt.menus(win)` / `qt.menus(win, n)` | the menu bar's top-level captions, or the entries of the menu at position `n`. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
@@ -3984,18 +3984,27 @@ Under `to show` a memo becomes read-only and a choice is **disabled**, a
 There is deliberately **no `list` word**: a one-column `table` is a picker,
 `qt.selected` addresses it, and `qt.refresh` keeps it current.
 
-**A table does not follow its list on its own.** `table orders to show lines`
-reads `lines` when the window opens; appending to it afterwards changes nothing
-on screen, which is right for a declaration and useless for a list that moves.
-`qt.refresh(win, "orders")` re-reads the subject from the frame that calls it
-and redraws — growing, shrinking and rewriting changed cells — and answers how
-many rows it drew:
+**Nothing follows its subject on its own.** `table orders to show lines` reads
+`lines` when the window opens and `form to edit cust` reads `cust` then;
+changing either afterwards changes nothing on screen, which is right for a
+declaration and useless for data that moves. `qt.refresh` re-reads the subject
+from the frame that calls it and redraws:
 
 <!--fragment: the inside of a program, not a program on its own-->
 ```basic
 lines = append(lines, { placed: "2026-03-01", who: "Alan Turing" })
-shown = qt.refresh(orders, "lines_view")
+shown = qt.refresh(orders, "lines_view")      ' a table, by its NAME
+
+cust = people[chosen]
+drew = qt.refresh(orders, "cust")             ' a form, by its SUBJECT
 ```
+
+A **form has no name** (§0.6 refuses one both ways), so its subject is the only
+thing that addresses it — and a window where one word is both a table's name and
+a form's subject is **refused**, naming both, rather than resolved by a
+precedence nobody wrote down. A subject spread across **several** forms is
+visited in all of them, because `qt.subject` already folds across all of them
+and the two directions must agree about what a subject reaches.
 
 A column's **caption** is not refreshed, and cannot be: it is set when the
 widget is built and only the declaration names it. Only the rows follow.

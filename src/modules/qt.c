@@ -1101,57 +1101,24 @@ static int qt_build_items(void *parent, Value *items, void *root) {
  * otherwise left alone. That is a stated limit rather than a gap: the fix, if
  * a real case wants it, is for the inner container to say whose subject it
  * serves, which is what `form to edit` already spells. */
-static int qt_bind_form(void *root, Value *form, const char *window_name) {
+/* FILL A FORM'S PARTS FROM ITS SUBJECT. Extracted from `qt_bind_form` for the
+ * reason `qt_populate_table` was: OPENING a window and RE-SHOWING a form must
+ * go through one piece of code, or a form renders one way at open and another
+ * afterwards -- and a form that cannot be re-shown was a GAP, found by trying
+ * to write BAG's editor, where choosing a row has to show that area.
+ *
+ * `filled` COUNTS WHAT IT WROTE, so `qt.refresh` can answer how many things it
+ * drew rather than a bare success. That is the difference between "it ran" and
+ * "it did something", and every defect this backend has is the first kind. */
+static int qt_populate_form(void *root, Value *form, Value *slot,
+                            const char *window_name, int *filled) {
     char err[QT_ERRBUF];
     char message[512];
-    const char *subject = qt_record_text(form, "subject");
+    /* READ FROM THE FORM rather than passed in, so a refresh cannot be handed
+     * a direction the declaration does not have. */
     const char *direction = qt_record_text(form, "direction");
-    if (!subject || !direction) {
-        return 1;
-    }
-    Value *slot = qt_subject_slot(subject);
-    if (!slot) {
-        snprintf(message, sizeof(message),
-                 "window `%s`: `form to %s %s` found no `%s` -- qt.open reads "
-                 "the subject from the frame that calls it",
-                 window_name, direction, subject, subject);
-        qt_raise(message);
-        return 0;
-    }
-    if (slot->kind != VALUE_RECORD) {
-        snprintf(message, sizeof(message),
-                 "window `%s`: `form to %s %s` needs a record, and `%s` holds "
-                 "%s", window_name, direction, subject, subject,
-                 value_kind_name(slot->kind));
-        qt_raise(message);
-        return 0;
-    }
-    QtOpenWindow *entry = qt_window_entry(window_name);
-    /* ONE CAPTURE PER SUBJECT, not per form. Two forms may edit one record --
-     * the fixture's own `cust` is split across a column and a group, which is
-     * how a long form is laid out -- and a second capture of the same variable
-     * would be a second answer to `qt.subject`. The FOLD still visits every
-     * form carrying that subject, so a record spread over several groups is
-     * gathered back whole. */
-    int already = 0;
-    for (size_t i = 0; entry && i < entry->binding_count; i++) {
-        if (strcmp(entry->bindings[i].subject, subject) == 0) {
-            already = 1;
-            break;
-        }
-    }
-    if (entry && !already) {
-        QtBinding *grown = realloc(entry->bindings,
-                                   sizeof(*entry->bindings) *
-                                       (entry->binding_count + 1));
-        if (!grown) {
-            abort();
-        }
-        entry->bindings = grown;
-        entry->bindings[entry->binding_count].subject = copy_string(subject);
-        entry->bindings[entry->binding_count].direction = copy_string(direction);
-        entry->bindings[entry->binding_count].record = value_copy(*slot);
-        entry->binding_count++;
+    if (!direction) {
+        direction = "edit";
     }
     RecordField *entries = record_find(form, "items");
     if (!entries || !entries->value || entries->value->kind != VALUE_ARRAY) {
@@ -1226,6 +1193,9 @@ static int qt_bind_form(void *root, Value *form, const char *window_name) {
         err[0] = '\0';
         int ok = gb_qt_write(root, name, text.as.string, err, sizeof(err));
         value_free(text);
+        if (ok && filled) {
+            *filled = *filled + 1;
+        }
         if (!ok) {
             /* A `choice` WHOSE LIST IS NOT FILLED YET IS NOT A MISTAKE, and
              * the ordering makes it ordinary: a declared `options:` list is
@@ -1248,6 +1218,165 @@ static int qt_bind_form(void *root, Value *form, const char *window_name) {
                      name, err[0] ? err : "the part refused that value");
             qt_raise(message);
             return 0;
+        }
+    }
+    return 1;
+}
+
+static int qt_bind_form(void *root, Value *form, const char *window_name) {
+    char message[512];
+    const char *subject = qt_record_text(form, "subject");
+    const char *direction = qt_record_text(form, "direction");
+    if (!subject || !direction) {
+        return 1;
+    }
+    Value *slot = qt_subject_slot(subject);
+    if (!slot) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `form to %s %s` found no `%s` -- qt.open reads "
+                 "the subject from the frame that calls it",
+                 window_name, direction, subject, subject);
+        qt_raise(message);
+        return 0;
+    }
+    if (slot->kind != VALUE_RECORD) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `form to %s %s` needs a record, and `%s` holds "
+                 "%s", window_name, direction, subject, subject,
+                 value_kind_name(slot->kind));
+        qt_raise(message);
+        return 0;
+    }
+    QtOpenWindow *entry = qt_window_entry(window_name);
+    /* ONE CAPTURE PER SUBJECT, not per form. Two forms may edit one record --
+     * the fixture's own `cust` is split across a column and a group, which is
+     * how a long form is laid out -- and a second capture of the same variable
+     * would be a second answer to `qt.subject`. The FOLD still visits every
+     * form carrying that subject, so a record spread over several groups is
+     * gathered back whole. */
+    int already = 0;
+    for (size_t i = 0; entry && i < entry->binding_count; i++) {
+        if (strcmp(entry->bindings[i].subject, subject) == 0) {
+            already = 1;
+            break;
+        }
+    }
+    if (entry && !already) {
+        QtBinding *grown = realloc(entry->bindings,
+                                   sizeof(*entry->bindings) *
+                                       (entry->binding_count + 1));
+        if (!grown) {
+            abort();
+        }
+        entry->bindings = grown;
+        entry->bindings[entry->binding_count].subject = copy_string(subject);
+        entry->bindings[entry->binding_count].direction = copy_string(direction);
+        entry->bindings[entry->binding_count].record = value_copy(*slot);
+        entry->binding_count++;
+    }
+    int drawn = 0;
+    return qt_populate_form(root, form, slot, window_name, &drawn);
+}
+
+static int qt_populate_table(void *root, Value *table, Value *slot,
+                             const char *window_name);
+
+/* HOW MANY PARTS A SUBJECT DRIVES, without touching any of them. Needed
+ * BEFORE anything is written, so that an ambiguous name is refused rather
+ * than half-acted-on. */
+static int qt_count_subject(Value *items, const char *subject) {
+    int found = 0;
+    size_t count = items->as.array.store ? items->as.array.store->count : 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *entry = &items->as.array.store->items[i];
+        if (entry->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *kind = qt_record_text(entry, "kind");
+        if (!kind || strcmp(kind, "container") != 0) {
+            continue;
+        }
+        const char *word = qt_record_text(entry, "word");
+        const char *mine = qt_record_text(entry, "subject");
+        if (word && mine && strcmp(mine, subject) == 0 &&
+            (strcmp(word, "form") == 0 || strcmp(word, "table") == 0)) {
+            found++;
+            continue;
+        }
+        RecordField *nested = record_find(entry, "items");
+        if (nested && nested->value && nested->value->kind == VALUE_ARRAY) {
+            found += qt_count_subject(nested->value, subject);
+        }
+    }
+    return found;
+}
+
+/* EVERY FORM AND TABLE CARRYING ONE SUBJECT, RE-SHOWN. A subject can drive
+ * several parts -- §0.5's own fixture splits `cust` across a column and a
+ * group, which is how a long form is laid out -- and `qt.subject` already
+ * folds across all of them, so re-showing has to visit all of them too or the
+ * two directions would disagree about what a subject reaches.
+ *
+ * `drawn` accumulates across them; `found` counts the NODES, which is what
+ * separates "nothing matched" from "matched and wrote nothing" -- a form whose
+ * record has no fields yet is the second, and is ordinary. */
+static int qt_reshow_subject(void *root, Value *items, const char *subject,
+                             Value *slot, const char *window_name, int *drawn,
+                             int *found) {
+    size_t count = items->as.array.store ? items->as.array.store->count : 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *entry = &items->as.array.store->items[i];
+        if (entry->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *kind = qt_record_text(entry, "kind");
+        if (!kind || strcmp(kind, "container") != 0) {
+            continue;
+        }
+        const char *word = qt_record_text(entry, "word");
+        const char *mine = qt_record_text(entry, "subject");
+        if (word && mine && strcmp(mine, subject) == 0) {
+            if (strcmp(word, "form") == 0) {
+                if (slot->kind != VALUE_RECORD) {
+                    char message[512];
+                    snprintf(message, sizeof(message),
+                             "qt.refresh: `%s` fills a form, so it needs a "
+                             "record, and it holds %s", subject,
+                             value_kind_name(slot->kind));
+                    qt_raise(message);
+                    return 0;
+                }
+                if (!qt_populate_form(root, entry, slot, window_name, drawn)) {
+                    return 0;
+                }
+                *found = *found + 1;
+                continue;
+            }
+            if (strcmp(word, "table") == 0) {
+                if (slot->kind != VALUE_ARRAY) {
+                    char message[512];
+                    snprintf(message, sizeof(message),
+                             "qt.refresh: `%s` fills a table, so it needs a "
+                             "list of records, and it holds %s", subject,
+                             value_kind_name(slot->kind));
+                    qt_raise(message);
+                    return 0;
+                }
+                if (!qt_populate_table(root, entry, slot, window_name)) {
+                    return 0;
+                }
+                *drawn = *drawn + (int)(slot->as.array.store
+                                            ? slot->as.array.store->count : 0);
+                *found = *found + 1;
+                continue;
+            }
+        }
+        RecordField *nested = record_find(entry, "items");
+        if (nested && nested->value && nested->value->kind == VALUE_ARRAY) {
+            if (!qt_reshow_subject(root, nested->value, subject, slot,
+                                   window_name, drawn, found)) {
+                return 0;
+            }
         }
     }
     return 1;
@@ -2484,17 +2613,52 @@ static Value qt_eval_call(AstExpr *expr) {
                         items->value->kind == VALUE_ARRAY)
                            ? qt_find_table(items->value, which.as.string)
                            : NULL;
-        if (!root || !table) {
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        /* A TABLE'S NAME **OR** A FORM'S SUBJECT, because a form HAS no name
+         * -- §0.6 refused one both ways, a form's parts being addressed by
+         * their own names where a table shows many rows. So the one thing a
+         * form can be addressed by is the subject it declares, and this verb
+         * accepts either rather than growing a second one.
+         *
+         * AN AMBIGUITY IS REFUSED AND NOT RESOLVED. A table called `orders`
+         * beside a form `to edit orders` is a window where the word means two
+         * things, and picking one silently is how a program refreshes
+         * something other than what the author named. */
+        int subject_nodes = 0;
+        if (items && items->value && items->value->kind == VALUE_ARRAY) {
+            Value *probe = qt_subject_slot(which.as.string);
+            int drawn_probe = 0;
+            (void)probe; (void)drawn_probe;
+            subject_nodes = qt_count_subject(items->value, which.as.string);
+        }
+        if (table && subject_nodes > 0) {
             snprintf(message, sizeof(message),
-                     root ? "qt.refresh: window `%s` declares no table named `%s`"
-                          : "window `%s` is not open",
+                     "qt.refresh: window `%s` has both a table named `%s` and "
+                     "%d part(s) bound to a subject called `%s`, so the name "
+                     "means two things here -- rename one",
+                     wname ? wname : "", which.as.string, subject_nodes,
+                     which.as.string);
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        if (!table && subject_nodes == 0) {
+            snprintf(message, sizeof(message),
+                     "qt.refresh: window `%s` declares no table named `%s` and "
+                     "nothing bound to a subject of that name",
                      wname ? wname : "", which.as.string);
             qt_raise(message);
             value_free(win); value_free(which);
             return value_null();
         }
-        const char *subject = qt_record_text(table, "subject");
-        if (!subject) {
+        const char *subject = table ? qt_record_text(table, "subject") : NULL;
+        if (table && !subject) {
             snprintf(message, sizeof(message),
                      "qt.refresh: table `%s` is bound to nothing to refresh "
                      "from", which.as.string);
@@ -2504,17 +2668,22 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         /* THE SAME NON-RAISING WALK `qt.open` USES, so the sentence about a
          * missing subject is the one an author has already met. */
-        Value *slot = qt_subject_slot(subject);
+        const char *from = table ? subject : which.as.string;
+        Value *slot = qt_subject_slot(from);
         if (!slot) {
             snprintf(message, sizeof(message),
                      "qt.refresh: `%s` is not in scope here -- it is read from "
                      "the frame that calls qt.refresh, as qt.open reads it from "
-                     "the frame that calls that", subject);
+                     "the frame that calls that", from);
             qt_raise(message);
             value_free(win); value_free(which);
             return value_null();
         }
-        if (slot->kind != VALUE_ARRAY) {
+        /* THE KIND IS CHECKED WHERE IT IS KNOWN. A table-by-name needs a
+         * list; a subject may fill a form (a record) or a table (a list) and
+         * the walker checks each against the node it found, so the sentence
+         * names which of the two was wanted. */
+        if (table && slot->kind != VALUE_ARRAY) {
             snprintf(message, sizeof(message),
                      "qt.refresh: `%s` needs a list of records, and it holds %s",
                      subject, value_kind_name(slot->kind));
@@ -2522,22 +2691,32 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win); value_free(which);
             return value_null();
         }
-        if (!qt_populate_table(root, table, slot, wname ? wname : "")) {
-            value_free(win); value_free(which);
-            return value_null();
+        int drawn = 0;
+        if (table) {
+            if (!qt_populate_table(root, table, slot, wname ? wname : "")) {
+                value_free(win); value_free(which);
+                return value_null();
+            }
+            drawn = (int)(slot->as.array.store ? slot->as.array.store->count : 0);
+        } else {
+            int found = 0;
+            if (!qt_reshow_subject(root, items->value, which.as.string, slot,
+                                   wname ? wname : "", &drawn, &found)) {
+                value_free(win); value_free(which);
+                return value_null();
+            }
         }
         /* AND THE CAPTURE MOVES WITH IT. */
         QtOpenWindow *entry = wname ? qt_window_entry(wname) : NULL;
         for (size_t i = 0; entry && i < entry->binding_count; i++) {
-            if (strcmp(entry->bindings[i].subject, subject) == 0) {
+            if (strcmp(entry->bindings[i].subject, from) == 0) {
                 value_free(entry->bindings[i].record);
                 entry->bindings[i].record = value_copy(*slot);
                 break;
             }
         }
-        size_t shown = slot->as.array.store ? slot->as.array.store->count : 0;
         value_free(win); value_free(which);
-        return value_number((double)shown);
+        return value_number((double)drawn);
     }
 
     if (strcmp(verb, "heading") == 0) {

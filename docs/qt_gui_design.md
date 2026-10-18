@@ -819,6 +819,34 @@ refreshed table into the **old** list — a plausible record assembled from two
 different moments. Asserted: after refreshing a one-element capture to two
 elements, the fold answers two.
 
+### A form could not be re-shown either, and that was the same gap
+
+**Found one increment later, writing BAG's editor** (§0.13's own motivation):
+choosing a row has to *show that area*, and a form populates at open with
+nothing to re-run it. So `qt.refresh` takes **a table's name or a form's
+subject**.
+
+**A form has no name** — §0.6 refused one both ways, a form's parts being
+addressed by their own names where a table shows many rows — so the subject it
+declares is the only thing that addresses it. One verb takes either rather than
+growing a second.
+
+**An ambiguity is refused, not resolved.** A table called `orders` beside a form
+`to edit orders` is a window where the word means two things, and picking one
+silently is how a program refreshes something other than what the author named.
+Counted *before* anything is written, so a bad name is refused rather than
+half-acted-on.
+
+**And a subject spread across several forms is visited in all of them**, because
+`qt.subject` already folds across all of them — §0.5's own fixture splits `cust`
+across a column and a group — so the two directions would otherwise disagree
+about what a subject reaches. The tier asserts the second form, which is what
+separates visiting *the subject* from visiting *the first form that mentions it*.
+
+**The populate half was extracted rather than copied**, as the table's was, for
+the same reason: a form that renders one way at open and another afterwards is
+the defect, not the saving.
+
 **Headings are deliberately not refreshed.** A column's caption is set when the
 widget is built and only the declaration names it, so there is nothing to
 re-read. Only the rows follow.

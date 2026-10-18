@@ -673,10 +673,10 @@ elif [ "${rfchecks:-0}" = "0" ]; then
 else
     pass "$rfchecks checks, 0 mismatches"
 fi
-if [ "${rfchecks:-0}" -ge 21 ]; then
+if [ "${rfchecks:-0}" -ge 29 ]; then
     pass "the refresh fixture ran its whole battery ($rfchecks)"
 else
-    fail "the refresh fixture ran only $rfchecks checks, want at least 21"
+    fail "the refresh fixture ran only $rfchecks checks, want at least 29"
 fi
 
 # ------------------------------------------------------------------- TEXT/MEMO
