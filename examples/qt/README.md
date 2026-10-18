@@ -10,7 +10,7 @@ somebody to close it. That is how to verify a Qt install without looking at a
 screen, and it is how `tests/run_qt_examples.sh` gates these — until it existed
 they were only *parsed*, and an example can rot while every fixture passes.
 
-The first five take one aspect each; the last four combine them.
+The first six take one aspect each; the last four combine them.
 
 | | |
 |---|---|
@@ -19,6 +19,7 @@ The first five take one aspect each; the last four combine them.
 | `properties.bas` | **the by-name route**, which is what makes this backend small: `QPushButton` alone exposes 75 properties, so anything the backend does not own goes to the widget's own `QMetaObject`. Three doors that must agree about what a name is — the declaration, `qt.read`, `qt.set` — with a misspelling refused by name at each, because `setProperty` on an unknown name SUCCEEDS in Qt and would silently do nothing |
 | `theme.bas` | **one stylesheet for the application, and a widget that overrides it.** The theme half **needs no display at all** — a sheet set before any window exists is remembered and applied when there is a `QApplication` to put it on — so this is the one example whose first half runs on a text-only machine |
 | `clock.bas` | **Qt owns the thread and gBASIC is still serviced** — §5.1's architectural claim as something you can watch: a `timer.every` keeps firing after `qt.run()` has taken the thread, and an ordinary gBASIC watcher writes into three widgets. It teaches two things learned by getting them wrong: the `watch` goes INSIDE `program` (at the top level beside one it registers nothing), and **`qt.stop()` does not cancel your timers** — leave a repeating one live and the program never exits |
+| `menus.bas` | **a bar, submenus, separators, shortcuts, and items that know whether they can be used** — and the aspect that cost **no grammar at all**, measured before a line was written: `menu "File"` is `group "Credit"`'s own production, `item` is the named leaf, `separator()` is `stretch()`, and a submenu is the same production once more. An item is a `QAction` rather than a widget, so `shortcut:`, `checkable:` and `enabled:` arrive through the by-name door with nothing plumbed — and `qt.menus` is the only thing that can witness the **structure**, a by-name registry being flat while a bar is a tree |
 | `invoice.bas` | **a window built from data** — one row per invoice line, which is the one thing a `window` block cannot write, a declaration having no loop in it (§4). There is no second API: the block binds a RECORD, and `qt.open` asks only that a record carry `kind: "window"`, so building that record is the other door. `qt.check` gives it the declaration's own load-time rules, and needs no display |
 | `customer.bas` | the form §2 of `docs/qt_gui_design.md` draws: a `form to edit` bound to a record **by name**, a titled group, and two buttons pushed right by a `stretch`. Nothing populates a widget and nothing reads one back part by part — the form takes `cust` from the frame that opens it, and the handler asks `qt.subject` for the whole record, with `limit` still money because the field declares `type: {USD}` |
 | `orders.bas` | **a list and the record under it** — a `table` feeding a `form`, the commonest shape a business screen takes and the one §7 designed `table` for. Nothing wires a widget: the table reads `.total` from every element of `lines` and the form reads `chosen.who`, both by name, so the program only answers *which row* and refills |
@@ -35,6 +36,7 @@ That is not a test-only arrangement — it is how a GUI gBASIC program renders o
 a headless server.
 
 **Nothing here is manual.** `tests/run_gui_parse.sh` parses every program in
-this directory on every gate run, and `tests/run_qt_backend.sh` drives the
-whole surface offscreen, so these examples cannot rot silently the way a
-display-gated one would.
+this directory on every gate run, and `tests/run_qt_examples.sh` **runs** each
+one offscreen in `check` mode, then again with no display at all — so these
+examples cannot rot silently the way a display-gated one would. Parsing alone
+catches a syntax error and nothing else, which is the gap that suite closed.
