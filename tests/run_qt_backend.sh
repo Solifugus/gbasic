@@ -505,6 +505,53 @@ else
     fail "the emptied-number refusal: $(grep EMPTYNUMBER "$work/t.out" || echo 'never fired')"
 fi
 
+# ------------------------------------------------------------------------ MENU
+
+printf 'TIER menu: a bar, submenus, separators, and properties on a QAction\n'
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
+    tests/qt_menu_test.bas > "$work/m.out" 2> "$work/m.err"
+m_rc=$?
+set -e
+if [ "$m_rc" != "0" ]; then
+    printf '    %s\n' "$(tail -5 "$work/m.err")"
+    fail "the menu fixture exited $m_rc"
+fi
+mchecks=$(grep -c '^ok   ' "$work/m.out" || true)
+if grep -q MISMATCH "$work/m.out"; then
+    grep MISMATCH "$work/m.out" | while read -r line; do printf '    %s\n' "$line"; done
+    fail "$(grep -c MISMATCH "$work/m.out") mismatches in the menu fixture"
+else
+    pass "$mchecks checks, 0 mismatches"
+fi
+if [ "${mchecks:-0}" -ge 15 ]; then
+    pass "and it really ran them ($mchecks >= 15)"
+else
+    fail "only $mchecks menu checks ran -- the fixture stopped early"
+fi
+# TWO DIFFERENT SIGNALS ON THE SAME CLASS, proven by FIRING rather than by the
+# window opening: `trigger` and `toggle` are no-arg QAction slots, so choosing
+# a menu entry is driven with no human in front of it. One signal alone would
+# be satisfied by a backend where that one happened to be wired.
+if grep -qx 'SIGNAL open_file.triggered' "$work/m.out"; then
+    pass "choosing a menu item reaches a gBASIC handler"
+else
+    fail "the item handler never fired: $(grep SIGNAL "$work/m.out" || echo 'nothing')"
+fi
+if grep -qx 'SIGNAL wrap_it.toggled' "$work/m.out"; then
+    pass "and a checkable item's own signal is a separate connection"
+else
+    fail "the toggle handler never fired: $(grep SIGNAL "$work/m.out" || echo 'nothing')"
+fi
+# A MENU IS NOT A PART. Its CAPTION is what a person reads and its ITEMS are
+# what a handler addresses, so the caption must not answer as a name -- which
+# would let `qt.read(win, "File")` look like it worked.
+if grep -q 'NOTADDRESSABLE: qt.read: this window has no `Recent`' "$work/m.out"; then
+    pass "a menu's caption is not a part name"
+else
+    fail "a menu answered to its caption: $(grep NOTADDRESS "$work/m.out" || echo 'never fired')"
+fi
+
 # ----------------------------------------------------------------------- THEME
 
 printf 'TIER theme: one stylesheet for the application, and it needs no display\n'
@@ -684,13 +731,21 @@ else
     vg_bind_rc=$?
     QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
         tests/qt_table_test.bas > "$work/vgt.out" 2> "$work/vgt.err"
-    vg_table_rc=$?
+    vg_table_only_rc=$?
+    QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
+        tests/qt_menu_test.bas > "$work/vgm.out" 2> "$work/vgm.err"
+    vg_menu_rc=$?
     set -e
-    # THE WORSE OF THE TWO, so a clean binding run cannot hide a table defect.
+    # THE WORST OF THE THREE, so a clean run of one fixture cannot hide a
+    # defect in another -- a form, a table and a menu allocate differently.
     vg_rc=$vg_bind_rc
-    if [ "$vg_table_rc" != "0" ]; then
-        vg_rc=$vg_table_rc
+    if [ "$vg_table_only_rc" != "0" ]; then
+        vg_rc=$vg_table_only_rc
         cp "$work/vgt.err" "$work/vgb.err"
+    fi
+    if [ "$vg_menu_rc" != "0" ]; then
+        vg_rc=$vg_menu_rc
+        cp "$work/vgm.err" "$work/vgb.err"
     fi
     # COMPARED AGAINST $VG_EXIT, which the shared policy exposes for exactly
     # this: the fixture itself can fail for its own reasons, and reading that
@@ -703,7 +758,7 @@ else
         printf '    %s\n' "$(tail -3 "$work/vgb.err")"
         fail "the fixture exited $vg_rc under valgrind, which is not a valgrind objection"
     else
-        pass "no invalid access or uninitialised read across open, fold and teardown, for a form OR a table"
+        pass "no invalid access or uninitialised read across open, fold and teardown -- form, table and menu"
     fi
 fi
 

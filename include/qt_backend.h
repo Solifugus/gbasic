@@ -148,6 +148,26 @@ int gb_qt_write(void *window, const char *name, const char *text,
 int gb_qt_get(void *window, const char *name, const char *prop, char *kind,
               double *num, char **text, char *err, size_t err_size);
 
+/* A MENU. MEASURED FIRST: the whole shape needs NO NEW GRAMMAR -- `menu "File"`
+ * is the production `group "Credit"` already uses, `item open( label: "..." )`
+ * is the named leaf, `separator()` is the `stretch()` form, and a submenu is
+ * the same production recursively. Only the vocabulary refused them.
+ *
+ * A MENU BAR BELONGS TO THE WINDOW, not to a layout, which makes this the
+ * first directive placed by nothing: `gb_qt_menu` with a NULL parent menu
+ * hangs the menu off the window's own QMenuBar, and with one hangs it off that
+ * menu as a submenu.
+ *
+ * AN ITEM IS A QAction AND NOT A WIDGET, which is why the registry holds
+ * QObject: an item is addressed by name for `on open.triggered`, for
+ * `enabled:`/`shortcut:`/`checkable:` at construction, and for
+ * `qt.read(win, "open", "enabled")`, and all three go through QObject. */
+void *gb_qt_menu(void *window, void *parent_menu, const char *title, char *err,
+                 size_t err_size);
+void *gb_qt_menu_item(void *window, void *menu, const char *name,
+                      const char *label, char *err, size_t err_size);
+int gb_qt_menu_separator(void *menu, char *err, size_t err_size);
+
 /* A TABLE. ITS PARTS ARE COLUMNS, NOT WIDGETS (§7), so it is built in ONE call
  * from the declaration's whole `field` list rather than by the part walk that
  * every other container uses -- a column has no widget of its own, and handing

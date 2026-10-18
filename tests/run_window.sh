@@ -484,6 +484,114 @@ end window
 EOF
 refuse "a table showing one field twice is refused" "shows 'who' twice"
 
+# -------------------------------------------------------------------- MENU
+# `menu` JOINED THE VOCABULARY 2026-10-18 AND NEEDED NO GRAMMAR AT ALL, which
+# is the measurement that shaped it: `menu "File"` is the production
+# `group "Credit"` already uses, `item open( label: "..." )` is the named leaf,
+# `separator()` is the `stretch()` form, and a submenu is the same production
+# recursively. Bison still reports zero conflicts (the tier below), and the
+# shapes already PARSED before this -- only the vocabulary refused them.
+src menu_ok <<'EOF'
+window w( title: "x" )
+    menu "File"
+        item open_file( label: "Open...", shortcut: "Ctrl+O" )
+        menu "Recent"
+            item r1( label: "a.bas" )
+        end menu
+        separator()
+    end menu
+    column
+        field note( label: "Note" )
+    end column
+    on open_file.triggered
+        print "chosen"
+    end on
+end window
+program main()
+    print "ACCEPTED"
+end program
+EOF
+got=$(out_of "$written")
+if printf '%s' "$got" | grep -qF 'ACCEPTED'; then
+    pass "CONTROL: a menu bar with a submenu, a separator and a handler is accepted"
+else
+    printf '    %s\n' "$(printf '%s' "$got" | head -2)"
+    fail "a valid menu was refused"
+fi
+
+# A MENU BAR BELONGS TO THE WINDOW, so a `menu` sits at the top level or inside
+# another menu and NOWHERE ELSE. Refused rather than placed somewhere
+# surprising: Qt would put a QMenuBar wherever the layout said, so a `menu`
+# inside a `row` renders as a bar in the middle of the screen -- a
+# plausible-looking widget nobody asked for.
+src menu_in_column <<'EOF'
+window w( title: "x" )
+    column
+        menu "File"
+            item a( label: "A" )
+        end menu
+    end column
+end window
+EOF
+refuse "a menu inside a layout is refused, saying a bar is not laid out" "a menu belongs to the window or to another menu"
+
+src menu_no_caption <<'EOF'
+window w( title: "x" )
+    menu
+        item a( label: "A" )
+    end menu
+end window
+EOF
+refuse "a menu with no caption is refused" "a menu needs a caption"
+
+# A MENU'S PARTS ARE ITEMS, SEPARATORS AND SUBMENUS. A button among them is a
+# widget in a place that holds actions.
+src menu_button <<'EOF'
+window w( title: "x" )
+    menu "File"
+        button b( label: "B" )
+    end menu
+end window
+EOF
+refuse "a widget inside a menu is refused" "a menu holds items, separators and submenus"
+
+# AND THE MIRROR OF THE PLACEMENT RULE: a menu's parts may not appear where
+# things ARE laid out. Without this, `item open( ... )` in a column reaches
+# `gb_qt_part`, which has no widget for the word -- refused at RUN time, late,
+# and only for somebody with Qt in their build.
+src item_outside <<'EOF'
+window w( title: "x" )
+    column
+        item a( label: "A" )
+    end column
+end window
+EOF
+refuse "an item outside a menu is refused at LOAD time" "'item' belongs in a menu"
+
+src separator_named <<'EOF'
+window w( title: "x" )
+    menu "File"
+        separator x( label: "y" )
+    end menu
+end window
+EOF
+refuse "a separator is a line and takes no name" "a separator is a line and takes no name"
+
+# A MENU'S CAPTION IS NOT A NAME, so a handler cannot address one -- its ITEMS
+# are what a handler addresses, which is the opposite of a table (named,
+# addressable) and is asserted so the two cannot drift into each other.
+src menu_handler <<'EOF'
+window w( title: "x" )
+    menu "File"
+        item a( label: "A" )
+    end menu
+    on File.triggered
+        print "x"
+    end on
+end window
+EOF
+refuse "a handler naming a menu's CAPTION is refused" "names nothing in this window"
+
 src table_direction <<'EOF'
 window w( title: "x" )
     table orders to view lines
@@ -512,7 +620,7 @@ refuse "a misspelled table is named, and the suggestion is the real word" "did y
 # list rather than the one-word answer, for the newest word in the language.
 # Two representations of one list drift. It is derived from the two tables now,
 # and this loop fails the next time a word is added to one and not the other.
-for w in row column form group table field button check stretch; do
+for w in row column form group table menu field button check stretch item separator; do
     # ONE TRANSPOSITION of the last two letters, which is what fingers actually
     # do and is the shape the finder had to learn (`colunm`, `feild`).
     typo=$(printf '%s' "$w" | sed -E 's/(.)(.)$/\2\1/')
@@ -591,6 +699,13 @@ refuse "a window closed by the wrong word is refused" "closed by \`end window\`,
 # that one turned 22 suites red on their own valgrind tiers.
 src valid <<'EOF'
 window customer( title: "C", width: 300, height: 200 ) to show cust
+    menu "File"
+        item open_it( label: "Open...", shortcut: "Ctrl+O" )
+        menu "Recent"
+            item recent_one( label: "a.bas" )
+        end menu
+        separator()
+    end menu
     column( margin: 4 )
         form to edit cust
             field id( label: "Account" )
@@ -609,6 +724,9 @@ window customer( title: "C", width: 300, height: 200 ) to show cust
     end on
     on orders.activated
         print "chosen"
+    end on
+    on open_it.triggered
+        print "opened"
     end on
 end window
 EOF

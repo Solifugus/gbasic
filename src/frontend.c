@@ -591,8 +591,9 @@ static void win_error(WinCheck *chk, int line, int column, const char *fmt, ...)
  * ABSENT until it exists, so a `table` written today is refused as an unknown
  * word rather than silently accepted and ignored. */
 static const char *win_container_words[] = {"row", "column", "form", "group",
-                                            "table", NULL};
-static const char *win_leaf_words[] = {"field", "button", "check", "stretch", NULL};
+                                            "table", "menu", NULL};
+static const char *win_leaf_words[] = {"field", "button", "check", "stretch",
+                                       "item", "separator", NULL};
 
 static int win_in(const char *const *set, const char *word) {
     for (size_t i = 0; set[i]; i++) {
@@ -680,13 +681,16 @@ static const char *win_nearest(const char *word) {
 }
 
 static void win_check_items(WinCheck *chk, const AstWindowItemList *items,
-                            const char *window_subject,
+                            const char *window_subject, const char *parent_word,
                             const char **names, size_t *name_count,
                             size_t name_cap);
 
-/* One item, and the window's subject so a bare `form` can inherit it. */
+/* One item, the window's subject so a bare `form` can inherit it, and THE
+ * PARENT'S WORD, which `menu` is the first directive to need: a menu bar
+ * belongs to the WINDOW rather than to a layout, so where a `menu` may appear
+ * is a fact about its surroundings and not about itself. */
 static void win_check_item(WinCheck *chk, const AstWindowItem *item,
-                           const char *window_subject,
+                           const char *window_subject, const char *parent_word,
                            const char **names, size_t *name_count,
                            size_t name_cap) {
     if (item->kind == AST_WINDOW_HANDLER) {
@@ -705,8 +709,9 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
         } else {
             win_error(chk, item->line, item->column,
                       "window: unknown directive '%s'. The containers are row, "
-                      "column, form, group and table; the parts are field, "
-                      "button, check and stretch", word);
+                      "column, form, group, table and menu; the parts are "
+                      "field, button, check, stretch, item and separator",
+                      word);
         }
         return;
     }
@@ -758,6 +763,46 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
                       "window: only a form or a table carries a subject, not '%s'",
                       word);
         }
+        /* A MENU BAR BELONGS TO THE WINDOW, so a `menu` sits at the window's
+         * top level or inside another menu, and nowhere else. Refused rather
+         * than placed somewhere surprising: Qt would put a QMenuBar wherever
+         * the layout said, so a `menu` inside a `row` would render as a bar in
+         * the middle of the screen -- a plausible-looking widget nobody asked
+         * for, which is the class the closed vocabulary exists to prevent. */
+        if (strcmp(word, "menu") == 0) {
+            if (!parent_word ||
+                (strcmp(parent_word, "window") != 0 &&
+                 strcmp(parent_word, "menu") != 0)) {
+                win_error(chk, item->line, item->column,
+                          "window: a menu belongs to the window or to another "
+                          "menu, not inside '%s' -- a menu bar is not laid out",
+                          parent_word ? parent_word : "?");
+            }
+            if (!item->label) {
+                win_error(chk, item->line, item->column,
+                          "window: a menu needs a caption -- `menu \"File\"` "
+                          "-- because that is what a person reads on the bar");
+            }
+            if (item->name) {
+                win_error(chk, item->line, item->column,
+                          "window: a menu takes no name; its ITEMS are what a "
+                          "handler addresses");
+            }
+            for (size_t i = 0; i < item->entries.count; i++) {
+                const AstWindowItem *part = item->entries.items[i];
+                if (part->kind == AST_WINDOW_HANDLER || !part->word) {
+                    continue;
+                }
+                if (strcmp(part->word, "item") != 0 &&
+                    strcmp(part->word, "separator") != 0 &&
+                    strcmp(part->word, "menu") != 0) {
+                    win_error(chk, part->line, part->column,
+                              "window: a menu holds items, separators and "
+                              "submenus -- '%s' is none of those", part->word);
+                }
+            }
+        }
+
         /* A TABLE IS NAMED AND A FORM IS NOT, which is a real difference and
          * not a spelling: a form's parts are addressed by their own names,
          * where a table shows MANY rows, so the table itself is what a handler
@@ -846,8 +891,31 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
             }
             return;   /* columns are not window-wide names */
         }
-        win_check_items(chk, &item->entries, window_subject, names, name_count,
-                        name_cap);
+        win_check_items(chk, &item->entries, window_subject, word, names,
+                        name_count, name_cap);
+        return;
+    }
+
+    /* AN ITEM AND A SEPARATOR ARE MENU WORDS, and the mirror of the rule above:
+     * a menu may not be laid out, and a menu's parts may not appear where
+     * things ARE laid out. `item open( ... )` in a `column` would otherwise
+     * reach `gb_qt_part`, which has no widget for the word and would refuse at
+     * RUN time -- late, and only for somebody with Qt in their build. */
+    if (strcmp(word, "item") == 0 || strcmp(word, "separator") == 0) {
+        if (!parent_word || strcmp(parent_word, "menu") != 0) {
+            win_error(chk, item->line, item->column,
+                      "window: '%s' belongs in a menu, not in '%s'", word,
+                      parent_word ? parent_word : "?");
+            return;
+        }
+    }
+    if (strcmp(word, "separator") == 0) {
+        /* A SEPARATOR IS A LINE and names nothing, the rule `stretch` follows
+         * for being pure space. */
+        if (item->name) {
+            win_error(chk, item->line, item->column,
+                      "window: a separator is a line and takes no name");
+        }
         return;
     }
 
@@ -882,12 +950,12 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
 }
 
 static void win_check_items(WinCheck *chk, const AstWindowItemList *items,
-                            const char *window_subject,
+                            const char *window_subject, const char *parent_word,
                             const char **names, size_t *name_count,
                             size_t name_cap) {
     for (size_t i = 0; i < items->count; i++) {
-        win_check_item(chk, items->items[i], window_subject, names, name_count,
-                       name_cap);
+        win_check_item(chk, items->items[i], window_subject, parent_word, names,
+                       name_count, name_cap);
     }
 }
 
@@ -950,8 +1018,10 @@ static void win_check_window(WinCheck *chk, const AstStmt *stmt) {
 
     const char *names[256];
     size_t name_count = 0;
+    /* "window" IS THE PARENT AT THE TOP LEVEL, which is the one place a `menu`
+     * may appear outside another menu -- a menu bar belongs to the window. */
     win_check_items(chk, &stmt->as.window.items, stmt->as.window.subject,
-                    names, &name_count, 256);
+                    "window", names, &name_count, 256);
     win_check_handlers(chk, &stmt->as.window.items, names, name_count);
 }
 

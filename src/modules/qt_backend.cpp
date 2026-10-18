@@ -48,6 +48,9 @@
 #include <QCheckBox>
 #include <QHeaderView>
 #include <QItemSelectionModel>
+#include <QMenuBar>
+#include <QMenu>
+#include <QAction>
 #include <QTableWidget>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -163,6 +166,11 @@ void GbQtRelay::tick() {
 struct GbQtNode {
     QWidget *widget = nullptr;
     QLayout *layout = nullptr;
+    /* A NODE THAT IS A QObject AND NOT A WIDGET -- a menu `item`, which is a
+     * QAction. Kept in its own field rather than widening `widget`, so every
+     * door that needs a real widget keeps a type that says so and cannot be
+     * handed an action by accident. */
+    QObject *object = nullptr;
     GbQtNode *root = nullptr;
     bool is_form = false;
     /* ADDRESSED BY NAME, AND NOT EVERY NAMED THING IS A WIDGET: a menu `item`
@@ -427,25 +435,34 @@ static int set_property(QObject *widget, const char *prop, const QVariant &v,
     return 1;
 }
 
+/* THE THING AN OPTION IS SET ON: the widget where there is one, the QObject
+ * where there is not. A menu `item` is a QAction, so `shortcut:`, `enabled:`
+ * and `checkable:` reach it through exactly the same by-name door every widget
+ * property goes through -- which is the whole saving of that design, since a
+ * QAction's properties were never anticipated anywhere. */
+static QObject *settable(GbQtNode *n) {
+    if (!n) {
+        return nullptr;
+    }
+    return n->widget ? (QObject *)n->widget : n->object;
+}
+
 extern "C" int gb_qt_set_text(void *widget, const char *prop,
                               const char *value, char *err, size_t err_size) {
-    GbQtNode *n = (GbQtNode *)widget;
-    return set_property(n ? n->widget : nullptr, prop,
+    return set_property(settable((GbQtNode *)widget), prop,
                         QVariant(QString::fromUtf8(value)), err, err_size);
 }
 
 extern "C" int gb_qt_set_number(void *widget, const char *prop, double value,
                                 char *err, size_t err_size) {
-    GbQtNode *n = (GbQtNode *)widget;
-    return set_property(n ? n->widget : nullptr, prop, QVariant(value), err,
-                        err_size);
+    return set_property(settable((GbQtNode *)widget), prop, QVariant(value),
+                        err, err_size);
 }
 
 extern "C" int gb_qt_set_bool(void *widget, const char *prop, int value,
                               char *err, size_t err_size) {
-    GbQtNode *n = (GbQtNode *)widget;
-    return set_property(n ? n->widget : nullptr, prop, QVariant(value != 0),
-                        err, err_size);
+    return set_property(settable((GbQtNode *)widget), prop,
+                        QVariant(value != 0), err, err_size);
 }
 
 extern "C" int gb_qt_layout_number(void *container, const char *prop,
@@ -725,6 +742,92 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
  * subject keeps its own order would make `qt.selected`'s row index mean a
  * different row in each, and an index that silently means two things is worse
  * than no sorting. */
+/* THE WINDOW'S MENU BAR, made once and kept as a child of the window. A plain
+ * QWidget has no `menuBar()` the way a QMainWindow does, so it is created on
+ * demand and added to the TOP of the window's own layout -- which is where a
+ * menu bar goes and is also why a menu is placed by nothing in the
+ * declaration: it does not sit in the `row`/`column` tree at all. */
+static QMenuBar *menu_bar_of(GbQtNode *root) {
+    if (!root || !root->widget) {
+        return nullptr;
+    }
+    QMenuBar *bar = root->widget->findChild<QMenuBar *>(
+        QString(), Qt::FindDirectChildrenOnly);
+    if (bar) {
+        return bar;
+    }
+    bar = new QMenuBar(root->widget);
+    if (QBoxLayout *b = qobject_cast<QBoxLayout *>(root->layout)) {
+        b->insertWidget(0, bar);
+    }
+    return bar;
+}
+
+extern "C" void *gb_qt_menu(void *window, void *parent_menu, const char *title,
+                            char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root) {
+        say(err, err_size, "there is no window to put a menu on");
+        return nullptr;
+    }
+    QMenu *made = nullptr;
+    if (parent_menu) {
+        GbQtNode *pm = (GbQtNode *)parent_menu;
+        QMenu *outer = qobject_cast<QMenu *>(pm->widget);
+        if (!outer) {
+            say(err, err_size, "a submenu needs a menu around it");
+            return nullptr;
+        }
+        made = outer->addMenu(QString::fromUtf8(title ? title : ""));
+    } else {
+        QMenuBar *bar = menu_bar_of(root);
+        if (!bar) {
+            say(err, err_size, "this window cannot hold a menu bar");
+            return nullptr;
+        }
+        made = bar->addMenu(QString::fromUtf8(title ? title : ""));
+    }
+    GbQtNode *n = node_new();
+    n->root = root;
+    n->widget = made;
+    return n;
+}
+
+extern "C" void *gb_qt_menu_item(void *window, void *menu, const char *name,
+                                 const char *label, char *err,
+                                 size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    GbQtNode *m = (GbQtNode *)menu;
+    QMenu *owner = m ? qobject_cast<QMenu *>(m->widget) : nullptr;
+    if (!owner) {
+        say(err, err_size, "an item needs a menu around it");
+        return nullptr;
+    }
+    QAction *act = owner->addAction(QString::fromUtf8(label ? label : ""));
+    GbQtNode *n = node_new();
+    n->root = root;
+    /* NO `widget`, BECAUSE IT IS NOT ONE. A QAction is a QObject, so anything
+     * that genuinely needs a widget -- `grow:`, a view's edit triggers --
+     * refuses on this node rather than quietly applying to the menu it sits
+     * in, which is the rule `stretch` already follows for the same reason. */
+    n->object = act;
+    if (name && *name && root) {
+        root->parts.insert(QString::fromUtf8(name), act);
+    }
+    return n;
+}
+
+extern "C" int gb_qt_menu_separator(void *menu, char *err, size_t err_size) {
+    GbQtNode *m = (GbQtNode *)menu;
+    QMenu *owner = m ? qobject_cast<QMenu *>(m->widget) : nullptr;
+    if (!owner) {
+        say(err, err_size, "a separator needs a menu around it");
+        return 0;
+    }
+    owner->addSeparator();
+    return 1;
+}
+
 extern "C" void *gb_qt_table(void *parent, const char *name,
                              const char *const *headers, int columns,
                              char *err, size_t err_size) {

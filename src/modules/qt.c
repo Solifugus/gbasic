@@ -350,6 +350,86 @@ static int qt_apply_options(void *node, Value *options, const char *word,
 
 static int qt_build_items(void *parent, Value *items, void *root);
 
+/* A MENU IS BUILT BY ITS OWN WALK, because it is not laid out: its children are
+ * actions and submenus rather than widgets in a box, and handing them to
+ * `gb_qt_part` -- which maps a word to a widget -- has nothing to map. A
+ * submenu recurses here, which is why `menu "Recent"` inside `menu "File"`
+ * needed no vocabulary of its own. */
+static int qt_build_menu(void *root, void *parent_menu, Value *menu) {
+    char err[QT_ERRBUF];
+    char message[512];
+    const char *title = qt_record_text(menu, "label");
+    err[0] = '\0';
+    void *node = gb_qt_menu(root, parent_menu, title ? title : "", err,
+                            sizeof(err));
+    if (!node) {
+        snprintf(message, sizeof(message), "window: %s",
+                 err[0] ? err : "that menu could not be built");
+        qt_raise(message);
+        return 0;
+    }
+    RecordField *entries = record_find(menu, "items");
+    if (!entries || !entries->value || entries->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    size_t count = entries->value->as.array.store
+                       ? entries->value->as.array.store->count : 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *part = &entries->value->as.array.store->items[i];
+        if (part->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *kind = qt_record_text(part, "kind");
+        const char *word = qt_record_text(part, "word");
+        if (kind && strcmp(kind, "handler") == 0) {
+            continue;   /* connected in the second pass, like every other */
+        }
+        if (!word) {
+            continue;
+        }
+        if (strcmp(word, "menu") == 0) {
+            if (!qt_build_menu(root, node, part)) {
+                return 0;
+            }
+            continue;
+        }
+        if (strcmp(word, "separator") == 0) {
+            err[0] = '\0';
+            if (!gb_qt_menu_separator(node, err, sizeof(err))) {
+                snprintf(message, sizeof(message), "window: %s",
+                         err[0] ? err : "that separator could not be added");
+                qt_raise(message);
+                return 0;
+            }
+            continue;
+        }
+        /* AN ITEM. Its `label:` is the text a person reads, consumed at
+         * construction like a button's; everything else -- `shortcut:`,
+         * `enabled:`, `checkable:` -- goes to the QAction's own QMetaObject by
+         * name, which is the by-name route reaching a class nothing
+         * anticipated. */
+        const char *name = qt_record_text(part, "name");
+        RecordField *opts = record_find(part, "options");
+        const char *label = NULL;
+        if (opts && opts->value && opts->value->kind == VALUE_RECORD) {
+            label = qt_record_text(opts->value, "label");
+        }
+        err[0] = '\0';
+        void *act = gb_qt_menu_item(root, node, name ? name : "",
+                                    label ? label : "", err, sizeof(err));
+        if (!act) {
+            snprintf(message, sizeof(message), "window: %s",
+                     err[0] ? err : "that item could not be added");
+            qt_raise(message);
+            return 0;
+        }
+        if (!qt_apply_options(act, opts ? opts->value : NULL, "item", 0)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int qt_build_item(void *parent, Value *item, void *root) {
     char err[QT_ERRBUF];
     char message[512];
@@ -366,6 +446,14 @@ static int qt_build_item(void *parent, Value *item, void *root) {
     const char *label = qt_record_text(item, "label");
     RecordField *opts = record_find(item, "options");
     err[0] = '\0';
+
+    if (strcmp(kind, "container") == 0 && word && strcmp(word, "menu") == 0) {
+        /* THE ROOT, NOT THE PARENT, because a menu bar belongs to the window
+         * and not to whatever container the declaration happens to sit in --
+         * the load-time pass already refused a menu anywhere a layout would
+         * have placed it. */
+        return qt_build_menu(root, NULL, item);
+    }
 
     if (strcmp(kind, "container") == 0 && word && strcmp(word, "table") == 0) {
         /* A TABLE'S PARTS ARE COLUMNS, so it is built from its WHOLE field
