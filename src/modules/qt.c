@@ -51,6 +51,407 @@ static void qt_raise(const char *message) {
     runtime_error_raise(message, QT_ERROR_CODE, "qt");
 }
 
+static const char *qt_record_text(Value *record, const char *field) {
+    RecordField *f = record_find(record, field);
+    if (!f || !f->value || f->value->kind != VALUE_STRING) {
+        return NULL;
+    }
+    return f->value->as.string;
+}
+
+/* ---- `qt.check`: the declaration's own rules, over a window a program BUILT
+ *
+ * §4 of docs/qt_gui_design.md says the block is SUGAR OVER A BUILDER, because
+ * a declaration cannot contain a loop and so cannot generate a row per
+ * invoice. MEASURED 2026-10-18, THAT DOOR WAS ALREADY OPEN AND NOBODY KNEW:
+ * `qt.open` reads the record the declaration binds and asks only that `kind`
+ * is `"window"`, so a record a program builds opens, renders, reads back and
+ * fires handlers exactly as a declared one. The builder needed no verb.
+ *
+ * WHAT IT NEEDED WAS THIS. A declared window is validated at LOAD time and a
+ * built one was validated not at all -- which is not a missing nicety but the
+ * defect `web.configure` was built to close, where the record could already be
+ * written directly and that path checked nothing, so `app.options.workesr = 4`
+ * was accepted in silence. Measured here before a line was written:
+ *
+ *   a part with NO NAME               opened quietly, unaddressable forever
+ *   TWO PARTS SHARING A NAME          opened quietly, the second shadowing
+ *   `word: "feild"`                   refused, by the BACKEND, for having no
+ *                                     widget wired -- never "did you mean
+ *                                     'field'?"
+ *   `item` in a `column`              same: the right refusal, wrong sentence
+ *   a handler naming nothing          refused for carrying no function, never
+ *                                     "there is nothing called `nobody`"
+ *
+ * The last is the one load-time validation exists for, so a builder without it
+ * is a builder whose mistakes surface as a window that looks fine.
+ *
+ * THE RULES ARE NOT COPIED HERE. They live in src/window_check.c and this is
+ * an adapter over a record; src/frontend.c has one over the AST. See
+ * include/window_check.h for the argument, which is `would`/`execute`'s:
+ * if the two could disagree, a check would describe a different window from
+ * the one that opens.
+ *
+ * IT NEEDS NO QT AND NO DISPLAY, and that is deliberate rather than
+ * incidental -- it is the `web.routes` property, the same one that let the
+ * whole declaration ship before any Qt existed. So it sits OUTSIDE the
+ * `#if HAVE_QT` guard, which is this project's own stated convention read the
+ * other way: code that is not optional must stay out of those guards.
+ *
+ * AND THE FIELD NAMES ARE CLOSED, which the vocabulary rules cannot cover
+ * because they are about the REPRESENTATION rather than about windows:
+ * `{ kind: "part", word: "field", nmae: "x" }` is a part with no name and a
+ * stray key, and reporting only the first would send a reader looking for a
+ * name they can see they wrote. */
+
+typedef struct {
+    char message[512];
+    int count;
+    int reported;          /* 1 once `message` holds the first problem */
+    const char *path[16];  /* where we are, for a record with no line */
+    size_t depth;
+} QtCheckSink;
+
+static QtCheckSink *qt_check_sink = NULL;
+
+typedef struct {
+    Value *value;
+    size_t depth;
+    char where[192];
+} QtCheckItem;
+
+/* A RECORD HAS NO LINE, so what locates a problem is the PATH to it. A
+ * declaration's refusal sends a reader to the line they must edit; the
+ * nearest honest equivalent here names the chain of words that got us there,
+ * which is what a reader of the building code has in front of them. */
+static void qt_check_path(char *out, size_t cap, const char *parent,
+                          const char *word, const char *name, size_t index) {
+    char leaf[96];
+    if (name && *name) {
+        snprintf(leaf, sizeof(leaf), "%s %s", word ? word : "?", name);
+    } else if (word && *word) {
+        snprintf(leaf, sizeof(leaf), "%s[%zu]", word, index);
+    } else {
+        snprintf(leaf, sizeof(leaf), "items[%zu]", index);
+    }
+    if (parent && *parent) {
+        snprintf(out, cap, "%s > %s", parent, leaf);
+    } else {
+        snprintf(out, cap, "%s", leaf);
+    }
+}
+
+static int qr_kind(const void *p) {
+    const QtCheckItem *it = (const QtCheckItem *)p;
+    const char *kind = qt_record_text(it->value, "kind");
+    if (kind && strcmp(kind, "handler") == 0) {
+        return GB_WIN_HANDLER;
+    }
+    if (kind && strcmp(kind, "container") == 0) {
+        return GB_WIN_CONTAINER;
+    }
+    return GB_WIN_LEAF;
+}
+
+static const char *qr_field(const void *p, const char *field) {
+    const QtCheckItem *it = (const QtCheckItem *)p;
+    return qt_record_text(it->value, field);
+}
+static const char *qr_word(const void *p)      { return qr_field(p, "word"); }
+static const char *qr_name(const void *p)      { return qr_field(p, "name"); }
+static const char *qr_label(const void *p)     { return qr_field(p, "label"); }
+static const char *qr_subject(const void *p)   { return qr_field(p, "subject"); }
+static const char *qr_direction(const void *p) { return qr_field(p, "direction"); }
+static const char *qr_target(const void *p)    { return qr_field(p, "target"); }
+static const char *qr_signal(const void *p)    { return qr_field(p, "signal"); }
+
+/* A RECORD HAS NO `end` WORD, there being no source to close, so this is
+ * always absent -- which the shared checker reads as "nothing to disagree
+ * with" rather than as an empty closer. */
+static const char *qr_close_word(const void *p) {
+    (void)p;
+    return NULL;
+}
+
+static int qr_handler_callable(const void *p) {
+    const QtCheckItem *it = (const QtCheckItem *)p;
+    RecordField *f = record_find(it->value, "handler");
+    return (f && f->value && f->value->kind == VALUE_FUNCTION) ? 1 : 0;
+}
+
+/* A CHILD IS MATERIALISED ON DEMAND, because the model hands back a pointer
+ * the checker keeps for the length of one call and a record field is a
+ * `Value *` with no view struct of its own. ONE SLOT PER DEPTH, which is what
+ * the checker's lifetime actually requires: it holds a PARENT across the loop
+ * over that parent's children and a CHILD during one call, so slots must
+ * outlive siblings and may be reused only when the walk leaves a level.
+ *
+ * MY FIRST VERSION WAS A RING OF SIXTEEN with a comment claiming the checker
+ * "holds at most a parent and a child at any moment". THAT WAS FALSE and the
+ * sixteen was the giveaway: at the seventeenth SIBLING the ring recycled the
+ * PARENT'S slot while the walk was still iterating it, so `qr_entry` read a
+ * path out of a slot that had become a different item. It SEGFAULTED at
+ * nineteen generated parts -- which the fixture had, §2.4's rejected keypad
+ * being nineteen buttons -- and a crash takes block-buffered stdout with it,
+ * so the run printed everything up to the tier and nothing after it, reading
+ * exactly like a hang. The same shape §0.3 of the design describes for a
+ * display-less Qt abort, arriving from my own code.
+ *
+ * THE DEPTH IS BOUNDED AND THAT IS NOT CAUTION. A DECLARED window's nesting is
+ * bounded by its source, and a BUILT one is bounded by nothing -- a loop can
+ * nest a container inside itself a million deep, and `gb_window_check`
+ * recurses, so the refusal is in front of a C stack overflow rather than in
+ * front of a slot overflow. It is checked in the SHAPE walk, which runs first
+ * and recurses the same way, so by the time the rules run no depth beyond the
+ * cap exists.
+ *
+ * THE MARGIN IS MEASURED, not assumed, which is the standard `rules` set for
+ * its own cap: with the cap lifted this walk survives 5,000 and SEGFAULTS at
+ * 10,000, so 64 sits some 80x short of the crash it stands in front of. The
+ * CONTROL is what makes that a statement about this code rather than about
+ * gBASIC -- building the same 10,000-deep record and NOT checking it exits 0,
+ * where a nested value around 22,000 deep is separately known to kill the
+ * interpreter at teardown. 64 nested containers is already far past any
+ * layout, so the cap is cheap; the margin is what says a reader who raises it
+ * is trading something real. */
+#define QT_CHECK_MAX_DEPTH 64
+static QtCheckItem qt_check_slots[QT_CHECK_MAX_DEPTH + 2];
+
+static const void *qt_check_wrap(const QtCheckItem *parent, Value *v,
+                                 size_t index) {
+    size_t depth = parent ? parent->depth + 1 : 1;
+    if (depth > QT_CHECK_MAX_DEPTH + 1) {
+        depth = QT_CHECK_MAX_DEPTH + 1;   /* unreachable: the shape walk refused */
+    }
+    QtCheckItem *slot = &qt_check_slots[depth];
+    slot->value = v;
+    slot->depth = depth;
+    qt_check_path(slot->where, sizeof(slot->where),
+                  parent ? parent->where : NULL,
+                  qt_record_text(v, "word"), qt_record_text(v, "name"), index);
+    return slot;
+}
+
+static size_t qr_items_of(Value *v) {
+    RecordField *f = record_find(v, "items");
+    if (!f || !f->value || f->value->kind != VALUE_ARRAY) {
+        return 0;
+    }
+    return f->value->as.array.store->count;
+}
+
+static const void *qr_item_of(const QtCheckItem *owner, size_t i) {
+    RecordField *f = record_find(owner->value, "items");
+    return qt_check_wrap(owner->depth == 0 ? NULL : owner,
+                         &f->value->as.array.store->items[i], i);
+}
+
+static size_t qr_entry_count(const void *p) {
+    return qr_items_of(((const QtCheckItem *)p)->value);
+}
+static const void *qr_entry(const void *p, size_t i) {
+    return qr_item_of((const QtCheckItem *)p, i);
+}
+
+static size_t qr_win_item_count(const void *p) {
+    return qr_items_of(((const QtCheckItem *)p)->value);
+}
+static const void *qr_win_item(const void *p, size_t i) {
+    return qr_item_of((const QtCheckItem *)p, i);
+}
+
+static size_t qr_win_option_count(const void *p) {
+    RecordField *f = record_find(((const QtCheckItem *)p)->value, "options");
+    if (!f || !f->value || f->value->kind != VALUE_RECORD) {
+        return 0;
+    }
+    return f->value->as.record.count;
+}
+static const char *qr_win_option_name(const void *p, size_t i) {
+    RecordField *f = record_find(((const QtCheckItem *)p)->value, "options");
+    return f->value->as.record.fields[i].name;
+}
+
+static void qr_report(void *ctx, const void *win, const void *item,
+                      const char *message) {
+    QtCheckSink *sink = (QtCheckSink *)ctx;
+    (void)win;
+    sink->count++;
+    if (sink->reported) {
+        return;
+    }
+    const QtCheckItem *it = (const QtCheckItem *)item;
+    if (it && it->where[0]) {
+        snprintf(sink->message, sizeof(sink->message), "%s (at %s)", message,
+                 it->where);
+    } else {
+        snprintf(sink->message, sizeof(sink->message), "%s", message);
+    }
+    sink->reported = 1;
+}
+
+/* THE FIELD NAMES A RECORD MAY CARRY, per kind. Unknown ones are refused BY
+ * NAME, the rule `webserver.listen` and `reasoning.check_context` already
+ * follow -- and the reason is the same one `web.configure` measured: without
+ * it, a misspelled key leaves an author believing they asked for something. */
+static const char *qt_check_keys(const char *kind) {
+    if (kind && strcmp(kind, "handler") == 0) {
+        return "kind target signal handler";
+    }
+    if (kind && strcmp(kind, "container") == 0) {
+        return "kind word name label subject direction options items";
+    }
+    return "kind word name label options";
+}
+
+static int qt_check_key_known(const char *allowed, const char *name) {
+    size_t len = strlen(name);
+    const char *p = allowed;
+    while (*p) {
+        const char *end = p;
+        while (*end && *end != ' ') { end++; }
+        if ((size_t)(end - p) == len && strncmp(p, name, len) == 0) {
+            return 1;
+        }
+        p = (*end == ' ') ? end + 1 : end;
+    }
+    return 0;
+}
+
+/* The representation walk, kept SEPARATE from the rules: this says whether
+ * the record is a window-shaped record at all, and gb_window_check says
+ * whether the window is a legal window. Confusing the two is how a reader
+ * ends up being told about a missing name when what they wrote was a typo'd
+ * key. */
+static int qt_check_shape(Value *v, const char *where, size_t depth,
+                          QtCheckSink *sink) {
+    if (depth > QT_CHECK_MAX_DEPTH) {
+        sink->count++;
+        if (!sink->reported) {
+            snprintf(sink->message, sizeof(sink->message),
+                     "window: containers are nested more than %d deep (at %s) "
+                     "-- a layout that deep is a loop that built itself",
+                     QT_CHECK_MAX_DEPTH, where && *where ? where : "items");
+            sink->reported = 1;
+        }
+        return 0;
+    }
+    if (v->kind != VALUE_RECORD) {
+        sink->count++;
+        if (!sink->reported) {
+            snprintf(sink->message, sizeof(sink->message),
+                     "window: this is a %s, not an item record (at %s)",
+                     value_kind_name(v->kind), where && *where ? where : "items");
+            sink->reported = 1;
+        }
+        return 0;
+    }
+    const char *kind = qt_record_text(v, "kind");
+    if (!kind || (strcmp(kind, "container") != 0 && strcmp(kind, "part") != 0 &&
+                  strcmp(kind, "handler") != 0)) {
+        sink->count++;
+        if (!sink->reported) {
+            snprintf(sink->message, sizeof(sink->message),
+                     "window: every item needs `kind:` -- \"container\", "
+                     "\"part\" or \"handler\" -- and this one says %s%s%s "
+                     "(at %s)",
+                     kind ? "\"" : "", kind ? kind : "nothing", kind ? "\"" : "",
+                     where && *where ? where : "items");
+            sink->reported = 1;
+        }
+        return 0;
+    }
+    const char *allowed = qt_check_keys(kind);
+    for (size_t i = 0; i < v->as.record.count; i++) {
+        const char *fname = v->as.record.fields[i].name;
+        if (!qt_check_key_known(allowed, fname)) {
+            sink->count++;
+            if (!sink->reported) {
+                snprintf(sink->message, sizeof(sink->message),
+                         "window: a %s carries no '%s' (the fields are %s) "
+                         "(at %s)", kind, fname, allowed,
+                         where && *where ? where : "items");
+                sink->reported = 1;
+            }
+            return 0;
+        }
+    }
+    if (strcmp(kind, "container") == 0) {
+        RecordField *f = record_find(v, "items");
+        if (f && f->value && f->value->kind == VALUE_ARRAY) {
+            char child[192];
+            for (size_t i = 0; i < f->value->as.array.store->count; i++) {
+                Value *c = &f->value->as.array.store->items[i];
+                qt_check_path(child, sizeof(child), where,
+                              c->kind == VALUE_RECORD ? qt_record_text(c, "word") : NULL,
+                              c->kind == VALUE_RECORD ? qt_record_text(c, "name") : NULL,
+                              i);
+                if (!qt_check_shape(c, child, depth + 1, sink)) {
+                    return 0;
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+/* Returns the number of problems; `message` holds the first. ONE PROBLEM AND
+ * NOT ALL OF THEM, deliberately and unlike `rules.validate`: this reports by
+ * RAISING, and a raise carries one sentence. The count travels with it so the
+ * caller is told there are more. */
+static int qt_check_window_record(Value *win, char *message, size_t cap) {
+    static const GbWinModel model = {
+        qr_name, qr_subject, qr_direction, qr_close_word,
+        qr_win_option_count, qr_win_option_name, qr_win_item_count,
+        qr_win_item,
+        qr_kind, qr_word, qr_name, qr_label, qr_subject, qr_direction,
+        qr_close_word, qr_target, qr_signal, qr_handler_callable,
+        qr_entry_count, qr_entry,
+        qr_report, NULL
+    };
+    QtCheckSink sink;
+    sink.message[0] = '\0';
+    sink.count = 0;
+    sink.reported = 0;
+    sink.depth = 0;
+    qt_check_sink = &sink;
+
+    QtCheckItem root;
+    root.value = win;
+    root.depth = 0;
+    root.where[0] = '\0';
+
+    /* THE SHAPE FIRST, THEN THE RULES. A record that is not item-shaped
+     * cannot be judged against window rules at all, and judging it anyway is
+     * how a reader gets told their part has no name when what they wrote was
+     * a string. */
+    RecordField *items = record_find(win, "items");
+    if (items && items->value && items->value->kind == VALUE_ARRAY) {
+        char child[192];
+        for (size_t i = 0; i < items->value->as.array.store->count; i++) {
+            Value *c = &items->value->as.array.store->items[i];
+            qt_check_path(child, sizeof(child), NULL,
+                          c->kind == VALUE_RECORD ? qt_record_text(c, "word") : NULL,
+                          c->kind == VALUE_RECORD ? qt_record_text(c, "name") : NULL,
+                          i);
+            if (!qt_check_shape(c, child, 1, &sink)) {
+                snprintf(message, cap, "%s", sink.message);
+                qt_check_sink = NULL;
+                return sink.count;
+            }
+        }
+    }
+
+    GbWinModel m = model;
+    m.ctx = &sink;
+    gb_window_check(&m, &root);
+    if (sink.count > 0) {
+        snprintf(message, cap, "%s", sink.message);
+    }
+    qt_check_sink = NULL;
+    return sink.count;
+}
+
 #if HAVE_QT
 
 /* ONE OPEN WINDOW PER DECLARED NAME. A declaration's name is unique in its
@@ -238,14 +639,6 @@ static int qt_pump_gbasic(void) {
 /* --- walking the declaration -------------------------------------------- */
 
 #define QT_ERRBUF 256
-
-static const char *qt_record_text(Value *record, const char *field) {
-    RecordField *f = record_find(record, field);
-    if (!f || !f->value || f->value->kind != VALUE_STRING) {
-        return NULL;
-    }
-    return f->value->as.string;
-}
 
 /* The options this backend owns because they are NOT widget properties.
  * Everything else goes to the widget's own QMetaObject by name, which is the
@@ -1256,6 +1649,71 @@ static int qt_window_record(Value *v, const char *verb) {
 
 #endif /* HAVE_QT */
 
+/* `qt.check` ANSWERS ON A BUILD WITH NO QT, like `can_display` and for a
+ * stronger reason: it is a check on a DECLARATION, and the whole declarative
+ * surface was built to be provable with no display and no toolkit. A program
+ * that builds a window on a headless machine and validates it before shipping
+ * it is doing exactly what this is for. */
+static Value qt_check_verb(AstExpr *expr, size_t argc) {
+    char message[512];
+    if (argc != 1) {
+        qt_raise("qt.check expects one window record");
+        return value_null();
+    }
+    Value win = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(win);
+        return value_null();
+    }
+    if (win.kind != VALUE_RECORD) {
+        qt_raise("qt.check expects one window record");
+        value_free(win);
+        return value_null();
+    }
+    const char *kind = qt_record_text(&win, "kind");
+    if (!kind || strcmp(kind, "window") != 0) {
+        qt_raise("qt.check expects a window record -- one carrying "
+                 "`kind: \"window\"`, which is what a `window` block binds");
+        value_free(win);
+        return value_null();
+    }
+    static const char *head[] = {"kind", "name", "options", "items",
+                                 "subject", "direction", NULL};
+    for (size_t i = 0; i < win.as.record.count; i++) {
+        const char *fname = win.as.record.fields[i].name;
+        int known = 0;
+        for (size_t j = 0; head[j]; j++) {
+            if (strcmp(head[j], fname) == 0) { known = 1; break; }
+        }
+        if (!known) {
+            snprintf(message, sizeof(message),
+                     "window: a window carries no '%s' (the fields are kind, "
+                     "name, options, items, subject and direction)", fname);
+            qt_raise(message);
+            value_free(win);
+            return value_null();
+        }
+    }
+    message[0] = '\0';
+    int problems = qt_check_window_record(&win, message, sizeof(message));
+    value_free(win);
+    if (problems > 0) {
+        char full[640];
+        if (problems == 1) {
+            snprintf(full, sizeof(full), "%s", message);
+        } else {
+            /* THE COUNT TRAVELS WITH THE SENTENCE, because a raise carries
+             * one problem and a reader who fixes it should not have to
+             * discover the rest one run at a time. */
+            snprintf(full, sizeof(full), "%s -- and %d more", message,
+                     problems - 1);
+        }
+        qt_raise(full);
+        return value_null();
+    }
+    return value_bool(1);
+}
+
 static Value qt_eval_call(AstExpr *expr) {
     const char *verb = expr->as.call.name;
     size_t argc = expr->as.call.args.count;
@@ -1270,6 +1728,9 @@ static Value qt_eval_call(AstExpr *expr) {
      * own words. */
     if (strcmp(verb, "can_display") == 0 && argc == 0) {
         return value_bool(0);
+    }
+    if (strcmp(verb, "check") == 0) {
+        return qt_check_verb(expr, argc);
     }
     snprintf(message, sizeof(message),
              "Qt support is not available in this build");
@@ -1286,6 +1747,10 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(gb_qt_can_display() ? 1 : 0);
     }
 
+    if (strcmp(verb, "check") == 0) {
+        return qt_check_verb(expr, argc);
+    }
+
     if (strcmp(verb, "open") == 0) {
         if (argc != 1) {
             qt_raise("qt.open expects one window declaration");
@@ -1297,6 +1762,20 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         if (!qt_window_record(&win, "open")) {
+            value_free(win);
+            return value_null();
+        }
+        /* THE SAME RULES, WHETHER OR NOT ANYBODY CALLED `qt.check`. A
+         * declaration met them at LOAD time; a built record meets them here,
+         * because a validator nobody is obliged to call is necessary and not
+         * sufficient -- `rules.validate` refused a malformed stack all along
+         * and `rules.evaluate` still answered `ok: true` for a string, since
+         * nothing obliged a caller to validate first. A declared window has
+         * already passed, so this costs one walk over a small record and
+         * changes nothing it says. */
+        message[0] = '\0';
+        if (qt_check_window_record(&win, message, sizeof(message)) > 0) {
+            qt_raise(message);
             value_free(win);
             return value_null();
         }

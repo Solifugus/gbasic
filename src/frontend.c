@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "window_check.h"
 
 /* Reentrant parse core (src/parser.y). Threads the sink and path straight into a
  * stack-allocated per-parse context, touching no file-scope parser state — so
@@ -550,538 +551,127 @@ static void srv_refuse_nested(SrvCheck *chk, const AstStmtList *list, const char
             break;
         }
     }
-}
 
-/* ---- load-time validation of `window` declarative blocks --------------------
+}
+/* ---- the AST adapter over gb_window_check ---------------------------------
  *
- * The same treatment the `server` block gets, in the same pass and the same
- * sink, which is what puts every refusal into --json-diagnostics and an
- * editor's error list for nothing. It is also what makes the whole declarative
- * surface testable WITH NO DISPLAY -- the property that let `web.routes` be
- * proven with no socket, and the reason this increment ships before any Qt.
- *
- * THE VOCABULARY IS CLOSED AND THAT IS THE POINT. A misspelled directive is a
- * widget nobody sees: it would lay out, draw nothing an author recognises, and
- * raise nothing. Closed, it is a located refusal naming the nearest real word.
- *
- * WHAT IS DELIBERATELY NOT CHECKED, said here rather than discovered: a LEAF's
- * options. Those are widget properties and Qt exposes 75 on a button alone, so
- * the set cannot be closed without Qt in the build -- the head's options can
- * and are. */
+ * The rules moved to src/window_check.c so that a window a program BUILDS
+ * meets the same ones a window a program DECLARES meets -- see
+ * include/window_check.h for why that mattered and what was measured. What is
+ * left here is the half that is genuinely about source: the AST shape, a
+ * span, and the diagnostics sink that puts every refusal into
+ * --json-diagnostics and an editor's error list for nothing. */
 typedef struct {
     gb_diagnostics *diags;
     const char *path;
     int errors;
 } WinCheck;
 
-static void win_error(WinCheck *chk, int line, int column, const char *fmt, ...) {
-    char message[512];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(message, sizeof(message), fmt, ap);
-    va_end(ap);
+static int wa_kind(const void *p) {
+    const AstWindowItem *item = (const AstWindowItem *)p;
+    switch (item->kind) {
+    case AST_WINDOW_HANDLER:   return GB_WIN_HANDLER;
+    case AST_WINDOW_CONTAINER: return GB_WIN_CONTAINER;
+    default:                   return GB_WIN_LEAF;
+    }
+}
+
+static const char *wa_word(const void *p) {
+    return ((const AstWindowItem *)p)->word;
+}
+static const char *wa_name(const void *p) {
+    return ((const AstWindowItem *)p)->name;
+}
+static const char *wa_label(const void *p) {
+    return ((const AstWindowItem *)p)->label;
+}
+static const char *wa_subject(const void *p) {
+    return ((const AstWindowItem *)p)->subject;
+}
+static const char *wa_direction(const void *p) {
+    return ((const AstWindowItem *)p)->subject_direction;
+}
+static const char *wa_close_word(const void *p) {
+    return ((const AstWindowItem *)p)->close_word;
+}
+static const char *wa_target(const void *p) {
+    return ((const AstWindowItem *)p)->event_target;
+}
+static const char *wa_signal(const void *p) {
+    return ((const AstWindowItem *)p)->event_signal;
+}
+/* A DECLARED HANDLER ALWAYS CARRIES A BODY, the grammar having given it one,
+ * so this answers yes unconditionally -- and that is the whole reason the
+ * question is in the model rather than in the rules: it can only be answered
+ * no by a window somebody built. */
+static int wa_handler_callable(const void *p) {
+    (void)p;
+    return 1;
+}
+static size_t wa_entry_count(const void *p) {
+    return ((const AstWindowItem *)p)->entries.count;
+}
+static const void *wa_entry(const void *p, size_t i) {
+    return ((const AstWindowItem *)p)->entries.items[i];
+}
+
+static const char *wa_win_name(const void *p) {
+    return ((const AstStmt *)p)->as.window.name;
+}
+static const char *wa_win_subject(const void *p) {
+    return ((const AstStmt *)p)->as.window.subject;
+}
+static const char *wa_win_direction(const void *p) {
+    return ((const AstStmt *)p)->as.window.subject_direction;
+}
+static const char *wa_win_close_word(const void *p) {
+    return ((const AstStmt *)p)->as.window.close_word;
+}
+static size_t wa_win_option_count(const void *p) {
+    return ((const AstStmt *)p)->as.window.options.count;
+}
+static const char *wa_win_option_name(const void *p, size_t i) {
+    return ((const AstStmt *)p)->as.window.options.items[i].name;
+}
+static size_t wa_win_item_count(const void *p) {
+    return ((const AstStmt *)p)->as.window.items.count;
+}
+static const void *wa_win_item(const void *p, size_t i) {
+    return ((const AstStmt *)p)->as.window.items.items[i];
+}
+
+/* THE POSITION IS THE ITEM'S OWN, which is what makes these refusals
+ * actionable: a reader is sent to the line they have to edit rather than to
+ * the head of the block. A fault in the HEAD reports at the head. */
+static void wa_report(void *ctx, const void *win, const void *item,
+                      const char *message) {
+    WinCheck *chk = (WinCheck *)ctx;
+    int line, column;
+    if (item) {
+        line = ((const AstWindowItem *)item)->line;
+        column = ((const AstWindowItem *)item)->column;
+    } else {
+        line = ((const AstStmt *)win)->line;
+        column = ((const AstStmt *)win)->column;
+    }
     gb_span span = {line, column, line, column};
     gb_report_to(chk->diags, GB_DIAG_WINDOW_BLOCK, 0, chk->path, span, message);
     chk->errors++;
 }
 
-/* CONTAINERS TAKE A BODY AND LEAVES DO NOT, which is not a taxonomy but the
- * grammar's own discipline: every head shape decides its own body-ness, which
- * is what makes the block cost zero bison conflicts. `table` is deliberately
- * ABSENT until it exists, so a `table` written today is refused as an unknown
- * word rather than silently accepted and ignored. */
-static const char *win_container_words[] = {"row", "column", "form", "group",
-                                            "table", "menu", "tabs", "tab",
-                                            "cells", NULL};
-static const char *win_leaf_words[] = {"field", "button", "check", "stretch",
-                                       "item", "separator", NULL};
-
-static int win_in(const char *const *set, const char *word) {
-    for (size_t i = 0; set[i]; i++) {
-        if (strcmp(set[i], word) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-/* The nearest real word: one substitution, one insertion, one deletion -- OR
- * ONE TRANSPOSITION, which is the correction that matters.
- *
- * `colunm` for `column` is a transposition, and so are `feild`, `recieve` and
- * most of what fingers actually do; under a plain one-edit rule it needs TWO
- * edits and no suggestion is offered. Measured by writing the test first and
- * watching it miss the exact example the comment claimed to catch -- the
- * commonest typo there is was the one case the first version could not see.
- *
- * Still short of a Levenshtein table nobody would maintain, and it answers
- * NULL when nothing is close, because a suggestion that is sometimes nonsense
- * is worse than none. */
-static const char *win_nearest(const char *word) {
-    /* DERIVED FROM THE TWO VOCABULARY TABLES, not a third copy of them. It WAS
-     * a third copy, and `table` was added to the containers and to the
-     * sentence that lists them and missed HERE -- so a reader who typed
-     * `tabel` got the generic list instead of the one-word answer, which is
-     * the defect the near-miss finder exists to prevent, for the newest word
-     * in the language. Two representations of one list drift;
-     * run_web_configure.sh's TABLES tripwire makes that argument for the
-     * server block's own options, and run_window.sh now asserts every word
-     * here is reachable. */
-    const char *all[32];
-    size_t n = 0;
-    for (size_t i = 0; win_container_words[i] && n + 1 < 32; i++) {
-        all[n++] = win_container_words[i];
-    }
-    for (size_t i = 0; win_leaf_words[i] && n + 1 < 32; i++) {
-        all[n++] = win_leaf_words[i];
-    }
-    all[n] = NULL;
-    size_t len = strlen(word);
-    for (size_t i = 0; all[i]; i++) {
-        size_t other = strlen(all[i]);
-        if (other + 1 < len || len + 1 < other) {
-            continue;
-        }
-        /* ONE TRANSPOSITION: equal length, and exactly two adjacent positions
-         * swapped. Checked first because it is the common case. */
-        if (other == len) {
-            size_t diff = 0, first = 0;
-            for (size_t k = 0; k < len; k++) {
-                if (word[k] != all[i][k]) {
-                    if (diff == 0) { first = k; }
-                    diff++;
-                }
-            }
-            if (diff == 0) {
-                return all[i];
-            }
-            if (diff == 2 && first + 1 < len &&
-                word[first] == all[i][first + 1] &&
-                word[first + 1] == all[i][first] &&
-                word[first + 1] != all[i][first + 1]) {
-                return all[i];
-            }
-        }
-        size_t a = 0, b = 0, edits = 0;
-        while (a < len && b < other && edits <= 1) {
-            if (word[a] == all[i][b]) {
-                a++; b++;
-                continue;
-            }
-            edits++;
-            if (len > other)       { a++; }
-            else if (other > len)  { b++; }
-            else                   { a++; b++; }
-        }
-        edits += (len - a) + (other - b);
-        if (edits <= 1) {
-            return all[i];
-        }
-    }
-    return NULL;
-}
-
-static void win_check_items(WinCheck *chk, const AstWindowItemList *items,
-                            const char *window_subject, const char *parent_word,
-                            const char **names, size_t *name_count,
-                            size_t name_cap);
-
-/* One item, the window's subject so a bare `form` can inherit it, and THE
- * PARENT'S WORD, which `menu` is the first directive to need: a menu bar
- * belongs to the WINDOW rather than to a layout, so where a `menu` may appear
- * is a fact about its surroundings and not about itself. */
-static void win_check_item(WinCheck *chk, const AstWindowItem *item,
-                           const char *window_subject, const char *parent_word,
-                           const char **names, size_t *name_count,
-                           size_t name_cap) {
-    if (item->kind == AST_WINDOW_HANDLER) {
-        return;   /* its target is checked once the whole window is known */
-    }
-    const char *word = item->word ? item->word : "";
-    int is_container = win_in(win_container_words, word);
-    int is_leaf = win_in(win_leaf_words, word);
-
-    if (!is_container && !is_leaf) {
-        const char *near = win_nearest(word);
-        if (near) {
-            win_error(chk, item->line, item->column,
-                      "window: unknown directive '%s' -- did you mean '%s'?",
-                      word, near);
-        } else {
-            win_error(chk, item->line, item->column,
-                      "window: unknown directive '%s'. The containers are row, "
-                      "column, form, group, table, menu, tabs, tab and "
-                      "cells; the parts are field, button, check, stretch, "
-                      "item and separator", word);
-        }
-        return;
-    }
-
-    /* THE WORD AND THE SHAPE MUST AGREE. The grammar decides shape from the
-     * head alone, so `field x` with a body parses perfectly as a container --
-     * and would lay out a field containing other things, which is not a thing. */
-    if (is_leaf && item->kind == AST_WINDOW_CONTAINER) {
-        win_error(chk, item->line, item->column,
-                  "window: '%s' takes no body -- write `%s name( ... )` on one line",
-                  word, word);
-        return;
-    }
-    if (is_container && item->kind == AST_WINDOW_LEAF) {
-        win_error(chk, item->line, item->column,
-                  "window: '%s' is a container and needs a body ending `end %s`",
-                  word, word);
-        return;
-    }
-
-    if (item->kind == AST_WINDOW_CONTAINER) {
-        if (item->close_word && strcmp(item->close_word, word) != 0) {
-            win_error(chk, item->line, item->column,
-                      "window: '%s' is closed by `end %s`, not `end %s`",
-                      word, word, item->close_word);
-        }
-        /* A `form` NAMES ITS SUBJECT OR INHERITS THE WINDOW'S, and a window
-         * with neither is a form about nothing. The window's subject is a
-         * DEFAULT a form may shadow -- the rule a nested `with principal(p)`
-         * already follows. */
-        int carries_subject = (strcmp(word, "form") == 0 ||
-                               strcmp(word, "table") == 0);
-        if (carries_subject) {
-            if (item->subject_direction &&
-                strcmp(item->subject_direction, "edit") != 0 &&
-                strcmp(item->subject_direction, "show") != 0) {
-                win_error(chk, item->line, item->column,
-                          "window: a %s is `to edit` or `to show`, not `to %s`",
-                          word, item->subject_direction);
-            }
-            if (!item->subject && !window_subject) {
-                win_error(chk, item->line, item->column,
-                          "window: this %s names no subject and the window has "
-                          "none to inherit -- write `%s to edit <record>`",
-                          word, word);
-            }
-        } else if (item->subject) {
-            win_error(chk, item->line, item->column,
-                      "window: only a form or a table carries a subject, not '%s'",
-                      word);
-        }
-        /* A MENU BAR BELONGS TO THE WINDOW, so a `menu` sits at the window's
-         * top level or inside another menu, and nowhere else. Refused rather
-         * than placed somewhere surprising: Qt would put a QMenuBar wherever
-         * the layout said, so a `menu` inside a `row` would render as a bar in
-         * the middle of the screen -- a plausible-looking widget nobody asked
-         * for, which is the class the closed vocabulary exists to prevent. */
-        if (strcmp(word, "menu") == 0) {
-            if (!parent_word ||
-                (strcmp(parent_word, "window") != 0 &&
-                 strcmp(parent_word, "menu") != 0)) {
-                win_error(chk, item->line, item->column,
-                          "window: a menu belongs to the window or to another "
-                          "menu, not inside '%s' -- a menu bar is not laid out",
-                          parent_word ? parent_word : "?");
-            }
-            if (!item->label) {
-                win_error(chk, item->line, item->column,
-                          "window: a menu needs a caption -- `menu \"File\"` "
-                          "-- because that is what a person reads on the bar");
-            }
-            if (item->name) {
-                win_error(chk, item->line, item->column,
-                          "window: a menu takes no name; its ITEMS are what a "
-                          "handler addresses");
-            }
-            for (size_t i = 0; i < item->entries.count; i++) {
-                const AstWindowItem *part = item->entries.items[i];
-                if (part->kind == AST_WINDOW_HANDLER || !part->word) {
-                    continue;
-                }
-                if (strcmp(part->word, "item") != 0 &&
-                    strcmp(part->word, "separator") != 0 &&
-                    strcmp(part->word, "menu") != 0) {
-                    win_error(chk, part->line, part->column,
-                              "window: a menu holds items, separators and "
-                              "submenus -- '%s' is none of those", part->word);
-                }
-            }
-        }
-
-        /* A TABLE IS NAMED AND A FORM IS NOT, which is a real difference and
-         * not a spelling: a form's parts are addressed by their own names,
-         * where a table shows MANY rows, so the table itself is what a handler
-         * and `qt.selected` address. Refused both ways, so neither shape can
-         * be written the other's way and quietly mean something else. */
-        if (strcmp(word, "table") == 0 && !item->name) {
-            win_error(chk, item->line, item->column,
-                      "window: a table needs a name -- `table orders to show "
-                      "<list>` -- because that is what a handler and "
-                      "`qt.selected` address");
-        }
-        /* WHICH CONTAINERS MAY BE NAMED, and it is a short list on purpose: a
-         * name is what a handler and a property read address, so it belongs to
-         * a container that IS a widget with state of its own. A `table` shows
-         * many rows and a `tabs` has a current page; a `row` is a box and a
-         * `tab` is a PAGE whose CAPTION is what a person reads, the rule a
-         * `menu` follows. */
-        int may_be_named = (strcmp(word, "table") == 0 ||
-                            strcmp(word, "tabs") == 0);
-        if (!may_be_named && item->name) {
-            win_error(chk, item->line, item->column,
-                      "window: '%s' takes no name; a table and a `tabs` are "
-                      "named, because they are the containers with state a "
-                      "handler can ask about", word);
-        }
-
-        /* A `tab` BELONGS TO A `tabs` and needs a caption; a `tabs` holds
-         * nothing else. Refused both ways, because a QTabWidget has NO LAYOUT
-         * of its own -- its children are pages -- so anything else inside one
-         * would be dropped silently rather than mislaid. */
-        if (strcmp(word, "tabs") == 0) {
-            for (size_t i = 0; i < item->entries.count; i++) {
-                const AstWindowItem *part = item->entries.items[i];
-                if (part->kind == AST_WINDOW_HANDLER || !part->word) {
-                    continue;
-                }
-                if (strcmp(part->word, "tab") != 0) {
-                    win_error(chk, part->line, part->column,
-                              "window: `tabs` holds `tab` pages -- '%s' is not "
-                              "one; put it inside a tab", part->word);
-                }
-            }
-        }
-        /* `cells` HOLDS ROWS OF CELLS, which is also why it needed no new
-         * word: a grid IS rows, so `row` is reused -- refined inside `cells`
-         * to mean a row whose columns ALIGN with the rows above, where a `row`
-         * elsewhere is a box that does not. Anything else directly inside
-         * `cells` has no row to go in, so it is refused rather than placed at
-         * whatever position happened to be current. */
-        if (strcmp(word, "cells") == 0) {
-            for (size_t i = 0; i < item->entries.count; i++) {
-                const AstWindowItem *part = item->entries.items[i];
-                if (part->kind == AST_WINDOW_HANDLER || !part->word) {
-                    continue;
-                }
-                if (strcmp(part->word, "row") != 0) {
-                    win_error(chk, part->line, part->column,
-                              "window: `cells` holds `row`s of cells -- '%s' "
-                              "is not one; put it inside a row", part->word);
-                }
-            }
-        }
-        if (strcmp(word, "tab") == 0) {
-            if (!parent_word || strcmp(parent_word, "tabs") != 0) {
-                win_error(chk, item->line, item->column,
-                          "window: a `tab` belongs to a `tabs`, not to '%s'",
-                          parent_word ? parent_word : "?");
-            }
-            if (!item->label) {
-                win_error(chk, item->line, item->column,
-                          "window: a tab needs a caption -- `tab \"General\"` "
-                          "-- because that is what a person reads on it");
-            }
-        }
-        /* A NAMED CONTAINER REGISTERS ITS NAME TOO. Only leaves did, so
-         * `on orders.activated` on a perfectly real table would have been
-         * refused as naming nothing in the window -- the refusal that exists
-         * to catch a handler that can never fire, firing on one that can. */
-        if (item->name) {
-            for (size_t i = 0; i < *name_count; i++) {
-                if (strcmp(names[i], item->name) == 0) {
-                    win_error(chk, item->line, item->column,
-                              "window: '%s' is declared twice, so `on "
-                              "%s.<signal>` could not say which",
-                              item->name, item->name);
-                    break;
-                }
-            }
-            if (*name_count < name_cap) {
-                names[*name_count] = item->name;
-                *name_count = *name_count + 1;
-            }
-        }
-        /* A TABLE'S PARTS ARE COLUMNS, so every one must be a `field` -- §7's
-         * own decision, and the saving is that `field` already means "one value
-         * of the subject". A `button` among them would be a widget in a place
-         * that holds values, which lays out as nothing an author recognises.
-         *
-         * AND A COLUMN'S NAME BELONGS TO ITS TABLE, NOT TO THE WINDOW, which
-         * is a correction the first runnable example produced immediately: a
-         * screen listing orders and showing the chosen one is the commonest
-         * shape there is, and BOTH want a `who` and a `total` -- the list's
-         * are columns, the form's are widgets. With the columns registered
-         * window-wide that example was refused as declaring `who` twice, which
-         * is a true sentence about a program with nothing wrong with it.
-         *
-         * So the columns are checked HERE (named, unique within their own
-         * table) and the recursion that would register them window-wide is
-         * skipped. `qt.cell(win, "orders", r, "who")` addresses one, which is
-         * a column of a named table rather than a thing in the window. */
-        if (strcmp(word, "table") == 0) {
-            const char *seen[64];
-            size_t seen_count = 0;
-            for (size_t i = 0; i < item->entries.count; i++) {
-                const AstWindowItem *part = item->entries.items[i];
-                if (part->kind == AST_WINDOW_HANDLER) {
-                    continue;
-                }
-                if (!part->word || strcmp(part->word, "field") != 0) {
-                    win_error(chk, part->line, part->column,
-                              "window: a table's parts are columns, so they are "
-                              "all `field` -- '%s' is not one",
-                              part->word ? part->word : "?");
-                    continue;
-                }
-                if (!part->name) {
-                    win_error(chk, part->line, part->column,
-                              "window: a table's column needs a name -- it is "
-                              "the field of the subject this column shows");
-                    continue;
-                }
-                for (size_t j = 0; j < seen_count; j++) {
-                    if (strcmp(seen[j], part->name) == 0) {
-                        win_error(chk, part->line, part->column,
-                                  "window: table '%s' shows '%s' twice, so two "
-                                  "columns would hold one field", item->name,
-                                  part->name);
-                        break;
-                    }
-                }
-                if (seen_count < 64) {
-                    seen[seen_count++] = part->name;
-                }
-            }
-            return;   /* columns are not window-wide names */
-        }
-        win_check_items(chk, &item->entries, window_subject, word, names,
-                        name_count, name_cap);
-        return;
-    }
-
-    /* AN ITEM AND A SEPARATOR ARE MENU WORDS, and the mirror of the rule above:
-     * a menu may not be laid out, and a menu's parts may not appear where
-     * things ARE laid out. `item open( ... )` in a `column` would otherwise
-     * reach `gb_qt_part`, which has no widget for the word and would refuse at
-     * RUN time -- late, and only for somebody with Qt in their build. */
-    if (strcmp(word, "item") == 0 || strcmp(word, "separator") == 0) {
-        if (!parent_word || strcmp(parent_word, "menu") != 0) {
-            win_error(chk, item->line, item->column,
-                      "window: '%s' belongs in a menu, not in '%s'", word,
-                      parent_word ? parent_word : "?");
-            return;
-        }
-    }
-    if (strcmp(word, "separator") == 0) {
-        /* A SEPARATOR IS A LINE and names nothing, the rule `stretch` follows
-         * for being pure space. */
-        if (item->name) {
-            win_error(chk, item->line, item->column,
-                      "window: a separator is a line and takes no name");
-        }
-        return;
-    }
-
-    /* A LEAF'S NAME IS WHAT A HANDLER AND A BINDING ADDRESS, so `field()` with
-     * none is refused -- except `stretch`, which is pure space and names
-     * nothing. */
-    if (strcmp(word, "stretch") == 0) {
-        if (item->name) {
-            win_error(chk, item->line, item->column,
-                      "window: stretch is space and takes no name");
-        }
-        return;
-    }
-    if (!item->name) {
-        win_error(chk, item->line, item->column,
-                  "window: '%s' needs a name -- `%s id( ... )` -- because that is "
-                  "what a handler and a binding address", word, word);
-        return;
-    }
-    for (size_t i = 0; i < *name_count; i++) {
-        if (strcmp(names[i], item->name) == 0) {
-            win_error(chk, item->line, item->column,
-                      "window: '%s' is declared twice, so `on %s.<signal>` could "
-                      "not say which", item->name, item->name);
-            return;
-        }
-    }
-    if (*name_count < name_cap) {
-        names[*name_count] = item->name;
-        *name_count = *name_count + 1;
-    }
-}
-
-static void win_check_items(WinCheck *chk, const AstWindowItemList *items,
-                            const char *window_subject, const char *parent_word,
-                            const char **names, size_t *name_count,
-                            size_t name_cap) {
-    for (size_t i = 0; i < items->count; i++) {
-        win_check_item(chk, items->items[i], window_subject, parent_word, names,
-                       name_count, name_cap);
-    }
-}
-
-/* Every handler in the tree, checked against the names the window declares.
- * THIS IS THE REFUSAL LOAD-TIME VALIDATION EXISTS FOR: `on save.clicked` with
- * no `button save` is a handler that can never fire, and nothing at run time
- * would ever say so -- the button is simply not there to connect. */
-static void win_check_handlers(WinCheck *chk, const AstWindowItemList *items,
-                               const char **names, size_t name_count) {
-    for (size_t i = 0; i < items->count; i++) {
-        const AstWindowItem *item = items->items[i];
-        if (item->kind == AST_WINDOW_HANDLER) {
-            int found = 0;
-            for (size_t j = 0; j < name_count; j++) {
-                if (item->event_target && strcmp(names[j], item->event_target) == 0) {
-                    found = 1;
-                    break;
-                }
-            }
-            if (!found) {
-                win_error(chk, item->line, item->column,
-                          "window: `on %s.%s` names nothing in this window, so it "
-                          "could never fire",
-                          item->event_target ? item->event_target : "?",
-                          item->event_signal ? item->event_signal : "?");
-            }
-        } else if (item->kind == AST_WINDOW_CONTAINER) {
-            win_check_handlers(chk, &item->entries, names, name_count);
-        }
-    }
-}
-
 static void win_check_window(WinCheck *chk, const AstStmt *stmt) {
-    /* THE HEAD'S OPTIONS ARE CLOSED, unlike a leaf's: these are the window's
-     * own, not a widget's, so the set is knowable without Qt. A misspelling
-     * that was ignored would leave an author believing they had asked for
-     * something -- the rule `make_dir` and `webserver.listen` already follow. */
-    static const char *head[] = {"title", "width", "height", NULL};
-    for (size_t i = 0; i < stmt->as.window.options.count; i++) {
-        const AstRecordField *field = &stmt->as.window.options.items[i];
-        if (!win_in(head, field->name)) {
-            win_error(chk, stmt->line, stmt->column,
-                      "window '%s': unknown option '%s' (the options are title, "
-                      "width and height)", stmt->as.window.name, field->name);
-        }
-    }
-    if (stmt->as.window.subject_direction &&
-        strcmp(stmt->as.window.subject_direction, "edit") != 0 &&
-        strcmp(stmt->as.window.subject_direction, "show") != 0) {
-        win_error(chk, stmt->line, stmt->column,
-                  "window '%s': the shorthand is `to edit` or `to show`, not `to %s`",
-                  stmt->as.window.name, stmt->as.window.subject_direction);
-    }
-    if (stmt->as.window.close_word &&
-        strcmp(stmt->as.window.close_word, "window") != 0) {
-        win_error(chk, stmt->line, stmt->column,
-                  "window '%s' is closed by `end window`, not `end %s`",
-                  stmt->as.window.name, stmt->as.window.close_word);
-    }
-
-    const char *names[256];
-    size_t name_count = 0;
-    /* "window" IS THE PARENT AT THE TOP LEVEL, which is the one place a `menu`
-     * may appear outside another menu -- a menu bar belongs to the window. */
-    win_check_items(chk, &stmt->as.window.items, stmt->as.window.subject,
-                    "window", names, &name_count, 256);
-    win_check_handlers(chk, &stmt->as.window.items, names, name_count);
+    static const GbWinModel model = {
+        wa_win_name, wa_win_subject, wa_win_direction, wa_win_close_word,
+        wa_win_option_count, wa_win_option_name, wa_win_item_count,
+        wa_win_item,
+        wa_kind, wa_word, wa_name, wa_label, wa_subject, wa_direction,
+        wa_close_word, wa_target, wa_signal, wa_handler_callable,
+        wa_entry_count, wa_entry,
+        wa_report, NULL
+    };
+    GbWinModel m = model;
+    m.ctx = chk;
+    gb_window_check(&m, stmt);
 }
 
 static void srv_walk(SrvCheck *chk, const AstStmtList *list, int top_level,

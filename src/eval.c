@@ -7,6 +7,7 @@
 #include "platform.h"
 #include "actor.h"
 #include "diagnostics.h"
+#include "window_check.h"
 
 #include <ctype.h>
 #include <dirent.h>

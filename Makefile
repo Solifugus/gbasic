@@ -389,7 +389,7 @@ endif
 WIN_RES ?=
 PLATFORM_OBJ ?= src/platform_posix.o
 
-LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS)
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS)
 OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
@@ -523,7 +523,10 @@ src/builtins.o: src/builtins.c include/builtins.h .buildswitch-stamp
 src/diagnostics.o: src/diagnostics.c include/diagnostics.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/frontend.o: src/frontend.c include/gbasic.h include/diagnostics.h include/ast.h .buildswitch-stamp
+src/window_check.o: src/window_check.c include/window_check.h .buildswitch-stamp
+	$(CC) $(CFLAGS) -c $< -o $@
+
+src/frontend.o: src/frontend.c include/gbasic.h include/diagnostics.h include/ast.h include/window_check.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/actor.o: src/actor.c include/actor.h include/platform.h .buildswitch-stamp
