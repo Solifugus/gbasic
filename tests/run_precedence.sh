@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: exclusive -- does `touch src/parser.y` and then `make`, to force bison to re-run and count its conflicts; that relinks ./gbasic with a plain make, no `make clean` and no switches, which is a third shape of rebuilder and the one the binary-stability guard caught
 # Operator precedence, and in particular where `not` sits (DOGFOOD 15).
 #
 # SELF-CHECKING RATHER THAN A GOLDEN, and forced: every defect in a precedence

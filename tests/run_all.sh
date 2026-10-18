@@ -316,6 +316,26 @@ for path in tests/run_*.sh; do
     sed 's/#.*//' "$path" 2>/dev/null \
       | grep -qE '(^|&&|;|\|\||\()[[:space:]]*make([[:space:]]+-[A-Za-z]+[^;&|]*)?[[:space:]]+clean' \
       && rebuilds=1
+    # A SUITE THAT MODIFIES A BUILD INPUT REBUILDS, however plain its `make`.
+    # run_precedence does `touch src/parser.y` so bison re-runs and its
+    # conflicts can be counted -- no `make clean`, no switches, no tool, and it
+    # relinks ./gbasic under every suite beside it. Found by the guard below
+    # after TWO scans missed it, which is the measurement that says a scan is
+    # necessary and never sufficient here.
+    # NARROWED TO WHAT UNAMBIGUOUSLY WRITES INTO THIS TREE. The first draft
+    # matched any `cp`/`mv` near a build path and FALSELY FLAGGED run_regex,
+    # which copies `src include Makefile` INTO A SCRATCH TREE and edits the
+    # copy -- `"$fb/src/eval.c"`. A tripwire whose false positives look exactly
+    # like its true ones is not a tripwire, which finio's amount-kind check and
+    # run_libcurl_floor's smtp.c comment have each already taught here. So:
+    # `touch`/`sed -i`/a redirect, onto a path that is RELATIVE (not preceded
+    # by `/` or `$`, which is what a scratch-tree path looks like). The
+    # ambiguous shapes are left to the behavioural guard, which is the right
+    # division of labour -- a scan names what it is sure of, the guard catches
+    # the rest.
+    sed 's/#.*//' "$path" 2>/dev/null \
+      | grep -qE '((touch|sed -i)[^;&|]*[^/$[:alnum:]_]|>[[:space:]]*)(src/|include/|Makefile|third_party/)' \
+      && rebuilds=1
     for tool in $builds; do
         [ -f "$tool" ] || continue
         sed 's/#.*//' "$tool" 2>/dev/null \
@@ -324,7 +344,7 @@ for path in tests/run_*.sh; do
     done
     if [ "$rebuilds" = "1" ] \
        && ! grep -qE "^# *GATE-LANE: *exclusive" "$path" 2>/dev/null; then
-        printf 'FAIL lane: %s rebuilds the tree (its own `make clean`, or a tool it runs) and does not declare `# GATE-LANE: exclusive --`\n' "$name"
+        printf 'FAIL lane: %s rebuilds the tree (its own `make clean`, a tool it runs, or a build input it writes) and does not declare `# GATE-LANE: exclusive --`\n' "$name"
         lane_rot=1
     fi
 done
