@@ -504,6 +504,10 @@ AstWindowItem *ast_window_container(char *word, char *label, AstRecordFieldList 
 AstWindowItem *ast_window_form(char *word, char *verb, char *direction, char *subject,
                                AstWindowItemList entries, char *close_word,
                                int line, int column);
+AstWindowItem *ast_window_named_form(char *word, char *name, char *verb,
+                                     char *direction, char *subject,
+                                     AstWindowItemList entries,
+                                     char *close_word, int line, int column);
 AstWindowItem *ast_window_handler(char *target, char *signal, AstStmtList body,
                                   int line, int column);
 AstStmt *ast_window(char *name, AstRecordFieldList options, AstWindowItemList items,

@@ -348,7 +348,129 @@ window w( title: "x" )
     end row
 end window
 EOF
-refuse "only a form carries a subject" "only a form carries a subject"
+refuse "only a form or a table carries a subject" "only a form or a table carries a subject"
+
+# ------------------------------------------------------------------- TABLE
+# `table` JOINED THE VOCABULARY 2026-10-18 (§7's own decision: a table's parts
+# are `field`, the same word a form uses for the same idea -- one value of the
+# subject). Everything decidable about it is decidable HERE, with no Qt and no
+# display, which is the whole bet this suite rests on.
+#
+# MEASURED BEFORE WRITING THE GRAMMAR: a NAMED container carrying a subject --
+# `table orders to show lines` -- costs ZERO conflicts, which is what let the
+# design's own spelling be built rather than a nameless `table to show lines`.
+# `TO` is a hard keyword, so after `IDENT IDENT` one token of lookahead
+# separates it from the named LEAF's `LPAREN`.
+src table_ok <<'EOF'
+window w( title: "x" )
+    table orders to show lines
+        field placed( label: "Date" )
+        field total( label: "Total", type: {USD} )
+    end table
+
+    on orders.activated
+        print "chosen"
+    end on
+end window
+program main()
+    print "ACCEPTED"
+end program
+EOF
+got=$(out_of "$written")
+if printf '%s' "$got" | grep -qF 'ACCEPTED'; then
+    pass "CONTROL: a table with columns and a handler is accepted"
+else
+    printf '    %s\n' "$(printf '%s' "$got" | head -2)"
+    fail "a valid table was refused"
+fi
+
+# A TABLE IS NAMED AND A FORM IS NOT, refused BOTH WAYS so neither shape can be
+# written the other's way and quietly mean something else. The difference is
+# real rather than a spelling: a form's parts are addressed by their own names,
+# where a table shows MANY rows, so the TABLE is what a handler and
+# `qt.selected` address.
+src table_unnamed <<'EOF'
+window w( title: "x" )
+    table to show lines
+        field a( label: "A" )
+    end table
+end window
+EOF
+refuse "a table with no name is refused, with the reason" "a table needs a name"
+
+src form_named <<'EOF'
+window w( title: "x" )
+    form rows to edit cust
+        field a( label: "A" )
+    end form
+end window
+EOF
+refuse "a NAMED form is refused, saying only a table is named" "only a table is named"
+
+# A TABLE'S PARTS ARE COLUMNS, so every one is a `field`. A `button` among them
+# would be a widget in a place that holds values, which lays out as nothing an
+# author recognises -- and the refusal points at the BUTTON rather than at the
+# table, which is where the author has to edit.
+src table_button <<'EOF'
+window w( title: "x" )
+    table orders to show lines
+        field a( label: "A" )
+        button go( label: "Go" )
+    end table
+end window
+EOF
+refuse "a part that is not a field is refused inside a table" "a table's parts are columns"
+
+src table_direction <<'EOF'
+window w( title: "x" )
+    table orders to view lines
+        field a( label: "A" )
+    end table
+end window
+EOF
+refuse "a table's direction is edit or show too" "a table is \`to edit\` or \`to show\`, not \`to view\`"
+
+# THE VOCABULARY SENTENCE MUST NAME IT, or a reader who typed `table` correctly
+# and made some other mistake is told the containers are row, column, form and
+# group -- a list that does not include the word they just used successfully.
+src table_typo <<'EOF'
+window w( title: "x" )
+    tabel orders to show lines
+        field a( label: "A" )
+    end tabel
+end window
+EOF
+refuse "a misspelled table is named, and the suggestion is the real word" "did you mean 'table'?"
+
+# AND EVERY VOCABULARY WORD MUST BE REACHABLE AS A SUGGESTION, which is a
+# TRIPWIRE and not a flourish: `win_nearest` held a THIRD hardcoded copy of the
+# vocabulary, so `table` was added to the containers and to the sentence that
+# lists them and MISSED THERE -- a reader who typed `tabel` got the generic
+# list rather than the one-word answer, for the newest word in the language.
+# Two representations of one list drift. It is derived from the two tables now,
+# and this loop fails the next time a word is added to one and not the other.
+for w in row column form group table field button check stretch; do
+    # ONE TRANSPOSITION of the last two letters, which is what fingers actually
+    # do and is the shape the finder had to learn (`colunm`, `feild`).
+    typo=$(printf '%s' "$w" | sed -E 's/(.)(.)$/\2\1/')
+    # WRITTEN AS A PARENTHESISED LEAF (`rwo()`), because a BARE word with no
+    # body is no production at all and dies in the grammar before the word
+    # check ever sees it -- the first draft of this loop did that and reported
+    # all nine words as missing, including the ones that already worked, which
+    # is how it was obvious the fixture and not the code was wrong.
+    src "near_$w" <<EOF
+window w( title: "x" )
+    $typo()
+end window
+EOF
+    got=$(out_of "$written")
+    if printf '%s' "$got" | grep -qF "did you mean '$w'?"; then
+        pass "a typo for '$w' suggests it"
+    else
+        printf '    %s\n' "$(printf '%s' "$got" | head -1)"
+        fail "'$typo' did not suggest '$w' -- is it missing from a vocabulary list?"
+    fi
+done
 
 src no_name <<'EOF'
 window w( title: "x" )
@@ -398,12 +520,22 @@ refuse "a window closed by the wrong word is refused" "closed by \`end window\`,
 
 # THE CONTROL FOR THE WHOLE BLOCK: without it every refusal above is satisfied
 # by a checker that rejects every window there is.
+# A TABLE IS IN HERE DELIBERATELY, and not only for the control: this file is
+# what the VALGRIND tier parses, so the named-container-with-a-subject
+# production is exercised under valgrind by being here. PLAT-OPTPARAM's lesson
+# is that a new AST field has to be freed in every place that frees the node,
+# and a few unfreed bytes per parse are invisible to every functional check --
+# that one turned 22 suites red on their own valgrind tiers.
 src valid <<'EOF'
 window customer( title: "C", width: 300, height: 200 ) to show cust
     column( margin: 4 )
         form to edit cust
             field id( label: "Account" )
         end form
+        table orders to show lines
+            field placed( label: "Date" )
+            field total( label: "Total", type: {USD} )
+        end table
         row
             stretch()
             button save( text: "Save" )
@@ -411,6 +543,9 @@ window customer( title: "C", width: 300, height: 200 ) to show cust
     end column
     on save.clicked
         print "ok"
+    end on
+    on orders.activated
+        print "chosen"
     end on
 end window
 EOF
@@ -465,10 +600,25 @@ fi
 
 printf 'TIER valgrind\n'
 if vg_available; then
-    if vg_run ./gbasic --ast "$work/valid.bas" >/dev/null 2>"$work/vg.err"; then
-        pass "no definite leak or invalid access parsing and freeing a window"
-    else
+    set +e
+    vg_run ./gbasic --ast "$work/valid.bas" >/dev/null 2>"$work/vg.err"
+    vg_rc=$?
+    set -e
+    # COMPARED AGAINST $VG_EXIT, which the shared policy exposes for exactly
+    # this. A bare `if vg_run ...` reads ANY nonzero as a valgrind objection,
+    # so when the fixture itself failed -- adding a `table` to it before the
+    # vocabulary knew the word -- this tier printed FAIL valgrind objected over
+    # a report saying `definitely lost: 0 bytes` and `ERROR SUMMARY: 0 errors`,
+    # which sent the reader to look for a leak that was not there. The
+    # reports-the-wrong-cause class, and run_repl.sh records the identical
+    # defect in its own valgrind tier.
+    if [ "$vg_rc" = "$VG_EXIT" ]; then
         tail -25 "$work/vg.err"; fail "valgrind objected"
+    elif [ "$vg_rc" != "0" ]; then
+        printf '    %s\n' "$(out_of "$work/valid.bas" | head -2)"
+        fail "the fixture itself exited $vg_rc, which is not a valgrind objection"
+    else
+        pass "no definite leak or invalid access parsing and freeing a window"
     fi
 else
     pass "SKIP (valgrind unavailable)"

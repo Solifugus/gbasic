@@ -433,6 +433,78 @@ else
     fail "the bad-value refusal: $(grep BADVALUE "$work/b.out" || echo 'never fired')"
 fi
 
+# ----------------------------------------------------------------------- TABLE
+
+printf 'TIER table: many rows, columns from the declaration, and a chosen row\n'
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
+    tests/qt_table_test.bas > "$work/t.out" 2> "$work/t.err"
+t_rc=$?
+set -e
+if [ "$t_rc" != "0" ]; then
+    printf '    %s\n' "$(tail -5 "$work/t.err")"
+    fail "the table fixture exited $t_rc"
+fi
+tchecks=$(grep -c '^ok   ' "$work/t.out" || true)
+if grep -q MISMATCH "$work/t.out"; then
+    grep MISMATCH "$work/t.out" | while read -r line; do printf '    %s\n' "$line"; done
+    fail "$(grep -c MISMATCH "$work/t.out") mismatches in the table fixture"
+else
+    pass "$tchecks checks, 0 mismatches"
+fi
+if [ "${tchecks:-0}" -ge 29 ]; then
+    pass "and it really ran them ($tchecks >= 29)"
+else
+    fail "only $tchecks table checks ran -- the fixture stopped early"
+fi
+# A HANDLER WHOSE TARGET IS A CONTAINER. Only LEAVES registered a name before
+# this, so `on orders.<signal>` on a perfectly real table was refused at load
+# time as naming nothing in the window -- the refusal that exists to catch a
+# handler which can never fire, firing on one that can.
+#
+# PROVEN BY FIRING IT, not by the window opening: `itemSelectionChanged` is a
+# no-arg signal `qt.select` emits, which is why the fixture uses it rather than
+# `activated` (a double-click no fixture can produce). A handler connected and
+# never fired looks identical to one that worked.
+if grep -qx 'SIGNAL orders.itemSelectionChanged' "$work/t.out"; then
+    pass "a handler whose target is a TABLE connects and fires"
+else
+    fail "the table handler never fired: $(tr '\n' '|' < "$work/t.out" | tail -c 200)"
+fi
+# THE FIVE REFUSALS, pinned here because each is a SENTENCE and the fixture can
+# only say whether something raised.
+if grep -q 'NOTALIST: .*needs a list of records, and `notalist` holds record' "$work/t.out"; then
+    pass "a table bound to a record is refused, naming what it holds"
+else
+    fail "the wrong-subject-kind refusal: $(grep NOTALIST "$work/t.out" || echo 'never fired')"
+fi
+# AN ELEMENT THAT IS NOT A RECORD NAMES WHICH ONE, matching what a projection
+# does for the same mistake -- a table of numbers would otherwise render as a
+# grid of blanks, which looks exactly like no data.
+if grep -q 'BADELEMENT: .*element 1 of `mixed` is number' "$work/t.out"; then
+    pass "a non-record element is refused and the INDEX is named"
+else
+    fail "the bad-element refusal: $(grep BADELEMENT "$work/t.out" || echo 'never fired')"
+fi
+if grep -q 'BADCOLUMN: qt.cell: table `orders` has no `nosuch` column' "$work/t.out"; then
+    pass "a column name the table does not declare is refused"
+else
+    fail "the bad-column refusal: $(grep BADCOLUMN "$work/t.out" || echo 'never fired')"
+fi
+# A PART THAT IS NOT A TABLE IS ITS OWN SENTENCE. Answering `unknown` there
+# would read as "nothing is selected", which is true of a button and is not
+# what the author asked.
+if grep -q 'NOTATABLE: qt.selected: `close` is not a table' "$work/t.out"; then
+    pass "qt.selected on something that is not a table says so"
+else
+    fail "the not-a-table refusal: $(grep NOTATABLE "$work/t.out" || echo 'never fired')"
+fi
+if grep -q 'EMPTYNUMBER: number modifier expects a valid number string' "$work/t.out"; then
+    pass "emptying a number column is refused rather than folded to zero"
+else
+    fail "the emptied-number refusal: $(grep EMPTYNUMBER "$work/t.out" || echo 'never fired')"
+fi
+
 # --------------------------------------------------------------------- LOOP
 printf 'TIER loop: Qt owns the thread and gBASIC is still serviced\n'
 if ! command -v curl >/dev/null 2>&1; then
@@ -507,8 +579,17 @@ else
     # this tree relies on.
     QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
         tests/qt_binding_test.bas > "$work/vgb.out" 2> "$work/vgb.err"
-    vg_rc=$?
+    vg_bind_rc=$?
+    QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
+        tests/qt_table_test.bas > "$work/vgt.out" 2> "$work/vgt.err"
+    vg_table_rc=$?
     set -e
+    # THE WORSE OF THE TWO, so a clean binding run cannot hide a table defect.
+    vg_rc=$vg_bind_rc
+    if [ "$vg_table_rc" != "0" ]; then
+        vg_rc=$vg_table_rc
+        cp "$work/vgt.err" "$work/vgb.err"
+    fi
     # COMPARED AGAINST $VG_EXIT, which the shared policy exposes for exactly
     # this: the fixture itself can fail for its own reasons, and reading that
     # as a valgrind objection prints FAIL over a report saying zero errors --
@@ -520,7 +601,7 @@ else
         printf '    %s\n' "$(tail -3 "$work/vgb.err")"
         fail "the fixture exited $vg_rc under valgrind, which is not a valgrind objection"
     else
-        pass "no invalid access or uninitialised read across open, fold and teardown"
+        pass "no invalid access or uninitialised read across open, fold and teardown, for a form OR a table"
     fi
 fi
 

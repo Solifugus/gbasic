@@ -590,7 +590,8 @@ static void win_error(WinCheck *chk, int line, int column, const char *fmt, ...)
  * is what makes the block cost zero bison conflicts. `table` is deliberately
  * ABSENT until it exists, so a `table` written today is refused as an unknown
  * word rather than silently accepted and ignored. */
-static const char *win_container_words[] = {"row", "column", "form", "group", NULL};
+static const char *win_container_words[] = {"row", "column", "form", "group",
+                                            "table", NULL};
 static const char *win_leaf_words[] = {"field", "button", "check", "stretch", NULL};
 
 static int win_in(const char *const *set, const char *word) {
@@ -615,8 +616,24 @@ static int win_in(const char *const *set, const char *word) {
  * NULL when nothing is close, because a suggestion that is sometimes nonsense
  * is worse than none. */
 static const char *win_nearest(const char *word) {
-    static const char *all[] = {"row", "column", "form", "group",
-                                "field", "button", "check", "stretch", NULL};
+    /* DERIVED FROM THE TWO VOCABULARY TABLES, not a third copy of them. It WAS
+     * a third copy, and `table` was added to the containers and to the
+     * sentence that lists them and missed HERE -- so a reader who typed
+     * `tabel` got the generic list instead of the one-word answer, which is
+     * the defect the near-miss finder exists to prevent, for the newest word
+     * in the language. Two representations of one list drift;
+     * run_web_configure.sh's TABLES tripwire makes that argument for the
+     * server block's own options, and run_window.sh now asserts every word
+     * here is reachable. */
+    const char *all[32];
+    size_t n = 0;
+    for (size_t i = 0; win_container_words[i] && n + 1 < 32; i++) {
+        all[n++] = win_container_words[i];
+    }
+    for (size_t i = 0; win_leaf_words[i] && n + 1 < 32; i++) {
+        all[n++] = win_leaf_words[i];
+    }
+    all[n] = NULL;
     size_t len = strlen(word);
     for (size_t i = 0; all[i]; i++) {
         size_t other = strlen(all[i]);
@@ -688,8 +705,8 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
         } else {
             win_error(chk, item->line, item->column,
                       "window: unknown directive '%s'. The containers are row, "
-                      "column, form and group; the parts are field, button, "
-                      "check and stretch", word);
+                      "column, form, group and table; the parts are field, "
+                      "button, check and stretch", word);
         }
         return;
     }
@@ -720,22 +737,79 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
          * with neither is a form about nothing. The window's subject is a
          * DEFAULT a form may shadow -- the rule a nested `with principal(p)`
          * already follows. */
-        if (strcmp(word, "form") == 0) {
+        int carries_subject = (strcmp(word, "form") == 0 ||
+                               strcmp(word, "table") == 0);
+        if (carries_subject) {
             if (item->subject_direction &&
                 strcmp(item->subject_direction, "edit") != 0 &&
                 strcmp(item->subject_direction, "show") != 0) {
                 win_error(chk, item->line, item->column,
-                          "window: a form is `to edit` or `to show`, not `to %s`",
-                          item->subject_direction);
+                          "window: a %s is `to edit` or `to show`, not `to %s`",
+                          word, item->subject_direction);
             }
             if (!item->subject && !window_subject) {
                 win_error(chk, item->line, item->column,
-                          "window: this form names no subject and the window has "
-                          "none to inherit -- write `form to edit <record>`");
+                          "window: this %s names no subject and the window has "
+                          "none to inherit -- write `%s to edit <record>`",
+                          word, word);
             }
         } else if (item->subject) {
             win_error(chk, item->line, item->column,
-                      "window: only a form carries a subject, not '%s'", word);
+                      "window: only a form or a table carries a subject, not '%s'",
+                      word);
+        }
+        /* A TABLE IS NAMED AND A FORM IS NOT, which is a real difference and
+         * not a spelling: a form's parts are addressed by their own names,
+         * where a table shows MANY rows, so the table itself is what a handler
+         * and `qt.selected` address. Refused both ways, so neither shape can
+         * be written the other's way and quietly mean something else. */
+        if (strcmp(word, "table") == 0 && !item->name) {
+            win_error(chk, item->line, item->column,
+                      "window: a table needs a name -- `table orders to show "
+                      "<list>` -- because that is what a handler and "
+                      "`qt.selected` address");
+        }
+        if (strcmp(word, "table") != 0 && item->name) {
+            win_error(chk, item->line, item->column,
+                      "window: '%s' takes no name; only a table is named, "
+                      "because its parts are columns rather than widgets", word);
+        }
+        /* A TABLE'S PARTS ARE COLUMNS, so every one must be a `field` -- §7's
+         * own decision, and the saving is that `field` already means "one value
+         * of the subject". A `button` among them would be a widget in a place
+         * that holds values, which lays out as nothing an author recognises. */
+        if (strcmp(word, "table") == 0) {
+            for (size_t i = 0; i < item->entries.count; i++) {
+                const AstWindowItem *part = item->entries.items[i];
+                if (part->kind == AST_WINDOW_HANDLER) {
+                    continue;
+                }
+                if (!part->word || strcmp(part->word, "field") != 0) {
+                    win_error(chk, part->line, part->column,
+                              "window: a table's parts are columns, so they are "
+                              "all `field` -- '%s' is not one",
+                              part->word ? part->word : "?");
+                }
+            }
+        }
+        /* A NAMED CONTAINER REGISTERS ITS NAME TOO. Only leaves did, so
+         * `on orders.activated` on a perfectly real table would have been
+         * refused as naming nothing in the window -- the refusal that exists
+         * to catch a handler that can never fire, firing on one that can. */
+        if (item->name) {
+            for (size_t i = 0; i < *name_count; i++) {
+                if (strcmp(names[i], item->name) == 0) {
+                    win_error(chk, item->line, item->column,
+                              "window: '%s' is declared twice, so `on "
+                              "%s.<signal>` could not say which",
+                              item->name, item->name);
+                    break;
+                }
+            }
+            if (*name_count < name_cap) {
+                names[*name_count] = item->name;
+                *name_count = *name_count + 1;
+            }
         }
         win_check_items(chk, &item->entries, window_subject, names, name_count,
                         name_cap);

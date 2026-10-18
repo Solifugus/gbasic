@@ -129,6 +129,39 @@ int gb_qt_write(void *window, const char *name, const char *text,
 int gb_qt_get(void *window, const char *name, const char *prop, char *kind,
               double *num, char **text, char *err, size_t err_size);
 
+/* A TABLE. ITS PARTS ARE COLUMNS, NOT WIDGETS (§7), so it is built in ONE call
+ * from the declaration's whole `field` list rather than by the part walk that
+ * every other container uses -- a column has no widget of its own, and handing
+ * each one to `gb_qt_part` would make a QLineEdit per column heading.
+ *
+ * `headers` is one caption per column, in declaration order, which is also the
+ * order the cell calls below address. The table registers under `name` in the
+ * same registry a part uses, so `qt.read(win, "orders", ...)`, a handler and
+ * `gb_qt_set_display_only` all find it with no second lookup.
+ *
+ * ROW COUNT IS SET SEPARATELY from the cells because the subject's length is
+ * not known until the bind pass reads it, which is after the window is built. */
+void *gb_qt_table(void *parent, const char *name, const char *const *headers,
+                  int columns, char *err, size_t err_size);
+int gb_qt_table_size(void *window, const char *name, int rows, char *err,
+                     size_t err_size);
+int gb_qt_table_set(void *window, const char *name, int row, int col,
+                    const char *text, char *err, size_t err_size);
+/* malloc'd; NULL for a cell that is not there. An EMPTY cell answers "" -- a
+ * different thing from absent, and conflating them would make a blank the
+ * caller typed indistinguishable from a row that does not exist. */
+char *gb_qt_table_get(void *window, const char *name, int row, int col);
+int gb_qt_table_rows(void *window, const char *name);
+/* The row a person has selected, or -1 when none is. Not a boolean plus an
+ * index: "nothing is selected" is an ordinary state and must be answerable. */
+int gb_qt_table_selected(void *window, const char *name);
+/* CHOOSE A ROW FROM THE PROGRAM. A real need rather than a test hook: a window
+ * often opens with a row already highlighted, and a program that has just
+ * added one wants it chosen. `row` below zero clears the selection, which is
+ * how "nothing is chosen" is expressed on the way IN as well as out. */
+int gb_qt_table_select(void *window, const char *name, int row, char *err,
+                       size_t err_size);
+
 /* A `form to show` IS DISPLAY ONLY, so its parts must not take typing -- not
  * for neatness but because the alternative is a SILENT DISCARD: someone types
  * into a one-way form, nothing complains, and `qt.subject` never reports it.

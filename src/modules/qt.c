@@ -367,6 +367,44 @@ static int qt_build_item(void *parent, Value *item, void *root) {
     RecordField *opts = record_find(item, "options");
     err[0] = '\0';
 
+    if (strcmp(kind, "container") == 0 && word && strcmp(word, "table") == 0) {
+        /* A TABLE'S PARTS ARE COLUMNS, so it is built from its WHOLE field
+         * list in one call and its children are NOT walked as widgets -- each
+         * would otherwise become a QLineEdit standing in for a heading. The
+         * caption is the column's `label:`, falling back to its name, which is
+         * the same rule a form's row label follows. */
+        RecordField *cols = record_find(item, "items");
+        size_t ncols = (cols && cols->value && cols->value->kind == VALUE_ARRAY &&
+                        cols->value->as.array.store)
+                           ? cols->value->as.array.store->count : 0;
+        const char **headers = ncols ? calloc(ncols, sizeof(char *)) : NULL;
+        if (ncols && !headers) {
+            abort();
+        }
+        size_t at = 0;
+        for (size_t i = 0; i < ncols; i++) {
+            Value *col = &cols->value->as.array.store->items[i];
+            if (col->kind != VALUE_RECORD) {
+                continue;
+            }
+            const char *cap = qt_record_text(col, "label");
+            if (!cap) {
+                cap = qt_record_text(col, "name");
+            }
+            headers[at++] = cap ? cap : "";
+        }
+        void *tnode = gb_qt_table(parent, name ? name : "", headers, (int)at,
+                                  err, sizeof(err));
+        free((void *)headers);
+        if (!tnode) {
+            snprintf(message, sizeof(message), "window: %s",
+                     err[0] ? err : "that table could not be built");
+            qt_raise(message);
+            return 0;
+        }
+        return qt_apply_options(tnode, opts ? opts->value : NULL, "table", 1);
+    }
+
     if (strcmp(kind, "container") == 0) {
         void *node = gb_qt_container(parent, word ? word : "", label, err,
                                      sizeof(err));
@@ -562,6 +600,66 @@ static int qt_bind_form(void *root, Value *form, const char *window_name) {
     return 1;
 }
 
+/* WHICH COLUMN A FIELD NAME IS, read from the declaration. A cell is addressed
+ * by the name the AUTHOR gave the column rather than by its position, because
+ * a position is the one thing about a table that changes when somebody
+ * reorders the declaration -- and a silently shifted index reads a real value
+ * from the wrong column. Returns -1 when the table declares no such field. */
+static int qt_table_column(Value *table, const char *field) {
+    RecordField *cols = record_find(table, "items");
+    if (!cols || !cols->value || cols->value->kind != VALUE_ARRAY ||
+        !cols->value->as.array.store) {
+        return -1;
+    }
+    size_t n = cols->value->as.array.store->count;
+    for (size_t i = 0; i < n; i++) {
+        Value *col = &cols->value->as.array.store->items[i];
+        if (col->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *name = qt_record_text(col, "name");
+        if (name && strcmp(name, field) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/* THE TABLE A NAME REFERS TO, found in the declaration. The backend knows the
+ * widget by name; what only the declaration holds is the COLUMN LIST, which is
+ * what a cell's field name has to be resolved against. */
+static Value *qt_find_table(Value *items, const char *name) {
+    size_t count = items->as.array.store ? items->as.array.store->count : 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *entry = &items->as.array.store->items[i];
+        if (entry->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *kind = qt_record_text(entry, "kind");
+        if (!kind || strcmp(kind, "container") != 0) {
+            continue;
+        }
+        const char *word = qt_record_text(entry, "word");
+        const char *has = qt_record_text(entry, "name");
+        if (word && strcmp(word, "table") == 0 && has && strcmp(has, name) == 0) {
+            return entry;
+        }
+        RecordField *nested = record_find(entry, "items");
+        if (nested && nested->value && nested->value->kind == VALUE_ARRAY) {
+            Value *found = qt_find_table(nested->value, name);
+            if (found) {
+                return found;
+            }
+        }
+    }
+    return NULL;
+}
+
+/* A TABLE FOLDS BACK DIFFERENTLY FROM A FORM (a list of rows, not one record),
+ * and the walk that dispatches between them sits above both. */
+static int qt_fold_table(void *root, Value *table, Value *out,
+                         const char *window_name);
+
 /* READ THE WIDGETS BACK INTO THE RECORD. Walks the same shape the bind pass
  * walks and for the same reason: only a form's DIRECT children bind, so only
  * they fold back, and the record's shape therefore does not depend on the
@@ -657,7 +755,11 @@ static int qt_fold_items(void *root, Value *items, const char *subject,
         const char *has = qt_record_text(entry, "subject");
         if (has) {
             if (strcmp(has, subject) == 0) {
-                if (!qt_fold_form(root, entry, out, window_name)) {
+                const char *word = qt_record_text(entry, "word");
+                int ok = (word && strcmp(word, "table") == 0)
+                             ? qt_fold_table(root, entry, out, window_name)
+                             : qt_fold_form(root, entry, out, window_name);
+                if (!ok) {
                     return 0;
                 }
             }
@@ -674,6 +776,204 @@ static int qt_fold_items(void *root, Value *items, const char *subject,
     return 1;
 }
 
+/* A TABLE'S SUBJECT IS A LIST, which is the one structural difference from a
+ * form: a form shows ONE record and a table shows MANY, so the capture is an
+ * array and each `field` is a COLUMN read from every element rather than a
+ * widget read once.
+ *
+ * AN ELEMENT THAT IS NOT A RECORD IS REFUSED AND NAMED, matching what a
+ * projection does for the same mistake (`rows.amount` over a list someone
+ * built from numbers says which element broke it) -- a table of numbers would
+ * otherwise render as a grid of blanks, which looks like no data. */
+static int qt_bind_table(void *root, Value *table, const char *window_name) {
+    char err[QT_ERRBUF];
+    char message[512];
+    const char *name = qt_record_text(table, "name");
+    const char *subject = qt_record_text(table, "subject");
+    const char *direction = qt_record_text(table, "direction");
+    if (!name || !subject || !direction) {
+        return 1;
+    }
+    Value *slot = qt_subject_slot(subject);
+    if (!slot) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `table %s to %s %s` found no `%s` -- qt.open "
+                 "reads the subject from the frame that calls it",
+                 window_name, name, direction, subject, subject);
+        qt_raise(message);
+        return 0;
+    }
+    if (slot->kind != VALUE_ARRAY) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `table %s to %s %s` needs a list of records, and "
+                 "`%s` holds %s", window_name, name, direction, subject,
+                 subject, value_kind_name(slot->kind));
+        qt_raise(message);
+        return 0;
+    }
+    QtOpenWindow *entry = qt_window_entry(window_name);
+    int already = 0;
+    for (size_t i = 0; entry && i < entry->binding_count; i++) {
+        if (strcmp(entry->bindings[i].subject, subject) == 0) {
+            already = 1;
+            break;
+        }
+    }
+    if (entry && !already) {
+        QtBinding *grown = realloc(entry->bindings,
+                                   sizeof(*entry->bindings) *
+                                       (entry->binding_count + 1));
+        if (!grown) {
+            abort();
+        }
+        entry->bindings = grown;
+        entry->bindings[entry->binding_count].subject = copy_string(subject);
+        entry->bindings[entry->binding_count].direction = copy_string(direction);
+        entry->bindings[entry->binding_count].record = value_copy(*slot);
+        entry->binding_count++;
+    }
+    if (strcmp(direction, "show") == 0) {
+        err[0] = '\0';
+        if (!gb_qt_set_display_only(root, name, 1, err, sizeof(err))) {
+            snprintf(message, sizeof(message), "window `%s`: %s", window_name,
+                     err[0] ? err : "that table could not be made display only");
+            qt_raise(message);
+            return 0;
+        }
+    }
+    RecordField *cols = record_find(table, "items");
+    if (!cols || !cols->value || cols->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    size_t ncols = cols->value->as.array.store
+                       ? cols->value->as.array.store->count : 0;
+    size_t nrows = slot->as.array.store ? slot->as.array.store->count : 0;
+    err[0] = '\0';
+    if (!gb_qt_table_size(root, name, (int)nrows, err, sizeof(err))) {
+        snprintf(message, sizeof(message), "window `%s`: %s", window_name,
+                 err[0] ? err : "that table could not be sized");
+        qt_raise(message);
+        return 0;
+    }
+    for (size_t r = 0; r < nrows; r++) {
+        Value *row = &slot->as.array.store->items[r];
+        if (row->kind != VALUE_RECORD) {
+            snprintf(message, sizeof(message),
+                     "window `%s`: `%s` shows records, and element %zu of `%s` "
+                     "is %s", window_name, name, r, subject,
+                     value_kind_name(row->kind));
+            qt_raise(message);
+            return 0;
+        }
+        for (size_t c = 0; c < ncols; c++) {
+            Value *col = &cols->value->as.array.store->items[c];
+            if (col->kind != VALUE_RECORD) {
+                continue;
+            }
+            const char *field = qt_record_text(col, "name");
+            if (!field) {
+                continue;
+            }
+            RecordField *has = record_find(row, field);
+            const char *shown = "";
+            Value text = value_null();
+            if (has && has->value) {
+                /* THROUGH THE ONE RENDERER (PLAT-RENDER), and the copy is not
+                 * freed here because `builtin_string_value` consumes it. */
+                text = builtin_string_value(value_copy(*has->value));
+                if (text.kind == VALUE_STRING) {
+                    shown = text.as.string;
+                }
+            }
+            err[0] = '\0';
+            int ok = gb_qt_table_set(root, name, (int)r, (int)c, shown, err,
+                                     sizeof(err));
+            value_free(text);
+            if (!ok) {
+                snprintf(message, sizeof(message),
+                         "window `%s`: `%s` could not show row %zu -- %s",
+                         window_name, name, r,
+                         err[0] ? err : "that cell was refused");
+                qt_raise(message);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* READ A TABLE BACK. Each row becomes a record carrying the column names, and
+ * the kind rule is the form's exactly: `type:` where declared, the ORIGINAL
+ * element's field otherwise, text last. A row the person added is not
+ * possible yet -- the view has no way to grow -- so the fold writes over the
+ * capture row for row. */
+static int qt_fold_table(void *root, Value *table, Value *out,
+                         const char *window_name) {
+    char message[512];
+    const char *name = qt_record_text(table, "name");
+    RecordField *cols = record_find(table, "items");
+    if (!name || !cols || !cols->value || cols->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    size_t ncols = cols->value->as.array.store
+                       ? cols->value->as.array.store->count : 0;
+    int rows = gb_qt_table_rows(root, name);
+    if (rows < 0) {
+        return 1;
+    }
+    size_t have = (out->kind == VALUE_ARRAY && out->as.array.store)
+                      ? out->as.array.store->count : 0;
+    for (int r = 0; r < rows && (size_t)r < have; r++) {
+        Value *row = &out->as.array.store->items[r];
+        if (row->kind != VALUE_RECORD) {
+            continue;
+        }
+        for (size_t c = 0; c < ncols; c++) {
+            Value *col = &cols->value->as.array.store->items[c];
+            if (col->kind != VALUE_RECORD) {
+                continue;
+            }
+            const char *field = qt_record_text(col, "name");
+            if (!field) {
+                continue;
+            }
+            char *cell = gb_qt_table_get(root, name, r, (int)c);
+            if (!cell) {
+                continue;
+            }
+            RecordField *opts = record_find(col, "options");
+            const char *declared = NULL;
+            if (opts && opts->value && opts->value->kind == VALUE_RECORD) {
+                declared = qt_record_text(opts->value, "type");
+            }
+            RecordField *was = record_find(row, field);
+            Value folded;
+            if (declared) {
+                folded = qt_apply_type(declared, value_string(cell));
+            } else if (was && was->value && was->value->kind == VALUE_NUMBER) {
+                folded = qt_apply_type("number", value_string(cell));
+            } else {
+                folded = value_string(cell);
+            }
+            free(cell);
+            if (error_action_pending()) {
+                value_free(folded);
+                return 0;
+            }
+            if (folded.kind == VALUE_NULL) {
+                snprintf(message, sizeof(message),
+                         "window `%s`: row %d of `%s` does not hold a %s",
+                         window_name, r, name, declared ? declared : "number");
+                qt_raise(message);
+                value_free(folded);
+                return 0;
+            }
+            record_set(row, field, folded);
+        }
+    }
+    return 1;
+}
+
 static int qt_bind_items(void *root, Value *items, const char *window_name) {
     size_t count = items->as.array.store ? items->as.array.store->count : 0;
     for (size_t i = 0; i < count; i++) {
@@ -685,8 +985,12 @@ static int qt_bind_items(void *root, Value *items, const char *window_name) {
         if (!kind || strcmp(kind, "container") != 0) {
             continue;
         }
+        const char *word = qt_record_text(entry, "word");
         if (qt_record_text(entry, "subject")) {
-            if (!qt_bind_form(root, entry, window_name)) {
+            int ok = (word && strcmp(word, "table") == 0)
+                         ? qt_bind_table(root, entry, window_name)
+                         : qt_bind_form(root, entry, window_name);
+            if (!ok) {
                 return 0;
             }
             continue;
@@ -920,6 +1224,206 @@ static Value qt_eval_call(AstExpr *expr) {
         gb_qt_show(root);
         value_free(win);
         return value_bool(1);
+    }
+
+    /* ONE CELL, BY ROW AND BY THE COLUMN'S OWN NAME. This exists for two
+     * reasons and the first is the product one: after somebody has typed into
+     * a `to edit` table, what one cell now holds is a question a handler asks
+     * without wanting the whole list folded -- and for a `to show` table it is
+     * the only way to ask what is on the screen at all.
+     *
+     * THE SECOND REASON IS THAT WITHOUT IT A `show` TABLE'S POPULATION IS
+     * UNASSERTABLE: only an `edit` table's fold reads cells, so a backend that
+     * built the right grid and filled none of it passed every check a show
+     * table could make. The by-name/by-property reader had exactly that gap
+     * one increment ago, which is why this is being noticed rather than found.
+     *
+     * ADDRESSED BY NAME, NOT BY COLUMN NUMBER, because a number is the one
+     * thing that changes when the declaration is reordered -- and then it
+     * reads a real value from the wrong column, which is a plausible answer. */
+    if (strcmp(verb, "cell") == 0) {
+        if (argc != 4) {
+            qt_raise("qt.cell expects a window, a table, a row and a column name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value rowv = eval_expr(expr->as.call.args.items[2]);
+        Value colv = eval_expr(expr->as.call.args.items[3]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            value_free(rowv); value_free(colv);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "cell") || which.kind != VALUE_STRING ||
+            colv.kind != VALUE_STRING || rowv.kind != VALUE_NUMBER) {
+            if (!error_action_pending()) {
+                qt_raise("qt.cell expects the table's name as text, a row "
+                         "number and the column's name as text");
+            }
+            value_free(win); value_free(which);
+            value_free(rowv); value_free(colv);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            value_free(rowv); value_free(colv);
+            return value_null();
+        }
+        RecordField *items = record_find(&win, "items");
+        Value *table = (items && items->value &&
+                        items->value->kind == VALUE_ARRAY)
+                           ? qt_find_table(items->value, which.as.string)
+                           : NULL;
+        if (!table) {
+            snprintf(message, sizeof(message),
+                     "qt.cell: window `%s` declares no table named `%s`",
+                     wname ? wname : "", which.as.string);
+            qt_raise(message);
+            value_free(win); value_free(which);
+            value_free(rowv); value_free(colv);
+            return value_null();
+        }
+        int col = qt_table_column(table, colv.as.string);
+        if (col < 0) {
+            snprintf(message, sizeof(message),
+                     "qt.cell: table `%s` has no `%s` column",
+                     which.as.string, colv.as.string);
+            qt_raise(message);
+            value_free(win); value_free(which);
+            value_free(rowv); value_free(colv);
+            return value_null();
+        }
+        char *text = gb_qt_table_get(root, which.as.string,
+                                     (int)rowv.as.num.value, col);
+        snprintf(message, sizeof(message),
+                 "qt.cell: table `%s` has no row %ld", which.as.string,
+                 (long)rowv.as.num.value);
+        value_free(win); value_free(which);
+        value_free(rowv); value_free(colv);
+        if (!text) {
+            qt_raise(message);
+            return value_null();
+        }
+        Value out = value_string(text);
+        free(text);
+        return out;
+    }
+
+    /* CHOOSE A ROW FROM THE PROGRAM -- a window that opens with yesterday's
+     * order highlighted, or a row just added being made current. `unknown`
+     * clears the selection, so "nobody has chosen" is sayable in both
+     * directions rather than only readable. */
+    if (strcmp(verb, "select") == 0) {
+        if (argc != 3) {
+            qt_raise("qt.select expects a window, a table's name and a row");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value rowv = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(rowv);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "select") || which.kind != VALUE_STRING ||
+            (rowv.kind != VALUE_NUMBER && rowv.kind != VALUE_UNKNOWN)) {
+            if (!error_action_pending()) {
+                qt_raise("qt.select expects the table's name as text and a row "
+                         "number, or `unknown` to choose nothing");
+            }
+            value_free(win); value_free(which); value_free(rowv);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(rowv);
+            return value_null();
+        }
+        int row = (rowv.kind == VALUE_UNKNOWN) ? -1 : (int)rowv.as.num.value;
+        err[0] = '\0';
+        int ok = gb_qt_table_select(root, which.as.string, row, err,
+                                    sizeof(err));
+        value_free(win); value_free(which); value_free(rowv);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.select: %s",
+                     err[0] ? err : "that row could not be chosen");
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
+    /* WHICH ROW A PERSON HAS CHOSEN. Answers the INDEX rather than the record,
+     * so it composes with the subject the program already holds
+     * (`lines[qt.selected(win, "orders")]`) and does not become a second,
+     * staler copy of a row.
+     *
+     * NOTHING SELECTED ANSWERS `unknown`, NOT -1 AND NOT 0. Both of those are
+     * valid-looking indices -- 0 is the first row, and -1 would index from the
+     * end in a language that allowed it -- so either would let a program act
+     * on a row nobody picked. `unknown` is the answer `materiality` and
+     * `principal()` already give for "nobody said". */
+    if (strcmp(verb, "selected") == 0) {
+        if (argc != 2) {
+            qt_raise("qt.selected expects a window and a table's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "selected") || which.kind != VALUE_STRING) {
+            if (which.kind != VALUE_STRING && !error_action_pending()) {
+                qt_raise("qt.selected expects the table's name as text");
+            }
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        int row = gb_qt_table_rows(root, which.as.string);
+        if (row < 0) {
+            /* A PART THAT IS NOT A TABLE IS ITS OWN SENTENCE. `qt.selected`
+             * on a field is a mistake about what the thing IS, and answering
+             * `unknown` would read as "nothing is selected" -- true of a field
+             * and not what the author asked. */
+            snprintf(message, sizeof(message),
+                     "qt.selected: `%s` is not a table in window `%s`",
+                     which.as.string, wname ? wname : "");
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        int at = gb_qt_table_selected(root, which.as.string);
+        value_free(win);
+        value_free(which);
+        if (at < 0) {
+            return value_unknown();
+        }
+        return value_number((double)at);
     }
 
     /* THE RECORD THE FORM IS WORKING ON. For `to edit` the widgets are read AT

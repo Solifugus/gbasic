@@ -46,6 +46,9 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QHeaderView>
+#include <QItemSelectionModel>
+#include <QTableWidget>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -669,6 +672,160 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
     return 1;
 }
 
+/* ONE TABLE, BUILT FROM ITS WHOLE COLUMN LIST. QTableWidget is the item-based
+ * view, chosen for a first increment because a business list is hundreds of
+ * rows and it needs no model class -- THE COST IS STATED: it materialises
+ * every row, so this is not the path for the million-row case run_datagrid.sh
+ * proves with a native row model, and that path is a model behind
+ * QTableView rather than a bigger version of this.
+ *
+ * ROWS ARE NOT SORTABLE BY CLICKING, deliberately: sorting the VIEW while the
+ * subject keeps its own order would make `qt.selected`'s row index mean a
+ * different row in each, and an index that silently means two things is worse
+ * than no sorting. */
+extern "C" void *gb_qt_table(void *parent, const char *name,
+                             const char *const *headers, int columns,
+                             char *err, size_t err_size) {
+    GbQtNode *p = (GbQtNode *)parent;
+    if (!p || !p->layout) {
+        say(err, err_size, "that container cannot hold a table");
+        return nullptr;
+    }
+    QTableWidget *t = new QTableWidget(0, columns, p->widget);
+    QStringList caps;
+    for (int i = 0; i < columns; i++) {
+        caps << QString::fromUtf8(headers[i] ? headers[i] : "");
+    }
+    t->setHorizontalHeaderLabels(caps);
+    t->verticalHeader()->setVisible(false);
+    t->setSelectionBehavior(QAbstractItemView::SelectRows);
+    t->setSelectionMode(QAbstractItemView::SingleSelection);
+    t->horizontalHeader()->setStretchLastSection(true);
+
+    GbQtNode *n = node_new();
+    n->root = p->root;
+    n->widget = t;
+    if (QFormLayout *pf = qobject_cast<QFormLayout *>(p->layout)) {
+        pf->addRow(t);
+    } else if (QBoxLayout *pb = qobject_cast<QBoxLayout *>(p->layout)) {
+        pb->addWidget(t);
+    }
+    if (name && *name && n->root) {
+        n->root->parts.insert(QString::fromUtf8(name), t);
+    }
+    return n;
+}
+
+static QTableWidget *table_of(void *window, const char *name) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root) {
+        return nullptr;
+    }
+    return qobject_cast<QTableWidget *>(
+        root->parts.value(QString::fromUtf8(name), nullptr));
+}
+
+extern "C" int gb_qt_table_size(void *window, const char *name, int rows,
+                                char *err, size_t err_size) {
+    QTableWidget *t = table_of(window, name);
+    if (!t) {
+        say(err, err_size, QByteArray("`") + name + "` is not a table here");
+        return 0;
+    }
+    t->setRowCount(rows);
+    return 1;
+}
+
+extern "C" int gb_qt_table_set(void *window, const char *name, int row,
+                               int col, const char *text, char *err,
+                               size_t err_size) {
+    QTableWidget *t = table_of(window, name);
+    if (!t) {
+        say(err, err_size, QByteArray("`") + name + "` is not a table here");
+        return 0;
+    }
+    if (row < 0 || row >= t->rowCount() || col < 0 || col >= t->columnCount()) {
+        say(err, err_size, "that cell is outside the table");
+        return 0;
+    }
+    t->setItem(row, col, new QTableWidgetItem(QString::fromUtf8(text)));
+    return 1;
+}
+
+extern "C" char *gb_qt_table_get(void *window, const char *name, int row,
+                                 int col) {
+    QTableWidget *t = table_of(window, name);
+    if (!t || row < 0 || row >= t->rowCount() || col < 0 ||
+        col >= t->columnCount()) {
+        return nullptr;
+    }
+    /* AN EMPTY CELL HAS NO ITEM AT ALL in QTableWidget, so "" is built here
+     * rather than returned as NULL: absent and empty are different answers,
+     * and NULL is reserved for a cell that is not in the table. */
+    QTableWidgetItem *cell = t->item(row, col);
+    QByteArray bytes = cell ? cell->text().toUtf8() : QByteArray();
+    char *out = (char *)malloc((size_t)bytes.size() + 1);
+    if (!out) {
+        return nullptr;
+    }
+    memcpy(out, bytes.constData(), (size_t)bytes.size());
+    out[bytes.size()] = '\0';
+    return out;
+}
+
+extern "C" int gb_qt_table_rows(void *window, const char *name) {
+    QTableWidget *t = table_of(window, name);
+    return t ? t->rowCount() : -1;
+}
+
+extern "C" int gb_qt_table_selected(void *window, const char *name) {
+    QTableWidget *t = table_of(window, name);
+    if (!t) {
+        return -1;
+    }
+    /* THE SELECTION MODEL FIRST, `currentRow` second, and the order was
+     * decided by trying it: with SelectRows + SingleSelection a click sets
+     * BOTH, so in ordinary use either answers -- but a selection made any
+     * other way (a program's `selectAll`, a keyboard range) sets the selection
+     * and leaves `currentRow` at -1, so asking only the current row reports
+     * "nobody has chosen" about a visibly highlighted row. Asking what is
+     * SELECTED is also the more faithful reading of the question. */
+    if (QItemSelectionModel *sel = t->selectionModel()) {
+        QModelIndexList rows = sel->selectedRows();
+        if (!rows.isEmpty()) {
+            return rows.first().row();
+        }
+    }
+    return t->currentRow();
+}
+
+extern "C" int gb_qt_table_select(void *window, const char *name, int row,
+                                 char *err, size_t err_size) {
+    QTableWidget *t = table_of(window, name);
+    if (!t) {
+        say(err, err_size, QByteArray("`") + name + "` is not a table here");
+        return 0;
+    }
+    if (row < 0) {
+        t->clearSelection();
+        t->setCurrentCell(-1, -1);
+        return 1;
+    }
+    if (row >= t->rowCount()) {
+        say(err, err_size, "that row is outside the table");
+        return 0;
+    }
+    /* BOTH, deliberately. `selectRow` highlights and `setCurrentCell` moves
+     * the current index, and a click does both -- setting only one leaves the
+     * table in a state no person could have put it in, which is exactly the
+     * state that made `selectAll` useless for this (SingleSelection ignores
+     * it, so the first attempt at this tier reported "nobody has chosen"
+     * about a table it had just told to select everything). */
+    t->selectRow(row);
+    t->setCurrentCell(row, 0);
+    return 1;
+}
+
 extern "C" int gb_qt_set_display_only(void *window, const char *name, int on,
                                       char *err, size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
@@ -677,6 +834,17 @@ extern "C" int gb_qt_set_display_only(void *window, const char *name, int on,
     if (!w) {
         say(err, err_size, QByteArray("this window has no `") + name + "`");
         return 0;
+    }
+    /* A VIEW IS A THIRD ANSWER and it has to come first: a QTableWidget has no
+     * `readOnly`, and DISABLING it would also stop SELECTION -- which a
+     * display-only table still needs, since choosing a row is reading and not
+     * editing. `editTriggers` is the property that says exactly what is meant. */
+    if (QAbstractItemView *v = qobject_cast<QAbstractItemView *>(w)) {
+        v->setEditTriggers(on ? QAbstractItemView::NoEditTriggers
+                              : QAbstractItemView::DoubleClicked |
+                                    QAbstractItemView::EditKeyPressed |
+                                    QAbstractItemView::AnyKeyPressed);
+        return 1;
     }
     /* `readOnly` WHERE IT EXISTS, because it leaves the text selectable and
      * copyable, which is what a display form is for; `enabled` otherwise,

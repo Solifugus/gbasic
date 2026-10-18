@@ -496,6 +496,25 @@ AstWindowItem *ast_window_form(char *word, char *verb, char *direction, char *su
     return item;
 }
 
+/* A CONTAINER THAT CARRIES BOTH A NAME AND A SUBJECT -- `table orders to show
+ * lines`. Separate from ast_window_form rather than giving that one an extra
+ * NULL at every call site, since the two shapes are different productions and
+ * a reader of the grammar should see which is which. */
+AstWindowItem *ast_window_named_form(char *word, char *name, char *verb,
+                                     char *direction, char *subject,
+                                     AstWindowItemList entries,
+                                     char *close_word, int line, int column) {
+    AstWindowItem *item = window_item_new(AST_WINDOW_CONTAINER, line, column);
+    item->word = word;
+    item->name = name;
+    item->subject_verb = verb;
+    item->subject_direction = direction;
+    item->subject = subject;
+    item->entries = entries;
+    item->close_word = close_word;
+    return item;
+}
+
 AstWindowItem *ast_window_handler(char *target, char *signal, AstStmtList body,
                                   int line, int column) {
     AstWindowItem *item = window_item_new(AST_WINDOW_HANDLER, line, column);

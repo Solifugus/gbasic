@@ -1371,6 +1371,21 @@ window_item
         $$ = ast_window_form($1, copy_const("to"), $3, $4, $6, $8,
                              @1.first_line, @1.first_column);
       }
+    /* NAMED CONTAINER with a subject:  table orders to show lines ... end table
+     *
+     * A `table` NEEDS A NAME where a `form` does not, and that is not a whim:
+     * a form's parts are addressed by their OWN names, where a table shows
+     * many rows, so `qt.read(win, "placed")` could not say which -- the table
+     * itself is the thing a handler and `qt.selected` address.
+     *
+     * MEASURED AT ZERO CONFLICTS before being written, which is what decided
+     * the spelling §7 records rather than a nameless `table to show lines`:
+     * `TO` is a hard keyword, so after `IDENT IDENT` one token of lookahead
+     * separates this from the named LEAF's `LPAREN`. */
+    | IDENT IDENT TO IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE {
+        $$ = ast_window_named_form($1, $2, copy_const("to"), $4, $5, $7, $9,
+                                   @1.first_line, @1.first_column);
+      }
     /* HANDLER:                  on save.clicked ... end on           */
     | ON IDENT DOT IDENT NEWLINE statement_list END ON NEWLINE {
         $$ = ast_window_handler($2, $4, $6, @1.first_line, @1.first_column);
