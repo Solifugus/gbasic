@@ -3,10 +3,11 @@
 **Status: largely shipped.** The `window` declaration (§0.2), the `qt` module
 (§0.4), binding (§0.5), `table` (§0.6), menus and theming (§0.7),
 `tabs`/`cells` (§0.8), the builder (§0.9), `text`/`memo` (§0.10) and
-`qt.refresh` (§0.11) and `choice` (§0.13) exist, with §0.12 a whole application
-built on them, gated by
-`tests/run_window.sh`, `tests/run_qt_backend.sh` and
-`tests/run_qt_builder.sh`. Still proposal: `stdlib/qt.bas`, `show:`/`edit:` in
+`qt.refresh` (§0.11), `choice` (§0.13) and `source` (§0.14) exist, with §0.12 a
+whole application built on them, gated by
+`tests/run_window.sh`, `tests/run_qt_backend.sh`,
+`tests/run_qt_builder.sh`, `tests/run_qt_examples.sh` and
+`tests/run_qt_source.sh`. Still proposal: `stdlib/qt.bas`, `show:`/`edit:` in
 option position, binding into a container nested inside a form, more than one
 window, and threads. **This line has been wrong three times by being left
 alone** — twice in one day claiming the declaration could not render, and then
@@ -1655,6 +1656,138 @@ lexer supplies the token at **zero** conflicts where the grammar would cost
 four; and it is recorded as a **type name in the declaration** rather than
 becoming a 28th value kind. `m = {USD}` still does not parse, which is the line
 the `server` block's literal-only head already draws.
+
+## 0.14 `source` (2026-10-18): a code editor, and a trap it nearly shipped with
+
+**§0.1 called Studio's editor the one piece with no Qt counterpart, and the
+2026-10-17 measurement corrected that in the helpful direction** — the nearest
+answer is KDE's KSyntaxHighlighting, which *is* the extracted Kate engine, and
+`editors/kate/gbasic.xml` was written for Kate, so the input format was already
+in hand. This is the increment that uses it.
+
+### Why it is a word and not a property
+
+Everything else a widget carries goes through `QMetaObject` by name, and that
+is the whole argument for how small this backend is: eight construction words
+against the 75 properties `QPushButton` alone exposes. **A highlighter is not a
+property.** It is an object you attach to a document, so `indexOfProperty` has
+nothing to find however it is spelled — and the same is true of the
+`QCompleter` Studio wants next, which is why the shape here is *attach a thing,
+then ask what was attached* rather than a new option.
+
+### A `source` is a `memo` with four differences
+
+Each is a fact about the widget's **setup** rather than a `Q_PROPERTY`, which
+is why none of them was reachable before:
+
+| | and why |
+|---|---|
+| it does not wrap | a wrapped line of code makes a line number stop matching the file — the **opposite** default from `text`, where wrapping is what stops a paragraph truncating |
+| a four-column tab | the width every gBASIC file in this tree is written at; Qt's default is eight |
+| the system's monospaced font | **asked for**, never named: a hardcoded family is how a port acquires a fallback nobody chose |
+| a highlighter | the part above |
+
+They are asserted as differences **against a `memo` in the same window**, since
+every value check also passes on a backend that built a plain memo and called
+it a source.
+
+### The trap, and why the probe came first
+
+The probe that designed this reported the `gBASIC` definition as **found with
+no search path set at all**, which read as the path plumbing being unnecessary. It
+was a copy hand-installed into `~/.local/share/org.kde.syntax-highlighting` in
+June, for Kate. A fresh machine finds nothing.
+
+And what a fresh machine then *shows* is the sharp part: **an absent definition
+still applies the theme's normal-text format to every line** — measured at 3
+format ranges against 8 — so the editor is not blank, not plain and not
+obviously wrong. It is an ordinary editor with ordinary text in it. That is the
+libcurl floor, mawk's missing interval expressions and LDAP's GnuTLS
+diagnostic for the fourth time: **invisible exactly where it was written.**
+
+So the definition comes from a path the *build* knows, mirroring the stdlib
+loader one line up in the Makefile: `GBASIC_SYNTAX_PATH` for the source tree,
+a baked-in `$(DATADIR)/syntax-highlighting` otherwise, and `make` derives the
+engine's `<dir>/syntax/` layout from the one definition the repo ships. A tier
+runs with `XDG_DATA_HOME` moved aside and requires the file to be **ours**.
+
+**It caught a second instance within the hour.** `run_qt_examples.sh` ran
+`editor.bas` with no path set and reported clean stderr — on this machine only;
+pointed at an empty `XDG_DATA_HOME` it fails. The suite exports the path now.
+
+### "It highlights" is two claims in two places
+
+Neither is sufficient alone, and the second is the one gBASIC cannot make:
+
+- **Which definition was applied** — `qt.highlighting(win, part)` answers
+  `{ language, file }`, or `unknown` when none is. It reports the **file** as
+  well as the name because a definition the user installed in their own home
+  *shadows* ours and reports the identical name (measured, 7 ranges against 8).
+  That precedence is left alone deliberately — it is the rule `load` already
+  follows for a library beside the program — but being unable to **see** it
+  would not be acceptable.
+- **Whether the text is really coloured** — gBASIC cannot read a
+  `QTextLayout`'s format ranges, so `tests/qt/source_probe.cpp` does it in C++,
+  with the control in the same process: 15 ranges against 5, **while both
+  format every one of the five lines**. That last number is what makes a
+  presence check vacuous.
+
+### Lookup is by name, and that is recorded rather than preferred
+
+`*.bas` is claimed by **FreeBASIC at the same priority as ours**, extension
+lookup picks FreeBASIC with no error, and FreeBASIC is a near enough neighbour
+that the result looks right. `editors/README.md` argues deliberately against
+shipping a priority, since a higher one wins for *every* `.bas` file on the
+machine including somebody's FreeBASIC. So by-name is the only route left. The
+fixture asks for FreeBASIC and requires FreeBASIC, beside gBASIC giving gBASIC
+— the pair without which every other check passes on extension lookup.
+
+### An absent definition warns rather than raising
+
+Warning **2115**. The editor is built, editable and useful without
+highlighting, so stopping the program is a worse answer than saying so — the
+position `odbc.connect` takes on a driver needing `ClientCharset`, and for the
+identical reason, that the failure is *silent*. The message names the **part**
+because it cannot name a position: a window record holds no line, so it is
+reported at `qt.open`. Its control is that a run which found its definition is
+silent.
+
+`theme:` is **declared**, not always inferred, because `qt.theme` sets a
+stylesheet and a stylesheet does not move Qt's palette — so a dark application
+with an inferred theme gets light highlighting on a dark background, which is
+less readable than none. `theme:` without `language:` is refused, since the
+theme is applied with the definition and alone would do nothing.
+
+### Valgrind objected, and it is PCRE2's JIT
+
+Isolated the way `run_odbc.sh` isolates a driver defect — reproduced with **no
+gBASIC in the stack** — then narrowed by measurement:
+
+| | objections |
+|---|---|
+| a `QPlainTextEdit` with no highlighter | 0 |
+| gBASIC's pre-existing `memo` fixture | 0 |
+| a highlighted document | 3 |
+| the same, `QT_ENABLE_REGEXP_JIT=0` | 0 |
+
+The JIT compiles to **anonymous** executable memory, which is why valgrind can
+name no object (`obj:*`, `???`) and its own glibc suppressions do not match,
+and its matcher over-reads the subject in 16-byte steps by design. The tier
+**turns the JIT off rather than suppressing**, on `tests/odbc.supp`'s own
+argument: the only suppression available would be "anything in an object we
+cannot name", which would also hide uninitialised data *we* passed in. The
+premise is asserted — the fixture must produce the same checks either way — so
+a setting that changed the program would fail rather than pass quietly.
+
+### Still open, and named so the absence is not read as an oversight
+
+- **A line-number gutter.** Qt has no widget for one; it is a painted side
+  area, and real work. Studio needs it.
+- **Completion.** The *data* already exists — `source_outline`, `src/lsp/` —
+  and the popup is a `QCompleter`, another object attached to a widget, so it
+  lands exactly where the highlighter did and for the same reason.
+- **Which copy wins** when the user has their own definition is measured but
+  not *chosen*: the engine decides, and `qt.highlighting` reports it.
 
 ### Still open
 

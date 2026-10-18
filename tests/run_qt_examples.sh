@@ -39,6 +39,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 make >/dev/null
 
+# WHERE `editor.bas` FINDS ITS SYNTAX DEFINITION, and this line is not
+# housekeeping -- without it this suite PASSED ON THIS MACHINE AND NOWHERE
+# ELSE. The developer who wrote the Kate definition had also installed a copy
+# into ~/.local/share/org.kde.syntax-highlighting, so `source` highlighted with
+# no path set at all; on any other machine the example warns 2115 and the
+# clean-stderr check fails. MEASURED by pointing XDG_DATA_HOME at an empty
+# directory, which is what a fresh machine is: `FAIL editor.bas wrote to
+# stderr`. The engine wants `<dir>/syntax/*.xml` and `make` builds that layout
+# from the one definition the repo ships, the same arrangement
+# `GBASIC_PATH=stdlib` is for libraries.
+export GBASIC_SYNTAX_PATH=editors/kate
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 status=0

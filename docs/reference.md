@@ -3851,6 +3851,8 @@ end program
 | `qt.set(win, part, property, value)` | set one named Qt property at run time — the write half of `qt.read(win, part, property)`. The only other way to set one is the declaration, which is written before anything has happened |
 | `qt.at(win, part)` | where a part sits in its `cells`: `{ row, column, across, down }`, asked of the layout |
 | `qt.menus(win)` / `qt.menus(win, n)` | the menu bar's top-level captions, or the entries of the menu at position `n`. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
+| `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
+| `qt.highlighting(win, part)` | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
 | `qt.theme(css)` / `qt.theme()` | set or read **one stylesheet for the whole application**. Needs no display, and is remembered until there is a `QApplication` to put it on, so a program themes first and opens second |
 | `qt.subject(win, name)` | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
 | `qt.invoke(win, name, method)` | call a widget method by name — `click`, `clear`, `setFocus` |
@@ -4033,6 +4035,55 @@ carries no `readOnly`, being no kind of entry, so asking for one is refused by
 name — which is how a program tells the two apart, since Qt strips newlines only
 from **typed** input and a `field` set programmatically stores them just as a
 `memo` does.
+
+**`source` is a code editor.** A `memo` holds prose; code is different in four
+ways, none of which is a Qt property and so none of which a `memo` could be
+talked into: it **does not wrap** (a wrapped line makes a line number stop
+matching the file — the opposite default from `text`, where wrapping is what
+stops a paragraph truncating), its **tab is four columns** rather than eight,
+its **font is the system's monospaced one** (asked for, never named — a
+hardcoded family is how a port acquires a fallback nobody chose), and it
+carries a **highlighter**.
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+column( margin: 8 )
+    source code( language: "gBASIC", theme: "dark" )
+end column
+```
+
+`language:` names a **definition**, never a file extension, and that is
+load-bearing rather than fussy: `*.bas` is claimed by FreeBASIC at the same
+priority as gBASIC, so a lookup by extension picks FreeBASIC — with no error,
+and plausibly, FreeBASIC being a near neighbour. `theme:` is `"light"` or
+`"dark"`, and is **declared** rather than inferred because `qt.theme` sets a
+stylesheet and a stylesheet does not move Qt's palette, so a dark application
+with an inferred theme would get light highlighting on a dark background.
+A `theme:` with no `language:` is refused, since the theme is applied with the
+definition and alone would do nothing.
+
+A `source` **binds in a form** like a `field` or a `memo`, which is what makes
+it useful: the text of whichever file is open is a record field like any other.
+
+**Where the definition comes from.** KSyntaxHighlighting searches a `syntax`
+directory holding the XML. gBASIC looks in `GBASIC_SYNTAX_PATH` first and then
+in the path compiled in at build time — the same two steps `GBASIC_PATH` and
+the installed stdlib already follow — so from the source tree:
+
+```sh
+GBASIC_SYNTAX_PATH=editors/kate ./gbasic examples/qt/editor.bas
+```
+
+After `make install` that is unnecessary. If no definition is found the editor
+**still opens and still edits**, and warning **2115** says so, because an
+absent definition colours every line with the theme's ordinary text and there
+is nothing on screen to notice. `qt.highlighting` is how a program asks what it
+actually got.
+
+**Not there yet:** a line-number gutter (Qt has no widget for one — it is a
+painted side area) and completion (the data exists in `source_outline` and
+`gbasic-lsp`; the popup is a `QCompleter`, another object attached to a widget,
+so it lands where the highlighter did).
 
 **`tabs` holds `tab` pages.** A page is given a column layout, so a `field`, a
 `row`, a `group` or a whole `table` works inside one with no further vocabulary:

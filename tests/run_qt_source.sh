@@ -346,10 +346,19 @@ else
     nojit_ok=$(grep -c '^ok' "$work/nojit.out" || true)
     nojit_bad=$(grep -c 'MISMATCH' "$work/nojit.out" || true)
     jit_ok=$(grep -c '^ok' "$work/sem.out" 2>/dev/null || true)
-    if [ "${nojit_ok:-0}" = "${jit_ok:-0}" ] && [ "${nojit_bad:-1}" = "0" ]; then
+    jit_bad=$(grep -c 'MISMATCH' "$work/sem.out" 2>/dev/null || true)
+    # AN EQUIVALENCE BETWEEN THE TWO RUNS, not a claim that either is clean --
+    # a correction found by perturbing. Written as "the counts agree AND the
+    # no-JIT run has no mismatches", a BROKEN FIXTURE failed here too, saying
+    # "with the regex JIT off the fixture behaves differently" when both runs
+    # behaved identically badly: the semantics tier had already named the real
+    # defect and this one blamed a setting that had nothing to do with it,
+    # which is the reports-the-wrong-cause class this tree keeps recording.
+    # Comparing BOTH counts leaves this tier failing only for its own reason.
+    if [ "${nojit_ok:-0}" = "${jit_ok:-0}" ] && [ "${nojit_bad:-0}" = "${jit_bad:-0}" ]; then
         pass "the JIT setting changes nothing the program does ($nojit_ok checks either way)"
     else
-        fail "with the regex JIT off the fixture behaves differently ($nojit_ok/$nojit_bad against $jit_ok) -- the tier below would measure another program"
+        fail "with the regex JIT off the fixture behaves differently ($nojit_ok ok/$nojit_bad bad against $jit_ok ok/$jit_bad bad) -- the tier below would measure another program"
     fi
     set +e
     QT_ENABLE_REGEXP_JIT=0 QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
