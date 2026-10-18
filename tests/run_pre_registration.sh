@@ -51,8 +51,14 @@ status=0
 # child (which said nothing and hung). AST_STMT_PROGRAM is in the set because the
 # pass reaches into the block's DIRECT children for those loads; it is not itself
 # a hoisted declaration.
-EXPECTED_KINDS='AST_STMT_FUNCTION AST_STMT_MODIFIER AST_STMT_PROGRAM AST_STMT_SERVER AST_STMT_USE'
-EXPECTED_CALLS='function_register library_import modifier_register register_hoistable_declarations register_method_bodies_in server_register'
+# AST_STMT_WINDOW joined the set 2026-10-17, and THIS SUITE IS WHY IT WAS NOT
+# MISSED: the hoist gained a kind and the tripwire went red naming both sets, in
+# the same run, before anything was committed. A `window` declaration is
+# position-blind for the same reason a `server` one is -- the block may sit
+# beside `program main` and be named from inside it -- and its head options are
+# literals, enforced at load time, so registering it runs no user code.
+EXPECTED_KINDS='AST_STMT_FUNCTION AST_STMT_MODIFIER AST_STMT_PROGRAM AST_STMT_SERVER AST_STMT_USE AST_STMT_WINDOW'
+EXPECTED_CALLS='function_register library_import modifier_register register_hoistable_declarations register_method_bodies_in server_register window_register'
 
 # Comment lines are stripped: the set is a fact about CODE, and a comment that
 # happens to name `function_register_def` should not enter the contract.

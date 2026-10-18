@@ -110,6 +110,41 @@ and the data grid, which is ordinary work rather than an open question.
 
 ---
 
+## 0.2 WHAT IS BUILT (2026-10-17)
+
+**The declarative half, with no Qt.** `tests/run_window.sh`, 27 checks, headless
+on every platform — because a declaration is **data**, and everything decidable
+about it is decidable without the thing it eventually drives. That is the
+`web.routes` bet: a route table proven with no socket.
+
+- **Two lexer tokens and nothing reserved.** The opener fires only on
+  `window IDENT (` (measured: 153 uses of the word in the tree, **zero** of that
+  shape), and a bare `{IDENT}` followed by `,`, `)` or a newline is the
+  type-naming token — so `x {date}= s` and `{USD}19.99` are untouched.
+- **Zero bison conflicts**, now a standing assertion rather than a design note.
+- **Fifteen load-time refusals** in the `server` block's own pass and sink, so
+  they reach `--json-diagnostics` for nothing. The sharpest:
+  `on cancel.clicked` with no `cancel` can never fire, and nothing at run time
+  would ever say so.
+- **The declaration binds its name** to an introspectable record — nested
+  containers, each form's subject and direction, labels, parts and their
+  options, handlers as `{ target, signal }` — so a backend reads it with no new
+  builtin, exactly as `web.routes` reads a server record. **Hoisted**, so the
+  block may sit below the program that names it.
+- A **non-literal option is visible by name and not by value**: `show: cust.id`
+  names a place to read when something renders, in the frame where the subject
+  lives, so there is no value to report at load time. The head's options are all
+  literals and never unknown.
+
+**What does not exist is anything that RENDERS it.** That is a missing backend,
+not a missing declaration, and it is the next increment: `QApplication::exec()`
+owning the loop (§5.1), gBASIC's sources as **drained** `QSocketNotifier`s, and
+widgets built from this record through `QMetaObject`. It wants the offscreen
+platform in its suite from the first commit rather than retrofitted, since that
+is the increment where headless stops being free.
+
+---
+
 ## 1. Why Qt, and what changed
 
 Qt was rejected as a GUI backend on 2026-09-27 on measured grounds, and that

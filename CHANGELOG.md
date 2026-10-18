@@ -92,10 +92,25 @@ first version could not see the example its own comment claimed to catch:
 `colunm` for `column` is a transposition, like `feild` and most of what fingers
 do, and needs two edits under a plain one-edit rule.
 
-**Evaluating a window block refuses** — "declared but not yet executable" — and
-the suite asserts that, because a block which parsed, bound nothing and raised
-nothing would read as a working window. That tier goes red when the Qt backend
-lands, which is the correct way for it to end.
+**The declaration binds its name** to an introspectable record — nested
+containers, each form's subject and direction, labels, parts and their options,
+handlers as `{ target, signal }` — so a backend reads it with **no new
+builtin**, exactly as `web.routes` reads a server record. It is **hoisted**, so
+the block may sit below the program that names it, and `run_pre_registration`'s
+tripwire caught that change and named both of its sets before anything was
+committed, which is what that suite is for.
+
+**A non-literal option is visible by name and not by value.** `show: cust.id`
+names a place to read when something renders, in the frame where the subject
+lives, so there is no value to report at load time. The head's options are all
+literals and never unknown. That is a statement about what a declaration can
+*know*, not a gap.
+
+An earlier tier in this increment asserted that evaluating a window **refused**
+— "declared but not yet executable" — which was right while nothing observable
+happened and is now simply false; it was replaced by the positive claim it had
+been standing in for. What still does not exist is anything that **renders** a
+window, and that is a missing backend rather than a missing declaration.
 
 **Three defects caught inside the increment, all by building it:**
 

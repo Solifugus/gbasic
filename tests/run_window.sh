@@ -106,12 +106,95 @@ for want in 'Window "customer"' 'Container column' 'Container form to edit cust'
 done
 printf '%s\n' "$tree" | grep -qF 'Handler save.clicked' && pass "the whole example parses into the tree the document draws"
 
-# AND THE DECLARATION IS NOT EXECUTABLE YET, which is asserted rather than
-# left as an absence: see the header.
-if printf '%s' "$(out_of "$written")" | grep -q "declared but not yet executable"; then
-    pass "and evaluating it REFUSES rather than silently doing nothing"
+# AND IT BINDS ITS NAME, which is the whole introspection surface and needs no
+# new builtin: a `server` block does the same and `web.routes` reads the record
+# with no socket. This tier REPLACED one asserting a refusal -- "declared but
+# not yet executable" -- which was right while nothing observable happened and
+# is now simply false.
+src introspect <<'EOF'
+window customer( title: "Customer", width: 480 ) to edit cust
+    column( margin: 8 )
+        form to edit cust
+            field id( label: "Account" )
+        end form
+        group "Credit"
+            field limit( label: "Limit", type: {USD} )
+        end group
+    end column
+    on id.clicked
+        print "x"
+    end on
+end window
+
+program main()
+    print customer.kind + "/" + customer.name + "/" + customer.subject
+    print customer.options.title + "/" + string(customer.options.width)
+    col = customer.items[0]
+    print col.kind + "/" + col.word + "/" + string(count(col.items))
+    print col.items[0].subject + "/" + col.items[0].direction
+    print col.items[1].label
+    print col.items[0].items[0].word + "/" + col.items[0].items[0].name
+    print col.items[0].items[0].options.label
+    print customer.items[1].kind + "/" + customer.items[1].target + "." + customer.items[1].signal
+end program
+EOF
+got=$(out_of "$written" | tr '
+' '|')
+want='window/customer/cust|Customer/480|container/column/2|cust/edit|Credit|field/id|Account|handler/id.clicked|'
+if [ "$got" = "$want" ]; then
+    pass "the declaration reads back as ordinary data, nested, with no new builtin"
 else
-    out_of "$written" | head -3; fail "evaluating a window block did not refuse"
+    printf '    got:  %s
+    want: %s
+' "$got" "$want"
+    fail "the introspection record is not what the declaration says"
+fi
+
+# A NON-LITERAL OPTION IS VISIBLE BY NAME AND NOT BY VALUE, which is a
+# statement about what a declaration can KNOW rather than a gap: `show: cust.id`
+# names a place to read when something renders, in the frame where the subject
+# lives, so there is no value to report at load time. The head's options are all
+# literals (load-time enforced), so nothing there is ever unknown.
+src binding <<'EOF'
+window w( title: "x" )
+    form to edit cust
+        field id( label: "Account", show: cust.id )
+    end form
+end window
+
+program main()
+    f = w.items[0].items[0]
+    print f.options.label
+    print "show is " + type(f.options.show)
+    print "and the NAME is there: " + string(has(f.options, "show"))
+end program
+EOF
+got=$(out_of "$written" | tr '
+' '|')
+if [ "$got" = "Account|show is nothing|and the NAME is there: true|" ]; then
+    pass "a binding option is reported by NAME with no value, which is the honest answer"
+else
+    printf '    %s
+' "$got"; fail "a non-literal option was not reported by name"
+fi
+
+# AND IT IS HOISTED, like a server declaration: the block may sit BELOW the
+# program that names it, which is the position the design's own examples use.
+src hoisted <<'EOF'
+program main()
+    print "named from above: " + below.name
+end program
+
+window below( title: "x" )
+    stretch()
+end window
+EOF
+got=$(out_of "$written")
+if [ "$got" = "named from above: below" ]; then
+    pass "a window declared BELOW the program block is still bound"
+else
+    printf '    %s
+' "$got"; fail "the declaration is not hoisted"
 fi
 
 printf 'TIER tokens: `window` is not reserved\n'
@@ -236,7 +319,7 @@ window w( title: "x" ) to edit cust
 end window
 EOF
 got=$(out_of "$written")
-if printf '%s' "$got" | grep -q "declared but not yet executable"; then
+if [ -z "$got" ]; then
     pass "CONTROL: a bare form INHERITS the window's subject, as the shorthand says"
 else
     printf '    %s\n' "$(printf '%s' "$got" | head -2)"
@@ -326,9 +409,8 @@ window customer( title: "C", width: 300, height: 200 ) to show cust
 end window
 EOF
 got=$(out_of "$written")
-if printf '%s' "$got" | grep -q "declared but not yet executable" \
-   && ! printf '%s' "$got" | grep -qi "unknown\|refused\|twice\|no subject"; then
-    pass "CONTROL: a valid window reports NOTHING but the not-yet-executable refusal"
+if [ -z "$got" ]; then
+    pass "CONTROL: a valid window loads with NOTHING to say"
 else
     printf '%s\n' "$got" | head -4
     fail "a valid window was rejected by a load-time check"

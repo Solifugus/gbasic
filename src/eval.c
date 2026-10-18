@@ -44248,6 +44248,113 @@ static Value server_build_value(AstStmt *stmt) {
 /* Register one server declaration: hidden handler functions, the `web` import
  * the sugar stands on, and the name binding in the global frame. Idempotent --
  * the pre-registration walk and the on-reach walk may both get here. */
+/* THE DECLARATION AS A VALUE, which is the whole introspection surface and
+ * needs no new builtin: a `window` block binds its name, exactly as a `server`
+ * block does, and a library reads the record. `web.routes` reads a server
+ * record the same way, with no socket; a Qt backend will read this one, with no
+ * display until it chooses to open one.
+ *
+ * AN OPTION VALUE THAT IS NOT A LITERAL IS VISIBLE BY NAME AND NOT BY VALUE,
+ * and that is a statement about what a declaration can know rather than a gap.
+ * `field id( label: "Account", show: cust.id )` carries a literal and a
+ * BINDING: the first is knowable now, the second names a place to read when
+ * something renders, in the frame where the subject lives. So it is recorded as
+ * `unknown`, which is the honest answer and the one a backend will replace at
+ * render time. The window HEAD's options are all literals, enforced in the
+ * load-time pass, so nothing there is ever unknown. */
+static Value window_items_value(AstWindowItemList *items);
+
+static Value window_item_value(AstWindowItem *item) {
+    Value out = value_record(NULL, 0);
+    switch (item->kind) {
+    case AST_WINDOW_HANDLER:
+        record_set(&out, "kind", value_string("handler"));
+        record_set(&out, "target",
+                   value_string(item->event_target ? item->event_target : ""));
+        record_set(&out, "signal",
+                   value_string(item->event_signal ? item->event_signal : ""));
+        return out;
+    case AST_WINDOW_LEAF:
+        record_set(&out, "kind", value_string("part"));
+        break;
+    case AST_WINDOW_CONTAINER:
+        record_set(&out, "kind", value_string("container"));
+        break;
+    }
+    record_set(&out, "word", value_string(item->word ? item->word : ""));
+    if (item->name) {
+        record_set(&out, "name", value_string(item->name));
+    }
+    if (item->label) {
+        record_set(&out, "label", value_string(item->label));
+    }
+    if (item->subject) {
+        record_set(&out, "subject", value_string(item->subject));
+        record_set(&out, "direction",
+                   value_string(item->subject_direction ? item->subject_direction : ""));
+    }
+    Value options = value_record(NULL, 0);
+    for (size_t i = 0; i < item->options.count; i++) {
+        AstRecordField *field = &item->options.items[i];
+        record_set(&options, field->name, server_literal_value(field->value));
+    }
+    record_set(&out, "options", options);
+    if (item->kind == AST_WINDOW_CONTAINER) {
+        record_set(&out, "items", window_items_value(&item->entries));
+    }
+    return out;
+}
+
+static Value window_items_value(AstWindowItemList *items) {
+    Value *values = items->count ? malloc(sizeof(Value) * items->count) : NULL;
+    if (items->count && !values) {
+        abort();
+    }
+    for (size_t i = 0; i < items->count; i++) {
+        values[i] = window_item_value(items->items[i]);
+    }
+    /* `value_array` ADOPTS the buffer -- `array_storage_new` assigns it
+     * straight into the store -- so freeing it here is a double free, which is
+     * exactly what the first version did and what the first run reported. The
+     * server block's own `trust_proxy` array hands its malloc over the same
+     * way and frees nothing. */
+    return value_array(values, items->count);
+}
+
+static Value window_build_value(AstStmt *stmt) {
+    Value window = value_record(NULL, 0);
+    record_set(&window, "kind", value_string("window"));
+    record_set(&window, "name", value_string(stmt->as.window.name));
+
+    Value options = value_record(NULL, 0);
+    for (size_t i = 0; i < stmt->as.window.options.count; i++) {
+        AstRecordField *field = &stmt->as.window.options.items[i];
+        record_set(&options, field->name, server_literal_value(field->value));
+    }
+    record_set(&window, "options", options);
+
+    /* The window's SUBJECT is a default a form may shadow, so it is reported
+     * here as well as on each form -- a reader of the record needs to know
+     * which forms inherited and which named their own, and that is only
+     * answerable with both. */
+    if (stmt->as.window.subject) {
+        record_set(&window, "subject", value_string(stmt->as.window.subject));
+        record_set(&window, "direction",
+                   value_string(stmt->as.window.subject_direction
+                                    ? stmt->as.window.subject_direction : ""));
+    }
+    record_set(&window, "items", window_items_value(&stmt->as.window.items));
+    return window;
+}
+
+static void window_register(AstStmt *stmt) {
+    /* NO `load` IS IMPLIED, unlike the server block's `web`. A window block is
+     * a declaration and nothing more until a backend exists; importing a
+     * library that cannot render anything would be a promise rather than a
+     * dependency. */
+    env_set(stmt->as.window.name, window_build_value(stmt));
+}
+
 static void server_register(AstStmt *stmt) {
     server_register_scope(stmt->as.server.name, &stmt->as.server.items);
     library_import("web", NULL, NULL);
@@ -44308,6 +44415,12 @@ static void register_hoistable_declarations(AstStmtList program) {
             function_register(stmt);
         } else if (stmt->kind == AST_STMT_MODIFIER) {
             modifier_register(stmt);
+        } else if (stmt->kind == AST_STMT_WINDOW) {
+            /* A window declaration is position-blind for the same reason a
+             * server one is: the block may sit beside `program main` and be
+             * named from inside it. Its head options are literals, enforced at
+             * load time, so this runs no user code at all. */
+            window_register(stmt);
         } else if (stmt->kind == AST_STMT_SERVER) {
             /* PLAT-WEB-5: a server declaration is position-blind too -- the
              * draft's own example puts the block beside `program main` and
@@ -45287,12 +45400,19 @@ static EvalResult eval_stmt(AstStmt *stmt) {
      * after. tests/run_window.sh asserts this refusal, so that tier goes RED
      * when the backend lands, which is the correct way for it to end. */
     case AST_STMT_WINDOW:
-        runtime_error_raise("a `window` block is declared but not yet executable: "
-                            "it parses and is validated, and nothing renders it "
-                            "(see docs/qt_gui_design.md)", 1004, "not implemented");
-        current_line = previous_line;
-        current_column = previous_column;
-        return eval_error_result();
+        /* REGISTERED BY THE HOIST ALREADY, so reaching the statement binds it
+         * again and nothing more -- the same shape a server block has. It no
+         * longer REFUSES: the declaration now does something observable (it
+         * binds an introspectable record), so there is nothing silent left to
+         * guard against. What still does not exist is anything that RENDERS
+         * it, and that is a missing backend rather than a missing declaration. */
+        window_register(stmt);
+        if (error_action_pending()) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        break;
     case AST_STMT_SERVER:
         server_register(stmt);
         if (error_action_pending()) {
@@ -45883,6 +46003,7 @@ static AstStmt *program_block_prepare(AstStmtList program) {
             AstStmt *st = program.items[i];
             if (st->kind == AST_STMT_PROGRAM || st->kind == AST_STMT_FUNCTION ||
                 st->kind == AST_STMT_MODIFIER || st->kind == AST_STMT_SERVER ||
+                st->kind == AST_STMT_WINDOW ||
                 st->kind == AST_STMT_USE || st->kind == AST_STMT_LIBRARY) {
                 continue;
             }
