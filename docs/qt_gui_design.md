@@ -238,7 +238,7 @@ the **import**, taking the whole program with it — the shrink
   declaration because the binding is the *name*.
 - **`tabs` and `cells`** are not in the validated vocabulary, so there is
   nothing to render; and the **data-driven builder** (§4) is unstarted.
-  (`table` shipped 2026-10-18 — §0.6.)
+  (`table` shipped 2026-10-18 — §0.6; menus and theming the same day — §0.7.)
 - **A nested container inside a form does not bind.** A `form` holding a `row`
   holding fields binds only the form's direct children, deliberately: binding
   through the layout would make the record's shape depend on how the form is
@@ -418,6 +418,81 @@ model behind `QTableView`, not a bigger version of this. Click-to-sort is off
 deliberately: sorting the view while the subject keeps its own order would make
 one row index mean two different rows. A row cannot be added or removed from the
 view, so the fold writes over the capture row for row.
+
+## 0.7 Menus and theming (2026-10-18)
+
+Both asked for by name. Neither was in this document before.
+
+### Menus need no grammar at all
+
+**Measured before a line was written**, and it shaped the whole increment:
+`menu "File"` is the production `group "Credit"` already uses, `item open(
+label: "..." )` is the named leaf, `separator()` is the `stretch()` form, and a
+submenu is the same production recursively. Every one already *parsed* — only
+the vocabulary refused them — so bison reports the same zero conflicts before
+and after. `table` needed new grammar for its name; menus needed none.
+
+**An item is a `QAction`, not a widget**, which is the one structural fact here.
+The parts registry now holds `QObject`, so an item is addressed by name for
+`on open.triggered`, for `qt.read(win, "open", "enabled")` and for
+`shortcut:`/`enabled:`/`checkable:` at construction — all through the same
+by-name door every widget option uses. A `QAction`'s properties are listed
+nowhere in this backend and needed no plumbing.
+
+**A menu bar belongs to the window**, not to a layout, so a `menu` sits at the
+top level or inside another menu and nowhere else. Refused rather than placed
+somewhere surprising: Qt would put a `QMenuBar` wherever the layout said, so a
+`menu` inside a `row` renders as a bar in the middle of the screen. The mirror
+is refused at *load* time too — `item` and `separator` may not appear where
+things *are* laid out, which would otherwise reach `gb_qt_part`, find no widget
+for the word, and fail at run time for whoever has Qt in their build. This is
+the first directive whose placement depends on its **surroundings**, so the
+validator now carries the parent's word.
+
+**A menu's caption is not a name** — the opposite of a table, and asserted so
+the two cannot drift together: a table is named because it shows many rows,
+where a menu's *items* are what a handler addresses.
+
+### Two oracles, both found by perturbation
+
+A by-name registry is flat and menus are a tree, so **the registry hid the
+structure from its own tests**. An item keeps its name wherever its menu ends
+up, so:
+
+- hanging a submenu off the **bar** instead of off its parent produced **zero
+  mismatches**;
+- adding an item to the **wrong menu** was invisible for the same reason;
+- and a **missing separator** was too.
+
+`qt.menus(win)` answers the bar's captions and `qt.menus(win, n)` the entries of
+one menu, both as lists — so they pin the count, the order, and that `Recent` is
+an entry *of* File rather than a menu beside it.
+
+**A separator answers `unknown`, not `""`.** Skipping the separator branch let
+one *fall through* and be added as an action with empty text, which a
+caption-based check could not tell from a real line — so Qt is asked
+`isSeparator()`, and a separator *has* no caption where `item x( label: "" )`
+has an empty one. The absent/empty distinction this language makes everywhere
+else, load-bearing here.
+
+### Theming: most of it already worked
+
+**Measured first:** `styleSheet` is a `Q_PROPERTY` of `QWidget`, so
+`button go( styleSheet: "QPushButton { ... }" )` has been reachable since the
+by-name route shipped — that route paying off in a way this document did not
+anticipate, which is the argument for a door over a table of bindings. What it
+cannot reach is **one sheet for the whole application**, and that is `qt.theme`.
+
+**It needs no display**, and that decided the implementation: a program will set
+a theme before opening anything, so the sheet is *remembered* and applied when
+the `QApplication` is constructed. Refusing until a window existed would force
+the first window to appear unthemed and then change.
+
+**It takes text, not a filename.** `qt.theme(read({file}"dark.qss"))` composes
+out of what the language already has, where a file argument would put file
+resolution, missing-file behaviour and a search path inside a GUI module with no
+business owning them. Qt resolves the cascade between the app sheet and a
+widget's own, so there is no precedence rule here to invent.
 
 ---
 

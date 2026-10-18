@@ -3845,6 +3845,7 @@ end program
 | `qt.select(win, table, row)` | choose a row from the program, for a window that opens with one highlighted; `unknown` chooses nothing |
 | `qt.cell(win, table, row, column)` | one cell, addressed by the **column's own name** rather than its position |
 | `qt.heading(win, table, column)` | a column's caption, by its name **or** its position |
+| `qt.menus(win)` / `qt.menus(win, n)` | the menu bar's top-level captions, or the entries of the menu at position `n`. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
 | `qt.theme(css)` / `qt.theme()` | set or read **one stylesheet for the whole application**. Needs no display, and is remembered until there is a `QApplication` to put it on, so a program themes first and opens second |
 | `qt.subject(win, name)` | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
 | `qt.invoke(win, name, method)` | call a widget method by name — `click`, `clear`, `setFocus` |
@@ -3893,6 +3894,29 @@ refused and the index named, the same way a projection reports it.
 blindly would turn `{ id: 42 }` into `{ id: "42" }`. The kind comes from
 `type:` where the field declares one, from the captured field otherwise, and
 from a check box being a check box.
+
+**A menu bar belongs to the window.** `menu "File"` sits at the window's top
+level or inside another menu, and nowhere else — it is not laid out, so a `menu`
+inside a `row` is refused rather than rendered as a bar in the middle of the
+screen. Its parts are `item`, `separator` and nested `menu`:
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+menu "File"
+    item open_file( label: "Open...", shortcut: "Ctrl+O" )
+    menu "Recent"
+        item recent_one( label: "ledger.bas" )
+    end menu
+    separator()
+    item quit_app( label: "Quit", shortcut: "Ctrl+Q" )
+end menu
+```
+
+A menu's **caption** is what a person reads and its **items** are what a handler
+addresses — so a menu takes no name, and `on open_file.triggered` names the
+item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
+`checked:` reach it through the same by-name property route every widget option
+uses.
 
 **Theming is Qt's stylesheet language, and most of it was already there.**
 `styleSheet` is an ordinary Qt property, so any widget takes one through the
