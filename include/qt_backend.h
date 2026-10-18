@@ -297,6 +297,66 @@ int gb_qt_table_select(void *window, const char *name, int row, char *err,
 int gb_qt_set_display_only(void *window, const char *name, int on, char *err,
                            size_t err_size);
 
+/* ---- HIGHLIGHTING (docs/qt_gui_design.md §0.14) ----------------------------
+ *
+ * WHY THIS IS A SEPARATE SEAM RATHER THAN A PROPERTY: everything else a widget
+ * carries goes through `QMetaObject` by name, which is what keeps this backend
+ * small -- but a highlighter is an OBJECT you attach to a document, not a
+ * property you set, so there is nothing for `indexOfProperty` to find. The
+ * same is true of the completer Studio will want next, which is why the shape
+ * here is "attach a thing and then ask what was attached".
+ *
+ * `gb_qt_has_highlighting` ANSWERS, like gb_qt_can_display, rather than
+ * refusing: a build without KSyntaxHighlighting still renders a `source`
+ * widget and still edits text, so a program needs to be able to ask instead of
+ * being stopped. */
+int gb_qt_has_highlighting(void);
+
+/* A DIRECTORY TO SEARCH, in the engine's own layout: a `syntax`
+ * subdirectory holding the XML. Called before the first `source` is constructed; later calls add further
+ * paths. SAFE WITHOUT KSyntaxHighlighting, where it does nothing, so the
+ * caller needs no guard of its own. */
+void gb_qt_syntax_path(const char *dir);
+
+/* ATTACH A HIGHLIGHTER to a `source` widget's document, with the definition
+ * looked up BY NAME.
+ *
+ * BY NAME IS NOT A STYLE CHOICE. `*.bas` is claimed by TWO definitions at the
+ * same priority -- the bundled FreeBASIC one and ours -- and lookup by
+ * EXTENSION picks FreeBASIC with no error at all, FreeBASIC being a near
+ * neighbour, so the result is plausible and wrong (run_ksyntax.sh asserts both
+ * halves). `editors/README.md` argues deliberately against shipping a priority,
+ * since a higher one would win for every `.bas` file on the machine including
+ * somebody's FreeBASIC -- so by-name is the only route left, and that is a
+ * decision, recorded.
+ *
+ * `theme` is "light", "dark", or NULL to ask Qt's own palette. It is DECLARED
+ * rather than always inferred because `qt.theme` sets a STYLESHEET, which does
+ * not move the palette -- so a dark application with an inferred theme gets
+ * light highlighting on a dark background, which is unreadable and which
+ * nothing could report.
+ *
+ * RETURNS 0 AND SETS `err` when the language is not known to the engine. That
+ * matters more than it looks: an INVALID definition still applies the theme's
+ * normal-text format to every line, so the widget looks like an ordinary
+ * editor with text in it -- measured 2026-10-18, 3 ranges against 8 -- and
+ * "highlighting ran" is therefore a vacuous assertion. */
+int gb_qt_highlight(void *window, const char *name, const char *language,
+                    const char *theme, char *err, size_t err_size);
+
+/* WHAT WAS ACTUALLY APPLIED -- the oracle, and it needs both halves.
+ *
+ * The NAME catches the wrong language (FreeBASIC for gBASIC). The FILE catches
+ * what the name cannot: a definition the user installed into their own
+ * ~/.local/share/org.kde.syntax-highlighting SHADOWS ours and reports the
+ * identical name -- measured 2026-10-18, 7 ranges against 8. That precedence
+ * is left alone deliberately, being the same rule `load` follows in letting a
+ * library beside the program override the standard one; what is not acceptable
+ * is being unable to SEE it. Both malloc'd; NULL when no definition is
+ * applied, which is a different answer from an empty string. */
+char *gb_qt_highlight_language(void *window, const char *name);
+char *gb_qt_highlight_file(void *window, const char *name);
+
 void gb_qt_show(void *window);
 
 /* Hands the thread to QApplication::exec(). `tick_ms` is how often gBASIC's

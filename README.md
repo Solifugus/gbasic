@@ -13,7 +13,7 @@ application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.10.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**184 test suites** gate every change, goldens are byte-exact, and the claims in
+**185 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -444,6 +444,7 @@ On Linux, with a C11 compiler, `make` and `bison`. Everything else is optional:
 | GTK 3 | `load gui` |
 | libgirepository-2.0 (GLib ≥ 2.80) | `load gi`, and the GTK 4 libraries above |
 | Qt 6 Widgets + `moc` | the `qt` module — rendering a `window` declaration. Needs **both**: Qt's signal/slot syntax is not C++, so a QObject subclass needs a generated translation unit, and Qt6 can be installed without its tools. Dynamically linked, unlike the statically linked libraries above, because Qt is LGPL-3 |
+| KSyntaxHighlighting (KF6) | syntax highlighting in a `source` widget — **optional**: without it a `source` is still a working code editor and warns once (2115) that it is not highlighting, since an absent definition is invisible rather than obviously broken. Rides Qt's switch, having nothing to attach to otherwise. Detected by header and library, not `pkg-config`: KDE Frameworks ship CMake config files and no `.pc` at all |
 
 ```sh
 make                                    # build ./gbasic
@@ -522,7 +523,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 184 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 185 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite

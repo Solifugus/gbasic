@@ -572,7 +572,8 @@ static QtOpenWindow *qt_window_entry(const char *name) {
  * §0.10 ruled out could do neither. */
 static int qt_bindable_word(const char *word) {
     return word && (strcmp(word, "field") == 0 || strcmp(word, "check") == 0 ||
-                    strcmp(word, "memo") == 0 || strcmp(word, "choice") == 0);
+                    strcmp(word, "memo") == 0 || strcmp(word, "choice") == 0 ||
+                    strcmp(word, "source") == 0);
 }
 
 /* THE SUBJECT, WITHOUT RAISING. `env_get` raises `undefined variable: cust`,
@@ -665,7 +666,7 @@ static int qt_pump_gbasic(void) {
 static int qt_structural_option(const char *name) {
     static const char *structural[] = {
         "label", "margin", "spacing", "grow", "show", "edit", "type",
-        "across", "down", "options", NULL
+        "across", "down", "options", "language", "theme", NULL
     };
     for (size_t i = 0; structural[i]; i++) {
         if (strcmp(name, structural[i]) == 0) {
@@ -1067,6 +1068,93 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             }
             if (!qt_fill_choice(root, name, list->value, "window")) {
                 return 0;
+            }
+        }
+    }
+
+    /* THE HIGHLIGHTER, which is the one thing in this vocabulary the by-name
+     * property route cannot reach: it is an OBJECT attached to a document, so
+     * `indexOfProperty` has nothing to find -- hence `language:` and `theme:`
+     * are structural and handled here, the shape `options:` above follows.
+     *
+     * REFUSED ON ANYTHING BUT A `source`, because a language means nothing to
+     * a button and `setProperty("language", ...)` would have stored a dynamic
+     * property that nothing reads -- an option that silently does nothing,
+     * which is the failure class this whole backend is tested against. */
+    if (opts && opts->value && opts->value->kind == VALUE_RECORD) {
+        RecordField *lang = record_find(opts->value, "language");
+        RecordField *thm = record_find(opts->value, "theme");
+        int is_source = word && strcmp(word, "source") == 0;
+        if ((lang || thm) && !is_source) {
+            snprintf(message, sizeof(message),
+                     "window: only a `source` carries `%s`, not '%s'",
+                     lang ? "language" : "theme", word ? word : "?");
+            qt_raise(message);
+            return 0;
+        }
+        if (thm && !lang) {
+            /* A THEME WITH NOTHING TO COLOUR. Refused rather than ignored:
+             * the theme is applied with the definition, so on its own it is
+             * silent, and a `source` whose author asked for `theme: "dark"`
+             * and got nothing has no way to tell. */
+            snprintf(message, sizeof(message),
+                     "window: `source %s( theme: ... )` needs a `language:` "
+                     "too -- a theme colours a definition, and alone it would "
+                     "do nothing", name ? name : "?");
+            qt_raise(message);
+            return 0;
+        }
+        if (is_source && lang && lang->value) {
+            const char *theme_text = NULL;
+            if (lang->value->kind != VALUE_STRING) {
+                snprintf(message, sizeof(message),
+                         "window: `source %s( language: ... )` needs the "
+                         "language's name as text, and it holds %s",
+                         name ? name : "?",
+                         value_kind_name(lang->value->kind));
+                qt_raise(message);
+                return 0;
+            }
+            if (thm && thm->value) {
+                if (thm->value->kind != VALUE_STRING) {
+                    snprintf(message, sizeof(message),
+                             "window: `source %s( theme: ... )` needs \"light\" "
+                             "or \"dark\" as text, and it holds %s",
+                             name ? name : "?",
+                             value_kind_name(thm->value->kind));
+                    qt_raise(message);
+                    return 0;
+                }
+                theme_text = thm->value->as.string;
+                /* SPELLED OUT, because an unrecognised word would fall
+                 * through to asking Qt's palette -- which answers something
+                 * reasonable, so `theme: "Dark"` would look like a theme that
+                 * does not work rather than a word that is not one. */
+                if (strcmp(theme_text, "light") != 0 &&
+                    strcmp(theme_text, "dark") != 0) {
+                    snprintf(message, sizeof(message),
+                             "window: `source %s( theme: \"%s\" )` is not a "
+                             "theme; write \"light\" or \"dark\", or leave it "
+                             "out to follow the window's own colours",
+                             name ? name : "?", theme_text);
+                    qt_raise(message);
+                    return 0;
+                }
+            }
+            err[0] = '\0';
+            if (!gb_qt_highlight(root, name, lang->value->as.string,
+                                 theme_text, err, sizeof(err))) {
+                /* A WARNING, NOT A RAISE, and the distinction is the whole
+                 * reason this is affordable: the editor is built, editable
+                 * and perfectly usable without highlighting, so stopping the
+                 * program would be a worse answer than saying so -- the
+                 * position `odbc.connect` takes on a driver that needs
+                 * ClientCharset. AND IT MUST BE SAID: an absent definition
+                 * still formats every line with the theme's normal text, so
+                 * there is nothing on screen to notice. */
+                warn_fmt(2115, "highlighting", "window: %s",
+                         err[0] ? err : "the syntax definition could not be "
+                                        "applied");
             }
         }
     }
@@ -1987,6 +2075,12 @@ static Value qt_eval_call(AstExpr *expr) {
     if (strcmp(verb, "can_display") == 0 && argc == 0) {
         return value_bool(0);
     }
+    /* ANSWERS WITHOUT QT, like can_display and for the same reason: "can this
+     * build highlight?" is a question a program asks in order to choose, so
+     * refusing it would make the choice unmakeable. */
+    if (strcmp(verb, "can_highlight") == 0 && argc == 0) {
+        return value_bool(0);
+    }
     if (strcmp(verb, "check") == 0) {
         return qt_check_verb(expr, argc);
     }
@@ -2003,6 +2097,19 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         return value_bool(gb_qt_can_display() ? 1 : 0);
+    }
+
+    /* A BUILD-LEVEL QUESTION, where `qt.highlighting` is a per-widget one, and
+     * both are needed: this one tells a program whether to offer the feature
+     * at all, that one tells it what a particular editor actually got -- which
+     * a boolean cannot, since the definition can be the wrong one or somebody
+     * else's copy of the right one. */
+    if (strcmp(verb, "can_highlight") == 0) {
+        if (argc != 0) {
+            qt_raise("qt.can_highlight takes no arguments");
+            return value_null();
+        }
+        return value_bool(gb_qt_has_highlighting() ? 1 : 0);
     }
 
     if (strcmp(verb, "check") == 0) {
@@ -2070,6 +2177,28 @@ static Value qt_eval_call(AstExpr *expr) {
                 return value_null();
             }
             qt_begun = 1;
+            /* WHERE A HIGHLIGHTING DEFINITION COMES FROM, and it is the same
+             * two-step the stdlib loader uses: an environment override for the
+             * source tree, then the path compiled in at build time. Registered
+             * ONCE, here, because `gb_qt_syntax_path` is cheap and idempotent
+             * and this is the one place that runs before any `source` exists.
+             *
+             * IT IS NOT OPTIONAL POLISH. Measured 2026-10-18: with no path at
+             * all this machine still answers `gBASIC`, from a copy installed
+             * by hand into ~/.local/share/org.kde.syntax-highlighting in June,
+             * while a machine without that copy answers nothing -- and an
+             * absent definition still formats every line with the theme's
+             * normal text, so the editor looks entirely ordinary and
+             * highlights nothing. The dev machine was the only one where this
+             * would have appeared to work, which is the shape of defect this
+             * tree has recorded three times from the other direction. */
+            const char *syn = getenv("GBASIC_SYNTAX_PATH");
+            if (syn && *syn) {
+                gb_qt_syntax_path(syn);
+            }
+#ifdef GBASIC_DEFAULT_SYNTAX
+            gb_qt_syntax_path(GBASIC_DEFAULT_SYNTAX);
+#endif
         }
         if (!qt_callbacks_set) {
             gb_qt_set_callbacks(qt_invoke_handler, qt_pump_gbasic);
@@ -2717,6 +2846,66 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         value_free(win); value_free(which);
         return value_number((double)drawn);
+    }
+
+    /* WHAT IS ACTUALLY HIGHLIGHTING THIS EDITOR -- the oracle, answering a
+     * record so that each of the three things it witnesses is separable.
+     *
+     * `unknown` RATHER THAN A RECORD OF EMPTIES when nothing is applied,
+     * because "no highlighting" and "highlighting with no name" are different
+     * claims, and the first is an ordinary state: a `source` with no
+     * `language:` is a perfectly good plain code editor.
+     *
+     * WHY A VERB AND NOT A PROPERTY: a highlighter is an object attached to a
+     * document, so the by-name route has nothing to read. And why it answers
+     * the FILE as well as the name -- a definition the user installed in their
+     * own home SHADOWS the one we ship and reports the identical name
+     * (measured, 7 ranges against 8), so the name alone cannot witness which
+     * file was used. That precedence is deliberate, being the rule `load`
+     * already follows; what would not be acceptable is being unable to see
+     * it. */
+    if (strcmp(verb, "highlighting") == 0) {
+        if (argc != 2) {
+            qt_raise("qt.highlighting expects a window and a part's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "highlighting") ||
+            which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.highlighting expects a window and the part's "
+                         "name as text");
+            }
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        char *lang = gb_qt_highlight_language(root, which.as.string);
+        if (!lang) {
+            value_free(win); value_free(which);
+            return value_unknown();
+        }
+        char *file = gb_qt_highlight_file(root, which.as.string);
+        Value out = value_record(NULL, 0);
+        record_set(&out, "language", value_string(lang));
+        record_set(&out, "file", value_string(file ? file : ""));
+        free(lang);
+        free(file);
+        value_free(win); value_free(which);
+        return out;
     }
 
     if (strcmp(verb, "heading") == 0) {

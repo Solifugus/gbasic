@@ -12,6 +12,17 @@ DOCDIR := $(PREFIX)/share/doc/gbasic
 # Baked-in fallback the loader searches when GBASIC_PATH does not resolve a library,
 # so an installed `gbasic` finds its stdlib without any environment setup.
 CFLAGS += -DGBASIC_DEFAULT_STDLIB='"$(STDLIBDIR)"'
+# WHERE A HIGHLIGHTING DEFINITION COMES FROM, the same arrangement one line up
+# and for the same reason. KSyntaxHighlighting searches `<dir>/syntax/*.xml`, so
+# what is baked in is the PARENT of a `syntax` directory -- and it is baked in
+# rather than looked for because MEASURED 2026-10-18 the alternative is the
+# worst kind of green: this machine answers `gBASIC` with no path set at all,
+# from a copy hand-installed into ~/.local/share/org.kde.syntax-highlighting in
+# June, while a FRESH machine answers nothing -- and an absent definition still
+# applies the theme's normal-text format to every line, so the editor looks
+# perfectly ordinary and is not highlighting anything.
+SYNTAXDIR := $(DATADIR)/syntax-highlighting
+CFLAGS += -DGBASIC_DEFAULT_SYNTAX='"$(SYNTAXDIR)"'
 
 # Because that path is COMPILED IN, changing PREFIX has to invalidate the objects
 # that carry it -- and make cannot see a changed -D on its own. Without this, the
@@ -337,6 +348,29 @@ else
 CFLAGS += -DHAVE_GIO=0
 endif
 
+# KSYNTAXHIGHLIGHTING -- the `source` widget's highlighter (docs/qt_gui_design.md
+# §0.14). DETECTED BY HEADER AND LIBRARY RATHER THAN pkg-config, which is not a
+# shortcut: KDE Frameworks ship CMake config files and NO .pc at all, measured --
+# `pkg-config --exists KF6SyntaxHighlighting` is false on a machine where the
+# library is installed and working, so asking pkg-config would compile the
+# feature out wherever it is present.
+#
+# IT RIDES QT'S SWITCH. The highlighter is only reachable through a widget, so a
+# build without Qt has nothing to attach one to; and unlike Qt itself it is MIT,
+# so it could be linked statically -- not done here, because it is a 2 MB .so
+# whose only consumer is a build that already depends on a dynamically linked Qt.
+KSYNTAX_INC := $(firstword $(wildcard /usr/include/KF6/KSyntaxHighlighting) $(wildcard /usr/local/include/KF6/KSyntaxHighlighting))
+KSYNTAX_AVAILABLE := $(shell [ -d "$(KSYNTAX_INC)" ] && printf 1 || printf 0)
+ifeq ($(QT_AVAILABLE),0)
+KSYNTAX_AVAILABLE := 0
+endif
+ifeq ($(KSYNTAX_AVAILABLE),1)
+QT_CXXFLAGS += -DHAVE_KSYNTAX=1 -I$(KSYNTAX_INC)
+QT_LIBS += -lKF6SyntaxHighlighting
+else
+QT_CXXFLAGS += -DHAVE_KSYNTAX=0
+endif
+
 ifeq ($(QT_AVAILABLE),1)
 CFLAGS += -DHAVE_QT=1
 QT_OBJS := src/modules/qt_backend.o
@@ -401,7 +435,7 @@ LSP_OBJS := src/lsp/main.o src/lsp/rpc.o src/lsp/handlers.o src/lsp/lsp_position
 
 .PHONY: all dev clean install uninstall
 
-all: libgbasic.a gbasic
+all: libgbasic.a gbasic editors/kate/syntax/gbasic.xml
 
 # Build every binary in the tree, including the ones kept out of `all` (the LSP
 # server). This is the routine developer/CI entry point: it guarantees gbasic-lsp
@@ -480,7 +514,7 @@ FORCE:
 # `^[A-Z0-9_]+_AVAILABLE` from COLUMN ONE, and a name used only inside this
 # variable never appears there -- so tests/run_library_tiers.sh asserts the
 # names in this line are all assigned, which catches the NEXT one.
-BUILD_SWITCH_SIG := $(GIO_AVAILABLE)|$(GIR_AVAILABLE)|$(GTK_AVAILABLE)|$(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(QT_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)
+BUILD_SWITCH_SIG := $(GIO_AVAILABLE)|$(GIR_AVAILABLE)|$(GTK_AVAILABLE)|$(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(QT_AVAILABLE)|$(KSYNTAX_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)
 .buildswitch-stamp: FORCE
 	@printf '%s' '$(BUILD_SWITCH_SIG)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(BUILD_SWITCH_SIG)' > $@
 
@@ -511,6 +545,21 @@ src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c s
 # (the usual arrangement for a QObject defined in a source file rather than a
 # header), so there is one object rather than two -- and it means moc output is
 # a build artifact that never needs committing.
+# THE ENGINE'S OWN LAYOUT, derived from the one definition this repo ships.
+# KSyntaxHighlighting searches `<dir>/syntax/*.xml` and `editors/kate/gbasic.xml`
+# is not in that shape, so the suites and `run_ksyntax.sh` each used to build it
+# in a scratch directory -- a workaround repeated per caller. It is made once
+# here, which is why `GBASIC_SYNTAX_PATH=editors/kate` works from the source
+# tree exactly as `GBASIC_PATH=stdlib` does, and why a developer gets the
+# definition the REPO ships rather than whatever is in their home directory.
+#
+# GENERATED, NOT COMMITTED: two copies of one definition is the drift this tree
+# tripwires against elsewhere, and a copy rule with the original as its
+# prerequisite cannot go stale.
+editors/kate/syntax/gbasic.xml: editors/kate/gbasic.xml
+	@mkdir -p $(dir $@)
+	cp $< $@
+
 src/modules/qt_backend.moc: src/modules/qt_backend.cpp include/qt_backend.h
 	$(QT_MOC) -Iinclude $< -o $@
 
@@ -539,6 +588,8 @@ install: gbasic
 	install -m 0644 stdlib/*.bas $(DESTDIR)$(STDLIBDIR)/
 	install -d $(DESTDIR)$(STDLIBDIR)/gtksourceview
 	install -m 0644 stdlib/gtksourceview/gbasic.lang $(DESTDIR)$(STDLIBDIR)/gtksourceview/
+	install -d $(DESTDIR)$(SYNTAXDIR)/syntax
+	install -m 0644 editors/kate/gbasic.xml $(DESTDIR)$(SYNTAXDIR)/syntax/
 	install -d $(DESTDIR)$(DOCDIR)
 	install -m 0644 LICENSE NOTICE LICENSING.md $(DESTDIR)$(DOCDIR)/
 	@echo "Installed gbasic to $(DESTDIR)$(BINDIR), stdlib to $(DESTDIR)$(STDLIBDIR),"
@@ -567,3 +618,4 @@ clean:
 	rm -f gbasic-lsp $(LSP_OBJS)
 	rm -f .stdlibdir-stamp .buildswitch-stamp
 	rm -f src/modules/qt_backend.moc src/modules/qt_backend.o
+	rm -rf editors/kate/syntax

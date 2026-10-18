@@ -53,8 +53,8 @@ static const char *win_container_words[] = {"row", "column", "form", "group",
                                             "table", "menu", "tabs", "tab",
                                             "cells", NULL};
 static const char *win_leaf_words[] = {"field", "button", "check", "text",
-                                       "memo", "choice", "stretch", "item",
-                                       "separator", NULL};
+                                       "memo", "choice", "source", "stretch",
+                                       "item", "separator", NULL};
 
 static int win_in(const char *const *set, const char *word) {
     for (size_t i = 0; set[i]; i++) {

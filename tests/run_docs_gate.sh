@@ -644,6 +644,12 @@ if [ -f Makefile ] && [ -f README.md ]; then
             # installed without its tools. 'Qt 6' is the spelling a
             # reader would recognise; the row says the rest.
             HAVE_QT)       want='Qt 6' ;;
+            # NOT pkg-config-detected, unlike every other row: KDE
+            # Frameworks ship CMake config and no .pc, so the Makefile
+            # looks for the header directory. The README says so,
+            # because a reader who tries pkg-config concludes it is
+            # absent on a machine where it works.
+            HAVE_KSYNTAX)  want='KSyntaxHighlighting' ;;
             *) echo "FAIL dependency     Makefile probes $m and this check has no README spelling for it"
                dep_ok=0; status=1; continue ;;
         esac
@@ -813,11 +819,21 @@ if [ -f "$ERRDOC" ] && [ -f src/eval.c ]; then
     # EVERY SHAPE THAT RAISES ONE, measured rather than assumed: the first
     # version of this check looked only for `warn_fmt(` and reported 2101 as a
     # ghost, because `unused-result` goes through `runtime_warn` directly.
-    emitted=$(grep -oE '(warn_fmt|warn_fmt_at|note_fmt_at|runtime_warn|runtime_warn_at)\([^,]*, *2[0-9]{3},|(warn_fmt|warn_fmt_at|note_fmt_at)\(2[0-9]{3},' src/eval.c \
+    # EVERY FILE THE RUNTIME IS MADE OF, which is NOT just src/eval.c: the
+    # optional modules are `#include`d into it, so a warning raised from one is
+    # emitted by the same translation unit while living in another file.
+    # MEASURED when warning 2115 arrived in src/modules/qt.c as the first of
+    # its kind: the check read src/eval.c literally and reported a live warning
+    # as a GHOST -- a derived check blind to where the code actually is, which
+    # is the rot this whole section exists to prevent. The list is DERIVED from
+    # eval.c's own include lines rather than written out, because a second list
+    # of modules is a list a new module silently stays off.
+    runtime_src="src/eval.c $(sed -n 's|^#include "\(modules/[A-Za-z0-9_]*\.c\)"|src/\1|p' src/eval.c | tr '\n' ' ')"
+    emitted=$(grep -hoE '(warn_fmt|warn_fmt_at|note_fmt_at|runtime_warn|runtime_warn_at)\([^,]*, *2[0-9]{3},|(warn_fmt|warn_fmt_at|note_fmt_at)\(2[0-9]{3},' $runtime_src \
               | grep -oE '2[0-9]{3}' | sort -u)
     for c in $emitted; do
         grep -qE "^\| $c \|" "$warn_table" \
-            || { echo "FAIL warning codes  $ERRDOC has no row for warning $c, which src/eval.c emits"; codes_ok=0; status=1; }
+            || { echo "FAIL warning codes  $ERRDOC has no row for warning $c, which the runtime emits"; codes_ok=0; status=1; }
     done
     # THE TABLE ONLY, not the whole file -- the first version scanned every
     # `| NNNN |` row and reported the ERROR-code table's 2001/2002/2003 as
@@ -825,10 +841,10 @@ if [ -f "$ERRDOC" ] && [ -f src/eval.c ]; then
     for c in $(grep -oE '^\| 2[0-9]{3} \|' "$warn_table" | grep -oE '2[0-9]{3}'); do
         [ "$c" = "2100" ] && continue   # explicit warning(...), raised from gBASIC
         printf '%s\n' "$emitted" | grep -qx "$c" \
-            || { echo "FAIL warning ghost  $ERRDOC lists warning $c, which src/eval.c does not emit"; codes_ok=0; status=1; }
+            || { echo "FAIL warning ghost  $ERRDOC lists warning $c, which the runtime does not emit"; codes_ok=0; status=1; }
     done
     [ "$codes_ok" = "1" ] \
-        && echo "PASS warning codes  $ERRDOC covers every warning src/eval.c emits, and none it does not"
+        && echo "PASS warning codes  $ERRDOC covers every warning the runtime emits, and none it does not"
     rm -f "$warn_table"
 fi
 

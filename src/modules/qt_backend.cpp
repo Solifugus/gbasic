@@ -55,6 +55,14 @@
 #include <QGridLayout>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QFontDatabase>
+#include <QFontMetricsF>
+#if HAVE_KSYNTAX
+#include <KSyntaxHighlighting/Definition>
+#include <KSyntaxHighlighting/Repository>
+#include <KSyntaxHighlighting/SyntaxHighlighter>
+#include <KSyntaxHighlighting/Theme>
+#endif
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -512,6 +520,39 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
             m->setPlainText(QString::fromUtf8(label));
         }
         w = m;
+    } else if (strcmp(word, "source") == 0) {
+        /* CODE, which a `memo` is not -- and the difference is four things a
+         * person editing a program notices within a minute, none of them
+         * reachable through the by-name property route because each is a
+         * fact about the WIDGET'S SETUP rather than a Q_PROPERTY:
+         *
+         *   a MONOSPACED font, asked of the system rather than named, since
+         *   "Courier" is not installed everywhere and a hardcoded family is
+         *   how a port gets a fallback nobody chose;
+         *
+         *   NO WRAPPING, because a wrapped line of code makes the line
+         *   numbers stop matching the file -- the opposite default from
+         *   `text`, where wrapping is what stops a paragraph truncating;
+         *
+         *   A TAB THAT IS FOUR COLUMNS WIDE rather than eight, which is the
+         *   width every gBASIC file in this tree is written at;
+         *
+         *   and the HIGHLIGHTER, attached separately because it is an object
+         *   rather than a property (see gb_qt_highlight).
+         *
+         * IT IS A QPlainTextEdit LIKE `memo`, deliberately, so `qt.read` and
+         * `qt.write` reach it through the `plainText` branch that already
+         * exists and a form can bind it with nothing new. Rich text would
+         * make a program that put source in as a string read markup back. */
+        QPlainTextEdit *se = new QPlainTextEdit(p->widget);
+        QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        se->setFont(mono);
+        se->setLineWrapMode(QPlainTextEdit::NoWrap);
+        se->setTabStopDistance(4 * QFontMetricsF(mono).horizontalAdvance(QLatin1Char(' ')));
+        if (label && *label) {
+            se->setPlainText(QString::fromUtf8(label));
+        }
+        w = se;
     } else {
         say(err, err_size,
             QByteArray("no Qt widget is wired for `") + word + "`");
@@ -1227,6 +1268,197 @@ extern "C" void *gb_qt_table(void *parent, const char *name,
         n->root->parts.insert(QString::fromUtf8(name), t);
     }
     return n;
+}
+
+/* ---- HIGHLIGHTING -----------------------------------------------------------
+ *
+ * ONE REPOSITORY FOR THE PROCESS, which is what KSyntaxHighlighting's own
+ * header asks for ("keep it for the lifetime of your application"): it reads
+ * several hundred definitions and every theme, so one per editor would pay for
+ * that per widget. Constructed lazily, because a program with no `source` in
+ * it must not pay at all -- and search paths added before the first use are
+ * remembered until then.
+ */
+#if HAVE_KSYNTAX
+static KSyntaxHighlighting::Repository *g_repo = nullptr;
+static QStringList g_syntax_paths;
+
+static KSyntaxHighlighting::Repository *repo(void) {
+    if (!g_repo) {
+        g_repo = new KSyntaxHighlighting::Repository();
+        for (const QString &p : g_syntax_paths) {
+            g_repo->addCustomSearchPath(p);
+        }
+    }
+    return g_repo;
+}
+#endif
+
+extern "C" int gb_qt_has_highlighting(void) {
+#if HAVE_KSYNTAX
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+extern "C" void gb_qt_syntax_path(const char *dir) {
+#if HAVE_KSYNTAX
+    if (!dir || !*dir) {
+        return;
+    }
+    QString p = QString::fromUtf8(dir);
+    if (g_syntax_paths.contains(p)) {
+        return;
+    }
+    g_syntax_paths.append(p);
+    /* ADDED NOW IF THE REPOSITORY IS ALREADY BUILT, remembered otherwise --
+     * so the order in which a program opens a window and sets a path cannot
+     * decide whether the path takes effect. */
+    if (g_repo) {
+        g_repo->addCustomSearchPath(p);
+    }
+#else
+    (void)dir;
+#endif
+}
+
+/* A `source` WIDGET'S DOCUMENT. It must really BE one: attaching a highlighter
+ * to a `memo` would work (both are QPlainTextEdit) and attaching one to a
+ * `field` would silently do nothing, so the kind is checked rather than
+ * assumed from the caller's word. */
+static QPlainTextEdit *source_named(void *window, const char *name, char *err,
+                                    size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!o) {
+        say(err, err_size, QByteArray("there is nothing called `") + name +
+                               "` in this window");
+        return nullptr;
+    }
+    QPlainTextEdit *e = qobject_cast<QPlainTextEdit *>(o);
+    if (!e) {
+        say(err, err_size, QByteArray("`") + name +
+                               "` is not a text editor, so it cannot be "
+                               "highlighted");
+        return nullptr;
+    }
+    return e;
+}
+
+extern "C" int gb_qt_highlight(void *window, const char *name,
+                               const char *language, const char *theme,
+                               char *err, size_t err_size) {
+    QPlainTextEdit *e = source_named(window, name, err, err_size);
+    if (!e) {
+        return 0;
+    }
+#if HAVE_KSYNTAX
+    KSyntaxHighlighting::Definition def =
+        repo()->definitionForName(QString::fromUtf8(language ? language : ""));
+    if (!def.isValid()) {
+        /* THE MESSAGE CARRIES THE PART'S NAME because its POSITION cannot:
+         * a window record holds no line, so this warning is reported at
+         * `qt.open` rather than at the declaration that named the language.
+         * Naming the part is what makes the site not matter. */
+        say(err, err_size,
+            QByteArray("`source ") + name + "` asked for the `" +
+                (language ? language : "") +
+                "` syntax definition and none is installed, so it will work "
+                "as a plain editor");
+        return 0;
+    }
+    /* ONE HIGHLIGHTER PER DOCUMENT. Re-pointing an existing one rather than
+     * adding a second, because two QSyntaxHighlighters on one document both
+     * run and the later one wins per block -- which looks like the first
+     * language having been ignored. */
+    KSyntaxHighlighting::SyntaxHighlighter *hl =
+        e->findChild<KSyntaxHighlighting::SyntaxHighlighter *>(
+            QString(), Qt::FindDirectChildrenOnly);
+    if (!hl) {
+        hl = new KSyntaxHighlighting::SyntaxHighlighter(e->document());
+        hl->setParent(e);
+    }
+    hl->setDefinition(def);
+    KSyntaxHighlighting::Theme th;
+    if (theme && strcmp(theme, "dark") == 0) {
+        th = repo()->defaultTheme(KSyntaxHighlighting::Repository::DarkTheme);
+    } else if (theme && strcmp(theme, "light") == 0) {
+        th = repo()->defaultTheme(KSyntaxHighlighting::Repository::LightTheme);
+    } else {
+        th = repo()->themeForPalette(e->palette());
+    }
+    hl->setTheme(th);
+    /* THE EDITOR'S OWN COLOURS MUST FOLLOW THE THEME, or a dark theme paints
+     * dark text on the widget's light background and the result is less
+     * readable than no highlighting at all -- the one case where doing half
+     * the job is worse than doing none. */
+    if (th.isValid()) {
+        QColor bg(QRgb(th.editorColor(
+            KSyntaxHighlighting::Theme::BackgroundColor)));
+        QColor fg(QRgb(th.textColor(KSyntaxHighlighting::Theme::Normal)));
+        QPalette pal = e->palette();
+        pal.setColor(QPalette::Base, bg);
+        pal.setColor(QPalette::Text, fg);
+        e->setPalette(pal);
+    }
+    return 1;
+#else
+    (void)language;
+    (void)theme;
+    say(err, err_size,
+        QByteArray("`source ") + name +
+            "` cannot be highlighted: this gBASIC was built without "
+            "KSyntaxHighlighting, so it will work as a plain editor");
+    return 0;
+#endif
+}
+
+#if HAVE_KSYNTAX
+static char *dup_qbytes(const QByteArray &bytes) {
+    char *out = (char *)malloc((size_t)bytes.size() + 1);
+    if (!out) {
+        return nullptr;
+    }
+    memcpy(out, bytes.constData(), (size_t)bytes.size());
+    out[bytes.size()] = 0;
+    return out;
+}
+
+static KSyntaxHighlighting::Definition applied_definition(void *window,
+                                                          const char *name) {
+    QPlainTextEdit *e = source_named(window, name, nullptr, 0);
+    if (!e) {
+        return KSyntaxHighlighting::Definition();
+    }
+    KSyntaxHighlighting::SyntaxHighlighter *hl =
+        e->findChild<KSyntaxHighlighting::SyntaxHighlighter *>(
+            QString(), Qt::FindDirectChildrenOnly);
+    return hl ? hl->definition() : KSyntaxHighlighting::Definition();
+}
+#endif
+
+extern "C" char *gb_qt_highlight_language(void *window, const char *name) {
+#if HAVE_KSYNTAX
+    KSyntaxHighlighting::Definition def = applied_definition(window, name);
+    return def.isValid() ? dup_qbytes(def.name().toUtf8()) : nullptr;
+#else
+    (void)window;
+    (void)name;
+    return nullptr;
+#endif
+}
+
+extern "C" char *gb_qt_highlight_file(void *window, const char *name) {
+#if HAVE_KSYNTAX
+    KSyntaxHighlighting::Definition def = applied_definition(window, name);
+    return def.isValid() ? dup_qbytes(def.filePath().toUtf8()) : nullptr;
+#else
+    (void)window;
+    (void)name;
+    return nullptr;
+#endif
 }
 
 static QTableWidget *table_of(void *window, const char *name) {
