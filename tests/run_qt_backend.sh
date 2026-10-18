@@ -611,6 +611,38 @@ else
     fail "the bad-part refusal: $(grep BADPART "$work/tb.out" || echo 'never fired')"
 fi
 
+# --------------------------------------------------------------------- REFRESH
+
+printf 'TIER refresh: a table shows the list as it is NOW\n'
+# MEASURED WHILE BUILDING A WHOLE APPLICATION on this surface, and it was a GAP
+# rather than a limit: a `table to show` captured its subject at open and NEVER
+# FOLLOWED IT, so appending to the list left `rowCount` where it was and a
+# program had no way to say otherwise. Awkward for a game; fatal for anything
+# list-driven, which is most business software and is Studio's file tree.
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
+    tests/qt_refresh_test.bas > "$work/rf.out" 2> "$work/rf.err"
+rf_rc=$?
+set -e
+if [ "$rf_rc" != "0" ]; then
+    printf '    %s\n' "$(tail -5 "$work/rf.err")"
+    fail "the refresh fixture exited $rf_rc"
+fi
+rfchecks=$(grep -c '^ok   ' "$work/rf.out" || true)
+if grep -q MISMATCH "$work/rf.out"; then
+    grep MISMATCH "$work/rf.out" | while read -r line; do printf '    %s\n' "$line"; done
+    fail "$(grep -c MISMATCH "$work/rf.out") mismatches in the refresh fixture"
+elif [ "${rfchecks:-0}" = "0" ]; then
+    fail "no refresh checks ran at all, so '0 mismatches' would mean nothing"
+else
+    pass "$rfchecks checks, 0 mismatches"
+fi
+if [ "${rfchecks:-0}" -ge 21 ]; then
+    pass "the refresh fixture ran its whole battery ($rfchecks)"
+else
+    fail "the refresh fixture ran only $rfchecks checks, want at least 21"
+fi
+
 # ------------------------------------------------------------------- TEXT/MEMO
 
 printf 'TIER text: a sentence on a window, and many lines of one\n'

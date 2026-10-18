@@ -1332,61 +1332,25 @@ static int qt_fold_items(void *root, Value *items, const char *subject,
  * projection does for the same mistake (`rows.amount` over a list someone
  * built from numbers says which element broke it) -- a table of numbers would
  * otherwise render as a grid of blanks, which looks like no data. */
-static int qt_bind_table(void *root, Value *table, const char *window_name) {
+/* FILL A TABLE'S ROWS FROM ITS SUBJECT. Extracted from `qt_bind_table` so
+ * that OPENING a window and REFRESHING a table go through one piece of code:
+ * a second copy is a second thing that can disagree, and a disagreement here
+ * means a table that renders one way at open and another way afterwards. The
+ * rule `would`/`execute` share in `automation`, and the one
+ * `webserver_loop_iterate` follows for its two callers.
+ *
+ * THE HEADINGS ARE NOT HERE, deliberately: a column's caption is set when the
+ * widget is constructed and cannot change while the window is open, the
+ * declaration being the only thing that names it. Only the ROWS follow the
+ * list. */
+static int qt_populate_table(void *root, Value *table, Value *slot,
+                             const char *window_name) {
     char err[QT_ERRBUF];
     char message[512];
     const char *name = qt_record_text(table, "name");
     const char *subject = qt_record_text(table, "subject");
-    const char *direction = qt_record_text(table, "direction");
-    if (!name || !subject || !direction) {
+    if (!name || !subject) {
         return 1;
-    }
-    Value *slot = qt_subject_slot(subject);
-    if (!slot) {
-        snprintf(message, sizeof(message),
-                 "window `%s`: `table %s to %s %s` found no `%s` -- qt.open "
-                 "reads the subject from the frame that calls it",
-                 window_name, name, direction, subject, subject);
-        qt_raise(message);
-        return 0;
-    }
-    if (slot->kind != VALUE_ARRAY) {
-        snprintf(message, sizeof(message),
-                 "window `%s`: `table %s to %s %s` needs a list of records, and "
-                 "`%s` holds %s", window_name, name, direction, subject,
-                 subject, value_kind_name(slot->kind));
-        qt_raise(message);
-        return 0;
-    }
-    QtOpenWindow *entry = qt_window_entry(window_name);
-    int already = 0;
-    for (size_t i = 0; entry && i < entry->binding_count; i++) {
-        if (strcmp(entry->bindings[i].subject, subject) == 0) {
-            already = 1;
-            break;
-        }
-    }
-    if (entry && !already) {
-        QtBinding *grown = realloc(entry->bindings,
-                                   sizeof(*entry->bindings) *
-                                       (entry->binding_count + 1));
-        if (!grown) {
-            abort();
-        }
-        entry->bindings = grown;
-        entry->bindings[entry->binding_count].subject = copy_string(subject);
-        entry->bindings[entry->binding_count].direction = copy_string(direction);
-        entry->bindings[entry->binding_count].record = value_copy(*slot);
-        entry->binding_count++;
-    }
-    if (strcmp(direction, "show") == 0) {
-        err[0] = '\0';
-        if (!gb_qt_set_display_only(root, name, 1, err, sizeof(err))) {
-            snprintf(message, sizeof(message), "window `%s`: %s", window_name,
-                     err[0] ? err : "that table could not be made display only");
-            qt_raise(message);
-            return 0;
-        }
     }
     RecordField *cols = record_find(table, "items");
     if (!cols || !cols->value || cols->value->kind != VALUE_ARRAY) {
@@ -1447,6 +1411,65 @@ static int qt_bind_table(void *root, Value *table, const char *window_name) {
         }
     }
     return 1;
+}
+
+static int qt_bind_table(void *root, Value *table, const char *window_name) {
+    char err[QT_ERRBUF];
+    char message[512];
+    const char *name = qt_record_text(table, "name");
+    const char *subject = qt_record_text(table, "subject");
+    const char *direction = qt_record_text(table, "direction");
+    if (!name || !subject || !direction) {
+        return 1;
+    }
+    Value *slot = qt_subject_slot(subject);
+    if (!slot) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `table %s to %s %s` found no `%s` -- qt.open "
+                 "reads the subject from the frame that calls it",
+                 window_name, name, direction, subject, subject);
+        qt_raise(message);
+        return 0;
+    }
+    if (slot->kind != VALUE_ARRAY) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `table %s to %s %s` needs a list of records, and "
+                 "`%s` holds %s", window_name, name, direction, subject,
+                 subject, value_kind_name(slot->kind));
+        qt_raise(message);
+        return 0;
+    }
+    QtOpenWindow *entry = qt_window_entry(window_name);
+    int already = 0;
+    for (size_t i = 0; entry && i < entry->binding_count; i++) {
+        if (strcmp(entry->bindings[i].subject, subject) == 0) {
+            already = 1;
+            break;
+        }
+    }
+    if (entry && !already) {
+        QtBinding *grown = realloc(entry->bindings,
+                                   sizeof(*entry->bindings) *
+                                       (entry->binding_count + 1));
+        if (!grown) {
+            abort();
+        }
+        entry->bindings = grown;
+        entry->bindings[entry->binding_count].subject = copy_string(subject);
+        entry->bindings[entry->binding_count].direction = copy_string(direction);
+        entry->bindings[entry->binding_count].record = value_copy(*slot);
+        entry->binding_count++;
+    }
+    if (strcmp(direction, "show") == 0) {
+        err[0] = '\0';
+        if (!gb_qt_set_display_only(root, name, 1, err, sizeof(err))) {
+            snprintf(message, sizeof(message), "window `%s`: %s", window_name,
+                     err[0] ? err : "that table could not be made display only");
+            qt_raise(message);
+            return 0;
+        }
+    }
+    return qt_populate_table(root, table, slot, window_name);
 }
 
 /* READ A TABLE BACK. Each row becomes a record carrying the column names, and
@@ -2256,6 +2279,107 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         return value_bool(1);
+    }
+
+    /* `qt.refresh(win, table)` -- SHOW THE LIST AS IT IS NOW.
+     *
+     * MEASURED, AND IT WAS A GAP RATHER THAN A LIMIT: a `table to show`
+     * captured its subject when the window opened and NEVER FOLLOWED IT, so
+     * appending to the list left `rowCount` at its old value and a program had
+     * no way to say otherwise. For a game that is awkward; for anything
+     * list-driven -- orders arriving, a search result, a filtered view -- it
+     * is fatal, and Studio's file tree is exactly that shape.
+     *
+     * IT IS THE SYMMETRIC HALF OF `qt.subject`, which is what settled the
+     * design: §2.2's watcher pair could not do write-back, so a record is read
+     * from the widgets AT THE MOMENT ASKED. This is the same principle the
+     * other way -- the list is read from the frame AT THE MOMENT ASKED, with
+     * nothing tracked in between, so no change can be missed.
+     *
+     * THE CAPTURED RECORD IS UPDATED TOO. A later `qt.subject` folds the
+     * widgets back over what the form captured at open, and leaving that stale
+     * would make a refreshed table fold into the OLD list -- a plausible
+     * record built from two different moments. */
+    if (strcmp(verb, "refresh") == 0) {
+        if (argc != 2) {
+            qt_raise("qt.refresh expects a window and the table's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "refresh") || which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.refresh expects a window and the table's name as "
+                         "text");
+            }
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        RecordField *items = record_find(&win, "items");
+        Value *table = (root && items && items->value &&
+                        items->value->kind == VALUE_ARRAY)
+                           ? qt_find_table(items->value, which.as.string)
+                           : NULL;
+        if (!root || !table) {
+            snprintf(message, sizeof(message),
+                     root ? "qt.refresh: window `%s` declares no table named `%s`"
+                          : "window `%s` is not open",
+                     wname ? wname : "", which.as.string);
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        const char *subject = qt_record_text(table, "subject");
+        if (!subject) {
+            snprintf(message, sizeof(message),
+                     "qt.refresh: table `%s` is bound to nothing to refresh "
+                     "from", which.as.string);
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        /* THE SAME NON-RAISING WALK `qt.open` USES, so the sentence about a
+         * missing subject is the one an author has already met. */
+        Value *slot = qt_subject_slot(subject);
+        if (!slot) {
+            snprintf(message, sizeof(message),
+                     "qt.refresh: `%s` is not in scope here -- it is read from "
+                     "the frame that calls qt.refresh, as qt.open reads it from "
+                     "the frame that calls that", subject);
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        if (slot->kind != VALUE_ARRAY) {
+            snprintf(message, sizeof(message),
+                     "qt.refresh: `%s` needs a list of records, and it holds %s",
+                     subject, value_kind_name(slot->kind));
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        if (!qt_populate_table(root, table, slot, wname ? wname : "")) {
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        /* AND THE CAPTURE MOVES WITH IT. */
+        QtOpenWindow *entry = wname ? qt_window_entry(wname) : NULL;
+        for (size_t i = 0; entry && i < entry->binding_count; i++) {
+            if (strcmp(entry->bindings[i].subject, subject) == 0) {
+                value_free(entry->bindings[i].record);
+                entry->bindings[i].record = value_copy(*slot);
+                break;
+            }
+        }
+        size_t shown = slot->as.array.store ? slot->as.array.store->count : 0;
+        value_free(win); value_free(which);
+        return value_number((double)shown);
     }
 
     if (strcmp(verb, "heading") == 0) {

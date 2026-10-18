@@ -12,6 +12,33 @@ From the repository root:
 ./gbasic examples/bag/bag.bas
 ```
 
+### In a window
+
+`gui.bas` plays the same world with a mouse:
+
+```sh
+./gbasic examples/bag/gui.bas
+QT_QPA_PLATFORM=offscreen ./gbasic examples/bag/gui.bas check   # plays itself
+```
+
+It needs gBASIC built with Qt 6; without it, the program says so and points at
+the text version rather than failing.
+
+**It is a proof rather than a demo.** The text game is a read–eval–print loop —
+`print` the room, `input(">")` a command, repeat — and that is the one shape a
+GUI cannot have, because Qt owns the loop. So `gui.bas` is the same game with
+its control flow turned inside out, and building it is what found two gaps in
+the Qt surface: there was no word for a paragraph of text (`text`/`memo` now),
+and a table did not follow a list that changed (`qt.refresh` now). See §0.10 to
+§0.12 of `docs/qt_gui_design.md`.
+
+**The one thing to take from it is where the state lives.** gBASIC has no
+closures, and a handler fires beneath `qt.run()`, so the frame it sees is
+`main`'s. A handler can *read* a local there and **cannot rebind a scalar** —
+warning 2104 says so and names the remedy: *mutate a field of a shared record
+instead.* So the whole game state is one record `g`, and every handler mutates
+its fields. That is the pattern any stateful gBASIC GUI wants.
+
 BAG asks whether to load a tiny demo project. Answer `y` to get a ready-made cellar, garden, tunnel, brass key, and gate trigger.
 
 You can also load the checked-in sample project from the BAG menu:

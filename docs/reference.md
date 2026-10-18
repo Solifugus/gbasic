@@ -3846,6 +3846,7 @@ end program
 | `qt.select(win, table, row)` | choose a row from the program, for a window that opens with one highlighted; `unknown` chooses nothing |
 | `qt.cell(win, table, row, column)` | one cell, addressed by the **column's own name** rather than its position |
 | `qt.heading(win, table, column)` | a column's caption, by its name **or** its position |
+| `qt.refresh(win, table)` | show the list **as it is now**, answering how many rows it drew. A `table to show` reads its subject when the window OPENS and does not follow it afterwards, so this is what makes a changing list visible — the symmetric half of `qt.subject`, which reads the widgets at the moment asked. The subject is re-read from the frame that calls this, and the table grows, shrinks and redraws changed cells |
 | `qt.set(win, part, property, value)` | set one named Qt property at run time — the write half of `qt.read(win, part, property)`. The only other way to set one is the declaration, which is written before anything has happened |
 | `qt.at(win, part)` | where a part sits in its `cells`: `{ row, column, across, down }`, asked of the layout |
 | `qt.menus(win)` / `qt.menus(win, n)` | the menu bar's top-level captions, or the entries of the menu at position `n`. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
@@ -3953,6 +3954,22 @@ addresses — so a menu takes no name, and `on open_file.triggered` names the
 item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
 `checked:` reach it through the same by-name property route every widget option
 uses.
+
+**A table does not follow its list on its own.** `table orders to show lines`
+reads `lines` when the window opens; appending to it afterwards changes nothing
+on screen, which is right for a declaration and useless for a list that moves.
+`qt.refresh(win, "orders")` re-reads the subject from the frame that calls it
+and redraws — growing, shrinking and rewriting changed cells — and answers how
+many rows it drew:
+
+<!--fragment: the inside of a program, not a program on its own-->
+```basic
+lines = append(lines, { placed: "2026-03-01", who: "Alan Turing" })
+shown = qt.refresh(orders, "lines_view")
+```
+
+A column's **caption** is not refreshed, and cannot be: it is set when the
+widget is built and only the declaration names it. Only the rows follow.
 
 **`text` is a sentence and `memo` is many.** A `field` is one line of entry, so
 until these existed a heading, an instruction or a description had nowhere to

@@ -2,8 +2,9 @@
 
 **Status: largely shipped.** The `window` declaration (§0.2), the `qt` module
 (§0.4), binding (§0.5), `table` (§0.6), menus and theming (§0.7),
-`tabs`/`cells` (§0.8), the builder (§0.9) and `text`/`memo` (§0.10) exist,
-gated by
+`tabs`/`cells` (§0.8), the builder (§0.9), `text`/`memo` (§0.10) and
+`qt.refresh` (§0.11) exist, with §0.12 a whole application built on them, gated
+by
 `tests/run_window.sh`, `tests/run_qt_backend.sh` and
 `tests/run_qt_builder.sh`. Still proposal: `stdlib/qt.bas`, `show:`/`edit:` in
 option position, binding into a container nested inside a form, more than one
@@ -782,6 +783,102 @@ is what "this exit leads to which area" needs. A **`list`** probably does not
 need a word: a single-column `table` already answers a picker, and `qt.selected`
 and `qt.cell` already address it. Both are decided against what a real program
 needs rather than against Qt's catalogue.
+
+---
+
+## 0.11 `qt.refresh` (2026-10-18): a table did not follow its list
+
+**Shipped.** `tests/qt_refresh_test.bas`, a tier in `tests/run_qt_backend.sh`.
+
+**Found by building a whole small application** — BAG in a window (§0.12) — and
+it was a **gap rather than a limit**: a `table to show` captured its subject
+when the window opened and **never followed it**, so appending to the list left
+`rowCount` where it was and a program had no way to say otherwise. Measured
+before the verb was written: `rowCount` 2, append, `rowCount` 2, and row 2
+refused as absent.
+
+For a game that is awkward. For anything **list-driven** — orders arriving, a
+search result, a filtered view — it is fatal, and Studio's file tree is exactly
+that shape, so this would have blocked the declared consumer.
+
+**It is the symmetric half of `qt.subject`,** which is what settled the design.
+§2.2's watcher pair could not do write-back, so a record is read from the
+widgets **at the moment asked**. This is the same principle the other way: the
+list is read from the frame at the moment asked, with nothing tracked in
+between, so no change can be missed.
+
+**The population is one piece of code.** It was extracted from `qt_bind_table`
+rather than copied, because a second copy is a second thing that can disagree —
+and a disagreement here means a table that renders one way at open and another
+way afterwards. The arrangement `would`/`execute` share, and the one
+`webserver_loop_iterate` follows for its two callers.
+
+**The captured record moves with it.** A later `qt.subject` folds the widgets
+back over what was captured at open, so leaving that stale would fold a
+refreshed table into the **old** list — a plausible record assembled from two
+different moments. Asserted: after refreshing a one-element capture to two
+elements, the fold answers two.
+
+**Headings are deliberately not refreshed.** A column's caption is set when the
+widget is built and only the declaration names it, so there is nothing to
+re-read. Only the rows follow.
+
+The tier's load-bearing check is the **shrink**: a refresh that appended rather
+than rewrote passes every grow-and-change check, and only requiring row 1 to be
+*gone* separates them — a stale row below the new ones holds a perfectly
+ordinary value under a correct heading.
+
+---
+
+## 0.12 BAG in a window (2026-10-18): the proof, and where state lives
+
+**Shipped.** `examples/bag/gui.bas`, a tier in `tests/run_bag_smoke.sh`.
+
+BAG — the Basic Adventure Generator — was the first real program written in the
+earliest gBASIC. The game it writes is a **read–eval–print loop**: `print` the
+room, `input(">")` a command, repeat. That is the one shape a GUI cannot have,
+because **Qt owns the loop**. So this is the same game with its control flow
+turned inside out, and it is a proof rather than a demo: if a whole small
+application can be built on this surface, the surface works.
+
+It plays itself in `check` mode through the same handlers a mouse would fire —
+take the key, walk north, find the gate shut, open it, walk through — and the
+gate is the part worth watching: **North is disabled in the Garden until the key
+is used**, which is the world changing a widget through `qt.set`.
+
+### Where the state lives, which is the thing to take from it
+
+gBASIC has no closures, and a handler fires from inside Qt's loop beneath
+`qt.run()`, so the frame it sees is the one that called `qt.run` — `main`.
+**Measured, and the two halves differ:**
+
+| | |
+|---|---|
+| a handler reading `main`'s locals | **works** |
+| a handler rebinding a scalar | **silently makes a function-local** — warning 2104 fires |
+| a handler writing `g.field` on a record | **reaches `main`'s record** |
+| a *function* called from a handler reading `g` | **works**, and it can write widgets |
+
+So the whole game state is **one record**, and every handler mutates its
+fields. That is not a trick: it is warning 2104's own advice — *"mutate a field
+of a shared record instead"* — and it is the pattern any stateful gBASIC GUI
+wants, Studio included. A helper called from a handler must `return nothing`,
+or warning 2101 fires for the discarded result.
+
+### What it exercises in one screen
+
+`text` for the room name and its description, `memo` for the transcript, a
+`table` for what is here (with `qt.refresh` so it follows the room), `field`
+plus `button` for typed commands, six buttons whose `enabled` is set per room,
+a `menu` bar with a separator, `group`/`row`/`column` layout, and `qt.theme`.
+
+### Still ahead of it
+
+BAG's **editor** — the menu-driven half — is form-heavy, and an area's six
+exits each name another area while an item names its location. Those want a
+**dropdown**, which is the one widget with no substitute (§0.10). And teaching
+BAG to *emit* a `window` block, so the generated game is a GUI, is a separate
+exercise: a program writing a declaration.
 
 ---
 
