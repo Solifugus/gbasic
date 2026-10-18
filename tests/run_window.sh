@@ -8,12 +8,18 @@
 # then the entire declarative surface -- every refusal, every position, the
 # introspection -- is gated on every platform, headless, before a widget exists.
 #
-# WHAT IS DELIBERATELY NOT HERE: anything that renders. Evaluating a window
-# block RAISES "declared but not yet executable", asserted below, because a
-# block that parsed, bound nothing and raised nothing would read as a working
-# window to whoever wrote one -- the silent-success shape this tree distrusts
-# most. That refusal is replaced when the Qt backend lands, and the tier goes
-# red then, which is the correct way for it to end.
+# WHAT IS DELIBERATELY NOT HERE: anything that renders. That is
+# tests/run_qt_backend.sh, which needs Qt in the build and so can SKIP, which is
+# exactly why everything decidable about the declaration is asserted here
+# instead -- a gate that shrinks when a dependency is absent is the failure this
+# file's own glob-discovery note argues against.
+#
+# THIS COMMENT HAS BEEN WRONG TWICE AND BOTH ARE WORTH KEEPING IN MIND. It first
+# said evaluating a window block RAISED "declared but not yet executable", which
+# was true until the declaration bound a record; then that nothing could render
+# one, which was true until the backend landed the same day. A tier asserting a
+# refusal that is no longer correct does not go quiet -- it goes RED, which is
+# how both were found.
 #
 # Tiers:
 #   PARSE       the design's own example (docs/qt_gui_design.md §2) parses, and

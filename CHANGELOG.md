@@ -16,6 +16,103 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### The Qt backend: a `window` is rendered, and "no display" is a sentence
+
+The `window` block shipped as a declaration with no Qt at all — parsed,
+validated, refused and bound to an introspectable record, headless on every
+platform. This is the half that renders it: a `qt` module over Qt 6 Widgets,
+behind `#if HAVE_QT`, and the **first C++ in the tree** (every other optional
+module is a `.c` file `#include`d into `src/eval.c`; this one cannot be, so it
+is a separate object behind a C seam, with `moc` in the build).
+
+```basic
+program main
+    if not qt.can_display() then
+        print "no display -- running as a report instead"
+        report()
+        stop
+    end if
+    qt.open(customer)
+    qt.write(customer, "name", cust.name)
+    qt.run()
+end program
+```
+
+**The surface:** `qt.can_display()`, `qt.open(win)`, `qt.read(win, name)`,
+`qt.write(win, name, value)`, `qt.invoke(win, name, method)`, `qt.run()`,
+`qt.stop()`.
+
+**The address of a window is its declaration, not a handle** —
+`qt.open(customer)` takes the record the block bound, exactly as
+`web.routes(app)` takes a server record. So there is **no 28th value kind**,
+which would owe answers for rendering, `encode`, comparison and copying;
+PLAT-EQ's lesson is that a new kind silently opted into the numeric coercion and
+was found *by adding one*.
+
+**No `load`**, the one place this departs from the optional-module convention,
+and deliberate twice over: a `window` block implies no import, so neither does
+rendering one; and `load qt` on a build without Qt would raise at the **import**,
+taking the whole program with it. The refusal belongs at the call — and
+`qt.can_display()` **answers** there rather than raising, including on a build
+with no Qt at all, which is the shape `has_builtin` already has and for the same
+reason: a program asking whether it may open a window is degrading gracefully.
+
+**NO DISPLAY IS A SENTENCE, NEVER AN ABORT**, and the hazard is worse than "it
+will not work". Measured: with no display Qt calls `qFatal` and **aborts** —
+SIGABRT, exit 134, core dumped — `qFatal` cannot be caught, and a crash takes
+block-buffered stdout with it, so a program printing its progress prints
+**nothing** and the failure reads as line 1. That is exactly the defect GTK
+produced and `run_gi.sh` records at exit 139. **And the environment cannot be
+read instead**, which was the obvious guess: measured, Qt found Wayland through
+`XDG_RUNTIME_DIR` with `WAYLAND_DISPLAY` unset, so its own detection is richer
+than any reimplementation and would drift as Qt changes. So the refusal asks
+**Qt itself in a forked child** — a process we can afford to lose — and the
+parent reads a status. The message names **a display**, not a Qt plugin failure,
+which names the one thing the author cannot fix.
+
+**gBASIC runs completely on a text-only machine**, which was the question that
+produced that requirement. The lean release builds with no GUI toolkit at all, a
+program with no `window` block is untouched, and a window block still parses,
+validates and introspects with no Qt — only *opening* one needs a display.
+`QT_QPA_PLATFORM=offscreen` stays something a **user** may set, so a GUI program
+can render on a headless server.
+
+**Qt owns the loop**, which was measured before any of this was written
+(`docs/qt_gui_design.md` §5.1): under the other arrangement gBASIC's `poll()`
+never runs while a **nested** Qt loop is up — a modal dialog, `QMessageBox`,
+`QMenu::exec()`, drag-and-drop — measured at a 651 ms gap over a 600 ms dialog,
+which is a webserver answering nothing and every timer missing. So the event
+loop's body is now a function of its own with **two callers sharing it**: the
+ordinary `while`, and a Qt timer while a window is open. One body, because a
+second copy is a second thing that can disagree — and a disagreement here means
+a source serviced under one arrangement and starved under the other.
+`tests/run_qt_backend.sh` asserts it through the interpreter: a webserver is
+still answered while `QApplication::exec()` holds the thread.
+
+**Construction is a table; everything else is by name.** Eight words need a
+table because a `QWidget` constructor is not `Q_INVOKABLE`; properties, methods
+and signals go through `QMetaObject`. Eight entries against the **75 properties
+`QPushButton` alone exposes** *is* the argument for the by-name route. It also
+closes the one refusal set the declaration leaves open on purpose: a leaf's
+options are widget properties, which cannot be a closed set without Qt in the
+build, so `button go( texx: "Go" )` is refused **by name** here — with the
+control that two real properties on the same widget are accepted, or the rule
+would be satisfied by a backend refusing every option there is.
+
+**A handler is a hidden function, so the record carries something callable.** `on
+save.clicked` becomes a function registered under a name user code cannot spell,
+and the window record's handler entry carries a function **value** — the shape
+`web.routes` already uses for a route. A backend therefore needs no registry and
+no name-mangling scheme of its own.
+
+**Declared and not yet acted on, said out loud rather than dropped in silence:**
+`type: {USD}` is carried and unused, so a field is a plain text editor;
+`show:`/`edit:` **cannot** be acted on from the record at all, because a
+non-literal option is recorded by name and not by value — `show: cust.id` names
+a place to read in the frame where the subject lives — so population is the
+program's and the watcher pair that makes `form to edit` two-way is the next
+increment.
+
 ### Studio's editor on Qt: the definition this repo already ships works
 
 No Qt code ships. `docs/qt_gui_design.md` §0.1 records that Studio is to move

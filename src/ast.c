@@ -1534,6 +1534,17 @@ void ast_free_window_item_list(AstWindowItemList list) {
         free(item->close_word);
         free(item->event_target);
         free(item->event_signal);
+        free(item->fn_name);
+        if (item->fn_stmt) {
+            /* The registration shell: its name is its own copy, the body is
+             * THIS item's and is freed below. PLAT-OPTPARAM's lesson is why
+             * this is here at all -- one unfreed parser field turned 22 suites
+             * red on their own valgrind tiers. */
+            free(item->fn_stmt->as.function.name);
+            free(item->fn_stmt->as.function.source_path);
+            free(item->fn_stmt->as.function.library);
+            free(item->fn_stmt);
+        }
         ast_free_record_field_list(item->options);
         ast_free_window_item_list(item->entries);
         ast_free_program(item->body);

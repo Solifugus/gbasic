@@ -211,6 +211,13 @@ struct AstWindowItem {
     AstRecordFieldList options;
     AstWindowItemList entries;
     AstStmtList body;        /* handler */
+    char *fn_name;           /* handler: minted internal function name (NULL until registration) */
+    AstStmt *fn_stmt;        /* handler: the synthesized function node the registry holds.
+                              * A SHELL over this item's body (shared, not copied), so the
+                              * item frees the body and nothing frees this. The server
+                              * block's own handlers work exactly this way -- which is what
+                              * lets a backend CALL `on save.clicked` while reading only the
+                              * record, since the record carries a function VALUE. */
     int line;
     int column;
 };

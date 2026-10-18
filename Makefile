@@ -97,6 +97,35 @@ GIR_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --e
 GIR_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags girepository-2.0 2>/dev/null)
 GIR_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs girepository-2.0 2>/dev/null)
 
+# QT 6 (the `qt` module, docs/qt_gui_design.md). TWO THINGS MUST BE PRESENT and
+# the second is easy to forget: the LIBRARIES, and `moc`. Qt's signal/slot
+# syntax is not C++ -- a QObject subclass needs a generated translation unit --
+# and Qt6 can be installed WITHOUT its tools, which run_ksyntax.sh already
+# learned the direct way. So detection asks for both, and a machine with the
+# libraries and no moc builds without Qt rather than failing to compile.
+#
+# AND THIS IS THE FIRST C++ IN THE TREE. Every other optional module is a `.c`
+# file `#include`d into src/eval.c; this one cannot be, so it is a separate
+# object behind the C seam in include/qt_backend.h. -lstdc++ joins the link
+# only when Qt is in, so a build without it links exactly what it did before.
+#
+# NOT STATICALLY LINKABLE, unlike libxml2, sqlite and zlib: Qt is LGPL-3, and
+# what follows from LGPL-3 is that the toolkit must be dynamically linked
+# unless the relink obligation is met (docs/qt_gui_design.md §0). A gBASIC GUI
+# application therefore depends on an installed Qt -- acceptable for a desktop
+# application, since a desktop has a toolkit, and a genuine divergence from the
+# direction the Linux releases took.
+QT_LIBEXEC := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --variable=libexecdir Qt6Core 2>/dev/null)
+QT_MOC := $(firstword $(wildcard $(QT_LIBEXEC)/moc) $(shell command -v moc 2>/dev/null))
+QT_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists Qt6Widgets && printf 1 || printf 0)
+ifeq ($(QT_MOC),)
+QT_AVAILABLE := 0
+endif
+QT_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags Qt6Widgets 2>/dev/null)
+QT_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs Qt6Widgets 2>/dev/null)
+CXX ?= c++
+QT_CXXFLAGS := -std=c++17 -fPIC -Wall -Wextra -Iinclude -Isrc/modules -g
+
 # GIO (NAP-12 row-model adapter). `GListModel` is a GIO interface, and
 # girepository-2.0 links only gobject/glib — so the DataGrid's native
 # adapter needs gio-2.0 explicitly. Independent of GTK: the adapter
@@ -180,6 +209,11 @@ ZLIB_CFLAGS :=
 ZLIB_LIBS := -lz
 GIR_AVAILABLE := 0
 GIO_AVAILABLE := 0
+# Qt on Windows is a milestone of its own, and QSocketNotifier there works on
+# SOCKETS ONLY -- so direction A needs QWinEventNotifier for any source that is
+# not one (docs/qt_gui_design.md §5.1 names it rather than leaving it to be
+# discovered during the port).
+QT_AVAILABLE := 0
 endif
 
 ifeq ($(GTK_AVAILABLE),1)
@@ -303,6 +337,15 @@ else
 CFLAGS += -DHAVE_GIO=0
 endif
 
+ifeq ($(QT_AVAILABLE),1)
+CFLAGS += -DHAVE_QT=1
+QT_OBJS := src/modules/qt_backend.o
+LDLIBS += $(QT_LIBS) -lstdc++
+else
+CFLAGS += -DHAVE_QT=0
+QT_OBJS :=
+endif
+
 # libgbasic is every object except the CLI entry points (src/main.o, src/repl.o,
 # src/lineedit.o). The CLI is
 # its first consumer; the archive is the seam a future embedder links against.
@@ -346,7 +389,7 @@ endif
 WIN_RES ?=
 PLATFORM_OBJ ?= src/platform_posix.o
 
-LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS)
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS)
 OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
@@ -437,7 +480,7 @@ FORCE:
 # `^[A-Z0-9_]+_AVAILABLE` from COLUMN ONE, and a name used only inside this
 # variable never appears there -- so tests/run_library_tiers.sh asserts the
 # names in this line are all assigned, which catches the NEXT one.
-BUILD_SWITCH_SIG := $(GIO_AVAILABLE)|$(GIR_AVAILABLE)|$(GTK_AVAILABLE)|$(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)
+BUILD_SWITCH_SIG := $(GIO_AVAILABLE)|$(GIR_AVAILABLE)|$(GTK_AVAILABLE)|$(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(QT_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)
 .buildswitch-stamp: FORCE
 	@printf '%s' '$(BUILD_SWITCH_SIG)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(BUILD_SWITCH_SIG)' > $@
 
@@ -461,8 +504,18 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h .stdlibdir-stamp .buildswitch-stamp
+src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/rowmodel.c src/modules/xlsx.c src/modules/qt.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# THE QT BACKEND: moc, then C++. The generated unit is `#include`d by the .cpp
+# (the usual arrangement for a QObject defined in a source file rather than a
+# header), so there is one object rather than two -- and it means moc output is
+# a build artifact that never needs committing.
+src/modules/qt_backend.moc: src/modules/qt_backend.cpp include/qt_backend.h
+	$(QT_MOC) -Iinclude $< -o $@
+
+src/modules/qt_backend.o: src/modules/qt_backend.cpp src/modules/qt_backend.moc include/qt_backend.h .buildswitch-stamp
+	$(CXX) $(QT_CXXFLAGS) $(QT_CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -510,3 +563,4 @@ clean:
 	rm -f third_party/yescrypt/*.o
 	rm -f gbasic-lsp $(LSP_OBJS)
 	rm -f .stdlibdir-stamp .buildswitch-stamp
+	rm -f src/modules/qt_backend.moc src/modules/qt_backend.o

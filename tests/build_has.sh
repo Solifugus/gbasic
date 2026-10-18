@@ -35,6 +35,13 @@ build_has() {
     local probe
     case "$1" in
         sqlite|pg|odbc|http|webclient|smtp|ldap|xml|gi) probe="load $1" ;;
+        # `qt` TAKES NO `load` -- a window block implies no import, so neither
+        # does rendering one -- so the probe is a CALL. `qt.run` with nothing
+        # open refuses for an ordinary reason on a build WITH Qt and with the
+        # build refusal without it, and CONSTRUCTS NOTHING either way, which
+        # matters more here than anywhere else in this file: with no display,
+        # constructing a QApplication aborts the process uncatchably.
+        qt)       probe='x = qt.run()' ;;
         crypto)   probe='x = sha256("build_has")' ;;
         password) probe='x = password_hash("build_has")' ;;
         xlsx)     probe='x = xlsx.open("build_has_no_such.xlsx")' ;;

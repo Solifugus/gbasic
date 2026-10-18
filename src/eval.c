@@ -10025,8 +10025,8 @@ static size_t library_name_count = 0;
 static int library_is_native_qualifier(const char *name) {
     static const char *native[] = {
         "gi", "gui", "http", "ldap", "money", "odbc", "pg", "process",
-        "reflect", "rowmodel", "smtp", "sqlite", "this", "timer", "webclient",
-        "webserver", "xlsx", "xml", NULL
+        "qt", "reflect", "rowmodel", "smtp", "sqlite", "this", "timer",
+        "webclient", "webserver", "xlsx", "xml", NULL
     };
     for (size_t i = 0; native[i]; i++) {
         if (strcmp(name, native[i]) == 0) {
@@ -10084,6 +10084,7 @@ static const GbCapability gb_capability_table[] = {
     { "odbc",      "db" },
     { "pg",        "db" },
     { "process",   "process" },
+    { "qt",        "display" },
     { "reflect",   "" },
     { "rowmodel",  "" },
     { "smtp",      "net" },
@@ -22923,171 +22924,222 @@ static void webserver_check_timeouts(WebServer *server) {
 
 static int webserver_event_loop_running = 0;
 
-static int webserver_run_event_loop(void) {
-    webserver_event_loop_running = 1;
-    while ((webserver_any_active() || aux_loop_sources_active()) &&
-           !runtime_stopped) {
-        if (webserver_term_requested) {
-            for (size_t i = 0; i < webserver_count; i++) {
-                webservers[i].draining = 1;
-            }
-        }
+/* ONE ITERATION OF THE EVENT LOOP, EXTRACTED SO SOMEBODY ELSE CAN DRIVE IT.
+ *
+ * It was the body of `webserver_run_event_loop`'s `while`, and the reason it
+ * is now a function of its own is Qt: docs/qt_gui_design.md §5.1 measured both
+ * ways the two loops could be arranged and ruled one out -- QT OWNS THE WAIT,
+ * because Qt opens NESTED event loops (a modal dialog, QMessageBox,
+ * QMenu::exec(), drag-and-drop) and while one is up a loop of OURS never runs.
+ * Measured: a 651 ms gap over a 600 ms dialog, which is a webserver answering
+ * nothing and every timer missing.
+ *
+ * So when a window is open this body is driven by a Qt timer instead of by the
+ * `while` below. The two callers share ONE body rather than keeping a copy
+ * each, which is the rule `would`/`execute` follow in `automation` for the
+ * same reason: a second copy is a second thing that can disagree, and here a
+ * disagreement would mean a source serviced under one arrangement and starved
+ * under the other.
+ *
+ * Returns 0 having done one pass, 1 on an error that must end the loop.
+ * `*idle` is set when there was nothing left to poll, which is a reason to
+ * STOP rather than a failure -- the distinction the extracted `break` used to
+ * make by being a `break`. */
+static int webserver_loop_iterate(int *idle) {
+    *idle = 0;
+    if (webserver_term_requested) {
         for (size_t i = 0; i < webserver_count; i++) {
-            webserver_sync_shutdown(&webservers[i]);
-            webserver_progress_drain(&webservers[i]);
-            webserver_process_responses(&webservers[i]);
-            if (error_action_pending()) {
-                return 1;
-            }
-            webserver_finish_shutdown(&webservers[i]);
+            webservers[i].draining = 1;
         }
+    }
+    for (size_t i = 0; i < webserver_count; i++) {
+        webserver_sync_shutdown(&webservers[i]);
+        webserver_progress_drain(&webservers[i]);
+        webserver_process_responses(&webservers[i]);
+        if (error_action_pending()) {
+            return 1;
+        }
+        webserver_finish_shutdown(&webservers[i]);
+    }
 
-        size_t descriptor_count = 0;
-        for (size_t i = 0; i < webserver_count; i++) {
-            if (webservers[i].running && !webservers[i].shutdown_requested &&
-                !webservers[i].held && !webservers[i].draining) {
-                descriptor_count++;
-            }
-            descriptor_count += webservers[i].client_count;
+    size_t descriptor_count = 0;
+    for (size_t i = 0; i < webserver_count; i++) {
+        if (webservers[i].running && !webservers[i].shutdown_requested &&
+            !webservers[i].held && !webservers[i].draining) {
+            descriptor_count++;
         }
-        /* PLAT-HTTP: libcurl's descriptors join the SAME poll rather than
-         * getting a wait of their own, which is the whole reason handle
-         * readiness can be delivered by the loop at all. A transfer that curl
-         * has no descriptor for yet (a name still resolving) contributes
-         * nothing and rides the tick. */
-        int http_fds[HTTP_MAX_POLL_FDS];
-        short http_events[HTTP_MAX_POLL_FDS];
-        size_t http_fd_count = 0;
-        int aux_ok = !webserver_term_requested;
-        int http_wants_loop = aux_ok && http_loop_active();
-        if (http_wants_loop) {
-            http_fd_count = http_collect_fds(http_fds, http_events,
-                                             HTTP_MAX_POLL_FDS);
+        descriptor_count += webservers[i].client_count;
+    }
+    /* PLAT-HTTP: libcurl's descriptors join the SAME poll rather than
+     * getting a wait of their own, which is the whole reason handle
+     * readiness can be delivered by the loop at all. A transfer that curl
+     * has no descriptor for yet (a name still resolving) contributes
+     * nothing and rides the tick. */
+    int http_fds[HTTP_MAX_POLL_FDS];
+    short http_events[HTTP_MAX_POLL_FDS];
+    size_t http_fd_count = 0;
+    int aux_ok = !webserver_term_requested;
+    int http_wants_loop = aux_ok && http_loop_active();
+    if (http_wants_loop) {
+        http_fd_count = http_collect_fds(http_fds, http_events,
+                                         HTTP_MAX_POLL_FDS);
+    }
+    /* The interpreter's ONE inbox, so a pool worker's reply arrives as an
+     * event instead of through a `receive` that would stall the loop. */
+    int inbox_wants_loop = aux_ok && inbox_loop_active();
+    /* The clock needs no descriptor -- it rides the poll timeout -- so it
+     * joins the break condition and nothing else until service time. */
+    int timer_wants_loop = aux_ok && timer_loop_active();
+    if (descriptor_count == 0 && !http_wants_loop && !inbox_wants_loop &&
+        !timer_wants_loop) {
+        *idle = 1;
+        return 0;
+    }
+    size_t inbox_fd_count = inbox_wants_loop ? mailbox_poll_count(&root_mailbox) : 0;
+    struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + inbox_fd_count + 2,
+                                    sizeof(struct pollfd));
+    if (!pollfds) {
+        abort();
+    }
+    size_t cursor = 0;
+    for (size_t i = 0; i < webserver_count; i++) {
+        if (webservers[i].running && !webservers[i].shutdown_requested &&
+            !webservers[i].held && !webservers[i].draining) {
+            pollfds[cursor].fd = webservers[i].listen_fd;
+            pollfds[cursor].events = POLLIN;
+            cursor++;
         }
-        /* The interpreter's ONE inbox, so a pool worker's reply arrives as an
-         * event instead of through a `receive` that would stall the loop. */
-        int inbox_wants_loop = aux_ok && inbox_loop_active();
-        /* The clock needs no descriptor -- it rides the poll timeout -- so it
-         * joins the break condition and nothing else until service time. */
-        int timer_wants_loop = aux_ok && timer_loop_active();
-        if (descriptor_count == 0 && !http_wants_loop && !inbox_wants_loop &&
-            !timer_wants_loop) {
-            break;
-        }
-        size_t inbox_fd_count = inbox_wants_loop ? mailbox_poll_count(&root_mailbox) : 0;
-        struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + inbox_fd_count + 2,
-                                        sizeof(struct pollfd));
-        if (!pollfds) {
-            abort();
-        }
-        size_t cursor = 0;
-        for (size_t i = 0; i < webserver_count; i++) {
-            if (webservers[i].running && !webservers[i].shutdown_requested &&
-                !webservers[i].held && !webservers[i].draining) {
-                pollfds[cursor].fd = webservers[i].listen_fd;
-                pollfds[cursor].events = POLLIN;
-                cursor++;
-            }
-            for (size_t j = 0; j < webservers[i].client_count; j++) {
-                pollfds[cursor].fd = webservers[i].clients[j].fd;
-                short events = webservers[i].clients[j].waiting_response ? 0 : POLLIN;
+        for (size_t j = 0; j < webservers[i].client_count; j++) {
+            pollfds[cursor].fd = webservers[i].clients[j].fd;
+            short events = webservers[i].clients[j].waiting_response ? 0 : POLLIN;
 #if HAVE_LIBSSL
-                if (webservers[i].clients[j].tls_handshaking) {
-                    events = webservers[i].clients[j].tls_want_write ? POLLOUT : POLLIN;
+            if (webservers[i].clients[j].tls_handshaking) {
+                events = webservers[i].clients[j].tls_want_write ? POLLOUT : POLLIN;
+            }
+#endif
+            pollfds[cursor].events = events;
+            cursor++;
+        }
+    }
+    for (size_t k = 0; k < http_fd_count; k++) {
+        pollfds[descriptor_count + k].fd = http_fds[k];
+        pollfds[descriptor_count + k].events = http_events[k];
+    }
+    size_t inbox_slot = descriptor_count + http_fd_count;
+    size_t polled = inbox_slot;
+    if (inbox_wants_loop) {
+        mailbox_poll_fill(&root_mailbox, &pollfds[inbox_slot]);
+        polled += inbox_fd_count;
+    }
+    long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
+    if (timer_wants_loop) {
+        tick_ms = timer_poll_timeout_ms(tick_ms);
+    }
+    /* A frame already read off the wire will not wake the poll. */
+    int inbox_pending = inbox_wants_loop && mailbox_pending(&root_mailbox);
+    if (inbox_pending) {
+        tick_ms = 0;
+    }
+    int ready = poll(pollfds, polled, (int)tick_ms);
+    if (ready < 0 && errno != EINTR) {
+        free(pollfds);
+        webserver_raise("webserver poll failed");
+        return 1;
+    }
+    if (http_wants_loop && !http_loop_service()) {
+        free(pollfds);
+        return 1;
+    }
+    if (inbox_wants_loop &&
+        (inbox_pending ||
+         mailbox_poll_ready(&root_mailbox, &pollfds[inbox_slot], inbox_fd_count))) {
+        if (!inbox_loop_service()) {
+            free(pollfds);
+            return 1;
+        }
+    }
+    /* Serviced unconditionally rather than on a revents bit: a timer has no
+     * descriptor, so what says it is due is the clock and not the poll. */
+    if (timer_wants_loop && !timer_loop_service()) {
+        free(pollfds);
+        return 1;
+    }
+    cursor = 0;
+    for (size_t i = 0; i < webserver_count; i++) {
+        size_t polled_client_count = webservers[i].client_count;
+        if (webservers[i].running && !webservers[i].shutdown_requested &&
+            !webservers[i].held && !webservers[i].draining) {
+            if (pollfds[cursor].revents & POLLIN) {
+                webserver_accept(&webservers[i]);
+            }
+            cursor++;
+        }
+        for (size_t j = 0; j < polled_client_count; j++) {
+            int fd = pollfds[cursor].fd;
+            short events = pollfds[cursor].revents;
+            cursor++;
+            size_t current = 0;
+            while (current < webservers[i].client_count &&
+                   webservers[i].clients[current].fd != fd) {
+                current++;
+            }
+            if (current >= webservers[i].client_count) {
+                continue;
+            }
+            if (events & (POLLERR | POLLHUP | POLLNVAL)) {
+                webserver_client_close(&webservers[i], current);
+#if HAVE_LIBSSL
+            } else if (webservers[i].clients[current].tls_handshaking) {
+                if (events & (POLLIN | POLLOUT)) {
+                    webserver_tls_handshake(&webservers[i], current);
                 }
 #endif
-                pollfds[cursor].events = events;
-                cursor++;
+            } else if ((events & POLLIN) &&
+                       !webservers[i].clients[current].waiting_response) {
+                webserver_read_client(&webservers[i], current);
             }
-        }
-        for (size_t k = 0; k < http_fd_count; k++) {
-            pollfds[descriptor_count + k].fd = http_fds[k];
-            pollfds[descriptor_count + k].events = http_events[k];
-        }
-        size_t inbox_slot = descriptor_count + http_fd_count;
-        size_t polled = inbox_slot;
-        if (inbox_wants_loop) {
-            mailbox_poll_fill(&root_mailbox, &pollfds[inbox_slot]);
-            polled += inbox_fd_count;
-        }
-        long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
-        if (timer_wants_loop) {
-            tick_ms = timer_poll_timeout_ms(tick_ms);
-        }
-        /* A frame already read off the wire will not wake the poll. */
-        int inbox_pending = inbox_wants_loop && mailbox_pending(&root_mailbox);
-        if (inbox_pending) {
-            tick_ms = 0;
-        }
-        int ready = poll(pollfds, polled, (int)tick_ms);
-        if (ready < 0 && errno != EINTR) {
-            free(pollfds);
-            webserver_raise("webserver poll failed");
-            return 1;
-        }
-        if (http_wants_loop && !http_loop_service()) {
-            free(pollfds);
-            return 1;
-        }
-        if (inbox_wants_loop &&
-            (inbox_pending ||
-             mailbox_poll_ready(&root_mailbox, &pollfds[inbox_slot], inbox_fd_count))) {
-            if (!inbox_loop_service()) {
+            if (error_action_pending()) {
                 free(pollfds);
                 return 1;
             }
         }
-        /* Serviced unconditionally rather than on a revents bit: a timer has no
-         * descriptor, so what says it is due is the clock and not the poll. */
-        if (timer_wants_loop && !timer_loop_service()) {
-            free(pollfds);
+        webserver_process_responses(&webservers[i]);
+        webserver_check_timeouts(&webservers[i]);
+    }
+    free(pollfds);
+    return 0;
+}
+
+static int webserver_run_event_loop(void) {
+    webserver_event_loop_running = 1;
+    while ((webserver_any_active() || aux_loop_sources_active()) &&
+           !runtime_stopped) {
+        int idle = 0;
+        if (webserver_loop_iterate(&idle)) {
             return 1;
         }
-        cursor = 0;
-        for (size_t i = 0; i < webserver_count; i++) {
-            size_t polled_client_count = webservers[i].client_count;
-            if (webservers[i].running && !webservers[i].shutdown_requested &&
-                !webservers[i].held && !webservers[i].draining) {
-                if (pollfds[cursor].revents & POLLIN) {
-                    webserver_accept(&webservers[i]);
-                }
-                cursor++;
-            }
-            for (size_t j = 0; j < polled_client_count; j++) {
-                int fd = pollfds[cursor].fd;
-                short events = pollfds[cursor].revents;
-                cursor++;
-                size_t current = 0;
-                while (current < webservers[i].client_count &&
-                       webservers[i].clients[current].fd != fd) {
-                    current++;
-                }
-                if (current >= webservers[i].client_count) {
-                    continue;
-                }
-                if (events & (POLLERR | POLLHUP | POLLNVAL)) {
-                    webserver_client_close(&webservers[i], current);
-#if HAVE_LIBSSL
-                } else if (webservers[i].clients[current].tls_handshaking) {
-                    if (events & (POLLIN | POLLOUT)) {
-                        webserver_tls_handshake(&webservers[i], current);
-                    }
-#endif
-                } else if ((events & POLLIN) &&
-                           !webservers[i].clients[current].waiting_response) {
-                    webserver_read_client(&webservers[i], current);
-                }
-                if (error_action_pending()) {
-                    free(pollfds);
-                    return 1;
-                }
-            }
-            webserver_process_responses(&webservers[i]);
-            webserver_check_timeouts(&webservers[i]);
+        if (idle) {
+            break;
         }
-        free(pollfds);
     }
     return error_action_pending() ? 1 : 0;
+}
+
+/* THE SAME BODY, ONE PASS, FOR A LOOP WE DO NOT OWN. Answers 1 to keep going
+ * and 0 to stop, which is what the Qt tick reports back to Qt's loop. Doing
+ * nothing when there is nothing of ours to service is deliberate: a window
+ * with no webserver, no transfer and no timer behind it must not be torn down
+ * because gBASIC had no work. */
+static int webserver_run_event_loop_once(void) {
+    if (runtime_stopped ||
+        (!webserver_any_active() && !aux_loop_sources_active())) {
+        return 1;
+    }
+    int idle = 0;
+    if (webserver_loop_iterate(&idle)) {
+        return 0;
+    }
+    return 1;
 }
 
 /* PLAT-WEB-1 Gap A: where to bind.
@@ -30699,6 +30751,9 @@ static Value gi_eval_call(AstExpr *expr) {
  * back as ordinary gBASIC gobject values. Self-guarded on HAVE_GIR && HAVE_GIO. */
 #include "modules/rowmodel.c"
 #include "modules/xlsx.c"
+/* AFTER the event loop, deliberately: the Qt tick calls
+ * webserver_run_event_loop_once, which is defined above. */
+#include "modules/qt.c"
 
 /* ===================== process.run (NAP-6) ==============================
  * A general, shell-injection-safe synchronous process runner. Structured argv is
@@ -34193,6 +34248,17 @@ static Value eval_call(AstExpr *expr) {
             /* No `load`: there is no optional dependency here, only clock
              * arithmetic -- the `process` precedent. */
             return timer_eval_call(expr);
+        }
+
+        if (strcmp(expr->as.call.library, "qt") == 0) {
+            /* No `load` EVEN THOUGH QT IS OPTIONAL, which is the one place
+             * this module departs from the convention and it is deliberate: a
+             * `window` block implies no import (window_register says why), and
+             * `load qt` on a build without Qt would raise at the IMPORT and
+             * take the whole program with it -- the shrink run_discovery.sh's
+             * note argues against. The refusal belongs at the call, where the
+             * program can ask first with `qt.can_display()`. */
+            return qt_eval_call(expr);
         }
 
         if (strcmp(expr->as.call.library, "http") == 0) {
@@ -44273,6 +44339,13 @@ static Value window_item_value(AstWindowItem *item) {
                    value_string(item->event_target ? item->event_target : ""));
         record_set(&out, "signal",
                    value_string(item->event_signal ? item->event_signal : ""));
+        /* THE FUNCTION ITSELF, not its name -- the shape `web.routes` already
+         * uses for a route's handler. A backend therefore needs no name
+         * mangling of its own and no second registry: the declaration hands it
+         * something callable. */
+        if (item->fn_name) {
+            record_set(&out, "handler", value_function(item->fn_name, NULL));
+        }
         return out;
     case AST_WINDOW_LEAF:
         record_set(&out, "kind", value_string("part"));
@@ -44347,11 +44420,64 @@ static Value window_build_value(AstStmt *stmt) {
     return window;
 }
 
+/* A HANDLER BECOMES A HIDDEN FUNCTION, exactly as a server block's does. The
+ * name is unspellable from user code ("customer.on save.clicked@12:5"), so
+ * `on save.clicked` pollutes no scope and is reachable only through the
+ * function VALUE the window record carries -- which is what lets a backend
+ * CALL it while reading nothing but the record.
+ *
+ * Guarded on fn_stmt because `window_register` runs TWICE for one block, once
+ * from the pre-registration hoist and once when the statement is reached. The
+ * duplicate-definition refusal compares stmt POINTERS, so re-registering the
+ * same shell is allowed and minting a second one would not be. */
+static void window_item_ensure_fn(const char *window_name, AstWindowItem *item) {
+    if (item->fn_stmt) {
+        return;
+    }
+    char buffer[320];
+    snprintf(buffer, sizeof(buffer), "%s.on %s.%s@%d:%d", window_name,
+             item->event_target ? item->event_target : "",
+             item->event_signal ? item->event_signal : "",
+             item->line, item->column);
+    item->fn_name = copy_string(buffer);
+    AstStmt *fn = calloc(1, sizeof(*fn));
+    if (!fn) {
+        abort();
+    }
+    fn->kind = AST_STMT_FUNCTION;
+    fn->line = item->line;
+    fn->column = item->column;
+    fn->as.function.name = copy_string(buffer);
+    /* NO PARAMETERS, and that is the handler shape §2.4 decided: one `on
+     * <name>.<signal>` with the body naming what it needs. calloc leaves the
+     * name list empty, which is what an argument-less function wants. */
+    fn->as.function.body = item->body;
+    item->fn_stmt = fn;
+}
+
+static void window_register_scope(const char *window_name,
+                                  AstWindowItemList *items) {
+    for (size_t i = 0; i < items->count; i++) {
+        AstWindowItem *item = items->items[i];
+        if (item->kind == AST_WINDOW_HANDLER) {
+            window_item_ensure_fn(window_name, item);
+            function_register(item->fn_stmt);
+        } else if (item->kind == AST_WINDOW_CONTAINER) {
+            window_register_scope(window_name, &item->entries);
+        }
+    }
+}
+
 static void window_register(AstStmt *stmt) {
     /* NO `load` IS IMPLIED, unlike the server block's `web`. A window block is
      * a declaration and nothing more until a backend exists; importing a
      * library that cannot render anything would be a promise rather than a
-     * dependency. */
+     * dependency. The Qt backend is a native module for the same reason -- it
+     * has nothing to import. */
+    window_register_scope(stmt->as.window.name, &stmt->as.window.items);
+    if (error_action_pending()) {
+        return;
+    }
     env_set(stmt->as.window.name, window_build_value(stmt));
 }
 
@@ -45392,13 +45518,13 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             return eval_error_result();
         }
         break;
-    /* A `window` DECLARATION PARSES AND IS VALIDATED, AND IS NOT YET
-     * EXECUTABLE -- and it says so rather than doing nothing. Silent success is
-     * the shape this tree distrusts most: a block that parsed, bound nothing
-     * and raised nothing would read as a working window to whoever wrote one.
-     * Binding and introspection are the next increment; the Qt backend the one
-     * after. tests/run_window.sh asserts this refusal, so that tier goes RED
-     * when the backend lands, which is the correct way for it to end. */
+    /* A `window` DECLARATION BINDS AN INTROSPECTABLE RECORD AND REGISTERS ITS
+     * HANDLERS, and that is all it does -- opening a window is `qt.open`,
+     * which is a separate act for the same reason `web.serve` is. The two
+     * earlier states of this comment are worth keeping in mind by anyone
+     * editing it: it first said the block was not executable and REFUSED, then
+     * said it bound a record and nothing could render it. Both were true when
+     * written, and both stopped being true. */
     case AST_STMT_WINDOW:
         /* REGISTERED BY THE HOIST ALREADY, so reaching the statement binds it
          * again and nothing more -- the same shape a server block has. It no

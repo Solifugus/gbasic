@@ -1,7 +1,12 @@
 # A Qt GUI for gBASIC — design
 
-**Status: Proposal. None of this exists.** There is no `qt` module, no
-`stdlib/qt.bas`, and no Qt backend for anything. Do not code against it.
+**Status: partly shipped.** The `window` declaration (§0.2) and the `qt` module
+(§0.4) exist and are gated by `tests/run_window.sh` and
+`tests/run_qt_backend.sh`. Everything else here is still proposal — there is no
+`stdlib/qt.bas`, no builder (§4), no `tabs`/`cells`/`table`, and no two-way
+binding. **This line has been wrong twice in one day by being left alone**, so
+the rule is that a section says its own state and this line says which sections
+are which.
 
 **Provenance.** Where this says *measured* it means a command was run on
 2026-10-14 and the output is quoted or summarised. Where it says *decided* it
@@ -128,20 +133,18 @@ about it is decidable without the thing it eventually drives. That is the
   would ever say so.
 - **The declaration binds its name** to an introspectable record — nested
   containers, each form's subject and direction, labels, parts and their
-  options, handlers as `{ target, signal }` — so a backend reads it with no new
-  builtin, exactly as `web.routes` reads a server record. **Hoisted**, so the
-  block may sit below the program that names it.
+  options, and each handler as `{ target, signal, handler }` where `handler` is
+  a **function value** — so a backend reads it with no new builtin, exactly as
+  `web.routes` reads a server record, and can *call* `on save.clicked` without
+  a registry or a name-mangling scheme of its own. **Hoisted**, so the block may
+  sit below the program that names it.
 - A **non-literal option is visible by name and not by value**: `show: cust.id`
   names a place to read when something renders, in the frame where the subject
   lives, so there is no value to report at load time. The head's options are all
   literals and never unknown.
 
-**What does not exist is anything that RENDERS it.** That is a missing backend,
-not a missing declaration, and it is the next increment: `QApplication::exec()`
-owning the loop (§5.1), gBASIC's sources as **drained** `QSocketNotifier`s, and
-widgets built from this record through `QMetaObject`. It wants the offscreen
-platform in its suite from the first commit rather than retrofitted, since that
-is the increment where headless stops being free.
+**What did not exist at that point was anything that RENDERS it** — a missing
+backend rather than a missing declaration. That is §0.4.
 
 ### 0.3 REQUIRED OF THE FIRST BACKEND COMMIT: "no display" is a sentence
 
@@ -182,6 +185,73 @@ Two consequences worth keeping:
   so a GUI program can render on a headless server.
 - The refusal names what is missing — a display — rather than reporting a Qt
   plugin failure, which names the one thing the author cannot fix.
+
+---
+
+## 0.4 THE BACKEND (2026-10-17): the `qt` module
+
+**Built, and `tests/run_qt_backend.sh` holds it.** Four things in it come from
+measurement rather than from this document's arguments, and are not re-decided
+in the code:
+
+| | |
+|---|---|
+| **Qt owns the loop** | §5.1 direction A. gBASIC's event-loop body is now a function of its own (`webserver_loop_iterate`) with **two callers sharing it** — the ordinary `while`, and a Qt timer while a window is open. One body, because a second copy is a second thing that can disagree, and a disagreement here means a source serviced under one arrangement and starved under the other |
+| **Every source is drained** | the contract §5.1 had to state after a probe that did not read its pipe fired **545,066 times for one byte**. The tick cannot have that defect *by construction* — it runs the real loop body, which reads — and the rule is written down because the next source added may not be a timer |
+| **No display is a sentence** | §0.3, asked of Qt in a forked child. `gb_qt_begin` refuses as well as the caller, because it is the one place a `QApplication` can be constructed |
+| **Construction is a table; everything else is by name** | §1. Eight words need a table because a `QWidget` constructor is not `Q_INVOKABLE`; properties, methods and signals go through `QMetaObject` by name. Eight table entries against the 75 properties `QPushButton` alone exposes **is** the argument for the by-name route |
+
+**The address of a window is its declaration, not a handle.** `qt.open(customer)`
+takes the record the block bound and so does `qt.read(customer, "name")` —
+exactly as `web.routes(app)` takes a server record. So there is **no 28th value
+kind**, which would owe answers for rendering, `encode`, comparison and copying;
+PLAT-EQ's lesson is that a new kind silently opted into the numeric coercion and
+was found *by adding one*.
+
+The surface: `qt.can_display()`, `qt.open(win)`, `qt.read(win, name)`,
+`qt.write(win, name, value)`, `qt.invoke(win, name, method)`, `qt.run()`,
+`qt.stop()`. `qt.write` renders through **the one renderer** (PLAT-RENDER), so a
+date, money or a duration reaches a widget in the words the language itself uses
+rather than this module growing a second opinion. `qt.invoke` is the method-by-
+name door the 2026-10-14 probe measured, and it is also what makes the signal
+path testable **with no human in front of the screen**: invoking `click` on a
+button emits the real `clicked` signal through the real connection.
+
+**`qt.can_display()` ANSWERS where every other verb refuses**, including on a
+build with no Qt at all — the shape `has_builtin` already has, and for the same
+reason: a program asking whether it may open a window is *degrading gracefully*,
+and "this build has no Qt" is one of the answers to that question rather than an
+error.
+
+**No `load`**, which is the one place this departs from the optional-module
+convention and is deliberate twice over: a `window` block implies no import, so
+neither does rendering one; and `load qt` on a build without Qt would raise at
+the **import**, taking the whole program with it — the shrink
+`run_discovery.sh`'s own note argues against. The refusal belongs at the call.
+
+### What is declared and not yet acted on, said out loud
+
+- **`type: {USD}`** is carried by the declaration and the backend does not use
+  it. A field is a plain text editor; nothing is damaged, and parsing through
+  the modifier arrives with the binding increment.
+- **`show:` / `edit:` cannot be acted on from the record at all**, and that is a
+  property of the declaration rather than an omission: a non-literal option is
+  recorded **by name and not by value** (§0.2), because `show: cust.id` names a
+  place to read in the frame where the subject lives. So population is the
+  program's — `qt.write(customer, "name", cust.name)` — and the watcher pair
+  that makes `form to edit` genuinely two-way is the next increment.
+- **`tabs`, `cells` and `table`** are not in the validated vocabulary either, so
+  there is nothing to render; and the **data-driven builder** (§4) is unstarted.
+
+### What the suite cannot assert, and why
+
+**Valgrind.** Qt's platform plugins, font configuration and `QApplication`
+statics are not freed by design, so a leak tier here would be a suppression file
+*describing Qt* rather than a check on us — and `run_valgrind_policy.sh`'s whole
+argument is that an access-only tier must not become "valgrind is off". The
+gBASIC-side allocations this increment adds (the handler shells and their minted
+names) **are** covered, by `run_window.sh`'s existing valgrind tier, which
+parses every window fixture without opening one.
 
 ---
 
@@ -701,10 +771,15 @@ served.
 
 **What this does NOT answer**, stated rather than implied:
 
-- **Re-entry into the evaluator.** The probe proves a real Qt signal reaches a C
-  callback through a `moc` translation unit, via one generic relay — the shape
-  above. Calling `invoke_function` from there is still inferred from
-  `gi_signal_marshal`, which ships it for GTK.
+- ~~**Re-entry into the evaluator.**~~ **MEASURED 2026-10-17 by the backend**
+  (§0.4): a real `clicked` signal reaches a gBASIC handler through one generic
+  relay, and the handler reads the live widget. `run_qt_backend.sh` asserts it
+  on its own and with a control that it fired when the button was clicked and
+  **not** when the window opened — which would be the registration-time firing
+  `watch` has, and here would mean every button acting before anybody pressed
+  one. What is still carried over from `gi_signal_marshal` rather than
+  re-derived is the RAISE CONTAINMENT, which is the same code shape one toolkit
+  over.
 - **Windows.** `QSocketNotifier` there works on **sockets only**, not arbitrary
   handles, so direction A will need `QWinEventNotifier` for any source that is
   not a socket. Named now rather than discovered during the port.

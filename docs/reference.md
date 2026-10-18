@@ -3797,6 +3797,71 @@ Parse failures and misuse (bad argument types, a closed reader, a non-element
 subtree) raise structured errors. See `docs/xml_design.md` and the `examples/xml_*`
 programs for the full surface and worked SEC-filing examples.
 
+## Qt Module
+
+The `qt` module renders a `window` declaration with Qt 6 Widgets. It is
+available when gBASIC is built with Qt 6 and `moc`; otherwise every verb but
+one raises a clean runtime error (`error.source = "qt"`), the way the other
+optional modules degrade.
+
+```basic
+window customer( title: "Customer", width: 480 )
+    column( margin: 8, spacing: 8 )
+        form to edit cust
+            field name( label: "Name" )
+        end form
+        row
+            stretch()
+            button save( text: "Save", default: true )
+        end row
+    end column
+
+    on save.clicked
+        print "saving " + qt.read(customer, "name")
+    end on
+end window
+
+program main()
+    if qt.can_display() then
+        qt.open(customer)
+        qt.write(customer, "name", "Ada Lovelace")
+        qt.run()
+    else
+        print "no display -- nothing to open"
+    end if
+end program
+```
+
+| | |
+|---|---|
+| `qt.can_display()` | whether a window can be opened at all. **Answers rather than raising**, including on a build with no Qt — a program asking this is degrading gracefully, and "this build has no Qt" is one of the answers |
+| `qt.open(win)` | build and show the declaration. Refuses, naming **a display**, when there is none |
+| `qt.read(win, name)` | the text a part is showing (`"true"`/`"false"`for a check box) |
+| `qt.write(win, name, value)` | show a value, rendered exactly as `print` would render it |
+| `qt.invoke(win, name, method)` | call a widget method by name — `click`, `clear`, `setFocus` |
+| `qt.run()` | hand the thread to Qt's event loop. gBASIC's own sources (a webserver, transfers, timers, the actor inbox) keep being serviced |
+| `qt.stop()` | end that loop; ordinarily called from a handler |
+
+**A window is addressed by its declaration**, not by a handle: `qt.open(customer)`
+and `qt.read(customer, "name")` both take the record the `window` block bound,
+the same way `web.routes(app)` takes a server record.
+
+**No `load` is needed.** A `window` block implies no import, so neither does
+rendering one.
+
+**With no display, `qt.open` refuses and the program continues** — catchably,
+so a program can fall back to a text interface. gBASIC itself runs completely on
+a machine with no display: only opening a window needs one, and a `window` block
+still parses, is validated and can be read back as a record with no Qt present.
+Setting `QT_QPA_PLATFORM=offscreen` renders without a display, which is how a
+GUI program can run on a headless server.
+
+An option on a part that is not one of the layout words (`label`, `margin`,
+`spacing`, `grow`) is set as a **Qt property by name**, so `text:` and
+`enabled:` work on any widget that has them and a misspelling is refused naming
+the widget's class. `type:`, `show:` and `edit:` are carried by the declaration
+and not yet acted on; see `docs/qt_gui_design.md` §0.4.
+
 ## GUI (GTK 3) Module — experimental
 
 `gui` is an **experimental proof of concept** (Stage 6A), enabled only when
