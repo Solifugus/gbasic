@@ -405,7 +405,90 @@ window w( title: "x" )
     end form
 end window
 EOF
-refuse "a NAMED form is refused, saying only a table is named" "only a table is named"
+refuse "a NAMED form is refused, saying which containers may be named" "a table and a \`tabs\` are named"
+
+# -------------------------------------------------------------------- TABS
+# `tabs` / `tab "Name"` JOINED 2026-10-18 AND COST NO GRAMMAR EITHER: both ride
+# productions that already existed (the bare container, and the
+# `group "Credit"` labelled form). A NAMED container with no options costs none
+# -- but one WITH options and a body costs FOUR reduce/reduce, and bison reports
+# the rule useless, because after `IDENT IDENT ( ... ) NEWLINE` the parser
+# cannot tell a named LEAF from a container head. That is the wall §5.2 records
+# for the server block, so the vocabulary carries A NAME OR OPTIONS AND NOT
+# BOTH, and `qt.set` is what makes that affordable.
+src tabs_ok <<'EOF'
+window w( title: "x" )
+    column
+        tabs settings
+            tab "General"
+                field a( label: "A" )
+            end tab
+            tab "Advanced"
+                check b( label: "B" )
+            end tab
+        end tabs
+    end column
+    on settings.currentChanged
+        print "changed"
+    end on
+end window
+program main()
+    print "ACCEPTED"
+end program
+EOF
+got=$(out_of "$written")
+if printf '%s' "$got" | grep -qF 'ACCEPTED'; then
+    pass "CONTROL: a named tabs with two captioned pages and a handler is accepted"
+else
+    printf '    %s\n' "$(printf '%s' "$got" | head -2)"
+    fail "a valid tabs was refused"
+fi
+
+# A QTabWidget HAS NO LAYOUT OF ITS OWN -- its children are PAGES -- so
+# anything but a `tab` inside one would be DROPPED rather than mislaid, which
+# is the silent kind of wrong.
+src tabs_bare_field <<'EOF'
+window w( title: "x" )
+    tabs
+        field a( label: "A" )
+    end tabs
+end window
+EOF
+refuse "a part directly inside tabs is refused, naming the remedy" "put it inside a tab"
+
+src tab_outside <<'EOF'
+window w( title: "x" )
+    column
+        tab "X"
+            field a( label: "A" )
+        end tab
+    end column
+end window
+EOF
+refuse "a tab outside a tabs is refused" "a \`tab\` belongs to a \`tabs\`"
+
+src tab_no_caption <<'EOF'
+window w( title: "x" )
+    tabs
+        tab
+            field a( label: "A" )
+        end tab
+    end tabs
+end window
+EOF
+refuse "a tab with no caption is refused" "a tab needs a caption"
+
+# AND A NAME IS STILL REFUSED ON THE CONTAINERS THAT HAVE NO STATE TO ASK
+# ABOUT, which the named-container production made grammatical for the first
+# time: `row thing` parses now, and must still be refused.
+src row_named <<'EOF'
+window w( title: "x" )
+    row thing
+        field a( label: "A" )
+    end row
+end window
+EOF
+refuse "a named row is refused, now that the grammar admits the shape" "'row' takes no name"
 
 # A TABLE'S PARTS ARE COLUMNS, so every one is a `field`. A `button` among them
 # would be a widget in a place that holds values, which lays out as nothing an
@@ -620,7 +703,7 @@ refuse "a misspelled table is named, and the suggestion is the real word" "did y
 # list rather than the one-word answer, for the newest word in the language.
 # Two representations of one list drift. It is derived from the two tables now,
 # and this loop fails the next time a word is added to one and not the other.
-for w in row column form group table menu field button check stretch item separator; do
+for w in row column form group table menu tabs field button check stretch item separator; do
     # ONE TRANSPOSITION of the last two letters, which is what fingers actually
     # do and is the shape the finder had to learn (`colunm`, `feild`).
     typo=$(printf '%s' "$w" | sed -E 's/(.)(.)$/\2\1/')
@@ -714,6 +797,11 @@ window customer( title: "C", width: 300, height: 200 ) to show cust
             field placed( label: "Date" )
             field total( label: "Total", type: {USD} )
         end table
+        tabs settings
+            tab "General"
+                field note( label: "Note" )
+            end tab
+        end tabs
         row
             stretch()
             button save( text: "Save" )

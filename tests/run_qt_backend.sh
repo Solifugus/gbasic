@@ -519,6 +519,62 @@ else
     fail "the emptied-number refusal: $(grep EMPTYNUMBER "$work/t.out" || echo 'never fired')"
 fi
 
+# ------------------------------------------------------------------------ TABS
+
+printf 'TIER tabs: a book of pages, and qt.set -- the write half of the route\n'
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
+    tests/qt_tabs_test.bas > "$work/tb.out" 2> "$work/tb.err"
+tb_rc=$?
+set -e
+if [ "$tb_rc" != "0" ]; then
+    printf '    %s\n' "$(tail -5 "$work/tb.err")"
+    fail "the tabs fixture exited $tb_rc"
+fi
+tbchecks=$(grep -c '^ok   ' "$work/tb.out" || true)
+if grep -q MISMATCH "$work/tb.out"; then
+    grep MISMATCH "$work/tb.out" | while read -r line; do printf '    %s\n' "$line"; done
+    fail "$(grep -c MISMATCH "$work/tb.out") mismatches in the tabs fixture"
+elif [ "${tbchecks:-0}" = "0" ]; then
+    fail "no tabs checks ran at all, so '0 mismatches' would mean nothing"
+else
+    pass "$tbchecks checks, 0 mismatches"
+fi
+if [ "${tbchecks:-0}" -ge 17 ]; then
+    pass "and it really ran them ($tbchecks >= 17)"
+else
+    fail "only $tbchecks tabs checks ran -- the fixture stopped early"
+fi
+# A NAMED CONTAINER'S OWN SIGNAL, fired by SETTING A PROPERTY -- so the handler
+# path for a container that is neither a leaf nor a table is driven with no
+# human in front of it.
+if grep -qx 'SIGNAL settings.currentChanged' "$work/tb.out"; then
+    # SINGLE-QUOTED, because a backtick inside a double-quoted bash string is
+    # COMMAND SUBSTITUTION: this line read `tabs` and the shell RAN the `tabs`
+    # command, printing its escape sequences into the middle of a pass message.
+    # Harmless here and the same trap tools/build-release-tarball.sh has
+    # recorded four times -- there it would have run `make install` as a side
+    # effect of a COMMENT. There is a tripwire for that file; this is a suite
+    # message, which nothing scans.
+    pass 'a handler on a named `tabs` connects and fires'
+else
+    fail "the tabs handler never fired: $(grep SIGNAL "$work/tb.out" || echo 'nothing')"
+fi
+# THE TWO HALVES OF ONE ROUTE MUST AGREE ABOUT WHAT A PROPERTY NAME IS. A
+# setter that accepted an unknown name would store a dynamic property nothing
+# reads -- an option silently doing nothing, which is the defect the closed
+# head vocabulary exists to prevent one level up.
+if grep -q 'BADPROP: qt.set: a QPushButton has no `texx` property' "$work/tb.out"; then
+    pass "qt.set refuses an unknown property BY NAME, as the read half does"
+else
+    fail "the bad-property refusal: $(grep BADPROP "$work/tb.out" || echo 'never fired')"
+fi
+if grep -q 'BADPART: qt.set: this window has no `nope`' "$work/tb.out"; then
+    pass "and an absent part in its own words"
+else
+    fail "the bad-part refusal: $(grep BADPART "$work/tb.out" || echo 'never fired')"
+fi
+
 # ------------------------------------------------------------------------ MENU
 
 printf 'TIER menu: a bar, submenus, separators, and properties on a QAction\n'
@@ -755,8 +811,12 @@ else
     vg_table_only_rc=$?
     QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
         tests/qt_menu_test.bas > "$work/vgm.out" 2> "$work/vgm.err"
-    vg_menu_rc=$?
+    vg_menu_only_rc=$?
+    QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
+        tests/qt_tabs_test.bas > "$work/vgb2.out" 2> "$work/vgtb.err"
+    vg_tabs_rc=$?
     set -e
+    vg_menu_rc=$vg_menu_only_rc
     # THE WORST OF THE THREE, so a clean run of one fixture cannot hide a
     # defect in another -- a form, a table and a menu allocate differently.
     vg_rc=$vg_bind_rc
@@ -767,6 +827,10 @@ else
     if [ "$vg_menu_rc" != "0" ]; then
         vg_rc=$vg_menu_rc
         cp "$work/vgm.err" "$work/vgb.err"
+    fi
+    if [ "$vg_tabs_rc" != "0" ]; then
+        vg_rc=$vg_tabs_rc
+        cp "$work/vgtb.err" "$work/vgb.err"
     fi
     # COMPARED AGAINST $VG_EXIT, which the shared policy exposes for exactly
     # this: the fixture itself can fail for its own reasons, and reading that
@@ -779,7 +843,7 @@ else
         printf '    %s\n' "$(tail -3 "$work/vgb.err")"
         fail "the fixture exited $vg_rc under valgrind, which is not a valgrind objection"
     else
-        pass "no invalid access or uninitialised read across open, fold and teardown -- form, table and menu"
+        pass "no invalid access or uninitialised read across open, fold and teardown -- form, table, menu and tabs"
     fi
 fi
 

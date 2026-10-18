@@ -51,6 +51,7 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -280,10 +281,20 @@ extern "C" void *gb_qt_window(const char *title, int width, int height) {
 /* The container table. Four words, each deciding its own layout -- which is
  * the one thing a table is genuinely needed for (see note 4). */
 extern "C" void *gb_qt_container(void *parent, const char *word,
-                                 const char *title, char *err,
-                                 size_t err_size) {
+                                 const char *name, const char *title,
+                                 char *err, size_t err_size) {
     GbQtNode *p = (GbQtNode *)parent;
-    if (!p || !p->layout) {
+    if (!p) {
+        say(err, err_size, "that container cannot hold anything");
+        return nullptr;
+    }
+    /* A `tab` IS THE ONE CONTAINER WHOSE PARENT HAS NO LAYOUT, because a
+     * QTabWidget's children are PAGES rather than things in a box -- so the
+     * layout requirement is asked of every other word and not of this one.
+     * Found by running it: with the guard first, `tab "General"` inside
+     * `tabs` was refused with "that container cannot hold anything", a true
+     * sentence about the wrong thing. */
+    if (!p->layout && strcmp(word, "tab") != 0) {
         say(err, err_size, "that container cannot hold anything");
         return nullptr;
     }
@@ -313,10 +324,42 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
         QVBoxLayout *inner = new QVBoxLayout(box);
         n->widget = box;
         n->layout = inner;
+    } else if (strcmp(word, "tabs") == 0) {
+        /* A QTabWidget HAS NO LAYOUT OF ITS OWN -- its children are PAGES,
+         * added with addTab. So the node carries no `layout`, which is what
+         * makes anything but a `tab` inside it refuse rather than being
+         * silently dropped: `gb_qt_part` and `gb_qt_container` both begin by
+         * asking the parent for a layout. The load-time pass refuses it first;
+         * this is the floor under that. */
+        n->widget = new QTabWidget(p->widget);
+    } else if (strcmp(word, "tab") == 0) {
+        QTabWidget *book = qobject_cast<QTabWidget *>(p->widget);
+        if (!book) {
+            say(err, err_size, "a `tab` needs `tabs` around it");
+            return nullptr;
+        }
+        /* A PAGE IS A COLUMN, which is the choice worth naming: a tab holds
+         * several things stacked, so giving it a QVBoxLayout means `field`,
+         * `row`, `group` and `table` all work inside one with no further
+         * vocabulary -- a page that was a bare QWidget would need every
+         * author to open a `column` first. */
+        QWidget *page = new QWidget(book);
+        QVBoxLayout *inner = new QVBoxLayout(page);
+        n->widget = page;
+        n->layout = inner;
+        book->addTab(page, QString::fromUtf8(title ? title : ""));
+        /* ADDED BY addTab, so it must NOT also be added to a parent layout
+         * below -- a page belongs to the book, not to the box the book sits
+         * in. Returning here is what keeps it out of that path. */
+        return n;
     } else {
         say(err, err_size,
             QByteArray("no Qt container is wired for `") + word + "`");
         return nullptr;
+    }
+
+    if (name && *name && n->root && n->widget) {
+        n->root->parts.insert(QString::fromUtf8(name), n->widget);
     }
 
     QBoxLayout *pb = qobject_cast<QBoxLayout *>(p->layout);
@@ -658,6 +701,42 @@ extern "C" int gb_qt_write(void *window, const char *name, const char *text,
     }
     return set_property(w, "text", QVariant(QString::fromUtf8(text)), err,
                         err_size);
+}
+
+/* THE PART A NAME REFERS TO, for the run-time property doors. One helper so
+ * the refusal for an absent part is one sentence rather than three. */
+static QObject *part_named(void *window, const char *name, char *err,
+                           size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!o) {
+        say(err, err_size, QByteArray("this window has no `") + name + "`");
+    }
+    return o;
+}
+
+extern "C" int gb_qt_set_part_text(void *window, const char *name,
+                                   const char *prop, const char *value,
+                                   char *err, size_t err_size) {
+    QObject *o = part_named(window, name, err, err_size);
+    return o ? set_property(o, prop, QVariant(QString::fromUtf8(value)), err,
+                            err_size)
+             : 0;
+}
+
+extern "C" int gb_qt_set_part_number(void *window, const char *name,
+                                     const char *prop, double value,
+                                     char *err, size_t err_size) {
+    QObject *o = part_named(window, name, err, err_size);
+    return o ? set_property(o, prop, QVariant(value), err, err_size) : 0;
+}
+
+extern "C" int gb_qt_set_part_bool(void *window, const char *name,
+                                   const char *prop, int value, char *err,
+                                   size_t err_size) {
+    QObject *o = part_named(window, name, err, err_size);
+    return o ? set_property(o, prop, QVariant(value != 0), err, err_size) : 0;
 }
 
 /* READ A PROPERTY BY NAME. The same QMetaObject door `set_property` goes

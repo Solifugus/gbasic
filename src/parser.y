@@ -1355,6 +1355,21 @@ window_item
     | IDENT LPAREN record_field_list RPAREN NEWLINE window_item_list END IDENT NEWLINE {
         $$ = ast_window_container($1, NULL, $3, $6, $8, @1.first_line, @1.first_column);
       }
+    /* NAMED CONTAINER, no options:  tabs settings ... end tabs
+     *
+     * MEASURED AT ZERO CONFLICTS; the form WITH options --
+     * `tabs settings( movable: true )` and a body -- costs FOUR reduce/reduce
+     * and bison reports the rule useless, because after
+     * `IDENT IDENT ( ... ) NEWLINE` the parser cannot tell a named LEAF from
+     * the head of a container whose body is still to come. That is the same
+     * wall §5.2 records for the server block's head, so the vocabulary carries
+     * A NAME OR OPTIONS AND NOT BOTH -- and `qt.set` is what makes that
+     * affordable, since a named container's properties can be set at run time
+     * instead. */
+    | IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE {
+        $$ = ast_window_named_form($1, $2, NULL, NULL, NULL, $4, $6,
+                                   @1.first_line, @1.first_column);
+      }
     /* CONTAINER with a label:   group "Credit" ... end group         */
     | IDENT STRING NEWLINE window_item_list END IDENT NEWLINE {
         $$ = ast_window_container($1, $2, ast_record_field_list_empty(), $4, $6,

@@ -591,7 +591,8 @@ static void win_error(WinCheck *chk, int line, int column, const char *fmt, ...)
  * ABSENT until it exists, so a `table` written today is refused as an unknown
  * word rather than silently accepted and ignored. */
 static const char *win_container_words[] = {"row", "column", "form", "group",
-                                            "table", "menu", NULL};
+                                            "table", "menu", "tabs", "tab",
+                                            NULL};
 static const char *win_leaf_words[] = {"field", "button", "check", "stretch",
                                        "item", "separator", NULL};
 
@@ -709,9 +710,9 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
         } else {
             win_error(chk, item->line, item->column,
                       "window: unknown directive '%s'. The containers are row, "
-                      "column, form, group, table and menu; the parts are "
-                      "field, button, check, stretch, item and separator",
-                      word);
+                      "column, form, group, table, menu, tabs and tab; the "
+                      "parts are field, button, check, stretch, item and "
+                      "separator", word);
         }
         return;
     }
@@ -814,10 +815,49 @@ static void win_check_item(WinCheck *chk, const AstWindowItem *item,
                       "<list>` -- because that is what a handler and "
                       "`qt.selected` address");
         }
-        if (strcmp(word, "table") != 0 && item->name) {
+        /* WHICH CONTAINERS MAY BE NAMED, and it is a short list on purpose: a
+         * name is what a handler and a property read address, so it belongs to
+         * a container that IS a widget with state of its own. A `table` shows
+         * many rows and a `tabs` has a current page; a `row` is a box and a
+         * `tab` is a PAGE whose CAPTION is what a person reads, the rule a
+         * `menu` follows. */
+        int may_be_named = (strcmp(word, "table") == 0 ||
+                            strcmp(word, "tabs") == 0);
+        if (!may_be_named && item->name) {
             win_error(chk, item->line, item->column,
-                      "window: '%s' takes no name; only a table is named, "
-                      "because its parts are columns rather than widgets", word);
+                      "window: '%s' takes no name; a table and a `tabs` are "
+                      "named, because they are the containers with state a "
+                      "handler can ask about", word);
+        }
+
+        /* A `tab` BELONGS TO A `tabs` and needs a caption; a `tabs` holds
+         * nothing else. Refused both ways, because a QTabWidget has NO LAYOUT
+         * of its own -- its children are pages -- so anything else inside one
+         * would be dropped silently rather than mislaid. */
+        if (strcmp(word, "tabs") == 0) {
+            for (size_t i = 0; i < item->entries.count; i++) {
+                const AstWindowItem *part = item->entries.items[i];
+                if (part->kind == AST_WINDOW_HANDLER || !part->word) {
+                    continue;
+                }
+                if (strcmp(part->word, "tab") != 0) {
+                    win_error(chk, part->line, part->column,
+                              "window: `tabs` holds `tab` pages -- '%s' is not "
+                              "one; put it inside a tab", part->word);
+                }
+            }
+        }
+        if (strcmp(word, "tab") == 0) {
+            if (!parent_word || strcmp(parent_word, "tabs") != 0) {
+                win_error(chk, item->line, item->column,
+                          "window: a `tab` belongs to a `tabs`, not to '%s'",
+                          parent_word ? parent_word : "?");
+            }
+            if (!item->label) {
+                win_error(chk, item->line, item->column,
+                          "window: a tab needs a caption -- `tab \"General\"` "
+                          "-- because that is what a person reads on it");
+            }
         }
         /* A NAMED CONTAINER REGISTERS ITS NAME TOO. Only leaves did, so
          * `on orders.activated` on a perfectly real table would have been

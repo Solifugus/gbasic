@@ -84,10 +84,16 @@ int gb_qt_begin(char *err, size_t err_size);
 
 void *gb_qt_window(const char *title, int width, int height);
 
-/* A container word (`row`, `column`, `form`, `group`). `title` is the group
- * box's caption and is NULL for the others. */
-void *gb_qt_container(void *parent, const char *word, const char *title,
-                      char *err, size_t err_size);
+/* A container word (`row`, `column`, `form`, `group`, `tabs`, `tab`). `title`
+ * is the caption a `group` or a `tab` carries and is NULL for the others.
+ *
+ * `name` IS FOR A CONTAINER THAT IS ADDRESSABLE -- `tabs settings`, so
+ * `on settings.currentChanged` and `qt.read(win, "settings", "currentIndex")`
+ * can find it. NULL for the ones that are not; the load-time pass decides
+ * which may carry one, and a `tab` never does (its CAPTION is what a person
+ * reads, the rule a `menu` follows). */
+void *gb_qt_container(void *parent, const char *word, const char *name,
+                      const char *title, char *err, size_t err_size);
 
 /* A leaf word (`field`, `button`, `check`, `stretch`). `name` is the
  * declaration's name, which is how `qt.read`/`qt.write` and a handler's
@@ -131,6 +137,17 @@ char *gb_qt_read(void *window, const char *name);
 
 int gb_qt_write(void *window, const char *name, const char *text,
                 char *err, size_t err_size);
+
+/* SET ONE PROPERTY ON A NAMED PART -- the same QMetaObject door the
+ * declaration's options go through, reached by NAME at run time rather than by
+ * node at construction. Three entry points for the same reason the three
+ * setters above have three: the gBASIC value kind decides the QVariant. */
+int gb_qt_set_part_text(void *window, const char *name, const char *prop,
+                        const char *value, char *err, size_t err_size);
+int gb_qt_set_part_number(void *window, const char *name, const char *prop,
+                          double value, char *err, size_t err_size);
+int gb_qt_set_part_bool(void *window, const char *name, const char *prop,
+                        int value, char *err, size_t err_size);
 
 /* A PROPERTY BY NAME, READ BACK -- the other direction of the by-name route
  * the three setters take, and the thing that makes that route's central claim

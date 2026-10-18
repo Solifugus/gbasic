@@ -509,7 +509,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
     }
 
     if (strcmp(kind, "container") == 0) {
-        void *node = gb_qt_container(parent, word ? word : "", label, err,
+        void *node = gb_qt_container(parent, word ? word : "", name, label, err,
                                      sizeof(err));
         if (!node) {
             snprintf(message, sizeof(message), "window: %s",
@@ -1442,6 +1442,91 @@ static Value qt_eval_call(AstExpr *expr) {
      * COUNT and the ORDER as well -- a submenu that escaped shows up as a
      * third entry, and two menus that swapped show up reordered. Same shape as
      * `qt.heading` one directive over, found the same way. */
+    /* SET ONE PROPERTY BY NAME -- the write half of the route `qt.read(win,
+     * part, prop)` opened, and it was left out when that shipped.
+     *
+     * TWO REASONS, AND THE FIRST IS THE ORDINARY ONE: a program wants to
+     * change a widget after something happened -- enable a button once a form
+     * validates, grey a menu item, make a field read-only on a condition --
+     * and until now the ONLY way to set a property was the declaration, which
+     * is written before anything has happened. That was a gap with no
+     * workaround, not a convenience.
+     *
+     * THE SECOND IS A MEASURED GRAMMAR LIMIT: a container may carry A NAME OR
+     * OPTIONS AND NOT BOTH (`tabs settings( movable: true )` with a body costs
+     * four reduce/reduce conflicts and bison calls the rule useless), so a
+     * NAMED container cannot be configured in its head. With this it is
+     * configured at run time instead, which makes that limit affordable rather
+     * than something the author has to design around. */
+    if (strcmp(verb, "set") == 0) {
+        if (argc != 4) {
+            qt_raise("qt.set expects a window, a part, a property and a value");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value prop = eval_expr(expr->as.call.args.items[2]);
+        Value v = eval_expr(expr->as.call.args.items[3]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            value_free(prop); value_free(v);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "set") || which.kind != VALUE_STRING ||
+            prop.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.set expects the part's name and the property's "
+                         "name as text");
+            }
+            value_free(win); value_free(which);
+            value_free(prop); value_free(v);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            value_free(prop); value_free(v);
+            return value_null();
+        }
+        /* THROUGH THE SAME DOOR THE DECLARATION'S OPTIONS GO THROUGH, so a
+         * property the widget does not carry is refused BY NAME here too --
+         * the two halves of one route must agree about what a property name
+         * is, which is the rule `qt.read`'s own refusal already follows. */
+        err[0] = '\0';
+        int ok = 0;
+        switch (v.kind) {
+        case VALUE_STRING:
+            ok = gb_qt_set_part_text(root, which.as.string, prop.as.string,
+                                     v.as.string, err, sizeof(err));
+            break;
+        case VALUE_NUMBER:
+            ok = gb_qt_set_part_number(root, which.as.string, prop.as.string,
+                                       v.as.num.value, err, sizeof(err));
+            break;
+        case VALUE_BOOL:
+            ok = gb_qt_set_part_bool(root, which.as.string, prop.as.string,
+                                     v.as.boolean, err, sizeof(err));
+            break;
+        default:
+            snprintf(err, sizeof(err),
+                     "a property takes text, a number or true/false");
+            break;
+        }
+        value_free(win); value_free(which);
+        value_free(prop); value_free(v);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.set: %s",
+                     err[0] ? err : "that property was refused");
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
     if (strcmp(verb, "menus") == 0) {
         /* ONE ARGUMENT gives the BAR's captions; TWO gives the ENTRIES of the
          * menu at that position -- the same oracle one level in, which closes
