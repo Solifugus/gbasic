@@ -3845,6 +3845,8 @@ end program
 | `qt.select(win, table, row)` | choose a row from the program, for a window that opens with one highlighted; `unknown` chooses nothing |
 | `qt.cell(win, table, row, column)` | one cell, addressed by the **column's own name** rather than its position |
 | `qt.heading(win, table, column)` | a column's caption, by its name **or** its position |
+| `qt.set(win, part, property, value)` | set one named Qt property at run time — the write half of `qt.read(win, part, property)`. The only other way to set one is the declaration, which is written before anything has happened |
+| `qt.at(win, part)` | where a part sits in its `cells`: `{ row, column, across, down }`, asked of the layout |
 | `qt.menus(win)` / `qt.menus(win, n)` | the menu bar's top-level captions, or the entries of the menu at position `n`. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
 | `qt.theme(css)` / `qt.theme()` | set or read **one stylesheet for the whole application**. Needs no display, and is remembered until there is a `QApplication` to put it on, so a program themes first and opens second |
 | `qt.subject(win, name)` | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
@@ -3917,6 +3919,49 @@ addresses — so a menu takes no name, and `on open_file.triggered` names the
 item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
 `checked:` reach it through the same by-name property route every widget option
 uses.
+
+**`tabs` holds `tab` pages.** A page is given a column layout, so a `field`, a
+`row`, a `group` or a whole `table` works inside one with no further vocabulary:
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+tabs settings
+    tab "General"
+        field who( label: "Name" )
+    end tab
+    tab "Advanced"
+        check deep( label: "Verbose" )
+    end tab
+end tabs
+```
+
+A `tabs` may carry a **name** (`tabs settings`) so `on settings.currentChanged`
+and `qt.read(win, "settings", "currentIndex")` can find it. **A container takes a
+name or options, not both** — `tabs settings( movable: true )` with a body costs
+four grammar conflicts, measured — so a named container's properties are set
+with `qt.set` instead.
+
+**`cells` holds rows of cells.** A grid *is* rows, so `row` is reused — refined
+inside `cells` to mean a row whose columns line up with the rows above, where a
+`row` elsewhere is just a box. `across:` and `down:` span columns and rows,
+which is the thing a box layout cannot do:
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+cells( spacing: 6 )
+    row
+        field first( label: "First" )
+        field last(  label: "Last" )
+    end row
+    row
+        field notes( label: "Notes", across: 3 )
+    end row
+end cells
+```
+
+A `field`'s label takes a cell of its own, which is how a labelled grid lines
+up; a `check` carries its own caption and takes none. A part written directly
+inside `cells` is refused — it has no row to go in.
 
 **Theming is Qt's stylesheet language, and most of it was already there.**
 `styleSheet` is an ordinary Qt property, so any widget takes one through the

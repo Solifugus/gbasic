@@ -236,9 +236,8 @@ the **import**, taking the whole program with it — the shrink
   recorded by name and not by value (§0.2), so it cannot be acted on. What
   shipped is the **form-level** binding, which needs no value from the
   declaration because the binding is the *name*.
-- **`tabs` and `cells`** are not in the validated vocabulary, so there is
-  nothing to render; and the **data-driven builder** (§4) is unstarted.
-  (`table` shipped 2026-10-18 — §0.6; menus and theming the same day — §0.7.)
+- **The data-driven builder** (§4) is unstarted. (`table` shipped 2026-10-18 —
+  §0.6; menus and theming the same day — §0.7; `tabs` and `cells` — §0.8.)
 - **A nested container inside a form does not bind.** A `form` holding a `row`
   holding fields binds only the form's direct children, deliberately: binding
   through the layout would make the record's shape depend on how the form is
@@ -493,6 +492,74 @@ out of what the language already has, where a file argument would put file
 resolution, missing-file behaviour and a search path inside a GUI module with no
 business owning them. Qt resolves the cascade between the app sheet and a
 widget's own, so there is no precedence rule here to invent.
+
+## 0.8 `tabs` and `cells` (2026-10-18)
+
+The last two words in §2.5's layout table. Both cost **no grammar**; one
+production was added for a different reason, and its shape was decided by
+measurement.
+
+### A container may carry a name or options, not both
+
+`tabs settings` with a body costs **zero** conflicts. The same thing *with*
+options — `tabs settings( movable: true )` — costs **four reduce/reduce**, and
+bison reports the rule useless: after `IDENT IDENT ( ... ) NEWLINE` the parser
+cannot tell a named *leaf* from the head of a container whose body is still to
+come. That is the wall §5.2 records for the server block's head.
+
+So the limit is stated rather than designed around, and **`qt.set` is what makes
+it affordable** — a named container's properties are set at run time.
+
+### `qt.set` was a gap, not a convenience
+
+`qt.read(win, part, property)` shipped without a counterpart, and the *only*
+other way to set a property is the declaration, which is written before anything
+has happened. So enabling a button once a form validates, greying a menu item,
+or making a field read-only on a condition had **no workaround at all**. It
+refuses an unknown property by name, because the two halves of one route must
+agree about what a property name is.
+
+### `cells` needed no new word
+
+A grid *is* rows of cells, so `row` is reused — refined inside `cells` to mean a
+row whose columns **align** with the rows above, where a `row` elsewhere is a box
+that does not. A new word per axis, or a position option on every part, was
+unnecessary. `across:` and `down:` are the spans, which is the half a box layout
+cannot do and the reason the directive exists.
+
+### The oracle was built before the fixture, and immediately paid for itself
+
+Third increment running, the same hole: every part reads back **by name**, so a
+widget in the wrong cell or with the wrong span is invisible to every other
+check — and placement is the entire point of `cells`. `qt.at(win, part)` answers
+`{ row, column, across, down }` by asking **the layout**, walking up from the
+widget rather than from any record of where we put it, because a remembered
+position would agree with a placement that was wrong.
+
+It found, within a minute, that **a field's label took no cell** — which is how
+the four-increment `label:` defect was discovered (see below). The geometry is
+now also the only way the *field* half of that fix is assertable, since a
+field's label becomes a nameless `QLabel`: its **column** says it is there.
+
+### `label:` had never reached any widget
+
+Measured: `check hold( label: "On hold" )` rendered with **no text**, and every
+`field` in a form got `addRow(QString(), w)` — an empty label. So every form row
+in this backend was unlabelled from the first backend commit through four
+increments.
+
+`qt_apply_options` skips `label` as "consumed at construction", and construction
+read the **top-level** `label` — which only a labelled *container* sets
+(`group "Credit"`, `tab "General"`). A leaf's `label:` is an option, read by
+nobody.
+
+**And I had already seen it.** The same defect in a sibling path produced table
+captions reading `placed`/`who`/`total` an hour earlier; I fixed that lookup and
+did not sweep, which is exactly PLAT-NUL's standing lesson — *a defect found in
+one place is evidence about every place that reads the same thing.* The menu
+path, written later, happened to read `options` correctly, which hid the
+pattern. No test caught it because every fixture read a value or some other
+property, and an unlabelled widget raises nothing.
 
 ---
 
