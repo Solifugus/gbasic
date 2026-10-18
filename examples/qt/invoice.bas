@@ -63,7 +63,7 @@ end function
 function on_close()
     qt.stop()
 end function
-program main()
+program main(args)
     lines = [ { code: "a1", what: "Consulting, March", qty: 12,
                 amount: {USD}"1800.00" },
               { code: "b2", what: "Travel",            qty: 1,
@@ -93,6 +93,12 @@ program main()
     print "the second line reads: " + qt.read(win, "a_b2", "text")
     ' AND PLACED BY THE LAYOUT, which is the half a property read cannot see.
     print "it sits at " + string(qt.at(win, "a_b2"))
+    if contains(args, "check") then
+        print "generated lines: " + string(len(lines))
+        print "the total shows: " + qt.read(win, "sum")
+        qt.stop()
+        return
+    end if
     qt.run()
     print "closed"
 end program

@@ -60,7 +60,7 @@ window notes( title: "Notes", width: 540, height: 360 )
     end on
 end window
 
-program main()
+program main(args)
     if not qt.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
@@ -80,6 +80,21 @@ program main()
 
         qt.open(notes)
         qt.select(notes, "note_list", 0)
+
+        if contains(args, "check") then
+            ' THE MENU BAR IS A TREE and the by-name registry is FLAT, so the
+            ' only way to see the structure is to ask Qt for it: a submenu hung
+            ' off the bar, an item in the wrong menu and a missing separator
+            ' all produce zero mismatches to a by-name check.
+            print "menus:         " + string(qt.menus(notes))
+            print "File holds:    " + string(qt.menus(notes, 0))
+            print "theme set:     " + string(len(qt.theme()) > 0)
+            print "notes:         " + string(len(notes_held))
+            print "chosen:        " + string(qt.selected(notes, "note_list"))
+            print "its title:     " + qt.cell(notes, "note_list", 0, "title")
+            qt.stop()
+            return
+        end if
         qt.run()
     end if
 end program

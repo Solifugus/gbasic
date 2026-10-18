@@ -69,6 +69,10 @@
 #               and for a stronger reason: it is a check on a DECLARATION, and
 #               the whole declarative surface was built to be provable with no
 #               toolkit.
+#   (The COVER tier that lived here, asserting examples/qt/README.md names
+#   every example, MOVED to tests/run_qt_examples.sh -- that suite owns the
+#   directory, and this one is about the builder. It caught two the day it was
+#   written and the move does not weaken it.)
 #   VALGRIND    the record walk allocates nothing, but it indexes a slot per
 #               DEPTH and the first version was a RING OF SIXTEEN that recycled
 #               the parent's slot at the seventeenth sibling -- a segfault at
@@ -344,39 +348,6 @@ if printf '%s\n' "$out" | grep -q 'check good: true' && \
 else
     printf '%s\n' "$out"
     fail "qt.check did not answer without a display"
-fi
-
-printf 'TIER cover: every Qt example is documented\n'
-# ADDED BECAUSE IT CAUGHT TWO. `examples/qt/README.md` listed `customer.bas`
-# and nothing else, while `orders.bas` and `notes.bas` had been there for a day
-# -- and run_gui_parse.sh parses the DIRECTORY by glob, so the examples
-# themselves could not rot while the page describing them silently did. Same
-# shape as the cookbook harness's COVER tier, and the same argument run_all.sh
-# makes about discovery: a list you have to remember to extend is a list that
-# shrinks.
-missing=""
-for f in examples/qt/*.bas; do
-    b=$(basename "$f")
-    hits=$(grep -c "\`$b\`" examples/qt/README.md || true)
-    if [ "$hits" -eq 0 ]; then
-        missing="$missing$b "
-    fi
-done
-if [ -z "$missing" ]; then
-    pass "every examples/qt/*.bas is named in the README"
-else
-    fail "undocumented Qt examples: $missing"
-fi
-# AND THE OTHER DIRECTION, or "everything is documented" is satisfied by a
-# README naming files that are gone.
-ghosts=""
-for b in $(grep -oE '^\| `[a-z_]+\.bas`' examples/qt/README.md | tr -d '|` ' ); do
-    [ -f "examples/qt/$b" ] || ghosts="$ghosts$b "
-done
-if [ -z "$ghosts" ]; then
-    pass "and the README names no example that is gone"
-else
-    fail "the README names missing examples: $ghosts"
 fi
 
 printf 'TIER valgrind\n'

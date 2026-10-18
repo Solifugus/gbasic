@@ -59,7 +59,7 @@ window customer( title: "Customer", width: 420 )
     end on
 end window
 
-program main()
+program main(args)
     ' ASK FIRST. `qt.can_display()` answers rather than raising -- including on
     ' a build with no Qt in it at all -- so a program can do something else
     ' instead of ending.
@@ -80,6 +80,26 @@ program main()
                  hold: false }
 
         qt.open(customer)
+
+        ' `check` PRINTS WHAT IT CAN SEE AND EXITS, which is how this example
+        ' is gated and also how you verify a Qt install without a screen.
+        if contains(args, "check") then
+            print "id shows:      " + qt.read(customer, "id")
+            print "name shows:    " + qt.read(customer, "name")
+            print "limit shows:   " + qt.read(customer, "limit")
+            print "hold shows:    " + qt.read(customer, "hold")
+            ' TYPING, FROM THE PROGRAM -- and then the whole record back.
+            qt.write(customer, "name", "Grace Hopper")
+            back = qt.subject(customer, "cust")
+            print "folded name:   " + back.name
+            ' AND THE KIND SURVIVED, which is what `type: {USD}` is for: a
+            ' widget holds TEXT, so a fold that trusted the widget would turn
+            ' money into a string that still prints the same digits.
+            print "limit is a:    " + type(back.limit)
+            print "untouched:     " + string(cust.name)
+            qt.stop()
+            return
+        end if
         qt.run()
     end if
 end program

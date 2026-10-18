@@ -52,7 +52,7 @@ window orders( title: "Orders", width: 560, height: 380 )
     end on
 end window
 
-program main()
+program main(args)
     if not qt.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
@@ -69,6 +69,23 @@ program main()
         ' A ROW CHOSEN FROM THE PROGRAM, so the window opens with something in
         ' it rather than waiting to be clicked.
         qt.select(orders, "lines_view", 0)
+
+        if contains(args, "check") then
+            print "rows:          " + string(len(lines))
+            print "chosen row:    " + string(qt.selected(orders, "lines_view"))
+            print "its customer:  " + qt.cell(orders, "lines_view", 0, "who")
+            ' THE CAPTION COMES FROM `label:` WHERE THE DATA COMES FROM `name`,
+            ' which is why the heading is an independent oracle: a column
+            ' reading the wrong field still shows a plausible value under a
+            ' heading that would have to be wrong too.
+            print "its heading:   " + qt.heading(orders, "lines_view", "who")
+            print "by position:   " + qt.heading(orders, "lines_view", 1)
+            qt.select(orders, "lines_view", 2)
+            print "after select:  " + string(qt.selected(orders, "lines_view"))
+            print "that customer: " + qt.cell(orders, "lines_view", 2, "who")
+            qt.stop()
+            return
+        end if
         qt.run()
     end if
 end program
