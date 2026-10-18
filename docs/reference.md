@@ -4085,6 +4085,23 @@ painted side area) and completion (the data exists in `source_outline` and
 `gbasic-lsp`; the popup is a `QCompleter`, another object attached to a widget,
 so it lands where the highlighter did).
 
+**The containers, and why there are no alignment properties.** A `row` packs
+left to right and a `column` top to bottom, each taking `margin:` and
+`spacing:`; a `group "Caption"` is a titled box around whatever is inside it;
+and a `form` lays its parts out as labelled rows, which is the whole of what
+`QFormLayout` does.
+
+**A `stretch` is pure space** (written `stretch()`), and it is the reason this vocabulary carries no
+`align:` anywhere: a stretch absorbs whatever room is left over, so to push a
+button to the right you put a stretch to its left. It is not a widget, so it
+takes no name and nothing can be set on it — anything you try to set is
+refused rather than quietly applied to the row it sits in.
+
+A `button` carries its caption in `text:` rather than `label:`, which is Qt's
+own spelling for it; `label:` on a `field` is the caption placed beside it, and
+in a `cells` grid that caption **takes a cell of its own**, which is why a
+labelled field occupies two.
+
 **`tabs` holds `tab` pages.** A page is given a column layout, so a `field`, a
 `row`, a `group` or a whole `table` works inside one with no further vocabulary:
 
