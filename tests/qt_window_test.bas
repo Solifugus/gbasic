@@ -44,8 +44,16 @@ window customer( title: "Customer", width: 480, height: 320 )
     ' rather than assigning: gBASIC has no closures, so a handler is a function
     ' and a write to an enclosing name would be a function-local -- which is
     ' the read-then-shadow rule run_core.sh exists for, not a defect here.
+    ' TWO LINES, AND THE SPLIT IS LOAD-BEARING. The first needs nothing but the
+    ' handler having run, so a handler fired during CONSTRUCTION is visible in
+    ' the ordering; the second reads the live widget, which is what says the
+    ' signal arrived with the window actually built. With one line doing both,
+    ' a connect-time fire raises inside `qt.read` and prints NOTHING -- so the
+    ' ordering control could not see it, which is how the perturbation written
+    ' for that control came back green.
     on save.clicked
-        print "SIGNAL save.clicked -> " + qt.read(customer, "name")
+        print "SIGNAL save.clicked"
+        print "SIGNAL read -> " + qt.read(customer, "name")
     end on
 end window
 

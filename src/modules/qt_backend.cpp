@@ -349,11 +349,17 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
     return n;
 }
 
-/* PROPERTIES BY NAME. `setProperty` on a name the widget's QMetaObject does
- * not carry would SUCCEED, storing a dynamic property nothing reads -- an
- * option silently doing nothing, which is the defect the window block's
- * closed vocabulary exists to prevent one level up. So the name is checked
- * against the metaobject first and refused by name. */
+/* PROPERTIES BY NAME -- AND THE METAOBJECT LOOKUP IS ABOUT THE MESSAGE, which
+ * is a correction to what this comment first claimed.
+ *
+ * It said `setProperty` on an undeclared name would SUCCEED, storing a dynamic
+ * property nothing reads. Measured, it does not: Qt returns false for a
+ * property the metaobject does not declare, so the `!setProperty` branch below
+ * refuses it either way -- and says "would not take that value for `texx`",
+ * which is FALSE. The value was fine; the name was not. That is the
+ * reports-the-wrong-cause class this tree has named repeatedly, so the lookup
+ * stays and the SUITE ASSERTS THE WORDING, because with the lookup removed and
+ * only the refusal asserted every check stayed green. */
 static int set_property(QWidget *widget, const char *prop, const QVariant &v,
                         char *err, size_t err_size) {
     if (!widget) {

@@ -171,7 +171,7 @@ fi
 # THE SIGNAL IS THE LOAD-BEARING LINE and is asserted on its own: every check
 # above passes on a backend that connected nothing, because nothing in the
 # fixture's state depends on the handler having run.
-if grep -qx 'SIGNAL save.clicked -> Ada Lovelace' "$work/w.out"; then
+if grep -qx 'SIGNAL read -> Ada Lovelace' "$work/w.out"; then
     pass "a real Qt signal reached a gBASIC handler, which read the live widget"
 else
     fail "the handler did not run: $(grep SIGNAL "$work/w.out" || echo '(nothing)')"
@@ -179,7 +179,12 @@ fi
 # AND IT RAN WHERE THE DECLARATION PUT IT, not at open: a handler fired during
 # construction would be the registration-time firing `watch` has, which here
 # would mean every button acting before anybody pressed one.
-if [ "$(grep -n 'SIGNAL save' "$work/w.out" | cut -d: -f1)" -gt \
+# ASSERTED ON THE HANDLER'S FIRST LINE, which needs nothing but the handler
+# having run. Against the line that READS the widget this control could not
+# fail: a handler fired at connect time raises inside `qt.read` -- the window
+# is not registered yet -- so it prints nothing and the ordering still looks
+# right. Measured, by the perturbation written for this check coming back green.
+if [ "$(grep -n 'SIGNAL save.clicked' "$work/w.out" | head -1 | cut -d: -f1)" -gt \
      "$(grep -n '^opened' "$work/w.out" | cut -d: -f1)" ]; then
     pass "CONTROL: it fired when the button was clicked and not when the window opened"
 else
@@ -220,10 +225,17 @@ EOF
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 ./gbasic "$work/badprop.bas" > "$work/bp.out" 2>&1
 set -e
-if grep -q 'REFUSED: .*texx' "$work/bp.out"; then
-    pass "a property the widget does not carry is refused AND NAMED"
+# THE WORDING IS THE ASSERTION, not merely that it refused. Qt's own
+# `setProperty` returns false for a property the metaobject does not declare,
+# so a backend WITHOUT the metaobject check still refuses -- and says "would
+# not take that value", which is FALSE: the value was fine, the name was not.
+# That is the reports-the-wrong-cause class, and it is the whole reason the
+# check exists. Measured: with the metaobject lookup removed, every other
+# check in this file stays green.
+if grep -q 'REFUSED: .*has no `texx` property' "$work/bp.out"; then
+    pass "a property the widget does not carry is refused, NAMED, and said to be absent"
 else
-    fail "unknown property not refused by name: $(tr '\n' '|' < "$work/bp.out")"
+    fail "the refusal does not name texx as absent: $(tr '\n' '|' < "$work/bp.out")"
 fi
 # THE CONTROL. Without it the rule above is satisfied by a backend that refuses
 # every option there is, which would make the whole by-name route useless.
