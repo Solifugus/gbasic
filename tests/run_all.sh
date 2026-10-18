@@ -330,7 +330,7 @@ for path in tests/run_*.sh; do
 done
 # And the other direction, so the set cannot quietly empty: the mid-link
 # hazard is real and at least one suite has always carried it.
-if [ "${#exc[@]}" -eq 0 ] && [ -z "$filter" ]; then
+if [ "${#exc[@]}" -eq 0 ] && [ -z "$filter" ] && [ "$changed_mode" != "1" ]; then
     printf 'FAIL lane: no suite declares itself exclusive -- the scan stopped matching, it did not pass\n'
     lane_rot=1
 fi
