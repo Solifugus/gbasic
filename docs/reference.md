@@ -3954,6 +3954,31 @@ item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
 `checked:` reach it through the same by-name property route every widget option
 uses.
 
+**`text` is a sentence and `memo` is many.** A `field` is one line of entry, so
+until these existed a heading, an instruction or a description had nowhere to
+go — the leaf vocabulary reached a line edit, a button and a check box and no
+further. A `text` **wraps by default**, because a label that does not wrap
+silently drops the thing it exists to show; `wordWrap: false` asks for one line.
+A `memo` is editable, scrolls, and holds plain text rather than markup, so what
+goes in is what `qt.read` gives back.
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+column( margin: 8, spacing: 6 )
+    text heading( label: "The Cellar" )
+    text blurb( label: "A dank room. Water drips somewhere behind you." )
+    memo log( label: "You are in the cellar." )
+    field command( label: "Command" )
+end column
+```
+
+Both are ordinary named parts: `qt.write` reaches them, `qt.set` reaches their
+properties, and they place in a `cells` grid like anything else. A `text`
+carries no `readOnly`, being no kind of entry, so asking for one is refused by
+name — which is how a program tells the two apart, since Qt strips newlines only
+from **typed** input and a `field` set programmatically stores them just as a
+`memo` does.
+
 **`tabs` holds `tab` pages.** A page is given a column layout, so a `field`, a
 `row`, a `group` or a whole `table` works inside one with no further vocabulary:
 

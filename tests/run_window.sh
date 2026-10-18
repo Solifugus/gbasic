@@ -745,9 +745,33 @@ refuse "a misspelled table is named, and the suggestion is the real word" "did y
 # vocabulary, so `table` was added to the containers and to the sentence that
 # lists them and MISSED THERE -- a reader who typed `tabel` got the generic
 # list rather than the one-word answer, for the newest word in the language.
-# Two representations of one list drift. It is derived from the two tables now,
-# and this loop fails the next time a word is added to one and not the other.
-for w in row column form group table menu tabs cells field button check stretch item separator; do
+#
+# THE WORD LIST IS NOW ASKED OF THE BINARY, which this loop needed for its own
+# sake: it WAS a hardcoded list too -- a FIFTH copy -- and `tab` was already
+# missing from it, so the newest words could be added to the code and this
+# tripwire would have gone on passing while testing fewer of them each time.
+# A tripwire that can drift is not one. The binary's own "unknown directive"
+# sentence is built from the two tables, so parsing it is asking the code.
+src vocab_probe <<'EOF'
+window w( title: "x" )
+    zzzqqq nothing_close( label: "x" )
+end window
+EOF
+vocab_line=$(out_of "$written")
+vocab=$(printf '%s' "$vocab_line" \
+    | sed -E 's/.*The containers are //; s/; the parts are / /' \
+    | tr -d ',' | sed -E 's/ and / /g')
+vocab_count=$(printf '%s\n' $vocab | grep -c . || true)
+# THE PROBE MUST HAVE WORKED, or the loop below runs over nothing and reports
+# a clean sweep of an empty list -- the vacuous-pass shape this file's own
+# mismatch reports already defend against.
+if [ "${vocab_count:-0}" -ge 14 ]; then
+    pass "the vocabulary came from the binary ($vocab_count words)"
+else
+    printf '    %s\n' "$(printf '%s' "$vocab_line" | head -1)"
+    fail "could not read the vocabulary out of the binary: got '$vocab'"
+fi
+for w in $vocab; do
     # ONE TRANSPOSITION of the last two letters, which is what fingers actually
     # do and is the shape the finder had to learn (`colunm`, `feild`).
     typo=$(printf '%s' "$w" | sed -E 's/(.)(.)$/\2\1/')

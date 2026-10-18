@@ -2,7 +2,8 @@
 
 **Status: largely shipped.** The `window` declaration (§0.2), the `qt` module
 (§0.4), binding (§0.5), `table` (§0.6), menus and theming (§0.7),
-`tabs`/`cells` (§0.8) and the builder (§0.9) exist, gated by
+`tabs`/`cells` (§0.8), the builder (§0.9) and `text`/`memo` (§0.10) exist,
+gated by
 `tests/run_window.sh`, `tests/run_qt_backend.sh` and
 `tests/run_qt_builder.sh`. Still proposal: `stdlib/qt.bas`, `show:`/`edit:` in
 option position, binding into a container nested inside a form, more than one
@@ -710,6 +711,77 @@ in `run_rules.sh`, which is where the helper was copied from.
 and `qt.check` makes it safe to build; helpers would be sugar over sugar, and
 whether they earn their place is a question a real consumer answers. Studio
 (§0.1) is that consumer.
+
+---
+
+## 0.10 `text` and `memo` (2026-10-18): the toolkit could not display a sentence
+
+**Shipped.** `tests/qt_text_test.bas`, a tier in `tests/run_qt_backend.sh`.
+
+**Found by setting out to write one example per aspect**, which is the argument
+for writing them. The leaf vocabulary constructed **`QLineEdit`,
+`QPushButton`, `QCheckBox` and no more** — so a heading, an instruction, a room
+description or a log had nowhere to go at all. Nothing in the tree said so,
+because every fixture and every example happened to need only an entry, a box
+and a button.
+
+**The nearest substitute was measured and refused.** A read-only frameless
+`QLineEdit` looks like a label — `readOnly: true, frame: false` both take — and
+**cannot wrap**, and is still a text entry: focusable, single-line, selectable
+as an input. A paragraph was not expressible, so this is a gap rather than a
+convenience.
+
+`text` → `QLabel`, **wrapping by default**, because a label that does not wrap
+silently truncates the thing it exists to show. `memo` → `QPlainTextEdit`
+rather than `QTextEdit`, because the subject is *text*: rich text would make
+`qt.read` answer markup for something a program put in as a string, and nothing
+in this vocabulary asks for formatting.
+
+**Both cost no grammar** — they ride the named-leaf production, as `item` and
+`separator` did.
+
+### A `QPlainTextEdit` has no `text` property
+
+It is `plainText`, and the reader's fallthrough asked for `text` — which answers
+an *invalid* `QVariant`, which this backend reports as **an absent part**. So
+`qt.read` on a perfectly real `memo` would have said the window has no such
+thing, and `qt.write` would have been refused for an unknown property on the one
+thing a memo is for. Both halves are named rather than left to the fallthrough.
+
+### Three hardcoded copies of the vocabulary, found by adding to it
+
+The *fourth* copy was the **"unknown directive" sentence**, which listed every
+word in prose — so adding a word meant editing a list nothing checked, and a
+reader who typed something nothing is close to would have been handed a list
+missing the newest words. It is built from the tables now.
+
+The *fifth* was in `run_window.sh`'s own typo tripwire — the loop that exists to
+catch exactly this drift was itself a hardcoded list, **and `tab` was already
+missing from it**, so the newest words could be added to the code while the
+tripwire went on passing and testing fewer of them each time. A tripwire that
+can drift is not one. It now asks the **binary** for its vocabulary by parsing
+that derived sentence, which is asking the code; all 17 words are swept, and
+the probe asserts it read a plausible list rather than looping over nothing.
+
+### Two of my own assumptions, both wrong, both found by running it
+
+A `QLineEdit` given three lines **keeps all three** — Qt strips newlines from
+*typed* input, not from `setText` — so the difference between a `field` and a
+`memo` is what a person *sees*, not what is stored, and a text comparison cannot
+tell them apart. The discriminator is the class, asked through the same by-name
+door: only a memo carries `plainText`.
+
+And `qt.read(win, part, "readOnly")` on a `QLabel` **raises** rather than
+answering `unknown`, which is this backend's documented contract for an absent
+property. The refusal is the assertion.
+
+### Still missing, and judged rather than listed
+
+A **`choice`** (`QComboBox`) has no substitute — a dropdown in a form row, which
+is what "this exit leads to which area" needs. A **`list`** probably does not
+need a word: a single-column `table` already answers a picker, and `qt.selected`
+and `qt.cell` already address it. Both are decided against what a real program
+needs rather than against Qt's catalogue.
 
 ---
 

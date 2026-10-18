@@ -52,8 +52,9 @@ static void win_error(WinRun *run, const void *item, const char *fmt, ...) {
 static const char *win_container_words[] = {"row", "column", "form", "group",
                                             "table", "menu", "tabs", "tab",
                                             "cells", NULL};
-static const char *win_leaf_words[] = {"field", "button", "check", "stretch",
-                                       "item", "separator", NULL};
+static const char *win_leaf_words[] = {"field", "button", "check", "text",
+                                       "memo", "stretch", "item", "separator",
+                                       NULL};
 
 static int win_in(const char *const *set, const char *word) {
     for (size_t i = 0; set[i]; i++) {
@@ -62,6 +63,23 @@ static int win_in(const char *const *set, const char *word) {
         }
     }
     return 0;
+}
+
+/* "row, column, ... and cells" -- an English list, because the sentence it
+ * goes into is read by somebody who has just mistyped a word. */
+static void win_join(char *out, size_t cap, const char *const *set) {
+    size_t n = 0;
+    out[0] = '\0';
+    while (set[n]) { n++; }
+    size_t used = 0;
+    for (size_t i = 0; i < n; i++) {
+        const char *sep = (i == 0) ? "" : (i + 1 == n) ? " and " : ", ";
+        int wrote = snprintf(out + used, cap - used, "%s%s", sep, set[i]);
+        if (wrote < 0 || (size_t)wrote >= cap - used) {
+            break;
+        }
+        used += (size_t)wrote;
+    }
 }
 
 int gb_window_word_is_container(const char *word) {
@@ -207,11 +225,19 @@ static void win_check_item(WinRun *run, const void *item,
                       "window: unknown directive '%s' -- did you mean '%s'?",
                       word, near);
         } else {
+            /* THE SENTENCE IS BUILT FROM THE TABLES, which is the same
+             * correction `win_nearest` needed: this was a FOURTH hardcoded
+             * copy of the vocabulary, in prose, so adding a word meant
+             * editing a list nothing checked. A reader who typed something
+             * nothing is close to would have been handed a list missing the
+             * newest words -- the defect the closed vocabulary exists to
+             * prevent, in the message that exists to explain it. */
+            char containers[256], parts[256];
+            win_join(containers, sizeof(containers), win_container_words);
+            win_join(parts, sizeof(parts), win_leaf_words);
             win_error(run, item,
-                      "window: unknown directive '%s'. The containers are row, "
-                      "column, form, group, table, menu, tabs, tab and "
-                      "cells; the parts are field, button, check, stretch, "
-                      "item and separator", word);
+                      "window: unknown directive '%s'. The containers are %s; "
+                      "the parts are %s", word, containers, parts);
         }
         return;
     }

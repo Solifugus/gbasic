@@ -59,7 +59,9 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QLabel>
+#include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QMetaMethod>
 #include <QMetaObject>
 #include <QPushButton>
@@ -463,6 +465,39 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
             c->setText(QString::fromUtf8(label));
         }
         w = c;
+    } else if (strcmp(word, "text") == 0) {
+        /* A SENTENCE ON A WINDOW, which nothing could display: the leaf
+         * vocabulary reached QLineEdit, QPushButton and QCheckBox and no
+         * more, so a heading, an instruction or a room description had
+         * nowhere to go. MEASURED before adding it -- the nearest substitute
+         * is a read-only frameless QLineEdit, which cannot WRAP and is still
+         * a text entry, so a paragraph was not expressible at all.
+         *
+         * IT WRAPS BY DEFAULT, deliberately: a label that does not wrap
+         * silently truncates the thing it exists to show, and the author who
+         * wants one line has `wordWrap: false` through the by-name route.
+         * Selectable, because text a person cannot copy is a nuisance and the
+         * widget is read-only either way. */
+        QLabel *l = new QLabel(p->widget);
+        l->setWordWrap(true);
+        l->setTextInteractionFlags(Qt::TextBrowserInteraction |
+                                   Qt::TextSelectableByKeyboard);
+        if (label && *label) {
+            l->setText(QString::fromUtf8(label));
+        }
+        w = l;
+    } else if (strcmp(word, "memo") == 0) {
+        /* MANY LINES, which `field` is not: a QLineEdit holds one, so a
+         * description, a note or a game's output log had nowhere to go
+         * either. QPlainTextEdit rather than QTextEdit because the subject is
+         * TEXT -- rich text would make `qt.read` answer markup for something
+         * a program put in as a string, and nothing in this vocabulary asks
+         * for formatting. */
+        QPlainTextEdit *m = new QPlainTextEdit(p->widget);
+        if (label && *label) {
+            m->setPlainText(QString::fromUtf8(label));
+        }
+        w = m;
     } else {
         say(err, err_size,
             QByteArray("no Qt widget is wired for `") + word + "`");
@@ -791,6 +826,13 @@ extern "C" char *gb_qt_read(void *window, const char *name) {
         v = w->property("text");
     } else if (qobject_cast<QCheckBox *>(w)) {
         v = w->property("checked");
+    } else if (qobject_cast<QPlainTextEdit *>(w)) {
+        /* A QPlainTextEdit HAS NO `text` PROPERTY -- it is `plainText` -- and
+         * the fallthrough below would have answered an INVALID QVariant,
+         * which this function reports as an absent part. So `qt.read` on a
+         * perfectly real `memo` would have said the window has no such thing.
+         * Named here rather than left to the fallthrough for that reason. */
+        v = w->property("plainText");
     } else {
         v = w->property("text");
     }
@@ -821,6 +863,13 @@ extern "C" int gb_qt_write(void *window, const char *name, const char *text,
         QString s = QString::fromUtf8(text);
         return set_property(w, "checked",
                             QVariant(s == "true" || s == "1"), err, err_size);
+    }
+    if (qobject_cast<QPlainTextEdit *>(w)) {
+        /* THE WRITE HALF OF THE SAME FACT. `set_property(w, "text", ...)` is
+         * refused by the QMetaObject door, so a `qt.write` to a memo would
+         * have reported an unknown property for the one thing a memo is for. */
+        return set_property(w, "plainText",
+                            QVariant(QString::fromUtf8(text)), err, err_size);
     }
     return set_property(w, "text", QVariant(QString::fromUtf8(text)), err,
                         err_size);

@@ -611,6 +611,39 @@ else
     fail "the bad-part refusal: $(grep BADPART "$work/tb.out" || echo 'never fired')"
 fi
 
+# ------------------------------------------------------------------- TEXT/MEMO
+
+printf 'TIER text: a sentence on a window, and many lines of one\n'
+# WHY THIS TIER EXISTS AT ALL is the finding: the leaf vocabulary reached
+# QLineEdit, QPushButton and QCheckBox AND NO MORE, so until 2026-10-18 a
+# heading, an instruction or a room description had NOWHERE TO GO -- and
+# nothing in the tree said so, because every fixture and every example happened
+# to need only an entry, a box and a button. Found by setting out to write one
+# example per aspect of this backend, which is the argument for writing them.
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
+    tests/qt_text_test.bas > "$work/tx.out" 2> "$work/tx.err"
+tx_rc=$?
+set -e
+if [ "$tx_rc" != "0" ]; then
+    printf '    %s\n' "$(tail -5 "$work/tx.err")"
+    fail "the text fixture exited $tx_rc"
+fi
+txchecks=$(grep -c '^ok   ' "$work/tx.out" || true)
+if grep -q MISMATCH "$work/tx.out"; then
+    grep MISMATCH "$work/tx.out" | while read -r line; do printf '    %s\n' "$line"; done
+    fail "$(grep -c MISMATCH "$work/tx.out") mismatches in the text fixture"
+elif [ "${txchecks:-0}" = "0" ]; then
+    fail "no text checks ran at all, so '0 mismatches' would mean nothing"
+else
+    pass "$txchecks checks, 0 mismatches"
+fi
+if [ "${txchecks:-0}" -ge 17 ]; then
+    pass "the text fixture ran its whole battery ($txchecks)"
+else
+    fail "the text fixture ran only $txchecks checks, want at least 17"
+fi
+
 # ------------------------------------------------------------------------ MENU
 
 printf 'TIER menu: a bar, submenus, separators, and properties on a QAction\n'
