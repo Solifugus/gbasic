@@ -611,6 +611,42 @@ else
     fail "the bad-part refusal: $(grep BADPART "$work/tb.out" || echo 'never fired')"
 fi
 
+# ---------------------------------------------------------------------- CHOICE
+
+printf 'TIER choice: one of a list, through either of its two doors\n'
+# DECIDED BY A REAL PROGRAM rather than Qt's catalogue: BAG's area editor gives
+# every area six exits and each NAMES ANOTHER AREA, which a `field` can only
+# answer by typing an id and a `table` is a grid rather than a dropdown. The
+# same measurement said NOT to add a `list`, a one-column `table` already being
+# a picker that `qt.selected` addresses and `qt.refresh` keeps current.
+#
+# AND IT CAUGHT TWO GAPS OF MINE: `qt_bindable_word` admitted only `field` and
+# `check`, so a `choice` AND a `memo` rendered perfectly and bound NOT AT ALL --
+# the widget plainly showed a value and the fold answered an empty string.
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
+    tests/qt_choice_test.bas > "$work/ch.out" 2> "$work/ch.err"
+ch_rc=$?
+set -e
+if [ "$ch_rc" != "0" ]; then
+    printf '    %s\n' "$(tail -5 "$work/ch.err")"
+    fail "the choice fixture exited $ch_rc"
+fi
+chchecks=$(grep -c '^ok   ' "$work/ch.out" || true)
+if grep -q MISMATCH "$work/ch.out"; then
+    grep MISMATCH "$work/ch.out" | while read -r line; do printf '    %s\n' "$line"; done
+    fail "$(grep -c MISMATCH "$work/ch.out") mismatches in the choice fixture"
+elif [ "${chchecks:-0}" = "0" ]; then
+    fail "no choice checks ran at all, so '0 mismatches' would mean nothing"
+else
+    pass "$chchecks checks, 0 mismatches"
+fi
+if [ "${chchecks:-0}" -ge 24 ]; then
+    pass "the choice fixture ran its whole battery ($chchecks)"
+else
+    fail "the choice fixture ran only $chchecks checks, want at least 24"
+fi
+
 # --------------------------------------------------------------------- REFRESH
 
 printf 'TIER refresh: a table shows the list as it is NOW\n'

@@ -243,6 +243,15 @@ char *gb_qt_menu_entry_title(void *window, int index, int entry,
  * not known until the bind pass reads it, which is after the window is built. */
 void *gb_qt_table(void *parent, const char *name, const char *const *headers,
                   int columns, char *err, size_t err_size);
+/* FILL A `choice`'S LIST. Two calls rather than one taking an array, because
+ * the C seam carries no gBASIC types: clear it, then add each item. `clear`
+ * also resets the selection, which is the honest behaviour -- a list that has
+ * changed may not contain what was chosen. */
+int gb_qt_choice_clear(void *window, const char *name, char *err,
+                       size_t err_size);
+int gb_qt_choice_add(void *window, const char *name, const char *item,
+                     char *err, size_t err_size);
+
 int gb_qt_table_size(void *window, const char *name, int rows, char *err,
                      size_t err_size);
 int gb_qt_table_set(void *window, const char *name, int row, int col,

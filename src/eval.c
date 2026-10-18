@@ -44221,6 +44221,55 @@ static Value server_literal_value(AstExpr *expr) {
     }
 }
 
+/* A WINDOW'S OPTION VALUE. Scalars go through `server_literal_value`, which
+ * the two blocks share; what this adds is AN ARRAY OF LITERALS, for
+ * `choice facing( options: ["north", "south"] )`.
+ *
+ * WHY THAT IS NOT A WIDENING OF THE RULE BUT A GAP IN IT. The declaration
+ * records an option BY VALUE only when it is a literal, and the stated reason
+ * is what a declaration can KNOW: `show: cust.id` names a place to read when
+ * something renders, so there is nothing to report at load time. An array
+ * whose elements are all literals is knowable at load time, so it falls on the
+ * knowable side of that very reason -- it was excluded by the implementation
+ * rather than by the argument.
+ *
+ * SEPARATE FROM THE SERVER PATH BY CONSTRUCTION. `server_literal_value` is
+ * shared, and a server head option taking a list means nothing today; giving
+ * the window its own wrapper leaves that path provably unchanged rather than
+ * needing a suite to say so.
+ *
+ * AN ARRAY WITH A NON-LITERAL IN IT IS STILL `nothing`, not a partial list:
+ * half a list is worse than none, since a `choice` filled from it would offer
+ * some of the options and look perfectly ordinary. */
+static Value window_literal_value(AstExpr *expr) {
+    if (expr->kind == AST_EXPR_ARRAY) {
+        for (size_t i = 0; i < expr->as.array.count; i++) {
+            AstExpr *el = expr->as.array.items[i];
+            if (el->kind != AST_EXPR_NUMBER && el->kind != AST_EXPR_STRING &&
+                el->kind != AST_EXPR_BOOL) {
+                return value_null();
+            }
+        }
+        Value *values = NULL;
+        if (expr->as.array.count > 0) {
+            values = malloc(sizeof(Value) * expr->as.array.count);
+            if (!values) {
+                abort();
+            }
+            for (size_t i = 0; i < expr->as.array.count; i++) {
+                values[i] = server_literal_value(expr->as.array.items[i]);
+            }
+        }
+        /* `value_array` ADOPTS the buffer, so freeing it here is a double
+         * free -- which the note on `window_items_value` six functions along
+         * already records as what ITS first version did, and which I did
+         * again anyway. The run said `free(): double free detected in tcache
+         * 2` and aborted. */
+        return value_array(values, expr->as.array.count);
+    }
+    return server_literal_value(expr);
+}
+
 static Value server_site_value(const char *name, const char *host,
                                AstRecordFieldList *options,
                                AstServerItemList *items) {
@@ -44387,7 +44436,7 @@ static Value window_item_value(AstWindowItem *item) {
     Value options = value_record(NULL, 0);
     for (size_t i = 0; i < item->options.count; i++) {
         AstRecordField *field = &item->options.items[i];
-        record_set(&options, field->name, server_literal_value(field->value));
+        record_set(&options, field->name, window_literal_value(field->value));
     }
     record_set(&out, "options", options);
     if (item->kind == AST_WINDOW_CONTAINER) {
@@ -44420,7 +44469,7 @@ static Value window_build_value(AstStmt *stmt) {
     Value options = value_record(NULL, 0);
     for (size_t i = 0; i < stmt->as.window.options.count; i++) {
         AstRecordField *field = &stmt->as.window.options.items[i];
-        record_set(&options, field->name, server_literal_value(field->value));
+        record_set(&options, field->name, window_literal_value(field->value));
     }
     record_set(&window, "options", options);
 

@@ -46,6 +46,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QMenuBar>
@@ -486,6 +487,19 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
             l->setText(QString::fromUtf8(label));
         }
         w = l;
+    } else if (strcmp(word, "choice") == 0) {
+        /* ONE OF A LIST, which had no substitute at all: a `field` means
+         * typing the thing's id and a `table` is a grid rather than a
+         * dropdown. MEASURED against a real program -- BAG's area editor,
+         * where each of six exits names another area -- rather than chosen
+         * from Qt's catalogue, which is why `list` was NOT added: a
+         * one-column `table` already answers a picker and `qt.selected`
+         * addresses it.
+         *
+         * ITS ITEMS COME FROM DATA, so they are filled by `qt.options` rather
+         * than guessed here; a declared `options:` literal is handled above in
+         * qt.c, for the fixed case where typing them out is the honest thing. */
+        w = new QComboBox(p->widget);
     } else if (strcmp(word, "memo") == 0) {
         /* MANY LINES, which `field` is not: a QLineEdit holds one, so a
          * description, a note or a game's output log had nowhere to go
@@ -826,6 +840,13 @@ extern "C" char *gb_qt_read(void *window, const char *name) {
         v = w->property("text");
     } else if (qobject_cast<QCheckBox *>(w)) {
         v = w->property("checked");
+    } else if (qobject_cast<QComboBox *>(w)) {
+        /* THE CHOSEN TEXT, which is what a program asked "which one?" wants.
+         * A QComboBox has no `text` property either, so the fallthrough would
+         * have reported a real `choice` as an absent part -- the same defect a
+         * `memo` had, one widget along. The INDEX is reachable through the
+         * by-name route as `currentIndex`. */
+        v = w->property("currentText");
     } else if (qobject_cast<QPlainTextEdit *>(w)) {
         /* A QPlainTextEdit HAS NO `text` PROPERTY -- it is `plainText` -- and
          * the fallthrough below would have answered an INVALID QVariant,
@@ -863,6 +884,22 @@ extern "C" int gb_qt_write(void *window, const char *name, const char *text,
         QString s = QString::fromUtf8(text);
         return set_property(w, "checked",
                             QVariant(s == "true" || s == "1"), err, err_size);
+    }
+    if (QComboBox *box = qobject_cast<QComboBox *>(w)) {
+        /* CHOOSE AN EXISTING ITEM BY ITS TEXT, and REFUSE one that is not
+         * there. `setCurrentText` on an uneditable box silently does NOTHING
+         * in Qt, so a program setting a value that is not in the list would
+         * read back the old one and nothing would say so -- a plausible wrong
+         * answer, which is this backend's whole failure class. */
+        int at = box->findText(QString::fromUtf8(text));
+        if (at < 0) {
+            say(err, err_size,
+                QByteArray("`") + name + "` has no choice `" + text +
+                "` -- fill its list with qt.options first");
+            return 0;
+        }
+        box->setCurrentIndex(at);
+        return 1;
     }
     if (qobject_cast<QPlainTextEdit *>(w)) {
         /* THE WRITE HALF OF THE SAME FACT. `set_property(w, "text", ...)` is
@@ -1199,6 +1236,43 @@ static QTableWidget *table_of(void *window, const char *name) {
     }
     return qobject_cast<QTableWidget *>(
         root->parts.value(QString::fromUtf8(name), nullptr));
+}
+
+/* A `choice`'S LIST, filled from data. The part must really BE one: a program
+ * that put items into a QLineEdit by mistake would get no error from Qt and a
+ * widget that looks untouched. */
+static QComboBox *choice_named(void *window, const char *name, char *err,
+                               size_t err_size) {
+    QObject *o = part_named(window, name, err, err_size);
+    if (!o) {
+        return nullptr;
+    }
+    QComboBox *box = qobject_cast<QComboBox *>(o);
+    if (!box) {
+        say(err, err_size,
+            QByteArray("`") + name + "` is not a `choice`, so it holds no list");
+    }
+    return box;
+}
+
+extern "C" int gb_qt_choice_clear(void *window, const char *name, char *err,
+                                  size_t err_size) {
+    QComboBox *box = choice_named(window, name, err, err_size);
+    if (!box) {
+        return 0;
+    }
+    box->clear();
+    return 1;
+}
+
+extern "C" int gb_qt_choice_add(void *window, const char *name,
+                                const char *item, char *err, size_t err_size) {
+    QComboBox *box = choice_named(window, name, err, err_size);
+    if (!box) {
+        return 0;
+    }
+    box->addItem(QString::fromUtf8(item));
+    return 1;
 }
 
 extern "C" int gb_qt_table_size(void *window, const char *name, int rows,

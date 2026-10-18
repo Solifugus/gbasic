@@ -3,8 +3,8 @@
 **Status: largely shipped.** The `window` declaration (§0.2), the `qt` module
 (§0.4), binding (§0.5), `table` (§0.6), menus and theming (§0.7),
 `tabs`/`cells` (§0.8), the builder (§0.9), `text`/`memo` (§0.10) and
-`qt.refresh` (§0.11) exist, with §0.12 a whole application built on them, gated
-by
+`qt.refresh` (§0.11) and `choice` (§0.13) exist, with §0.12 a whole application
+built on them, gated by
 `tests/run_window.sh`, `tests/run_qt_backend.sh` and
 `tests/run_qt_builder.sh`. Still proposal: `stdlib/qt.bas`, `show:`/`edit:` in
 option position, binding into a container nested inside a form, more than one
@@ -879,6 +879,92 @@ exits each name another area while an item names its location. Those want a
 **dropdown**, which is the one widget with no substitute (§0.10). And teaching
 BAG to *emit* a `window` block, so the generated game is a GUI, is a separate
 exercise: a program writing a declaration.
+
+---
+
+## 0.13 `choice` (2026-10-18): the last widget with no substitute
+
+**Shipped.** `tests/qt_choice_test.bas`, a tier in `tests/run_qt_backend.sh`.
+
+**Decided by a real program rather than Qt's catalogue.** BAG's area editor
+gives every area six exits and **each one names another area**; an item names its
+location. A `field` can only answer that by typing an id, and a `table` is a grid
+rather than a dropdown — so there was no substitute at all.
+
+**And the same measurement said not to add a `list`.** A one-column `table`
+already *is* a picker, `qt.selected` already addresses it, and since §0.11 it
+follows a changing list. A `list` would be a second way to say that, which is
+the shape this tree puts tripwires against.
+
+### Two doors, because one program needs both
+
+BAG's triggers fire on a **fixed** set of directions and its exits name a set
+that is **not** fixed. So:
+
+| | |
+|---|---|
+| `choice facing( options: ["north", "south"] )` | declared, knowable at load time, carried **by value** in the record |
+| `qt.options(win, part, list)` | from data, filled after the window opens |
+
+Both go through **one filler**, because a choice filled one way and refilled the
+other must hold the same thing — the rule `qt_populate_table` follows for a
+table's rows.
+
+**A declared list needed the literal rule looked at again.** A window's options
+are recorded by value only when literal, and the stated reason is what a
+declaration can *know*: `show: cust.id` names a place to read later. An array
+whose elements are all literals **is** knowable at load time, so it falls on the
+knowable side of that very reason — it was excluded by the implementation rather
+than by the argument. `window_literal_value` adds it and leaves the shared
+server path untouched **by construction** rather than by a suite saying so. An
+array with a non-literal inside it is still `nothing` and not a partial list:
+half a list is worse than none, since the dropdown would offer some of the
+options and look entirely ordinary.
+
+### `qt.write` refuses a choice that is not there
+
+Qt's own `setCurrentText` **silently does nothing** on an uneditable box, so a
+program setting an absent value would read back the old one with nothing said —
+a plausible wrong answer, which is this backend's whole failure class.
+
+### Refilling resets the selection
+
+Deliberately: a list that has changed may not contain what was chosen, and an
+index into a list that has moved is how a form comes to report a value nobody
+picked. A program that wants the old choice back asks for it with `qt.write`,
+which refuses one the new list does not hold.
+
+### Two gaps of mine, found by folding one back
+
+`qt_bindable_word` admitted only `field` and `check`. So a `choice` **and a
+`memo`** rendered perfectly and **bound not at all** — the widget plainly showed
+a value and `qt.subject` answered an empty string. Adding words to the
+vocabulary without adding them there leaves them half-wired: a window that looks
+right and a record that never fills.
+
+The rule is now stated rather than enumerated: **a part binds if it holds a
+value a person can change.** `field`, `check`, `memo`, `choice` do; `text` does
+not, so folding it would be meaningless and populating it alone would make
+`to edit` and `to show` mean different things depending on the word. A form
+wanting wrapped prose from its subject uses a `memo` with `readOnly: true` —
+which binds *and* wraps, where the read-only `field` §0.10 ruled out could do
+neither.
+
+**And a `choice` whose list is not filled yet does not raise at open.** The
+ordering makes it ordinary: a declared list is there at construction, but a
+`qt.options` list can only arrive *after* the window is open, which is after the
+binding pass. So the subject's value has nothing to match and the selection is
+left alone — the same ruling §0.5 made one line up for a field the record does
+not have. Every other word still raises, so a real refusal is not swallowed.
+
+### And a double free the file already warned about
+
+`value_array` **adopts** its buffer. The note on `window_items_value`, six
+functions along in the same file, says so in as many words — *"freeing it here
+is a double free, which is exactly what the first version did"* — and I did it
+again anyway. The run said `free(): double free detected in tcache 2` and
+aborted. Fourth instance this session of a correct paragraph nearby that the
+author did not read.
 
 ---
 

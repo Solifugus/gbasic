@@ -553,8 +553,26 @@ static QtOpenWindow *qt_window_entry(const char *name) {
  * `button` and `stretch` do not, so a button named `save` inside a form is not
  * a binding that failed to find a field -- it is a button. Without this
  * distinction the refusal below would fire on the commonest form there is. */
+/* WHICH PARTS A FORM BINDS. THE RULE IS "IT HOLDS A VALUE A PERSON CAN
+ * CHANGE", which is what decides the two new words rather than taste.
+ *
+ * A `memo` and a `choice` are bound: a description and a chosen value are both
+ * data, and BAG's area editor wants exactly those -- `area.description` in a
+ * memo and `area.north` in a dropdown. ADDING THEM TO THE VOCABULARY WITHOUT
+ * ADDING THEM HERE LEFT THEM HALF-WIRED, rendering perfectly and binding not
+ * at all, which is a window that looks right and a record that never fills:
+ * found by folding one back and getting an empty string out of a widget that
+ * plainly showed a value.
+ *
+ * A `text` IS NOT BOUND, and that is a decision rather than an omission: it
+ * carries no value a person can change, so folding it is meaningless, and
+ * populating it alone would make `to edit` and `to show` mean different things
+ * depending on the word. A form wanting WRAPPED PROSE from its subject uses a
+ * `memo` with `readOnly: true`, which binds and wraps -- the read-only `field`
+ * §0.10 ruled out could do neither. */
 static int qt_bindable_word(const char *word) {
-    return word && (strcmp(word, "field") == 0 || strcmp(word, "check") == 0);
+    return word && (strcmp(word, "field") == 0 || strcmp(word, "check") == 0 ||
+                    strcmp(word, "memo") == 0 || strcmp(word, "choice") == 0);
 }
 
 /* THE SUBJECT, WITHOUT RAISING. `env_get` raises `undefined variable: cust`,
@@ -647,7 +665,7 @@ static int qt_pump_gbasic(void) {
 static int qt_structural_option(const char *name) {
     static const char *structural[] = {
         "label", "margin", "spacing", "grow", "show", "edit", "type",
-        "across", "down", NULL
+        "across", "down", "options", NULL
     };
     for (size_t i = 0; structural[i]; i++) {
         if (strcmp(name, structural[i]) == 0) {
@@ -655,6 +673,42 @@ static int qt_structural_option(const char *name) {
         }
     }
     return 0;
+}
+
+/* FILL A `choice`'S LIST FROM AN ARRAY. ONE PIECE OF CODE for both doors --
+ * the declared `options:` literal and the run-time `qt.options` -- because a
+ * choice filled one way and refilled the other must hold the same thing, which
+ * is the rule `qt_populate_table` follows for a table's rows.
+ *
+ * EVERY ITEM GOES THROUGH THE ONE RENDERER (PLAT-RENDER), so a list of numbers,
+ * dates or money reads as a person would see it printed rather than as whatever
+ * a bare cast produced. */
+static int qt_fill_choice(void *root, const char *name, Value *list,
+                          const char *whose) {
+    char err[QT_ERRBUF];
+    char message[512];
+    err[0] = '\0';
+    if (!gb_qt_choice_clear(root, name, err, sizeof(err))) {
+        snprintf(message, sizeof(message), "%s: %s", whose,
+                 err[0] ? err : "that list could not be cleared");
+        qt_raise(message);
+        return 0;
+    }
+    size_t n = list->as.array.store ? list->as.array.store->count : 0;
+    for (size_t i = 0; i < n; i++) {
+        Value text = builtin_string_value(value_copy(list->as.array.store->items[i]));
+        const char *shown = (text.kind == VALUE_STRING) ? text.as.string : "";
+        err[0] = '\0';
+        int ok = gb_qt_choice_add(root, name, shown, err, sizeof(err));
+        value_free(text);
+        if (!ok) {
+            snprintf(message, sizeof(message), "%s: %s", whose,
+                     err[0] ? err : "that choice could not be added");
+            qt_raise(message);
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static int qt_apply_options(void *node, Value *options, const char *word,
@@ -980,7 +1034,43 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         qt_raise(message);
         return 0;
     }
-    return qt_apply_options(node, opts ? opts->value : NULL, word ? word : "", 0);
+    if (!qt_apply_options(node, opts ? opts->value : NULL, word ? word : "", 0)) {
+        return 0;
+    }
+    /* A DECLARED `options:` LIST, for the fixed case -- a direction, a status,
+     * a currency -- where typing them out is the honest thing. The data-driven
+     * case is `qt.options`, and BAG's editor needs both in one program: the
+     * directions are fixed and the areas are not, which is the measurement
+     * that said support both rather than one.
+     *
+     * AFTER the property pass, because `options` is a STRUCTURAL option (it is
+     * no Qt property, a QComboBox's items not being one) and so was skipped
+     * there; and refused on anything that is not a `choice`, since a list of
+     * items means nothing to a field or a button. */
+    if (opts && opts->value && opts->value->kind == VALUE_RECORD) {
+        RecordField *list = record_find(opts->value, "options");
+        if (list && list->value) {
+            if (!word || strcmp(word, "choice") != 0) {
+                snprintf(message, sizeof(message),
+                         "window: only a `choice` holds a list of options, not "
+                         "'%s'", word ? word : "?");
+                qt_raise(message);
+                return 0;
+            }
+            if (list->value->kind != VALUE_ARRAY) {
+                snprintf(message, sizeof(message),
+                         "window: `choice %s( options: ... )` needs a list, and "
+                         "it holds %s", name ? name : "?",
+                         value_kind_name(list->value->kind));
+                qt_raise(message);
+                return 0;
+            }
+            if (!qt_fill_choice(root, name, list->value, "window")) {
+                return 0;
+            }
+        }
+    }
+    return 1;
 }
 
 static int qt_build_items(void *parent, Value *items, void *root) {
@@ -1137,6 +1227,22 @@ static int qt_bind_form(void *root, Value *form, const char *window_name) {
         int ok = gb_qt_write(root, name, text.as.string, err, sizeof(err));
         value_free(text);
         if (!ok) {
+            /* A `choice` WHOSE LIST IS NOT FILLED YET IS NOT A MISTAKE, and
+             * the ordering makes it ordinary: a declared `options:` list is
+             * filled at construction and so is there, but one filled by
+             * `qt.options` can only be filled AFTER the window is open --
+             * which is after this pass. So the subject's value has nothing to
+             * match and the selection is simply left alone.
+             *
+             * It is the same ruling §0.5 already made one line up, where a
+             * field the record does not have is left empty rather than
+             * refused because that is what a form filling in a NEW record
+             * needs. Every other word still raises, so a real refusal is not
+             * swallowed. */
+            const char *word = qt_record_text(part, "word");
+            if (word && strcmp(word, "choice") == 0) {
+                continue;
+            }
             snprintf(message, sizeof(message),
                      "window `%s`: `%s` could not be shown -- %s", window_name,
                      name, err[0] ? err : "the part refused that value");
@@ -2300,6 +2406,58 @@ static Value qt_eval_call(AstExpr *expr) {
      * widgets back over what the form captured at open, and leaving that stale
      * would make a refreshed table fold into the OLD list -- a plausible
      * record built from two different moments. */
+    /* `qt.options(win, part, list)` -- a `choice`'S LIST, FROM DATA.
+     *
+     * The same principle as `qt.refresh` one widget along: the list is read AT
+     * THE MOMENT ASKED, nothing tracked in between. Here it is passed rather
+     * than named, because a choice has no declared subject to re-read -- which
+     * is the honest difference: a table says `to show lines` and a choice does
+     * not say anything.
+     *
+     * CLEARING RESETS THE SELECTION and that is deliberate: a list that has
+     * changed may not contain what was chosen, and keeping an index into a
+     * list that has moved is how a form comes to report a value nobody picked.
+     * A program that wants the old choice back asks for it with `qt.write`,
+     * which refuses one that is not in the new list. */
+    if (strcmp(verb, "options") == 0) {
+        if (argc != 3) {
+            qt_raise("qt.options expects a window, a part's name and a list");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value list = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "options") || which.kind != VALUE_STRING ||
+            list.kind != VALUE_ARRAY) {
+            if (!error_action_pending()) {
+                qt_raise("qt.options expects a window, the part's name as text "
+                         "and a list");
+            }
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        if (!qt_fill_choice(root, which.as.string, &list, "qt.options")) {
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        size_t n = list.as.array.store ? list.as.array.store->count : 0;
+        value_free(win); value_free(which); value_free(list);
+        return value_number((double)n);
+    }
+
     if (strcmp(verb, "refresh") == 0) {
         if (argc != 2) {
             qt_raise("qt.refresh expects a window and the table's name");

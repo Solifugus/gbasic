@@ -3846,6 +3846,7 @@ end program
 | `qt.select(win, table, row)` | choose a row from the program, for a window that opens with one highlighted; `unknown` chooses nothing |
 | `qt.cell(win, table, row, column)` | one cell, addressed by the **column's own name** rather than its position |
 | `qt.heading(win, table, column)` | a column's caption, by its name **or** its position |
+| `qt.options(win, part, list)` | fill a `choice`'s list from data, answering how many items it put in. Clearing **resets the selection**, deliberately: a list that has changed may not contain what was chosen, and an index into a list that has moved is how a form reports a value nobody picked |
 | `qt.refresh(win, table)` | show the list **as it is now**, answering how many rows it drew. A `table to show` reads its subject when the window OPENS and does not follow it afterwards, so this is what makes a changing list visible — the symmetric half of `qt.subject`, which reads the widgets at the moment asked. The subject is re-read from the frame that calls this, and the table grows, shrinks and redraws changed cells |
 | `qt.set(win, part, property, value)` | set one named Qt property at run time — the write half of `qt.read(win, part, property)`. The only other way to set one is the declaration, which is written before anything has happened |
 | `qt.at(win, part)` | where a part sits in its `cells`: `{ row, column, across, down }`, asked of the layout |
@@ -3954,6 +3955,34 @@ addresses — so a menu takes no name, and `on open_file.triggered` names the
 item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
 `checked:` reach it through the same by-name property route every widget option
 uses.
+
+**`choice` is one of a list**, and its list comes through one of two doors. A
+**declared** `options:` is for a fixed set — a direction, a status, a currency —
+and the record the declaration binds carries it by value, so it is there before
+the window opens. A set that comes from **data** is filled by `qt.options`
+after it opens:
+
+<!--fragment: the inside of a program, not a program on its own-->
+```basic
+shown = qt.options(editor, "leads_to", ["(nowhere)", "The Cellar", "The Garden"])
+qt.write(editor, "leads_to", "The Garden")
+```
+
+`qt.read(win, part)` answers the **chosen text**; `currentIndex` through the
+by-name route answers its position. `qt.write` chooses an item by its text and
+**refuses one that is not in the list** — Qt's own `setCurrentText` silently
+does nothing on an uneditable box, so a program setting an absent value would
+read back the old one with nothing said.
+
+A `choice` and a `memo` are both **bound** by a form, the rule being *it holds a
+value a person can change*: a description and a chosen value are data. A `text`
+is not bound — it carries no such value, so folding it would be meaningless. A
+form wanting wrapped prose from its subject uses a `memo` with `readOnly: true`.
+Under `to show` a memo becomes read-only and a choice is **disabled**, a
+`QComboBox` having no `readOnly`.
+
+There is deliberately **no `list` word**: a one-column `table` is a picker,
+`qt.selected` addresses it, and `qt.refresh` keeps it current.
 
 **A table does not follow its list on its own.** `table orders to show lines`
 reads `lines` when the window opens; appending to it afterwards changes nothing
