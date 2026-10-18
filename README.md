@@ -608,7 +608,8 @@ without a test going red. Seventeen of them:
 
 - [Windows with Qt](docs/qt_cookbook.md) — a declarative `window` block
   rendered with Qt 6: a form bound to a record, a list feeding it, menus,
-  layout, a code editor, and a window built from data
+  layout, tabs, theming, a code editor, a window built from data, and the
+  event loop that keeps gBASIC's own work running while Qt holds the thread
 - [GUI with GTK](docs/gui_tutorial.md) and its [cookbook](docs/gui_cookbook.md)
   — the older GTK 4 path, built as a record tree rather than a declaration
 - [EDGAR securities analysis](docs/edgar_tutorial.md) — build a forensic

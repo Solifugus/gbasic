@@ -1,0 +1,5 @@
+a theme can be set before anything opens: true
+the app sheet holds the dark background: true
+the ordinary field has no sheet of its own: true
+the special one kept its own:               true
+and clearing it leaves nothing: true

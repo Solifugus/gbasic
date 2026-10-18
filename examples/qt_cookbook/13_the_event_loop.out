@@ -1,0 +1,4 @@
+ticks serviced while Qt held the thread: 3
+the window reads back:                   3 ticks
+and the memo grew to lines:              3
+qt.run returned, so the program continues

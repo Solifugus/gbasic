@@ -950,3 +950,294 @@ a part with no name is refused: window: 'field' needs a name -- `field id( ... )
 ```
 
 ---
+
+## A book of pages
+
+`tabs` holds `tab`s, and each page is given a column layout — which is why a
+field, a row, a group or a whole `table` works inside one with no further
+vocabulary. A `tab` **needs a caption and takes no name**; the `tabs` *is*
+named, because it has state a handler can ask about where a page does not.
+
+A `QTabWidget` has no layout of its own, so anything placed directly in one
+would be **dropped** rather than mislaid — which is why a `tab` is required
+around whatever goes on a page.
+
+**A container carries a name or options, never both.** `tabs pages( ... )`
+costs four reduce/reduce conflicts in the grammar and is refused, which is why
+an option that moves is set at run time with `qt.set` instead. And the parts
+registry is **flat** — a page is not a namespace, so a part on any page is
+reachable by name whichever page is in front.
+
+<!--CODE:11_tabs-->
+
+```basic
+' A BOOK OF PAGES. `tabs` holds `tab`s, and each page is given a column layout
+' -- which is why a field, a row, a group or a whole table works inside one
+' with no further vocabulary.
+'
+' A `tab` NEEDS A CAPTION AND TAKES NO NAME; the `tabs` IS named, because it has
+' state a handler can ask about (which page is showing) where a page does not.
+' A QTabWidget has no layout of its own, so anything placed directly in one
+' would be DROPPED rather than mislaid -- which is why a `tab` is required.
+window settings( title: "Settings", width: 520, height: 300 )
+    column( margin: 10 )
+        tabs pages
+            tab "General"
+                field who(  label: "Name" )
+                field mail( label: "Email" )
+            end tab
+            tab "Advanced"
+                check deep(  label: "Verbose logging" )
+                check retry( label: "Retry on failure", checked: true )
+            end tab
+            tab "Limits"
+                cells
+                    row
+                        field soft( label: "Soft", text: "100" )
+                        field hard( label: "Hard", text: "500" )
+                    end row
+                end cells
+            end tab
+        end tabs
+    end column
+end window
+
+program main(args)
+    if not qt.can_display() then
+        print "no display"
+        return
+    end if
+    qt.open(settings)
+
+    ' THE `tabs` IS NAMED, so its state is reachable by name like any other
+    ' property -- `currentIndex` is Qt's own, and nothing in this backend knows
+    ' about it.
+    print "pages:         " + string(qt.read(settings, "pages", "count"))
+    print "showing page:  " + string(qt.read(settings, "pages", "currentIndex"))
+
+    ' A CONTAINER CARRIES A NAME OR OPTIONS, NEVER BOTH -- `tabs pages( ... )`
+    ' costs four reduce/reduce conflicts in the grammar and is refused, which is
+    ' why an option that moves is set at run time instead.
+    qt.set(settings, "pages", "movable", true)
+    print "movable now:   " + string(qt.read(settings, "pages", "movable"))
+
+    qt.set(settings, "pages", "currentIndex", 2)
+    print "after turning: " + string(qt.read(settings, "pages", "currentIndex"))
+
+    ' PARTS ON ANY PAGE ARE REACHABLE BY NAME, whichever page is in front:
+    ' the registry is flat, and a page is not a namespace.
+    qt.write(settings, "who", "Ada")
+    print "a part on page 0: " + qt.read(settings, "who")
+    at = qt.at(settings, "hard")
+    print ("and a grid on page 2 still has coordinates: column " +
+           string(at.column))
+    qt.stop()
+end program
+```
+
+<!--OUT:11_tabs-->
+
+```
+pages:         3
+showing page:  0
+movable now:   true
+after turning: 2
+a part on page 0: Ada
+and a grid on page 2 still has coordinates: column 3
+```
+
+---
+
+## Theming the application, and one widget that opts out
+
+Per-widget styling needed **nothing new**: `styleSheet` is an ordinary
+`Q_PROPERTY` of every `QWidget`, so it arrives through the same by-name route
+as `text` or `enabled`. What that route cannot reach is *one sheet for the
+application*, because that belongs to the `QApplication` rather than to any
+widget — so `qt.theme` is the verb for it.
+
+**It needs no display.** A sheet set before any window exists is remembered and
+applied when there is a `QApplication` to put it on, so a program themes first
+and opens second — which means the first half of this recipe runs on a
+text-only machine.
+
+Qt resolves the cascade, so **a widget's own sheet wins** over the
+application's, which is what makes an exception expressible. That is worth
+asserting rather than assuming: a theme applied by *writing* onto every widget
+would satisfy a check that only asked whether the app sheet was set, and would
+silently flatten the exception.
+
+<!--CODE:12_theming-->
+
+```basic
+' ONE STYLESHEET FOR THE WHOLE APPLICATION, and a widget that overrides it.
+'
+' PER-WIDGET STYLING NEEDED NOTHING NEW: `styleSheet` is an ordinary
+' Q_PROPERTY of every QWidget, so it arrives through the same by-name route as
+' `text` or `enabled`. What that route CANNOT reach is one sheet for the
+' application, because that belongs to the QApplication rather than to any
+' widget -- so `qt.theme` is the verb for it.
+window panel( title: "Theming", width: 420, height: 220 )
+    column( margin: 10, spacing: 8 )
+        text heading( label: "Themed by the application" )
+        field normal(  label: "Ordinary" )
+        ' ITS OWN SHEET, declared. Qt resolves the cascade, so a widget's own
+        ' sheet wins over the application's -- which is what makes an
+        ' exception expressible at all.
+        field special( label: "Its own colours",
+                       styleSheet: "background: #ffd; color: #600;" )
+        button close( text: "Close" )
+    end column
+end window
+
+program main(args)
+    ' IT NEEDS NO DISPLAY. A sheet set before any window exists is REMEMBERED
+    ' and applied when there is a QApplication to put it on -- so a program
+    ' themes first and opens second, and this half of the recipe runs on a
+    ' text-only machine.
+    qt.theme("QWidget { background: #2e3440; color: #eceff4; }")
+    print ("a theme can be set before anything opens: " +
+                 string(len(qt.theme()) > 0))
+
+    if not qt.can_display() then
+        print "no display"
+        return
+    end if
+    qt.open(panel)
+
+    ' THE APPLICATION'S SHEET IS WHAT WAS ASKED FOR.
+    print ("the app sheet holds the dark background: " +
+                 string(contains(qt.theme(), "#2e3440")))
+
+    ' AND THE WIDGET THAT DECLARED ITS OWN STILL HAS IT. A theme applied by
+    ' WRITING onto every widget would pass a check that only asked whether the
+    ' app sheet was set, and would silently flatten this.
+    print ("the ordinary field has no sheet of its own: " +
+                 string(len(qt.read(panel, "normal", "styleSheet")) = 0))
+    print ("the special one kept its own:               " +
+                 string(contains(qt.read(panel, "special", "styleSheet"), "#ffd")))
+
+    ' CHANGING IT AT RUN TIME is the same call. A dark and a light theme are
+    ' two strings; there is no theme registry to keep in step.
+    qt.theme("")
+    print "and clearing it leaves nothing: " + string(len(qt.theme()) = 0)
+    qt.stop()
+end program
+```
+
+<!--OUT:12_theming-->
+
+```
+a theme can be set before anything opens: true
+the app sheet holds the dark background: true
+the ordinary field has no sheet of its own: true
+the special one kept its own:               true
+and clearing it leaves nothing: true
+```
+
+---
+
+## Qt owns the thread, and gBASIC is still serviced
+
+**The only recipe that calls `qt.run()`**, and the architectural claim the
+whole backend rests on — so it is worth watching rather than taking on trust.
+
+Why Qt's loop is the one that waits: Qt opens **nested** loops — a modal
+dialog, a menu, a drag — and under the other arrangement gBASIC's own `poll()`
+never runs for the dialog's whole life. Measured during the design at a 651 ms
+gap over a 600 ms dialog, which is a webserver answering nothing. So gBASIC's
+sources ride a Qt timer, and a `timer`, a webserver and an actor mailbox all
+keep running while `qt.run()` holds the thread. **Nothing here arranges it**:
+`qt.run()` is one call and `timer.every` is the same verb any other program
+uses.
+
+Two things learned by getting them wrong, both on the page rather than in a
+comment: the `watch` goes **inside** `program` — at the top level beside one it
+registers nothing and says nothing about it (warning **2106**) — and it works
+inside because `qt.run()` *blocks* in that frame, so `main`'s frame is still
+alive for the watcher to reach. And **`qt.stop()` does not cancel your
+timers**, which is right (a program may have work left after its window
+closes) but means a repeating timer left live keeps gBASIC's own post-main loop
+running and the program never exits: measured at 197 further ticks before a
+timeout killed it.
+
+<!--CODE:13_the_event_loop-->
+
+```basic
+' QT OWNS THE THREAD AND gBASIC IS STILL SERVICED. This is the only recipe
+' that calls `qt.run()`, and it is the architectural claim the whole backend
+' rests on -- so it is worth watching rather than taking on trust.
+'
+' WHY QT'S LOOP IS THE ONE THAT WAITS: Qt opens NESTED loops -- a modal dialog,
+' a menu, a drag -- and under the other arrangement gBASIC's own poll never
+' runs for the dialog's whole life. Measured during the design: a 651ms gap
+' over a 600ms dialog, which is a webserver answering nothing. So gBASIC's
+' sources ride a Qt timer, and a `timer`, a webserver and an actor mailbox all
+' keep running while `qt.run()` holds the thread.
+'
+' NOTHING HERE ARRANGES IT. `qt.run()` is one call and `timer.every` is the
+' same verb any other program uses.
+window clock( title: "Still ticking", width: 320, height: 180 )
+    column( margin: 10, spacing: 6 )
+        text ticks( label: "0 ticks" )
+        memo log(   label: "" )
+    end column
+end window
+
+program main(args)
+    if not qt.can_display() then
+        print "no display"
+        return
+    end if
+
+    seen = 0
+    qt.open(clock)
+    beat = timer.every(0.1)
+
+    ' THE `watch` GOES INSIDE `program`. At the top level beside a `program`
+    ' block it registers NOTHING and says nothing about it (warning 2106), and
+    ' it works here because `qt.run()` BLOCKS in this frame -- so main's frame
+    ' is still alive and the watcher can reach `seen` in it.
+    watch(timer.ticks)
+        while count(timer.ticks) > 0
+            ev = take_first(timer.ticks)
+            seen = seen + 1
+            ' ORDINARY gBASIC WRITING INTO A Qt WIDGET, from inside Qt's loop.
+            qt.write(clock, "ticks", string(seen) + " ticks")
+            qt.write(clock, "log",
+                     qt.read(clock, "log") + "tick " + string(seen) + chr(10))
+            if seen >= 3 then
+                ' BOTH, AND THE CANCEL MATTERS: `qt.stop()` DOES NOT CANCEL
+                ' YOUR TIMERS, and it should not -- a program may have work
+                ' left after its window closes. But leave a repeating timer
+                ' live and gBASIC's own post-main loop keeps running, so the
+                ' program never exits. Measured during the design at 197
+                ' further ticks before a timeout killed it.
+                cancelled = timer.cancel(beat)
+                qt.stop()
+            end if
+        end while
+    end watch
+
+    ' AND IT RETURNS, which is the other half: `qt.run()` gives the thread
+    ' back when something calls `qt.stop()`, so a program carries on
+    ' afterwards.
+    rc = qt.run()
+    print "ticks serviced while Qt held the thread: " + string(seen)
+    print "the window reads back:                   " + qt.read(clock, "ticks")
+    print("and the memo grew to lines:              " +
+          string(len(split(qt.read(clock, "log"), chr(10))) - 1))
+    print "qt.run returned, so the program continues"
+end program
+```
+
+<!--OUT:13_the_event_loop-->
+
+```
+ticks serviced while Qt held the thread: 3
+the window reads back:                   3 ticks
+and the memo grew to lines:              3
+qt.run returned, so the program continues
+```
+
+---
