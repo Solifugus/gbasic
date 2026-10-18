@@ -13,7 +13,7 @@ application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.10.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**181 test suites** gate every change, goldens are byte-exact, and the claims in
+**182 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -443,6 +443,7 @@ On Linux, with a C11 compiler, `make` and `bison`. Everything else is optional:
 | libxcrypt | `password_hash` / `password_verify` — **optional**: where it is absent the vendored yescrypt (`third_party/yescrypt`) provides them instead, writing and reading the same `$y$` hashes. That is what the Windows build and **both Linux downloads** use; a from-source build prefers libxcrypt when it finds it. The one difference is that only libxcrypt reads the legacy `$6$`/`$2b$` schemes, and the vendored backend refuses them by name rather than answering `false` |
 | GTK 3 | `load gui` |
 | libgirepository-2.0 (GLib ≥ 2.80) | `load gi`, and the GTK 4 libraries above |
+| Qt 6 Widgets + `moc` | the `qt` module — rendering a `window` declaration. Needs **both**: Qt's signal/slot syntax is not C++, so a QObject subclass needs a generated translation unit, and Qt6 can be installed without its tools. Dynamically linked, unlike the statically linked libraries above, because Qt is LGPL-3 |
 
 ```sh
 make                                    # build ./gbasic
@@ -521,7 +522,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 181 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 182 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite

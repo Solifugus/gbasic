@@ -638,6 +638,12 @@ if [ -f Makefile ] && [ -f README.md ]; then
             HAVE_LIBSSL)   want='libssl' ;;
             HAVE_LIBXML2)  want='libxml2' ;;
             HAVE_ZLIB)     want='zlib' ;;
+            # Qt is the one row that names a TOOL as well as a library,
+            # because `moc` is required and is separately packaged --
+            # run_ksyntax.sh learned the direct way that Qt6 can be
+            # installed without its tools. 'Qt 6' is the spelling a
+            # reader would recognise; the row says the rest.
+            HAVE_QT)       want='Qt 6' ;;
             *) echo "FAIL dependency     Makefile probes $m and this check has no README spelling for it"
                dep_ok=0; status=1; continue ;;
         esac
