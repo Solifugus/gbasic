@@ -125,6 +125,28 @@ program main()
           qt.cell(ledger, "orders", 0, "who") = qt.cell(ledger, "orders", 0, "placed"),
           false)
 
+    ' ------------------------------------------------- THE MAPPING ORACLE
+    ' THE CAPTION COMES FROM `label:` AND THE DATA FROM `name` -- two
+    ' different sources in the declaration -- so this is the only tier that
+    ' pins the column MAPPING independently of the mapping itself. Everything
+    ' above reads cells through the same by-name route population writes them
+    ' with, so if BOTH were permuted the same way every check would pass while
+    ' every value sat under the wrong heading. Agreement is not correctness.
+    '
+    ' FOUND BY PERTURBATION, not by design: "every column reads the FIRST
+    ' field" and "a cell ignores the name and reads column 0" produced
+    ' IDENTICAL output, which is the signature of checks that cannot separate
+    ' two different defects.
+    check("the first column's caption is the one declared for it",
+          qt.heading(ledger, "orders", "placed"), "Date")
+    check("and the second's is its own", qt.heading(ledger, "orders", "who"),
+          "Customer")
+    check("and the third's", qt.heading(ledger, "orders", "total"), "Total")
+    ' THE PAIRING IS THE ASSERTION: the caption over the column that holds
+    ' `who` must be `who`'s label, which a permuted mapping cannot satisfy.
+    check("so `Customer` sits over the customer, not over the date",
+          qt.heading(ledger, "orders", "who") = "Date", false)
+
     ' --------------------------------------------------------- DIRECTION
     ' A `show` TABLE IS NOT EDITABLE AND IS STILL SELECTABLE, which is why it
     ' gets a third answer rather than the form's: a QTableWidget has no
@@ -168,7 +190,18 @@ program main()
     ' THE RECORD FOLLOWS THE WIDGETS for a table exactly as for a form, and the
     ' kinds survive: a cell holds TEXT, so folding back blindly turns
     ' `{ qty: 4 }` into `{ qty: "4" }`, which still prints 4.
+    ' GUARDED, because a perturbation that leaves cells EMPTY makes the number
+    ' column's fold refuse -- correctly -- and an unguarded raise here would
+    ' end the fixture and take every later tier with it. Measured: two
+    ' perturbations did exactly that, and the mismatches above only survived
+    ' because of --line-buffered. run_discovery.sh's recorded trap.
+    on error goto next
     before = qt.subject(sheet, "items")
+    if error then
+        print "MISMATCH the fold of an untouched edit table raised: " + error.message
+        error.clear()
+        before = [ { name: "", qty: 0 }, { name: "", qty: 0 } ]
+    end if
     check("the fold returns one row per table row", len(before), 2)
     check("a number column folds back AS a number", type(before[0].qty),
           "number")

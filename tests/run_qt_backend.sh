@@ -452,8 +452,8 @@ if grep -q MISMATCH "$work/t.out"; then
 else
     pass "$tchecks checks, 0 mismatches"
 fi
-if [ "${tchecks:-0}" -ge 29 ]; then
-    pass "and it really ran them ($tchecks >= 29)"
+if [ "${tchecks:-0}" -ge 33 ]; then
+    pass "and it really ran them ($tchecks >= 33)"
 else
     fail "only $tchecks table checks ran -- the fixture stopped early"
 fi

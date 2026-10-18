@@ -799,6 +799,23 @@ extern "C" int gb_qt_table_selected(void *window, const char *name) {
     return t->currentRow();
 }
 
+extern "C" char *gb_qt_table_heading(void *window, const char *name,
+                                     int col) {
+    QTableWidget *t = table_of(window, name);
+    if (!t || col < 0 || col >= t->columnCount()) {
+        return nullptr;
+    }
+    QTableWidgetItem *h = t->horizontalHeaderItem(col);
+    QByteArray bytes = h ? h->text().toUtf8() : QByteArray();
+    char *out = (char *)malloc((size_t)bytes.size() + 1);
+    if (!out) {
+        return nullptr;
+    }
+    memcpy(out, bytes.constData(), (size_t)bytes.size());
+    out[bytes.size()] = '\0';
+    return out;
+}
+
 extern "C" int gb_qt_table_select(void *window, const char *name, int row,
                                  char *err, size_t err_size) {
     QTableWidget *t = table_of(window, name);

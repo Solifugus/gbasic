@@ -387,7 +387,22 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             if (col->kind != VALUE_RECORD) {
                 continue;
             }
-            const char *cap = qt_record_text(col, "label");
+            /* THE CAPTION IS IN `options`, which is where a LEAF's
+             * `label:` lives -- the top-level `label` field carries the
+             * `group "Credit"` string form instead. Reading the wrong one
+             * fell back to the field's NAME and produced a table captioned
+             * `placed`/`who`/`total` rather than `Date`/`Customer`/`Total`:
+             * a perfectly plausible header row, and every other check in the
+             * fixture passed. The mapping oracle caught it on its first run,
+             * which is the whole reason that tier exists. */
+            RecordField *copts = record_find(col, "options");
+            const char *cap = NULL;
+            if (copts && copts->value && copts->value->kind == VALUE_RECORD) {
+                cap = qt_record_text(copts->value, "label");
+            }
+            if (!cap) {
+                cap = qt_record_text(col, "label");
+            }
             if (!cap) {
                 cap = qt_record_text(col, "name");
             }
@@ -1308,6 +1323,76 @@ static Value qt_eval_call(AstExpr *expr) {
         value_free(rowv); value_free(colv);
         if (!text) {
             qt_raise(message);
+            return value_null();
+        }
+        Value out = value_string(text);
+        free(text);
+        return out;
+    }
+
+    /* A COLUMN'S CAPTION, by the column's own name. THE REASON IS AN ORACLE,
+     * and this module first argued against adding it on the grounds that a
+     * program which set a caption already knows it. That was the wrong test:
+     * the caption comes from `label:` and a cell's data from `name` -- TWO
+     * DIFFERENT SOURCES in the declaration -- so the caption is the only thing
+     * that pins the column MAPPING independently of the mapping itself.
+     *
+     * WITHOUT IT, population and `qt.cell` both map a column to a name, and
+     * two perturbations -- "every column reads the first field" and "a cell
+     * ignores the name and reads column 0" -- produced IDENTICAL output, which
+     * is the signature of a check that cannot separate them. If both were
+     * permuted the same way, every value would sit under the wrong heading and
+     * nothing would notice. Agreement is not correctness (PLAT-NUMFMT). */
+    if (strcmp(verb, "heading") == 0) {
+        if (argc != 3) {
+            qt_raise("qt.heading expects a window, a table and a column name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value colv = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(colv);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "heading") || which.kind != VALUE_STRING ||
+            colv.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.heading expects the table's name and the column's "
+                         "name as text");
+            }
+            value_free(win); value_free(which); value_free(colv);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        RecordField *items = record_find(&win, "items");
+        Value *table = (root && items && items->value &&
+                        items->value->kind == VALUE_ARRAY)
+                           ? qt_find_table(items->value, which.as.string)
+                           : NULL;
+        if (!root || !table) {
+            snprintf(message, sizeof(message),
+                     root ? "qt.heading: window `%s` declares no table named `%s`"
+                          : "window `%s` is not open",
+                     wname ? wname : "", which.as.string);
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(colv);
+            return value_null();
+        }
+        int col = qt_table_column(table, colv.as.string);
+        if (col < 0) {
+            snprintf(message, sizeof(message),
+                     "qt.heading: table `%s` has no `%s` column",
+                     which.as.string, colv.as.string);
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(colv);
+            return value_null();
+        }
+        char *text = gb_qt_table_heading(root, which.as.string, col);
+        value_free(win); value_free(which); value_free(colv);
+        if (!text) {
+            qt_raise("qt.heading: that column has no caption");
             return value_null();
         }
         Value out = value_string(text);

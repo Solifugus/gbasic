@@ -155,6 +155,17 @@ int gb_qt_table_rows(void *window, const char *name);
 /* The row a person has selected, or -1 when none is. Not a boolean plus an
  * index: "nothing is selected" is an ordinary state and must be answerable. */
 int gb_qt_table_selected(void *window, const char *name);
+/* A COLUMN'S CAPTION. THE REASON IS AN ORACLE and this header first argued
+ * against adding it: the caption comes from the declaration's `label:` while a
+ * cell's data comes from its `name`, which are TWO DIFFERENT SOURCES -- so the
+ * caption is the only thing that pins the column MAPPING independently.
+ * Without it, population and the by-name cell reader both map column to name,
+ * and if both were permuted the SAME way every check would pass while every
+ * value sat under the wrong heading. Agreement is not correctness, which is
+ * PLAT-NUMFMT's recorded lesson; two perturbations producing identical output
+ * is what showed it here. malloc'd; NULL for a column that is not there. */
+char *gb_qt_table_heading(void *window, const char *name, int col);
+
 /* CHOOSE A ROW FROM THE PROGRAM. A real need rather than a test hook: a window
  * often opens with a row already highlighted, and a program that has just
  * added one wants it chosen. `row` below zero clears the selection, which is
