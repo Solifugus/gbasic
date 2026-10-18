@@ -527,10 +527,16 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "read") == 0 || strcmp(verb, "write") == 0) {
         int writing = strcmp(verb, "write") == 0;
-        if (argc != (writing ? 3u : 2u)) {
+        /* `qt.read` TAKES AN OPTIONAL PROPERTY NAME, which is the read half of
+         * the by-name route the declaration's options already take. Two
+         * arguments ask what the part is SHOWING; three ask one named property
+         * of the widget. */
+        int reading_prop = (!writing && argc == 3);
+        if (writing ? argc != 3u : (argc != 2u && argc != 3u)) {
             snprintf(message, sizeof(message),
                      writing ? "qt.write expects a window, a name and a value"
-                             : "qt.read expects a window and a name");
+                             : "qt.read expects a window, a name and "
+                               "optionally a property");
             qt_raise(message);
             return value_null();
         }
@@ -560,6 +566,47 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win);
             value_free(which);
             return value_null();
+        }
+        if (reading_prop) {
+            Value prop = eval_expr(expr->as.call.args.items[2]);
+            if (error_action_pending()) {
+                value_free(win);
+                value_free(which);
+                value_free(prop);
+                return value_null();
+            }
+            if (prop.kind != VALUE_STRING) {
+                qt_raise("qt.read expects the property's name as text");
+                value_free(win);
+                value_free(which);
+                value_free(prop);
+                return value_null();
+            }
+            char kind = 't';
+            double num = 0.0;
+            char *text = NULL;
+            err[0] = '\0';
+            int ok = gb_qt_get(root, which.as.string, prop.as.string, &kind,
+                               &num, &text, err, sizeof(err));
+            value_free(win);
+            value_free(which);
+            value_free(prop);
+            if (!ok) {
+                snprintf(message, sizeof(message), "qt.read: %s",
+                         err[0] ? err : "that property could not be read");
+                qt_raise(message);
+                free(text);
+                return value_null();
+            }
+            if (kind == 'b') {
+                return value_bool(num != 0.0);
+            }
+            if (kind == 'n') {
+                return value_number(num);
+            }
+            Value out = value_string(text ? text : "");
+            free(text);
+            return out;
         }
         if (!writing) {
             char *text = gb_qt_read(root, which.as.string);

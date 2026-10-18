@@ -109,8 +109,25 @@ int gb_qt_invoke(void *window, const char *target, const char *method,
 /* The value a part is showing, and setting it. malloc'd; NULL when the window
  * has no part of that name or that part holds no text. */
 char *gb_qt_read(void *window, const char *name);
+
 int gb_qt_write(void *window, const char *name, const char *text,
                 char *err, size_t err_size);
+
+/* A PROPERTY BY NAME, READ BACK -- the other direction of the by-name route
+ * the three setters take, and the thing that makes that route's central claim
+ * assertable at all. Until this existed a suite could say an option was
+ * ACCEPTED and not that it had any effect, so a backend that took every option
+ * and applied none passed every check; measured, that is exactly what
+ * run_qt_backend.sh's refusal tier could not see.
+ *
+ * `kind` comes back as 'b' bool, 'n' number or 't' text, DECIDED BY THE
+ * QVariant rather than by the caller, so `readOnly` arrives as a gBASIC
+ * boolean instead of the string "true" -- which matters because `if
+ * qt.read(w, "f", "readOnly")` on the string "false" would be TRUE, every
+ * non-empty string being true in this language. `text` is malloc'd and set
+ * only for 't'. */
+int gb_qt_get(void *window, const char *name, const char *prop, char *kind,
+              double *num, char **text, char *err, size_t err_size);
 
 void gb_qt_show(void *window);
 

@@ -239,6 +239,13 @@ else
 fi
 # THE CONTROL. Without it the rule above is satisfied by a backend that refuses
 # every option there is, which would make the whole by-name route useless.
+#
+# AND IT USED TO ASSERT ONLY `opened: true`, WHICH WAS TOO WEAK AND SAID SO BY
+# ITS OWN DESIGN: accepting an option and ACTING ON IT are two claims, and
+# nothing here could see the second -- so a backend that took every option and
+# applied none passed this tier, which is the one tier arguing that the by-name
+# route works. `qt.read(win, part, property)` is the read half of that route and
+# is what closes it; both properties are now read back.
 cat > "$work/goodprop.bas" <<'EOF'
 window w( title: "W" )
     column
@@ -247,7 +254,8 @@ window w( title: "W" )
 end window
 program main()
     print "opened: " + string(qt.open(w))
-    print "enabled reads: " + qt.read(w, "go")
+    print "text took effect: " + qt.read(w, "go", "text")
+    print "enabled took effect: " + string(qt.read(w, "go", "enabled"))
 end program
 EOF
 set +e
@@ -257,6 +265,95 @@ if grep -qx 'opened: true' "$work/gp.out"; then
     pass "CONTROL: two real Qt properties on the same widget are accepted"
 else
     fail "a legal option was refused: $(tr '\n' '|' < "$work/gp.out")"
+fi
+# THE TWO HALVES ARE SEPARATE CHECKS because they fail for different reasons: a
+# text property that did not take leaves the button captionless, and a BOOLEAN
+# that did not take leaves it enabled -- and `enabled` is the one that would be
+# invisible, since the default is already true.
+if grep -qx 'text took effect: Go' "$work/gp.out"; then
+    pass "a text option reached the widget, read back by name"
+else
+    fail "text: did not reach the widget: $(tr '\n' '|' < "$work/gp.out")"
+fi
+if grep -qx 'enabled took effect: false' "$work/gp.out"; then
+    pass "a boolean option reached the widget, read back by name"
+else
+    fail "enabled: false did not reach the widget: $(tr '\n' '|' < "$work/gp.out")"
+fi
+
+# ------------------------------------------------------------------ PROPERTIES
+
+printf 'TIER properties: read back in the KIND Qt declares, not as text\n'
+# THE KIND IS THE LOAD-BEARING PART and it is not a preference. Every non-empty
+# string is TRUE in this language, so a boolean answered as the text "false"
+# reads BACKWARDS in the one place a property is most likely to be used --
+# `if qt.read(f, "readOnly")`. The kind therefore comes from the QVariant, and
+# this tier asserts `type()` and not only the value, because `string(false)` and
+# the text "false" are the same characters and a value check cannot tell them
+# apart -- the same trap the finio OFX adapter's amounts hid behind.
+cat > "$work/props.bas" <<'EOF'
+window p( title: "P" )
+    column
+        field name( label: "Name", placeholderText: "type here", maxLength: 40 )
+        check live( label: "Live", checked: true )
+    end column
+end window
+program main()
+    x = qt.open(p)
+    print "text: " + qt.read(p, "name", "placeholderText")
+    print "number: " + string(qt.read(p, "name", "maxLength")) + " / " + type(qt.read(p, "name", "maxLength"))
+    print "bool: " + string(qt.read(p, "name", "readOnly")) + " / " + type(qt.read(p, "name", "readOnly"))
+    print "checked: " + string(qt.read(p, "live", "checked")) + " / " + type(qt.read(p, "live", "checked"))
+    on error goto next
+    y = qt.read(p, "name", "texx")
+    if error then
+        print "BADPROP: " + error.message
+        error.clear()
+    end if
+    z = qt.read(p, "nope", "text")
+    if error then
+        print "BADPART: " + error.message
+        error.clear()
+    end if
+end program
+EOF
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 60 ./gbasic "$work/props.bas" > "$work/pr.out" 2>&1
+set -e
+if grep -qx 'text: type here' "$work/pr.out"; then
+    pass "a text property reads back as text"
+else
+    fail "text property: $(tr '\n' '|' < "$work/pr.out")"
+fi
+if grep -qx 'number: 40 / number' "$work/pr.out"; then
+    pass "a numeric property reads back as a NUMBER, not as its digits"
+else
+    fail "numeric property: $(tr '\n' '|' < "$work/pr.out")"
+fi
+if grep -qx 'bool: false / boolean' "$work/pr.out"; then
+    pass "a boolean property reads back as a BOOLEAN -- the kind that would read backwards as text"
+else
+    fail "boolean property: $(tr '\n' '|' < "$work/pr.out")"
+fi
+if grep -qx 'checked: true / boolean' "$work/pr.out"; then
+    pass "a checkbox's own state reads back, so the two boolean answers are distinguished"
+else
+    fail "checked: $(tr '\n' '|' < "$work/pr.out")"
+fi
+# THE READ HALF MUST REFUSE WHAT THE WRITE HALF REFUSES. A reader answering
+# `unknown` for a misspelled property would report a MISTAKE as an ABSENCE, and
+# the two halves of one route would disagree about what a property name is.
+if grep -q 'BADPROP: .*has no `texx` property' "$work/pr.out"; then
+    pass "an unknown property is refused on the READ side too, named"
+else
+    fail "a misspelled property was not refused on read: $(tr '\n' '|' < "$work/pr.out")"
+fi
+# AND A MISSING PART IS A DIFFERENT SENTENCE from a missing property, or the
+# message names the wrong one of two things the author can mistype.
+if grep -q 'BADPART: .*has no `nope`' "$work/pr.out"; then
+    pass "an absent PART is refused in its own words, not as a missing property"
+else
+    fail "an absent part was not distinguished: $(tr '\n' '|' < "$work/pr.out")"
 fi
 
 # --------------------------------------------------------------------- LOOP

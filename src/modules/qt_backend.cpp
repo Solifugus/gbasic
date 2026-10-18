@@ -598,6 +598,77 @@ extern "C" int gb_qt_write(void *window, const char *name, const char *text,
                         err_size);
 }
 
+/* READ A PROPERTY BY NAME. The same QMetaObject door `set_property` goes
+ * through, so a misspelling is refused HERE TOO -- which matters more than it
+ * looks: the setters refuse an unknown name, and a reader that answered
+ * `unknown` for one instead would let a typo'd probe report an absence rather
+ * than a mistake, so the two halves of one route would disagree about what a
+ * property name is.
+ *
+ * THE KIND COMES FROM THE QVariant, not from the caller. A bool answered as the
+ * text "false" would be TRUE in gBASIC, every non-empty string being true, so
+ * the one property most likely to be read in an `if` would read backwards. */
+extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
+                         char *kind, double *num, char **text, char *err,
+                         size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QWidget *w = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!w) {
+        say(err, err_size, QByteArray("this window has no `") + name + "`");
+        return 0;
+    }
+    const QMetaObject *mo = w->metaObject();
+    if (mo->indexOfProperty(prop) < 0) {
+        say(err, err_size,
+            QByteArray("a ") + mo->className() + " has no `" + prop +
+                "` property");
+        return 0;
+    }
+    QVariant v = w->property(prop);
+    if (!v.isValid()) {
+        say(err, err_size,
+            QByteArray("a ") + mo->className() + " gave no value for `" + prop +
+                "`");
+        return 0;
+    }
+    switch (v.typeId()) {
+    case QMetaType::Bool:
+        *kind = 'b';
+        *num = v.toBool() ? 1.0 : 0.0;
+        return 1;
+    case QMetaType::Int:
+    case QMetaType::UInt:
+    case QMetaType::LongLong:
+    case QMetaType::ULongLong:
+    case QMetaType::Double:
+    case QMetaType::Float:
+        *kind = 'n';
+        *num = v.toDouble();
+        return 1;
+    default:
+        break;
+    }
+    /* EVERYTHING ELSE AS TEXT, deliberately rather than a kind per Qt type: a
+     * QFont, a QSize and an enum all render through QVariant::toString, and
+     * growing a case per Qt type is the table the by-name design exists to
+     * avoid. A caller wanting more than the text of a QFont is asking for a
+     * widget vocabulary this module does not have. */
+    {
+        QByteArray bytes = v.toString().toUtf8();
+        char *out = (char *)malloc((size_t)bytes.size() + 1);
+        if (!out) {
+            say(err, err_size, "out of memory reading that property");
+            return 0;
+        }
+        memcpy(out, bytes.constData(), (size_t)bytes.size());
+        out[bytes.size()] = '\0';
+        *kind = 't';
+        *text = out;
+    }
+    return 1;
+}
+
 extern "C" void gb_qt_show(void *window) {
     GbQtNode *n = (GbQtNode *)window;
     if (n && n->widget) {
