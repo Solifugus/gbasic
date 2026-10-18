@@ -505,6 +505,108 @@ else
     fail "the emptied-number refusal: $(grep EMPTYNUMBER "$work/t.out" || echo 'never fired')"
 fi
 
+# ----------------------------------------------------------------------- THEME
+
+printf 'TIER theme: one stylesheet for the application, and it needs no display\n'
+# PER-WIDGET STYLING ALREADY WORKED BEFORE THIS, and the tier says so with a
+# check rather than a comment: `styleSheet` is a Q_PROPERTY of QWidget, so
+# `field a( styleSheet: "..." )` has been reachable since the by-name property
+# route shipped -- that route (§1) paying off in a way nobody designed. What it
+# cannot reach is ONE sheet for the whole application, which is what anybody
+# means by a theme, and that is what `qt.theme` adds.
+cat > "$work/theme.bas" <<'EOF'
+window w( title: "W" )
+    column
+        field a( label: "A", styleSheet: "color: red;" )
+    end column
+end window
+program main()
+    print "EMPTY:[" + qt.theme() + "]"
+    print "SET:" + string(qt.theme("QLineEdit { background: #222; }"))
+    print "BEFORE:" + qt.theme()
+    print "DISPLAY:" + string(qt.can_display())
+    x = qt.open(w)
+    print "AFTER:" + qt.theme()
+    print "WIDGET:" + qt.read(w, "a", "styleSheet")
+    print "CHANGED:" + string(qt.theme("QLineEdit { background: #fff; }"))
+    print "NOW:" + qt.theme()
+    on error goto next
+    y = qt.theme(42)
+    if error then
+        print "REFUSED:" + error.message
+        error.clear()
+    end if
+end program
+EOF
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 60 ./gbasic "$work/theme.bas" > "$work/th.out" 2>&1
+set -e
+# ASSERTED AS A DIFFERENCE between before and after opening, because the whole
+# design decision is that the sheet is REMEMBERED and applied when the
+# QApplication is constructed -- so a program themes first and opens second,
+# and the first window is built already themed rather than appearing plain and
+# then changing. A check only after opening passes on an implementation that
+# refused until a window existed.
+if grep -qx 'EMPTY:\[\]' "$work/th.out"; then
+    pass "with nothing set, the theme is empty rather than absent"
+else
+    fail "the empty theme: $(grep EMPTY "$work/th.out" || echo 'no line')"
+fi
+if grep -qx 'BEFORE:QLineEdit { background: #222; }' "$work/th.out"; then
+    pass "a theme set BEFORE any window is remembered and readable"
+else
+    fail "set-before-open: $(grep BEFORE "$work/th.out" || echo 'no line')"
+fi
+if grep -qx 'AFTER:QLineEdit { background: #222; }' "$work/th.out"; then
+    pass "and it survives the QApplication being constructed"
+else
+    fail "survives-open: $(grep AFTER "$work/th.out" || echo 'no line')"
+fi
+# THE CASCADE IS QT'S OWN and so there is no precedence rule here to invent --
+# but a backend that applied the app sheet by WRITING it onto every widget
+# would pass the two checks above and destroy this one.
+if grep -qx 'WIDGET:color: red;' "$work/th.out"; then
+    pass "a widget keeps its OWN sheet, so the app theme did not overwrite it"
+else
+    fail "the per-widget sheet: $(grep WIDGET "$work/th.out" || echo 'no line')"
+fi
+if grep -qx 'NOW:QLineEdit { background: #fff; }' "$work/th.out"; then
+    pass "and the theme can be changed once a window is up"
+else
+    fail "changing it: $(grep NOW "$work/th.out" || echo 'no line')"
+fi
+# THE MESSAGE NAMES THE REMEDY, because a theme is almost always a FILE and the
+# platform/policy split means this verb takes TEXT -- so the error has to spell
+# the composition rather than leave the author to find it.
+if grep -q 'REFUSED:.*read({file}"dark.qss")' "$work/th.out"; then
+    pass "a theme that is not text is refused, naming how to load a file"
+else
+    fail "the refusal: $(grep REFUSED "$work/th.out" || echo 'never fired')"
+fi
+# AND IT WORKS WITH NO DISPLAY AT ALL, which is the half that could not be
+# asserted offscreen: setting a theme is harmless metadata, so refusing it on a
+# text-only machine would make a program that themes before asking
+# `qt.can_display()` fail for no reason.
+cat > "$work/themenodisp.bas" <<'EOF'
+program main()
+    print "SET:" + string(qt.theme("QWidget { color: #abc; }"))
+    print "BACK:" + qt.theme()
+    print "DISPLAY:" + string(qt.can_display())
+end program
+EOF
+set +e
+env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_RUNTIME_DIR QT_QPA_PLATFORM= \
+    timeout -k 5 60 ./gbasic "$work/themenodisp.bas" > "$work/thn.out" 2>&1
+nd_rc=$?
+set -e
+if [ "$nd_rc" = "0" ] && grep -qx 'BACK:QWidget { color: #abc; }' "$work/thn.out" \
+   && grep -qx 'DISPLAY:false' "$work/thn.out"; then
+    pass "a theme is set and read with NO display, where every other verb refuses"
+else
+    printf '    %s\n' "$(tr '\n' '|' < "$work/thn.out")"
+    fail "theming required a display (exit $nd_rc)"
+fi
+
 # --------------------------------------------------------------------- LOOP
 printf 'TIER loop: Qt owns the thread and gBASIC is still serviced\n'
 if ! command -v curl >/dev/null 2>&1; then

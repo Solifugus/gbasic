@@ -3845,6 +3845,7 @@ end program
 | `qt.select(win, table, row)` | choose a row from the program, for a window that opens with one highlighted; `unknown` chooses nothing |
 | `qt.cell(win, table, row, column)` | one cell, addressed by the **column's own name** rather than its position |
 | `qt.heading(win, table, column)` | a column's caption, by its name **or** its position |
+| `qt.theme(css)` / `qt.theme()` | set or read **one stylesheet for the whole application**. Needs no display, and is remembered until there is a `QApplication` to put it on, so a program themes first and opens second |
 | `qt.subject(win, name)` | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
 | `qt.invoke(win, name, method)` | call a widget method by name — `click`, `clear`, `setFocus` |
 | `qt.run()` | hand the thread to Qt's event loop. gBASIC's own sources (a webserver, transfers, timers, the actor inbox) keep being serviced |
@@ -3892,6 +3893,22 @@ refused and the index named, the same way a projection reports it.
 blindly would turn `{ id: 42 }` into `{ id: "42" }`. The kind comes from
 `type:` where the field declares one, from the captured field otherwise, and
 from a check box being a check box.
+
+**Theming is Qt's stylesheet language, and most of it was already there.**
+`styleSheet` is an ordinary Qt property, so any widget takes one through the
+same by-name route as every other option:
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+button go( text: "Go",
+           styleSheet: "QPushButton { background: #2d6cdf; color: white; }" )
+```
+
+`qt.theme` is the part that route cannot reach: **one sheet for the whole
+application**. Qt resolves the cascade between the two, so a widget's own sheet
+still wins. It takes *text* rather than a filename — `qt.theme(read({file}
+"dark.qss"))` composes out of what the language already has — and it needs no
+display, so a program sets its theme before asking `qt.can_display()`.
 
 **No `load` is needed.** A `window` block implies no import, so neither does
 rendering one.

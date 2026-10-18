@@ -1343,6 +1343,62 @@ static Value qt_eval_call(AstExpr *expr) {
      * is the signature of a check that cannot separate them. If both were
      * permuted the same way, every value would sit under the wrong heading and
      * nothing would notice. Agreement is not correctness (PLAT-NUMFMT). */
+    /* THE APPLICATION'S THEME. One argument SETS it, none READS it back.
+     *
+     * PER-WIDGET STYLING ALREADY WORKED and this is deliberately not that:
+     * `styleSheet` is a Q_PROPERTY of QWidget, so `button go( styleSheet:
+     * "..." )` has been reachable since the by-name property route shipped,
+     * with no vocabulary of its own. What that route cannot reach is ONE sheet
+     * for the whole application, which is what anybody means by a theme -- and
+     * Qt resolves the cascade between the two itself, so there is no
+     * precedence rule here to invent.
+     *
+     * IT DOES NOT NEED A DISPLAY and does not open one: the sheet is
+     * remembered and applied when a QApplication is constructed. A program
+     * therefore sets its theme first and asks `qt.can_display()` after, and
+     * the first window is built already themed instead of appearing plain and
+     * then changing.
+     *
+     * THE THEME IS TEXT, NOT A FILE, which is the platform/policy split this
+     * tree keeps making: `qt.theme(read({file}"dark.qss"))` composes out of
+     * what the language already has, where a file argument would put file
+     * resolution, missing-file behaviour and a search path inside a GUI
+     * module that has no business owning them. */
+    if (strcmp(verb, "theme") == 0) {
+        if (argc > 1) {
+            qt_raise("qt.theme takes a stylesheet to set, or nothing to read "
+                     "the current one");
+            return value_null();
+        }
+        if (argc == 0) {
+            char *css = gb_qt_theme_get();
+            Value out = value_string(css ? css : "");
+            free(css);
+            return out;
+        }
+        Value v = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(v);
+            return value_null();
+        }
+        if (v.kind != VALUE_STRING) {
+            qt_raise("qt.theme expects a stylesheet as text -- "
+                     "`qt.theme(read({file}\"dark.qss\"))` to load one");
+            value_free(v);
+            return value_null();
+        }
+        err[0] = '\0';
+        int ok = gb_qt_theme_set(v.as.string, err, sizeof(err));
+        value_free(v);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.theme: %s",
+                     err[0] ? err : "that stylesheet was refused");
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
     if (strcmp(verb, "heading") == 0) {
         if (argc != 3) {
             qt_raise("qt.heading expects a window, a table and a column name");

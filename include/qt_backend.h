@@ -59,6 +59,25 @@ typedef int (*GbQtTickFn)(void);
 
 void gb_qt_set_callbacks(GbQtInvokeFn invoke, GbQtTickFn tick);
 
+/* THE APPLICATION'S OWN STYLESHEET -- the half of theming the by-name property
+ * route does NOT already give. Measured before this was written: `styleSheet`
+ * is a Q_PROPERTY of QWidget, so `field name( styleSheet: "..." )` already
+ * worked with no vocabulary of its own, which is that route (§1) paying off in
+ * a way nobody designed. What it cannot reach is ONE sheet for the whole
+ * application, which is what anybody means by a theme.
+ *
+ * IT MUST NOT NEED A DISPLAY. Setting a theme is harmless metadata and a
+ * program will want to set it BEFORE opening anything, so the sheet is
+ * REMEMBERED and applied when the QApplication is constructed -- and applied
+ * at once if one already exists. Refusing until a window is open would force
+ * the first window to appear unthemed and then change, which is the one visible
+ * consequence worth avoiding.
+ *
+ * READ BACK FROM QT, not from the remembered copy, so what comes back is what
+ * Qt holds rather than what we asked for. */
+int gb_qt_theme_set(const char *css, char *err, size_t err_size);
+char *gb_qt_theme_get(void);
+
 /* Construct the QApplication. Separate from gb_qt_window because it must
  * happen exactly once and after gb_qt_can_display() has said yes. */
 int gb_qt_begin(char *err, size_t err_size);

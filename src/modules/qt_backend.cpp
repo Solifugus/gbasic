@@ -186,6 +186,36 @@ static GbQtNode *node_new(void) {
     return n;
 }
 
+/* THE THEME IS REMEMBERED UNTIL THERE IS A QApplication TO PUT IT ON. A
+ * program sets a theme before it opens anything, which is also when there is
+ * no QApplication -- so holding it here is what lets the first window appear
+ * already themed instead of appearing plain and then changing. */
+static QString g_theme;
+
+extern "C" int gb_qt_theme_set(const char *css, char *err, size_t err_size) {
+    (void)err;
+    (void)err_size;
+    g_theme = QString::fromUtf8(css ? css : "");
+    if (g_app) {
+        g_app->setStyleSheet(g_theme);
+    }
+    return 1;
+}
+
+extern "C" char *gb_qt_theme_get(void) {
+    /* ASKED OF QT where there is a QApplication, and of the remembered copy
+     * only where there is not -- so this is a round trip through Qt's own
+     * state rather than a variable answering with what it was handed. */
+    QByteArray bytes = (g_app ? g_app->styleSheet() : g_theme).toUtf8();
+    char *out = (char *)malloc((size_t)bytes.size() + 1);
+    if (!out) {
+        return nullptr;
+    }
+    memcpy(out, bytes.constData(), (size_t)bytes.size());
+    out[bytes.size()] = '\0';
+    return out;
+}
+
 extern "C" int gb_qt_begin(char *err, size_t err_size) {
     if (g_app) {
         return 1;
@@ -201,6 +231,12 @@ extern "C" int gb_qt_begin(char *err, size_t err_size) {
         return 0;
     }
     g_app = new QApplication(g_fake_argc, g_fake_argv);
+    /* THE REMEMBERED THEME, APPLIED BEFORE ANY WINDOW EXISTS, which is the
+     * whole point of remembering it: the first window is then built already
+     * themed rather than appearing plain and changing. */
+    if (!g_theme.isEmpty()) {
+        g_app->setStyleSheet(g_theme);
+    }
     return 1;
 }
 
