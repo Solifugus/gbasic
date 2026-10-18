@@ -171,6 +171,58 @@ else
     fail "A served ${a_served} without a dialog and ${am_served} with one -- the claim is that these are equal"
 fi
 
+printf 'TIER no display: a refusal, never an abort\n'
+# THE REQUIREMENT FOR THE FIRST BACKEND COMMIT, measured here so it is enforced
+# rather than remembered. Matthew asked for it after asking whether gBASIC would
+# still run on a text-only machine -- it does, completely; only a window needs a
+# display -- and the measurement showed the hazard is worse than "it will not
+# work":
+#
+#   WITH NO DISPLAY, Qt CALLS qFatal AND ABORTS. Measured: SIGABRT, exit 134,
+#   core dumped, with "no Qt platform plugin could be initialized" on stderr.
+#   qFatal CANNOT BE CAUGHT, so by the time our process knows, it is gone -- and
+#   a crash takes block-buffered stdout with it, so a program printing its
+#   progress prints NOTHING and the failure reads as line 1. Exactly the defect
+#   GTK produced (run_gi.sh: a widget built before gtk_init, exit 139).
+#
+#   AND THE ENVIRONMENT CANNOT BE READ INSTEAD, which was the obvious guess and
+#   is wrong: Qt found Wayland through XDG_RUNTIME_DIR with WAYLAND_DISPLAY
+#   unset, so its detection is richer than a reimplementation would be.
+#
+# So the probe ASKS QT, IN A FORKED CHILD -- a process we can afford to lose --
+# and the parent reads a status. All three answers are asserted, because any one
+# alone is satisfied by a probe that always says the same thing.
+probe_says() {
+    set +e
+    env "$@" timeout -k 5 60 "$work/probe" probe 2>/dev/null | sed -n 's/^can_display=//p'
+    set -e
+}
+with_display=$(probe_says QT_QPA_PLATFORM=offscreen)
+no_display=$(probe_says -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM                         -u XDG_RUNTIME_DIR -u XDG_SESSION_TYPE)
+offscreen=$(probe_says -u DISPLAY -u WAYLAND_DISPLAY -u XDG_RUNTIME_DIR                        QT_QPA_PLATFORM=offscreen)
+if [ "$no_display" = "0" ]; then
+    pass "with no display it answers NO rather than aborting the process"
+else
+    fail "with no display the probe answered '$no_display' -- it must be 0, and the parent must survive"
+fi
+if [ "$with_display" = "1" ] && [ "$offscreen" = "1" ]; then
+    pass "CONTROL: a usable platform answers YES, offscreen included -- so a headless server can still render to an image"
+else
+    fail "a usable platform did not answer yes (platform=$with_display offscreen=$offscreen)"
+fi
+# AND THE PARENT MUST SURVIVE, which is the whole point and is not implied by
+# the answer: a probe that aborted its own process would print nothing at all,
+# so the exit status is asserted separately.
+set +e
+env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR     -u XDG_SESSION_TYPE timeout -k 5 60 "$work/probe" probe >/dev/null 2>&1
+probe_rc=$?
+set -e
+if [ "$probe_rc" = "0" ]; then
+    pass "and it exits cleanly, so a diagnostic can still be printed afterwards"
+else
+    fail "the probe process itself exited $probe_rc with no display (134 = the abort it exists to prevent)"
+fi
+
 printf 'TIER display: the answer is not an artefact of the offscreen platform\n'
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
     set +e

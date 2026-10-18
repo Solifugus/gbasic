@@ -32,7 +32,10 @@
 #include <QDialog>
 #include <QEventLoop>
 #include <QObject>
+#include <QGuiApplication>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/wait.h>
 
 /* ONE GENERIC RELAY, which is the shape the design proposes for every signal:
  * a widget's signal reaches this object, and it calls back into C. For the real
@@ -80,6 +83,35 @@ static QSocketNotifier *notifier = nullptr;
 static int fake_argc = 1;
 static char fake_arg0[] = "gbasic";
 static char *fake_argv[] = { fake_arg0, nullptr };
+
+extern "C" int qt_spike_can_display(void) {
+    /* THE CHILD IS THE ONE THAT MAY DIE. It constructs a real QGuiApplication,
+     * which is what would abort, and exits 0 only if that succeeded. The parent
+     * reads a status rather than sharing the fate. */
+    pid_t pid = fork();
+    if (pid < 0) {
+        return 0;
+    }
+    if (pid == 0) {
+        /* Nothing is printed: Qt's own complaint on the way down would reach
+         * the user's stderr, and the point of this probe is to replace it with
+         * one sentence of ours. */
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, 2);
+        }
+        int argc = 1;
+        static char arg0[] = "gbasic";
+        char *argv[] = { arg0, nullptr };
+        QGuiApplication probe(argc, argv);
+        _exit(0);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        return 0;
+    }
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 1 : 0;
+}
 
 extern "C" int qt_spike_init(qt_spike_cb cb) {
     if (app) return 0;

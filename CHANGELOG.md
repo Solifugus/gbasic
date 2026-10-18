@@ -203,6 +203,30 @@ recorded. Every gBASIC source registered with Qt must be drained by its handler,
 and the tier asserts a ceiling on the activation count rather than merely that
 the source was served.
 
+**And it now carries a requirement for the first backend commit.** Asked after
+the question *"will gBASIC still run on a text-only computer?"* — **it will,
+completely**: the lean release builds with `GTK_AVAILABLE=0`, this repository's
+test binary carries `HAVE_GTK=0`, and a program with no `window` block is
+untouched. Only *opening* a window needs a display, and a window block still
+parses, validates and introspects with no Qt at all.
+
+The hazard is worse than "it will not work", and the suite measures all of it:
+**with no display Qt calls `qFatal` and aborts** — SIGABRT, exit 134, core
+dumped — and `qFatal` cannot be caught, so by the time the process knows it is
+gone. A crash also takes block-buffered stdout with it, so a program printing
+its progress prints nothing and the failure reads as line 1: exactly the defect
+GTK produced, which `run_gi.sh` records as a widget built before `gtk_init`,
+exit 139.
+
+**And the environment cannot be read instead** — the obvious guess, and wrong:
+Qt found Wayland through `XDG_RUNTIME_DIR` with `WAYLAND_DISPLAY` unset. So the
+refusal asks **Qt itself, in a forked child** — a process we can afford to lose
+— and the parent reads a status. Proven rather than planned: **no** where Qt
+aborts, **yes** on a real display, **yes** under `QT_QPA_PLATFORM=offscreen`
+(which stays something a *user* may set, so a headless server can render to an
+image), and the parent exits cleanly in every case so a diagnostic can still be
+printed.
+
 **What it does not answer, stated rather than implied:** re-entry into the
 evaluator (the probe proves a real Qt signal reaches a C callback through a
 `moc` translation unit; `invoke_function` from there is inferred from

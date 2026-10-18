@@ -33,6 +33,22 @@ extern "C" {
 
 typedef void (*qt_spike_cb)(const char *what);
 
+/* CAN THIS MACHINE OPEN A WINDOW AT ALL? Asked in a FORKED CHILD, and that is
+ * not caution but the only thing that works: with no display Qt calls qFatal,
+ * which ABORTS -- measured, SIGABRT and a core dump -- and qFatal cannot be
+ * caught, so by the time our process knows, it is gone. A crash also takes
+ * block-buffered stdout with it, so a program printing its progress prints
+ * NOTHING and the failure reads as line 1. The same defect GTK produced
+ * (run_gi.sh: a widget built before gtk_init, exit 139).
+ *
+ * AND IT CANNOT BE DONE BY READING THE ENVIRONMENT, which was the obvious
+ * guess and is wrong: measured, Qt found Wayland through XDG_RUNTIME_DIR with
+ * WAYLAND_DISPLAY unset, so its detection is richer than any reimplementation
+ * of it would be. Asking Qt itself, in a process we can afford to lose, is the
+ * only answer that stays true as Qt changes.
+ *
+ * 1 yes, 0 no. One fork per program that opens a window, cached by the caller. */
+int  qt_spike_can_display(void);
 int  qt_spike_init(qt_spike_cb cb);       /* 0 ok */
 void qt_spike_show(void);
 int  qt_spike_pump(int max_ms);           /* DIRECTION B: gBASIC owns the loop */

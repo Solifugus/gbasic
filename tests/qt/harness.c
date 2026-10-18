@@ -1,28 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
-/* SPDX-License-Identifier: Apache-2.0
- * Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
- *
- * THE QT EVENT-LOOP PROBE. docs/qt_gui_design.md §5 names one thing as
- * unproven before any code is written: `QApplication::exec()` against gBASIC's
- * own event loop, "plus doing the re-entry from a C++/moc translation unit".
- * The signal path is NOT the risk -- `gi_signal_marshal` in src/eval.c has
- * shipped exactly that for GTK -- but the loop does not transfer, because
- * gBASIC's answer there is GLib's.
- *
- * IT LINKS NO gBASIC CODE, DELIBERATELY. The loop question is answerable in
- * isolation: gBASIC's loop is ONE poll() over the webserver's descriptors,
- * libcurl's descriptors and the root mailbox, with timers riding the poll
- * timeout (webserver_run_event_loop in src/eval.c), so every source is a
- * descriptor or a deadline and a stand-in needs only a real poll over a real
- * descriptor. Keeping gBASIC out means the answer cannot be confounded by
- * anything else, and it means this probe stays buildable when the interpreter
- * changes.
- *
- * THIS IS NOT THE START OF THE LIBRARY. Nothing here is an API anybody should
- * code against; it exists to produce the two numbers §5 asked for and to keep
- * producing them.
- */
 /* THE HARNESS STANDS IN FOR gBASIC'S LOOP, and it is the same shape:
  * webserver_run_event_loop is ONE poll() over the webserver's descriptors,
  * libcurl's descriptors and the root mailbox, with timers riding the poll
@@ -61,6 +38,10 @@ int main(int argc, char **argv) {
     if (pipe(pipefd) != 0) { perror("pipe"); return 2; }
     fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
 
+    if (strcmp(mode, "probe") == 0) {
+        printf("can_display=%d\n", qt_spike_can_display());
+        return 0;
+    }
     if (qt_spike_init(on_event) != 0) { fprintf(stderr, "init failed\n"); return 2; }
     qt_spike_show();
 

@@ -143,6 +143,46 @@ widgets built from this record through `QMetaObject`. It wants the offscreen
 platform in its suite from the first commit rather than retrofitted, since that
 is the increment where headless stops being free.
 
+### 0.3 REQUIRED OF THE FIRST BACKEND COMMIT: "no display" is a sentence
+
+**Decided 2026-10-17 and already measured**, after the question "will gBASIC
+still run on a text-only computer?" — it will, completely: the lean release
+builds with `GTK_AVAILABLE=0`, this repository's own test binary carries
+`HAVE_GTK=0`, and a program with no `window` block is untouched by any of this.
+Only *opening* a window needs a display, and a window block still **parses,
+validates and introspects** with no Qt at all, which is why the declaration
+shipped first.
+
+But the hazard is worse than "it will not work", and `tests/run_qt_loop.sh`
+measures all of it:
+
+- **With no display, Qt calls `qFatal` and ABORTS** — SIGABRT, exit 134, core
+  dumped, with *"no Qt platform plugin could be initialized"* on stderr.
+  **`qFatal` cannot be caught**, so by the time the process knows, it is gone.
+  And a crash takes block-buffered stdout with it, so a program printing its
+  progress prints **nothing** and the failure reads as line 1. This is exactly
+  the defect GTK produced and `run_gi.sh` records: a widget constructed before
+  `gtk_init`, exit 139.
+- **The environment cannot be read instead**, which was the obvious guess and is
+  wrong: measured, Qt found Wayland through `XDG_RUNTIME_DIR` with
+  `WAYLAND_DISPLAY` unset. Its own detection is richer than any reimplementation
+  of it, and would drift as Qt changes.
+
+**So the first backend commit must refuse before constructing anything**, by
+asking Qt **in a forked child** — a process we can afford to lose — and reading
+a status. The remedy is proven, not planned: the probe answers **no** where Qt
+aborts, **yes** on a real display, **yes** under `QT_QPA_PLATFORM=offscreen`,
+and the parent **exits cleanly in every case**, so a diagnostic can still be
+printed. All four are asserted, because any one alone is satisfied by a probe
+that always says the same thing.
+
+Two consequences worth keeping:
+
+- `QT_QPA_PLATFORM=offscreen` stays something **a user** may legitimately set,
+  so a GUI program can render on a headless server.
+- The refusal names what is missing — a display — rather than reporting a Qt
+  plugin failure, which names the one thing the author cannot fix.
+
 ---
 
 ## 1. Why Qt, and what changed
