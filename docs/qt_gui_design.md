@@ -900,13 +900,34 @@ or warning 2101 fires for the discarded result.
 plus `button` for typed commands, six buttons whose `enabled` is set per room,
 a `menu` bar with a separator, `group`/`row`/`column` layout, and `qt.theme`.
 
+### And the editor, which decided three additions rather than using them
+
+`examples/bag/editor.bas` is BAG's other half: the game *plays* a world and the
+editor *describes* one. The text version asks *"which area does north lead to?"*
+and wants an id the author has to remember; a window answers with a dropdown.
+
+**Writing it is what produced `memo` (§0.10), `choice` (§0.13) and both halves
+of `qt.refresh` (§0.11).** None was reasoned to — each was the thing that
+stopped the program being writable, and each was found by trying:
+
+| | without it |
+|---|---|
+| `memo` | a description is a one-line entry |
+| `choice` | you type area ids |
+| `qt.refresh` on a table | the area list never grows |
+| `qt.refresh` on a form | the editor shows the first area for ever |
+
+The tier asserts the **round trip**, not the rendering: point an exit at another
+area *by name*, keep it, and require the record to hold the right **id** and the
+list to show the new **name**. A dropdown holding the right words while storing
+the wrong id is the plausible wrong answer here, and only reading the record
+back catches it.
+
 ### Still ahead of it
 
-BAG's **editor** — the menu-driven half — is form-heavy, and an area's six
-exits each name another area while an item names its location. Those want a
-**dropdown**, which is the one widget with no substitute (§0.10). And teaching
-BAG to *emit* a `window` block, so the generated game is a GUI, is a separate
-exercise: a program writing a declaration.
+Teaching BAG to **emit** a `window` block, so the generated game is a GUI, is a
+separate exercise: a program writing a declaration. And the editor covers areas;
+items and triggers are the same shapes again.
 
 ---
 

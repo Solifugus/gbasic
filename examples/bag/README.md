@@ -32,6 +32,27 @@ the Qt surface: there was no word for a paragraph of text (`text`/`memo` now),
 and a table did not follow a list that changed (`qt.refresh` now). See §0.10 to
 §0.12 of `docs/qt_gui_design.md`.
 
+### Describing a world in a window
+
+`editor.bas` is BAG's other half — the game *plays* a world, the editor
+*describes* one:
+
+```sh
+./gbasic examples/bag/editor.bas
+QT_QPA_PLATFORM=offscreen ./gbasic examples/bag/editor.bas check
+```
+
+The text BAG asks *"which area does north lead to?"* and wants an id the author
+has to remember. A window answers that with a **dropdown**, and that is not
+decoration: writing this program is what decided three additions to the Qt
+surface rather than illustrating them —
+
+| | |
+|---|---|
+| `memo` | a description is a paragraph, and nothing could show one |
+| `choice` | an exit **names another area**, six times per area |
+| `qt.refresh` | choosing a row must *show that area*, and a form populated once at open — so did a table, so neither the list nor the editor followed the data |
+
 **The one thing to take from it is where the state lives.** gBASIC has no
 closures, and a handler fires beneath `qt.run()`, so the frame it sees is
 `main`'s. A handler can *read* a local there and **cannot rebind a scalar** —
