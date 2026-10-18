@@ -3853,6 +3853,9 @@ end program
 | `qt.menus(win)` / `qt.menus(win, n)` | the menu bar's top-level captions, or the entries of the menu at position `n`. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
 | `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
 | `qt.highlighting(win, part)` | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
+| `qt.inform(win, text)` | a message box with one button, parented to `win` so Qt centres it there and makes it modal to that window |
+| `qt.confirm(win, question)` | a message box with two, answering **`true` or `false`** rather than a button code — two buttons is the whole of what it offers, and anything richer is a window shown modally. **No is the default**, because a question answered by pressing Return without reading should not be the destructive one |
+| `qt.answer(value)` | answer the dialog that is open, from the program rather than a person — a timeout, an unattended run, a suite. **Refuses when nothing is open**, rather than being a silent no-op that would leave a program waiting for somebody who is not there |
 | `qt.theme(css)` / `qt.theme()` | set or read **one stylesheet for the whole application**. Needs no display, and is remembered until there is a `QApplication` to put it on, so a program themes first and opens second |
 | `qt.subject(win, name)` | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
 | `qt.invoke(win, name, method)` | call a widget method by name — `click`, `clear`, `setFocus` |
@@ -4084,6 +4087,24 @@ actually got.
 painted side area) and completion (the data exists in `source_outline` and
 `gbasic-lsp`; the popup is a `QCompleter`, another object attached to a widget,
 so it lands where the highlighter did).
+
+**A modal dialog is modal to the whole program, not just the window.** Qt's own
+loop survives the nested one a dialog opens — that is why the backend hands Qt
+the thread at all — but gBASIC cannot re-enter while the interpreter is
+suspended inside its own handler:
+
+| dialog raised | gBASIC's own sources |
+|---|---|
+| outside a handler | keep running — a `timer` fires, and can answer the box |
+| **from a handler** (somebody clicked) | **suspended** until it is answered |
+
+The second is the normal case, so a `timer`, a webserver and an actor mailbox
+all stop until the question is answered — defensible for a desktop application
+and surprising for one that is also a server. Measured both ways through the
+interpreter, and `tests/run_qt_dialog.sh` asserts it with a real `server` on an
+OS-assigned port, because a limitation nobody can observe is one nobody will
+believe. A dialog with no display refuses **naming the display**, not the shut
+window.
 
 **The containers, and why there are no alignment properties.** A `row` packs
 left to right and a `column` top to bottom, each taking `margin:` and

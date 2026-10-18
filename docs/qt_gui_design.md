@@ -3,11 +3,11 @@
 **Status: largely shipped.** The `window` declaration (§0.2), the `qt` module
 (§0.4), binding (§0.5), `table` (§0.6), menus and theming (§0.7),
 `tabs`/`cells` (§0.8), the builder (§0.9), `text`/`memo` (§0.10) and
-`qt.refresh` (§0.11), `choice` (§0.13) and `source` (§0.14) exist, with §0.12 a
+`qt.refresh` (§0.11), `choice` (§0.13), `source` (§0.14) and dialogs (§0.15) exist, with §0.12 a
 whole application built on them, gated by
 `tests/run_window.sh`, `tests/run_qt_backend.sh`,
 `tests/run_qt_builder.sh`, `tests/run_qt_examples.sh` and
-`tests/run_qt_source.sh`. Still proposal: `stdlib/qt.bas`, `show:`/`edit:` in
+`tests/run_qt_source.sh` and `tests/run_qt_dialog.sh`. Still proposal: `stdlib/qt.bas`, `show:`/`edit:` in
 option position, binding into a container nested inside a form, more than one
 window, and threads. **This line has been wrong three times by being left
 alone** — twice in one day claiming the declaration could not render, and then
@@ -1807,6 +1807,81 @@ a setting that changed the program would fail rather than pass quietly.
   lands exactly where the highlighter did and for the same reason.
 - **Which copy wins** when the user has their own definition is measured but
   not *chosen*: the engine decides, and `qt.highlighting` reports it.
+
+## 0.15 Dialogs (2026-10-18): a question, and how far it reaches
+
+**A program could not ask one.** No message box, no confirm — and the irony is
+sharp: §5.1 chose direction A *because* modal dialogs starve the other
+arrangement (a 651 ms gap over a 600 ms dialog, which is a webserver answering
+nothing), and nothing could open one.
+
+### Measured before designing, which decided the shape
+
+A C++ probe in gBASIC's exact arrangement — a `QTimer` inside Qt's loop, which
+is what `gb_qt_run` uses — shows the tick firing **during** a modal
+`QMessageBox` (3 of 3) and **able to press its button**. So a program can
+answer its own dialog, and a suite needs no human. A `QFileDialog` behaves the
+same once `DontUseNativeDialog` asks for Qt's own rather than the desktop's.
+
+### And the claim is narrower than §5.1 reads
+
+§5.1 is about **Qt's** loop surviving the nested one. It does. What cannot
+happen is **gBASIC re-entering while the interpreter is suspended inside its
+own handler**:
+
+| dialog raised | gBASIC's own sources |
+|---|---|
+| outside a handler | keep running — a `timer` fires and can answer the box |
+| **from a handler** | **suspended** until it is answered |
+
+**The second is the normal case** — somebody clicked, and the program asks
+before acting — so a modal dialog is modal to the whole *program*. Measured
+both ways through the interpreter, and `run_qt_dialog.sh` asserts it with a
+real `server` block on an OS-assigned port: the route answers with no dialog
+up and does **not** answer during one, with a third check that the dialog was
+still open so what was measured was a stall and not a crash. **If that tier
+ever passes, the limitation is gone** and this section, the reference and the
+cookbook all overstate it — which is `run_limitations.sh`'s negative-control
+shape.
+
+That is defensible for a desktop application and surprising for one that is
+also a server. The design answer for a program that must keep serving is a
+*non-blocking* ask — a dialog that returns at once and delivers its answer to
+a handler — and that is deliberately **not** built here: it is a second API
+for the same thing, and nothing has needed it yet.
+
+### Two defects found by running it
+
+- **The pump lived inside `gb_qt_run`**, so a dialog opened *before* the
+  program handed over the thread had no pump at all: `exec()` opened a nested
+  loop with nothing servicing gBASIC, and the first `qt.confirm` written
+  outside `qt.run()` **hung until a 30-second timeout**. It is reference-counted
+  now and a dialog arms it too, so the promise holds wherever the box was
+  opened from rather than only in the arrangement the pump was written for.
+- **The no-display refusal named the wrong cause.** It said *"window `app` is
+  not open"* — true, and the window is shut *because* there is nowhere to put
+  it. It names the display now, with the control that an unopened window still
+  gets the other sentence. Fifth instance of that class here.
+
+### Decisions
+
+`confirm` answers a **boolean**, not a button code: two buttons is the whole of
+what it offers. **No is the default**, because a question answered by pressing
+Return without reading should not be the destructive one. `qt.answer` **refuses
+when nothing is open** rather than being a silent no-op — which would leave a
+program waiting for somebody who is not there, and a hang is not a failure.
+A `QMessageBox` is heap-allocated behind a `QPointer`, because a
+stack-allocated `QObject` *given a parent* is a double free and the parent is
+wanted so Qt centres the box on it.
+
+### Still open
+
+- **A file chooser.** Measured available (the probe drives one), not built.
+- **A window shown modally**, which is what anything richer than two buttons
+  wants, and which would also answer "more than one window".
+- **A dialog over another** is not refused — the backend keeps a stack — but
+  nothing exercises it, and a claim nobody has run is not a claim.
+
 
 ### Still open
 
