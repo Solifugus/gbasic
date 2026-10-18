@@ -1,12 +1,16 @@
 # A Qt GUI for gBASIC — design
 
-**Status: partly shipped.** The `window` declaration (§0.2) and the `qt` module
-(§0.4) exist and are gated by `tests/run_window.sh` and
-`tests/run_qt_backend.sh`. Everything else here is still proposal — there is no
-`stdlib/qt.bas`, no builder (§4), no `tabs`/`cells`/`table`, and no two-way
-binding. **This line has been wrong twice in one day by being left alone**, so
-the rule is that a section says its own state and this line says which sections
-are which.
+**Status: largely shipped.** The `window` declaration (§0.2), the `qt` module
+(§0.4), binding (§0.5), `table` (§0.6), menus and theming (§0.7),
+`tabs`/`cells` (§0.8) and the builder (§0.9) exist, gated by
+`tests/run_window.sh`, `tests/run_qt_backend.sh` and
+`tests/run_qt_builder.sh`. Still proposal: `stdlib/qt.bas`, `show:`/`edit:` in
+option position, binding into a container nested inside a form, more than one
+window, and threads. **This line has been wrong three times by being left
+alone** — twice in one day claiming the declaration could not render, and then
+again listing `tabs`/`cells`/`table` and the builder as absent after all four
+had shipped — so the rule is that a section says its own state and this line
+says which sections are which.
 
 **Provenance.** Where this says *measured* it means a command was run on
 2026-10-14 and the output is quoted or summarised. Where it says *decided* it
@@ -563,6 +567,152 @@ property, and an unlabelled widget raises nothing.
 
 ---
 
+## 0.9 The builder (2026-10-18): §4, and the door that was already open
+
+**Shipped.** `tests/run_qt_builder.sh`, `tests/qt_check_test.bas`,
+`tests/qt_builder_test.bas`.
+
+§4 called for a second door: the block for fixed layouts, and a builder for
+data-driven lists, because a declaration cannot contain a loop and so cannot
+generate a row per invoice. **Measured before anything was designed, that door
+was already open and nobody knew.** `qt.open` reads the record a declaration
+binds and asks only that `kind` is `"window"`, so this works:
+
+```basic
+rows = []
+for each line in invoice.lines
+    rows = append(rows, { kind: "part", word: "field", name: line.id,
+                          options: { label: line.description,
+                                     text: string(line.amount) } })
+end for
+win = { kind: "window", name: "invoice",
+        options: { title: "Invoice", width: 420 },
+        items: [ { kind: "container", word: "column", options: { margin: 8 },
+                   items: rows } ] }
+qt.open(win)
+```
+
+It opens, renders, reads back through `qt.read`, places through `qt.at`, and
+fires handlers — identically to a declared window. The surface *is* the record,
+which is the `web.routes` shape §4 itself named. **No verb was needed.** That is
+the third time in this design that measuring a gap before filling it changed
+what got built: menus needed no grammar (§0.7), a named container with options
+cost four conflicts (§0.8), and this needed no builder.
+
+### What it lacked was every load-time check
+
+A declared window is validated at load time (§0.2) and a built one was validated
+not at all. **That is not a missing nicety — it is the defect `web.configure`
+was built to close**, where the record could already be written directly and
+that path validated nothing, so `app.options.workesr = 4` was accepted in
+silence. Measured on the binary first:
+
+| built record | what happened |
+|---|---|
+| a part with **no name** | opened quietly, unaddressable forever |
+| **two parts sharing a name** | opened quietly, the second shadowing the first |
+| `word: "feild"` | refused by the *backend* for having no widget wired — never *did you mean 'field'?* |
+| `item` in a `column` | the right refusal with the wrong sentence |
+| a handler naming nothing | refused for carrying no function — never *there is nothing called `nobody` in this window* |
+
+The last is the refusal load-time validation exists for, so a builder without it
+is a builder whose mistakes surface as a window that looks fine.
+
+### One checker, two adapters — and no second copy
+
+The rules are ~350 lines. A record walker would be a **second copy**, which is
+the drift this tree puts tripwires against — and which this very vocabulary had
+already suffered: it was written out three times before `win_nearest` was derived
+from the tables, and the newest word was missing from the third.
+
+So they moved to `src/window_check.c`, expressed against an **accessor model**:
+`src/frontend.c` adapts the AST, `src/modules/qt.c` adapts a record, and neither
+holds a rule. It is the arrangement `would` and `execute` share in `automation`,
+for the reason stated there — *if the two could disagree, a check would describe
+a different window from the one that opens.* A source tripwire asserts there is
+no second vocabulary table and no second near-miss finder.
+
+`qt.check(win)` is the verb, and it **needs no Qt and no display**: it is a check
+on a *declaration*, which is the `web.routes` property that let the whole
+declarative surface ship before any Qt existed. So it sits outside the
+`#if HAVE_QT` guard — this project's own convention read the other way, that code
+which is *not* optional must stay out of those guards.
+
+**`qt.open` runs it too.** A validator nobody is obliged to call is necessary and
+not sufficient: `rules.validate` refused a malformed stack all along while
+`rules.evaluate` still answered `ok: true` for a string, because nothing obliged
+a caller to validate first.
+
+### The record's field names are closed as well
+
+That is a question about the **representation** rather than about windows, so it
+lives in the adapter and not in the rules: `{ kind: "part", word: "field",
+nmae: "x" }` is refused *by name*, and an item with no `kind:` is told the three
+it may have. Reported with a **path** (`column[0] > field a`) since a record has
+no line — the nearest honest equivalent of the line a declaration's refusal
+sends a reader to.
+
+### Two defects of mine, both found by running it
+
+**The child wrapper was a ring of sixteen**, under a comment claiming the checker
+"holds at most a parent and a child at any moment". That was **false**, and the
+sixteen was the giveaway: at the seventeenth *sibling* the ring recycled the
+*parent's* slot while the walk was still iterating it. It segfaulted at nineteen
+generated parts — which the fixture had, §2.4's rejected keypad being nineteen
+buttons — and a crash takes block-buffered stdout with it, so the run printed
+everything up to the tier and nothing after, reading exactly like a hang. The
+same shape §0.3 describes for a display-less Qt abort, arriving from my own code.
+One slot per **depth** now.
+
+**And that exposed the second.** A declared window's nesting is bounded by its
+source; a **built** one is bounded by nothing, and the walk recurses. Measured:
+with the cap lifted it survives 5,000 and segfaults at 10,000, while building the
+same 10,000-deep record and *not* checking it exits 0 — the control that makes
+that a fact about this walk rather than about gBASIC, where a nested value around
+22,000 deep is separately known to kill the interpreter at teardown. Capped at
+**64**, some 80x short of the crash, with the margin recorded rather than the
+cap merely asserted.
+
+### Parity is the load-bearing tier, and its limit is demonstrated
+
+"The builder works" is satisfied by a builder that renders something
+**plausible**, which is this backend's whole failure class. So the same window is
+written **both ways** and every observable must agree — properties, labels, and
+the grid geometry `qt.at` reads back from the layout itself.
+
+**Parity alone is not enough and the fixture says so.** Perturbing
+`gb_qt_span` to ignore spans breaks *both* halves equally, so all six parity
+checks stay green and only the companion assertion — *the span really is 2* —
+catches it. That is agreement-is-not-correctness (PLAT-NUMFMT) one level up, and
+it is why the companion check is there.
+
+Beside it, **agreement** puts every one of the 23 `window` declarations in the
+tree through the *record* adapter, lifted mechanically rather than listed: a
+declaration passed the AST adapter at load time, so a refusal there means the two
+have drifted, and it is the only tier that can see that.
+
+### Three of this suite's own controls caught my scanner, not the tree
+
+Each is a trap already written down somewhere in `tests/`. The `one_copy` scanner
+first reported `src/modules/qt.c` for the sentence `never "did you mean
+'field'?"` **inside the comment explaining why the finder lives elsewhere** — the
+*argument* for a rule read as a breach of it, which is `run_libcurl_floor.sh`'s
+`smtp.c` trap. Stripping comments with a sed **range** then deleted to end of
+file whenever `/*` and `*/` sat on one line, so the scanner read nothing and
+would have passed on anything; caught by the control asserting it keeps the code.
+And `code_only | grep -q` fails the whole pipeline **when it matches**, grep
+closing the pipe and awk dying of SIGPIPE — fifth instance in this tree, recorded
+in `run_rules.sh`, which is where the helper was copied from.
+
+### What is deliberately not built
+
+**`stdlib/qt.bas` with builder helpers.** The record is buildable as it stands
+and `qt.check` makes it safe to build; helpers would be sugar over sugar, and
+whether they earn their place is a question a real consumer answers. Studio
+(§0.1) is that consumer.
+
+---
+
 ## 1. Why Qt, and what changed
 
 Qt was rejected as a GUI backend on 2026-09-27 on measured grounds, and that
@@ -847,12 +997,23 @@ it, this is a description of intent and not legal advice.
 
 ## 4. The block is sugar over a builder
 
+**Shipped 2026-10-18 — see §0.9, and the premise of this section was measured
+and found already satisfied.**
+
 A declaration cannot contain a loop, so a `window` block cannot generate a row
 per invoice. The `server` block has exactly this shape and the same answer: the
 block is **sugar over a data API** (`web.routes` is the table; the block is a
 nicer way to write it). So a Qt library wants both doors — the block for fixed
 layouts, which is most dialogs, forms and toolbars; and a builder for
-data-driven lists. The builder's surface is not designed here.
+data-driven lists.
+
+This section said "the builder's surface is not designed here". **It did not
+need designing: the surface is the record, and the door was already open.**
+`qt.open` reads the record a declaration binds and asks only that `kind` is
+`"window"`, so a record a program *builds* opens, renders, reads back and fires
+handlers exactly as a declared one — measured before anything was written. What
+was missing was not a verb but the validation a declaration gets, which is
+§0.9's subject.
 
 ## 5. What must be measured before any code is written
 

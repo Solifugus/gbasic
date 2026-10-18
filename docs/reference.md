@@ -3837,7 +3837,8 @@ end program
 | | |
 |---|---|
 | `qt.can_display()` | whether a window can be opened at all. **Answers rather than raising**, including on a build with no Qt — a program asking this is degrading gracefully, and "this build has no Qt" is one of the answers |
-| `qt.open(win)` | build and show the declaration. Refuses, naming **a display**, when there is none |
+| `qt.open(win)` | build and show the declaration. Refuses, naming **a display**, when there is none, and runs `qt.check` first so a window nobody validated cannot open |
+| `qt.check(win)` | the declaration's own load-time rules, over a window record — **answers on a build with no Qt and needs no display**, because it is a check on a declaration. Answers `true` or refuses with the first problem and a count of the rest |
 | `qt.read(win, name)` | the text a part is showing (`"true"`/`"false"`for a check box) |
 | `qt.read(win, name, property)` | one named Qt property of that part, **in the kind Qt declares it** — `readOnly` answers a boolean, `maxLength` a number. A property the widget does not carry is refused by name, as it is when set |
 | `qt.write(win, name, value)` | show a value, rendered exactly as `print` would render it |
@@ -3857,6 +3858,39 @@ end program
 **A window is addressed by its declaration**, not by a handle: `qt.open(customer)`
 and `qt.read(customer, "name")` both take the record the `window` block bound,
 the same way `web.routes(app)` takes a server record.
+
+**And a program may build that record itself**, which is how you get a row per
+invoice: a declaration cannot contain a loop, and `qt.open` asks only that the
+record carry `kind: "window"`. So the block is one door and ordinary values are
+the other, exactly as `server` and `web.routes` are two doors on one thing.
+
+```basic
+rows = []
+for each line in invoice.lines
+    rows = append(rows, { kind: "part", word: "field", name: line.id,
+                          options: { label: line.description,
+                                     text: string(line.amount) } })
+end for
+win = { kind: "window", name: "invoice",
+        options: { title: "Invoice", width: 420 },
+        items: [ { kind: "container", word: "column", options: { margin: 8 },
+                   items: rows } ] }
+qt.open(win)
+```
+
+A built window is the shape the declaration binds, so `print customer` shows
+what to build: `kind` is `"window"`, `"container"`, `"part"` or `"handler"`;
+a container carries `word`, `items` and optionally `name`, `label`, `subject`
+and `direction`; a part carries `word`, `options` and usually `name`; a handler
+carries `target`, `signal` and `handler` (a function value).
+
+**It meets the same rules a declaration meets**, through `qt.check` — the same
+closed vocabulary with its near-miss hint, the same placement rules, names
+unique within the window, and a handler whose target really exists. The field
+names are closed too, so `nmae:` is refused by name rather than leaving a part
+silently unlabelled. A problem is reported with a **path**
+(`column[0] > field a`) because a record has no line. Containers may not nest
+more than 64 deep, which only a loop can get wrong.
 
 **A form binds by name.** `form to edit cust` names its subject, and a field
 named `email` takes `cust.email` — so there is nothing to look up and nothing to
