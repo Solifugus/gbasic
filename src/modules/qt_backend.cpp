@@ -165,7 +165,13 @@ struct GbQtNode {
     QLayout *layout = nullptr;
     GbQtNode *root = nullptr;
     bool is_form = false;
-    QHash<QString, QWidget *> parts;   /* root only */
+    /* ADDRESSED BY NAME, AND NOT EVERY NAMED THING IS A WIDGET: a menu `item`
+     * is a QAction, which descends from QObject and not from QWidget. Holding
+     * QObject* is what lets one registry serve both -- properties, signals and
+     * `qt.read` all work through QObject, so the three doors that genuinely
+     * need a widget (`grow`, a view's edit triggers, a table's cells) cast
+     * and refuse instead of there being a second registry to keep in step. */
+    QHash<QString, QObject *> parts;   /* root only */
 };
 
 static QApplication *g_app = nullptr;
@@ -399,7 +405,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
  * reports-the-wrong-cause class this tree has named repeatedly, so the lookup
  * stays and the SUITE ASSERTS THE WORDING, because with the lookup removed and
  * only the refusal asserted every check stayed green. */
-static int set_property(QWidget *widget, const char *prop, const QVariant &v,
+static int set_property(QObject *widget, const char *prop, const QVariant &v,
                         char *err, size_t err_size) {
     if (!widget) {
         say(err, err_size, "there is no widget to set that on");
@@ -503,7 +509,7 @@ extern "C" int gb_qt_connect(void *window, const char *target,
         say(err, err_size, "there is no window to connect that to");
         return 0;
     }
-    QWidget *w = root->parts.value(QString::fromUtf8(target), nullptr);
+    QObject *w = root->parts.value(QString::fromUtf8(target), nullptr);
     if (!w) {
         /* UNREACHABLE FROM A DECLARATION and kept anyway: the load-time pass
          * already refuses `on cancel.clicked` with no `cancel` (§0.2), so
@@ -543,7 +549,7 @@ extern "C" int gb_qt_connect(void *window, const char *target,
 extern "C" int gb_qt_invoke(void *window, const char *target,
                             const char *method, char *err, size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
-    QWidget *w = root ? root->parts.value(QString::fromUtf8(target), nullptr)
+    QObject *w = root ? root->parts.value(QString::fromUtf8(target), nullptr)
                       : nullptr;
     if (!w) {
         say(err, err_size,
@@ -593,7 +599,7 @@ extern "C" char *gb_qt_read(void *window, const char *name) {
     if (!root) {
         return nullptr;
     }
-    QWidget *w = root->parts.value(QString::fromUtf8(name), nullptr);
+    QObject *w = root->parts.value(QString::fromUtf8(name), nullptr);
     if (!w) {
         return nullptr;
     }
@@ -621,7 +627,7 @@ extern "C" char *gb_qt_read(void *window, const char *name) {
 extern "C" int gb_qt_write(void *window, const char *name, const char *text,
                            char *err, size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
-    QWidget *w = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+    QObject *w = root ? root->parts.value(QString::fromUtf8(name), nullptr)
                       : nullptr;
     if (!w) {
         say(err, err_size,
@@ -651,7 +657,7 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
                          char *kind, double *num, char **text, char *err,
                          size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
-    QWidget *w = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+    QObject *w = root ? root->parts.value(QString::fromUtf8(name), nullptr)
                       : nullptr;
     if (!w) {
         say(err, err_size, QByteArray("this window has no `") + name + "`");
@@ -882,7 +888,7 @@ extern "C" int gb_qt_table_select(void *window, const char *name, int row,
 extern "C" int gb_qt_set_display_only(void *window, const char *name, int on,
                                       char *err, size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
-    QWidget *w = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+    QObject *w = root ? root->parts.value(QString::fromUtf8(name), nullptr)
                       : nullptr;
     if (!w) {
         say(err, err_size, QByteArray("this window has no `") + name + "`");
