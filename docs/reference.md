@@ -3862,6 +3862,7 @@ end program
 | `qt.scroll(win, part, notches [, modifier])` | turn the wheel on a part, for a program driving itself, answering **whether anything claimed the event**. `notches` may be **fractional** — a trackpad sends less than one, and that is the case the direction rounding exists for. The modifier is `"ctrl"`, `"shift"` or `"alt"`, refused by name, because one silently ignored sends a plain wheel while the author believes they sent a modified one |
 | `qt.wheel()` | the wheel event **being handled** — `{ dy, dx, ctrl, shift, alt }`, with `dy` in **notches** rather than Qt's 120-unit delta and **positive meaning away from you** (Qt's sign, and the opposite of GTK's). Refuses outside a wheel handler, since there is no sensible record to hand back and a program asking in the wrong place would otherwise read zeros and act on them |
 | `qt.swallow()` | claim the event being handled, so the view does not also act on it. Not optional for a zoom: Ctrl+wheel scrolls a `source` *faster* than a plain wheel, so a handler that zooms without claiming leaves the editor jumping about while it resizes. Refuses when nothing is in flight rather than being a silent no-op |
+| `qt.has_icon(win, part)` | whether a part has an icon. It exists because a QIcon has **no text form** — measured, a button carrying a real image and one carrying nothing both read back as `""` — so `qt.read(win, part, "icon")` **refuses** and names this instead, an empty answer for a property that *is* set being a wrong answer rather than no answer. A part that cannot carry one (a `text`, a `table`) is refused, naming its kind |
 | `qt.scrolled(win, part)` | how far a part is scrolled, or **`unknown`** for one that does not scroll — a different claim from *scrolled to nowhere*, since a `button` has no position where a `source` at the top has position 0. A `QAbstractScrollArea` reaches its scrollbar by a method, so this is the only route to it |
 | `qt.scroll_to(win, part, position)` | put it back, which is how *"reopen the editor where I left it"* is written. A part that does not scroll is refused by name rather than succeeding and doing nothing; the range is Qt's own, so a position past the end is clamped |
 | `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
@@ -4021,6 +4022,32 @@ addresses — so a menu takes no name, and `on open_file.triggered` names the
 item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
 `checked:` reach it through the same by-name property route every widget option
 uses.
+
+**`icon:` is the one option that is not an ordinary property.** Qt will not turn
+a string into an icon, so this is the single name with a conversion behind it —
+and it is the same conversion in the declaration and in `qt.set`, so the two
+cannot disagree. There are three sources and they are told apart by facts:
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+item act_open( label: "Open", icon: "SP_DialogOpenButton" )
+button brand( label: "Go", icon: "icons/go.png" )
+button themed( label: "Save", icon: "document-save" )
+```
+
+A name beginning **`SP_`** is one of Qt's own 81 standard icons, which work
+with no desktop icon theme installed — the only source that always does. A
+string that **names an existing file** is that file. Anything else is a
+**freedesktop theme name**.
+
+The two kinds of failure are answered differently, because they are different
+in kind. A path that is not there, a file that is not an image, and a
+misspelled `SP_` name are all **refused** — each is a fact that can be
+checked, and the intent is unambiguous. A theme name this machine's theme does
+not have is warning **2116**, never a raise: that is a fact about the *machine*,
+and refusing would stop a program running on a server with no icon theme at
+all. `qt.has_icon(win, part)` is how a program asks whether one arrived, and an
+empty source clears it.
 
 **A `popup` is a context menu**, and it spends its one slot the other way
 round. A container carries a name *or* options and never both, so a `menu`

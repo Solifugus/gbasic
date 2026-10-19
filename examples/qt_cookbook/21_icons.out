@@ -1,0 +1,9 @@
+OK has an icon:      true
+Cancel has one:      true
+Plain has none:      false
+the menu item has:   true
+and now Plain has:   true
+cleared again:       false
+a misspelled Qt name: qt.set: `SP_NotAThing` is not one of Qt's standard icon names
+a path that is not there: qt.set: there is no icon file at `/no/such/icon.png`
+reading one as text: qt.read: an icon has no text form; ask `qt.has_icon(win, part)` whether there is one

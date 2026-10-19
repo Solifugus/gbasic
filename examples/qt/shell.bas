@@ -26,6 +26,12 @@
 ' A SCROLL NEEDS NO DIRECTION, so its slot is free and it MAY be named -- which
 ' is what makes `widgetResizable` and the scrollbar policies readable by name.
 '
+' THE MENU ITEMS CARRY ICONS, and they are `SP_` names on purpose: those are
+' Qt's own eighty-one standard icons, which work with NO desktop icon theme
+' installed -- measured, a headless machine has none at all, so a freedesktop
+' name like "document-open" would warn here and show nothing. `qt.has_icon`
+' is how a program asks whether one arrived, a QIcon having no text form.
+'
 ' AND CTRL + WHEEL ZOOMS THE EDITOR, because a shell without that is not one.
 ' A wheel is an EVENT and not a signal -- a Qt widget receives one rather than
 ' emitting it -- so `on code.wheel` is handled the way `on <window>.closed` is
@@ -36,9 +42,11 @@
 ' would jump about while the text resized.
 window shell( title: "Shell", width: 820, height: 520 )
     menu "File"
-        item act_open( label: "Open", shortcut: "Ctrl+O" )
+        item act_open( label: "Open", shortcut: "Ctrl+O",
+                       icon: "SP_DialogOpenButton" )
         separator()
-        item act_quit( label: "Quit", shortcut: "Ctrl+Q" )
+        item act_quit( label: "Quit", shortcut: "Ctrl+Q",
+                       icon: "SP_DialogCloseButton" )
     end menu
 
     split across
@@ -131,6 +139,10 @@ program main(args)
         print("the editor is pane " + string(ed.index) + " of " +
               string(ed.panes) + " in the " + ed.direction + " split")
         print "the table is pane  " + string(tb.index)
+
+        print "-- the menu items' icons"
+        print("Open has an icon:   " + string(qt.has_icon(shell, "act_open")))
+        print("Quit has an icon:   " + string(qt.has_icon(shell, "act_quit")))
 
         print "-- ctrl + wheel over the editor"
         was = number(split(qt.read(shell, "code", "font"), ",")[1])

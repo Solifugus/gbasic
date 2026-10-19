@@ -2884,6 +2884,81 @@ even have three.
   exit.
 - **A scrollbar policy as a word**, unchanged from §0.19.
 
+## 0.23 Icons (2026-10-19): the one property the by-name route cannot carry
+
+Studio uses `Gtk.IconTheme` and nothing in this vocabulary could express an
+icon at all.
+
+### Measured first, and four of six decided something
+
+| measured | result |
+|---|---|
+| `setProperty("icon", QString(...))` | **false**, for a theme name *and* a file path, icon left null |
+| `QIcon::themeName()` here | **empty**, and `hasThemeIcon("document-save")` **false** |
+| `QStyle::StandardPixmap` | **81 keys**, and `standardIcon` works with **no theme** |
+| `QIcon(path)` on a real PNG | non-null |
+| a QIcon's `toString` | **empty** whether or not an icon is set |
+| `icon` as a Q_PROPERTY | QPushButton 62, QAction 4 |
+
+The first is what makes this an increment rather than a documentation line:
+**`icon` is the single property the by-name route cannot carry**, because
+QVariant will not convert a string to a QIcon. Its branch therefore lives in
+`set_property` — the **one** door the declaration's options and `qt.set` both
+go through — so the two cannot disagree about what an icon source is.
+Tripwired, with its vacuity control.
+
+### Three sources, told apart by facts rather than guesses
+
+- **`SP_...`** — one of QStyle's 81 `StandardPixmap` keys. Qt's *own* namespace,
+  so this is not a heuristic, and measured, these work with no icon theme
+  installed: the only source that always does.
+- **an existing file** — asked of the filesystem, so a fact rather than a shape.
+  What an application shipping its own icons uses.
+- **anything else** — a freedesktop theme name.
+
+### And the failures are answered differently, which is the design
+
+A **path that is not there** is a fact we can check and an intent that is
+unambiguous, so it is **refused**, naming the path. So is a **`SP_` name Qt
+does not know**: that is Qt's own namespace, so a name in it that Qt rejects is
+a misspelling, not a machine without a theme.
+
+A **theme name that resolves to nothing** is a fact about *the machine* —
+measured, this one has no icon theme at all — so refusing would make
+`icon: "document-save"` fail on exactly the headless machines the release
+targets. It **warns** (2116), which is the position §0.14 takes for a missing
+syntax definition and for the same reason: the program is perfectly usable
+without the picture, and the failure is otherwise **invisible**, a button with
+no icon looking exactly like one that was never meant to have one. The warning
+tier also asserts the program **carried on**, which is the whole difference
+from a refusal.
+
+**Clearing is legal and silent.** A program swapping a play icon for a pause
+one has to be able to take one away, and falling through would ask the theme
+for an icon called `""`.
+
+### `qt.has_icon` is the oracle, and it was not foreseen
+
+It came from asking what a check could *observe*. A QIcon has no text form, and
+measured, a button carrying a real PNG and one carrying nothing **both**
+answered `""` through `qt.read` — so without this every check would pass on a
+backend that resolved nothing. Worse, `qt.read` on an icon was answering a
+**wrong** answer rather than no answer, which is the class this backend
+refuses; it refuses now and names `qt.has_icon` instead.
+
+That verb is also what a **program** needs, not only a test: an icon the
+theme lacks is a warning, so falling back to a text-only button means being
+able to ask.
+
+### Still open
+
+- **A size.** Qt picks one from the icon and the widget's `iconSize`, which is a
+  property and so already reachable — but nothing asserts it.
+- **An icon from bytes a program already holds**, which would need a verb
+  rather than a path and has no caller yet.
+- **A per-window icon** (`windowIcon`) is the same property on the root and
+  should already work through the window's own name; unmeasured.
+
 ### Still open
 
 - **`grow` as a bare option** is an option with no value, which is new grammar in
