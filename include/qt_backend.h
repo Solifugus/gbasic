@@ -480,6 +480,29 @@ int gb_qt_pane_sizes(void *window, const char *name, int *out, int *count,
 int gb_qt_resize_panes(void *window, const char *name, const int *sizes,
                        int count, char *err, size_t err_size);
 
+/* AN ICON FROM TEXT is done inside `set_property`, the ONE door the
+ * declaration's options and `qt.set` both go through -- because measured,
+ * `setProperty("icon", QString(...))` returns FALSE for both a theme name and
+ * a file path and the icon stays null: QVariant will not convert a string to a
+ * QIcon, so this is the single property the by-name route cannot carry by
+ * itself. Three sources, told apart by facts rather than guesses (a `SP_` name
+ * is one of QStyle's 81 StandardPixmap keys, an existing file is asked of the
+ * filesystem, anything else is a freedesktop theme name), and the two failures
+ * answered differently: a path that is not there is REFUSED and a theme name
+ * this machine lacks WARNS, because measured, a headless machine has no icon
+ * theme at all and refusing would break `icon: "document-save"` on exactly the
+ * machines the release targets.
+ *
+ * WHETHER A PART HAS ONE is its own question, and it had to become one: a
+ * QIcon's `toString` is EMPTY whether or not an icon is set -- measured, a
+ * button carrying a real PNG and one carrying nothing both answered "" -- so
+ * the by-name READ route cannot tell them apart. It refuses now, naming this,
+ * which is also the only thing that makes a declared `icon:` observable at
+ * all. And a program needs it: an icon the theme lacks is a warning, so
+ * falling back to a text-only button means being able to ask. */
+int gb_qt_has_icon(void *window, const char *name, int *has, char *err,
+                   size_t err_size);
+
 int gb_qt_scrolled(void *window, const char *name, double *at, char *err,
                    size_t err_size);
 int gb_qt_scroll_to(void *window, const char *name, double at, char *err,

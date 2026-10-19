@@ -176,6 +176,7 @@ scope — so it is not a reserved word and `r.warning` still parses.
 | 2112 | a sum, difference or product of two EXACT integers left the range the runtime holds exactly, so the answer degraded to an approximation | `exactness` |
 | 2114 | `chmod` could not express every bit of the mode on this platform; the owner write bit was applied and the rest was not (Windows has one of the twelve) | `file operation` |
 | 2115 | a `source` widget asked for a syntax definition that is not installed, or this build has no KSyntaxHighlighting, so the editor works as a PLAIN one -- a warning rather than a raise because an absent definition still formats every line with the theme's normal text, so there is nothing on screen to notice | `highlighting` |
+| 2116 | an `icon:` named something this machine's icon theme does not have, so the part carries no picture -- a warning rather than a raise because it is a fact about the MACHINE: measured, a headless machine has no icon theme at all, so refusing would break `icon: "document-save"` on exactly the machines the release targets. A path that is not there and a misspelled `SP_` name are REFUSED instead, both being facts we can check. Ask `qt.has_icon(win, part)` whether one arrived | `icon` |
 | 2113 | a SUBDIRECTORY reached by a recursive `list`/`files`/`folders` pattern could not be read, and the walk continued without it (the directory you NAMED still raises) | `directory` |
 
 **This table stops where the source does**, checked by `tests/run_docs_gate.sh`

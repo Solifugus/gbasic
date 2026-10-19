@@ -860,6 +860,19 @@ static int qt_apply_options(void *node, Value *options, const char *word,
             qt_raise(message);
             return 0;
         }
+        if (ok == 2) {
+            /* SET, BUT NOT FOUND -- today that is only an `icon:` naming
+             * something this machine's icon theme does not have. A WARNING and
+             * not a raise, the position §0.14 takes for a missing syntax
+             * definition and for the same reason: the program is perfectly
+             * usable without the picture, and the failure is otherwise
+             * INVISIBLE, a button with no icon looking exactly like one that
+             * was never meant to have one. Refusing would make a program
+             * unrunnable on a machine whose theme lacks one name -- and
+             * measured, a headless machine has NO theme at all, which is the
+             * release's own target. */
+            warn_fmt(2116, "icon", "window: on `%s`, %s", word, err);
+        }
     }
     (void)is_container;
     return 1;
@@ -2946,6 +2959,13 @@ static Value qt_eval_call(AstExpr *expr) {
             qt_raise(message);
             return value_null();
         }
+        if (ok == 2) {
+            /* THE SAME NOTE THROUGH THE OTHER DOOR. Both halves of one route
+             * must say the same thing about an icon the theme does not have,
+             * or an author would get a warning from the declaration and
+             * silence from `qt.set`. */
+            warn_fmt(2116, "icon", "qt.set: %s", err);
+        }
         return value_bool(1);
     }
 
@@ -4431,6 +4451,51 @@ static Value qt_eval_call(AstExpr *expr) {
      * `unknown` for a part that does not scroll -- a different claim from
      * "scrolled to nowhere", since a `button` has no position where a `source`
      * at the top has position 0. */
+    /* WHETHER A PART HAS AN ICON. The oracle, and the only observable there is:
+     * a QIcon has no text form, so `qt.read` on `icon` refuses and names this.
+     * It is also what a program needs, an icon the machine's theme lacks being
+     * a warning rather than a refusal -- so falling back to a text-only button
+     * means being able to ask. */
+    if (strcmp(verb, "has_icon") == 0) {
+        if (argc != 2) {
+            qt_raise("qt.has_icon expects a window and a part's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "has_icon") || which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.has_icon expects the part's name as text");
+            }
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        int has = 0;
+        err[0] = '\0';
+        int ok = gb_qt_has_icon(root, which.as.string, &has, err, sizeof(err));
+        value_free(win); value_free(which);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.has_icon: %s",
+                     err[0] ? err : "that part could not be asked");
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(has);
+    }
+
     if (strcmp(verb, "scrolled") == 0 || strcmp(verb, "scroll_to") == 0) {
         int writing = strcmp(verb, "scroll_to") == 0;
         int want = writing ? 3 : 2;

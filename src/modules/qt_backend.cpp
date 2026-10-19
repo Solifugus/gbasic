@@ -69,6 +69,9 @@
 #include <QContextMenuEvent>
 #include <QWheelEvent>
 #include <QScrollBar>
+#include <QMetaEnum>
+#include <QStyle>
+#include <QIcon>
 #include <QCursor>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -972,6 +975,98 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
  * reports-the-wrong-cause class this tree has named repeatedly, so the lookup
  * stays and the SUITE ASSERTS THE WORDING, because with the lookup removed and
  * only the refusal asserted every check stayed green. */
+/* AN ICON FROM TEXT, which the by-name route CANNOT do by itself: measured,
+ * `setProperty("icon", QString(...))` returns FALSE for both a theme name and
+ * a file path and the icon stays null, because QVariant will not convert a
+ * string to a QIcon. So `icon` is the one property with a branch of its own --
+ * and it is HERE, in the single door the declaration's options and `qt.set`
+ * both go through, rather than in either of them.
+ *
+ * THREE SOURCES, TOLD APART BY FACTS RATHER THAN BY GUESSES:
+ *
+ *   `SP_...`              one of QStyle's 81 StandardPixmap keys. Qt's OWN
+ *                         namespace, so this is not a heuristic -- and
+ *                         measured, these work with NO icon theme installed,
+ *                         which is the only source that always does
+ *   an existing FILE      asked of the filesystem, so it is a fact and not a
+ *                         shape. What an application shipping its own icons
+ *                         uses
+ *   anything else         a freedesktop theme name
+ *
+ * AND THE TWO FAILURES ARE DIFFERENT IN KIND, which is why they are answered
+ * differently. A path that is not there is a fact we can check and an intent
+ * that is unambiguous, so it is REFUSED, naming the path. A theme name that
+ * resolves to nothing is a fact about THE MACHINE: measured, this one has no
+ * icon theme at all (`themeName()` empty, `hasThemeIcon("document-save")`
+ * false), so refusing would make `icon: "document-save"` fail on exactly the
+ * headless machines the release targets. It WARNS instead -- the position
+ * §0.14 takes for a missing syntax definition and for the same reason, that
+ * the program is perfectly usable without it and the failure is otherwise
+ * INVISIBLE, a button with no picture looking exactly like one that was never
+ * meant to have a picture.
+ *
+ * ANSWERS 2 FOR "SET, BUT NOT FOUND", which is truthy -- so no caller of
+ * `set_property` had to change, and the two that can carry an icon check for
+ * it and warn. */
+static int icon_from_text(const QString &text, QIcon *out, char *err,
+                          size_t err_size) {
+    if (text.isEmpty()) {
+        /* CLEARING IS LEGAL AND SILENT. A program that swaps a play icon for a
+         * pause one has to be able to take one away, and an empty string is
+         * the obvious way to say so -- where falling through would ask the
+         * theme for an icon called "" and warn about a name nobody wrote. */
+        *out = QIcon();
+        return 1;
+    }
+    if (text.startsWith(QStringLiteral("SP_"))) {
+        const QMetaObject *smo = &QStyle::staticMetaObject;
+        int ei = smo->indexOfEnumerator("StandardPixmap");
+        if (ei >= 0) {
+            QMetaEnum me = smo->enumerator(ei);
+            bool known = false;
+            int val = me.keyToValue(text.toUtf8().constData(), &known);
+            if (known && QApplication::style()) {
+                *out = QApplication::style()->standardIcon(
+                    (QStyle::StandardPixmap)val);
+                return 1;
+            }
+        }
+        /* REFUSED RATHER THAN WARNED, because `SP_` is Qt's own namespace: a
+         * name in it that Qt does not know is a misspelling, not a machine
+         * without a theme. */
+        say(err, err_size,
+            QByteArray("`") + text.toUtf8() +
+                "` is not one of Qt's standard icon names");
+        return 0;
+    }
+    QFileInfo info(text);
+    if (info.isFile()) {
+        *out = QIcon(text);
+        if (out->isNull()) {
+            /* THE FILE IS THERE AND IS NOT AN IMAGE, which is a fact about the
+             * file and so a refusal like a missing one. */
+            say(err, err_size,
+                QByteArray("`") + text.toUtf8() +
+                    "` is not an image Qt can read");
+            return 0;
+        }
+        return 1;
+    }
+    if (text.contains(QLatin1Char('/'))) {
+        say(err, err_size,
+            QByteArray("there is no icon file at `") + text.toUtf8() + "`");
+        return 0;
+    }
+    *out = QIcon::fromTheme(text);
+    if (out->isNull()) {
+        say(err, err_size,
+            QByteArray("no icon named `") + text.toUtf8() +
+                "` in this machine's icon theme");
+        return 2;
+    }
+    return 1;
+}
+
 static int set_property(QObject *widget, const char *prop, const QVariant &v,
                         char *err, size_t err_size) {
     if (!widget) {
@@ -984,6 +1079,21 @@ static int set_property(QObject *widget, const char *prop, const QVariant &v,
             QByteArray("a ") + mo->className() + " has no `" + prop +
                 "` property");
         return 0;
+    }
+    /* THE ONE PROPERTY THAT NEEDS A CONVERSION, done here so the declaration
+     * and `qt.set` cannot disagree about what an icon source is. */
+    if (strcmp(prop, "icon") == 0 && v.typeId() == QMetaType::QString) {
+        QIcon icon;
+        int how = icon_from_text(v.toString(), &icon, err, err_size);
+        if (how == 0) {
+            return 0;
+        }
+        if (!widget->setProperty(prop, QVariant::fromValue(icon))) {
+            say(err, err_size,
+                QByteArray("a ") + mo->className() + " would not take an icon");
+            return 0;
+        }
+        return how;   /* 1, or 2 for "set, but the theme has no such name" */
     }
     if (!widget->setProperty(prop, v)) {
         say(err, err_size,
@@ -1497,6 +1607,18 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
                 "`");
         return 0;
     }
+    /* AN ICON IS REFUSED RATHER THAN RENDERED, and that is not fussiness: a
+     * QIcon's `toString` is EMPTY whether or not there is an icon -- measured,
+     * a button carrying a real PNG and one carrying nothing both answered "",
+     * so the text route cannot tell them apart. An empty answer for a property
+     * that IS set is a wrong answer, which is worse than no answer, so it says
+     * what to ask instead. */
+    if (v.typeId() == QMetaType::QIcon) {
+        say(err, err_size,
+            "an icon has no text form; ask `qt.has_icon(win, part)` whether "
+            "there is one");
+        return 0;
+    }
     switch (v.typeId()) {
     case QMetaType::Bool:
         *kind = 'b';
@@ -1905,6 +2027,42 @@ static QScrollBar *bar_of(void *window, const char *name) {
  * answers because the middle one is not an error: a `button` legitimately has
  * no scroll position, and the caller turns that into `unknown` -- a different
  * claim from a `source` sitting at position 0. */
+/* WHETHER A PART HAS AN ICON. THE ORACLE, and this one was not foreseen -- it
+ * came from asking what a check could observe, which is the discipline §0.8
+ * arrived at by getting it wrong. A QIcon has no text form, so without this a
+ * declared `icon:` is UNOBSERVABLE and every check would pass on a backend
+ * that resolved nothing.
+ *
+ * IT IS ALSO WHAT A PROGRAM NEEDS. An icon that the machine's theme does not
+ * have is a WARNING rather than a refusal, so a program that wants to fall
+ * back to a text-only button has to be able to ask. */
+extern "C" int gb_qt_has_icon(void *window, const char *name, int *has,
+                              char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name ? name : ""),
+                                          nullptr)
+                      : nullptr;
+    if (!o) {
+        say(err, err_size,
+            QByteArray("this window has no `") + (name ? name : "") + "`");
+        return 0;
+    }
+    if (o->metaObject()->indexOfProperty("icon") < 0) {
+        /* NAMES THE KIND, because a `text` or a `table` simply cannot carry
+         * one and "no icon" would read as an answer rather than as a category
+         * mistake. */
+        say(err, err_size,
+            QByteArray("a ") + o->metaObject()->className() +
+                " cannot carry an icon");
+        return 0;
+    }
+    QIcon icon = o->property("icon").value<QIcon>();
+    if (has) {
+        *has = icon.isNull() ? 0 : 1;
+    }
+    return 1;
+}
+
 extern "C" int gb_qt_scrolled(void *window, const char *name, double *at,
                               char *err, size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
