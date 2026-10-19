@@ -248,6 +248,16 @@ if grep -q 'REFUSED: .*has no `texx` property' "$work/bp.out"; then
 else
     fail "the refusal does not name texx as absent: $(tr '\n' '|' < "$work/bp.out")"
 fi
+# AND IT NAMES WHICH PART, not the vocabulary word. It said "on `button`" until
+# 2026-10-19, which identifies nothing a reader can go and edit in a window
+# with three of them -- found by reading warning 2116's own output rather than
+# by any check, because every assertion on these messages matches a WILDCARD
+# prefix and so could not see it.
+if grep -q 'REFUSED: window: on `go`,' "$work/bp.out"; then
+    pass "and it names the part (go) rather than the word (button)"
+else
+    fail "the refusal does not name the part: $(tr '\n' '|' < "$work/bp.out")"
+fi
 # THE CONTROL. Without it the rule above is satisfied by a backend that refuses
 # every option there is, which would make the whole by-name route useless.
 #

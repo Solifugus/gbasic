@@ -1094,4 +1094,42 @@ EOF
     fi
 fi
 
+# 11. THE Qt SURFACE against the reference, in BOTH directions. A `window`
+#     vocabulary word and a `qt.` verb are both PROMISES, and the reference is
+#     where somebody looks one up -- so a verb that ships undocumented is the
+#     roster rot in a surface that grew by ten verbs and one word in a single
+#     day (§0.20-§0.23). DERIVED from the source rather than listed, because a
+#     second list of verbs is a list a new verb silently stays off, which is
+#     this whole section's argument.
+QTREF=docs/reference.md
+if [ -f "$QTREF" ] && [ -f src/modules/qt.c ] && [ -f src/window_check.c ]; then
+    qt_ok=1
+    verbs=$(grep -oE 'strcmp\(verb, "[a-z_]+"\)' src/modules/qt.c \
+            | grep -oE '"[a-z_]+"' | tr -d '"' | sort -u)
+    nverbs=0
+    for v in $verbs; do
+        nverbs=$((nverbs + 1))
+        grep -q "qt\.$v" "$QTREF" \
+            || { echo "FAIL qt surface    $QTREF has no mention of \`qt.$v\`, which src/modules/qt.c dispatches"; qt_ok=0; status=1; }
+    done
+    words=$(sed -n '/^static const char \*win_container_words/,/NULL};/p;/^static const char \*win_leaf_words/,/NULL};/p' src/window_check.c \
+            | grep -oE '"[a-z]+"' | tr -d '"' | sort -u)
+    nwords=0
+    for w in $words; do
+        nwords=$((nwords + 1))
+        grep -qF "\`$w\`" "$QTREF" \
+            || { echo "FAIL qt surface    $QTREF never mentions the window word \`$w\`"; qt_ok=0; status=1; }
+    done
+    # THE VACUITY GUARD, because both loops are satisfied by extracting
+    # NOTHING -- and a regex that stopped matching would do exactly that
+    # silently, which is the shape this file's own warning-code check was
+    # caught in when it read src/eval.c literally.
+    if [ "$nverbs" -lt 25 ] || [ "$nwords" -lt 12 ]; then
+        echo "FAIL qt surface    extracted only $nverbs verbs and $nwords words -- the derivation is broken, not the docs"
+        qt_ok=0; status=1
+    fi
+    [ "$qt_ok" = "1" ] \
+        && echo "PASS qt surface     all $nverbs qt verbs and $nwords window words appear in $QTREF"
+fi
+
 exit "$status"
