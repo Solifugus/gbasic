@@ -3858,6 +3858,11 @@ end program
 | `qt.menus(win)` / `qt.menus(win, n)` / `qt.menus(win, "name")` | the menu bar's top-level captions, the entries of the menu at position `n`, or the entries of the **`popup`** of that name. A number is a position on the bar and text is a popup's name — a popup is not on the bar, so it *has* no position. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
 | `qt.popup(win, name)` | raise a `popup` at the pointer, answering **whether anything was shown**. `false` when every item is hidden — a row that offers nothing rather than an error, since Qt declines to show such a menu and an empty context menu reads as a control that failed. The count **recurses**, so a lone empty submenu is not something to show |
 | `qt.right_click(win, part [, row])` | right-click a part the way a mouse does, for a program driving itself. It sends a **press, a release and then the context event**, so the selection moves as it would for a person — without which a handler would read a stale row. A third argument aims at a table row's own rectangle. Routed through the widget's **viewport** where there is one, which is what a `table`, `memo` and `source` answer to and nothing else can reach |
+| `qt.scroll(win, part, notches [, modifier])` | turn the wheel on a part, for a program driving itself, answering **whether anything claimed the event**. `notches` may be **fractional** — a trackpad sends less than one, and that is the case the direction rounding exists for. The modifier is `"ctrl"`, `"shift"` or `"alt"`, refused by name, because one silently ignored sends a plain wheel while the author believes they sent a modified one |
+| `qt.wheel()` | the wheel event **being handled** — `{ dy, dx, ctrl, shift, alt }`, with `dy` in **notches** rather than Qt's 120-unit delta and **positive meaning away from you** (Qt's sign, and the opposite of GTK's). Refuses outside a wheel handler, since there is no sensible record to hand back and a program asking in the wrong place would otherwise read zeros and act on them |
+| `qt.swallow()` | claim the event being handled, so the view does not also act on it. Not optional for a zoom: Ctrl+wheel scrolls a `source` *faster* than a plain wheel, so a handler that zooms without claiming leaves the editor jumping about while it resizes. Refuses when nothing is in flight rather than being a silent no-op |
+| `qt.scrolled(win, part)` | how far a part is scrolled, or **`unknown`** for one that does not scroll — a different claim from *scrolled to nowhere*, since a `button` has no position where a `source` at the top has position 0. A `QAbstractScrollArea` reaches its scrollbar by a method, so this is the only route to it |
+| `qt.scroll_to(win, part, position)` | put it back, which is how *"reopen the editor where I left it"* is written. A part that does not scroll is refused by name rather than succeeding and doing nothing; the range is Qt's own, so a position past the end is clamped |
 | `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
 | `qt.highlighting(win, part)` | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
 | `qt.inform(win, text)` | a message box with one button, parented to `win` so Qt centres it there and makes it modal to that window |
@@ -4053,6 +4058,31 @@ is enough: the policy is set because the handler exists. The cost is that this
 *replaces* the menu Qt would have put up itself, so a `memo` or `field` with a
 context handler loses its own cut/copy/paste — which is why a part with no
 handler keeps Qt's.
+
+**A wheel is an event, not a signal.** A Qt widget has no wheel signal — it
+*receives* one — so `on <part>.wheel` is handled the way `on <window>.closed`
+is, and the handler asks `qt.wheel()` for the event rather than taking
+arguments:
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+on code.wheel
+    ev = qt.wheel()
+    if ev.ctrl then
+        f = split(qt.read(app, "code", "font"), ",")
+        qt.set(app, "code", "font", f[0] + "," + string(number(f[1]) + 2))
+        qt.swallow()
+    end if
+end on
+```
+
+That is a working Ctrl+wheel zoom, and it needs **no zoom verb**: `font` is an
+ordinary property that reads back as text, so the size is a number in a list.
+`qt.swallow()` is what stops the editor also scrolling — without it a
+Ctrl+wheel scrolls *faster* than a plain one and the view jumps about while the
+text resizes. A handler that declines leaves the wheel alone, which is what
+keeps ordinary scrolling working, and the filter is installed only on the parts
+that declared a handler.
 
 **The row that was right-clicked is `qt.selected`.** Qt moves the current row
 on a right-press, so a handler asks the question it already asks for a left

@@ -2713,6 +2713,113 @@ each round.
 - **`popup` at the pointer only.** `QCursor::pos()` is right for a right-click
   and wrong for a menu raised from a keyboard shortcut.
 
+## 0.21 The wheel (2026-10-19): an event, and a zoom that needed no verb
+
+Studio uses a `Gtk.EventControllerScroll` for exactly one thing — **Ctrl +
+wheel zooms the editor** — and its handler reads `dy`, calls one function and
+returns `true` to mean handled. So the requirement is a direction, the
+modifiers, and a way to say handled. Nothing more.
+
+### Measured first, and three of five results shrank it
+
+| measured | result |
+|---|---|
+| a synthetic `QWheelEvent` | **delivered** — a plain one moved the scrollbar 92 → 95 |
+| does `QPlainTextEdit` zoom on Ctrl+wheel? | **no** — the font stayed 9.00, so the gap is real |
+| Ctrl+wheel on a `QPlainTextEdit` | scrolls **faster** than a plain one (95 → 111 against 92 → 95) |
+| can an event filter swallow it? | **yes** (102 → 102), and declining leaves plain scrolling intact (102 → 105) |
+| `font` on a widget | **Q_PROPERTY 27**, and it reads back as **text** |
+
+Two of those are worth stating plainly. **A synthetic wheel event being
+delivered is better than GTK** — Studio records its scroll and key controllers
+as its *only* untested controls precisely because `Gtk.EventControllerScroll`
+has no emit, so `qt.scroll` closes an exception that project had to sanction.
+And **the zoom needs no verb**: `font` reads back as
+`"monospace,9,-1,5,400,..."`, so a program splits it, changes the number and
+writes it back — asserted through the interpreter rather than taken from the
+probe. That is why there is no `qt.zoom`, and it is a measurement rather than a
+deferral, since `zoomIn`/`zoomOut` carry a defaulted argument `qt.invoke` could
+not reach anyway. Sixth time in this backend that measuring a gap before
+filling it found it closed.
+
+### What is genuinely missing is the event
+
+A QWidget has no wheel **signal** — it *receives* a `QWheelEvent` — so
+`on code.wheel` is the second thing here that has to be an event rather than a
+signal, after `closed`, and it is answered the same way: before the by-name
+lookup, which would otherwise refuse a well-formed handler with *"a
+QPlainTextEdit emits no `wheel` signal"*.
+
+**The filter goes on the viewport**, which is `mouse_target`'s third caller
+now. An event filter sees only what is delivered to the object it sits on, so
+one installed on the `QPlainTextEdit` itself would never fire — the same
+measurement `qt.right_click` rests on, load-bearing here for a second reason.
+And it is installed **only where a handler was declared**: one per window, or
+one on `QApplication`, would see every wheel event in the program, and a filter
+that claims is a filter that costs a `source` or `table` its ordinary
+scrolling.
+
+### `qt.swallow` is not optional
+
+Ctrl+wheel scrolls *faster* than a plain wheel, so a handler that zooms without
+claiming the event leaves the editor jumping about while it resizes. It refuses
+when nothing is in flight rather than being a silent no-op — the rule
+`qt.answer` already follows.
+
+`dy` is in **notches**, not Qt's 120-unit angle delta: one click is what a
+person did, and a vocabulary that made a program divide by 120 would leak the
+wrong half of the abstraction. A sub-notch turn rounds **away from zero**,
+because a trackpad sends deltas under 120 and integer division would report
+that the wheel moved by nothing — in the one value whose *sign* is the whole of
+what a zoom reads. Positive is away from the user, which is Qt's own sign and
+the **opposite** of GTK's, so Studio's `if dy < 0 then zoom in` inverts when it
+is ported.
+
+### Two perturbations went green, and both added something
+
+This is the part to read. `qt.scroll` answers whether anything **claimed** the
+event, which is the shape `qt.popup` has — and a filter made to record the
+claim and then return `false`, so the claim is reported while the view scrolls
+anyway, was caught by **nothing**. That answer agrees with `qt.swallow` having
+been called, whatever Qt then did with the event, so the whole of what
+swallowing does was being asserted against the program's own word for it.
+Agreement is not correctness, which is PLAT-NUMFMT's lesson arriving inside my
+own increment.
+
+The only honest observable is the position, and a program could not ask: a
+`QAbstractScrollArea` reaches its scrollbar by a **method**, so the by-name
+property route cannot see one. Hence **`qt.scrolled`** and **`qt.scroll_to`** —
+both directions, because a reader without a writer is the shape `webclient`'s
+read and write halves had. Not a test hook either: reopening an editor where
+somebody left it is what Studio already does for its panes. It answers
+`unknown` for a part that does not scroll, a different claim from *"scrolled to
+nowhere"*.
+
+The second green perturbation was the sub-notch rounding: with `qt.scroll`
+taking whole notches it could not be driven at all, so that verb takes a
+**fraction** now and a quarter-notch is asserted in both directions.
+
+### A lesson about restoring a perturbation, the second in one day
+
+The morning's increment lost an hour of uncommitted work to
+`git checkout -- .`, and the remedy written down was to name the one file. That
+is **also wrong when the uncommitted work spans files**: restoring the
+perturbed `.cpp` reverted my own unfinished change in it while the header kept
+the matching one, and the build failed with a conflicting declaration. The
+discipline is to **commit first and then perturb** — neither a blanket
+checkout nor a single-file one is safe over work in progress.
+
+### Still open
+
+- **A key handler** is still not needed and the reason is worth keeping: a
+  `QAction` shortcut fires while a `QPlainTextEdit` has focus and the editor
+  does not eat the key, so Studio's zoom keys are `item zoom_in( shortcut:
+  "Ctrl++" )` in a menu and need no mechanism.
+- **The horizontal wheel** is reported (`dx`) and nothing uses it, so the sign
+  convention there is untested.
+- **A mouse position** for a wheel event, which a chart zooming about the
+  pointer would want.
+
 ### Still open
 
 - **`grow` as a bare option** is an option with no value, which is new grammar in

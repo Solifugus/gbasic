@@ -25,6 +25,15 @@
 '
 ' A SCROLL NEEDS NO DIRECTION, so its slot is free and it MAY be named -- which
 ' is what makes `widgetResizable` and the scrollbar policies readable by name.
+'
+' AND CTRL + WHEEL ZOOMS THE EDITOR, because a shell without that is not one.
+' A wheel is an EVENT and not a signal -- a Qt widget receives one rather than
+' emitting it -- so `on code.wheel` is handled the way `on <window>.closed` is
+' and the handler asks `qt.wheel()` for the event. The zoom itself needs no
+' verb: `font` reads back as text, so the size is a number in a list. And
+' `qt.swallow()` is what stops the editor ALSO scrolling, which is not optional
+' -- Ctrl + wheel scrolls a text view FASTER than a plain wheel, so the view
+' would jump about while the text resized.
 window shell( title: "Shell", width: 820, height: 520 )
     menu "File"
         item act_open( label: "Open", shortcut: "Ctrl+O" )
@@ -75,10 +84,26 @@ window shell( title: "Shell", width: 820, height: 520 )
             g.log = g.log + "picked row " + string(at) + chr(10)
         end if
     end on
+
+    on code.wheel
+        ev = qt.wheel()
+        if not ev.ctrl then
+            ' DECLINED, so the editor scrolls as it always did.
+            return
+        end if
+        f = split(qt.read(shell, "code", "font"), ",")
+        bigger = 1
+        if ev.dy < 0 then
+            bigger = 0 - 1
+        end if
+        qt.set(shell, "code", "font", f[0] + "," + string(number(f[1]) + bigger))
+        g.zooms = g.zooms + 1
+        qt.swallow()
+    end on
 end window
 
 program main(args)
-    g = { log: "" }
+    g = { log: "", zooms: 0 }
 
     if not qt.can_display() then
         print "No display is available, so there is no window to open."
@@ -106,6 +131,15 @@ program main(args)
         print("the editor is pane " + string(ed.index) + " of " +
               string(ed.panes) + " in the " + ed.direction + " split")
         print "the table is pane  " + string(tb.index)
+
+        print "-- ctrl + wheel over the editor"
+        was = number(split(qt.read(shell, "code", "font"), ",")[1])
+        claimed = qt.scroll(shell, "code", 2, "ctrl")
+        print("claimed " + string(claimed) + ", font " + string(was) + " -> " +
+              string(number(split(qt.read(shell, "code", "font"), ",")[1])))
+        ' A PLAIN WHEEL IS LEFT ALONE, which is what keeps the editor usable.
+        print("a plain wheel claims nothing: " +
+              string(qt.scroll(shell, "code", -1)))
 
         print "-- the nearest region wins"
         deep = qt.pane(shell, "f1")

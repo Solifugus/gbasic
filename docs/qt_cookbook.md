@@ -1940,3 +1940,131 @@ the menu:       ["Open","Rename...",unknown,"Delete"]
 ```
 
 ---
+
+## 19. The wheel
+
+Ctrl + wheel zooms the editor — what every code editor does, and what gBASIC
+Studio uses a scroll controller for.
+
+**A wheel is an event, not a signal.** A Qt widget has no wheel signal; it
+*receives* one. So `on code.wheel` is handled the way `on <window>.closed` is,
+and the handler asks `qt.wheel()` for the event rather than taking arguments.
+`dy` is in **notches** — one click of the wheel — and **positive means away
+from you**. (That is Qt's sign and the opposite of GTK's, so a handler ported
+from a GTK program has its comparison the wrong way round.)
+
+**The zoom needs no verb.** `font` is an ordinary property that reads back as
+text — `"monospace,9,-1,5,400,..."` — so the size is just a number in a list:
+split it, change it, write it back. There is no `qt.zoom` because nothing needs
+one.
+
+**`qt.swallow()` is what stops the editor also scrolling**, and it is not
+optional: Ctrl + wheel scrolls a text view *faster* than a plain wheel, so
+without it the view jumps about while the text resizes. A handler that
+**declines** — by simply not calling it — leaves the wheel alone, which is what
+keeps ordinary scrolling working. So the rule is *only with Ctrl*, exactly as
+Studio's is, and a part that declared no wheel handler is not filtered at all.
+
+`qt.scroll` drives the wheel the way a mouse does, for a program checking
+itself, and answers whether anything **claimed** the event. `notches` may be
+fractional, because a trackpad sends less than one. And `qt.scrolled` /
+`qt.scroll_to` read and set the position — which is how *"reopen the editor
+where I left it"* is written, and also the only way to see that swallowing
+really stopped the view rather than merely reporting that it had.
+
+<!--CODE:19_the_wheel-->
+
+```basic
+' THE WHEEL -- Ctrl + wheel zooms the editor, which is what every code editor
+' does and what gBASIC Studio uses a scroll controller for.
+'
+' A WHEEL IS AN EVENT, NOT A SIGNAL. A Qt widget has no wheel signal -- it
+' RECEIVES one -- so `on code.wheel` is handled the way `on <window>.closed` is,
+' and the handler asks `qt.wheel()` for the event rather than taking arguments.
+' `dy` is in NOTCHES (one click of the wheel) and positive means away from you.
+'
+' THE ZOOM NEEDS NO VERB. `font` is an ordinary property that reads back as
+' text -- "monospace,9,-1,5,400,..." -- so the size is just a number in a list:
+' split it, change it, write it back.
+'
+' `qt.swallow()` IS WHAT STOPS THE EDITOR ALSO SCROLLING, and it is not
+' optional: Ctrl + wheel scrolls a text view FASTER than a plain wheel, so
+' without it the view jumps about while the text resizes. A handler that
+' DECLINES leaves the wheel alone, which is what keeps ordinary scrolling
+' working -- so the rule is "only with Ctrl", exactly as Studio's is.
+
+window app( title: "Zoom", width: 520, height: 360 )
+    column( margin: 8, spacing: 6 )
+        text hint( label: "Ctrl + wheel over the code zooms it." )
+        source code()
+    end column
+
+    on code.wheel
+        ev = qt.wheel()
+        if not ev.ctrl then
+            ' NOTHING, and the event is left alone so the editor scrolls.
+            return
+        end if
+        f = split(qt.read(app, "code", "font"), ",")
+        bigger = 1
+        if ev.dy < 0 then
+            bigger = 0 - 1
+        end if
+        qt.set(app, "code", "font", f[0] + "," + string(number(f[1]) + bigger))
+        g.zooms = g.zooms + 1
+        qt.swallow()
+    end on
+end window
+
+program main(args)
+    if not qt.can_display() then
+        print "no display, so no window -- the declaration is still checked"
+        return
+    end if
+
+    g = { zooms: 0 }
+    qt.open(app)
+
+    lines = []
+    for i = 1 to 200
+        lines = append(lines, "print " + string(i))
+    end for
+    x = qt.write(app, "code", join(lines, chr(10)))
+
+    size = number(split(qt.read(app, "code", "font"), ",")[1])
+    print "font at first:   " + string(size)
+
+    ' A PLAIN WHEEL SCROLLS and does not zoom. `qt.scroll` drives the wheel the
+    ' way a mouse does, and answers whether anything CLAIMED the event.
+    qt.scroll_to(app, "code", 50)
+    claimed = qt.scroll(app, "code", -2)
+    print ("plain wheel:     claimed " + string(claimed) +
+           ", zooms " + string(g.zooms))
+    print ("                 and it scrolled to " +
+           string(qt.scrolled(app, "code")))
+
+    ' CTRL + WHEEL ZOOMS and claims the event, so the view stays put.
+    was = qt.scrolled(app, "code")
+    claimed = qt.scroll(app, "code", 3, "ctrl")
+    print ("ctrl+wheel:      claimed " + string(claimed) +
+           ", zooms " + string(g.zooms))
+    print ("                 font now " +
+           string(number(split(qt.read(app, "code", "font"), ",")[1])))
+    print "                 view stayed at " + string(qt.scrolled(app, "code") = was)
+
+    qt.close(app)
+end program
+```
+
+<!--OUT:19_the_wheel-->
+
+```
+font at first:   9
+plain wheel:     claimed false, zooms 0
+                 and it scrolled to 56
+ctrl+wheel:      claimed true, zooms 1
+                 font now 10
+                 view stayed at true
+```
+
+---

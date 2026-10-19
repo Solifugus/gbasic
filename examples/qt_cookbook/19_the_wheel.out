@@ -1,0 +1,6 @@
+font at first:   9
+plain wheel:     claimed false, zooms 0
+                 and it scrolled to 56
+ctrl+wheel:      claimed true, zooms 1
+                 font now 10
+                 view stayed at true
