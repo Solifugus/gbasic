@@ -1789,6 +1789,103 @@ extern "C" int gb_qt_right_click(void *window, const char *name, int row,
     return 1;
 }
 
+/* THE SPLITTER A PART IS IN, found the way `gb_qt_pane_of` finds it: by
+ * walking UP from the widget, because a `split` cannot be named and so cannot
+ * be looked up. Shared by the reader and the writer, since two walks would be
+ * two things that can disagree about which split a part is in -- and the check
+ * that catches a walk finding the WRONG one is that resizing the inner split
+ * leaves the outer alone. */
+static QSplitter *splitter_of(void *window, const char *name, char *err,
+                              size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root) {
+        say(err, err_size, "there is no window to look in");
+        return nullptr;
+    }
+    QObject *o = root->parts.value(QString::fromUtf8(name ? name : ""), nullptr);
+    if (!o) {
+        say(err, err_size,
+            QByteArray("this window has no `") + (name ? name : "") + "`");
+        return nullptr;
+    }
+    QWidget *w = qobject_cast<QWidget *>(o);
+    QWidget *at = w;
+    while (at) {
+        if (QSplitter *sp = qobject_cast<QSplitter *>(at->parentWidget())) {
+            return sp;
+        }
+        /* STOPS AT THE NEAREST REGION, like `gb_qt_pane_of`: a part inside a
+         * `scroll` that is itself a pane reports the scroll, not the split,
+         * because the scroll is what immediately holds it. */
+        if (qobject_cast<QAbstractScrollArea *>(at->parentWidget())) {
+            break;
+        }
+        at = at->parentWidget();
+    }
+    say(err, err_size,
+        QByteArray("`") + (name ? name : "") + "` is not in a split");
+    return nullptr;
+}
+
+extern "C" int gb_qt_pane_sizes(void *window, const char *name, int *out,
+                                int *count, char *err, size_t err_size) {
+    QSplitter *sp = splitter_of(window, name, err, err_size);
+    if (!sp) {
+        return 0;
+    }
+    QList<int> s = sp->sizes();
+    int have = (int)s.size();
+    if (!count) {
+        return 0;
+    }
+    if (*count <= 0 || !out) {
+        *count = have;
+        return 1;
+    }
+    int n = have < *count ? have : *count;
+    for (int i = 0; i < n; i++) {
+        out[i] = s[i];
+    }
+    *count = n;
+    return 1;
+}
+
+extern "C" int gb_qt_resize_panes(void *window, const char *name,
+                                  const int *sizes, int count, char *err,
+                                  size_t err_size) {
+    QSplitter *sp = splitter_of(window, name, err, err_size);
+    if (!sp) {
+        return 0;
+    }
+    int have = (int)sp->sizes().size();
+    if (count != have) {
+        /* NAMES BOTH NUMBERS, because the author has to know which way they
+         * were wrong -- and the consequence of not refusing is measured: one
+         * size on a two-pane split collapses the second, three honour none. */
+        char line[160];
+        snprintf(line, sizeof(line),
+                 "that split has %d panes and %d %s given", have, count,
+                 count == 1 ? "size was" : "sizes were");
+        say(err, err_size, QByteArray(line));
+        return 0;
+    }
+    QList<int> want;
+    for (int i = 0; i < count; i++) {
+        if (sizes[i] < 0) {
+            /* REFUSED RATHER THAN CLAMPED: a negative width means nothing, and
+             * Qt would quietly treat it as a collapse -- a layout that looks
+             * deliberate and is not. */
+            char line[160];
+            snprintf(line, sizeof(line), "a pane cannot be %d wide", sizes[i]);
+            say(err, err_size, QByteArray(line));
+            return 0;
+        }
+        want.append(sizes[i]);
+    }
+    sp->setSizes(want);
+    return 1;
+}
+
 /* THE SCROLLBAR OF A PART, or null where there is none. A QAbstractScrollArea
  * reaches its bars by a METHOD rather than a property, which is why the
  * ordinary by-name route cannot see a scroll position at all. */

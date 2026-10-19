@@ -2753,6 +2753,12 @@ static Value qt_eval_call(AstExpr *expr) {
         int panes = 0, at = -1, resizable = 0;
         int ok = gb_qt_pane_of(root, which.as.string, &kindt, &dirt, &panes,
                                &at, &resizable);
+        /* THE NAME OUTLIVES THE VALUE, because the sizes are read BELOW and
+         * `value_free(which)` would leave `which.as.string` dangling -- which
+         * is exactly what the first draft did: a use-after-free that showed up
+         * as `sizes` silently never being set, rather than as a crash. */
+        char *part = which.kind == VALUE_STRING && which.as.string
+                         ? copy_string(which.as.string) : NULL;
         value_free(win);
         value_free(which);
         if (!ok) {
@@ -2760,6 +2766,7 @@ static Value qt_eval_call(AstExpr *expr) {
              * no scroll" is an ordinary answer, and a record saying
              * `panes: 0` would read as a splitter that holds nothing. The rule
              * `qt.dialog` and `principal()` already follow. */
+            free(part);
             free(kindt);
             free(dirt);
             return value_unknown();
@@ -2770,9 +2777,36 @@ static Value qt_eval_call(AstExpr *expr) {
             record_set(&out, "direction", value_string(dirt));
             record_set(&out, "panes", value_number(panes));
             record_set(&out, "index", value_number(at));
+            /* THE SIZES ARE PART OF WHAT A PANE IS, so they join the record
+             * rather than getting a verb of their own -- and a `scroll`
+             * carries NO `sizes` field at all, which is a different claim from
+             * an empty list. */
+            int howmany = 0;
+            if (part && gb_qt_pane_sizes(root, part, NULL, &howmany, err,
+                                         sizeof(err)) && howmany > 0) {
+                int *got = malloc(sizeof(int) * (size_t)howmany);
+                if (!got) {
+                    abort();
+                }
+                int filled = howmany;
+                if (gb_qt_pane_sizes(root, part, got, &filled, err,
+                                     sizeof(err))) {
+                    Value *items = malloc(sizeof(Value) * (size_t)filled);
+                    if (!items) {
+                        abort();
+                    }
+                    for (int i = 0; i < filled; i++) {
+                        items[i] = value_number(got[i]);
+                    }
+                    record_set(&out, "sizes",
+                               value_array(items, (size_t)filled));
+                }
+                free(got);
+            }
         } else {
             record_set(&out, "resizable", value_bool(resizable ? 1 : 0));
         }
+        free(part);
         free(kindt);
         free(dirt);
         return out;
@@ -4317,6 +4351,76 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!gb_qt_swallow(err, sizeof(err))) {
             snprintf(message, sizeof(message), "qt.swallow: %s",
                      err[0] ? err : "that event could not be claimed");
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
+    /* SET THE PANE SIZES OF THE SPLIT A PART IS IN. The write half of what
+     * `qt.pane` reports, and the answer to §0.19's open item: `setSizes` takes
+     * a QList<int>, so it is neither a property nor invokable, and a `split`
+     * cannot be named -- so the part is what addresses it. */
+    if (strcmp(verb, "resize_panes") == 0) {
+        if (argc != 3) {
+            qt_raise("qt.resize_panes expects a window, a part's name and a "
+                     "list of sizes");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value list = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "resize_panes") ||
+            which.kind != VALUE_STRING || list.kind != VALUE_ARRAY) {
+            if (!error_action_pending()) {
+                qt_raise("qt.resize_panes expects the part's name as text and "
+                         "the sizes as a list");
+            }
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        size_t n = list.as.array.store ? list.as.array.store->count : 0;
+        int *sizes = n ? malloc(sizeof(int) * n) : NULL;
+        if (n && !sizes) {
+            abort();
+        }
+        int bad = 0;
+        for (size_t i = 0; i < n; i++) {
+            Value *v = &list.as.array.store->items[i];
+            if (v->kind != VALUE_NUMBER) {
+                bad = 1;
+                break;
+            }
+            sizes[i] = (int)v->as.num.value;
+        }
+        if (bad) {
+            qt_raise("qt.resize_panes: a pane's size must be a number");
+            free(sizes);
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            free(sizes);
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        err[0] = '\0';
+        int ok = gb_qt_resize_panes(root, which.as.string, sizes, (int)n, err,
+                                    sizeof(err));
+        free(sizes);
+        value_free(win); value_free(which); value_free(list);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.resize_panes: %s",
+                     err[0] ? err : "those panes could not be resized");
             qt_raise(message);
             return value_null();
         }

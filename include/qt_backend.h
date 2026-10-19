@@ -441,6 +441,45 @@ int gb_qt_scroll(void *window, const char *name, double notches, int mods,
  * ANSWERS `unknown` FOR A PART THAT DOES NOT SCROLL, which is a different
  * claim from "scrolled to nowhere": a `button` has no position, where a
  * `source` at the top has position 0. */
+/* THE PANE SIZES OF THE SPLIT A PART IS IN, and the write half. §0.19 left
+ * this open for two reasons and both still hold: `setSizes` takes a
+ * QList<int>, so measured, `sizes` is NOT a property (-1) and `setSizes` is
+ * NOT invokable by name (-1), which is the whole of the by-name route this
+ * backend otherwise reaches everything through; and a `split` CANNOT BE NAMED,
+ * its one slot being the direction, so there is nothing to address.
+ *
+ * SO IT IS ADDRESSED BY WALKING UP FROM A PART -- the rule `gb_qt_pane_of`
+ * already follows, which is why this needed no new spelling.
+ *
+ * STUDIO NEEDS IT: its shell reads `split.position` for three splits out of a
+ * saved session and writes them back on exit, so a converted Studio without
+ * this forgets its layout every time -- a feature it already has.
+ *
+ * A LIST AND NOT A NUMBER, which is a difference from GTK rather than a
+ * preference: a Gtk.Paned has exactly two children and one divider, where a
+ * QSplitter holds any number.
+ *
+ * `count` IS AN IN-OUT. Called with *count 0 it only reports how many panes
+ * there are; called with room it fills `out`. Two calls rather than an
+ * allocation crossing the seam, which is the shape `gb_qt_menu_count` and
+ * `gb_qt_menu_title` already have. */
+int gb_qt_pane_sizes(void *window, const char *name, int *out, int *count,
+                     char *err, size_t err_size);
+
+/* SET THEM. A COUNT MISMATCH IS REFUSED, and that is measured rather than
+ * cautious: one size on a two-pane splitter COLLAPSES the second (Qt answered
+ * [774, 0]) and three sizes honour NONE of them ([310, 464]) -- both perfectly
+ * ordinary-looking layouts that are not what was asked for, which is the
+ * silent class this backend is tested against.
+ *
+ * WHAT IT SETS IS A RATIO IN EFFECT. `setSizes` is not exact -- asked for
+ * 260/540 of an 800-wide splitter it gave 252/522, the difference being the
+ * handle and the layout's margins -- and a window resize re-proportions
+ * (194/580 became 244/730). So a caller stores numbers whose MEANING is their
+ * proportion, and nothing here promises to hand the same ones back. */
+int gb_qt_resize_panes(void *window, const char *name, const int *sizes,
+                       int count, char *err, size_t err_size);
+
 int gb_qt_scrolled(void *window, const char *name, double *at, char *err,
                    size_t err_size);
 int gb_qt_scroll_to(void *window, const char *name, double at, char *err,
