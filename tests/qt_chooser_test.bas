@@ -11,8 +11,13 @@
 ' THE TIER TO READ FIRST IS `cancel`. Measured while building this: a REJECTED
 ' QFileDialog STILL REPORTS ITS SELECTION, so the obvious implementation --
 ' read selectedFiles() when the dialog closes -- returns the path for a chooser
-' the person cancelled. Only the result code separates the two, and only this
-' tier can tell them apart.
+' the person cancelled. Only the result code separates the two.
+'
+' AND THAT TIER HAD TO BE MADE ABLE TO SEE IT, which a perturbation found and
+' reading did not: a cancel with nothing preselected answers `unknown` either
+' way, because the selection is empty either way -- so the check whose comment
+' claimed to catch the defect did not, and an unrelated tier caught it. It
+' opens the chooser ON A FILE now, which is also the realistic shape.
 '
 ' AND THE ORACLE WAS BUILT BEFORE THE FIXTURE, which is the discipline §0.8
 ' arrived at the hard way: `title:` and `filter:` are otherwise ACCEPTED AND
@@ -135,6 +140,18 @@ nothing_open:
     check("filter: as a list", g.seen.filter, "Text (*.txt);;All (*)")
     check("and it is a chooser, not a message box", g.seen.kind, "chooser")
 
+    print "-- a path option may be a reference, not only text"
+    ' A GAP RATHER THAN A RULE, and the cookbook found it: `temp_dir()` answers
+    ' a `{dir}`, so the most natural `folder:` there is was refused as "not
+    ' text". Every path builtin in this language already takes a string, a
+    ' `{file}` or a `{dir}` alike, and a GUI module is the wrong place to be
+    ' stricter -- so `qt.answer` takes one too, asserted here because the
+    ' chooser and the answer are two separate doors and a fix reaching one is
+    ' the shape webclient's read and write halves had.
+    g.want = {file}here
+    by_ref = qt.choose_file(app, { folder: {dir}work })
+    check("a {dir} folder and a {file} answer", by_ref, here)
+
     print "-- naming a file to write, which need not exist yet"
     g.want = work + "/fresh.txt"
     saving = qt.choose_save(app, { title: "Save as", folder: work, name: "fresh.txt" })
@@ -151,10 +168,20 @@ nothing_open:
     ' hands back the path for a chooser the person declined. And `unknown`
     ' rather than "" because the empty string is the plausible wrong answer:
     ' `if path = "" then` happens to work while `read({file}path)` does not.
+    ' THE CHOOSER IS OPENED ON A FILE, which is both the realistic shape -- a
+    ' chooser opens on the file you had, and the person changes their mind --
+    ' and what makes this tier able to see the defect at all. MEASURED by
+    ' perturbation: with the result code ignored, a cancel with NOTHING
+    ' preselected still answers `unknown`, because the selection is empty
+    ' either way, so the tier whose comment claimed to catch it did not and
+    ' the absent-path tier below caught it instead. `name:` is applied BEFORE
+    ' exec, where selectFile is still honoured, so there is a selection for a
+    ' result-code-ignoring backend to hand back.
     g.mode = "cancel"
-    none = qt.choose_file(app, { folder: work })
+    none = qt.choose_file(app, { folder: work, name: "have.txt" })
     check("cancel is unknown", is_unknown(none), true)
     check("and not the empty string", none = "", false)
+    check("and not the file it opened on", none = here, false)
     ' ASSERTED AS A DIFFERENCE, since "it answers unknown" alone passes on a
     ' chooser that never answers anything.
     g.mode = "path"

@@ -10,16 +10,22 @@
 # AND THE CLAIM THAT CAME WITH IT IS NARROWER THAN IT READS, which is this
 # suite's reason for existing. §5.1 is about QT's loop surviving the nested
 # one; a C++ probe in gBASIC's exact arrangement confirms the tick fires during
-# a modal QMessageBox and can press its button. WHAT CANNOT HAPPEN is gBASIC
-# re-entering while the interpreter is SUSPENDED INSIDE ITS OWN HANDLER:
+# a modal QMessageBox and can press its button. What cannot happen is gBASIC
+# being serviced while the dialog went up from inside the pump's own tick:
 #
-#   dialog raised OUTSIDE a handler   the sources keep running, and a `timer`
-#                                     can answer the box
-#   dialog raised FROM a handler      they are SUSPENDED until it is answered
+#   raised from `main`              the sources keep running, and a `timer`
+#                                   can answer the box
+#   raised inside a watcher body    they are SUSPENDED until it is answered
 #
-# THE SECOND IS THE NORMAL CASE -- somebody clicked, and the program asks
-# before acting -- so a modal dialog is modal to the whole PROGRAM and not only
-# to its window. That is defensible for a desktop application and surprising
+# THE SECOND IS THE NORMAL CASE -- a `timer` body, a webserver handler, an
+# actor mailbox watcher and a button clicked from any of them all run inside
+# one -- so a modal dialog is modal to the whole PROGRAM, not just its window.
+#
+# THAT SECOND ROW USED TO SAY "FROM A HANDLER" AND NAMED THE WRONG CAUSE,
+# corrected by the `stall` tier below: TWO guards hold it, each sufficient
+# alone -- Qt declining to re-deliver its own timer, and gBASIC's
+# `watcher_drain` declining to re-enter -- and the fixture that establishes it
+# HAS NO HANDLER IN IT AT ALL. That is defensible for a desktop application and surprising
 # for one that is also a server, and a limitation nobody can observe is one
 # nobody will believe, so it is ASSERTED here with a real server on a real
 # port rather than written down.
@@ -176,6 +182,58 @@ if grep -q "is not open" "$work/nd2.out"; then
     pass "and with one, an unopened window gets the other sentence"
 else
     cat "$work/nd2.out"; fail "the two refusals do not differ, so neither names a cause"
+fi
+
+# -------------------------------------------------------- WHAT HOLDS THE STALL
+# TWO INDEPENDENT GUARDS, EACH SUFFICIENT ALONE, and it took removing them one
+# at a time to tell -- which is why this tier exists rather than a paragraph.
+#
+# THE WORDING ABOVE USED TO NAME A HANDLER. Its measurement is right and the
+# cause is wider: this fixture HAS NO HANDLER and stalls identically, so what
+# matters is that a WATCHER BODY was on the stack -- a `timer` body, a
+# webserver handler, an actor mailbox watcher, an `http` event watcher, or a
+# button clicked from any of them.
+#
+#   QT'S      gBASIC's sources ride ONE reference-counted Qt timer, and Qt will
+#             not re-deliver a timer whose handler is on the stack: measured in
+#             C++ at 0 pump ticks against 3 for a fresh timer during one box.
+#   gBASIC'S  `watcher_drain` returns at once while a watcher body is on the
+#             stack, so the loop polls, finds work and declines to dispatch it.
+#
+# REMOVING EITHER CHANGES NOTHING -- given a timer of its own the pump reached
+# gBASIC's loop 397 times during this dialog and the stall did not move, and
+# with gBASIC's guard alone removed the pump still never ticked. WITH BOTH OFF
+# IT DISSOLVES, which is what proves the pair rather than either.
+#
+# SO THE FIX IS NOT A TIMER CHANGE, which is the useful half to record: it
+# needs watcher dispatch to become RE-ENTRANT, and that guard is deliberate and
+# right -- a watcher body re-entered mid-statement is the hazard, not the
+# remedy. A language decision, not this backend's to take.
+#
+# THE FIXTURE HANGS BY DESIGN, so it is bounded and judged from outside.
+printf 'TIER stall: it needs no handler, which is what names its real cause\n'
+set +e
+QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 12 ./gbasic \
+    --line-buffered tests/qt_dialog_pump_fixture.bas > "$work/pump.out" 2>&1
+pump_rc=$?
+set -e
+if grep -q "NO DISPLAY" "$work/pump.out"; then
+    printf '  SKIP (no display -- what starves the pump was NOT measured)\n'
+elif ! grep -q "DIALOG UP" "$work/pump.out"; then
+    head -4 "$work/pump.out"
+    fail "the fixture never raised a dialog, so nothing was measured"
+elif grep -q "^TICK 2" "$work/pump.out"; then
+    # IF THIS EVER HAPPENS the pump re-entered its own tick, the stall is gone,
+    # and this suite's table plus §0.15 and the reference all overstate it --
+    # run_limitations.sh's negative-control shape.
+    fail "a watcher body ran during a dialog raised from inside another one -- watcher dispatch has become re-entrant, so the stall is gone and this suite, §0.15 and the reference now overstate it"
+elif grep -q "DIALOG DOWN" "$work/pump.out"; then
+    fail "the dialog closed by itself, so what was measured was not a stall"
+elif [ "$pump_rc" = "0" ]; then
+    fail "the program ended on its own, so the dialog was answered by something"
+else
+    pass "with NO handler involved, a dialog raised inside a watcher body stalls every source"
+    pass "and the dialog was still open, so that was a stall and not a crash"
 fi
 
 # ------------------------------------------------------------------ VALGRIND

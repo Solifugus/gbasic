@@ -98,11 +98,11 @@ else
     bad=$(grep -c 'MISMATCH' "$work/sem.out" || true)
     # A FLOOR, because a fixture that dies early leaves no MISMATCH lines and
     # would otherwise report `ok 0 checks, 0 mismatches`.
-    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 18 ]; then
+    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 20 ]; then
         pass "$checks checks, 0 mismatches"
     else
         grep MISMATCH "$work/sem.out" | head -6
-        fail "$checks checks, $bad mismatches (want >= 18 and none)"
+        fail "$checks checks, $bad mismatches (want >= 20 and none)"
     fi
     if grep -q "^ok   filter: as a list" "$work/sem.out"; then
         pass "and the options were read back off the live chooser, not off the record"
@@ -166,6 +166,12 @@ refuse 'a folder chooser has no name filter' \
 refuse 'nor a suggested name, `folder:` being where it starts' \
     '    p = qt.choose_folder(app, { name: "x" })' \
     'has no use for `name`'
+refuse 'a path option that is neither text nor a path reference' \
+    '    p = qt.choose_file(app, { folder: 7 })' \
+    'as text, a {file} or a {dir}'
+refuse 'and a title, which is prose, must be text' \
+    '    p = qt.choose_file(app, { title: {dir}"/tmp" })' \
+    'expects `title` as text'
 refuse "options that are not a record" \
     '    p = qt.choose_file(app, "/tmp")' \
     'options as a record'

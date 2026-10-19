@@ -3016,9 +3016,17 @@ static Value qt_eval_call(AstExpr *expr) {
          * a chooser does not say which file, and a path on a message box is
          * not one of its two buttons. Both are sentences rather than guesses.
          */
-        if (v.kind == VALUE_STRING) {
+        /* A PATH MAY ARRIVE AS A REFERENCE here too, for the reason the
+         * chooser's own options do: `{dir}` is what `temp_dir()` answers and
+         * `{file}` is what an author holds after choosing one, so refusing
+         * them would make the obvious spelling the wrong one. */
+        const char *given = NULL;
+        if (v.kind == VALUE_STRING)    { given = v.as.string; }
+        else if (v.kind == VALUE_FILE) { given = v.as.file_path; }
+        else if (v.kind == VALUE_DIR)  { given = v.as.dir_path; }
+        if (given) {
             err[0] = '\0';
-            int pok = gb_qt_answer_path(v.as.string, err, sizeof(err));
+            int pok = gb_qt_answer_path(given, err, sizeof(err));
             value_free(v);
             if (!pok) {
                 snprintf(message, sizeof(message), "qt.answer: %s",
@@ -3205,16 +3213,42 @@ static Value qt_eval_call(AstExpr *expr) {
                     }
                     continue;
                 }
-                if (!f->value || f->value->kind != VALUE_STRING) {
+                /* A PATH MAY ARRIVE AS A REFERENCE, which was a gap rather
+                 * than a rule and the cookbook found it: `temp_dir()` answers
+                 * a `{dir}`, so the most natural `folder:` there is was
+                 * refused as "not text". Every path builtin in this language
+                 * already takes a string, a `{file}` or a `{dir}` alike, and a
+                 * GUI module is the wrong place to be stricter. `title` is
+                 * prose and stays text. */
+                const char *as_path = NULL;
+                if (f->value) {
+                    if (f->value->kind == VALUE_STRING) {
+                        as_path = f->value->as.string;
+                    } else if (f->value->kind == VALUE_FILE) {
+                        as_path = f->value->as.file_path;
+                    } else if (f->value->kind == VALUE_DIR) {
+                        as_path = f->value->as.dir_path;
+                    }
+                }
+                if (strcmp(fname, "title") == 0 &&
+                    (!f->value || f->value->kind != VALUE_STRING)) {
                     snprintf(message, sizeof(message),
-                             "qt.%s expects `%s` as text", verb, fname);
+                             "qt.%s expects `title` as text", verb);
                     qt_raise(message);
                     value_free(win); value_free(opts);
                     return value_null();
                 }
-                if (strcmp(fname, "title") == 0)  { title = f->value->as.string; }
-                if (strcmp(fname, "folder") == 0) { folder = f->value->as.string; }
-                if (strcmp(fname, "name") == 0)   { pname = f->value->as.string; }
+                if (!as_path) {
+                    snprintf(message, sizeof(message),
+                             "qt.%s expects `%s` as text, a {file} or a {dir}",
+                             verb, fname);
+                    qt_raise(message);
+                    value_free(win); value_free(opts);
+                    return value_null();
+                }
+                if (strcmp(fname, "title") == 0)  { title = as_path; }
+                if (strcmp(fname, "folder") == 0) { folder = as_path; }
+                if (strcmp(fname, "name") == 0)   { pname = as_path; }
             }
         }
         const char *wname = qt_record_text(&win, "name");

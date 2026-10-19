@@ -1826,23 +1826,48 @@ same once `DontUseNativeDialog` asks for Qt's own rather than the desktop's.
 ### And the claim is narrower than §5.1 reads
 
 §5.1 is about **Qt's** loop surviving the nested one. It does. What cannot
-happen is **gBASIC re-entering while the interpreter is suspended inside its
-own handler**:
+happen is **gBASIC being serviced while a watcher body is on the stack**:
 
 | dialog raised | gBASIC's own sources |
 |---|---|
-| outside a handler | keep running — a `timer` fires and can answer the box |
-| **from a handler** | **suspended** until it is answered |
+| from `main`, outside any watcher | keep running — a `timer` fires and can answer the box |
+| **inside a watcher body** | **suspended** until it is answered |
 
-**The second is the normal case** — somebody clicked, and the program asks
-before acting — so a modal dialog is modal to the whole *program*. Measured
-both ways through the interpreter, and `run_qt_dialog.sh` asserts it with a
-real `server` block on an OS-assigned port: the route answers with no dialog
-up and does **not** answer during one, with a third check that the dialog was
-still open so what was measured was a stall and not a crash. **If that tier
-ever passes, the limitation is gone** and this section, the reference and the
-cookbook all overstate it — which is `run_limitations.sh`'s negative-control
-shape.
+**The second is the normal case**, and it is wider than it looks: a `timer`
+body, a webserver handler, an actor mailbox watcher, an `http` event watcher
+and a button clicked from any of them all run inside one. So a modal dialog is
+modal to the whole *program*. Measured both ways through the interpreter, and
+`run_qt_dialog.sh` asserts it with a real `server` block on an OS-assigned
+port: the route answers with no dialog up and does **not** answer during one,
+with a third check that the dialog was still open so what was measured was a
+stall and not a crash. **If that tier ever passes, the limitation is gone** and
+this section, the reference and the cookbook all overstate it — which is
+`run_limitations.sh`'s negative-control shape.
+
+#### That row said "from a handler", and named the wrong cause (corrected 2026-10-18)
+
+The measurement was right and the mechanism was not, which the chooser's own
+work turned up: **there is no handler at all in
+`tests/qt_dialog_pump_fixture.bas`** and the stall is identical. Two
+independent guards hold it, **each sufficient alone**, and it took removing
+them one at a time to tell:
+
+| | what it does |
+|---|---|
+| **Qt's** | gBASIC's sources ride **one** reference-counted `QTimer`, and Qt will not re-deliver a timer whose handler is on the stack — measured in C++ at **0** pump ticks against **3** for a fresh timer during the same box |
+| **gBASIC's** | `watcher_drain` returns at once while a watcher body is on the stack, so the loop polls, finds work and declines to dispatch it |
+
+**Removing either changes nothing.** Given a timer of its own the pump reached
+gBASIC's loop **397 times** during one dialog and the stall did not move; with
+gBASIC's guard alone removed the pump still never ticked. With both off it
+dissolves — the next tick arrives and answers the box, which is what proves
+the pair rather than either.
+
+**So the fix is not a timer change**, and that is the half worth recording,
+because a timer change is what anybody would reach for first. It needs watcher
+dispatch to become **re-entrant**, and that guard is deliberate and is the
+right call: a watcher body re-entered mid-statement is the hazard, not the
+remedy. A language decision, not this backend's to take.
 
 That is defensible for a desktop application and surprising for one that is
 also a server. The design answer for a program that must keep serving is a
@@ -1876,12 +1901,139 @@ wanted so Qt centres the box on it.
 
 ### Still open
 
-- **A file chooser.** Measured available (the probe drives one), not built.
+- ~~A file chooser.~~ **Built 2026-10-18 — see §0.16.**
 - **A window shown modally**, which is what anything richer than two buttons
   wants, and which would also answer "more than one window".
 - **A dialog over another** is not refused — the backend keeps a stack — but
   nothing exercises it, and a claim nobody has run is not a claim.
 
+## 0.16 A file chooser (2026-10-18): which file, and who may answer
+
+**Three verbs, not one with a mode**, because they ask three genuinely
+different questions — *which existing file?*, *what shall I call it?*, *which
+folder?* — which is also how Qt splits them, and which lets each one refuse the
+options that mean nothing to it instead of ignoring them:
+
+```basic
+path = qt.choose_file(app, { title: "Open", folder: here,
+                             filter: ["gBASIC programs (*.bas *.gb)", "All files (*)"] })
+if is_unknown(path) then return          ' they cancelled
+text = read({file}path)
+```
+
+`qt.choose_save` names a file to write, which need not exist; `qt.choose_folder`
+picks a directory. `qt.open_file` was **rejected as a name**: it reads as
+though it opens the file, and `f = qt.open_file(app)` looks like it answers
+contents or a handle. These verbs *choose*; the program does the reading.
+
+### Four things were measured first, and three of them changed the design
+
+**1. The desktop's own chooser cannot be driven.** With the native dialog — the
+XDG portal, which is what Qt reaches for on Wayland — `selectFile` does
+**nothing** (the selection is empty before `exec`) and accepting does nothing
+either: 41 pump ticks, `rc` 0, no file. So a program could not preselect a path
+and `qt.answer` would be a **silent no-op**, which is the failure class this
+whole backend is tested against. `DontUseNativeDialog` is therefore set
+unconditionally and is **not** offered as an option.
+
+**2. And offscreen cannot tell the two apart.** With no portal to reach, Qt
+falls back to its own widget dialog — so the native path measures as *drivable*
+under `QT_QPA_PLATFORM=offscreen`, the one platform every suite here runs on.
+Comfortable test data hiding the difference is a shape this tree has a name
+for, so the forcing is held by a **source tripwire** with its own vacuity
+control rather than by a tier that would pass either way.
+
+**3. `selectFile` is ignored while the dialog is visible** and its name field
+has focus — deliberately, so Qt never overwrites what somebody is typing. The
+obvious implementation of `qt.answer(path)` therefore left the selection
+**empty** and the accept silently refused. What works is what a person does:
+**type into the name field, then press the button** — the rule `qt.answer`
+already followed for a message box, and it pays again, because **Qt disables
+that button** for a path the mode cannot take. So the refusal is the chooser's
+own rule rather than a reimplementation of it, and the warning box a direct
+`accept()` would have raised never appears. That box was a *hang* rather than a
+failure: it opens a second nested loop from inside the first one's pump tick.
+
+**4. A rejected `QFileDialog` still reports its selection**, so reading the
+file list without checking the result code answers a path for a chooser the
+person **cancelled**. Not an error — a wrong answer, and the worst kind.
+
+### Decisions
+
+**The answer is text**, and that was decided rather than defaulted. Both
+`{file}` and `{dir}` accept a path that is not there (measured), so a typed
+answer *was* available — but three sibling verbs would then answer two kinds,
+and the rule this backend already follows is that a kind comes from the
+**declaration** and not from Qt (§0.5: a widget holds text, so folding back
+blindly turns `{ id: 42 }` into `{ id: "42" }`). A chooser has no declaration
+to read a kind from, and what Qt holds is a path. So text, and
+`{file}qt.choose_file(app)` where a typed value is wanted — one inline
+modifier, which is the spelling 0.5.0 added for exactly this.
+
+**Cancelling answers `unknown`, never `""`.** The empty string is the plausible
+wrong answer: `if path = "" then` happens to work while `read({file}path)` does
+not, so an author who forgot to check gets a puzzle instead of a raise.
+`unknown` is what `qt.selected` already answers for "nothing is chosen", and
+`if path then` on it **raises**, which is loud.
+
+**`filter:` takes text or a list**, joined with Qt's own `;;` by the backend,
+because two semicolons meaning "or" is a Qt-ism nobody should have to know. A
+single string passes through, so somebody who does know it loses nothing.
+
+**The option set is closed and refused by name**, with a near-miss hint — four
+options is a vocabulary that *can* be closed, unlike the 75 properties a
+`QPushButton` exposes. An ignored misspelling is a chooser that opens in the
+wrong folder with the wrong filter and says nothing. `filter:` and `name:` are
+refused on `qt.choose_folder`, where Qt would ignore both.
+
+**`qt.answer` grew a third argument shape.** A path answers a chooser; `false`
+is a **cancel**, which is what a timeout or a program giving up actually wants
+to say; `true` is **refused**, because it would have to mean "accept *what?*"
+and guessing which file somebody meant is the one thing this verb must not do.
+A path handed to a message box is refused the other way round. The two kinds
+are told apart in the backend so each refusal names the dialog that is actually
+open.
+
+### `qt.dialog()`, and why the oracle came first
+
+`title:` and `filter:` would otherwise be **accepted and unobservable** — the
+hole a leaf's `label:` sat in for four increments while every check passed
+(§0.8). `qt.dialog()` answers the innermost open dialog as a record (`kind`,
+`title`, and `text` for a message box or `folder`/`filter` for a chooser), or
+`unknown` when none is open — the `principal()` distinction, since "nothing is
+open" and "a dialog carrying no fields" are different claims. It is not a test
+hook, on the argument `qt.highlighting` already won: being unable to see what
+landed is being unable to tell an option that worked from one that did nothing.
+
+### The near-miss matcher is extracted, not copied
+
+The option names are the **second** closed vocabulary in this backend, so
+`gb_nearest_word(word, set)` is now the matcher and
+`gb_window_word_nearest` is three lines of it. That comment already recorded
+the window vocabulary having been written out three times with the newest word
+missing from the third; two copies of the *matcher* is the same drift one level
+up.
+
+### Nine perturbations proven red
+
+Each caught by the tier written for it — and **the native one is caught by the
+source tripwire alone**, every behavioural check staying green because
+offscreen falls back, which is what says that tripwire earns its place. One
+perturbation also found a **false claim in the fixture's own comment**: a
+cancel with nothing preselected answers `unknown` either way, because the
+selection is empty either way, so the check that claimed to catch a
+result-code-ignoring backend did not and an unrelated tier caught it instead.
+It opens the chooser **on a file** now, which is also the realistic shape.
+
+### Still open
+
+- **Choosing several files at once.** `QFileDialog` does it; the verb would be
+  `qt.choose_files`, answering a list *always* — a verb whose return **kind**
+  moves with an option is a shape this tree records as biting. Nothing has
+  needed it, so it is one more verb that is not written.
+- **The desktop's own chooser**, which is what a user on a real desktop
+  expects (recent places, bookmarks, cloud). Measured undrivable above, so
+  offering it would mean a mode in which `qt.answer` silently does nothing.
 
 ### Still open
 

@@ -3855,7 +3855,11 @@ end program
 | `qt.highlighting(win, part)` | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
 | `qt.inform(win, text)` | a message box with one button, parented to `win` so Qt centres it there and makes it modal to that window |
 | `qt.confirm(win, question)` | a message box with two, answering **`true` or `false`** rather than a button code — two buttons is the whole of what it offers, and anything richer is a window shown modally. **No is the default**, because a question answered by pressing Return without reading should not be the destructive one |
-| `qt.answer(value)` | answer the dialog that is open, from the program rather than a person — a timeout, an unattended run, a suite. **Refuses when nothing is open**, rather than being a silent no-op that would leave a program waiting for somebody who is not there |
+| `qt.answer(value)` | answer the dialog that is open, from the program rather than a person — a timeout, an unattended run, a suite. `true`/`false` for a message box; **a path** for a file chooser, and `false` there is a *cancel*. `true` on a chooser is **refused**, because it would have to mean "accept *what?*", and a path on a message box likewise — each refusal names the dialog that is actually open. **Refuses when nothing is open**, rather than being a silent no-op that would leave a program waiting for somebody who is not there |
+| `qt.choose_file(win [, opts])` | *which existing file?* Answers the path as **text**, or **`unknown`** if they cancelled |
+| `qt.choose_save(win [, opts])` | *what shall I call it?* — a name to write to, which need not exist yet |
+| `qt.choose_folder(win [, opts])` | *which folder?* |
+| `qt.dialog()` | the innermost open dialog as a record — `kind` (`"message"` or `"chooser"`), `title`, and `text` or `folder`/`filter` — or **`unknown`** when none is open, which is a different claim from a dialog carrying no fields |
 | `qt.theme(css)` / `qt.theme()` | set or read **one stylesheet for the whole application**. Needs no display, and is remembered until there is a `QApplication` to put it on, so a program themes first and opens second |
 | `qt.subject(win, name)` | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
 | `qt.invoke(win, name, method)` | call a widget method by name — `click`, `clear`, `setFocus` |
@@ -4090,21 +4094,43 @@ so it lands where the highlighter did).
 
 **A modal dialog is modal to the whole program, not just the window.** Qt's own
 loop survives the nested one a dialog opens — that is why the backend hands Qt
-the thread at all — but gBASIC cannot re-enter while the interpreter is
-suspended inside its own handler:
+the thread at all — but gBASIC is not serviced while a **watcher body** is on
+the stack:
 
 | dialog raised | gBASIC's own sources |
 |---|---|
-| outside a handler | keep running — a `timer` fires, and can answer the box |
-| **from a handler** (somebody clicked) | **suspended** until it is answered |
+| from `main`, outside any watcher | keep running — a `timer` fires, and can answer the box |
+| **inside a watcher body** | **suspended** until it is answered |
 
-The second is the normal case, so a `timer`, a webserver and an actor mailbox
-all stop until the question is answered — defensible for a desktop application
-and surprising for one that is also a server. Measured both ways through the
-interpreter, and `tests/run_qt_dialog.sh` asserts it with a real `server` on an
-OS-assigned port, because a limitation nobody can observe is one nobody will
-believe. A dialog with no display refuses **naming the display**, not the shut
-window.
+The second is the normal case and it is wider than it looks: a `timer` body, a
+webserver handler, an actor mailbox watcher, an `http` event watcher and a
+button clicked from any of them all run inside one. So a `timer`, a webserver
+and an actor mailbox all stop until the question is answered — defensible for a
+desktop application and surprising for one that is also a server. Measured both
+ways through the interpreter, and `tests/run_qt_dialog.sh` asserts it with a
+real `server` on an OS-assigned port, because a limitation nobody can observe
+is one nobody will believe. A dialog with no display refuses **naming the
+display**, not the shut window.
+
+**Two guards hold that, each sufficient alone** — Qt will not re-deliver the
+one timer gBASIC's sources ride on while its handler is on the stack, and
+`watcher_drain` declines to re-enter while a watcher body is running. Removing
+either changes nothing; with both off it dissolves. **So the remedy is not a
+timer change**: it needs watcher dispatch to become re-entrant, and that guard
+is deliberate — a watcher body re-entered mid-statement is the hazard, not the
+remedy. (This row used to say *"from a handler"*; a fixture with **no handler
+in it** stalls identically, which is what corrected it.)
+
+**Choosing a file** needs Qt's own dialog, not the desktop's, and that is
+forced rather than offered: with the native chooser `selectFile` does nothing
+and accepting does nothing, so a program could neither preselect a path nor
+answer one — `qt.answer` would be a silent no-op. Cancelling answers
+**`unknown`**, never `""`, because the empty string is the plausible wrong
+answer: `if path = "" then` happens to work where `read({file}path)` does not.
+`filter:` takes text or a **list**, joined with Qt's `;;` for you. The options
+are `title:`, `folder:`, `name:` and `filter:`, closed and refused by name with
+a near-miss hint; `qt.choose_folder` refuses `filter:` and `name:`, which Qt
+would ignore.
 
 **The containers, and why there are no alignment properties.** A `row` packs
 left to right and a `column` top to bottom, each taking `margin:` and
