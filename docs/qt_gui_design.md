@@ -2567,8 +2567,14 @@ select the row under the pointer as a backend policy, and Qt does it already —
 **Studio's per-row hiding came free**: its context menu is built once holding
 every item and hides the ones a row does not offer, which is `qt.set(win,
 "delete_it", "visible", false)` through the by-name route that already existed.
-Fifth time in this backend that measuring a gap before filling it found it
-closed.
+
+That keeps happening, and the instances are worth naming rather than counting —
+§0.7 (menus needed no grammar), §0.9 (the builder's door was already open),
+§0.17 (a second window already worked) and now both halves of this one. The
+earlier sections each claimed an ordinal and they do **not** agree with each
+other, because the count depends on whether "measuring changed the design"
+(§0.8's four conflicts) belongs in the same series as "the gap was already
+closed". Naming them is checkable where a number is not.
 
 ### The word, and the one slot
 
@@ -2739,8 +2745,8 @@ And **the zoom needs no verb**: `font` reads back as
 writes it back — asserted through the interpreter rather than taken from the
 probe. That is why there is no `qt.zoom`, and it is a measurement rather than a
 deferral, since `zoomIn`/`zoomOut` carry a defaulted argument `qt.invoke` could
-not reach anyway. Sixth time in this backend that measuring a gap before
-filling it found it closed.
+not reach anyway. One more for §0.20's list of gaps that measuring found
+already closed.
 
 ### What is genuinely missing is the event
 
