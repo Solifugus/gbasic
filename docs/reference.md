@@ -3857,7 +3857,7 @@ end program
 | `qt.resize_panes(win, part, sizes)` | set the pane sizes of the split a part is in — how *"restore my layout"* is written, and the only route to them: `setSizes` takes a list, so it is neither a property nor invokable, and a `split` cannot be named. A **count mismatch is refused, naming both numbers**, because one size on a two-pane split *collapses* the second and three honour none of them, both silently. What you set is a **ratio** in effect: Qt adds the handle and the margins, and re-proportions on resize, so the same numbers do not come back |
 | `qt.at(win, part)` | where a part sits in its `cells`: `{ row, column, across, down }`, asked of the layout |
 | `qt.menus(win)` / `qt.menus(win, n)` / `qt.menus(win, "name")` | the menu bar's top-level captions, the entries of the menu at position `n`, or the entries of the **`popup`** of that name. A number is a position on the bar and text is a popup's name — a popup is not on the bar, so it *has* no position. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
-| `qt.popup(win, name)` | raise a `popup` at the pointer, answering **whether anything was shown**. `false` when every item is hidden — a row that offers nothing rather than an error, since Qt declines to show such a menu and an empty context menu reads as a control that failed. The count **recurses**, so a lone empty submenu is not something to show |
+| `qt.popup(win, name [, under])` | raise a `popup`, answering **whether anything was shown**. With a third argument it pops **under that part** rather than at the pointer, which is what a menu *button* wants — its menu belongs under the button, not wherever the mouse happens to be. A name that is not there is refused, since popping at the pointer instead would look like a bug in the program rather than a name that was wrong. **The menu stays up until something dismisses it** — a person clicks an item or presses Escape, and a program driving itself calls `qt.invoke(win, menu, "hide")`, because a menu left up goes on grabbing the mouse. `false` when every item is hidden — a row that offers nothing rather than an error, since Qt declines to show such a menu and an empty context menu reads as a control that failed. The count **recurses**, so a lone empty submenu is not something to show |
 | `qt.right_click(win, part [, row])` | right-click a part the way a mouse does, for a program driving itself. It sends a **press, a release and then the context event**, so the selection moves as it would for a person — without which a handler would read a stale row. A third argument aims at a table row's own rectangle. Routed through the widget's **viewport** where there is one, which is what a `table`, `memo` and `source` answer to and nothing else can reach |
 | `qt.scroll(win, part, notches [, modifier])` | turn the wheel on a part, for a program driving itself, answering **whether anything claimed the event**. `notches` may be **fractional** — a trackpad sends less than one, and that is the case the direction rounding exists for. The modifier is `"ctrl"`, `"shift"` or `"alt"`, refused by name, because one silently ignored sends a plain wheel while the author believes they sent a modified one |
 | `qt.wheel()` | the wheel event **being handled** — `{ dy, dx, ctrl, shift, alt }`, with `dy` in **notches** rather than Qt's 120-unit delta and **positive meaning away from you** (Qt's sign, and the opposite of GTK's). Refuses outside a wheel handler, since there is no sensible record to hand back and a program asking in the wrong place would otherwise read zeros and act on them |
@@ -4022,6 +4022,31 @@ addresses — so a menu takes no name, and `on open_file.triggered` names the
 item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
 `checked:` reach it through the same by-name property route every widget option
 uses.
+
+**A `separator` divides a menu *or* a layout.** One word, one meaning — a line
+that divides — over two widgets, and **its orientation comes from the parent**:
+a `column` is divided by a horizontal rule and a `row` by a vertical one, so
+there is no option to get wrong.
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+column
+    text heading( label: "Credit" )
+    separator rule()
+    row
+        button ok( label: "OK" )
+        separator()
+        button cancel( label: "Cancel" )
+    end row
+end column
+```
+
+A rule in a layout **may be named**, where a menu's separator may not: it is a
+real widget, so a name is how it is themed (`qt.set(win, "rule", "styleSheet",
+...)`) and how its orientation is read back (`qt.read(win, "rule",
+"frameShape")` answers `HLine` or `VLine`). It is refused where there is
+nothing to divide — a splitter pane already has a draggable handle between its
+panes, and a `cells` grid has no direction to take.
 
 **`icon:` is the one option that is not an ordinary property.** Qt will not turn
 a string into an icon, so this is the single name with a conversion behind it —

@@ -72,11 +72,18 @@ window app( title: "Context", width: 620, height: 400 )
         ' wherever the mouse happens to be, which is what §0.20 left open as
         ' "at the pointer only". Studio builds one (a Gtk.MenuButton with a
         ' glyph in its label), so this is the caller that closes it.
+        ' TWO BUTTONS AT OPPOSITE ENDS, which is what makes `under` observable
+        ' at all: the boolean says only that a menu appeared, so the only
+        ' honest check is that popping under one and popping under the other
+        ' put the menu in DIFFERENT places -- and a menu's own `x` is in a
+        ' different coordinate space from a button's, so comparing them
+        ' directly would be comparing two unrelated numbers.
         row
             button proj( label: "Project" )
             separator toolbar_rule()
             button other( label: "Other" )
             stretch()
+            button far( label: "Far right" )
         end row
         split across
             table files to show rows
@@ -280,6 +287,21 @@ program main()
     ' bottom-left lands exactly there.
     qt.invoke(app, "proj", "click")
     check("a menu popped under a button appeared", g.under, true)
+    ' WHERE IT APPEARED, asserted as a DIFFERENCE. A perturbation that ignored
+    ' the third argument and popped at the pointer left the boolean TRUE and
+    ' was caught by NOTHING -- the fifth time in these increments that a green
+    ' perturbation meant a missing observable.
+    left_at = qt.read(app, "editor_actions", "x")
+    x = qt.popup(app, "editor_actions", "far")
+    right_at = qt.read(app, "editor_actions", "x")
+    check("popping under a different button moved the menu",
+          right_at > left_at, true)
+    ' AND THE CONTROL: at the POINTER it is somewhere else again, which is what
+    ' says the third argument is doing the work rather than the menu happening
+    ' to land near whatever was asked.
+    x = qt.popup(app, "editor_actions")
+    check("and at the pointer it is in neither place",
+          qt.read(app, "editor_actions", "x") != right_at, true)
 
     ' ---- a rule in a layout, beside the menu separator above --------------
     ' THE SAME WORD, two widgets, one meaning. A row is divided by a VERTICAL

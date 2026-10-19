@@ -49,6 +49,29 @@ window shell( title: "Shell", width: 820, height: 520 )
                        icon: "SP_DialogCloseButton" )
     end menu
 
+    ' THE TOOLBAR MENU, which is Studio's own header shape: a button that drops
+    ' a menu UNDER ITSELF rather than at the pointer, which is what
+    ' `qt.popup`'s third argument is for. The arrow glyph is in the LABEL on
+    ' purpose -- Studio's comment records that GTK's own `always-show-arrow`
+    ' drew nothing on 4.22, and Geometric Shapes is in every mainstream UI font.
+    popup proj_menu
+        item proj_new(  label: "New Project" )
+        item proj_open( label: "Open Project" )
+    end popup
+
+    column( margin: 6, spacing: 6 )
+        ' A SEPARATOR DIVIDES A LAYOUT TOO, and its orientation comes from the
+        ' parent: VERTICAL between groups of toolbar buttons in this `row`,
+        ' HORIZONTAL under it in the `column`. There is no option for it,
+        ' because the only correct value is the one the parent already knows.
+        row
+            button proj_btn( label: "Project \u{25be}" )
+            separator group_bar()
+            button run_btn( label: "Run" )
+            stretch()
+        end row
+        separator header_rule()
+
     split across
         ' THE NAV PANE. A column of labels does not scroll on its own, which is
         ' exactly what `scroll` is for.
@@ -73,8 +96,9 @@ window shell( title: "Shell", width: 820, height: 520 )
                 field at(   label: "Line" )
                 field says( label: "Message" )
             end table
-        end split
+            end split
     end split
+    end column
 
     on act_open.triggered
         g.log = g.log + "opened" + chr(10)
@@ -91,6 +115,10 @@ window shell( title: "Shell", width: 820, height: 520 )
         if not is_unknown(at) then
             g.log = g.log + "picked row " + string(at) + chr(10)
         end if
+    end on
+
+    on proj_btn.clicked
+        g.menu_shown = qt.popup(shell, "proj_menu", "proj_btn")
     end on
 
     on code.wheel
@@ -111,7 +139,7 @@ window shell( title: "Shell", width: 820, height: 520 )
 end window
 
 program main(args)
-    g = { log: "", zooms: 0 }
+    g = { log: "", zooms: 0, menu_shown: false }
 
     if not qt.can_display() then
         print "No display is available, so there is no window to open."
@@ -139,6 +167,20 @@ program main(args)
         print("the editor is pane " + string(ed.index) + " of " +
               string(ed.panes) + " in the " + ed.direction + " split")
         print "the table is pane  " + string(tb.index)
+
+        print "-- the toolbar"
+        qt.invoke(shell, "proj_btn", "click")
+        print("the Project menu dropped under its button: " +
+              string(g.menu_shown))
+        print("the group divider is " +
+              string(qt.read(shell, "group_bar", "frameShape")) +
+              ", the header rule is " +
+              string(qt.read(shell, "header_rule", "frameShape")))
+        ' AND PUT IT AWAY. A popped menu STAYS UP until something dismisses it
+        ' -- a person clicks an item or presses Escape, and a program that
+        ' pops one in `check` mode has to close it, or it goes on grabbing
+        ' the mouse while everything below runs. `hide` is an ordinary method.
+        qt.invoke(shell, "proj_menu", "hide")
 
         print "-- the menu items' icons"
         print("Open has an icon:   " + string(qt.has_icon(shell, "act_open")))

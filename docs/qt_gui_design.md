@@ -3059,6 +3059,110 @@ Open with it: whether the word is a new one or an option on `table` (the
 one-slot rule makes an option awkward), and whether a model-backed table can
 share `qt.cell`'s by-name column addressing.
 
+## 0.26 A rule, and a menu under a button (2026-10-19)
+
+The last two things Studio actually uses that the vocabulary could not express
+— and they were found by **counting its whole widget surface** rather than
+working from my gap list, which is the method §0.19 arrived at and which keeps
+paying.
+
+### The survey, because the gap list was wrong in both directions
+
+Every `gtk.*(` and `gi.new("Gtk.*")` in Studio's `app/` and `lib/`:
+
+| Studio | uses | Qt | status |
+|---|---|---|---|
+| `gtk.label` | 51 | `text` | §0.10 |
+| `gtk.button` | 25 | `button` | ✓ |
+| `gtk.box` | 25 | `row` / `column` | ✓ |
+| `gtk.scrolled` | 5 | `scroll` | §0.19 |
+| `gtk.application_window` | 5 | `window` | ✓ |
+| `Gtk.CssProvider` | 4 | `qt.theme`, `styleSheet` | §0.7 |
+| `gtk.paned` | 3 | `split` + `qt.resize_panes` | §0.19, §0.22 |
+| `gtk.listbox` | 3 | `table` | §0.6 |
+| `Gtk.StringList` | 3 | `choice` options / `qt.options` | §0.13 |
+| `Gtk.Popover` | 3 | `popup` | §0.20 |
+| `Gtk.Grid` | 3 | `cells` | §0.8 |
+| `Gtk.DropDown` | 3 | `choice` | §0.13 |
+| **`Gtk.Separator`** | **2** | — | **this section** |
+| `Gtk.GestureClick` | 2 | the context signal + `qt.right_click` | §0.20 |
+| `Gtk.Entry` | 2 | `field` | ✓ |
+| `gtk.notebook` | 1 | `tabs` | §0.8 |
+| `Gtk.TextBuffer` | 1 | `memo` / `source` | ✓ |
+| **`Gtk.MenuButton`** | **1** | `popup` + a handler | **this section** |
+| `Gtk.EventControllerScroll` | 1 | `on <part>.wheel` | §0.21 |
+| `Gtk.EventControllerKey` | 1 | a `QAction` shortcut | §0.21, measured unnecessary |
+| `Gtk.CheckButton` | 1 | `check` | ✓ |
+
+§0.19 already recorded that Studio uses **none** of the toolbar, status bar,
+progress bar, slider, spin box or date picker I had listed. Counting the whole
+surface found the error in the other direction too: two things that are small,
+**used**, and absent.
+
+### A `separator` in a layout
+
+The word already existed and the validator refused it outside a menu — so a
+horizontal rule between panes, and a vertical divider between two groups of
+toolbar buttons, could not be written. Studio has both (`studio_shell._rule`
+and `._bar`), and its own comment says the horizontal one *"is the line that
+says where one pane ends and the next begins"*, so it is a visual element
+rather than decoration.
+
+**One word, one meaning, two widgets.** A separator means *a line that
+divides*, which is as true of a rule between sections as of a line in a menu.
+The validator already carries the parent's word, so one word covers both and
+the backend picks the widget.
+
+**The orientation comes from the parent**, as `stretch` takes its axis from
+one, and that is load-bearing rather than tidy:
+
+| measured | result |
+|---|---|
+| `HLine` in a **column** | **378 × 3** — a rule |
+| `VLine` in a **row** | **3 × 78** — a divider |
+| `HLine` in a **row** (wrong way round) | **119 × 3** — a stub taking a share of the width |
+| `QBoxLayout::direction()` | 2 for a column, 0 for a row — so the parent knows |
+
+An option whose only correct value is the one the parent already knows would be
+an option to get wrong. Refused where there is nothing to divide: a splitter
+pane already has a draggable handle, and a `cells` grid has no direction.
+
+**And it may be named**, where a menu's separator may not. Not a loosening for
+symmetry: a rule is a real widget with real properties and **Studio styles its
+own** (`studio_style.apply(sep, "rule")`), so one that could not be addressed
+could not be themed. It is also the only way to observe the orientation —
+`qt.read(win, name, "frameShape")` — which is the one thing that can be built
+wrong.
+
+### A menu under the button that opened it
+
+`qt.popup` takes an optional third argument naming a part to pop beneath, which
+closes §0.20's own open item (*"at the pointer only"*). Studio is the caller:
+it builds a toolbar menu button, and a menu button's menu belongs under the
+button rather than wherever the mouse happens to be. Measured, popping at a
+widget's bottom-left lands exactly there.
+
+**And the fifth green perturbation of the day produced its oracle.** Ignoring
+the third argument and popping at the pointer left `qt.popup`'s boolean `true`
+and was caught by nothing — the boolean says only that a menu appeared. A
+menu's own `x` is in a different coordinate space from a button's, so comparing
+them directly would be comparing two unrelated numbers; what is honest is a
+**difference**: popping under one button and under another puts the menu in
+different places, with the pointer as a third.
+
+That makes five increments today where the question *"what would be observable
+if this did nothing?"* decided a design detail — `qt.right_click`,
+`qt.scrolled`, `qt.has_icon`, a nameable rule, and this.
+
+**And a usage note the example found rather than any check.** A popped menu
+**stays up** until something dismisses it, and a visible `QMenu` grabs the
+mouse — so adding a menu button to `examples/qt/shell.bas` broke the Ctrl+wheel
+check two tiers below it, with the menu still open and swallowing the wheel. A
+person clicks an item or presses Escape; a program driving itself calls
+`qt.invoke(win, menu, "hide")`. Auto-dismissing was considered and rejected
+outright: a menu that vanished the instant it appeared would be no menu at
+all.
+
 ### Still open
 
 - **`grow` as a bare option** is an option with no value, which is new grammar in

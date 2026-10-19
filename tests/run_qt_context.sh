@@ -240,11 +240,11 @@ elif [ "$rc" != "0" ]; then
 else
     checks=$(grep -c '^ok' "$work/sem.out" || true)
     bad=$(grep -c 'MISMATCH' "$work/sem.out" || true)
-    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 33 ]; then
+    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 35 ]; then
         pass "$checks checks, 0 mismatches"
     else
         grep MISMATCH "$work/sem.out" | head -6
-        fail "$checks checks, $bad mismatches (want >= 33 and none)"
+        fail "$checks checks, $bad mismatches (want >= 35 and none)"
     fi
     # QT'S OFFSCREEN PLUGIN SAYS THESE ON EVERY RUN AND THEY ARE NOT OURS:
     # `propagateSizeHints` on any window, and `raise` and `grabbing the
@@ -301,11 +301,20 @@ else
     # UNDER A PART rather than at the pointer, which §0.20 left open as its own
     # limitation and which Studio's toolbar menu button is the caller for: a
     # menu button's menu belongs under the button, not wherever the mouse is.
+    # THE POSITION, AND IT IS A DIFFERENCE. `qt.popup`'s boolean says only that
+    # a menu appeared, so a perturbation that IGNORED the third argument and
+    # popped at the pointer left every check green -- the fifth time in these
+    # increments that a green perturbation meant a missing observable. A menu's
+    # own `x` is in a different coordinate space from a button's, so the honest
+    # check is that popping under one button and under another puts it in
+    # DIFFERENT places, with the pointer as a third.
     if grep -q "^ok   a menu popped under a button appeared" "$work/sem.out" &&
+       grep -q "^ok   popping under a different button moved the menu" "$work/sem.out" &&
+       grep -q "^ok   and at the pointer it is in neither place" "$work/sem.out" &&
        grep -q "^ok   popping under something that is not there is refused" "$work/sem.out"; then
-        pass "UNDER: a menu hangs off the thing that opened it, and a bad name is refused"
+        pass "UNDER: the menu follows the part named, three positions apart"
     else
-        fail "popping under a part was not measured -- at the pointer only, a toolbar menu appears wherever the mouse happens to be"
+        fail "where the menu popped was not measured -- the boolean is true whether or not the third argument was honoured"
     fi
     # AND THE SAME WORD IN A LAYOUT. A `separator` means a line that divides,
     # which is as true of a rule between two sections as of a line in a menu --
