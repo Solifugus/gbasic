@@ -3012,8 +3012,11 @@ from a handler.
 **What is NOT yet decided**, and should be decided by measurement rather than
 here: whether the backend drives the whole loop (so a program only supplies
 words), or whether a key handler arrives first and the loop is written in
-gBASIC. The second would make completion ordinary and give §0.21's still-open
-key handler a caller; the first is smaller and less general.
+gBASIC. The first is smaller and less general. The second is
+interesting because it would give a key handler its **first real caller** —
+§0.21's open list says a key handler is *not needed*, and that is still true of
+everything measured so far, so completion would be the thing that changes the
+answer rather than a use for something already wanted.
 
 ## 0.25 A virtualised table: measured, not built (2026-10-19)
 
