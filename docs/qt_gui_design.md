@@ -2959,6 +2959,97 @@ able to ask.
 - **A per-window icon** (`windowIcon`) is the same property on the root and
   should already work through the window's own name; unmeasured.
 
+## 0.24 Completion: measured, not built (2026-10-19)
+
+The next item on Studio's list, measured before being designed — and the
+measurement says it is a bigger increment than §0.20–§0.23, so this records
+what is known rather than guessing at a shape.
+
+### What is measured
+
+| measured | result |
+|---|---|
+| `completer` as a property | **−1** on both `QPlainTextEdit` and `QLineEdit`, and `setCompleter` is **not invokable** |
+| a `QCompleter` over a word list | works — prefix `pro` gives `program`, `property`, `procedure` |
+| `complete()` | makes the popup **visible** offscreen |
+| the word under the cursor | findable: `WordUnderCursor` on a cursor at the end of `x = pro` gives `pro` |
+| inserting a completion | works with no key handler — `x = pro` became `x = program` |
+| replacing the model | works, so the word list can follow the data |
+| **a Return key sent into the popup** | **fires nothing**, and the popup stays up |
+| **a Return key sent into the editor** | fires nothing and inserts a newline |
+| `activated` | two overloads, `QString` and `QModelIndex` |
+
+### What those decide, and what they leave open
+
+**It cannot ride the by-name route.** `completer` is not a property and
+`setCompleter` is not invokable, so attaching one needs a verb — the same
+position the highlighter is in, and for the same reason: it is an *object*
+attached to a widget rather than a value on it.
+
+**A `QLineEdit` handles completion itself; a `QPlainTextEdit` does not.** For
+an editor the host must, on every keystroke, find the prefix, call
+`setCompletionPrefix` and `complete()`, and then handle `activated` and insert
+the text. gBASIC cannot do that — this backend has no key handler, deliberately
+(§0.21: a `QAction` shortcut covered Studio's keys). So **the backend would have
+to own a keystroke loop**, which is new machinery and the reason this is not a
+small increment.
+
+**And the popup is not drivable headless**, which is the sharper problem: a
+Return into the popup fires nothing and leaves it up, so a suite cannot choose
+an item. What *is* drivable is the list (a prefix gives rows) and the insertion
+(a cursor's word can be replaced). So a testable design makes the **data**
+primary — a verb supplying the words, and an oracle answering what would be
+offered for the word under the cursor right now — and states the popup's own
+appearance as unasserted, the way §0.15 states the limit on a dialog raised
+from a handler.
+
+**What is NOT yet decided**, and should be decided by measurement rather than
+here: whether the backend drives the whole loop (so a program only supplies
+words), or whether a key handler arrives first and the loop is written in
+gBASIC. The second would make completion ordinary and give §0.21's still-open
+key handler a caller; the first is smaller and less general.
+
+## 0.25 A virtualised table: measured, not built (2026-10-19)
+
+§0.6 defers this and `table` materialises every row, so the million-row path is
+a **model** behind a `QTableView` rather than a bigger version of what exists.
+Measured before designing, because one number decides whether gBASIC can drive
+one at all.
+
+### The cost question, answered
+
+A model's `data()` would have to call back into the interpreter, and if that
+happened per cell of the whole table it would be unusable. It does not:
+
+| model rows | viewport | `data()` calls | highest row touched |
+|---|---|---|---|
+| 100 | 300px | **27** | 8 |
+| 10,000 | 300px | **27** | 8 |
+| 1,000,000 | 300px | **27** | 8 |
+| 1,000,000 | 900px | **87** | 28 |
+
+**The cost is the viewport, not the table.** And `scrollToBottom` on a million
+rows cost **54 calls in total** and jumped straight to row 999,999 — it does
+not touch anything on the way. So a callback per visible cell is ~30–90 per
+redraw, which is the fact that makes this buildable.
+
+Also measured: `sortingEnabled` **is** a property (index 89), so click-to-sort
+is reachable by name — which matters because `table` deliberately turns it off,
+a sorted view making `qt.selected`'s index mean a different row in the view than
+in the subject.
+
+### What it still needs, and why it is not this session's increment
+
+A **new callback shape**. Every handler in this backend is a name invoked with
+no arguments and no result (`g_invoke`); a model needs *"what is in cell (r,
+c)"* — arguments in and text back. That is a new seam across the C/gBASIC
+boundary rather than a new widget, which is why this is a larger increment than
+§0.20–§0.23 despite the cost question being settled.
+
+Open with it: whether the word is a new one or an option on `table` (the
+one-slot rule makes an option awkward), and whether a model-backed table can
+share `qt.cell`'s by-name column addressing.
+
 ### Still open
 
 - **`grow` as a bare option** is an option with no value, which is new grammar in
