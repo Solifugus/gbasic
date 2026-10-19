@@ -2820,6 +2820,70 @@ checkout nor a single-file one is safe over work in progress.
 - **A mouse position** for a wheel event, which a chart zooming about the
   pointer would want.
 
+## 0.22 Pane sizes (2026-10-19): §0.19's open item, and why it has no name
+
+§0.19 left this open and both of its reasons still hold. `setSizes` takes a
+`QList<int>`, so measured, `sizes` is **not** a property (−1) and `setSizes` is
+**not** invokable by name (−1) — the by-name route this backend reaches
+everything else through cannot see either. And a `split` **cannot be named**,
+its one slot being the direction, so there is nothing to look up.
+
+**So it is addressed by walking up from a part**, which is the rule `qt.pane`
+already follows and is why this needed no new spelling: `sizes` joins what that
+answers, and the write half is a verb taking the same part.
+
+### Studio needs it, which is why it came before icons
+
+Its shell reads `split.position` for **three** splits out of a saved session
+and writes them back on exit, so a converted Studio without this forgets its
+layout every time — a feature it already has. GTK's `position` is one number
+because a `Gtk.Paned` has exactly two children; a `QSplitter` holds any number,
+so this is a **list**.
+
+### Three measurements, and the first is why nothing asserts an exact size
+
+| measured | result |
+|---|---|
+| `setSizes` exactness | asked 260/540 of an 800-wide splitter, **got 252/522** — the handle and the margins |
+| a **wrong count** | `[100]` on a two-pane split gave **`[774, 0]`**, collapsing the second; `[200,300,400]` gave `[310,464]`, honouring none |
+| a window resize | 194/580 became **244/730** — Qt re-proportions |
+
+So what a program stores is a **ratio** in effect, and nothing here promises to
+hand the same numbers back. Every check is a proportion or a difference.
+
+**A count mismatch is refused**, and that is measured rather than cautious:
+both silent outcomes above are perfectly ordinary-looking layouts that are not
+what was asked for, which is the class this backend is tested against. The
+refusal names **both** numbers, because the author has to know which way they
+were wrong. A negative size is refused too rather than clamped — Qt would
+quietly treat it as a collapse, a layout that looks deliberate and is not.
+
+### One walk, and the check that it finds the right splitter
+
+The reader and the writer share `splitter_of`, because two walks would be two
+things that can disagree about which split a part is in. **The tier that
+matters is that resizing the inner split leaves the outer alone** — every size
+check in the fixture passes on a walk that resized whichever splitter it met
+first, and that is the one that does not.
+
+It stops at the **nearest region**, like `qt.pane`: a part inside a `scroll`
+that is itself a pane reports the scroll, not the split, because the scroll is
+what immediately holds it. Asserted both ways, with the control that a `table`
+which *is* a direct pane is still found — without which the refusal is
+satisfied by a walk that refuses everything that is not a plain widget.
+
+**Zero is legal**, which is how a shell hides a panel without forgetting it,
+and a collapsed pane comes back. Three panes are asserted separately, because a
+two-pane-only implementation passes everything else and a `Gtk.Paned` cannot
+even have three.
+
+### Still open
+
+- **`on <split>.splitterMoved`**, which still needs a spelling that frees the
+  slot — so a program can save the layout when it changes rather than only on
+  exit.
+- **A scrollbar policy as a word**, unchanged from §0.19.
+
 ### Still open
 
 - **`grow` as a bare option** is an option with no value, which is new grammar in

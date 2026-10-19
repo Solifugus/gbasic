@@ -50,8 +50,8 @@ program main(args)
     ' WHAT THE SPLIT LOOKS LIKE NOW. `browser` is a part of the outer split, so
     ' naming it is how the outer split is addressed.
     outer = qt.pane(app, "browser")
-    print "the outer split is " + outer.direction + " with " +
-          string(outer.panes) + " panes"
+    print ("the outer split is " + outer.direction + " with " +
+           string(outer.panes) + " panes")
     print "the browser is pane " + string(outer.index)
 
     ' SET IT. Think of these as a ratio: a narrow browser beside a wide editor.
@@ -72,19 +72,20 @@ program main(args)
     saved = { browser: qt.pane(app, "browser").sizes,
               editor:  qt.pane(app, "code").sizes }
     qt.resize_panes(app, "browser", [450, 450])
-    print "after a change, even:           " +
-          string(qt.pane(app, "browser").sizes[0] = qt.pane(app, "browser").sizes[1])
+    even = qt.pane(app, "browser").sizes
+    print ("after a change, even:           " +
+           string(even[0] = even[1]))
     qt.resize_panes(app, "browser", saved.browser)
     back = qt.pane(app, "browser").sizes
     print "and restored to narrow again:   " + string(back[0] < back[1])
 
     ' HIDING A PANEL: zero, and it comes back.
     qt.resize_panes(app, "browser", [0, 900])
-    print "browser hidden:                 " +
-          string(qt.pane(app, "browser").sizes[0] = 0)
+    print ("browser hidden:                 " +
+           string(qt.pane(app, "browser").sizes[0] = 0))
     qt.resize_panes(app, "browser", saved.browser)
-    print "and shown again:                " +
-          string(qt.pane(app, "browser").sizes[0] > 0)
+    print ("and shown again:                " +
+           string(qt.pane(app, "browser").sizes[0] > 0))
 
     ' A WRONG COUNT IS REFUSED, naming both numbers.
     on error goto next
