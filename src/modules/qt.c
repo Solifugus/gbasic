@@ -750,8 +750,14 @@ static int qt_fill_choice(void *root, const char *name, Value *list,
     return 1;
 }
 
+/* `named` IS THE PART'S OWN NAME, carried so a refusal and a note can say WHICH
+ * one. `word` alone is the vocabulary word -- so a window with three buttons
+ * got "on `button`", which identifies nothing a reader can go and edit. Found
+ * by reading warning 2116's own output, not by a check: the assertions on
+ * these messages all match a wildcard prefix, so the shortcoming was invisible
+ * to the suite. */
 static int qt_apply_options(void *node, Value *options, const char *word,
-                            int is_container) {
+                            const char *named, int is_container) {
     char err[QT_ERRBUF];
     char message[512];
     if (!options || options->kind != VALUE_RECORD) {
@@ -856,7 +862,8 @@ static int qt_apply_options(void *node, Value *options, const char *word,
         }
         if (!ok) {
             snprintf(message, sizeof(message), "window: on `%s`, %s",
-                     word, err[0] ? err : "that option was refused");
+                     (named && *named) ? named : word,
+                     err[0] ? err : "that option was refused");
             qt_raise(message);
             return 0;
         }
@@ -871,7 +878,8 @@ static int qt_apply_options(void *node, Value *options, const char *word,
              * unrunnable on a machine whose theme lacks one name -- and
              * measured, a headless machine has NO theme at all, which is the
              * release's own target. */
-            warn_fmt(2116, "icon", "window: on `%s`, %s", word, err);
+            warn_fmt(2116, "icon", "window: on `%s`, %s",
+                     (named && *named) ? named : word, err);
         }
     }
     (void)is_container;
@@ -950,7 +958,8 @@ static int qt_fill_menu(void *root, void *node, Value *menu) {
             qt_raise(message);
             return 0;
         }
-        if (!qt_apply_options(act, opts ? opts->value : NULL, "item", 0)) {
+        if (!qt_apply_options(act, opts ? opts->value : NULL, "item",
+                              name, 0)) {
             return 0;
         }
     }
@@ -1094,7 +1103,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             qt_raise(message);
             return 0;
         }
-        return qt_apply_options(tnode, opts ? opts->value : NULL, "table", 1);
+        return qt_apply_options(tnode, opts ? opts->value : NULL, "table", name, 1);
     }
 
     if (strcmp(kind, "container") == 0) {
@@ -1121,7 +1130,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             return 0;
         }
         if (!qt_apply_options(node, opts ? opts->value : NULL,
-                              word ? word : "", 1)) {
+                              word ? word : "", name, 1)) {
             return 0;
         }
         RecordField *entries = record_find(item, "items");
@@ -1139,7 +1148,8 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         qt_raise(message);
         return 0;
     }
-    if (!qt_apply_options(node, opts ? opts->value : NULL, word ? word : "", 0)) {
+    if (!qt_apply_options(node, opts ? opts->value : NULL, word ? word : "",
+                          name, 0)) {
         return 0;
     }
     /* A DECLARED `options:` LIST, for the fixed case -- a direction, a status,
