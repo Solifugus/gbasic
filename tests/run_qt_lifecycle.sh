@@ -46,6 +46,16 @@
 . "$(dirname "$0")/portable.sh"
 . "$(dirname "$0")/premise.sh"
 set -uo pipefail
+# `set +e` BELOW WITHOUT A MATCHING `set -e`, DELIBERATELY. This file's mode is
+# `set -uo pipefail` -- NO `-e` -- so `set +e` is already a no-op and a `set -e`
+# after it does not RESTORE anything, it TURNS THE MODE ON. Copied from a suite
+# whose header really is `set -euo pipefail`, it silently armed `-e` for the
+# rest of the file, and the only thing that then fires is an unguarded command
+# that FAILS -- which on a red path is a `grep` finding nothing. MEASURED
+# 2026-10-19: a perturbation of this suite died immediately after printing its
+# tier header, with no verdict and no FAIL line, indistinguishable from still
+# running. The `set +e` lines are kept because they say "a failure is expected
+# here", which is true; the mode changes are gone.
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
 source tests/valgrind_tier.sh
@@ -78,7 +88,6 @@ end program
 BAS
 set +e
 ./gbasic "$work/shadow.bas" > "$work/shadow.out" 2>&1
-set -e
 if grep -q "the window itself is called 'app'" "$work/shadow.out" &&
    ! grep -q RAN "$work/shadow.out"; then
     pass "a part taking the window's name is refused, and nothing ran"
@@ -99,7 +108,6 @@ end program
 BAS
 set +e
 ./gbasic "$work/shadow_rec.bas" > "$work/shadow_rec.out" 2>&1
-set -e
 if grep -q "the window itself is called 'app'" "$work/shadow_rec.out"; then
     pass "and a BUILT window is refused in the same words"
 else
@@ -123,7 +131,6 @@ end program
 BAS
 set +e
 ./gbasic "$work/handler_ok.bas" > "$work/handler_ok.out" 2>&1
-set -e
 if grep -q RAN "$work/handler_ok.out"; then
     pass 'CONTROL: `on app.closed` on the window itself is accepted'
 else
@@ -148,7 +155,6 @@ end program
 BAS
 set +e
 ./gbasic "$work/handler_bad.bas" > "$work/handler_bad.out" 2>&1
-set -e
 if grep -q "names nothing in this window" "$work/handler_bad.out" &&
    ! grep -q RAN "$work/handler_bad.out"; then
     pass "CONTROL: and a handler naming nothing is still refused"
@@ -168,7 +174,6 @@ set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_lifecycle_test.bas > "$work/sem.out" 2> "$work/sem.err"
 rc=$?
-set -e
 if grep -q "SKIP no display" "$work/sem.out"; then
     printf '  SKIP (no display -- the lifecycle was NOT exercised)\n'
 elif [ "$rc" != "0" ]; then
@@ -235,7 +240,6 @@ QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 60 ./gbasic \
     --line-buffered tests/qt_lifecycle_loop_fixture.bas \
     > "$work/loop.out" 2> "$work/loop.err"
 loop_rc=$?
-set -e
 if grep -q "SKIP no display" "$work/loop.out"; then
     printf '  SKIP (no display -- what closing a window does to the loop was NOT measured)\n'
 elif [ "$loop_rc" != "0" ]; then
@@ -287,7 +291,6 @@ QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 60 ./gbasic \
     --line-buffered tests/qt_lifecycle_stop_fixture.bas \
     > "$work/stop.out" 2> "$work/stop.err"
 stop_rc=$?
-set -e
 if grep -q "SKIP no display" "$work/stop.out"; then
     printf '  SKIP (no display -- what qt.stop does to a window was NOT measured)\n'
 elif [ "$stop_rc" != "0" ]; then
@@ -344,7 +347,6 @@ BAS
     set +e
     QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 40 ./gbasic \
         --line-buffered "$work/r.bas" > "$work/r.out" 2>&1
-    set -e
     if grep -q "NO DISPLAY" "$work/r.out"; then
         printf '  SKIP %s (no display)\n' "$1"
     elif grep -q "REFUSED" "$work/r.out" && grep -qF "$3" "$work/r.out"; then
@@ -401,7 +403,6 @@ BAS
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 40 ./gbasic \
     --line-buffered "$work/part_closed.bas" > "$work/part_closed.out" 2>&1
-set -e
 if grep -q "NO DISPLAY" "$work/part_closed.out"; then
     printf '  SKIP a part has no close (no display)\n'
 elif grep -q 'emits no .closed. signal' "$work/part_closed.out"; then
@@ -432,7 +433,6 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
     -u XDG_SESSION_TYPE timeout -k 5 40 ./gbasic "$work/ask.bas" \
     > "$work/ask.out" 2>&1
 ask_rc=$?
-set -e
 if [ "$ask_rc" = "0" ] && grep -q "^ASKED false" "$work/ask.out"; then
     pass "with no display at all it answers false without raising"
 else
@@ -469,7 +469,6 @@ else
     big=$(QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib /usr/bin/time -f '%M' \
         timeout -k 5 300 ./gbasic tests/qt_lifecycle_growth_fixture.bas 2000 \
         2>"$work/b.rss"); b_rc=$?
-    set -e
     s_rss=$(tail -1 "$work/s.rss"); b_rss=$(tail -1 "$work/b.rss")
     if printf '%s' "$small" | grep -q "SKIP no display"; then
         printf '  SKIP (no display -- reopening was NOT measured)\n'
@@ -509,7 +508,6 @@ else
         vg_run_access_only ./gbasic tests/qt_lifecycle_test.bas \
         >/dev/null 2>"$work/vg.err"
     vg_rc=$?
-    set -e
     if [ "$vg_rc" = "$VG_EXIT" ]; then
         grep -E "Invalid|uninitialised" "$work/vg.err" | head -4
         fail "valgrind objected"

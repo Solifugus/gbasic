@@ -3838,6 +3838,8 @@ end program
 |---|---|
 | `qt.can_display()` | whether a window can be opened at all. **Answers rather than raising**, including on a build with no Qt — a program asking this is degrading gracefully, and "this build has no Qt" is one of the answers |
 | `qt.open(win)` | build and show the declaration. Refuses, naming **a display**, when there is none, and runs `qt.check` first so a window nobody validated cannot open |
+| `qt.open_modal(win)` | open it **modally and block** until somebody answers, which is what `qt.confirm` is not: two buttons is the whole of what a message box offers, so anything with a layout of its own comes through here. Answers **true** when accepted and **false** for a reject, a close, or the window being dismissed. It is the **same window** — one shared open path, so the declaration, the binding and the handlers are the same code — and it **closes the window before returning**, so the `closed` handler is where the form is read |
+| `qt.accept(win)` / `qt.reject(win)` | say yes or no to a modally shown window, which is what a button handler calls. Refused on a window that was not opened modally, naming the verb that would have made it one. Not `qt.answer`, which drives a *dialog* from the program when nobody is there |
 | `qt.close(win)` | close it: the window is **removed from gBASIC's registry**, and every verb that needs an open one then refuses by name. Not a hide — Qt leaves a dismissed window alive and still readable, so a program would otherwise go on reading values off a screen nobody is looking at. **Refuses** when the window is not open, rather than being a silent no-op; `qt.is_open` is how a program asks without raising. Reopening builds a **fresh** window, so a form captures its subject again |
 | `qt.is_open(win)` | whether it is still there. **Answers rather than raising**, like `qt.can_display`, because a window can close *without the program asking* — once the person can dismiss one, every other verb starts refusing for a reason that is nobody's mistake |
 | `qt.check(win)` | the declaration's own load-time rules, over a window record — **answers on a build with no Qt and needs no display**, because it is a check on a declaration. Answers `true` or refuses with the first problem and a count of the rest |
@@ -3896,6 +3898,25 @@ Afterwards `qt.read`, `qt.write` and `qt.subject` all refuse by name, and
 alive and still holding its values, so answering would mean reading off a screen
 nobody is looking at. `closed` is the window's own event and not a widget
 signal, so `on save.closed` on a button is refused.
+
+**A window shown modally is the same window**, and `on <window>.closed` is
+where its form is read too — `qt.open_modal` closes the window before it
+returns, so the four ways it can end leave one state rather than two:
+
+| | `qt.open_modal` answers | `closed` fires |
+|---|---|---|
+| `qt.accept(win)` | **true** | yes |
+| `qt.reject(win)` | false | yes |
+| `qt.close(win)` | false | yes |
+| the window manager's button | false | yes |
+
+**It does not starve the rest of the program.** A modal window opened from
+`main` — *"show this form and wait"* — leaves gBASIC's own sources running: a
+webserver answers, a `timer` fires, so a program can even answer its own
+window. The limitation is the other case, and it is the one `qt.confirm` already
+has: a modal window or dialog raised from **inside a handler** suspends every
+source until it is answered, because what cannot happen is re-entering the
+interpreter, not re-entering Qt's loop.
 
 **And a program may build that record itself**, which is how you get a row per
 invoice: a declaration cannot contain a loop, and `qt.open` asks only that the

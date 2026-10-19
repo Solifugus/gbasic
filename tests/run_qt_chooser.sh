@@ -36,6 +36,16 @@
 #      person cancelled. Only the `cancel` tier can see that.
 . "$(dirname "$0")/portable.sh"
 set -uo pipefail
+# `set +e` BELOW WITHOUT A MATCHING `set -e`, DELIBERATELY. This file's mode is
+# `set -uo pipefail` -- NO `-e` -- so `set +e` is already a no-op and a `set -e`
+# after it does not RESTORE anything, it TURNS THE MODE ON. Copied from a suite
+# whose header really is `set -euo pipefail`, it silently armed `-e` for the
+# rest of the file, and the only thing that then fires is an unguarded command
+# that FAILS -- which on a red path is a `grep` finding nothing. MEASURED
+# 2026-10-19: a perturbation of this suite died immediately after printing its
+# tier header, with no verdict and no FAIL line, indistinguishable from still
+# running. The `set +e` lines are kept because they say "a failure is expected
+# here", which is true; the mode changes are gone.
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
 source tests/valgrind_tier.sh
@@ -87,7 +97,6 @@ QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_chooser_test.bas "$work" \
     > "$work/sem.out" 2> "$work/sem.err"
 rc=$?
-set -e
 if grep -q "SKIP no display" "$work/sem.out"; then
     printf '  SKIP (no display -- the chooser was NOT exercised)\n'
 elif [ "$rc" != "0" ]; then
@@ -143,7 +152,6 @@ BAS
     set +e
     QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 40 ./gbasic \
         --line-buffered "$work/r.bas" > "$work/r.out" 2>&1
-    set -e
     if grep -q "NO DISPLAY" "$work/r.out"; then
         printf '  SKIP %s (no display)\n' "$1"
     elif grep -q "REFUSED" "$work/r.out" && grep -qF "$3" "$work/r.out"; then
@@ -220,7 +228,6 @@ BAS
 set +e
 nodisplay timeout -k 5 60 ./gbasic "$work/nd.bas" > "$work/nd.out" 2>&1
 nd_rc=$?
-set -e
 if [ "$nd_rc" = "0" ] && grep -q "no display is available" "$work/nd.out"; then
     pass "with no display it names the display, and is catchable"
 else
@@ -230,7 +237,6 @@ fi
 # or naming the display would just be what this verb always says.
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 ./gbasic "$work/nd.bas" > "$work/nd2.out" 2>&1
-set -e
 if grep -q "is not open" "$work/nd2.out"; then
     pass "CONTROL: and an unopened window still gets the other sentence"
 else
@@ -251,7 +257,6 @@ else
         vg_run_access_only ./gbasic tests/qt_chooser_test.bas "$work" \
         >/dev/null 2>"$work/vg.err"
     vg_rc=$?
-    set -e
     if [ "$vg_rc" = "$VG_EXIT" ]; then
         grep -E "Invalid|uninitialised" "$work/vg.err" | head -4
         fail "valgrind objected"

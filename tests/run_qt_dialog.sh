@@ -37,6 +37,16 @@
 # there, which is a HANG and not a failure.
 . "$(dirname "$0")/portable.sh"
 set -uo pipefail
+# `set +e` BELOW WITHOUT A MATCHING `set -e`, DELIBERATELY. This file's mode is
+# `set -uo pipefail` -- NO `-e` -- so `set +e` is already a no-op and a `set -e`
+# after it does not RESTORE anything, it TURNS THE MODE ON. Copied from a suite
+# whose header really is `set -euo pipefail`, it silently armed `-e` for the
+# rest of the file, and the only thing that then fires is an unguarded command
+# that FAILS -- which on a red path is a `grep` finding nothing. MEASURED
+# 2026-10-19: a perturbation of this suite died immediately after printing its
+# tier header, with no verdict and no FAIL line, indistinguishable from still
+# running. The `set +e` lines are kept because they say "a failure is expected
+# here", which is true; the mode changes are gone.
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
 source tests/valgrind_tier.sh
@@ -70,7 +80,6 @@ set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 90 ./gbasic --line-buffered \
     tests/qt_dialog_test.bas > "$work/sem.out" 2> "$work/sem.err"
 rc=$?
-set -e
 if grep -q "SKIP no display" "$work/sem.out"; then
     printf '  SKIP (no display -- dialogs were NOT exercised)\n'
 elif [ "$rc" != "0" ]; then
@@ -190,7 +199,6 @@ BAS
 set +e
 nodisplay timeout -k 5 60 ./gbasic "$work/nd.bas" > "$work/nd.out" 2>&1
 nd_rc=$?
-set -e
 # NO DISPLAY NAMES THE DISPLAY. "window `app` is not open" is TRUE here and
 # reports the wrong cause, which is the class this tree has recorded five
 # times -- the window is shut because there is nowhere to put it.
@@ -203,7 +211,6 @@ fi
 # or naming the display would just be what this verb always says.
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 ./gbasic "$work/nd.bas" > "$work/nd2.out" 2>&1
-set -e
 if grep -q "is not open" "$work/nd2.out"; then
     pass "and with one, an unopened window gets the other sentence"
 else
@@ -242,7 +249,6 @@ set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 12 ./gbasic \
     --line-buffered tests/qt_dialog_pump_fixture.bas > "$work/pump.out" 2>&1
 pump_rc=$?
-set -e
 if grep -q "NO DISPLAY" "$work/pump.out"; then
     printf '  SKIP (no display -- what starves the pump was NOT measured)\n'
 elif ! grep -q "DIALOG UP" "$work/pump.out"; then
@@ -275,7 +281,6 @@ else
     QT_ENABLE_REGEXP_JIT=0 QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
         tests/qt_dialog_test.bas >/dev/null 2>"$work/vg.err"
     vg_rc=$?
-    set -e
     if [ "$vg_rc" = "$VG_EXIT" ]; then
         grep -E "Invalid|uninitialised" "$work/vg.err" | head -4
         fail "valgrind objected"

@@ -225,5 +225,71 @@ else
     bad "CONTROL: the scanner's selftest failed, so it is measuring nothing"
 fi
 
+# A `set -e` IN A FILE THAT NEVER ASKED FOR ONE. The `set +e` ... `set -e` pair
+# is a save/restore only where the header really is `set -euo pipefail`; copied
+# into a suite whose header is `set -uo pipefail` it does not restore anything,
+# it TURNS THE MODE ON -- and the only thing that then fires is an unguarded
+# command that FAILS, which on a red path is a `grep` finding nothing. So the
+# cost is paid exactly when a suite is going red: it dies mid-tier with no
+# verdict and no FAIL line, which reads as still running.
+#
+# MEASURED 2026-10-19 on four suites (three written that day), bitten in one of
+# them by a line added to IMPROVE a failure report. Sited here for the reason
+# the backtick tripwire above gives: how a suite reports is part of the harness.
+# THE FLAG WORDS ONLY, NOT THE WHOLE LINE, which the control below caught: a
+# header of `set -uo pipefail` CONTAINS the letter `e` -- in "pipefail" -- so a
+# `case "$hdr" in *e*)` skipped every file in the tree and the check above it
+# passed while reading nothing. Each DASH-PREFIXED word is tested instead.
+declares_e() {                  # $1 = the file's `set` line
+    local w
+    for w in $1; do
+        case "$w" in -*e*) return 0;; esac
+    done
+    return 1
+}
+nmode=0
+for f in tests/run_*.sh tests/lsp/run_*.sh; do
+    [ -f "$f" ] || continue
+    hdr=$(grep -m1 '^set -' "$f" 2>/dev/null || true)
+    declares_e "$hdr" && continue
+    if grep -qE '^[[:space:]]*set -e[[:space:]]*$' "$f"; then
+        printf '    %s declares %s and then turns -e on\n' "$f" "${hdr:-<no set line>}"
+        nmode=$((nmode + 1))
+    fi
+done
+if [ "$nmode" = "0" ]; then
+    ok "no suite turns -e on in a file whose header left it off"
+else
+    bad "$nmode suite(s) arm -e by accident, so a red path can die with no verdict"
+fi
+# ITS VACUITY CONTROL, because "none found" is equally satisfied by a scan that
+# reads nothing: a planted copy must be flagged.
+mkdir -p "$tmp/modescan"
+printf '#!/usr/bin/env bash\nset -uo pipefail\nset +e\nfoo\nset -e\n' \
+    > "$tmp/modescan/run_planted.sh"
+planted=0
+hdr=$(grep -m1 '^set -' "$tmp/modescan/run_planted.sh")
+if ! declares_e "$hdr"; then
+    grep -qE '^[[:space:]]*set -e[[:space:]]*$' \
+        "$tmp/modescan/run_planted.sh" && planted=1
+fi
+# AND THE OTHER HALF OF THE CONTROL: a file that really does declare `-e` must
+# be SKIPPED, or the scan would report every suite using the idiom correctly.
+printf '#!/usr/bin/env bash\nset -euo pipefail\nset +e\nfoo\nset -e\n' \
+    > "$tmp/modescan/run_legit.sh"
+legit=1
+hdr2=$(grep -m1 '^set -' "$tmp/modescan/run_legit.sh")
+declares_e "$hdr2" && legit=0
+if [ "$legit" = "0" ]; then
+    ok "CONTROL: a suite that really declares -e is left alone"
+else
+    bad "CONTROL: the scan would flag a suite using the save/restore correctly"
+fi
+if [ "$planted" = "1" ]; then
+    ok "CONTROL: and a planted one is flagged"
+else
+    bad "CONTROL: the scan missed a planted mode change, so it is measuring nothing"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]

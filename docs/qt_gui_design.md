@@ -1905,10 +1905,11 @@ wanted so Qt centres the box on it.
 ### Still open
 
 - ~~A file chooser.~~ **Built 2026-10-18 — see §0.16.**
-- **A window shown modally**, which is what anything richer than two buttons
-  wants. The clause that used to follow this — "and which would also answer
-  *more than one window*" — was **wrong**, and §0.17 measured it: more than one
-  window already worked, so a modal window answers only its own question.
+- ~~A window shown modally,~~ which is what anything richer than two buttons
+  wants. **Built 2026-10-19 — see §0.18.** The clause that used to follow this
+  — "and which would also answer *more than one window*" — was **wrong**, and
+  §0.17 measured it: more than one window already worked, so a modal window
+  answered only its own question.
 - **A dialog over another** is not refused — the backend keeps a stack — but
   nothing exercises it, and a claim nobody has run is not a claim.
 
@@ -2242,14 +2243,174 @@ separately in the selftest: with it disabled the `refuse` line goes unflagged.
 
 ### Still open
 
-- **A window shown modally**, which is §0.15's "anything richer than two
-  buttons". It would meet the two guards §0.15 measured, so its limits are
-  already known; a different claim from a dialog, and it waits.
+- ~~A window shown modally.~~ **Built 2026-10-19 — see §0.18**, and it needed
+  this increment first: `qt.open_modal` closes the window before it returns, so
+  the `closed` handler is where a modal form is read too.
 - **No `qt.hide`.** `qt.invoke(win, name, "hide")` reaches it and is *not* a
   close, which is right (Qt sends no `QEvent::Close` for a hide) and means a
   hidden window still reports open. Nothing has needed the verb.
 - **Nothing tells a program its window was MOVED or RESIZED.** Those are
   events like `closed`, so they would land the same way; nothing has asked.
+
+## 0.18 A window shown modally (2026-10-19): the last of §0.15's list
+
+**`qt.confirm` answers a boolean because two buttons is the whole of what a
+message box offers.** Anything richer — a form to fill in, a list to choose
+from, a thing with a layout of its own — is a window shown modally, which §0.15
+named and left open:
+
+```basic
+window edit( title: "Customer", width: 360 )
+    column( margin: 10 )
+        form to edit cust
+            field who( label: "Name" )
+        end form
+        row
+            button save(   label: "Save" )
+            button cancel( label: "Cancel" )
+        end row
+    end column
+
+    on save.clicked    x = qt.accept(edit)   end on
+    on cancel.clicked  x = qt.reject(edit)   end on
+    on edit.closed
+        g.typed = qt.subject(edit, "cust")        ' §0.17's rule, unchanged
+    end on
+end window
+
+program main(args)
+    cust = { who: "Ada Lovelace" }
+    if qt.open_modal(edit) then
+        print "saved " + g.typed.who
+    else
+        print "cancelled"
+    end if
+end program
+```
+
+### It is the same window, and that is held by one shared open path
+
+`qt.open` and `qt.open_modal` differ in exactly two things: whether the root is
+a `QDialog`, and what happens once it is built. Everything else — the record
+check, the already-open refusal, the display refusal, starting Qt, the syntax
+paths, the options, the build, the connect, the bind — is **the same code**
+(`qt_open_declared`), because two copies of it would drift, which is the shape
+this tree tripwires against (`would`/`execute` in `automation`; one checker and
+two adapters in §0.9). So a modal window needs no vocabulary of its own, and
+needing none is a measured fact rather than a hope.
+
+That claim is structural, so it is held **two ways**: a tripwire counting the
+places that build a window (exactly one), and a **parity** tier that opens one
+declaration both ways and requires every observable to agree — the parts, the
+window's own title, a column heading, a cell, the menu bar, and the grid
+position `qt.at` reads back from the layout.
+
+### A QDialog root, only when asked for
+
+Measured before choosing it: everything this backend builds works on a QDialog
+— a menu bar (which here is a plain `QMenuBar` in the root's box layout, not
+`QMainWindow`'s), a form, tabs, a table, buttons — and `accept`, `reject` and
+`done` are **invokable by name** on one while being **absent** from a `QWidget`.
+So the answer mechanism is Qt's own. (On Qt 6.10.2 those are method indices 39,
+40 and 38 against −1; the numbers are recorded because they are what was
+measured, and only their *presence* is the claim — an index moves with the
+version, which is exactly why the lookup is by name.)
+
+Making *every* root a QDialog would also have worked and was rejected as a
+wider change for nothing: with a QWidget root an ordinary window genuinely
+*has* no `accept`, so refusing `qt.accept` on one is a fact rather than a
+policy. A QDialog shown with `show()` is an ordinary window — `isModal` is
+false until `exec()` runs — so nothing else moves.
+
+### Four ways it can end, and the fourth row shaped the implementation
+
+| | `qt.open_modal` answers | `closed` fires |
+|---|---|---|
+| `qt.accept(win)` | **true** | yes |
+| `qt.reject(win)` | false | yes |
+| `qt.close(win)` | false | yes |
+| the window manager's button | false | yes |
+
+**Accepting delivers no `QEvent::Close` at all.** Measured, and finer than the
+guess that prompted the measurement: `close()` delivers one on a visible widget
+**and** on a merely hidden one, and **nothing** on a QDialog that `done()` has
+already finished with — `done` marks it closed, so a later `close()` is a
+no-op. A backend whose bookkeeping hung off the event would therefore skip the
+commonest ending in silence, and `qt.is_open` would answer `true` for a window
+the program had finished with.
+
+So the ending is **one function called from two places and idempotent**
+(`node_closed`), not a side effect of an event: `gb_qt_close` does the
+bookkeeping directly and the event filter becomes a no-op. The perturbation
+that reverts it reports the handler never firing and the window still open.
+
+### `qt.open_modal` closes the window before it returns
+
+`accept()` leaves the widget hidden but alive and readable, while the window
+manager's button closes it — so `false` would otherwise mean two different
+states, and every `qt.close` after a modal window would need an `qt.is_open`
+guard. Closing here makes the `closed` handler fire **exactly once however the
+window ended**, so §0.17's single rule — the handler is where a dismissed form
+is read — holds for a modal window with no exception. The cost is stated: the
+subject is read in the handler, not after the call.
+
+### Its extent is the dialog's, and the control is what makes that precise
+
+§0.15 measured that a dialog raised **from a handler** suspends gBASIC's own
+sources until it is answered — two guards, each sufficient alone. This is the
+other case and it is the common one: *"show this form and wait"* is opened from
+`main`, and there the sources **keep running**. Measured from another process:
+the webserver answers `pong` while a modal window is up, and a `timer` fires
+inside the modal loop — which is also what makes the window answerable without
+a person, and therefore what makes any of this drivable.
+
+Without that control, §0.15 reads as *"a nested Qt loop starves gBASIC"*, which
+is false and would be the wrong lesson to carry into the Windows port. What
+starves it is re-entering the **interpreter**, not the loop.
+
+### `qt.accept` rather than `qt.answer`
+
+`qt.answer` exists to drive a dialog **from the program** when nobody is there
+— a timeout, an unattended run, a suite. This is the person's own answer
+arriving through a button they pressed: a different thing wearing the same
+word, so it gets its own verb rather than a third argument shape on that one.
+Its refusal names the verb that would have made the window modal, because Qt's
+own would say *"a QWidget emits no…"* about a method, which names the wrong
+thing.
+
+### Three defects of mine, each found by running it rather than reading it
+
+**The helper was written outside `#if HAVE_QT`.** This file's own convention
+note says code that is *not* optional must stay **out** of those guards —
+`qt.check` is exactly that. The mirror is just as true and is the half I got
+wrong: code that *is* optional must stay **in** them, and the shared open path
+calls `gb_qt_window`, `gb_qt_begin` and `gb_qt_show`, none of which exists
+without Qt. Written just after the `#endif`, it compiled fine here and broke
+`make QT_AVAILABLE=0` with `QT_ERRBUF undeclared` — caught by
+`run_platform.sh` and `run_packaging.sh`, the two suites that build lean, and
+by **none** of the ten Qt suites, which all run on a full build. CLAUDE.md
+names the cheap check for exactly this (`make QT_AVAILABLE=0` before trusting a
+green gate) and I skipped it.
+
+**The ending was hung off the event** and the accepted case silently did
+nothing — found by the first program written against it, which reported
+`returned true` beside `still open true`. Fixed by the `node_closed`
+extraction, which is better than the original design rather than a patch on it.
+
+**The tripwire's own control could not fail.** `grep -c` counts matching
+**lines**, and the planted second call site went on the same line — which is
+exactly how somebody would write a second path by hand (`modal ? a : b`). It
+counts occurrences now, and the control is what found it.
+
+### Still open
+
+- **A modal window opened from inside a handler** is legal and is **not
+  asserted**: §0.15's limit applies, so gBASIC's sources are suspended and
+  nothing but a person can answer it — which is fine for a real user and
+  undrivable in a suite. A claim nobody has run is not a claim.
+- **A modal window over a modal window**, same reason.
+- **No `qt.hide`.** `qt.invoke(win, name, "hide")` reaches it and is not a
+  close, which is right; nothing has needed the verb.
 
 ### Still open
 
