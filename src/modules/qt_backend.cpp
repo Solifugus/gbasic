@@ -2838,12 +2838,36 @@ extern "C" char *gb_qt_table_get(void *window, const char *name, int row,
     return out;
 }
 
+/* HOW MANY ROWS A TABLE OF EITHER KIND HAS, or -1 for a part that is not a
+ * table at all -- which is the distinction `qt.selected` rests on, since it
+ * answers `unknown` for "nobody has chosen" and must not use the same answer
+ * for "that is a field". An asking table answers from its MODEL, so a program
+ * does not have to know which kind it declared. */
 extern "C" int gb_qt_table_rows(void *window, const char *name) {
+    if (GbQtAskModel *m = ask_model_of(window, name)) {
+        return m->rows;
+    }
     QTableWidget *t = table_of(window, name);
     return t ? t->rowCount() : -1;
 }
 
 extern "C" int gb_qt_table_selected(void *window, const char *name) {
+    /* THE SAME QUESTION OF AN ASKING TABLE, and asked the same way: of the
+     * SELECTION rather than the cursor, for the reason the comment below
+     * gives. A QTableView's selection model is reached directly. */
+    if (ask_model_of(window, name)) {
+        GbQtNode *root = (GbQtNode *)window;
+        QTableView *v = qobject_cast<QTableView *>(
+            root->parts.value(QString::fromUtf8(name), nullptr));
+        if (!v || !v->selectionModel()) {
+            return -1;
+        }
+        QModelIndexList rows = v->selectionModel()->selectedRows();
+        if (!rows.isEmpty()) {
+            return rows.first().row();
+        }
+        return v->currentIndex().isValid() ? v->currentIndex().row() : -1;
+    }
     QTableWidget *t = table_of(window, name);
     if (!t) {
         return -1;
@@ -2901,6 +2925,32 @@ extern "C" char *gb_qt_table_heading(void *window, const char *name,
 
 extern "C" int gb_qt_table_select(void *window, const char *name, int row,
                                  char *err, size_t err_size) {
+    /* AN ASKING TABLE HAS A SELECTION TOO, and a program must not have to know
+     * which kind of table it declared in order to choose a row -- which is the
+     * whole point of `to ask` being a direction on `table` rather than a word
+     * of its own. A QTableView keeps its selection in a model, so this goes
+     * through that rather than through QTableWidget's cell cursor. */
+    if (GbQtAskModel *m = ask_model_of(window, name)) {
+        GbQtNode *root = (GbQtNode *)window;
+        QTableView *v = qobject_cast<QTableView *>(
+            root->parts.value(QString::fromUtf8(name), nullptr));
+        if (!v) {
+            say(err, err_size, QByteArray("`") + name + "` is not a table here");
+            return 0;
+        }
+        if (row < 0) {
+            v->clearSelection();
+            v->setCurrentIndex(QModelIndex());
+            return 1;
+        }
+        if (row >= m->rows) {
+            say(err, err_size, "that row is outside the table");
+            return 0;
+        }
+        v->selectRow(row);
+        v->setCurrentIndex(m->index(row, 0));
+        return 1;
+    }
     QTableWidget *t = table_of(window, name);
     if (!t) {
         say(err, err_size, QByteArray("`") + name + "` is not a table here");

@@ -77,21 +77,6 @@ function cell_of(row, column)
     return {date}"2026-03-04"
 end function
 
-' ONE REAL TURN OF QT'S LOOP, so a paint happens. Nothing offscreen paints
-' without it, which is why `repaint` alone answered 0.
-'
-' THE TIMER AND THE WATCHER ARE NOT IN HERE, and the first draft's were -- a
-' `watch` may only be registered at TOP LEVEL, so one inside a function is
-' refused (`watch may only be registered at top level for now`), the program
-' then had nothing to hand the thread back, and it HUNG. A hang is not a
-' failure, which is why the runner bounds this fixture.
-function spin()
-    g.ticks = 0
-    g.stopping = true
-    qt.run()
-    g.stopping = false
-    return nothing
-end function
 
 program main()
     rows = [{ name: "a" }, { name: "b" }]
@@ -128,13 +113,26 @@ program main()
     ' viewport, where what matters is that the number does NOT follow the
     ' table's size. A model that asked for every cell would be correct and
     ' unusable, and nothing else here would notice.
+    ' TWO TURNS OF QT'S LOOP, AND BOTH ARE ENTERED FROM THE TOP LEVEL of the
+    ' program block -- which is not a style choice. A `watch` body fires only
+    ' while the GLOBAL frame is current (`watcher_trigger_change` returns at
+    ' once otherwise), so `qt.run()` called from inside a FUNCTION leaves that
+    ' function's frame current for the whole of Qt's loop and every tick is
+    ' appended to `timer.ticks` and never delivered. The timer's own schedule
+    ' advances, so it looks like it is working, and the program HANGS. Measured
+    ' while writing this fixture, which first wrapped these turns in a `spin()`
+    ' helper and hung with no output at all.
     qt.rows(app, "results", 100)
     g.asked = 0
-    spin()
+    g.ticks = 0
+    g.stopping = true
+    qt.run()
     small = g.asked
+
     qt.rows(app, "results", 1000000)
     g.asked = 0
-    spin()
+    g.ticks = 0
+    qt.run()
     big = g.asked
 
     check("a hundred rows asks for some cells", small > 0, true)
