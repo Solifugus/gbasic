@@ -1526,17 +1526,33 @@ extern "C" void *gb_qt_popup_menu(void *window, const char *name, char *err,
     return n;
 }
 
-/* HOW MANY OF A MENU'S ENTRIES A PERSON WOULD SEE. A separator is furniture, so
- * a menu holding nothing but separators shows nothing -- which is the same
- * answer Qt gives (`isEmpty()` is true for a menu whose every action is
- * hidden), and asking it this way means the answer does not depend on whether
- * the menu has been shown yet. */
+/* HOW MANY OF A MENU'S ENTRIES A PERSON WOULD SEE, ASKED OF THE WHOLE TREE. A
+ * separator is furniture, so a menu holding nothing but separators shows
+ * nothing -- and asking it this way, rather than looking at the menu after it
+ * was popped, means the answer does not depend on whether it has been shown.
+ *
+ * IT RECURSES, AND THAT WAS FOUND BY THE BROWSER EXAMPLE RATHER THAN REASONED.
+ * Hiding every item INSIDE a submenu does not hide the submenu: measured, with
+ * one all-hidden submenu left, Qt reports `isEmpty()` FALSE and SHOWS a 120x25
+ * menu holding nothing but an arrow leading nowhere -- which is "reads as a
+ * control that failed" one level in, and is exactly what the boolean exists to
+ * prevent. Qt's own test cannot see it; it declines only once the submenu's
+ * own action is hidden too.
+ *
+ * A SUBMENU IS TOLD BY `menu()` BEING NON-NULL, measured against a plain
+ * item's nil, so this needs nothing remembered on our side. */
 static int menu_visible_entries(QMenu *m) {
     int shown = 0;
     for (QAction *a : m->actions()) {
-        if (a->isVisible() && !a->isSeparator()) {
-            shown++;
+        if (!a->isVisible() || a->isSeparator()) {
+            continue;
         }
+        if (QMenu *sub = a->menu()) {
+            /* A SUBMENU COUNTS FOR WHAT IT LEADS TO, not for itself. */
+            shown += menu_visible_entries(sub);
+            continue;
+        }
+        shown++;
     }
     return shown;
 }

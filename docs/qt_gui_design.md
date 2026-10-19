@@ -2539,6 +2539,180 @@ an inline cast.
   "verticalScrollBarPolicy", ...)` reaches it today, which is a Qt-ism in a
   place that otherwise has none.
 
+## 0.20 A context menu (2026-10-19): `popup`, and a Qt default that silences a handler
+
+Studio's browser right-clicks a row and offers what that row can do, and
+nothing in this vocabulary could express it. Derived from Studio's own source
+rather than guessed, like `split` before it — and reading it changed the
+increment twice, because two of the three things I expected to build were
+already there.
+
+### Measured first, and four of eight results changed what got built
+
+| measured | result |
+|---|---|
+| `customContextMenuRequested` from a synthetic `QContextMenuEvent` | **fires** — an earlier probe reported 0 and was wrong, so the path is drivable |
+| the same event sent to a `table`, `memo` or `source` | **0 times**, and it propagated to the *parent* |
+| the same event sent to that widget's **viewport** | **1** — which is where a real right-click lands |
+| `QMenu::popup` / `QMenu::exec` invokable by name | **no** (both −1, against `show` 18 and `hide` 19) |
+| a right-**press** on a table row | Qt **moves `currentRow()`** to that row by itself |
+| `visible` on a `QAction` | **Q_PROPERTY 14**, settable by name |
+| an all-hidden menu | answers `isEmpty()` **true**, and `popup()` leaves it **invisible** |
+| a `QMenu` parented to a widget that **has** a layout | layout count 2 before, 2 after — **not taken** |
+
+So the increment shrank twice. **The row came free**: I expected to have to
+deliver the signal's `QPoint` through a handler that takes no arguments, or to
+select the row under the pointer as a backend policy, and Qt does it already —
+`qt.selected` answers *which row was right-clicked* with nothing new. And
+**Studio's per-row hiding came free**: its context menu is built once holding
+every item and hides the ones a row does not offer, which is `qt.set(win,
+"delete_it", "visible", false)` through the by-name route that already existed.
+Fifth time in this backend that measuring a gap before filling it found it
+closed.
+
+### The word, and the one slot
+
+A `menu` could not be reused. It spends its one slot on the **caption** a
+person reads on the bar — §0.8 measured that a container carries a name *or*
+options, never both — and a context menu has no bar to be read on, so a caption
+would name the thing nobody ever sees. What it needs is a **name**, so
+`qt.popup(win, "row_actions")` can raise it:
+
+```basic
+popup row_actions
+    item open_it( label: "Open" )
+    item rename_it( label: "Rename..." )
+    separator()
+    item delete_it( label: "Delete" )
+    menu "More"
+        item info_it( label: "Properties" )
+    end menu
+end popup
+```
+
+The same trade `split across` makes in the other direction, and at **zero
+grammar cost** — `popup row_actions` is the production `tabs settings` already
+uses, and a submenu inside one is the same production recursing, exactly as
+`menu "Recent"` inside `menu "File"` already was. Both halves of the slot rule
+are refused, so neither word can be written the other's way: a `popup` with a
+caption and a `menu` with a name are each named in a refusal.
+
+Its **placement** is the bar's rule reached by a different route rather than by
+analogy: a `QMenu` is placed by nothing (measured above), so a `popup` written
+inside a `row` is a declaration the layout silently ignores — refused, which is
+the class the closed vocabulary exists to prevent.
+
+### Declaring the handler is what asks for the custom menu
+
+This is the load-bearing half, and it is the silent class this backend is
+tested against arriving from a **Qt default**. Every widget kind starts at
+`DefaultContextMenu`, and under that policy `customContextMenuRequested` is
+**never emitted** — so
+
+```basic
+on files.customContextMenuRequested
+    ...
+end on
+```
+
+without a second line setting the policy is a handler connected to a signal
+nothing emits: the right-click does nothing, and nothing is raised. So
+`gb_qt_connect` sets the policy when it sees that signal. The author has
+already said what they want by naming the handler, and a vocabulary where the
+request takes two lines is one where it gets written as one.
+
+**The cost is stated rather than hidden**: this *replaces* the menu Qt would
+have put up itself, so a `memo` or `field` with a context handler loses its own
+cut/copy/paste. Which is why the policy is touched only where a handler exists
+— asserted as a difference, with the control that a part with **no** handler
+keeps Qt's. Without that control, *"the policy is set"* is satisfied by setting
+it on every widget in the language, and the perturbation that does exactly that
+is caught by the control and by nothing else.
+
+### `qt.right_click` is the oracle, and it was built before the fixture
+
+The discipline §0.8 arrived at by getting it wrong. A `table`, `memo` or
+`source` answers only through its **viewport**, and gBASIC cannot name a
+viewport — so without this verb the whole path is drivable only on `field` and
+`button`, the two kinds that happen to have none, and every check would be
+about the two cases that need no routing at all.
+
+It sends a **press and a release** and then the context event, in the order a
+mouse produces them, because the selection is part of the answer: a bare
+context event would fire the handler over a stale selection, which is a verb
+that drives half of what a mouse does and would make the row question look
+unanswerable. `qt.right_click(win, part)` clicks the part; a third argument
+aims at a table row's own rectangle, which is what makes *"right-click the
+third file"* writable.
+
+### `qt.popup` answers whether anything was shown
+
+Not a convenience and not a refusal. Studio's own comment says an empty context
+menu *"reads as a control that failed"*, and Qt agrees — an all-hidden menu is
+`isEmpty()` and `popup()` leaves it invisible. A row that offers nothing is an
+**ordinary outcome**, so a boolean is the truthful report where an error would
+be about a program that did nothing wrong. Both halves asserted, since `true`
+alone passes on a verb that always says yes.
+
+**And the count recurses, which `examples/qt/browser.bas` found rather than any
+reasoning.** Hiding every item *inside* a submenu does not hide the submenu:
+measured, Qt then reports `isEmpty()` **false** and **shows** a 120×25 menu
+holding nothing but an arrow leading nowhere — which is *"reads as a control
+that failed"* one level in, and exactly what the boolean exists to prevent.
+Qt's own test cannot see it; it declines only once the submenu's own action is
+hidden too. A submenu is told by `menu()` being non-null (a plain item's is
+nil), so it counts for **what it leads to** rather than for itself. Asserted
+both ways, because a count that stopped treating a submenu as anything at all
+satisfies the first half.
+
+### The oracle a flat registry always needs
+
+`qt.menus(win, "row_actions")` reads a popup's entries, taking **text where a
+bar position is a number** — a `popup` is not on the bar, so it *has* no
+position. It exists for the measurement the submenu oracle already rests on: an
+`item` keeps its name wherever its menu ends up, so one built into the wrong
+popup of two passes every by-name check there is, and that perturbation
+produced **zero mismatches** when the same hole was open for submenus. It also
+says a popup has **not** quietly been added to the bar, since
+`gb_qt_menu_count` cannot see one.
+
+One entry walk serves a bar menu, a submenu and a popup — two copies would
+drift in the way that matters, a popup's items stopping agreeing with a menu's
+about what `shortcut:` or a submenu means. Tripwired, with its vacuity control
+counting **occurrences rather than lines**, which is how the equivalent control
+in §0.18 was found unable to fail.
+
+### Two defects of my own, both worth recording
+
+The fixture's first draft counted into plain scalars in `main`, and every
+counter read 0 while the handlers had plainly run — the selection had moved and
+the item visibility had changed. That is warning 2104 and §0.12's own rule: a
+handler cannot rebind an outer scalar. The state is one record whose fields the
+handlers mutate, which is exactly what the cookbook's recipe 3 exists to teach,
+and I walked into it anyway.
+
+And **restoring a perturbation destroyed an hour of uncommitted work.** The
+standing advice is to restore with `git checkout` rather than from a snapshot
+copy, and that advice is incomplete: it is safe only when *everything else* in
+the tree is committed too. Here the increment was committed and the docs, the
+submenu fix and a backtick fix were not, so `git checkout -- .` took the lot.
+The discipline is `git checkout -- <the one perturbed file>`, or commit before
+each round.
+
+### Still open
+
+- **Adding to Qt's own menu rather than replacing it.**
+  `createStandardContextMenu()` is how an editor keeps cut/copy/paste *and*
+  offers its own, and it needs a `contextMenuEvent` override rather than the
+  signal — so the honest position today is that a context handler on a `memo`
+  or `source` replaces the standard menu, which this increment states and does
+  not fix.
+- **The signal's position.** A handler takes no arguments, so the `QPoint` is
+  unreachable. Nothing needs it while Qt moves the selection, and a non-table
+  part that wanted *where* was clicked would.
+- **`popup` at the pointer only.** `QCursor::pos()` is right for a right-click
+  and wrong for a menu raised from a keyboard shortcut.
+
 ### Still open
 
 - **`grow` as a bare option** is an option with no value, which is new grammar in

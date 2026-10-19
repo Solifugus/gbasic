@@ -3855,7 +3855,9 @@ end program
 | `qt.set(win, part, property, value)` | set one named Qt property at run time — the write half of `qt.read(win, part, property)`. The only other way to set one is the declaration, which is written before anything has happened |
 | `qt.pane(win, part)` | which draggable or scrolled region a part sits in: `{ kind: "split", direction, panes, index }` or `{ kind: "scroll", resizable }`, and **`unknown`** when it is in neither — a record saying `panes: 0` would read as a splitter holding nothing. Asked of the **layout**, walking up from the part, and it reports the **nearest** region. This is the only way to observe a `split`, which spends its one slot on the direction and so cannot be named |
 | `qt.at(win, part)` | where a part sits in its `cells`: `{ row, column, across, down }`, asked of the layout |
-| `qt.menus(win)` / `qt.menus(win, n)` | the menu bar's top-level captions, or the entries of the menu at position `n`. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
+| `qt.menus(win)` / `qt.menus(win, n)` / `qt.menus(win, "name")` | the menu bar's top-level captions, the entries of the menu at position `n`, or the entries of the **`popup`** of that name. A number is a position on the bar and text is a popup's name — a popup is not on the bar, so it *has* no position. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
+| `qt.popup(win, name)` | raise a `popup` at the pointer, answering **whether anything was shown**. `false` when every item is hidden — a row that offers nothing rather than an error, since Qt declines to show such a menu and an empty context menu reads as a control that failed. The count **recurses**, so a lone empty submenu is not something to show |
+| `qt.right_click(win, part [, row])` | right-click a part the way a mouse does, for a program driving itself. It sends a **press, a release and then the context event**, so the selection moves as it would for a person — without which a handler would read a stale row. A third argument aims at a table row's own rectangle. Routed through the widget's **viewport** where there is one, which is what a `table`, `memo` and `source` answer to and nothing else can reach |
 | `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
 | `qt.highlighting(win, part)` | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
 | `qt.inform(win, text)` | a message box with one button, parented to `win` so Qt centres it there and makes it modal to that window |
@@ -4013,6 +4015,56 @@ addresses — so a menu takes no name, and `on open_file.triggered` names the
 item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
 `checked:` reach it through the same by-name property route every widget option
 uses.
+
+**A `popup` is a context menu**, and it spends its one slot the other way
+round. A container carries a name *or* options and never both, so a `menu`
+spends it on the caption a person reads on the bar — and a context menu has no
+bar to be read on, so what it needs is a **name**:
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+popup row_actions
+    item open_it( label: "Open" )
+    item rename_it( label: "Rename..." )
+    separator()
+    item delete_it( label: "Delete" )
+end popup
+```
+
+Both halves are refused, so neither word can be written the other's way: a
+`popup` with a caption and a `menu` with a name each get a refusal naming the
+remedy. A `popup` holds the same three things a `menu` does, nested `menu`
+included, and it belongs to the **window** — a `QMenu` is placed by nothing, so
+one written inside a `row` is a declaration the layout would silently ignore.
+
+**Declaring the handler is what asks for the custom menu.** Every Qt widget
+starts at `DefaultContextMenu`, and under that policy
+`customContextMenuRequested` is never emitted — so writing
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+on files.customContextMenuRequested
+    qt.set(app, "delete_it", "visible", true)
+    shown = qt.popup(app, "row_actions")
+end on
+```
+
+is enough: the policy is set because the handler exists. The cost is that this
+*replaces* the menu Qt would have put up itself, so a `memo` or `field` with a
+context handler loses its own cut/copy/paste — which is why a part with no
+handler keeps Qt's.
+
+**The row that was right-clicked is `qt.selected`.** Qt moves the current row
+on a right-press, so a handler asks the question it already asks for a left
+click, and the signal's position is never needed. What a row offers is decided
+by **hiding** what it does not: `visible` is an ordinary `QAction` property, so
+one menu is built once and `qt.set` narrows it per row — and `qt.popup` answers
+`false` when nothing in it is visible, because an empty context menu reads as a
+control that failed and a row that offers nothing is an ordinary outcome. That
+count **recurses**: a submenu counts for what it leads to, not for itself, so a
+menu whose every item is hidden behind one empty submenu still answers `false`
+— which Qt's own `isEmpty()` does not, it being happy to show an arrow leading
+nowhere.
 
 **`choice` is one of a list**, and its list comes through one of two doors. A
 **declared** `options:` is for a fixed set — a direction, a status, a currency —

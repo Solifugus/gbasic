@@ -1,0 +1,7 @@
+right-clicked:  reports
+menu appeared:  true
+open offered:   false
+right-clicked:  notes.txt
+open offered:   true
+opened:         notes.txt
+the menu:       ["Open","Rename...",unknown,"Delete"]

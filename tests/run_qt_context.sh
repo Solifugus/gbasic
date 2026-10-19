@@ -30,8 +30,9 @@
 #   a QMenu parented to a widget     layout count 2 before, 2 after -- a popup
 #   WITH a layout is not taken       is placed by nothing, like the bar
 #   `visible` is Q_PROPERTY 14       of QAction, settable by name
-#   an ALL-HIDDEN menu答 isEmpty     and popup() leaves it INVISIBLE, so the
-#                                    honest answer is a boolean
+#   an ALL-HIDDEN menu answers       isEmpty() true, and popup() leaves it
+#                                    INVISIBLE, so the honest answer here
+#                                    is a boolean rather than a refusal
 #
 # THE TIER TO READ FIRST IS POLICY, because it is the silent class this backend
 # is tested against arriving from a Qt DEFAULT: every widget kind starts at
@@ -239,11 +240,11 @@ elif [ "$rc" != "0" ]; then
 else
     checks=$(grep -c '^ok' "$work/sem.out" || true)
     bad=$(grep -c 'MISMATCH' "$work/sem.out" || true)
-    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 26 ]; then
+    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 30 ]; then
         pass "$checks checks, 0 mismatches"
     else
         grep MISMATCH "$work/sem.out" | head -6
-        fail "$checks checks, $bad mismatches (want >= 26 and none)"
+        fail "$checks checks, $bad mismatches (want >= 30 and none)"
     fi
     # QT'S OFFSCREEN PLUGIN SAYS THESE ON EVERY RUN AND THEY ARE NOT OURS:
     # `propagateSizeHints` on any window, and `raise` and `grabbing the
@@ -284,7 +285,18 @@ else
        grep -q "^ok   and shows again once an item is back" "$work/sem.out"; then
         pass "SHOWN: both halves of the boolean"
     else
-        fail "qt.popup's answer was not measured both ways -- `true` alone passes on a verb that always says yes"
+        fail "qt.popup's answer was not measured both ways -- a bare true alone passes on a verb that always says yes"
+    fi
+    # THE SUBMENU HALF, found by examples/qt/browser.bas rather than reasoned:
+    # hiding every item INSIDE a submenu does not hide the submenu, and
+    # measured, Qt then reports isEmpty() FALSE and SHOWS a 120x25 menu holding
+    # nothing but an arrow to nowhere. BOTH directions, because a count that
+    # stopped treating a submenu as anything at all satisfies the first.
+    if grep -q "^ok   a popup holding only an empty submenu shows nothing" "$work/sem.out" &&
+       grep -q "^ok   a directory offers only what the submenu leads to" "$work/sem.out"; then
+        pass "SUBMENU: the count recurses, asserted both ways"
+    else
+        fail "the submenu was not counted for what it leads to -- a popup showing only an arrow to nowhere would report that it shows something"
     fi
 fi
 

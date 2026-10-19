@@ -84,7 +84,12 @@ window app( title: "Context", width: 620, height: 400 )
         qt.set(app, "delete_it", "visible", r.kind = "file")
         qt.set(app, "rename_it", "visible", r.kind = "file")
         qt.set(app, "open_it", "visible", r.kind = "file")
-        qt.set(app, "info_it", "visible", r.kind = "file")
+        ' PROPERTIES APPLY TO BOTH, which is what every file manager does --
+        ' and it is deliberately the SUBMENU'S only item, so a directory's
+        ' menu is non-empty ONLY through the submenu. That is the recursion
+        ' asserted in the TRUE direction, which the empty-submenu check below
+        ' cannot do.
+        qt.set(app, "info_it", "visible", true)
         g.shown = qt.popup(app, "row_actions")
     end on
 
@@ -201,9 +206,10 @@ program main()
     ' Qt MOVES THE SELECTION on a right-press, so this is the row under the
     ' pointer rather than wherever the selection happened to be.
     check("the selection followed the click", qt.selected(app, "files"), 1)
-    ' Row 1 is a directory, so Open/Rename/Delete/Info are hidden and only the
-    ' submenu's own entry remains visible -- which is what `shown` answers.
-    check("a directory still offers the submenu", g.shown, true)
+    ' Row 1 is a directory, so Open, Rename and Delete are hidden and the ONLY
+    ' thing left is the submenu's own item -- so a `true` here can only come
+    ' from counting INTO the submenu, which is the recursion's positive half.
+    check("a directory offers only what the submenu leads to", g.shown, true)
     check("delete is hidden for a directory",
           qt.read(app, "delete_it", "visible"), false)
 
@@ -230,6 +236,25 @@ program main()
     qt.set(app, "comment_it", "visible", true)
     check("and shows again once an item is back",
           qt.popup(app, "editor_actions"), true)
+
+    ' AND A SUBMENU COUNTS FOR WHAT IT LEADS TO, NOT FOR ITSELF. Found by
+    ' examples/qt/browser.bas rather than reasoned: hiding every item INSIDE a
+    ' submenu does not hide the submenu, and measured, Qt then reports
+    ' `isEmpty()` FALSE and SHOWS a menu holding nothing but an arrow leading
+    ' nowhere -- "reads as a control that failed" one level in, which is
+    ' exactly what this boolean exists to prevent. Qt's own test cannot see it.
+    qt.set(app, "open_it", "visible", false)
+    qt.set(app, "rename_it", "visible", false)
+    qt.set(app, "delete_it", "visible", false)
+    qt.set(app, "info_it", "visible", false)
+    check("a popup holding only an empty submenu shows nothing",
+          qt.popup(app, "row_actions"), false)
+    ' ITS CONTROL: the submenu's own item back, and only that, must show --
+    ' without which "it recursed" is satisfied by a count that stopped treating
+    ' a submenu as anything at all.
+    qt.set(app, "info_it", "visible", true)
+    check("and an item inside the submenu is enough",
+          qt.popup(app, "row_actions"), true)
 
     ' ---- the editor answers too -------------------------------------------
     qt.right_click(app, "code")

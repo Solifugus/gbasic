@@ -94,8 +94,13 @@ for f in $examples; do
         ./gbasic --line-buffered "$f" check > "$work/$b.out" 2> "$work/$b.err"
     rc=$?
     set -e
-    # Qt's offscreen plugin says this on every run and it is not ours.
-    grep -v 'propagateSizeHints' "$work/$b.err" > "$work/$b.err2" || true
+    # QT'S OFFSCREEN PLUGIN SAYS THESE AND THEY ARE NOT OURS: it says
+    # `propagateSizeHints` on every run, and `raise` and `grabbing the
+    # keyboard` the moment a menu pops -- which browser.bas does, and which is
+    # what widened this from the one message to the whole sentence. Filtered on
+    # the SENTENCE and not on the word "plugin", so a real plugin failure
+    # ("Could not load the Qt platform plugin") still reddens this.
+    grep -v 'This plugin does not support' "$work/$b.err" > "$work/$b.err2" || true
     lines=$(grep -c . "$work/$b.out" || true)
     if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
         fail "$b HUNG -- it reached qt.run() with nobody to close it"
