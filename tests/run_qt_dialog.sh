@@ -43,7 +43,13 @@ source tests/valgrind_tier.sh
 make >/dev/null
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"; pkill -f qt_dialog_modal_fixture 2>/dev/null || true' EXIT
+# `-KILL`, NOT THE DEFAULT SIGTERM, and that is measured rather than careful:
+# this interpreter installs a SIGTERM handler for pool drain, and the modal
+# fixture is BLOCKED INSIDE A NESTED QT LOOP, so it records the signal and
+# never acts on it. Measured 2026-10-18 -- a leftover fixture survived SIGTERM
+# and died only on SIGKILL -- after finding SIXTEEN of them on this machine,
+# one per run of this suite since it shipped that morning.
+trap 'rm -rf "$work"; pkill -KILL -f qt_dialog_modal_fixture 2>/dev/null || true' EXIT
 status=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
@@ -139,8 +145,28 @@ else
             pass "the dialog was still open, so that was a stall and not a crash"
         fi
     fi
+    # `$fixture` IS THE `timeout` PROCESS, NOT `./gbasic`, which is the whole
+    # defect: killing `timeout` leaves its child ORPHANED, and with `timeout`
+    # dead nothing is left to escalate to it. So the fixture is named
+    # explicitly and killed with SIGKILL, for the reason the trap above gives.
     kill -9 "$fixture" 2>/dev/null || true
     wait "$fixture" 2>/dev/null || true
+    pkill -KILL -f qt_dialog_modal_fixture 2>/dev/null || true
+    # AND IT IS ASSERTED, because a leak here is INVISIBLE: the tier passes,
+    # the suite passes, and a gBASIC process holding a modal dialog sits on the
+    # machine for ever. docs/reference.md promises in bold that nothing this
+    # interpreter starts outlives it, and run_process_lifetime.sh exists for
+    # that promise -- but it guards gBASIC's own CHILDREN, where this is the
+    # suite leaking the interpreter itself.
+    for _ in $(seq 1 25); do
+        pgrep -f qt_dialog_modal_fixture >/dev/null 2>&1 || break
+        sleep 0.2
+    done
+    if pgrep -f qt_dialog_modal_fixture >/dev/null 2>&1; then
+        fail "a modal fixture is still running after the tier -- this suite leaks one gBASIC process per run"
+    else
+        pass "and nothing was left running behind it"
+    fi
 fi
 
 # ------------------------------------------------------------------- REFUSALS

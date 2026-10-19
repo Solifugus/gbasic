@@ -201,6 +201,14 @@ echo "TIER a suite's own messages do not run the shell"
 # over another paragraph -- the release script's own backtick tripwire has
 # covered its container string since the third instance and could never see
 # these. Sited here because a suite's message is part of the harness.
+#
+# IT WAS WIDENED AT THE TWELFTH INSTANCE, which is a measured correction to
+# itself: a new suite wrote three offenders and the scanner caught the two on
+# `pass`/`fail` lines and missed the one on its own `refuse` helper. Nearly
+# every suite here has such a helper, and its first argument IS the message --
+# so the four names were never the boundary of the class, only the names that
+# had been noticed. It reads every function THE FILE DEFINES now, derived
+# rather than listed, and the selftest below asserts that half separately.
 if python3 tools/scan_shell_backticks.py tests/*.sh tools/*.sh > "$tmp/backticks.txt" 2>&1; then
     ok "no suite or tool message hands a quoted name to the shell"
 else

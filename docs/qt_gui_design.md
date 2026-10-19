@@ -1564,7 +1564,10 @@ served.
 - **Windows.** `QSocketNotifier` there works on **sockets only**, not arbitrary
   handles, so direction A will need `QWinEventNotifier` for any source that is
   not a socket. Named now rather than discovered during the port.
-- Threads, actors, and more than one window.
+- Threads and actors.
+- ~~More than one window.~~ **Measured 2026-10-18 and it already worked** —
+  two open at once, parts scoped per window, a dialog parenting to whichever is
+  named. What was actually missing was the LIFECYCLE; see §0.17.
 
 **What it costs the interpreter, which is a note and not a decision:** a program
 with a `window` hands the thread to `QApplication::exec()`, so the post-`main`
@@ -1903,7 +1906,9 @@ wanted so Qt centres the box on it.
 
 - ~~A file chooser.~~ **Built 2026-10-18 — see §0.16.**
 - **A window shown modally**, which is what anything richer than two buttons
-  wants, and which would also answer "more than one window".
+  wants. The clause that used to follow this — "and which would also answer
+  *more than one window*" — was **wrong**, and §0.17 measured it: more than one
+  window already worked, so a modal window answers only its own question.
 - **A dialog over another** is not refused — the backend keeps a stack — but
   nothing exercises it, and a claim nobody has run is not a claim.
 
@@ -2034,6 +2039,217 @@ It opens the chooser **on a file** now, which is also the realistic shape.
 - **The desktop's own chooser**, which is what a user on a real desktop
   expects (recent places, bookmarks, cloud). Measured undrivable above, so
   offering it would mean a mode in which `qt.answer` silently does nothing.
+
+## 0.17 The window lifecycle (2026-10-18): closing one, and knowing it closed
+
+**What was missing was not "a second window."** That was measured first and
+turned out to work already: two windows open at once, parts scoped per window
+(`qt.read(other, "who")` refuses by name), a dialog parenting to whichever
+window is named, `qt.stop()` with both up — and opening the same declaration
+twice already refused by name. Third time in this backend that measuring a gap
+before filling it found it closed (menus needed no grammar, §0.7; the builder's
+door was already open, §0.9).
+
+What was missing was the **lifecycle**, and the four gaps were measured one
+throwaway program at a time:
+
+| asked for | answer before this |
+|---|---|
+| `qt.close(win)` | `undefined function: qt.close` |
+| a method on the **window** | `qt.invoke: this window has no \`a_win\`` |
+| `on a_win.closed` | `names nothing in this window` |
+| what closing the last window does to `qt.run()` | unmeasurable — nothing could close one |
+
+### Then six things were measured in C++, and the fifth decided the design
+
+| | |
+|---|---|
+| `quitOnLastWindowClosed` | **true** (Qt's default; we never set it) |
+| `close()` offscreen | delivers `QEvent::Close` to an event filter |
+| closing one of two windows | `exec()` keeps running |
+| closing the last one | `exec()` **returns** |
+| **after `close()`** | **the widget is still alive and still readable** |
+| `delete` right after `close()` | safe, `close()` having returned |
+
+**The fifth row is why a close is bookkeeping and not a hide.** Qt does not set
+`WA_DeleteOnClose`, so a window the person dismissed goes on answering
+`qt.read` with the values it was showing — a program reading off a screen
+nobody is looking at, raising nothing. That is the failure class this whole
+backend is tested against, arriving from Qt's own defaults. So a close
+**removes the window from gBASIC's registry**, and every verb that needs an
+open one then refuses by name.
+
+### Which makes `on <win>.closed` load-bearing rather than a notification
+
+It fires **before** the registry forgets, so it is the one place a program can
+still read what the person typed:
+
+```basic
+window app( title: "Customer", width: 360, height: 200 )
+    column( margin: 10 )
+        form to edit cust
+            field who( label: "Customer" )
+        end form
+    end column
+
+    on app.closed
+        g.saved = qt.subject(app, "cust")      ' still readable, just
+    end on                                     ' -- the next thing that happens
+end window                                     '    is the registry forgetting
+```
+
+A program with nothing to save needs no handler; one that has something has
+exactly one place to put it. Asserted **both ways** — the handler reads the
+live widget, and the same read *after* the close refuses — because either half
+alone passes on an implementation that got the order backwards.
+
+### The window is a part of itself
+
+One `parts.insert` and four doors open at once, none of them knowing anything
+new: `qt.read(win, "app", "windowTitle")`, `qt.set`, `qt.invoke(win, "app",
+"showMaximized")` and `on app.closed`. Measured before relying on it:
+`windowTitle` is a `Q_PROPERTY` of `QWidget` (index 43) and `close()` and
+`showMaximized()` are invokable by name (24 and 21), so nothing had to be added
+for any of them. That is §1's by-name argument paying off a fourth time.
+
+**The cost is a collision, and it is refused rather than silently won.** A part
+called `app` would register *second*, over the root, so `on app.closed` would
+connect to a button — and `qt.read(win, "app", "windowTitle")` would not fail
+either, because `windowTitle` is a property of **every** `QWidget` and a
+non-window one's is empty. So the answer would be `""`: a plausible value for a
+window whose title is right there on screen, which is this backend's failure
+class exactly. It gets its own sentence, because "declared twice" is the wrong
+advice when one of the two is the window. The handler-target list is seeded with the window's name, which
+is the whole of making it addressable at load time — and the same rule reaches
+a **built** record, one checker and two adapters (§0.9).
+
+`closed` is answered in `gb_qt_connect` before the by-name signal lookup,
+because **a QWidget emits nothing when it closes — it receives an event**, so
+that lookup has nothing to find and would refuse a perfectly well-formed
+handler. The special case is narrow: `on save.closed` on a button falls through
+and gets `a QPushButton emits no \`closed\` signal`, correctly.
+
+### One path for all three ways in
+
+`qt.close` calls `widget->close()` rather than doing the work itself, so the
+program's verb, an invoked `close` and the window manager's own button are the
+**same code** — the rule `would` and `execute` follow in `automation`, and for
+the same reason: if they could disagree, a suite driving one would be
+describing the other. The X button is the one that cannot be driven here
+(offscreen has no window manager); it reaches `QWidget::close()` through Qt's
+platform layer, so that much is construction rather than measurement, and is
+said rather than implied.
+
+### `qt.is_open` answers where the others refuse
+
+Same argument `qt.can_display` and `qt.can_highlight` rest on: a question asked
+*in order to choose* must not raise. It is needed here because **a window can
+close without the program asking** — once the person can dismiss one, every
+other verb starts raising for a reason that is nobody's mistake, and a program
+with no way to ask would have to wrap each call in `on error` to learn
+something it could simply be told. `qt.close` on a window that is not open
+still **refuses**, which is `qt.answer`'s rule: a silent no-op would hide the
+one case a program most needs to know about.
+
+### A correction this increment exposed rather than introduced
+
+`gb_qt_stop` called `QCoreApplication::quit()`, and **measured on Qt 6.10.2
+that closes every top-level window** (it calls `closeAllWindows`), where
+`exit(0)` ends the loop and leaves them alone. So `qt.stop()` — which means
+*give me the thread back* and nothing more — was **dismissing the program's
+windows**, and nothing could see it: they were merely hidden, every part stayed
+readable, and no fixture asked whether the window was still up. It surfaced
+only once a close became bookkeeping, when a program that reads its window
+after `qt.run()` returned started being told it was not open.
+
+**Measured rather than grepped, and the two answers differ.** Eight programs in
+this tree read a window textually after `qt.run()`; exactly **one** actually
+broke — the cookbook recipe whose subject *is* the event loop — because in the
+others the reads sit inside handlers that run before the stop, or `qt.run()` is
+not reached in the mode the suite drives. A grep would have reported eight
+regressions and sent somebody looking in seven wrong places.
+
+Both halves are now asserted, because each catches a different wrong
+implementation: `is_open` catches a `stop` that runs the close bookkeeping, and
+`visible` catches one that merely hides the window — which is what the defect
+actually did, and which `is_open` alone would go on missing.
+
+### A raising `closed` handler behaves like any other handler
+
+Measured side by side with a raising `clicked` one and the two are **identical**:
+the raise is reported, located, on stderr and then *contained* so the loop
+survives, and the statement that provoked it is abandoned — so `ok =
+qt.close(app)` leaves `ok` undefined while the close itself completes. That is
+the raise containment §5 carries over from `gi_signal_marshal`, unchanged, and
+the uniformity is the point: `closed` is not a special kind of handler, so it
+must not fail in a special way. Nothing new was written for it and nothing is
+claimed beyond that measurement.
+
+### Reopening is bounded, and that had to be measured
+
+Before this, a second `qt.open` met "already open", so open-and-close in a loop
+could not be written — and the obvious implementation grows for ever, one node
+per part per open. A `qt.close` deletes the widget where it stands; a close
+noticed in the **event filter** cannot (the filter runs inside that widget's
+own dispatch and `close()` goes on to hide it afterwards), so that one waits
+and is deleted at the next `qt.open`. `deleteLater()` was the obvious answer
+and is **not** relied on: a deferred delete needs a loop to spin, and the
+commonest shape here closes the *last* window, which returns from `exec()`.
+
+Measured over 200 and 2000 cycles, half closing by the verb and half by the
+event:
+
+| | 200 cycles | 2000 cycles | ratio |
+|---|---|---|---|
+| retired | 41.9 MB | 42.3 MB | **1.01** |
+| not retired | 45.1 MB | 81.6 MB | **1.81** |
+
+so the tier's gate at 1.25 separates them with room on both sides, as a ratio
+rather than an absolute size.
+
+### Eleven perturbations proven red, and one of them found a real defect
+
+Each caught by the tier written for it. Two are worth recording.
+
+**The re-entry guard was in the wrong place, and only a perturbation showed
+it.** Written as `!n->widget` alone it caught the `qt.close` path — where
+nulling the widget before closing already stops a second entry — so removing
+the flag left the whole suite **green**. The case it misses is the realistic
+one: the person clicks X, the handler tries to tidy up by closing the window,
+and on that path the widget is still ours to delete, so deleting it destroys
+the event filter currently executing, the node the outer frame is about to hand
+to `g_closed`, and the widget both are parented to. It segfaulted with **no
+output at all**, block-buffered stdout going with the crash — §0.3's shape
+arriving from my own code. The fixture drives both paths now.
+
+**The handler-less window is the tier to read first.** The bookkeeping must be
+unconditional and the handler is the optional part, so a filter installed only
+where `on app.closed` appears would leave exactly the programs that declared no
+handler reading a dismissed window — and nothing else in that fixture could see
+it, every other window there having a handler. Worse than a wrong answer: the
+registry then holds an entry pointing at a window that has been deleted, which
+is why that perturbation reports exit 139 after the mismatch that names it.
+
+### The twelfth backtick, and a measured correction to the tripwire
+
+This suite wrote three of them and `tools/scan_shell_backticks.py` caught
+**two** — both on `pass`/`fail` lines — and missed the one on its own `refuse`
+helper. Nearly every suite in this tree has such a helper and its first
+argument *is* the message, so the four names were never the boundary of the
+class, only the names that had been noticed. It reads every function **the file
+itself defines** now, derived rather than listed, with that half asserted
+separately in the selftest: with it disabled the `refuse` line goes unflagged.
+
+### Still open
+
+- **A window shown modally**, which is §0.15's "anything richer than two
+  buttons". It would meet the two guards §0.15 measured, so its limits are
+  already known; a different claim from a dialog, and it waits.
+- **No `qt.hide`.** `qt.invoke(win, name, "hide")` reaches it and is *not* a
+  close, which is right (Qt sends no `QEvent::Close` for a hide) and means a
+  hidden window still reports open. Nothing has needed the verb.
+- **Nothing tells a program its window was MOVED or RESIZED.** Those are
+  events like `closed`, so they would land the same way; nothing has asked.
 
 ### Still open
 

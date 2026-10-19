@@ -3838,6 +3838,8 @@ end program
 |---|---|
 | `qt.can_display()` | whether a window can be opened at all. **Answers rather than raising**, including on a build with no Qt — a program asking this is degrading gracefully, and "this build has no Qt" is one of the answers |
 | `qt.open(win)` | build and show the declaration. Refuses, naming **a display**, when there is none, and runs `qt.check` first so a window nobody validated cannot open |
+| `qt.close(win)` | close it: the window is **removed from gBASIC's registry**, and every verb that needs an open one then refuses by name. Not a hide — Qt leaves a dismissed window alive and still readable, so a program would otherwise go on reading values off a screen nobody is looking at. **Refuses** when the window is not open, rather than being a silent no-op; `qt.is_open` is how a program asks without raising. Reopening builds a **fresh** window, so a form captures its subject again |
+| `qt.is_open(win)` | whether it is still there. **Answers rather than raising**, like `qt.can_display`, because a window can close *without the program asking* — once the person can dismiss one, every other verb starts refusing for a reason that is nobody's mistake |
 | `qt.check(win)` | the declaration's own load-time rules, over a window record — **answers on a build with no Qt and needs no display**, because it is a check on a declaration. Answers `true` or refuses with the first problem and a count of the rest |
 | `qt.read(win, name)` | the text a part is showing (`"true"`/`"false"`for a check box) |
 | `qt.read(win, name, property)` | one named Qt property of that part, **in the kind Qt declares it** — `readOnly` answers a boolean, `maxLength` a number. A property the widget does not carry is refused by name, as it is when set |
@@ -3862,13 +3864,38 @@ end program
 | `qt.dialog()` | the innermost open dialog as a record — `kind` (`"message"` or `"chooser"`), `title`, and `text` or `folder`/`filter` — or **`unknown`** when none is open, which is a different claim from a dialog carrying no fields |
 | `qt.theme(css)` / `qt.theme()` | set or read **one stylesheet for the whole application**. Needs no display, and is remembered until there is a `QApplication` to put it on, so a program themes first and opens second |
 | `qt.subject(win, name)` | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
-| `qt.invoke(win, name, method)` | call a widget method by name — `click`, `clear`, `setFocus` |
+| `qt.invoke(win, name, method)` | call a widget method by name — `click`, `clear`, `setFocus`, or `close`/`showMaximized` on the **window itself** |
 | `qt.run()` | hand the thread to Qt's event loop. gBASIC's own sources (a webserver, transfers, timers, the actor inbox) keep being serviced |
-| `qt.stop()` | end that loop; ordinarily called from a handler |
+| `qt.stop()` | end that loop; ordinarily called from a handler. It means *give me the thread back* and **nothing more** — the windows stay open and readable, and no `closed` handler fires. (Qt's own `quit()` closes every top-level window; this does not use it.) |
 
 **A window is addressed by its declaration**, not by a handle: `qt.open(customer)`
 and `qt.read(customer, "name")` both take the record the `window` block bound,
 the same way `web.routes(app)` takes a server record.
+
+**And the window is a part of itself.** Its own name reaches it in the same
+by-name table every part lives in, so `qt.read(win, "customer", "windowTitle")`,
+`qt.set`, `qt.invoke(win, "customer", "close")` and a handler on the window all
+work with no extra vocabulary. One consequence: **a part may not take the
+window's name**, refused by name at load time, because the part would otherwise
+register over the window and `on customer.closed` would reach a widget.
+
+**`on <window>.closed` fires when the window closes** — by `qt.close`, by an
+invoked `close`, or because the person pressed the button — and it fires
+**before** the window stops being open, which is what makes it the one place to
+read a form somebody has just dismissed:
+
+<!--fragment: a handler block only exists inside a `window`, so it cannot parse alone-->
+```basic
+    on customer.closed
+        saved = qt.subject(customer, "cust")     ' still readable, just
+    end on
+```
+
+Afterwards `qt.read`, `qt.write` and `qt.subject` all refuse by name, and
+`qt.is_open` answers `false`. That is deliberate: Qt leaves a closed window
+alive and still holding its values, so answering would mean reading off a screen
+nobody is looking at. `closed` is the window's own event and not a widget
+signal, so `on save.closed` on a button is refused.
 
 **And a program may build that record itself**, which is how you get a row per
 invoice: a declaration cannot contain a loop, and `qt.open` asks only that the
