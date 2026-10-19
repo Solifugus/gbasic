@@ -57,8 +57,9 @@ static void win_error(WinRun *run, const void *item, const char *fmt, ...) {
  * ABSENT until it exists, so one written today is refused as unknown rather
  * than silently accepted and ignored. */
 static const char *win_container_words[] = {"row", "column", "form", "group",
-                                            "table", "menu", "tabs", "tab",
-                                            "cells", "split", "scroll", NULL};
+                                            "table", "menu", "popup", "tabs",
+                                            "tab", "cells", "split", "scroll",
+                                            NULL};
 static const char *win_leaf_words[] = {"field", "button", "check", "text",
                                        "memo", "choice", "source", "stretch",
                                        "item", "separator", NULL};
@@ -341,10 +342,15 @@ static void win_check_item(WinRun *run, const void *item,
         if (strcmp(word, "menu") == 0) {
             if (!parent_word ||
                 (strcmp(parent_word, "window") != 0 &&
-                 strcmp(parent_word, "menu") != 0)) {
+                 strcmp(parent_word, "menu") != 0 &&
+                 /* A SUBMENU OF A CONTEXT MENU needs no vocabulary of its own:
+                  * `menu "Recent"` inside a `popup` is the same production
+                  * recursing, exactly as it does inside another `menu`. */
+                 strcmp(parent_word, "popup") != 0)) {
                 win_error(run, item,
-                          "window: a menu belongs to the window or to another "
-                          "menu, not inside '%s' -- a menu bar is not laid out",
+                          "window: a menu belongs to the window, to another "
+                          "menu or to a popup, not inside '%s' -- a menu bar "
+                          "is not laid out",
                           parent_word ? parent_word : "?");
             }
             if (!M->label(item)) {
@@ -369,6 +375,49 @@ static void win_check_item(WinRun *run, const void *item,
                     win_error(run, part,
                               "window: a menu holds items, separators and "
                               "submenus -- '%s' is none of those", pw);
+                }
+            }
+        }
+
+        /* A CONTEXT MENU. The same placement rule as a menu bar and for the
+         * same measured reason -- a QMenu is placed by nothing, so a `popup`
+         * inside a `row` would be a declaration the layout silently ignores --
+         * but the opposite rule about its one slot: a `menu` MUST have a
+         * caption and MUST NOT have a name, and a `popup` is the mirror. A
+         * caption on a popup would name the thing nobody ever reads, since a
+         * context menu has no bar to appear on. */
+        if (strcmp(word, "popup") == 0) {
+            if (!parent_word || strcmp(parent_word, "window") != 0) {
+                win_error(run, item,
+                          "window: a popup menu belongs to the window, not "
+                          "inside '%s' -- a menu is placed by nothing, so one "
+                          "written here would never be laid out",
+                          parent_word ? parent_word : "?");
+            }
+            if (!iname) {
+                win_error(run, item,
+                          "window: a popup menu needs a name -- `popup "
+                          "row_actions` -- because `qt.popup` is the only way "
+                          "to raise one");
+            }
+            if (M->label(item)) {
+                win_error(run, item,
+                          "window: a popup menu takes no caption; nobody reads "
+                          "it, because it never appears on a bar -- give it a "
+                          "NAME instead");
+            }
+            size_t pcount = M->entry_count(item);
+            for (size_t i = 0; i < pcount; i++) {
+                const void *part = M->entry(item, i);
+                const char *pw = M->word(part);
+                if (M->kind(part) == GB_WIN_HANDLER || !pw) {
+                    continue;
+                }
+                if (strcmp(pw, "item") != 0 && strcmp(pw, "separator") != 0 &&
+                    strcmp(pw, "menu") != 0) {
+                    win_error(run, part,
+                              "window: a popup menu holds items, separators "
+                              "and submenus -- '%s' is none of those", pw);
                 }
             }
         }
@@ -451,7 +500,15 @@ static void win_check_item(WinRun *run, const void *item,
                              * `widgetResizable` and the scrollbar policies
                              * readable through the ordinary by-name route,
                              * which is the whole of its observability. */
-                            strcmp(word, "scroll") == 0);
+                            strcmp(word, "scroll") == 0 ||
+                            /* A `popup` IS NAMED RATHER THAN CAPTIONED, which
+                             * is the one slot spent differently from `menu`:
+                             * a context menu is never read on a bar, so a
+                             * caption would name nothing, and
+                             * `qt.popup(win, "row_actions")` is how it is
+                             * raised at all. Required, not merely allowed --
+                             * checked below. */
+                            strcmp(word, "popup") == 0);
         /* A `split` IS NEITHER: its slot is the direction, checked above, so it
          * must not reach this refusal NOR be registered as a name below. */
         if (strcmp(word, "split") == 0) {
@@ -604,10 +661,11 @@ static void win_check_item(WinRun *run, const void *item,
      * reach `gb_qt_part`, which has no widget for the word and would refuse at
      * RUN time -- late, and only for somebody with Qt in their build. */
     if (strcmp(word, "item") == 0 || strcmp(word, "separator") == 0) {
-        if (!parent_word || strcmp(parent_word, "menu") != 0) {
+        if (!parent_word || (strcmp(parent_word, "menu") != 0 &&
+                             strcmp(parent_word, "popup") != 0)) {
             win_error(run, item,
-                      "window: '%s' belongs in a menu, not in '%s'", word,
-                      parent_word ? parent_word : "?");
+                      "window: '%s' belongs in a menu or a popup, not in '%s'",
+                      word, parent_word ? parent_word : "?");
             return;
         }
     }

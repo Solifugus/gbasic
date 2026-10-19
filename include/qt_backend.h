@@ -269,6 +269,15 @@ void *gb_qt_menu_item(void *window, void *menu, const char *name,
                       const char *label, char *err, size_t err_size);
 int gb_qt_menu_separator(void *menu, char *err, size_t err_size);
 
+/* A TOP-LEVEL POPUP MENU. Its own constructor rather than a third case inside
+ * `gb_qt_menu`, because what it takes is different in kind: that one takes a
+ * TITLE (the caption on the bar, or on the parent menu for a submenu) and this
+ * one takes a NAME. A submenu inside a popup needs nothing new -- it recurses
+ * through `gb_qt_menu` with this menu as its parent, which is how `menu
+ * "Recent"` inside `menu "File"` already works. */
+void *gb_qt_popup_menu(void *window, const char *name, char *err,
+                       size_t err_size);
+
 /* THE BAR'S OWN TOP-LEVEL MENUS. THE REASON IS AN ORACLE: without it, SUBMENU
  * NESTING IS UNASSERTABLE. An item keeps its name wherever its menu ends up, so
  * a submenu hung off the BAR instead of off its parent passes every check there
@@ -293,6 +302,70 @@ int gb_qt_menu_entry_count(void *window, int index);
  * and "" for the other. */
 char *gb_qt_menu_entry_title(void *window, int index, int entry,
                              int *is_separator);
+
+/* THE SAME ORACLE FOR A POPUP, by name rather than by bar position. A `popup`
+ * is not on the bar at all, so `gb_qt_menu_count` cannot see one -- which is
+ * also the check that a popup has NOT quietly been added to the bar -- and
+ * without this an item declared in the wrong popup of two keeps its name and
+ * is invisible to every by-name check. Answers -1 for a name that is not a
+ * popup, which is how the caller tells "no such menu" from "an empty one". */
+int gb_qt_popup_entry_count(void *window, const char *name);
+char *gb_qt_popup_entry_title(void *window, const char *name, int entry,
+                              int *is_separator);
+
+/* A CONTEXT MENU. `popup row_actions` is a menu that is NOT on the bar, and the
+ * word exists because the slot does: §0.8 measured that a container carries a
+ * NAME OR OPTIONS AND NOT BOTH, `menu "File"` spends its one slot on the
+ * caption a person reads on the bar, and a context menu has no bar to be read
+ * on -- what it needs is a NAME, so `qt.popup(win, "row_actions")` can address
+ * it. The same trade `split across` makes in the other direction, where the
+ * direction is what no splitter can do without.
+ *
+ * MEASURED BEFORE THE WORD WAS CHOSEN, and two results shaped it. A QMenu
+ * parented to a widget that HAS a layout is NOT taken by that layout (the
+ * layout's count was 2 before and 2 after), so a popup is placed by nothing,
+ * exactly like the bar -- which is why it belongs to the window and is refused
+ * inside a layout, for the same reason and not by analogy. And `QMenu::popup`
+ * and `QMenu::exec` are NOT invokable by name (both -1 against `show` at 18 and
+ * `hide` at 19), so `qt.invoke` cannot reach either and a verb is the only
+ * route: `show()` would put the menu wherever it last was rather than where the
+ * pointer is.
+ *
+ * IT ANSWERS WHETHER ANYTHING WAS SHOWN, and that is Studio's own question
+ * rather than a convenience. Its context menu is built ONCE holding every item
+ * there is and HIDES the ones a row does not offer (`visible` is Q_PROPERTY 14
+ * of QAction, so `qt.set` already reaches it -- no new capability), and its own
+ * comment says an empty menu "reads as a control that failed". Measured, Qt
+ * agrees: an all-hidden menu answers `isEmpty()` true and `popup()` leaves it
+ * INVISIBLE. So the honest answer is a boolean, not a refusal -- an empty
+ * context menu is an ordinary outcome of a row that offers nothing. */
+int gb_qt_popup(void *window, const char *name, int *shown, char *err,
+                size_t err_size);
+
+/* DRIVE A RIGHT-CLICK THE WAY A MOUSE DOES -- the oracle, built before the
+ * fixture, which is the discipline §0.8 arrived at by getting it wrong.
+ *
+ * IT EXISTS BECAUSE OF ONE MEASUREMENT: a `table`, `memo` or `source` does NOT
+ * answer a context-menu event sent to the widget itself. Delivered to the
+ * QTableWidget it fired the signal 0 times and the event propagated to the
+ * PARENT; delivered to that widget's VIEWPORT it fired 1. A real right-click
+ * lands on the viewport, so the feature works for a person on all five kinds --
+ * and a synthetic event aimed where gBASIC can name reaches nothing, so without
+ * this verb the whole path is undrivable and every check would be about a
+ * `field` and a `button`, the two kinds that happen not to have a viewport.
+ *
+ * IT SENDS A REAL PRESS AND RELEASE rather than a bare QContextMenuEvent,
+ * because the selection is part of the answer: measured, Qt MOVES THE CURRENT
+ * ROW on a right-press (row 3 under the pointer, `currentRow()` 3 afterwards),
+ * so `qt.selected` already answers "which row was right-clicked" and the gap I
+ * expected to have to close was closed by Qt. A bare event would fire the
+ * signal and leave the selection where it was, which is a verb that drives
+ * HALF of what a mouse does and would make the row question look unanswerable.
+ *
+ * `row` IS -1 FOR "WHEREVER THE PART IS", and a real index aims at that row's
+ * own rectangle, which is what makes "right-click the third file" writable. */
+int gb_qt_right_click(void *window, const char *name, int row, char *err,
+                      size_t err_size);
 
 /* A TABLE. ITS PARTS ARE COLUMNS, NOT WIDGETS (§7), so it is built in ONE call
  * from the declaration's whole `field` list rather than by the part walk that

@@ -866,25 +866,22 @@ static int qt_apply_options(void *node, Value *options, const char *word,
 }
 
 static int qt_build_items(void *parent, Value *items, void *root);
+static int qt_build_menu(void *root, void *parent_menu, Value *menu);
 
 /* A MENU IS BUILT BY ITS OWN WALK, because it is not laid out: its children are
  * actions and submenus rather than widgets in a box, and handing them to
  * `gb_qt_part` -- which maps a word to a widget -- has nothing to map. A
  * submenu recurses here, which is why `menu "Recent"` inside `menu "File"`
  * needed no vocabulary of its own. */
-static int qt_build_menu(void *root, void *parent_menu, Value *menu) {
+/* THE ENTRIES OF A MENU, from a node that has already been made. ONE WALK for
+ * a bar menu, a submenu AND a `popup`, because two copies of it are two things
+ * that can drift -- and the way they would drift is that a popup's items stop
+ * agreeing with a bar menu's about what `shortcut:` or a submenu means, which
+ * is the rule `would`/`execute` already follow in `automation`. The only thing
+ * the three differ in is how the QMenu itself is made. */
+static int qt_fill_menu(void *root, void *node, Value *menu) {
     char err[QT_ERRBUF];
     char message[512];
-    const char *title = qt_record_text(menu, "label");
-    err[0] = '\0';
-    void *node = gb_qt_menu(root, parent_menu, title ? title : "", err,
-                            sizeof(err));
-    if (!node) {
-        snprintf(message, sizeof(message), "window: %s",
-                 err[0] ? err : "that menu could not be built");
-        qt_raise(message);
-        return 0;
-    }
     RecordField *entries = record_find(menu, "items");
     if (!entries || !entries->value || entries->value->kind != VALUE_ARRAY) {
         return 1;
@@ -947,6 +944,40 @@ static int qt_build_menu(void *root, void *parent_menu, Value *menu) {
     return 1;
 }
 
+static int qt_build_menu(void *root, void *parent_menu, Value *menu) {
+    char err[QT_ERRBUF];
+    char message[512];
+    const char *title = qt_record_text(menu, "label");
+    err[0] = '\0';
+    void *node = gb_qt_menu(root, parent_menu, title ? title : "", err,
+                            sizeof(err));
+    if (!node) {
+        snprintf(message, sizeof(message), "window: %s",
+                 err[0] ? err : "that menu could not be built");
+        qt_raise(message);
+        return 0;
+    }
+    return qt_fill_menu(root, node, menu);
+}
+
+/* A `popup` -- the same entries, a different owner. It is registered by NAME
+ * where a bar menu is captioned, which is §0.8's one-slot rule spent the other
+ * way round, and it is parented to the WINDOW rather than added to the bar. */
+static int qt_build_popup(void *root, Value *menu) {
+    char err[QT_ERRBUF];
+    char message[512];
+    const char *name = qt_record_text(menu, "name");
+    err[0] = '\0';
+    void *node = gb_qt_popup_menu(root, name ? name : "", err, sizeof(err));
+    if (!node) {
+        snprintf(message, sizeof(message), "window: %s",
+                 err[0] ? err : "that popup menu could not be built");
+        qt_raise(message);
+        return 0;
+    }
+    return qt_fill_menu(root, node, menu);
+}
+
 static int qt_build_item(void *parent, Value *item, void *root) {
     char err[QT_ERRBUF];
     char message[512];
@@ -983,6 +1014,14 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         label = qt_record_text(item, "label");
     }
     err[0] = '\0';
+
+    if (strcmp(kind, "container") == 0 && word && strcmp(word, "popup") == 0) {
+        /* THE ROOT, like a bar menu and for the same reason: a QMenu is placed
+         * by nothing, so the container the declaration sits in is irrelevant
+         * -- and the load-time pass has already refused one anywhere a layout
+         * would have been asked to place it. */
+        return qt_build_popup(root, item);
+    }
 
     if (strcmp(kind, "container") == 0 && word && strcmp(word, "menu") == 0) {
         /* THE ROOT, NOT THE PARENT, because a menu bar belongs to the window
@@ -2906,6 +2945,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         int which = -1;
+        char *pname = NULL;
         if (argc == 2) {
             Value idx = eval_expr(expr->as.call.args.items[1]);
             if (error_action_pending()) {
@@ -2913,20 +2953,44 @@ static Value qt_eval_call(AstExpr *expr) {
                 value_free(idx);
                 return value_null();
             }
-            if (idx.kind != VALUE_NUMBER) {
-                qt_raise("qt.menus expects the menu's position as a number");
+            /* A NUMBER IS A POSITION ON THE BAR AND TEXT IS A POPUP'S NAME,
+             * which is not an overload for convenience: a `popup` is not on
+             * the bar at all, so it HAS no position, and the alternative was a
+             * second verb answering the same question about the same thing. */
+            if (idx.kind == VALUE_STRING) {
+                pname = idx.as.string ? copy_string(idx.as.string) : NULL;
+            } else if (idx.kind == VALUE_NUMBER) {
+                which = (int)idx.as.num.value;
+            } else {
+                qt_raise("qt.menus expects the menu's position as a number, or "
+                         "a popup menu's name as text");
                 value_free(win);
                 value_free(idx);
                 return value_null();
             }
-            which = (int)idx.as.num.value;
             value_free(idx);
         }
         value_free(win);
-        int n = (which < 0) ? gb_qt_menu_count(root)
-                            : gb_qt_menu_entry_count(root, which);
+        int n;
+        if (pname) {
+            n = gb_qt_popup_entry_count(root, pname);
+        } else if (which < 0) {
+            n = gb_qt_menu_count(root);
+        } else {
+            n = gb_qt_menu_entry_count(root, which);
+        }
         if (n < 0) {
-            if (which < 0) {
+            if (pname) {
+                /* NAMES WHAT IT LOOKED FOR, because the mistake this catches
+                 * is naming a button or a bar menu's caption where a `popup`
+                 * was meant -- and "no menu at position" would be nonsense
+                 * about a name. */
+                snprintf(message, sizeof(message),
+                         "qt.menus: this window has no popup menu called `%s`",
+                         pname);
+                qt_raise(message);
+                free(pname);
+            } else if (which < 0) {
                 qt_raise("qt.menus: that window has no menu bar to read");
             } else {
                 snprintf(message, sizeof(message),
@@ -2945,9 +3009,14 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         for (int i = 0; i < n; i++) {
             int is_sep = 0;
-            char *t = (which < 0)
-                          ? gb_qt_menu_title(root, i)
-                          : gb_qt_menu_entry_title(root, which, i, &is_sep);
+            char *t;
+            if (pname) {
+                t = gb_qt_popup_entry_title(root, pname, i, &is_sep);
+            } else if (which < 0) {
+                t = gb_qt_menu_title(root, i);
+            } else {
+                t = gb_qt_menu_entry_title(root, which, i, &is_sep);
+            }
             /* A SEPARATOR ANSWERS `unknown`, NOT "". It HAS no caption, where
              * `item x( label: "" )` has an empty one -- the absent/empty
              * distinction this language makes everywhere else, and the only
@@ -2955,6 +3024,7 @@ static Value qt_eval_call(AstExpr *expr) {
             titles[i] = is_sep ? value_unknown() : value_string(t ? t : "");
             free(t);
         }
+        free(pname);
         return value_array(titles, (size_t)n);
     }
 
@@ -4076,6 +4146,132 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!ok) {
             snprintf(message, sizeof(message), "qt.write: %s",
                      err[0] ? err : "that value could not be shown");
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        value_free(win);
+        value_free(which);
+        return value_bool(1);
+    }
+
+    /* RAISE A CONTEXT MENU. Answers whether anything was SHOWN, which is not a
+     * convenience: Studio's own context menu is built once holding every item
+     * and HIDES the ones a row does not offer, and its comment says an empty
+     * one "reads as a control that failed" -- so a row that offers nothing is
+     * an ordinary outcome and `false` is the truthful report, not an error. */
+    if (strcmp(verb, "popup") == 0) {
+        if (argc != 2) {
+            qt_raise("qt.popup expects a window and a popup menu's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "popup") || which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.popup expects the popup menu's name as text");
+            }
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        int shown = 0;
+        err[0] = '\0';
+        if (!gb_qt_popup(root, which.as.string, &shown, err, sizeof(err))) {
+            snprintf(message, sizeof(message), "qt.popup: %s",
+                     err[0] ? err : "that menu could not be raised");
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        value_free(win);
+        value_free(which);
+        return value_bool(shown);
+    }
+
+    /* DRIVE A RIGHT-CLICK. The oracle for the whole context-menu path, for the
+     * measured reason in qt_backend.h: a `table`, `memo` or `source` does not
+     * answer an event sent to the widget, only one sent to its VIEWPORT, which
+     * gBASIC has no way to name -- so without this the path is drivable only
+     * on the two kinds that happen to have no viewport. */
+    if (strcmp(verb, "right_click") == 0) {
+        if (argc != 2 && argc != 3) {
+            qt_raise("qt.right_click expects a window, a part's name and "
+                     "optionally a row");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        int row = -1;
+        if (argc == 3) {
+            Value r = eval_expr(expr->as.call.args.items[2]);
+            if (error_action_pending()) {
+                value_free(win);
+                value_free(which);
+                value_free(r);
+                return value_null();
+            }
+            if (r.kind != VALUE_NUMBER) {
+                qt_raise("qt.right_click expects the row as a number");
+                value_free(win);
+                value_free(which);
+                value_free(r);
+                return value_null();
+            }
+            row = (int)r.as.num.value;
+            value_free(r);
+            if (row < 0) {
+                qt_raise("qt.right_click: a row is counted from 0");
+                value_free(win);
+                value_free(which);
+                return value_null();
+            }
+        }
+        if (!qt_window_record(&win, "right_click") ||
+            which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.right_click expects the part's name as text");
+            }
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        err[0] = '\0';
+        if (!gb_qt_right_click(root, which.as.string, row, err, sizeof(err))) {
+            snprintf(message, sizeof(message), "qt.right_click: %s",
+                     err[0] ? err : "that part could not be clicked");
             qt_raise(message);
             value_free(win);
             value_free(which);

@@ -64,6 +64,10 @@
 #include <QMessageBox>
 #include <QPointer>
 #include <QAbstractButton>
+#include <QAbstractScrollArea>
+#include <QMouseEvent>
+#include <QContextMenuEvent>
+#include <QCursor>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QDialogButtonBox>
@@ -1127,6 +1131,26 @@ extern "C" int gb_qt_connect(void *window, const char *target,
                 "` signal");
         return 0;
     }
+    /* DECLARING THE HANDLER IS WHAT ASKS FOR A CUSTOM CONTEXT MENU. Measured,
+     * every widget kind starts at `DefaultContextMenu`, and under that policy
+     * `customContextMenuRequested` IS NEVER EMITTED -- so a handler written
+     * for it without a second line setting the policy is a handler connected
+     * to a signal nothing emits, which raises nothing and looks exactly like a
+     * right-click that did not happen. That is the silent class this backend
+     * is tested against, arriving from a Qt default.
+     *
+     * SET HERE AND NOT ASKED FOR IN THE DECLARATION'S OPTIONS, because the
+     * author has already said what they want by naming the handler, and a
+     * vocabulary where the request takes two lines is one where it gets
+     * written as one. The cost is stated rather than hidden: this REPLACES the
+     * menu Qt would have put up itself, so a `memo` or `field` with a context
+     * handler loses its own cut/copy/paste -- which is why the policy is
+     * touched only where a handler exists, and a part with none keeps Qt's. */
+    if (strcmp(signal, "customContextMenuRequested") == 0) {
+        if (QWidget *cw = qobject_cast<QWidget *>(w)) {
+            cw->setContextMenuPolicy(Qt::CustomContextMenu);
+        }
+    }
     GbQtRelay *relay = new GbQtRelay();
     relay->setParent(w);
     relay->handler = QByteArray(handler);
@@ -1477,6 +1501,158 @@ extern "C" int gb_qt_menu_separator(void *menu, char *err, size_t err_size) {
     return 1;
 }
 
+/* A TOP-LEVEL POPUP MENU -- parented to the window and registered by NAME, so
+ * `qt.popup` can find it and `qt.set(win, "row_actions", ...)` reaches it like
+ * anything else named.
+ *
+ * NOT ADDED TO THE BAR, which is the whole difference, and the layout does not
+ * take it: measured, parenting a QMenu to a widget that has a layout left that
+ * layout's count unchanged. So a popup is placed by nothing -- the same
+ * property the bar has, reached by a different route. */
+extern "C" void *gb_qt_popup_menu(void *window, const char *name, char *err,
+                                  size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !root->widget) {
+        say(err, err_size, "there is no window to put a popup menu on");
+        return nullptr;
+    }
+    QMenu *made = new QMenu(root->widget);
+    GbQtNode *n = node_new();
+    n->root = root;
+    n->widget = made;
+    if (name && *name) {
+        root->parts.insert(QString::fromUtf8(name), made);
+    }
+    return n;
+}
+
+/* HOW MANY OF A MENU'S ENTRIES A PERSON WOULD SEE. A separator is furniture, so
+ * a menu holding nothing but separators shows nothing -- which is the same
+ * answer Qt gives (`isEmpty()` is true for a menu whose every action is
+ * hidden), and asking it this way means the answer does not depend on whether
+ * the menu has been shown yet. */
+static int menu_visible_entries(QMenu *m) {
+    int shown = 0;
+    for (QAction *a : m->actions()) {
+        if (a->isVisible() && !a->isSeparator()) {
+            shown++;
+        }
+    }
+    return shown;
+}
+
+extern "C" int gb_qt_popup(void *window, const char *name, int *shown,
+                           char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (shown) {
+        *shown = 0;
+    }
+    if (!root || !root->widget) {
+        say(err, err_size, "there is no window to pop a menu up on");
+        return 0;
+    }
+    QObject *o = root->parts.value(QString::fromUtf8(name ? name : ""), nullptr);
+    if (!o) {
+        say(err, err_size,
+            QByteArray("this window has no `") + (name ? name : "") + "`");
+        return 0;
+    }
+    QMenu *m = qobject_cast<QMenu *>(o);
+    if (!m) {
+        /* NAMES THE KIND IT FOUND, because the mistake this catches is naming
+         * a button or a table where a `popup` was meant, and "no such thing"
+         * would be false about a name that is right there. */
+        say(err, err_size,
+            QByteArray("`") + (name ? name : "") + "` is a " +
+                o->metaObject()->className() + ", not a popup menu");
+        return 0;
+    }
+    if (menu_visible_entries(m) == 0) {
+        /* NOT A REFUSAL. A row that offers nothing is ordinary, and Qt itself
+         * declines to show the menu, so the truthful report is `false` rather
+         * than an error about a program that did nothing wrong. */
+        return 1;
+    }
+    m->popup(QCursor::pos());
+    if (shown) {
+        *shown = 1;
+    }
+    return 1;
+}
+
+/* THE WIDGET A MOUSE EVENT WOULD LAND ON. For a scroll area that is the
+ * VIEWPORT and not the widget, which is the measurement this verb exists for:
+ * a context-menu event delivered to a QTableWidget fired its signal 0 times
+ * and propagated to the parent, and the same event delivered to that widget's
+ * viewport fired 1. */
+static QWidget *mouse_target(QWidget *w) {
+    QAbstractScrollArea *sa = qobject_cast<QAbstractScrollArea *>(w);
+    return sa ? sa->viewport() : w;
+}
+
+extern "C" int gb_qt_right_click(void *window, const char *name, int row,
+                                 char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root) {
+        say(err, err_size, "there is no window to click in");
+        return 0;
+    }
+    QObject *o = root->parts.value(QString::fromUtf8(name ? name : ""), nullptr);
+    if (!o) {
+        say(err, err_size,
+            QByteArray("this window has no `") + (name ? name : "") + "`");
+        return 0;
+    }
+    QWidget *w = qobject_cast<QWidget *>(o);
+    if (!w) {
+        /* A menu `item` is a QAction, so there is nothing to click AT. Named
+         * rather than silently doing nothing, which is what a cast to
+         * QWidget* and a NULL check further down would have produced. */
+        say(err, err_size,
+            QByteArray("`") + (name ? name : "") + "` is a " +
+                o->metaObject()->className() + ", which has nothing to click");
+        return 0;
+    }
+    QWidget *target = mouse_target(w);
+    QPoint at(4, 4);
+    if (row >= 0) {
+        QTableWidget *t = qobject_cast<QTableWidget *>(w);
+        if (!t) {
+            say(err, err_size,
+                QByteArray("`") + (name ? name : "") +
+                    "` is not a table, so it has no row to click");
+            return 0;
+        }
+        if (row >= t->rowCount()) {
+            say(err, err_size, "that table has no such row");
+            return 0;
+        }
+        QTableWidgetItem *it = t->item(row, 0);
+        if (!it) {
+            say(err, err_size, "that row is empty");
+            return 0;
+        }
+        at = t->visualItemRect(it).center();
+    } else if (target->width() > 8 && target->height() > 8) {
+        at = QPoint(target->width() / 2, target->height() / 2);
+    }
+    QPoint global = target->mapToGlobal(at);
+    /* A PRESS AND A RELEASE, THEN THE CONTEXT EVENT, in the order a mouse
+     * produces them -- the press is what MOVES THE SELECTION (measured: Qt
+     * sets `currentRow()` to the row under a right-press), which is what lets
+     * `qt.selected` answer "which row was right-clicked" with no new verb. A
+     * bare context event would fire the handler over a stale selection. */
+    QMouseEvent press(QEvent::MouseButtonPress, at, global, Qt::RightButton,
+                      Qt::RightButton, Qt::NoModifier);
+    QApplication::sendEvent(target, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, at, global, Qt::RightButton,
+                        Qt::RightButton, Qt::NoModifier);
+    QApplication::sendEvent(target, &release);
+    QContextMenuEvent ctx(QContextMenuEvent::Mouse, at, global);
+    QApplication::sendEvent(target, &ctx);
+    return 1;
+}
+
 extern "C" int gb_qt_menu_count(void *window) {
     GbQtNode *root = (GbQtNode *)window;
     if (!root || !root->widget) {
@@ -1525,17 +1701,14 @@ static QMenu *bar_menu_at(void *window, int index) {
     return bar->actions().at(index)->menu();
 }
 
-extern "C" int gb_qt_menu_entry_count(void *window, int index) {
-    QMenu *m = bar_menu_at(window, index);
-    return m ? (int)m->actions().size() : -1;
-}
-
-extern "C" char *gb_qt_menu_entry_title(void *window, int index, int entry,
-                                        int *is_separator) {
+/* ONE ENTRY'S CAPTION, from a QMenu however it was found -- off the bar by
+ * position, or by NAME for a `popup`. Shared rather than copied, because the
+ * two would drift in exactly the way that matters: a separator reported as a
+ * line by one route and as an empty caption by the other. */
+static char *menu_entry_title(QMenu *m, int entry, int *is_separator) {
     if (is_separator) {
         *is_separator = 0;
     }
-    QMenu *m = bar_menu_at(window, index);
     if (!m || entry < 0 || entry >= m->actions().size()) {
         return nullptr;
     }
@@ -1555,6 +1728,41 @@ extern "C" char *gb_qt_menu_entry_title(void *window, int index, int entry,
     memcpy(out, bytes.constData(), (size_t)bytes.size());
     out[bytes.size()] = '\0';
     return out;
+}
+
+extern "C" int gb_qt_menu_entry_count(void *window, int index) {
+    QMenu *m = bar_menu_at(window, index);
+    return m ? (int)m->actions().size() : -1;
+}
+
+extern "C" char *gb_qt_menu_entry_title(void *window, int index, int entry,
+                                        int *is_separator) {
+    return menu_entry_title(bar_menu_at(window, index), entry, is_separator);
+}
+
+/* A POPUP MENU BY NAME. THE ORACLE, and the hole it fills is the one a flat
+ * by-name registry always leaves: an `item` keeps its name wherever its menu
+ * ends up, so an item declared in the WRONG popup of two is invisible to every
+ * check there is -- the same measurement the submenu oracle rests on, where
+ * that perturbation produced ZERO mismatches. The captions are the only thing
+ * that can say which popup an item landed in, and they pin the order. */
+static QMenu *named_menu(void *window, const char *name) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !name) {
+        return nullptr;
+    }
+    QObject *o = root->parts.value(QString::fromUtf8(name), nullptr);
+    return o ? qobject_cast<QMenu *>(o) : nullptr;
+}
+
+extern "C" int gb_qt_popup_entry_count(void *window, const char *name) {
+    QMenu *m = named_menu(window, name);
+    return m ? (int)m->actions().size() : -1;
+}
+
+extern "C" char *gb_qt_popup_entry_title(void *window, const char *name,
+                                         int entry, int *is_separator) {
+    return menu_entry_title(named_menu(window, name), entry, is_separator);
 }
 
 extern "C" void *gb_qt_table(void *parent, const char *name,

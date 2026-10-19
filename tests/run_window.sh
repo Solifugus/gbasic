@@ -660,7 +660,7 @@ window w( title: "x" )
     end column
 end window
 EOF
-refuse "a menu inside a layout is refused, saying a bar is not laid out" "a menu belongs to the window or to another menu"
+refuse "a menu inside a layout is refused, saying a bar is not laid out" "a menu belongs to the window, to another menu or to a popup"
 
 src menu_no_caption <<'EOF'
 window w( title: "x" )
