@@ -3035,17 +3035,20 @@ interesting because it would give a key handler its **first real caller** —
 everything measured so far, so completion would be the thing that changes the
 answer rather than a use for something already wanted.
 
-## 0.25 A virtualised table: measured, not built (2026-10-19)
+## 0.25 A table that asks for its cells (2026-10-19)
 
-§0.6 defers this and `table` materialises every row, so the million-row path is
-a **model** behind a `QTableView` rather than a bigger version of what exists.
-Measured before designing, because one number decides whether gBASIC can drive
-one at all.
+§0.6 deferred this and `table x to show <list>` materialises every row into a
+QTableWidget, so the large-result path is a **model** behind a `QTableView`
+rather than a bigger version of what exists. gBASIC Studio is the consumer
+rather than a hypothesis: its results grid switches to
+`datagrid.create_virtual(count_fn, cell_fn)` above 500 rows, and `datagrid` is
+GTK-only — so this was the one thing its Qt conversion could not express.
 
-### The cost question, answered
+### The one number that decided whether it is possible at all
 
-A model's `data()` would have to call back into the interpreter, and if that
-happened per cell of the whole table it would be unusable. It does not:
+A model's `data()` has to call back into the interpreter, and per cell of the
+whole table that would be unusable. Measured in C++ before anything was
+designed:
 
 | model rows | viewport | `data()` calls | highest row touched |
 |---|---|---|---|
@@ -3053,36 +3056,103 @@ happened per cell of the whole table it would be unusable. It does not:
 | 10,000 | 300px | **27** | 8 |
 | 1,000,000 | 300px | **27** | 8 |
 | 1,000,000 | 900px | **87** | 28 |
+| 1,000,000, then `scrollToBottom` | 300px | **54 in total** | 999,999 |
 
-**The cost is the viewport, not the table.** And `scrollToBottom` on a million
-rows cost **54 calls in total** and jumped straight to row 999,999 — it does
-not touch anything on the way. So a callback per visible cell is ~30–90 per
-redraw, which is the fact that makes this buildable.
+**The cost is the viewport, not the table** — and `scrollToBottom` jumps
+straight to the last row rather than touching anything on the way.
 
-Also measured: `sortingEnabled` **is** a property (index 89), so click-to-sort
-is reachable by name — which matters because `table` deliberately turns it off,
-a sorted view making `qt.selected`'s index mean a different row in the view than
-in the subject.
+### And it needed no new seam, which corrects my own first assessment
 
-### What it still needs — and this is a correction
+I wrote that this needs a new callback shape across the C/gBASIC boundary,
+because every handler here is a name invoked with no arguments and no result.
+Reading rather than assuming showed otherwise: **`invoke_function(stmt, args,
+argc, receiver)` already takes arguments and returns a `Value`** — the handler
+path simply passes `NULL, 0, NULL` because handlers take none, and
+`qt_invoke_handler` is already a caller. So this is one more callback beside
+`GbQtInvokeFn`, not a new kind of crossing.
 
-My first assessment said it needs a **new callback shape** across the C/gBASIC
-boundary, because every handler here is a name invoked with no arguments and no
-result (`g_invoke`), where a model needs *"what is in cell (r, c)"*. That
-overstates it, and reading rather than assuming is what showed so:
-**`invoke_function(stmt, args, argc, receiver)` already takes arguments and
-returns a `Value`** — the handler path simply passes `NULL, 0, NULL` because
-handlers take none, and `qt_invoke_handler` is already a caller.
+### `ask` is the third direction, at zero grammar cost
 
-So what is actually needed is one more typedef beside `GbQtInvokeFn`, one more
-callback registered through `gb_qt_set_callbacks`, and a gBASIC-side function
-that builds two numbers and reads a string back. That makes this a **medium**
-increment rather than a large one, and the better-specified of the two that are
-left.
+```basic
+table results to ask cell_of
+    field who(   label: "Customer" )
+    field total( label: "Total" )
+end table
+```
 
-Still open with it: whether the word is a new one or an option on `table` (the
-one-slot rule makes an option awkward), and whether a model-backed table can
-share `qt.cell`'s by-name column addressing.
+`IDENT IDENT TO IDENT IDENT` is the production a named container with a subject
+already uses, and the direction is recognised **by position** in the validator
+rather than by a token — so `ask` joins `show` and `edit` for nothing. The
+subject is a **function name** rather than a list, which is what the word says:
+a table that *asks* for a cell instead of being shown one.
+
+**A form is still refused one**, and that is a control rather than caution: a
+form shows or edits *one* record whose fields it can read, so there is nothing
+for it to ask *for*, and `form x to ask f` would be a declaration whose subject
+could never be bound. Without that refusal, "ask is a direction" is satisfied
+by letting every word that carries a subject take it.
+
+**The row count is a verb**, `qt.rows(win, table, n)`, because it changes:
+Studio's grid is refilled by every query, so a count fixed when the window
+opened would be wrong the first time anybody ran a second one. Setting it
+resets the model, which is how Qt is told to re-ask — so there is no
+`qt.refresh` for an asking table, the count *is* the refresh. Reading it back
+with no count is the only way to observe that a set took.
+
+**Everything else answers through the model**, so a program never has to know
+which kind of table it declared: `qt.cell`, `qt.heading`, `qt.select`,
+`qt.selected` and the row count all take either. A failed callback draws an
+**empty cell** rather than stopping the program, which is forced rather than
+chosen — `data()` runs during a *paint*, with Qt's own frames between us and
+anything that could unwind, so there is nowhere to raise to; the raise is
+reported through the ordinary contained-raise channel instead.
+
+### The oracle was free, for once
+
+The callback is gBASIC code, so it **counts its own calls** — everything the
+headline claim needs is a number the fixture already has. Asserted as a
+difference across four orders of magnitude *and* as the other side of the same
+claim (far fewer calls than rows), because a model that walked the table would
+be correct and unusable and nothing else in the file would notice.
+
+Asserting it in the language took one idea beyond the C++ measurement: nothing
+paints offscreen without a real turn of Qt's loop, so `repaint` answered **0**
+cells. The fixture hands the thread to `qt.run()` and takes it back with a
+timer, which is the cookbook's event-loop pattern.
+
+### Two things found on the way, and both were mine
+
+**A green perturbation exposed the fixture, not the implementation.** A model
+made to prefetch five hundred rows on every `qt.rows` passed every check —
+because the fixture reset its counter *after* `qt.rows`, so cost incurred while
+setting the count was invisible. The boundary is before it now, and what is
+measured is the whole cost of showing N rows. Sixth time today that a green
+perturbation meant a missing observable rather than a passing test.
+
+**And a pre-existing defect that is not this increment's**, found because the
+fixture needed two turns of Qt's loop and hung with no output. `qt.run()`
+called from inside a **function** silently starves every loop-delivered source:
+`watcher_trigger_change` returns at once unless the **global frame** is
+current, so a function frame left current for the whole of Qt's loop means
+every timer tick is appended to `timer.ticks` and never delivered. The timer's
+own schedule advances, so it looks like it is working. Traced through
+`pump_arm`, the loop's early return and `timer_loop_service` to that one guard;
+it reaches timers, the actor inbox, `http` events and a webserver's requests,
+all of which go through it. Recorded rather than fixed — the guard is there
+because a watcher body must run in the global frame, so the repair is to make
+the pump establish that frame for the drain, which is a change to scope
+handling and its own increment.
+
+### Still open
+
+- **Click-to-sort** is off, as it is for a held table, and here the reason is
+  stronger: a sorted view would make `qt.selected`'s index mean a different row
+  than the data has, and the data is somewhere this side never sees.
+- **`qt.refresh` on an asking table** does nothing; the count is the refresh.
+  Whether it should be an alias is a question nobody has needed answered.
+- **A per-row kind** — a cell answers whatever the callback returns, rendered by
+  the one renderer, and nothing lets a column declare `type: {USD}` the way a
+  form's field can.
 
 ## 0.26 A rule, and a menu under a button (2026-10-19)
 

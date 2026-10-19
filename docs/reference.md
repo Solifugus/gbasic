@@ -3851,6 +3851,7 @@ end program
 | `qt.cell(win, table, row, column)` | one cell, addressed by the **column's own name** rather than its position |
 | `qt.heading(win, table, column)` | a column's caption, by its name **or** its position |
 | `qt.options(win, part, list)` | fill a `choice`'s list from data, answering how many items it put in. Clearing **resets the selection**, deliberately: a list that has changed may not contain what was chosen, and an index into a list that has moved is how a form reports a value nobody picked |
+| `qt.rows(win, table)` / `qt.rows(win, table, n)` | how many rows a **`to ask`** table has, or tell it. A verb rather than part of the declaration because it changes — a results grid is refilled by every query — and setting it is also how *"the data changed"* is said, since it resets the model and Qt re-asks. A negative count is refused rather than shown as empty |
 | `qt.refresh(win, what)` | show a subject **as it is now**, answering how many rows or parts it drew. `what` is a **table's name** or a **form's subject** — a form has no name, so the subject is the only thing that addresses one, and a name meaning both is refused rather than resolved. A table grows, shrinks and redraws changed cells; a form fills every part, across **all** the forms carrying that subject. The symmetric half of `qt.subject`, which reads the widgets at the moment asked |
 | `qt.set(win, part, property, value)` | set one named Qt property at run time — the write half of `qt.read(win, part, property)`. The only other way to set one is the declaration, which is written before anything has happened |
 | `qt.pane(win, part)` | which draggable or scrolled region a part sits in: `{ kind: "split", direction, panes, index, sizes }` or `{ kind: "scroll", resizable }`, and **`unknown`** when it is in neither — a record saying `panes: 0` would read as a splitter holding nothing. Asked of the **layout**, walking up from the part, and it reports the **nearest** region. This is the only way to observe a `split`, which spends its one slot on the direction and so cannot be named |
@@ -4022,6 +4023,35 @@ addresses — so a menu takes no name, and `on open_file.triggered` names the
 item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
 `checked:` reach it through the same by-name property route every widget option
 uses.
+
+**A table can ask for its cells instead of being shown them.** `table x to show
+<list>` holds every row; `table x to ask <function>` keeps none and asks for
+each cell as it becomes visible, which is how a large result set is shown:
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+table results to ask cell_of
+    field who(   label: "Customer" )
+    field total( label: "Total" )
+end table
+```
+
+The subject is a **function name**, not a list. It is called with a row and a
+column (both counted from 0) and whatever it returns is rendered by the same
+renderer `print` uses, so a number, a date or money arrives in the words the
+language itself uses. Tell the table how many rows there are with `qt.rows`,
+and tell it again when the data changes.
+
+**The cost is the viewport, not the table.** Measured: a `QTableView` asks for
+about 27 cells whether the table has a hundred rows or a million, and scrolling
+to the end asks for a few dozen more rather than walking everything in between.
+
+`qt.cell`, `qt.heading`, `qt.select` and `qt.selected` all work on either kind,
+so a program need not know which it declared. A form may **not** `ask` — it
+shows or edits one record whose fields it can read, so there is nothing for it
+to ask for. Click-to-sort is off for the same reason it is off for a held
+table, only more so: a sorted view would make `qt.selected`'s index mean a
+different row than the data has, and the data is somewhere Qt never sees.
 
 **A `separator` divides a menu *or* a layout.** One word, one meaning — a line
 that divides — over two widgets, and **its orientation comes from the parent**:

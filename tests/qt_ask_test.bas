@@ -122,16 +122,22 @@ program main()
     ' advances, so it looks like it is working, and the program HANGS. Measured
     ' while writing this fixture, which first wrapped these turns in a `spin()`
     ' helper and hung with no output at all.
-    qt.rows(app, "results", 100)
+    ' THE COUNTER IS RESET BEFORE `qt.rows`, NOT AFTER, and that boundary is
+    ' the assertion: what is being measured is the WHOLE cost of showing N
+    ' rows -- telling the table how many there are AND painting it. Reset
+    ' afterwards, a model that did expensive work while being told the count
+    ' would be invisible, and a perturbation that prefetched five hundred rows
+    ' on every `qt.rows` passed every check in this file.
     g.asked = 0
     g.ticks = 0
     g.stopping = true
+    qt.rows(app, "results", 100)
     qt.run()
     small = g.asked
 
-    qt.rows(app, "results", 1000000)
     g.asked = 0
     g.ticks = 0
+    qt.rows(app, "results", 1000000)
     qt.run()
     big = g.asked
 

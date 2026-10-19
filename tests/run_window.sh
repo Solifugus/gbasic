@@ -812,7 +812,32 @@ window w( title: "x" )
     end table
 end window
 EOF
-refuse "a table's direction is edit or show too" "a table is \`to edit\` or \`to show\`, not \`to view\`"
+refuse "a table's direction names all three it has" "a table is \`to show\`, \`to edit\` or \`to ask\`, not \`to view\`"
+
+# A TABLE HAS A THIRD DIRECTION AND A FORM DOES NOT, which is the control pair
+# for §0.25: `to ask` means the rows are wherever the program keeps them and a
+# function is asked for each cell, so there is nothing for a FORM to ask FOR --
+# it shows or edits ONE record whose fields it can read, and `form to ask f`
+# would be a declaration whose subject could never be bound. Without this,
+# "ask is a direction" is satisfied by letting every word that carries a
+# subject take it.
+src table_may_ask <<'EOF'
+window w( title: "x" )
+    table orders to ask cell_of
+        field a( label: "A" )
+    end table
+end window
+EOF
+accept "a table may ask for its cells"
+
+src form_may_not_ask <<'EOF'
+window w( title: "x" )
+    form to ask cell_of
+        field a( label: "A" )
+    end form
+end window
+EOF
+refuse "a form may not ask" "a form is \`to edit\` or \`to show\`"
 
 # THE VOCABULARY SENTENCE MUST NAME IT, or a reader who typed `table` correctly
 # and made some other mistake is told the containers are row, column, form and

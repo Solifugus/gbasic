@@ -1,0 +1,7 @@
+rows:          1000000
+row 0:         customer 0
+row 999999:    customer 999999
+money reads:   12.00
+a date reads:  2026-01-01
+cells asked for to draw a MILLION rows: 64
+which is fewer than a thousand:         true
