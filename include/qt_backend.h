@@ -50,6 +50,12 @@ int gb_qt_can_display(void);
  * registered for it -- by name rather than as a value, which is what
  * `gi_signal_marshal` already does for GTK (§5). */
 typedef void (*GbQtInvokeFn)(const char *handler);
+/* WHAT IS IN ONE CELL, asked of gBASIC. Answers 1 and fills `*text` with a
+ * malloc'd string the caller frees, or 0 if the function is gone or raised --
+ * in which case the cell is drawn empty rather than the program stopped, the
+ * position a model has to take because `data()` is called during a PAINT and
+ * there is nothing sensible to unwind into. */
+typedef int (*GbQtCellFn)(const char *fn, int row, int column, char **text);
 
 /* A WINDOW HAS CLOSED, and gBASIC's own registry has to learn about it. The
  * backend cannot do that bookkeeping itself: which declaration a window came
@@ -70,7 +76,7 @@ typedef void (*GbQtClosedFn)(void *window);
 typedef int (*GbQtTickFn)(void);
 
 void gb_qt_set_callbacks(GbQtInvokeFn invoke, GbQtTickFn tick,
-                         GbQtClosedFn closed);
+                         GbQtClosedFn closed, GbQtCellFn cell);
 
 /* THE APPLICATION'S OWN STYLESHEET -- the half of theming the by-name property
  * route does NOT already give. Measured before this was written: `styleSheet`
@@ -543,6 +549,56 @@ int gb_qt_choice_clear(void *window, const char *name, char *err,
                        size_t err_size);
 int gb_qt_choice_add(void *window, const char *name, const char *item,
                      char *err, size_t err_size);
+
+/* A TABLE WHOSE ROWS ARE ASKED FOR RATHER THAN HELD -- `table results to ask
+ * cell_of`, which is §0.25 built. A `table ... to show <list>` materialises
+ * every row into a QTableWidget, so §0.6 deferred the million-row path to a
+ * MODEL behind a QTableView, and gBASIC Studio is the consumer: its results
+ * grid switches to `datagrid.create_virtual(count_fn, cell_fn)` above 500
+ * rows, and `datagrid` is GTK-only.
+ *
+ * THE ONE NUMBER THAT DECIDED WHETHER THIS IS POSSIBLE AT ALL. A model's
+ * `data()` has to call back into the interpreter, and per cell of the whole
+ * table that would be unusable. Measured, it is not:
+ *
+ *      100 rows,      300px tall  ->     27 data() calls, top row seen 8
+ *      10,000 rows,   300px tall  ->     27 data() calls, top row seen 8
+ *      1,000,000 rows,300px tall  ->     27 data() calls, top row seen 8
+ *      1,000,000 rows,900px tall  ->     87 data() calls, top row seen 28
+ *
+ * THE COST IS THE VIEWPORT, NOT THE TABLE -- and `scrollToBottom` on a
+ * million rows cost 54 calls IN TOTAL, jumping straight to row 999,999 rather
+ * than touching anything on the way. So a callback per visible cell is ~30-90
+ * per redraw.
+ *
+ * AND IT NEEDS NO NEW SEAM, which is a correction to §0.25's own first
+ * assessment: `invoke_function(stmt, args, argc, receiver)` ALREADY takes
+ * arguments and returns a Value -- the handler path simply passes
+ * `NULL, 0, NULL` because handlers take none. So this is one more callback
+ * beside `GbQtInvokeFn` rather than a new kind of crossing.
+ *
+ * `ask` IS THE THIRD DIRECTION WORD, beside `show` and `edit`, and it costs
+ * ZERO grammar: `IDENT IDENT TO IDENT IDENT` is the production a named
+ * container with a subject already uses, and the direction is recognised by
+ * POSITION in the validator rather than by a token. The subject is a FUNCTION
+ * NAME rather than a list, which is what the word says -- a table that ASKS
+ * for a cell instead of being shown one.
+ *
+ * THE ROW COUNT IS A VERB AND NOT PART OF THE DECLARATION, because it changes:
+ * Studio's grid is refilled by every query, so a count fixed when the window
+ * opened would be wrong the first time anybody ran a second query. */
+void *gb_qt_virtual_table(void *parent, const char *name,
+                          const char *const *headers, int ncols,
+                          const char *cell_fn, char *err, size_t err_size);
+
+/* HOW MANY ROWS THE MODEL CLAIMS. Setting it resets the view, which is what
+ * tells Qt to re-ask for everything -- so this is also how "the data changed"
+ * is said. Reading it back is the only way to observe that the setting took,
+ * and is the shape `gb_qt_menu_count` already has. */
+int gb_qt_virtual_rows(void *window, const char *name, int rows, char *err,
+                       size_t err_size);
+int gb_qt_virtual_row_count(void *window, const char *name, int *rows,
+                            char *err, size_t err_size);
 
 int gb_qt_table_size(void *window, const char *name, int rows, char *err,
                      size_t err_size);

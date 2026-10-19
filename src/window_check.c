@@ -317,10 +317,28 @@ static void win_check_item(WinRun *run, const void *item,
                                strcmp(word, "table") == 0);
         if (carries_subject) {
             const char *dir = M->direction(item);
-            if (dir && strcmp(dir, "edit") != 0 && strcmp(dir, "show") != 0) {
-                win_error(run, item,
-                          "window: a %s is `to edit` or `to show`, not `to %s`",
-                          word, dir);
+            /* `ask` IS A TABLE'S THIRD DIRECTION AND A FORM'S HAS ONLY TWO.
+             * A form shows or edits ONE record whose fields it can read; an
+             * asking table's rows are wherever the program keeps them and this
+             * side never sees them, so there is nothing for a form to ask FOR
+             * -- and `form x to ask f` would be a declaration whose subject
+             * could never be bound. Refused by naming the two a form has,
+             * which is also what stops `ask` spreading to every word that
+             * carries a subject just because one of them wanted it. */
+            int table_word = strcmp(word, "table") == 0;
+            int known = dir && (strcmp(dir, "edit") == 0 ||
+                                strcmp(dir, "show") == 0 ||
+                                (table_word && strcmp(dir, "ask") == 0));
+            if (dir && !known) {
+                if (table_word) {
+                    win_error(run, item,
+                              "window: a table is `to show`, `to edit` or "
+                              "`to ask`, not `to %s`", dir);
+                } else {
+                    win_error(run, item,
+                              "window: a %s is `to edit` or `to show`, not "
+                              "`to %s`", word, dir);
+                }
             }
             if (!M->subject(item) && !window_subject) {
                 win_error(run, item,

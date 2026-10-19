@@ -647,6 +647,67 @@ static Value qt_apply_type(const char *modifier_name, Value value) {
  * (the old error model reported at raise time, so silence here would be a
  * regression), then the flight is cleared and Qt's loop is asked to stop,
  * which is what `gi_main_loop_quit` does one toolkit over. */
+/* WHAT IS IN ONE CELL, asked of gBASIC by the model behind an asking table.
+ *
+ * IT NEEDED NO NEW SEAM, which is a correction to §0.25's first assessment:
+ * `invoke_function` already takes arguments and returns a Value -- the handler
+ * path simply passes `NULL, 0, NULL` because handlers take none. The args are
+ * heap-allocated and ownership passes to the callee, which is the convention
+ * every other caller in eval.c follows.
+ *
+ * A RAISE DRAWS AN EMPTY CELL AND STOPS THE LOOP rather than propagating,
+ * because `data()` is called during a PAINT with Qt's own frames in between --
+ * there is nowhere to unwind to. It is reported the way a handler's raise is
+ * (`raise_report_contained`), so it is not silent; what it cannot be is
+ * recoverable in place. */
+static int qt_cell_text(const char *fn, int row, int column, char **text) {
+    if (text) {
+        *text = NULL;
+    }
+    FunctionDef *def = function_resolve(NULL, fn);
+    if (!def || !def->stmt) {
+        return 0;
+    }
+    int saved_stopped = runtime_stopped;
+    int saved_line = current_line;
+    int saved_column = current_column;
+    int before_gen = error_generation;
+
+    Value *args = malloc(sizeof(Value) * 2);
+    if (!args) {
+        abort();
+    }
+    args[0] = value_number(row);
+    args[1] = value_number(column);
+    Value result = invoke_function(def->stmt, args, 2, NULL);
+
+    int ok = 1;
+    if (runtime_stopped || error_generation != before_gen) {
+        if (raise_in_flight) {
+            raise_report_contained();
+        }
+        runtime_stopped = saved_stopped;
+        error_clear_state();
+        gb_qt_stop();
+        ok = 0;
+    } else {
+        /* THROUGH THE ONE RENDERER (PLAT-RENDER), so a date, money or a
+         * duration reaches a cell in the words the language itself uses --
+         * rather than this module growing a second opinion about how a value
+         * looks, which is the rule `qt.write` already follows. */
+        Value as_text = builtin_string_value(result);
+        if (as_text.kind == VALUE_STRING && as_text.as.string && text) {
+            *text = copy_string(as_text.as.string);
+        }
+        value_free(as_text);
+        result = value_null();   /* consumed by builtin_string_value */
+    }
+    value_free(result);
+    current_line = saved_line;
+    current_column = saved_column;
+    return ok;
+}
+
 static void qt_invoke_handler(const char *handler) {
     FunctionDef *def = function_resolve(NULL, handler);
     if (!def || !def->stmt) {
@@ -1094,8 +1155,21 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             }
             headers[at++] = cap ? cap : "";
         }
-        void *tnode = gb_qt_table(parent, name ? name : "", headers, (int)at,
-                                  err, sizeof(err));
+        /* `to ask` BUILDS A DIFFERENT WIDGET, and it has to be decided HERE
+         * rather than switched later: a QTableWidget IS its own model, so a
+         * table cannot become model-backed after it is made. The declaration
+         * is the only place that can say. */
+        const char *tdir = qt_record_text(item, "direction");
+        void *tnode;
+        if (tdir && strcmp(tdir, "ask") == 0) {
+            const char *cellfn = qt_record_text(item, "subject");
+            tnode = gb_qt_virtual_table(parent, name ? name : "", headers,
+                                        (int)at, cellfn ? cellfn : "", err,
+                                        sizeof(err));
+        } else {
+            tnode = gb_qt_table(parent, name ? name : "", headers, (int)at,
+                                err, sizeof(err));
+        }
         free((void *)headers);
         if (!tnode) {
             snprintf(message, sizeof(message), "window: %s",
@@ -1859,6 +1933,15 @@ static int qt_bind_table(void *root, Value *table, const char *window_name) {
     if (!name || !subject || !direction) {
         return 1;
     }
+    /* AN ASKING TABLE HAS NOTHING TO BIND. Its subject is a FUNCTION NAME, not
+     * a variable holding rows -- the rows are wherever the program keeps them
+     * and this side never sees them -- so the lookup below would refuse a
+     * perfectly good declaration for naming something that is not in the
+     * frame. The function is resolved per cell instead, and a missing one is
+     * refused THERE, where the name is actually needed. */
+    if (strcmp(direction, "ask") == 0) {
+        return 1;
+    }
     Value *slot = qt_subject_slot(subject);
     if (!slot) {
         snprintf(message, sizeof(message),
@@ -2299,7 +2382,7 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
     }
     if (!qt_callbacks_set) {
         gb_qt_set_callbacks(qt_invoke_handler, qt_pump_gbasic,
-                            qt_window_closed);
+                            qt_window_closed, qt_cell_text);
         qt_callbacks_set = 1;
     }
 
@@ -4527,6 +4610,86 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         return value_bool(has);
+    }
+
+    /* HOW MANY ROWS AN ASKING TABLE HAS. A VERB AND NOT PART OF THE
+     * DECLARATION, because it changes: a results grid is refilled by every
+     * query, so a count fixed when the window opened would be wrong the first
+     * time anybody ran a second one. Setting it also tells Qt to re-ask for
+     * everything, which is how "the data changed" is said -- there is no
+     * `qt.refresh` for an asking table because the count IS the refresh.
+     *
+     * READ WITH NO COUNT, which is the only way to observe that a set took --
+     * the shape `qt.menus` already has. */
+    if (strcmp(verb, "rows") == 0) {
+        if (argc != 2 && argc != 3) {
+            qt_raise("qt.rows expects a window, a table's name and optionally "
+                     "how many rows it now has");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        int setting = 0, howmany = 0;
+        if (argc == 3) {
+            Value n = eval_expr(expr->as.call.args.items[2]);
+            if (error_action_pending()) {
+                value_free(win); value_free(which); value_free(n);
+                return value_null();
+            }
+            if (n.kind != VALUE_NUMBER) {
+                qt_raise("qt.rows expects the number of rows as a number");
+                value_free(win); value_free(which); value_free(n);
+                return value_null();
+            }
+            howmany = (int)n.as.num.value;
+            value_free(n);
+            if (howmany < 0) {
+                /* REFUSED RATHER THAN CLAMPED: a negative count is a mistake
+                 * in the program's own arithmetic, and silently showing an
+                 * empty table would hide it. */
+                qt_raise("qt.rows: a table cannot have fewer than no rows");
+                value_free(win); value_free(which);
+                return value_null();
+            }
+            setting = 1;
+        }
+        if (!qt_window_record(&win, "rows") || which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.rows expects the table's name as text");
+            }
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        err[0] = '\0';
+        int ok;
+        if (setting) {
+            ok = gb_qt_virtual_rows(root, which.as.string, howmany, err,
+                                    sizeof(err));
+        } else {
+            ok = gb_qt_virtual_row_count(root, which.as.string, &howmany, err,
+                                         sizeof(err));
+        }
+        value_free(win); value_free(which);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.rows: %s",
+                     err[0] ? err : "that table could not be asked");
+            qt_raise(message);
+            return value_null();
+        }
+        return setting ? value_bool(1) : value_number(howmany);
     }
 
     if (strcmp(verb, "scrolled") == 0 || strcmp(verb, "scroll_to") == 0) {

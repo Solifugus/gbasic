@@ -69,6 +69,8 @@
 #include <QContextMenuEvent>
 #include <QWheelEvent>
 #include <QScrollBar>
+#include <QAbstractTableModel>
+#include <QTableView>
 #include <QFrame>
 #include <QMetaEnum>
 #include <QStyle>
@@ -155,14 +157,16 @@ extern "C" int gb_qt_can_display(void) {
 /* ------------------------------------------------------------------ */
 
 static GbQtInvokeFn g_invoke = nullptr;
+static GbQtCellFn g_cell = nullptr;
 static GbQtTickFn g_tick = nullptr;
 static GbQtClosedFn g_closed = nullptr;
 
 extern "C" void gb_qt_set_callbacks(GbQtInvokeFn invoke, GbQtTickFn tick,
-                                    GbQtClosedFn closed) {
+                                    GbQtClosedFn closed, GbQtCellFn cell) {
     g_invoke = invoke;
     g_tick = tick;
     g_closed = closed;
+    g_cell = cell;
 }
 
 /* ONE GENERIC RELAY per connection. A widget's signal reaches `fire()` and
@@ -300,6 +304,80 @@ public:
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
 };
+
+/* A TABLE THAT ASKS FOR ITS CELLS. The million-row path §0.6 deferred, and the
+ * reason it is affordable is one measurement: a QTableView asks `data()` only
+ * for what is VISIBLE -- 27 calls for 100 rows and 27 for a million, 87 for a
+ * taller viewport, and `scrollToBottom` on a million cost 54 in total, jumping
+ * straight to the last row rather than touching anything on the way. So the
+ * cost is the viewport and not the table.
+ *
+ * `rowCount` IS WHAT IT WAS TOLD, not something it counts: the rows are
+ * wherever the program keeps them and this side never sees them. Setting it
+ * resets the model, which is how Qt is told to re-ask -- and is therefore also
+ * how "the data changed" is said.
+ *
+ * A FAILED CALLBACK DRAWS AN EMPTY CELL rather than stopping the program, and
+ * that is forced rather than chosen: `data()` is called during a PAINT, with
+ * Qt's own frames between us and anything that could unwind, so there is
+ * nowhere to raise to. The gBASIC side reports the raise through its own
+ * channel instead. */
+class GbQtAskModel : public QAbstractTableModel {
+public:
+    QByteArray cell_fn;
+    QStringList headers;
+    int rows = 0;
+    int rowCount(const QModelIndex &parent) const override {
+        return parent.isValid() ? 0 : rows;
+    }
+    int columnCount(const QModelIndex &parent) const override {
+        return parent.isValid() ? 0 : (int)headers.size();
+    }
+    QVariant headerData(int section, Qt::Orientation o,
+                        int role) const override {
+        if (role != Qt::DisplayRole || o != Qt::Horizontal) {
+            return QAbstractTableModel::headerData(section, o, role);
+        }
+        if (section < 0 || section >= headers.size()) {
+            return QVariant();
+        }
+        return headers.at(section);
+    }
+    QVariant data(const QModelIndex &ix, int role) const override {
+        if (role != Qt::DisplayRole || !ix.isValid() || !g_cell ||
+            cell_fn.isEmpty()) {
+            return QVariant();
+        }
+        char *text = nullptr;
+        if (!g_cell(cell_fn.constData(), ix.row(), ix.column(), &text)) {
+            return QVariant();
+        }
+        QString out = QString::fromUtf8(text ? text : "");
+        free(text);
+        return out;
+    }
+    void set_rows(int n) {
+        beginResetModel();
+        rows = n < 0 ? 0 : n;
+        endResetModel();
+    }
+};
+
+/* THE MODEL BEHIND A PART, or null where that part is not an asking table. */
+static GbQtAskModel *ask_model_of(void *window, const char *name) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !name) {
+        return nullptr;
+    }
+    QObject *o = root->parts.value(QString::fromUtf8(name), nullptr);
+    QTableView *v = o ? qobject_cast<QTableView *>(o) : nullptr;
+    /* `dynamic_cast` AND NOT `qobject_cast`, because this model carries no
+     * Q_OBJECT: it declares no signals or slots of its own, so adding the
+     * macro would mean another moc translation unit for nothing. RTTI answers
+     * the only question being asked -- is this view's model OURS -- and
+     * answers it safely for a model somebody else's code put there. */
+    return v ? dynamic_cast<GbQtAskModel *>(v->model()) : nullptr;
+}
 
 /* THE WIDGET A MOUSE EVENT WOULD LAND ON. For a scroll area that is the
  * VIEWPORT and not the widget, which is a measurement rather than a guess: a
@@ -2613,6 +2691,85 @@ extern "C" int gb_qt_choice_add(void *window, const char *name,
     return 1;
 }
 
+extern "C" void *gb_qt_virtual_table(void *parent, const char *name,
+                                     const char *const *headers, int ncols,
+                                     const char *cell_fn, char *err,
+                                     size_t err_size) {
+    GbQtNode *p = (GbQtNode *)parent;
+    if (!p || !p->widget) {
+        say(err, err_size, "there is nowhere to put that table");
+        return nullptr;
+    }
+    QTableView *v = new QTableView(p->widget);
+    GbQtAskModel *m = new GbQtAskModel();
+    m->setParent(v);
+    m->cell_fn = QByteArray(cell_fn ? cell_fn : "");
+    for (int i = 0; i < ncols; i++) {
+        m->headers << QString::fromUtf8(headers && headers[i] ? headers[i] : "");
+    }
+    v->setModel(m);
+    /* THE SAME THREE DECISIONS A `table` MAKES, for the same reasons recorded
+     * there: whole rows are selected because a cell is not a record; one at a
+     * time, because `qt.selected` answers ONE index; and CLICK-TO-SORT IS OFF,
+     * since a sorted view would make that index mean a different row in the
+     * view than in the data -- which here would be worse, the data being
+     * somewhere this side never sees. */
+    v->setSelectionBehavior(QAbstractItemView::SelectRows);
+    v->setSelectionMode(QAbstractItemView::SingleSelection);
+    v->setSortingEnabled(false);
+    v->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    if (QBoxLayout *b = qobject_cast<QBoxLayout *>(p->layout)) {
+        b->addWidget(v);
+    } else if (QSplitter *sp = qobject_cast<QSplitter *>(p->widget)) {
+        (void)sp;   /* parenting enrolled it as a pane already (§0.19) */
+    } else if (QGridLayout *g = qobject_cast<QGridLayout *>(p->layout)) {
+        g->addWidget(v, p->grid_row < 0 ? 0 : p->grid_row,
+                     p->grid_col < 0 ? 0 : p->grid_col);
+    } else if (!p->layout) {
+        /* a tab page or a splitter pane: parenting is enrolment */
+    } else {
+        say(err, err_size, "that container cannot hold a table");
+        delete v;
+        return nullptr;
+    }
+    GbQtNode *n = node_new();
+    n->root = p->root;
+    n->widget = v;
+    if (name && *name && n->root) {
+        n->root->parts.insert(QString::fromUtf8(name), v);
+    }
+    return n;
+}
+
+extern "C" int gb_qt_virtual_rows(void *window, const char *name, int rows,
+                                  char *err, size_t err_size) {
+    GbQtAskModel *m = ask_model_of(window, name);
+    if (!m) {
+        say(err, err_size,
+            QByteArray("`") + (name ? name : "") +
+                "` is not a table that asks for its rows");
+        return 0;
+    }
+    m->set_rows(rows);
+    return 1;
+}
+
+extern "C" int gb_qt_virtual_row_count(void *window, const char *name,
+                                       int *rows, char *err,
+                                       size_t err_size) {
+    GbQtAskModel *m = ask_model_of(window, name);
+    if (!m) {
+        say(err, err_size,
+            QByteArray("`") + (name ? name : "") +
+                "` is not a table that asks for its rows");
+        return 0;
+    }
+    if (rows) {
+        *rows = m->rows;
+    }
+    return 1;
+}
+
 extern "C" int gb_qt_table_size(void *window, const char *name, int rows,
                                 char *err, size_t err_size) {
     QTableWidget *t = table_of(window, name);
@@ -2642,6 +2799,26 @@ extern "C" int gb_qt_table_set(void *window, const char *name, int row,
 
 extern "C" char *gb_qt_table_get(void *window, const char *name, int row,
                                  int col) {
+    /* AN ASKING TABLE ANSWERS THROUGH ITS MODEL, so `qt.cell` reads one the
+     * same way it reads a held table -- which matters twice over: a program
+     * should not have to know which kind it declared to read a cell, and this
+     * is the route a check uses to observe that the callback is wired at all,
+     * since a cell asked for is a cell the callback was called for. */
+    if (GbQtAskModel *m = ask_model_of(window, name)) {
+        if (row < 0 || row >= m->rows || col < 0 ||
+            col >= (int)m->headers.size()) {
+            return nullptr;
+        }
+        QVariant v = m->data(m->index(row, col), Qt::DisplayRole);
+        QByteArray bytes = v.toString().toUtf8();
+        char *out = (char *)malloc((size_t)bytes.size() + 1);
+        if (!out) {
+            return nullptr;
+        }
+        memcpy(out, bytes.constData(), (size_t)bytes.size());
+        out[bytes.size()] = '\0';
+        return out;
+    }
     QTableWidget *t = table_of(window, name);
     if (!t || row < 0 || row >= t->rowCount() || col < 0 ||
         col >= t->columnCount()) {
@@ -2689,6 +2866,24 @@ extern "C" int gb_qt_table_selected(void *window, const char *name) {
 
 extern "C" char *gb_qt_table_heading(void *window, const char *name,
                                      int col) {
+    /* AN ASKING TABLE'S CAPTIONS LIVE IN ITS MODEL, and they are the ORACLE
+     * here for the same reason they are for a held table: a cell's data and
+     * its heading come from different places (the callback and the
+     * declaration), so a column mapped wrongly shows the right values under
+     * the wrong headings, and only the captions can say so. */
+    if (GbQtAskModel *m = ask_model_of(window, name)) {
+        if (col < 0 || col >= (int)m->headers.size()) {
+            return nullptr;
+        }
+        QByteArray bytes = m->headers.at(col).toUtf8();
+        char *out = (char *)malloc((size_t)bytes.size() + 1);
+        if (!out) {
+            return nullptr;
+        }
+        memcpy(out, bytes.constData(), (size_t)bytes.size());
+        out[bytes.size()] = '\0';
+        return out;
+    }
     QTableWidget *t = table_of(window, name);
     if (!t || col < 0 || col >= t->columnCount()) {
         return nullptr;
