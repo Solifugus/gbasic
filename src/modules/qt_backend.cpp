@@ -68,6 +68,7 @@
 #include <QMouseEvent>
 #include <QContextMenuEvent>
 #include <QWheelEvent>
+#include <QScrollBar>
 #include <QCursor>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -1788,7 +1789,80 @@ extern "C" int gb_qt_right_click(void *window, const char *name, int row,
     return 1;
 }
 
-extern "C" int gb_qt_scroll(void *window, const char *name, int notches,
+/* THE SCROLLBAR OF A PART, or null where there is none. A QAbstractScrollArea
+ * reaches its bars by a METHOD rather than a property, which is why the
+ * ordinary by-name route cannot see a scroll position at all. */
+static QScrollBar *bar_of(void *window, const char *name) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !name) {
+        return nullptr;
+    }
+    QObject *o = root->parts.value(QString::fromUtf8(name), nullptr);
+    QWidget *w = o ? qobject_cast<QWidget *>(o) : nullptr;
+    QAbstractScrollArea *sa = w ? qobject_cast<QAbstractScrollArea *>(w)
+                                : nullptr;
+    return sa ? sa->verticalScrollBar() : nullptr;
+}
+
+/* 0 IS A REFUSAL, 1 IS "FOUND BUT IT DOES NOT SCROLL", 2 IS A POSITION. Three
+ * answers because the middle one is not an error: a `button` legitimately has
+ * no scroll position, and the caller turns that into `unknown` -- a different
+ * claim from a `source` sitting at position 0. */
+extern "C" int gb_qt_scrolled(void *window, const char *name, double *at,
+                              char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root) {
+        say(err, err_size, "there is no window to read that in");
+        return 0;
+    }
+    if (!root->parts.contains(QString::fromUtf8(name ? name : ""))) {
+        say(err, err_size,
+            QByteArray("this window has no `") + (name ? name : "") + "`");
+        return 0;
+    }
+    QScrollBar *b = bar_of(window, name);
+    if (!b) {
+        return 1;
+    }
+    if (at) {
+        *at = (double)b->value();
+    }
+    return 2;
+}
+
+extern "C" int gb_qt_scroll_to(void *window, const char *name, double at,
+                               char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root) {
+        say(err, err_size, "there is no window to scroll");
+        return 0;
+    }
+    if (!root->parts.contains(QString::fromUtf8(name ? name : ""))) {
+        say(err, err_size,
+            QByteArray("this window has no `") + (name ? name : "") + "`");
+        return 0;
+    }
+    QScrollBar *b = bar_of(window, name);
+    if (!b) {
+        /* NAMED RATHER THAN IGNORED: a program restoring a remembered position
+         * onto the wrong part would otherwise succeed and do nothing. */
+        say(err, err_size,
+            QByteArray("`") + (name ? name : "") + "` does not scroll");
+        return 0;
+    }
+    /* CLAMPED BY QT ITSELF, which is why nothing here checks the range: a
+     * QScrollBar refuses a value outside its own minimum and maximum, and that
+     * maximum moves with the content. */
+    b->setValue((int)at);
+    return 1;
+}
+
+/* `notches` IS FRACTIONAL, because a trackpad is real: Qt's convention is 120
+ * units to a notch and a high-resolution device sends less, which is exactly
+ * the case the filter's round-away-from-zero exists for -- and with a whole
+ * number here that rounding could not be driven at all, so a perturbation
+ * removing it went GREEN. */
+extern "C" int gb_qt_scroll(void *window, const char *name, double notches,
                             int mods, int *claimed, char *err,
                             size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
@@ -1823,7 +1897,7 @@ extern "C" int gb_qt_scroll(void *window, const char *name, int notches,
     }
     g_wheel_claimed_last = false;
     QWheelEvent ev(QPointF(at), QPointF(target->mapToGlobal(at)), QPoint(0, 0),
-                   QPoint(0, notches * 120), Qt::NoButton, m,
+                   QPoint(0, (int)(notches * 120)), Qt::NoButton, m,
                    Qt::NoScrollPhase, false);
     QApplication::sendEvent(target, &ev);
     if (claimed) {

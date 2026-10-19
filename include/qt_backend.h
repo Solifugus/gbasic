@@ -417,8 +417,34 @@ int gb_qt_swallow(char *err, size_t err_size);
  * `gb_qt_right_click` records -- and here it is twice load-bearing, since that
  * is also where the FILTER has to sit: an event filter sees only what is
  * delivered to the object it is installed on. */
-int gb_qt_scroll(void *window, const char *name, int notches, int mods,
+int gb_qt_scroll(void *window, const char *name, double notches, int mods,
                  int *claimed, char *err, size_t err_size);
+
+/* WHERE A PART IS SCROLLED TO, and the write half beside it.
+ *
+ * IT EXISTS BECAUSE A PERTURBATION WENT GREEN. `gb_qt_scroll` answers whether
+ * anything CLAIMED the event, and a filter made to record the claim and then
+ * return FALSE -- so the claim is reported while the view scrolls anyway --
+ * was caught by NOTHING: the answer agrees with `gb_qt_swallow` having been
+ * called, whatever Qt then did with the event. That is agreement rather than
+ * correctness (PLAT-NUMFMT's lesson), and the only honest observable is the
+ * position itself. So the claim "swallowing stops the view" is now asserted
+ * against the view.
+ *
+ * AND IT IS NOT A TEST HOOK. Reopening an editor where somebody left it is
+ * what Studio already does for its panes, and a program could not ask: a
+ * QAbstractScrollArea's scrollbar is reached by a METHOD, not a property, so
+ * the by-name route cannot see it. BOTH DIRECTIONS, because a reader without a
+ * writer is the shape `webclient`'s read and write halves had -- a door that
+ * opens one way.
+ *
+ * ANSWERS `unknown` FOR A PART THAT DOES NOT SCROLL, which is a different
+ * claim from "scrolled to nowhere": a `button` has no position, where a
+ * `source` at the top has position 0. */
+int gb_qt_scrolled(void *window, const char *name, double *at, char *err,
+                   size_t err_size);
+int gb_qt_scroll_to(void *window, const char *name, double at, char *err,
+                    size_t err_size);
 
 /* The modifier bits `gb_qt_scroll` takes, so a caller does not depend on Qt's
  * own values. */

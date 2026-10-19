@@ -158,11 +158,11 @@ elif [ "$rc" != "0" ]; then
 else
     checks=$(grep -c '^ok' "$work/sem.out" || true)
     bad=$(grep -c 'MISMATCH' "$work/sem.out" || true)
-    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 24 ]; then
+    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 32 ]; then
         pass "$checks checks, 0 mismatches"
     else
         grep MISMATCH "$work/sem.out" | head -6
-        fail "$checks checks, $bad mismatches (want >= 24 and none)"
+        fail "$checks checks, $bad mismatches (want >= 32 and none)"
     fi
     # Qt's offscreen plugin says these on every run and they are not ours.
     grep -v 'This plugin does not support' "$work/sem.err" > "$work/sem.err2" || true
@@ -177,6 +177,29 @@ else
         pass "CLAIMED: swallowing and declining, asserted as a difference"
     else
         fail "qt.swallow was not measured both ways -- a backend that swallows everything costs every source and table its ordinary scrolling"
+    fi
+    # THE TIER A PERTURBATION FORCED, and the one to read after POLICY: the
+    # check above asserts what the PROGRAM said, and a filter made to record
+    # the claim and then return FALSE -- so the claim is reported while the
+    # view scrolls anyway -- was caught by NOTHING. Agreement is not
+    # correctness (PLAT-NUMFMT), so the claim is asserted against the VIEW,
+    # which is what `qt.scrolled` was added for.
+    if grep -q "^ok   a declined wheel really scrolled the view" "$work/sem.out" &&
+       grep -q "^ok   a swallowed wheel left the view alone" "$work/sem.out"; then
+        pass "VIEW: swallowing really stops it, and declining really does not"
+    else
+        fail "swallowing was asserted only against qt.scroll's own answer, which agrees with qt.swallow having been called whatever Qt then did"
+    fi
+    # A SUB-NOTCH TURN, which is why `qt.scroll` takes a FRACTION: a trackpad
+    # sends deltas under Qt's 120-unit notch and integer division reports those
+    # as zero -- in the one value whose sign is the whole of what a zoom reads.
+    # Without a fraction to drive it the rounding could not be exercised at all
+    # and a perturbation removing it went green.
+    if grep -q "^ok   a quarter-notch up still reads as up" "$work/sem.out" &&
+       grep -q "^ok   and a quarter-notch down as down" "$work/sem.out"; then
+        pass "SUB-NOTCH: a fraction of a notch keeps its direction"
+    else
+        fail "a sub-notch turn was not driven -- integer division reports it as no movement at all"
     fi
     if grep -q "^ok   a part with no handler claims nothing" "$work/sem.out" &&
        grep -q "^ok   an undeclared part in a window that has one claims nothing" "$work/sem.out"; then

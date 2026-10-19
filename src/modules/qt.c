@@ -4323,6 +4323,79 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
+    /* WHERE A PART IS SCROLLED TO, and the write half. `qt.scrolled` answers
+     * `unknown` for a part that does not scroll -- a different claim from
+     * "scrolled to nowhere", since a `button` has no position where a `source`
+     * at the top has position 0. */
+    if (strcmp(verb, "scrolled") == 0 || strcmp(verb, "scroll_to") == 0) {
+        int writing = strcmp(verb, "scroll_to") == 0;
+        int want = writing ? 3 : 2;
+        if (argc != want) {
+            qt_raise(writing
+                         ? "qt.scroll_to expects a window, a part's name and a "
+                           "position"
+                         : "qt.scrolled expects a window and a part's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        double at = 0;
+        if (writing) {
+            Value pos = eval_expr(expr->as.call.args.items[2]);
+            if (error_action_pending()) {
+                value_free(win); value_free(which); value_free(pos);
+                return value_null();
+            }
+            if (pos.kind != VALUE_NUMBER) {
+                qt_raise("qt.scroll_to expects the position as a number");
+                value_free(win); value_free(which); value_free(pos);
+                return value_null();
+            }
+            at = pos.as.num.value;
+            value_free(pos);
+        }
+        if (!qt_window_record(&win, writing ? "scroll_to" : "scrolled") ||
+            which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("that verb expects the part's name as text");
+            }
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        err[0] = '\0';
+        int ok;
+        if (writing) {
+            ok = gb_qt_scroll_to(root, which.as.string, at, err, sizeof(err));
+        } else {
+            ok = gb_qt_scrolled(root, which.as.string, &at, err, sizeof(err));
+        }
+        value_free(win); value_free(which);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.%s: %s", verb,
+                     err[0] ? err : "that part could not be reached");
+            qt_raise(message);
+            return value_null();
+        }
+        if (writing) {
+            return value_bool(1);
+        }
+        /* 1 MEANS FOUND AND NOT SCROLLABLE, 2 MEANS A POSITION. */
+        return ok == 2 ? value_number(at) : value_unknown();
+    }
+
     /* TURN THE WHEEL, for a program driving itself -- and it answers whether
      * anything CLAIMED the event, which is the only thing that makes
      * `qt.swallow` observable: a QPlainTextEdit has no scroll position a
@@ -4349,9 +4422,12 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win); value_free(which); value_free(turn);
             return value_null();
         }
-        int notches = (int)turn.as.num.value;
+        double notches = turn.as.num.value;
         value_free(turn);
-        if (notches == 0) {
+        /* MEASURED IN QT'S OWN UNITS, because a fraction small enough rounds
+         * to no event at all -- and "it turned by nothing" is a mistake about
+         * the argument rather than a wheel that did not move. */
+        if ((int)(notches * 120) == 0) {
             qt_raise("qt.scroll: a wheel turns by at least one notch");
             value_free(win); value_free(which);
             return value_null();

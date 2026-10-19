@@ -42,7 +42,7 @@ end function
 
 window app( title: "Wheel", width: 480, height: 360 )
     column
-        source code( plainText: "one" )
+        source code( plainText: "one" )   ' filled in `main`, to have somewhere to scroll
         table grid to show rows
             field name( label: "Name" )
         end table
@@ -93,6 +93,13 @@ program main()
           rows: rows }
 
     qt.open(app)
+    ' SOMEWHERE TO SCROLL. Without content the scrollbar has a range of zero and
+    ' every position check below would be 0 = 0 -- true, and about nothing.
+    lines = []
+    for i = 1 to 400
+        lines = append(lines, "line " + string(i))
+    end for
+    x = qt.write(app, "code", join(lines, chr(10)))
 
     ' ---- the event reaches the handler, with its direction and modifiers ----
     before = number(split(qt.read(app, "code", "font"), ",")[1])
@@ -133,11 +140,53 @@ program main()
     check("and shrank back", 
           number(split(qt.read(app, "code", "font"), ",")[1]), before)
 
+    ' ---- SWALLOWING MUST STOP THE VIEW, not merely report that it did -----
+    ' THIS TIER EXISTS BECAUSE A PERTURBATION WENT GREEN. `qt.scroll` answers
+    ' whether anything CLAIMED the event, and a filter made to record the claim
+    ' and then return FALSE -- so the claim is reported while the view scrolls
+    ' anyway -- was caught by NOTHING: that answer agrees with `qt.swallow`
+    ' having been called, whatever Qt then did. Agreement is not correctness,
+    ' so the claim is now asserted against the view itself, which is what
+    ' `qt.scrolled` is for.
+    qt.scroll_to(app, "code", 40)
+    sat = qt.scrolled(app, "code")
+    check("the editor is where we put it", sat, 40)
+    ' A PLAIN WHEEL: the handler declines, so the view MUST move.
+    qt.scroll(app, "code", -2)
+    moved = qt.scrolled(app, "code")
+    check("a declined wheel really scrolled the view", moved != sat, true)
+    ' CTRL + WHEEL: the handler swallows, so the view MUST NOT move -- which is
+    ' the half that was unobservable, and the reason this pair is a difference
+    ' rather than two facts about one path.
+    qt.scroll(app, "code", -2, "ctrl")
+    check("a swallowed wheel left the view alone",
+          qt.scrolled(app, "code"), moved)
+
+    ' ---- a sub-notch turn is still a turn ---------------------------------
+    ' A trackpad sends deltas under Qt's 120-unit notch, which integer division
+    ' reports as ZERO -- a handler told the wheel moved by nothing, in the one
+    ' value whose SIGN is the whole of what a zoom reads. Driven with a
+    ' fraction, which is why `qt.scroll` takes one: without it the rounding
+    ' could not be exercised and a perturbation removing it went green.
+    qt.scroll(app, "code", 0.25)
+    check("a quarter-notch up still reads as up", g.dy, 1)
+    qt.scroll(app, "code", -0.25)
+    check("and a quarter-notch down as down", g.dy, -1)
+
+    ' ---- a part that does not scroll answers `unknown`, not 0 -------------
+    check("a field has no scroll position",
+          is_unknown(qt.scrolled(app, "plain")), true)
+
     ' ---- a second modifier, so `ctrl` is read rather than assumed ----------
+    ' ASSERTED AS A DIFFERENCE AGAINST THE COUNT BEFORE IT, not against a
+    ' literal: the zoom counter moves with every Ctrl+wheel above it, so a
+    ' number written here is a transcript that breaks whenever a check is added
+    ' -- which it did, the first time.
+    zoomed_before = g.zoomed
     qt.scroll(app, "code", 1, "shift")
     check("shift is reported", g.shift, true)
     check("and shift is not ctrl", g.ctrl, false)
-    check("so it did not zoom", g.zoomed, 2)
+    check("so it did not zoom", g.zoomed, zoomed_before)
 
     ' ---- a table answers too, through its own viewport ---------------------
     qt.scroll(app, "grid", -1)
@@ -168,6 +217,16 @@ program main()
     qt.scroll(app, "code", 0)
     check("zero notches is refused", error.message,
           "qt.scroll: a wheel turns by at least one notch")
+    error.clear()
+
+    qt.scroll_to(app, "plain", 10)
+    check("scrolling a part that does not scroll is refused", error.message,
+          "qt.scroll_to: `plain` does not scroll")
+    error.clear()
+
+    qt.scrolled(app, "no_such_part")
+    check("an unknown part is refused by the reader too", error.message,
+          "qt.scrolled: this window has no `no_such_part`")
     error.clear()
     on error stop
 
