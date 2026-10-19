@@ -240,11 +240,11 @@ elif [ "$rc" != "0" ]; then
 else
     checks=$(grep -c '^ok' "$work/sem.out" || true)
     bad=$(grep -c 'MISMATCH' "$work/sem.out" || true)
-    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 30 ]; then
+    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 33 ]; then
         pass "$checks checks, 0 mismatches"
     else
         grep MISMATCH "$work/sem.out" | head -6
-        fail "$checks checks, $bad mismatches (want >= 30 and none)"
+        fail "$checks checks, $bad mismatches (want >= 33 and none)"
     fi
     # QT'S OFFSCREEN PLUGIN SAYS THESE ON EVERY RUN AND THEY ARE NOT OURS:
     # `propagateSizeHints` on any window, and `raise` and `grabbing the
@@ -297,6 +297,24 @@ else
         pass "SUBMENU: the count recurses, asserted both ways"
     else
         fail "the submenu was not counted for what it leads to -- a popup showing only an arrow to nowhere would report that it shows something"
+    fi
+    # UNDER A PART rather than at the pointer, which §0.20 left open as its own
+    # limitation and which Studio's toolbar menu button is the caller for: a
+    # menu button's menu belongs under the button, not wherever the mouse is.
+    if grep -q "^ok   a menu popped under a button appeared" "$work/sem.out" &&
+       grep -q "^ok   popping under something that is not there is refused" "$work/sem.out"; then
+        pass "UNDER: a menu hangs off the thing that opened it, and a bad name is refused"
+    else
+        fail "popping under a part was not measured -- at the pointer only, a toolbar menu appears wherever the mouse happens to be"
+    fi
+    # AND THE SAME WORD IN A LAYOUT. A `separator` means a line that divides,
+    # which is as true of a rule between two sections as of a line in a menu --
+    # one word, two widgets. A row is divided by a VERTICAL line, which is the
+    # half a menu separator cannot show.
+    if grep -q "^ok   a toolbar divider is vertical" "$work/sem.out"; then
+        pass "RULE: a separator in a row, beside the menu separator above"
+    else
+        fail "the layout separator was not measured here -- its orientation comes from the parent and is the one thing that can be built wrong"
     fi
 fi
 

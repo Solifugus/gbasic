@@ -4216,8 +4216,9 @@ static Value qt_eval_call(AstExpr *expr) {
      * one "reads as a control that failed" -- so a row that offers nothing is
      * an ordinary outcome and `false` is the truthful report, not an error. */
     if (strcmp(verb, "popup") == 0) {
-        if (argc != 2) {
-            qt_raise("qt.popup expects a window and a popup menu's name");
+        if (argc != 2 && argc != 3) {
+            qt_raise("qt.popup expects a window, a popup menu's name and "
+                     "optionally a part to pop under");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -4245,9 +4246,30 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(which);
             return value_null();
         }
+        /* A THIRD ARGUMENT NAMES A PART TO POP UNDER, which is what a menu
+         * BUTTON wants: its menu belongs under the button rather than
+         * wherever the mouse happens to be. Without it, §0.20's "at the
+         * pointer only" makes a toolbar menu unbuildable. */
+        char *under = NULL;
+        if (argc == 3) {
+            Value u = eval_expr(expr->as.call.args.items[2]);
+            if (error_action_pending()) {
+                value_free(win); value_free(which); value_free(u);
+                return value_null();
+            }
+            if (u.kind != VALUE_STRING) {
+                qt_raise("qt.popup expects the part to pop under as text");
+                value_free(win); value_free(which); value_free(u);
+                return value_null();
+            }
+            under = u.as.string ? copy_string(u.as.string) : NULL;
+            value_free(u);
+        }
         int shown = 0;
         err[0] = '\0';
-        if (!gb_qt_popup(root, which.as.string, &shown, err, sizeof(err))) {
+        if (!gb_qt_popup(root, which.as.string, under, &shown, err,
+                         sizeof(err))) {
+            free(under);
             snprintf(message, sizeof(message), "qt.popup: %s",
                      err[0] ? err : "that menu could not be raised");
             qt_raise(message);
@@ -4255,6 +4277,7 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(which);
             return value_null();
         }
+        free(under);
         value_free(win);
         value_free(which);
         return value_bool(shown);

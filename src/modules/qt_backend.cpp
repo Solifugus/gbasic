@@ -69,6 +69,7 @@
 #include <QContextMenuEvent>
 #include <QWheelEvent>
 #include <QScrollBar>
+#include <QFrame>
 #include <QMetaEnum>
 #include <QStyle>
 #include <QIcon>
@@ -803,6 +804,52 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
         say(err, err_size,
             QByteArray("`") + word + "` needs a `row` inside `cells`");
         return nullptr;
+    }
+
+    if (strcmp(word, "separator") == 0) {
+        /* A RULE IN A LAYOUT, which is the SAME WORD a menu uses and the same
+         * meaning -- a line that divides -- over a different widget. The
+         * validator already carries the parent's word, so one word covers
+         * both and the backend picks the widget.
+         *
+         * THE ORIENTATION COMES FROM THE PARENT, exactly as `stretch` takes
+         * its axis from one, and that is load-bearing rather than tidy:
+         * measured, the wrong way round is VISIBLY wrong -- an HLine in a row
+         * renders 119x3, a stubby stub taking a share of the width, where a
+         * VLine renders 3x78. A `separator( orientation: ... )` would be an
+         * option whose only correct value is the one the parent already knows.
+         *
+         * REFUSED WHERE THERE IS NO BOX, naming what a rule needs: a splitter
+         * pane has its own draggable divider and a grid cell has no direction,
+         * so a rule there would be a line at an orientation nobody chose. */
+        if (!pb) {
+            say(err, err_size,
+                "`separator` needs a `row` or a `column` to divide -- a "
+                "splitter already has a handle between its panes");
+            return nullptr;
+        }
+        QFrame *rule = new QFrame(p->widget);
+        /* A COLUMN IS DIVIDED BY A HORIZONTAL LINE and a row by a vertical
+         * one, which is the opposite of what the direction's name suggests
+         * until you picture it. */
+        bool vertical_box = pb->direction() == QBoxLayout::TopToBottom ||
+                            pb->direction() == QBoxLayout::BottomToTop;
+        rule->setFrameShape(vertical_box ? QFrame::HLine : QFrame::VLine);
+        rule->setFrameShadow(QFrame::Sunken);
+        pb->addWidget(rule);
+        GbQtNode *n = node_new();
+        n->root = p->root;
+        n->widget = rule;
+        /* REGISTERED IF NAMED, which is the whole point of letting a rule have
+         * a name: it is how Studio themes its own and the only way to observe
+         * the orientation, which is the one thing that can be built wrong. */
+        if (name && *name && n->root) {
+            n->root->parts.insert(QString::fromUtf8(name), rule);
+        }
+        /* NAMED NOTHING, like a menu's separator and for the same reason: it
+         * is a line. The validator refuses a name on it either way, and this
+         * is the floor under that. */
+        return n;
     }
 
     if (strcmp(word, "stretch") == 0) {
@@ -1809,8 +1856,8 @@ static int menu_visible_entries(QMenu *m) {
     return shown;
 }
 
-extern "C" int gb_qt_popup(void *window, const char *name, int *shown,
-                           char *err, size_t err_size) {
+extern "C" int gb_qt_popup(void *window, const char *name, const char *under,
+                           int *shown, char *err, size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
     if (shown) {
         *shown = 0;
@@ -1841,7 +1888,25 @@ extern "C" int gb_qt_popup(void *window, const char *name, int *shown,
          * than an error about a program that did nothing wrong. */
         return 1;
     }
-    m->popup(QCursor::pos());
+    QPoint at = QCursor::pos();
+    if (under && *under) {
+        QObject *uo = root->parts.value(QString::fromUtf8(under), nullptr);
+        QWidget *uw = uo ? qobject_cast<QWidget *>(uo) : nullptr;
+        if (!uw) {
+            /* NAMES WHAT IT LOOKED FOR, because popping at the pointer
+             * instead would put a menu button's menu wherever the mouse is --
+             * which looks like a bug in the program rather than a name that
+             * was wrong. */
+            say(err, err_size,
+                QByteArray("there is nothing called `") + under +
+                    "` to pop under");
+            return 0;
+        }
+        /* THE BOTTOM-LEFT, which is where a menu hangs from the thing that
+         * opened it -- measured to land exactly there. */
+        at = uw->mapToGlobal(QPoint(0, uw->height()));
+    }
+    m->popup(at);
     if (shown) {
         *shown = 1;
     }

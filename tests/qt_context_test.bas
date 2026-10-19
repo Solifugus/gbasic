@@ -66,13 +66,30 @@ window app( title: "Context", width: 620, height: 400 )
         item comment_it( label: "Comment out" )
     end popup
 
-    split across
-        table files to show rows
-            field name( label: "File" )
-            field kind( label: "Kind" )
-        end table
-        source code( plainText: "x = 1" )
-    end split
+    column
+        ' A TOOLBAR MENU BUTTON, which is what `qt.popup`'s third argument is
+        ' for: a menu button's menu belongs UNDER the button rather than
+        ' wherever the mouse happens to be, which is what §0.20 left open as
+        ' "at the pointer only". Studio builds one (a Gtk.MenuButton with a
+        ' glyph in its label), so this is the caller that closes it.
+        row
+            button proj( label: "Project" )
+            separator toolbar_rule()
+            button other( label: "Other" )
+            stretch()
+        end row
+        split across
+            table files to show rows
+                field name( label: "File" )
+                field kind( label: "Kind" )
+            end table
+            source code( plainText: "x = 1" )
+        end split
+    end column
+
+    on proj.clicked
+        g.under = qt.popup(app, "editor_actions", "proj")
+    end on
 
     on files.customContextMenuRequested
         g.asked = g.asked + 1
@@ -163,7 +180,7 @@ program main()
     ' every counter read 0 while the handlers had plainly run, which is the
     ' trap the cookbook's recipe 3 exists to teach.
     g = { asked: 0, editor_asked: 0, opened: 0, shown: false, hits: 0,
-          where: [], rows: rows }
+          where: [], rows: rows, under: false }
 
     qt.open(app)
 
@@ -256,6 +273,20 @@ program main()
     check("and an item inside the submenu is enough",
           qt.popup(app, "row_actions"), true)
 
+    ' ---- a menu UNDER a part, rather than at the pointer -----------------
+    ' A MENU BUTTON'S MENU BELONGS UNDER THE BUTTON. §0.20 shipped `qt.popup`
+    ' at the pointer only and recorded that as open; Studio's toolbar menu
+    ' button is the caller that closes it. Measured: popping at a widget's
+    ' bottom-left lands exactly there.
+    qt.invoke(app, "proj", "click")
+    check("a menu popped under a button appeared", g.under, true)
+
+    ' ---- a rule in a layout, beside the menu separator above --------------
+    ' THE SAME WORD, two widgets, one meaning. A row is divided by a VERTICAL
+    ' line, which is the half a menu's separator cannot show.
+    check("a toolbar divider is vertical",
+          qt.read(app, "toolbar_rule", "frameShape"), "VLine")
+
     ' ---- the editor answers too -------------------------------------------
     qt.right_click(app, "code")
     check("a right-click in the editor fired", g.editor_asked, 1)
@@ -273,6 +304,12 @@ program main()
     ' right there.
     check("a table is not a popup menu", error.message,
           "qt.popup: `files` is a QTableWidget, not a popup menu")
+    error.clear()
+
+    qt.popup(app, "row_actions", "not_a_part")
+    check("popping under something that is not there is refused",
+          error.message,
+          "qt.popup: there is nothing called `not_a_part` to pop under")
     error.clear()
 
     qt.right_click(app, "open_it")

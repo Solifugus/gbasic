@@ -339,8 +339,15 @@ char *gb_qt_popup_entry_title(void *window, const char *name, int entry,
  * agrees: an all-hidden menu answers `isEmpty()` true and `popup()` leaves it
  * INVISIBLE. So the honest answer is a boolean, not a refusal -- an empty
  * context menu is an ordinary outcome of a row that offers nothing. */
-int gb_qt_popup(void *window, const char *name, int *shown, char *err,
-                size_t err_size);
+/* `under` NAMES A PART TO POP BENEATH, or is NULL for the pointer. §0.20 left
+ * "popup at the pointer only" open, and Studio is the caller that closes it: it
+ * builds a TOOLBAR MENU BUTTON (a Gtk.MenuButton with a `\u25be` glyph in the
+ * label, its own comment recording that GTK's `always-show-arrow` drew nothing
+ * on 4.22), and a menu button's menu belongs under the button rather than
+ * wherever the mouse happens to be. Measured: popping at a widget's
+ * bottom-left lands exactly there. */
+int gb_qt_popup(void *window, const char *name, const char *under, int *shown,
+                char *err, size_t err_size);
 
 /* DRIVE A RIGHT-CLICK THE WAY A MOUSE DOES -- the oracle, built before the
  * fixture, which is the discipline §0.8 arrived at by getting it wrong.

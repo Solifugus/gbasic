@@ -265,6 +265,22 @@ refuse() {   # refuse LABEL NEEDLE
     fi
 }
 
+# THE OTHER HALF, because a refusal tier with no positives is satisfied by
+# refusing everything -- which is why nearly every rule in this file has one
+# beside it. It asserts the declaration is ACCEPTED, i.e. that the load-time
+# pass said nothing at all.
+accept() {   # accept LABEL
+    local label="$1"
+    local got
+    got=$(out_of "$written")
+    if [ -z "$got" ]; then
+        pass "$label"
+    else
+        printf '    %s\n' "$(printf '%s' "$got" | head -2)"
+        fail "$label (expected it to be accepted, got a diagnostic)"
+    fi
+}
+
 src unknown_word <<'EOF'
 window w( title: "x" )
     colunm( margin: 8 )
@@ -702,7 +718,55 @@ window w( title: "x" )
     end menu
 end window
 EOF
-refuse "a separator is a line and takes no name" "a separator is a line and takes no name"
+refuse "a menu's separator takes no name" "a menu's separator is a line and takes no name"
+
+# A `separator` IN A LAYOUT IS THE SAME WORD AND THE SAME MEANING -- a line
+# that divides -- over a different widget, and it MAY be named where a menu's
+# may not. That is not a loosening for symmetry: a rule is a real widget with
+# real properties, and gBASIC Studio STYLES its own, so one that could not be
+# addressed could not be themed. It is also the only way to observe the
+# ORIENTATION, which is the one thing that can be built wrong.
+#
+# IT WAS REFUSED OUTSIDE A MENU until Studio's whole widget surface was COUNTED
+# rather than reasoned about: it uses two, as the rule between panes and as the
+# divider between groups of toolbar buttons, and neither could be written.
+src rule_in_column <<'EOF'
+window w( title: "x" )
+    column
+        text a( label: "A" )
+        separator()
+        text b( label: "B" )
+    end column
+end window
+EOF
+accept "a separator divides a column"
+
+src rule_named <<'EOF'
+window w( title: "x" )
+    row
+        text a( label: "A" )
+        separator bar()
+        text b( label: "B" )
+    end row
+end window
+EOF
+accept "and a rule in a layout may be named"
+
+# WHERE A RULE CANNOT GO IS WHERE THERE IS NOTHING TO DIVIDE. A splitter pane
+# already has a draggable handle between its panes, and a `cells` grid has no
+# direction to take -- so a line there would appear at an orientation nobody
+# chose, which measured renders as a stub taking a share of the width rather
+# than as a line.
+src rule_as_pane <<'EOF'
+window w( title: "x" )
+    split across
+        field a()
+        separator()
+        field b()
+    end split
+end window
+EOF
+refuse "a separator as a splitter pane is refused" "there is nothing for one to divide"
 
 # A MENU'S CAPTION IS NOT A NAME, so a handler cannot address one -- its ITEMS
 # are what a handler addresses, which is the opposite of a table (named,

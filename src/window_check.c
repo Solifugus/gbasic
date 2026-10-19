@@ -660,21 +660,85 @@ static void win_check_item(WinRun *run, const void *item,
      * things ARE laid out. `item open( ... )` in a `column` would otherwise
      * reach `gb_qt_part`, which has no widget for the word and would refuse at
      * RUN time -- late, and only for somebody with Qt in their build. */
-    if (strcmp(word, "item") == 0 || strcmp(word, "separator") == 0) {
+    /* AN `item` BELONGS IN A MENU and nowhere else -- `item open( ... )` in a
+     * `column` would otherwise reach `gb_qt_part`, which has no widget for the
+     * word, and fail at RUN time: late, and only for somebody with Qt.
+     *
+     * A `separator` IS DIFFERENT NOW, and deliberately so: it means A LINE
+     * THAT DIVIDES, which is as true of a rule between two panes as of a line
+     * in a menu, so ONE WORD covers both and the backend picks the widget. It
+     * was refused outside a menu until Studio's whole widget surface was
+     * counted rather than reasoned about -- it uses two of them, one as the
+     * rule between panes and one as the divider between groups of toolbar
+     * buttons, and neither could be written. */
+    if (strcmp(word, "item") == 0) {
         if (!parent_word || (strcmp(parent_word, "menu") != 0 &&
                              strcmp(parent_word, "popup") != 0)) {
             win_error(run, item,
-                      "window: '%s' belongs in a menu or a popup, not in '%s'",
-                      word, parent_word ? parent_word : "?");
+                      "window: 'item' belongs in a menu or a popup, not in "
+                      "'%s'", parent_word ? parent_word : "?");
             return;
         }
     }
     if (strcmp(word, "separator") == 0) {
-        /* A SEPARATOR IS A LINE and names nothing, the rule `stretch` follows
-         * for being pure space. */
-        if (iname) {
+        /* WHERE A RULE CAN GO IS WHERE THERE IS SOMETHING TO DIVIDE: a `row`
+         * or a `column`, or a container that gets one of its own. Refused in a
+         * `cells` grid (no direction to take) and as a splitter pane (which
+         * already has a draggable handle between its panes), so a line never
+         * appears at an orientation nobody chose -- measured, the wrong way
+         * round renders as a stubby stub taking a share of the width. */
+        int in_menu = parent_word && (strcmp(parent_word, "menu") == 0 ||
+                                      strcmp(parent_word, "popup") == 0);
+        int in_box = parent_word && (strcmp(parent_word, "row") == 0 ||
+                                     strcmp(parent_word, "column") == 0 ||
+                                     strcmp(parent_word, "group") == 0 ||
+                                     strcmp(parent_word, "tab") == 0 ||
+                                     strcmp(parent_word, "scroll") == 0 ||
+                                     strcmp(parent_word, "window") == 0);
+        if (!in_menu && !in_box) {
             win_error(run, item,
-                      "window: a separator is a line and takes no name");
+                      "window: a separator divides a menu or a row or a "
+                      "column -- there is nothing for one to divide in '%s'",
+                      parent_word ? parent_word : "?");
+            return;
+        }
+    }
+    if (strcmp(word, "separator") == 0) {
+        /* A MENU'S SEPARATOR NAMES NOTHING -- it is a QAction with no
+         * properties worth reading, the rule `stretch` follows for being pure
+         * space. A LAYOUT'S RULE MAY BE NAMED, and that is not a loosening for
+         * symmetry: it is a real widget with real properties, and STUDIO
+         * STYLES ITS OWN (`studio_style.apply(sep, "rule")`), so a rule that
+         * could not be addressed could not be themed. It is also the only way
+         * to observe one -- `qt.read(win, name, "frameShape")` answers HLine
+         * or VLine, and the orientation is the one thing that can be built
+         * wrong: measured, the wrong way round renders as a stub taking a
+         * share of the width rather than as a line. */
+        int in_menu = parent_word && (strcmp(parent_word, "menu") == 0 ||
+                                      strcmp(parent_word, "popup") == 0);
+        if (iname && in_menu) {
+            win_error(run, item,
+                      "window: a menu's separator is a line and takes no "
+                      "name; a rule in a row or a column may have one");
+        }
+        if (iname && !in_menu) {
+            if (win_shadows_window(run, item, iname)) {
+                /* reported; not registered */
+            } else {
+                for (size_t i = 0; i < *name_count; i++) {
+                    if (strcmp(names[i], iname) == 0) {
+                        win_error(run, item,
+                                  "window: '%s' is declared twice, so `on "
+                                  "%s.<signal>` could not say which", iname,
+                                  iname);
+                        break;
+                    }
+                }
+            }
+            if (*name_count < name_cap) {
+                names[*name_count] = iname;
+                *name_count = *name_count + 1;
+            }
         }
         return;
     }

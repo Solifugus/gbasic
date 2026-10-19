@@ -32,9 +32,21 @@ window customer( title: "Customer", width: 480, height: 320 )
             end form
         end group
 
+        ' A RULE BETWEEN SECTIONS, which is a `separator` in a LAYOUT rather
+        ' than in a menu -- one word, one meaning (a line that divides), two
+        ' widgets. ITS ORIENTATION COMES FROM THE PARENT, as `stretch` takes
+        ' its axis from one, and that is load-bearing rather than tidy:
+        ' measured, the wrong way round renders as a stubby 119x3 stub taking
+        ' a share of the width instead of a line. NAMED, because that is the
+        ' only way to observe the orientation -- and because Studio STYLES its
+        ' own rule, so one that could not be addressed could not be themed.
+        separator rule()
+
         row
             stretch()
             button save(   text: "Save", default: true )
+            ' THE SAME WORD IN A ROW, which must come out the other way round.
+            separator bar()
             button cancel( text: "Cancel" )
         end row
 
@@ -178,4 +190,22 @@ program main()
     end if
 
     print "done"
+
+    ' ------------------------------------------------- A RULE IN A LAYOUT
+    ' THE ORIENTATION IS THE ONE THING THAT CAN BE BUILT WRONG, and it is
+    ' asserted as a DIFFERENCE between the two: a column is divided by a
+    ' HORIZONTAL line and a row by a VERTICAL one, which is the opposite of
+    ' what the direction's name suggests until you picture it. Either reading
+    ' alone passes on a backend that hardcodes one shape.
+    check("a column's rule is horizontal",
+          qt.read(customer, "rule", "frameShape"), "HLine")
+    check("and a row's divider is vertical",
+          qt.read(customer, "bar", "frameShape"), "VLine")
+    ' AND IT IS A REAL WIDGET, which is why it may be named at all: Studio
+    ' styles its own rule, so one that could not be addressed could not be
+    ' themed.
+    qt.set(customer, "rule", "styleSheet", "color: #808080")
+    check("a rule can be themed like anything else",
+          qt.read(customer, "rule", "styleSheet"), "color: #808080")
+
 end program
