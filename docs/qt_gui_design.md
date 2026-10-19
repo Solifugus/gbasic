@@ -2412,6 +2412,133 @@ counts occurrences now, and the control is what found it.
 - **No `qt.hide`.** `qt.invoke(win, name, "hide")` reaches it and is not a
   close, which is right; nothing has needed the verb.
 
+## 0.19 `split` and `scroll` (2026-10-19): the two words Studio's shell needs
+
+**Derived from gBASIC Studio's own source rather than guessed**, which is why
+these two came first of the gaps §0.18 left. Its shell is `gtk.paned` **three
+times nested** and `gtk.scrolled` **five times**, and nothing in this
+vocabulary could express either: `row` and `column` are boxes nobody can drag,
+and while `source`, `memo` and `table` scroll themselves, an ordinary column of
+widgets does not. One increment, because they are one layout.
+
+```basic
+split across
+    scroll files
+        column( margin: 4 )
+            text f1( label: "one.bas" )
+        end column
+    end scroll
+    split down
+        source code()
+        table out to show rows
+            field line( label: "Line" )
+        end table
+    end split
+end split
+```
+
+That is Studio's shell: a file list beside an editor above an output table.
+
+### A measurement made the implementation small
+
+| | |
+|---|---|
+| `QSplitter` has **no layout** | like a `QTabWidget`, so the layout guards had to learn about it |
+| **parenting is enough** | `count()` went to 2 from two `new QLabel(…, sp)` calls — no `addWidget` anywhere |
+| `orientation` is a Q_PROPERTY | Horizontal=1, Vertical=2, and it accepts the string `"Vertical"` too |
+| `widgetResizable` defaults to **false** | the trap — see below |
+| one pane has **zero** handles | n panes give n−1, so a one-pane split is a container nobody can drag |
+
+The second row is why the backend change is three branches and a guard rather
+than a child-management scheme: a widget created with a splitter as its Qt
+parent *is* a pane, so the construction that already existed does the work.
+
+**`widgetResizable` is the trap.** Left at Qt's default the inner widget keeps
+its original size for ever, so content never reflows to the viewport — a window
+that is resized shows a stripe of widgets beside a grey expanse, with nothing
+raised. Measured working: 40 rows give an inner height of 932 against a 258
+viewport, and the scrollbar appears.
+
+**`sizes` is neither a property nor invokable** (it takes a `QList<int>`), so
+saving and restoring pane widths needs its own verb and is **not** in this
+increment. Stated rather than discovered.
+
+### The direction spends the one free slot, so the split cannot be named
+
+§0.8 measured that a container carries a **name or options, never both**
+(`tabs settings( movable: true )` costs four reduce/reduce). A splitter with no
+direction is not a splitter, where a name is something only some splitters
+would ever want — so `split across` / `split down` puts the direction in that
+slot, at **zero** grammar cost, and the validator refuses anything else by name
+with a near-miss hint.
+
+**The cost is real and stated:** a `split` cannot be named, so `on
+x.splitterMoved` and `qt.set` cannot reach it. A `scroll` needs no direction,
+so its slot *is* free — it may be named, and that is what makes
+`widgetResizable` and the scrollbar policies readable through the ordinary
+by-name route.
+
+### Which left the split unobservable, so the oracle came first
+
+Nothing could address a splitter, so nothing could say whether one was built,
+which way round it is, or how many panes it got. `qt.pane(win, part)` answers
+`{ kind, direction, panes, index }` for a part in a split and
+`{ kind, resizable }` for one in a scroll, or **`unknown`** when it is in
+neither — a record saying `panes: 0` would read as a splitter that holds
+nothing, which is the rule `qt.dialog` and `principal()` already follow.
+
+**Asked of the layout**, walking up from a part that *can* be named, which is
+the rule `qt.at` already follows for a grid: a position we remembered would
+agree with a placement that was wrong. It keeps the last widget it came
+through, because a pane is usually a **container** and the part asked about is
+inside it — a perturbation that asked the splitter for the named widget's own
+index left every check passing, since every other part in the fixture happens
+to *be* a pane.
+
+The **nesting** check falls out of it: the outer split must report **two**
+panes, so an inner split hung off the window instead of its parent is caught —
+the shape the menu oracle had to learn the hard way (§0.7).
+
+### Two things this increment found on the way
+
+**A named leaf with no options was a parse error.** `field who()` and `source
+code()` — and a *pane* needs no label, so that is exactly what an author
+writes. Measured at **zero** conflicts and kept; not decoration in a project
+that rejected `IDENT expression` as a statement form over four.
+
+**A pane has nowhere to put a label, and the refusal is not in the validator.**
+That is where it went first and it **could not work**: `label()` reads a
+*top-level* label — what a `group "Credit"` carries — while a leaf's `label:`
+is an **option**, so it read NULL for every leaf and the check silently never
+fired. That is §0.8's own recorded defect reproduced exactly, one increment
+later. It lives in `gb_qt_part` now, where the label is a parameter, and it is
+narrow by derivation rather than by taste: a `button`, a `check`, a `text`, a
+`memo` and a `source` all consume their own caption at construction, so only a
+`field` and a `choice` — whose label the **parent layout** places — are
+refused, with a `check` keeping its caption as a pane asserted beside it.
+
+### Eleven perturbations proven red
+
+Each caught by the tier written for it. The guard tripwire is the one worth
+reading: a splitter has no layout, so **three** separate doors ask a parent for
+one (`gb_qt_container`, `gb_qt_part`, `gb_qt_table`) and each was found by
+running the thing — a table as a direct pane was refused with *"that container
+cannot hold a table"*, a true sentence about the wrong thing. A fourth door
+would refuse panes in silence, so the tripwire balances the parentheses of
+every `if` mentioning `!p->layout` and asks whether that condition names a
+splitter. Counting lines instead reported two perfectly well guarded
+conditions, because they name the local the function already made rather than
+an inline cast.
+
+### Still open
+
+- **Pane sizes.** `setSizes` takes a `QList<int>` and is neither a property nor
+  invokable, so *"restore my layout"* needs a verb of its own.
+- **`on <split>.splitterMoved`**, which needs a spelling that frees the slot.
+- **A scrollbar policy as a word.** `qt.set(win, "files",
+  "verticalScrollBarPolicy", ...)` reaches it today, which is a Qt-ism in a
+  place that otherwise has none.
+
 ### Still open
 
 - **`grow` as a bare option** is an option with no value, which is new grammar in

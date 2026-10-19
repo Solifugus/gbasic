@@ -3853,6 +3853,7 @@ end program
 | `qt.options(win, part, list)` | fill a `choice`'s list from data, answering how many items it put in. Clearing **resets the selection**, deliberately: a list that has changed may not contain what was chosen, and an index into a list that has moved is how a form reports a value nobody picked |
 | `qt.refresh(win, what)` | show a subject **as it is now**, answering how many rows or parts it drew. `what` is a **table's name** or a **form's subject** — a form has no name, so the subject is the only thing that addresses one, and a name meaning both is refused rather than resolved. A table grows, shrinks and redraws changed cells; a form fills every part, across **all** the forms carrying that subject. The symmetric half of `qt.subject`, which reads the widgets at the moment asked |
 | `qt.set(win, part, property, value)` | set one named Qt property at run time — the write half of `qt.read(win, part, property)`. The only other way to set one is the declaration, which is written before anything has happened |
+| `qt.pane(win, part)` | which draggable or scrolled region a part sits in: `{ kind: "split", direction, panes, index }` or `{ kind: "scroll", resizable }`, and **`unknown`** when it is in neither — a record saying `panes: 0` would read as a splitter holding nothing. Asked of the **layout**, walking up from the part, and it reports the **nearest** region. This is the only way to observe a `split`, which spends its one slot on the direction and so cannot be named |
 | `qt.at(win, part)` | where a part sits in its `cells`: `{ row, column, across, down }`, asked of the layout |
 | `qt.menus(win)` / `qt.menus(win, n)` | the menu bar's top-level captions, or the entries of the menu at position `n`. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
 | `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
@@ -4217,6 +4218,40 @@ and `qt.read(win, "settings", "currentIndex")` can find it. **A container takes 
 name or options, not both** — `tabs settings( movable: true )` with a body costs
 four grammar conflicts, measured — so a named container's properties are set
 with `qt.set` instead.
+
+**`split` is a row or column you can drag, and `scroll` is a region that
+scrolls.** `row` and `column` are boxes; a `split` puts a draggable handle
+between its panes, and `scroll` is for an ordinary column of widgets, since
+`source`, `memo` and `table` already scroll themselves:
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+split across
+    scroll files
+        column( margin: 4 )
+            text f1( label: "one.bas" )
+        end column
+    end scroll
+    split down
+        source code()
+        table out to show rows
+            field line( label: "Line" )
+        end table
+    end split
+end split
+```
+
+**A split's direction is a word, not a name.** It is `across` or `down`,
+refused by name with a near-miss hint if it is anything else — the one free
+slot carries the direction, so a `split` **cannot be named** and `qt.pane` is
+how you observe one. A `scroll` needs no direction, so it *may* be named, which
+is what makes `widgetResizable` and the scrollbar policies readable by name.
+
+**A split needs at least two panes.** With one there is no handle to drag
+(n panes give n−1), so that is a `row` or a `column` and it is refused as one.
+And a `field` or a `choice` carrying a `label:` as a *direct* pane is refused
+too: a pane has no layout, and those two have their caption placed by the
+parent — so it would render the widget and drop the word in silence.
 
 **`cells` holds rows of cells.** A grid *is* rows, so `row` is reused — refined
 inside `cells` to mean a row whose columns line up with the rows above, where a
