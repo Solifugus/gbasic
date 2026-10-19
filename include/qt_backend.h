@@ -106,8 +106,23 @@ int gb_qt_begin(char *err, size_t err_size);
  *
  * Until this, `qt.invoke`/`qt.read`/`qt.set` reached PARTS only, so there was
  * no way to address the window at all: no close, no raise, no reading or
- * setting its own title or size. */
-void *gb_qt_window(const char *name, const char *title, int width, int height);
+ * setting its own title or size.
+ *
+ * `modal` BUILDS A QDialog RATHER THAN A QWidget, and that is the whole of
+ * what a modal window needs from construction. MEASURED BEFORE CHOOSING IT:
+ * everything this backend builds works on a QDialog root -- a menu bar (which
+ * is a plain QMenuBar in the root's box layout here, not QMainWindow's), a
+ * form, tabs, a table, buttons -- and `accept` (39), `reject` (40) and `done`
+ * (38) are all invokable BY NAME on one while being ABSENT from a QWidget
+ * (-1). So the answer mechanism is Qt's own and the refusal on a non-modal
+ * window is Qt's own too.
+ *
+ * ONLY WHEN ASKED FOR, deliberately. Making every root a QDialog would have
+ * worked and would have been a wider change for nothing: a QWidget root then
+ * genuinely HAS no `accept`, so `qt.accept` on an ordinary window is refused
+ * by the same by-name door everything else goes through. */
+void *gb_qt_window(const char *name, const char *title, int width, int height,
+                   int modal);
 
 /* A container word (`row`, `column`, `form`, `group`, `tabs`, `tab`). `title`
  * is the caption a `group` or a `tab` carries and is NULL for the others.
@@ -545,6 +560,48 @@ void gb_qt_show(void *window);
  * same event by construction rather than by measurement -- stated, because the
  * difference matters. */
 int gb_qt_close(void *window, char *err, size_t err_size);
+
+/* ---- A WINDOW SHOWN MODALLY (docs/qt_gui_design.md §0.18) -----------------
+ *
+ * §0.15 named this as what `qt.confirm` is not: two buttons is the whole of
+ * what a message box offers, and ANYTHING RICHER IS A WINDOW SHOWN MODALLY --
+ * a form to fill in, a list to choose from, a thing with a layout of its own.
+ *
+ * IT IS THE SAME WINDOW. `qt.open` and `qt.open_modal` share one open path
+ * (`qt_open_declared`), so the declaration, the validation, the binding and
+ * the handlers are not merely similar -- they are the same code, which is why
+ * a modal window needs no second vocabulary.
+ *
+ * FOUR WAYS IT CAN END, MEASURED, and the table is the design:
+ *
+ *   qt.accept(win)    exec -> true    `closed` does NOT fire   still readable
+ *   qt.reject(win)    exec -> false   does not fire            still readable
+ *   qt.close(win)     exec -> false   FIRES                    closed
+ *   the X button      exec -> false   FIRES                    closed
+ *
+ * ACCEPTING IS NOT CLOSING -- `accept()` delivers no QEvent::Close at all
+ * (measured) and leaves the widget hidden but alive. That asymmetry would be a
+ * trap at the gBASIC level, where `false` would mean two different states and
+ * a program would have to guard every `qt.close` with `qt.is_open`. So
+ * `qt.open_modal` CLOSES THE WINDOW BEFORE IT RETURNS: the `closed` handler
+ * then fires exactly once however the window ended, and §0.17's single rule --
+ * that the handler is the one place a dismissed form can still be read --
+ * extends to a modal window with no exception.
+ *
+ * ITS MODAL EXTENT IS THE DIALOG'S, measured in §0.15 and not re-argued:
+ * `exec()` opens a nested loop, so gBASIC's sources run while it is up when it
+ * was opened from `main` and are suspended when it was opened from inside a
+ * watcher body. Two guards hold that, each sufficient alone. */
+int gb_qt_show_modal(void *window, int *accepted, char *err, size_t err_size);
+
+/* ANSWER A MODAL WINDOW -- what a button handler calls to say yes or no.
+ *
+ * NOT `qt.answer`, which exists to drive a dialog FROM THE PROGRAM when no
+ * person is there (a timeout, an unattended run, a suite). This is the
+ * person's answer arriving through a button they pressed, which is a different
+ * thing wearing the same word, so it gets its own verb rather than a third
+ * argument shape on that one. */
+int gb_qt_answer_modal(void *window, int accept, char *err, size_t err_size);
 
 /* Hands the thread to QApplication::exec(). `tick_ms` is how often gBASIC's
  * own loop gets one non-blocking iteration. */

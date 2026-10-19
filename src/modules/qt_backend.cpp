@@ -47,6 +47,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QEvent>
+#include <QDialog>
 #include <QComboBox>
 #include <QHeaderView>
 #include <QItemSelectionModel>
@@ -329,23 +330,50 @@ static void retired_drain(void) {
     }
 }
 
+/* THE WINDOW HAS ENDED. ONE COPY, CALLED FROM TWO PLACES, AND IDEMPOTENT --
+ * which is what `closing` is for.
+ *
+ * IT IS A FUNCTION RATHER THAN THE FILTER'S BODY BECAUSE QT DOES NOT ALWAYS
+ * DELIVER THE EVENT, measured 2026-10-19 and finer than the guess that
+ * prompted the measurement: `close()` delivers a QEvent::Close on a visible
+ * widget AND on a merely hidden one, and delivers NOTHING on a QDialog that
+ * has already been accepted or rejected -- `done()` marks it closed, so a
+ * later `close()` is a no-op. A modal window therefore ends without an event
+ * on the path that matters most, and bookkeeping hung off the filter alone
+ * would silently not happen: `qt.is_open` would go on answering true for a
+ * window the program had finished with.
+ *
+ * THE HANDLER RUNS FIRST, WHILE THE WINDOW IS STILL REGISTERED, and that
+ * ordering is the whole of what makes `on app.closed` useful: it is the one
+ * place a program can still read what the person typed, because the next line
+ * is what stops every verb finding the window. */
+/* ONE GUARD, HERE, AND IT ANSWERS WHETHER IT DID THE WORK -- which a
+ * perturbation forced. Written with the same `closing` test in BOTH this
+ * function and the filter below, NEITHER COPY WAS LOAD-BEARING: removing the
+ * one here changed nothing, because the filter guarded itself, so the suite
+ * stayed GREEN on a build whose ending was no longer idempotent. The invariant
+ * belongs to this function, so it lives in exactly one place and the filter
+ * asks. */
+static bool node_closed(GbQtNode *node) {
+    if (!node || node->closing) {
+        return false;
+    }
+    node->closing = true;
+    if (!node->closed_handler.isEmpty() && g_invoke) {
+        g_invoke(node->closed_handler.constData());
+    }
+    if (g_closed) {
+        g_closed(node);
+    }
+    return true;
+}
+
 bool GbQtCloser::eventFilter(QObject *obj, QEvent *event) {
-    if (event->type() == QEvent::Close && node && !node->closing) {
-        node->closing = true;
-        /* THE HANDLER RUNS FIRST, WHILE THE WINDOW IS STILL REGISTERED, and
-         * that ordering is the whole of what makes `on app.closed` useful: it
-         * is the one place a program can still read what the person typed,
-         * because the next line is what stops every verb finding the window. */
-        if (!node->closed_handler.isEmpty() && g_invoke) {
-            g_invoke(node->closed_handler.constData());
-        }
-        if (g_closed) {
-            g_closed(node);
-        }
+    if (event->type() == QEvent::Close && node_closed(node)) {
         /* STILL HOLDING A WIDGET means we did not arrive through
-         * `gb_qt_close`, which nulls it before closing -- so this is the
-         * window manager's button or an invoked `close`, and the widget is
-         * ours to retire. */
+         * `gb_qt_close`, which clears it -- so this is the window manager's
+         * button or an invoked `close`, and the widget is ours to retire. It is
+         * inside the guard because appending twice would retire the node twice. */
         if (node->widget) {
             g_retired.append(node);
         }
@@ -408,13 +436,20 @@ extern "C" int gb_qt_begin(char *err, size_t err_size) {
 }
 
 extern "C" void *gb_qt_window(const char *name, const char *title, int width,
-                              int height) {
+                              int height, int modal) {
     /* A WINDOW CLOSED EARLIER IS DELETED HERE -- see `retired_drain`. Done
      * before the new one is built so a program that opens, closes and reopens
      * holds at most one retired window at a time. */
     retired_drain();
     GbQtNode *n = node_new();
-    QWidget *w = new QWidget();
+    /* A QDialog WHEN THE WINDOW WILL BE SHOWN MODALLY, and a plain QWidget
+     * otherwise. That one choice is all construction has to know: a QDialog IS
+     * a QWidget, so every container, part, menu and property below is reached
+     * by exactly the same code -- measured on a real one before relying on it.
+     * What it adds is `exec()`, `accept()` and `reject()`, and what it costs is
+     * nothing, because a QDialog shown with `show()` is an ordinary window
+     * (`isModal` is false until `exec()` runs). */
+    QWidget *w = modal ? (QWidget *)new QDialog() : new QWidget();
     if (title && *title) {
         w->setWindowTitle(QString::fromUtf8(title));
     }
@@ -2200,13 +2235,60 @@ extern "C" int gb_qt_close(void *window, char *err, size_t err_size) {
         return 0;
     }
     QWidget *w = n->widget;
-    /* NULLED BEFORE CLOSING, not after, and that order is the guard: the
-     * handler `close()` is about to run can reach this function again, and
-     * `w` is held locally so only one call owns the delete. */
+    /* THE BOOKKEEPING FIRST AND DIRECTLY, not through the event. `node_closed`
+     * sets `closing`, so the filter below becomes a no-op and the handler sees
+     * exactly what it sees on the window manager's path -- a window still
+     * registered and still whole. Doing it here rather than relying on
+     * `close()` is what makes the accepted-modal case work at all, since Qt
+     * delivers no event for it. */
+    (void)node_closed(n);
+    /* CLEARED BEFORE CLOSING, and that order is the guard: a handler can reach
+     * this function again, and `w` is held locally so only one call owns the
+     * delete. */
     n->widget = nullptr;
-    w->close();          /* -> GbQtCloser -> the handler, then the registry */
+    w->close();          /* Qt's own hide and cleanup; the filter is spent */
     delete w;            /* measured safe: close() has returned */
     node_retire(n);
+    return 1;
+}
+
+extern "C" int gb_qt_show_modal(void *window, int *accepted, char *err,
+                                size_t err_size) {
+    GbQtNode *n = (GbQtNode *)window;
+    QDialog *d = n ? qobject_cast<QDialog *>(n->widget) : nullptr;
+    if (!d) {
+        say(err, err_size, "that window was not opened modally");
+        return 0;
+    }
+    /* 50ms IS gBASIC'S OWN POLL TIMEOUT, the same number and the same reason
+     * `show_box` gives: a source serviced on this timer is serviced exactly as
+     * often as it would be with Qt out of the picture. The count simply goes
+     * deeper when `qt.run()` already armed one. */
+    pump_arm(50);
+    int rc = d->exec();                     /* NESTED EVENT LOOP */
+    pump_disarm();
+    if (accepted) {
+        *accepted = (rc == QDialog::Accepted) ? 1 : 0;
+    }
+    return 1;
+}
+
+extern "C" int gb_qt_answer_modal(void *window, int accept, char *err,
+                                  size_t err_size) {
+    GbQtNode *n = (GbQtNode *)window;
+    QDialog *d = n ? qobject_cast<QDialog *>(n->widget) : nullptr;
+    if (!d) {
+        /* NAMED HERE RATHER THAN LEFT TO QT, although Qt would also refuse:
+         * a QWidget has no `accept` at all, so the by-name route would answer
+         * "a QWidget emits no..." about a method, which names the wrong thing.
+         * What the author needs to hear is that this window was not opened
+         * modally. */
+        say(err, err_size, "that window was not opened modally");
+        return 0;
+    }
+    /* `done()` RATHER THAN accept()/reject(), which are the same call with the
+     * code baked in -- one path, so the two answers cannot diverge. */
+    d->done(accept ? QDialog::Accepted : QDialog::Rejected);
     return 1;
 }
 

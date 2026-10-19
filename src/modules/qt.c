@@ -562,6 +562,20 @@ static QtOpenWindow *qt_window_entry(const char *name) {
  * THE HANDLER HAS ALREADY RUN by the time this is called, which is the
  * ordering that makes `on app.closed` the place to read a form: see
  * `GbQtCloser::eventFilter`. */
+/* THE REGISTRY'S NAME FOR A NODE, which is also the authority on whether the
+ * window is still open at all: `qt.open_modal` needs to close the window it
+ * opened, and after the X button ended the modal loop the entry is already
+ * gone -- so asking the registry is how the two endings are told apart without
+ * the backend having to report which one happened. */
+static const char *qt_window_name_of(void *node) {
+    for (size_t i = 0; i < qt_window_count; i++) {
+        if (qt_windows[i].node == node) {
+            return qt_windows[i].name;
+        }
+    }
+    return NULL;
+}
+
 static void qt_window_closed(void *node) {
     for (size_t i = 0; i < qt_window_count; i++) {
         if (qt_windows[i].node == node) {
@@ -2084,6 +2098,184 @@ static Value qt_check_verb(AstExpr *expr, size_t argc) {
     return value_bool(1);
 }
 
+#if HAVE_QT
+
+/* GUARDED, AND THE CONVENTION CUTS BOTH WAYS. This file's note says code that
+ * is NOT optional must stay OUT of these guards -- `qt.check` below is exactly
+ * that, answering on a build with no Qt. The mirror is this: code that IS
+ * optional must stay IN them, and this helper calls `gb_qt_window`,
+ * `gb_qt_begin` and `gb_qt_show`, none of which exists without Qt. Written
+ * just after the `#endif`, it compiled here and broke `make QT_AVAILABLE=0`
+ * with `QT_ERRBUF undeclared` -- caught by run_platform.sh and run_packaging.sh,
+ * which are the two suites that build lean, and NOT by the Qt suites, which
+ * all run on a full build. The cheap check CLAUDE.md names (`make
+ * QT_AVAILABLE=0`) is the one I skipped.
+ */
+/* OPEN A WINDOW -- THE WHOLE PATH, ONE COPY. `qt.open` and `qt.open_modal`
+ * differ in exactly two things: whether the root is a QDialog (so `exec()`
+ * exists) and what happens after it is built. Everything else -- the record
+ * check, the already-open refusal, the display refusal, starting Qt, the
+ * syntax paths, the options, the build, the connect, the bind -- is the same,
+ * and TWO COPIES OF IT WOULD DRIFT, which is this tree's recorded failure
+ * shape (`would`/`execute` in `automation`, one checker two adapters in
+ * §0.9). So a modal window IS the same window by construction rather than by
+ * assertion.
+ *
+ * Answers 1 and sets `*root_out` on success; 0 with the raise already made. */
+static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
+                            int modal, void **root_out) {
+    char message[512];
+    char err[QT_ERRBUF];
+    *root_out = NULL;
+    if (argc != 1) {
+        snprintf(message, sizeof(message),
+                 "qt.%s expects one window declaration", verb);
+        qt_raise(message);
+        return 0;
+    }
+    Value win = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(win);
+        return 0;
+    }
+    if (!qt_window_record(&win, verb)) {
+        value_free(win);
+        return 0;
+    }
+    /* THE SAME RULES, WHETHER OR NOT ANYBODY CALLED `qt.check`. A
+     * declaration met them at LOAD time; a built record meets them here,
+     * because a validator nobody is obliged to call is necessary and not
+     * sufficient -- `rules.validate` refused a malformed stack all along
+     * and `rules.evaluate` still answered `ok: true` for a string, since
+     * nothing obliged a caller to validate first. A declared window has
+     * already passed, so this costs one walk over a small record and
+     * changes nothing it says. */
+    message[0] = '\0';
+    if (qt_check_window_record(&win, message, sizeof(message)) > 0) {
+        qt_raise(message);
+        value_free(win);
+        return 0;
+    }
+    const char *name = qt_record_text(&win, "name");
+    if (name && qt_window_find(name)) {
+        snprintf(message, sizeof(message),
+                 "window `%s` is already open", name);
+        qt_raise(message);
+        value_free(win);
+        return 0;
+    }
+    /* THE REFUSAL, BEFORE ANYTHING IS CONSTRUCTED (§0.3). With no display
+     * Qt calls `qFatal`, which aborts uncatchably and takes
+     * block-buffered stdout with it, so a program printing its progress
+     * prints nothing and the failure reads as line 1. The sentence names
+     * what is MISSING -- a display -- rather than reporting a Qt plugin
+     * failure, which names the one thing the author cannot fix. */
+    if (!gb_qt_can_display()) {
+        snprintf(message, sizeof(message),
+                 "no display is available, so window `%s` cannot be "
+                 "opened. Set QT_QPA_PLATFORM=offscreen to render without "
+                 "one", name ? name : "");
+        qt_raise(message);
+        value_free(win);
+        return 0;
+    }
+    if (!qt_begun) {
+        err[0] = '\0';
+        if (!gb_qt_begin(err, sizeof(err))) {
+            snprintf(message, sizeof(message), "qt.%s: %s", verb,
+                     err[0] ? err : "Qt could not start");
+            qt_raise(message);
+            value_free(win);
+            return 0;
+        }
+        qt_begun = 1;
+        /* WHERE A HIGHLIGHTING DEFINITION COMES FROM, and it is the same
+         * two-step the stdlib loader uses: an environment override for the
+         * source tree, then the path compiled in at build time. Registered
+         * ONCE, here, because `gb_qt_syntax_path` is cheap and idempotent
+         * and this is the one place that runs before any `source` exists.
+         *
+         * IT IS NOT OPTIONAL POLISH. Measured 2026-10-18: with no path at
+         * all this machine still answers `gBASIC`, from a copy installed
+         * by hand into ~/.local/share/org.kde.syntax-highlighting in June,
+         * while a machine without that copy answers nothing -- and an
+         * absent definition still formats every line with the theme's
+         * normal text, so the editor looks entirely ordinary and
+         * highlights nothing. The dev machine was the only one where this
+         * would have appeared to work, which is the shape of defect this
+         * tree has recorded three times from the other direction. */
+        const char *syn = getenv("GBASIC_SYNTAX_PATH");
+        if (syn && *syn) {
+            gb_qt_syntax_path(syn);
+        }
+        /* RELATIVE TO THE BINARY BEFORE THE BAKED-IN PATH, which is
+         * what a DOWNLOAD needs: a release tarball is relocatable and runs
+         * where it is unpacked, so the absolute path compiled in at build
+         * time names a directory that is not there. Same resolver the
+         * stdlib uses, for the same reason. */
+        const char *near = gb_exe_relative_syntax();
+        if (near) {
+            gb_qt_syntax_path(near);
+        }
+#ifdef GBASIC_DEFAULT_SYNTAX
+        gb_qt_syntax_path(GBASIC_DEFAULT_SYNTAX);
+#endif
+    }
+    if (!qt_callbacks_set) {
+        gb_qt_set_callbacks(qt_invoke_handler, qt_pump_gbasic,
+                            qt_window_closed);
+        qt_callbacks_set = 1;
+    }
+
+    RecordField *of = record_find(&win, "options");
+    const char *title = NULL;
+    long width = 0, height = 0;
+    if (of && of->value && of->value->kind == VALUE_RECORD) {
+        title = qt_record_text(of->value, "title");
+        RecordField *wf = record_find(of->value, "width");
+        RecordField *hf = record_find(of->value, "height");
+        if (wf && wf->value && wf->value->kind == VALUE_NUMBER) {
+            width = (long)wf->value->as.num.value;
+        }
+        if (hf && hf->value && hf->value->kind == VALUE_NUMBER) {
+            height = (long)hf->value->as.num.value;
+        }
+    }
+    void *root = gb_qt_window(name ? name : "",
+                              title ? title : (name ? name : ""),
+                              (int)width, (int)height, modal);
+    /* REMEMBERED BEFORE BINDING, because a form's capture is kept on the
+     * registry entry; forgotten again if binding refuses, so a failed
+     * open leaves nothing behind. */
+    if (name) {
+        qt_window_remember(name, root);
+    }
+    RecordField *items = record_find(&win, "items");
+    if (items && items->value && items->value->kind == VALUE_ARRAY) {
+        if (!qt_build_items(root, items->value, root) ||
+            !qt_connect_items(root, items->value) ||
+            !qt_bind_items(root, items->value, name ? name : "")) {
+            if (name) {
+                qt_window_forget(name);
+            }
+            value_free(win);
+            return 0;
+        }
+    }
+    /* SHOWN LAST, so a bound form appears filled in rather than appearing
+     * empty and then populating. A MODAL WINDOW IS NOT SHOWN HERE: `exec()`
+     * shows it, and showing it twice would put it up non-modally for one
+     * iteration first. */
+    if (!modal) {
+        gb_qt_show(root);
+    }
+    *root_out = root;
+    value_free(win);
+    return 1;
+}
+
+#endif /* HAVE_QT */
+
 static Value qt_eval_call(AstExpr *expr) {
     const char *verb = expr->as.call.name;
     size_t argc = expr->as.call.args.count;
@@ -2153,8 +2345,78 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     if (strcmp(verb, "open") == 0) {
+        void *root = NULL;
+        if (!qt_open_declared(expr, argc, "open", 0, &root)) {
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
+    /* A WINDOW SHOWN MODALLY (docs/qt_gui_design.md §0.18) -- what §0.15 named
+     * as the thing `qt.confirm` is not: two buttons is the whole of what a
+     * message box offers, and anything richer is a window with a layout of its
+     * own.
+     *
+     * IT IS THE SAME WINDOW. This and `qt.open` share one open path, so the
+     * declaration, the validation, the binding and the handlers are the same
+     * code rather than merely similar -- which is why a modal window needs no
+     * vocabulary of its own.
+     *
+     * IT CLOSES THE WINDOW BEFORE RETURNING, and that is the decision worth
+     * reading. Measured, `accept()` delivers no close event at all and leaves
+     * the widget hidden but readable, while the X button closes it -- so
+     * `false` would otherwise mean two different states and every `qt.close`
+     * after one would need an `qt.is_open` guard. Closing here makes the
+     * `closed` handler fire exactly once however the window ended, so §0.17's
+     * single rule -- the handler is where a dismissed form is read -- holds
+     * for a modal window too. */
+    if (strcmp(verb, "open_modal") == 0) {
+        void *root = NULL;
+        if (!qt_open_declared(expr, argc, "open_modal", 1, &root)) {
+            return value_null();
+        }
+        int accepted = 0;
+        err[0] = '\0';
+        if (!gb_qt_show_modal(root, &accepted, err, sizeof(err))) {
+            snprintf(message, sizeof(message), "qt.open_modal: %s",
+                     err[0] ? err : "that window could not be shown modally");
+            qt_raise(message);
+            return value_null();
+        }
+        /* THE REGISTRY DECIDES WHETHER THERE IS ANYTHING LEFT TO CLOSE: after
+         * the X button it has already forgotten the window, and closing again
+         * would be the refusal `qt.close` correctly makes. */
+        const char *still = qt_window_name_of(root);
+        if (still) {
+            err[0] = '\0';
+            if (!gb_qt_close(root, err, sizeof(err))) {
+                snprintf(message, sizeof(message), "qt.open_modal: %s",
+                         err[0] ? err : "that window could not be closed");
+                qt_raise(message);
+                return value_null();
+            }
+        }
+        if (error_action_pending()) {
+            /* A `closed` HANDLER THAT RAISED. Its raise is the answer, not
+             * ours -- the first-raise-wins rule. */
+            return value_null();
+        }
+        return value_bool(accepted ? 1 : 0);
+    }
+
+    /* SAY YES OR NO TO A MODAL WINDOW -- what a button handler calls.
+     *
+     * NOT `qt.answer`, which exists to drive a dialog FROM THE PROGRAM when
+     * nobody is there (a timeout, an unattended run, a suite). This is the
+     * person's own answer arriving through a button they pressed: a different
+     * thing wearing the same word, so it gets its own verb rather than a third
+     * argument shape on that one. */
+    if (strcmp(verb, "accept") == 0 || strcmp(verb, "reject") == 0) {
+        int accepting = strcmp(verb, "accept") == 0;
         if (argc != 1) {
-            qt_raise("qt.open expects one window declaration");
+            snprintf(message, sizeof(message),
+                     "qt.%s expects one window declaration", verb);
+            qt_raise(message);
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -2162,134 +2424,30 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win);
             return value_null();
         }
-        if (!qt_window_record(&win, "open")) {
+        if (!qt_window_record(&win, verb)) {
             value_free(win);
             return value_null();
         }
-        /* THE SAME RULES, WHETHER OR NOT ANYBODY CALLED `qt.check`. A
-         * declaration met them at LOAD time; a built record meets them here,
-         * because a validator nobody is obliged to call is necessary and not
-         * sufficient -- `rules.validate` refused a malformed stack all along
-         * and `rules.evaluate` still answered `ok: true` for a string, since
-         * nothing obliged a caller to validate first. A declared window has
-         * already passed, so this costs one walk over a small record and
-         * changes nothing it says. */
-        message[0] = '\0';
-        if (qt_check_window_record(&win, message, sizeof(message)) > 0) {
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
             qt_raise(message);
             value_free(win);
             return value_null();
         }
-        const char *name = qt_record_text(&win, "name");
-        if (name && qt_window_find(name)) {
-            snprintf(message, sizeof(message),
-                     "window `%s` is already open", name);
-            qt_raise(message);
-            value_free(win);
-            return value_null();
-        }
-        /* THE REFUSAL, BEFORE ANYTHING IS CONSTRUCTED (§0.3). With no display
-         * Qt calls `qFatal`, which aborts uncatchably and takes
-         * block-buffered stdout with it, so a program printing its progress
-         * prints nothing and the failure reads as line 1. The sentence names
-         * what is MISSING -- a display -- rather than reporting a Qt plugin
-         * failure, which names the one thing the author cannot fix. */
-        if (!gb_qt_can_display()) {
-            snprintf(message, sizeof(message),
-                     "no display is available, so window `%s` cannot be "
-                     "opened. Set QT_QPA_PLATFORM=offscreen to render without "
-                     "one", name ? name : "");
-            qt_raise(message);
-            value_free(win);
-            return value_null();
-        }
-        if (!qt_begun) {
-            err[0] = '\0';
-            if (!gb_qt_begin(err, sizeof(err))) {
-                snprintf(message, sizeof(message), "qt.open: %s",
-                         err[0] ? err : "Qt could not start");
-                qt_raise(message);
-                value_free(win);
-                return value_null();
-            }
-            qt_begun = 1;
-            /* WHERE A HIGHLIGHTING DEFINITION COMES FROM, and it is the same
-             * two-step the stdlib loader uses: an environment override for the
-             * source tree, then the path compiled in at build time. Registered
-             * ONCE, here, because `gb_qt_syntax_path` is cheap and idempotent
-             * and this is the one place that runs before any `source` exists.
-             *
-             * IT IS NOT OPTIONAL POLISH. Measured 2026-10-18: with no path at
-             * all this machine still answers `gBASIC`, from a copy installed
-             * by hand into ~/.local/share/org.kde.syntax-highlighting in June,
-             * while a machine without that copy answers nothing -- and an
-             * absent definition still formats every line with the theme's
-             * normal text, so the editor looks entirely ordinary and
-             * highlights nothing. The dev machine was the only one where this
-             * would have appeared to work, which is the shape of defect this
-             * tree has recorded three times from the other direction. */
-            const char *syn = getenv("GBASIC_SYNTAX_PATH");
-            if (syn && *syn) {
-                gb_qt_syntax_path(syn);
-            }
-            /* RELATIVE TO THE BINARY BEFORE THE BAKED-IN PATH, which is
-             * what a DOWNLOAD needs: a release tarball is relocatable and runs
-             * where it is unpacked, so the absolute path compiled in at build
-             * time names a directory that is not there. Same resolver the
-             * stdlib uses, for the same reason. */
-            const char *near = gb_exe_relative_syntax();
-            if (near) {
-                gb_qt_syntax_path(near);
-            }
-#ifdef GBASIC_DEFAULT_SYNTAX
-            gb_qt_syntax_path(GBASIC_DEFAULT_SYNTAX);
-#endif
-        }
-        if (!qt_callbacks_set) {
-            gb_qt_set_callbacks(qt_invoke_handler, qt_pump_gbasic,
-                                qt_window_closed);
-            qt_callbacks_set = 1;
-        }
-
-        RecordField *of = record_find(&win, "options");
-        const char *title = NULL;
-        long width = 0, height = 0;
-        if (of && of->value && of->value->kind == VALUE_RECORD) {
-            title = qt_record_text(of->value, "title");
-            RecordField *wf = record_find(of->value, "width");
-            RecordField *hf = record_find(of->value, "height");
-            if (wf && wf->value && wf->value->kind == VALUE_NUMBER) {
-                width = (long)wf->value->as.num.value;
-            }
-            if (hf && hf->value && hf->value->kind == VALUE_NUMBER) {
-                height = (long)hf->value->as.num.value;
-            }
-        }
-        void *root = gb_qt_window(name ? name : "",
-                                  title ? title : (name ? name : ""),
-                                  (int)width, (int)height);
-        /* REMEMBERED BEFORE BINDING, because a form's capture is kept on the
-         * registry entry; forgotten again if binding refuses, so a failed
-         * open leaves nothing behind. */
-        if (name) {
-            qt_window_remember(name, root);
-        }
-        RecordField *items = record_find(&win, "items");
-        if (items && items->value && items->value->kind == VALUE_ARRAY) {
-            if (!qt_build_items(root, items->value, root) ||
-                !qt_connect_items(root, items->value) ||
-                !qt_bind_items(root, items->value, name ? name : "")) {
-                if (name) {
-                    qt_window_forget(name);
-                }
-                value_free(win);
-                return value_null();
-            }
-        }
-        /* SHOWN LAST, so a bound form appears filled in rather than appearing
-         * empty and then populating. */
-        gb_qt_show(root);
+        err[0] = '\0';
+        int ok = gb_qt_answer_modal(root, accepting, err, sizeof(err));
         value_free(win);
+        if (!ok) {
+            snprintf(message, sizeof(message),
+                     "qt.%s: %s -- use qt.open_modal to show it modally, or "
+                     "qt.close to shut an ordinary window", verb,
+                     err[0] ? err : "that window was not opened modally");
+            qt_raise(message);
+            return value_null();
+        }
         return value_bool(1);
     }
 
