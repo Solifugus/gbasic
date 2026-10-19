@@ -60,6 +60,9 @@
 #include <QMessageBox>
 #include <QPointer>
 #include <QAbstractButton>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QDialogButtonBox>
 #if HAVE_KSYNTAX
 #include <KSyntaxHighlighting/Definition>
 #include <KSyntaxHighlighting/Repository>
@@ -156,6 +159,31 @@ public:
 public slots:
     void fire();
     void tick();
+};
+
+/* A SUBCLASS ONLY FOR THE FALLBACK. accept() and reject() are both PROTECTED
+ * on QFileDialog -- a QMessageBox's buttons hid that, since a box can be
+ * answered from outside by clicking the real one, where a chooser's buttons are
+ * private children.
+ *
+ * BUT THE REAL BUTTONS ARE STILL THE ROUTE, measured: the chooser's name field
+ * is `fileNameEdit` and its button box is `buttonBox`, so typing a path and
+ * pressing the AcceptRole button (labelled Open, Save or Choose by mode) is
+ * exactly what a person does -- the same rule `gb_qt_answer` already follows,
+ * and it buys something a direct accept() does not. QT DISABLES THAT BUTTON
+ * for a path that is not there, so the refusal comes from Qt's own rule rather
+ * than from a reimplementation of it, and the warning box accept() would have
+ * put up never appears. That box was a HANG rather than a failure: it opens a
+ * second nested loop from inside the first one's pump tick, which Qt will not
+ * re-enter, so nothing could reach either dialog.
+ *
+ * Declared here rather than beside the dialog code so moc's output, included a
+ * few lines below, can see it. */
+class GbQtChooser : public QFileDialog {
+    Q_OBJECT
+public:
+    using QFileDialog::QFileDialog;
+    void drive_reject() { reject(); }
 };
 
 void GbQtRelay::fire() {
@@ -1666,7 +1694,11 @@ extern "C" int gb_qt_set_display_only(void *window, const char *name, int on,
  * fired from a timer during the first one may ask its own question. Refusing
  * the second would be a rule about this backend rather than about dialogs.
  */
-static QVector<QMessageBox *> g_dialogs;   /* innermost last */
+/* QDialog RATHER THAN QMessageBox, because a file chooser is one too and
+ * `qt.answer` has to be able to tell them apart: the answer to a message box
+ * is yes or no and the answer to a chooser is a PATH, so handing one the
+ * other's answer must be a sentence rather than a guess. */
+static QVector<QDialog *> g_dialogs;      /* innermost last */
 
 /* Defined with `gb_qt_run`, which is the other caller. Declared here because a
  * dialog arms the same pump and sits above it in the file. */
@@ -1739,12 +1771,70 @@ extern "C" int gb_qt_confirm(void *window, const char *text, int *answer,
     return show_box(window, text, true, answer, err, err_size);
 }
 
+/* ---- A FILE CHOOSER (§0.16) ------------------------------------------------
+ *
+ * accept() AND done() ARE BOTH PROTECTED ON QFileDialog, which a QMessageBox's
+ * buttons hid: there a box can be answered from outside by clicking the real
+ * button. A chooser's Open button is a private child, so the only honest route
+ * is a subclass -- and we own the construction, so that costs nothing.
+ *
+ * accept() IS KEPT RATHER THAN done(), deliberately: it is the one that
+ * VALIDATES, so an ExistingFile chooser still refuses a path that is not there
+ * instead of handing back a name nothing can read. The cost is the hang
+ * `gb_qt_answer_path` guards against, which is a better trade than a chooser
+ * whose promise ("this file exists") is only true when a person used it. */
+
+static GbQtChooser *innermost_chooser(void) {
+    if (g_dialogs.isEmpty()) {
+        return nullptr;
+    }
+    return qobject_cast<GbQtChooser *>(g_dialogs.last());
+}
+
 extern "C" int gb_qt_answer(int value, char *err, size_t err_size) {
     if (g_dialogs.isEmpty()) {
         say(err, err_size, "no dialog is open");
         return 0;
     }
-    QMessageBox *box = g_dialogs.last();
+    /* A CHOOSER'S ANSWER IS A PATH, so `true` has no meaning here -- accept
+     * WHAT? -- while `false` does: it is a cancel, which is what a timeout or
+     * a program giving up actually wants to say. Refusing the one and honouring
+     * the other is the difference between a verb that reads clearly and one
+     * that guesses which file you meant. */
+    if (GbQtChooser *ch = innermost_chooser()) {
+        if (!value) {
+            /* THE REAL CANCEL BUTTON, for the reason just below: it is what a
+             * person presses. `reject()` is the fallback for a layout that has
+             * none, rather than the route. */
+            QDialogButtonBox *bb =
+                ch->findChild<QDialogButtonBox *>(QStringLiteral("buttonBox"));
+            QAbstractButton *no = nullptr;
+            if (bb) {
+                const QList<QAbstractButton *> buttons = bb->buttons();
+                for (QAbstractButton *b : buttons) {
+                    if (bb->buttonRole(b) == QDialogButtonBox::RejectRole) {
+                        no = b;
+                        break;
+                    }
+                }
+            }
+            if (no) {
+                no->click();
+            } else {
+                ch->drive_reject();
+            }
+            return 1;
+        }
+        say(err, err_size,
+            "the open dialog is a file chooser, so `true` does not say which "
+            "file -- give qt.answer the path instead");
+        return 0;
+    }
+    QMessageBox *box = qobject_cast<QMessageBox *>(g_dialogs.last());
+    if (!box) {
+        say(err, err_size, "the open dialog cannot be answered");
+        return 0;
+    }
     /* CLICK THE REAL BUTTON rather than calling done() with a code: the button
      * is what a person presses, so pressing it exercises the same path and
      * cannot drift from what the box actually offers. A box with no such
@@ -1759,6 +1849,205 @@ extern "C" int gb_qt_answer(int value, char *err, size_t err_size) {
         return 0;
     }
     b->click();
+    return 1;
+}
+
+/* The button a person presses to say yes, whatever this mode calls it: Open,
+ * Save or Choose. Found BY ROLE rather than by label, because the label is
+ * translated and the role is not. */
+static QAbstractButton *chooser_accept_button(GbQtChooser *ch) {
+    QDialogButtonBox *bb =
+        ch->findChild<QDialogButtonBox *>(QStringLiteral("buttonBox"));
+    if (!bb) {
+        return nullptr;
+    }
+    const QList<QAbstractButton *> buttons = bb->buttons();
+    for (QAbstractButton *b : buttons) {
+        if (bb->buttonRole(b) == QDialogButtonBox::AcceptRole) {
+            return b;
+        }
+    }
+    return nullptr;
+}
+
+extern "C" int gb_qt_answer_path(const char *path, char *err,
+                                 size_t err_size) {
+    if (g_dialogs.isEmpty()) {
+        say(err, err_size, "no dialog is open");
+        return 0;
+    }
+    GbQtChooser *ch = innermost_chooser();
+    if (!ch) {
+        say(err, err_size,
+            "the open dialog is a message box, which is answered with true or "
+            "false rather than with a path");
+        return 0;
+    }
+    QString p = QString::fromUtf8(path ? path : "");
+    if (p.isEmpty()) {
+        say(err, err_size, "qt.answer needs a path, or false to cancel");
+        return 0;
+    }
+    /* TYPED IN, NOT selectFile()'d, and that was measured rather than chosen:
+     * `selectFile` is IGNORED while the dialog is visible and its name field
+     * has focus -- deliberately, so Qt never overwrites what somebody is
+     * typing -- so the obvious implementation left the selection EMPTY and the
+     * accept silently refused. Writing the field is what selectFile does
+     * internally when it is allowed to. */
+    QLineEdit *field = ch->findChild<QLineEdit *>(QStringLiteral("fileNameEdit"));
+    QAbstractButton *go = chooser_accept_button(ch);
+    if (!field || !go) {
+        /* A LAYOUT WE DO NOT RECOGNISE SAYS SO rather than doing nothing: a
+         * silent no-op here leaves a program waiting for a person who is not
+         * there, and a hang is not a failure. */
+        say(err, err_size,
+            "this chooser does not have the name field and button Qt usually "
+            "gives it, so it cannot be answered from the program");
+        return 0;
+    }
+    field->setText(p);
+    /* QT'S OWN RULE DECIDES, not ours. It disables the button for a path this
+     * mode cannot accept -- measured, an absent file in an `ExistingFile`
+     * chooser -- so the refusal is the chooser's own and cannot drift from what
+     * it would do for a person. The message asks QFileInfo only to say WHY. */
+    if (!go->isEnabled()) {
+        QFileInfo info(p);
+        if (!info.exists()) {
+            say(err, err_size,
+                QByteArray("this chooser will not take `") + p.toUtf8()
+                    + "`, which is not there");
+        } else {
+            say(err, err_size,
+                QByteArray("this chooser will not take `") + p.toUtf8() + "`");
+        }
+        return 0;
+    }
+    go->click();
+    if (ch->result() != QDialog::Accepted) {
+        say(err, err_size,
+            QByteArray("the chooser did not accept `") + p.toUtf8() + "`");
+        return 0;
+    }
+    return 1;
+}
+
+extern "C" char *gb_qt_choose(void *window, int kind, const char *title,
+                              const char *folder, const char *name,
+                              const char *filter, int *cancelled, char *err,
+                              size_t err_size) {
+    if (cancelled) {
+        *cancelled = 0;
+    }
+    QWidget *parent = dialog_parent(window, err, err_size);
+    if (!parent) {
+        return nullptr;
+    }
+    /* ON THE HEAP BEHIND A QPointer, for the reason `show_box` records: a
+     * stack-allocated QObject GIVEN A PARENT is a double free, and the parent
+     * is wanted so Qt centres the chooser on the window and makes it modal to
+     * it. */
+    QPointer<GbQtChooser> dlg = new GbQtChooser(parent);
+    dlg->setOption(QFileDialog::DontUseNativeDialog, true);   /* measured; §0.16 */
+    switch (kind) {
+    case GB_QT_PICK_SAVE:
+        dlg->setFileMode(QFileDialog::AnyFile);
+        dlg->setAcceptMode(QFileDialog::AcceptSave);
+        break;
+    case GB_QT_PICK_FOLDER:
+        dlg->setFileMode(QFileDialog::Directory);
+        dlg->setOption(QFileDialog::ShowDirsOnly, true);
+        break;
+    default:
+        dlg->setFileMode(QFileDialog::ExistingFile);
+        dlg->setAcceptMode(QFileDialog::AcceptOpen);
+        break;
+    }
+    /* THE WINDOW'S OWN TITLE WHEN NONE IS GIVEN, which is what `show_box`
+     * already does: a dialog belonging to no named thing is a dialog a person
+     * cannot place. */
+    dlg->setWindowTitle(title && *title ? QString::fromUtf8(title)
+                                        : parent->windowTitle());
+    if (folder && *folder) {
+        dlg->setDirectory(QString::fromUtf8(folder));
+    }
+    if (filter && *filter) {
+        /* `;;` IS QT'S OWN SEPARATOR and splitting here is what lets the
+         * gBASIC side take a LIST -- a caller should not have to know that
+         * two semicolons mean "or". A single string passes through unchanged,
+         * so somebody who does know Qt's spelling loses nothing. */
+        dlg->setNameFilters(QString::fromUtf8(filter).split(QStringLiteral(";;"),
+                                                            Qt::SkipEmptyParts));
+    }
+    if (name && *name) {
+        dlg->selectFile(QString::fromUtf8(name));
+    }
+    g_dialogs.append(dlg.data());
+    pump_arm(50);
+    int rc = dlg->exec();                   /* NESTED EVENT LOOP */
+    pump_disarm();
+    g_dialogs.removeAll(dlg.data());
+    char *out = nullptr;
+    /* THE RESULT CODE DECIDES, NOT THE SELECTION. Measured: a REJECTED
+     * QFileDialog still reports selectedFiles(), so reading the list without
+     * asking whether it was accepted hands back a path for a dialog the person
+     * cancelled -- an ordinary-looking answer that is simply not true. */
+    if (rc == QDialog::Accepted && dlg) {
+        QStringList chosen = dlg->selectedFiles();
+        if (!chosen.isEmpty()) {
+            out = strdup(chosen.first().toUtf8().constData());
+        }
+    }
+    if (!out && cancelled) {
+        *cancelled = 1;
+    }
+    if (dlg) {
+        delete dlg;
+    }
+    return out;
+}
+
+/* WHAT IS OPEN. Built before the fixture, because `title:` and `filter:` are
+ * otherwise accepted and unobservable -- the hole a leaf's `label:` sat in for
+ * four increments (§0.8). */
+extern "C" int gb_qt_dialog_info(char **kind, char **title, char **text,
+                                 char **folder, char **filter) {
+    if (kind)   { *kind = nullptr; }
+    if (title)  { *title = nullptr; }
+    if (text)   { *text = nullptr; }
+    if (folder) { *folder = nullptr; }
+    if (filter) { *filter = nullptr; }
+    if (g_dialogs.isEmpty()) {
+        return 0;
+    }
+    QDialog *d = g_dialogs.last();
+    if (title) {
+        *title = strdup(d->windowTitle().toUtf8().constData());
+    }
+    if (GbQtChooser *ch = qobject_cast<GbQtChooser *>(d)) {
+        if (kind) {
+            *kind = strdup("chooser");
+        }
+        if (folder) {
+            *folder = strdup(ch->directory().absolutePath().toUtf8().constData());
+        }
+        if (filter) {
+            *filter = strdup(ch->nameFilters().join(QStringLiteral(";;"))
+                                 .toUtf8().constData());
+        }
+        return 1;
+    }
+    if (QMessageBox *box = qobject_cast<QMessageBox *>(d)) {
+        if (kind) {
+            *kind = strdup("message");
+        }
+        if (text) {
+            *text = strdup(box->text().toUtf8().constData());
+        }
+        return 1;
+    }
+    if (kind) {
+        *kind = strdup("dialog");
+    }
     return 1;
 }
 

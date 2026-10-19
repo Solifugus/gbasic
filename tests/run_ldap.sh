@@ -120,7 +120,7 @@ if [ "$DEAD" = "$PLAIN" ] || [ "$TLS" = "$DEAD" ] || [ -z "$DEAD" ]; then
 fi
 # And it really refuses, which is the premise the `unreachable` tier rests on.
 if (exec 3<>/dev/tcp/127.0.0.1/"$DEAD") 2>/dev/null; then
-    fail "the dead port $DEAD accepted a connection; `unreachable` cannot be tested against it"
+    fail "the dead port $DEAD accepted a connection; \`unreachable\` cannot be tested against it"
     printf '\nrun_ldap: %d checks, %d failed\n' "$checks" "$failures"; exit 1
 fi
 export LDAP_PLAIN_PORT="$PLAIN" LDAP_TLS_PORT="$TLS" \

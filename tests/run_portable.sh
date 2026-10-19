@@ -189,5 +189,33 @@ else
     ok "a probe can be forced to no, which is how each skip was checked to say the right thing"
 fi
 
+echo "TIER a suite's own messages do not run the shell"
+# A BACKTICK INSIDE A DOUBLE-QUOTED STRING IS COMMAND SUBSTITUTION, and this
+# tree has produced ELEVEN instances -- a message quoting a name the way this
+# project quotes names (`load`, `qt.confirm`, `unreachable`) and the shell
+# running it. IT IS INVISIBLE WHERE IT IS WRITTEN: the substitution usually
+# fails quietly, so the line prints with the quoted word MISSING and reads as an
+# ordinary sentence, and in a `fail` message it only surfaces on the day a tier
+# legitimately goes red. FOUR WERE LIVE when this tier was added and none was
+# written by the session that found them, which is the argument for a scanner
+# over another paragraph -- the release script's own backtick tripwire has
+# covered its container string since the third instance and could never see
+# these. Sited here because a suite's message is part of the harness.
+if python3 tools/scan_shell_backticks.py tests/*.sh tools/*.sh > "$tmp/backticks.txt" 2>&1; then
+    ok "no suite or tool message hands a quoted name to the shell"
+else
+    head -8 "$tmp/backticks.txt"
+    bad "a message would run a quoted name as a command"
+fi
+# ITS OWN VACUITY CONTROL, because "no offenders" is equally satisfied by a
+# scanner that reads nothing: the selftest plants one and requires the two safe
+# spellings beside it to stay silent.
+if python3 tools/scan_shell_backticks.py --selftest >/dev/null 2>&1; then
+    ok "CONTROL: and it still flags a planted one while leaving the safe spellings alone"
+else
+    python3 tools/scan_shell_backticks.py --selftest 2>&1 | head -4
+    bad "CONTROL: the scanner's selftest failed, so it is measuring nothing"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]

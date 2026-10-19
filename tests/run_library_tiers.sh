@@ -65,7 +65,7 @@ elif [ "$withdep" -lt 15 ]; then
     # lines would report every library as dependency-free and this whole suite
     # would agree with an empty table. 21 today; a build that removed a module
     # could legitimately lower it, not to single figures.
-    fail "only $withdep libraries were found to need anything, wanted at least 15 -- the derivation has probably stopped reading `load` lines"
+    fail "only $withdep libraries were found to need anything, wanted at least 15 -- the derivation has probably stopped reading \`load\` lines"
 else
     pass "$total libraries, $withdep needing an optional dependency"
 fi

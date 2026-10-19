@@ -99,4 +99,15 @@ int gb_window_word_known(const char *word);
 int gb_window_word_is_container(const char *word);
 const char *gb_window_word_nearest(const char *word);
 
+/* THE NEAR-MISS MATCHER ITSELF, over ANY closed vocabulary -- which is what
+ * `gb_window_word_nearest` is now three lines of. Extracted when the file
+ * chooser's option set became the second closed vocabulary in this backend:
+ * two copies of a matcher drift, and the comment on the window version already
+ * records that THE VOCABULARY ITSELF had been written out three times and the
+ * newest word was missing from the third. One matcher, two callers.
+ *
+ * Answers NULL when nothing is close, because a suggestion that is sometimes
+ * nonsense is worse than none. `set` is NULL-terminated. */
+const char *gb_nearest_word(const char *word, const char *const *set);
+
 #endif /* GBASIC_WINDOW_CHECK_H */

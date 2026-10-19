@@ -93,6 +93,61 @@ int gb_window_word_known(const char *word) {
     return win_in(win_container_words, word) || win_in(win_leaf_words, word);
 }
 
+/* THE NEAR-MISS MATCHER, over any closed vocabulary. EXTRACTED rather than
+ * copied when the file chooser's option names became the second closed set in
+ * this backend (docs/qt_gui_design.md §0.16): the comment below already
+ * records that the WINDOW VOCABULARY had been written out three times and the
+ * newest word was missing from the third, which is the same drift one level
+ * up. One matcher, two callers. */
+const char *gb_nearest_word(const char *word, const char *const *set) {
+    if (!word || !set) {
+        return NULL;
+    }
+    size_t len = strlen(word);
+    for (size_t i = 0; set[i]; i++) {
+        size_t other = strlen(set[i]);
+        if (other + 1 < len || len + 1 < other) {
+            continue;
+        }
+        /* ONE TRANSPOSITION: equal length, and exactly two adjacent positions
+         * swapped. Checked first because it is the common case. */
+        if (other == len) {
+            size_t diff = 0, first = 0;
+            for (size_t k = 0; k < len; k++) {
+                if (word[k] != set[i][k]) {
+                    if (diff == 0) { first = k; }
+                    diff++;
+                }
+            }
+            if (diff == 0) {
+                return set[i];
+            }
+            if (diff == 2 && first + 1 < len &&
+                word[first] == set[i][first + 1] &&
+                word[first + 1] == set[i][first] &&
+                word[first + 1] != set[i][first + 1]) {
+                return set[i];
+            }
+        }
+        size_t a = 0, b = 0, edits = 0;
+        while (a < len && b < other && edits <= 1) {
+            if (word[a] == set[i][b]) {
+                a++; b++;
+                continue;
+            }
+            edits++;
+            if (len > other)       { a++; }
+            else if (other > len)  { b++; }
+            else                   { a++; b++; }
+        }
+        edits += (len - a) + (other - b);
+        if (edits <= 1) {
+            return set[i];
+        }
+    }
+    return NULL;
+}
+
 /* The nearest real word: one substitution, one insertion, one deletion -- OR
  * ONE TRANSPOSITION, which is the correction that matters.
  *
@@ -127,49 +182,7 @@ const char *gb_window_word_nearest(const char *word) {
         all[n++] = win_leaf_words[i];
     }
     all[n] = NULL;
-    size_t len = strlen(word);
-    for (size_t i = 0; all[i]; i++) {
-        size_t other = strlen(all[i]);
-        if (other + 1 < len || len + 1 < other) {
-            continue;
-        }
-        /* ONE TRANSPOSITION: equal length, and exactly two adjacent positions
-         * swapped. Checked first because it is the common case. */
-        if (other == len) {
-            size_t diff = 0, first = 0;
-            for (size_t k = 0; k < len; k++) {
-                if (word[k] != all[i][k]) {
-                    if (diff == 0) { first = k; }
-                    diff++;
-                }
-            }
-            if (diff == 0) {
-                return all[i];
-            }
-            if (diff == 2 && first + 1 < len &&
-                word[first] == all[i][first + 1] &&
-                word[first + 1] == all[i][first] &&
-                word[first + 1] != all[i][first + 1]) {
-                return all[i];
-            }
-        }
-        size_t a = 0, b = 0, edits = 0;
-        while (a < len && b < other && edits <= 1) {
-            if (word[a] == all[i][b]) {
-                a++; b++;
-                continue;
-            }
-            edits++;
-            if (len > other)       { a++; }
-            else if (other > len)  { b++; }
-            else                   { a++; b++; }
-        }
-        edits += (len - a) + (other - b);
-        if (edits <= 1) {
-            return all[i];
-        }
-    }
-    return NULL;
+    return gb_nearest_word(word, all);
 }
 
 /* A WINDOW AND AN ITEM BOTH HOLD CHILDREN and the model asks for them

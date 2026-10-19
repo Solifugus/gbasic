@@ -417,6 +417,75 @@ int gb_qt_confirm(void *window, const char *text, int *answer,
  * the failure class this whole backend is tested against. */
 int gb_qt_answer(int value, char *err, size_t err_size);
 
+/* WHAT IS OPEN, so a program driving its own dialogs is not driving blind.
+ *
+ * NOT A TEST HOOK, on the argument `qt.highlighting` already won: this backend
+ * applies things a program asked for and a program that cannot SEE what landed
+ * has no way to tell an option that worked from one that silently did nothing
+ * -- which is exactly how a leaf's `label:` reached no widget for four
+ * increments (§0.8). So the oracle is built BEFORE the fixture this time.
+ *
+ * `kind` is "message" or "chooser"; the rest are malloc'd and may be NULL.
+ * Everything answers for the INNERMOST open dialog, and 0 when none is. */
+int gb_qt_dialog_info(char **kind, char **title, char **text, char **folder,
+                      char **filter);
+
+/* ---- A FILE CHOOSER (docs/qt_gui_design.md §0.16) --------------------------
+ *
+ * THREE QUESTIONS, NOT ONE VERB WITH A MODE, because they are genuinely three:
+ * "which existing file?", "what shall I call it?" and "which folder?" -- which
+ * is also how Qt splits them, and each can then refuse the options that mean
+ * nothing to it rather than ignoring them.
+ *
+ * QT'S OWN DIALOG IS FORCED, AND THAT WAS MEASURED RATHER THAN PREFERRED. With
+ * the desktop's native chooser (the XDG portal, which is what Qt reaches for on
+ * Wayland), on a real display:
+ *
+ *   selectFile()   does NOTHING -- selectedFiles() is EMPTY before exec()
+ *   accept()       does NOTHING -- 41 pump ticks, rc=0, no file chosen
+ *
+ * so a program could not preselect a path and `gb_qt_answer_path` would be a
+ * SILENT NO-OP, which is the failure class this whole backend is tested
+ * against. `DontUseNativeDialog` is therefore set unconditionally and is not
+ * offered as an option.
+ *
+ * AND OFFSCREEN CANNOT TELL THE TWO APART: with no portal to reach, Qt falls
+ * back to its own widget dialog, so the native path MEASURES AS DRIVABLE under
+ * QT_QPA_PLATFORM=offscreen -- the one platform every suite here runs on.
+ * Comfortable test data hiding the difference is the shape this tree has a name
+ * for, so the measurement is recorded here rather than asserted in a tier that
+ * would pass either way.
+ *
+ * `kind` is one of the three below. `title`, `folder`, `name` and `filter` may
+ * each be NULL for "no opinion"; `filter` is Qt's own `;;`-separated form, so a
+ * caller handing over one string passes it through and a caller with a list
+ * joins it.
+ *
+ * Answers a malloc'd absolute path, or NULL. `*cancelled` is set to 1 when the
+ * person said no, WHICH IS A DIFFERENT ANSWER FROM A FAILURE -- and it has to
+ * be asked rather than inferred from an empty selection, because measured, a
+ * REJECTED QFileDialog STILL REPORTS ITS SELECTION: reading selectedFiles()
+ * without checking the result code hands back a path for a dialog the person
+ * cancelled, which is a plausible wrong answer and the worst kind. */
+#define GB_QT_PICK_OPEN   0
+#define GB_QT_PICK_SAVE   1
+#define GB_QT_PICK_FOLDER 2
+
+char *gb_qt_choose(void *window, int kind, const char *title,
+                   const char *folder, const char *name, const char *filter,
+                   int *cancelled, char *err, size_t err_size);
+
+/* ANSWER THE OPEN CHOOSER WITH A PATH -- `qt.answer` for the dialog whose
+ * answer is not yes or no.
+ *
+ * IT CHECKS THE PATH BEFORE ACCEPTING, and that is not defensiveness: measured,
+ * QFileDialog::accept() in ExistingFile mode puts up its OWN QMessageBox when
+ * the file is not there, and that box opens a SECOND nested loop from inside
+ * the first one's pump tick -- which Qt will not re-enter -- so the program
+ * HANGS with two dialogs up and no way to reach either. Refusing an absent path
+ * here turns that hang into a sentence. */
+int gb_qt_answer_path(const char *path, char *err, size_t err_size);
+
 void gb_qt_show(void *window);
 
 /* Hands the thread to QApplication::exec(). `tick_ms` is how often gBASIC's

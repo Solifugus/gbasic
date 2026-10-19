@@ -54,7 +54,7 @@ END {
     # The rate alone is not the story -- a fix that moves cells from
     # `unsupported` into `judged` can lower it while being a clear gain, so the
     # judged TOTAL has to be read alongside it.
-    printf "note: compare `judged` as well as the rate; moving cells out of\n"
-    printf "      `unsupported` into `judged` can lower the rate and still be a gain.\n"
+    printf 'note: compare `judged` as well as the rate; moving cells out of\n'
+    printf '      `unsupported` into `judged` can lower the rate and still be a gain.\n'
 }
 ' "$file"

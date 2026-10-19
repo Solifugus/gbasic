@@ -81,7 +81,7 @@ for f in $examples; do
     fi
 done
 if [ -z "$missing" ]; then
-    pass "all $count take `printf '%s' check` and end themselves"
+    pass "all $count take \`check\` and end themselves"
 else
     fail "these would HANG under the RUN tier: $missing"
 fi

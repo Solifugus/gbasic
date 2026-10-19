@@ -3002,13 +3002,31 @@ static Value qt_eval_call(AstExpr *expr) {
      * handler, because that is the only code that runs while a box is up. */
     if (strcmp(verb, "answer") == 0) {
         if (argc != 1) {
-            qt_raise("qt.answer expects one value -- true or false");
+            qt_raise("qt.answer expects one value -- true or false for a message box, or a path for a file chooser");
             return value_null();
         }
         Value v = eval_expr(expr->as.call.args.items[0]);
         if (error_action_pending()) {
             value_free(v);
             return value_null();
+        }
+        /* A PATH ANSWERS A CHOOSER, because that dialog's answer is not yes
+         * or no. The two kinds are told apart by the BACKEND rather than here,
+         * so each refusal can name which dialog is actually open -- `true` on
+         * a chooser does not say which file, and a path on a message box is
+         * not one of its two buttons. Both are sentences rather than guesses.
+         */
+        if (v.kind == VALUE_STRING) {
+            err[0] = '\0';
+            int pok = gb_qt_answer_path(v.as.string, err, sizeof(err));
+            value_free(v);
+            if (!pok) {
+                snprintf(message, sizeof(message), "qt.answer: %s",
+                         err[0] ? err : "the dialog could not be answered");
+                qt_raise(message);
+                return value_null();
+            }
+            return value_bool(1);
         }
         /* `value_truthy` REPORTS A REFUSAL rather than guessing: gBASIC
          * raises on `not unknown` and friends, so a value that has no truth
@@ -3020,7 +3038,7 @@ static Value qt_eval_call(AstExpr *expr) {
         value_free(v);
         if (refused || error_action_pending()) {
             if (!error_action_pending()) {
-                qt_raise("qt.answer expects true or false");
+                qt_raise("qt.answer expects true or false, or a path for a file chooser");
             }
             return value_null();
         }
@@ -3032,6 +3050,250 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         return value_bool(1);
+    }
+
+    /* ---- A FILE CHOOSER (§0.16) -------------------------------------------
+     *
+     * THREE VERBS, NOT ONE WITH A MODE, because they ask three different
+     * questions -- "which existing file?", "what shall I call it?", "which
+     * folder?" -- which is also how Qt splits them, and which lets each one
+     * refuse the options that mean nothing to it rather than ignore them.
+     *
+     * `qt.open_file` WAS REJECTED AS A NAME: it reads as though it opens the
+     * file, and `f = qt.open_file(app)` looks like it answers contents or a
+     * handle. These verbs CHOOSE; the program does the reading.
+     *
+     * THE ANSWER IS TEXT, and that was a decision rather than the easy route.
+     * `{file}` and `{dir}` both accept a path that is not there (measured), so
+     * a typed answer was available -- but three sibling verbs would then answer
+     * TWO kinds, and the rule this backend already follows is that a kind comes
+     * from the DECLARATION and not from Qt (§0.5: a widget holds text, so
+     * folding back blindly turns `{ id: 42 }` into `{ id: "42" }`). A chooser
+     * has no declaration to read a kind from, and what Qt holds is a path. So
+     * text, and `{file}qt.choose_file(app)` where a typed value is wanted --
+     * one inline modifier, which is the spelling 0.5.0 added for exactly this.
+     *
+     * CANCELLING ANSWERS `unknown`, NEVER "". The empty string is a plausible
+     * wrong answer: `if path = "" then` happens to work while
+     * `read({file}path)` does not, so an author who forgot to check gets a
+     * puzzle instead of a raise. `unknown` is what `qt.selected` already
+     * answers for "nothing is chosen" and what `qt.highlighting` answers for
+     * "no definition", and `if path then` on it RAISES, which is loud. */
+    if (strcmp(verb, "choose_file") == 0 || strcmp(verb, "choose_save") == 0 ||
+        strcmp(verb, "choose_folder") == 0) {
+        int kind = GB_QT_PICK_OPEN;
+        if (strcmp(verb, "choose_save") == 0)   { kind = GB_QT_PICK_SAVE; }
+        if (strcmp(verb, "choose_folder") == 0) { kind = GB_QT_PICK_FOLDER; }
+        if (argc < 1 || argc > 2) {
+            snprintf(message, sizeof(message),
+                     "qt.%s expects a window, and optionally a record of "
+                     "options", verb);
+            qt_raise(message);
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value opts = value_null();
+        if (argc == 2) {
+            opts = eval_expr(expr->as.call.args.items[1]);
+        }
+        if (error_action_pending()) {
+            value_free(win); value_free(opts);
+            return value_null();
+        }
+        if (!qt_window_record(&win, verb)) {
+            value_free(win); value_free(opts);
+            return value_null();
+        }
+        if (argc == 2 && opts.kind != VALUE_RECORD) {
+            snprintf(message, sizeof(message),
+                     "qt.%s expects its options as a record -- "
+                     "`qt.%s(app, { title: \"Open\" })`", verb, verb);
+            qt_raise(message);
+            value_free(win); value_free(opts);
+            return value_null();
+        }
+        /* THE OPTION SET IS CLOSED AND REFUSED BY NAME, which is the rule this
+         * backend follows everywhere a vocabulary can be closed -- and here it
+         * can, there being four options rather than the 75 properties a
+         * QPushButton exposes. An ignored misspelling is a chooser that opens
+         * in the wrong folder, with the wrong filter, and says nothing. */
+        static const char *const pick_opts[] = {
+            "title", "folder", "name", "filter", NULL
+        };
+        const char *title = NULL, *folder = NULL, *pname = NULL;
+        char filter[1024];
+        filter[0] = '\0';
+        if (argc == 2) {
+            for (size_t i = 0; i < opts.as.record.count; i++) {
+                RecordField *f = &opts.as.record.fields[i];
+                const char *fname = f->name ? f->name : "";
+                int known = 0;
+                for (size_t k = 0; pick_opts[k]; k++) {
+                    if (strcmp(pick_opts[k], fname) == 0) { known = 1; break; }
+                }
+                if (!known) {
+                    const char *near = gb_nearest_word(fname, pick_opts);
+                    if (near) {
+                        snprintf(message, sizeof(message),
+                                 "qt.%s does not know the option `%s` -- did "
+                                 "you mean `%s`?", verb, fname, near);
+                    } else {
+                        snprintf(message, sizeof(message),
+                                 "qt.%s does not know the option `%s`. It "
+                                 "takes title, folder, name and filter", verb,
+                                 fname);
+                    }
+                    qt_raise(message);
+                    value_free(win); value_free(opts);
+                    return value_null();
+                }
+                /* TWO OPTIONS MEAN NOTHING TO A FOLDER CHOOSER and Qt would
+                 * IGNORE both, which is the silent-no-op this module refuses
+                 * elsewhere: a folder has no name filter, and `folder:` is
+                 * already how you say where to start, so a second spelling
+                 * would be two ways to say one thing. */
+                if (kind == GB_QT_PICK_FOLDER &&
+                    (strcmp(fname, "filter") == 0 ||
+                     strcmp(fname, "name") == 0)) {
+                    snprintf(message, sizeof(message),
+                             "qt.choose_folder has no use for `%s` -- a folder "
+                             "has no name filter, and `folder:` is where it "
+                             "starts", fname);
+                    qt_raise(message);
+                    value_free(win); value_free(opts);
+                    return value_null();
+                }
+                if (strcmp(fname, "filter") == 0) {
+                    /* TEXT OR A LIST. The list is joined with Qt's own `;;`
+                     * HERE rather than being the author's problem -- two
+                     * semicolons meaning "or" is a Qt-ism nobody should have
+                     * to know, and a single string passes through so somebody
+                     * who does know it loses nothing. */
+                    if (f->value && f->value->kind == VALUE_STRING) {
+                        snprintf(filter, sizeof(filter), "%s",
+                                 f->value->as.string);
+                    } else if (f->value && f->value->kind == VALUE_ARRAY) {
+                        size_t used = 0;
+                        for (size_t e = 0; e < f->value->as.array.store->count; e++) {
+                            Value *el = &f->value->as.array.store->items[e];
+                            if (el->kind != VALUE_STRING) {
+                                snprintf(message, sizeof(message),
+                                         "qt.%s expects every filter to be "
+                                         "text, like \"Programs (*.bas)\"",
+                                         verb);
+                                qt_raise(message);
+                                value_free(win); value_free(opts);
+                                return value_null();
+                            }
+                            int wrote = snprintf(filter + used,
+                                                 sizeof(filter) - used, "%s%s",
+                                                 used ? ";;" : "",
+                                                 el->as.string);
+                            if (wrote < 0 ||
+                                (size_t)wrote >= sizeof(filter) - used) {
+                                break;
+                            }
+                            used += (size_t)wrote;
+                        }
+                    } else {
+                        snprintf(message, sizeof(message),
+                                 "qt.%s expects `filter` as text or a list of "
+                                 "text, like \"Programs (*.bas)\"", verb);
+                        qt_raise(message);
+                        value_free(win); value_free(opts);
+                        return value_null();
+                    }
+                    continue;
+                }
+                if (!f->value || f->value->kind != VALUE_STRING) {
+                    snprintf(message, sizeof(message),
+                             "qt.%s expects `%s` as text", verb, fname);
+                    qt_raise(message);
+                    value_free(win); value_free(opts);
+                    return value_null();
+                }
+                if (strcmp(fname, "title") == 0)  { title = f->value->as.string; }
+                if (strcmp(fname, "folder") == 0) { folder = f->value->as.string; }
+                if (strcmp(fname, "name") == 0)   { pname = f->value->as.string; }
+            }
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            /* THE DISPLAY, NOT THE WINDOW, when that is the real cause -- the
+             * correction §0.15 records, made once and then applied rather than
+             * rediscovered. */
+            if (!gb_qt_can_display()) {
+                snprintf(message, sizeof(message),
+                         "no display is available, so qt.%s has no window to "
+                         "put a chooser on. Guard with qt.can_display()", verb);
+            } else {
+                snprintf(message, sizeof(message), "window `%s` is not open",
+                         wname ? wname : "");
+            }
+            qt_raise(message);
+            value_free(win); value_free(opts);
+            return value_null();
+        }
+        err[0] = '\0';
+        int cancelled = 0;
+        char *path = gb_qt_choose(root, kind, title, folder, pname,
+                                  filter[0] ? filter : NULL, &cancelled, err,
+                                  sizeof(err));
+        value_free(win); value_free(opts);
+        if (!path) {
+            if (cancelled) {
+                return value_unknown();
+            }
+            snprintf(message, sizeof(message), "qt.%s: %s", verb,
+                     err[0] ? err : "the chooser could not be shown");
+            qt_raise(message);
+            return value_null();
+        }
+        Value out = value_string(path);
+        free(path);
+        return out;
+    }
+
+    /* `qt.dialog()` -- WHAT IS OPEN, so a program driving its own dialogs is
+     * not driving blind.
+     *
+     * BUILT BEFORE THE FIXTURE, which is the discipline §0.8 arrived at the
+     * hard way: `title:` and `filter:` would otherwise be accepted and
+     * unobservable, which is the hole a leaf's `label:` sat in for four
+     * increments while every check passed. It is not a test hook for the same
+     * reason `qt.highlighting` is not -- being unable to see what landed is
+     * being unable to tell an option that worked from one that did nothing. */
+    if (strcmp(verb, "dialog") == 0) {
+        if (argc != 0) {
+            qt_raise("qt.dialog takes nothing -- it answers the dialog that "
+                     "is open");
+            return value_null();
+        }
+        char *dkind = NULL, *dtitle = NULL, *dtext = NULL, *dfolder = NULL,
+             *dfilter = NULL;
+        int open = gb_qt_dialog_info(&dkind, &dtitle, &dtext, &dfolder,
+                                     &dfilter);
+        if (!open) {
+            /* `unknown` RATHER THAN AN EMPTY RECORD, the distinction
+             * `principal()` already makes: "nothing is open" and "a dialog
+             * carrying no fields" are different claims. */
+            return value_unknown();
+        }
+        Value out = value_record(NULL, 0);
+        record_set(&out, "kind", value_string(dkind ? dkind : "dialog"));
+        record_set(&out, "title", value_string(dtitle ? dtitle : ""));
+        if (dtext) {
+            record_set(&out, "text", value_string(dtext));
+        }
+        if (dfolder) {
+            record_set(&out, "folder", value_string(dfolder));
+        }
+        if (dfilter) {
+            record_set(&out, "filter", value_string(dfilter));
+        }
+        free(dkind); free(dtitle); free(dtext); free(dfolder); free(dfilter);
+        return out;
     }
 
     if (strcmp(verb, "heading") == 0) {
