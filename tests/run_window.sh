@@ -768,6 +768,28 @@ end window
 EOF
 refuse "a separator as a splitter pane is refused" "there is nothing for one to divide"
 
+# A NAMED RULE IS A NAMED PART, so it meets the same two rules every other name
+# does -- which is the point of registering it rather than merely accepting it.
+# Neither of these had a check until the increment that gave a rule a name.
+src rule_twice <<'EOF'
+window w( title: "x" )
+    column
+        separator a()
+        separator a()
+    end column
+end window
+EOF
+refuse "two rules sharing a name are refused" "is declared twice"
+
+src rule_shadows_window <<'EOF'
+window w( title: "x" )
+    column
+        separator w()
+    end column
+end window
+EOF
+refuse "a rule may not take the window own name" "the window itself is called"
+
 # A MENU'S CAPTION IS NOT A NAME, so a handler cannot address one -- its ITEMS
 # are what a handler addresses, which is the opposite of a table (named,
 # addressable) and is asserted so the two cannot drift into each other.

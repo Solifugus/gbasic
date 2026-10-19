@@ -2964,6 +2964,23 @@ able to ask.
   rather than a path and has no caller yet.
 - **A per-window icon** (`windowIcon`) is the same property on the root and
   should already work through the window's own name; unmeasured.
+- **PLAT-NUL's sweep has never reached this backend**, and `icon:` is the first
+  option where that matters. Every text option crosses the seam as a
+  `const char *` (`gb_qt_set_part_text` and the option path both pass
+  `v.as.string`), so a string with an interior NUL **truncates** — measured by
+  reading, not by a probe: nothing in `src/modules/qt.c` or
+  `qt_backend.cpp` checks for one. For a label that is meaningless; for an
+  icon it is a **path**, and a truncated path silently becomes a theme lookup
+  that finds nothing and warns about a name nobody wrote.
+
+  The language's own answer for a path is to **refuse** one with a NUL — which
+  is what `real_path`, `file_type`, `file_name`, `directory_name` and both
+  arguments of `join_path` already do, because a path crosses into the OS as a
+  NUL-terminated string and so cannot be opened anyway. But fixing the icon
+  door alone would **move** the truncation rather than remove it, which is
+  exactly the mistake PLAT-NUL records: the whole by-name property route is one
+  door, and the sweep belongs to it rather than to this section. Recorded here
+  because `icon:` is what made it reachable.
 
 ## 0.24 Completion: measured, not built (2026-10-19)
 
@@ -3047,15 +3064,23 @@ is reachable by name — which matters because `table` deliberately turns it off
 a sorted view making `qt.selected`'s index mean a different row in the view than
 in the subject.
 
-### What it still needs, and why it is not this session's increment
+### What it still needs — and this is a correction
 
-A **new callback shape**. Every handler in this backend is a name invoked with
-no arguments and no result (`g_invoke`); a model needs *"what is in cell (r,
-c)"* — arguments in and text back. That is a new seam across the C/gBASIC
-boundary rather than a new widget, which is why this is a larger increment than
-§0.20–§0.23 despite the cost question being settled.
+My first assessment said it needs a **new callback shape** across the C/gBASIC
+boundary, because every handler here is a name invoked with no arguments and no
+result (`g_invoke`), where a model needs *"what is in cell (r, c)"*. That
+overstates it, and reading rather than assuming is what showed so:
+**`invoke_function(stmt, args, argc, receiver)` already takes arguments and
+returns a `Value`** — the handler path simply passes `NULL, 0, NULL` because
+handlers take none, and `qt_invoke_handler` is already a caller.
 
-Open with it: whether the word is a new one or an option on `table` (the
+So what is actually needed is one more typedef beside `GbQtInvokeFn`, one more
+callback registered through `gb_qt_set_callbacks`, and a gBASIC-side function
+that builds two numbers and reads a string back. That makes this a **medium**
+increment rather than a large one, and the better-specified of the two that are
+left.
+
+Still open with it: whether the word is a new one or an option on `table` (the
 one-slot rule makes an option awkward), and whether a model-backed table can
 share `qt.cell`'s by-name column addressing.
 
