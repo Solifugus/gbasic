@@ -32,6 +32,13 @@ typedef struct {
     const GbWinModel *m;
     const void *win;
     int errors;
+    /* THE WINDOW'S OWN NAME, carried because two rules below need it and
+     * neither is where it was read. It is in the SAME namespace as the parts:
+     * the backend registers the root widget in the one by-name table, so
+     * `on app.closed` addresses the window exactly as `on save.clicked`
+     * addresses a button -- which also means a part called `app` would shadow
+     * it, and is refused by name rather than silently winning. */
+    const char *window_name;
 } WinRun;
 
 static void win_error(WinRun *run, const void *item, const char *fmt, ...) {
@@ -202,6 +209,29 @@ static void win_check_items(WinRun *run, const void *owner, int is_window,
                             const char *window_subject, const char *parent_word,
                             const char **names, size_t *name_count,
                             size_t name_cap);
+
+/* A PART MAY NOT TAKE THE WINDOW'S OWN NAME. The window is addressable by it
+ * -- `qt.read(win, "app", "windowTitle")`, `qt.invoke(win, "app", "close")`,
+ * `on app.closed` -- because the backend registers the root widget in the one
+ * by-name table every part uses, which is what makes the window reachable for
+ * no new machinery at all. The cost of that is this collision, and the part
+ * would quietly WIN it (registered second, over the root), so `on app.closed`
+ * would connect to a button and the window's own title would be unreadable.
+ *
+ * SEPARATE FROM THE TWICE-DECLARED MESSAGE because the remedy is different:
+ * nothing is declared twice here, and "rename one of them" is wrong advice
+ * when one of the two is the window. */
+static int win_shadows_window(WinRun *run, const void *item,
+                              const char *iname) {
+    if (!iname || !run->window_name || strcmp(iname, run->window_name) != 0) {
+        return 0;
+    }
+    win_error(run, item,
+              "window: the window itself is called '%s', so a part cannot be "
+              "-- `on %s.closed` and `qt.read(win, \"%s\", ...)` address the "
+              "window", iname, iname, iname);
+    return 1;
+}
 
 /* One item, the window's subject so a bare `form` can inherit it, and THE
  * PARENT'S WORD, which `menu` is the first directive to need: a menu bar
@@ -426,6 +456,9 @@ static void win_check_item(WinRun *run, const void *item,
          * refused as naming nothing in the window -- the refusal that exists
          * to catch a handler that can never fire, firing on one that can. */
         if (iname) {
+            if (win_shadows_window(run, item, iname)) {
+                /* reported; not registered, so nothing after it is confused */
+            } else {
             for (size_t i = 0; i < *name_count; i++) {
                 if (strcmp(names[i], iname) == 0) {
                     win_error(run, item,
@@ -433,6 +466,7 @@ static void win_check_item(WinRun *run, const void *item,
                               "%s.<signal>` could not say which", iname, iname);
                     break;
                 }
+            }
             }
             if (*name_count < name_cap) {
                 names[*name_count] = iname;
@@ -538,6 +572,9 @@ static void win_check_item(WinRun *run, const void *item,
                   "what a handler and a binding address", word, word);
         return;
     }
+    if (win_shadows_window(run, item, iname)) {
+        return;
+    }
     for (size_t i = 0; i < *name_count; i++) {
         if (strcmp(names[i], iname) == 0) {
             win_error(run, item,
@@ -599,6 +636,7 @@ int gb_window_check(const GbWinModel *model, const void *win) {
     run.m = model;
     run.win = win;
     run.errors = 0;
+    run.window_name = model->win_name(win);
 
     /* THE HEAD'S OPTIONS ARE CLOSED, unlike a leaf's: these are the window's
      * own, not a widget's, so the set is knowable without Qt. A misspelling
@@ -630,6 +668,14 @@ int gb_window_check(const GbWinModel *model, const void *win) {
 
     const char *names[256];
     size_t name_count = 0;
+    /* THE WINDOW IS A TARGET LIKE ANY PART, which is what makes `on
+     * app.closed` a handler rather than a refusal: `win_check_handlers`
+     * matches a target against this list, so seeding it is the whole of making
+     * the window addressable at load time. It is also what `win_shadows_window`
+     * keeps a part out of. */
+    if (run.window_name) {
+        names[name_count++] = run.window_name;
+    }
     /* "window" IS THE PARENT AT THE TOP LEVEL, which is the one place a `menu`
      * may appear outside another menu -- a menu bar belongs to the window. */
     win_check_items(&run, win, 1, model->win_subject(win), "window", names,

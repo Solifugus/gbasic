@@ -51,13 +51,26 @@ int gb_qt_can_display(void);
  * `gi_signal_marshal` already does for GTK (§5). */
 typedef void (*GbQtInvokeFn)(const char *handler);
 
+/* A WINDOW HAS CLOSED, and gBASIC's own registry has to learn about it. The
+ * backend cannot do that bookkeeping itself: which declaration a window came
+ * from, and what a form captured when it opened, are facts the C side holds.
+ *
+ * CALLED FOR EVERY CLOSE, however it arrived -- `gb_qt_close`, a `close`
+ * invoked by name, or the window manager's own button -- because all three
+ * deliver the same QEvent::Close and one hook catches them all. That
+ * uniformity is the point: a program must not be able to tell them apart,
+ * since a person clicking X is the ordinary case and the other two exist to
+ * be drivable. */
+typedef void (*GbQtClosedFn)(void *window);
+
 /* ONE ITERATION OF gBASIC'S OWN EVENT LOOP, NON-BLOCKING. Qt owns the wait
  * (direction A, measured in §5.1), so gBASIC's sources cannot have a `poll()`
  * of their own; they ride a Qt timer instead. Returns 0 to ask Qt's loop to
  * stop. */
 typedef int (*GbQtTickFn)(void);
 
-void gb_qt_set_callbacks(GbQtInvokeFn invoke, GbQtTickFn tick);
+void gb_qt_set_callbacks(GbQtInvokeFn invoke, GbQtTickFn tick,
+                         GbQtClosedFn closed);
 
 /* THE APPLICATION'S OWN STYLESHEET -- the half of theming the by-name property
  * route does NOT already give. Measured before this was written: `styleSheet`
@@ -82,7 +95,19 @@ char *gb_qt_theme_get(void);
  * happen exactly once and after gb_qt_can_display() has said yes. */
 int gb_qt_begin(char *err, size_t err_size);
 
-void *gb_qt_window(const char *title, int width, int height);
+/* `name` IS THE DECLARATION'S OWN NAME, and it buys four doors for one line:
+ * the root widget is registered in the same by-name table every part uses, so
+ * `qt.read(win, "app", "windowTitle")`, `qt.set`, `qt.invoke(win, "app",
+ * "showMaximized")` and `on app.closed` all reach the window itself through
+ * machinery that already existed. MEASURED before relying on it: `windowTitle`
+ * is a Q_PROPERTY of QWidget (index 43) and `close()` and `showMaximized()`
+ * are both invokable by name (24 and 21), so nothing had to be added for any
+ * of them -- which is note 4's by-name argument paying off a fourth time.
+ *
+ * Until this, `qt.invoke`/`qt.read`/`qt.set` reached PARTS only, so there was
+ * no way to address the window at all: no close, no raise, no reading or
+ * setting its own title or size. */
+void *gb_qt_window(const char *name, const char *title, int width, int height);
 
 /* A container word (`row`, `column`, `form`, `group`, `tabs`, `tab`). `title`
  * is the caption a `group` or a `tab` carries and is NULL for the others.
@@ -487,6 +512,39 @@ char *gb_qt_choose(void *window, int kind, const char *title,
 int gb_qt_answer_path(const char *path, char *err, size_t err_size);
 
 void gb_qt_show(void *window);
+
+/* CLOSE A WINDOW. Measured first, and every answer shaped what is here:
+ *
+ *   quitOnLastWindowClosed       true (Qt's default, never set by us)
+ *   close() offscreen            delivers QEvent::Close to an event filter
+ *   closing one of two windows   exec() keeps running
+ *   closing the last one         exec() RETURNS -- so `qt.run()` ends
+ *   after close()                THE WIDGET IS STILL ALIVE AND READABLE
+ *   delete immediately after     safe, close() having returned
+ *
+ * THE FIFTH ROW IS WHY A CLOSE IS BOOKKEEPING AND NOT A HIDE. Qt does not set
+ * `WA_DeleteOnClose`, so a window the person dismissed goes on answering
+ * `qt.read` with the values it was showing -- a program reading from a window
+ * nobody can see, which is a plausible wrong answer and the class this backend
+ * is tested against. So a close REMOVES the window from gBASIC's registry, and
+ * every verb that needs an open one then refuses by name.
+ *
+ * WHICH MAKES THE `closed` HANDLER LOAD-BEARING RATHER THAN A NOTIFICATION:
+ * it fires BEFORE the registry forgets, so reading the form in it is the one
+ * place a program can still see what the person typed. A program with nothing
+ * to save needs no handler; one that has something has exactly one place to
+ * put it.
+ *
+ * ONE PATH FOR ALL THREE WAYS IN. `gb_qt_close` calls `widget->close()` rather
+ * than doing the work itself, so the program's verb, an invoked `close` and
+ * the window manager's button are the same code -- the rule `would` and
+ * `execute` follow in `automation`, and for the same reason: if they could
+ * disagree, a suite driving one would be describing the other. The X button is
+ * the one that cannot be driven here (offscreen has no window manager), and it
+ * reaches `QWidget::close()` through Qt's own platform layer, so it is the
+ * same event by construction rather than by measurement -- stated, because the
+ * difference matters. */
+int gb_qt_close(void *window, char *err, size_t err_size);
 
 /* Hands the thread to QApplication::exec(). `tick_ms` is how often gBASIC's
  * own loop gets one non-blocking iteration. */

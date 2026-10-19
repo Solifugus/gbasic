@@ -549,6 +549,30 @@ static QtOpenWindow *qt_window_entry(const char *name) {
     return NULL;
 }
 
+/* THE WINDOW HAS CLOSED, and this is the whole of gBASIC's side of it: the
+ * entry goes, so every verb that needs an open window refuses by name and
+ * `qt.open` will build a fresh one.
+ *
+ * BY NODE RATHER THAN BY NAME because the backend has no names of its own --
+ * it was handed one for the by-name table and holds no record of which
+ * declaration a window came from, which is exactly the split this seam keeps
+ * (docs/qt_gui_design.md: the C side walks the declaration, C++ takes one
+ * widget at a time).
+ *
+ * THE HANDLER HAS ALREADY RUN by the time this is called, which is the
+ * ordering that makes `on app.closed` the place to read a form: see
+ * `GbQtCloser::eventFilter`. */
+static void qt_window_closed(void *node) {
+    for (size_t i = 0; i < qt_window_count; i++) {
+        if (qt_windows[i].node == node) {
+            char *name = copy_string(qt_windows[i].name);
+            qt_window_forget(name);
+            free(name);
+            return;
+        }
+    }
+}
+
 /* WHICH WORDS BIND. `field` and `check` carry a value a person can change;
  * `button` and `stretch` do not, so a button named `save` inside a form is not
  * a binding that failed to find a field -- it is a button. Without this
@@ -2081,6 +2105,18 @@ static Value qt_eval_call(AstExpr *expr) {
     if (strcmp(verb, "can_highlight") == 0 && argc == 0) {
         return value_bool(0);
     }
+    /* ANSWERS WITHOUT QT for the same reason: a program asking whether its
+     * window is still there is choosing what to do next, and on a build that
+     * cannot open one the true answer is no. Refusing would make a program
+     * that degrades gracefully have to special-case the degradation. */
+    if (strcmp(verb, "is_open") == 0 && argc == 1) {
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        value_free(win);
+        if (error_action_pending()) {
+            return value_null();
+        }
+        return value_bool(0);
+    }
     if (strcmp(verb, "check") == 0) {
         return qt_check_verb(expr, argc);
     }
@@ -2210,7 +2246,8 @@ static Value qt_eval_call(AstExpr *expr) {
 #endif
         }
         if (!qt_callbacks_set) {
-            gb_qt_set_callbacks(qt_invoke_handler, qt_pump_gbasic);
+            gb_qt_set_callbacks(qt_invoke_handler, qt_pump_gbasic,
+                                qt_window_closed);
             qt_callbacks_set = 1;
         }
 
@@ -2228,7 +2265,8 @@ static Value qt_eval_call(AstExpr *expr) {
                 height = (long)hf->value->as.num.value;
             }
         }
-        void *root = gb_qt_window(title ? title : (name ? name : ""),
+        void *root = gb_qt_window(name ? name : "",
+                                  title ? title : (name ? name : ""),
                                   (int)width, (int)height);
         /* REMEMBERED BEFORE BINDING, because a form's capture is kept on the
          * registry entry; forgotten again if binding refuses, so a failed
@@ -2253,6 +2291,87 @@ static Value qt_eval_call(AstExpr *expr) {
         gb_qt_show(root);
         value_free(win);
         return value_bool(1);
+    }
+
+    /* CLOSE A WINDOW (docs/qt_gui_design.md §0.17). THE OTHER HALF OF
+     * `qt.open`, and until this there was none: a window could be opened and
+     * never shut, which for a second window is the whole point -- one you open,
+     * use and dismiss.
+     *
+     * IT REFUSES WHEN THE WINDOW IS NOT OPEN rather than doing nothing, which
+     * is the rule `qt.answer` already follows: a silent no-op is the failure
+     * class this backend is tested against, and here it would hide the one
+     * case a program most needs to know about -- the person closed it first.
+     * `qt.is_open` is how a program asks without raising.
+     *
+     * A CLOSE IS NOT UNDONE BY REOPENING. `qt.open` builds a fresh window from
+     * the declaration, so a form captures its subject again and nothing of the
+     * old one survives -- which is what makes a dismissed window's values
+     * readable only in the `closed` handler. */
+    if (strcmp(verb, "close") == 0) {
+        if (argc != 1) {
+            qt_raise("qt.close expects one window declaration");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(win);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "close")) {
+            value_free(win);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message),
+                     "window `%s` is not open, so there is nothing to close",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win);
+            return value_null();
+        }
+        err[0] = '\0';
+        int ok = gb_qt_close(root, err, sizeof(err));
+        value_free(win);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.close: %s",
+                     err[0] ? err : "that window could not be closed");
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
+    /* IS IT STILL THERE? ANSWERS RATHER THAN REFUSING, which is the same
+     * argument `qt.can_display` and `qt.can_highlight` rest on: this is a
+     * question a program asks IN ORDER TO CHOOSE, and a raise would make the
+     * choice unmakeable.
+     *
+     * IT IS NEEDED BECAUSE A WINDOW CAN CLOSE WITHOUT THE PROGRAM ASKING. Once
+     * the person can dismiss one, every other verb starts raising for a reason
+     * that is nobody's mistake, and a program with no way to ask would have to
+     * wrap each call in `on error` to find out something it could simply be
+     * told. */
+    if (strcmp(verb, "is_open") == 0) {
+        if (argc != 1) {
+            qt_raise("qt.is_open expects one window declaration");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(win);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "is_open")) {
+            value_free(win);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        int open = (wname && qt_window_find(wname)) ? 1 : 0;
+        value_free(win);
+        return value_bool(open);
     }
 
     /* ONE CELL, BY ROW AND BY THE COLUMN'S OWN NAME. This exists for two

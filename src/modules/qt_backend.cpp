@@ -46,6 +46,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QEvent>
 #include <QComboBox>
 #include <QHeaderView>
 #include <QItemSelectionModel>
@@ -142,10 +143,13 @@ extern "C" int gb_qt_can_display(void) {
 
 static GbQtInvokeFn g_invoke = nullptr;
 static GbQtTickFn g_tick = nullptr;
+static GbQtClosedFn g_closed = nullptr;
 
-extern "C" void gb_qt_set_callbacks(GbQtInvokeFn invoke, GbQtTickFn tick) {
+extern "C" void gb_qt_set_callbacks(GbQtInvokeFn invoke, GbQtTickFn tick,
+                                    GbQtClosedFn closed) {
     g_invoke = invoke;
     g_tick = tick;
+    g_closed = closed;
 }
 
 /* ONE GENERIC RELAY per connection. A widget's signal reaches `fire()` and
@@ -196,7 +200,9 @@ void GbQtRelay::tick() {
     /* ONE NON-BLOCKING ITERATION OF gBASIC'S LOOP. It drains by construction,
      * running the real loop body; see note 2 at the top of this file. */
     if (g_tick && !g_tick()) {
-        QCoreApplication::quit();
+        /* `exit(0)` for the reason `gb_qt_stop` gives: `quit()` closes every
+         * window, which is not what "gBASIC's loop has no more work" means. */
+        QCoreApplication::exit(0);
     }
 }
 
@@ -227,6 +233,17 @@ struct GbQtNode {
     int grid_next_row = 0;
     GbQtNode *root = nullptr;
     bool is_form = false;
+    /* ROOT ONLY. `closed_handler` is the function `on app.closed` named, held
+     * here rather than connected because A QWidget HAS NO `closed` SIGNAL --
+     * closing is an EVENT, so the by-name signal route has nothing to find and
+     * `gb_qt_connect` would refuse a handler that is perfectly well formed.
+     *
+     * `closing` is a RE-ENTRY GUARD and not bookkeeping: the handler runs while
+     * the window is still registered (which is what makes reading the form in
+     * it possible), so a handler that closes the window again would arrive back
+     * here through `QWidget::close()`. One flag, set before the handler runs. */
+    QByteArray closed_handler;
+    bool closing = false;
     /* ADDRESSED BY NAME, AND NOT EVERY NAMED THING IS A WIDGET: a menu `item`
      * is a QAction, which descends from QObject and not from QWidget. Holding
      * QObject* is what lets one registry serve both -- properties, signals and
@@ -252,6 +269,88 @@ static GbQtNode *node_new(void) {
     GbQtNode *n = new GbQtNode();
     g_nodes.append(n);
     return n;
+}
+
+/* EVERY ROOT WINDOW CARRIES ONE, whether or not a handler was declared -- and
+ * that is the load-bearing half. The BOOKKEEPING is unconditional, because
+ * gBASIC's registry has to stop reporting a dismissed window as open however
+ * it was dismissed; the HANDLER is the optional part. A filter installed only
+ * where `on app.closed` appears would leave a program that declared no handler
+ * reading from a window nobody can see.
+ *
+ * NO Q_OBJECT: `eventFilter` is a virtual, so there is no signal or slot here
+ * for moc to generate, and this class is declared after GbQtNode -- which is
+ * below the moc include -- precisely because it needs one. */
+class GbQtCloser : public QObject {
+public:
+    GbQtNode *node = nullptr;
+protected:
+    bool eventFilter(QObject *obj, QEvent *event) override;
+};
+
+/* DROP A WINDOW'S NODES. Reopening was impossible before this increment (a
+ * second `qt.open` met "already open"), so repeated open/close is a new shape
+ * and would otherwise grow `g_nodes` by one entry per part per open, for ever.
+ * Deleting the node structs is safe because nothing outside holds one: the
+ * caller's handle is the registry entry, which has already been forgotten, and
+ * the build pass holds parents only within a single call. */
+static void node_retire(GbQtNode *root) {
+    for (int i = g_nodes.size() - 1; i >= 0; i--) {
+        if (g_nodes[i]->root == root) {
+            delete g_nodes[i];
+            g_nodes.remove(i);
+        }
+    }
+}
+
+/* A WINDOW CLOSED BY SOMETHING OTHER THAN `gb_qt_close` cannot be deleted
+ * where it is noticed: the filter runs inside that widget's own event
+ * dispatch, and `QWidget::close()` goes on to hide it afterwards. So it waits
+ * here and is deleted at the next `gb_qt_window`, which is both a safe moment
+ * -- a fresh call from gBASIC, inside nobody's dispatch -- and the one that
+ * matters, since reopening is what would otherwise accumulate.
+ *
+ * `deleteLater()` WAS THE OBVIOUS ANSWER AND IS NOT RELIED ON: a deferred
+ * delete needs an event loop to spin, and the commonest shape here closes the
+ * LAST window, which RETURNS from exec() -- so the queue may never be
+ * processed. Draining it ourselves asks nothing about whether a loop is
+ * running. Anything still waiting at teardown is deleted by `gb_qt_end`,
+ * which is why a program that never opens another window leaks nothing. */
+static QVector<GbQtNode *> g_retired;
+
+static void retired_drain(void) {
+    QVector<GbQtNode *> list = g_retired;
+    g_retired.clear();
+    for (int i = 0; i < list.size(); i++) {
+        QWidget *w = list[i]->widget;
+        list[i]->widget = nullptr;
+        delete w;
+        node_retire(list[i]);
+    }
+}
+
+bool GbQtCloser::eventFilter(QObject *obj, QEvent *event) {
+    if (event->type() == QEvent::Close && node && !node->closing) {
+        node->closing = true;
+        /* THE HANDLER RUNS FIRST, WHILE THE WINDOW IS STILL REGISTERED, and
+         * that ordering is the whole of what makes `on app.closed` useful: it
+         * is the one place a program can still read what the person typed,
+         * because the next line is what stops every verb finding the window. */
+        if (!node->closed_handler.isEmpty() && g_invoke) {
+            g_invoke(node->closed_handler.constData());
+        }
+        if (g_closed) {
+            g_closed(node);
+        }
+        /* STILL HOLDING A WIDGET means we did not arrive through
+         * `gb_qt_close`, which nulls it before closing -- so this is the
+         * window manager's button or an invoked `close`, and the widget is
+         * ours to retire. */
+        if (node->widget) {
+            g_retired.append(node);
+        }
+    }
+    return QObject::eventFilter(obj, event);
 }
 
 /* THE THEME IS REMEMBERED UNTIL THERE IS A QApplication TO PUT IT ON. A
@@ -308,7 +407,12 @@ extern "C" int gb_qt_begin(char *err, size_t err_size) {
     return 1;
 }
 
-extern "C" void *gb_qt_window(const char *title, int width, int height) {
+extern "C" void *gb_qt_window(const char *name, const char *title, int width,
+                              int height) {
+    /* A WINDOW CLOSED EARLIER IS DELETED HERE -- see `retired_drain`. Done
+     * before the new one is built so a program that opens, closes and reopens
+     * holds at most one retired window at a time. */
+    retired_drain();
     GbQtNode *n = node_new();
     QWidget *w = new QWidget();
     if (title && *title) {
@@ -328,6 +432,17 @@ extern "C" void *gb_qt_window(const char *title, int width, int height) {
      * shape and costs nothing when the block supplies one. */
     QVBoxLayout *box = new QVBoxLayout(w);
     n->layout = box;
+    /* THE WINDOW IS A PART OF ITSELF, in the only table that matters: one
+     * insert and `qt.read`, `qt.set`, `qt.invoke` and `on <name>.<signal>`
+     * all reach it, none of them knowing anything new. The load-time pass
+     * refuses a part that shares the name, so this cannot shadow one. */
+    if (name && *name) {
+        n->parts.insert(QString::fromUtf8(name), w);
+    }
+    GbQtCloser *closer = new GbQtCloser();
+    closer->node = n;
+    closer->setParent(w);
+    w->installEventFilter(closer);
     return n;
 }
 
@@ -821,6 +936,17 @@ extern "C" int gb_qt_connect(void *window, const char *target,
         say(err, err_size,
             QByteArray("this window has no `") + target + "` to connect to");
         return 0;
+    }
+    /* `closed` IS AN EVENT, NOT A SIGNAL, and that is a fact about Qt rather
+     * than a choice here: a QWidget emits nothing when it closes, it RECEIVES
+     * a QCloseEvent -- so the by-name signal route below has nothing to find
+     * and would refuse `on app.closed` with "a QWidget emits no `closed`
+     * signal", which is true and useless. It is answered here instead, and
+     * only for the window itself: a `button` has no close worth reporting, so
+     * `on save.closed` falls through and gets that refusal, correctly. */
+    if (w == (QObject *)root->widget && strcmp(signal, "closed") == 0) {
+        root->closed_handler = QByteArray(handler);
+        return 1;
     }
     const QMetaObject *mo = w->metaObject();
     int si = -1;
@@ -2051,6 +2177,39 @@ extern "C" int gb_qt_dialog_info(char **kind, char **title, char **text,
     return 1;
 }
 
+extern "C" int gb_qt_close(void *window, char *err, size_t err_size) {
+    GbQtNode *n = (GbQtNode *)window;
+    /* A CLOSE ALREADY IN FLIGHT MAY NOT BE FINISHED FROM INSIDE ITSELF, and
+     * that is the whole reason `closing` exists. A `closed` handler runs while
+     * the window is still registered -- which is what makes it useful -- so it
+     * can reach this function again, and on the path that did NOT come through
+     * here (the window manager's button, or an invoked `close`) the widget is
+     * still ours to delete. Deleting it there destroys the event filter
+     * currently executing, the node the outer frame is about to hand to
+     * `g_closed`, and the widget both are parented to.
+     *
+     * MEASURED, AND BY PERTURBATION RATHER THAN BY READING: with this guard
+     * written as `!n->widget` alone it caught only the `qt.close` path, where
+     * nulling the widget below already stops a second entry -- so removing the
+     * flag left the suite GREEN and the event-driven case segfaulted with no
+     * output at all, block-buffered stdout going with the crash. Both
+     * conditions are checked, and they answer in the same words because from
+     * the caller's side they are the same situation. */
+    if (!n || !n->widget || n->closing) {
+        say(err, err_size, "that window is already closing");
+        return 0;
+    }
+    QWidget *w = n->widget;
+    /* NULLED BEFORE CLOSING, not after, and that order is the guard: the
+     * handler `close()` is about to run can reach this function again, and
+     * `w` is held locally so only one call owns the delete. */
+    n->widget = nullptr;
+    w->close();          /* -> GbQtCloser -> the handler, then the registry */
+    delete w;            /* measured safe: close() has returned */
+    node_retire(n);
+    return 1;
+}
+
 extern "C" void gb_qt_show(void *window) {
     GbQtNode *n = (GbQtNode *)window;
     if (n && n->widget) {
@@ -2109,13 +2268,35 @@ extern "C" int gb_qt_run(int tick_ms) {
     return rc;
 }
 
+/* `exit(0)` AND NOT `quit()`, WHICH IS A CORRECTION RATHER THAN A PREFERENCE.
+ * MEASURED on Qt 6.10.2: `QCoreApplication::quit()` CLOSES EVERY TOP-LEVEL
+ * WINDOW (it calls closeAllWindows), where `exit(0)` ends the loop and leaves
+ * them alone -- the widget is still visible afterwards.
+ *
+ * SO `qt.stop()` WAS DISMISSING THE PROGRAM'S WINDOWS as a side effect of
+ * asking for the thread back, and nothing could see it: the windows were
+ * merely HIDDEN, every part stayed readable, and no fixture asked whether the
+ * window was still up. It surfaced only once a close became bookkeeping, when
+ * a program that reads its window after `qt.run()` returned started being
+ * told it was not open (measured: eight read one textually after `qt.run()`,
+ * exactly one actually broke).
+ *
+ * `qt.stop()` MEANS "GIVE ME THE THREAD BACK" and nothing more. A program that
+ * wants its window gone says `qt.close`, and the person who wants it gone
+ * presses the button; neither is what `stop` asks for, and firing `on
+ * <win>.closed` on an orderly shutdown would make that handler mean two
+ * different things. */
 extern "C" void gb_qt_stop(void) {
     if (g_app) {
-        QCoreApplication::quit();
+        QCoreApplication::exit(0);
     }
 }
 
 extern "C" void gb_qt_end(void) {
+    /* A WINDOW WAITING TO BE RETIRED is deleted by the loop below like any
+     * other -- its node still holds the widget -- so the list is only cleared,
+     * never drained, because draining it would delete the same widget twice. */
+    g_retired.clear();
     /* A WINDOW IS THE ONE WIDGET WITH NO QT PARENT, so it is the one this has
      * to delete; everything else goes with it, Qt owning its children. The
      * nodes themselves are ours either way. */
