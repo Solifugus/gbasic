@@ -367,6 +367,65 @@ int gb_qt_popup(void *window, const char *name, int *shown, char *err,
 int gb_qt_right_click(void *window, const char *name, int row, char *err,
                       size_t err_size);
 
+/* THE WHEEL. `on <part>.wheel` is an EVENT and not a signal -- the second
+ * thing in this backend that has to be, after `closed`, and for the same
+ * reason: a QWidget has no wheel signal, it RECEIVES a QWheelEvent, so the
+ * by-name signal route has nothing to find and would refuse a well-formed
+ * handler with "a QPlainTextEdit emits no `wheel` signal", true and useless.
+ *
+ * DERIVED FROM STUDIO, which uses a Gtk.EventControllerScroll for exactly one
+ * thing: Ctrl + wheel zooms the editor. Its handler reads `dy`, calls one
+ * function and returns TRUE to mean handled -- so the requirement is a
+ * direction, the modifiers, and a way to say handled. Nothing more.
+ *
+ * FIVE MEASUREMENTS, THREE OF WHICH SHRANK IT. A synthetic QWheelEvent IS
+ * delivered (a plain one moved the scrollbar 92 -> 95), which is better than
+ * GTK -- Studio records its scroll and key controllers as its ONLY untested
+ * controls precisely because `Gtk.EventControllerScroll` has no emit, so
+ * `gb_qt_scroll` closes an exception that project had to sanction. A
+ * QPlainTextEdit does NOT zoom on Ctrl+wheel (the font stayed 9.00), so the
+ * gap is real. Ctrl+wheel scrolls FASTER than a plain one (95 -> 111 against
+ * 92 -> 95), which is why claiming the event is not optional: a handler that
+ * zooms without claiming leaves the editor jumping about while it resizes. A
+ * filter CAN swallow it (102 -> 102), and declining leaves plain scrolling
+ * intact (102 -> 105). And `font` is Q_PROPERTY 27 reading back as TEXT, so
+ * THE ZOOM NEEDS NO VERB -- split the text, change the number, write it back,
+ * which is why there is no `qt.zoom` and that is a measurement rather than a
+ * deferral: `zoomIn`/`zoomOut` carry a defaulted argument `qt.invoke` could
+ * not reach anyway.
+ *
+ * `dy` IS IN NOTCHES, NOT QT'S 120-UNIT ANGLE DELTA. One click of the wheel is
+ * what a person did; 120 is a Qt-ism, and a vocabulary that made a program
+ * divide by it would leak the wrong half of the abstraction. Positive is away
+ * from the user, which is Qt's own sign -- and the OPPOSITE of GTK's, so
+ * Studio's `if dy < 0 then zoom in` inverts when it is ported. */
+int gb_qt_wheel_event(int *dy, int *dx, int *ctrl, int *shift, int *alt);
+
+/* CLAIM THE EVENT BEING HANDLED, so the view does not also act on it. Refuses
+ * when nothing is in flight rather than being a silent no-op, the rule
+ * `gb_qt_answer` already follows: a verb that quietly did nothing would leave
+ * an author believing the editor had stopped scrolling for another reason. */
+int gb_qt_swallow(char *err, size_t err_size);
+
+/* TURN THE WHEEL ON A PART, the way a mouse does -- and it ANSWERS WHETHER
+ * ANYTHING CLAIMED THE EVENT, which is what makes `gb_qt_swallow` assertable
+ * at all: a QPlainTextEdit has no scroll position a program can read
+ * (`verticalScrollBar` is a method, not a property), so without this the one
+ * thing swallowing does would be unobservable. The shape `gb_qt_popup` has.
+ *
+ * ROUTED THROUGH THE VIEWPORT where there is one, for the reason
+ * `gb_qt_right_click` records -- and here it is twice load-bearing, since that
+ * is also where the FILTER has to sit: an event filter sees only what is
+ * delivered to the object it is installed on. */
+int gb_qt_scroll(void *window, const char *name, int notches, int mods,
+                 int *claimed, char *err, size_t err_size);
+
+/* The modifier bits `gb_qt_scroll` takes, so a caller does not depend on Qt's
+ * own values. */
+#define GB_QT_MOD_CTRL  1
+#define GB_QT_MOD_SHIFT 2
+#define GB_QT_MOD_ALT   4
+
 /* A TABLE. ITS PARTS ARE COLUMNS, NOT WIDGETS (§7), so it is built in ONE call
  * from the declaration's whole `field` list rather than by the part walk that
  * every other container uses -- a column has no widget of its own, and handing

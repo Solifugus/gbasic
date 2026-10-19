@@ -67,6 +67,7 @@
 #include <QAbstractScrollArea>
 #include <QMouseEvent>
 #include <QContextMenuEvent>
+#include <QWheelEvent>
 #include <QCursor>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -294,6 +295,109 @@ public:
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
 };
+
+/* THE WIDGET A MOUSE EVENT WOULD LAND ON. For a scroll area that is the
+ * VIEWPORT and not the widget, which is a measurement rather than a guess: a
+ * context-menu event delivered to a QTableWidget fired its signal 0 times and
+ * propagated to the PARENT, and the same event delivered to that widget's
+ * viewport fired 1. Used by the right-click verb, by the wheel filter and by
+ * the wheel verb -- three callers, one rule, because a second copy is a second
+ * thing that can be wrong about which widget a mouse touches.
+ *
+ * DECLARED HERE, beside the relay, rather than beside its first caller: it is
+ * needed by `gb_qt_connect` five hundred lines above where it used to sit. */
+static QWidget *mouse_target(QWidget *w) {
+    QAbstractScrollArea *sa = qobject_cast<QAbstractScrollArea *>(w);
+    return sa ? sa->viewport() : w;
+}
+
+/* THE WHEEL EVENT BEING HANDLED, held while one handler runs. A handler takes
+ * no arguments -- the shape of every handler in this backend -- so the event
+ * cannot be passed in and is asked for instead, the rule `principal()` and
+ * `gb_qt_dialog` already follow.
+ *
+ * ONE SET OF GLOBALS AND NOT A STACK, deliberately: the only way to deliver a
+ * second wheel event from inside the first is to re-enter the INTERPRETER,
+ * which §0.15 measured cannot happen while a watcher body is on the stack. If
+ * that ever changes this becomes a stack, and this comment is the warning. */
+static bool g_wheel_live = false;
+static int g_wheel_dy = 0, g_wheel_dx = 0;
+static bool g_wheel_ctrl = false, g_wheel_shift = false, g_wheel_alt = false;
+static bool g_wheel_claimed = false;
+/* SEPARATE FROM `g_wheel_claimed`, which is cleared as the handler returns:
+ * this is what `gb_qt_scroll` reads AFTERWARDS to answer whether anything took
+ * the event. */
+static bool g_wheel_claimed_last = false;
+
+/* ONE FILTER PER DECLARED HANDLER, holding that handler's name -- the shape
+ * GbQtRelay has for a signal. Installed on the widget a wheel event would LAND
+ * on, which for a scroll area is the viewport.
+ *
+ * AND ONLY WHERE A HANDLER WAS DECLARED. One per window, or one on
+ * QApplication, would see every wheel event in the program -- and a filter
+ * that claims is a filter that costs a `source` or `table` its ordinary
+ * scrolling, so its reach is the declaration's and nothing wider. */
+class GbQtWheeler : public QObject {
+public:
+    QByteArray handler;
+    bool eventFilter(QObject *obj, QEvent *event) override {
+        if (event->type() != QEvent::Wheel) {
+            return QObject::eventFilter(obj, event);
+        }
+        QWheelEvent *we = static_cast<QWheelEvent *>(event);
+        /* NOTCHES, NOT QT'S ANGLE DELTA: one click is 120 units by Qt's own
+         * convention, and a program dividing by 120 would carry a Qt-ism no
+         * other part of this vocabulary exposes. */
+        g_wheel_dy = we->angleDelta().y() / 120;
+        g_wheel_dx = we->angleDelta().x() / 120;
+        /* A SUB-NOTCH TURN IS STILL A TURN. A high-resolution wheel or a
+         * trackpad sends deltas smaller than 120, which integer division
+         * reports as ZERO -- a handler told the wheel moved by nothing, in a
+         * value whose SIGN is the whole of what Studio reads. Rounded away
+         * from zero for that reason. */
+        if (g_wheel_dy == 0 && we->angleDelta().y() != 0) {
+            g_wheel_dy = we->angleDelta().y() > 0 ? 1 : -1;
+        }
+        if (g_wheel_dx == 0 && we->angleDelta().x() != 0) {
+            g_wheel_dx = we->angleDelta().x() > 0 ? 1 : -1;
+        }
+        Qt::KeyboardModifiers m = we->modifiers();
+        g_wheel_ctrl  = (m & Qt::ControlModifier) != 0;
+        g_wheel_shift = (m & Qt::ShiftModifier) != 0;
+        g_wheel_alt   = (m & Qt::AltModifier) != 0;
+        g_wheel_claimed = false;
+        g_wheel_live = true;
+        if (!handler.isEmpty() && g_invoke) {
+            g_invoke(handler.constData());
+        }
+        g_wheel_live = false;
+        g_wheel_claimed_last = g_wheel_claimed;
+        return g_wheel_claimed;
+    }
+};
+
+extern "C" int gb_qt_wheel_event(int *dy, int *dx, int *ctrl, int *shift,
+                                 int *alt) {
+    if (!g_wheel_live) {
+        return 0;
+    }
+    if (dy)    { *dy = g_wheel_dy; }
+    if (dx)    { *dx = g_wheel_dx; }
+    if (ctrl)  { *ctrl = g_wheel_ctrl ? 1 : 0; }
+    if (shift) { *shift = g_wheel_shift ? 1 : 0; }
+    if (alt)   { *alt = g_wheel_alt ? 1 : 0; }
+    return 1;
+}
+
+extern "C" int gb_qt_swallow(char *err, size_t err_size) {
+    if (!g_wheel_live) {
+        say(err, err_size, "no event is being handled");
+        return 0;
+    }
+    g_wheel_claimed = true;
+    return 1;
+}
+
 
 /* DROP A WINDOW'S NODES. Reopening was impossible before this increment (a
  * second `qt.open` met "already open"), so repeated open/close is a new shape
@@ -1115,6 +1219,31 @@ extern "C" int gb_qt_connect(void *window, const char *target,
         root->closed_handler = QByteArray(handler);
         return 1;
     }
+    /* `wheel` IS AN EVENT TOO, the second after `closed`, and for the same
+     * reason: a QWidget has no wheel SIGNAL, it receives a QWheelEvent -- so
+     * the by-name route below would refuse `on code.wheel` with "a
+     * QPlainTextEdit emits no `wheel` signal", true and useless.
+     *
+     * THE FILTER GOES ON THE VIEWPORT where there is one, because that is
+     * where the event is delivered and an event filter sees only what reaches
+     * the object it sits on -- one installed on the QPlainTextEdit itself
+     * would never fire, which is the measurement `gb_qt_right_click` already
+     * rests on, load-bearing here for a second reason. */
+    if (strcmp(signal, "wheel") == 0) {
+        QWidget *ww = qobject_cast<QWidget *>(w);
+        if (!ww) {
+            say(err, err_size,
+                QByteArray("`") + target + "` is a " +
+                    w->metaObject()->className() + ", which has no wheel");
+            return 0;
+        }
+        GbQtWheeler *turner = new GbQtWheeler();
+        turner->handler = QByteArray(handler);
+        QWidget *on = mouse_target(ww);
+        turner->setParent(on);
+        on->installEventFilter(turner);
+        return 1;
+    }
     const QMetaObject *mo = w->metaObject();
     int si = -1;
     for (int i = 0; i < mo->methodCount(); i++) {
@@ -1596,16 +1725,6 @@ extern "C" int gb_qt_popup(void *window, const char *name, int *shown,
     return 1;
 }
 
-/* THE WIDGET A MOUSE EVENT WOULD LAND ON. For a scroll area that is the
- * VIEWPORT and not the widget, which is the measurement this verb exists for:
- * a context-menu event delivered to a QTableWidget fired its signal 0 times
- * and propagated to the parent, and the same event delivered to that widget's
- * viewport fired 1. */
-static QWidget *mouse_target(QWidget *w) {
-    QAbstractScrollArea *sa = qobject_cast<QAbstractScrollArea *>(w);
-    return sa ? sa->viewport() : w;
-}
-
 extern "C" int gb_qt_right_click(void *window, const char *name, int row,
                                  char *err, size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
@@ -1666,6 +1785,50 @@ extern "C" int gb_qt_right_click(void *window, const char *name, int row,
     QApplication::sendEvent(target, &release);
     QContextMenuEvent ctx(QContextMenuEvent::Mouse, at, global);
     QApplication::sendEvent(target, &ctx);
+    return 1;
+}
+
+extern "C" int gb_qt_scroll(void *window, const char *name, int notches,
+                            int mods, int *claimed, char *err,
+                            size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (claimed) {
+        *claimed = 0;
+    }
+    if (!root) {
+        say(err, err_size, "there is no window to scroll in");
+        return 0;
+    }
+    QObject *o = root->parts.value(QString::fromUtf8(name ? name : ""), nullptr);
+    if (!o) {
+        say(err, err_size,
+            QByteArray("this window has no `") + (name ? name : "") + "`");
+        return 0;
+    }
+    QWidget *w = qobject_cast<QWidget *>(o);
+    if (!w) {
+        say(err, err_size,
+            QByteArray("`") + (name ? name : "") + "` is a " +
+                o->metaObject()->className() + ", which has no wheel");
+        return 0;
+    }
+    QWidget *target = mouse_target(w);
+    Qt::KeyboardModifiers m = Qt::NoModifier;
+    if (mods & GB_QT_MOD_CTRL)  { m |= Qt::ControlModifier; }
+    if (mods & GB_QT_MOD_SHIFT) { m |= Qt::ShiftModifier; }
+    if (mods & GB_QT_MOD_ALT)   { m |= Qt::AltModifier; }
+    QPoint at(4, 4);
+    if (target->width() > 8 && target->height() > 8) {
+        at = QPoint(target->width() / 2, target->height() / 2);
+    }
+    g_wheel_claimed_last = false;
+    QWheelEvent ev(QPointF(at), QPointF(target->mapToGlobal(at)), QPoint(0, 0),
+                   QPoint(0, notches * 120), Qt::NoButton, m,
+                   Qt::NoScrollPhase, false);
+    QApplication::sendEvent(target, &ev);
+    if (claimed) {
+        *claimed = g_wheel_claimed_last ? 1 : 0;
+    }
     return 1;
 }
 

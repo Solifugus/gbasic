@@ -4282,6 +4282,136 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
+    /* THE WHEEL EVENT BEING HANDLED. Answers `unknown` -- no, REFUSES --
+     * outside a wheel handler, because "no wheel event is in flight" is a
+     * mistake about where the call was written rather than an ordinary
+     * outcome: there is no sensible record to hand back, and a program that
+     * asked in the wrong place would otherwise read zeros and act on them. */
+    if (strcmp(verb, "wheel") == 0) {
+        if (argc != 0) {
+            qt_raise("qt.wheel takes no arguments -- it answers the event "
+                     "being handled");
+            return value_null();
+        }
+        int dy = 0, dx = 0, ctrl = 0, shift = 0, alt = 0;
+        if (!gb_qt_wheel_event(&dy, &dx, &ctrl, &shift, &alt)) {
+            qt_raise("qt.wheel: no wheel event is being handled");
+            return value_null();
+        }
+        Value out = value_record(NULL, 0);
+        record_set(&out, "dy", value_number(dy));
+        record_set(&out, "dx", value_number(dx));
+        record_set(&out, "ctrl", value_bool(ctrl));
+        record_set(&out, "shift", value_bool(shift));
+        record_set(&out, "alt", value_bool(alt));
+        return out;
+    }
+
+    /* CLAIM IT, so the view does not also act on it. */
+    if (strcmp(verb, "swallow") == 0) {
+        if (argc != 0) {
+            qt_raise("qt.swallow takes no arguments");
+            return value_null();
+        }
+        err[0] = '\0';
+        if (!gb_qt_swallow(err, sizeof(err))) {
+            snprintf(message, sizeof(message), "qt.swallow: %s",
+                     err[0] ? err : "that event could not be claimed");
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
+    /* TURN THE WHEEL, for a program driving itself -- and it answers whether
+     * anything CLAIMED the event, which is the only thing that makes
+     * `qt.swallow` observable: a QPlainTextEdit has no scroll position a
+     * program can read. */
+    if (strcmp(verb, "scroll") == 0) {
+        if (argc != 3 && argc != 4) {
+            qt_raise("qt.scroll expects a window, a part's name, how many "
+                     "notches and optionally a modifier");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value turn = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(turn);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "scroll") || which.kind != VALUE_STRING ||
+            turn.kind != VALUE_NUMBER) {
+            if (!error_action_pending()) {
+                qt_raise("qt.scroll expects the part's name as text and the "
+                         "notches as a number");
+            }
+            value_free(win); value_free(which); value_free(turn);
+            return value_null();
+        }
+        int notches = (int)turn.as.num.value;
+        value_free(turn);
+        if (notches == 0) {
+            qt_raise("qt.scroll: a wheel turns by at least one notch");
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        int mods = 0;
+        if (argc == 4) {
+            Value mv = eval_expr(expr->as.call.args.items[3]);
+            if (error_action_pending()) {
+                value_free(win); value_free(which); value_free(mv);
+                return value_null();
+            }
+            if (mv.kind != VALUE_STRING) {
+                qt_raise("qt.scroll expects the modifier as text");
+                value_free(win); value_free(which); value_free(mv);
+                return value_null();
+            }
+            /* A CLOSED SET, REFUSED BY NAME. Four words is a vocabulary that
+             * CAN be closed, and a misspelled modifier silently ignored is a
+             * driving verb that sends a plain wheel while the author believes
+             * they sent Ctrl+wheel -- which would make every check about the
+             * plain case while reading as the modified one. */
+            if (strcmp(mv.as.string, "ctrl") == 0) {
+                mods = GB_QT_MOD_CTRL;
+            } else if (strcmp(mv.as.string, "shift") == 0) {
+                mods = GB_QT_MOD_SHIFT;
+            } else if (strcmp(mv.as.string, "alt") == 0) {
+                mods = GB_QT_MOD_ALT;
+            } else {
+                snprintf(message, sizeof(message),
+                         "qt.scroll: `%s` is not a modifier -- use ctrl, "
+                         "shift or alt", mv.as.string);
+                qt_raise(message);
+                value_free(win); value_free(which); value_free(mv);
+                return value_null();
+            }
+            value_free(mv);
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        int claimed = 0;
+        err[0] = '\0';
+        if (!gb_qt_scroll(root, which.as.string, notches, mods, &claimed, err,
+                          sizeof(err))) {
+            snprintf(message, sizeof(message), "qt.scroll: %s",
+                     err[0] ? err : "that part could not be scrolled");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        value_free(win); value_free(which);
+        return value_bool(claimed);
+    }
+
     if (strcmp(verb, "invoke") == 0) {
         if (argc != 3) {
             qt_raise("qt.invoke expects a window, a part's name and a method");
