@@ -47,6 +47,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QEvent>
+#include <QSplitter>
+#include <QScrollArea>
 #include <QDialog>
 #include <QComboBox>
 #include <QHeaderView>
@@ -497,7 +499,13 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
      * Found by running it: with the guard first, `tab "General"` inside
      * `tabs` was refused with "that container cannot hold anything", a true
      * sentence about the wrong thing. */
-    if (!p->layout && strcmp(word, "tab") != 0) {
+    /* A SPLITTER PARENT HAS NO LAYOUT EITHER, and unlike a QTabWidget it needs
+     * nothing else: MEASURED, simply PARENTING a widget to a QSplitter enrols
+     * it as a pane -- `count()` went to 2 from two `new QLabel(..., sp)` calls
+     * with no `addWidget` anywhere. So the only change a splitter needs on this
+     * side is for the layout requirement not to be asked of its children. */
+    if (!p->layout && strcmp(word, "tab") != 0 &&
+        !qobject_cast<QSplitter *>(p->widget)) {
         say(err, err_size, "that container cannot hold anything");
         return nullptr;
     }
@@ -551,6 +559,46 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
         grid->setContentsMargins(0, 0, 0, 0);
         n->widget = host;
         n->layout = grid;
+    } else if (strcmp(word, "split") == 0) {
+        /* A ROW OR COLUMN YOU CAN DRAG. `title` carries the DIRECTION here --
+         * the declaration has one free slot and spends it on that (§0.8), so
+         * the C side is handed the word rather than a name.
+         *
+         * `orientation` IS A Q_PROPERTY (measured, index 67, Horizontal=1
+         * Vertical=2, and it accepts the string "Vertical" too), so the
+         * direction costs one setProperty and nothing had to be plumbed.
+         *
+         * NO LAYOUT, deliberately: a QSplitter's children are PANES, and
+         * leaving `layout` null is what makes the guard above the one place
+         * that decides what may hold what. */
+        QSplitter *sp = new QSplitter(p->widget);
+        sp->setOrientation((title && strcmp(title, "down") == 0)
+                               ? Qt::Vertical
+                               : Qt::Horizontal);
+        n->widget = sp;
+    } else if (strcmp(word, "scroll") == 0) {
+        /* A SCROLLED REGION, which is what a long list of ordinary widgets
+         * needs -- `source`, `memo` and `table` scroll themselves, so this is
+         * for everything else.
+         *
+         * `widgetResizable` DEFAULTS TO FALSE AND THAT IS THE TRAP: left alone,
+         * the inner widget keeps its original size for ever, so content never
+         * reflows to the viewport's width and a window that is resized shows a
+         * stripe of widgets beside a grey expanse. Measured true: 40 rows give
+         * an inner height of 932 against a 258 viewport, and the scrollbar
+         * appears.
+         *
+         * IT HOLDS MANY THINGS THROUGH AN INNER COLUMN, the choice a `tab`
+         * already makes: a QScrollArea takes exactly ONE widget, so a bare one
+         * would force every author to open a `column` first. */
+        QScrollArea *area = new QScrollArea(p->widget);
+        QWidget *inner = new QWidget(area);
+        QVBoxLayout *box = new QVBoxLayout(inner);
+        box->setContentsMargins(0, 0, 0, 0);
+        area->setWidget(inner);
+        area->setWidgetResizable(true);
+        n->widget = area;
+        n->layout = box;
     } else if (strcmp(word, "tabs") == 0) {
         /* A QTabWidget HAS NO LAYOUT OF ITS OWN -- its children are PAGES,
          * added with addTab. So the node carries no `layout`, which is what
@@ -602,8 +650,33 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
 extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
                             const char *label, char *err, size_t err_size) {
     GbQtNode *p = (GbQtNode *)parent;
-    if (!p || !p->layout) {
+    /* A SPLITTER PARENT HAS NO LAYOUT and still holds things -- see
+     * `gb_qt_container`: parenting a widget to a QSplitter enrols it as a
+     * pane, measured. So a `field` or a `source` can be a pane directly,
+     * which is the common case (Studio's editor is one). */
+    QSplitter *psplit = p ? qobject_cast<QSplitter *>(p->widget) : nullptr;
+    if (!p || (!p->layout && !psplit)) {
         say(err, err_size, "that container cannot hold anything");
+        return nullptr;
+    }
+    /* A PANE HAS NOWHERE TO PUT A LABEL, and this is the silent-discard class
+     * rather than a tidiness rule. Most leaves consume their own caption at
+     * construction -- a `button`, a `check`, a `text`, a `memo` and a `source`
+     * all call setText or setPlainText below -- but a `field` and a `choice`
+     * have theirs placed by the PARENT LAYOUT, and a splitter has none. So
+     * `field who( label: "Name" )` as a direct pane renders the field and
+     * DROPS THE WORD, with nothing raised: exactly how a leaf's `label:`
+     * reached no widget at all for four increments (§0.8).
+     *
+     * NARROW, AND DERIVED FROM THE CONSTRUCTION BELOW rather than guessed --
+     * the two words whose label the parent places are the two that are
+     * refused, and the suite asserts a `check` keeps its caption as a pane so
+     * the rule cannot widen into one that fires on correct declarations. */
+    if (!p->layout && psplit && label && *label &&
+        (strcmp(word, "field") == 0 || strcmp(word, "choice") == 0)) {
+        say(err, err_size,
+            QByteArray("a pane has nowhere to put a label, so `") + word +
+                "` cannot carry one here -- put it in a `form` or a `column`");
         return nullptr;
     }
     QBoxLayout *pb = qobject_cast<QBoxLayout *>(p->layout);
@@ -951,6 +1024,61 @@ extern "C" int gb_qt_cell_of(void *window, const char *name, int *row,
         *down = rs;
         *across = cs;
         return 1;
+    }
+    return 0;
+}
+
+/* Returned to the C side as malloc'd text, the convention every other reader
+ * here follows. */
+static char *dup_utf8(const QString &text) {
+    QByteArray bytes = text.toUtf8();
+    char *out = (char *)malloc((size_t)bytes.size() + 1);
+    if (!out) {
+        return nullptr;
+    }
+    memcpy(out, bytes.constData(), (size_t)bytes.size());
+    out[bytes.size()] = '\0';
+    return out;
+}
+
+extern "C" int gb_qt_pane_of(void *window, const char *name, char **kind,
+                             char **direction, int *panes, int *index,
+                             int *resizable) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    QWidget *w = qobject_cast<QWidget *>(o);
+    if (!w) {
+        return 0;
+    }
+    /* WALK UP FROM THE WIDGET, not from any record of where we put it -- which
+     * is what makes this an oracle rather than an echo. A pane may be a
+     * container, so the thing the splitter holds is an ANCESTOR of the named
+     * part rather than the part itself: the walk keeps the last widget it came
+     * through, and that one is the pane. */
+    QWidget *child = w;
+    for (QWidget *up = w->parentWidget(); up; up = up->parentWidget()) {
+        if (QSplitter *sp = qobject_cast<QSplitter *>(up)) {
+            if (kind) { *kind = dup_utf8(QStringLiteral("split")); }
+            if (direction) {
+                *direction = dup_utf8(sp->orientation() == Qt::Vertical
+                                          ? QStringLiteral("down")
+                                          : QStringLiteral("across"));
+            }
+            if (panes) { *panes = sp->count(); }
+            if (index) { *index = sp->indexOf(child); }
+            if (resizable) { *resizable = 0; }
+            return 1;
+        }
+        if (QScrollArea *sc = qobject_cast<QScrollArea *>(up)) {
+            if (kind) { *kind = dup_utf8(QStringLiteral("scroll")); }
+            if (direction) { *direction = nullptr; }
+            if (panes) { *panes = 0; }
+            if (index) { *index = -1; }
+            if (resizable) { *resizable = sc->widgetResizable() ? 1 : 0; }
+            return 1;
+        }
+        child = up;
     }
     return 0;
 }
@@ -1433,7 +1561,12 @@ extern "C" void *gb_qt_table(void *parent, const char *name,
                              const char *const *headers, int columns,
                              char *err, size_t err_size) {
     GbQtNode *p = (GbQtNode *)parent;
-    if (!p || !p->layout) {
+    /* A SPLITTER PARENT, which has no layout and still holds things -- a table
+     * as a direct pane is the ordinary shape (a result grid beside an editor),
+     * and the add below does nothing in that case because parenting already
+     * enrolled it. Third guard to learn this; they are counted in the suite so
+     * a FOURTH door cannot be added without one. */
+    if (!p || (!p->layout && !qobject_cast<QSplitter *>(p->widget))) {
         say(err, err_size, "that container cannot hold a table");
         return nullptr;
     }

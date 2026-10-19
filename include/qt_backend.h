@@ -179,6 +179,31 @@ int gb_qt_span(void *widget, long across, long down, char *err,
 int gb_qt_cell_of(void *window, const char *name, int *row, int *col,
                   int *across, int *down);
 
+/* WHICH DRAGGABLE OR SCROLLED REGION A NAMED PART SITS IN -- `split` and
+ * `scroll`'s oracle, and it is built before their fixture because without it
+ * NEITHER IS OBSERVABLE AT ALL.
+ *
+ * A `split` SPENDS ITS ONE SLOT ON THE DIRECTION (§0.8 measured that a
+ * container carries a name OR options and not both), so it cannot be named --
+ * which means `qt.read`, `qt.set` and a handler cannot reach it, and nothing
+ * could say whether a splitter was built, which way round it is, or how many
+ * panes it got. ASKED OF THE LAYOUT, walking up from a part that CAN be named,
+ * which is the rule `gb_qt_cell_of` already follows for a grid: a position we
+ * remembered would agree with a placement that was wrong.
+ *
+ * It also answers for a `scroll`, which CAN be named -- so that half is
+ * reachable by the ordinary route too and this is the half that says a part is
+ * INSIDE one rather than beside it.
+ *
+ * `kind` comes back "split" or "scroll", malloc'd. For a split, `direction` is
+ * "across" or "down" (malloc'd), `panes` is how many it holds and `index` is
+ * which one this part is. For a scroll, `resizable` reports
+ * `widgetResizable` -- the one that defaults to FALSE and silently stops
+ * content reflowing. 1 when the part is in one of the two, 0 when it is not,
+ * which is a different answer from being absent. */
+int gb_qt_pane_of(void *window, const char *name, char **kind,
+                  char **direction, int *panes, int *index, int *resizable);
+
 int gb_qt_connect(void *window, const char *target, const char *signal,
                   const char *handler, char *err, size_t err_size);
 

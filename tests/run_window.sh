@@ -775,6 +775,20 @@ for w in $vocab; do
     # ONE TRANSPOSITION of the last two letters, which is what fingers actually
     # do and is the shape the finder had to learn (`colunm`, `feild`).
     typo=$(printf '%s' "$w" | sed -E 's/(.)(.)$/\2\1/')
+    # A TRANSPOSITION OF TWO IDENTICAL LETTERS IS NOT A TYPO, and the generator
+    # produced one silently: `scroll` ends in `ll`, so swapping the last two
+    # gives `scroll` back -- a VALID word, so nothing was refused and the check
+    # reported the word as unreachable when the fixture was at fault. Dropping
+    # the last letter instead is still one edit and still a typo a finger makes.
+    if [ "$typo" = "$w" ]; then
+        typo=$(printf '%s' "$w" | sed -E 's/.$//')
+    fi
+    # AND THE GUARD, because a generator that quietly returns the word itself is
+    # a check that measures nothing: that is exactly what just happened.
+    if [ "$typo" = "$w" ]; then
+        fail "the typo generator produced the word itself for '$w', so nothing was measured"
+        continue
+    fi
     # WRITTEN AS A PARENTHESISED LEAF (`rwo()`), because a BARE word with no
     # body is no production at all and dies in the grammar before the word
     # check ever sees it -- the first draft of this loop did that and reported

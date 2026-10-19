@@ -58,7 +58,7 @@ static void win_error(WinRun *run, const void *item, const char *fmt, ...) {
  * than silently accepted and ignored. */
 static const char *win_container_words[] = {"row", "column", "form", "group",
                                             "table", "menu", "tabs", "tab",
-                                            "cells", NULL};
+                                            "cells", "split", "scroll", NULL};
 static const char *win_leaf_words[] = {"field", "button", "check", "text",
                                        "memo", "choice", "source", "stretch",
                                        "item", "separator", NULL};
@@ -384,6 +384,60 @@ static void win_check_item(WinRun *run, const void *item,
                       "<list>` -- because that is what a handler and "
                       "`qt.selected` address");
         }
+        /* A `split` IS A ROW OR COLUMN YOU CAN DRAG, and its one free slot
+         * carries the DIRECTION rather than a name. That is forced rather than
+         * chosen: §0.8 measured that a container may carry a name OR options
+         * and not both (`tabs settings( movable: true )` costs four
+         * reduce/reduce), so there is exactly one slot, and a splitter with no
+         * direction is not a splitter -- where a name is something only some
+         * splitters would ever want.
+         *
+         * THE COST IS STATED: a `split` cannot be named, so `on x.splitterMoved`
+         * and `qt.set` cannot reach it. `qt.pane` is what makes it observable
+         * anyway, asked of the layout by walking up from a part that CAN be
+         * named -- the rule `qt.at` already follows for a grid. */
+        if (strcmp(word, "split") == 0) {
+            static const char *dirs[] = {"across", "down", NULL};
+            if (M->label(item)) {
+                win_error(run, item,
+                          "window: a split's direction is a word, not a string "
+                          "-- `split across`, without the quotes");
+            } else if (!iname) {
+                win_error(run, item,
+                          "window: a split needs a direction -- `split across` "
+                          "or `split down`");
+            } else if (!win_in(dirs, iname)) {
+                const char *near = gb_nearest_word(iname, dirs);
+                if (near) {
+                    win_error(run, item,
+                              "window: a split is `across` or `down`, not '%s' "
+                              "-- did you mean `%s`?", iname, near);
+                } else {
+                    win_error(run, item,
+                              "window: a split is `across` or `down`, not '%s' "
+                              "(the slot carries the direction, not a name)",
+                              iname);
+                }
+            }
+            /* AT LEAST TWO PANES, MEASURED RATHER THAN ASSUMED: a QSplitter
+             * puts a draggable handle BETWEEN panes, so n panes give n-1
+             * handles and ONE pane gives ZERO -- a container nobody can drag,
+             * which is an author who meant `column`. */
+            size_t panes = 0;
+            size_t count = M->entry_count(item);
+            for (size_t i = 0; i < count; i++) {
+                if (M->kind(M->entry(item, i)) != GB_WIN_HANDLER) {
+                    panes++;
+                }
+            }
+            if (panes < 2) {
+                win_error(run, item,
+                          "window: a split needs at least two panes -- with %zu "
+                          "there is nothing to drag, so you want a `row` or a "
+                          "`column`", panes);
+            }
+        }
+
         /* WHICH CONTAINERS MAY BE NAMED, and it is a short list on purpose: a
          * name is what a handler and a property read address, so it belongs to
          * a container that IS a widget with state of its own. A `table` shows
@@ -391,7 +445,18 @@ static void win_check_item(WinRun *run, const void *item,
          * `tab` is a PAGE whose CAPTION is what a person reads, the rule a
          * `menu` follows. */
         int may_be_named = (strcmp(word, "table") == 0 ||
-                            strcmp(word, "tabs") == 0);
+                            strcmp(word, "tabs") == 0 ||
+                            /* A `scroll` NEEDS NO DIRECTION, so its slot is
+                             * free -- and naming it is what makes
+                             * `widgetResizable` and the scrollbar policies
+                             * readable through the ordinary by-name route,
+                             * which is the whole of its observability. */
+                            strcmp(word, "scroll") == 0);
+        /* A `split` IS NEITHER: its slot is the direction, checked above, so it
+         * must not reach this refusal NOR be registered as a name below. */
+        if (strcmp(word, "split") == 0) {
+            may_be_named = 1;
+        }
         if (!may_be_named && iname) {
             win_error(run, item,
                       "window: '%s' takes no name; a table and a `tabs` are "
@@ -455,7 +520,7 @@ static void win_check_item(WinRun *run, const void *item,
          * `on orders.activated` on a perfectly real table would have been
          * refused as naming nothing in the window -- the refusal that exists
          * to catch a handler that can never fire, firing on one that can. */
-        if (iname) {
+        if (iname && strcmp(word, "split") != 0) {
             if (win_shadows_window(run, item, iname)) {
                 /* reported; not registered, so nothing after it is confused */
             } else {
@@ -566,6 +631,21 @@ static void win_check_item(WinRun *run, const void *item,
         }
         return;
     }
+    /* A PANE HAS NOWHERE TO PUT A LABEL and that refusal is NOT HERE, which is
+     * worth writing down because this is where I first put it and it could not
+     * work. `M->label(item)` reads a TOP-LEVEL label -- which is what a
+     * `group "Credit"` or a `menu "File"` carries -- while A LEAF'S `label:` IS
+     * AN OPTION, so it reads NULL for every leaf and the check silently never
+     * fired. That is §0.8's own recorded defect reproduced exactly: the table
+     * heading extraction read the top-level label and fell back to the field's
+     * name, captioning a table with its own column names.
+     *
+     * Deciding it here would need an option accessor on an ITEM, which the
+     * model has only for the window HEAD -- and §0.8 already puts leaf-option
+     * rules on the Qt side, a leaf's options being widget properties that
+     * cannot be closed without Qt in the build. So `gb_qt_part` refuses it,
+     * where the label is a parameter and the parent is in hand.
+     */
     if (!iname) {
         win_error(run, item,
                   "window: '%s' needs a name -- `%s id( ... )` -- because that is "

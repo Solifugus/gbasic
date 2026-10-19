@@ -1346,6 +1346,11 @@ window_item
     | IDENT IDENT LPAREN record_field_list RPAREN NEWLINE {
         $$ = ast_window_leaf($1, $2, $4, @1.first_line, @1.first_column);
       }
+    /* LEAF, named, NO options:  source code()                       */
+    | IDENT IDENT LPAREN RPAREN NEWLINE {
+        $$ = ast_window_leaf($1, $2, ast_record_field_list_empty(),
+                             @1.first_line, @1.first_column);
+      }
     /* CONTAINER, bare:          row ... end row                     */
     | IDENT NEWLINE window_item_list END IDENT NEWLINE {
         $$ = ast_window_container($1, NULL, ast_record_field_list_empty(), $3, $5,

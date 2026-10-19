@@ -1046,7 +1046,21 @@ static int qt_build_item(void *parent, Value *item, void *root) {
     }
 
     if (strcmp(kind, "container") == 0) {
-        void *node = gb_qt_container(parent, word ? word : "", name, label, err,
+        /* A `split`'S SLOT IS ITS DIRECTION, NOT A NAME. The declaration has
+         * one free slot (§0.8: a container carries a name OR options, never
+         * both) and a splitter spends it on `across` or `down` -- so the word
+         * is handed over as the construction string and the NAME is withheld,
+         * which also keeps the splitter out of the by-name parts table where
+         * it would have registered itself as "across". The load-time pass has
+         * already refused anything but the two words. */
+        const char *cword = word ? word : "";
+        const char *cname = name;
+        const char *clabel = label;
+        if (strcmp(cword, "split") == 0) {
+            clabel = name;
+            cname = NULL;
+        }
+        void *node = gb_qt_container(parent, cword, cname, clabel, err,
                                      sizeof(err));
         if (!node) {
             snprintf(message, sizeof(message), "window: %s",
@@ -2656,6 +2670,75 @@ static Value qt_eval_call(AstExpr *expr) {
      * ASKED OF THE LAYOUT, walking up from the widget rather than from our own
      * record of where we put it: a remembered position would agree with a
      * placement that was wrong, which is no oracle at all. */
+    /* WHICH DRAGGABLE OR SCROLLED REGION A PART SITS IN (§0.19) -- `split` and
+     * `scroll`'s oracle, and it exists because WITHOUT IT NEITHER IS
+     * OBSERVABLE. A `split` spends its one slot on the direction, so it cannot
+     * be named, so `qt.read`, `qt.set` and a handler cannot reach it and
+     * nothing could say whether a splitter was built, which way round it is,
+     * or how many panes it got.
+     *
+     * ASKED OF THE LAYOUT, walking up from a part that CAN be named -- the rule
+     * `qt.at` already follows, and for the same reason: a position we
+     * remembered would agree with a placement that was wrong. */
+    if (strcmp(verb, "pane") == 0) {
+        if (argc != 2) {
+            qt_raise("qt.pane expects a window and a part's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "pane") || which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.pane expects the part's name as text");
+            }
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win);
+            value_free(which);
+            return value_null();
+        }
+        char *kindt = NULL, *dirt = NULL;
+        int panes = 0, at = -1, resizable = 0;
+        int ok = gb_qt_pane_of(root, which.as.string, &kindt, &dirt, &panes,
+                               &at, &resizable);
+        value_free(win);
+        value_free(which);
+        if (!ok) {
+            /* `unknown`, NOT A RECORD OF ZEROES: "this part is in no split and
+             * no scroll" is an ordinary answer, and a record saying
+             * `panes: 0` would read as a splitter that holds nothing. The rule
+             * `qt.dialog` and `principal()` already follow. */
+            free(kindt);
+            free(dirt);
+            return value_unknown();
+        }
+        Value out = value_record(NULL, 0);
+        record_set(&out, "kind", value_string(kindt ? kindt : ""));
+        if (dirt) {
+            record_set(&out, "direction", value_string(dirt));
+            record_set(&out, "panes", value_number(panes));
+            record_set(&out, "index", value_number(at));
+        } else {
+            record_set(&out, "resizable", value_bool(resizable ? 1 : 0));
+        }
+        free(kindt);
+        free(dirt);
+        return out;
+    }
+
     if (strcmp(verb, "at") == 0) {
         if (argc != 2) {
             qt_raise("qt.at expects a window and a part's name");
