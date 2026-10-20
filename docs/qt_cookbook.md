@@ -955,8 +955,11 @@ a part with no name is refused: window: 'field' needs a name -- `field id( ... )
 
 `tabs` holds `tab`s, and each page is given a column layout — which is why a
 field, a row, a group or a whole `table` works inside one with no further
-vocabulary. A `tab` **needs a caption and takes no name**; the `tabs` *is*
-named, because it has state a handler can ask about where a page does not.
+vocabulary. A `tab` **needs a caption**, so a declared one spends its single
+slot there and cannot also be named; the `tabs` *is* named, because it has state
+a handler can ask about. (Since §0.27 a `tab` may carry a name in a **record**,
+which is what gives `qt.refresh(win, name, items)` an identity to keep a page
+by — the caption being the thing that changes.)
 
 A `QTabWidget` has no layout of its own, so anything placed directly in one
 would be **dropped** rather than mislaid — which is why a `tab` is required

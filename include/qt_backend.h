@@ -917,7 +917,39 @@ int gb_qt_run(int tick_ms);
 void gb_qt_stop(void);
 void gb_qt_end(void);
 
+
+/* A CONTAINER WHOSE CHILDREN CHANGE (§0.27) -- `qt.refresh(win, name, items)`.
+ * The C side drives the walk and these are the parts it cannot do itself: the
+ * container has to be resolved BY NAME (a position is the one thing a reorder
+ * changes), a kept child has to be recognised and MOVED rather than rebuilt,
+ * a caption has to be re-read, and an absent child has to be DELETED with
+ * every name in its subtree -- measured, a child merely unhooked from a layout
+ * stays parented and visible. */
+void *gb_qt_container_node(void *window, const char *name,
+                           char *err, size_t err_size);
+const char *gb_qt_node_word(void *node);
+void *gb_qt_child_named(void *container, const char *name);
+int gb_qt_child_count(void *container);
+void *gb_qt_child_at(void *container, int index);
+int gb_qt_child_place(void *container, void *child, int position,
+                      char *err, size_t err_size);
+int gb_qt_child_caption(void *container, void *child, const char *text,
+                        char *err, size_t err_size);
+int gb_qt_child_drop(void *container, void *child, char *err, size_t err_size);
+
+/* THE CAPTIONS OF A `tabs`, as a count plus a per-index read -- the `qt.menus`
+ * shape, and for the same reason: `QTabWidget::tabText(int)` takes an argument
+ * and `qt.invoke` passes none, so without this a caption is unobservable and
+ * every check about one passes on an implementation that never set it. */
+/* THE ORDER ORACLE: the name of the child at a position, or "" for one nobody
+ * named. A box's order is observable through nothing else -- `qt.at` answers
+ * coordinates for a `cells` grid only. */
+char *gb_qt_child_name(void *container, int index);
+
+int gb_qt_tab_count(void *window, const char *name);
+char *gb_qt_tab_caption(void *window, const char *name, int index);
 #ifdef __cplusplus
 }
 #endif
+
 #endif

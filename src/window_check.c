@@ -505,12 +505,23 @@ static void win_check_item(WinRun *run, const void *item,
             }
         }
 
-        /* WHICH CONTAINERS MAY BE NAMED, and it is a short list on purpose: a
-         * name is what a handler and a property read address, so it belongs to
-         * a container that IS a widget with state of its own. A `table` shows
-         * many rows and a `tabs` has a current page; a `row` is a box and a
-         * `tab` is a PAGE whose CAPTION is what a person reads, the rule a
-         * `menu` follows. */
+        /* WHICH CONTAINERS MAY BE NAMED, and the rule is "a container with
+         * state of its own that something addresses", not a list anybody is
+         * free to add to: a name is what a handler, a property read and now a
+         * RECONCILE address. A `table` shows many rows and a `tabs` has a
+         * current page.
+         *
+         * §0.27 WIDENED IT BY ITS OWN JUSTIFICATION RATHER THAN BY ANALOGY. A
+         * `column`, a `row` and a `group` were refused on the grounds that a
+         * box has no state worth asking about -- and `qt.refresh(win, name,
+         * items)` gives every one of them some: THE SET OF CHILDREN. The verb
+         * cannot address what cannot be named, so refusing the name refuses
+         * the feature, which is the same argument that named a `scroll`.
+         *
+         * A `form` IS STILL REFUSED, deliberately (§0.6): its parts are
+         * addressed by their own names, so there is nothing a form's name
+         * would be for -- and a `cells` grid is refused too, since its
+         * positions are DECLARED and a reconcile would have to invent them. */
         int may_be_named = (strcmp(word, "table") == 0 ||
                             strcmp(word, "tabs") == 0 ||
                             /* A `scroll` NEEDS NO DIRECTION, so its slot is
@@ -526,7 +537,34 @@ static void win_check_item(WinRun *run, const void *item,
                              * `qt.popup(win, "row_actions")` is how it is
                              * raised at all. Required, not merely allowed --
                              * checked below. */
-                            strcmp(word, "popup") == 0);
+                            strcmp(word, "popup") == 0 ||
+                            /* A `tab` IS NAMED SO A RECONCILE HAS AN IDENTITY
+                             * (§0.27), and the reason is sharper than symmetry
+                             * with its siblings: `qt.refresh(win, name, items)`
+                             * keeps a child whose name is unchanged, and THE
+                             * CAPTION IS THE THING THAT CHANGES -- a notebook
+                             * tab carries a `* ` unsaved marker -- so keying on
+                             * the caption would rebuild the editor on the first
+                             * keystroke in any document, which is the cost the
+                             * verb exists to remove.
+                             *
+                             * THE DECLARATION STILL CANNOT SPELL BOTH, because
+                             * §0.8's one slot is a fact about the GRAMMAR: a
+                             * captioned `tab "One"` and a named `tab one` are
+                             * two shapes of one production and neither carries
+                             * the other. A RECORD has no such limit, which is
+                             * what §0.9's builder already rests on, and the
+                             * callers that need identity are the ones building
+                             * a record. */
+                            strcmp(word, "tab") == 0 ||
+                            /* THE BOXES, for the reconcile above. A declared
+                             * one still spends its one slot either way, so
+                             * `column stack` carries no options and
+                             * `column( margin: 6 )` carries no name -- §0.8's
+                             * rule unchanged. */
+                            strcmp(word, "column") == 0 ||
+                            strcmp(word, "row") == 0 ||
+                            strcmp(word, "group") == 0);
         /* A `split` IS NEITHER: its slot is the direction, checked above, so it
          * must not reach this refusal NOR be registered as a name below. */
         if (strcmp(word, "split") == 0) {
@@ -534,9 +572,10 @@ static void win_check_item(WinRun *run, const void *item,
         }
         if (!may_be_named && iname) {
             win_error(run, item,
-                      "window: '%s' takes no name; a table and a `tabs` are "
-                      "named, because they are the containers with state a "
-                      "handler can ask about", word);
+                      "window: '%s' takes no name; a container is named "
+                      "when something addresses it -- a table, a `tabs`, a "
+                      "`scroll`, a `popup`, a `tab`, and a `column`, `row` or "
+                      "`group` whose children `qt.refresh` reconciles", word);
         }
 
         /* A `tab` BELONGS TO A `tabs` and needs a caption; a `tabs` holds

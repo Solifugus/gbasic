@@ -5,7 +5,10 @@
 '     QT_QPA_PLATFORM=offscreen ./gbasic examples/qt/tabs.bas check
 '
 ' A `tab` NEEDS A CAPTION AND NOTHING ELSE, because the caption is what a
-' person reads; it takes no name. The `tabs` itself IS named, because it has
+' person reads, so a DECLARED tab spends its one slot there and cannot also be
+' named -- which §0.27 did not change: a `tab` may carry a name in a RECORD, so
+' a reconcile has an identity that is not the caption, and the declaration's
+' one-slot rule stands. The `tabs` itself IS named, because it has
 ' state a handler can ask about -- which page is showing -- and that is the
 ' short list of containers that may be named: a `table` and a `tabs`.
 '

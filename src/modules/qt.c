@@ -1686,6 +1686,156 @@ static int qt_table_column(Value *table, const char *field) {
 /* THE TABLE A NAME REFERS TO, found in the declaration. The backend knows the
  * widget by name; what only the declaration holds is the COLUMN LIST, which is
  * what a cell's field name has to be resolved against. */
+/* RECONCILE A NAMED CONTAINER'S CHILDREN AGAINST A RECORD (§0.27).
+ *
+ * KEPT BY NAME AND WORD. A child whose name and word are unchanged keeps its
+ * widget -- and with it the text, the caret, the scroll position and the undo
+ * stack, which is the whole reason the verb exists rather than a rebuild
+ * being dressed up. A new child is BUILT through `qt_build_item`, the same
+ * door `qt.open` uses, so a window cannot render one way at open and another
+ * afterwards; that is the rule `qt_populate_table` and `qt_populate_form`
+ * already follow one widget along.
+ *
+ * AN UNNAMED CHILD IS ALWAYS REBUILT, and that is a consequence rather than a
+ * decision: there is nothing to match it by. A declaration cannot name a
+ * `tab` at all -- its one slot is the caption (§0.8) -- so the callers that
+ * need identity are the ones BUILDING a record, which may carry any field.
+ *
+ * ABSENT MEANS DELETED. Measured: a child dropped from a box layout and not
+ * deleted stays parented and VISIBLE, floating at its old geometry, so
+ * unhooking would leave the window showing what the record no longer says.
+ */
+static int qt_reconcile_children(void *root, void *container, Value *items,
+                                 int *placed) {
+    char err[QT_ERRBUF];
+    char message[512];
+    size_t count = items->as.array.store ? items->as.array.store->count : 0;
+    /* WHAT WAS THERE BEFORE, taken as NODES up front: the walk below both
+     * builds and drops, so a list captured afterwards could not tell a child
+     * that survived from one that was built to replace it. */
+    int before = gb_qt_child_count(container);
+    void **kept = (void **)calloc((size_t)(before > 0 ? before : 1),
+                                  sizeof(void *));
+    void **was = (void **)calloc((size_t)(before > 0 ? before : 1),
+                                 sizeof(void *));
+    if (!kept || !was) {
+        free(kept);
+        free(was);
+        qt_raise("qt.refresh ran out of memory");
+        return 0;
+    }
+    for (int i = 0; i < before; i++) {
+        was[i] = gb_qt_child_at(container, i);
+    }
+    int nkept = 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *entry = &items->as.array.store->items[i];
+        if (entry->kind != VALUE_RECORD) {
+            free(kept);
+            free(was);
+            qt_raise("qt.refresh: every item must be a record");
+            return 0;
+        }
+        const char *name = qt_record_text(entry, "name");
+        const char *word = qt_record_text(entry, "word");
+        void *child = name ? gb_qt_child_named(container, name) : NULL;
+        if (child && word && strcmp(gb_qt_node_word(child), word) != 0) {
+            /* THE SAME NAME FOR A DIFFERENT WORD IS NOT THE SAME CHILD, which
+             * is why the word is part of the key: keeping a `field` where the
+             * record now says `source` would leave the window showing a widget
+             * the declaration no longer describes. */
+            err[0] = '\0';
+            if (!gb_qt_child_drop(container, child, err, sizeof(err))) {
+                free(kept);
+                free(was);
+                snprintf(message, sizeof(message), "qt.refresh: %s",
+                         err[0] ? err : "that child could not be replaced");
+                qt_raise(message);
+                return 0;
+            }
+            /* AND IT MUST LEAVE THE "WAS THERE" LIST, or the prune pass below
+             * drops the same child a SECOND time -- which the fixture caught
+             * on its first run: the first drop succeeds and nulls the node's
+             * widget, the second refuses because there is nothing to drop, and
+             * the message blames the record. Same shape as §0.18's idempotence
+             * guard, where a close reached `node_closed` twice. */
+            for (int w = 0; w < before; w++) {
+                if (was[w] == child) {
+                    was[w] = NULL;
+                }
+            }
+            child = NULL;
+        }
+        if (child) {
+            kept[nkept++] = child;
+            const char *cap = qt_record_text(entry, "label");
+            err[0] = '\0';
+            if (!gb_qt_child_caption(container, child, cap ? cap : "", err,
+                                     sizeof(err))) {
+                free(kept);
+                free(was);
+                snprintf(message, sizeof(message), "qt.refresh: %s",
+                         err[0] ? err : "that caption could not be set");
+                qt_raise(message);
+                return 0;
+            }
+        } else if (!qt_build_item(container, entry, root)) {
+            free(kept);
+            free(was);
+            return 0;
+        }
+    }
+    /* DROPPED: anything that was there and is not in the record now. Done
+     * AFTER the build pass, so a child that moved from one position to another
+     * is never deleted and rebuilt on the way. */
+    for (int i = 0; i < before; i++) {
+        int survived = 0;
+        for (int j = 0; j < nkept; j++) {
+            if (was[i] == kept[j]) {
+                survived = 1;
+                break;
+            }
+        }
+        if (survived || !was[i]) {
+            continue;
+        }
+        err[0] = '\0';
+        if (!gb_qt_child_drop(container, was[i], err, sizeof(err))) {
+            free(kept);
+            free(was);
+            snprintf(message, sizeof(message), "qt.refresh: %s",
+                     err[0] ? err : "that child could not be removed");
+            qt_raise(message);
+            return 0;
+        }
+    }
+    free(kept);
+    free(was);
+    /* AND THE ORDER IS THE RECORD'S, applied last because the set has to be
+     * final before a position means anything. By NAME, since an unnamed child
+     * was rebuilt and is already where the build put it. */
+    int at = 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *entry = &items->as.array.store->items[i];
+        const char *name = qt_record_text(entry, "name");
+        void *child = name ? gb_qt_child_named(container, name) : NULL;
+        if (child) {
+            err[0] = '\0';
+            if (!gb_qt_child_place(container, child, at, err, sizeof(err))) {
+                snprintf(message, sizeof(message), "qt.refresh: %s",
+                         err[0] ? err : "that child could not be placed");
+                qt_raise(message);
+                return 0;
+            }
+        }
+        at++;
+    }
+    if (placed) {
+        *placed = (int)count;
+    }
+    return 1;
+}
+
 static Value *qt_find_table(Value *items, const char *name) {
     size_t count = items->as.array.store ? items->as.array.store->count : 0;
     for (size_t i = 0; i < count; i++) {
@@ -3062,6 +3212,131 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
+    if (strcmp(verb, "children") == 0) {
+        /* THE NAMES OF A CONTAINER'S CHILDREN, IN ORDER -- the oracle for
+         * `qt.refresh(win, name, items)` and the only way a box's order can be
+         * seen at all: `qt.at` answers coordinates for a `cells` grid alone
+         * (§0.8), and `qt.tabs` answers captions rather than identity. A child
+         * nobody named answers "", which is a different claim from absent. */
+        if (argc != 2) {
+            qt_raise("qt.children expects a window and the container's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "children") ||
+            which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.children expects a window and the container's "
+                         "name as text");
+            }
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        char cerr[QT_ERRBUF];
+        cerr[0] = '\0';
+        void *container = gb_qt_container_node(root, which.as.string, cerr,
+                                               sizeof(cerr));
+        if (!container) {
+            snprintf(message, sizeof(message), "qt.children: %s",
+                     cerr[0] ? cerr : "that container cannot be found");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        value_free(win); value_free(which);
+        int n = gb_qt_child_count(container);
+        Value *names = n > 0 ? malloc(sizeof(Value) * (size_t)n) : NULL;
+        if (n > 0 && !names) {
+            abort();
+        }
+        for (int i = 0; i < n; i++) {
+            char *nm = gb_qt_child_name(container, i);
+            names[i] = value_string(nm ? nm : "");
+            free(nm);
+        }
+        return value_array(names, (size_t)(n > 0 ? n : 0));
+    }
+
+    if (strcmp(verb, "tabs") == 0) {
+        /* THE CAPTIONS OF A `tabs`, AS A LIST, and it exists because they are
+         * otherwise unobservable: `QTabWidget::tabText(int)` takes an argument
+         * and `qt.invoke` passes none, so every check about a caption would
+         * pass on an implementation that never set one. The `qt.menus` shape
+         * for the same reason one widget along. */
+        if (argc != 2) {
+            qt_raise("qt.tabs expects a window and the tab set's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "tabs") || which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.tabs expects a window and the tab set's name as "
+                         "text");
+            }
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        int n = gb_qt_tab_count(root, which.as.string);
+        if (n < 0) {
+            /* NAMES WHAT IT LOOKED FOR, because the mistake this catches is
+             * naming a window's other container where a `tabs` was meant --
+             * and "no tabs" would be a true sentence about the wrong thing. */
+            snprintf(message, sizeof(message),
+                     "qt.tabs: this window has no tab set called `%s`",
+                     which.as.string);
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        /* THE NAME IS COPIED BEFORE THE VALUE GOES, which §0.22 had to learn
+         * the hard way: reading `which.as.string` after `value_free(which)` is
+         * a use-after-free that presents as a field silently never being set. */
+        char *tname = copy_string(which.as.string);
+        value_free(win); value_free(which);
+        /* AN EMPTY ARRAY FOR A TAB SET WITH NO PAGES, not a refusal -- the
+         * `qt.menus` rule: "there are none" is the honest answer to the
+         * question that was asked, and a reconcile can legitimately empty one. */
+        Value *caps = n ? malloc(sizeof(Value) * (size_t)n) : NULL;
+        if (n && !caps) {
+            abort();
+        }
+        for (int i = 0; i < n; i++) {
+            char *cap = gb_qt_tab_caption(root, tname, i);
+            caps[i] = value_string(cap ? cap : "");
+            free(cap);
+        }
+        free(tname);
+        return value_array(caps, (size_t)n);
+    }
+
     if (strcmp(verb, "menus") == 0) {
         /* ONE ARGUMENT gives the BAR's captions; TWO gives the ENTRIES of the
          * menu at that position -- the same oracle one level in, which closes
@@ -3303,9 +3578,61 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     if (strcmp(verb, "refresh") == 0) {
-        if (argc != 2) {
-            qt_raise("qt.refresh expects a window and the table's name");
+        /* A THIRD ARGUMENT IS A CONTAINER'S CHILDREN (§0.27), which is one
+         * verb taking either rather than a second verb asking the same
+         * question about a different word -- the rule §0.11 took when this
+         * verb learned to serve a form as well as a table. Two arguments:
+         * re-show what a table or a form already has. Three: reconcile a
+         * named container's children against the record. */
+        if (argc != 2 && argc != 3) {
+            qt_raise("qt.refresh expects a window and the table's name, and "
+                     "optionally a container's items to reconcile");
             return value_null();
+        }
+        if (argc == 3) {
+            Value win = eval_expr(expr->as.call.args.items[0]);
+            Value which = eval_expr(expr->as.call.args.items[1]);
+            Value items = eval_expr(expr->as.call.args.items[2]);
+            if (error_action_pending()) {
+                value_free(win); value_free(which); value_free(items);
+                return value_null();
+            }
+            if (!qt_window_record(&win, "refresh") ||
+                which.kind != VALUE_STRING || items.kind != VALUE_ARRAY) {
+                if (!error_action_pending()) {
+                    qt_raise("qt.refresh expects a window, a container's name "
+                             "as text, and its items as an array");
+                }
+                value_free(win); value_free(which); value_free(items);
+                return value_null();
+            }
+            const char *wname = qt_record_text(&win, "name");
+            void *root = wname ? qt_window_find(wname) : NULL;
+            if (!root) {
+                snprintf(message, sizeof(message), "window `%s` is not open",
+                         wname ? wname : "");
+                qt_raise(message);
+                value_free(win); value_free(which); value_free(items);
+                return value_null();
+            }
+            char cerr[QT_ERRBUF];
+            cerr[0] = '\0';
+            void *container = gb_qt_container_node(root, which.as.string, cerr,
+                                                   sizeof(cerr));
+            if (!container) {
+                snprintf(message, sizeof(message), "qt.refresh: %s",
+                         cerr[0] ? cerr : "that container cannot be found");
+                qt_raise(message);
+                value_free(win); value_free(which); value_free(items);
+                return value_null();
+            }
+            int placed = 0;
+            int ok = qt_reconcile_children(root, container, &items, &placed);
+            value_free(win); value_free(which); value_free(items);
+            if (!ok) {
+                return value_null();
+            }
+            return value_number((double)placed);
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
         Value which = eval_expr(expr->as.call.args.items[1]);
@@ -4253,14 +4580,26 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!writing) {
             char *text = gb_qt_read(root, which.as.string);
+            /* THE NAME IS COPIED BEFORE THE VALUE GOES. The refusal below
+             * names the part, and reading `which.as.string` after
+             * `value_free(which)` is a USE-AFTER-FREE -- §0.22's own defect,
+             * one door along, and this one survived because nothing had ever
+             * ASKED FOR A NAME THAT IS NOT THERE: §0.27's fixture reads a
+             * dropped child and valgrind named it on the first run. A read
+             * whose refusal path nothing exercises is a read nothing checks. */
+            char *asked = which.kind == VALUE_STRING && which.as.string
+                              ? copy_string(which.as.string) : NULL;
             value_free(win);
             value_free(which);
             if (!text) {
                 snprintf(message, sizeof(message),
-                         "this window has no part named `%s`", which.as.string);
+                         "this window has no part named `%s`",
+                         asked ? asked : "");
+                free(asked);
                 qt_raise(message);
                 return value_null();
             }
+            free(asked);
             Value out = value_string(text);
             free(text);
             return out;

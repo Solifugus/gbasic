@@ -421,7 +421,7 @@ window w( title: "x" )
     end form
 end window
 EOF
-refuse "a NAMED form is refused, saying which containers may be named" "a table and a \`tabs\` are named"
+refuse "a NAMED form is refused, and the message states the RULE rather than listing the words" "a container is named when something addresses it"
 
 # ------------------------------------------------------------------- CELLS
 # `cells` NEEDED NO NEW WORD EITHER, and that is the design: a grid IS rows of
@@ -538,9 +538,12 @@ end window
 EOF
 refuse "a tab with no caption is refused" "a tab needs a caption"
 
-# AND A NAME IS STILL REFUSED ON THE CONTAINERS THAT HAVE NO STATE TO ASK
-# ABOUT, which the named-container production made grammatical for the first
-# time: `row thing` parses now, and must still be refused.
+# A NAMED BOX IS ADMITTED SINCE §0.27, AND THE RULE DID NOT CHANGE -- its
+# consequences did. A name is for a container "with state something addresses",
+# and `qt.refresh(win, name, items)` gives a box some: THE SET OF CHILDREN. The
+# verb cannot address what cannot be named, so refusing the name refused the
+# feature. This case asserted the opposite until that increment, which is the
+# honest shape of a deliberate change rather than a weakening.
 src row_named <<'EOF'
 window w( title: "x" )
     row thing
@@ -548,7 +551,11 @@ window w( title: "x" )
     end row
 end window
 EOF
-refuse "a named row is refused, now that the grammar admits the shape" "'row' takes no name"
+accept "a named row is admitted, so a reconcile can address it"
+
+# THE CONTROL FOR THAT IS ALREADY ABOVE: a named `form` is refused, because its
+# parts are addressed by their own names (§0.6), so "a box may be named" cannot
+# quietly become "anything may".
 
 # A TABLE'S PARTS ARE COLUMNS, so every one is a `field`. A `button` among them
 # would be a widget in a place that holds values, which lays out as nothing an

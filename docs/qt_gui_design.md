@@ -3269,3 +3269,153 @@ all.
   the head; `grow: true` avoids it and reads slightly worse.
 
 - **Qt Charts' licence** is unverified locally (§3).
+## 0.27 A container whose children change (2026-10-19)
+
+**Asked for by the consumer, with measurements** — `docs/qt_dynamic_children_proposal.md`,
+written by the gBASIC Studio side from converting its shell. Everything that
+window needs existed except one thing: **a container whose set of children
+changes while the window is up.** `qt.refresh` answers it for a `table` (§0.11,
+written for Studio's file tree by name) and for a form's subject, and nothing
+answered it for any other container. Studio's notebook is one tab per open
+document, which is not a corner case — it is what the application is.
+
+### What the proposal established, and what it left open
+
+It measured the shape of the gap rather than describing it: `qt.read(win,
+"book", "count")` answers 2 for a two-tab `tabs`, so the set is observable;
+`qt.refresh(win, "book")` refuses, naming tables; and `qt.invoke` passes **no
+arguments**, so `QTabWidget::removeTab(int)` and `setTabText(int, QString)` —
+the two calls that would change a tab set or a caption in place — are out of
+reach by construction rather than by omission. That last one is a deliberate
+shape of `qt.invoke` and not something to patch there.
+
+It also measured the **workaround and why it is not enough**: a generation loop
+(close, rebuild the record, open, run again) carries the buffers, the active
+tab, the geometry and the pane sizes, and loses two things — per-document undo
+history, and **the window's position on screen**, since `x`/`y` are read-only
+on a `QWidget` and the record takes `width`/`height` only. A window that jumps
+across the screen when you open a file is worse than any feature it buys.
+
+### Six measurements on Qt 6.10.2, and three decide the design
+
+| asked | answer |
+|---|---|
+| does `removeTab` DELETE the page? | **no** — the widget is alive and still parented |
+| a kept `QPlainTextEdit`'s text and undo across removeTab + addTab | **both survive** (`isUndoAvailable` 1) |
+| `setTabText(0, ...)` | changes a caption **in place** |
+| `tabBar()->moveTab(2, 0)` | reorders without rebuilding |
+| a box layout's `removeWidget` | widget alive, **still parented to the box** |
+| …and still **visible** | **YES — it floats** at its old geometry |
+
+**The second is the whole point of the verb**: a child that is kept really does
+keep what was typed into it, so a reconcile is worth building rather than a
+rebuild being dressed up.
+
+**The sixth is the trap, and it is this backend's own failure class arriving
+from Qt's defaults.** A child dropped from a layout and not deleted STAYS ON
+SCREEN — so "absent" cannot mean "removed from the layout", it has to mean
+deleted, and the name has to leave `parts` with it or the registry is left
+pointing at freed memory (§0.17's rule for a closed window, one level in).
+
+### What was built
+
+`qt.refresh(win, name, items)` — a third form of the verb, which is the
+proposer's own recommendation and the rule §0.11 already took (*"One verb takes
+either rather than growing a second"*). `items` is exactly what `items:` holds
+in the record `qt.open` read, so a caller that already builds its window as a
+record (§0.9) has nothing new to construct.
+
+**The reconcile is by NAME and WORD.** A child whose name and word are
+unchanged is KEPT, with its widget, its text, its caret and its undo stack; a
+child that is new is BUILT through `qt_build_item`, the same path `qt.open`
+uses, which is what stops a window rendering one way at open and another
+afterwards; a child that is absent is DELETED and its name purged from the
+parts registry; and a `tab`'s caption is re-read, because it is data in the
+record.
+
+**A `tab` carries a NAME in the record, which the declaration cannot spell**,
+and that is the one rule this increment adds rather than reuses. §0.8's one-slot
+rule is a fact about the GRAMMAR — a `tab` spends its slot on the caption — and
+not about the record, which is what the builder already rests on. The reason a
+name is needed at all is sharper than symmetry: **the caption is the thing that
+changes.** Studio's tab labels carry a `* ` unsaved marker, so a reconcile keyed
+on the caption would rebuild the editor on the first keystroke in any document,
+which is precisely the cost the verb exists to remove. Keyed on `name` where the
+record gives one, on the caption where it does not.
+
+### What it does not do, said rather than discovered
+
+- **It does not recurse into a kept child.** A kept child keeps everything,
+  including its own children. A nested reconcile is a different verb's problem
+  and nothing has asked for one.
+- **It admits `tabs`, `column`, `row` and `group` only.** A `split` cannot be
+  named at all (§0.19: its one slot is the direction), and a `cells` grid has
+  DECLARED positions, so reconciling one would have to invent them. Both are
+  refused by name with the reason, rather than silently doing nothing — which
+  is what a verb that ignored an unknown container would do.
+- **`qt.tabs(win, name)`** answers a `tabs`' captions as a list, because
+  `QTabWidget::tabText(int)` takes an argument and `qt.invoke` passes none, so
+  without it a caption is unobservable and every check about one would pass on
+  an implementation that never set it. The `qt.menus` shape, for the reason
+  recorded there.
+
+### Three defects found by building it, none visible by reading
+
+**A named `tab` never reached the registry.** `gb_qt_container`'s tab branch
+returns early — deliberately, so a page is not also added to the parent's
+layout — and that early return skipped the name registration twenty lines
+below. Invisible until something asked a container for a child BY NAME: the
+reconcile could not recognise any page, so it rebuilt every one, and the editor
+came back holding the record's text instead of what had been typed into it —
+precisely the defect the verb exists to prevent, arriving from the one door
+that returns before the common path.
+
+**A child replaced because its WORD changed was dropped twice.** The first drop
+succeeds and nulls the node's widget; the prune pass then finds the same node
+still in its "was there" list and refuses, with a message blaming the record. A
+replaced child leaves that list now. Same shape as §0.18's idempotence guard,
+where a close reached `node_closed` twice.
+
+**And a use-after-free in `qt.read`, which is older than this increment.**
+Reading a dropped child's name is the first thing in the tree that ever asked
+`qt.read` for a name that is not there, and valgrind named it on the first run:
+the refusal formats `which.as.string` AFTER `value_free(which)`. §0.22's own
+defect, one door along — *"a use-after-free that showed up as `sizes` silently
+never being set"* — and it survived because **a refusal path nothing exercises
+is a refusal path nothing checks.** A sweep of the whole module found exactly
+one other straight-line instance of the shape, already guarded by the comment
+§0.22 left behind.
+
+### Two perturbations went green, and that is the finding
+
+Six of eight reddened the check written for them. The two that did not are
+worth more than the six:
+
+**Replacing the `delete` with a `hide()` leaves every check green**, because the
+name is purged either way and a widget nobody can name is unobservable from the
+language — the leak that would reveal it is excluded by the Qt valgrind policy
+(access-only, Qt not freeing its own platform plugin or QApplication statics).
+So that claim is held by a SOURCE TRIPWIRE with a vacuity control, which is the
+arrangement §0.14 reached for the syntax-definition path and for the same
+reason.
+
+**Skipping the NAME PURGE also leaves every check green** — `qt.read` on a
+dropped name happens to refuse — and valgrind reports **21 invalid reads**. That
+half is covered after all, by the tier whose stated reason in the suite is
+exactly this: a stale `QObject *` in the registry is a use-after-free that a
+correct answer would not reveal. The two halves are proven by different tiers
+rather than both resting on one.
+
+### And the naming rule widened by its own justification
+
+`qt.refresh` cannot address what cannot be named, and a `column`, `row` and
+`group` could not be named — refused on the grounds that a box has no state
+worth asking about. **The verb gives every one of them some: the set of
+children.** So the rule did not change, its consequences did; the refusal
+message now states the rule (*a container is named when something addresses
+it*) rather than enumerating four words, which is the third time this
+vocabulary has been written out by hand and the reason `win_nearest` derives
+its suggestions from the tables.
+
+A `form` is still refused a name (§0.6: its parts are addressed by their own
+names), and so is `cells`, whose positions are declared.

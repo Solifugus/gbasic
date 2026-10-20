@@ -233,6 +233,13 @@ void GbQtRelay::tick() {
 struct GbQtNode {
     QWidget *widget = nullptr;
     QLayout *layout = nullptr;
+    /* THE DECLARED WORD, kept because a RECONCILE has to know what a child IS:
+     * `qt.refresh(win, name, items)` keeps a child whose name AND word are
+     * unchanged, and a name alone is not enough -- a `field` replaced by a
+     * `source` under one name is a different widget, and keeping the old one
+     * would leave the window showing what the record no longer says. Set at
+     * the doors that build from a declaration. */
+    QByteArray word;
     /* A NODE THAT IS A QObject AND NOT A WIDGET -- a menu `item`, which is a
      * QAction. Kept in its own field rather than widening `widget`, so every
      * door that needs a real widget keeps a type that says so and cannot be
@@ -702,6 +709,7 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
     }
     GbQtNode *n = node_new();
     n->root = p->root;
+    n->word = word ? word : "";
 
     QGridLayout *parent_grid = qobject_cast<QGridLayout *>(p->layout);
     if (parent_grid && strcmp(word, "row") == 0 && p->grid_row < 0) {
@@ -816,7 +824,18 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
         book->addTab(page, QString::fromUtf8(title ? title : ""));
         /* ADDED BY addTab, so it must NOT also be added to a parent layout
          * below -- a page belongs to the book, not to the box the book sits
-         * in. Returning here is what keeps it out of that path. */
+         * in. Returning here is what keeps it out of that path.
+         *
+         * AND THAT EARLY RETURN SKIPPED THE NAME REGISTRATION, which was
+         * invisible until §0.27 asked a container for a child BY NAME: a named
+         * `tab` never reached `parts`, so the reconcile could not recognise one
+         * and rebuilt every page -- the editor came back holding the record's
+         * text instead of what had been typed into it, which is precisely the
+         * defect the verb exists to prevent, arriving from the one door that
+         * returns before the common path. */
+        if (name && *name && n->root) {
+            n->root->parts.insert(QString::fromUtf8(name), page);
+        }
         return n;
     } else {
         say(err, err_size,
@@ -950,6 +969,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
 
     GbQtNode *n = node_new();
     n->root = p->root;
+    n->word = word ? word : "";
     QWidget *w = nullptr;
     if (strcmp(word, "field") == 0) {
         w = new QLineEdit(p->widget);
@@ -2430,6 +2450,11 @@ extern "C" void *gb_qt_table(void *parent, const char *name,
         return nullptr;
     }
     QTableWidget *t = new QTableWidget(0, columns, p->widget);
+    /* ONE WORD FOR BOTH TABLE DOORS: a reconcile keys on the DECLARED word,
+     * and `to show` and `to ask` are two DIRECTIONS of `table` rather than two
+     * words -- so a table that changed direction is a change of options, not
+     * of identity, and the declaration is still the only place that can decide
+     * which widget it is (a QTableWidget IS its own model). */
     QStringList caps;
     for (int i = 0; i < columns; i++) {
         caps << QString::fromUtf8(headers[i] ? headers[i] : "");
@@ -2442,6 +2467,7 @@ extern "C" void *gb_qt_table(void *parent, const char *name,
 
     GbQtNode *n = node_new();
     n->root = p->root;
+    n->word = "table";
     n->widget = t;
     if (QFormLayout *pf = qobject_cast<QFormLayout *>(p->layout)) {
         pf->addRow(t);
@@ -2734,6 +2760,7 @@ extern "C" void *gb_qt_virtual_table(void *parent, const char *name,
     }
     GbQtNode *n = node_new();
     n->root = p->root;
+    n->word = "table";
     n->widget = v;
     if (name && *name && n->root) {
         n->root->parts.insert(QString::fromUtf8(name), v);
@@ -3553,4 +3580,313 @@ extern "C" void gb_qt_end(void) {
     g_nodes.clear();
     delete g_app;
     g_app = nullptr;
+}
+
+/* ===========================================================================
+ * A CONTAINER WHOSE CHILDREN CHANGE (§0.27)
+ *
+ * `qt.refresh(win, name, items)` reconciles a named container's children
+ * against the record, keeping what has not changed. The C side drives the
+ * walk; these are the four things it cannot do for itself.
+ *
+ * WHY A RECONCILE RATHER THAN A REBUILD, measured in C++ before any of it was
+ * written: a QPlainTextEdit taken out of a QTabWidget and put back keeps its
+ * text AND its undo stack (`isUndoAvailable` 1), and so does one removed from
+ * a box layout and re-inserted -- it is even visible again with no `show()`.
+ * A rebuild loses both, which for an editor is the whole of what a person had.
+ *
+ * AND WHY "ABSENT" MEANS DELETED: also measured, a child dropped from a box
+ * layout and NOT deleted stays PARENTED AND VISIBLE, floating at its old
+ * geometry. So unhooking is not enough -- the widget goes, and its name goes
+ * out of the registry with it, or `qt.read` answers from something nobody can
+ * see. That is §0.17's rule for a dismissed window one level in.
+ * ========================================================================= */
+
+/* The children a container holds, in the order the user sees them. Asked of
+ * QT rather than of any list of ours, for the reason `qt.at` and `qt.pane`
+ * are: a remembered order would agree with an order that was never applied. */
+static QVector<QWidget *> container_children(GbQtNode *c) {
+    QVector<QWidget *> out;
+    if (!c || !c->widget) {
+        return out;
+    }
+    if (QTabWidget *tw = qobject_cast<QTabWidget *>(c->widget)) {
+        for (int i = 0; i < tw->count(); i++) {
+            out.append(tw->widget(i));
+        }
+        return out;
+    }
+    if (QBoxLayout *b = qobject_cast<QBoxLayout *>(c->layout)) {
+        for (int i = 0; i < b->count(); i++) {
+            if (QWidget *w = b->itemAt(i)->widget()) {
+                out.append(w);
+            }
+        }
+    }
+    return out;
+}
+
+static GbQtNode *node_for_widget(GbQtNode *root, QWidget *w) {
+    if (!w) {
+        return nullptr;
+    }
+    for (int i = 0; i < g_nodes.size(); i++) {
+        if (g_nodes[i]->widget == w && g_nodes[i]->root == root) {
+            return g_nodes[i];
+        }
+    }
+    return nullptr;
+}
+
+/* RESOLVE A NAMED CONTAINER, and refuse anything a reconcile cannot order.
+ * NAMED BY NAME AND NOT BY POSITION, because a position is the one thing that
+ * changes when the record is reordered -- which is the very operation this
+ * verb performs. */
+extern "C" void *gb_qt_container_node(void *window, const char *name,
+                                      char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !name || !*name) {
+        say(err, err_size, "that window is not open");
+        return nullptr;
+    }
+    QObject *o = root->parts.value(QString::fromUtf8(name), nullptr);
+    if (!o) {
+        say(err, err_size, QByteArray("this window has no container named `")
+                               + name + "`");
+        return nullptr;
+    }
+    QWidget *w = qobject_cast<QWidget *>(o);
+    GbQtNode *n = w ? node_for_widget(root, w) : nullptr;
+    if (!n) {
+        say(err, err_size, QByteArray("`") + name + "` is not a container");
+        return nullptr;
+    }
+    /* THE ADMITTED SET IS SMALL AND SAID SO. A QTabWidget orders by tab index
+     * and a box layout by position; a SPLITTER cannot be named at all (§0.19,
+     * its one slot is the direction) and a `cells` GRID has declared
+     * positions, so reconciling one would have to invent them. Refused by
+     * name rather than quietly doing nothing. */
+    if (qobject_cast<QTabWidget *>(n->widget)) {
+        return n;
+    }
+    if (qobject_cast<QBoxLayout *>(n->layout)) {
+        return n;
+    }
+    say(err, err_size,
+        QByteArray("`") + name + "` holds its children in a way that cannot be "
+        "reconciled; a `tabs`, a `column`, a `row` and a `group` can");
+    return nullptr;
+}
+
+extern "C" const char *gb_qt_node_word(void *node) {
+    GbQtNode *n = (GbQtNode *)node;
+    return n ? n->word.constData() : "";
+}
+
+/* A CHILD OF THIS CONTAINER, BY NAME. The registry is flat, so a name alone
+ * would find a widget anywhere in the window -- the same hazard the menu
+ * oracle records -- hence the containment test, which is what makes this
+ * answer "a child of THIS container" rather than "a part with that name". */
+extern "C" void *gb_qt_child_named(void *container, const char *name) {
+    GbQtNode *c = (GbQtNode *)container;
+    if (!c || !c->root || !name || !*name) {
+        return nullptr;
+    }
+    QObject *o = c->root->parts.value(QString::fromUtf8(name), nullptr);
+    QWidget *w = qobject_cast<QWidget *>(o);
+    if (!w) {
+        return nullptr;
+    }
+    QVector<QWidget *> kids = container_children(c);
+    for (int i = 0; i < kids.size(); i++) {
+        if (kids[i] == w) {
+            return node_for_widget(c->root, w);
+        }
+    }
+    return nullptr;
+}
+
+extern "C" int gb_qt_child_count(void *container) {
+    return container_children((GbQtNode *)container).size();
+}
+
+extern "C" void *gb_qt_child_at(void *container, int index) {
+    GbQtNode *c = (GbQtNode *)container;
+    QVector<QWidget *> kids = container_children(c);
+    if (index < 0 || index >= kids.size()) {
+        return nullptr;
+    }
+    return node_for_widget(c->root, kids[index]);
+}
+
+/* PUT A CHILD AT A POSITION. A move, never a rebuild: `moveTab` for a tab and
+ * removeWidget/insertWidget for a box, both of which measured as keeping the
+ * widget's text and undo stack. */
+extern "C" int gb_qt_child_place(void *container, void *child, int position,
+                                 char *err, size_t err_size) {
+    GbQtNode *c = (GbQtNode *)container;
+    GbQtNode *k = (GbQtNode *)child;
+    if (!c || !k || !k->widget) {
+        say(err, err_size, "that child cannot be placed");
+        return 0;
+    }
+    if (QTabWidget *tw = qobject_cast<QTabWidget *>(c->widget)) {
+        int at = tw->indexOf(k->widget);
+        if (at < 0) {
+            say(err, err_size, "that child is not in this tab set");
+            return 0;
+        }
+        if (at != position && position >= 0 && position < tw->count()) {
+            tw->tabBar()->moveTab(at, position);
+        }
+        return 1;
+    }
+    if (QBoxLayout *b = qobject_cast<QBoxLayout *>(c->layout)) {
+        int at = b->indexOf(k->widget);
+        if (at != position) {
+            b->removeWidget(k->widget);
+            b->insertWidget(position, k->widget);
+            k->widget->setVisible(true);
+        }
+        return 1;
+    }
+    say(err, err_size, "that container cannot order its children");
+    return 0;
+}
+
+/* A TAB'S CAPTION, re-read from the record. The one thing `setTabText` is
+ * needed for, and the reason a reconcile cannot key on the caption: it is
+ * exactly what changes. */
+extern "C" int gb_qt_child_caption(void *container, void *child,
+                                   const char *text, char *err,
+                                   size_t err_size) {
+    GbQtNode *c = (GbQtNode *)container;
+    GbQtNode *k = (GbQtNode *)child;
+    if (!c || !k || !k->widget) {
+        say(err, err_size, "that child has no caption");
+        return 0;
+    }
+    QTabWidget *tw = qobject_cast<QTabWidget *>(c->widget);
+    if (!tw) {
+        return 1;       /* only a tab set has captions; nothing to do */
+    }
+    int at = tw->indexOf(k->widget);
+    if (at < 0) {
+        say(err, err_size, "that child is not in this tab set");
+        return 0;
+    }
+    tw->setTabText(at, QString::fromUtf8(text ? text : ""));
+    return 1;
+}
+
+/* THE NAME OF A CHILD AT A POSITION, which is the ORDER ORACLE and was built
+ * because the claim had nothing to check it with: `qt.tabs` answers a tab
+ * set's captions, and a `column`'s order is observable through NOTHING --
+ * `qt.at` answers coordinates for a `cells` grid only (§0.8 says so), so the
+ * first draft of the fixture asked it and was told `a` is not in a `cells`.
+ *
+ * ASKED OF THE REGISTRY BY WIDGET, because a node carries its word and not its
+ * name; the reverse lookup is a walk over the window's own parts, which is
+ * small and is the only place that knows what a thing is called. */
+extern "C" char *gb_qt_child_name(void *container, int index) {
+    GbQtNode *c = (GbQtNode *)container;
+    if (!c || !c->root) {
+        return nullptr;
+    }
+    QVector<QWidget *> kids = container_children(c);
+    if (index < 0 || index >= kids.size()) {
+        return nullptr;
+    }
+    for (QHash<QString, QObject *>::const_iterator it = c->root->parts.begin();
+         it != c->root->parts.end(); ++it) {
+        if (it.value() == kids[index]) {
+            return strdup(it.key().toUtf8().constData());
+        }
+    }
+    return strdup("");      /* a child nobody named: present, and anonymous */
+}
+
+extern "C" int gb_qt_tab_count(void *window, const char *name) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !name) {
+        return -1;
+    }
+    QObject *o = root->parts.value(QString::fromUtf8(name), nullptr);
+    QTabWidget *tw = qobject_cast<QTabWidget *>(o);
+    return tw ? tw->count() : -1;
+}
+
+extern "C" char *gb_qt_tab_caption(void *window, const char *name, int index) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !name) {
+        return nullptr;
+    }
+    QObject *o = root->parts.value(QString::fromUtf8(name), nullptr);
+    QTabWidget *tw = qobject_cast<QTabWidget *>(o);
+    if (!tw || index < 0 || index >= tw->count()) {
+        return nullptr;
+    }
+    return strdup(tw->tabText(index).toUtf8().constData());
+}
+
+/* DROP A CHILD: out of the container, out of the registry, and deleted.
+ * EVERY NAME IN THE SUBTREE GOES, not just the child's own -- a tab page holds
+ * an editor with a name of its own, and leaving that behind would leave the
+ * registry pointing at freed memory, which is a use-after-free a correct
+ * answer would not reveal. The nodes are ours, so their widget pointers are
+ * nulled before the delete rather than left dangling for `node_for_widget`. */
+extern "C" int gb_qt_child_drop(void *container, void *child, char *err,
+                                size_t err_size) {
+    GbQtNode *c = (GbQtNode *)container;
+    GbQtNode *k = (GbQtNode *)child;
+    if (!c || !k || !k->widget || !c->root) {
+        say(err, err_size, "that child cannot be dropped");
+        return 0;
+    }
+    QWidget *w = k->widget;
+    /* the names first, while the widget tree is still intact to be asked */
+    QVector<QString> doomed;
+    for (QHash<QString, QObject *>::const_iterator it = c->root->parts.begin();
+         it != c->root->parts.end(); ++it) {
+        QObject *o = it.value();
+        if (o == w) {
+            doomed.append(it.key());
+            continue;
+        }
+        QWidget *ow = qobject_cast<QWidget *>(o);
+        if (ow && w->isAncestorOf(ow)) {
+            doomed.append(it.key());
+            continue;
+        }
+        /* A QAction IS NOT A WIDGET and its parent chain is QObject's, so it
+         * is walked rather than asked -- a menu built inside a dropped page
+         * would otherwise keep its name. */
+        for (QObject *p = o ? o->parent() : nullptr; p; p = p->parent()) {
+            if (p == w) {
+                doomed.append(it.key());
+                break;
+            }
+        }
+    }
+    for (int i = 0; i < doomed.size(); i++) {
+        c->root->parts.remove(doomed[i]);
+    }
+    for (int i = 0; i < g_nodes.size(); i++) {
+        if (g_nodes[i]->widget && (g_nodes[i]->widget == w ||
+                                   w->isAncestorOf(g_nodes[i]->widget))) {
+            g_nodes[i]->widget = nullptr;
+            g_nodes[i]->layout = nullptr;
+        }
+    }
+    if (QTabWidget *tw = qobject_cast<QTabWidget *>(c->widget)) {
+        int at = tw->indexOf(w);
+        if (at >= 0) {
+            tw->removeTab(at);
+        }
+    } else if (QBoxLayout *b = qobject_cast<QBoxLayout *>(c->layout)) {
+        b->removeWidget(w);
+    }
+    w->setParent(nullptr);
+    delete w;
+    return 1;
 }
