@@ -1,0 +1,9 @@
+tabs at the start:   notes.bas
+after opening one:   notes.bas, main.bas
+the reconcile placed 2 pages
+and the typing survived: true
+after an edit:       * notes.bas, main.bas
+still the same page: true
+after closing one:   * notes.bas
+children by name:    p1
+the closed one is gone: this window has no part named `ed2`
