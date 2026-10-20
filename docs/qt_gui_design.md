@@ -3593,11 +3593,29 @@ business; the list is the program's.
 **Two of those changed the implementation.** The protected members force the
 subclass, which is why a `source` is now a `GbQtSourceEdit` and a `memo` is
 still a bare `QPlainTextEdit` — not an oversight but what makes `qt.mark` on a
-memo a **refusal** rather than a silent no-op. And because that subclass
-declares no `Q_OBJECT` (it needs none), its metaobject *is*
-`QPlainTextEdit`'s, so `qobject_cast` would succeed for a memo as well: the
-refusal is made with `dynamic_cast`, which knows the real type. That is the one
-place in this increment where the obvious code would have been quietly wrong.
+memo a **refusal** rather than a silent no-op. The refusal is made with
+`dynamic_cast`, which knows the real type without a metaobject.
+
+**And the reason first written down for that was wrong**, which a perturbation
+established rather than review: the comment claimed that because the subclass
+declares no `Q_OBJECT` its metaobject *is* `QPlainTextEdit`'s, so
+`qobject_cast<GbQtSourceEdit *>` would silently succeed for a memo too.
+Measured, **it does not compile** — Qt 6 answers with a static assertion,
+*"qobject_cast requires the type to have a Q_OBJECT macro"*. So the wrong code
+cannot ship, which is a better state of the world than the one described, and
+the hazard was overstated. The refusal is still load-bearing: a memo and a
+source are both `QPlainTextEdit`s, so an implementation that took the parts
+entry at face value accepts a memo and quietly does nothing to it — the
+perturbation that drops the check reddens the memo refusal and valgrind
+together.
+
+**That perturbation also exposed a trap in the perturbation workflow itself**,
+which is worth more than the correction: with `qobject_cast` in place the build
+FAILED, the suite's own `make` was unchecked, and it went on to run the
+**previously built binary** and report green. `run_all.sh` guards its up-front
+build (line 166), so the gate is safe; a suite run **by hand** had nothing, and
+that is exactly how a perturbation is exercised. This suite checks the build
+now.
 
 ### The glyph is not configurable, and that is the §0.23 measurement again
 
@@ -3679,3 +3697,22 @@ Its first run measured four glyphs rather than six, and the fixture was at
 fault: the shared line sat at 20 with thirteen lines visible, so the priority
 case was **below the fold**. A check whose subject is off-screen measures
 nothing, which is recorded here because the number looked plausible.
+
+**Two further perturbations went green, and each produced an observable** — the
+seventh and eighth time in this backend that has happened, and both were
+invisible for the same reason: *every check was taken at the top of the
+document*, where a margin that never repaints still looks right.
+
+- **The gutter never follows a scroll.** Removing the `updateRequest` connect
+  leaves the numbers sitting still while the text moves under them, which is
+  the whole reason that signal is the one that matters — and all 30 semantic
+  checks and all four paint checks stayed green. What changes when the view
+  moves is the first line painted, so the probe scrolls to the bottom and
+  requires the margin to have repainted from line 190.
+- **The display is 0-based.** Every number in the margin is one out, which is
+  the same off-by-one the mark API was designed to have no room for. The
+  recorded first line is therefore **the number the painter drew**, not a
+  recomputation from `firstVisibleBlock()` — which would agree with a 0-based
+  painter and say nothing.
+
+Ten perturbations proven red in all, each caught by the check written for it.

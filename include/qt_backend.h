@@ -731,7 +731,7 @@ int gb_qt_gutter_press(void *window, const char *name, int line, char *err,
 int gb_qt_gutter_click(int *line);
 /* What the LAST gutter paint drew -- the probe tier's oracle, since a painted
  * glyph is unobservable from gBASIC. */
-void gb_qt_gutter_painted(int *lines, int *marks);
+void gb_qt_gutter_painted(int *lines, int *marks, int *first);
 
 char *gb_qt_highlight_language(void *window, const char *name);
 char *gb_qt_highlight_file(void *window, const char *name);

@@ -704,9 +704,24 @@ void GbQtGutter::paintEvent(QPaintEvent *ev) { m_owner->paintGutterOn(this, ev);
  * Kept here rather than in the probe so the probe measures the real painter. */
 static int g_gutter_painted_lines = 0;
 static int g_gutter_painted_marks = 0;
-extern "C" void gb_qt_gutter_painted(int *lines, int *marks) {
+/* WHICH NUMBER THE LAST PAINT DREW FIRST, and it exists because TWO
+ * perturbations went GREEN. With the `updateRequest` connect removed the
+ * gutter never follows a SCROLL -- the numbers sit still while the text moves
+ * under them, which is the whole reason that signal is the one that matters --
+ * and with the display made 0-based every number in the margin is one out.
+ * NOTHING in the suite could see either, because every other check is taken at
+ * the top of the document, where a margin that never repaints still looks
+ * right. The seventh and eighth time in this backend that asking "what would
+ * be observable if this did nothing?" produced one.
+ *
+ * IT IS THE NUMBER THAT WAS DRAWN, not a recomputation: a capture taken from
+ * `firstVisibleBlock()` at the end of the paint would agree with a 0-based
+ * painter and say nothing about what is on screen. */
+static int g_gutter_first_line = 0;
+extern "C" void gb_qt_gutter_painted(int *lines, int *marks, int *first) {
     if (lines) { *lines = g_gutter_painted_lines; }
     if (marks) { *marks = g_gutter_painted_marks; }
+    if (first) { *first = g_gutter_first_line; }
 }
 
 /* THE GLYPHS COME FROM QStyle, NOT FROM A THEME AND NOT FROM A FONT, and that
@@ -765,7 +780,7 @@ void GbQtSourceEdit::paintGutterOn(QWidget *g, QPaintEvent *ev) {
     int bottom = top + (int)blockBoundingRect(block).height();
     int mw = m_marks ? markColumn() : 0;
     int fh = (int)QFontMetricsF(font()).height();
-    int drew_lines = 0, drew_marks = 0;
+    int drew_lines = 0, drew_marks = 0, drew_first = 0;
 
     while (block.isValid() && top <= ev->rect().bottom()) {
         if (block.isVisible() && bottom >= ev->rect().top()) {
@@ -781,6 +796,9 @@ void GbQtSourceEdit::paintGutterOn(QWidget *g, QPaintEvent *ev) {
                 p.drawText(mw, top, g->width() - mw - 4, fh,
                            Qt::AlignRight | Qt::AlignVCenter,
                            QString::number(line));
+                if (drew_lines == 0) {
+                    drew_first = line;
+                }
                 drew_lines++;
             }
         }
@@ -791,6 +809,7 @@ void GbQtSourceEdit::paintGutterOn(QWidget *g, QPaintEvent *ev) {
     }
     g_gutter_painted_lines = drew_lines;
     g_gutter_painted_marks = drew_marks;
+    g_gutter_first_line = drew_first;
 }
 
 /* THE GUTTER CLICK, held while one handler runs -- §0.21's arrangement exactly,
@@ -2950,12 +2969,22 @@ static GbQtSourceEdit *source_edit_named(void *window, const char *name,
                                "` in this window");
         return nullptr;
     }
-    /* `dynamic_cast` AND NOT `qobject_cast`, which is load-bearing rather
-     * than a style choice: this class declares no Q_OBJECT -- it needs none,
-     * its connects being the functor form and `paintEvent` a virtual -- so its
-     * metaobject IS QPlainTextEdit's, and `qobject_cast<GbQtSourceEdit *>`
-     * would succeed for a `memo` as well. That is the refusal this function
-     * exists to make, so it is made with RTTI, which knows the real type. */
+    /* `dynamic_cast` AND NOT `qobject_cast`, and the reason is NARROWER THAN
+     * THE ONE FIRST WRITTEN HERE, which a perturbation corrected: this class
+     * declares no Q_OBJECT -- it needs none, its connects being the functor
+     * form and `paintEvent` a virtual -- and the first version of this comment
+     * claimed `qobject_cast<GbQtSourceEdit *>` would therefore SUCCEED for a
+     * `memo` as well, silently. MEASURED, IT DOES NOT COMPILE: Qt 6 answers
+     * with a static assertion, "qobject_cast requires the type to have a
+     * Q_OBJECT macro". So the wrong code cannot ship, which is a better state
+     * of the world than the one that was written down -- and RTTI is simply
+     * the cast that is available, knowing the real type without a metaobject.
+     *
+     * THE REFUSAL ITSELF IS STILL LOAD-BEARING: a `memo` and a `source` are
+     * both QPlainTextEdits, so an implementation that took the parts entry at
+     * face value would accept a memo and quietly do nothing to it -- proven
+     * by the perturbation that drops the check, which reddens the memo
+     * refusal and valgrind together. */
     GbQtSourceEdit *e = dynamic_cast<GbQtSourceEdit *>(o);
     if (!e) {
         say(err, err_size,

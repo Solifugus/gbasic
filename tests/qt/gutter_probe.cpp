@@ -117,19 +117,41 @@ int main(int argc, char **argv) {
      * already non-zero the counters are being set by something other than the
      * painter and everything after it is worthless. */
     int before_lines = -1, before_marks = -1;
-    gb_qt_gutter_painted(&before_lines, &before_marks);
+    gb_qt_gutter_painted(&before_lines, &before_marks, nullptr);
     printf("before_lines=%d before_marks=%d\n", before_lines, before_marks);
 
     for (int i = 0; i < 12; i++) {
         QApplication::processEvents();
     }
 
-    int painted_lines = 0, painted_marks = 0;
-    gb_qt_gutter_painted(&painted_lines, &painted_marks);
+    int painted_lines = 0, painted_marks = 0, first_line = 0;
+    gb_qt_gutter_painted(&painted_lines, &painted_marks, &first_line);
 
     printf("display=yes width=%d numbers=%d marks=%d total=200\n", width,
            numbers, marks);
-    printf("painted_lines=%d painted_marks=%d\n", painted_lines, painted_marks);
+    printf("painted_lines=%d painted_marks=%d first_line=%d\n", painted_lines,
+           painted_marks, first_line);
+
+    /* AND THE MARGIN FOLLOWS A SCROLL, which is what `updateRequest` is for
+     * and what a `blockCountChanged`-only version gets wrong: the numbers sit
+     * still while the text moves under them. Produced by a perturbation that
+     * went GREEN -- every other check here is taken at the top of the
+     * document, so none of them could see it. */
+    /* A POSITION PAST THE END, which Qt clamps -- the range is the scrollbar's
+     * own and depends on the viewport, so asking for the bottom by name is
+     * steadier than computing it. */
+    gb_qt_scroll_to(win, "code", 100000.0, err, sizeof(err));
+    for (int i = 0; i < 8; i++) {
+        QApplication::processEvents();
+    }
+    int scrolled_first = 0, scrolled_lines = 0;
+    gb_qt_gutter_painted(&scrolled_lines, nullptr, &scrolled_first);
+    printf("scrolled_first=%d scrolled_lines=%d\n", scrolled_first,
+           scrolled_lines);
+    gb_qt_scroll_to(win, "code", 0.0, err, sizeof(err));
+    for (int i = 0; i < 4; i++) {
+        QApplication::processEvents();
+    }
 
     /* THE CONTROL, IN THE SAME PROCESS so the comparison does not rest on two
      * environments being identical: a margin with NUMBERS AND NO MARKS must
@@ -147,7 +169,7 @@ int main(int argc, char **argv) {
         QApplication::processEvents();
     }
     int bare_lines = -1, bare_marks = -1;
-    gb_qt_gutter_painted(&bare_lines, &bare_marks);
+    gb_qt_gutter_painted(&bare_lines, &bare_marks, nullptr);
     printf("bare_lines=%d bare_marks=%d\n", bare_lines, bare_marks);
     return 0;
 }

@@ -74,7 +74,16 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
 source tests/valgrind_tier.sh
-make >/dev/null
+# THE BUILD IS CHECKED, which this suite's own perturbation round forced: a
+# failed `make` here used to leave the suite running the PREVIOUSLY BUILT
+# binary and reporting green, so a perturbation that did not compile looked
+# like one the checks could not see. run_all.sh guards its own up-front build
+# (line 166) and a suite run BY HAND had nothing -- which is exactly the way
+# these are exercised.
+if ! make >/dev/null; then
+    printf 'run_qt_gutter: FAILED (the build failed -- nothing was measured)\n'
+    exit 1
+fi
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -236,6 +245,29 @@ else
         else
             cat "$work/paint.out"
             fail "painted ${pmarks:-0} glyphs for six marked lines (7 = the priority rule is not applied)"
+        fi
+        # THE FIRST LINE IS NUMBERED 1, asserted on the number the painter
+        # actually DREW rather than on a recomputation of it -- which is what
+        # makes it a check on the 1-based display rather than a tautology.
+        pfirst=$(pfield first_line)
+        if [ "${pfirst:-0}" = "1" ]; then
+            pass "the top of the document is numbered 1, not 0"
+        else
+            cat "$work/paint.out"
+            fail "the first line drawn was numbered ${pfirst:-0}"
+        fi
+        # AND THE MARGIN FOLLOWS A SCROLL, which is what `updateRequest` is
+        # for. PRODUCED BY A PERTURBATION THAT WENT GREEN: with that connect
+        # removed the numbers sit still while the text moves under them, and
+        # NOTHING in this suite could see it -- every other check is taken at
+        # the top of the document, so they all stayed green. The first painted
+        # line is what changes when the view moves.
+        sfirst=$(pfield scrolled_first)
+        if [ "${sfirst:-0}" -gt 100 ]; then
+            pass "scrolled to the bottom, the margin repainted from line $sfirst"
+        else
+            cat "$work/paint.out"
+            fail "after scrolling the margin still started at line ${sfirst:-0} -- it does not follow the view"
         fi
         # THE CONTROL, in the same process: numbers and NO marks must paint
         # numbers and no glyphs, without which "six glyphs" is satisfied by a
