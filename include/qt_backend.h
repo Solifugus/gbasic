@@ -702,6 +702,37 @@ int gb_qt_highlight(void *window, const char *name, const char *language,
  * library beside the program override the standard one; what is not acceptable
  * is being unable to SEE it. Both malloc'd; NULL when no definition is
  * applied, which is a different answer from an empty string. */
+/* ---- THE MARGIN ON A `source` (§0.29) ----------------------------------
+ * `line_numbers:` and `marks:` are STRUCTURAL options, the shape `language:`
+ * has: each builds a child widget rather than setting a property, so the
+ * by-name route has nothing to find and they are applied through here.
+ *
+ * A CATEGORY IS LOOKED UP RATHER THAN SPELLED TWICE. The names and their
+ * priority live in the backend, where the painter is, and the module asks --
+ * two copies of a closed vocabulary is the drift this tree tripwires against,
+ * and the window words were written out three times before being derived. */
+int gb_qt_gutter_enable(void *window, const char *name, int numbers, int marks,
+                        char *err, size_t err_size);
+/* 1 described, 0 no gutter on that `source`, -1 refused (err set). */
+int gb_qt_gutter_info(void *window, const char *name, int *numbers, int *marks,
+                      int *width, char *err, size_t err_size);
+int gb_qt_mark_kind(const char *category);
+const char *gb_qt_mark_name(int kind);
+int gb_qt_mark_count(void);
+int gb_qt_mark_set(void *window, const char *name, int kind, const int *lines,
+                   int count, char *err, size_t err_size);
+/* The count, or -1 refused (err set). Writes at most `max` into `out`. */
+int gb_qt_mark_get(void *window, const char *name, int kind, int *out, int max,
+                   char *err, size_t err_size);
+/* Press the margin beside a line -- what makes the click path drivable. */
+int gb_qt_gutter_press(void *window, const char *name, int line, char *err,
+                       size_t err_size);
+/* 1 while a `gutter` handler is running, with the 1-based line clicked. */
+int gb_qt_gutter_click(int *line);
+/* What the LAST gutter paint drew -- the probe tier's oracle, since a painted
+ * glyph is unobservable from gBASIC. */
+void gb_qt_gutter_painted(int *lines, int *marks);
+
 char *gb_qt_highlight_language(void *window, const char *name);
 char *gb_qt_highlight_file(void *window, const char *name);
 

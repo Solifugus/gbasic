@@ -1,0 +1,10 @@
+numbers: true   marks: true
+reserved a width:            true
+section lines:               [1]
+warning lines:               [4]
+warning, recomputed:         [2,5]
+warning, cleared:            []
+lines clicked:               [4,6]
+breakpoints:                 [4,6]
+after clicking 4 again:      [6]
+line 6 is both error and break, and break is what shows

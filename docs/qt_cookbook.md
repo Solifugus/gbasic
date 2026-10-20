@@ -2651,3 +2651,165 @@ children by name:    p1
 the closed one is gone: this window has no part named `ed2`
 ```
 
+---
+
+## 24. A margin with marks
+
+A `source`'s **margin**, and what sits in it.
+
+It is not a ruler. Line numbers are worth having on their own — gBASIC's
+diagnostics are `line:column` and a reader has nothing to count against — but
+the margin's real job is to carry a **mark per line**: a `▶` where each runnable
+section starts, an icon where the parse failed, a dot where somebody set a
+breakpoint.
+
+```basic
+source code( language: "gBASIC", line_numbers: true, marks: true )
+```
+
+The two options are independent and both are **refused on anything but a
+`source`**, because a `memo` has no margin and an option that was accepted and
+did nothing would be invisible.
+
+**The five categories are `section`, `error`, `warning`, `note` and `break`**,
+and the set is closed — an unknown one is refused by name with a near-miss hint,
+because a category decides a glyph and a priority and the backend has to know
+both. Three of them are gBASIC's own diagnostic severities, so a program showing
+diagnostics has one category per severity rather than flattening them.
+
+**A line carries one glyph**, decided by two rules. A mark the *person* placed
+outranks one the program *computed*, so `break` wins everything — a breakpoint
+is the one mark somebody set deliberately and has to see in order to remove it.
+Among computed marks the more urgent wins: error, warning, note, with `section`
+lowest but above `note`, so the run affordance is not hidden by the least urgent
+thing there is.
+
+**Line 1 is the first line.** `source_outline` reports `start_line = 1` and a
+parse diagnostic carries a 1-based line, so a line number read out of either
+goes straight in with no arithmetic. Line 0 is **refused** rather than dropped,
+since a silently dropped mark would report success and draw nothing.
+
+**Setting a category replaces its whole list.** That is what a gutter
+recomputed on every redraw wants: there is no record of what was already drawn
+to keep in step, and an empty list clears it. `qt.marks` reads back **what was
+set**, not what is currently drawable — a program may mark line 40 and then
+shorten the document, and the list is the program's while the drawing is the
+widget's.
+
+**Clicking the margin** is an event rather than a signal, the margin being a
+plain child widget that emits nothing, and the handler **asks** which line it
+was. The filter sits on the margin itself, so an ordinary press in the text is
+still an ordinary caret move.
+
+`qt.gutter(win, part)` answers `{ line_numbers, marks, width }`, or `unknown`
+for a `source` with no margin. The `width` follows the **digit count**, so a
+thousand-line document reserves more room than a nine-line one.
+
+<!--CODE:24_a_margin_with_marks-->
+
+```basic
+' A MARGIN WITH MARKS -- line numbers, a mark per line, and a breakpoint you
+' can click to set. Under QT_QPA_PLATFORM=offscreen, so it runs with no screen.
+'
+' IT IS NOT A RULER, which is the whole reason the margin carries categories
+' rather than a line-number flag: a `section` mark says "this is a thing you
+' can Run and it starts here", an `error` mark is the only thing in the window
+' saying WHERE a syntax error is, and a `break` mark is a breakpoint somebody
+' set. The three diagnostic categories are gBASIC's own severities, so a
+' program showing diagnostics has one category per severity.
+
+window ed( title: "Editor", width: 620, height: 420 )
+    column
+        source code( language: "gBASIC", line_numbers: true, marks: true )
+        text hint( label: "click the margin to set a breakpoint" )
+    end column
+
+    ' THE MARGIN IS AN EVENT, NOT A SIGNAL -- it is a plain child widget and
+    ' emits nothing -- and the handler ASKS which line it was, the rule
+    ' `qt.wheel()` already follows.
+    on code.gutter
+        c = qt.gutter_click()
+        b = qt.marks(ed, "code", "break")
+        if contains(b, c.line) then
+            qt.mark(ed, "code", "break", b excluding [c.line])
+        else
+            qt.mark(ed, "code", "break", concat(b, [c.line]))
+        end if
+        append(g.clicked, c.line)
+    end on
+end window
+
+program main( args )
+    g = { clicked: [] }
+    if not qt.can_display() then
+        print "no display -- nothing to show"
+        return
+    end if
+
+    qt.open(ed)
+    qt.write(ed, "code", join([ "function total(rows)",
+                                "    t = 0",
+                                "    for each r in rows",
+                                "        t = t + r.amount",
+                                "    end for",
+                                "    return t",
+                                "end function" ], chr(10)))
+
+    ' WHAT THE MARGIN IS, or `unknown` for a `source` that has none.
+    gut = qt.gutter(ed, "code")
+    print "numbers: " + string(gut.line_numbers) + "   marks: " + string(gut.marks)
+    print "reserved a width:            " + string(gut.width > 0)
+
+    ' A SECTION STARTS AT LINE 1 -- 1-BASED, like `source_outline`'s own
+    ' `start_line` and like every diagnostic gBASIC prints, so a line number
+    ' read out of one goes straight in here with no arithmetic.
+    qt.mark(ed, "code", "section", [1])
+    qt.mark(ed, "code", "warning", [4])
+    print "section lines:               " + string(qt.marks(ed, "code", "section"))
+    print "warning lines:               " + string(qt.marks(ed, "code", "warning"))
+
+    ' SETTING A CATEGORY REPLACES IT, which is what a gutter recomputed on
+    ' every redraw wants: there is no list of what was already drawn to keep.
+    qt.mark(ed, "code", "warning", [2, 5])
+    print "warning, recomputed:         " + string(qt.marks(ed, "code", "warning"))
+    qt.mark(ed, "code", "warning", [])
+    print "warning, cleared:            " + string(qt.marks(ed, "code", "warning"))
+
+    ' A BREAKPOINT, SET THE WAY A PERSON SETS ONE. `qt.gutter_press` is what
+    ' stands in for the mouse; a line that is not on screen is refused,
+    ' because a mouse could not land there either.
+    qt.gutter_press(ed, "code", 4)
+    qt.gutter_press(ed, "code", 6)
+    print "lines clicked:               " + string(g.clicked)
+    print "breakpoints:                 " + string(qt.marks(ed, "code", "break"))
+
+    ' CLICKING THE SAME LINE AGAIN CLEARS IT -- the handler above decides that,
+    ' not the margin: `qt.mark` replaces a list and the program says what the
+    ' list is.
+    qt.gutter_press(ed, "code", 4)
+    print "after clicking 4 again:      " + string(qt.marks(ed, "code", "break"))
+
+    ' A LINE CARRIES ONE GLYPH, and `break` outranks everything because a mark
+    ' somebody PLACED must not be hidden by one the program COMPUTED.
+    qt.mark(ed, "code", "error", [6])
+    print "line 6 is both error and break, and break is what shows"
+
+    qt.close(ed)
+end program
+```
+
+<!--OUT:24_a_margin_with_marks-->
+
+```
+numbers: true   marks: true
+reserved a width:            true
+section lines:               [1]
+warning lines:               [4]
+warning, recomputed:         [2,5]
+warning, cleared:            []
+lines clicked:               [4,6]
+breakpoints:                 [4,6]
+after clicking 4 again:      [6]
+line 6 is both error and break, and break is what shows
+```
+

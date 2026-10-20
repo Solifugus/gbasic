@@ -3872,6 +3872,11 @@ end program
 | `qt.scroll_to(win, part, position)` | put it back, which is how *"reopen the editor where I left it"* is written. A part that does not scroll is refused by name rather than succeeding and doing nothing; the range is Qt's own, so a position past the end is clamped |
 | `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
 | `qt.highlighting(win, part)` | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
+| `qt.mark(win, part, category, lines)` | put a mark beside each of those lines in a `source`'s margin, **replacing that category's whole list** — which is the consumer's own shape, since a gutter is recomputed on every redraw and an add/remove pair would make the caller keep a record of what it had already drawn. An empty list clears it. The categories are `section`, `error`, `warning`, `note` and `break`, and an unknown one is **refused by name** with a near-miss hint: unlike a widget's properties the set *can* be closed, because a category decides a glyph and a priority and the backend has to know both. **Line 1 is the first line** — `source_outline` reports `start_line = 1` and a parse diagnostic carries a 1-based line, so there is no conversion anywhere — and **line 0 is refused** rather than dropped, a silently dropped mark reporting success while drawing nothing |
+| `qt.marks(win, part, category)` | that category's lines, as a list. **What was set, never what is currently drawable**: a program may mark line 40 and then shorten the document, and a read filtered to the lines still in the file would disagree with the write for a reason the caller cannot see. The drawing is the widget's business; the list is the program's |
+| `qt.gutter(win, part)` | what that `source`'s margin is — `{ line_numbers, marks, width }` — or **`unknown`** for one that has none, since `width: 0` would say a margin exists and is empty. The `width` follows the **digit count**, so a thousand-line document reserves more than a nine-line one |
+| `qt.gutter_press(win, part, line)` | press the margin beside a line, which is what makes a `gutter` handler drivable without a person — `qt.right_click`'s and `qt.scroll`'s shape. A line that is **not on screen** is refused, because a mouse cannot land there |
+| `qt.gutter_click()` | which line the margin click being handled was on: `{ line }`, or **`unknown`** outside a handler — a different claim from *line 0*. Takes no arguments, because a handler here takes none and the event is asked for instead, the rule `qt.wheel()` and `principal()` already follow |
 | `qt.inform(win, text)` | a message box with one button, parented to `win` so Qt centres it there and makes it modal to that window |
 | `qt.confirm(win, question)` | a message box with two, answering **`true` or `false`** rather than a button code — two buttons is the whole of what it offers, and anything richer is a window shown modally. **No is the default**, because a question answered by pressing Return without reading should not be the destructive one |
 | `qt.answer(value)` | answer the dialog that is open, from the program rather than a person — a timeout, an unattended run, a suite. `true`/`false` for a message box; **a path** for a file chooser, and `false` there is a *cancel*. `true` on a chooser is **refused**, because it would have to mean "accept *what?*", and a path on a message box likewise — each refusal names the dialog that is actually open. **Refuses when nothing is open**, rather than being a silent no-op that would leave a program waiting for somebody who is not there |
@@ -4337,8 +4342,67 @@ absent definition colours every line with the theme's ordinary text and there
 is nothing on screen to notice. `qt.highlighting` is how a program asks what it
 actually got.
 
-**Not there yet:** a line-number gutter (Qt has no widget for one — it is a
-painted side area) and completion (the data exists in `source_outline` and
+**The margin, and a mark per line.** A `source` can carry a margin, and it is
+not a ruler:
+
+<!--fragment: one line of a `window` declaration-->
+```basic
+source code( language: "gBASIC", line_numbers: true, marks: true )
+```
+
+```basic
+qt.mark(win, "code", "section", [1, 12, 31])   ' ▶ where each section starts
+qt.mark(win, "code", "error", [18])            ' where the parse failed
+qt.mark(win, "code", "break", [12])            ' a breakpoint somebody set
+qt.mark(win, "code", "error", [])              ' clears that category
+```
+
+The two options are independent — numbers alone, marks alone, both, or neither
+— and both are **refused on anything but a `source`**, because a `memo` has no
+margin and an accepted option that did nothing would be invisible. Each wants a
+literal `true` or `false` rather than being read for truthiness, since every
+non-empty string in gBASIC is true and `line_numbers: "no"` would turn them on.
+
+**The five categories are derived, not chosen**, which is what lets the set be
+closed: `section` and `break` were asked for, and `error`, `warning` and `note`
+are exactly gBASIC's own diagnostic severities, so a program showing
+diagnostics has one category per severity rather than flattening three into
+one. **A line carries one glyph**, and which one is decided by two rules — a
+mark the *person* placed outranks one the program *computed*, so `break` wins
+everything (a breakpoint is the one mark somebody set deliberately and has to
+see in order to remove it); among computed marks the more urgent wins, error
+over warning over note, with `section` lowest but above `note` so the run
+affordance is not hidden by the least urgent thing there is.
+
+**The glyph is not configurable, and that is a measurement.** A theme icon name
+resolves to nothing on a machine with no icon theme, which is why a consumer
+ends up shipping its own image for an error marker. Four of the five come from
+Qt's own standard pixmaps, which are part of Qt Widgets and need no theme, and
+`break` is painted, needing neither a theme nor a font — so there is nothing
+here that can fail to appear.
+
+**Clicking the margin** is how a breakpoint is set, and it is an event rather
+than a signal (the margin is a plain child widget and emits nothing):
+
+<!--fragment: a handler block, which lives inside a `window` declaration-->
+```basic
+on code.gutter
+    c = qt.gutter_click()
+    b = qt.marks(win, "code", "break")
+    if contains(b, c.line) then
+        qt.mark(win, "code", "break", b excluding [c.line])
+    else
+        qt.mark(win, "code", "break", concat(b, [c.line]))
+    end if
+end on
+```
+
+The filter sits on the margin itself, so an ordinary press in the text is still
+an ordinary caret move, and it is installed **only where a handler was
+declared**. A `gutter` handler on a `source` with no margin is refused at load
+time, naming the option that would give it one.
+
+**Not there yet:** completion (the data exists in `source_outline` and
 `gbasic-lsp`; the popup is a `QCompleter`, another object attached to a widget,
 so it lands where the highlighter did).
 

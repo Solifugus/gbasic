@@ -779,7 +779,14 @@ static int qt_pump_gbasic(void) {
 static int qt_structural_option(const char *name) {
     static const char *structural[] = {
         "label", "margin", "spacing", "grow", "show", "edit", "type",
-        "across", "down", "options", "language", "theme", NULL
+        "across", "down", "options", "language", "theme",
+        /* THE MARGIN'S TWO OPTIONS (§0.29). Structural because each builds a
+         * CHILD WIDGET rather than setting a property -- `setProperty("marks",
+         * ...)` would store a dynamic property nothing reads, which is the
+         * silent-no-op class this backend is tested against. Note `margin:` is
+         * already taken, by a layout's own margin, which is why the gutter is
+         * spelled as the two things it carries. */
+        "line_numbers", "marks", NULL
     };
     for (size_t i = 0; structural[i]; i++) {
         if (strcmp(name, structural[i]) == 0) {
@@ -1370,6 +1377,65 @@ static int qt_build_item(void *parent, Value *item, void *root) {
                 warn_fmt(2115, "highlighting", "window: %s",
                          err[0] ? err : "the syntax definition could not be "
                                         "applied");
+            }
+        }
+    }
+    /* THE MARGIN (§0.29), structural for the same reason as the highlighter:
+     * `line_numbers:` and `marks:` each build a CHILD WIDGET, so there is no
+     * property for the by-name route to find.
+     *
+     * REFUSED ON ANYTHING BUT A `source`, and that refusal is what makes the
+     * option honest rather than decorative -- a `memo` has no gutter and never
+     * will, so `memo notes( line_numbers: true )` would otherwise be accepted
+     * in silence and do nothing, which is this backend's own failure class. */
+    if (opts && opts->value && opts->value->kind == VALUE_RECORD) {
+        RecordField *lnum = record_find(opts->value, "line_numbers");
+        RecordField *mk = record_find(opts->value, "marks");
+        int is_source = word && strcmp(word, "source") == 0;
+        if ((lnum || mk) && !is_source) {
+            snprintf(message, sizeof(message),
+                     "window: only a `source` has a margin, so `%s` cannot "
+                     "carry `%s`",
+                     word ? word : "?", lnum ? "line_numbers" : "marks");
+            qt_raise(message);
+            return 0;
+        }
+        if (is_source && (lnum || mk)) {
+            int numbers = 0, marks = 0;
+            /* A LITERAL `true`, the rule §0.28's `depth:` set: anything else
+             * is refused rather than read for truthiness, because in gBASIC
+             * every non-empty string is true and `line_numbers: "no"` would
+             * turn them ON. */
+            if (lnum && lnum->value) {
+                if (lnum->value->kind != VALUE_BOOL) {
+                    snprintf(message, sizeof(message),
+                             "window: `source %s( line_numbers: ... )` is "
+                             "true or false, and it holds %s",
+                             name ? name : "?",
+                             value_kind_name(lnum->value->kind));
+                    qt_raise(message);
+                    return 0;
+                }
+                numbers = lnum->value->as.boolean ? 1 : 0;
+            }
+            if (mk && mk->value) {
+                if (mk->value->kind != VALUE_BOOL) {
+                    snprintf(message, sizeof(message),
+                             "window: `source %s( marks: ... )` is true or "
+                             "false, and it holds %s", name ? name : "?",
+                             value_kind_name(mk->value->kind));
+                    qt_raise(message);
+                    return 0;
+                }
+                marks = mk->value->as.boolean ? 1 : 0;
+            }
+            err[0] = '\0';
+            if (!gb_qt_gutter_enable(root, name, numbers, marks, err,
+                                     sizeof(err))) {
+                snprintf(message, sizeof(message), "window: %s",
+                         err[0] ? err : "the margin could not be created");
+                qt_raise(message);
+                return 0;
             }
         }
     }
@@ -3486,6 +3552,323 @@ static Value qt_eval_call(AstExpr *expr) {
             free(nm);
         }
         return value_array(names, (size_t)(n > 0 ? n : 0));
+    }
+
+    if (strcmp(verb, "mark") == 0 || strcmp(verb, "marks") == 0) {
+        /* A MARK PER LINE IN A `source`'S MARGIN (§0.29) -- the second of the
+         * two asks docs/qt_studio_requests.md names as blocking a feature
+         * Studio already has, and the one the user widened on reading it:
+         * *"I was only thinking line numbers and forgot about break points."*
+         *
+         * REPLACE, NEVER ADD OR REMOVE, which is the consumer's own shape:
+         * Studio recomputes the whole list on every redraw, so an add/remove
+         * pair would make it keep a record of what it had already drawn --
+         * a cache to get wrong, and it already has two of those. An empty
+         * list clears the category, which falls out of replacing.
+         *
+         * ONE DOOR FOR BOTH DIRECTIONS, because the pair has to agree about
+         * what a category IS: a writer that accepted `warn` and a reader that
+         * did not would make a mark unreadable for a reason nothing explains.
+         * The shape `qt.read`/`qt.set` already share. */
+        int setting = strcmp(verb, "mark") == 0;
+        if (argc != (setting ? 4 : 3)) {
+            qt_raise(setting
+                         ? "qt.mark expects a window, a `source`'s name, a "
+                           "category and a list of lines"
+                         : "qt.marks expects a window, a `source`'s name and "
+                           "a category");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value cat = eval_expr(expr->as.call.args.items[2]);
+        Value lines = setting ? eval_expr(expr->as.call.args.items[3])
+                              : value_null();
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(cat);
+            value_free(lines);
+            return value_null();
+        }
+        if (!qt_window_record(&win, verb) || which.kind != VALUE_STRING ||
+            cat.kind != VALUE_STRING ||
+            (setting && lines.kind != VALUE_ARRAY)) {
+            if (!error_action_pending()) {
+                qt_raise(setting
+                             ? "qt.mark expects a window, a `source`'s name "
+                               "and a category as text, and the lines as an "
+                               "array"
+                             : "qt.marks expects a window, and a `source`'s "
+                               "name and a category as text");
+            }
+            value_free(win); value_free(which); value_free(cat);
+            value_free(lines);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(cat);
+            value_free(lines);
+            return value_null();
+        }
+        /* THE NAMES ARE COPIED BEFORE THE VALUES GO (§0.22's defect, found a
+         * second time in `qt.read` by §0.27). */
+        char *pname = copy_string(which.as.string);
+        char *cname = copy_string(cat.as.string);
+        value_free(win); value_free(which); value_free(cat);
+        /* THE CATEGORY SET IS CLOSED, unlike a leaf's properties -- and it
+         * CAN be closed, because a category decides a GLYPH and a PRIORITY
+         * and the backend has to know both. So an unknown one is refused by
+         * name with a near-miss hint, through the same matcher the chooser's
+         * options and the window's words use. */
+        int kind = gb_qt_mark_kind(cname);
+        if (kind < 0) {
+            char listing[160];
+            size_t at = 0;
+            int total = gb_qt_mark_count();
+            const char *set[16];
+            for (int i = 0; i < total && i < 15; i++) {
+                set[i] = gb_qt_mark_name(i);
+                at += (size_t)snprintf(listing + at, sizeof(listing) - at,
+                                       "%s`%s`", i ? ", " : "", set[i]);
+            }
+            set[total < 15 ? total : 15] = NULL;
+            const char *near = gb_nearest_word(cname, set);
+            if (near) {
+                snprintf(message, sizeof(message),
+                         "qt.%s: `%s` is not a mark category -- did you mean "
+                         "`%s`?", verb, cname, near);
+            } else {
+                snprintf(message, sizeof(message),
+                         "qt.%s: `%s` is not a mark category; the categories "
+                         "are %s", verb, cname, listing);
+            }
+            free(pname); free(cname);
+            value_free(lines);
+            qt_raise(message);
+            return value_null();
+        }
+        free(cname);
+        char err[QT_ERRBUF];
+        err[0] = '\0';
+        if (!setting) {
+            int buf[4096];
+            int n = gb_qt_mark_get(root, pname, kind, buf,
+                                   (int)(sizeof(buf) / sizeof(buf[0])), err,
+                                   sizeof(err));
+            if (n < 0) {
+                snprintf(message, sizeof(message), "qt.marks: %s",
+                         err[0] ? err : "that margin could not be read");
+                free(pname);
+                qt_raise(message);
+                return value_null();
+            }
+            free(pname);
+            int cap = (int)(sizeof(buf) / sizeof(buf[0]));
+            if (n > cap) {
+                n = cap;
+            }
+            Value *out = n > 0 ? malloc(sizeof(Value) * (size_t)n) : NULL;
+            if (n > 0 && !out) {
+                abort();
+            }
+            for (int i = 0; i < n; i++) {
+                out[i] = value_number((double)buf[i]);
+            }
+            return value_array(out, (size_t)(n > 0 ? n : 0));
+        }
+        size_t count = lines.as.array.store ? lines.as.array.store->count : 0;
+        int *nums = count ? malloc(sizeof(int) * count) : NULL;
+        if (count && !nums) {
+            abort();
+        }
+        for (size_t i = 0; i < count; i++) {
+            Value *el = &lines.as.array.store->items[i];
+            if (el->kind != VALUE_NUMBER) {
+                snprintf(message, sizeof(message),
+                         "qt.mark: the lines are numbers, and item %zu holds "
+                         "%s", i, value_kind_name(el->kind));
+                free(nums); free(pname);
+                value_free(lines);
+                qt_raise(message);
+                return value_null();
+            }
+            long line = (long)el->as.num.value;
+            /* LINE 1 IS THE FIRST LINE, and line 0 is REFUSED rather than
+             * dropped. MEASURED rather than chosen: `source_outline` reports
+             * `start_line = 1` for the first line and a parse diagnostic
+             * carries a 1-based line too, so both of the consumer's own
+             * sources are 1-based and the gutter displays 1-based -- which
+             * means there is NO CONVERSION ANYWHERE, and a conversion is
+             * exactly where an off-by-one would live. A 0-based caller is the
+             * plausible mistake, and a silently dropped mark would report
+             * success while drawing nothing. */
+            if (line < 1) {
+                snprintf(message, sizeof(message),
+                         "qt.mark: line numbers start at 1, and item %zu is "
+                         "%ld", i, line);
+                free(nums); free(pname);
+                value_free(lines);
+                qt_raise(message);
+                return value_null();
+            }
+            nums[i] = (int)line;
+        }
+        value_free(lines);
+        int ok = gb_qt_mark_set(root, pname, kind, nums, (int)count, err,
+                                sizeof(err));
+        free(nums);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.mark: %s",
+                     err[0] ? err : "that margin could not be marked");
+            free(pname);
+            qt_raise(message);
+            return value_null();
+        }
+        free(pname);
+        return value_bool(1);
+    }
+
+    if (strcmp(verb, "gutter_press") == 0) {
+        /* A PRESS IN THE MARGIN, which is how the `gutter` handler is driven
+         * without a person -- `qt.right_click`'s shape (§0.20) and
+         * `qt.scroll`'s (§0.21), and in the product surface for the reason
+         * stated there rather than as a test hook. */
+        if (argc != 3) {
+            qt_raise("qt.gutter_press expects a window, a `source`'s name and "
+                     "a line");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value linev = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(linev);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "gutter_press") ||
+            which.kind != VALUE_STRING || linev.kind != VALUE_NUMBER) {
+            if (!error_action_pending()) {
+                qt_raise("qt.gutter_press expects a window, a `source`'s name "
+                         "as text and a line number");
+            }
+            value_free(win); value_free(which); value_free(linev);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(linev);
+            return value_null();
+        }
+        char *pname = copy_string(which.as.string);
+        long line = (long)linev.as.num.value;
+        value_free(win); value_free(which); value_free(linev);
+        char err[QT_ERRBUF];
+        err[0] = '\0';
+        if (!gb_qt_gutter_press(root, pname, (int)line, err, sizeof(err))) {
+            snprintf(message, sizeof(message), "qt.gutter_press: %s",
+                     err[0] ? err : "that margin could not be pressed");
+            free(pname);
+            qt_raise(message);
+            return value_null();
+        }
+        free(pname);
+        return value_bool(1);
+    }
+
+    if (strcmp(verb, "gutter") == 0) {
+        /* WHAT THE MARGIN IS, or NOTHING AT ALL -- the shape `qt.pane`,
+         * `qt.dialog` and `principal()` all take, for the reason stated
+         * there: a record reading `width: 0` would say a margin exists and is
+         * empty, where the truth is that this `source` has none.
+         *
+         * `width` IS THE ONLY PART OF THE RESERVATION A gBASIC CHECK CAN SEE,
+         * and it is a real observable rather than a test hook: it follows the
+         * DIGIT COUNT, so a thousand-line document reserves more than a
+         * nine-line one -- which a gutter that ignored the count would fail
+         * while passing any presence check. */
+        if (argc != 2) {
+            qt_raise("qt.gutter expects a window and a `source`'s name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "gutter") || which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.gutter expects a window and a `source`'s name as "
+                         "text");
+            }
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        char *pname = copy_string(which.as.string);
+        value_free(win); value_free(which);
+        char err[QT_ERRBUF];
+        err[0] = '\0';
+        int numbers = 0, marks = 0, width = 0;
+        int got = gb_qt_gutter_info(root, pname, &numbers, &marks, &width, err,
+                                    sizeof(err));
+        if (got < 0) {
+            snprintf(message, sizeof(message), "qt.gutter: %s",
+                     err[0] ? err : "that margin could not be read");
+            free(pname);
+            qt_raise(message);
+            return value_null();
+        }
+        free(pname);
+        if (got == 0) {
+            return value_unknown();
+        }
+        Value out = value_record(NULL, 0);
+        record_set(&out, "line_numbers", value_bool(numbers));
+        record_set(&out, "marks", value_bool(marks));
+        record_set(&out, "width", value_number((double)width));
+        return out;
+    }
+
+    if (strcmp(verb, "gutter_click") == 0) {
+        /* WHICH LINE WAS CLICKED, asked for rather than passed in -- §0.21's
+         * arrangement, reused rather than re-argued: a handler in this
+         * backend takes no arguments, so `on code.gutter` fires and the
+         * handler asks.
+         *
+         * IT IS IN THIS INCREMENT RATHER THAN AFTER IT because a breakpoint
+         * you cannot click to set is decorative, and a breakpoint is why the
+         * user said the margin matters. ANSWERS `unknown` OUTSIDE A HANDLER,
+         * which is a different claim from "line 0" and is the distinction
+         * `qt.wheel` and `principal()` already make. */
+        if (argc != 0) {
+            qt_raise("qt.gutter_click takes no arguments -- it answers the "
+                     "click being handled");
+            return value_null();
+        }
+        int line = 0;
+        if (!gb_qt_gutter_click(&line)) {
+            return value_unknown();
+        }
+        Value out = value_record(NULL, 0);
+        record_set(&out, "line", value_number((double)line));
+        return out;
     }
 
     if (strcmp(verb, "depth") == 0) {

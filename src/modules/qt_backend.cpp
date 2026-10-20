@@ -76,6 +76,11 @@
 #include <QMetaEnum>
 #include <QStyle>
 #include <QIcon>
+#include <QPainter>
+#include <QPaintEvent>
+#include <QResizeEvent>
+#include <QPalette>
+#include <QTextBlock>
 #include <QCursor>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -486,6 +491,350 @@ extern "C" int gb_qt_swallow(char *err, size_t err_size) {
         return 0;
     }
     g_wheel_claimed = true;
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* THE MARGIN ON A `source`, AND A MARK PER LINE (§0.29).             */
+/* ------------------------------------------------------------------ */
+
+/* FIVE CATEGORIES, AND THE SET IS DERIVED RATHER THAN CHOSEN. Two were asked
+ * for -- `section`, which is the whole run-a-cell affordance (a mark saying
+ * "this is a thing you can Run and it starts here"), and `break`, which the
+ * user named on reading the word "gutter": *"I was only thinking line numbers
+ * and forgot about break points"*. The other three ARE gBASIC's own
+ * diagnostic severities: `gb_severity` is exactly {error, warning, note}, so a
+ * program showing diagnostics has one category per severity rather than
+ * having to flatten three into one. Nothing here is invented.
+ *
+ * THE ENUM ORDER IS THE PRIORITY, so there is no second table to drift out of
+ * step with this one -- the larger ordinal wins a line, which is what makes
+ * "one glyph per line" decidable at all. The ordering is two rules:
+ *
+ *   A MARK THE PERSON PLACED OUTRANKS ONE THE PROGRAM COMPUTED, so `break`
+ *   wins everything. A breakpoint is the one mark somebody set deliberately
+ *   and must be able to see in order to remove, and hiding it behind a
+ *   computed error would make it unclickable for a reason nothing explains.
+ *
+ *   AMONG COMPUTED MARKS THE MORE URGENT WINS -- error over warning over
+ *   note -- with `section` lowest but ABOVE `note`, which preserves the
+ *   priority Studio's own request states (section 1, error 2 "wins") and
+ *   keeps the run affordance from being hidden by the least urgent thing
+ *   there is. */
+enum {
+    GB_MARK_NOTE = 0,
+    GB_MARK_SECTION,
+    GB_MARK_WARNING,
+    GB_MARK_ERROR,
+    GB_MARK_BREAK,
+    GB_MARK_COUNT
+};
+
+static const char *const g_mark_names[GB_MARK_COUNT] = {
+    "note", "section", "warning", "error", "break"
+};
+
+static int mark_kind_of(const char *name) {
+    for (int i = 0; i < GB_MARK_COUNT; i++) {
+        if (strcmp(name, g_mark_names[i]) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+class GbQtSourceEdit;
+
+/* THE GUTTER IS A PLAIN CHILD QWidget AND NEEDS NO moc: `paintEvent` is a
+ * virtual, and the two connections that drive it are functor connects that
+ * reach a lambda. This file has no moc pass and this increment did not add
+ * one -- measured before being relied on. */
+class GbQtGutter : public QWidget {
+public:
+    explicit GbQtGutter(GbQtSourceEdit *owner);
+
+protected:
+    void paintEvent(QPaintEvent *ev) override;
+
+private:
+    GbQtSourceEdit *m_owner;
+};
+
+/* A `source` IS THIS SUBCLASS RATHER THAN A BARE QPlainTextEdit, and that is
+ * FORCED rather than preferred: everything the gutter has to know to paint a
+ * line in the right place -- `firstVisibleBlock`, `blockBoundingGeometry`,
+ * `blockBoundingRect`, `contentOffset` -- is PROTECTED, as is
+ * `setViewportMargins`, which is what reserves the space. Qt's own Code Editor
+ * example subclasses for exactly this reason.
+ *
+ * A `memo` IS STILL A BARE QPlainTextEdit, which is not an oversight but what
+ * makes `qt.mark` on a memo a refusal rather than a silent no-op: the cast
+ * fails, and the message names the word the author wrote. */
+class GbQtSourceEdit : public QPlainTextEdit {
+public:
+    explicit GbQtSourceEdit(QWidget *parent) : QPlainTextEdit(parent) {}
+
+    void enableGutter(bool numbers, bool marks) {
+        m_numbers = numbers;
+        m_marks = marks;
+        if (!m_gutter) {
+            m_gutter = new GbQtGutter(this);
+            /* FUNCTOR CONNECTS, so no moc. `updateRequest` is the one that
+             * matters: it fires on SCROLL as well as on an edit, and without
+             * it the numbers stay where they were while the text moves --
+             * measured, and the reason a `blockCountChanged`-only version
+             * looks right until you touch the scrollbar. */
+            connect(this, &QPlainTextEdit::blockCountChanged, this,
+                    [this](int) { refreshGutter(); });
+            connect(this, &QPlainTextEdit::updateRequest, this,
+                    [this](const QRect &r, int dy) {
+                        if (!m_gutter) { return; }
+                        if (dy != 0) {
+                            m_gutter->scroll(0, dy);
+                        } else {
+                            m_gutter->update(0, r.y(), m_gutter->width(),
+                                             r.height());
+                        }
+                    });
+        }
+        refreshGutter();
+        m_gutter->setVisible(m_numbers || m_marks);
+    }
+
+    bool hasGutter() const { return m_gutter != nullptr; }
+    QWidget *gutterWidget() const { return m_gutter; }
+    bool numbersOn() const { return m_numbers; }
+    bool marksOn() const { return m_marks; }
+    int gutterWidth() const {
+        if (!m_numbers && !m_marks) {
+            return 0;
+        }
+        int w = 4;
+        if (m_marks) {
+            w += markColumn();
+        }
+        if (m_numbers) {
+            /* THE WIDTH FOLLOWS THE DIGIT COUNT, which is also the one thing
+             * about the reservation a gBASIC check can observe: a thousand-line
+             * document reserves more than a nine-line one, so a gutter that
+             * ignored the count passes a presence check and fails that. */
+            int digits = 1, lines = qMax(1, blockCount());
+            while (lines >= 10) { lines /= 10; digits++; }
+            w += QFontMetricsF(font()).horizontalAdvance(QLatin1Char('9')) *
+                     digits + 8;
+        }
+        return w;
+    }
+    int markColumn() const {
+        return (int)QFontMetricsF(font()).height();
+    }
+
+    void setMarks(int kind, const QVector<int> &lines) {
+        m_marks_by_kind[kind] = lines;
+        if (m_gutter) {
+            m_gutter->update();
+        }
+    }
+    const QVector<int> &marksOf(int kind) const {
+        return m_marks_by_kind[kind];
+    }
+
+    /* WHICH CATEGORY OWNS A LINE, or -1. The priority rule lives here and
+     * nowhere else, so the painter and anything that asks later cannot
+     * disagree about which glyph a line carries. */
+    int kindAt(int line) const {
+        for (int k = GB_MARK_COUNT - 1; k >= 0; k--) {
+            if (m_marks_by_kind[k].contains(line)) {
+                return k;
+            }
+        }
+        return -1;
+    }
+
+    void refreshGutter() {
+        int w = gutterWidth();
+        setViewportMargins(w, 0, 0, 0);
+        if (m_gutter) {
+            QRect cr = contentsRect();
+            m_gutter->setGeometry(QRect(cr.left(), cr.top(), w, cr.height()));
+        }
+    }
+
+    /* The gutter's own paint, written here because this is where the protected
+     * block geometry is reachable. */
+    void paintGutterOn(QWidget *g, QPaintEvent *ev);
+
+    /* WHERE A LINE SITS, in the gutter's own coordinates, or -1 if it is not
+     * on screen. Here for the same reason the paint is: `blockBoundingGeometry`
+     * and `contentOffset` are protected. */
+    int lineTop(int line) const {
+        QTextBlock b = document()->findBlockByNumber(line - 1);
+        if (!b.isValid() || !b.isVisible()) {
+            return -1;
+        }
+        QRectF r = blockBoundingGeometry(b).translated(contentOffset());
+        if (r.bottom() < 0 || r.top() > viewport()->height()) {
+            return -1;
+        }
+        return (int)r.top();
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *ev) override {
+        QPlainTextEdit::resizeEvent(ev);
+        refreshGutter();
+    }
+
+private:
+    GbQtGutter *m_gutter = nullptr;
+    bool m_numbers = false;
+    bool m_marks = false;
+    QVector<int> m_marks_by_kind[GB_MARK_COUNT];
+};
+
+GbQtGutter::GbQtGutter(GbQtSourceEdit *owner)
+    : QWidget(owner), m_owner(owner) {}
+
+void GbQtGutter::paintEvent(QPaintEvent *ev) { m_owner->paintGutterOn(this, ev); }
+
+/* HOW MANY LINES AND MARKS THE LAST PAINT DREW. Read by the C++ probe tier,
+ * because a painted glyph is unobservable from gBASIC: `qt.marks` answers what
+ * was SET, so a backend that stored a list and painted nothing would satisfy
+ * it -- which is the green-perturbation shape this backend is tested against.
+ * Kept here rather than in the probe so the probe measures the real painter. */
+static int g_gutter_painted_lines = 0;
+static int g_gutter_painted_marks = 0;
+extern "C" void gb_qt_gutter_painted(int *lines, int *marks) {
+    if (lines) { *lines = g_gutter_painted_lines; }
+    if (marks) { *marks = g_gutter_painted_marks; }
+}
+
+/* THE GLYPHS COME FROM QStyle, NOT FROM A THEME AND NOT FROM A FONT, and that
+ * was measured rather than chosen (§0.23 took the same decision one increment
+ * over). A theme name resolves to nothing on a machine with no icon theme --
+ * measured, this one has none -- and a font glyph like U+25B6 needs a font
+ * that happens to carry it, which Qt substitutes for in silence. A QStyle
+ * standard pixmap comes from the built-in fusion style, which is part of Qt
+ * Widgets and always there: all five used here measured non-null 16x16 with no
+ * theme installed.
+ *
+ * `break` IS PAINTED RATHER THAN A PIXMAP because no standard pixmap is a
+ * breakpoint, and a filled circle is what every debugger draws. It needs
+ * neither style nor font, so it is the one glyph here with no dependency at
+ * all. */
+static void paint_mark(QPainter &p, int kind, const QRect &box) {
+    if (kind == GB_MARK_BREAK) {
+        int d = qMin(box.width(), box.height()) - 4;
+        if (d < 4) { d = qMin(box.width(), box.height()); }
+        QRect c(0, 0, d, d);
+        c.moveCenter(box.center());
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(200, 40, 40));
+        p.drawEllipse(c);
+        p.restore();
+        return;
+    }
+    QStyle::StandardPixmap sp = QStyle::SP_MessageBoxInformation;
+    switch (kind) {
+    case GB_MARK_SECTION: sp = QStyle::SP_MediaPlay;           break;
+    case GB_MARK_WARNING: sp = QStyle::SP_MessageBoxWarning;   break;
+    case GB_MARK_ERROR:   sp = QStyle::SP_MessageBoxCritical;  break;
+    default:              sp = QStyle::SP_MessageBoxInformation; break;
+    }
+    QStyle *st = QApplication::style();
+    if (!st) { return; }
+    int d = qMin(box.width(), box.height());
+    if (d > 16) { d = 16; }
+    if (d < 1) { return; }
+    QPixmap pm = st->standardIcon(sp).pixmap(d, d);
+    if (pm.isNull()) { return; }
+    QRect c(0, 0, pm.width(), pm.height());
+    c.moveCenter(box.center());
+    p.drawPixmap(c.topLeft(), pm);
+}
+
+void GbQtSourceEdit::paintGutterOn(QWidget *g, QPaintEvent *ev) {
+    QPainter p(g);
+    p.fillRect(ev->rect(), palette().color(QPalette::Window));
+
+    QTextBlock block = firstVisibleBlock();
+    int line = block.blockNumber() + 1;   /* 1-BASED -- see gb_qt_mark */
+    int top = (int)(blockBoundingGeometry(block).translated(contentOffset()).top());
+    int bottom = top + (int)blockBoundingRect(block).height();
+    int mw = m_marks ? markColumn() : 0;
+    int fh = (int)QFontMetricsF(font()).height();
+    int drew_lines = 0, drew_marks = 0;
+
+    while (block.isValid() && top <= ev->rect().bottom()) {
+        if (block.isVisible() && bottom >= ev->rect().top()) {
+            if (m_marks) {
+                int k = kindAt(line);
+                if (k >= 0) {
+                    paint_mark(p, k, QRect(2, top, mw - 2, fh));
+                    drew_marks++;
+                }
+            }
+            if (m_numbers) {
+                p.setPen(palette().color(QPalette::WindowText));
+                p.drawText(mw, top, g->width() - mw - 4, fh,
+                           Qt::AlignRight | Qt::AlignVCenter,
+                           QString::number(line));
+                drew_lines++;
+            }
+        }
+        block = block.next();
+        top = bottom;
+        bottom = top + (int)blockBoundingRect(block).height();
+        line++;
+    }
+    g_gutter_painted_lines = drew_lines;
+    g_gutter_painted_marks = drew_marks;
+}
+
+/* THE GUTTER CLICK, held while one handler runs -- §0.21's arrangement exactly,
+ * and reused rather than re-argued: a handler in this backend takes no
+ * arguments, so the event is ASKED FOR instead (`qt.gutter_click`). A
+ * breakpoint you cannot click to set is decorative, which is why this is in the
+ * same increment as the `break` category rather than after it. */
+static bool g_gclick_live = false;
+static int g_gclick_line = 0;
+
+class GbQtGutterClicker : public QObject {
+public:
+    QByteArray handler;
+    GbQtSourceEdit *edit = nullptr;
+    bool eventFilter(QObject *obj, QEvent *event) override {
+        if (event->type() != QEvent::MouseButtonPress || !edit) {
+            return QObject::eventFilter(obj, event);
+        }
+        QMouseEvent *me = static_cast<QMouseEvent *>(event);
+        if (me->button() != Qt::LeftButton) {
+            return QObject::eventFilter(obj, event);
+        }
+        /* THE LINE IS ASKED OF THE DOCUMENT, not computed from the y
+         * coordinate and a line height: a wrapped or hidden block makes those
+         * two disagree, and `cursorForPosition` is the widget's own answer.
+         * The x is pushed into the text area because the click arrived on the
+         * gutter, which is OUTSIDE the viewport -- at the gutter's own x the
+         * cursor would clamp to the first line whatever was clicked. */
+        QPoint vp(1, me->position().toPoint().y());
+        g_gclick_line = edit->cursorForPosition(vp).blockNumber() + 1;
+        g_gclick_live = true;
+        if (!handler.isEmpty() && g_invoke) {
+            g_invoke(handler.constData());
+        }
+        g_gclick_live = false;
+        return true;
+    }
+};
+
+extern "C" int gb_qt_gutter_click(int *line) {
+    if (!g_gclick_live) {
+        return 0;
+    }
+    if (line) { *line = g_gclick_line; }
     return 1;
 }
 
@@ -1056,7 +1405,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * `qt.write` reach it through the `plainText` branch that already
          * exists and a form can bind it with nothing new. Rich text would
          * make a program that put source in as a string read markup back. */
-        QPlainTextEdit *se = new QPlainTextEdit(p->widget);
+        GbQtSourceEdit *se = new GbQtSourceEdit(p->widget);
         QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
         se->setFont(mono);
         se->setLineWrapMode(QPlainTextEdit::NoWrap);
@@ -1499,6 +1848,33 @@ extern "C" int gb_qt_connect(void *window, const char *target,
         QWidget *on = mouse_target(ww);
         turner->setParent(on);
         on->installEventFilter(turner);
+        return 1;
+    }
+    /* `gutter` IS AN EVENT, the third after `closed` and `wheel`, and it is
+     * here for the same reason: the gutter is a plain child QWidget that emits
+     * nothing, so the by-name route would refuse `on code.gutter` with "a
+     * QPlainTextEdit emits no `gutter` signal".
+     *
+     * THE FILTER GOES ON THE GUTTER ITSELF, which is the whole point -- a
+     * press inside the text area is an ordinary caret move and must stay one,
+     * so the reach of this is the margin and nothing wider. The gutter is
+     * found through the editor's own accessor rather than `findChild`, which
+     * could not work: with no Q_OBJECT its metaobject is QWidget's, so a
+     * search by type would match any child widget. */
+    if (strcmp(signal, "gutter") == 0) {
+        GbQtSourceEdit *se = dynamic_cast<GbQtSourceEdit *>(w);
+        if (!se || !se->gutterWidget()) {
+            say(err, err_size,
+                QByteArray("`") + target + "` has no margin to click; a "
+                "`gutter` handler needs `source " + target +
+                "( line_numbers: true )` or `( marks: true )`");
+            return 0;
+        }
+        GbQtGutterClicker *gc = new GbQtGutterClicker();
+        gc->handler = QByteArray(handler);
+        gc->edit = se;
+        gc->setParent(se->gutterWidget());
+        se->gutterWidget()->installEventFilter(gc);
         return 1;
     }
     const QMetaObject *mo = w->metaObject();
@@ -2556,6 +2932,164 @@ static QPlainTextEdit *source_named(void *window, const char *name, char *err,
         return nullptr;
     }
     return e;
+}
+
+/* A `source`'S EDITOR, as the subclass. SEPARATE FROM `source_named` because
+ * the two answer different questions and the difference is the point: that one
+ * accepts any QPlainTextEdit, so it admits a `memo`, which is right for
+ * highlighting (a memo CAN be highlighted) and wrong for a margin -- a `memo`
+ * has no gutter and never will, so `qt.mark` on one is a refusal naming the
+ * word the author wrote rather than a call that quietly does nothing. */
+static GbQtSourceEdit *source_edit_named(void *window, const char *name,
+                                         char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!o) {
+        say(err, err_size, QByteArray("there is nothing called `") + name +
+                               "` in this window");
+        return nullptr;
+    }
+    /* `dynamic_cast` AND NOT `qobject_cast`, which is load-bearing rather
+     * than a style choice: this class declares no Q_OBJECT -- it needs none,
+     * its connects being the functor form and `paintEvent` a virtual -- so its
+     * metaobject IS QPlainTextEdit's, and `qobject_cast<GbQtSourceEdit *>`
+     * would succeed for a `memo` as well. That is the refusal this function
+     * exists to make, so it is made with RTTI, which knows the real type. */
+    GbQtSourceEdit *e = dynamic_cast<GbQtSourceEdit *>(o);
+    if (!e) {
+        say(err, err_size,
+            QByteArray("only a `source` has a margin, and `") + name +
+                "` is not one");
+        return nullptr;
+    }
+    return e;
+}
+
+extern "C" int gb_qt_gutter_enable(void *window, const char *name, int numbers,
+                                   int marks, char *err, size_t err_size) {
+    GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
+    if (!e) {
+        return 0;
+    }
+    e->enableGutter(numbers != 0, marks != 0);
+    return 1;
+}
+
+/* { line_numbers, marks, width } OR NOTHING AT ALL, which is the distinction
+ * `qt.pane`, `qt.dialog` and `principal()` all make for the same reason: a
+ * record reading `width: 0` would say a gutter exists and is empty, where the
+ * truth is that this `source` has none. */
+extern "C" int gb_qt_gutter_info(void *window, const char *name, int *numbers,
+                                 int *marks, int *width, char *err,
+                                 size_t err_size) {
+    GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
+    if (!e) {
+        return -1;
+    }
+    if (!e->hasGutter() || (!e->numbersOn() && !e->marksOn())) {
+        return 0;
+    }
+    if (numbers) { *numbers = e->numbersOn() ? 1 : 0; }
+    if (marks)   { *marks = e->marksOn() ? 1 : 0; }
+    if (width)   { *width = e->gutterWidth(); }
+    return 1;
+}
+
+/* PRESS THE MARGIN BESIDE A LINE, which is what makes the click path drivable
+ * at all -- the same argument `qt.right_click` (§0.20) and `qt.scroll` (§0.21)
+ * rest on, and §0.18's rule that a claim nobody has run is not a claim. It is
+ * a product verb rather than a test hook for the reason §0.21 records: Studio's
+ * own notes list its scroll and key controllers as the controls it has no way
+ * to exercise, and this closes that exception rather than sanctioning another.
+ *
+ * THE Y COMES FROM THE DOCUMENT, not from a line height: a real press lands at
+ * a pixel and the block geometry is what says which pixel a line occupies, so
+ * asking the widget is the only answer that stays right when a block is hidden
+ * or the font changes. */
+extern "C" int gb_qt_gutter_press(void *window, const char *name, int line,
+                                  char *err, size_t err_size) {
+    GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
+    if (!e) {
+        return 0;
+    }
+    QWidget *g = e->gutterWidget();
+    if (!g || !g->isVisible()) {
+        say(err, err_size, QByteArray("`source ") + name +
+                               "` has no margin to press");
+        return 0;
+    }
+    if (line < 1) {
+        say(err, err_size, "line numbers start at 1");
+        return 0;
+    }
+    int y = e->lineTop(line);
+    if (y < 0) {
+        say(err, err_size, QByteArray("`source ") + name +
+                               "` has no such line on screen");
+        return 0;
+    }
+    QPointF p(2.0, (double)y + 1.0);
+    QMouseEvent press(QEvent::MouseButtonPress, p, g->mapToGlobal(p.toPoint()),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(g, &press);
+    return 1;
+}
+
+extern "C" int gb_qt_mark_kind(const char *category) {
+    return category ? mark_kind_of(category) : -1;
+}
+
+extern "C" const char *gb_qt_mark_name(int kind) {
+    return (kind >= 0 && kind < GB_MARK_COUNT) ? g_mark_names[kind] : NULL;
+}
+
+extern "C" int gb_qt_mark_count(void) { return GB_MARK_COUNT; }
+
+extern "C" int gb_qt_mark_set(void *window, const char *name, int kind,
+                              const int *lines, int count, char *err,
+                              size_t err_size) {
+    GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
+    if (!e) {
+        return 0;
+    }
+    if (!e->marksOn()) {
+        /* REFUSED RATHER THAN TURNED ON HERE, and the reason is visible:
+         * the margin RESERVES its width at construction, so enabling it on
+         * the first mark would shift the text sideways while somebody is
+         * reading it. The declaration is where the space is claimed. */
+        say(err, err_size,
+            QByteArray("`source ") + name + "` does not carry marks; declare "
+            "it `source " + name + "( marks: true )` so the margin reserves "
+            "its space before the window is shown");
+        return 0;
+    }
+    QVector<int> v;
+    v.reserve(count);
+    for (int i = 0; i < count; i++) {
+        v.append(lines[i]);
+    }
+    e->setMarks(kind, v);
+    return 1;
+}
+
+/* WHAT WAS SET, UNFILTERED -- never what is currently drawable. A program may
+ * mark line 40 and then shorten the document, and a read that answered only
+ * the lines still in the file would disagree with the write for a reason the
+ * caller cannot see, making `qt.mark` then `qt.marks` non-idempotent. The
+ * drawing is the widget's business; the list is the program's. */
+extern "C" int gb_qt_mark_get(void *window, const char *name, int kind,
+                              int *out, int max, char *err, size_t err_size) {
+    GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
+    if (!e) {
+        return -1;
+    }
+    const QVector<int> &v = e->marksOf(kind);
+    int n = v.size();
+    for (int i = 0; i < n && i < max; i++) {
+        out[i] = v[i];
+    }
+    return n;
 }
 
 extern "C" int gb_qt_highlight(void *window, const char *name,

@@ -3500,3 +3500,182 @@ still `File`, so the only difference is that a second column exists. Asking for
 one is now the check — and it exposed a refusal naming the wrong cause, since
 `qt.heading` answered *"that column has no caption"* for a column that is not
 there. `gb_qt_column_count` exists so the two can be told apart.
+
+## 0.29 A margin on `source`, carrying a mark per line (2026-10-19)
+
+The second of the two asks `docs/qt_studio_requests.md` names as blocking a
+feature gBASIC Studio already has — §0.28's `tree` was the first, and that
+document's own words are *"Two of these are gaps that block a feature Studio
+already has."*
+
+**It is not a ruler, and the user said so twice.** On first hearing the word
+their instinct was *"it's not just line numbers"*, and on reading this section's
+plan they named what they had originally left out: *"I didn't think the gutter
+was essential because I was only thinking line numbers and forgot about break
+points and other things."* That is the whole argument for the shape: a margin
+that could only number lines would have to be rebuilt the first time anything
+else wanted to sit in it.
+
+### The category set is derived rather than chosen
+
+Which is what lets it be **closed**, unlike a leaf's properties (75 on a
+button, §1's own argument for the by-name route). A category decides a **glyph**
+and a **priority**, and the backend has to know both, so an unknown one is
+refused by name with a near-miss hint through the same matcher the chooser's
+options use (§0.16).
+
+| category | where it comes from | priority |
+|---|---|---|
+| `note` | `GB_SEVERITY_NOTE` | 1 |
+| `section` | Studio's ask — `▶` at each runnable section's start | 2 |
+| `warning` | `GB_SEVERITY_WARNING` | 3 |
+| `error` | `GB_SEVERITY_ERROR` | 4 |
+| `break` | the user's ask — a breakpoint | 5 (wins) |
+
+Two were asked for and the other three **are** gBASIC's own diagnostic
+severities: `gb_severity` is exactly `{error, warning, note}`, so a program
+showing diagnostics has one category per severity instead of flattening three
+into one. Nothing here is invented.
+
+**The enum order IS the priority**, so there is no second table to drift out of
+step with the first — and the ordering is two rules rather than a preference. A
+mark the **person** placed outranks one the program **computed**, which is why
+`break` wins everything: a breakpoint is the one mark somebody set deliberately
+and must be able to see in order to remove, and hiding it behind a computed
+error would make it unclickable for a reason nothing explains. Among computed
+marks the more urgent wins, with `section` lowest but **above** `note` — which
+preserves the priority Studio's own request states (section 1, error 2 "wins")
+and keeps the run affordance from being hidden by the least urgent thing there
+is.
+
+### Line 1 is the first line, and that was measured
+
+The ask's example reads `qt.mark(win, "code", "section", [0, 12, 31])`, which
+looks 0-based. Measured, both of the consumer's own sources are **1-based**:
+`source_outline` reports `start_line = 1` for the first line, and a parse
+diagnostic carries a 1-based line. The gutter displays 1-based too, as every
+editor does and as gBASIC's own `line:column` diagnostics already assume.
+
+**So there is no conversion anywhere**, which is the point: a conversion is
+exactly where an off-by-one would live, and an off-by-one here puts a mark one
+line away from the error it is pointing at — which reads as a margin that
+works. Line 0 is **refused** rather than dropped, because a 0-based caller is
+the plausible mistake and a silently dropped mark would report success while
+drawing nothing.
+
+### Replace, never add or remove
+
+Which is the consumer's shape rather than a simplification: Studio recomputes
+the whole list on every redraw, and the GTK version removes every mark in the
+range before adding. An add/remove pair would make it keep a record of what it
+had already drawn — a cache to get wrong, and it already has two of those. An
+empty list clears a category, which falls out of replacing rather than needing
+a verb.
+
+**`qt.marks` answers what was SET, never what is drawable.** A program may mark
+line 40 and then shorten the document, and a read filtered to the lines still
+in the file would disagree with the write for a reason the caller cannot see —
+making `qt.mark` then `qt.marks` non-idempotent. The drawing is the widget's
+business; the list is the program's.
+
+### What was measured before any of it was written
+
+| asked | answer |
+|---|---|
+| can the gutter be a plain child `QWidget`? | yes — `paintEvent` is a virtual |
+| does it need `moc`? | no; the two connections are the functor form reaching a lambda. **And a moc pass already runs on this file**, which is the stronger fact — my earlier note said "no moc needed" |
+| what must a subclass reach? | `firstVisibleBlock`, `blockBoundingGeometry`, `blockBoundingRect`, `contentOffset`, `setViewportMargins` — **all protected**, which is why Qt's own Code Editor example subclasses |
+| is the margin really reserved? | yes — viewport x = 29 for a 28px margin |
+| does scrolling drive it? | yes, through `updateRequest`, which fires on scroll as well as on an edit |
+| does anything paint without a turn of the loop? | **no** — a bare `repaint()` painted 0 gutter lines; `update()` plus `processEvents()` painted 24 (§0.25's lesson, measured again) |
+| are the glyphs available with no icon theme? | all five standard pixmaps measured non-null 16×16 on a machine with **no icon theme at all** |
+
+**Two of those changed the implementation.** The protected members force the
+subclass, which is why a `source` is now a `GbQtSourceEdit` and a `memo` is
+still a bare `QPlainTextEdit` — not an oversight but what makes `qt.mark` on a
+memo a **refusal** rather than a silent no-op. And because that subclass
+declares no `Q_OBJECT` (it needs none), its metaobject *is*
+`QPlainTextEdit`'s, so `qobject_cast` would succeed for a memo as well: the
+refusal is made with `dynamic_cast`, which knows the real type. That is the one
+place in this increment where the obvious code would have been quietly wrong.
+
+### The glyph is not configurable, and that is the §0.23 measurement again
+
+The ask proposed `SP_MessageBoxCritical` or a shipped file, *"both better than a
+theme name here"*, and the reason it says so is worth keeping: Studio ships its
+own PNG because `dialog-error` and `dialog-error-symbolic` are both standard
+freedesktop names and **neither resolved** — this install's Breeze has the first
+and not the second, its Adwaita the second and not the first, and what GTK drew
+was a grey missing-icon disc wide enough to sit on top of the code.
+
+So four of the five glyphs come from **QStyle standard pixmaps**, which are part
+of Qt Widgets and need no theme, and `break` is **painted** — a filled circle,
+which is what every debugger draws and which needs neither style nor font, the
+one glyph here with no dependency at all. A font glyph like `U+25B6` was
+rejected for the same class of reason: it needs a font that happens to carry
+it, and Qt substitutes in silence.
+
+**That removes the reason the ask mentioned icons at all.** A program cannot
+change a glyph, which is a stated cost rather than an oversight; if a real need
+appears, that need is the argument.
+
+### The click, which is why `break` is in this increment
+
+A breakpoint you cannot click to set is decorative. `on <part>.gutter` is the
+**third event rather than a signal** here, after `closed` (§0.17) and `wheel`
+(§0.21), and for the same reason: the gutter is a plain child widget and emits
+nothing, so the by-name route would refuse a well-formed handler with *"a
+QPlainTextEdit emits no `gutter` signal"*.
+
+It needed **no new handler shape**, which is what made it affordable: §0.21
+already established that a handler here takes no arguments and the event is
+*asked for* instead, so `qt.gutter_click()` answers `{ line }` exactly as
+`qt.wheel()` answers the turn. It answers **`unknown`** outside a handler,
+which is a different claim from *line 0*.
+
+**The filter sits on the gutter itself**, so an ordinary press in the text is
+still an ordinary caret move — and it is installed **only where a handler was
+declared**, the reach being the declaration's and nothing wider (§0.21's rule,
+and the control that catches the over-correction is a `source` with no handler
+firing none). The line is asked of the document through `cursorForPosition`
+rather than computed from a y coordinate and a line height, because a hidden
+block makes those two disagree; the x is pushed into the text area, since at the
+gutter's own x the cursor would clamp to the first line whatever was clicked.
+
+`qt.gutter_press(win, part, line)` is what makes any of it drivable — the
+`qt.right_click` (§0.20) and `qt.scroll` (§0.21) shape, in the product surface
+for the reason stated there rather than as a test hook. A line **not on screen**
+is refused, because a mouse cannot land there.
+
+### What a check could observe if this did nothing
+
+The question that produced five verbs in §0.20–§0.26, and here it has an
+uncomfortable answer: **almost nothing.** `qt.marks` answers what was set, so a
+backend that stored five lists and painted nothing satisfies every check the
+language can make — and a `QWidget`'s pixels are not reachable from gBASIC at
+all, unlike a `QTextLayout`'s format ranges, which is what made §0.14's colour
+claim checkable.
+
+So the claim is split, and both halves are necessary:
+
+- **`qt.gutter(win, part)`** answers `{ line_numbers, marks, width }`, or
+  **`unknown`** for a `source` with no margin — the distinction `qt.pane`,
+  `qt.dialog` and `principal()` all make, since `width: 0` would say a margin
+  exists and is empty. The `width` follows the **digit count**, which is the one
+  part of the reservation gBASIC can see: a 1200-line document reserves more
+  than a 12-line one, and a gutter that ignored the count passes every presence
+  check and fails that.
+- **`tests/qt/gutter_probe.cpp`** makes the painting claim, and it **links the
+  real backend object** rather than reimplementing the setup — the difference
+  from `tests/qt/source_probe.cpp`, and strictly stronger, since what it
+  measures is the painter the product runs. Three things make its numbers
+  evidence rather than constants: the counters are **zero before any turn of the
+  loop**, it paints **13 of 200** lines (so it walked real block geometry rather
+  than looping the document), and six marked lines of which one carries **two**
+  categories paint **six** glyphs — seven would mean the priority rule is not
+  applied.
+
+Its first run measured four glyphs rather than six, and the fixture was at
+fault: the shared line sat at 20 with thirteen lines visible, so the priority
+case was **below the fold**. A check whose subject is off-screen measures
+nothing, which is recorded here because the number looked plausible.
