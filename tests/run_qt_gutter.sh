@@ -115,19 +115,26 @@ fi
 # `win_nearest` was derived from the tables, with the newest word missing from
 # the third.
 printf 'TIER one vocabulary: the categories are named in one place and asked for\n'
-cat_dupes=0
-for name in section warning note break; do
-    n=$(grep -c "\"$name\"" src/modules/qt.c || true)
-    if [ "${n:-0}" != "0" ]; then
-        cat_dupes=$((cat_dupes + 1))
-        printf '     src/modules/qt.c spells "%s" itself\n' "$name"
-    fi
-done
+# THE SCAN TAKES A PATH, which the GATE'S OWN LANE CHECK FORCED rather than
+# taste: the first version planted its control copy in `src/modules/qt.c`
+# itself and restored it, and `src/` IS A BUILD INPUT -- so the scan reported
+# this suite as one that rebuilds the tree, which in a parallel gate means
+# another suite's plain `make` compiles the planted file. Correct, and caught
+# within minutes of the suite existing, the way run_portable.sh caught
+# run_qt_children.sh arming `-e`. A scan reads a file, so it can read a COPY.
+spells_a_category() {                   # path -> prints each name it spells
+    for name in section warning note break; do
+        n=$(grep -c "\"$name\"" "$1" || true)
+        [ "${n:-0}" != "0" ] && printf '%s\n' "$name"
+    done
+}
+cat_dupes=$(spells_a_category src/modules/qt.c | wc -l)
 asks=0
 for fn in gb_qt_mark_kind gb_qt_mark_name gb_qt_mark_count; do
     grep -q "$fn" src/modules/qt.c && asks=$((asks + 1))
 done
-if [ "$cat_dupes" != "0" ]; then
+if [ "${cat_dupes:-1}" != "0" ]; then
+    spells_a_category src/modules/qt.c | sed 's/^/     src\/modules\/qt.c spells /'
     fail "the module holds its own copy of the category names"
 elif [ "$asks" != "3" ]; then
     fail "the module does not ask the backend for the categories ($asks of 3)"
@@ -135,20 +142,15 @@ else
     pass "the module asks (3 accessors) and spells no category itself"
 fi
 # THE CONTROL, because "no duplicates" is equally satisfied by a scan that read
-# nothing: a planted copy must be found.
-cp src/modules/qt.c "$work/qt_c.bak"
+# nothing -- planted in a COPY, so nothing under src/ is written.
+cp src/modules/qt.c "$work/planted.c"
 printf 'static const char *dupe[] = { "section", "warning", "note", "break" };\n' \
-    >> src/modules/qt.c
-planted=0
-for name in section warning note break; do
-    n=$(grep -c "\"$name\"" src/modules/qt.c || true)
-    [ "${n:-0}" != "0" ] && planted=$((planted + 1))
-done
-cp "$work/qt_c.bak" src/modules/qt.c
-if ! grep -q 'static const char \*dupe' src/modules/qt.c && [ "$planted" = "4" ]; then
+    >> "$work/planted.c"
+planted=$(spells_a_category "$work/planted.c" | wc -l)
+if [ "${planted:-0}" = "4" ]; then
     pass "and the scan finds a planted copy (so it is reading the file)"
 else
-    fail "the scan could not find a planted copy, or the restore failed"
+    fail "the scan found ${planted:-0} of 4 planted names -- it is reading nothing"
 fi
 
 # ------------------------------------------------------------------ SEMANTICS

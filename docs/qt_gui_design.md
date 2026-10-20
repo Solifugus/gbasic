@@ -3716,3 +3716,15 @@ document*, where a margin that never repaints still looks right.
   painter and say nothing.
 
 Ten perturbations proven red in all, each caught by the check written for it.
+
+**And the gate caught the suite itself.** The source tripwire's control planted
+its copy in `src/modules/qt.c` and restored it — and `src/` is a **build
+input**, so `run_all.sh`'s lane scan reported this suite as one that *rebuilds
+the tree*, which in a parallel run means another suite's plain `make` compiles
+the planted file. Correct, and caught within minutes of the suite existing:
+the third time a tripwire here has caught my own brand-new work, after
+`run_portable.sh` on a `set -e` that armed rather than restored and
+`run_qt_split.sh`'s guard tier on §0.25's model-backed table. A scan reads a
+file, so it can read a copy. The gate run it fired on was **discarded** rather
+than explained away, since the lane verdict is taken at pre-flight from the
+file as it then was.
