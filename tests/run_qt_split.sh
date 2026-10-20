@@ -92,29 +92,70 @@ printf 'TIER guards: every layout guard admits a splitter parent\n'
 # `!p->layout` in order to FIRE on a splitter -- read as a fourth door that had
 # not learned. The scanner balances the parentheses of each `if` that mentions
 # `!p->layout` and asks whether THAT condition also names a splitter.
+#
+# AND BY CHAIN, which a SECOND failure forced -- §0.25's asking table, caught by
+# this tier on the gate before it was pushed, which is what the tier is for. Its
+# placement is an if/else chain whose SPLITTER BRANCH COMES FIRST and whose last
+# arm is a bare `else if (!p->layout)` fall-through for a tab page; that arm
+# cannot name a splitter and does not need to, because the branch above it
+# already took them. Verified BEHAVIOURALLY before this scanner was touched --
+# an asking table as a direct pane reports `kind=split index=1 of 2` and its
+# cells read back -- because a tripwire is only worth fixing after the thing it
+# guards has been shown correct. So a condition counts as guarded when ANY
+# EARLIER BRANCH OF ITS OWN CHAIN names a splitter, and the walk back is by
+# `} else` rather than by distance, since a character window would be a guess.
+# A tripwire whose false positives look like its true ones is one somebody turns
+# off.
 cat > "$work/guards.py" <<'PYEOF'
 import re, sys
 src = open(sys.argv[1]).read()
-bad, total = [], 0
-for m in re.finditer(r'!p->layout', src):
-    # walk back to the opening `if (`, then forward to its matching `)`
-    start = src.rfind('if (', 0, m.start())
-    if start < 0:
-        bad.append('a `!p->layout` outside any if'); continue
-    i, depth = start + 3, 0
+
+def cond_of(if_start):
+    # from the opening `if (`, forward to its matching `)`
+    i, depth = if_start + 3, 0
     while i < len(src):
         if src[i] == '(': depth += 1
         elif src[i] == ')':
             depth -= 1
-            if depth == 0: break
+            if depth == 0: return src[if_start:i + 1]
         i += 1
-    cond = src[start:i + 1]
+    return src[if_start:]
+
+def chain(if_start):
+    # this condition and every EARLIER branch of the same if/else chain,
+    # walked back through `} else` so the hop is structural, not a distance.
+    out, hops = [], 0
+    while if_start is not None and if_start >= 0 and hops < 12:
+        out.append(cond_of(if_start))
+        before = src[:if_start].rstrip()
+        if not before.endswith('else'): break
+        before = before[:-4].rstrip()
+        if before.endswith('}'):
+            j, d = len(before) - 1, 0
+            while j >= 0:
+                if src[j] == '}': d += 1
+                elif src[j] == '{':
+                    d -= 1
+                    if d == 0: break
+                j -= 1
+            if_start = src.rfind('if (', 0, j)
+        else:
+            if_start = src.rfind('if (', 0, len(before))
+        hops += 1
+    return out
+
+bad, total = [], 0
+for m in re.finditer(r'!p->layout', src):
+    start = src.rfind('if (', 0, m.start())
+    if start < 0:
+        bad.append('a `!p->layout` outside any if'); continue
     total += 1
     # EITHER SPELLING NAMES A SPLITTER: an inline `qobject_cast<QSplitter *>`
     # or the local the function already made (`psplit`). Asking for only the
     # first reported two conditions that were perfectly well guarded.
-    if 'QSplitter' not in cond and 'psplit' not in cond:
-        bad.append(cond.replace('\n', ' ')[:110])
+    conds = chain(start)
+    if not any('QSplitter' in c or 'psplit' in c for c in conds):
+        bad.append(conds[0].replace('\n', ' ')[:110])
 print('conditions=%d' % total)
 for b in bad:
     print('UNGUARDED %s' % b)
@@ -132,7 +173,34 @@ else
     # DELETED a condition reported the other one: fewer conditions than the
     # four that exist means a door was removed or renamed, which is as worth
     # knowing as one that forgot about splitters.
-    fail "expected >=4 layout conditions all admitting a splitter, got ${nconds:-0} with $(grep -c UNGUARDED "$work/guards.out" || true) unguarded -- a pane would be refused in silence, or a guard has moved"
+    fail "expected >=4 layout conditions all admitting a splitter, got ${nconds:-0} with $(grep -c UNGUARDED "$work/guards.out" || true) unguarded -- a pane would be refused (loudly to the author, silently to this gate, since no fixture here puts that widget in a split), or a guard has moved"
+fi
+
+# AND THE CONTROL, because "no offenders" is equally satisfied by a scanner that
+# read nothing -- and the chain walk above made that a live risk rather than a
+# theoretical one, since a walk that hopped too far would find a splitter
+# somewhere and call everything guarded. Two planted doors, each the shape a
+# real omission takes: a STANDALONE `if (!p->layout)` refusal, and a chain whose
+# splitter branch has been removed.
+python3 - "$work/plant.cpp" <<'PLANTEOF'
+import io, re, sys
+src = io.open('src/modules/qt_backend.cpp', encoding='utf-8').read()
+# (1) a door of its own that never heard of splitters
+src = src.replace("    QTableView *v = new QTableView(p->widget);",
+                  "    if (!p->layout) {\n        return nullptr;\n    }\n"
+                  "    QTableView *v = new QTableView(p->widget);", 1)
+# (2) the asking table's chain with its splitter arm taken out
+src = re.sub(r'\} else if \(QSplitter \*sp = qobject_cast<QSplitter \*>\(p->widget\)\) \{\n[^\n]*\n', '} ', src, count=1)
+io.open(sys.argv[1], 'w', encoding='utf-8').write(src)
+PLANTEOF
+python3 "$work/guards.py" "$work/plant.cpp" > "$work/plant.out" 2>&1
+p_rc=$?
+p_bad=$(grep -c UNGUARDED "$work/plant.out" || true)
+if [ "$p_rc" != "0" ] && [ "${p_bad:-0}" -ge 2 ]; then
+    pass "and the scanner flags a planted door and a chain with its splitter arm removed ($p_bad)"
+else
+    cat "$work/plant.out"
+    fail "the scanner did NOT flag two planted unguarded doors (rc $p_rc, $p_bad found) -- it is reading nothing, or the chain walk hops too far"
 fi
 # THE VACUITY CONTROL: "all of them" is equally satisfied by a scanner that
 # found none, so a copy with one admission removed must break it.

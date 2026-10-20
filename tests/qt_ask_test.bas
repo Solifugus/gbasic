@@ -58,6 +58,26 @@ window held( title: "Held", width: 400, height: 240 )
     end column
 end window
 
+' AN ASKING TABLE AS A DIRECT PANE, which is how Studio's results grid actually
+' sits -- beside an editor, in a `split`. IT IS HERE BECAUSE A TRIPWIRE FOUND
+' THE GAP RATHER THAN A FAILURE: a splitter has no layout, so every door that
+' asks a parent for one has to admit it (§0.19), and the model-backed table was
+' a FOURTH such door that no behavioural check in this file could reach, every
+' table here living in a `column`. run_qt_split's guard tier reported it on the
+' gate before §0.25 was pushed, which is what that tier is for; measured, the
+' backend was right all along and the scanner could not see an if/else chain
+' whose splitter arm comes first. So the claim is asserted BEHAVIOURALLY here,
+' where a refusal would be loud, rather than resting on a source scan alone.
+window paned( title: "Beside an editor", width: 600, height: 300 )
+    split across
+        source code()
+        table grid to ask cell_of
+            field a( label: "A" )
+            field b( label: "B" )
+        end table
+    end split
+end window
+
 ' THE CALLBACK. It encodes its own arguments into the answer, which is what
 ' makes a row or column offset visible rather than plausible -- and it counts
 ' its own calls, which is the whole oracle for the cost claim.
@@ -211,6 +231,32 @@ program main()
     error.clear()
     on error stop
     qt.close(held)
+
+    ' ---- A PANE, NOT A COLUMN ------------------------------------------
+    ' THREE CLAIMS, because "it opened" is satisfied by a table that was built
+    ' and never enrolled: the LAYOUT must report it as a pane of the split
+    ' (asked of Qt by walking up, which is what `qt.pane` does), its CELLS must
+    ' still come from the callback, and the editor beside it must still be the
+    ' OTHER pane -- without that last one, a table that had replaced the whole
+    ' splitter would pass the first two.
+    qt.open(paned)
+    ' NOT `g`: that name is this fixture's state record, and shadowing it made
+    ' the callback read a field of a number -- the cells came back EMPTY and the
+    ' program died at the counter, two symptoms of one clobbered name.
+    paned_rows = qt.rows(paned, "grid", 50)
+    spot = qt.pane(paned, "grid")
+    check("an asking table is a pane of the split", spot.kind, "split")
+    check("and it is the second of two", string(spot.index) + " of " +
+          string(spot.panes), "1 of 2")
+    ' THE SHARED CALLBACK ANSWERS BY COLUMN, so column `b` is index 1, which
+    ' this one renders as row * 2 -- asserted as the value a pane's own cell
+    ' gives rather than as a string of its own, since the point is that the
+    ' crossing still happens when the table's parent is a splitter.
+    check("its cells still come from the callback",
+          qt.cell(paned, "grid", 3, "b"), "6")
+    check("and the editor is still the other pane",
+          string(qt.pane(paned, "code").index), "0")
+    qt.close(paned)
 
     cancelled = timer.cancel(beat)
     check("the timer was cancelled, so the program can end", cancelled, true)
