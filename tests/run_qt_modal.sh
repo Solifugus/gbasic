@@ -58,7 +58,7 @@ source tests/valgrind_tier.sh
 make >/dev/null
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"; pkill -KILL -f qt_modal_extent_fixture 2>/dev/null || true' EXIT
+trap 'rm -rf "$work"; pkill -KILL -f qt_modal_extent_fixture 2>/dev/null || true; pkill -KILL -f "gbasic tests/qt_modal_test.bas" 2>/dev/null || true' EXIT
 status=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
@@ -365,7 +365,29 @@ else
     vg_deadline=$((SECONDS + 420))
     while kill -0 "$vg_pid" 2>/dev/null; do
         if [ "$SECONDS" -ge "$vg_deadline" ]; then
+            # AND THE CHILD, NOT ONLY THE WAITER. `$!` is the SUBSHELL bash
+            # forks to run a shell function in the background, so `kill -9`
+            # on it leaves valgrind and the interpreter underneath it
+            # ORPHANED -- holding a modal dialog for ever. MEASURED, not
+            # reasoned: a leftover from this tier was found 19 hours after the
+            # run that started it, by sweeping the machine rather than by any
+            # check. Identical in cause to the leak run_qt_dialog.sh records
+            # (`timeout ... &` makes `$!` the bound, not the child), which is
+            # why the fixture is killed BY NAME here and in the EXIT trap.
+            # THE CHILDREN FIRST, while the parent is still there for
+            # `pgrep -P` to ask, then the waiter, then a sweep BY NAME as the
+            # backstop. By-pid is the one that cannot hit an innocent
+            # bystander, and the by-name sweep is why there is a backstop at
+            # all: a pattern matches any process whose command line merely
+            # MENTIONS the fixture, which is not hypothetical -- the EXIT trap
+            # killed the very shell that was verifying this fix, so the
+            # perturbation's restore never ran and the perturbed file sat
+            # there looking restored.
+            for vg_kid in $(pgrep -P "$vg_pid" 2>/dev/null); do
+                kill -9 "$vg_kid" 2>/dev/null
+            done
             kill -9 "$vg_pid" 2>/dev/null
+            pkill -KILL -f "gbasic tests/qt_modal_test.bas" 2>/dev/null
             vg_killed=1
             break
         fi
@@ -383,6 +405,19 @@ else
         fail "valgrind objected"
     else
         pass "no invalid access across five modal loops, four closes and teardown"
+    fi
+
+    # THE ABSENCE IS ASSERTED, because the leak is invisible from inside: the
+    # tier passed, the suite passed, and an interpreter holding a modal dialog
+    # went on running for 19 hours. docs/reference.md promises in bold that
+    # nothing this interpreter starts outlives it, and here it was the SUITE
+    # breaking that promise about the interpreter -- which
+    # run_process_lifetime.sh structurally cannot see.
+    if pgrep -f "gbasic tests/qt_modal_test.bas" >/dev/null 2>&1; then
+        pkill -KILL -f "gbasic tests/qt_modal_test.bas" 2>/dev/null
+        fail "the valgrind tier left a gbasic process behind (killed now, but the bound leaks children)"
+    else
+        pass "and nothing was left running afterwards"
     fi
 fi
 

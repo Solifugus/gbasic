@@ -32,6 +32,11 @@
 #              in NOT_MECHANICAL below with a reason, and every probe finds
 #              its bullet. Adding a bullet without a probe fails here, which
 #              is what stops the ledger growing back into prose nobody checks.
+#              SINCE 2026-10-19 it reads the ledger's own "live list" table as
+#              well as the accepted-limitations bullets, because that table is
+#              the region the file tells a reader to act on and it was the one
+#              region no probe could reach -- the blind spot in which it had
+#              already carried a row that read as open and was fixed.
 #   CONTROL -- THE TIER THAT MAKES THE OTHERS MEAN ANYTHING. Every bullet
 #              already STRUCK THROUGH gets the opposite check: the limitation
 #              must be provably GONE. Without it a probe could pass for the
@@ -55,6 +60,25 @@ LEDGER=DOGFOOD.md
 SECTION_START='^### Open — accepted as documented limitations'
 SECTION_END='^## Seed entries'
 
+# AND THE LIVE LIST, which is the table this file itself introduces with the
+# words "So the live list is:" -- the region a reader is meant to act on, and
+# which nothing checked until 2026-10-19, so the one table anybody trusts was
+# the one table no probe could reach. Its own prose records a row that still
+# read as open having in fact been fixed, which is the rot this suite exists to
+# prevent happening inside the suite's blind spot.
+#
+# IT IS THE FIRST TABLE OF THAT SECTION AND ONLY THE FIRST, bounded by where
+# the table itself ends rather than by a line count. WHAT THAT LEAVES OUT IS
+# NAMED RATHER THAN SKIPPED QUIETLY: the RANKED table below it is the
+# 2026-10-13 audit's archive, 50 of 52 struck, and the handful of rows still
+# live there (a listing's relative path, `lock` with no non-blocking form, a
+# `duration` from a computed number of seconds) have no probes. Covering them
+# is its own increment -- each needs a measurement of its own, and several may
+# already be as stale as the row this audit found -- so the bound is deliberate
+# and this comment is the record of the remaining gap.
+INDEX_START='^### OPEN NOW'
+INDEX_END='^### Open — worth fixing'
+
 status=0
 pass=0
 skip=0
@@ -67,8 +91,9 @@ skipped() { printf 'SKIP %s\n' "$*"; skip=$((skip + 1)); }
 fixed() {
     printf 'FAIL %s\n' "$1"
     printf '     THE LIMITATION IS GONE. This suite is a negative control: it\n'
-    printf '     fails when the thing it guards gets fixed. Strike the bullet in\n'
-    printf '     %s (accepted-limitations section), note which phase\n' "$LEDGER"
+    printf '     fails when the thing it guards gets fixed. Strike the claim in\n'
+    printf '     %s -- the accepted-limitations bullet or the\n' "$LEDGER"
+    printf '     live-list row, whichever this probe claims -- note which phase\n'
     printf '     resolved it, and remove the probe here.\n'
     status=1
 }
@@ -95,6 +120,7 @@ gi_emit|No \`gi.emit\`
 spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
+qt_run_in_function|silently starves every loop-delivered source
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -108,6 +134,79 @@ deep_value_teardown|segfaults when it is RELEASED
 NOT_MECHANICAL="
 vg_riscv|valgrind does not exist for riscv64|a fact about another architecture, unobservable from this one
 "
+
+probe_qt_run_in_function() {
+    # A PAIR, AND NEITHER HALF MEANS ANYTHING ALONE. The limitation is that
+    # `qt.run()` from inside a FUNCTION never gets gBASIC's sources serviced,
+    # so the program HANGS -- and "it hung" is equally satisfied by a fixture
+    # that cannot run at all, which is why the CONTROL is the identical program
+    # with `qt.run()` at the TOP LEVEL, which must tick and exit 0.
+    #
+    # IT GOES RED WHEN THE DEFECT IS FIXED, which is this suite's whole shape:
+    # the repair is to make the pump establish the global frame for the drain,
+    # and on a build that does so the first half exits 0 and this probe fails,
+    # naming the ledger line to strike.
+    local body
+    body='
+window app( title: "L", width: 200, height: 120 )
+    column
+        text t( label: "x" )
+    end column
+end window
+function handover()
+    qt.run()
+    return nothing
+end function
+program main(args)
+    if not qt.can_display() then
+        print "NODISPLAY"
+        return
+    end if
+    seen = 0
+    qt.open(app)
+    beat = timer.every(0.05)
+    watch(timer.ticks)
+        while count(timer.ticks) > 0
+            ev = take_first(timer.ticks)
+            seen = seen + 1
+            if seen >= 2 then
+                cancelled = timer.cancel(beat)
+                qt.stop()
+            end if
+        end while
+    end watch
+    HANDOVER
+    print "TICKS " + string(seen)
+end program
+'
+    printf '%s' "$body" | sed 's/^    HANDOVER$/    handover()/' > "$WORK/qtrun_fn.bas"
+    printf '%s' "$body" | sed 's/^    HANDOVER$/    qt.run()/'  > "$WORK/qtrun_top.bas"
+
+    set +e
+    QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 12 \
+        ./gbasic --line-buffered "$WORK/qtrun_top.bas" > "$WORK/qtrun_top.out" 2>&1
+    local top_rc=$?
+    QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 12 \
+        ./gbasic --line-buffered "$WORK/qtrun_fn.bas" > "$WORK/qtrun_fn.out" 2>&1
+    local fn_rc=$?
+
+    if grep -q NODISPLAY "$WORK/qtrun_top.out" 2>/dev/null; then
+        skipped "qt_run_in_function (no Qt in this build, so the loop was not exercised)"
+        return 0
+    fi
+    # THE CONTROL FIRST, because without it a hang proves nothing.
+    if [ "$top_rc" != "0" ] || ! grep -q "TICKS 2" "$WORK/qtrun_top.out"; then
+        printf '     %s\n' "$(tail -2 "$WORK/qtrun_top.out")"
+        printf 'FAIL qt_run_in_function CONTROL: qt.run at the TOP LEVEL must tick and exit 0, or a hang below means nothing\n'
+        status=1
+        return 1
+    fi
+    if [ "$fn_rc" = "124" ] || [ "$fn_rc" = "137" ]; then
+        ok "qt.run() inside a function still starves the loop, while the top level still ticks"
+    else
+        fixed "qt.run() inside a function no longer hangs (exit $fn_rc) -- the pump now serves the loop from any frame"
+    fi
+}
 
 probe_deep_value_teardown() {
     # THE DEPTH IS A PROPERTY OF THE STACK, NOT OF THE LANGUAGE, so this probe is
@@ -559,7 +658,47 @@ bullets() {
     ' | sed 's/  */ /g'
 }
 
-live_bullets=$(bullets | grep -v '^- ~~')
+# One logical claim per LIVE row of the open index table, rendered in the same
+# shape as a bullet so the claimed/unclaimed machinery below is one mechanism
+# rather than two. A row is struck when its "what" cell opens with ~~.
+index_region() {
+    awk -v s="$INDEX_START" -v e="$INDEX_END" '
+        $0 ~ s { inside = 1; next }
+        $0 ~ e { inside = 0 }
+        inside { print }
+    ' "$LEDGER"
+}
+
+index_rows() {
+    index_region | awk -F'|' '
+        /^\|/ { seen = 1
+            what = $3
+            gsub(/^ +| +$/, "", what)
+            if (what == "what" || what ~ /^-+$/ || what == "") { next }
+            print (what ~ /^~~/ ? "STRUCK " : "LIVE ") what
+            next
+        }
+        # The first table ENDS at the first line after it that is not a row,
+        # which is what keeps this off the ranked archive underneath.
+        seen { exit }
+    ' | sed 's/  */ /g'
+}
+
+# THE VACUITY GUARD IS ABOUT THE TABLE, NOT ABOUT LIVE ROWS, and the
+# distinction is the whole point: the index is LEGITIMATELY EMPTY of live rows
+# whenever nothing is open (it was, from 2026-10-14 to 2026-10-19), so
+# requiring one would fail on a healthy tree -- while requiring NO rows at all
+# would pass on markers that had moved and a table nobody was reading.
+index_any=$(index_rows | wc -l)
+if [ "$index_any" -eq 0 ]; then
+    fail "COVER: no rows parsed out of $LEDGER's open index -- the table markers moved"
+fi
+
+live_bullets=$(printf '%s\n%s\n' "$(bullets | grep -v '^- ~~')" \
+                                  "$(index_rows | sed -n 's/^LIVE /- /p')" | sed '/^$/d')
+# Only the accepted-limitations BULLETS get the struck half. A struck ROW in
+# the index points at a fix that has a suite of its own, where a struck bullet
+# here is a claim that a limitation is gone and needs its own control.
 struck_bullets=$(bullets | grep '^- ~~')
 
 live_n=$(printf '%s\n' "$live_bullets" | sed '/^$/d' | wc -l)

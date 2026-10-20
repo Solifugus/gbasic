@@ -47,6 +47,7 @@ live list is:
 
 | | what | where |
 |---|---|---|
+| 1 | **`qt.run()` from inside a function silently starves every loop-delivered source.** `watcher_trigger_change` returns at once unless the GLOBAL frame is current, so a function frame left current for the whole of Qt's loop means every timer tick is appended to `timer.ticks` and never delivered — the timer's own schedule advances, so it looks like it is working, and the program HANGS with no output. Reaches timers, the actor inbox, `http` events and a webserver's requests. Workaround: call `qt.run()` from the top level of the `program` block. | 2026-10-19 entry |
 | — | ~~**A deeply nested value segfaults at teardown**~~ **DOCUMENTED AS AN ACCEPTED LIMITATION 2026-10-14**, with the numbers re-measured at a PINNED stack: ~43,000 levels at 8 MB, records and arrays alike, and 60,000 releases cleanly at 64 MB — so it is a fact about `ulimit -s`. It has a probe in `run_limitations.sh` now, with the 64 MB run as the control, so it goes red if anybody fixes it. | accepted limitations |
 | 5 | ~~**`DECODE_MAX_DEPTH` is unsafe below a ~2.5 MB stack**~~ **CLOSED 2026-10-14** — the bound is DERIVED from `getrlimit(RLIMIT_STACK)` now, `min(10000, stack_KB * 2)`, so it is unchanged at the 8 MB default and drops instead of the process below ~2.5 MB. The remote demonstration re-run against the fix: HTTP 200 and the listener alive at `ulimit -s 2048`. | 2026-10-14 entry |
 
@@ -55,13 +56,23 @@ constants chosen against one machine's `ulimit -s`. Item 5 is fixed at the root
 by asking the machine instead of guessing, and item 1 is **documented rather than
 fixed**: nothing a program READS can reach it, so it takes a construction loop of
 the program's own, and making the release iterative is surgery on the runtime's
-most ownership-sensitive function. **So this index is now EMPTY**, which is the
-first time since it was written. The accepted-limitations section below is where
-item 1 lives, and it is machine-checked there. Its "where" column pointed
-at a *2026-10-12 entry* in this file that **did not exist** — that measurement was
-recorded in `docs/exact_number_design.md` and never logged here, so the index
-built to stop live items going stale shipped with a dangling pointer of its own.
-A pointer in a table is only as good as the thing it names.
+most ownership-sensitive function. **So this index was EMPTY from 2026-10-14**,
+for the first time since it was written, until the Qt event-loop item above was
+found on 2026-10-19 while building §0.25. The accepted-limitations section below
+is where the teardown item lives, and it is machine-checked there. Its "where"
+column pointed at a *2026-10-12 entry* in this file that **did not exist** — that
+measurement was recorded in `docs/exact_number_design.md` and never logged here,
+so the index built to stop live items going stale shipped with a dangling
+pointer of its own. A pointer in a table is only as good as the thing it names.
+
+**AND THAT IS WHY THIS TABLE IS MACHINE-CHECKED NOW TOO**, as of 2026-10-19.
+`run_limitations.sh`'s COVER tier read only the accepted-limitations bullets, so
+the one region this file calls "the part you act on" was the region nothing
+checked — and this very audit found that one of the two rows which still read as
+open had in fact been fixed, which is exactly the rot a probe prevents. Every
+LIVE row here must now be claimed by a probe that asserts the defect STILL HOLDS,
+so a row goes red when somebody fixes it rather than sitting here claiming to be
+open.
 
 | | what | where |
 |---|---|---|
@@ -108,7 +119,10 @@ is answered — a clause chains with `;` and has since 2026-10-03.
 
 Everything else in this file is history, and deliberately so. The eight bullets
 under *accepted limitations* are machine-checked by `tests/run_limitations.sh`,
-which goes RED when one gets fixed, so they cannot go stale unnoticed.
+which goes RED when one gets fixed, so they cannot go stale unnoticed — and
+since 2026-10-19 so is the **live list** above. The live rows of the ranked
+table in this section are **not** probed, which that suite says in as many
+words rather than leaving it to be noticed.
 
 ### Open — worth fixing (ranked)
 
@@ -12891,3 +12905,42 @@ release script is the one place to change, and it wants watching.
   already exists as the way out, so this is the missing way IN. Its refusal is
   already decided by that function's own rule: a value in seconds can only ever
   produce the fixed-length components, so the round trip cannot invent months.
+
+## 2026-10-19 — CC — while: building §0.25, a table that asks for its cells
+- **Type:** bug
+- **Severity:** high
+- **What:** `qt.run()` called from inside a FUNCTION silently starves every
+  loop-delivered source, and the program hangs with no output at all.
+  `watcher_trigger_change` (src/eval.c) returns at once unless
+  `current_env == &global_env`, so a function frame left current for the whole
+  of Qt's loop means a tick is appended to `timer.ticks` and the watcher body
+  is never run. The timer's own `next_due` advances, so from outside it looks
+  like the timer is working.
+
+  ```basic
+  function handover()
+      qt.run()                  ' hangs: no tick is ever delivered
+      return nothing
+  end function
+  program main()
+      qt.open(app)
+      beat = timer.every(0.05)
+      watch(timer.ticks)
+          ' never runs
+      end watch
+      handover()
+  end program
+  ```
+
+  The identical program with `qt.run()` at the top level of `program` ticks and
+  returns. Traced through `pump_arm` (the pump IS armed), the event loop's
+  early return (`timer_wants_loop` is 1) and `timer_loop_service` (the timer
+  fires, `next_due` advances) to that one guard. It reaches timers, the actor
+  inbox, `http` events and a webserver's requests, all of which notify through
+  it.
+- **Workaround:** call `qt.run()` from the top level of the `program` block,
+  which is where gBASIC Studio already calls GTK's equivalent. The repair is
+  to make the pump establish the global frame for the duration of the drain —
+  the guard is right (a watcher body is declared at top level and must run in
+  that frame), it is the pump that leaves the wrong frame current — which is a
+  change to scope handling and its own increment.
