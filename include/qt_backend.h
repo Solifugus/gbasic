@@ -941,6 +941,29 @@ int gb_qt_child_drop(void *container, void *child, char *err, size_t err_size);
  * shape, and for the same reason: `QTabWidget::tabText(int)` takes an argument
  * and `qt.invoke` passes none, so without this a caption is unobservable and
  * every check about one passes on an implementation that never set it. */
+/* A `tree` (§0.28) -- rows with a DEPTH, drawn as a tree. The rows arrive one
+ * at a time, each with its depth, and an INDEX IS INTO THE DECLARED ROWS: a
+ * pre-order walk reproduces the order they were given in, because each row is
+ * attached under the last row one level shallower, so nothing is remembered
+ * between calls. `gb_qt_tree_depth` answers -2 for a part that is not a tree
+ * and -1 for a row that is not there, which are different questions. */
+/* HOW MANY COLUMNS A TABLE OR TREE HAS, -1 for anything else -- so a
+ * heading's refusal can say WHICH of the two things is wrong. */
+int gb_qt_column_count(void *window, const char *name);
+
+void *gb_qt_tree(void *parent, const char *name, const char *const *headers,
+                 int columns, char *err, size_t err_size);
+int gb_qt_tree_clear(void *window, const char *name);
+int gb_qt_tree_add(void *window, const char *name, int depth,
+                   const char *const *cells, int columns);
+int gb_qt_tree_depth(void *window, const char *name, int row);
+int gb_qt_tree_rows(void *window, const char *name);
+char *gb_qt_tree_get(void *window, const char *name, int row, int col);
+char *gb_qt_tree_heading(void *window, const char *name, int col);
+int gb_qt_tree_selected(void *window, const char *name);
+int gb_qt_tree_select(void *window, const char *name, int row, char *err,
+                      size_t err_size);
+
 /* THE ORDER ORACLE: the name of the child at a position, or "" for one nobody
  * named. A box's order is observable through nothing else -- `qt.at` answers
  * coordinates for a `cells` grid only. */

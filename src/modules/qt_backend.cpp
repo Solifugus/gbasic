@@ -58,6 +58,7 @@
 #include <QAction>
 #include <QGridLayout>
 #include <QTabWidget>
+#include <QTreeWidget>
 #include <QTableWidget>
 #include <QFontDatabase>
 #include <QFontMetricsF>
@@ -2671,6 +2672,16 @@ extern "C" char *gb_qt_highlight_file(void *window, const char *name) {
 #endif
 }
 
+/* A TREE ANSWERS THE SAME FIVE QUESTIONS A TABLE DOES -- a cell, a heading,
+ * the row count, what is chosen and choosing one -- so each is answered in ONE
+ * function that knows three widget kinds, rather than five more verbs. That is
+ * the rule §0.6 set when an asking table joined a held one: a program should
+ * not have to know which kind it declared to read a cell. Declared here
+ * because these answers come before the tree section below. */
+static QTreeWidget *tree_of(void *window, const char *name);
+static QTreeWidgetItem *tree_item_at(QTreeWidget *t, int index);
+static int tree_index_of(QTreeWidget *t, QTreeWidgetItem *want);
+
 static QTableWidget *table_of(void *window, const char *name) {
     GbQtNode *root = (GbQtNode *)window;
     if (!root) {
@@ -2846,6 +2857,13 @@ extern "C" char *gb_qt_table_get(void *window, const char *name, int row,
         out[bytes.size()] = '\0';
         return out;
     }
+    if (QTreeWidget *tr = tree_of(window, name)) {
+        QTreeWidgetItem *item = tree_item_at(tr, row);
+        if (!item || col < 0 || col >= tr->columnCount()) {
+            return nullptr;
+        }
+        return strdup(item->text(col).toUtf8().constData());
+    }
     QTableWidget *t = table_of(window, name);
     if (!t || row < 0 || row >= t->rowCount() || col < 0 ||
         col >= t->columnCount()) {
@@ -2874,11 +2892,24 @@ extern "C" int gb_qt_table_rows(void *window, const char *name) {
     if (GbQtAskModel *m = ask_model_of(window, name)) {
         return m->rows;
     }
+    if (QTreeWidget *tr = tree_of(window, name)) {
+        int n = 0;
+        QTreeWidgetItemIterator it(tr);
+        while (*it) { n++; ++it; }
+        return n;
+    }
     QTableWidget *t = table_of(window, name);
     return t ? t->rowCount() : -1;
 }
 
 extern "C" int gb_qt_table_selected(void *window, const char *name) {
+    if (QTreeWidget *tr = tree_of(window, name)) {
+        QList<QTreeWidgetItem *> chosen = tr->selectedItems();
+        if (!chosen.isEmpty()) {
+            return tree_index_of(tr, chosen.first());
+        }
+        return tr->currentItem() ? tree_index_of(tr, tr->currentItem()) : -1;
+    }
     /* THE SAME QUESTION OF AN ASKING TABLE, and asked the same way: of the
      * SELECTION rather than the cursor, for the reason the comment below
      * gives. A QTableView's selection model is reached directly. */
@@ -2915,6 +2946,23 @@ extern "C" int gb_qt_table_selected(void *window, const char *name) {
     return t->currentRow();
 }
 
+/* HOW MANY COLUMNS, or -1 for a part that is neither a table nor a tree. It
+ * exists so a heading's refusal can tell "there is no such column" from "that
+ * column carries no caption", which `gb_qt_table_heading` answers with the
+ * same NULL: §0.28's fixture asked for a column past the end -- to pin that a
+ * tree's DEPTH column is declared and NOT DRAWN -- and was told the column had
+ * no caption, which names the one thing that is not wrong with it. */
+extern "C" int gb_qt_column_count(void *window, const char *name) {
+    if (GbQtAskModel *m = ask_model_of(window, name)) {
+        return (int)m->headers.size();
+    }
+    if (QTreeWidget *tr = tree_of(window, name)) {
+        return tr->columnCount();
+    }
+    QTableWidget *t = table_of(window, name);
+    return t ? t->columnCount() : -1;
+}
+
 extern "C" char *gb_qt_table_heading(void *window, const char *name,
                                      int col) {
     /* AN ASKING TABLE'S CAPTIONS LIVE IN ITS MODEL, and they are the ORACLE
@@ -2935,6 +2983,12 @@ extern "C" char *gb_qt_table_heading(void *window, const char *name,
         out[bytes.size()] = '\0';
         return out;
     }
+    if (QTreeWidget *tr = tree_of(window, name)) {
+        if (col < 0 || col >= tr->columnCount() || !tr->headerItem()) {
+            return nullptr;
+        }
+        return strdup(tr->headerItem()->text(col).toUtf8().constData());
+    }
     QTableWidget *t = table_of(window, name);
     if (!t || col < 0 || col >= t->columnCount()) {
         return nullptr;
@@ -2952,6 +3006,16 @@ extern "C" char *gb_qt_table_heading(void *window, const char *name,
 
 extern "C" int gb_qt_table_select(void *window, const char *name, int row,
                                  char *err, size_t err_size) {
+    if (QTreeWidget *tr = tree_of(window, name)) {
+        QTreeWidgetItem *item = tree_item_at(tr, row);
+        if (!item) {
+            say(err, err_size, "that tree has no such row");
+            return 0;
+        }
+        tr->setCurrentItem(item);
+        item->setSelected(true);
+        return 1;
+    }
     /* AN ASKING TABLE HAS A SELECTION TOO, and a program must not have to know
      * which kind of table it declared in order to choose a row -- which is the
      * whole point of `to ask` being a direction on `table` rather than a word
@@ -3888,5 +3952,257 @@ extern "C" int gb_qt_child_drop(void *container, void *child, char *err,
     }
     w->setParent(nullptr);
     delete w;
+    return 1;
+}
+
+/* ===========================================================================
+ * A `tree` (§0.28) -- rows with a DEPTH, drawn as a tree.
+ *
+ * ASKED FOR BY NAME ("a better looking tree view on the left"). What it adds
+ * is the WIDGET and the DEPTH: measured, ten of the things the request calls
+ * missing chrome -- headerHidden, rootIsDecorated, itemsExpandable,
+ * indentation, animated, alternatingRowColors, uniformRowHeights,
+ * allColumnsShowFocus, expandsOnDoubleClick, sortingEnabled -- are already
+ * Q_PROPERTYs that the by-name route reaches, and `showGrid` does not exist on
+ * a tree at all, so there are no grid lines to turn off.
+ *
+ * AN INDEX IS INTO THE DECLARED ROWS, NEVER INTO WHAT IS ON SCREEN, which is
+ * measured rather than chosen: a collapsed child is NOT `isHidden()`, so Qt's
+ * own NotHidden iterator still counts every row and there is no free "visible
+ * index". A PRE-ORDER WALK reproduces the order the rows were given in, by
+ * construction -- each row is added under the last row one level shallower --
+ * so the index needs no bookkeeping of ours to stay meaningful.
+ * ========================================================================= */
+
+static QTreeWidget *tree_of(void *window, const char *name) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root) {
+        return nullptr;
+    }
+    return qobject_cast<QTreeWidget *>(
+        root->parts.value(QString::fromUtf8(name), nullptr));
+}
+
+/* THE ITEM AT A DECLARED INDEX, by pre-order walk. `QTreeWidgetItemIterator`
+ * walks in exactly that order, which is why nothing has to be remembered. */
+static QTreeWidgetItem *tree_item_at(QTreeWidget *t, int index) {
+    if (!t || index < 0) {
+        return nullptr;
+    }
+    int at = 0;
+    QTreeWidgetItemIterator it(t);
+    while (*it) {
+        if (at == index) {
+            return *it;
+        }
+        at++;
+        ++it;
+    }
+    return nullptr;
+}
+
+static int tree_index_of(QTreeWidget *t, QTreeWidgetItem *want) {
+    if (!t || !want) {
+        return -1;
+    }
+    int at = 0;
+    QTreeWidgetItemIterator it(t);
+    while (*it) {
+        if (*it == want) {
+            return at;
+        }
+        at++;
+        ++it;
+    }
+    return -1;
+}
+
+extern "C" void *gb_qt_tree(void *parent, const char *name,
+                            const char *const *headers, int columns,
+                            char *err, size_t err_size) {
+    GbQtNode *p = (GbQtNode *)parent;
+    /* A SPLITTER PARENT HAS NO LAYOUT and still holds things -- the fourth
+     * door to learn it, and the one the guard tier in run_qt_split.sh counts
+     * so a fifth cannot be added without one. A file tree beside an editor is
+     * the ordinary shape, so this is the parent it will usually have. */
+    if (!p || (!p->layout && !qobject_cast<QSplitter *>(p->widget))) {
+        say(err, err_size, "that container cannot hold a tree");
+        return nullptr;
+    }
+    QTreeWidget *t = new QTreeWidget(p->widget);
+    t->setColumnCount(columns > 0 ? columns : 1);
+    QStringList caps;
+    for (int i = 0; i < columns; i++) {
+        caps << QString::fromUtf8(headers && headers[i] ? headers[i] : "");
+    }
+    t->setHeaderLabels(caps);
+    /* THE SAME THREE DECISIONS A `table` MAKES, for the reasons recorded
+     * there: whole rows are selected, one at a time because `qt.selected`
+     * answers ONE index, and CLICK-TO-SORT IS OFF -- a sorted view would make
+     * an index mean a different row in the view than in the data, which for a
+     * tree would also destroy the nesting the depths describe. */
+    t->setSelectionBehavior(QAbstractItemView::SelectRows);
+    t->setSelectionMode(QAbstractItemView::SingleSelection);
+    t->setSortingEnabled(false);
+    t->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    if (QBoxLayout *b = qobject_cast<QBoxLayout *>(p->layout)) {
+        b->addWidget(t);
+    } else if (QSplitter *sp = qobject_cast<QSplitter *>(p->widget)) {
+        (void)sp;   /* parenting enrolled it as a pane already (§0.19) */
+    } else if (QGridLayout *g = qobject_cast<QGridLayout *>(p->layout)) {
+        g->addWidget(t, p->grid_row < 0 ? 0 : p->grid_row,
+                     p->grid_col < 0 ? 0 : p->grid_col);
+    } else if (!p->layout) {
+        /* a tab page or a splitter pane: parenting is enrolment */
+    } else {
+        say(err, err_size, "that container cannot hold a tree");
+        delete t;
+        return nullptr;
+    }
+    GbQtNode *n = node_new();
+    n->root = p->root;
+    n->word = "tree";
+    n->widget = t;
+    if (name && *name && n->root) {
+        n->root->parts.insert(QString::fromUtf8(name), t);
+    }
+    return n;
+}
+
+extern "C" int gb_qt_tree_clear(void *window, const char *name) {
+    QTreeWidget *t = tree_of(window, name);
+    if (!t) {
+        return 0;
+    }
+    t->clear();
+    return 1;
+}
+
+/* ONE ROW, AT A DEPTH. A row deeper than the last one by more than one level
+ * is attached to the deepest ancestor there is rather than refused, because
+ * the rows come from a program's own walk and a gap means "as deep as it can
+ * go" -- refusing would turn an ordinary filtered listing into an error. */
+extern "C" int gb_qt_tree_add(void *window, const char *name, int depth,
+                              const char *const *cells, int columns) {
+    QTreeWidget *t = tree_of(window, name);
+    if (!t) {
+        return 0;
+    }
+    QTreeWidgetItem *item = new QTreeWidgetItem();
+    for (int i = 0; i < columns; i++) {
+        item->setText(i, QString::fromUtf8(cells && cells[i] ? cells[i] : ""));
+    }
+    if (depth <= 0) {
+        t->addTopLevelItem(item);
+        t->expandItem(item);
+        return 1;
+    }
+    /* THE PARENT IS THE LAST ROW ONE LEVEL SHALLOWER, which is what makes the
+     * pre-order index equal the declared order. Found by walking back from the
+     * last row rather than kept in a variable, so a reconcile or a refresh
+     * needs no state carried between calls. */
+    QTreeWidgetItem *prev = nullptr;
+    int at = 0;
+    QTreeWidgetItemIterator it(t);
+    while (*it) {
+        prev = *it;
+        at++;
+        ++it;
+    }
+    (void)at;
+    QTreeWidgetItem *parent = prev;
+    while (parent) {
+        int d = 0;
+        for (QTreeWidgetItem *up = parent->parent(); up; up = up->parent()) {
+            d++;
+        }
+        if (d == depth - 1) {
+            break;
+        }
+        parent = parent->parent();
+    }
+    if (!parent) {
+        t->addTopLevelItem(item);
+    } else {
+        parent->addChild(item);
+        parent->setExpanded(true);
+    }
+    return 1;
+}
+
+extern "C" int gb_qt_tree_depth(void *window, const char *name, int row) {
+    QTreeWidget *t = tree_of(window, name);
+    if (!t) {
+        return -2;          /* not a tree at all: a different answer */
+    }
+    QTreeWidgetItem *item = tree_item_at(t, row);
+    if (!item) {
+        return -1;          /* no such row */
+    }
+    int d = 0;
+    for (QTreeWidgetItem *up = item->parent(); up; up = up->parent()) {
+        d++;
+    }
+    return d;
+}
+
+extern "C" int gb_qt_tree_rows(void *window, const char *name) {
+    QTreeWidget *t = tree_of(window, name);
+    if (!t) {
+        return -1;
+    }
+    int n = 0;
+    QTreeWidgetItemIterator it(t);
+    while (*it) {
+        n++;
+        ++it;
+    }
+    return n;
+}
+
+extern "C" char *gb_qt_tree_get(void *window, const char *name, int row,
+                                int col) {
+    QTreeWidget *t = tree_of(window, name);
+    QTreeWidgetItem *item = tree_item_at(t, row);
+    if (!item || col < 0 || col >= t->columnCount()) {
+        return nullptr;
+    }
+    return strdup(item->text(col).toUtf8().constData());
+}
+
+extern "C" char *gb_qt_tree_heading(void *window, const char *name, int col) {
+    QTreeWidget *t = tree_of(window, name);
+    if (!t || col < 0 || col >= t->columnCount()) {
+        return nullptr;
+    }
+    return strdup(t->headerItem()->text(col).toUtf8().constData());
+}
+
+extern "C" int gb_qt_tree_selected(void *window, const char *name) {
+    QTreeWidget *t = tree_of(window, name);
+    if (!t) {
+        return -2;          /* not a tree: distinct from "nobody has chosen" */
+    }
+    QList<QTreeWidgetItem *> chosen = t->selectedItems();
+    if (!chosen.isEmpty()) {
+        return tree_index_of(t, chosen.first());
+    }
+    return t->currentItem() ? tree_index_of(t, t->currentItem()) : -1;
+}
+
+extern "C" int gb_qt_tree_select(void *window, const char *name, int row,
+                                 char *err, size_t err_size) {
+    QTreeWidget *t = tree_of(window, name);
+    if (!t) {
+        say(err, err_size, "that part is not a tree");
+        return 0;
+    }
+    QTreeWidgetItem *item = tree_item_at(t, row);
+    if (!item) {
+        say(err, err_size, "that tree has no such row");
+        return 0;
+    }
+    t->setCurrentItem(item);
+    item->setSelected(true);
     return 1;
 }

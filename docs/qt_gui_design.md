@@ -3419,3 +3419,84 @@ its suggestions from the tables.
 
 A `form` is still refused a name (§0.6: its parts are addressed by their own
 names), and so is `cells`, whose positions are declared.
+
+## 0.28 A `tree` (2026-10-19)
+
+**The user asked for this by name** — *"a better looking tree view on the
+left"* — and it is the first of the two asks in
+`docs/qt_studio_requests.md` that block a feature Studio already has. Its file
+browser is the left third of its window and the thing a person looks at most
+after the code; under GTK it is a `Gtk.ListBox` of hand-built rows (a glyph
+label pinned to one character, a margin per depth level, an ellipsizing name),
+and in this vocabulary it had to become a `table` — the only widget here whose
+row count could change without rebuilding the window. That works, and it looks
+like a spreadsheet pretending to be a file tree.
+
+### Measured first, and it moved the work rather than the estimate
+
+| asked of Qt 6.10.2 | answer |
+|---|---|
+| the chrome the request calls missing | **ten Q_PROPERTYs**: `headerHidden`, `rootIsDecorated`, `itemsExpandable`, `indentation`, `animated`, `alternatingRowColors`, `uniformRowHeights`, `expandsOnDoubleClick`, `allColumnsShowFocus`, `sortingEnabled` |
+| `showGrid` on a tree | **absent** — there are no grid lines to turn off |
+| a flat list with a depth column | builds the tree correctly; `src > lib > util.bas` reads back |
+| the current item's flat index | recoverable by walking the iterator |
+| after collapsing a parent, Qt's `NotHidden` iterator | **counts every row** — a collapsed child is not `isHidden()` |
+
+**The request's own note is corrected in the helpful direction**: header
+visibility *"is not a `Q_PROPERTY`"* is true of `headerVisible` and false of
+`headerHidden`. So what `tree` adds is **the widget and the depth**; the look
+was always one `qt.set` away, and the fixture asserts that rather than assuming
+it.
+
+**And the last row decided the semantics.** There is no free "visible index",
+so an index has to mean something else: **the rows the program handed over**. A
+pre-order walk reproduces that order by construction — each row is attached
+under the last row one level shallower — so the index needs no bookkeeping of
+ours to stay meaningful however the tree is expanded, and `qt.selected`,
+`qt.cell` and `qt.depth` all speak it.
+
+### The spelling costs no grammar
+
+`tree files to show rows` is the production `table orders to show lines`
+already uses (§0.6), so bison reports the same zero conflicts. The depth is a
+**column that is not drawn**, declared `field depth( depth: true )` — the
+alternative being a convention (*a field called `depth` is the depth*), which
+is magic a reader cannot see where an option says it. At most one, because two
+would be a declaration with two answers; **none is legal**, being a flat list,
+which is exactly what a program that owns its own expansion hands over.
+
+A tree is **`to show`** and nothing else. `to edit` would have to write a value
+back from a row that may be a PARENT, and `to ask` is a table's third
+direction for a million rows a program cannot hold, where a tree's shape comes
+from depths it has in hand. Refused by naming the one it has, which is what
+stops a direction spreading to every word that carries a subject because one of
+them wanted it.
+
+### `qt.depth` is the oracle, and it is the fourth of its kind
+
+A populate that **ignored the depth** builds a flat tree whose every name,
+index, selection, heading and refresh reads back correctly — so nothing else in
+the fixture can see it. Proven: that perturbation reddens the three depth
+checks and nothing else. It answers the depth **the widget has**, walked up the
+item's parents, rather than the number the record carried; and it refuses "that
+is not a tree" separately from "there is no such row", which is the distinction
+`qt.selected` already rests on.
+
+That makes four increments in a row where asking *what would be observable if
+this did nothing?* produced a verb — §0.20's `qt.right_click`, §0.21's
+`qt.scrolled`, §0.23's `qt.has_icon`, and this.
+
+### One declaration rule needed a new accessor, and one perturbation needed a check
+
+The checker deliberately does **not** police a leaf's options — they are widget
+properties, and a QPushButton exposes 75 — so `depth:` is the first option a
+DECLARATION RULE turns on, and the accessor model gained `option_true`,
+answered by both adapters (§0.9's one checker, two adapters). It reports only a
+literal `true`, because a rule can rest only on what is declared.
+
+**And drawing the depth column changed nothing observable**, which a
+perturbation showed: cells are read by field name and the first heading is
+still `File`, so the only difference is that a second column exists. Asking for
+one is now the check — and it exposed a refusal naming the wrong cause, since
+`qt.heading` answered *"that column has no caption"* for a column that is not
+there. `gb_qt_column_count` exists so the two can be told apart.

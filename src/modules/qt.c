@@ -173,6 +173,20 @@ static const char *qr_close_word(const void *p) {
     return NULL;
 }
 
+/* THE RECORD SIDE OF THE SAME QUESTION: an option is a field of the item's
+ * `options` record, and only a literal `true` counts -- a BUILT window may put
+ * anything there, and a rule can only rest on what the record says. */
+static int qr_option_true(const void *p, const char *option) {
+    const QtCheckItem *it = (const QtCheckItem *)p;
+    RecordField *opts = record_find(it->value, "options");
+    if (!opts || !opts->value || opts->value->kind != VALUE_RECORD) {
+        return 0;
+    }
+    RecordField *f = record_find(opts->value, option);
+    return (f && f->value && f->value->kind == VALUE_BOOL &&
+            f->value->as.boolean) ? 1 : 0;
+}
+
 static int qr_handler_callable(const void *p) {
     const QtCheckItem *it = (const QtCheckItem *)p;
     RecordField *f = record_find(it->value, "handler");
@@ -406,7 +420,7 @@ static int qt_check_window_record(Value *win, char *message, size_t cap) {
         qr_win_item,
         qr_kind, qr_word, qr_name, qr_label, qr_subject, qr_direction,
         qr_close_word, qr_target, qr_signal, qr_handler_callable,
-        qr_entry_count, qr_entry,
+        qr_option_true, qr_entry_count, qr_entry,
         qr_report, NULL
     };
     QtCheckSink sink;
@@ -1114,7 +1128,8 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         return qt_build_menu(root, NULL, item);
     }
 
-    if (strcmp(kind, "container") == 0 && word && strcmp(word, "table") == 0) {
+    if (strcmp(kind, "container") == 0 && word &&
+        (strcmp(word, "table") == 0 || strcmp(word, "tree") == 0)) {
         /* A TABLE'S PARTS ARE COLUMNS, so it is built from its WHOLE field
          * list in one call and its children are NOT walked as widgets -- each
          * would otherwise become a QLineEdit standing in for a heading. The
@@ -1145,6 +1160,15 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             RecordField *copts = record_find(col, "options");
             const char *cap = NULL;
             if (copts && copts->value && copts->value->kind == VALUE_RECORD) {
+                /* A TREE'S DEPTH COLUMN IS DECLARED AND NOT DRAWN (§0.28), so
+                 * it takes no header and no width. Skipped here rather than
+                 * filtered afterwards, so the column indices a cell read uses
+                 * are the drawn ones from the start. */
+                RecordField *dep = record_find(copts->value, "depth");
+                if (dep && dep->value && dep->value->kind == VALUE_BOOL &&
+                    dep->value->as.boolean) {
+                    continue;
+                }
                 cap = qt_record_text(copts->value, "label");
             }
             if (!cap) {
@@ -1161,7 +1185,10 @@ static int qt_build_item(void *parent, Value *item, void *root) {
          * is the only place that can say. */
         const char *tdir = qt_record_text(item, "direction");
         void *tnode;
-        if (tdir && strcmp(tdir, "ask") == 0) {
+        if (strcmp(word, "tree") == 0) {
+            tnode = gb_qt_tree(parent, name ? name : "", headers, (int)at,
+                               err, sizeof(err));
+        } else if (tdir && strcmp(tdir, "ask") == 0) {
             const char *cellfn = qt_record_text(item, "subject");
             tnode = gb_qt_virtual_table(parent, name ? name : "", headers,
                                         (int)at, cellfn ? cellfn : "", err,
@@ -1177,7 +1204,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             qt_raise(message);
             return 0;
         }
-        return qt_apply_options(tnode, opts ? opts->value : NULL, "table", name, 1);
+        return qt_apply_options(tnode, opts ? opts->value : NULL, word, name, 1);
     }
 
     if (strcmp(kind, "container") == 0) {
@@ -1556,6 +1583,8 @@ static int qt_bind_form(void *root, Value *form, const char *window_name) {
 
 static int qt_populate_table(void *root, Value *table, Value *slot,
                              const char *window_name);
+static int qt_populate_tree(void *root, Value *tree, Value *slot,
+                            const char *window_name);
 
 /* HOW MANY PARTS A SUBJECT DRIVES, without touching any of them. Needed
  * BEFORE anything is written, so that an ambiguous name is refused rather
@@ -1628,17 +1657,24 @@ static int qt_reshow_subject(void *root, Value *items, const char *subject,
                 *found = *found + 1;
                 continue;
             }
-            if (strcmp(word, "table") == 0) {
+            if (strcmp(word, "table") == 0 || strcmp(word, "tree") == 0) {
                 if (slot->kind != VALUE_ARRAY) {
                     char message[512];
                     snprintf(message, sizeof(message),
-                             "qt.refresh: `%s` fills a table, so it needs a "
-                             "list of records, and it holds %s", subject,
+                             "qt.refresh: `%s` fills a %s, so it needs a "
+                             "list of records, and it holds %s", subject, word,
                              value_kind_name(slot->kind));
                     qt_raise(message);
                     return 0;
                 }
-                if (!qt_populate_table(root, entry, slot, window_name)) {
+                /* A TREE REFRESHES THROUGH ITS OWN POPULATE -- the same door
+                 * its open uses, which is §0.11's rule -- and it is the reason
+                 * Studio's file browser had to be a table until now: a
+                 * directory expanding changes the row count. */
+                int ok = strcmp(word, "tree") == 0
+                             ? qt_populate_tree(root, entry, slot, window_name)
+                             : qt_populate_table(root, entry, slot, window_name);
+                if (!ok) {
                     return 0;
                 }
                 *drawn = *drawn + (int)(slot->as.array.store
@@ -1849,7 +1885,13 @@ static Value *qt_find_table(Value *items, const char *name) {
         }
         const char *word = qt_record_text(entry, "word");
         const char *has = qt_record_text(entry, "name");
-        if (word && strcmp(word, "table") == 0 && has && strcmp(has, name) == 0) {
+        /* A `tree` ANSWERS HERE TOO (§0.28), because every caller of this is
+         * asking "which declaration does this name refer to" and a tree's
+         * columns are resolved exactly as a table's are. One finder rather
+         * than two, so a cell read and a refresh cannot disagree about what a
+         * name means. */
+        if (word && has && strcmp(has, name) == 0 &&
+            (strcmp(word, "table") == 0 || strcmp(word, "tree") == 0)) {
             return entry;
         }
         RecordField *nested = record_find(entry, "items");
@@ -1964,6 +2006,15 @@ static int qt_fold_items(void *root, Value *items, const char *subject,
         if (has) {
             if (strcmp(has, subject) == 0) {
                 const char *word = qt_record_text(entry, "word");
+                /* A TREE IS NEVER FOLDED BACK. It is `to show` only, so there
+                 * is nothing a person can have changed -- and handing it to
+                 * the FORM fold (which is what the old two-way choice did for
+                 * any word that was not `table`) would walk a tree's columns
+                 * as if they were a form's parts and write nonsense into the
+                 * caller's record. */
+                if (word && strcmp(word, "tree") == 0) {
+                    continue;
+                }
                 int ok = (word && strcmp(word, "table") == 0)
                              ? qt_fold_table(root, entry, out, window_name)
                              : qt_fold_form(root, entry, out, window_name);
@@ -2004,6 +2055,134 @@ static int qt_fold_items(void *root, Value *items, const char *subject,
  * widget is constructed and cannot change while the window is open, the
  * declaration being the only thing that names it. Only the ROWS follow the
  * list. */
+/* THE DEPTH COLUMN OF A TREE: declared `field depth( depth: true )` and NOT
+ * drawn. Read from the declaration by both the build and the populate rather
+ * than passed between them, so the two cannot disagree about which column is
+ * which -- the rule `qt_populate_form` follows in reading the direction from
+ * the form. */
+static const char *qt_tree_depth_field(Value *tree) {
+    RecordField *cols = record_find(tree, "items");
+    if (!cols || !cols->value || cols->value->kind != VALUE_ARRAY) {
+        return NULL;
+    }
+    size_t n = cols->value->as.array.store
+                   ? cols->value->as.array.store->count : 0;
+    for (size_t i = 0; i < n; i++) {
+        Value *col = &cols->value->as.array.store->items[i];
+        if (col->kind != VALUE_RECORD) {
+            continue;
+        }
+        RecordField *opts = record_find(col, "options");
+        if (!opts || !opts->value || opts->value->kind != VALUE_RECORD) {
+            continue;
+        }
+        RecordField *d = record_find(opts->value, "depth");
+        if (d && d->value && d->value->kind == VALUE_BOOL &&
+            d->value->as.boolean) {
+            return qt_record_text(col, "name");
+        }
+    }
+    return NULL;
+}
+
+/* SHOW A TREE'S ROWS AS THEY ARE NOW. One door for the open and the refresh,
+ * which is §0.11's rule: a widget that renders one way at open and another
+ * afterwards is the defect that extraction exists to prevent. */
+static int qt_populate_tree(void *root, Value *tree, Value *slot,
+                            const char *window_name) {
+    char err[QT_ERRBUF];
+    char message[512];
+    const char *name = qt_record_text(tree, "name");
+    const char *subject = qt_record_text(tree, "subject");
+    if (!name || !subject) {
+        return 1;
+    }
+    RecordField *cols = record_find(tree, "items");
+    if (!cols || !cols->value || cols->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    const char *depth_field = qt_tree_depth_field(tree);
+    size_t ncols = cols->value->as.array.store
+                       ? cols->value->as.array.store->count : 0;
+    size_t nrows = slot->as.array.store ? slot->as.array.store->count : 0;
+    if (!gb_qt_tree_clear(root, name)) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `%s` is not a tree", window_name, name);
+        qt_raise(message);
+        return 0;
+    }
+    for (size_t r = 0; r < nrows; r++) {
+        Value *row = &slot->as.array.store->items[r];
+        if (row->kind != VALUE_RECORD) {
+            snprintf(message, sizeof(message),
+                     "window `%s`: `%s` shows records, and element %zu of `%s` "
+                     "is %s", window_name, name, r, subject,
+                     value_kind_name(row->kind));
+            qt_raise(message);
+            return 0;
+        }
+        int depth = 0;
+        if (depth_field) {
+            RecordField *d = record_find(row, depth_field);
+            if (d && d->value && d->value->kind == VALUE_NUMBER) {
+                depth = (int)d->value->as.num.value;
+            }
+        }
+        /* THE CELLS ARE BUILT BEFORE THE ROW IS ADDED, because a row is one
+         * call: the backend attaches it under the last row one level
+         * shallower, so a half-filled row would be in the tree already and
+         * the next row's parent search would find it. */
+        const char **cells = (const char **)calloc(ncols ? ncols : 1,
+                                                   sizeof(char *));
+        Value *texts = (Value *)calloc(ncols ? ncols : 1, sizeof(Value));
+        if (!cells || !texts) {
+            free((void *)cells);
+            free(texts);
+            qt_raise("qt: a tree row ran out of memory");
+            return 0;
+        }
+        int at = 0;
+        for (size_t c = 0; c < ncols; c++) {
+            Value *col = &cols->value->as.array.store->items[c];
+            if (col->kind != VALUE_RECORD) {
+                continue;
+            }
+            const char *field = qt_record_text(col, "name");
+            if (!field) {
+                continue;
+            }
+            if (depth_field && strcmp(field, depth_field) == 0) {
+                continue;       /* declared, not drawn */
+            }
+            RecordField *has = record_find(row, field);
+            texts[at] = value_null();
+            if (has && has->value) {
+                /* THROUGH THE ONE RENDERER (PLAT-RENDER); the copy is not
+                 * freed here because `builtin_string_value` consumes it. */
+                texts[at] = builtin_string_value(value_copy(*has->value));
+            }
+            cells[at] = texts[at].kind == VALUE_STRING ? texts[at].as.string
+                                                       : "";
+            at++;
+        }
+        err[0] = '\0';
+        int ok = gb_qt_tree_add(root, name, depth, cells, at);
+        for (int i = 0; i < at; i++) {
+            value_free(texts[i]);
+        }
+        free((void *)cells);
+        free(texts);
+        if (!ok) {
+            snprintf(message, sizeof(message),
+                     "window `%s`: `%s` could not show row %zu", window_name,
+                     name, r);
+            qt_raise(message);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int qt_populate_table(void *root, Value *table, Value *slot,
                              const char *window_name) {
     char err[QT_ERRBUF];
@@ -2142,6 +2321,39 @@ static int qt_bind_table(void *root, Value *table, const char *window_name) {
     return qt_populate_table(root, table, slot, window_name);
 }
 
+/* BIND A TREE: find its subject in the calling frame and draw it. Smaller than
+ * a table's bind and deliberately so -- a tree is `to show` ONLY (§0.28), so
+ * there is no editability to set and nothing to fold back, and the rows are not
+ * remembered for a later read. What it shares with a table is the refusal: a
+ * subject that is not in the frame, or is not a list, is named rather than
+ * silently drawing nothing. */
+static int qt_bind_tree(void *root, Value *tree, const char *window_name) {
+    char message[512];
+    const char *name = qt_record_text(tree, "name");
+    const char *subject = qt_record_text(tree, "subject");
+    if (!name || !subject) {
+        return 1;
+    }
+    Value *slot = qt_subject_slot(subject);
+    if (!slot) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `tree %s to show %s` found no `%s` -- qt.open "
+                 "reads the subject from the frame that calls it",
+                 window_name, name, subject, subject);
+        qt_raise(message);
+        return 0;
+    }
+    if (slot->kind != VALUE_ARRAY) {
+        snprintf(message, sizeof(message),
+                 "window `%s`: `tree %s to show %s` needs a list of records, "
+                 "and `%s` holds %s", window_name, name, subject, subject,
+                 value_kind_name(slot->kind));
+        qt_raise(message);
+        return 0;
+    }
+    return qt_populate_tree(root, tree, slot, window_name);
+}
+
 /* READ A TABLE BACK. Each row becomes a record carrying the column names, and
  * the kind rule is the form's exactly: `type:` where declared, the ORIGINAL
  * element's field otherwise, text last. A row the person added is not
@@ -2227,9 +2439,14 @@ static int qt_bind_items(void *root, Value *items, const char *window_name) {
         }
         const char *word = qt_record_text(entry, "word");
         if (qt_record_text(entry, "subject")) {
-            int ok = (word && strcmp(word, "table") == 0)
-                         ? qt_bind_table(root, entry, window_name)
-                         : qt_bind_form(root, entry, window_name);
+            int ok;
+            if (word && strcmp(word, "tree") == 0) {
+                ok = qt_bind_tree(root, entry, window_name);
+            } else if (word && strcmp(word, "table") == 0) {
+                ok = qt_bind_table(root, entry, window_name);
+            } else {
+                ok = qt_bind_form(root, entry, window_name);
+            }
             if (!ok) {
                 return 0;
             }
@@ -3271,6 +3488,71 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_array(names, (size_t)(n > 0 ? n : 0));
     }
 
+    if (strcmp(verb, "depth") == 0) {
+        /* HOW DEEP A ROW SITS IN A TREE, asked of THE WIDGET by walking the
+         * item's parents -- never of the record that was handed over. That is
+         * the whole reason the verb exists: a populate that IGNORED the depth
+         * builds a FLAT tree whose every name, index, selection and refresh
+         * reads back correctly, so nothing else can see it. The fourth time in
+         * this backend that asking "what would be observable if this did
+         * nothing?" produced a verb (§0.20's `qt.right_click`, §0.21's
+         * `qt.scrolled`, §0.23's `qt.has_icon`, and this). */
+        if (argc != 3) {
+            qt_raise("qt.depth expects a window, a tree's name and a row");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value rowv = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(rowv);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "depth") || which.kind != VALUE_STRING ||
+            rowv.kind != VALUE_NUMBER) {
+            if (!error_action_pending()) {
+                qt_raise("qt.depth expects a window, a tree's name as text and "
+                         "a row number");
+            }
+            value_free(win); value_free(which); value_free(rowv);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(rowv);
+            return value_null();
+        }
+        /* THE NAME IS COPIED BEFORE THE VALUE GOES (§0.22's defect, and the
+         * one §0.27 found in `qt.read` a second time). */
+        char *tname = copy_string(which.as.string);
+        long row = (long)rowv.as.num.value;
+        value_free(win); value_free(which); value_free(rowv);
+        int d = gb_qt_tree_depth(root, tname, (int)row);
+        if (d == -2) {
+            /* NOT A TREE IS A DIFFERENT ANSWER FROM NO SUCH ROW, which is the
+             * distinction `qt.selected` already rests on: "that is a field" and
+             * "nobody is there" must not share a sentence. */
+            snprintf(message, sizeof(message), "qt.depth: `%s` is not a tree",
+                     tname);
+            free(tname);
+            qt_raise(message);
+            return value_null();
+        }
+        if (d < 0) {
+            snprintf(message, sizeof(message), "qt.depth: `%s` has no row %ld",
+                     tname, row);
+            free(tname);
+            qt_raise(message);
+            return value_null();
+        }
+        free(tname);
+        return value_number((double)d);
+    }
+
     if (strcmp(verb, "tabs") == 0) {
         /* THE CAPTIONS OF A `tabs`, AS A LIST, and it exists because they are
          * otherwise unobservable: `QTabWidget::tabText(int)` takes an argument
@@ -3735,7 +4017,18 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         int drawn = 0;
         if (table) {
-            if (!qt_populate_table(root, table, slot, wname ? wname : "")) {
+            /* BY NAME, A TABLE **OR** A TREE. `qt_find_table` answers either
+             * (§0.28), so the populate has to pick the matching door -- and
+             * the word is the only thing that can say, since both are named
+             * containers carrying a subject. Handing a tree to the table's
+             * populate is what the first draft did, and `gb_qt_table_size`
+             * refused it with "`files` is not a table here": a true sentence
+             * naming the wrong thing, from one word further up. */
+            const char *tword = qt_record_text(table, "word");
+            int ok = (tword && strcmp(tword, "tree") == 0)
+                         ? qt_populate_tree(root, table, slot, wname ? wname : "")
+                         : qt_populate_table(root, table, slot, wname ? wname : "");
+            if (!ok) {
                 value_free(win); value_free(which);
                 return value_null();
             }
@@ -4294,7 +4587,22 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         char *text = gb_qt_table_heading(root, which.as.string, col);
+        /* NAMES WHICH OF THE TWO THINGS IS WRONG. A NULL means either "no such
+         * column" or "that column carries no caption", and §0.28's fixture
+         * asked for one past the end deliberately -- to pin that a tree's
+         * depth column is declared and NOT drawn -- and was told the column
+         * had no caption, naming the one thing that was not wrong with it. */
+        int ncols = gb_qt_column_count(root, which.as.string);
+        char *asked = copy_string(which.as.string);
         value_free(win); value_free(which); value_free(colv);
+        if (!text && ncols >= 0 && (col < 0 || col >= ncols)) {
+            snprintf(message, sizeof(message),
+                     "qt.heading: `%s` has no column %d", asked, col);
+            free(asked);
+            qt_raise(message);
+            return value_null();
+        }
+        free(asked);
         if (!text) {
             qt_raise("qt.heading: that column has no caption");
             return value_null();

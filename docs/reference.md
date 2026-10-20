@@ -3853,6 +3853,7 @@ end program
 | `qt.options(win, part, list)` | fill a `choice`'s list from data, answering how many items it put in. Clearing **resets the selection**, deliberately: a list that has changed may not contain what was chosen, and an index into a list that has moved is how a form reports a value nobody picked |
 | `qt.rows(win, table)` / `qt.rows(win, table, n)` | how many rows a **`to ask`** table has, or tell it. A verb rather than part of the declaration because it changes — a results grid is refilled by every query — and setting it is also how *"the data changed"* is said, since it resets the model and Qt re-asks. A negative count is refused rather than shown as empty |
 | `qt.refresh(win, name, items)` | **reconcile a container's children** against `items`, the same array `items:` holds in the record `qt.open` read, answering how many it reconciled. A child whose **name and word** are unchanged is KEPT — with its text, its caret, its scroll position and its undo stack — a new one is BUILT through the same door `qt.open` uses, an absent one is DELETED and its name leaves the window, and a `tab`'s caption is re-read. A `tabs`, `column`, `row` or `group`; a `split` cannot be named and a `cells` grid has declared positions, so both are refused by name. An **unnamed** child is always rebuilt, there being nothing to match it by |
+| `qt.depth(win, name, row)` | how deep that row sits in a **tree** — 0 for a top-level row — asked of the WIDGET by walking the item's parents, never of the record. A part that is not a tree and a row that is not there are refused separately, being different questions |
 | `qt.children(win, name)` | the **names** of that container's children, **in order** — `""` for one nobody named, which is a different answer from absent. The order oracle for `qt.refresh`: `qt.at` reads coordinates in a `cells` grid only, so a box's order is observable through nothing else |
 | `qt.tabs(win, name)` | the **captions** of a `tabs`, in order, as a list. `QTabWidget::tabText(int)` takes an argument and `qt.invoke` passes none, so without this a caption cannot be read back at all |
 | `qt.refresh(win, what)` | show a subject **as it is now**, answering how many rows or parts it drew. `what` is a **table's name** or a **form's subject** — a form has no name, so the subject is the only thing that addresses one, and a name meaning both is refused rather than resolved. A table grows, shrinks and redraws changed cells; a form fills every part, across **all** the forms carrying that subject. The symmetric half of `qt.subject`, which reads the widgets at the moment asked |
@@ -3979,6 +3980,38 @@ misspelled part changes nothing.
 typing — a field is read-only, a check box disabled — because the alternative is
 a silent discard: someone types, nothing complains, and nothing ever reports it.
 And only an `edit` form's record follows its widgets through `qt.subject`.
+
+**A `tree` shows a list that has a SHAPE.** `tree files to show rows` is a
+table's sibling: the same production, the same `field` columns, the same
+`qt.cell`/`qt.heading`/`qt.select`/`qt.selected`, and one column more —
+
+<!--fragment: the inside of a `window` block, not a program on its own-->
+```basic
+tree files to show rows
+    field name(  label: "File" )
+    field depth( depth: true )
+end tree
+```
+
+The column marked `depth: true` is **declared and not drawn**: it supplies the
+nesting, so a flat list of records becomes a tree, each row attached under the
+last row one level shallower. At most one column may carry it, and a tree with
+none is a flat list — which is what a program that owns its own expand/collapse
+state hands over.
+
+A tree is **`to show`** and nothing else: its rows are read, and a parent row
+has no value to write back. **An index is into the rows you gave it**, never
+into what is on screen — Qt's own iterator counts a collapsed child, so there
+is no "visible index" to be had — which makes `qt.selected` answer a number
+that stays meaningful however the tree is expanded. `qt.depth(win, name, row)`
+answers how deep a row sits, asked of the widget rather than of the record, and
+`qt.refresh(win, name)` re-reads the subject when a directory expands.
+
+Everything about how it **looks** is an ordinary property: `headerHidden`,
+`rootIsDecorated`, `itemsExpandable`, `indentation`, `animated`,
+`alternatingRowColors`, `uniformRowHeights`, `allColumnsShowFocus`,
+`expandsOnDoubleClick` and `sortingEnabled` all read and write through
+`qt.read`/`qt.set`, and a tree has no grid lines to turn off.
 
 **A table shows a list.** `table orders to show lines` takes an array of
 records; each `field` is a *column* read from every element, captioned by its

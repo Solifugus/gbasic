@@ -81,6 +81,14 @@ struct GbWinModel {
      * handler that cannot be called is the same defect as one that can never
      * fire. */
     int (*handler_callable)(const void *item);
+    /* WHETHER AN ITEM DECLARES THIS OPTION AS TRUE. The checker deliberately
+     * does NOT police a leaf's options -- they are widget properties, and Qt
+     * exposes 75 on a QPushButton alone, so that set cannot be closed from
+     * here -- and `depth:` on a tree's column is the first option a
+     * DECLARATION RULE turns on: at most one column may carry it, because two
+     * would be a declaration with two answers. May be NULL in a model that
+     * cannot answer it; every caller tests before calling. */
+    int (*option_true)(const void *item, const char *option);
     size_t (*entry_count)(const void *item);
     const void *(*entry)(const void *item, size_t i);
 

@@ -608,6 +608,22 @@ static int wa_handler_callable(const void *p) {
     (void)p;
     return 1;
 }
+/* AN ITEM'S OPTION, ANSWERED ONLY FOR A LITERAL `true`. The checker asks this
+ * for exactly one option -- `depth:` on a tree's column -- and a declaration
+ * rule can only rest on what is DECLARED: `depth: flag` names a place to read
+ * when something renders, so there is nothing to decide here, which is the
+ * same line §0.5 draws for a non-literal option. */
+static int wa_option_true(const void *p, const char *option) {
+    const AstWindowItem *it = (const AstWindowItem *)p;
+    for (size_t i = 0; i < it->options.count; i++) {
+        if (it->options.items[i].name &&
+            strcmp(it->options.items[i].name, option) == 0) {
+            const AstExpr *v = it->options.items[i].value;
+            return (v && v->kind == AST_EXPR_BOOL && v->as.boolean) ? 1 : 0;
+        }
+    }
+    return 0;
+}
 static size_t wa_entry_count(const void *p) {
     return ((const AstWindowItem *)p)->entries.count;
 }
@@ -666,7 +682,7 @@ static void win_check_window(WinCheck *chk, const AstStmt *stmt) {
         wa_win_item,
         wa_kind, wa_word, wa_name, wa_label, wa_subject, wa_direction,
         wa_close_word, wa_target, wa_signal, wa_handler_callable,
-        wa_entry_count, wa_entry,
+        wa_option_true, wa_entry_count, wa_entry,
         wa_report, NULL
     };
     GbWinModel m = model;

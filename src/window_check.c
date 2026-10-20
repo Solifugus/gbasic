@@ -59,7 +59,7 @@ static void win_error(WinRun *run, const void *item, const char *fmt, ...) {
 static const char *win_container_words[] = {"row", "column", "form", "group",
                                             "table", "menu", "popup", "tabs",
                                             "tab", "cells", "split", "scroll",
-                                            NULL};
+                                            "tree", NULL};
 static const char *win_leaf_words[] = {"field", "button", "check", "text",
                                        "memo", "choice", "source", "stretch",
                                        "item", "separator", NULL};
@@ -313,8 +313,12 @@ static void win_check_item(WinRun *run, const void *item,
          * with neither is a form about nothing. The window's subject is a
          * DEFAULT a form may shadow -- the rule a nested `with principal(p)`
          * already follows. */
+        /* A `tree` CARRIES A SUBJECT LIKE A TABLE, and like a table its rows
+         * are many -- the difference is that each one declares a DEPTH, so
+         * what is drawn is a tree rather than a list. */
         int carries_subject = (strcmp(word, "form") == 0 ||
-                               strcmp(word, "table") == 0);
+                               strcmp(word, "table") == 0 ||
+                               strcmp(word, "tree") == 0);
         if (carries_subject) {
             const char *dir = M->direction(item);
             /* `ask` IS A TABLE'S THIRD DIRECTION AND A FORM'S HAS ONLY TWO.
@@ -326,11 +330,26 @@ static void win_check_item(WinRun *run, const void *item,
              * which is also what stops `ask` spreading to every word that
              * carries a subject just because one of them wanted it. */
             int table_word = strcmp(word, "table") == 0;
-            int known = dir && (strcmp(dir, "edit") == 0 ||
-                                strcmp(dir, "show") == 0 ||
+            /* A TREE IS READ, SO IT HAS ONE DIRECTION. `to edit` would mean
+             * writing a value back from a tree of rows, which nothing has
+             * asked for and which has no answer for a row that is a PARENT;
+             * `to ask` is a table's third direction and exists because a
+             * million rows cannot be held, where a tree's shape comes from
+             * depths the program already has in hand. Refused by naming the
+             * one it has, which is also what stops a direction spreading to
+             * every word that carries a subject because one of them wanted
+             * it. */
+            int tree_word = strcmp(word, "tree") == 0;
+            int known = dir && ((strcmp(dir, "show") == 0) ||
+                                (!tree_word && strcmp(dir, "edit") == 0) ||
                                 (table_word && strcmp(dir, "ask") == 0));
             if (dir && !known) {
-                if (table_word) {
+                if (tree_word) {
+                    win_error(run, item,
+                              "window: a tree is `to show`, not `to %s` -- its "
+                              "rows are read, and a parent row has no value to "
+                              "write back", dir);
+                } else if (table_word) {
                     win_error(run, item,
                               "window: a table is `to show`, `to edit` or "
                               "`to ask`, not `to %s`", dir);
@@ -451,6 +470,13 @@ static void win_check_item(WinRun *run, const void *item,
                       "<list>` -- because that is what a handler and "
                       "`qt.selected` address");
         }
+        /* AND SO DOES A TREE, for the identical reason. */
+        if (strcmp(word, "tree") == 0 && !iname) {
+            win_error(run, item,
+                      "window: a tree needs a name -- `tree files to show "
+                      "<rows>` -- because that is what a handler and "
+                      "`qt.selected` address");
+        }
         /* A `split` IS A ROW OR COLUMN YOU CAN DRAG, and its one free slot
          * carries the DIRECTION rather than a name. That is forced rather than
          * chosen: §0.8 measured that a container may carry a name OR options
@@ -564,7 +590,10 @@ static void win_check_item(WinRun *run, const void *item,
                              * rule unchanged. */
                             strcmp(word, "column") == 0 ||
                             strcmp(word, "row") == 0 ||
-                            strcmp(word, "group") == 0);
+                            strcmp(word, "group") == 0 ||
+                            /* A `tree` IS A TABLE'S SIBLING HERE: its rows are
+                             * many, so the tree is what addresses them. */
+                            strcmp(word, "tree") == 0);
         /* A `split` IS NEITHER: its slot is the direction, checked above, so it
          * must not reach this refusal NOR be registered as a name below. */
         if (strcmp(word, "split") == 0) {
@@ -669,9 +698,17 @@ static void win_check_item(WinRun *run, const void *item,
          * table) and the recursion that would register them window-wide is
          * skipped. `qt.cell(win, "orders", r, "who")` addresses one, which is
          * a column of a named table rather than a thing in the window. */
-        if (strcmp(word, "table") == 0) {
+        if (strcmp(word, "table") == 0 || strcmp(word, "tree") == 0) {
             const char *seen[64];
             size_t seen_count = 0;
+            /* A TREE'S DEPTH IS A COLUMN THAT IS NOT DRAWN, declared
+             * `field depth( depth: true )`. The alternative was a convention
+             * -- a field CALLED depth is the depth -- which is magic a reader
+             * cannot see, where an option says it. AT MOST ONE, because two
+             * would be a declaration with two answers and one of them would
+             * silently win; NONE is legal and useful, being a flat tree, which
+             * is what a program that owns its own expansion hands over. */
+            int depth_fields = 0;
             size_t count = M->entry_count(item);
             for (size_t i = 0; i < count; i++) {
                 const void *part = M->entry(item, i);
@@ -682,14 +719,35 @@ static void win_check_item(WinRun *run, const void *item,
                 }
                 if (!pw || strcmp(pw, "field") != 0) {
                     win_error(run, part,
-                              "window: a table's parts are columns, so they are "
-                              "all `field` -- '%s' is not one", pw ? pw : "?");
+                              "window: a %s's parts are columns, so they are "
+                              "all `field` -- '%s' is not one", word,
+                              pw ? pw : "?");
                     continue;
                 }
                 if (!pn) {
                     win_error(run, part,
-                              "window: a table's column needs a name -- it is "
-                              "the field of the subject this column shows");
+                              "window: a %s's column needs a name -- it is "
+                              "the field of the subject this column shows",
+                              word);
+                    continue;
+                }
+                if (M->option_true && M->option_true(part, "depth")) {
+                    depth_fields++;
+                    if (depth_fields > 1) {
+                        win_error(run, part,
+                                  "window: a tree takes one depth column and "
+                                  "this is the %d%s -- two would be a "
+                                  "declaration with two answers",
+                                  depth_fields,
+                                  depth_fields == 2 ? "nd" : "rd");
+                    }
+                    if (strcmp(word, "table") != 0) {
+                        continue;   /* not a drawn column; name reuse is fine */
+                    }
+                    win_error(run, part,
+                              "window: `depth:` belongs to a tree's column, "
+                              "and this is a table -- a table has no depth to "
+                              "draw");
                     continue;
                 }
                 for (size_t j = 0; j < seen_count; j++) {
