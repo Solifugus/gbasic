@@ -309,7 +309,31 @@ for path in tests/run_*.sh; do
     # failed, reporting `./gbasic: No such file or directory`, `timeout:
     # failed to execute process: Permission denied` and a concurrent
     # `src/parser.tab.o` compile: the 2026-08-25 mid-link failures verbatim.
+    # AT A COMMAND POSITION, NOT MERELY MENTIONED, which a FALSE POSITIVE
+    # forced on 2026-10-19: run_library_tiers.sh says
+    # `grep -q 'library-needs.sh' tools/build-release-tarball.sh` and
+    # `rel=tools/build-release-tarball.sh` -- it READS the release script, as a
+    # tripwire on its contents, and never executes it. The release script does
+    # contain a rebuilding `make`, so the one-hop clause flagged a suite that
+    # cannot rebuild anything and demanded it join the exclusive lane, which
+    # would move a one-minute suite into the serial tail for nothing.
+    #
+    # This is clause (b)'s recorded lesson arriving in clause (c): a scan whose
+    # false positives look exactly like its true ones is one somebody turns
+    # off, and the division of labour is already written down -- the scan names
+    # what it is SURE of, the behavioural guard catches the rest. So the tool
+    # must sit where a command goes: start of line, after `&&`, `;`, a pipe, a
+    # `(`, or a word like `if`/`then`/`while`, optionally behind env
+    # assignments or a `bash`/`sh`/`env` prefix. A `(` MUST BE FOLLOWED BY
+    # WHITESPACE to count, which is measured rather than chosen: across every
+    # suite there are exactly two `(tools/...` and both are PROSE inside a
+    # message (`(tools/make_libcurl_floor_symbols.sh regenerates it)`), and
+    # ZERO tools invoked in a subshell at all. WHAT THAT GIVES UP IS STATED:
+    # a tool invoked through a VARIABLE is no longer seen, and that is the
+    # binary-stability guard's job, which is where the two previous
+    # generations of this scan were caught out as well.
     builds="$(sed 's/#.*//' "$path" 2>/dev/null \
+                | grep -oE '(^|&&|;|\||\([[:space:]]|\bif|\bthen|\bwhile|\buntil|\belse|!)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(bash[[:space:]]+|sh[[:space:]]+|env[[:space:]]+)?(\./)?(packaging|tools)/[A-Za-z0-9_.-]+\.sh' \
                 | grep -oE '(\./)?(packaging|tools)/[A-Za-z0-9_.-]+\.sh' \
                 | sed 's|^\./||' | sort -u)"
     rebuilds=0
