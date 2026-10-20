@@ -99,3 +99,34 @@ schedule advances, so it looks like it works, and the program hangs with no
 output. It is an open ledger item with a probe now (`run_limitations.sh`),
 recorded rather than fixed, because the repair is scope handling and its own
 increment.
+
+---
+
+## A correction to the `tree` ask, in the helpful direction
+
+Measured on Qt 6.10.2 while reading request 1, before designing anything: your
+note says header visibility *"is not a `Q_PROPERTY`"*, which is true of
+`headerVisible` and **not** of `headerHidden` — that one is a property, and so
+are nine more of the things the request calls missing chrome:
+
+| property | |
+|---|---|
+| `headerHidden` | the header row you do not want |
+| `rootIsDecorated`, `itemsExpandable`, `indentation`, `animated` | the expand arrows and how they behave |
+| `alternatingRowColors`, `uniformRowHeights`, `allColumnsShowFocus`, `expandsOnDoubleClick`, `sortingEnabled` | the rest of the look |
+
+And `showGrid` does not exist on a tree at all, so there are no grid lines to
+turn off. **So what `tree` has to add is the widget and the depth, not the
+chrome** — every one of those is already reachable through the by-name route
+you are using for `showGrid` and `alternatingRowColors` today.
+
+**One measurement changes the design question, though.** A flat list with a
+depth column builds the tree correctly (`src > lib > util.bas` reads back), and
+the current item's flat index is recoverable — but **a collapsed child is not
+`isHidden()`**, so after collapsing a parent Qt's own `NotHidden` iterator
+still counts every row. There is therefore no free "visible index". Either the
+rows you supply ARE the visible set and the widget does not own expansion —
+your own stated preference, and the smaller thing — or Qt owns expansion and
+`qt.selected` answers an index into the DECLARED rows rather than into what is
+on screen. Measured, those are not the same number, so the verb has to say
+which it means. I will take the first unless you say otherwise.
