@@ -211,7 +211,12 @@ else
     QT_QPA_PLATFORM=offscreen timeout -k 5 60 "$work/gprobe" \
         > "$work/paint.out" 2>/dev/null
     prc=$?
-    set -e
+    # NO `set -e` RESTORE: this header omits -e, so that line would ARM it
+    # rather than restore it -- and the cost falls EXACTLY on a red path, where
+    # an unguarded `grep` finding nothing kills the suite mid-tier with no
+    # verdict. run_portable.sh's tripwire caught this one within minutes of the
+    # suite existing, which is the fourth time a tripwire here has caught my
+    # own brand-new work.
     pfield() { sed -n "s/.*[[:space:]]*$1=\([^ ]*\).*/\1/p" "$work/paint.out" \
                    | head -1; }
     if [ "$prc" = "2" ]; then

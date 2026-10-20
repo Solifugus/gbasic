@@ -226,17 +226,39 @@ code_only() {
 # pipeline reports failure BECAUSE IT MATCHED -- so this loop found nothing in
 # a file that has it. Fifth instance of that trap in this tree, and recorded in
 # run_rules.sh, which is where this helper was copied from.
-near_files=""
+# WHAT THE RULE IS ACTUALLY FOR IS ONE MATCHER, NOT ONE SENTENCE, and the
+# first version of this scanner measured the sentence -- which went red the
+# moment §0.29 added `qt.mark`'s category near-miss, and MEASURING FIRST showed
+# the scanner was wrong rather than the code. `src/modules/qt.c` HAS HELD A
+# near-miss sentence since §0.16 (the chooser's option names) and this passed
+# anyway, because that one is written `"did "` + `"you mean"` ACROSS A LINE
+# BREAK and a literal grep cannot see it. So the check was passing by accident
+# of where a string wrapped, and would have gone on passing however many copies
+# were added in that shape.
+#
+# AND THE TWO SENTENCES ARE ABOUT DIFFERENT THINGS, which is why there are
+# legitimately two: `src/window_check.c` owns near-misses about the
+# DECLARATION's vocabulary, where the rules live (§0.9's one-checker-two-
+# adapters), and `src/modules/qt.c` owns them for a VERB'S ARGUMENTS -- a mark
+# category, a chooser option -- which the declaration pass has no business
+# knowing about. What must not be duplicated is the MATCHER.
+#
+# So: every file that offers a near miss must get it from `gb_nearest_word`,
+# and that function must be defined exactly once.
+defs=$(grep -c '^const char \*gb_nearest_word' src/window_check.c || true)
+near_bad=""
 for f in src/window_check.c src/frontend.c src/modules/qt.c; do
-    hits=$(code_only "$f" | grep -c 'did you mean' || true)
-    if [ "$hits" -gt 0 ]; then
-        near_files="$near_files$f "
-    fi
+    says=$(code_only "$f" | tr '\n' ' ' | grep -c 'did "*[[:space:]]*"*you mean' || true)
+    [ "${says:-0}" = "0" ] && continue
+    asks=$(code_only "$f" | grep -c 'gb_nearest_word' || true)
+    [ "${asks:-0}" = "0" ] && near_bad="$near_bad$f "
 done
-if [ "$near_files" = "src/window_check.c " ]; then
-    pass "the near-miss finder is only in src/window_check.c"
+if [ "${defs:-0}" != "1" ]; then
+    fail "gb_nearest_word is defined ${defs:-0} times, not once"
+elif [ -n "$near_bad" ]; then
+    fail "these offer a near miss without asking gb_nearest_word: $near_bad"
 else
-    fail "a near-miss finder appears in: $near_files"
+    pass "one matcher, and every near miss in the tree asks it"
 fi
 # AND THE CONTROLS, without which "no second copy" is equally satisfied by a
 # scanner that read nothing -- one per scanner, since they read differently.
@@ -246,12 +268,23 @@ if grep -q 'win_container_words' "$work/planted.c"; then
 else
     fail "the table scanner found nothing in a file that has one"
 fi
-printf 'x("did you mean %%s", near);\n' > "$work/planted2.c"
-planted_hits=$(code_only "$work/planted2.c" | grep -c 'did you mean' || true)
-if [ "$planted_hits" -ge 1 ]; then
-    pass "CONTROL: the finder scanner flags a planted message"
+printf 'x("did you mean %%s", my_own_guess(w));\n' > "$work/planted2.c"
+planted_hits=$(code_only "$work/planted2.c" | tr '\n' ' ' \
+                 | grep -c 'did "*[[:space:]]*you mean' || true)
+planted_asks=$(code_only "$work/planted2.c" | grep -c 'gb_nearest_word' || true)
+if [ "${planted_hits:-0}" -gt 0 ] && [ "${planted_asks:-0}" = "0" ]; then
+    pass "CONTROL: a near miss with no matcher call is flagged"
 else
-    fail "the finder scanner found nothing in a file that has one"
+    fail "the near-miss scanner cannot see a planted copy that asks nothing"
+fi
+# AND THE WRAPPED SPELLING IS SEEN, which is the half the old scanner missed.
+printf 'x("a %%s -- did "\n    "you mean %%s?", a, b);\n' > "$work/planted3.c"
+wrapped=$(code_only "$work/planted3.c" | tr '\n' ' ' \
+            | grep -c 'did "*[[:space:]]*"*you mean' || true)
+if [ "${wrapped:-0}" -gt 0 ]; then
+    pass "CONTROL: and one split across a line break is seen too"
+else
+    fail "a near miss wrapped across lines is invisible to the scanner"
 fi
 # AND THE OTHER DIRECTION: stripping comments must not strip CODE. Without
 # this, "no second copy" is satisfied by a code_only that returns nothing.
