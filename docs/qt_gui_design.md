@@ -117,8 +117,13 @@ kind of claim that should transfer unchanged.
 **Nothing here is blocked on Studio** — the increments stand on their own — and
 the editor question, which was the one that looked like it could move a date, is
 answered: the definition carries over, the engine is MIT and light, and the
-highlighting is gateable without a display. What remains for Studio is widgets
-and the data grid, which is ordinary work rather than an open question.
+highlighting is gateable without a display. What remained for Studio was widgets
+and the data grid, which was ordinary work rather than an open question — and
+**as of 2026-10-19 both are built**: the widgets through §0.5–§0.26, and the data
+grid through §0.25, which is the one thing the conversion could not express
+otherwise (`datagrid.create_virtual` is GTK-only). The gaps still named are
+completion (§0.24, measured and not built) and a line-number gutter, which Qt
+has no widget for.
 
 ---
 
