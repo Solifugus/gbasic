@@ -3877,6 +3877,9 @@ end program
 | `qt.gutter(win, part)` | what that `source`'s margin is — `{ line_numbers, marks, width }` — or **`unknown`** for one that has none, since `width: 0` would say a margin exists and is empty. The `width` follows the **digit count**, so a thousand-line document reserves more than a nine-line one |
 | `qt.gutter_press(win, part, line)` | press the margin beside a line, which is what makes a `gutter` handler drivable without a person — `qt.right_click`'s and `qt.scroll`'s shape. A line that is **not on screen** is refused, because a mouse cannot land there |
 | `qt.gutter_click()` | which line the margin click being handled was on: `{ line }`, or **`unknown`** outside a handler — a different claim from *line 0*. Takes no arguments, because a handler here takes none and the event is asked for instead, the rule `qt.wheel()` and `principal()` already follow |
+| `qt.dock(win, name)` | what that dock pane is doing — `{ area, floating, visible, tabbed_with }` — or **`unknown`** for a name that is not a pane. The `area` is asked of the **window**, not of anything remembered when it was built, because a remembered position agrees with a placement that was wrong; `tabbed_with` counts the panes sharing its tab group, which only the window can answer |
+| `qt.layout(win)` | the window's whole dock and toolbar arrangement as **text** to keep — which area each pane is in, their order, which tab is raised, what is floating and how big. **Base64**, because Qt's own blob is not valid UTF-8 and the obvious thing to do with it is store it, through `encode` or `persist`, both of which write JSON. It is Qt's format, not ours: keep it, do not read it — `qt.dock` is what answers questions |
+| `qt.restore_layout(win, text)` | put the panes back, answering whether it took. **Reported, never raised**: an arrangement saved before the window's declaration changed is an ordinary thing to find on startup, and losing it is not worth stopping a program for — the panes stay where the declaration put them |
 | `qt.inform(win, text)` | a message box with one button, parented to `win` so Qt centres it there and makes it modal to that window |
 | `qt.confirm(win, question)` | a message box with two, answering **`true` or `false`** rather than a button code — two buttons is the whole of what it offers, and anything richer is a window shown modally. **No is the default**, because a question answered by pressing Return without reading should not be the destructive one |
 | `qt.answer(value)` | answer the dialog that is open, from the program rather than a person — a timeout, an unattended run, a suite. `true`/`false` for a message box; **a path** for a file chooser, and `false` there is a *cancel*. `true` on a chooser is **refused**, because it would have to mean "accept *what?*", and a path on a message box likewise — each refusal names the dialog that is actually open. **Refuses when nothing is open**, rather than being a silent no-op that would leave a program waiting for somebody who is not there |
@@ -4517,6 +4520,65 @@ is what makes `widgetResizable` and the scrollbar policies readable by name.
 And a `field` or a `choice` carrying a `label:` as a *direct* pane is refused
 too: a pane has no layout, and those two have their caption placed by the
 parent — so it would render the widget and drop the word in silence.
+
+**A window can have its own furniture: dock panes, a toolbar and a status
+bar.** All three belong to the window rather than to a layout, the rule a `menu`
+already follows and for the same measured reason — a window with any of them is
+a `QMainWindow`, which places its dock areas, status bar and tool bars around
+the content itself:
+
+<!--fragment: the body of a `window` declaration-->
+```basic
+toolbar main
+    item open( label: "Open" )
+    separator()
+    item save( label: "Save" )
+end toolbar
+
+docks right
+    dock branches "Branches"
+        text b( label: "main" )
+    end dock
+    dock results "Results"
+        memo out()
+    end dock
+end docks
+
+status
+    text msg( label: "Ready" )
+    stretch()
+    text pos( label: "1:1" )
+end status
+```
+
+**A `docks` block carries the area and its panes are tabbed together.** The area
+is a word in the one free slot — `left`, `right`, `top` or `bottom`, refused by
+name with a near-miss hint — which is `split across`'s arrangement. Panes in one
+block become **tabs along that edge** rather than a stack down it, which is what
+an IDE does with a column of panels; panes in a second block go to a second
+edge. A block with no panes is refused, since it would reserve an edge and show
+nothing.
+
+**A `dock` carries a name *and* a caption** — `dock branches "Branches"` — the
+one shape in this vocabulary that carries both. The caption is what a person
+reads on the pane's title bar; the **name** is what `qt.set` and `qt.dock`
+address, and what Qt keys a saved layout by. A pane is given a column, like a
+`tab` and a `scroll`, so anything works inside one.
+
+**A `toolbar` holds what a menu holds.** Its entries are the same `item`s and
+`separator`s, with `shortcut:`, `checkable:` and `icon:` all working on them —
+so a toolbar needed no part of its own. It carries a **name** rather than a
+caption, because that is what a saved layout is keyed by.
+
+**A `status` bar takes no name, and holds `text` and `stretch`.** There is one
+per window, so a second is refused rather than silently merged into the first,
+and what a program updates is the text *in* it: a `text` part there is an
+ordinary widget whose `text` property `qt.set` reaches, which is why a status
+bar needs no verb of its own. `stretch()` pushes what follows to the right.
+
+**A window with furniture cannot be shown modally** — those things belong to a
+main window and a modal window is a dialog — so `qt.open_modal` refuses it
+rather than opening a window whose declared panes are not there.
 
 **`cells` holds rows of cells.** A grid *is* rows, so `row` is reused — refined
 inside `cells` to mean a row whose columns line up with the rows above, where a

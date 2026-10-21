@@ -3728,3 +3728,121 @@ the third time a tripwire here has caught my own brand-new work, after
 file, so it can read a copy. The gate run it fired on was **discarded** rather
 than explained away, since the lane verdict is taken at pre-flight from the
 file as it then was.
+
+## 0.30 The window's own furniture: docks, a toolbar, a status bar (2026-10-20)
+
+**Three asks turned out to be one increment, and that is the finding.** After
+§0.28's `tree` and §0.29's margin closed the two asks
+`docs/qt_studio_requests.md` calls blocking, three were left: dock panes (§3),
+a real status bar and a real toolbar (§4), and `qt.theme` (§5 — which already
+exists, and that document records it as a prediction rather than an ask).
+
+Every one of the first two is a **`QMainWindow`** feature. So the question to
+ask was §0.18's, of a different root: *does everything this backend builds work
+inside one?* Measured yes — a form, a table, tabs, a splitter, a `source` and a
+menu bar all do — so nothing below the root had to change, and three asks
+became one.
+
+### Only when the declaration asks
+
+§0.18's own rule, read again. Making every window a `QMainWindow` would have
+worked and would have been a wider change for nothing; a window asks for one by
+holding a `docks`, a `toolbar` or a `status`, decided from the declaration
+rather than offered as an option.
+
+**The control is that a window holding none is untouched**, without which "a
+main window works" is satisfied by making every root one — and it is asserted
+two ways, behaviourally (an ordinary window still opens and reads back, and has
+no layout to save) and as a source claim, because a plain root and a main-window
+root behave identically for everything the declaration below them can express.
+
+A **modal** window cannot have them: measured, a `QDialog` is not a
+`QMainWindow`, so `qt.open_modal` refuses rather than opening a window whose
+declared panes are not there.
+
+### One new production, priced before it was written
+
+| shape | cost | word |
+|---|---|---|
+| `docks right` | zero — `IDENT IDENT`, `split across`'s shape | the area block |
+| `dock branches "Branches"` | **zero, measured** — `IDENT IDENT STRING`, new | a pane |
+| `toolbar main` | zero — `IDENT IDENT` | a tool bar |
+| `status` | zero — `IDENT`, a bare container | the status bar |
+
+The new one is the interesting one, because **it is the only shape in this
+vocabulary carrying a name *and* a caption** — which §0.8's one-slot rule
+appears to forbid. It does not, and the measurement says why: that wall stands
+between two heads which **both end in `NEWLINE`** (`IDENT IDENT NEWLINE`, a
+named container, against `IDENT IDENT LPAREN … RPAREN NEWLINE`, a named leaf),
+and this head has a **STRING** where the choice would be, so one token of
+lookahead settles it. Measured at zero shift/reduce and zero reduce/reduce
+before the word existed.
+
+**A dock needs both for different reasons.** The caption is what a person reads
+on the pane's title bar. The **name** is what `qt.set` and `qt.dock` address —
+and what Qt keys a saved layout by: measured, a dock with no `objectName` makes
+`saveState` **warn and omit it**, so "restore my layout" would come back
+silently partial, and every suite in this tree checks stderr.
+
+### Three measurements decided the design rather than confirming it
+
+**A `QStatusBar` has no property for its text.** `message` and `currentMessage`
+are both absent, and `showMessage(QString)` takes an argument `qt.invoke` cannot
+pass. But a `QLabel` **inside** it carries `text` as an ordinary `Q_PROPERTY` —
+so a status bar holds named `text` parts and `qt.set(win, "msg", "text", …)`
+reaches them through the route that already exists. §1's by-name argument paying
+off instead of a verb of its own, for the fifth time.
+
+**A `QToolBar`'s entries are `QAction`s** — the same objects §0.7 already builds
+for a menu, with `checkable:` and `icon:` both working on one in a toolbar. So
+`item` and `separator` are admitted inside a toolbar and **one walk serves
+both**, which is why a toolbar needed no new part kind and why an `item` means
+the same thing in both places *by construction* rather than by agreement.
+
+**A `QMenuBar` added to the central widget's layout renders inside it** — a bar
+in the middle of the window, under the toolbar and above the content — so a main
+window must place it with `setMenuBar`. That is the one existing path this
+increment had to change, and the check that the menu bar survived is what says
+the two paths agree.
+
+### Why the saved layout is base64
+
+`saveState` answers an opaque blob, and the obvious thing a program does with it
+is **store it** — through `encode` or `persist`, both of which write JSON, whose
+strings must be valid UTF-8. Measured, the blob is **not**: 95 of its 143 bytes
+are NUL and 16 are above 127. gBASIC strings are binary-safe (PLAT-NUL), so
+handing back the raw bytes would be defensible and useless. Base64 round-trips
+exactly.
+
+An unrecognised layout is **reported, not raised**: `restoreState` answers false
+for a blob it does not know, which is exactly what a program finds after its
+window's declaration has changed — an ordinary thing to meet on startup, and
+losing a saved arrangement is not worth stopping a program for.
+
+### What a check could observe if this did nothing
+
+**A pane in the wrong area is invisible from the language.** Every part inside it
+reads back by name whichever edge it ended up on, and `visible` is true either
+way — so a backend that ignored the area entirely passes every other check here.
+
+`qt.dock(win, name)` is the oracle, built before the fixture (§0.8's lesson),
+and it asks the **window** (`dockWidgetArea`) rather than anything we remembered
+when the pane was built — `qt.at`'s and `qt.pane`'s own justification, since a
+remembered position agrees with a placement that was wrong. The **second**
+`docks` block is what separates *"the area was read"* from *"everything went to
+one edge"*: without it, a backend hardcoding `right` passes.
+
+Six perturbations proven red: the area ignored, no tabifying, the menu bar left
+in the central layout, the `objectName` dropped (caught **twice** — the restore
+silently fails *and* Qt warns on stderr), every root made a main window, and the
+layout handed back raw instead of base64.
+
+### And the fixture corrected a refusal
+
+`gb_qt_dock_info` carried a sentence for a window with no dock areas, and it was
+**unreachable by construction**: a `QDockWidget` can only be built on a
+`QMainWindow`, so a name that casts to one implies the frame, and no program
+could produce the message. Removed rather than left in — an unexercised refusal
+rots, which is how §0.27 found a use-after-free in `qt.read`'s. `qt.dock` on an
+ordinary window answers `unknown`, which is the honest answer and the one that
+composes with `is_unknown`.

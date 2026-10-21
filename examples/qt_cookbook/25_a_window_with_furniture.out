@@ -1,0 +1,11 @@
+branches: right, sharing a tab group with 1
+console:  bottom, sharing a tab group with 0
+status says:              Ready
+and after qt.set:         Saved notes.bas
+a toolbar item's label:   Open
+and one can be checkable: true
+the layout is text, kept as 336 characters
+floated:                  true
+restored:                 true
+floating now:             false
+an unrecognised layout:   false

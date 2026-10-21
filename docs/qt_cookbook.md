@@ -2813,3 +2813,160 @@ after clicking 4 again:      [6]
 line 6 is both error and break, and break is what shows
 ```
 
+---
+
+## 25. A window with furniture
+
+Dock panes, a toolbar and a status bar — the things that make a window look
+like an application rather than a form.
+
+All three belong to **the window** rather than to a layout, which is the rule a
+`menu` already follows and for the same reason: a window holding any of them is
+a `QMainWindow`, and a `QMainWindow` places its dock areas, its status bar and
+its tool bars around the content itself. A window that declares none of them is
+untouched, and a window with furniture **cannot be shown modally** — those
+things belong to a main window and a modal window is a dialog.
+
+**A `docks` block carries the area, and its panes are tabbed together.** The
+area is a word in the one free slot — `left`, `right`, `top` or `bottom` — which
+is `split across`'s arrangement. Panes in one block become **tabs along that
+edge** rather than a stack down it, which matters: five panes stacked down a
+column means the ones below the fold are invisible, and a heading reading
+"Errors" over a pane you cannot see says nothing. A second block is a second
+edge.
+
+**A `dock` carries a name *and* a caption** — the one shape in this vocabulary
+that carries both. The caption is what a person reads on the pane's title bar;
+the name is what `qt.set` and `qt.dock` address, and what Qt keys a saved layout
+by. A pane is given a column, like a `tab` and a `scroll`, so anything works
+inside one.
+
+**A `toolbar` holds what a menu holds** — the same `item`s and `separator`s,
+with `shortcut:`, `checkable:` and `icon:` all working on them. It carries a
+name rather than a caption, because a saved layout is keyed by it.
+
+**A `status` bar needs no verb of its own.** A `text` part in it is an ordinary
+widget whose `text` property `qt.set` reaches, so there is nothing new to learn
+— and `stretch()` pushes what follows to the right. There is one status bar per
+window, so a second is refused rather than quietly merged into the first.
+
+**`qt.dock(win, name)`** answers where a pane is and what it is doing, asked of
+the window rather than of the declaration. **`qt.layout(win)`** and
+**`qt.restore_layout(win, text)`** keep and put back the whole arrangement —
+which area each pane is in, their order, which tab is raised, what is floating.
+The text is Qt's own format: store it, do not read it. An arrangement saved
+before the window's declaration changed is **reported, not raised**, because
+finding one is an ordinary thing on startup.
+
+<!--CODE:25_a_window_with_furniture-->
+
+```basic
+' A WINDOW WITH FURNITURE -- dock panes, a toolbar and a status bar. Under
+' QT_QPA_PLATFORM=offscreen, so it runs with no screen.
+'
+' ALL THREE BELONG TO THE WINDOW rather than to a layout, which is the same
+' rule a `menu` follows: a window holding any of them is a QMainWindow, and a
+' QMainWindow places its dock areas, its status bar and its tool bars around
+' the content itself. A window that declares none of them is untouched.
+
+window ide( title: "Workbench", width: 880, height: 560 )
+    toolbar main
+        item open( label: "Open" )
+        separator()
+        item save( label: "Save" )
+    end toolbar
+
+    menu "File"
+        item quit( label: "Quit" )
+    end menu
+
+    column
+        source code( line_numbers: true )
+    end column
+
+    ' PANES IN ONE BLOCK ARE TABBED ALONG THAT EDGE, which is what an IDE does
+    ' with a column of panels -- five stacked panes means the ones below the
+    ' fold are invisible.
+    docks right
+        dock branches "Branches"
+            text b( label: "main" )
+        end dock
+        dock results "Results"
+            memo out()
+        end dock
+    end docks
+
+    ' A SECOND BLOCK IS A SECOND EDGE.
+    docks bottom
+        dock console "Console"
+            memo log()
+        end dock
+    end docks
+
+    status
+        text msg( label: "Ready" )
+        stretch()
+        text pos( label: "1:1" )
+    end status
+end window
+
+program main( args )
+    if not qt.can_display() then
+        print "no display -- nothing to show"
+        return
+    end if
+
+    qt.open(ide)
+
+    ' WHERE A PANE IS, asked of the window rather than of the declaration.
+    print "branches: " + qt.dock(ide, "branches").area + ", sharing a tab group with " + string(qt.dock(ide, "branches").tabbed_with)
+    print "console:  " + qt.dock(ide, "console").area + ", sharing a tab group with " + string(qt.dock(ide, "console").tabbed_with)
+
+    ' A STATUS BAR NEEDS NO VERB: a `text` part in it is an ordinary widget
+    ' whose `text` property `qt.set` reaches, which is why there is nothing
+    ' like `qt.status(...)` to learn.
+    print "status says:              " + qt.read(ide, "msg", "text")
+    qt.set(ide, "msg", "text", "Saved notes.bas")
+    print "and after qt.set:         " + qt.read(ide, "msg", "text")
+
+    ' A TOOLBAR HOLDS WHAT A MENU HOLDS -- the same items, so `checkable:` and
+    ' `icon:` work on them too.
+    print "a toolbar item's label:   " + qt.read(ide, "open", "text")
+    qt.set(ide, "save", "checkable", true)
+    print "and one can be checkable: " + string(qt.read(ide, "save", "checkable"))
+
+    ' KEEP THE ARRANGEMENT. The text is Qt's own format -- store it, do not
+    ' read it; `qt.dock` is what answers questions about a pane.
+    saved = qt.layout(ide)
+    print "the layout is text, kept as " + string(len(saved)) + " characters"
+
+    ' A PERSON DRAGS A PANE OUT; the program puts it back.
+    qt.set(ide, "branches", "floating", true)
+    print "floated:                  " + string(qt.dock(ide, "branches").floating)
+    print "restored:                 " + string(qt.restore_layout(ide, saved))
+    print "floating now:             " + string(qt.dock(ide, "branches").floating)
+
+    ' AND AN ARRANGEMENT SAVED BEFORE THE WINDOW CHANGED IS REPORTED, NOT
+    ' RAISED -- an ordinary thing to find on startup.
+    print "an unrecognised layout:   " + string(qt.restore_layout(ide, "bm90IG1pbmU="))
+
+    qt.close(ide)
+end program
+```
+
+<!--OUT:25_a_window_with_furniture-->
+
+```
+branches: right, sharing a tab group with 1
+console:  bottom, sharing a tab group with 0
+status says:              Ready
+and after qt.set:         Saved notes.bas
+a toolbar item's label:   Open
+and one can be checkable: true
+the layout is text, kept as 336 characters
+floated:                  true
+restored:                 true
+floating now:             false
+an unrecognised layout:   false
+```
+
