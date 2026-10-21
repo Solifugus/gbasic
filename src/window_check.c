@@ -59,7 +59,8 @@ static void win_error(WinRun *run, const void *item, const char *fmt, ...) {
 static const char *win_container_words[] = {"row", "column", "form", "group",
                                             "table", "menu", "popup", "tabs",
                                             "tab", "cells", "split", "scroll",
-                                            "tree", NULL};
+                                            "tree", "docks", "dock", "toolbar",
+                                            "status", NULL};
 static const char *win_leaf_words[] = {"field", "button", "check", "text",
                                        "memo", "choice", "source", "stretch",
                                        "item", "separator", NULL};
@@ -416,6 +417,184 @@ static void win_check_item(WinRun *run, const void *item,
             }
         }
 
+        /* THE WINDOW'S OWN FURNITURE (§0.30) -- `docks`, `dock`, `toolbar`
+         * and `status`. All four are QMainWindow features, which is the
+         * finding that made them one increment rather than three: the
+         * remaining asks in docs/qt_studio_requests.md are dock panes (§3), a
+         * status bar and a toolbar (§4), and every one of them hangs off a
+         * QMainWindow rather than needing a vocabulary of its own.
+         *
+         * THEY BELONG TO THE WINDOW, NOT TO A LAYOUT, which is the `menu`
+         * rule reached by the same measurement one widget along: a QMainWindow
+         * places its own dock areas, status bar and tool bars, and a
+         * QDockWidget added to a box layout is laid out like any other widget
+         * -- a titled frame in the middle of the screen with no dock
+         * behaviour, which is a plausible-looking widget nobody asked for. */
+        if (strcmp(word, "docks") == 0 || strcmp(word, "toolbar") == 0 ||
+            strcmp(word, "status") == 0) {
+            if (!parent_word || strcmp(parent_word, "window") != 0) {
+                win_error(run, item,
+                          "window: a `%s` belongs to the window, not inside "
+                          "'%s' -- the window places its own furniture", word,
+                          parent_word ? parent_word : "?");
+            }
+        }
+
+        /* A `docks` BLOCK CARRIES THE AREA, and the area is a WORD in the one
+         * slot -- `split across`'s arrangement exactly, and chosen for the
+         * same reason: a container carries a name or options and not both
+         * (§0.8, measured at four reduce/reduce), and an area whose only
+         * correct values are four known words is not something to spell as a
+         * string.
+         *
+         * GROUPING THEM IS WHAT THE ASK WANTS rather than a convenience:
+         * Studio's right-hand column is five stacked panes, and five docks in
+         * ONE area is what Qt tabs together -- *"five panes become five tabs
+         * along one edge, which is what every professional IDE does with
+         * exactly this content."* */
+        if (strcmp(word, "docks") == 0) {
+            static const char *areas[] = {"left", "right", "top", "bottom",
+                                          NULL};
+            if (M->label(item)) {
+                win_error(run, item,
+                          "window: a dock area is a word, not a string -- "
+                          "`docks right`, without the quotes");
+            } else if (!iname) {
+                win_error(run, item,
+                          "window: a `docks` block needs an area -- `docks "
+                          "left`, `right`, `top` or `bottom`");
+            } else if (!win_in(areas, iname)) {
+                const char *near = gb_nearest_word(iname, areas);
+                if (near) {
+                    win_error(run, item,
+                              "window: a dock area is `left`, `right`, `top` "
+                              "or `bottom`, not '%s' -- did you mean `%s`?",
+                              iname, near);
+                } else {
+                    win_error(run, item,
+                              "window: a dock area is `left`, `right`, `top` "
+                              "or `bottom`, not '%s' (the slot carries the "
+                              "area, not a name)", iname);
+                }
+            }
+            size_t count = M->entry_count(item);
+            size_t panes = 0;
+            for (size_t i = 0; i < count; i++) {
+                const void *part = M->entry(item, i);
+                const char *pw = M->word(part);
+                if (M->kind(part) == GB_WIN_HANDLER || !pw) {
+                    continue;
+                }
+                panes++;
+                if (strcmp(pw, "dock") != 0) {
+                    win_error(run, part,
+                              "window: a `docks` block holds `dock` panes -- "
+                              "'%s' is not one", pw);
+                }
+            }
+            if (panes == 0) {
+                win_error(run, item,
+                          "window: this `docks` block holds no panes, so it "
+                          "reserves an edge of the window and shows nothing");
+            }
+        }
+
+        /* A `dock` IS A PANE OF A `docks` BLOCK and nowhere else -- the area
+         * lives on the block, so a dock outside one has no area to go in and
+         * nothing would place it. */
+        if (strcmp(word, "dock") == 0) {
+            if (!parent_word || strcmp(parent_word, "docks") != 0) {
+                win_error(run, item,
+                          "window: a `dock` is a pane of a `docks` block, not "
+                          "of '%s' -- the block is what carries the area",
+                          parent_word ? parent_word : "?");
+            }
+            /* IT NEEDS BOTH, which is the one thing in this vocabulary that
+             * does -- and it is affordable because `dock branches "Branches"`
+             * MEASURED AT ZERO CONFLICTS. The NAME is what `qt.set` and
+             * `qt.dock` address and what Qt's own `saveState` keys the layout
+             * by (a dock with no `objectName` makes saveState WARN and drop
+             * it, measured); the CAPTION is what a person reads on the pane's
+             * title bar. */
+            if (!iname) {
+                win_error(run, item,
+                          "window: a dock needs a name -- `dock branches "
+                          "\"Branches\"` -- because the name is how a program "
+                          "shows, hides and finds it again");
+            }
+            if (!M->label(item)) {
+                win_error(run, item,
+                          "window: a dock needs a caption -- `dock branches "
+                          "\"Branches\"` -- because that is what a person "
+                          "reads on its title bar");
+            }
+        }
+
+        /* A TOOLBAR HOLDS WHAT A MENU HOLDS, which is why it needed no new
+         * part kind: measured, a QToolBar's entries are QActions, the same
+         * objects §0.7 already builds for a menu, and `checkable:` and an
+         * `icon:` both work on one in a toolbar. */
+        if (strcmp(word, "toolbar") == 0) {
+            if (!iname) {
+                win_error(run, item,
+                          "window: a toolbar needs a name -- `toolbar main` "
+                          "-- because Qt keys a saved layout by it and a "
+                          "program shows and hides it by it");
+            }
+            if (M->label(item)) {
+                win_error(run, item,
+                          "window: a toolbar's slot carries its NAME, not a "
+                          "caption -- `toolbar main`, without the quotes");
+            }
+            size_t count = M->entry_count(item);
+            for (size_t i = 0; i < count; i++) {
+                const void *part = M->entry(item, i);
+                const char *pw = M->word(part);
+                if (M->kind(part) == GB_WIN_HANDLER || !pw) {
+                    continue;
+                }
+                if (strcmp(pw, "item") != 0 && strcmp(pw, "separator") != 0) {
+                    win_error(run, part,
+                              "window: a toolbar holds items and separators "
+                              "-- '%s' is neither", pw);
+                }
+            }
+        }
+
+        /* A STATUS BAR TAKES NO NAME, and that is the `menu` rule for the
+         * same reason: there is exactly one per window, and what a program
+         * updates is the TEXT IN IT rather than the bar.
+         *
+         * WHAT IT HOLDS WAS DECIDED BY A MEASUREMENT: a QStatusBar has NO
+         * property for its text -- `message` and `currentMessage` are both
+         * absent and `showMessage(QString)` takes an argument `qt.invoke`
+         * cannot pass -- but a permanent QLabel inside it carries `text` as an
+         * ordinary Q_PROPERTY. So a status bar holds NAMED `text` parts and
+         * `qt.set(win, "msg", "text", ...)` reaches them through the by-name
+         * route that already exists, which is §1's argument paying off again
+         * rather than a verb of its own. */
+        if (strcmp(word, "status") == 0) {
+            if (iname) {
+                win_error(run, item,
+                          "window: a status bar takes no name; the `text` "
+                          "parts IN it are what a program updates");
+            }
+            size_t count = M->entry_count(item);
+            for (size_t i = 0; i < count; i++) {
+                const void *part = M->entry(item, i);
+                const char *pw = M->word(part);
+                if (M->kind(part) == GB_WIN_HANDLER || !pw) {
+                    continue;
+                }
+                if (strcmp(pw, "text") != 0 && strcmp(pw, "stretch") != 0) {
+                    win_error(run, part,
+                              "window: a status bar holds `text` and "
+                              "`stretch` -- '%s' is neither, and a status bar "
+                              "is not a layout", pw);
+                }
+            }
+        }
+
         /* A CONTEXT MENU. The same placement rule as a menu bar and for the
          * same measured reason -- a QMenu is placed by nothing, so a `popup`
          * inside a `row` would be a declaration the layout silently ignores --
@@ -593,10 +772,27 @@ static void win_check_item(WinRun *run, const void *item,
                             strcmp(word, "group") == 0 ||
                             /* A `tree` IS A TABLE'S SIBLING HERE: its rows are
                              * many, so the tree is what addresses them. */
-                            strcmp(word, "tree") == 0);
+                            strcmp(word, "tree") == 0 ||
+                            /* A `dock` AND A `toolbar` ARE ADDRESSED (§0.30):
+                             * a program shows and hides them, and Qt's own
+                             * `saveState` keys a stored layout by the
+                             * `objectName` their name becomes -- measured, one
+                             * without a name makes saveState WARN and drop it,
+                             * which would make "restore my layout" silently
+                             * partial. A `dock` is also the one thing here
+                             * carrying a name AND a caption, which costs
+                             * nothing: `dock branches "Branches"` measured at
+                             * zero conflicts. */
+                            strcmp(word, "dock") == 0 ||
+                            strcmp(word, "toolbar") == 0);
         /* A `split` IS NEITHER: its slot is the direction, checked above, so it
          * must not reach this refusal NOR be registered as a name below. */
         if (strcmp(word, "split") == 0) {
+            may_be_named = 1;
+        }
+        /* AND A `docks` BLOCK IS THE SAME: its slot is the AREA, checked
+         * above, so it must not be refused here nor registered as a name. */
+        if (strcmp(word, "docks") == 0) {
             may_be_named = 1;
         }
         if (!may_be_named && iname) {
@@ -663,7 +859,12 @@ static void win_check_item(WinRun *run, const void *item,
          * `on orders.activated` on a perfectly real table would have been
          * refused as naming nothing in the window -- the refusal that exists
          * to catch a handler that can never fire, firing on one that can. */
-        if (iname && strcmp(word, "split") != 0) {
+        /* A `docks` BLOCK'S SLOT IS AN AREA, not a name, so it is not
+         * registered -- `docks right` twice in one window is two blocks in one
+         * area, not a name declared twice. A `dock` and a `toolbar` ARE
+         * registered, which is the point of their names. */
+        if (iname && strcmp(word, "split") != 0 &&
+            strcmp(word, "docks") != 0) {
             if (win_shadows_window(run, item, iname)) {
                 /* reported; not registered, so nothing after it is confused */
             } else {
@@ -788,10 +989,16 @@ static void win_check_item(WinRun *run, const void *item,
      * buttons, and neither could be written. */
     if (strcmp(word, "item") == 0) {
         if (!parent_word || (strcmp(parent_word, "menu") != 0 &&
-                             strcmp(parent_word, "popup") != 0)) {
+                             strcmp(parent_word, "popup") != 0 &&
+                             /* A TOOLBAR TOO, since §0.30, and it needed no
+                              * new part kind: measured, a QToolBar's entries
+                              * are QActions -- the same objects a menu is
+                              * built from -- and `checkable:` and `icon:`
+                              * both work on one in a toolbar. */
+                             strcmp(parent_word, "toolbar") != 0)) {
             win_error(run, item,
-                      "window: 'item' belongs in a menu or a popup, not in "
-                      "'%s'", parent_word ? parent_word : "?");
+                      "window: 'item' belongs in a menu, a popup or a "
+                      "toolbar, not in '%s'", parent_word ? parent_word : "?");
             return;
         }
     }
@@ -803,7 +1010,14 @@ static void win_check_item(WinRun *run, const void *item,
          * appears at an orientation nobody chose -- measured, the wrong way
          * round renders as a stubby stub taking a share of the width. */
         int in_menu = parent_word && (strcmp(parent_word, "menu") == 0 ||
-                                      strcmp(parent_word, "popup") == 0);
+                                      strcmp(parent_word, "popup") == 0 ||
+                                      /* A TOOLBAR'S OWN DIVIDER, which is the
+                                       * SECOND of the two uses Studio has for
+                                       * a separator -- the comment above
+                                       * already named it ("the divider between
+                                       * groups of toolbar buttons") and there
+                                       * was no toolbar to put one in. */
+                                      strcmp(parent_word, "toolbar") == 0);
         int in_box = parent_word && (strcmp(parent_word, "row") == 0 ||
                                      strcmp(parent_word, "column") == 0 ||
                                      strcmp(parent_word, "group") == 0 ||
@@ -992,6 +1206,36 @@ int gb_window_check(const GbWinModel *model, const void *win) {
      * keeps a part out of. */
     if (run.window_name) {
         names[name_count++] = run.window_name;
+    }
+    /* AT MOST ONE STATUS BAR (§0.30), which is a fact about QMainWindow rather
+     * than a rule chosen here: `statusBar()` answers ONE bar, so a second
+     * `status` block would have its parts added to the SAME bar and the two
+     * declarations would silently merge -- a window with more text in its
+     * status bar than either block asked for. Several `toolbar`s and several
+     * `docks` blocks are legal, because Qt genuinely holds several of each. */
+    {
+        size_t top = model->win_item_count(win);
+        size_t bars = 0;
+        const void *second = NULL;
+        for (size_t i = 0; i < top; i++) {
+            const void *it = model->win_item(win, i);
+            const char *iw = model->word(it);
+            if (model->kind(it) == GB_WIN_HANDLER || !iw) {
+                continue;
+            }
+            if (strcmp(iw, "status") == 0) {
+                bars++;
+                if (bars == 2) {
+                    second = it;
+                }
+            }
+        }
+        if (bars > 1) {
+            win_error(&run, second,
+                      "window '%s' declares %zu status bars; a window has one, "
+                      "so the second would add its text to the first",
+                      wname ? wname : "?", bars);
+        }
     }
     /* "window" IS THE PARENT AT THE TOP LEVEL, which is the one place a `menu`
      * may appear outside another menu -- a menu bar belongs to the window. */

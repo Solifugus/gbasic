@@ -1375,6 +1375,21 @@ window_item
         $$ = ast_window_named_form($1, $2, NULL, NULL, NULL, $4, $6,
                                    @1.first_line, @1.first_column);
       }
+    /* NAMED CONTAINER WITH A CAPTION:  dock branches "Branches" ... end dock
+     *
+     * THE ONE SHAPE CARRYING BOTH, and it costs nothing: MEASURED AT ZERO
+     * shift/reduce and ZERO reduce/reduce before the word existed, because
+     * §0.8's one-slot wall is about two heads that both end in `NEWLINE` --
+     * `IDENT IDENT NEWLINE` (a named container) against
+     * `IDENT IDENT LPAREN ... RPAREN NEWLINE` (a named leaf) -- and this head
+     * has a STRING where the choice would have been, so one token of lookahead
+     * settles it. A `dock` needs both: the caption is what a person reads on
+     * its title bar, and the NAME is what addresses it and what Qt keys a
+     * saved layout by. */
+    | IDENT IDENT STRING NEWLINE window_item_list END IDENT NEWLINE {
+        $$ = ast_window_named_container($1, $2, $3, $5, $7,
+                                        @1.first_line, @1.first_column);
+      }
     /* CONTAINER with a label:   group "Credit" ... end group         */
     | IDENT STRING NEWLINE window_item_list END IDENT NEWLINE {
         $$ = ast_window_container($1, $2, ast_record_field_list_empty(), $4, $6,

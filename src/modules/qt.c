@@ -1127,6 +1127,56 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         return qt_build_popup(root, item);
     }
 
+    if (strcmp(kind, "container") == 0 && word &&
+        (strcmp(word, "docks") == 0 || strcmp(word, "toolbar") == 0 ||
+         strcmp(word, "status") == 0)) {
+        /* THE ROOT, NOT THE PARENT (§0.30) -- the window's own furniture,
+         * which is the `menu` rule for the identical measured reason: a
+         * QMainWindow places its dock areas, its status bar and its tool bars
+         * around the central widget, so the container a declaration happens to
+         * sit in is irrelevant, and the load-time pass has already refused one
+         * anywhere a layout would have been asked to place it.
+         *
+         * THE AREA RIDES IN `title`, which is where a `split`'s direction
+         * already rides: the declaration's one free slot carries a word, and
+         * the record puts a bare word in `name`, so it is handed over as the
+         * title the backend reads. */
+        /* THE ONE SLOT MEANS DIFFERENT THINGS, so it is handed over
+         * differently: a `docks` block spends it on the AREA (the `split
+         * across` arrangement, §0.19) where a `toolbar` spends it on its NAME
+         * -- which is what `qt.set(win, "main", "movable", ...)` reaches and
+         * what Qt keys a saved layout by. A `status` spends it on neither,
+         * there being one bar per window. */
+        const char *slot = qt_record_text(item, "name");
+        int is_docks = strcmp(word, "docks") == 0;
+        err[0] = '\0';
+        void *node = gb_qt_container(root, word,
+                                     is_docks ? NULL : slot,
+                                     is_docks ? slot : NULL,
+                                     err, sizeof(err));
+        if (!node) {
+            snprintf(message, sizeof(message), "window: %s",
+                     err[0] ? err : "that furniture could not be built");
+            qt_raise(message);
+            return 0;
+        }
+        /* A TOOLBAR'S ENTRIES GO THROUGH THE MENU WALK, not the widget walk,
+         * and that is the whole reason a toolbar needed no new part kind:
+         * measured, a QToolBar's entries ARE QActions -- the same objects
+         * §0.7 already builds -- so `qt_fill_menu` serves it unchanged and an
+         * `item` means the same thing in both places by construction. Handing
+         * them to `gb_qt_part` instead would map a word to a widget and find
+         * nothing to map. */
+        if (strcmp(word, "toolbar") == 0) {
+            return qt_fill_menu(root, node, item);
+        }
+        RecordField *kids = record_find(item, "items");
+        if (kids && kids->value && kids->value->kind == VALUE_ARRAY) {
+            return qt_build_items(node, kids->value, root);
+        }
+        return 1;
+    }
+
     if (strcmp(kind, "container") == 0 && word && strcmp(word, "menu") == 0) {
         /* THE ROOT, NOT THE PARENT, because a menu bar belongs to the window
          * and not to whatever container the declaration happens to sit in --
@@ -2833,9 +2883,54 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
             height = (long)hf->value->as.num.value;
         }
     }
+    /* WHETHER THIS WINDOW NEEDS A QMainWindow, decided from the DECLARATION
+     * rather than offered as an option (§0.30): a window asks for one by
+     * holding a `docks`, a `toolbar` or a `status`, and nothing else changes.
+     * That is §0.18's own rule for a modal root read again -- making every
+     * root a QMainWindow would have worked and would have been a wider change
+     * for nothing, and a plain QWidget root genuinely HAS no dock areas, so a
+     * `dock` on an ordinary window is a refusal rather than a policy.
+     *
+     * TOP LEVEL ONLY, because that is where the three words are legal: the
+     * load-time pass refuses a `docks` inside a layout (a QMainWindow places
+     * its own furniture), so a scan one level deep cannot miss one that is
+     * going to be built. */
+    int needs_frame = 0;
+    {
+        RecordField *top = record_find(&win, "items");
+        if (top && top->value && top->value->kind == VALUE_ARRAY &&
+            top->value->as.array.store) {
+            size_t n = top->value->as.array.store->count;
+            for (size_t i = 0; i < n; i++) {
+                Value *it = &top->value->as.array.store->items[i];
+                if (it->kind != VALUE_RECORD) {
+                    continue;
+                }
+                const char *iw = qt_record_text(it, "word");
+                if (iw && (strcmp(iw, "docks") == 0 ||
+                           strcmp(iw, "toolbar") == 0 ||
+                           strcmp(iw, "status") == 0)) {
+                    needs_frame = 1;
+                    break;
+                }
+            }
+        }
+    }
+    if (needs_frame && modal) {
+        /* MEASURED, A QDialog IS NOT A QMainWindow, so the two cannot be
+         * combined -- and this is a refusal rather than a silent downgrade
+         * because the alternative is a modal window whose declared panes
+         * simply are not there. */
+        qt_raise("qt.open_modal: a window with dock panes, a toolbar or a "
+                 "status bar cannot be shown modally -- those belong to a main "
+                 "window, and a modal window is a dialog");
+        value_free(win);
+        return 0;
+    }
     void *root = gb_qt_window(name ? name : "",
                               title ? title : (name ? name : ""),
-                              (int)width, (int)height, modal);
+                              (int)width, (int)height,
+                              modal ? 1 : (needs_frame ? 2 : 0));
     /* REMEMBERED BEFORE BINDING, because a form's capture is kept on the
      * registry entry; forgotten again if binding refuses, so a failed
      * open leaves nothing behind. */
@@ -3729,6 +3824,161 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         free(pname);
+        return value_bool(1);
+    }
+
+    if (strcmp(verb, "dock") == 0) {
+        /* WHERE A PANE IS AND WHAT IT IS DOING (§0.30) -- the oracle, built
+         * before the fixture, which is the discipline §0.8 arrived at by
+         * getting it wrong. Without it a pane placed in the WRONG AREA is
+         * invisible: every part inside it reads back by name whichever edge it
+         * ended up on, so a backend that ignored the area entirely would pass
+         * every check the language can otherwise make.
+         *
+         * ASKED OF THE WINDOW rather than of anything we remembered, which is
+         * `qt.at`'s and `qt.pane`'s own justification -- a remembered position
+         * agrees with a placement that was wrong. Answers `unknown` for a name
+         * that is not a dock, which is a different claim from "a dock with no
+         * area". */
+        if (argc != 2) {
+            qt_raise("qt.dock expects a window and a pane's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "dock") || which.kind != VALUE_STRING) {
+            if (!error_action_pending()) {
+                qt_raise("qt.dock expects a window and a pane's name as text");
+            }
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            return value_null();
+        }
+        char *pname = copy_string(which.as.string);
+        value_free(win); value_free(which);
+        char err[QT_ERRBUF];
+        char area[16];
+        int floating = 0, tabbed = 0, visible = 0;
+        err[0] = '\0';
+        area[0] = '\0';
+        int got = gb_qt_dock_info(root, pname, area, sizeof(area), &floating,
+                                  &tabbed, &visible, err, sizeof(err));
+        if (got < 0) {
+            snprintf(message, sizeof(message), "qt.dock: %s",
+                     err[0] ? err : "that pane could not be read");
+            free(pname);
+            qt_raise(message);
+            return value_null();
+        }
+        free(pname);
+        if (got == 0) {
+            return value_unknown();
+        }
+        Value out = value_record(NULL, 0);
+        record_set(&out, "area", value_string(area));
+        record_set(&out, "floating", value_bool(floating));
+        record_set(&out, "visible", value_bool(visible));
+        /* HOW MANY PANES SHARE ITS TAB GROUP, which is the ask's own point and
+         * is readable only from the WINDOW (`tabifiedDockWidgets` is a
+         * QMainWindow call, not a dock's). A count rather than a list, since
+         * what a program wants to know is whether this pane shares its edge. */
+        record_set(&out, "tabbed_with", value_number((double)tabbed));
+        return out;
+    }
+
+    if (strcmp(verb, "layout") == 0 || strcmp(verb, "restore_layout") == 0) {
+        /* THE WINDOW'S OWN LAYOUT, AS TEXT -- which is how "put my panes back
+         * where I left them" is written, and the same question §0.22 answered
+         * for a splitter. A dock layout is richer than pane sizes (which area,
+         * which order, which tab is raised, what is floating and how big) and
+         * Qt's `saveState` is the only thing that knows all of it.
+         *
+         * BASE64, AND THAT IS A MEASUREMENT RATHER THAN A PREFERENCE: the blob
+         * is NOT valid UTF-8 -- measured, 95 of 143 bytes are NUL and 16 are
+         * above 127 -- and the obvious thing a program does with it is STORE
+         * it, through `encode` or `persist`, both of which write JSON, whose
+         * strings must be valid UTF-8. gBASIC strings are binary-safe
+         * (PLAT-NUL), so handing back the raw bytes would be defensible and
+         * useless. It round-trips exactly, measured.
+         *
+         * AND IT IS QT'S FORMAT, NOT OURS: a program keeps it and does not
+         * read it, which is why it is one opaque string rather than a record
+         * naming areas -- `qt.dock` is what answers questions. */
+        int saving = strcmp(verb, "layout") == 0;
+        if (argc != (saving ? 1 : 2)) {
+            qt_raise(saving
+                         ? "qt.layout expects a window"
+                         : "qt.restore_layout expects a window and the text "
+                           "`qt.layout` answered");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value text = saving ? value_null()
+                            : eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(win); value_free(text);
+            return value_null();
+        }
+        if (!qt_window_record(&win, verb) ||
+            (!saving && text.kind != VALUE_STRING)) {
+            if (!error_action_pending()) {
+                qt_raise(saving
+                             ? "qt.layout expects a window"
+                             : "qt.restore_layout expects a window and the "
+                               "layout as text");
+            }
+            value_free(win); value_free(text);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(text);
+            return value_null();
+        }
+        char *blob = saving ? NULL : copy_string(text.as.string);
+        value_free(win); value_free(text);
+        char err[QT_ERRBUF];
+        err[0] = '\0';
+        if (saving) {
+            char *out = gb_qt_layout_save(root, err, sizeof(err));
+            if (!out) {
+                snprintf(message, sizeof(message), "qt.layout: %s",
+                         err[0] ? err : "this window has no layout to save");
+                qt_raise(message);
+                return value_null();
+            }
+            Value v = value_string(out);
+            free(out);
+            return v;
+        }
+        int ok = gb_qt_layout_restore(root, blob, err, sizeof(err));
+        free(blob);
+        if (!ok) {
+            /* REPORTED AS A VALUE, NOT A RAISE, which the implementation's own
+             * measurement decided: `restoreState` answers false for a blob it
+             * does not recognise, and that is exactly what a program finds
+             * after its window's declaration has changed -- an ORDINARY thing
+             * to meet on startup, and losing a saved arrangement is not worth
+             * stopping a program for. The panes are where the declaration put
+             * them, which is a usable window. */
+            return value_bool(0);
+        }
         return value_bool(1);
     }
 

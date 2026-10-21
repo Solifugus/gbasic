@@ -500,6 +500,31 @@ AstWindowItem *ast_window_form(char *word, char *verb, char *direction, char *su
  * lines`. Separate from ast_window_form rather than giving that one an extra
  * NULL at every call site, since the two shapes are different productions and
  * a reader of the grammar should see which is which. */
+/* A CONTAINER WITH A NAME AND A CAPTION -- `dock branches "Branches"`, the one
+ * shape in this vocabulary carrying both (§0.30). §0.8's one-slot rule is a
+ * fact about the two shapes of a head that END IN `NEWLINE`, and this head has
+ * a STRING between them, so the parser never has to choose: measured at ZERO
+ * bison conflicts before the word existed.
+ *
+ * A DOCK NEEDS BOTH FOR DIFFERENT REASONS. The caption is what a person reads
+ * on the pane's title bar; the NAME is what `qt.set` and `qt.dock` address and
+ * what Qt's own `saveState` keys a stored layout by -- measured, a dock with
+ * no `objectName` makes saveState WARN and omit it, so "restore my layout"
+ * would come back silently partial. */
+AstWindowItem *ast_window_named_container(char *word, char *name, char *label,
+                                          AstWindowItemList entries,
+                                          char *close_word, int line,
+                                          int column) {
+    AstWindowItem *item = window_item_new(AST_WINDOW_CONTAINER, line, column);
+    item->word = word;
+    item->name = name;
+    item->label = label;
+    item->options = ast_record_field_list_empty();
+    item->entries = entries;
+    item->close_word = close_word;
+    return item;
+}
+
 AstWindowItem *ast_window_named_form(char *word, char *name, char *verb,
                                      char *direction, char *subject,
                                      AstWindowItemList entries,

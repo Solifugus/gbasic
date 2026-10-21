@@ -54,6 +54,10 @@
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QMenuBar>
+#include <QMainWindow>
+#include <QDockWidget>
+#include <QStatusBar>
+#include <QToolBar>
 #include <QMenu>
 #include <QAction>
 #include <QGridLayout>
@@ -239,6 +243,15 @@ void GbQtRelay::tick() {
 struct GbQtNode {
     QWidget *widget = nullptr;
     QLayout *layout = nullptr;
+    /* WHERE CHILDREN ARE PARENTED, when that is not `widget` itself. ROOT ONLY,
+     * and only for a QMainWindow root (§0.30): a QMainWindow's own layout
+     * belongs to Qt -- it places the dock areas, the status bar and the tool
+     * bars around a CENTRAL WIDGET -- so the declaration's items are parented
+     * to that central widget while `widget` stays the window, which is what
+     * keeps `qt.read(win, "app", "windowTitle")`, `qt.close` and
+     * `on app.closed` reaching the frame. Null everywhere else, and every
+     * reader falls back to `widget`. */
+    QWidget *host = nullptr;
     /* THE DECLARED WORD, kept because a RECONCILE has to know what a child IS:
      * `qt.refresh(win, name, items)` keeps a child whose name AND word are
      * unchanged, and a name alone is not enough -- a `field` replaced by a
@@ -261,6 +274,14 @@ struct GbQtNode {
     int grid_row = -1;
     int grid_col = 0;
     int grid_next_row = 0;
+    /* A `docks` BLOCK'S AREA, and the first pane put in it (§0.30). The block
+     * is not a widget -- Qt has no object for a dock area, `addDockWidget`
+     * taking it as an argument -- so the node carries the area itself, and
+     * `dock_first` is what lets the second and later panes be TABBED onto the
+     * first rather than stacked down the edge. -1 on everything that is not
+     * one. */
+    int dock_area = -1;
+    QDockWidget *dock_first = nullptr;
     GbQtNode *root = nullptr;
     bool is_form = false;
     /* ROOT ONLY. `closed_handler` is the function `on app.closed` named, held
@@ -282,6 +303,42 @@ struct GbQtNode {
      * and refuse instead of there being a second registry to keep in step. */
     QHash<QString, QObject *> parts;   /* root only */
 };
+
+/* WHERE A CHILD OF THIS NODE GOES. One place, so the QMainWindow case cannot
+ * be forgotten at one door out of several -- which is the drift this backend
+ * tripwires against elsewhere. */
+/* A DOCK AREA'S WORD. One place, so the declaration's vocabulary and Qt's
+ * enum cannot drift -- and it answers -1 for a word it does not know rather
+ * than defaulting to an area, since a pane that quietly appeared on the wrong
+ * edge is the silent class this backend is tested against. */
+static int dock_area_of(const char *word) {
+    if (!word) {
+        return -1;
+    }
+    if (strcmp(word, "left") == 0)   { return (int)Qt::LeftDockWidgetArea; }
+    if (strcmp(word, "right") == 0)  { return (int)Qt::RightDockWidgetArea; }
+    if (strcmp(word, "top") == 0)    { return (int)Qt::TopDockWidgetArea; }
+    if (strcmp(word, "bottom") == 0) { return (int)Qt::BottomDockWidgetArea; }
+    return -1;
+}
+
+static const char *dock_area_word(int area) {
+    switch (area) {
+    case (int)Qt::LeftDockWidgetArea:   return "left";
+    case (int)Qt::RightDockWidgetArea:  return "right";
+    case (int)Qt::TopDockWidgetArea:    return "top";
+    case (int)Qt::BottomDockWidgetArea: return "bottom";
+    default: break;
+    }
+    return "none";
+}
+
+static QWidget *host_of(GbQtNode *n) {
+    if (!n) {
+        return nullptr;
+    }
+    return n->host ? n->host : n->widget;
+}
 
 static QApplication *g_app = nullptr;
 static QVector<GbQtNode *> g_nodes;
@@ -1005,7 +1062,7 @@ extern "C" int gb_qt_begin(char *err, size_t err_size) {
 }
 
 extern "C" void *gb_qt_window(const char *name, const char *title, int width,
-                              int height, int modal) {
+                              int height, int kind) {
     /* A WINDOW CLOSED EARLIER IS DELETED HERE -- see `retired_drain`. Done
      * before the new one is built so a program that opens, closes and reopens
      * holds at most one retired window at a time. */
@@ -1018,7 +1075,38 @@ extern "C" void *gb_qt_window(const char *name, const char *title, int width,
      * What it adds is `exec()`, `accept()` and `reject()`, and what it costs is
      * nothing, because a QDialog shown with `show()` is an ordinary window
      * (`isModal` is false until `exec()` runs). */
-    QWidget *w = modal ? (QWidget *)new QDialog() : new QWidget();
+    /* A THIRD ROOT KIND (§0.30). `kind` is 0 plain, 1 modal, 2 main -- ONE
+     * value rather than two booleans, because a window cannot be both and two
+     * flags would let a caller ask for it.
+     *
+     * A QMainWindow IS WHAT THE REMAINING THREE ASKS ALL NEED, which is the
+     * finding that made them one increment: dock panes, a status bar and a
+     * toolbar are every one of them a QMainWindow feature. MEASURED BEFORE
+     * CHOOSING IT, the §0.18 question asked again: everything this backend
+     * builds works inside one -- a form, a table, tabs, a splitter, a
+     * `source`, a menu bar -- so nothing below had to change for the root.
+     *
+     * ONLY WHEN THE DECLARATION ASKS, deliberately, which is §0.18's own rule:
+     * making every root a QMainWindow would have worked and would have been a
+     * wider change for nothing, and a plain QWidget root genuinely HAS no dock
+     * areas, so a `dock` on an ordinary window is refused by the load-time
+     * pass rather than by a policy here.
+     *
+     * ITS CENTRAL WIDGET CARRIES THE LAYOUT, because a QMainWindow's own
+     * layout belongs to Qt -- it places the dock areas, the status bar and the
+     * tool bars around a central widget, and a box layout set on the window
+     * itself is refused by Qt. So the declaration's items go in the centre and
+     * the furniture hangs off the frame. */
+    QWidget *w;
+    QMainWindow *frame = nullptr;
+    if (kind == 2) {
+        frame = new QMainWindow();
+        w = frame;
+    } else if (kind == 1) {
+        w = new QDialog();
+    } else {
+        w = new QWidget();
+    }
     if (title && *title) {
         w->setWindowTitle(QString::fromUtf8(title));
     }
@@ -1034,7 +1122,20 @@ extern "C" void *gb_qt_window(const char *name, const char *title, int width,
     /* A window needs a layout of its own or a single child sits at its
      * natural size in the corner. A column is the declaration's own default
      * shape and costs nothing when the block supplies one. */
-    QVBoxLayout *box = new QVBoxLayout(w);
+    QVBoxLayout *box;
+    if (frame) {
+        QWidget *central = new QWidget(frame);
+        box = new QVBoxLayout(central);
+        frame->setCentralWidget(central);
+        /* THE NODE'S WIDGET STAYS THE WINDOW so `qt.read(win, "app",
+         * "windowTitle")`, `qt.close` and `on app.closed` all reach the frame
+         * -- what moves is only where children are PARENTED, which is the
+         * central widget. Kept here so every `gb_qt_*` call below can ask one
+         * node for both. */
+        n->host = central;
+    } else {
+        box = new QVBoxLayout(w);
+    }
     n->layout = box;
     /* THE WINDOW IS A PART OF ITSELF, in the only table that matters: one
      * insert and `qt.read`, `qt.set`, `qt.invoke` and `on <name>.<signal>`
@@ -1071,7 +1172,16 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
      * it as a pane -- `count()` went to 2 from two `new QLabel(..., sp)` calls
      * with no `addWidget` anywhere. So the only change a splitter needs on this
      * side is for the layout requirement not to be asked of its children. */
+    /* A `dock` IS THE THIRD CONTAINER WHOSE PARENT HAS NO LAYOUT (§0.30),
+     * after `tab` and a splitter's panes -- and for a reason of its own: a
+     * `docks` block is an AREA rather than a widget, Qt having no object for
+     * one (`addDockWidget` takes it as an argument), so the block carries the
+     * area and nothing else. Found by running it, exactly as the `tab` case
+     * was: with the guard first, `dock branches "Branches"` was refused with
+     * "that container cannot hold anything" -- a true sentence about the wrong
+     * thing. */
     if (!p->layout && strcmp(word, "tab") != 0 &&
+        strcmp(word, "dock") != 0 &&
         !qobject_cast<QSplitter *>(p->widget)) {
         say(err, err_size, "that container cannot hold anything");
         return nullptr;
@@ -1094,7 +1204,7 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
         return n;
     }
     if (strcmp(word, "row") == 0 || strcmp(word, "column") == 0) {
-        QWidget *host = new QWidget(p->widget);
+        QWidget *host = new QWidget(host_of(p));
         QLayout *box = (strcmp(word, "row") == 0)
                            ? (QLayout *)new QHBoxLayout(host)
                            : (QLayout *)new QVBoxLayout(host);
@@ -1102,14 +1212,14 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
         n->widget = host;
         n->layout = box;
     } else if (strcmp(word, "form") == 0) {
-        QWidget *host = new QWidget(p->widget);
+        QWidget *host = new QWidget(host_of(p));
         QFormLayout *form = new QFormLayout(host);
         form->setContentsMargins(0, 0, 0, 0);
         n->widget = host;
         n->layout = form;
         n->is_form = true;
     } else if (strcmp(word, "group") == 0) {
-        QGroupBox *box = new QGroupBox(p->widget);
+        QGroupBox *box = new QGroupBox(host_of(p));
         if (title && *title) {
             box->setTitle(QString::fromUtf8(title));
         }
@@ -1122,7 +1232,7 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
          * costs no vocabulary and reads as what it does. The refinement is
          * that inside `cells` a row's columns ALIGN with the rows above it,
          * where a `row` elsewhere is a box that does not. */
-        QWidget *host = new QWidget(p->widget);
+        QWidget *host = new QWidget(host_of(p));
         QGridLayout *grid = new QGridLayout(host);
         grid->setContentsMargins(0, 0, 0, 0);
         n->widget = host;
@@ -1139,7 +1249,7 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
          * NO LAYOUT, deliberately: a QSplitter's children are PANES, and
          * leaving `layout` null is what makes the guard above the one place
          * that decides what may hold what. */
-        QSplitter *sp = new QSplitter(p->widget);
+        QSplitter *sp = new QSplitter(host_of(p));
         sp->setOrientation((title && strcmp(title, "down") == 0)
                                ? Qt::Vertical
                                : Qt::Horizontal);
@@ -1159,7 +1269,7 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
          * IT HOLDS MANY THINGS THROUGH AN INNER COLUMN, the choice a `tab`
          * already makes: a QScrollArea takes exactly ONE widget, so a bare one
          * would force every author to open a `column` first. */
-        QScrollArea *area = new QScrollArea(p->widget);
+        QScrollArea *area = new QScrollArea(host_of(p));
         QWidget *inner = new QWidget(area);
         QVBoxLayout *box = new QVBoxLayout(inner);
         box->setContentsMargins(0, 0, 0, 0);
@@ -1174,7 +1284,7 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
          * silently dropped: `gb_qt_part` and `gb_qt_container` both begin by
          * asking the parent for a layout. The load-time pass refuses it first;
          * this is the floor under that. */
-        n->widget = new QTabWidget(p->widget);
+        n->widget = new QTabWidget(host_of(p));
     } else if (strcmp(word, "tab") == 0) {
         QTabWidget *book = qobject_cast<QTabWidget *>(p->widget);
         if (!book) {
@@ -1206,6 +1316,134 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
             n->root->parts.insert(QString::fromUtf8(name), page);
         }
         return n;
+    } else if (strcmp(word, "docks") == 0) {
+        /* NOT A WIDGET AT ALL -- a `docks` block is an AREA, and Qt has no
+         * object for one: `addDockWidget(area, dock)` takes the area as an
+         * argument. So this node carries no widget and no layout; what it
+         * carries is the area, in `word`'s sibling slot, and each `dock` child
+         * reads it back. That is also what makes anything but a `dock` inside
+         * one refuse here as well as at load time.
+         *
+         * THE AREA IS THE DECLARATION'S ONE FREE SLOT, handed over in `title`
+         * the way a `split`'s direction is (§0.19) -- a container carries a
+         * name or options and not both (§0.8), and an area whose only correct
+         * values are four known words has no business being a string. */
+        QMainWindow *frame = qobject_cast<QMainWindow *>(p->root->widget);
+        if (!frame) {
+            say(err, err_size,
+                "dock panes need a window that has them, and this one is not a "
+                "main window");
+            return nullptr;
+        }
+        n->object = frame;
+        n->dock_area = dock_area_of(title);
+        if (n->dock_area < 0) {
+            say(err, err_size,
+                QByteArray("`") + (title ? title : "?") +
+                    "` is not a dock area");
+            return nullptr;
+        }
+        return n;
+    } else if (strcmp(word, "dock") == 0) {
+        /* A PANE OF THE BLOCK ABOVE IT. `title` is the caption and `name` is
+         * the name, which is the one place in this vocabulary carrying both --
+         * measured at zero bison conflicts, so it cost nothing.
+         *
+         * THE NAME BECOMES THE objectName, AND THAT IS NOT DECORATION:
+         * measured, `QMainWindow::saveState()` WARNS on a dock with no
+         * objectName ("'objectName' not set for QDockWidget") and omits it
+         * from the saved state -- so "restore my layout" would come back
+         * silently partial, and every suite in this tree checks stderr. */
+        QMainWindow *frame = p->object ? qobject_cast<QMainWindow *>(p->object)
+                                       : nullptr;
+        if (!frame || p->dock_area < 0) {
+            say(err, err_size, "a `dock` needs a `docks` block around it");
+            return nullptr;
+        }
+        QDockWidget *dw = new QDockWidget(frame);
+        dw->setWindowTitle(QString::fromUtf8(title ? title : ""));
+        if (name && *name) {
+            dw->setObjectName(QString::fromUtf8(name));
+        }
+        /* A PANE IS A COLUMN, the choice a `tab` and a `scroll` already make:
+         * a QDockWidget takes exactly ONE widget, so a bare one would force
+         * every author to open a `column` first. */
+        QWidget *body = new QWidget(dw);
+        QVBoxLayout *inner = new QVBoxLayout(body);
+        dw->setWidget(body);
+        frame->addDockWidget((Qt::DockWidgetArea)p->dock_area, dw);
+        /* TABBED WHEN THE BLOCK ALREADY HOLDS ONE, which is the ask's own
+         * point -- *"five panes become five tabs along one edge, which is what
+         * every professional IDE does with exactly this content"* -- and it is
+         * what makes a `docks` block a block rather than a loop: stacking five
+         * panes down an edge is what Studio has now and what it is trying to
+         * get away from. Qt raises one of a tab group and hides the rest,
+         * measured, which is the behaviour a tab group IS. */
+        if (p->dock_first) {
+            frame->tabifyDockWidget(p->dock_first, dw);
+        } else {
+            p->dock_first = dw;
+        }
+        n->widget = dw;
+        n->layout = inner;
+        n->host = body;
+        if (name && *name && n->root) {
+            n->root->parts.insert(QString::fromUtf8(name), dw);
+        }
+        return n;
+    } else if (strcmp(word, "toolbar") == 0) {
+        /* ITS ENTRIES ARE QActions -- the same objects a `menu` is built from,
+         * which is why a toolbar needed no new part kind: measured, a QAction
+         * in a QToolBar carries its text, its `checkable:` and its `icon:`
+         * exactly as it does in a menu. So `item` and `separator` are admitted
+         * inside one and the existing doors serve them.
+         *
+         * NO LAYOUT, like a QTabWidget and a QSplitter, which is what makes a
+         * `field` or a `row` inside a toolbar refuse rather than be dropped. */
+        QMainWindow *frame = qobject_cast<QMainWindow *>(p->root->widget);
+        if (!frame) {
+            say(err, err_size,
+                "a toolbar needs a window that has one, and this one is not a "
+                "main window");
+            return nullptr;
+        }
+        QToolBar *tb = new QToolBar(frame);
+        if (name && *name) {
+            /* THE objectName AGAIN, for saveState -- measured to warn and drop
+             * a toolbar without one, the same as a dock. */
+            tb->setObjectName(QString::fromUtf8(name));
+            tb->setWindowTitle(QString::fromUtf8(name));
+        }
+        frame->addToolBar(tb);
+        n->widget = tb;
+        if (name && *name && n->root) {
+            n->root->parts.insert(QString::fromUtf8(name), tb);
+        }
+        return n;
+    } else if (strcmp(word, "status") == 0) {
+        /* ONE PER WINDOW, which is Qt's own answer rather than a rule here:
+         * `statusBar()` creates one on demand and returns THE one, so a second
+         * `status` block would add its parts to the same bar -- which is why
+         * the load-time pass refuses a second rather than letting two
+         * declarations silently merge.
+         *
+         * WHAT IT HOLDS WAS DECIDED BY A MEASUREMENT: a QStatusBar has NO
+         * property for its text -- `message` and `currentMessage` are both
+         * absent, and `showMessage(QString)` takes an argument `qt.invoke`
+         * cannot pass -- while a QLabel INSIDE it carries `text` as an
+         * ordinary Q_PROPERTY. So the bar holds named `text` parts and
+         * `qt.set(win, "msg", "text", ...)` reaches them through the route
+         * that already exists, which is §1's by-name argument paying off
+         * rather than a verb of its own. */
+        QMainWindow *frame = qobject_cast<QMainWindow *>(p->root->widget);
+        if (!frame) {
+            say(err, err_size,
+                "a status bar needs a window that has one, and this one is not "
+                "a main window");
+            return nullptr;
+        }
+        n->widget = frame->statusBar();
+        return n;
     } else {
         say(err, err_size,
             QByteArray("no Qt container is wired for `") + word + "`");
@@ -1234,8 +1472,51 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
      * pane, measured. So a `field` or a `source` can be a pane directly,
      * which is the common case (Studio's editor is one). */
     QSplitter *psplit = p ? qobject_cast<QSplitter *>(p->widget) : nullptr;
-    if (!p || (!p->layout && !psplit)) {
+    /* A STATUS BAR HAS NO LAYOUT EITHER and still holds things (§0.30) -- this
+     * is the SIXTH door that asks a parent for a layout, and the fifth was
+     * found by run_qt_split.sh's guard tripwire rather than by reading, which
+     * is why that tripwire exists. A QStatusBar places its own children with
+     * `addWidget`, so what it needs here is for the layout requirement not to
+     * be asked of them. */
+    QStatusBar *pstatus = p ? qobject_cast<QStatusBar *>(p->widget) : nullptr;
+    if (!p || (!p->layout && !psplit && !pstatus)) {
         say(err, err_size, "that container cannot hold anything");
+        return nullptr;
+    }
+    /* WHAT A STATUS BAR MAY HOLD, refused here as well as at load time: the
+     * load-time pass is necessary and not sufficient, since a BUILT record
+     * (§0.9) reaches this door too. `text` becomes a QLabel whose `text` is an
+     * ordinary Q_PROPERTY -- which is the whole reason a status bar needs no
+     * verb of its own -- and `stretch` becomes a spacer, so a message on the
+     * left and a position on the right is written the way a `row` would be. */
+    if (pstatus) {
+        if (strcmp(word, "text") == 0) {
+            QLabel *l = new QLabel(pstatus);
+            if (label && *label) {
+                l->setText(QString::fromUtf8(label));
+            }
+            pstatus->addWidget(l, 0);
+            GbQtNode *sn = node_new();
+            sn->root = p->root;
+            sn->word = word;
+            sn->widget = l;
+            if (name && *name && sn->root) {
+                sn->root->parts.insert(QString::fromUtf8(name), l);
+            }
+            return sn;
+        }
+        if (strcmp(word, "stretch") == 0) {
+            QWidget *spacer = new QWidget(pstatus);
+            pstatus->addWidget(spacer, 1);
+            GbQtNode *sn = node_new();
+            sn->root = p->root;
+            sn->word = word;
+            sn->widget = spacer;
+            return sn;
+        }
+        say(err, err_size,
+            QByteArray("a status bar holds `text` and `stretch`, and `") +
+                word + "` is neither");
         return nullptr;
     }
     /* A PANE HAS NOWHERE TO PUT A LABEL, and this is the silent-discard class
@@ -1294,7 +1575,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
                 "splitter already has a handle between its panes");
             return nullptr;
         }
-        QFrame *rule = new QFrame(p->widget);
+        QFrame *rule = new QFrame(host_of(p));
         /* A COLUMN IS DIVIDED BY A HORIZONTAL LINE and a row by a vertical
          * one, which is the opposite of what the direction's name suggests
          * until you picture it. */
@@ -1341,15 +1622,15 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
     n->word = word ? word : "";
     QWidget *w = nullptr;
     if (strcmp(word, "field") == 0) {
-        w = new QLineEdit(p->widget);
+        w = new QLineEdit(host_of(p));
     } else if (strcmp(word, "button") == 0) {
-        QPushButton *b = new QPushButton(p->widget);
+        QPushButton *b = new QPushButton(host_of(p));
         if (label && *label) {
             b->setText(QString::fromUtf8(label));
         }
         w = b;
     } else if (strcmp(word, "check") == 0) {
-        QCheckBox *c = new QCheckBox(p->widget);
+        QCheckBox *c = new QCheckBox(host_of(p));
         if (label && *label) {
             c->setText(QString::fromUtf8(label));
         }
@@ -1367,7 +1648,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * wants one line has `wordWrap: false` through the by-name route.
          * Selectable, because text a person cannot copy is a nuisance and the
          * widget is read-only either way. */
-        QLabel *l = new QLabel(p->widget);
+        QLabel *l = new QLabel(host_of(p));
         l->setWordWrap(true);
         l->setTextInteractionFlags(Qt::TextBrowserInteraction |
                                    Qt::TextSelectableByKeyboard);
@@ -1387,7 +1668,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * ITS ITEMS COME FROM DATA, so they are filled by `qt.options` rather
          * than guessed here; a declared `options:` literal is handled above in
          * qt.c, for the fixed case where typing them out is the honest thing. */
-        w = new QComboBox(p->widget);
+        w = new QComboBox(host_of(p));
     } else if (strcmp(word, "memo") == 0) {
         /* MANY LINES, which `field` is not: a QLineEdit holds one, so a
          * description, a note or a game's output log had nowhere to go
@@ -1395,7 +1676,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * TEXT -- rich text would make `qt.read` answer markup for something
          * a program put in as a string, and nothing in this vocabulary asks
          * for formatting. */
-        QPlainTextEdit *m = new QPlainTextEdit(p->widget);
+        QPlainTextEdit *m = new QPlainTextEdit(host_of(p));
         if (label && *label) {
             m->setPlainText(QString::fromUtf8(label));
         }
@@ -1424,7 +1705,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * `qt.write` reach it through the `plainText` branch that already
          * exists and a form can bind it with nothing new. Rich text would
          * make a program that put source in as a string read markup back. */
-        GbQtSourceEdit *se = new GbQtSourceEdit(p->widget);
+        GbQtSourceEdit *se = new GbQtSourceEdit(host_of(p));
         QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
         se->setFont(mono);
         se->setLineWrapMode(QPlainTextEdit::NoWrap);
@@ -1450,7 +1731,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * labelled grid expects. It costs a column, which is why a `field`
          * with no label takes one cell and one with a label takes two. */
         if (strcmp(word, "field") == 0 && label && *label) {
-            pg->addWidget(new QLabel(QString::fromUtf8(label), p->widget),
+            pg->addWidget(new QLabel(QString::fromUtf8(label), host_of(p)),
                           p->grid_row, p->grid_col++);
         }
         /* THE GRID AND THE POSITION ARE KEPT ON THE PART, because that is
@@ -1467,7 +1748,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
         pf->addRow(w);
     } else if (pb) {
         if (strcmp(word, "field") == 0 && label && *label) {
-            pb->addWidget(new QLabel(QString::fromUtf8(label), p->widget));
+            pb->addWidget(new QLabel(QString::fromUtf8(label), host_of(p)));
         }
         pb->addWidget(w);
     }
@@ -2223,6 +2504,16 @@ static QMenuBar *menu_bar_of(GbQtNode *root) {
         return bar;
     }
     bar = new QMenuBar(root->widget);
+    /* A QMainWindow PLACES ITS OWN MENU BAR (§0.30), and the difference is
+     * visible rather than tidy: MEASURED, a QMenuBar added to the CENTRAL
+     * widget's box layout stays in that layout and renders INSIDE the central
+     * area -- a bar in the middle of the window, under the toolbar and above
+     * the content -- where `setMenuBar` puts it along the top of the frame
+     * where a person looks for it. */
+    if (QMainWindow *frame = qobject_cast<QMainWindow *>(root->widget)) {
+        frame->setMenuBar(bar);
+        return bar;
+    }
     if (QBoxLayout *b = qobject_cast<QBoxLayout *>(root->layout)) {
         b->insertWidget(0, bar);
     }
@@ -2259,17 +2550,45 @@ extern "C" void *gb_qt_menu(void *window, void *parent_menu, const char *title,
     return n;
 }
 
+/* WHAT AN `item` CAN BE ADDED TO. A QMenu and a QToolBar both take one and
+ * neither shares a base class that does, so the branch is here -- in ONE place,
+ * widened rather than copied, because two doors deciding what an item is would
+ * be two things that can disagree. (§0.30: a toolbar's entries ARE the QActions
+ * §0.7 already builds, measured, which is why no new part kind was needed.) */
+static QAction *add_action_to(QWidget *w, const QString &text) {
+    if (QMenu *m = qobject_cast<QMenu *>(w)) {
+        return m->addAction(text);
+    }
+    if (QToolBar *t = qobject_cast<QToolBar *>(w)) {
+        return t->addAction(text);
+    }
+    return nullptr;
+}
+
+static bool add_separator_to(QWidget *w) {
+    if (QMenu *m = qobject_cast<QMenu *>(w)) {
+        m->addSeparator();
+        return true;
+    }
+    if (QToolBar *t = qobject_cast<QToolBar *>(w)) {
+        t->addSeparator();
+        return true;
+    }
+    return false;
+}
+
 extern "C" void *gb_qt_menu_item(void *window, void *menu, const char *name,
                                  const char *label, char *err,
                                  size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
     GbQtNode *m = (GbQtNode *)menu;
-    QMenu *owner = m ? qobject_cast<QMenu *>(m->widget) : nullptr;
-    if (!owner) {
-        say(err, err_size, "an item needs a menu around it");
+    QAction *act = m ? add_action_to(m->widget,
+                                    QString::fromUtf8(label ? label : ""))
+                     : nullptr;
+    if (!act) {
+        say(err, err_size, "an item needs a menu or a toolbar around it");
         return nullptr;
     }
-    QAction *act = owner->addAction(QString::fromUtf8(label ? label : ""));
     GbQtNode *n = node_new();
     n->root = root;
     /* NO `widget`, BECAUSE IT IS NOT ONE. A QAction is a QObject, so anything
@@ -2285,12 +2604,10 @@ extern "C" void *gb_qt_menu_item(void *window, void *menu, const char *name,
 
 extern "C" int gb_qt_menu_separator(void *menu, char *err, size_t err_size) {
     GbQtNode *m = (GbQtNode *)menu;
-    QMenu *owner = m ? qobject_cast<QMenu *>(m->widget) : nullptr;
-    if (!owner) {
-        say(err, err_size, "a separator needs a menu around it");
+    if (!m || !add_separator_to(m->widget)) {
+        say(err, err_size, "a separator needs a menu or a toolbar around it");
         return 0;
     }
-    owner->addSeparator();
     return 1;
 }
 
@@ -3198,6 +3515,126 @@ static char *dup_qbytes(const QByteArray &bytes) {
     memcpy(out, bytes.constData(), (size_t)bytes.size());
     out[bytes.size()] = 0;
     return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* THE DOCK ORACLE AND THE SAVED LAYOUT (§0.30).                      */
+/* ------------------------------------------------------------------ */
+
+/* WHERE A DOCK IS, AND WHAT IT IS DOING -- the oracle, built before the
+ * fixture (the discipline §0.8 arrived at by getting it wrong). Without it a
+ * pane put in the WRONG AREA is invisible: every part inside it reads back by
+ * name regardless of which edge it ended up on, and `visible` is true either
+ * way, so a backend that ignored the area entirely would pass every check the
+ * language can otherwise make. It is asked of THE WINDOW (`dockWidgetArea`)
+ * rather than of anything we remembered, which is `qt.at`'s and `qt.pane`'s
+ * own justification: a remembered position agrees with a placement that was
+ * wrong.
+ *
+ * 1 described, 0 not a dock, -1 refused (err set). */
+extern "C" int gb_qt_dock_info(void *window, const char *name, char *area,
+                               size_t area_size, int *floating, int *tabbed,
+                               int *visible, char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!o) {
+        say(err, err_size, QByteArray("there is nothing called `") + name +
+                               "` in this window");
+        return -1;
+    }
+    QDockWidget *dw = qobject_cast<QDockWidget *>(o);
+    if (!dw) {
+        return 0;
+    }
+    /* NO FRAME MEANS NOT A DOCK OF OURS, answered as the same absence rather
+     * than as a refusal -- and that is a correction the fixture forced. A
+     * sentence here ("this window has no dock areas") was UNREACHABLE BY
+     * CONSTRUCTION: a QDockWidget can only be built on a QMainWindow, so a
+     * name that casts to one implies the frame, and no program could produce
+     * the message. An unexercised refusal rots, which is how §0.27 found a
+     * use-after-free in `qt.read`'s. */
+    QMainWindow *frame = qobject_cast<QMainWindow *>(root->widget);
+    if (!frame) {
+        return 0;
+    }
+    if (area && area_size) {
+        snprintf(area, area_size, "%s",
+                 dock_area_word((int)frame->dockWidgetArea(dw)));
+    }
+    if (floating) { *floating = dw->isFloating() ? 1 : 0; }
+    if (visible)  { *visible = dw->isVisible() ? 1 : 0; }
+    /* TABBED WITH SOMETHING ELSE, which is the ask's own point and is NOT
+     * readable from the dock: `tabifiedDockWidgets` is a QMainWindow call. A
+     * count rather than a list, because what a program wants to know is
+     * whether this pane shares its edge -- and Qt raises one of a tab group
+     * and hides the rest, so a hidden pane with tab siblings is ORDINARY
+     * rather than a fault. */
+    if (tabbed) { *tabbed = (int)frame->tabifiedDockWidgets(dw).size(); }
+    return 1;
+}
+
+/* THE WINDOW'S OWN LAYOUT, AS TEXT -- which is how "put my panes back where I
+ * left them" is written, and the same question §0.22 answered for a splitter
+ * one increment along. A dock layout is richer than pane sizes (which area,
+ * which order, which tab is raised, what is floating and how big), and Qt's
+ * `saveState` is the only thing that knows all of it.
+ *
+ * BASE64 RATHER THAN THE RAW BYTES, AND THAT IS A MEASUREMENT: `saveState`
+ * answers an opaque binary blob -- measured, 143 bytes of which 95 ARE NUL and
+ * 16 are above 127 -- so it is not valid UTF-8, and the obvious thing a
+ * program does with it is STORE it. `encode` and `persist` both write JSON,
+ * whose strings must be valid UTF-8, so raw bytes would be corrupted or
+ * refused at the one door every caller reaches for. gBASIC strings are
+ * binary-safe (PLAT-NUL), so returning the bytes would be defensible and
+ * useless. Base64 round-trips exactly, measured.
+ *
+ * AND IT IS QT'S FORMAT, NOT OURS: a program must not read it, only keep it,
+ * which is why it is one opaque string rather than a record. */
+extern "C" char *gb_qt_layout_save(void *window, char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QMainWindow *frame = root ? qobject_cast<QMainWindow *>(root->widget)
+                              : nullptr;
+    if (!frame) {
+        say(err, err_size,
+            "only a window with dock panes, a toolbar or a status bar has a "
+            "layout to save");
+        return nullptr;
+    }
+    QByteArray b64 = frame->saveState().toBase64();
+    return dup_qbytes(b64);
+}
+
+extern "C" int gb_qt_layout_restore(void *window, const char *text, char *err,
+                                    size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QMainWindow *frame = root ? qobject_cast<QMainWindow *>(root->widget)
+                              : nullptr;
+    if (!frame) {
+        say(err, err_size,
+            "only a window with dock panes, a toolbar or a status bar has a "
+            "layout to restore");
+        return 0;
+    }
+    QByteArray raw = QByteArray::fromBase64(QByteArray(text ? text : ""));
+    if (raw.isEmpty()) {
+        say(err, err_size,
+            "that is not a layout this window saved -- `qt.layout` answers the "
+            "text to keep");
+        return 0;
+    }
+    /* QT'S OWN ANSWER IS THE REPORT. `restoreState` returns false for a blob
+     * it does not recognise, which is exactly the case a program hits after a
+     * window's declaration has changed -- so it is reported rather than
+     * raised: an old saved layout is an ORDINARY thing to find, and losing it
+     * is not a failure worth stopping a program for. */
+    if (!frame->restoreState(raw)) {
+        say(err, err_size,
+            "this window did not recognise that layout, so its panes are "
+            "where the declaration put them");
+        return 0;
+    }
+    return 1;
 }
 
 static KSyntaxHighlighting::Definition applied_definition(void *window,

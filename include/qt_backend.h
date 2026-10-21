@@ -127,8 +127,15 @@ int gb_qt_begin(char *err, size_t err_size);
  * worked and would have been a wider change for nothing: a QWidget root then
  * genuinely HAS no `accept`, so `qt.accept` on an ordinary window is refused
  * by the same by-name door everything else goes through. */
+/* `kind` IS 0 PLAIN, 1 MODAL, 2 MAIN (§0.30) -- one value rather than two
+ * booleans, because a window cannot be both and two flags would let a caller
+ * ask for it. A MAIN window is a QMainWindow, which is what dock panes, a
+ * status bar and a toolbar all hang off -- the finding that made the three
+ * remaining asks in docs/qt_studio_requests.md one increment rather than
+ * three. Only when the declaration asks, the rule a modal root already
+ * follows: a plain QWidget root genuinely HAS no dock areas. */
 void *gb_qt_window(const char *name, const char *title, int width, int height,
-                   int modal);
+                   int kind);
 
 /* A container word (`row`, `column`, `form`, `group`, `tabs`, `tab`). `title`
  * is the caption a `group` or a `tab` carries and is NULL for the others.
@@ -702,6 +709,23 @@ int gb_qt_highlight(void *window, const char *name, const char *language,
  * library beside the program override the standard one; what is not acceptable
  * is being unable to SEE it. Both malloc'd; NULL when no definition is
  * applied, which is a different answer from an empty string. */
+/* ---- THE WINDOW'S OWN FURNITURE (§0.30) --------------------------------
+ * `docks`/`dock`/`toolbar`/`status` are built through `gb_qt_container` like
+ * every other container word; what needs its own entry points is reading a
+ * dock back and keeping the layout.
+ *
+ * 1 described, 0 that name is not a dock, -1 refused (err set). */
+int gb_qt_dock_info(void *window, const char *name, char *area,
+                    size_t area_size, int *floating, int *tabbed, int *visible,
+                    char *err, size_t err_size);
+/* BASE64, which is a measurement rather than a preference: `saveState` answers
+ * an opaque blob that is NOT valid UTF-8 (measured: 95 NUL bytes of 143), and
+ * the obvious thing a program does with it is store it -- through `encode` or
+ * `persist`, both of which write JSON. Caller frees. */
+char *gb_qt_layout_save(void *window, char *err, size_t err_size);
+int gb_qt_layout_restore(void *window, const char *text, char *err,
+                         size_t err_size);
+
 /* ---- THE MARGIN ON A `source` (§0.29) ----------------------------------
  * `line_numbers:` and `marks:` are STRUCTURAL options, the shape `language:`
  * has: each builds a child widget rather than setting a property, so the
