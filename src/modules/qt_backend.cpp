@@ -3246,6 +3246,149 @@ extern "C" void gb_qt_syntax_path(const char *dir) {
 #endif
 }
 
+/* OUTSIDE EVERY `#if`, AND THAT IS THIS PROJECT'S CONVENTION READ THE OTHER
+ * WAY. CLAUDE.md states both halves: code that IS optional must stay inside its
+ * guard, and code that is NOT must stay out -- and the second is the one that is
+ * easy to get wrong, because the ordinary build hides it. §0.18 records `with
+ * principal` written next to `http_multi` inside `#if HAVE_LIBCURL`, so the
+ * whole feature vanished from a build without libcurl; this block was first
+ * written next to `applied_definition`, inside `#if HAVE_KSYNTAX`, so dock panes
+ * vanished from a build without KSyntaxHighlighting -- which has nothing to do
+ * with them. Caught by run_platform.sh, which builds lean; every one of the
+ * eleven Qt suites passed, because they all run on a full build.
+ *
+ * `dup_qbytes` MOVED OUT WITH IT, for the same reason: a malloc'd copy of some
+ * bytes is not a highlighting function. */
+static char *dup_qbytes(const QByteArray &bytes) {
+    char *out = (char *)malloc((size_t)bytes.size() + 1);
+    if (!out) {
+        return nullptr;
+    }
+    memcpy(out, bytes.constData(), (size_t)bytes.size());
+    out[bytes.size()] = 0;
+    return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* THE DOCK ORACLE AND THE SAVED LAYOUT (§0.30).                      */
+/* ------------------------------------------------------------------ */
+
+/* WHERE A DOCK IS, AND WHAT IT IS DOING -- the oracle, built before the
+ * fixture (the discipline §0.8 arrived at by getting it wrong). Without it a
+ * pane put in the WRONG AREA is invisible: every part inside it reads back by
+ * name regardless of which edge it ended up on, and `visible` is true either
+ * way, so a backend that ignored the area entirely would pass every check the
+ * language can otherwise make. It is asked of THE WINDOW (`dockWidgetArea`)
+ * rather than of anything we remembered, which is `qt.at`'s and `qt.pane`'s
+ * own justification: a remembered position agrees with a placement that was
+ * wrong.
+ *
+ * 1 described, 0 not a dock, -1 refused (err set). */
+extern "C" int gb_qt_dock_info(void *window, const char *name, char *area,
+                               size_t area_size, int *floating, int *tabbed,
+                               int *visible, char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!o) {
+        say(err, err_size, QByteArray("there is nothing called `") + name +
+                               "` in this window");
+        return -1;
+    }
+    QDockWidget *dw = qobject_cast<QDockWidget *>(o);
+    if (!dw) {
+        return 0;
+    }
+    /* NO FRAME MEANS NOT A DOCK OF OURS, answered as the same absence rather
+     * than as a refusal -- and that is a correction the fixture forced. A
+     * sentence here ("this window has no dock areas") was UNREACHABLE BY
+     * CONSTRUCTION: a QDockWidget can only be built on a QMainWindow, so a
+     * name that casts to one implies the frame, and no program could produce
+     * the message. An unexercised refusal rots, which is how §0.27 found a
+     * use-after-free in `qt.read`'s. */
+    QMainWindow *frame = qobject_cast<QMainWindow *>(root->widget);
+    if (!frame) {
+        return 0;
+    }
+    if (area && area_size) {
+        snprintf(area, area_size, "%s",
+                 dock_area_word((int)frame->dockWidgetArea(dw)));
+    }
+    if (floating) { *floating = dw->isFloating() ? 1 : 0; }
+    if (visible)  { *visible = dw->isVisible() ? 1 : 0; }
+    /* TABBED WITH SOMETHING ELSE, which is the ask's own point and is NOT
+     * readable from the dock: `tabifiedDockWidgets` is a QMainWindow call. A
+     * count rather than a list, because what a program wants to know is
+     * whether this pane shares its edge -- and Qt raises one of a tab group
+     * and hides the rest, so a hidden pane with tab siblings is ORDINARY
+     * rather than a fault. */
+    if (tabbed) { *tabbed = (int)frame->tabifiedDockWidgets(dw).size(); }
+    return 1;
+}
+
+/* THE WINDOW'S OWN LAYOUT, AS TEXT -- which is how "put my panes back where I
+ * left them" is written, and the same question §0.22 answered for a splitter
+ * one increment along. A dock layout is richer than pane sizes (which area,
+ * which order, which tab is raised, what is floating and how big), and Qt's
+ * `saveState` is the only thing that knows all of it.
+ *
+ * BASE64 RATHER THAN THE RAW BYTES, AND THAT IS A MEASUREMENT: `saveState`
+ * answers an opaque binary blob -- measured, 143 bytes of which 95 ARE NUL and
+ * 16 are above 127 -- so it is not valid UTF-8, and the obvious thing a
+ * program does with it is STORE it. `encode` and `persist` both write JSON,
+ * whose strings must be valid UTF-8, so raw bytes would be corrupted or
+ * refused at the one door every caller reaches for. gBASIC strings are
+ * binary-safe (PLAT-NUL), so returning the bytes would be defensible and
+ * useless. Base64 round-trips exactly, measured.
+ *
+ * AND IT IS QT'S FORMAT, NOT OURS: a program must not read it, only keep it,
+ * which is why it is one opaque string rather than a record. */
+extern "C" char *gb_qt_layout_save(void *window, char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QMainWindow *frame = root ? qobject_cast<QMainWindow *>(root->widget)
+                              : nullptr;
+    if (!frame) {
+        say(err, err_size,
+            "only a window with dock panes, a toolbar or a status bar has a "
+            "layout to save");
+        return nullptr;
+    }
+    QByteArray b64 = frame->saveState().toBase64();
+    return dup_qbytes(b64);
+}
+
+extern "C" int gb_qt_layout_restore(void *window, const char *text, char *err,
+                                    size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QMainWindow *frame = root ? qobject_cast<QMainWindow *>(root->widget)
+                              : nullptr;
+    if (!frame) {
+        say(err, err_size,
+            "only a window with dock panes, a toolbar or a status bar has a "
+            "layout to restore");
+        return 0;
+    }
+    QByteArray raw = QByteArray::fromBase64(QByteArray(text ? text : ""));
+    if (raw.isEmpty()) {
+        say(err, err_size,
+            "that is not a layout this window saved -- `qt.layout` answers the "
+            "text to keep");
+        return 0;
+    }
+    /* QT'S OWN ANSWER IS THE REPORT. `restoreState` returns false for a blob
+     * it does not recognise, which is exactly the case a program hits after a
+     * window's declaration has changed -- so it is reported rather than
+     * raised: an old saved layout is an ORDINARY thing to find, and losing it
+     * is not a failure worth stopping a program for. */
+    if (!frame->restoreState(raw)) {
+        say(err, err_size,
+            "this window did not recognise that layout, so its panes are "
+            "where the declaration put them");
+        return 0;
+    }
+    return 1;
+}
+
 /* A `source` WIDGET'S DOCUMENT. It must really BE one: attaching a highlighter
  * to a `memo` would work (both are QPlainTextEdit) and attaching one to a
  * `field` would silently do nothing, so the kind is checked rather than
@@ -3507,136 +3650,6 @@ extern "C" int gb_qt_highlight(void *window, const char *name,
 }
 
 #if HAVE_KSYNTAX
-static char *dup_qbytes(const QByteArray &bytes) {
-    char *out = (char *)malloc((size_t)bytes.size() + 1);
-    if (!out) {
-        return nullptr;
-    }
-    memcpy(out, bytes.constData(), (size_t)bytes.size());
-    out[bytes.size()] = 0;
-    return out;
-}
-
-/* ------------------------------------------------------------------ */
-/* THE DOCK ORACLE AND THE SAVED LAYOUT (§0.30).                      */
-/* ------------------------------------------------------------------ */
-
-/* WHERE A DOCK IS, AND WHAT IT IS DOING -- the oracle, built before the
- * fixture (the discipline §0.8 arrived at by getting it wrong). Without it a
- * pane put in the WRONG AREA is invisible: every part inside it reads back by
- * name regardless of which edge it ended up on, and `visible` is true either
- * way, so a backend that ignored the area entirely would pass every check the
- * language can otherwise make. It is asked of THE WINDOW (`dockWidgetArea`)
- * rather than of anything we remembered, which is `qt.at`'s and `qt.pane`'s
- * own justification: a remembered position agrees with a placement that was
- * wrong.
- *
- * 1 described, 0 not a dock, -1 refused (err set). */
-extern "C" int gb_qt_dock_info(void *window, const char *name, char *area,
-                               size_t area_size, int *floating, int *tabbed,
-                               int *visible, char *err, size_t err_size) {
-    GbQtNode *root = (GbQtNode *)window;
-    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
-                      : nullptr;
-    if (!o) {
-        say(err, err_size, QByteArray("there is nothing called `") + name +
-                               "` in this window");
-        return -1;
-    }
-    QDockWidget *dw = qobject_cast<QDockWidget *>(o);
-    if (!dw) {
-        return 0;
-    }
-    /* NO FRAME MEANS NOT A DOCK OF OURS, answered as the same absence rather
-     * than as a refusal -- and that is a correction the fixture forced. A
-     * sentence here ("this window has no dock areas") was UNREACHABLE BY
-     * CONSTRUCTION: a QDockWidget can only be built on a QMainWindow, so a
-     * name that casts to one implies the frame, and no program could produce
-     * the message. An unexercised refusal rots, which is how §0.27 found a
-     * use-after-free in `qt.read`'s. */
-    QMainWindow *frame = qobject_cast<QMainWindow *>(root->widget);
-    if (!frame) {
-        return 0;
-    }
-    if (area && area_size) {
-        snprintf(area, area_size, "%s",
-                 dock_area_word((int)frame->dockWidgetArea(dw)));
-    }
-    if (floating) { *floating = dw->isFloating() ? 1 : 0; }
-    if (visible)  { *visible = dw->isVisible() ? 1 : 0; }
-    /* TABBED WITH SOMETHING ELSE, which is the ask's own point and is NOT
-     * readable from the dock: `tabifiedDockWidgets` is a QMainWindow call. A
-     * count rather than a list, because what a program wants to know is
-     * whether this pane shares its edge -- and Qt raises one of a tab group
-     * and hides the rest, so a hidden pane with tab siblings is ORDINARY
-     * rather than a fault. */
-    if (tabbed) { *tabbed = (int)frame->tabifiedDockWidgets(dw).size(); }
-    return 1;
-}
-
-/* THE WINDOW'S OWN LAYOUT, AS TEXT -- which is how "put my panes back where I
- * left them" is written, and the same question §0.22 answered for a splitter
- * one increment along. A dock layout is richer than pane sizes (which area,
- * which order, which tab is raised, what is floating and how big), and Qt's
- * `saveState` is the only thing that knows all of it.
- *
- * BASE64 RATHER THAN THE RAW BYTES, AND THAT IS A MEASUREMENT: `saveState`
- * answers an opaque binary blob -- measured, 143 bytes of which 95 ARE NUL and
- * 16 are above 127 -- so it is not valid UTF-8, and the obvious thing a
- * program does with it is STORE it. `encode` and `persist` both write JSON,
- * whose strings must be valid UTF-8, so raw bytes would be corrupted or
- * refused at the one door every caller reaches for. gBASIC strings are
- * binary-safe (PLAT-NUL), so returning the bytes would be defensible and
- * useless. Base64 round-trips exactly, measured.
- *
- * AND IT IS QT'S FORMAT, NOT OURS: a program must not read it, only keep it,
- * which is why it is one opaque string rather than a record. */
-extern "C" char *gb_qt_layout_save(void *window, char *err, size_t err_size) {
-    GbQtNode *root = (GbQtNode *)window;
-    QMainWindow *frame = root ? qobject_cast<QMainWindow *>(root->widget)
-                              : nullptr;
-    if (!frame) {
-        say(err, err_size,
-            "only a window with dock panes, a toolbar or a status bar has a "
-            "layout to save");
-        return nullptr;
-    }
-    QByteArray b64 = frame->saveState().toBase64();
-    return dup_qbytes(b64);
-}
-
-extern "C" int gb_qt_layout_restore(void *window, const char *text, char *err,
-                                    size_t err_size) {
-    GbQtNode *root = (GbQtNode *)window;
-    QMainWindow *frame = root ? qobject_cast<QMainWindow *>(root->widget)
-                              : nullptr;
-    if (!frame) {
-        say(err, err_size,
-            "only a window with dock panes, a toolbar or a status bar has a "
-            "layout to restore");
-        return 0;
-    }
-    QByteArray raw = QByteArray::fromBase64(QByteArray(text ? text : ""));
-    if (raw.isEmpty()) {
-        say(err, err_size,
-            "that is not a layout this window saved -- `qt.layout` answers the "
-            "text to keep");
-        return 0;
-    }
-    /* QT'S OWN ANSWER IS THE REPORT. `restoreState` returns false for a blob
-     * it does not recognise, which is exactly the case a program hits after a
-     * window's declaration has changed -- so it is reported rather than
-     * raised: an old saved layout is an ORDINARY thing to find, and losing it
-     * is not a failure worth stopping a program for. */
-    if (!frame->restoreState(raw)) {
-        say(err, err_size,
-            "this window did not recognise that layout, so its panes are "
-            "where the declaration put them");
-        return 0;
-    }
-    return 1;
-}
-
 static KSyntaxHighlighting::Definition applied_definition(void *window,
                                                           const char *name) {
     QPlainTextEdit *e = source_named(window, name, nullptr, 0);

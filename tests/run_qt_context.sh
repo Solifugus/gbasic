@@ -183,11 +183,15 @@ decl 'a popup holds only menu words' \
         button go( label: "Go" )
     end popup' \
     'is none of those'
-decl 'an item outside a menu or a popup is still refused' \
+# THE PLACES AN `item` MAY LIVE GREW BY ONE in §0.30 -- a `toolbar`, whose
+# entries are MEASURED to be the same QActions a menu is built from -- so the
+# refusal now names three rather than two. The claim this tier makes is
+# unchanged: a `column` is still none of them.
+decl 'an item outside a menu, a popup or a toolbar is still refused' \
 '    column
         item a( label: "A" )
     end column' \
-    "belongs in a menu or a popup"
+    "belongs in a menu, a popup or a toolbar"
 decl 'a submenu inside a popup is accepted' \
 '    popup row_actions
         item a( label: "A" )

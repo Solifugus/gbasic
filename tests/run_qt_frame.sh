@@ -305,7 +305,11 @@ BAS
     set +e
     out="$(QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 30 \
             ./gbasic "$work/m.bas" 2>&1)"
-    set -e
+    # NO `set -e` RESTORE -- and this file's own header says so, which is the
+    # part worth recording: I wrote that warning and then armed it anyway in a
+    # later tier. FIFTH instance of this trap in the tree and the SECOND in two
+    # days, both caught by run_portable.sh within minutes of the suite existing.
+    # The `set +e` above is kept because a failure there really is expected.
     if printf '%s' "$out" | grep -qF "cannot be shown modally"; then
         pass "a window with furniture is refused modally, naming why"
     else
