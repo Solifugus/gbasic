@@ -1853,22 +1853,62 @@ static int qt_reshow_subject(void *root, Value *items, const char *subject,
  * a position is the one thing about a table that changes when somebody
  * reorders the declaration -- and a silently shifted index reads a real value
  * from the wrong column. Returns -1 when the table declares no such field. */
+static const char *qt_tree_depth_field(Value *tree);
+
+/* WHICH COLUMN OF THE WIDGET A DECLARED FIELD IS, which is NOT its position in
+ * the declaration -- a tree's depth column is declared and NOT DRAWN (§0.28),
+ * so every field after it sits one column to the left of where the declaration
+ * puts it.
+ *
+ * FOUND BY WRITING A FIXTURE THAT HAPPENED TO DECLARE THE DEPTH FIRST (§0.33).
+ * §0.28's own fixture declares it LAST, where the drawn indices and the
+ * declared ones agree by accident, so nothing could see it -- and the
+ * consequence was not a wrong caption but a tree that read back as EMPTY:
+ * `qt.cell(win, "files", 0, "name")` resolved to column 1 of a one-column
+ * widget, `gb_qt_table_get` answered nothing, and the message said *"table
+ * `files` has no row 0"* -- naming the one thing that was not wrong, over a
+ * tree that had populated correctly. Two fields in the other order, no
+ * diagnostic, and every other verb still right.
+ *
+ * -2 FOR A FIELD THAT IS DECLARED AND NOT DRAWN, so a caller can say which of
+ * the two things is wrong: "there is no such column" is false about a field
+ * the author can see in their own declaration. */
 static int qt_table_column(Value *table, const char *field) {
     RecordField *cols = record_find(table, "items");
     if (!cols || !cols->value || cols->value->kind != VALUE_ARRAY ||
         !cols->value->as.array.store) {
         return -1;
     }
+    /* NULL FOR A TABLE, which is why there is no widget-kind test here: only a
+     * tree's column may carry `depth: true`, so one rule covers both. */
+    const char *undrawn = qt_tree_depth_field(table);
     size_t n = cols->value->as.array.store->count;
+    int at = 0;
     for (size_t i = 0; i < n; i++) {
         Value *col = &cols->value->as.array.store->items[i];
         if (col->kind != VALUE_RECORD) {
             continue;
         }
         const char *name = qt_record_text(col, "name");
-        if (name && strcmp(name, field) == 0) {
-            return (int)i;
+        /* A NAMELESS COLUMN IS SKIPPED WITHOUT COUNTING, which is what
+         * `qt_populate_tree` does -- and the two walks MUST agree, since this
+         * whole defect was two walks disagreeing about which column is which.
+         * Unreachable from a declaration (the grammar requires `field NAME`),
+         * so it is here to keep the two in step rather than to handle a case.
+         */
+        if (!name) {
+            continue;
         }
+        if (undrawn && strcmp(name, undrawn) == 0) {
+            if (strcmp(name, field) == 0) {
+                return -2;
+            }
+            continue;
+        }
+        if (strcmp(name, field) == 0) {
+            return at;
+        }
+        at++;
     }
     return -1;
 }
@@ -3076,6 +3116,105 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(gb_qt_has_highlighting() ? 1 : 0);
     }
 
+    /* ---- THE CLIPBOARD (§0.33) --------------------------------------------
+     *
+     * NO WINDOW ARGUMENT, which is a measured fact and not a shortcut: there
+     * is ONE clipboard per application, so taking a window would imply one
+     * per window. Every other verb here takes one because every other verb is
+     * about a widget; this one is not.
+     *
+     * A DISPLAY IS STILL NEEDED, because the clipboard belongs to a
+     * QApplication and constructing one without a display aborts the process
+     * uncatchably (§0.3) -- so the refusal names the display rather than a
+     * window, which is the wrong-cause class this tree has recorded six times.
+     */
+    if (strcmp(verb, "copy") == 0) {
+        if (argc != 1) {
+            qt_raise("qt.copy expects the text to copy");
+            return value_null();
+        }
+        Value v = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(v);
+            return value_null();
+        }
+        /* A PATH MAY ARRIVE AS A REFERENCE, for the reason §0.16's chooser
+         * options do and with the same evidence: copying the path of a file is
+         * the use this verb was asked for, and what an author holds after
+         * choosing one is a `{file}`. Refusing it would make the obvious
+         * spelling the wrong one. */
+        const char *given = NULL;
+        size_t len = 0;
+        if (v.kind == VALUE_STRING) {
+            given = v.as.string;
+            /* THE COUNT, NOT strlen: a gBASIC string may carry an interior NUL
+             * and the clipboard round-trips one exactly (measured), so this
+             * door carries rather than shortens. */
+            len = given ? string_length(given) : 0;
+        } else if (v.kind == VALUE_FILE) {
+            given = v.as.file_path;
+            len = given ? strlen(given) : 0;
+        } else if (v.kind == VALUE_DIR) {
+            given = v.as.dir_path;
+            len = given ? strlen(given) : 0;
+        }
+        if (!given) {
+            qt_raise("qt.copy expects text, or a file or folder reference");
+            value_free(v);
+            return value_null();
+        }
+        if (!gb_qt_can_display()) {
+            qt_raise("no display is available, so there is no clipboard to "
+                     "copy to. Guard with qt.can_display()");
+            value_free(v);
+            return value_null();
+        }
+        err[0] = '\0';
+        int ok = gb_qt_copy(given, (long)len, err, sizeof(err));
+        value_free(v);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.copy: %s",
+                     err[0] ? err : "the text could not be copied");
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
+    /* ANSWERS `unknown` WHEN THERE IS NO TEXT ON THE CLIPBOARD, never "" --
+     * measured, Qt distinguishes the two (a fresh clipboard reports no text, a
+     * deliberately copied empty string reports text of length 0), so both
+     * answers are honest rather than a guess. The §0.16 rule: a cancelled
+     * chooser answers `unknown` and a chosen empty name could not happen. */
+    if (strcmp(verb, "clipboard") == 0) {
+        if (argc != 0) {
+            qt_raise("qt.clipboard takes no arguments -- it answers what is on "
+                     "the clipboard, and qt.copy(text) puts something there");
+            return value_null();
+        }
+        if (!gb_qt_can_display()) {
+            qt_raise("no display is available, so there is no clipboard to "
+                     "read. Guard with qt.can_display()");
+            return value_null();
+        }
+        char *text = NULL;
+        long len = 0;
+        err[0] = '\0';
+        int rc = gb_qt_clipboard(&text, &len, err, sizeof(err));
+        if (rc < 0) {
+            snprintf(message, sizeof(message), "qt.clipboard: %s",
+                     err[0] ? err : "the clipboard could not be read");
+            qt_raise(message);
+            return value_null();
+        }
+        if (rc == 0) {
+            return value_unknown();
+        }
+        Value out = value_string_n(text, (size_t)len);
+        free(text);
+        return out;
+    }
+
     if (strcmp(verb, "check") == 0) {
         return qt_check_verb(expr, argc);
     }
@@ -3334,7 +3473,11 @@ static Value qt_eval_call(AstExpr *expr) {
         int col = qt_table_column(table, colv.as.string);
         if (col < 0) {
             snprintf(message, sizeof(message),
-                     "qt.cell: table `%s` has no `%s` column",
+                     col == -2
+                         ? "qt.cell: `%s`'s `%s` column carries the depth and "
+                           "is not drawn, so it holds no cell -- qt.depth "
+                           "answers it"
+                         : "qt.cell: table `%s` has no `%s` column",
                      which.as.string, colv.as.string);
             qt_raise(message);
             value_free(win); value_free(which);
@@ -4262,6 +4405,47 @@ static Value qt_eval_call(AstExpr *expr) {
         Value out = value_record(NULL, 0);
         record_set(&out, "line", value_number((double)line));
         return out;
+    }
+
+    if (strcmp(verb, "which_tab") == 0) {
+        /* WHICH TAB THE EVENT BEING HANDLED IS ABOUT -- the fourth verb of a
+         * shape the Studio bench named rather than this backend: `qt.selected`
+         * answers which row, `qt.gutter_click` which line, `qt.wheel` which
+         * way, and this one which tab. All four exist because a handler in
+         * this backend takes no arguments, so the event is ASKED FOR.
+         *
+         * IT IS THE ONE CASE Qt DOES NOT ANSWER BY ITSELF, which is why it
+         * needs a verb where a row does not: measured, a right-press MOVES a
+         * table's or a tree's current row, so `qt.selected` already says which
+         * was clicked -- and a right-press on a QTabBar correctly does NOT
+         * move the current index, so `qt.read(win, part, "currentIndex")`
+         * answers the tab that was ALREADY ACTIVE. Studio's rule is the
+         * opposite ("right-clicking a background tab to close it must not
+         * first switch you to it"), so without this a port acts on the wrong
+         * tab in silence.
+         *
+         * `unknown` RATHER THAN A NUMBER for both "no handler is running" and
+         * "the click was not over a tab" -- the second is an ordinary case,
+         * since a right-click on a tab widget's PAGE emits the same signal and
+         * `tabAt` answers nothing for it. 0 would be a valid-looking index and
+         * -1 is the C answer, not gBASIC's; the `qt.selected`/`principal()`
+         * distinction.
+         *
+         * NOT `tab_click`, WHICH WAS THE FIRST NAME AND WAS A LIE: the int
+         * route records any single-int signal a tab widget emits, so
+         * `currentChanged` reaches it too -- and that signal fires when the
+         * PROGRAM calls `setCurrentIndex`, where nobody clicked anything. The
+         * name has to be true of every route that fills it. */
+        if (argc != 0) {
+            qt_raise("qt.which_tab takes no arguments -- it answers the tab "
+                     "the event being handled is about");
+            return value_null();
+        }
+        int which = gb_qt_which_tab();
+        if (which < 0) {
+            return value_unknown();
+        }
+        return value_number((double)which);
     }
 
     if (strcmp(verb, "depth") == 0) {
@@ -5355,7 +5539,10 @@ static Value qt_eval_call(AstExpr *expr) {
                       : qt_table_column(table, colv.as.string);
         if (col < 0) {
             snprintf(message, sizeof(message),
-                     "qt.heading: table `%s` has no `%s` column",
+                     col == -2
+                         ? "qt.heading: `%s`'s `%s` column carries the depth "
+                           "and is not drawn, so it has no caption"
+                         : "qt.heading: table `%s` has no `%s` column",
                      which.as.string,
                      colv.kind == VALUE_STRING ? colv.as.string : "that");
             qt_raise(message);

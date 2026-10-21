@@ -344,9 +344,13 @@ program main()
           "qt.right_click: that table has no such row")
     error.clear()
 
+    ' WIDENED BY §0.33, which taught a tree row and a tab to be aimed at: the
+    ' three kinds that HAVE a row or a tab are named, so a `source` is told
+    ' what it is not rather than being measured against tables alone.
     qt.right_click(app, "code", 0)
-    check("only a table has rows to click", error.message,
-          "qt.right_click: `code` is not a table, so it has no row to click")
+    check("only a table, a tree or a tabs has rows to click", error.message,
+          "qt.right_click: `code` is not a table, a tree or a `tabs`, so it " +
+          "has no row or tab to click")
     error.clear()
 
     qt.menus(app, "files")

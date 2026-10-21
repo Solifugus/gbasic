@@ -155,7 +155,7 @@ else
         if [ "${bad:-1}" != "0" ]; then
             grep '^MISMATCH' "$work/sem.out" | head -5
             fail "$bad mismatches"
-        elif [ "${checks:-0}" -lt 15 ]; then
+        elif [ "${checks:-0}" -lt 20 ]; then
             fail "only ${checks:-0} checks ran -- the fixture stopped early"
         else
             pass "$checks checks, 0 mismatches"

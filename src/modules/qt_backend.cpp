@@ -62,6 +62,9 @@
 #include <QAction>
 #include <QGridLayout>
 #include <QTabWidget>
+#include <QTabBar>
+#include <QClipboard>
+#include <QMimeData>
 #include <QTreeWidget>
 #include <QTableWidget>
 #include <QFontDatabase>
@@ -192,6 +195,13 @@ public:
     QByteArray handler;
 public slots:
     void fire();
+    /* A SIGNAL THAT CARRIES WHICH THING IT IS ABOUT, which `fire()` throws
+     * away. Chosen by the signal's own parameter type in `gb_qt_connect`, and
+     * only for an EXACT type match -- QMetaObject::connect by index does not
+     * check argument types, so a `clicked(bool)` reaching `fireIndex(int)`
+     * would read four bytes out of a one-byte bool. */
+    void fireAt(QPoint at);
+    void fireIndex(int index);
     void tick();
 };
 
@@ -225,6 +235,81 @@ void GbQtRelay::fire() {
         invoke_handler(handler.constData());
     }
 }
+
+/* WHICH TAB AN EVENT IS ABOUT, held while one handler runs -- `qt.gutter_click`
+ * and `qt.wheel`'s arrangement, reused rather than re-argued: a handler in this
+ * backend takes no arguments, so the event is ASKED FOR instead.
+ *
+ * -1 MEANS NO TAB, which covers both "no handler is running" and "the click was
+ * not over a tab" -- a right-click on a tab widget's PAGE propagates up to the
+ * tab widget and emits the same signal, and `tabAt` answers -1 for it. Both are
+ * `unknown` from gBASIC, which is the truthful answer to "which tab was this
+ * about": none was.
+ *
+ * SAVED AND RESTORED around the handler rather than merely cleared, because a
+ * handler may open a modal window whose own handler asks (§0.31 bounds the
+ * nesting at 16 but does not forbid it), and a bare reset to -1 would leave the
+ * outer handler unable to ask again after the inner one returned. */
+static int g_tabclick = -1;
+
+/* THE TAB BAR BEHIND A WIDGET, which is what `tabAt` has to be asked of -- a
+ * QTabWidget is not one, it CONTAINS one. */
+static QTabBar *tab_bar_of(QWidget *w) {
+    if (!w) {
+        return nullptr;
+    }
+    if (QTabBar *b = qobject_cast<QTabBar *>(w)) {
+        return b;
+    }
+    if (QTabWidget *t = qobject_cast<QTabWidget *>(w)) {
+        return t->tabBar();
+    }
+    return nullptr;
+}
+
+void GbQtRelay::fireAt(QPoint at) {
+    /* THE POINT ARRIVES IN THE EMITTING WIDGET'S COORDINATES and the bar is
+     * not at its origin, which is the whole of what this mapping is for.
+     * MEASURED with `tabPosition: South`: a context event sent to the bar
+     * propagates to the QTabWidget and arrives at 124,285 where the bar's own
+     * y is 271, so an unmapped `tabAt` answers **-1** -- "no tab" for a click
+     * that was squarely on one. With tabs at the top the bar IS at the origin
+     * and the two agree, which is why the fixture puts them at the bottom:
+     * comfortable test data would have hidden this exactly. */
+    int tab = -1;
+    QWidget *w = qobject_cast<QWidget *>(parent());
+    QTabBar *bar = tab_bar_of(w);
+    if (bar && w) {
+        tab = bar->tabAt(bar == w ? at : bar->mapFrom(w, at));
+    }
+    int prev = g_tabclick;
+    g_tabclick = tab;
+    if (g_invoke) {
+        invoke_handler(handler.constData());
+    }
+    g_tabclick = prev;
+}
+
+void GbQtRelay::fireIndex(int index) {
+    /* ONLY A TAB WIDGET'S int IS A TAB INDEX. The slot is connected to any
+     * single-int signal, because that is one rule rather than a list of signal
+     * names a new Qt version silently falls off -- but what it RECORDS is
+     * narrowed here, since `stateChanged(int)` on a check box -- which the
+     * fixture declares as the over-correction guard -- is an int about
+     * something else entirely, and answering it from `qt.which_tab` would be a
+     * wrong answer wearing a plausible number. */
+    int prev = g_tabclick;
+    QWidget *w = qobject_cast<QWidget *>(parent());
+    if (tab_bar_of(w)) {
+        g_tabclick = index;
+    }
+    if (g_invoke) {
+        invoke_handler(handler.constData());
+    }
+    g_tabclick = prev;
+}
+
+extern "C" int gb_qt_which_tab(void) { return g_tabclick; }
 
 void GbQtRelay::tick() {
     /* ONE NON-BLOCKING ITERATION OF gBASIC'S LOOP. It drains by construction,
@@ -1132,6 +1217,90 @@ extern "C" int gb_qt_begin(char *err, size_t err_size) {
     if (!g_theme.isEmpty()) {
         g_app->setStyleSheet(g_theme);
     }
+    return 1;
+}
+
+/* ---- THE CLIPBOARD (docs/qt_gui_design.md §0.33) ---------------------------
+ *
+ * REPORTED FROM THE STUDIO BENCH as one of two gaps that stopped STU-21 being
+ * ported at all: its tab menu offers `Close` and `Copy file path`, and the
+ * second is the item the user volunteered an opinion about. There was no
+ * clipboard verb in this module at all, and Studio's GTK route (a
+ * `Gtk.TextBuffer` filled, selected and `copy_clipboard`ed into the window's
+ * clipboard) has no Qt counterpart.
+ *
+ * IT TAKES NO WINDOW, which is a measured fact rather than a convenience:
+ * `QGuiApplication::clipboard()` is a class static, there is ONE clipboard per
+ * application, and a verb taking a window would imply one per window.
+ *
+ * BUT IT DOES NEED A QApplication, so it begins Qt -- which needs a display,
+ * because constructing one without aborts the process uncatchably (§0.3). So
+ * there is no clipboard on a text-only machine, and the refusal says so rather
+ * than naming a window.
+ *
+ * THE TRAP STUDIO WARNED ABOUT DOES NOT EXIST HERE, and that was the one
+ * measurement worth making before writing a line: under GTK `set_text` HANGS
+ * and the working route installs a provider that reads a buffer AT PASTE TIME,
+ * so a buffer going out of scope gives a successful-looking copy and an empty
+ * paste with nothing raised at any layer. Measured, Qt copies EAGERLY -- a
+ * QString local to a function that has already returned reads back intact
+ * ("hello from a dead frame"), across a turn of the event loop, with no hang.
+ *
+ * A NUL IS CONTENT, which is PLAT-NUL's rule applied to a new door by asking
+ * what the FAR SIDE can hold: measured, `setText` takes a counted QString and
+ * `a\0b` round-trips as exactly 61 00 62, so the answer here is CARRY rather
+ * than refuse -- and the naive `QString::fromUtf8(text)` would have truncated
+ * at the NUL and reported success, which is the silent class. WHAT IS NOT
+ * MEASURED, and is said rather than implied: the offscreen clipboard is
+ * in-process, so whether a real compositor and the application pasting into
+ * preserve an interior NUL is somebody else's business. What this door
+ * promises is that it does not shorten the text itself. */
+extern "C" int gb_qt_copy(const char *text, long len, char *err,
+                          size_t err_size) {
+    if (!gb_qt_begin(err, err_size)) {
+        return 0;
+    }
+    QClipboard *c = QGuiApplication::clipboard();
+    if (!c) {
+        say(err, err_size, "this platform offers no clipboard");
+        return 0;
+    }
+    c->setText(QString::fromUtf8(text ? text : "", (qsizetype)len));
+    return 1;
+}
+
+/* 1 with text (the caller frees `*text`), 0 nothing on the clipboard, -1
+ * refused with `err` set.
+ *
+ * NOTHING AND EMPTY ARE DIFFERENT ANSWERS and the distinction is Qt's, not a
+ * guess: measured, a fresh clipboard reports `hasText()` false while one
+ * explicitly set to "" reports true, so `unknown` for "there is no text on the
+ * clipboard" and "" for "somebody copied an empty string" are both honest --
+ * the §0.16 rule, where a cancelled chooser answers `unknown` and never "". */
+extern "C" int gb_qt_clipboard(char **text, long *len, char *err,
+                               size_t err_size) {
+    if (!gb_qt_begin(err, err_size)) {
+        return -1;
+    }
+    QClipboard *c = QGuiApplication::clipboard();
+    if (!c) {
+        say(err, err_size, "this platform offers no clipboard");
+        return -1;
+    }
+    const QMimeData *m = c->mimeData();
+    if (!m || !m->hasText()) {
+        return 0;
+    }
+    QByteArray u = c->text().toUtf8();
+    char *copy = (char *)malloc((size_t)u.size() + 1);
+    if (!copy) {
+        say(err, err_size, "the clipboard text would not fit in memory");
+        return -1;
+    }
+    memcpy(copy, u.constData(), (size_t)u.size());
+    copy[u.size()] = '\0';
+    if (text) { *text = copy; } else { free(copy); }
+    if (len) { *len = (long)u.size(); }
     return 1;
 }
 
@@ -2290,7 +2459,27 @@ extern "C" int gb_qt_connect(void *window, const char *target,
     GbQtRelay *relay = new GbQtRelay();
     relay->setParent(w);
     relay->handler = QByteArray(handler);
-    int ri = relay->metaObject()->indexOfSlot("fire()");
+    /* WHICH SLOT, decided by the SIGNAL'S OWN PARAMETER TYPE (§0.33). A
+     * handler takes no arguments, so `fire()` has always thrown the signal's
+     * arguments away -- which is right for `clicked()` and loses the answer
+     * for the two signals that carry WHICH THING THEY ARE ABOUT:
+     * `customContextMenuRequested(QPoint)` and `tabCloseRequested(int)`.
+     *
+     * AN EXACT TYPE MATCH OR NOTHING. QMetaObject::connect by index does NOT
+     * check argument types -- it passes a void* the slot reinterprets -- so
+     * `clicked(bool)` reaching `fireIndex(int)` would read four bytes out of
+     * one, which is why this tests the type name rather than the count. */
+    const char *slot = "fire()";
+    QMetaMethod sm = mo->method(si);
+    if (sm.parameterCount() == 1) {
+        QByteArray pt = sm.parameterTypeName(0);
+        if (pt == "QPoint") {
+            slot = "fireAt(QPoint)";
+        } else if (pt == "int") {
+            slot = "fireIndex(int)";
+        }
+    }
+    int ri = relay->metaObject()->indexOfSlot(slot);
     if (ri < 0 || !QMetaObject::connect(w, si, relay, ri)) {
         say(err, err_size,
             QByteArray("Qt would not connect `") + target + "." + signal + "`");
@@ -2798,6 +2987,10 @@ extern "C" int gb_qt_popup(void *window, const char *name, const char *under,
     return 1;
 }
 
+static QTreeWidget *tree_of(void *window, const char *name);
+static QTreeWidgetItem *tree_item_at(QTreeWidget *t, int index);
+static int tree_index_of(QTreeWidget *t, QTreeWidgetItem *want);
+
 extern "C" int gb_qt_right_click(void *window, const char *name, int row,
                                  char *err, size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
@@ -2824,23 +3017,76 @@ extern "C" int gb_qt_right_click(void *window, const char *name, int row,
     QWidget *target = mouse_target(w);
     QPoint at(4, 4);
     if (row >= 0) {
+        /* A TREE ROW AIMS THE SAME WAY A TABLE ROW DOES (§0.33), and it had to
+         * learn to: §0.20 justified the row argument with *"right-click the
+         * third file"*, and the browser that sentence is about was a `table`
+         * for one increment and has been a `tree` since §0.28 -- so the
+         * sentence outlived the widget and the one shape it was written for
+         * could not be driven. `visualItemRect` is spelled the same on both,
+         * and a tree's rect is in VIEWPORT coordinates, which is where
+         * `mouse_target` already aims. */
         QTableWidget *t = qobject_cast<QTableWidget *>(w);
-        if (!t) {
+        QTreeWidget *tr = t ? nullptr : qobject_cast<QTreeWidget *>(w);
+        QTabBar *bar = (t || tr) ? nullptr : tab_bar_of(w);
+        if (!t && !tr && !bar) {
             say(err, err_size,
                 QByteArray("`") + (name ? name : "") +
-                    "` is not a table, so it has no row to click");
+                    "` is not a table, a tree or a `tabs`, so it has no row "
+                    "or tab to click");
             return 0;
         }
-        if (row >= t->rowCount()) {
-            say(err, err_size, "that table has no such row");
-            return 0;
+        if (bar) {
+            /* A TAB IS AIMED AT THROUGH THE BAR, AND THE TARGET MOVES WITH IT,
+             * which is the one place this verb changes where it delivers --
+             * because that is where a real right-click lands. Measured: a
+             * context event sent to the bar PROPAGATES to the QTabWidget and
+             * arrives in the tab widget's own coordinates, which is the path
+             * `GbQtRelay::fireAt` maps back through; delivering straight to
+             * the tab widget would reach the same handler by a route no mouse
+             * takes, and would make the mapping untested.
+             *
+             * THE PRESS IS THE POINT, not an incidental part of the gesture:
+             * on a table or a tree it MOVES the current row, and measured, on
+             * a tab bar it does NOT -- which is the whole reason this verb's
+             * tab form needs `qt.which_tab` where the row form needs nothing.
+             */
+            if (row >= bar->count()) {
+                say(err, err_size, "that has no such tab");
+                return 0;
+            }
+            QRect r = bar->tabRect(row);
+            if (r.isEmpty()) {
+                say(err, err_size,
+                    "that tab is not on screen, so a mouse could not reach it");
+                return 0;
+            }
+            at = r.center();
+            target = bar;
+        } else if (tr) {
+            QTreeWidgetItem *it = tree_item_at(tr, row);
+            if (!it) {
+                say(err, err_size, "that tree has no such row");
+                return 0;
+            }
+            QRect r = tr->visualItemRect(it);
+            if (r.isEmpty()) {
+                say(err, err_size,
+                    "that row is not on screen, so a mouse could not reach it");
+                return 0;
+            }
+            at = r.center();
+        } else {
+            if (row >= t->rowCount()) {
+                say(err, err_size, "that table has no such row");
+                return 0;
+            }
+            QTableWidgetItem *it = t->item(row, 0);
+            if (!it) {
+                say(err, err_size, "that row is empty");
+                return 0;
+            }
+            at = t->visualItemRect(it).center();
         }
-        QTableWidgetItem *it = t->item(row, 0);
-        if (!it) {
-            say(err, err_size, "that row is empty");
-            return 0;
-        }
-        at = t->visualItemRect(it).center();
     } else if (target->width() > 8 && target->height() > 8) {
         at = QPoint(target->width() / 2, target->height() / 2);
     }
@@ -3878,11 +4124,9 @@ extern "C" char *gb_qt_highlight_file(void *window, const char *name) {
  * the row count, what is chosen and choosing one -- so each is answered in ONE
  * function that knows three widget kinds, rather than five more verbs. That is
  * the rule §0.6 set when an asking table joined a held one: a program should
- * not have to know which kind it declared to read a cell. Declared here
- * because these answers come before the tree section below. */
-static QTreeWidget *tree_of(void *window, const char *name);
-static QTreeWidgetItem *tree_item_at(QTreeWidget *t, int index);
-static int tree_index_of(QTreeWidget *t, QTreeWidgetItem *want);
+ * not have to know which kind it declared to read a cell. The three helpers
+ * they share are declared further up, above `gb_qt_right_click`, which since
+ * §0.33 aims at a tree row and so reaches them first. */
 
 static QTableWidget *table_of(void *window, const char *name) {
     GbQtNode *root = (GbQtNode *)window;

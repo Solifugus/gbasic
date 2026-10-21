@@ -4015,3 +4015,199 @@ the cheapest form of §0.31's rule — one increment old and already paying.
 
 Four perturbations proven red: the read made 0-based, the write made 0-based,
 the column clamp removed, and the past-the-end refusal removed.
+
+## 0.33 The clipboard, and which thing an event is about (2026-10-21)
+
+Two gaps the gBASIC Studio session reported as *"the two gaps that stop STU-21
+being ported at all"*, plus a third defect found while writing the fixture for
+the second. STU-21 is Studio's tab right-click menu, whose two items are
+`Close` and `Copy file path` — and the user volunteered an opinion about the
+second (*"the right-click and copy file path works. And I really like it."*),
+which is why that report says the honest thing was to leave the feature out
+rather than ship a worse one.
+
+**Their report also carried one item that was already closed**, and the dates
+say why: it ends *"still request 1: the caret — unchanged and still the only
+thing blocking Run"*, written at 20:37, and §0.32 landed at 23:02 the same
+evening. Run is unblocked; nothing had to be built for it.
+
+### What was measured first
+
+Nine questions in two C++ probes, before a line was designed. Five changed
+something:
+
+| question | answer |
+|---|---|
+| does `setText` work offscreen, with no window open? | **yes**, and `clipboard()` is reachable before any window exists |
+| **does Qt copy eagerly, or at paste time?** | **eagerly** — a QString local to a function that has already returned reads back intact, across a turn of the loop, with no hang |
+| does an interior NUL survive? | **yes, exactly** — `a\0b` round-trips as 61 00 62, so the clipboard takes a counted string |
+| can "nothing on the clipboard" be told from "an empty string"? | **yes** — a fresh clipboard reports `hasText()` false, one set to `""` reports true |
+| does a right-press on a QTabBar move the current index? | **no** (tab 2 pressed, `currentIndex` still 0) |
+| does a right-press on a tree move the current item? | **yes** (current and selected both 2) |
+| where does a tab widget's context-menu signal get its point? | from the **tab widget's** coordinates, and the event **propagates** from the bar |
+| so does an unmapped `tabAt` work? | **with tabs at the top yes, at the bottom no** — it answers −1 for a click squarely on a tab |
+| is `tabCloseRequested(int)` reachable? | signal index 34, one parameter of type `int` |
+
+### The clipboard: `qt.copy(text)` and `qt.clipboard()`
+
+**The measurement Studio asked for is the one that matters.** Their warning was
+specific and from experience: under GTK `clipboard.set_text` *hangs*, and the
+route that works installs a content provider that reads a buffer **at paste
+time** — so a buffer that goes out of scope produces a successful-looking copy
+and an empty paste, with no error at any layer, and Studio holds its buffer on
+a global for that reason alone. Their own words: *"worth one measurement either
+way — copy, then read it back after the frame that copied has returned."*
+Measured, Qt copies eagerly, so the trap does not exist here; the fixture
+copies from inside a function and reads it back after that function has
+returned, because the failure it guards against is invisible from inside the
+program that copied.
+
+**No window argument**, which is a measured fact rather than a convenience:
+`QGuiApplication::clipboard()` is a class static and there is one clipboard per
+application, so a verb taking a window would be claiming otherwise. That claim
+is only checkable by *not* opening one, which is why every check in the fixture
+before its last tier runs before `qt.open` is ever called — and the last tier
+opens a window and copies again, because the verb must not quietly mean
+something different once one exists.
+
+**A display is still needed**, since the clipboard belongs to a QApplication
+and constructing one without a display aborts the process uncatchably (§0.3).
+So there is no clipboard on a text-only machine, and the refusal **names the
+display**: `gb_qt_begin`'s own sentence says *"no window can be opened"*, which
+is true of a window and the wrong cause here — the sixth instance of that class
+in this tree. Perturbing the guard away leaves `gb_qt_begin` to answer and the
+no-display tier catches it.
+
+**A NUL is carried, not refused**, which is PLAT-NUL's rule applied by asking
+what the far side can hold: the clipboard takes a counted QString and
+round-trips the byte exactly, so shortening would be ours and not Qt's. The
+naive `QString::fromUtf8(text)` measures with `strlen`, puts one byte on the
+clipboard and reports success. **What is not measured is stated rather than
+implied**: the offscreen clipboard is in-process, so whether a real compositor
+and the application pasting into preserve an interior NUL is their business;
+what this door promises is that it does not shorten the text itself.
+
+**And there are three places a byte can be lost, which the fixture alone cannot
+separate.** Measured: the perturbation that measures the write with `strlen` and
+the one that hands the read back as a C string produce *identical* output (`got
+1, want 3`), because a round trip fails if either door loses the bytes and the
+two halves agree with each other perfectly — the shape that let `webclient`
+hide the same defect. `tests/qt/clipboard_probe.cpp` links the real backend
+object (§0.29's arrangement) and exercises each door **alone**, with Qt's own
+clipboard as the other side: the write is judged by what Qt holds, and the read
+by a clipboard Qt filled. The verb's own `value_string_n` is the third place and
+is the fixture's. All three were perturbed and each reddened exactly its own.
+
+**`unknown` when there is no text**, never `""` — the §0.16 rule, and here the
+distinction is Qt's rather than a guess, which is why it can be made at all.
+
+### Which thing was this event about: `qt.which_tab()`
+
+**The shape is one the Studio bench named rather than this backend**, and the
+naming is the contribution: a handler here takes no arguments, so every event
+that is *about* something needs a verb to ask which. `qt.selected` answers which
+table or tree row, `qt.gutter_click` which line, `qt.wheel` which way, and this
+adds which tab — their observation being that *"a reader coming to this backend
+fresh would find that rule easier to apply than to rediscover per widget"*.
+
+**A tab is the one case Qt does not answer by itself**, which is why it needs a
+verb where a row does not: a right-press moves a table's or a tree's current
+row, so `qt.selected` already says which was clicked, and a right-press on a
+QTabBar correctly does **not** move the current index. STU-21's rule is the
+opposite — *"right-clicking a background tab to close it must not first switch
+you to it"* — so a port reading `currentIndex` acts on the wrong document in
+silence, and Studio shipped no tab menu at all rather than one that does.
+
+**Two routes, one answer.** The QPoint a context-menu signal carries, mapped
+through `QTabBar::tabAt`; and the int `tabCloseRequested` carries, which is the
+other half of the same problem since that index is unreachable from a
+zero-argument handler and `tabsClosable: true` is unusable without it. Both
+reach `GbQtRelay`, which gained two slots beside `fire()` — the generic relay
+has always thrown a signal's arguments away, which is right for `clicked()` and
+loses the answer for exactly these two.
+
+**The mapping is load-bearing and the fixture's tabs are at the bottom for that
+reason.** The point arrives in the *emitting widget's* coordinates and the bar
+is not at its origin, so with `tabPosition: South` an unmapped `tabAt` answers
+−1 — "no tab" for a click squarely on one — while with tabs at the top the bar
+*is* at the origin and the two agree. Comfortable test data would have hidden it
+entirely.
+
+**The slot is chosen by the signal's type NAME, never by its argument count**,
+and that is a hazard rather than a preference: `QMetaObject::connect` by index
+does not check argument types — it hands the slot a void\* to reinterpret — so
+`toggled(bool)` reaching `fireIndex(int)` reads four bytes out of one.
+
+**I expected valgrind to catch that and it does not.** Measured: the
+perturbation choosing by argument count leaves every behavioural check green
+*and* valgrind silent, because the bool sits in an initialised, aligned stack
+slot and the value is discarded for anything that is not a tab widget. So the
+rule is held by `tests/qt/slot_choice_scan.py` with a planted-copy control —
+§0.16's arrangement, where the native-dialog forcing is a tripwire because
+offscreen cannot tell the two dialogs apart. That was the one green
+perturbation of this increment and it produced the tripwire.
+
+**What it records is narrowed even though what it connects is not.** The int
+slot takes *any* single-int signal, because that is one rule rather than a list
+of signal names a new Qt version silently falls off — but it records only for a
+tab widget, since `stateChanged(int)` on a check box is an int about something
+else entirely and answering it would be a wrong answer wearing a plausible
+number. The fixture declares such a handler as the over-correction guard.
+
+**And the verb is not called `tab_click`, which was its first name and was a
+lie**: the int route takes any single-int signal, so `currentChanged` fills it
+too — and that fires when the *program* calls `setCurrentIndex`, where nobody
+clicked anything. A name has to be true of every route that fills it.
+`currentChanged` is also what makes the int route **drivable**, which is how it
+is asserted: driving the close button itself needs the QTabBar's own child
+widget, which gBASIC cannot name, so what is exercised is the rule through a
+signal a program can drive. That is stated rather than implied, since a claim
+nobody has run is not a claim.
+
+### `qt.right_click` aimed at a tree row and at a tab
+
+§0.20 justified that verb's row argument with *"right-click the third file"* —
+and the browser that sentence is about was a `table` for one increment and has
+been a `tree` since §0.28, so **the sentence outlived the widget** and the one
+shape it was written for could not be driven. Studio reported it as low
+severity, *"a tier faithfulness, not a feature"*, which is exactly right and is
+also why it is in this increment: without it the tab path would be the only one
+with an oracle.
+
+A tab aims **through the bar** and that is the one place this verb changes where
+it delivers, because that is where a real right-click lands: the context event
+propagates to the tab widget and arrives in its coordinates, which is the path
+the mapping reads back through. Delivering straight to the tab widget would
+reach the same handler by a route no mouse takes, and would leave the mapping
+untested.
+
+### A defect §0.28 could not see, found by the fixture
+
+Writing the tab fixture, a tree declared with `field depth( depth: true )`
+**first** read back as **empty**. The depth column is declared and not drawn, and
+the declaration-to-widget column mapping counted it — so `name` resolved to
+column 1 of a one-column widget, `gb_qt_table_get` answered nothing, and the
+message said *"table `files` has no row 0"*, naming the one thing that was not
+wrong over a tree that had populated perfectly. Two fields in the other order,
+no diagnostic, and every other verb still right.
+
+**§0.28's own fixture declares the depth last**, where the drawn indices and the
+declared ones agree by accident. That is the whole lesson: the order was never a
+decision, so nothing exercised the other one. `run_qt_tree.sh` now carries a
+second window declaring it first, and asking for the undrawn column by name is
+refused saying it **carries the depth** rather than that there is no such
+column — "there is no such column" being false about a field the author can see
+in their own declaration.
+
+Twelve perturbations proven red, one green with a finding. Two of this
+session's own suite failures were **false**, both the same trap and both mine:
+`pgrep -f "gbasic tests/..."` matched my own shell, because I wrote the runner
+with a heredoc and ran it in the same command, so the pattern was in that
+shell's own command line. The check was right both times.
+
+### Still not built, and said so
+
+`qt.copy` has no `qt.paste`: putting the clipboard's text *into* a widget is
+`qt.write`, and a verb that did both would be two things. Nothing drives the
+close button itself. And a tab bar's own `tabMoved(int, int)` carries two
+indices, which no slot here takes — nobody has asked.

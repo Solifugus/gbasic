@@ -387,6 +387,47 @@ int gb_qt_popup(void *window, const char *name, const char *under, int *shown,
 int gb_qt_right_click(void *window, const char *name, int row, char *err,
                       size_t err_size);
 
+/* WHICH TAB AN EVENT IS ABOUT, or -1 for none (§0.33).
+ *
+ * NOT `tab_click`, which was the first name and was a lie: the int route takes
+ * any single-int signal a tab widget emits, so `currentChanged` fills it too --
+ * and that fires when the PROGRAM calls `setCurrentIndex`, where nobody clicked
+ * anything. A name has to be true of every route that fills it.
+ *
+ * THE FOURTH VERB OF A SHAPE WORTH NAMING, which the Studio bench named rather
+ * than this backend: `qt.selected` answers which table or tree row, this one
+ * which tab, and `qt.gutter_click` and `qt.wheel` answer the same question for
+ * a line and a turn of the wheel. Every one is *"which thing was this event
+ * about?"*, answered by a verb BECAUSE A HANDLER TAKES NO ARGUMENTS.
+ *
+ * IT EXISTS BECAUSE A TAB IS THE ONE CASE Qt DOES NOT ANSWER BY ITSELF.
+ * Measured: a right-press on a table or a tree MOVES the current row, so
+ * `qt.selected` already says which one was clicked -- and a right-press on a
+ * QTabBar correctly does NOT move the current index, so `currentIndex` answers
+ * the tab that was ALREADY ACTIVE. Studio's rule is the opposite (*"right-
+ * clicking a background tab to close it must not first switch you to it"*), so
+ * without this a port acts on the wrong tab silently, which is this backend's
+ * named failure class.
+ *
+ * TWO ROUTES, ONE ANSWER: the QPoint a context-menu signal carries, mapped
+ * through `QTabBar::tabAt`, and the int `tabCloseRequested` carries -- which is
+ * the other half of the same problem, since that index is unreachable from a
+ * zero-argument handler and `tabsClosable: true` is unusable without it. */
+int gb_qt_which_tab(void);
+
+/* ---- THE CLIPBOARD (§0.33) -------------------------------------------------
+ * No window: there is ONE clipboard per application (`QGuiApplication::
+ * clipboard()` is a class static), so a window argument would imply one per
+ * window. Both begin Qt, which needs a display.
+ *
+ * `len` IS THE BYTE COUNT and is passed rather than recomputed, because
+ * measured the clipboard carries an interior NUL exactly (`a\0b` round-trips
+ * as 61 00 62) -- so PLAT-NUL's answer at this door is carry, and
+ * `QString::fromUtf8(text)` alone would have truncated and reported success. */
+int gb_qt_copy(const char *text, long len, char *err, size_t err_size);
+/* 1 with text (caller frees), 0 nothing on the clipboard, -1 refused. */
+int gb_qt_clipboard(char **text, long *len, char *err, size_t err_size);
+
 /* THE WHEEL. `on <part>.wheel` is an EVENT and not a signal -- the second
  * thing in this backend that has to be, after `closed`, and for the same
  * reason: a QWidget has no wheel signal, it RECEIVES a QWheelEvent, so the

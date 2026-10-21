@@ -738,3 +738,27 @@ the active tab, would duplicate the header's own `Close Tab` item and act on the
 wrong tab when it differs — worse than its absence, and the absence costs only
 a convenience. The header item still closes the active document.
 
+
+---
+
+# Where these were answered, 2026-10-21
+
+Added by the platform session rather than by Studio, so a reader of this
+document is not left acting on a request that has since been met. The requests
+above are left exactly as they were written; this only says where to look.
+
+| request | answered by |
+|---|---|
+| the caret (`qt.caret`, `qt.caret_to`) | **§0.32**, which landed at 23:02 on 2026-10-20 — two and a half hours after this document's *"still request 1"* was written. Run is unblocked |
+| no clipboard under Qt | **§0.33** — `qt.copy(text)` and `qt.clipboard()`. The measurement this document asked for was made first: **Qt copies eagerly**, so the GTK trap where a buffer read at paste time gives an empty paste does not exist here |
+| a tab's right-click can only reach the ACTIVE tab | **§0.33** — `qt.which_tab()`, both routes. It is not called `tab_click` because the int route takes any single-int tab signal, `currentChanged` included, and that fires when the program moves the tab |
+| `tabCloseRequested(int)` unreachable from a zero-argument handler | **§0.33**, the same verb. Driving the close button itself is still not possible from gBASIC, so what is asserted is the rule through `currentChanged` |
+| `qt.right_click`'s row aim is table-only | **§0.33** — a tree row and a tab are both aimed at now, the tab through the tab *bar*, which is where a real click lands |
+| `qt.theme` (§5, listed as a prediction rather than an ask) | already existed before this document was written |
+| the Tables pane "waits on the data grid" | **§0.25** shipped the model-backed asking table on 2026-10-19 (`table x to ask fn`), which is the Qt replacement for `datagrid` — 27 callbacks for a million rows. If that row meant a gap here it is closed; if it meant the pane has not been ported, that is Studio's own work |
+
+**And a defect this document's second gap uncovered**, worth knowing because it
+is in a feature Studio already uses: a `tree` declaring `field depth( depth:
+true )` **first** read back as empty, because the undrawn depth column was
+counted in the name-to-column mapping. §0.28's own fixture declares it last,
+where the indices agree by accident. Fixed, with the order asserted both ways.

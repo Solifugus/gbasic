@@ -44,6 +44,22 @@ function rows_now(extra)
     return out
 end function
 
+' THE SAME TREE WITH THE DEPTH DECLARED FIRST (§0.33). A separate window
+' because the order is the whole subject: `nav` declares it LAST, where the
+' drawn column indices and the declared ones agree BY ACCIDENT, so that fixture
+' could not see what this one is for. Found by writing an unrelated fixture
+' that happened to declare it the other way round -- and the consequence was
+' not a wrong caption but a tree that READ BACK AS EMPTY, since `name`
+' resolved to column 1 of a one-column widget and the message blamed the ROW.
+window nav2( title: "Files", width: 360, height: 300 )
+    column
+        tree files2 to show rows2
+            field depth( depth: true )
+            field name(  label: "File" )
+        end tree
+    end column
+end window
+
 window nav( title: "Files", width: 360, height: 300 )
     column
         tree files to show rows
@@ -137,6 +153,56 @@ program main()
     on error stop
 
     qt.close(nav)
+
+    ' ---- THE DEPTH DECLARED FIRST (§0.33) -------------------------------
+    rows2 = [ { depth: 0, name: "src" }, { depth: 1, name: "eval.c" } ]
+    qt.open(nav2)
+    ' READ THROUGH A CAUGHT RAISE, because the defect this tier exists for
+    ' RAISES rather than answering wrongly -- `name` resolved to a column the
+    ' widget does not have, so `qt.cell` reported "has no row 0" and killed
+    ' the fixture. A dead fixture reports "exited 1" and hides the assertion
+    ' that had already named the problem (the run_discovery lesson), so the
+    ' raise becomes the "got" instead.
+    on error goto next
+    first = qt.cell(nav2, "files2", 0, "name")
+    if error then
+        first = "RAISED: " + error.message
+        error.clear()
+    end if
+    nested = qt.cell(nav2, "files2", 1, "name")
+    if error then
+        nested = "RAISED: " + error.message
+        error.clear()
+    end if
+    cap = qt.heading(nav2, "files2", "name")
+    if error then
+        cap = "RAISED: " + error.message
+        error.clear()
+    end if
+    on error stop
+    check("a cell reads back whichever side the depth column was declared on",
+          first, "src")
+    check("and so does the nested row", nested, "eval.c")
+    check("the caption is on the drawn column", cap, "File")
+    check("and the depth still reads", string(qt.depth(nav2, "files2", 1)), "1")
+
+    ' AND THE UNDRAWN COLUMN SAYS WHICH OF THE TWO THINGS IS WRONG: "there is
+    ' no such column" would be false about a field the author can see in their
+    ' own declaration.
+    on error goto next
+    qt.cell(nav2, "files2", 0, "depth")
+    check("asking for the depth column as a cell says it is not drawn",
+          error.message,
+          "qt.cell: `files2`'s `depth` column carries the depth and is not " +
+          "drawn, so it holds no cell -- qt.depth answers it")
+    error.clear()
+    qt.cell(nav2, "files2", 0, "nope")
+    check("and a column nobody declared still gets the plain message",
+          error.message, "qt.cell: table `files2` has no `nope` column")
+    error.clear()
+    on error stop
+    qt.close(nav2)
+
     print "ok   " + string(g.checks) + " checks, " + string(g.bad) + " mismatches"
 end program
 
