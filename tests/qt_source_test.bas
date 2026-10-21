@@ -215,6 +215,85 @@ program main()
     qt.open(legal)
     check("while a real source takes both language and theme",
           qt.highlighting(legal, "s").language, "gBASIC")
+
+    ' ---- THE CARET (§0.32) ---------------------------------------------
+    ' ASKED FOR BY THE CONSUMER WITH THE USE THAT JUSTIFIES IT: *"stopped at
+    ' line 7 -- put the caret there to see why"*, which is the difference
+    ' between an editor you can look at and one you can use.
+    '
+    ' IT NEEDS A VERB, measured: `textCursor` is neither a Q_PROPERTY nor
+    ' invokable by name, both -1, because it answers a QTextCursor where the
+    ' by-name route moves QVariants. So it is one of the genuinely unreachable
+    ' things, like the highlighter and the margin.
+    qt.write(legal, "s", join([ "function total(rows)", "    t = 0",
+                                "    for each r in rows",
+                                "        t = t + r.amount", "    end for",
+                                "    return t", "end function" ], chr(10)))
+    ' 1-BASED, WHICH IS §0.29's RULE RATHER THAN A FRESH CHOICE: Qt's own
+    ' numbers are 0-based, and gBASIC's diagnostics, `source_outline` and a
+    ' mark list are all 1-based -- so a diagnostic's `line:column` goes
+    ' straight in and THERE IS NO CONVERSION AT THE CALL SITE.
+    check("a fresh caret is at line 1 column 1",
+          string(qt.caret(legal, "s").line) + ":" +
+          string(qt.caret(legal, "s").column), "1:1")
+    qt.caret_to(legal, "s", 4, 9)
+    here = qt.caret(legal, "s")
+    check("the caret goes where a diagnostic points",
+          string(here.line) + ":" + string(here.column), "4:9")
+    check("and reports no selection", string(here.selecting), "false")
+
+    ' THE COLUMN CLAMPS TO ITS OWN LINE, WHERE THE LINE DOES NOT -- and the
+    ' clamp is OURS, which this check corrected rather than confirmed:
+    ' `movePosition(Right, n)` walks ACROSS block boundaries, so before the fix
+    ' column 999 of line 2 landed on line 7 of a seven-line document. A
+    ' plausible position in the wrong place, which is the class this backend is
+    ' tested against.
+    qt.caret_to(legal, "s", 2, 999)
+    far = qt.caret(legal, "s")
+    check("a column past the end of its line stays on that line",
+          string(far.line), "2")
+    ok("and lands one past the last character", far.column = 10)
+
+    ' A `memo` HAS A CARET TOO, which is what says the verb is about a TEXT
+    ' EDITOR rather than about `source` -- the same reasoning `qt.highlighting`
+    ' rests on one widget along.
+    ok("a memo has a caret as well",
+       not is_unknown(qt.caret(ed, "log")))
+    ' AND A PART THAT IS NOT ONE ANSWERS AN ABSENCE rather than refusing:
+    ' "where is the caret in this editor's language" has no answer, and
+    ' `unknown` is the one that composes with `is_unknown` -- the shape
+    ' `qt.dock`, `qt.pane` and `qt.scrolled` all take.
+    ' A PART THAT EXISTS AND IS NOT AN EDITOR, which this check had to be
+    ' corrected into: the first version named a part that is not there at all,
+    ' which RAISES (and rightly -- an absent name is a mistake, where "that is
+    ' not an editor" is an answer), and its `or true` made it vacuous besides.
+    ' The window is a part of itself (§0.17), so it is the nearest thing to
+    ' hand that has no caret.
+    ok("a part that is not an editor answers unknown",
+       is_unknown(qt.caret(ed, "ed")))
+
+    on error goto next
+    ' A LINE PAST THE END IS REFUSED RATHER THAN CLAMPED, because a program
+    ' putting the caret where a diagnostic said is working from a model of the
+    ' document -- and if that model is stale, clamping puts the caret on the
+    ' WRONG LINE and looks like it worked. The message carries the real length.
+    qt.caret_to(legal, "s", 99, 1)
+    ok("a line past the end is refused, naming the real length",
+       contains(error.message, "this editor holds 7"))
+    error.clear()
+    ' LINE 0 IS THE 0-BASED CALLER'S MISTAKE, refused by name the way
+    ' `qt.mark`'s is, and the message says which numbering is meant.
+    qt.caret_to(legal, "s", 0, 1)
+    ok("line 0 is refused and names the numbering",
+       contains(error.message, "start at 1"))
+    error.clear()
+    ' THE CONTROL ON BOTH: a well-formed move is still taken, or the refusals
+    ' are satisfied by a verb that refuses everything.
+    took = qt.caret_to(legal, "s", 3, 2)
+    ok("and a well-formed move is still taken", took)
+    error.clear()
+    check("which took", string(qt.caret(legal, "s").line), "3")
+
     qt.stop()
 end program
 

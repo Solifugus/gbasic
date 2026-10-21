@@ -3945,3 +3945,73 @@ Four perturbations proven red: the deferral removed (caught by valgrind, and by
 the bound never firing because corruption ends the loop early), the cap removed,
 the drain at the wrong point (**caught by valgrind and nothing else**), and the
 table re-lookup removed.
+
+## 0.32 The caret (2026-10-20)
+
+**Asked for by the gBASIC Studio session, with the use that justifies it:**
+*"stopped at line 7 — put the caret there to see why"*, which is their own
+summary of why it outranks the rest of their list — *"the difference between an
+editor you can look at and one you can use."*
+
+### It needs a verb, and that was measured
+
+The question §0.23 and §0.29 both had to ask, because this backend's whole
+economy is that construction is a table and everything else is by name (§1).
+Measured: `textCursor` is **not** a `Q_PROPERTY` and `textCursor()` is **not**
+invokable by name — both −1 — because it answers a `QTextCursor` where the
+by-name route moves `QVariant`s. So the caret joins the highlighter and the
+margin as something genuinely unreachable, rather than something `qt.read`
+already does and nobody noticed.
+
+### 1-based, which is §0.29's rule rather than a fresh choice
+
+Qt's `blockNumber` and `positionInBlock` are both 0-based. gBASIC's own
+diagnostics, `source_outline` and a mark list are all 1-based. So **the +1 lives
+in one place** and a `line:column` out of any of them goes straight into
+`qt.caret_to` with no arithmetic at the call site — which is the whole use, and
+the same reasoning that made §0.29's marks 1-based.
+
+### The line refuses and the column clamps, which is not symmetry
+
+A **line** past the end means the caller's model of the document is wrong, and
+clamping would put the caret on a different line while looking like it worked —
+the silent class this backend is tested against. It is refused, and the message
+carries the document's real length, because that is what tells the caller their
+model has moved.
+
+A **column** past the end of its own line is ordinary — a diagnostic pointing
+just past the last character, or a line since shortened — so it clamps, landing
+where End would.
+
+**And the clamp is ours, which the fixture corrected rather than confirmed.**
+The first version of this comment said Qt stops at the line end by itself.
+Measured, `movePosition(Right, n)` walks **across** block boundaries: column 999
+of line 2 landed on **line 7** of a seven-line document. A plausible position in
+the wrong place — the second comment of mine this week that a measurement has
+contradicted, after `qobject_cast` in §0.29.
+
+### Two smaller decisions
+
+`selecting` is reported because a caret inside a selection is **one end of a
+range**, and a bare line and column would be an ambiguous reading — the
+`principal()` and `qt.dialog` discipline, where an answer that could mean two
+things is worse than a narrower one. The **anchor** is deliberately not
+reported: nobody has asked for it, and a verb answering five numbers when two
+were wanted is a surface to regret.
+
+A part that is not a text editor answers **`unknown`** rather than refusing,
+which composes with `is_unknown` — the shape `qt.dock`, `qt.pane` and
+`qt.scrolled` all take. A name that is **not there at all** still raises, and
+that distinction corrected a check of mine: the first version asked about an
+absent name, which is a mistake rather than an answer, and its `or true` made
+it vacuous besides.
+
+### And §0.31's discipline applied rather than rediscovered
+
+Measured: `setTextCursor` emits `cursorPositionChanged` **once**, so a handler
+may run inside `qt.caret_to` and may have reconciled that very editor away. The
+function therefore **ends on the call** and touches nothing afterwards, which is
+the cheapest form of §0.31's rule — one increment old and already paying.
+
+Four perturbations proven red: the read made 0-based, the write made 0-based,
+the column clamp removed, and the past-the-end refusal removed.

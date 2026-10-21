@@ -3698,6 +3698,100 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_array(names, (size_t)(n > 0 ? n : 0));
     }
 
+    if (strcmp(verb, "caret") == 0 || strcmp(verb, "caret_to") == 0) {
+        /* WHERE THE CARET IS, AND PUTTING IT SOMEWHERE (§0.32). Asked for by
+         * the consumer with the use that justifies it -- *"stopped at line 7,
+         * put the caret there to see why"* -- and it needs a verb rather than
+         * the by-name route because `textCursor` is measurably neither a
+         * property nor invokable.
+         *
+         * BOTH DIRECTIONS THROUGH ONE BRANCH, the rule `qt.mark`/`qt.marks`
+         * already follow: a reader and a writer that disagreed about what a
+         * line number MEANS would be the off-by-one §0.29 exists to have no
+         * room for, and here they share the numbering by construction. */
+        int putting = strcmp(verb, "caret_to") == 0;
+        if (argc != (putting ? 4 : 2)) {
+            qt_raise(putting
+                         ? "qt.caret_to expects a window, a part's name, a "
+                           "line and a column"
+                         : "qt.caret expects a window and a part's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value lv = putting ? eval_expr(expr->as.call.args.items[2])
+                           : value_null();
+        Value cv = putting ? eval_expr(expr->as.call.args.items[3])
+                           : value_null();
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(lv); value_free(cv);
+            return value_null();
+        }
+        if (!qt_window_record(&win, verb) || which.kind != VALUE_STRING ||
+            (putting && (lv.kind != VALUE_NUMBER || cv.kind != VALUE_NUMBER))) {
+            if (!error_action_pending()) {
+                qt_raise(putting
+                             ? "qt.caret_to expects a window, a part's name as "
+                               "text, and a line and a column as numbers"
+                             : "qt.caret expects a window and a part's name as "
+                               "text");
+            }
+            value_free(win); value_free(which); value_free(lv); value_free(cv);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(lv); value_free(cv);
+            return value_null();
+        }
+        char *pname = copy_string(which.as.string);
+        long want_line = putting ? (long)lv.as.num.value : 0;
+        long want_col = putting ? (long)cv.as.num.value : 0;
+        value_free(win); value_free(which); value_free(lv); value_free(cv);
+        char err[QT_ERRBUF];
+        err[0] = '\0';
+        if (putting) {
+            int ok = gb_qt_caret_to(root, pname, (int)want_line,
+                                    (int)want_col, err, sizeof(err));
+            if (!ok) {
+                snprintf(message, sizeof(message), "qt.caret_to: %s",
+                         err[0] ? err : "the caret could not be moved");
+                free(pname);
+                qt_raise(message);
+                return value_null();
+            }
+            free(pname);
+            return value_bool(1);
+        }
+        int line = 0, column = 0, selecting = 0;
+        int got = gb_qt_caret(root, pname, &line, &column, &selecting, err,
+                             sizeof(err));
+        if (got < 0) {
+            snprintf(message, sizeof(message), "qt.caret: %s",
+                     err[0] ? err : "the caret could not be read");
+            free(pname);
+            qt_raise(message);
+            return value_null();
+        }
+        free(pname);
+        if (got == 0) {
+            /* NOT A TEXT EDITOR IS AN ABSENCE, not a refusal: "where is the
+             * caret in this button" has no answer, and `unknown` is the one
+             * that composes with `is_unknown` -- the shape `qt.dock`,
+             * `qt.pane` and `qt.scrolled` all take. */
+            return value_unknown();
+        }
+        Value out = value_record(NULL, 0);
+        record_set(&out, "line", value_number((double)line));
+        record_set(&out, "column", value_number((double)column));
+        record_set(&out, "selecting", value_bool(selecting));
+        return out;
+    }
+
     if (strcmp(verb, "mark") == 0 || strcmp(verb, "marks") == 0) {
         /* A MARK PER LINE IN A `source`'S MARGIN (§0.29) -- the second of the
          * two asks docs/qt_studio_requests.md names as blocking a feature

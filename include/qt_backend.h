@@ -734,6 +734,19 @@ char *gb_qt_layout_save(void *window, char *err, size_t err_size);
 int gb_qt_layout_restore(void *window, const char *text, char *err,
                          size_t err_size);
 
+/* ---- THE CARET (§0.32) -------------------------------------------------
+ * IT NEEDS A VERB, measured: `textCursor` is not a Q_PROPERTY and
+ * `textCursor()` is not invokable by name, both -1, because it answers a
+ * QTextCursor and the by-name route moves QVariants. 1-BASED, which is §0.29's
+ * rule rather than a fresh choice -- so a diagnostic's `line:column` goes
+ * straight in with no arithmetic at the call site.
+ *
+ * 1 answered, 0 that name is not a text editor, -1 refused (err set). */
+int gb_qt_caret(void *window, const char *name, int *line, int *column,
+                int *selecting, char *err, size_t err_size);
+int gb_qt_caret_to(void *window, const char *name, int line, int column,
+                   char *err, size_t err_size);
+
 /* ---- THE MARGIN ON A `source` (§0.29) ----------------------------------
  * `line_numbers:` and `marks:` are STRUCTURAL options, the shape `language:`
  * has: each builds a child widget rather than setting a property, so the

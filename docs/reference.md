@@ -3872,6 +3872,8 @@ end program
 | `qt.scroll_to(win, part, position)` | put it back, which is how *"reopen the editor where I left it"* is written. A part that does not scroll is refused by name rather than succeeding and doing nothing; the range is Qt's own, so a position past the end is clamped |
 | `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
 | `qt.highlighting(win, part)` | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
+| `qt.caret(win, part)` | where the caret is in a `source` or a `memo` — `{ line, column, selecting }`, **1-based** — or **`unknown`** for a part that is not a text editor. The numbering is the one gBASIC's diagnostics, `source_outline` and `qt.mark` all use, so a `line:column` from any of them goes straight into `qt.caret_to` with no arithmetic. `selecting` is there because a caret inside a selection is one end of a range, and a bare line and column would be an ambiguous reading |
+| `qt.caret_to(win, part, line, column)` | put it there, which is how *"stopped at line 7 — show me why"* is written. A **line past the end is refused**, naming the document's real length: a program placing the caret where a diagnostic said is working from a model of the document, and clamping would put it on the wrong line and look like it worked. A **column** past the end of its own line clamps, landing where End would — that case is ordinary rather than a stale model |
 | `qt.mark(win, part, category, lines)` | put a mark beside each of those lines in a `source`'s margin, **replacing that category's whole list** — which is the consumer's own shape, since a gutter is recomputed on every redraw and an add/remove pair would make the caller keep a record of what it had already drawn. An empty list clears it. The categories are `section`, `error`, `warning`, `note` and `break`, and an unknown one is **refused by name** with a near-miss hint: unlike a widget's properties the set *can* be closed, because a category decides a glyph and a priority and the backend has to know both. **Line 1 is the first line** — `source_outline` reports `start_line = 1` and a parse diagnostic carries a 1-based line, so there is no conversion anywhere — and **line 0 is refused** rather than dropped, a silently dropped mark reporting success while drawing nothing |
 | `qt.marks(win, part, category)` | that category's lines, as a list. **What was set, never what is currently drawable**: a program may mark line 40 and then shorten the document, and a read filtered to the lines still in the file would disagree with the write for a reason the caller cannot see. The drawing is the widget's business; the list is the program's |
 | `qt.gutter(win, part)` | what that `source`'s margin is — `{ line_numbers, marks, width }` — or **`unknown`** for one that has none, since `width: 0` would say a margin exists and is empty. The `width` follows the **digit count**, so a thousand-line document reserves more than a nine-line one |
@@ -4575,6 +4577,18 @@ per window, so a second is refused rather than silently merged into the first,
 and what a program updates is the text *in* it: a `text` part there is an
 ordinary widget whose `text` property `qt.set` reaches, which is why a status
 bar needs no verb of its own. `stretch()` pushes what follows to the right.
+
+**The caret needs a verb, and that is measured rather than assumed.**
+`textCursor` is neither a property nor invokable by name — it answers a
+`QTextCursor`, where the by-name route moves QVariants — so it is one of the
+genuinely unreachable things, like the highlighter and the margin, rather than
+something `qt.read` already does.
+
+<!--fragment: inside a handler or a program that has opened the window-->
+```basic
+qt.caret_to(win, "code", 7, 5)      ' a diagnostic's own line:column
+c = qt.caret(win, "code")           ' { line: 7, column: 5, selecting: false }
+```
 
 **A handler that changes what it is watching calls itself.** A selection
 handler that calls `qt.refresh` alters the selection, which fires the handler

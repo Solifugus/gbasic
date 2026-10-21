@@ -3529,6 +3529,121 @@ static GbQtSourceEdit *source_edit_named(void *window, const char *name,
     return e;
 }
 
+/* WHERE THE CARET IS, AND PUTTING IT SOMEWHERE (§0.32) -- asked for by the
+ * gBASIC Studio session with the use that justifies it: *"stopped at line 7 --
+ * put the caret there to see why"*, which is the difference between an editor
+ * you can look at and one you can use.
+ *
+ * IT NEEDS A VERB, measured, which is the question §0.23 and §0.29 both had to
+ * ask: `textCursor` is NOT a Q_PROPERTY and `textCursor()` is NOT invokable by
+ * name (both -1), because it answers a QTextCursor and the by-name route moves
+ * QVariants. So this is one of the genuinely unreachable things, like the
+ * highlighter and the margin, rather than something a `qt.set` already does.
+ *
+ * 1-BASED, WHICH IS §0.29's RULE AND NOT A FRESH CHOICE: `blockNumber` and
+ * `positionInBlock` are both 0-based, and gBASIC's own diagnostics,
+ * `source_outline` and a mark list are all 1-based -- so the +1 lives here,
+ * once, and a diagnostic's `line:column` goes straight into `qt.caret_to`
+ * with no arithmetic at the call site. That is the whole use.
+ *
+ * 1 answered, 0 not a text editor, -1 refused (err set). */
+extern "C" int gb_qt_caret(void *window, const char *name, int *line,
+                           int *column, int *selecting, char *err,
+                           size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!o) {
+        say(err, err_size, QByteArray("there is nothing called `") + name +
+                               "` in this window");
+        return -1;
+    }
+    QPlainTextEdit *e = qobject_cast<QPlainTextEdit *>(o);
+    if (!e) {
+        return 0;
+    }
+    QTextCursor c = e->textCursor();
+    if (line)   { *line = c.blockNumber() + 1; }
+    if (column) { *column = c.positionInBlock() + 1; }
+    /* A CARET INSIDE A SELECTION IS ONE END OF A RANGE, so saying so is what
+     * keeps the reading unambiguous -- the `principal()` and `qt.dialog`
+     * discipline, where an answer that could mean two things is worse than a
+     * narrower one. The ANCHOR is deliberately not reported: nobody has asked
+     * for it, and a verb answering five numbers when two were wanted is a
+     * surface to regret. */
+    if (selecting) { *selecting = c.hasSelection() ? 1 : 0; }
+    return 1;
+}
+
+extern "C" int gb_qt_caret_to(void *window, const char *name, int line,
+                              int column, char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!o) {
+        say(err, err_size, QByteArray("there is nothing called `") + name +
+                               "` in this window");
+        return 0;
+    }
+    QPlainTextEdit *e = qobject_cast<QPlainTextEdit *>(o);
+    if (!e) {
+        say(err, err_size,
+            QByteArray("only a `source` or a `memo` has a caret, and `") +
+                name + "` is neither");
+        return 0;
+    }
+    if (line < 1 || column < 1) {
+        say(err, err_size,
+            "a line and a column both start at 1 -- the same numbering a "
+            "diagnostic and `qt.mark` use");
+        return 0;
+    }
+    QTextBlock block = e->document()->findBlockByNumber(line - 1);
+    if (!block.isValid()) {
+        /* REFUSED RATHER THAN CLAMPED TO THE LAST LINE, and the reason is the
+         * use: a program putting the caret on a line a diagnostic named is
+         * working from a model of the document, and if that model is stale the
+         * honest answer is to say so. Clamping would put the caret on the
+         * WRONG LINE and look like it worked, which is the silent class this
+         * backend is tested against. The message carries the real length,
+         * because that is what tells the caller their model has moved. */
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "that line is past the end -- this editor holds %d",
+                 e->document()->blockCount());
+        say(err, err_size, buf);
+        return 0;
+    }
+    QTextCursor c(block);
+    /* THE COLUMN CLAMPS, WHERE THE LINE DOES NOT, and the asymmetry is
+     * deliberate: a line past the end means the caller's idea of the document
+     * is wrong, where a column past the end of ITS line is ordinary -- a
+     * diagnostic pointing just past the last character, or a line that has
+     * since been shortened -- so it lands where a person pressing End would.
+     *
+     * AND THE CLAMP IS OURS, which a FIXTURE CORRECTED: the first version said
+     * "Qt stops at the line end by itself" and measured it does not --
+     * `movePosition(Right, n)` walks ACROSS block boundaries, so column 999 of
+     * line 2 landed on line 7 of a seven-line document. A plausible position,
+     * in the wrong place, which is the class this backend is tested against,
+     * and the second comment of mine this week that a measurement has
+     * contradicted. `block.length()` counts the separator, so the last
+     * position in the line is one less. */
+    int last = block.length() - 1;
+    int want = column - 1;
+    if (want > last) {
+        want = last;
+    }
+    c.movePosition(QTextCursor::Right, QTextCursor::MoveAnchor, want);
+    e->setTextCursor(c);
+    /* RE-ENTRY (§0.31): MEASURED, `setTextCursor` emits
+     * `cursorPositionChanged` exactly once, so a handler may run here and may
+     * have reconciled this very editor away. Nothing is touched afterwards --
+     * which is the cheapest form of the §0.31 discipline, and is why this
+     * function ends on the call rather than reading anything back. */
+    return 1;
+}
+
 extern "C" int gb_qt_gutter_enable(void *window, const char *name, int numbers,
                                    int marks, char *err, size_t err_size) {
     GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
