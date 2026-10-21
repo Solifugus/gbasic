@@ -722,11 +722,49 @@ static int qt_cell_text(const char *fn, int row, int column, char **text) {
     return ok;
 }
 
+/* HOW DEEP A HANDLER MAY RE-ENTER ITSELF (§0.31). MEASURED RATHER THAN CHOSEN:
+ * across every Qt fixture, example and cookbook recipe in the tree the deepest
+ * legitimate nesting is TWO -- a handler that opens a modal window whose own
+ * button handler runs -- and every other one is one. So 16 is eight times the
+ * real maximum, the margin §0.28's tree-depth cap uses, and nothing anybody
+ * has written comes near it.
+ *
+ * WHY THERE IS A CAP AT ALL, which the use-after-free was hiding: a selection
+ * handler that calls `qt.refresh` CHANGES THE SELECTION, which calls the
+ * handler again -- a true feedback loop in the program rather than a Qt fault,
+ * since every round genuinely alters the selection. Before the lifetime fix
+ * the loop terminated by corrupting memory (it "fired 8 times" and answered
+ * `unknown` for a row just selected); with the items kept alive it recursed
+ * until the stack ran out. So the crash was masking a second defect, and
+ * fixing the first exposed it -- which is why both are in one increment.
+ *
+ * A WARNING AND NOT A RAISE, which is forced rather than preferred: this runs
+ * inside a Qt call with Qt's own frames between it and anything that could
+ * unwind, the position §0.25 records for a cell callback ("there is nothing
+ * sensible to unwind into"). Breaking the loop and SAYING SO turns an
+ * unbounded crash into a located sentence, which is this backend's rule from
+ * §0.3 onwards. */
+#define QT_HANDLER_MAX_DEPTH 16
+
 static void qt_invoke_handler(const char *handler) {
     FunctionDef *def = function_resolve(NULL, handler);
     if (!def || !def->stmt) {
         return;   /* the handler function disappeared; nothing to call */
     }
+#if HAVE_QT
+    if (gb_qt_handler_depth() > QT_HANDLER_MAX_DEPTH) {
+        /* NOT CALLED, which is what breaks the loop. The message names the
+         * handler and the shape, because "too deep" alone leaves an author
+         * looking for a bug in the handler's body rather than at the fact that
+         * it triggers itself. */
+        warn_fmt(2117, "handler recursion",
+                 "window: `%s` has re-entered itself %d deep and was not "
+                 "called again -- a handler that changes what it is watching "
+                 "calls itself, and a selection handler that refreshes is the "
+                 "usual way in", handler, QT_HANDLER_MAX_DEPTH);
+        return;
+    }
+#endif
     int saved_stopped = runtime_stopped;
     int saved_line = current_line;
     int saved_column = current_column;
@@ -2967,6 +3005,17 @@ static Value qt_eval_call(AstExpr *expr) {
     const char *verb = expr->as.call.name;
     size_t argc = expr->as.call.args.count;
     char message[512];
+
+#if HAVE_QT
+    /* ANYTHING A RE-ENTRANT REFRESH TOOK OUT BUT COULD NOT FREE IS FREED HERE
+     * (§0.31), and this is the one moment it is safe to: at the top of a verb
+     * dispatch with no handler running, nothing of the backend's is on the
+     * stack. A tree refresh called from inside a selection handler cannot
+     * delete its items -- the Qt call that emitted the signal is still running
+     * on one of them -- so it takes them out and leaves them here. The depth
+     * test lives in the backend, so this call cannot get the timing wrong. */
+    gb_qt_retire_drain();
+#endif
 
 #if !HAVE_QT
     (void)argc;

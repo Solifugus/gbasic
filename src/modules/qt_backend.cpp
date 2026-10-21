@@ -167,6 +167,9 @@ extern "C" int gb_qt_can_display(void) {
 /* ------------------------------------------------------------------ */
 
 static GbQtInvokeFn g_invoke = nullptr;
+/* ONE DOOR INTO gBASIC -- defined with the retire list it drains, below, and
+ * declared here because the first of its four callers is a relay above it. */
+static void invoke_handler(const char *handler);
 static GbQtCellFn g_cell = nullptr;
 static GbQtTickFn g_tick = nullptr;
 static GbQtClosedFn g_closed = nullptr;
@@ -219,7 +222,7 @@ public:
 
 void GbQtRelay::fire() {
     if (g_invoke) {
-        g_invoke(handler.constData());
+        invoke_handler(handler.constData());
     }
 }
 
@@ -331,6 +334,77 @@ static const char *dock_area_word(int area) {
     default: break;
     }
     return "none";
+}
+
+/* A HANDLER IS RUNNING, AND HOW DEEP (§0.31). Four places call back into
+ * gBASIC -- a relayed signal, a wheel, a gutter click and a close -- and what
+ * they have in common is that the interpreter may do ANYTHING from inside a Qt
+ * call that is still on the stack, including destroying the widgets or items
+ * that call belongs to.
+ *
+ * REPORTED FROM THE STUDIO BENCH WITH VALGRIND NAMING BOTH ENDS: `qt.select`
+ * on a tree emits `itemSelectionChanged`, the handler calls `qt.refresh`, a
+ * tree refresh DELETES EVERY ITEM, and `QTreeWidgetItem::setSelected` then
+ * runs on with `this` freed. Severity high -- it segfaulted about three runs
+ * in five, and when it did not it answered `unknown` for a row just selected.
+ *
+ * A RE-LOOKUP CANNOT FIX IT, which is the measurement that produced this
+ * counter: the first attempt looked the item up again after `setCurrentItem`,
+ * and valgrind still objected INSIDE `setSelected` -- because that call emits
+ * the signal ITSELF, so the handler frees the item while the call that is
+ * freeing it is the one still executing. Nothing the caller does can help.
+ *
+ * SO THE DELETION WAITS, which is §0.17's own arrangement for a window closed
+ * from inside its own event dispatch, reached here by the same reasoning:
+ * while a handler is on the stack an item is TAKEN OUT of its widget -- so it
+ * stops being found, which is what a refresh means -- and kept ALIVE until the
+ * outermost handler returns. Measured: `setSelected` on an item with no model
+ * returns at once, so a taken-out item makes the rest of the call a harmless
+ * no-op rather than a crash. */
+static int g_handler_depth = 0;
+static int g_handler_max = 0;      /* measurement seam; see GB_QT_DEPTH_TRACE */
+static QList<QTreeWidgetItem *> g_retired_items;
+
+static void retired_items_drain(void) {
+    while (!g_retired_items.isEmpty()) {
+        delete g_retired_items.takeLast();
+    }
+}
+
+/* ONE DOOR INTO gBASIC, so the depth cannot be tracked at three sites and
+ * forgotten at the fourth -- the drift this backend tripwires against
+ * elsewhere, and the reason `qt_fill_menu` serves a toolbar too. */
+static void invoke_handler(const char *handler) {
+    if (!g_invoke || !handler || !*handler) {
+        return;
+    }
+    g_handler_depth++;
+    if (g_handler_depth > g_handler_max) {
+        g_handler_max = g_handler_depth;
+    }
+    g_invoke(handler);
+    g_handler_depth--;
+}
+
+/* WHERE THE DRAIN HAPPENS, AND THE FIRST ANSWER WAS WRONG. Draining when the
+ * handler depth returns to zero is NOT safe, which valgrind said plainly: the
+ * call that emitted the signal is STILL ON THE STACK at depth zero, so
+ * `setSelected` went on executing on an item the drain had just deleted --
+ * the same crash moved a few instructions later.
+ *
+ * THE SAFE MOMENT IS A FRESH ENTRY FROM gBASIC, which is §0.17's arrangement
+ * for a retired window reached by the same reasoning: at the top of a verb
+ * dispatch, with no handler running, nothing of ours is on the stack at all.
+ * `src/modules/qt.c` calls this there, and the depth test is here rather than
+ * at the call site so a second caller cannot get it wrong. */
+extern "C" int gb_qt_handler_depth(void) { return g_handler_depth; }
+
+extern "C" int gb_qt_handler_max(void) { return g_handler_max; }
+
+extern "C" void gb_qt_retire_drain(void) {
+    if (g_handler_depth == 0) {
+        retired_items_drain();
+    }
 }
 
 static QWidget *host_of(GbQtNode *n) {
@@ -521,7 +595,7 @@ public:
         g_wheel_claimed = false;
         g_wheel_live = true;
         if (!handler.isEmpty() && g_invoke) {
-            g_invoke(handler.constData());
+            invoke_handler(handler.constData());
         }
         g_wheel_live = false;
         g_wheel_claimed_last = g_wheel_claimed;
@@ -899,7 +973,7 @@ public:
         g_gclick_line = edit->cursorForPosition(vp).blockNumber() + 1;
         g_gclick_live = true;
         if (!handler.isEmpty() && g_invoke) {
-            g_invoke(handler.constData());
+            invoke_handler(handler.constData());
         }
         g_gclick_live = false;
         return true;
@@ -986,7 +1060,7 @@ static bool node_closed(GbQtNode *node) {
     }
     node->closing = true;
     if (!node->closed_handler.isEmpty() && g_invoke) {
-        g_invoke(node->closed_handler.constData());
+        invoke_handler(node->closed_handler.constData());
     }
     if (g_closed) {
         g_closed(node);
@@ -4017,6 +4091,35 @@ extern "C" char *gb_qt_table_heading(void *window, const char *name,
     return out;
 }
 
+/* A SELECTION CHANGE RE-ENTERS THE INTERPRETER, so nothing may be held across
+ * one. Reported by the gBASIC Studio session with valgrind naming both ends:
+ * `setCurrentItem` emits `itemSelectionChanged`, whose handler is gBASIC code,
+ * which may call `qt.refresh` -- and a tree's refresh DELETES EVERY ITEM. The
+ * pointer fetched before the call is then freed, and the next line writes
+ * through it. Severity high: it segfaulted about three runs in five, and when
+ * it did not it answered `unknown` for a row that had just been selected --
+ * the failure class this backend is tested against, with the crash as the
+ * merciful case.
+ *
+ * SO THE ITEM IS LOOKED UP AGAIN, BY NAME, after every call that can re-enter.
+ * Looking up by NAME is what makes that safe rather than hopeful: §0.27's
+ * reconcile purges a deleted child's name from the registry, which is exactly
+ * why that purge is load-bearing -- a stale pointer cannot come back out of
+ * `parts`, so a re-lookup either finds a live widget or finds nothing.
+ *
+ * DROPPING THE SECOND CALL WOULD ALSO HAVE WORKED AND WAS MEASURED: with
+ * `setSelected` removed all 18 tree checks still pass, because
+ * `setCurrentItem` selects as well in the DEFAULT selection mode. It is kept
+ * because that is only true of the default -- a program that sets
+ * `selectionMode` with `qt.set` would get a current row with no highlight --
+ * so the fix preserves every mode rather than the one the fixture uses.
+ *
+ * THE GENERAL RULE, worth more than the fix: a path that only exists once
+ * something CALLS BACK INTO the backend from inside it is invisible to a
+ * fixture that drives the verbs in sequence. This is the third such defect in
+ * a row (§0.22's own use-after-free, §0.27's reconcile never connecting a
+ * built child's handlers, and this), and run_qt_reentry.sh is the answer to
+ * the class rather than to the instance. */
 extern "C" int gb_qt_table_select(void *window, const char *name, int row,
                                  char *err, size_t err_size) {
     if (QTreeWidget *tr = tree_of(window, name)) {
@@ -4026,7 +4129,17 @@ extern "C" int gb_qt_table_select(void *window, const char *name, int row,
             return 0;
         }
         tr->setCurrentItem(item);
-        item->setSelected(true);
+        /* RE-ENTRY. See the note above this function: the handler that just
+         * ran may have refreshed the tree and deleted `item`, so it is looked
+         * up again rather than held. A tree that is gone, or a row that is no
+         * longer there, is an ORDINARY outcome of a handler that redrew --
+         * not a failure, since the program got what it asked for and then
+         * changed its mind. */
+        tr = tree_of(window, name);
+        item = tr ? tree_item_at(tr, row) : nullptr;
+        if (item) {
+            item->setSelected(true);
+        }
         return 1;
     }
     /* AN ASKING TABLE HAS A SELECTION TOO, and a program must not have to know
@@ -4052,7 +4165,16 @@ extern "C" int gb_qt_table_select(void *window, const char *name, int row,
             return 0;
         }
         v->selectRow(row);
-        v->setCurrentIndex(m->index(row, 0));
+        /* RE-ENTRY, the same hazard one table kind along: `selectRow` emits
+         * `selectionChanged`, and a handler may have rebuilt this window's
+         * children (§0.27) and deleted the view. Both the view AND the model
+         * are looked up again, because the model is owned by the view. */
+        m = ask_model_of(window, name);
+        v = qobject_cast<QTableView *>(
+            root->parts.value(QString::fromUtf8(name), nullptr));
+        if (v && m && row < m->rows) {
+            v->setCurrentIndex(m->index(row, 0));
+        }
         return 1;
     }
     QTableWidget *t = table_of(window, name);
@@ -4076,7 +4198,11 @@ extern "C" int gb_qt_table_select(void *window, const char *name, int row,
      * it, so the first attempt at this tier reported "nobody has chosen"
      * about a table it had just told to select everything). */
     t->selectRow(row);
-    t->setCurrentCell(row, 0);
+    /* RE-ENTRY, the third of the three table kinds. */
+    t = table_of(window, name);
+    if (t && row < t->rowCount()) {
+        t->setCurrentCell(row, 0);
+    }
     return 1;
 }
 
@@ -4638,6 +4764,12 @@ extern "C" void gb_qt_stop(void) {
 }
 
 extern "C" void gb_qt_end(void) {
+    if (getenv("GB_QT_DEPTH_TRACE")) {
+        fprintf(stderr, "GB_QT_DEPTH_MAX=%d\n", g_handler_max);
+    }
+    /* ANY ITEM STILL WAITING GOES HERE, so a program that never calls another
+     * verb after a refresh leaks nothing. */
+    retired_items_drain();
     /* A WINDOW WAITING TO BE RETIRED is deleted by the loop below like any
      * other -- its node still holds the widget -- so the list is only cleared,
      * never drained, because draining it would delete the same widget twice. */
@@ -5087,7 +5219,21 @@ extern "C" int gb_qt_tree_clear(void *window, const char *name) {
     if (!t) {
         return 0;
     }
-    t->clear();
+    if (g_handler_depth == 0) {
+        /* THE ORDINARY PATH IS UNCHANGED, which is what keeps this fix from
+         * being a behaviour change: with no handler on the stack there is no
+         * Qt call to outlive, so the items are deleted now as they always
+         * were. */
+        t->clear();
+        return 1;
+    }
+    /* INSIDE A HANDLER: taken out rather than deleted. `takeTopLevelItem`
+     * removes the row and hands us the item, children and all, so the tree is
+     * empty -- which is what a refresh means -- while every item stays ALIVE
+     * until the outermost handler returns. See the note on `invoke_handler`. */
+    while (t->topLevelItemCount() > 0) {
+        g_retired_items.append(t->takeTopLevelItem(0));
+    }
     return 1;
 }
 

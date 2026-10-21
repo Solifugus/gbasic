@@ -3846,3 +3846,102 @@ could produce the message. Removed rather than left in — an unexercised refusa
 rots, which is how §0.27 found a use-after-free in `qt.read`'s. `qt.dock` on an
 ordinary window answers `unknown`, which is the honest answer and the one that
 composes with `is_unknown`.
+
+## 0.31 Handlers that call back into the backend (2026-10-20)
+
+**Reported from the gBASIC Studio bench, with valgrind naming both ends** — and
+it is the third defect in a row of one shape, which is why the answer is a
+suite for the class rather than a fix for the instance.
+
+`qt.select` on a tree emits `itemSelectionChanged`; the handler calls
+`qt.refresh`; a tree's refresh **deletes every item**; and
+`QTreeWidgetItem::setSelected` runs on with `this` freed. Severity high: it
+segfaulted about three runs in five, and when it did not it answered `unknown`
+for a row that had just been selected — the failure class this backend is
+tested against, with the crash as the merciful case.
+
+### Why no existing fixture could see it
+
+`run_qt_tree.sh` selects and then refreshes, and connects no selection handler,
+so nothing re-enters. **The ordering was never the bug**, which the Studio
+session established before reporting it: four orderings clean, and only *"a
+selection handler that refreshes, then two selects"* reproduces.
+
+The three defects share one cause worth naming: **every one is a path that only
+exists once something calls back into the backend from inside it.** A fixture
+that drives the verbs in sequence never builds that frame.
+
+- §0.22's use-after-free, which showed up as `sizes` silently never being set.
+- §0.27's reconcile never connecting a **built** child's handlers — invisible
+  because no perturbation put a handler on a new child.
+- This one.
+
+### A re-lookup cannot fix it, and that was measured
+
+The obvious fix is to look the item up again after the call. Valgrind still
+objected, **inside `setSelected`** — because that call emits the signal itself,
+so the handler frees the item while the call doing the freeing is the one still
+executing. Nothing the caller does can help.
+
+**So the deletion waits**, which is §0.17's arrangement for a window closed
+inside its own event dispatch, reached here by the same reasoning. While a
+handler is on the stack, a tree's refresh **takes its items out** — so they stop
+being found, which is what a refresh means — and keeps them alive. Measured:
+`setSelected` on an item with no model returns at once, so the rest of the call
+becomes a harmless no-op.
+
+**And the drain point was wrong on the first attempt.** Freeing when the handler
+depth returns to zero is *also* unsafe: the call that emitted the signal is
+still on the stack at depth zero, so the same crash arrives a few instructions
+later. The safe moment is a **fresh entry from gBASIC** — the top of the
+module's verb dispatch, where nothing of ours is on the stack at all. That
+mistake is the one a perturbation caught and reasoning did not, and it is the
+reason the valgrind tier is the load-bearing one here.
+
+### Fixing the first defect exposed a second
+
+With the items kept alive, `setSelected` succeeds — and emits. The handler runs
+again, refreshes again, and the loop runs until the stack is gone. **The crash
+had been masking an unbounded recursion**: before the lifetime fix it terminated
+by corrupting memory (it "fired 8 times"), which looked like termination.
+
+It is a feedback loop in the **program**, not a Qt fault: every round genuinely
+alters the selection, so Qt is right to emit. What the backend owes is a bound
+and a sentence, which is warning **2117**. A warning rather than a raise is
+forced rather than preferred — this runs inside a Qt call with Qt's own frames
+in between and nothing to unwind into, the position §0.25 records for a cell
+callback.
+
+**The cap is measured, not chosen.** With `GB_QT_DEPTH_TRACE=1` across every Qt
+fixture, example and cookbook recipe in the tree, the deepest legitimate nesting
+is **two** — a handler that opens a modal window whose own button handler runs —
+and every other one is one. So 16 is eight times the real maximum, the margin
+§0.28's tree-depth cap uses, and the suite re-measures it rather than trusting
+the number.
+
+### One door, because the depth is the mechanism
+
+Four places call back into gBASIC — a relayed signal, a wheel, a gutter click
+and a close — and both the deferral and the cap rest on knowing how deep we
+are. They go through one `invoke_handler`, with a source tripwire and its
+control, because a fifth caller added beside `g_invoke` would be invisible to
+both.
+
+### And a third instance, found by perturbing the fix
+
+The table branch's re-lookup looked defensive and unexercised — removing it left
+every check green. Measuring rather than accepting that found the shape it
+guards: **a handler that reconciles away the very widget whose signal is
+running.** §0.27's reconcile deletes a child the record no longer mentions, so
+that frees the widget mid-call — strictly worse than the item case, one level
+up. With the re-lookup removed it segfaults three runs of three; with it, the
+by-name lookup finds nothing and the rest of the call is skipped, which is
+§0.27's name purge being load-bearing for a second reason.
+
+That shape is in the fixture now **because it was not**: it is the difference
+between a guard that is right and a guard that is known to be right.
+
+Four perturbations proven red: the deferral removed (caught by valgrind, and by
+the bound never firing because corruption ends the loop early), the cap removed,
+the drain at the wrong point (**caught by valgrind and nothing else**), and the
+table re-lookup removed.

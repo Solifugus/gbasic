@@ -4576,6 +4576,21 @@ and what a program updates is the text *in* it: a `text` part there is an
 ordinary widget whose `text` property `qt.set` reaches, which is why a status
 bar needs no verb of its own. `stretch()` pushes what follows to the right.
 
+**A handler that changes what it is watching calls itself.** A selection
+handler that calls `qt.refresh` alters the selection, which fires the handler
+again — a feedback loop in the program rather than a fault in Qt, because every
+round genuinely changes something. It is bounded at **16 deep** and reported as
+warning **2117**, which names the handler and the shape; past that the handler
+is simply not called again, so the program carries on. Sixteen is eight times
+the deepest nesting any program in this tree reaches, which is two — a handler
+that opens a modal window whose own button handler runs.
+
+A refresh called from inside a handler is also **safe**, which is worth saying
+because the obvious implementation is not: a tree's refresh deletes every item,
+and the Qt call that fired the handler is still running on one of them. Items
+taken out inside a handler are kept alive until the call returns, so a blunt
+redraw is slow rather than fatal.
+
 **A window with furniture cannot be shown modally** — those things belong to a
 main window and a modal window is a dialog — so `qt.open_modal` refuses it
 rather than opening a window whose declared panes are not there.

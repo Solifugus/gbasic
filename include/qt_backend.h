@@ -715,6 +715,14 @@ int gb_qt_highlight(void *window, const char *name, const char *language,
  * dock back and keeping the layout.
  *
  * 1 described, 0 that name is not a dock, -1 refused (err set). */
+/* DELETE WHATEVER A RE-ENTRANT REFRESH TOOK OUT BUT COULD NOT FREE (§0.31).
+ * Called at the top of the module's verb dispatch, which is the one moment
+ * nothing of ours is on the stack; it tests the handler depth itself, so a
+ * second caller cannot get the timing wrong. */
+void gb_qt_retire_drain(void);
+int gb_qt_handler_depth(void);
+int gb_qt_handler_max(void);
+
 int gb_qt_dock_info(void *window, const char *name, char *area,
                     size_t area_size, int *floating, int *tabbed, int *visible,
                     char *err, size_t err_size);
