@@ -31,8 +31,18 @@ def main():
     # and the probe reports `exit 0` for a child nothing killed -- a tier
     # measuring nothing while looking like a real failure. Measured: without
     # the flag the unlocked control reported `exit 0`.
+    #
+    # AND THE SIGNAL MUST START AT ITS DEFAULT. An IGNORED disposition is
+    # inherited across fork and exec, and a non-interactive shell sets SIGINT
+    # to ignored for every job it starts in the background -- so a gate
+    # launched that way handed both children an ignored SIGINT, neither died,
+    # and the parity tier reported `exit 0` for both (2026-10-22; green in the
+    # foreground). Resetting it here makes the tier a fact about gBASIC rather
+    # than about how the gate was started. gBASIC installing its own handler
+    # still replaces this default, which is what the locked case measures.
     p = subprocess.Popen(["./gbasic", "--line-buffered", fixture] + args,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         preexec_fn=lambda: signal.signal(signo, signal.SIG_DFL))
 
     # WAIT FOR THE CHILD TO SAY IT IS READY rather than sleeping. A fixture that
     # has not reached its lock yet would be killed before the handler is even
