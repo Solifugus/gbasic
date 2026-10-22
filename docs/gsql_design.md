@@ -282,6 +282,8 @@ These are non-negotiable architectural requirements even if the first implementa
 
 ### 6.2 The storage engine is designed and measured first (decided, v0.4)
 
+**The Phase 0a plan is `docs/gsql_storage_design.md`:** the candidates in detail, the shared components (page format, order-preserving key encoding, I/O layer, version store), the workload, crash and handoff harnesses, and how the choice is made.
+
 **Decision:** the storage engine's design is settled **before** layer-1 implementation (the SQL surface, §11) begins, by building candidate approaches small enough to measure and choosing between them on evidence.
 
 **Layering (judgement, v0.4):** keep a **storage interface** as a named seam between the engine's relational layer and its storage. It is not a plan to ship an interim SQLite-backed product. The interface earns its place because it is what lets the candidates be compared under one workload harness and one crash harness. SQLite may serve as a **reference oracle** in differential tests, and only there.
