@@ -130,7 +130,7 @@ The same in every candidate, and taken from AmorphDB's instance chain:
 
 **Consumers (decided 2026-10-21).** G-SQL serves many applications; no single one shapes it.
 - **G-Dash is the first consumer.** It has real code to read and has supplied numbers, so it gives concrete workloads now.
-- **WorkSplicer** is the more demanding future case: many tables and views, many small write transactions, and a platform for enterprise vertical applications. It is being redesigned, so its profile (§5.1.2) is provisional.
+- **WorkSplicer** is the more demanding future case: many tables and views, many small write transactions, and a platform for enterprise vertical applications. **It uses one database per tenant** (decided 2026-10-21). It is being redesigned, so its profile (§5.1.2) is provisional.
 - **The generic workloads** (§5.1.4) keep the comparison from fitting any one application.
 
 #### 5.1.1 G-Dash, the primary profile (read from its source)
@@ -271,6 +271,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 
 - **Round trip:** client to owner and back over the local socket, for an empty request, a point read and a batch of 100 rows, against the same operation called in-process. The protocol is accepted if the added cost is small next to the work of a typical query; the threshold is agreed after the first numbers rather than guessed now.
 - **Handoff:** owner exits (cleanly, and by kill -9) → a client takes the lock → opens → recovers → serves. Total time, per candidate and per log size.
+- **Many owners on one machine:** one database per tenant (WorkSplicer) means a multi-tenant deployment runs **one owner per active tenant**. Measure an idle owner's memory and file-descriptor cost, and **cold start**: the first request to a tenant whose owner is not running, including recovery. Measure at 1, 100 and 1,000 tenant databases. This decides whether an owner should stay up while it has clients or start on demand per request burst.
 
 ## 6. How the choice is made
 
@@ -293,7 +294,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 3. Whether an untyped `MONEY` column may be indexed (§3.2).
 4. *(Settled 2026-10-21: the §2.D reading is right, and G-SQL is a new development.)*
 5. The round-trip threshold for accepting the single-protocol rule (§5.5), agreed after first numbers.
-6. **Cross-database queries.** Proposed for the first release: **one query reads one database.** SQLite's `ATTACH` (several databases in one query) is not offered at first, because across owners it is a distributed query; it is added only if a real application needs it. Separately: whether one database is always one file plus at most a log (proposed: yes). G-Dash's case is §5.1.1a.
+6. **Cross-database queries.** **Decided (2026-10-21) for the first release: one query reads one database.** SQLite's `ATTACH` (several databases in one query) is not offered at first, because across owners it is a distributed query; it is added only if a real application needs it. Separately: whether one database is always one file plus at most a log (proposed: yes). G-Dash's case is §5.1.1a.
 
 ## 8. Reading list
 
