@@ -147,7 +147,7 @@ So this is a **language change**, and it is its own increment before G-SQL: G-SQ
 - **Comparison and arithmetic propagate `unknown`** where they raise today.
 - **SQL has two equalities, and gBASIC needs both.** SQL's `=` follows three-valued logic, but `GROUP BY`, `DISTINCT`, `UNION` and `IN`-list deduplication treat two NULLs as **not distinct**. gBASIC's `contains`, `find`, `remove_value`, `unique`, `sort`, record and array comparison, and the watcher change test are all "is this the same value" questions, and they must use the second, or `contains([unknown], unknown)` stops being true. PLAT-EQ already routes all of them through one comparison, which is the one place this split has to be made.
 - **The cost in this tree is small, measured:** about 10 places compare with `= unknown`, against 928 uses of `is_unknown(...)`, the idiom that keeps meaning what it means. Every changed site raises at an `if` rather than answering differently, if the open question below is answered "raise".
-- **Open, and the one place SQL gives no answer: what `if unknown` does.** SQL has no `if`; `WHERE` and `CASE WHEN` treat NULL as *not true* and silently drop the row. gBASIC raises today, and that is an anti-silence rule this project has defended repeatedly. **Recommendation: keep the raise** in procedural control flow (`if`, `while`, `until`), and inside a `sql` block follow SQL exactly. That is the one deliberate seam, and it is a boundary of context, not of value.
+- **Decided (v0.4): `if unknown` keeps raising.** SQL has no `if`; `WHERE` and `CASE WHEN` treat NULL as *not true* and silently drop the row. gBASIC raises, which is an anti-silence rule this project has defended repeatedly, and that stays in procedural control flow (`if`, `while`, `until`, an inline `if`). Inside a `sql` block, SQL is followed exactly. That is the one deliberate seam, and it is a boundary of context, not of value: the same `unknown`, a different consumer of the truth value.
 
 ### 3.2 Exact integers: already decided, and the prerequisite is smaller than v0.2 thought
 
@@ -273,10 +273,11 @@ These are non-negotiable architectural requirements even if the first implementa
 - **One protocol, always**, including for a program that is the only client. A second, in-process path would be a second implementation that can disagree with the first, the drift this project tripwires against. Whether the round trip is affordable is **measured before it is accepted** (a design gate in §6.2), not assumed.
 - **The owner's own concurrency:** proposed single-threaded, serving requests in order, with long queries made incremental (a cursor returns a batch per request) so one client cannot stall the others. Measure before adding threads.
 
-**Open, and the decision with the most consequences: the owner's lifetime.**
-- gBASIC promises that **nothing it starts outlives it** (`PR_SET_PDEATHSIG`, `run_process_lifetime.sh`). An owner started by the first client is that client's child, so it dies when that client exits, even while a web application is still using it.
-- **Proposed resolution:** when the owner disappears, a surviving client takes the lock and becomes, or starts, the next owner, which **runs crash recovery** on open. An owner ending is then simply the recovery path, so recovery is exercised constantly rather than only after a real crash. The cost to measure is reconnect and recovery time.
-- The alternative is an owner that detaches and exits after an idle period, which breaks the lifetime promise and needs its own justification.
+**Decided (v0.4): the owner's lifetime is handed off, never detached.**
+- gBASIC promises that **nothing it starts outlives it** (`PR_SET_PDEATHSIG`, `run_process_lifetime.sh`), and G-SQL keeps that promise. An owner started by a client is that client's child and dies with it, even while other clients are still using the database.
+- **When the owner disappears, a surviving client takes the lock and becomes, or starts, the next owner, which runs crash recovery on open.** An owner ending is therefore always the recovery path, so recovery is exercised on every handoff rather than only after a real crash. A clean exit and a kill -9 take the same route, which is what makes the crash harness (§6.2) a test of ordinary operation.
+- **Rejected:** an owner that detaches and lingers after its last client. It would break the lifetime promise, and it would leave recovery as a path that runs only after accidents.
+- **To specify and measure:** which client wins the takeover (the first to take the exclusive lock; the others reconnect to it), how long a handoff takes including recovery, and what a client's in-flight request sees (proposed: an open transaction is reported as **failed**, and is never silently retried; a read-only cursor may be reopened at its snapshot if the engine can name one).
 - **Also open:** authentication of local clients (socket file permissions as the baseline), and what a client sees mid-transaction when the owner dies (proposed: the transaction is reported as failed, never silently retried).
 
 ### 6.2 The storage engine is designed and measured first (decided, v0.4)
@@ -602,7 +603,7 @@ Representative tests to add when the corresponding feature is implemented:
 
 ### Phase 0a: Storage-engine design by measurement (decided, v0.4)
 
-Build the §6.2 candidates far enough to run the workload, crash and round-trip harnesses; choose; record the losing designs and their numbers. Settle the §6.1 owner lifetime from the measured reconnect and recovery times. Fix the page format, including the reserved encryption fields (§6.4). Nothing in Phase 1 is coded before this is decided.
+Build the §6.2 candidates far enough to run the workload, crash and round-trip harnesses; choose; record the losing designs and their numbers. Measure the §6.1 handoff (takeover, reconnect and recovery time). Fix the page format, including the reserved encryption fields (§6.4). Nothing in Phase 1 is coded before this is decided.
 
 ### Phase 0: Semantic contracts and test harness
 
@@ -641,16 +642,17 @@ ROLLUP/GROUPING, grouping sets/CUBE, richer windows, sophisticated optimizer, im
 9. Permit carefully controlled pure scalar gBASIC functions inside SQL.
 10. Protect SARGability through access/residual predicate separation and transparent `EXPLAIN` output.
 11. Defer costly advanced features where a clear initial benefit has not been demonstrated.
-12. One owning process per database file; every other process is a client (§6.1).
+12. One owning process per database file; every other process is a client. When the owner exits, a surviving client becomes the next owner and runs recovery; no owner outlives the processes that started it (§6.1).
+15. `unknown`'s truth tables are SQL's, except that procedural control flow (`if`, `while`, `until`) still raises on `unknown` (§3.1.1).
 13. The storage engine is chosen by measurement before the SQL layer is implemented (§6.2).
 14. The engine holds only what cannot be done as well in gBASIC (§1): access control, admin tools, import/export and migration tooling are gBASIC's.
 
 ## 13. Questions requiring a final engineering decision
 
 1. Literal and mixed-arithmetic exactness are already specified (`exact_number_design.md`). What remains is G-SQL's side: does an `INT64` column refuse an inexact value on write, and refuse on overflow instead of degrading with warning 2112? §3.2 proposes yes to both.
-2. Decided: SQL's (§3.1.1). Still open: what `if unknown` does in procedural code (recommended: keep the raise).
+2. Decided: SQL's (§3.1.1), with `if unknown` still raising in procedural code.
 3. Which persistent value kinds and date/time variants are supported in the first release?
-4. Which storage design wins the §6.2 measurements, and what is the owner's lifetime (§6.1)?
+4. Which storage design wins the §6.2 measurements, and how long does an owner handoff take (§6.1)?
 5. What are the first-release collation and comparison rules?
 6. Do foreign keys and `CHECK` constraints ship in the first release or the next?
 7. How are schema changes, function versions, and prepared plans invalidated?
@@ -687,6 +689,8 @@ ROLLUP/GROUPING, grouping sets/CUBE, richer windows, sophisticated optimizer, im
 ## 15. Revision history
 
 ### v0.4 — 2026-10-21
+
+Ruled by the project owner: `if unknown` keeps raising (§3.1.1), and the owner's lifetime is a handoff with recovery, never a detached owner (§6.1).
 
 Decided: one owning process per database (§6.1); the storage engine designed and measured before the SQL layer, with three candidates and a crash harness as the gate (§6.2); the scope rule that the engine holds only what gBASIC cannot do as well (§1). Added backup and restore (§6.3) and encryption at rest (§6.4), reserving the page-format space for encryption now. Measured that gBASIC's `unknown` does not follow SQL's truth tables, and recorded the agreed change, including the need for both of SQL's equalities (§3.1.1).
 
