@@ -72,8 +72,10 @@ The spikes are standalone C11 programs under a research directory outside `src/`
 AmorphDB (`~/development/amorphdb/internal/storage`) stores attributes, instances and values in separate fixed-record files. Each instance links to the older one, values are deduplicated and reference-counted, and compaction relocates values. **Its instance chain is where G-SQL's temporal model came from**, and §4 borrows it directly, including the author on every version. As a general engine it does not fit, for reasons that come from what G-SQL needs rather than from any defect:
 
 - G-SQL needs **ordered range indexes** (for `ORDER BY`, range predicates and joins), where AmorphDB's index is a hash index.
-- G-SQL needs **atomic multi-row transactions** across tables and indexes. Each AmorphDB store flushes its own file, and from reading the code I did not find a mechanism making one change atomic across files. **Verify this with the author.**
+- G-SQL needs **atomic multi-row transactions** across tables and indexes. Each AmorphDB store flushes its own file, and nothing makes one change atomic across files (confirmed by its author, 2026-10-21).
 - AmorphDB's compaction hands write authority to mesh peers while it runs, and an embedded engine has no peers.
+
+**Decided (2026-10-21):** AmorphDB is inspiration and lessons learned; G-SQL's storage is a new development, sharing no code with it.
 
 ## 3. Components shared by every candidate
 
@@ -124,7 +126,43 @@ The same in every candidate, and taken from AmorphDB's instance chain:
 
 ### 5.1 Workloads
 
-Taken from target applications wherever possible. **Needed from you:** which of G-Dash, WorkSplicer, Transcend and gProperties are representative, and rough volumes (rows, row size, writes per second, typical queries). Until then, these defaults:
+**Decided (2026-10-21): G-Dash is the representative application now; WorkSplicer will be more so later.** WorkSplicer is being redesigned, so its profile below is provisional and is revisited when its design settles. Its eventual role, work orchestration plus a platform for enterprise vertical applications, makes it the long-term reference.
+
+#### 5.1.1 G-Dash, the primary profile (read from its source)
+
+G-Dash's staging store (`gdash/src/gdash_store.bas`) shows its data pattern directly:
+
+- **Refresh is whole-dataset replacement.** A dataset is rebuilt from an ODBC or PostgreSQL source into a staging file (`materialize`), and made live by **one atomic rename** (`swap`). Readers never see a half-built dataset.
+- **Reads are read-only analytic queries across several datasets.** Up to 10 dataset files are attached **read-only** to one connection, and queried with filters, `GROUP BY` aggregates and column samples. Some of the SQL is **written by a model** (`nlq`), and the read-only attach is a deliberate second line of defence: with the SQL check bypassed, a generated `delete` is still refused by SQLite.
+- **Polling:** the browser polls a small JSON endpoint, so many small concurrent reads arrive through `workers: N` processes, which are owner clients under §6.1.
+- **The money boundary is hand-built:** about 100 lines (`to_minor` and its helpers) carry money and integers above 2^53 through SQLite as decimal text, because SQLite's binding loses them. **G-SQL exists to delete that code**, and doing so is an acceptance case (§6).
+
+What that asks of the engine, beyond the generic workloads:
+
+| id | workload | why |
+|---|---|---|
+| G1 | **replace a whole table atomically** while readers keep reading the old one, at 10⁵ and 10⁷ rows | G-Dash's refresh. Under §2.A this is a new tree plus a root swap; under §2.B and §2.C it is a bulk write plus a catalog change. Readers' snapshots must keep the old table alive until they finish |
+| G2 | aggregate scans (`GROUP BY` over a few columns, filters) across several tables, during G1 | the dashboard read path |
+| G3 | many small concurrent reads through the owner socket, 8 to 64 clients | the poll endpoint, and the §5.5 round-trip gate in its real shape |
+| G4 | a **read-only transaction refusing every write at the engine level** | G-Dash's safety net for model-written SQL must survive the move off SQLite. It is cheap at the storage interface (a read-only snapshot has no write path) and impossible to retrofit safely above it |
+
+**Open, raised by G-Dash:** G-Dash uses **one file per dataset** so that a refresh is one rename and a dataset can be attached read-only. In G-SQL, the same guarantees can come from one database with snapshot-isolated table replacement (G1) and read-only transactions (G4), or from attaching several G-SQL files. This is §7's single-file question with a concrete case attached.
+
+**Needed:** representative G-Dash volumes (rows per dataset, number of datasets, refresh frequency, queries per second).
+
+#### 5.1.2 WorkSplicer, the provisional future profile
+
+Work orchestration has a different shape from dashboards: **many small write transactions** (state transitions on work items), a **queue claim** (find the next ready item and mark it taken, atomically), an **audit history** of every transition (§4's version store), and **per-scope numbering** (`gsql_design.md` §10E). Provisionally:
+
+| id | workload | why |
+|---|---|---|
+| S1 | claim the next ready item by index order and update its state, one transaction per claim, 1 to 64 clients | the queue; the single writer makes a claim a plain write transaction, with no row locks to design |
+| S2 | state-transition updates with a temporal state column | §4's version-store cost under the update pattern orchestration actually has |
+| S3 | scoped serial allocation under concurrency | §10E's numbering |
+
+#### 5.1.3 Generic workloads
+
+Kept so the comparison is not shaped by one application:
 
 | id | workload | what it exposes |
 |---|---|---|
@@ -176,23 +214,25 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 ## 6. How the choice is made
 
 1. **Gate:** crash correctness (§5.3). Absolute.
-2. **Hard requirements:** online backup without stopping writers; bounded recovery time; a correct long-reader story; nonce uniqueness for encryption.
-3. **Weighed, with weights fixed before results are seen:** latency and throughput on the agreed workloads, space amplification, handoff time, and **implementation complexity**: lines of code, and the number of invariants a reader must hold to change it safely. Complexity counts because the engine is maintained for the life of the language.
+2. **Hard requirements:** online backup without stopping writers; bounded recovery time; a correct long-reader story; nonce uniqueness for encryption; atomic table replacement under live readers (G1); engine-enforced read-only transactions (G4).
+3. **Acceptance for the chosen design, before the SQL layer is accepted:** G-Dash's staging store can be rewritten against G-SQL with its decimal-text money boundary deleted, and its results are identical.
+4. **Weighed, with weights fixed before results are seen:** latency and throughput on the agreed workloads, space amplification, handoff time, and **implementation complexity**: lines of code, and the number of invariants a reader must hold to change it safely. Complexity counts because the engine is maintained for the life of the language.
 
 **Predictions, written now so measurement can refute them:**
 - 2.A wins recovery and handoff time (near constant), backup simplicity and the long-reader story, and is the simplest to make correct. It loses single-row commit latency without group commit, and space during W6.
 - 2.B wins single-row commit latency and space efficiency; recovery time grows with the log.
 - 2.C wins W4 by a wide margin and loses W1 tail latency, with the highest complexity.
+- G-Dash's profile (G1, G2, G3) favours 2.A further: table replacement is a root swap and its readers keep their snapshot for free.
 - **Overall prediction: 2.A, with group commit closing most of the commit-latency gap.** If 2.B or 2.C wins on the agreed workloads, that is the answer, and this paragraph stays as the record of what was expected.
 
 ## 7. Open questions
 
-1. Which applications define the workloads, and at what volumes (§5.1)?
+1. G-Dash volumes (§5.1.1); WorkSplicer's profile once its redesign settles (§5.1.2).
 2. The unified number encoding: exact integers and doubles in one order, plus NaN and signed zero (§3.2).
 3. Whether an untyped `MONEY` column may be indexed (§3.2).
-4. AmorphDB: is the reading in §2.D right? Does anything make a change atomic across its files?
+4. *(Settled 2026-10-21: the §2.D reading is right, and G-SQL is a new development.)*
 5. The round-trip threshold for accepting the single-protocol rule (§5.5), agreed after first numbers.
-6. Whether a large database should ever span several files (AmorphDB's per-zone files are one precedent), or always be one file plus at most a log.
+6. Whether a database should ever span several files, or always be one file plus at most a log. G-Dash's file-per-dataset arrangement (§5.1.1) and AmorphDB's per-zone files are the two precedents.
 
 ## 8. Reading list
 
