@@ -358,6 +358,8 @@ reconcile outside your own fixtures.
 
 ## A child built by a reconcile never has its handlers connected
 
+**Fixed 2026-10-21** (platform session, `3d3f7d9`). The rule chosen: a handler is connected exactly when the widget it **targets** was built in that refresh, wherever the handler record sits (inside the new child, beside it in the refresh items, or in the window's own declaration). A kept widget keeps exactly the connections it had, so nothing doubles, and a handler met twice in one pass is connected once. The one consequence to know: a handler **added** to a kept widget's record does nothing until that widget is rebuilt, since "kept" means untouched. `tests/qt_children_test.bas` carries the checks, in pairs, each proven red by its own perturbation.
+
 `qt_connect_items` runs from `qt.open` (src/modules/qt.c:2782). The reconcile's
 build pass calls `qt_build_item` (around :1818) and **not** `qt_connect_items`,
 so a handler record carried by a newly built child is skipped. Measured, not

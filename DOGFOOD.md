@@ -12944,3 +12944,144 @@ release script is the one place to change, and it wants watching.
   the guard is right (a watcher body is declared at top level and must run in
   that frame), it is the pump that leaves the wrong frame current — which is a
   change to scope handling and its own increment.
+
+## 2026-10-19 — CC — while: converting gBASIC Studio's shell from GTK to the Qt vocabulary
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** **A container's set of CHILDREN is fixed when `qt.open` reads the
+  record.** `qt.refresh` solves exactly this for a `table` (§0.11, written for
+  Studio's file tree by name) and for a form's subject, and nothing solves it
+  for any other container — so Studio's notebook, which is one tab per open
+  document, cannot gain or lose a tab while the window is up. Measured on Qt
+  6.10.2: `qt.read(win, "book", "count")` answers 2 for a two-tab `tabs`, so
+  the set is observable; `qt.refresh(win, "book")` refuses (*"declares no table
+  named `book`"*); and `qt.invoke` passes **no arguments**, so
+  `QTabWidget::removeTab(int)` and `setTabText(int, QString)` — the two Qt
+  calls that would change a tab set or a caption in place — are out of reach by
+  construction rather than by omission.
+
+  The same fact makes a **caption** fixed, which has its own cost: Studio's tab
+  labels carry `* ` unsaved / `~ ` changed / `! ` gone, so using the caption
+  for the marker would rebuild the window on the first keystroke in any
+  document.
+
+  §0.26's survey could not see this, and that is the interesting part: it
+  counted Studio's whole widget SURFACE and `gtk.notebook` → `tabs` is ticked.
+  This is not a widget type, it is a property of a container, so a survey of
+  types is the wrong instrument for it.
+- **Workaround:** a **generation loop** — close the window, rebuild the record,
+  open it again, run again. Measured end to end in one process: two
+  generations, the tab set changed, and all four things that must survive do
+  (the buffers via `qt.write`, the active tab via `qt.set … currentIndex`, the
+  geometry read in the `closed` handler §0.17 exists for, and the pane sizes
+  via `qt.resize_panes`). **Two things do not**: per-document undo history, and
+  **the window's POSITION on screen** — `x`/`y` are read-only on a `QWidget`
+  and the record takes `width`/`height` only, so a rebuilt window reappears
+  wherever the window manager puts it. A window that jumps when you open a file
+  is worse than any feature it buys, so the loop is right for something rare
+  (changing the whole workspace) and unusable for opening a file.
+
+  Studio's fallback if nothing changes is one editor plus an open-documents
+  `table` as the tab strip, which costs the per-document undo stack and changes
+  how the window looks. `docs/qt_dynamic_children_proposal.md` is the write-up,
+  with a proposed verb (one reconcile over a named container's `items`, keeping
+  a child whose `name` and `word` are unchanged) and the check that separates a
+  real reconcile from a rebuild: **a kept child still holds what was typed into
+  it.**
+- **Also measured, and it is the good news:** a **gBASIC timer fires while
+  `qt.run()` holds the thread.** Eight ticks of a `timer.every(0.05)` were
+  delivered inside the loop and each one wrote into the window — which is
+  exactly the shape of Studio's run poller at sixteen ticks a second, the other
+  thing this conversion had to establish. Subject to the 2026-10-19 entry
+  above: `qt.run()` must be called from the top level of the `program` block,
+  which is where Studio already calls GTK's equivalent.
+
+## 2026-10-19 — CC — while: wiring gBASIC Studio's Qt entry point onto `qt.refresh`
+- **Type:** bug
+- **Severity:** medium
+- **What:** **A child built by `qt.refresh(win, name, items)` never has its
+  handlers connected.** `qt_connect_items` runs from `qt.open`
+  (`src/modules/qt.c`); the reconcile's build pass calls `qt_build_item` and
+  not `qt_connect_items`, so a `{ kind: "handler", … }` record carried by a
+  newly built child is skipped. Measured on a two-page `tabs`, each page a
+  button plus its own `clicked` handler:
+
+  ```
+  declared handler fires:   true    ' built by qt.open
+  reconciled handler fires: false   ' built by qt.refresh, never connected
+  kept handler still fires: true    ' the kept child is untouched, correctly
+  ```
+
+  §0.27's own argument is that a new child goes "through `qt_build_item`, the
+  same path `qt.open` uses, which is what stops a window rendering one way at
+  open and another afterwards" — and it is the same path for the widget and not
+  for the handler. It fails in the worst direction: the verb answers the right
+  count, the caption is right, the widget is there and looks right, and the
+  control does nothing when pressed. Nothing in the language can tell a handler
+  that was never connected from one whose body did nothing, which is why eight
+  perturbations did not reach it — none put a handler on a NEW child.
+- **Workaround:** Studio polls. The only dynamic-part handler it wants is a
+  per-editor `textChanged` to fold typing back into the model, and the run
+  poller is already a `timer.every` — so it reads the active editor's
+  `plainText` and compares, which costs a sync lag of one tick rather than
+  correctness. Every handler Studio needs on a FIXED part (the Save button, the
+  menu items, the browser table, the `tabs` itself) is connected by `qt.open`
+  and works. Note for whoever fixes it: reconnecting a KEPT child would DOUBLE
+  its connections, since Qt appends — so the pass has to run over the built
+  children only, which the existing `kept`/`was` bookkeeping already
+  distinguishes. Written up with the check that would catch it in
+  `docs/qt_studio_requests.md`.
+- **Fixed 2026-10-21** (platform session, `3d3f7d9`): a handler is connected
+  exactly when its TARGET was built in that refresh, wherever the record sits,
+  including the window's own declaration; kept widgets are not reconnected, and
+  a handler met twice in one pass connects once. Six checks in
+  `tests/qt_children_test.bas`, four perturbations proven red. Studio's polling
+  workaround can now be replaced by a `textChanged` handler on each built
+  editor.
+
+## 2026-10-19 — CC — while: wiring gBASIC Studio's Qt handlers onto the §0.28 `tree`
+- **Type:** bug
+- **Severity:** high
+- **What:** **`gb_qt_table_select` reads a freed `QTreeWidgetItem` when the
+  tree was refreshed from inside its own selection handler.** Named by
+  valgrind, both ends:
+
+  ```
+  Invalid read of size 8
+     at QTreeWidgetItem::treeModel(QTreeWidget*) const
+     by QTreeWidgetItem::setSelected(bool)
+     by gb_qt_table_select (qt_backend.cpp:3550)
+     by qt_eval_call (qt.c:5034)
+   Address ... free'd
+     at operator delete(void*, unsigned long)
+     by QTreeWidgetItem::~QTreeWidgetItem()
+     by gb_qt_tree_clear (qt_backend.cpp:4611)
+     by qt_populate_tree (qt.c:2174)
+  ```
+
+  `qt.select` enters the item's `itemSelectionChanged` handler; the handler
+  calls `qt.refresh`, which clears every item; `setSelected` then runs on freed
+  memory as the original select finishes. **It segfaults about three runs in
+  five, and when it does not it gives a WRONG ANSWER** — `qt.selected` reports
+  `unknown` for a row that was just selected.
+
+  Minimal reproduction, ~30 lines, deterministic under valgrind: a `tree to
+  show` with an `itemSelectionChanged` handler whose body is `rows = g.rows` +
+  `qt.refresh(g.win, "files")`, then two `qt.select` calls. Four narrower
+  shapes are all CLEAN and are worth knowing, because they say where the bug is
+  not: refresh-then-select, select-then-refresh, select-then-refresh-then-select,
+  and selecting past a shrink. The handler re-entry is the ingredient.
+
+  Why the §0.28 suite missed it: `qt_tree_test.bas` selects and then refreshes,
+  and connects no selection handler — so the select never re-enters. That is
+  the same shape as the §0.27 defect one increment earlier (a reconcile's build
+  pass never connecting handlers), and the same shape as §0.22's own
+  use-after-free. **Three in that family now**, all in paths a fixture drives
+  in one order and a real consumer drives in another.
+- **Workaround:** Studio does not refresh the tree from inside the selection
+  handler, which is better design anyway and was arrived at first: a selection
+  cannot change the row set, so rebuilding the tree is work for nothing. It has
+  a `qt_redraw_selection` that renders everything except the browser. Eight
+  consecutive clean runs of the tier that crashed three in five. The crash is
+  still there for anyone whose shell redraws more bluntly, which is the obvious
+  thing to write.
