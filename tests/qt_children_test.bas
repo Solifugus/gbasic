@@ -221,6 +221,19 @@ program main()
     check("a window-declared handler follows its rebuilt target, once",
           string(g.w), "2")
 
+    ' THE SAME HANDLER IN BOTH PLACES. `deck`'s own record still lists p1 with
+    ' its handler, and so does the refresh, so rebuilding p1 meets one handler
+    ' twice. It must be connected once.
+    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+                                     button_page("p2", "b2", on_two) ])
+    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+                                     button_page("p1", "b1", on_one),
+                                     button_page("p2", "b2", on_two) ])
+    before = g.one
+    qt.invoke(deck, "b1", "click")
+    check("a handler listed in the window AND the refresh connects once",
+          string(g.one - before), "1")
+
     ' A HANDLER BESIDE THE CHILDREN, naming a part built in the same refresh.
     n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
                                      button_page("p1", "b1", on_one),
