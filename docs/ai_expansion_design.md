@@ -1,6 +1,6 @@
 # AI capability expansion: extending `llm`, `tools` and `agent`
 
-**Status:** Proposal, v0.2 (2026-10-21). **Nothing in it is implemented** except where a line says *exists*.
+**Status:** Proposal, v0.3 (2026-10-21). **Nothing in it is implemented** except where a line says *exists*.
 **Supersedes:** `gbasic-llm-enhancement-proposal.md` (the v0.1 discussion draft of the same day), renamed and revised here rather than kept beside it, so the index has one row and nobody has to reconcile two documents.
 **Related:** `docs/llm_design.md`, `docs/tools_design.md`, `docs/agent_design.md`, `docs/gbasic_ai_reference_and_primitives.md`, `examples/steward/steward.bas`.
 
@@ -20,6 +20,22 @@ v0.1 was written from reading the libraries. v0.2 checked each premise against t
 | "~1,782 lines" in `llm.bas` | 1,781 lines today | Immaterial; recorded so the number is not repeated as a fact |
 
 **Design rule (kept from v0.1):** add flexibility only when it does not add complexity to the common case. Prefer extending the three existing libraries and the reference application to adding a framework.
+
+**The harness is the developer's (agreed, v0.3).** The libraries supply model values, tools, a pure agent step and transports; how a program combines them is its own business. A common shape is **local first, cloud when more power is needed**, and it needs nothing from the library beyond what already exists, because a model is a value and every model value answers the same calls:
+
+```basic
+load llm
+fast = llm.local("http://localhost:11434", "qwen2.5-coder:14b")
+deep = llm.anthropic("claude-opus-5-5", env("ANTHROPIC_API_KEY"))
+
+function answer(question)
+    draft = llm.ask(fast, "Answer briefly. Say UNSURE if you are not certain.", question)
+    if contains(draft, "UNSURE") then return llm.ask(deep, "Answer carefully.", question)
+    return draft
+end function
+```
+
+The escalation rule (a self-reported doubt, a failed JSON check, a length, a cost budget) is the developer's choice, so it is shown in a cookbook recipe rather than built in as a routing policy. What the libraries owe that choice is uniformity: every backend, including an embedded one (§7.1), must accept the same `ask`, `chat`, `ask_json`, tool and streaming calls, or switching backends stops being a one-line change.
 
 ## 1. What exists
 
@@ -51,7 +67,8 @@ Acceptance case 1 below is that this program, and every existing `llm` example, 
 | 2 | Simulated and decoy tools (§4.2) | none, or one optional entry field | nothing |
 | 3 | Streaming a model reply (§5) | a pure stream fold in `llm` | `http` |
 | 4 | Cancellation, end to end (§6) | wiring only | 3 |
-| — | Scheduler, embedded inference, model management, coding-agent adapters | deferred (§7) | a real consumer |
+| 5 | Embedded local inference: a spike, then a model constructor (§7.1) | `llm.embedded(...)` | a measured spike |
+| — | Scheduler, model management, coding-agent adapters | deferred (§7) | a real consumer |
 
 Each increment ships with its own suite, self-checking rather than golden. Every defect in this area produces an ordinary-looking transcript, and a golden would record it as expected.
 
@@ -110,9 +127,20 @@ The parts exist: `http.stop` cancels a transfer and leaves what arrived readable
 ## 7. Deferred, with the condition that reopens each
 
 - **A scheduler** (priority, aging, worker leases and fencing, per-model concurrency, RAM/VRAM and token-rate budgets). Reopen when an application measurably needs more than one `tools.pool`. That means interactive requests starving behind background ones in a real workload, not a hypothetical one. v0.1's analysis of what such a scheduler must get right (starvation, stale results from a delayed worker, cancellation that a backend may not honour) is the right checklist when it does.
-- **Embedded inference** (binding llama.cpp, GGUF). Ollama and vLLM already serve local models through `llm.local`. An embedded backend adds a C++ dependency with GPU variants that the release builds would compile out, which is the "file in the archive that the binary beside it cannot run" problem `run_library_tiers.sh` exists for. Reopen when a deployment cannot run a model server. The first step would be a spike measuring package size, licence and Windows build, not an API.
 - **Model management** (inspect, download with pinned revision and integrity check, hardware-fit estimate, benchmark). Reopen when an application helps users choose models. When built, an estimate must say it is an estimate, and a benchmark must record the hardware and options it ran on.
 - **Coding-agent adapters** (Codex, Claude Code). These are a separate tool-backed agent shape, not a completion API. They are only worth building over a documented automation interface. A PTY in Studio is a user interface, not a library protocol.
+
+### 7.1 Embedded local inference (promoted from deferred, v0.3)
+
+**Why it is worth the work:** a model server such as Ollama is one more process, one more install and one more HTTP layer between the program and the model. Running the model in-process removes those layers, which is a design value here and not only a convenience.
+
+**Shape: a model constructor, nothing more.** `llm.embedded("models/qwen2.5-7b-q4.gguf", { context: 8192, gpu_layers: 99, threads: 8 })` returns a model value that `ask`, `chat`, `ask_json`, `embed`, tool calling and streaming accept exactly as they accept `llm.local`. The harness in §0 switches backends by changing one line. Capabilities the loaded model cannot honour (tool calls, embeddings, JSON grammar) are **refused by name**, never approximated.
+
+- **Configuration is a value; the loaded model is a handle.** The constructor's record is serializable and can sit in an `agent` run; the loaded weights are a live, non-serializable handle that is freed deterministically, like every other handle kind. A run that holds a model value resumes after a restart by loading again.
+- **Built on llama.cpp** (MIT), GGUF models. Not a new inference engine.
+- **An optional module** behind its own `HAVE_*` switch. A build without it refuses `llm.embedded` with a sentence naming the missing support, and `has_builtin` and `--capabilities` answer for it. Whether the release downloads carry it is a tier decision measured the way `run_library_tiers.sh` measures every other one.
+- **The spike comes first, and decides whether to continue:** load a small GGUF, complete, stream, cancel mid-reply, unload, load again; measure peak memory, time to first token and tokens per second against the same model under Ollama on the same machine; measure binary size and build time with CPU and GPU backends; build on Windows. The result goes into this document either way.
+- **Open:** a long generation runs in C and the interpreter is single-threaded, so the spike must establish how a reply reaches the event loop without blocking it: a worker process (the tool pool's arrangement, which costs a model load per worker) or a native thread delivering readiness through the loop as `http` does.
 
 ## 8. Acceptance cases
 
@@ -122,7 +150,8 @@ The parts exist: `http.stop` cancels a transfer and leaves what arrived readable
 4. A decoy is callable when advertised. An unadvertised name matching the decoy's is **refused**, not routed.
 5. Streamed and whole responses produce equal canonical responses for both providers, with the stream split at every byte boundary.
 6. A cancelled run issues no further model calls, its stopped transfer leaves partial text readable, and a tool result arriving after cancellation reaches no run.
-7. An approval applies only to the call stored in the run it answers. This needs a test, because it holds by construction today and nothing asserts it.
+7. The same harness runs unchanged against `llm.local` and `llm.embedded` for the same model file, and a capability the embedded model lacks is refused by name.
+8. An approval applies only to the call stored in the run it answers. This needs a test, because it holds by construction today and nothing asserts it.
 
 ## 9. Open questions
 
@@ -132,5 +161,6 @@ The parts exist: `http.stop` cancels a transfer and leaves what arrived readable
 
 ## 10. Revision history
 
+- **v0.3 (2026-10-21):** the harness is the developer's, with local-then-cloud shown as ordinary code; embedded local inference promoted from deferred to a spike and a model constructor (§7.1).
 - **v0.2 (2026-10-21):** checked against the tree (§0). Factories dropped (no closures); streaming moved from `webclient` to `http` as a pure fold; four open questions answered from the source; scheduler, embedded inference, model management and coding-agent adapters deferred with reopening conditions; refusal codes and the refusal warning added; acceptance cases made checkable.
 - **v0.1 (2026-10-21):** discussion draft, as `gbasic-llm-enhancement-proposal.md`.

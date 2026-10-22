@@ -1,7 +1,7 @@
 # G-SQL: Native Relational Database for gBASIC
 
-**Status:** Proposal — architecture v0.3. Agreed direction, proposals and open decisions are distinguished throughout; **nothing of G-SQL exists.**
-**Original date:** 2026-10-17 · **v0.2:** 2026-10-20 · **v0.3:** 2026-10-21
+**Status:** Proposal — architecture v0.4. Agreed direction, proposals and open decisions are distinguished throughout; **nothing of G-SQL exists.**
+**Original date:** 2026-10-17 · **v0.2:** 2026-10-20 · **v0.3 / v0.4:** 2026-10-21
 **Project:** [gBASIC](https://github.com/Solifugus/gbasic)
 **Scope:** Native embedded relational engine, pre-G-SQL core contracts, temporal history, scoped serials, relationships, dynamic SQL, shared expression semantics, statistical integration, and windowed iteration
 
@@ -21,6 +21,8 @@ Everything below this heading was **measured against the repository**, not assum
 | "settle whether a dedicated binary value is needed" (§10A) | PLAT-NUL's door sweep already answered it **per door** | No new value kind; the work is `bytea`/BLOB binding |
 | Capability checks as future work (§10A) | `has_builtin` answers per build, `gbasic --capabilities` exists | One decision left, and it is already named in the tree |
 | Version metadata "not independent timestamps alone" (§10D) | gBASIC's clock is **second-resolution by design** | The instinct was right; now it has a reason |
+| *(v0.4)* `unknown` truth tables identical to SQL `NULL` | **They are not, today**: gBASIC raises on `not unknown`, `true and unknown` and `unknown + 1`, and answers `unknown = unknown` **true** | Agreed to make them identical; a language change with its own increment before G-SQL (§3.1.1) |
+| *(v0.4)* "one writer, multiple readers", with no word about processes | A `server` block with `workers: N` is N **OS processes**, and every actor is a process | **Decided:** one owning process per database file, which every other process reaches as a client (§6.1) |
 
 ## 1. Purpose and design philosophy
 
@@ -40,6 +42,17 @@ Avoid duplicating algorithms and business logic already well expressed in gBASIC
 **Complexity rule (agreed):** Accept flexibility or extensibility beyond the targeted capabilities **only when it does not introduce additional complexity**. In evaluating a proposal, consider implementation, semantics, maintenance, documentation, and the cognitive cost to programmers, not just syntax. Prefer a small reusable mechanism to speculative configuration, abstraction, or generality. Keep advanced capabilities optional and ordinary cases straightforward.
 
 **Status vocabulary:** **Agreed direction** = design intent accepted, not necessarily implemented; **Proposed** = promising mechanism awaiting validation; **Open** = requires decision/testing. Illustrative code throughout is not guaranteed current gBASIC syntax.
+
+**Scope rule (agreed, v0.4):** G-SQL contains **only what cannot be done as well or better in gBASIC itself.** It is an embedded engine, not a database management system; a fuller system can be built *in gBASIC* on top of it afterwards. The test for each candidate is whether a gBASIC program over the engine's interface could do it equally well:
+
+| in the engine: needs knowledge only the engine has | in gBASIC: the developer's, or a library's |
+|---|---|
+| durability, crash recovery, page checksums and integrity checking | access control, roles and authorization policy (`principal()` already exists to build them on) |
+| a **consistent online backup** (only the engine knows a consistent point while writes continue, §6.3) | an admin shell, inspection and reporting tools |
+| encryption **at the page level** (§6.4) | import/export: CSV, xlsx and dumps |
+| transactions, isolation and snapshots | migration tooling and deployment of schema changes |
+| indexes, the planner and `EXPLAIN` | scheduling, retention jobs and archiving policy |
+| the schema catalog, and a schema version a migration tool can read and set | column-level encryption of selected fields (the `crypto` library; such columns are not indexable) |
 
 **Non-goals:** Do not recreate every PostgreSQL/SQL Server feature, build a second statistical library inside SQL, add general-purpose unrestricted `eval`, make all ecosystem improvements prerequisites, force business workflows into SQL, or introduce frameworks solely for hypothetical future use.
 
@@ -106,8 +119,35 @@ The `sql` body is priced as **one opaque span** delivered by the lexer, which is
 
 - An explicitly bound `nothing` becomes `unknown`/`NULL`; a `NOT NULL` constraint rejects it.
 - Omitting a column in `INSERT` invokes its declared default if present. Explicitly binding `nothing` **does not** invoke the default; it stores NULL or fails the constraint.
-- Preserve established gBASIC `unknown` behavior. Specify SQL predicate truth tables, `IS NULL`/`IS UNKNOWN`, joins, grouping, and aggregates with tests rather than assuming every conventional SQL coercion is appropriate.
+- `IS NULL`/`IS UNKNOWN`, joins, grouping and aggregates follow SQL exactly (§3.1.1), specified with tests.
 - Statistical reductions should preserve their documented missing-data policies; SQL aggregates should document how they ignore or propagate `unknown`.
+
+### 3.1.1 Truth tables: identical to SQL, which gBASIC is not yet (agreed v0.4)
+
+**Agreed direction:** `unknown` was modelled on SQL `NULL`, and its truth tables should be **identical** to SQL's. Measured today (§16), they are not:
+
+| expression | SQL | gBASIC today |
+|---|---|---|
+| `not unknown` | NULL | raises *"unknown cannot be used as a condition"* |
+| `true and unknown` | NULL | raises |
+| `false and unknown` | FALSE | false |
+| `unknown and false` | FALSE | **raises**: only the left operand short-circuits, so `and` is not commutative |
+| `true or unknown` | TRUE | true |
+| `unknown or true` | TRUE | **raises** |
+| `false or unknown` | NULL | raises |
+| `unknown = 1` | NULL | **false** |
+| `unknown = unknown` | NULL | **true** |
+| `unknown != 1` | NULL | true |
+| `unknown > 1` | NULL | raises *"unknown and nothing support only = and !="* |
+| `unknown + 1` | NULL | raises *"unknown cannot be used in arithmetic"* |
+
+So this is a **language change**, and it is its own increment before G-SQL: G-SQL's SQL and gBASIC's expressions must agree, and §10H shares one expression core between them. What it involves:
+
+- **Kleene logic for `not`, `and`, `or`**, commutative, with short-circuit only where an operand *determines* the answer. `stdlib/rules.bas` already implements exactly this (its `run_rules.sh` tier asserts the right operand is never evaluated when the left decides), which makes it the reference.
+- **Comparison and arithmetic propagate `unknown`** where they raise today.
+- **SQL has two equalities, and gBASIC needs both.** SQL's `=` follows three-valued logic, but `GROUP BY`, `DISTINCT`, `UNION` and `IN`-list deduplication treat two NULLs as **not distinct**. gBASIC's `contains`, `find`, `remove_value`, `unique`, `sort`, record and array comparison, and the watcher change test are all "is this the same value" questions, and they must use the second, or `contains([unknown], unknown)` stops being true. PLAT-EQ already routes all of them through one comparison, which is the one place this split has to be made.
+- **The cost in this tree is small, measured:** about 10 places compare with `= unknown`, against 928 uses of `is_unknown(...)`, the idiom that keeps meaning what it means. Every changed site raises at an `if` rather than answering differently, if the open question below is answered "raise".
+- **Open, and the one place SQL gives no answer: what `if unknown` does.** SQL has no `if`; `WHERE` and `CASE WHEN` treat NULL as *not true* and silently drop the row. gBASIC raises today, and that is an anti-silence rule this project has defended repeatedly. **Recommendation: keep the raise** in procedural control flow (`if`, `while`, `until`), and inside a `sql` block follow SQL exactly. That is the one deliberate seam, and it is a boundary of context, not of value.
 
 ### 3.2 Exact integers: already decided, and the prerequisite is smaller than v0.2 thought
 
@@ -213,14 +253,72 @@ Expected plan shape: index seek on `account_id`, then residual evaluation of `st
 These are non-negotiable architectural requirements even if the first implementation is modest.
 
 - ACID transactions with explicit `BEGIN`, `COMMIT`, `ROLLBACK` semantics and well-defined SQL-block behavior on error.
-- Crash-safe recovery using a documented WAL or equivalent journal, checksums/validation as appropriate, atomic commit markers, and startup recovery.
+- Crash-safe recovery, checksums on every page, atomic commit, and startup recovery, **proved by killing processes rather than by reasoning** (§6.2).
 - Explicit `fsync`/durability policy and tests for process termination during commits.
-- Initial concurrency recommendation: **one writer, multiple readers** with consistent read snapshots; decide whether readers can overlap a writer before selecting page/version architecture.
-- Isolation recommendation: start with a clear snapshot or serializable behavior that is implementable and testable; document transaction visibility, locking, and busy/timeouts. Do not claim MVCC or serializable guarantees until implemented.
-- Consider savepoints later; define deadlock/busy/error semantics.
+- Isolation: start with snapshot reads and serialized writes, which the process model makes natural (§6.1). Do not claim more than is implemented and tested.
+- Consider savepoints later; define busy/timeout/error semantics.
 - Treat database files as a versioned format with migrations, integrity checks, backups, and recoverability.
 
-**Open design decision:** exact journal/page layout and concurrency model require a focused storage-engine design review before coding.
+### 6.1 One owning process per database (decided, v0.4)
+
+**Decision:** a database file is owned by **exactly one process**, which runs the engine. Every other process that opens the file, including every web worker, every actor and an unrelated script started later, is a **client** sending requests to the owner. Nothing but the owner reads or writes the file.
+
+**Why this fits gBASIC rather than merely being simpler:**
+- gBASIC already runs as several processes as a matter of course (`workers: N`, actors). File-level locking shared between many processes is the hardest and least portable part of an embedded database, and this removes it: there is one writer by construction.
+- Snapshot reads are natural. A client streaming a large result holds a snapshot in the owner while other clients commit, so an iterator never sees a half-applied transaction.
+- The protocol is the boundary where typed gBASIC values cross between processes, and that boundary already exists (`serialize` and the actor wire). That is why exact-integer serialization is a prerequisite (§3.2).
+
+**Proposed shape, to be validated by the storage-design measurements (§6.2):**
+- The owner holds an exclusive lock on the file and listens on a local socket beside it (`business.gsql` → a socket the engine names; AF_UNIX on Linux, and Windows 10+ supports AF_UNIX too). A process opening the database tries to connect first; if nothing answers, it takes the lock and becomes the owner, or starts one.
+- **One protocol, always**, including for a program that is the only client. A second, in-process path would be a second implementation that can disagree with the first, the drift this project tripwires against. Whether the round trip is affordable is **measured before it is accepted** (a design gate in §6.2), not assumed.
+- **The owner's own concurrency:** proposed single-threaded, serving requests in order, with long queries made incremental (a cursor returns a batch per request) so one client cannot stall the others. Measure before adding threads.
+
+**Open, and the decision with the most consequences: the owner's lifetime.**
+- gBASIC promises that **nothing it starts outlives it** (`PR_SET_PDEATHSIG`, `run_process_lifetime.sh`). An owner started by the first client is that client's child, so it dies when that client exits, even while a web application is still using it.
+- **Proposed resolution:** when the owner disappears, a surviving client takes the lock and becomes, or starts, the next owner, which **runs crash recovery** on open. An owner ending is then simply the recovery path, so recovery is exercised constantly rather than only after a real crash. The cost to measure is reconnect and recovery time.
+- The alternative is an owner that detaches and exits after an idle period, which breaks the lifetime promise and needs its own justification.
+- **Also open:** authentication of local clients (socket file permissions as the baseline), and what a client sees mid-transaction when the owner dies (proposed: the transaction is reported as failed, never silently retried).
+
+### 6.2 The storage engine is designed and measured first (decided, v0.4)
+
+**Decision:** the storage engine's design is settled **before** layer-1 implementation (the SQL surface, §11) begins, by building candidate approaches small enough to measure and choosing between them on evidence.
+
+**Layering (judgement, v0.4):** keep a **storage interface** as a named seam between the engine's relational layer and its storage. It is not a plan to ship an interim SQLite-backed product. The interface earns its place because it is what lets the candidates be compared under one workload harness and one crash harness. SQLite may serve as a **reference oracle** in differential tests, and only there.
+
+**Candidates to build and measure:**
+
+| approach | shape | why it is a candidate here |
+|---|---|---|
+| **Copy-on-write B+tree** (LMDB's shape) | pages never overwritten in place; a commit writes new pages and atomically swaps the root | single writer by design, which §6.1 provides; a snapshot is a root pointer, so consistent reads and **hot backup come almost free** (§6.3); no separate WAL; old roots may also serve temporal history (§10D) |
+| **B+tree with a write-ahead log** (SQLite/PostgreSQL shape) | pages updated in place, changes journalled first, periodic checkpoint | the best-understood design; good space efficiency; needs checkpointing and a separate snapshot mechanism |
+| **Log-structured merge tree** (RocksDB shape) | writes appended to sorted runs, merged by compaction | strongest for write-heavy ingestion; costs read amplification and compaction tuning, a poorer fit for OLTP point reads |
+
+**Measured on each, under one harness:**
+- **Workloads** taken from the target applications rather than invented: point reads and writes by key, range scans, bulk load, a mixed OLTP profile, and long-running readers during writes.
+- **Metrics:** throughput, p50/p99 latency, write amplification, file growth and space reclamation, recovery time after a crash, and backup time while writes continue.
+- **Crash correctness, as the gating criterion:** kill -9 at every write and `fsync` point across many runs, then verify every committed transaction survived and nothing uncommitted is visible. This scales up the pattern `run_intake.sh`'s crash tier already uses.
+- **The §6.1 gate:** client-to-owner round-trip cost per query and per row batch, against an in-process call.
+
+The candidate chosen is the one that passes crash correctness and best serves the measured workloads. The losing designs and their numbers are recorded in this document, so the decision can be revisited with evidence.
+
+### 6.3 Backup and restore
+
+Only the engine knows a consistent point while writes continue, so **a consistent online backup belongs in the engine** (§1 scope rule). Everything around it (scheduling, retention, shipping copies elsewhere) is gBASIC.
+
+- **Required:** a hot backup producing a consistent database file while the owner keeps serving. Under a copy-on-write design this is copying the pages reachable from a snapshot root; under WAL it is a checkpoint plus a copy under a read snapshot. Restore is opening the produced file.
+- **Required:** an integrity check that verifies every page checksum and structural invariant, so a backup can be proved readable before it is needed.
+- **Proposed, later:** incremental backup (pages changed since a previous backup), and point-in-time recovery from an archived log. Decide after §6.2 picks an engine, since the cost differs sharply between the candidates.
+- Logical dumps and exports are gBASIC programs over queries, and are out of scope.
+
+### 6.4 Encryption at rest
+
+Three levels, and the engine owns only the middle one:
+
+1. **Filesystem or disk encryption** (LUKS, BitLocker, cloud volume encryption). Zero engine cost, and it satisfies most compliance requirements. Documented as the baseline recommendation.
+2. **Page-level authenticated encryption in the engine.** Each page sealed with AES-256-GCM, with the page number and file identity as associated data so pages cannot be swapped or replayed between positions, and a key supplied by the application at open and never stored in the file. It belongs in the engine because only the engine sees pages. It is an optional module behind `HAVE_LIBCRYPTO`: a build without it **refuses** to open an encrypted file by name.
+3. **Field-level encryption** of selected values with the `crypto` library. A gBASIC concern; such columns cannot be indexed or compared in SQL.
+
+**Decision for the page format now, even if level 2 ships later:** reserve space in every page for a nonce and authentication tag from the first format version. Retrofitting encryption would otherwise change the page layout and force a format migration. Nonce uniqueness must be guaranteed per write; a copy-on-write engine, which never rewrites a page in place, makes this simpler, and §6.2's comparison should record that. **Open:** key rotation (re-encrypting every page, online or offline) and the backup of encrypted databases (a backup stays encrypted under the same key).
 
 ## 7. Statistical integration
 
@@ -502,6 +600,10 @@ Representative tests to add when the corresponding feature is implemented:
 
 ## 11. Implementation roadmap
 
+### Phase 0a: Storage-engine design by measurement (decided, v0.4)
+
+Build the §6.2 candidates far enough to run the workload, crash and round-trip harnesses; choose; record the losing designs and their numbers. Settle the §6.1 owner lifetime from the measured reconnect and recovery times. Fix the page format, including the reserved encryption fields (§6.4). Nothing in Phase 1 is coded before this is decided.
+
 ### Phase 0: Semantic contracts and test harness
 
 Coordinate with §10A Core Contracts and §10B windowed iteration; these are cross-language foundations rather than G-SQL-only work.
@@ -531,7 +633,7 @@ ROLLUP/GROUPING, grouping sets/CUBE, richer windows, sophisticated optimizer, im
 1. Native G-SQL is an embedded relational engine integrated with gBASIC, not a generic SQLite clone.
 2. Keep PostgreSQL, SQL Server, ODBC, and other external adapters.
 3. Share native gBASIC value semantics; avoid an independent SQL type system.
-4. `NULL` and `UNKNOWN` are two **SQL** spellings of one value, `unknown`; gBASIC keeps `unknown` alone (ruled v0.3, §3.1). SQL-bound `nothing` becomes `unknown`.
+4. `unknown`'s truth tables are identical to SQL `NULL`'s; gBASIC is changed to match before G-SQL (§3.1.1). `NULL` and `UNKNOWN` are two **SQL** spellings of one value, `unknown`; gBASIC keeps `unknown` alone (ruled v0.3, §3.1). SQL-bound `nothing` becomes `unknown`.
 5. No new numeric type. Exact integers are a property of `number` and already shipped; `INT64`/`INTEGER` are SQL column constraints (§3.2). *(v0.2 said "add a single signed `INT64` type"; reversed in v0.3.)*
 6. Native money and temporal types remain native end to end.
 7. Support joins, unions, grouping, transactions, keys, indexes, and views.
@@ -539,13 +641,16 @@ ROLLUP/GROUPING, grouping sets/CUBE, richer windows, sophisticated optimizer, im
 9. Permit carefully controlled pure scalar gBASIC functions inside SQL.
 10. Protect SARGability through access/residual predicate separation and transparent `EXPLAIN` output.
 11. Defer costly advanced features where a clear initial benefit has not been demonstrated.
+12. One owning process per database file; every other process is a client (§6.1).
+13. The storage engine is chosen by measurement before the SQL layer is implemented (§6.2).
+14. The engine holds only what cannot be done as well in gBASIC (§1): access control, admin tools, import/export and migration tooling are gBASIC's.
 
 ## 13. Questions requiring a final engineering decision
 
 1. Literal and mixed-arithmetic exactness are already specified (`exact_number_design.md`). What remains is G-SQL's side: does an `INT64` column refuse an inexact value on write, and refuse on overflow instead of degrading with warning 2112? §3.2 proposes yes to both.
-2. What is the precise truth table for `unknown` in SQL predicates, equality, grouping, and join conditions?
+2. Decided: SQL's (§3.1.1). Still open: what `if unknown` does in procedural code (recommended: keep the raise).
 3. Which persistent value kinds and date/time variants are supported in the first release?
-4. What are the page format, journal strategy, reader/writer snapshot model, and durability guarantees?
+4. Which storage design wins the §6.2 measurements, and what is the owner's lifetime (§6.1)?
 5. What are the first-release collation and comparison rules?
 6. Do foreign keys and `CHECK` constraints ship in the first release or the next?
 7. How are schema changes, function versions, and prepared plans invalidated?
@@ -581,6 +686,10 @@ ROLLUP/GROUPING, grouping sets/CUBE, richer windows, sophisticated optimizer, im
 
 ## 15. Revision history
 
+### v0.4 — 2026-10-21
+
+Decided: one owning process per database (§6.1); the storage engine designed and measured before the SQL layer, with three candidates and a crash harness as the gate (§6.2); the scope rule that the engine holds only what gBASIC cannot do as well (§1). Added backup and restore (§6.3) and encryption at rest (§6.4), reserving the page-format space for encryption now. Measured that gBASIC's `unknown` does not follow SQL's truth tables, and recorded the agreed change, including the need for both of SQL's equalities (§3.1.1).
+
 ### v0.3 — 2026-10-21
 
 Checked v0.2 against the repository rather than against itself (§0, §16). Reversed: the new `INT64` type (exactness already lives on `number`; the real prerequisite is the binary serializer) and `NULL` as a gBASIC alias. Priced: both block heads at zero conflicts. Withdrawn and replaced: the `window(...)` head and `tran[-1]` (§10B). Answered from the tree: the binary value kind and part of capability checks. The retired `gbasic_gsql_design.md` was compared line by line before removal.
@@ -603,3 +712,4 @@ So they can be re-taken rather than trusted.
 - **Indexing** (§10B.1): `a[-1]` and `a[9]` on a three-element array both raise `array index out of range` under `on error goto next`.
 - **Iterable kinds** (§10B.2): the `for each` evaluation in `src/eval.c`, whose refusal reads "for in expects an array or a file".
 - **The retired document** (top of file): every non-blank line of `git show HEAD:docs/gbasic_gsql_design.md` tested for verbatim presence here; 219 of 233.
+- **Truth tables** (§3.1.1, v0.4): a scratch program evaluating each expression in its own function under `on error goto next`, printing the value or the raised message. Usage counts: `= unknown` in a condition position across `stdlib`, `examples` and `tests` (about 10), and `is_unknown(` occurrences (928).
