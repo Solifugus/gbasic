@@ -190,7 +190,15 @@ else
             fail "the server did not answer during a modal window -- direction A's promise does not hold for this nested loop"
         fi
         # AND THE TIMER FIRED, which is the same claim from inside and is what
-        # makes the window answerable without a person.
+        # makes the window answerable without a person. WAITED FOR, not
+        # sampled: the server can answer before the first 0.2 s tick is due,
+        # and under a loaded parallel gate a tick runs late -- the sampled
+        # form failed there and passed alone (2026-10-21). The bound is a
+        # hang-guard; the fixture gives up on its own after 150 ticks.
+        for _ in $(seq 1 100); do
+            grep -q "^TICK 1" "$work/ext.out" && break
+            sleep 0.1
+        done
         if grep -q "^TICK 1" "$work/ext.out"; then
             pass "and a gBASIC timer fires inside the modal loop"
         else
