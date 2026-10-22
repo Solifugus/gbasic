@@ -854,14 +854,32 @@ d="$work/shape"; mkdir -p "$d/files"
 for i in $(seq 1 120); do printf 'r\n' > "$d/files/t$i.csv"; done
 ./gbasic "$work/grow.bas" "$d" 20000 jnl >/dev/null
 cp "$d/jnl.json" "$d/rwr.json"
+# ALTERNATED, AND EACH STRATEGY'S FASTEST SAMPLE KEPT. Timed once each in
+# sequence, the two halves of the ratio could sit in different load windows,
+# and in a parallel gate that skewed it: 3.9x against a gate of 5 on
+# 2026-10-22, where alone it measures ~6x. The fix run_set_ops.sh already
+# uses: both halves in the same windows, the band unchanged. Every sample
+# starts from the same directory, since a run marks its 120 files taken.
+cp -a "$d" "$d.base"
 t_j=0; t_r=0; took_j=""; took_r=""
-for how in journal rewrite; do
-    name=jnl; [ "$how" = "rewrite" ] && name=rwr
-    start=$(date +%s%N)
-    took=$(./gbasic "$work/strategy.bas" "$d" "$name" "$how")
-    end=$(date +%s%N)
-    ms=$(( (end - start) / 1000000 ))
-    if [ "$how" = "journal" ]; then t_j=$ms; took_j=$took; else t_r=$ms; took_r=$took; fi
+for round in 1 2 3; do
+    for how in journal rewrite; do
+        name=jnl; [ "$how" = "rewrite" ] && name=rwr
+        rm -rf "$d"; cp -a "$d.base" "$d"
+        start=$(date +%s%N)
+        took=$(./gbasic "$work/strategy.bas" "$d" "$name" "$how")
+        end=$(date +%s%N)
+        ms=$(( (end - start) / 1000000 ))
+        if [ "$how" = "journal" ]; then
+            if [ "$t_j" -eq 0 ] || [ "$ms" -lt "$t_j" ]; then t_j=$ms; fi
+            [ "$took" = "took 120" ] && [ "$round" = 1 ] && took_j=$took
+            [ "$took" != "took 120" ] && took_j=$took
+        else
+            if [ "$t_r" -eq 0 ] || [ "$ms" -lt "$t_r" ]; then t_r=$ms; fi
+            [ "$took" = "took 120" ] && [ "$round" = 1 ] && took_r=$took
+            [ "$took" != "took 120" ] && took_r=$took
+        fi
+    done
 done
 if [ "$took_j" != "took 120" ] || [ "$took_r" != "took 120" ]; then
     fail "the shape tier did not take its 120 files ($took_j / $took_r) -- it measured nothing"

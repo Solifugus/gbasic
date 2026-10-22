@@ -40,9 +40,11 @@ def main():
     # foreground). Resetting it here makes the tier a fact about gBASIC rather
     # than about how the gate was started. gBASIC installing its own handler
     # still replaces this default, which is what the locked case measures.
+    # Signal 0 means "send none" (the `distinct` tier), and has no disposition.
     p = subprocess.Popen(["./gbasic", "--line-buffered", fixture] + args,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         preexec_fn=lambda: signal.signal(signo, signal.SIG_DFL))
+                         preexec_fn=(lambda: signal.signal(signo, signal.SIG_DFL))
+                                    if signo > 0 else None)
 
     # WAIT FOR THE CHILD TO SAY IT IS READY rather than sleeping. A fixture that
     # has not reached its lock yet would be killed before the handler is even
