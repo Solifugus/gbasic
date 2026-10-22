@@ -1935,8 +1935,134 @@ static int qt_table_column(Value *table, const char *field) {
  * deleted stays parented and VISIBLE, floating at its old geometry, so
  * unhooking would leave the window showing what the record no longer says.
  */
+/* THE PARTS A RECONCILE BUILT, BY NAME, so its handlers can be connected
+ * (DOGFOOD 2026-10-19, reported from gBASIC Studio). The pointers borrow from
+ * the items record, which outlives the reconcile. */
+typedef struct {
+    const char **names;
+    size_t count;
+    size_t cap;
+} QtNameSet;
+
+static int qt_names_add(QtNameSet *s, const char *name) {
+    if (s->count == s->cap) {
+        size_t cap = s->cap ? s->cap * 2 : 16;
+        const char **grown = realloc(s->names, cap * sizeof(*grown));
+        if (!grown) {
+            return 0;
+        }
+        s->names = grown;
+        s->cap = cap;
+    }
+    s->names[s->count++] = name;
+    return 1;
+}
+
+static int qt_names_has(const QtNameSet *s, const char *name) {
+    for (size_t i = 0; i < s->count; i++) {
+        if (strcmp(s->names[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int qt_names_collect(QtNameSet *s, Value *entry) {
+    const char *kind = qt_record_text(entry, "kind");
+    if (kind && strcmp(kind, "handler") == 0) {
+        return 1;
+    }
+    const char *name = qt_record_text(entry, "name");
+    if (name && !qt_names_add(s, name)) {
+        return 0;
+    }
+    RecordField *kids = record_find(entry, "items");
+    if (kids && kids->value && kids->value->kind == VALUE_ARRAY &&
+        kids->value->as.array.store) {
+        for (size_t i = 0; i < kids->value->as.array.store->count; i++) {
+            Value *k = &kids->value->as.array.store->items[i];
+            if (k->kind == VALUE_RECORD && !qt_names_collect(s, k)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* A HANDLER IS CONNECTED EXACTLY WHEN THE WIDGET IT TARGETS WAS BUILT IN THIS
+ * RECONCILE, wherever the handler record sits -- inside the new child, beside
+ * it in the refresh items, or in the window's own declaration. That one rule
+ * is what makes the pass safe to run on every refresh:
+ *   - a BUILT widget is new and carries no connections, so nothing doubles;
+ *   - a KEPT widget keeps exactly the connections it had, because Qt appends
+ *     and reconnecting it would make one click fire twice;
+ *   - a DROPPED widget's connections were deleted with it.
+ * The one consequence to know: a handler ADDED to a kept widget's record does
+ * nothing until that widget is rebuilt, since "kept" means untouched. `done`
+ * holds the triples connected in this pass, because the same handler may
+ * appear both in the window record and in the refresh items. */
+static int qt_connect_built(void *root, Value *items, const QtNameSet *built,
+                            QtNameSet *done) {
+    char err[QT_ERRBUF];
+    char message[512];
+    size_t count = items->as.array.store ? items->as.array.store->count : 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *entry = &items->as.array.store->items[i];
+        if (entry->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *kind = qt_record_text(entry, "kind");
+        if (kind && strcmp(kind, "handler") == 0) {
+            const char *target = qt_record_text(entry, "target");
+            const char *signal = qt_record_text(entry, "signal");
+            RecordField *hf = record_find(entry, "handler");
+            if (!target || !qt_names_has(built, target)) {
+                continue;
+            }
+            if (!signal || !hf || !hf->value ||
+                hf->value->kind != VALUE_FUNCTION) {
+                qt_raise("qt.refresh: this handler carries no function to call");
+                return 0;
+            }
+            const char *fn = hf->value->as.function.name;
+            int seen = 0;
+            for (size_t d = 0; d + 2 < done->count; d += 3) {
+                if (strcmp(done->names[d], target) == 0 &&
+                    strcmp(done->names[d + 1], signal) == 0 &&
+                    strcmp(done->names[d + 2], fn) == 0) {
+                    seen = 1;
+                    break;
+                }
+            }
+            if (seen) {
+                continue;
+            }
+            err[0] = '\0';
+            if (!gb_qt_connect(root, target, signal, fn, err, sizeof(err))) {
+                snprintf(message, sizeof(message), "qt.refresh: %s",
+                         err[0] ? err : "that handler could not be connected");
+                qt_raise(message);
+                return 0;
+            }
+            if (!qt_names_add(done, target) || !qt_names_add(done, signal) ||
+                !qt_names_add(done, fn)) {
+                qt_raise("qt.refresh ran out of memory");
+                return 0;
+            }
+            continue;
+        }
+        RecordField *kids = record_find(entry, "items");
+        if (kids && kids->value && kids->value->kind == VALUE_ARRAY) {
+            if (!qt_connect_built(root, kids->value, built, done)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 static int qt_reconcile_children(void *root, void *container, Value *items,
-                                 int *placed) {
+                                 Value *window_items, int *placed) {
     char err[QT_ERRBUF];
     char message[512];
     size_t count = items->as.array.store ? items->as.array.store->count : 0;
@@ -1958,11 +2084,13 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
         was[i] = gb_qt_child_at(container, i);
     }
     int nkept = 0;
+    QtNameSet built = { NULL, 0, 0 };
     for (size_t i = 0; i < count; i++) {
         Value *entry = &items->as.array.store->items[i];
         if (entry->kind != VALUE_RECORD) {
             free(kept);
             free(was);
+            free(built.names);
             qt_raise("qt.refresh: every item must be a record");
             return 0;
         }
@@ -1978,6 +2106,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
             if (!gb_qt_child_drop(container, child, err, sizeof(err))) {
                 free(kept);
                 free(was);
+                free(built.names);
                 snprintf(message, sizeof(message), "qt.refresh: %s",
                          err[0] ? err : "that child could not be replaced");
                 qt_raise(message);
@@ -2004,6 +2133,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
                                      sizeof(err))) {
                 free(kept);
                 free(was);
+                free(built.names);
                 snprintf(message, sizeof(message), "qt.refresh: %s",
                          err[0] ? err : "that caption could not be set");
                 qt_raise(message);
@@ -2012,6 +2142,13 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
         } else if (!qt_build_item(container, entry, root)) {
             free(kept);
             free(was);
+            free(built.names);
+            return 0;
+        } else if (!qt_names_collect(&built, entry)) {
+            free(kept);
+            free(was);
+            free(built.names);
+            qt_raise("qt.refresh ran out of memory");
             return 0;
         }
     }
@@ -2033,6 +2170,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
         if (!gb_qt_child_drop(container, was[i], err, sizeof(err))) {
             free(kept);
             free(was);
+            free(built.names);
             snprintf(message, sizeof(message), "qt.refresh: %s",
                      err[0] ? err : "that child could not be removed");
             qt_raise(message);
@@ -2055,10 +2193,22 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
                 snprintf(message, sizeof(message), "qt.refresh: %s",
                          err[0] ? err : "that child could not be placed");
                 qt_raise(message);
+                free(built.names);
                 return 0;
             }
         }
         at++;
+    }
+    /* HANDLERS LAST, once every new name exists and the set is final: a
+     * handler may name a part built after it in the record. */
+    QtNameSet done = { NULL, 0, 0 };
+    int connected = qt_connect_built(root, items, &built, &done) &&
+                    (!window_items ||
+                     qt_connect_built(root, window_items, &built, &done));
+    free(done.names);
+    free(built.names);
+    if (!connected) {
+        return 0;
     }
     if (placed) {
         *placed = (int)count;
@@ -4869,7 +5019,12 @@ static Value qt_eval_call(AstExpr *expr) {
                 return value_null();
             }
             int placed = 0;
-            int ok = qt_reconcile_children(root, container, &items, &placed);
+            RecordField *wi = record_find(&win, "items");
+            Value *window_items = (wi && wi->value &&
+                                   wi->value->kind == VALUE_ARRAY)
+                                      ? wi->value : NULL;
+            int ok = qt_reconcile_children(root, container, &items,
+                                           window_items, &placed);
             value_free(win); value_free(which); value_free(items);
             if (!ok) {
                 return value_null();

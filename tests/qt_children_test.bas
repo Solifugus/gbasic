@@ -166,8 +166,107 @@ program main()
           string(qt.read(box, "a", "checkable")), "true")
     qt.close(box)
 
+    ' ---- A BUILT CHILD'S HANDLERS ARE CONNECTED (DOGFOOD 2026-10-19) ------
+    ' Reported from gBASIC Studio: a page built by `qt.refresh` rendered and
+    ' read back correctly and its button did NOTHING, because only `qt.open`
+    ' ran the connect pass. Nothing else in this file could see it: no check
+    ' above pressed anything. The rule is that a handler is connected exactly
+    ' when its TARGET was built in this refresh, so the checks come in pairs:
+    ' the new one fires, AND a kept one still fires ONCE per click (Qt appends
+    ' connections, so reconnecting a kept widget would make it fire twice).
+    g.one = 0
+    g.two = 0
+    g.three = 0
+    g.w = 0
+    deck = { kind: "window", name: "deck",
+             options: { title: "Deck", width: 400, height: 260 },
+             items: [ { kind: "container", word: "tabs", name: "leaves",
+                        items: [ button_page("p0", "w", nothing),
+                                 button_page("p1", "b1", on_one) ] },
+                      { kind: "handler", target: "w", signal: "clicked",
+                        handler: on_w } ] }
+    check("the deck passes qt.check", string(qt.check(deck)), "true")
+    qt.open(deck)
+    qt.invoke(deck, "b1", "click")
+    check("a handler connected by qt.open fires (the control)",
+          string(g.one), "1")
+
+    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+                                     button_page("p1", "b1", on_one),
+                                     button_page("p2", "b2", on_two) ])
+    qt.invoke(deck, "b2", "click")
+    check("a handler inside a page BUILT by qt.refresh fires", string(g.two), "1")
+    qt.invoke(deck, "b1", "click")
+    check("a KEPT page's handler still fires exactly once per click",
+          string(g.one), "2")
+
+    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+                                     button_page("p1", "b1", on_one),
+                                     button_page("p2", "b2", on_two) ])
+    qt.invoke(deck, "b2", "click")
+    check("refreshing again does not connect a kept handler twice",
+          string(g.two), "2")
+
+    ' THE WINDOW'S OWN HANDLER, when its target is rebuilt: drop the page that
+    ' holds `w`, then bring it back. The handler lives in the window record,
+    ' not in the refresh items, and must follow the new widget.
+    qt.invoke(deck, "w", "click")
+    check("the window-declared handler fires before any rebuild", string(g.w), "1")
+    n = qt.refresh(deck, "leaves", [ button_page("p1", "b1", on_one),
+                                     button_page("p2", "b2", on_two) ])
+    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+                                     button_page("p1", "b1", on_one),
+                                     button_page("p2", "b2", on_two) ])
+    qt.invoke(deck, "w", "click")
+    check("a window-declared handler follows its rebuilt target, once",
+          string(g.w), "2")
+
+    ' A HANDLER BESIDE THE CHILDREN, naming a part built in the same refresh.
+    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+                                     button_page("p1", "b1", on_one),
+                                     button_page("p2", "b2", on_two),
+                                     button_page("p3", "b3", nothing),
+                                     { kind: "handler", target: "b3",
+                                       signal: "clicked", handler: on_three } ])
+    qt.invoke(deck, "b3", "click")
+    check("a handler beside the children reaches a part built with it",
+          string(g.three), "1")
+    qt.close(deck)
+
     print "ok   " + string(g.checks) + " checks, " + string(g.bad) + " mismatches"
 end program
+
+' A page holding one button, and that button's handler when one is given --
+' which is the shape Studio reported: the handler travels INSIDE the child.
+function button_page(id, button, fn)
+    kids = [ { kind: "part", word: "button", name: button,
+               options: { text: button } } ]
+    if not is_nothing(fn) then
+        append(kids, { kind: "handler", target: button, signal: "clicked",
+                       handler: fn })
+    end if
+    return { kind: "container", word: "tab", name: id, label: id, items: kids }
+end function
+
+function on_one()
+    g.one = g.one + 1
+    return nothing
+end function
+
+function on_two()
+    g.two = g.two + 1
+    return nothing
+end function
+
+function on_three()
+    g.three = g.three + 1
+    return nothing
+end function
+
+function on_w()
+    g.w = g.w + 1
+    return nothing
+end function
 
 function check(what, got, want)
     g.checks = g.checks + 1
