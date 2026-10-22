@@ -461,6 +461,8 @@ int gb_qt_clipboard(char **text, long *len, char *err, size_t err_size);
  * from the user, which is Qt's own sign -- and the OPPOSITE of GTK's, so
  * Studio's `if dy < 0 then zoom in` inverts when it is ported. */
 int gb_qt_wheel_event(int *dy, int *dx, int *ctrl, int *shift, int *alt);
+/* The same turn unrounded, in notches (Qt's angle delta / 120). */
+int gb_qt_wheel_exact(double *dy, double *dx);
 
 /* CLAIM THE EVENT BEING HANDLED, so the view does not also act on it. Refuses
  * when nothing is in flight rather than being a silent no-op, the rule

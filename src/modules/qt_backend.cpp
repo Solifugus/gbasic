@@ -634,6 +634,10 @@ static QWidget *mouse_target(QWidget *w) {
  * that ever changes this becomes a stack, and this comment is the warning. */
 static bool g_wheel_live = false;
 static int g_wheel_dy = 0, g_wheel_dx = 0;
+/* THE SAME TURN UNROUNDED, in notches. The rounded value is right for a
+ * program that reads only the sign; a program accumulating a trackpad's many
+ * small deltas needs these, or one swipe climbs several steps. */
+static double g_wheel_dy_exact = 0.0, g_wheel_dx_exact = 0.0;
 static bool g_wheel_ctrl = false, g_wheel_shift = false, g_wheel_alt = false;
 static bool g_wheel_claimed = false;
 /* SEPARATE FROM `g_wheel_claimed`, which is cleared as the handler returns:
@@ -662,6 +666,8 @@ public:
          * other part of this vocabulary exposes. */
         g_wheel_dy = we->angleDelta().y() / 120;
         g_wheel_dx = we->angleDelta().x() / 120;
+        g_wheel_dy_exact = we->angleDelta().y() / 120.0;
+        g_wheel_dx_exact = we->angleDelta().x() / 120.0;
         /* A SUB-NOTCH TURN IS STILL A TURN. A high-resolution wheel or a
          * trackpad sends deltas smaller than 120, which integer division
          * reports as ZERO -- a handler told the wheel moved by nothing, in a
@@ -698,6 +704,15 @@ extern "C" int gb_qt_wheel_event(int *dy, int *dx, int *ctrl, int *shift,
     if (ctrl)  { *ctrl = g_wheel_ctrl ? 1 : 0; }
     if (shift) { *shift = g_wheel_shift ? 1 : 0; }
     if (alt)   { *alt = g_wheel_alt ? 1 : 0; }
+    return 1;
+}
+
+extern "C" int gb_qt_wheel_exact(double *dy, double *dx) {
+    if (!g_wheel_live) {
+        return 0;
+    }
+    if (dy) { *dy = g_wheel_dy_exact; }
+    if (dx) { *dx = g_wheel_dx_exact; }
     return 1;
 }
 

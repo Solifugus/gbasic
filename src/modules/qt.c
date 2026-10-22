@@ -6236,6 +6236,15 @@ static Value qt_eval_call(AstExpr *expr) {
         Value out = value_record(NULL, 0);
         record_set(&out, "dy", value_number(dy));
         record_set(&out, "dx", value_number(dx));
+        /* UNROUNDED BESIDE ROUNDED. `dy` keeps its rule (a sub-notch turn is
+         * still a turn, rounded away from zero) for programs that read the
+         * sign; `dy_exact` is the fraction, for a program accumulating a
+         * trackpad's small deltas, which the rounded value makes impossible:
+         * a half-notch arrives as 1. Asked for by gBASIC Studio. */
+        double dy_exact = 0.0, dx_exact = 0.0;
+        gb_qt_wheel_exact(&dy_exact, &dx_exact);
+        record_set(&out, "dy_exact", value_number(dy_exact));
+        record_set(&out, "dx_exact", value_number(dx_exact));
         record_set(&out, "ctrl", value_bool(ctrl));
         record_set(&out, "shift", value_bool(shift));
         record_set(&out, "alt", value_bool(alt));

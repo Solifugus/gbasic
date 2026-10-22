@@ -53,6 +53,9 @@ window app( title: "Wheel", width: 480, height: 360 )
         ev = qt.wheel()
         g.seen = g.seen + 1
         g.dy = ev.dy
+        g.dy_exact = ev.dy_exact
+        g.dy_sum = g.dy_sum + ev.dy_exact
+        g.dy_round_sum = g.dy_round_sum + ev.dy
         g.ctrl = ev.ctrl
         g.shift = ev.shift
         ' STUDIO'S OWN RULE: only with Ctrl. Without the modifier this must do
@@ -89,7 +92,7 @@ end window
 
 program main()
     rows = [{ name: "a" }, { name: "b" }, { name: "c" }]
-    g = { seen: 0, dy: 0, ctrl: false, shift: false, zoomed: 0, grid_seen: 0,
+    g = { seen: 0, dy: 0, dy_exact: 0, dy_sum: 0, dy_round_sum: 0, ctrl: false, shift: false, zoomed: 0, grid_seen: 0,
           rows: rows }
 
     qt.open(app)
@@ -172,6 +175,21 @@ program main()
     check("a quarter-notch up still reads as up", g.dy, 1)
     qt.scroll(app, "code", -0.25)
     check("and a quarter-notch down as down", g.dy, -1)
+    ' THE UNROUNDED TURN BESIDE IT, asked for by gBASIC Studio: a trackpad
+    ' sends many small deltas, and with only the rounded value each one counts
+    ' as a whole notch, so one swipe climbs several zoom steps. `dy` keeps its
+    ' rule; `dy_exact` is what a program accumulates.
+    check("the same quarter-notch is -0.25 unrounded", g.dy_exact, -0.25)
+    qt.scroll(app, "code", 2)
+    check("a whole turn is unchanged unrounded", g.dy_exact, 2)
+    g.dy_sum = 0
+    g.dy_round_sum = 0
+    qt.scroll(app, "code", 0.25)
+    qt.scroll(app, "code", 0.25)
+    qt.scroll(app, "code", 0.25)
+    qt.scroll(app, "code", 0.25)
+    check("four quarter-notches accumulate to exactly one notch", g.dy_sum, 1)
+    check("where the rounded values count four", g.dy_round_sum, 4)
 
     ' ---- a part that does not scroll answers `unknown`, not 0 -------------
     check("a field has no scroll position",
