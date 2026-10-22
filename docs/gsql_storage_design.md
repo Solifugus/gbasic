@@ -126,7 +126,12 @@ The same in every candidate, and taken from AmorphDB's instance chain:
 
 ### 5.1 Workloads
 
-**Decided (2026-10-21): G-Dash is the representative application now; WorkSplicer will be more so later.** WorkSplicer is being redesigned, so its profile below is provisional and is revisited when its design settles. Its eventual role, work orchestration plus a platform for enterprise vertical applications, makes it the long-term reference.
+**How databases fit (clarified 2026-10-21).** A G-SQL **database** is one file (plus at most a log) holding **many tables, views and indexes**, as a SQLite file or a PostgreSQL database does. One owning process serves one database however many tables it holds (`gsql_design.md` §6.1). The normal application opens **one** database, sometimes a few (one per tenant, or an archive). WorkSplicer, with hundreds of tables and views in one database, is the shape the engine is designed for.
+
+**Consumers (decided 2026-10-21).** G-SQL serves many applications; no single one shapes it.
+- **G-Dash is the first consumer.** It has real code to read and has supplied numbers, so it gives concrete workloads now.
+- **WorkSplicer** is the more demanding future case: many tables and views, many small write transactions, and a platform for enterprise vertical applications. It is being redesigned, so its profile (§5.1.2) is provisional.
+- **The generic workloads** (§5.1.4) keep the comparison from fitting any one application.
 
 #### 5.1.1 G-Dash, the primary profile (read from its source)
 
@@ -175,9 +180,9 @@ The G-Dash workloads, revised:
 
 **Money comparisons in model-written SQL, raised by the answer:** today stored values are minor units, so generated SQL compares cents to dollars, and G-Dash has to warn about it. Native money removes the unit confusion, but leaves one question for `gsql_design.md` §3.3: what `amount > 100` means when `amount` is `MONEY(USD)` and `100` is a plain number. gBASIC's own answer for that comparison must be the SQL answer.
 
-### 5.1.1a The finding: one owner per file does not fit file-per-dataset
+### 5.1.1a G-Dash's file-per-dataset arrangement is a SQLite habit, not a G-SQL requirement
 
-G-Dash keeps **one file per dataset, 10²–10³ of them per deployment**, and makes a refresh live by renaming a fresh file over the old one. Under `gsql_design.md` §6.1 every database file has its own owning process, so this arrangement would mean:
+This section is about **one application's arrangement**, and does not change the general model above. G-Dash keeps **one file per dataset, 10²–10³ of them per deployment**, and makes a refresh live by renaming a fresh file over the old one. Under `gsql_design.md` §6.1 every database file has its own owning process, so this arrangement would mean:
 - **hundreds of owner processes**;
 - a dashboard query reading several datasets would span **several owners**, which is a distributed query;
 - a rename-in would need the old file's owner to notice its file was replaced and hand over.
@@ -192,7 +197,7 @@ None of that is worth building. Two ways out:
    The costs, stated: a dataset is no longer a file an operator can copy, inspect or delete on its own (the engine's backup and integrity check, §6.3 of the main document, replace that); and one database holds every dataset, so corruption and recovery are per database. One database per tenant keeps tenants apart, which is also what G-Dash's multi-tenant design needs.
 2. **Alternative: one owner process per directory**, owning many files and treating each as a dataset it can attach. This keeps G-Dash's file model, at the price of an owner that must manage many files, detect a file renamed in under it, and coordinate snapshots across them.
 
-**This is a decision for G-Dash and the project together**, and it answers §7's single-file question for G-Dash's case. Option 1 changes G-Dash's storage design; G-Dash's own seam (`gdash_store.bas` is the only module that touches storage, and its header says a backend swap "is this module's rewrite") is what makes that affordable.
+**This is a decision for G-Dash and the project together.** G-Dash used a file per dataset because, under SQLite, a rename was the easy way to get an atomic swap and a read-only attach. G-SQL provides both inside one database: atomic table replacement under live readers (G1) and engine-enforced read-only transactions (G4). Option 1 changes G-Dash's storage design; G-Dash's own seam (`gdash_store.bas` is the only module that touches storage, and its header says a backend swap "is this module's rewrite") is what makes that affordable.
 
 #### 5.1.2 WorkSplicer, the provisional future profile
 
@@ -288,7 +293,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 3. Whether an untyped `MONEY` column may be indexed (§3.2).
 4. *(Settled 2026-10-21: the §2.D reading is right, and G-SQL is a new development.)*
 5. The round-trip threshold for accepting the single-protocol rule (§5.5), agreed after first numbers.
-6. Whether a database should ever span several files, or always be one file plus at most a log. For G-Dash this becomes §5.1.1a: datasets as tables in one database (recommended), or one owner per directory of files. AmorphDB's per-zone files are the other precedent.
+6. **Cross-database queries.** Proposed for the first release: **one query reads one database.** SQLite's `ATTACH` (several databases in one query) is not offered at first, because across owners it is a distributed query; it is added only if a real application needs it. Separately: whether one database is always one file plus at most a log (proposed: yes). G-Dash's case is §5.1.1a.
 
 ## 8. Reading list
 
