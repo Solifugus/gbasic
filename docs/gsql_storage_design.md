@@ -148,7 +148,7 @@ What that asks of the engine, beyond the generic workloads:
 
 **Open, raised by G-Dash:** G-Dash uses **one file per dataset** so that a refresh is one rename and a dataset can be attached read-only. In G-SQL, the same guarantees can come from one database with snapshot-isolated table replacement (G1) and read-only transactions (G4), or from attaching several G-SQL files. This is §7's single-file question with a concrete case attached.
 
-**Needed:** representative G-Dash volumes (rows per dataset, number of datasets, refresh frequency, queries per second).
+**Known:** at most 11 datasets in one query today, but that is SQLite's attach cap (one opened plus ten attached), not a G-Dash requirement. **Asked, awaiting an answer:** representative volumes (rows and width per dataset, datasets per deployment, refresh frequency and duration, read load, query shape), in `gdash/docs/platform_ask_gsql_volumes.md` (2026-10-21).
 
 #### 5.1.2 WorkSplicer, the provisional future profile
 
@@ -160,7 +160,19 @@ Work orchestration has a different shape from dashboards: **many small write tra
 | S2 | state-transition updates with a temporal state column | §4's version-store cost under the update pattern orchestration actually has |
 | S3 | scoped serial allocation under concurrency | §10E's numbering |
 
-#### 5.1.3 Generic workloads
+#### 5.1.3 estateforge: realistic data, and an answer key no engine wrote
+
+`estateforge` (`~/development/estateforge`) generates a fabricated corporate estate from one declaration: tables, views, procedures, ETL flows and rows. It comes at three scales (25, 116 and 500 tables), in two vocabularies (energy trading with Enron-corpus names, and a US core bank), with named pathologies planted on purpose (null regions, undeclared foreign keys, SCD2 dimensions, denormalised copies, and others). Its distinctive property is that the declaration produces **the answer key as well as the database**: it computes each question's answer by folding over the generated rows, never by running SQL.
+
+Its role in G-SQL, by phase:
+
+- **Phase 0a (this document):** realistic row shapes, widths, key distributions and a 500-table catalog for the workloads, in place of uniform random keys. Its value distributions (trend, seasonality, planted anomalies) make compression and page-fill measurements honest.
+- **The SQL layer, later, and the stronger use: a differential oracle.** Build the same estate in PostgreSQL and in G-SQL, run its questions in both, and compare each against the answer key. Agreement between two engines alone could be one shared mistake; the answer key was written by neither engine. `nlq`'s value tier in this repository already uses estateforge exactly this way, against PostgreSQL.
+- **Semantics:** its `null_region` pathology and SCD2 dimensions exercise `unknown` and grouping under the SQL truth tables (`gsql_design.md` §3.1.1).
+
+**Gap:** estateforge's demo estate is about 4,800 rows, and its row loading goes through SQL inserts (12.7 ms/row on SQL Server, from its EF-4 report). The volume workloads here need 10⁵ to 10⁷ rows. So either estateforge gains a bulk export mode that the harness loads directly, or the harness generates volume from estateforge's schemas and distributions. **Decide with estateforge's session** when the harness is designed.
+
+#### 5.1.4 Generic workloads
 
 Kept so the comparison is not shaped by one application:
 
