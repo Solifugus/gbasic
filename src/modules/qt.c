@@ -876,6 +876,9 @@ static int qt_fill_choice(void *root, const char *name, Value *list,
  * by reading warning 2116's own output, not by a check: the assertions on
  * these messages all match a wildcard prefix, so the shortcoming was invisible
  * to the suite. */
+static const char **qt_text_list(Value *arr, size_t *count, char *err,
+                                 size_t err_size);
+
 static int qt_apply_options(void *node, Value *options, const char *word,
                             const char *named, int is_container) {
     char err[QT_ERRBUF];
@@ -975,9 +978,20 @@ static int qt_apply_options(void *node, Value *options, const char *word,
         case VALUE_BOOL:
             ok = gb_qt_set_bool(node, f->name, v->as.boolean, err, sizeof(err));
             break;
+        case VALUE_ARRAY: {
+            size_t n = 0;
+            const char **texts = qt_text_list(v, &n, err, sizeof(err));
+            if (texts) {
+                ok = gb_qt_set_text_list(node, f->name, texts, n, err,
+                                         sizeof(err));
+                free(texts);
+            }
+            break;
+        }
         default:
             snprintf(err, sizeof(err),
-                     "`%s:` must be text, a number or true/false", f->name);
+                     "`%s:` must be text, a number, true/false or a list of "
+                     "texts", f->name);
             break;
         }
         if (!ok) {
@@ -1007,6 +1021,29 @@ static int qt_apply_options(void *node, Value *options, const char *word,
 }
 
 static int qt_build_items(void *parent, Value *items, void *root);
+
+/* AN ARRAY OF TEXTS AS A C LIST, borrowing the strings. A property that
+ * takes several values (today only `shortcut`) is given a list; anything
+ * else in the list is refused here rather than passed on as an empty text. */
+static const char **qt_text_list(Value *arr, size_t *count, char *err,
+                                 size_t err_size) {
+    size_t n = arr->as.array.store ? arr->as.array.store->count : 0;
+    const char **out = malloc(sizeof(char *) * (n ? n : 1));
+    if (!out) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i++) {
+        Value *e = &arr->as.array.store->items[i];
+        if (e->kind != VALUE_STRING) {
+            snprintf(err, err_size, "a list of values must hold only text");
+            free(out);
+            return NULL;
+        }
+        out[i] = e->as.string;
+    }
+    *count = n;
+    return out;
+}
 static int qt_build_menu(void *root, void *parent_menu, Value *menu);
 
 /* A MENU IS BUILT BY ITS OWN WALK, because it is not laid out: its children are
@@ -3909,9 +3946,21 @@ static Value qt_eval_call(AstExpr *expr) {
             ok = gb_qt_set_part_bool(root, which.as.string, prop.as.string,
                                      v.as.boolean, err, sizeof(err));
             break;
+        case VALUE_ARRAY: {
+            size_t n = 0;
+            const char **texts = qt_text_list(&v, &n, err, sizeof(err));
+            if (texts) {
+                ok = gb_qt_set_part_text_list(root, which.as.string,
+                                              prop.as.string, texts, n, err,
+                                              sizeof(err));
+                free(texts);
+            }
+            break;
+        }
         default:
             snprintf(err, sizeof(err),
-                     "a property takes text, a number or true/false");
+                     "a property takes text, a number, true/false or a list "
+                     "of texts");
             break;
         }
         value_free(win); value_free(which);
@@ -4596,6 +4645,99 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_unknown();
         }
         return value_number((double)which);
+    }
+
+    if (strcmp(verb, "shortcuts") == 0 || strcmp(verb, "key") == 0) {
+        /* `qt.shortcuts(win, part)` answers EVERY shortcut a part answers to,
+         * because `qt.read(..., "shortcut")` reports only the first -- the
+         * property holds one sequence, measured. `qt.key(win, part, keys)`
+         * presses one key combination on a part through Qt's shortcut map,
+         * the keyboard's `qt.right_click`, and answers whether anything took
+         * it. Both asked for by gBASIC Studio, whose accelerators were
+         * untestable. */
+        int is_key = strcmp(verb, "key") == 0;
+        if (argc != (is_key ? 3 : 2)) {
+            qt_raise(is_key ? "qt.key expects a window, a part's name and the "
+                              "keys to press, like \"Ctrl+S\""
+                            : "qt.shortcuts expects a window and a part's name");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value keys = is_key ? eval_expr(expr->as.call.args.items[2])
+                            : value_null();
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(keys);
+            return value_null();
+        }
+        if (!qt_window_record(&win, verb) || which.kind != VALUE_STRING ||
+            (is_key && keys.kind != VALUE_STRING)) {
+            if (!error_action_pending()) {
+                qt_raise(is_key ? "qt.key expects a window, a part's name as "
+                                  "text and the keys as text"
+                                : "qt.shortcuts expects a window and a part's "
+                                  "name as text");
+            }
+            value_free(win); value_free(which); value_free(keys);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(keys);
+            return value_null();
+        }
+        char *pname = copy_string(which.as.string);
+        char *ktext = is_key ? copy_string(keys.as.string) : NULL;
+        value_free(win); value_free(which); value_free(keys);
+        err[0] = '\0';
+        if (is_key) {
+            int handled = 0;
+            int ok = gb_qt_key(root, pname, ktext, &handled, err, sizeof(err));
+            free(pname); free(ktext);
+            if (!ok) {
+                snprintf(message, sizeof(message), "qt.key: %s",
+                         err[0] ? err : "that key could not be pressed");
+                qt_raise(message);
+                return value_null();
+            }
+            return value_bool(handled);
+        }
+        char *joined = gb_qt_shortcuts(root, pname, err, sizeof(err));
+        free(pname);
+        if (!joined) {
+            snprintf(message, sizeof(message), "qt.shortcuts: %s",
+                     err[0] ? err : "that part has no shortcuts");
+            qt_raise(message);
+            return value_null();
+        }
+        size_t n = 0;
+        for (char *c = joined; *joined && *c; c++) {
+            if (*c == '\n') { n++; }
+        }
+        if (*joined) { n++; }
+        Value *items = n ? malloc(sizeof(Value) * n) : NULL;
+        if (n && !items) {
+            abort();
+        }
+        size_t at = 0;
+        char *start = joined;
+        for (char *c = joined; *joined; c++) {
+            if (*c == '\n' || *c == '\0') {
+                char saved = *c;
+                *c = '\0';
+                items[at++] = value_string(start);
+                if (saved == '\0') {
+                    break;
+                }
+                start = c + 1;
+            }
+        }
+        free(joined);
+        return value_array(items, n);
     }
 
     if (strcmp(verb, "depth") == 0) {

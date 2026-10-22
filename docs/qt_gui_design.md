@@ -4211,3 +4211,20 @@ shell's own command line. The check was right both times.
 `qt.write`, and a verb that did both would be two things. Nothing drives the
 close button itself. And a tab bar's own `tabMoved(int, int)` carries two
 indices, which no slot here takes — nobody has asked.
+
+## 0.34 Several shortcuts, and pressing a key (2026-10-22)
+
+**Asked for by gBASIC Studio, from a measurement Matthew made by hand** on a real desktop with a US layout. Studio's Bigger Text item declared `shortcut: "Ctrl++"`: Ctrl+Shift+= triggered it and plain Ctrl+= did not, because plain Ctrl+= delivers `Key_Equal` and matches no `Ctrl++`. Editors bind zoom-in to both. Changing the one shortcut to `Ctrl+=` would most likely just break the other route, and nothing could check either way, because nothing could press a key.
+
+**Four measurements in C++ first, each of which decided something:**
+- **The `shortcut` property holds one sequence and refuses a list** (`setProperty` with a string list answers false), while `QAction::setShortcuts` takes several and `shortcut` then reports only the first. So a list is a branch in `set_property`, the one door the declaration and `qt.set` share, and `qt.shortcuts` is the read-back that sees them all.
+- **A misspelled shortcut was accepted in silence.** `QKeySequence` turns `Ctlr+S` or `Ctrl+Bogus` into `Key_unknown`, `setProperty` still succeeds, and the item gets a shortcut that can never fire. Every shortcut is now parsed and an unknown key refused by name, single texts included.
+- **A synthesized key press reaches Qt 6's shortcut map.** A `sendEvent`'d `KeyPress` of Ctrl+= triggered the action and inserted nothing into the focused editor, so `qt.key` needs no Qt Test dependency. Qt's private window-system header, the other route, is not installed on an ordinary machine.
+- **Activation is asynchronous, and a window-wide shortcut needs an active window.** `activateWindow()` left `isActiveWindow()` false until window-system events were processed, and processing them would also fire the pump that runs gBASIC's own sources, re-entering the interpreter inside the call. `QApplication::setActiveWindow` activates synchronously and processes nothing. It is deprecated since Qt 6.5 and still present in 6.10; it is the one line to change if a later Qt removes it.
+
+**A list means alternatives; a comma means a chord.** `["Ctrl++", "Ctrl+="]` is two shortcuts, each firing the item. `"Ctrl+K, Ctrl+C"` is one shortcut pressed in turn. A widget taking one shortcut, like a `button`, refuses a list of several. A list for any other property is refused, naming `shortcut` as the one that takes several.
+
+**The limit, stated rather than tested around.** `qt.key` sends the key Qt *delivers*, not the physical keys pressed. On a real keyboard, Ctrl+Shift+= reaches `Ctrl++` because the platform key mapper also offers the combination without Shift; a synthesized event has no layout behind it. So `qt.key(…, "Ctrl++")` tests that route, and pressing `"Ctrl+Shift+="` does not reproduce it.
+
+**The load-bearing check is a difference** (`tests/run_qt_keys.sh`): the same press of Ctrl+= does nothing against the single `Ctrl++` (Studio's bug, reproduced) and fires once the list is set. Either half alone passes on a backend that ignores the list, or on a `qt.key` that fires everything. Its control is that a key nothing takes answers `false`. Four perturbations proven red: a list keeping only its first entry, no unknown-key check, the window not made active, and `qt.key` always answering `true`.
+

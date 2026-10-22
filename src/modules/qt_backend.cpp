@@ -71,6 +71,8 @@
 #include <QFontMetricsF>
 #include <QMessageBox>
 #include <QPointer>
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <QAbstractButton>
 #include <QAbstractScrollArea>
 #include <QMouseEvent>
@@ -2120,6 +2122,68 @@ static int icon_from_text(const QString &text, QIcon *out, char *err,
     return 1;
 }
 
+/* A SHORTCUT IS PARSED, NOT PASSED THROUGH. Measured: QKeySequence turns a
+ * misspelling (`Ctlr+S`, `Ctrl+Bogus`) into Qt's Key_unknown and setProperty
+ * still succeeds, so a typo was a shortcut that could never fire, with
+ * nothing raised. Every key in the sequence must be one Qt knows. An empty
+ * text is legal and clears the shortcut. */
+static int parse_shortcut(const QString &text, QKeySequence *out, char *err,
+                          size_t err_size) {
+    QKeySequence k = QKeySequence::fromString(text, QKeySequence::PortableText);
+    for (int i = 0; i < k.count(); i++) {
+        if (k[i].key() == Qt::Key_unknown) {
+            say(err, err_size,
+                QByteArray("`") + text.toUtf8() +
+                    "` is not a key Qt recognises (modifiers are Ctrl, Shift, "
+                    "Alt and Meta, written like Ctrl+S)");
+            return 0;
+        }
+    }
+    *out = k;
+    return 1;
+}
+
+/* SHORTCUTS, ONE OR SEVERAL (asked for by gBASIC Studio). The `shortcut`
+ * property holds ONE sequence and refuses a list, measured, while a QAction
+ * takes several through setShortcuts -- which is how an editor binds zoom-in
+ * to both Ctrl++ and Ctrl+=, since on a US layout plain Ctrl+= delivers
+ * Key_Equal and matches no "Ctrl++". So a LIST is alternatives. A comma
+ * INSIDE one text is something else entirely, a chord pressed in turn
+ * ("Ctrl+K, Ctrl+C"), and stays one sequence. */
+static int set_shortcuts(QObject *o, const QStringList &texts, char *err,
+                         size_t err_size) {
+    QList<QKeySequence> seqs;
+    for (const QString &t : texts) {
+        QKeySequence k;
+        if (!parse_shortcut(t, &k, err, err_size)) {
+            return 0;
+        }
+        if (!k.isEmpty()) {
+            seqs.append(k);
+        }
+    }
+    if (QAction *a = qobject_cast<QAction *>(o)) {
+        a->setShortcuts(seqs);
+        return 1;
+    }
+    if (seqs.size() > 1) {
+        say(err, err_size,
+            QByteArray("a ") + o->metaObject()->className() +
+                " takes one shortcut; only a menu or toolbar `item` takes "
+                "several");
+        return 0;
+    }
+    QVariant one = QVariant::fromValue(seqs.isEmpty() ? QKeySequence()
+                                                      : seqs.first());
+    if (!o->setProperty("shortcut", one)) {
+        say(err, err_size,
+            QByteArray("a ") + o->metaObject()->className() +
+                " would not take that shortcut");
+        return 0;
+    }
+    return 1;
+}
+
 static int set_property(QObject *widget, const char *prop, const QVariant &v,
                         char *err, size_t err_size) {
     if (!widget) {
@@ -2147,6 +2211,20 @@ static int set_property(QObject *widget, const char *prop, const QVariant &v,
             return 0;
         }
         return how;   /* 1, or 2 for "set, but the theme has no such name" */
+    }
+    if (strcmp(prop, "shortcut") == 0 &&
+        (v.typeId() == QMetaType::QString ||
+         v.typeId() == QMetaType::QStringList)) {
+        QStringList texts = v.typeId() == QMetaType::QString
+                                ? QStringList{v.toString()}
+                                : v.toStringList();
+        return set_shortcuts(widget, texts, err, err_size);
+    }
+    if (v.typeId() == QMetaType::QStringList) {
+        say(err, err_size,
+            QByteArray("`") + prop + "` takes one value, not a list; only "
+                                     "`shortcut` takes several");
+        return 0;
     }
     if (!widget->setProperty(prop, v)) {
         say(err, err_size,
@@ -2657,6 +2735,144 @@ extern "C" int gb_qt_set_part_text(void *window, const char *name,
     return o ? set_property(o, prop, QVariant(QString::fromUtf8(value)), err,
                             err_size)
              : 0;
+}
+
+static QStringList text_list(const char *const *values, size_t count) {
+    QStringList out;
+    for (size_t i = 0; i < count; i++) {
+        out.append(QString::fromUtf8(values[i]));
+    }
+    return out;
+}
+
+extern "C" int gb_qt_set_text_list(void *widget, const char *prop,
+                                   const char *const *values, size_t count,
+                                   char *err, size_t err_size) {
+    return set_property(settable((GbQtNode *)widget), prop,
+                        QVariant(text_list(values, count)), err, err_size);
+}
+
+extern "C" int gb_qt_set_part_text_list(void *window, const char *name,
+                                        const char *prop,
+                                        const char *const *values, size_t count,
+                                        char *err, size_t err_size) {
+    QObject *o = part_named(window, name, err, err_size);
+    return o ? set_property(o, prop, QVariant(text_list(values, count)), err,
+                            err_size)
+             : 0;
+}
+
+/* EVERY SHORTCUT A PART ANSWERS TO, joined by newlines (no key sequence can
+ * contain one), malloc'd for the caller. The `shortcut` property reports
+ * only the FIRST of an item's shortcuts, measured, so a program asserting
+ * that both Ctrl++ and Ctrl+= are bound needs this. */
+extern "C" char *gb_qt_shortcuts(void *window, const char *name, char *err,
+                                 size_t err_size) {
+    QObject *o = part_named(window, name, err, err_size);
+    if (!o) {
+        return nullptr;
+    }
+    QList<QKeySequence> seqs;
+    if (QAction *a = qobject_cast<QAction *>(o)) {
+        seqs = a->shortcuts();
+    } else if (o->metaObject()->indexOfProperty("shortcut") >= 0) {
+        QKeySequence k = o->property("shortcut").value<QKeySequence>();
+        if (!k.isEmpty()) {
+            seqs.append(k);
+        }
+    } else {
+        say(err, err_size,
+            QByteArray("`") + (name ? name : "") + "` is a " +
+                o->metaObject()->className() + ", which has no shortcut");
+        return nullptr;
+    }
+    QStringList texts;
+    for (const QKeySequence &k : seqs) {
+        texts.append(k.toString(QKeySequence::PortableText));
+    }
+    return strdup(texts.join(QChar('\n')).toUtf8().constData());
+}
+
+/* PRESS A KEY, as `qt.right_click` and `qt.scroll` do for the mouse (asked
+ * for by gBASIC Studio, whose every accelerator was untestable). A real
+ * QKeyEvent pair sent to the part, with the part focused and its window
+ * active, so Qt's shortcut map sees it -- measured: in Qt 6 a sendEvent'd
+ * KeyPress reaches the map, triggers a QAction's shortcut and inserts
+ * nothing, with no Qt Test dependency.
+ *
+ * THE LIMIT, stated: this is the key Qt DELIVERS, not the physical keys. On a
+ * real US keyboard Ctrl+Shift+= reaches a "Ctrl++" shortcut because the
+ * platform key mapper also offers the combination without Shift; a
+ * synthesized event has no layout behind it, so "Ctrl++" tests that route
+ * and "Ctrl+Shift+=" does not reproduce it.
+ *
+ * ONE COMBINATION, because a chord is two presses and two calls say so. */
+extern "C" int gb_qt_key(void *window, const char *name, const char *keys,
+                         int *handled, char *err, size_t err_size) {
+    QObject *o = part_named(window, name, err, err_size);
+    if (!o) {
+        return 0;
+    }
+    QWidget *w = qobject_cast<QWidget *>(o);
+    if (!w) {
+        say(err, err_size,
+            QByteArray("`") + (name ? name : "") + "` is a " +
+                o->metaObject()->className() +
+                ", which cannot take a key press -- press the key on a widget "
+                "and its shortcut reaches the item");
+        return 0;
+    }
+    QString text = QString::fromUtf8(keys ? keys : "");
+    QKeySequence k;
+    if (!parse_shortcut(text, &k, err, err_size)) {
+        return 0;
+    }
+    if (k.count() != 1) {
+        say(err, err_size,
+            k.isEmpty() ? QByteArray("qt.key needs a key to press")
+                        : QByteArray("`") + text.toUtf8() +
+                              "` is a chord of several presses; send each "
+                              "with its own qt.key");
+        return 0;
+    }
+    Qt::Key key = k[0].key();
+    Qt::KeyboardModifiers mods = k[0].keyboardModifiers();
+    QString typed;
+    if (!(mods & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) &&
+        key >= 0x20 && key < 0x7f) {
+        QChar c((ushort)key);
+        typed = (mods & Qt::ShiftModifier) ? QString(c) : QString(c.toLower());
+    }
+    /* THE WINDOW MUST BE ACTIVE, or a window-wide shortcut matches nothing,
+     * and activation is ASYNCHRONOUS: measured, activateWindow() leaves
+     * isActiveWindow() false until window-system events are processed. That
+     * processing would also fire timers, including the pump that runs
+     * gBASIC's own sources, re-entering the interpreter in the middle of this
+     * call. QApplication::setActiveWindow makes the window active
+     * synchronously and processes nothing. It is deprecated since Qt 6.5 and
+     * still present in 6.10; if a later Qt removes it, this is the line. */
+    w->window()->activateWindow();
+    if (!w->window()->isActiveWindow()) {
+        QT_WARNING_PUSH
+        QT_WARNING_DISABLE_DEPRECATED
+        QApplication::setActiveWindow(w->window());
+        QT_WARNING_POP
+    }
+    w->setFocus(Qt::OtherFocusReason);
+    QPointer<QWidget> guard(w);
+    QKeyEvent press(QEvent::KeyPress, key, mods, typed);
+    QApplication::sendEvent(w, &press);
+    bool took = press.isAccepted();
+    /* A HANDLER RUN BY THE PRESS MAY HAVE RECONCILED THIS WIDGET AWAY
+     * (§0.31), so the release goes only to a widget that still exists. */
+    if (guard) {
+        QKeyEvent release(QEvent::KeyRelease, key, mods, typed);
+        QApplication::sendEvent(guard, &release);
+    }
+    if (handled) {
+        *handled = took ? 1 : 0;
+    }
+    return 1;
 }
 
 extern "C" int gb_qt_set_part_number(void *window, const char *name,

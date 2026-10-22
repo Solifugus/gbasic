@@ -3866,6 +3866,8 @@ end program
 | `qt.right_click(win, part [, row])` | right-click a part the way a mouse does, for a program driving itself. It sends a **press, a release and then the context event**, so the selection moves as it would for a person — without which a handler would read a stale row. A third argument aims at a **table row, a tree row or a tab** by its own rectangle; for a tab it aims through the tab *bar*, which is where a real right-click lands. Routed through the widget's **viewport** where there is one, which is what a `table`, `memo` and `source` answer to and nothing else can reach |
 | `qt.which_tab()` | which tab the event **being handled** is about — a number, or **`unknown`** both outside a handler and when the click was not over a tab, which is an ordinary case since a right-click on a tab widget's *page* emits the same signal. It exists because a tab is the one case Qt does not answer by itself: a right-press **moves** a table's or a tree's current row, so `qt.selected` already says which was clicked, and a right-press on a tab bar correctly does **not** move the current index — so `currentIndex` answers the tab that was already active, and a menu acting on it closes the wrong document. It also answers the index `tabCloseRequested` carries, which is what makes `tabsClosable: true` usable at all |
 | `qt.scroll(win, part, notches [, modifier])` | turn the wheel on a part, for a program driving itself, answering **whether anything claimed the event**. `notches` may be **fractional** — a trackpad sends less than one, and that is the case the direction rounding exists for. The modifier is `"ctrl"`, `"shift"` or `"alt"`, refused by name, because one silently ignored sends a plain wheel while the author believes they sent a modified one |
+| `qt.key(win, part, keys)` | press one key combination on a part, for a program driving itself: a real key press and release, sent with the part focused and its window active, so **Qt's shortcut map sees it** and a bound item fires, while an unmodified key types into the widget. Answers **whether anything took the key**. One combination per call; a chord is refused. **The limit:** this is the key Qt *delivers*, not the physical keys, so it cannot reproduce a keyboard layout. On a real US keyboard Ctrl+Shift+= reaches a `Ctrl++` shortcut through the platform's key mapper; here that route is pressed as `"Ctrl++"` |
+| `qt.shortcuts(win, part)` | **every** shortcut a menu or toolbar item answers to, as a list of texts (a button's single one, too). `qt.read(..., "shortcut")` reports only the first, so this is how both of `["Ctrl++", "Ctrl+="]` are checked |
 | `qt.wheel()` | the wheel event **being handled** — `{ dy, dx, dy_exact, dx_exact, ctrl, shift, alt }`, with `dy` in **notches** rather than Qt's 120-unit delta and **positive meaning away from you** (Qt's sign, and the opposite of GTK's). `dy` is whole notches, and a sub-notch turn is rounded **away from zero** so its sign survives; `dy_exact` is the same turn **unrounded** (a quarter-notch is `0.25`), for a program that accumulates a trackpad's small deltas rather than counting each as a notch. Refuses outside a wheel handler, since there is no sensible record to hand back and a program asking in the wrong place would otherwise read zeros and act on them |
 | `qt.swallow()` | claim the event being handled, so the view does not also act on it. Not optional for a zoom: Ctrl+wheel scrolls a `source` *faster* than a plain wheel, so a handler that zooms without claiming leaves the editor jumping about while it resizes. Refuses when nothing is in flight rather than being a silent no-op |
 | `qt.has_icon(win, part)` | whether a part has an icon. It exists because a QIcon has **no text form** — measured, a button carrying a real image and one carrying nothing both read back as `""` — so `qt.read(win, part, "icon")` **refuses** and names this instead, an empty answer for a property that *is* set being a wrong answer rather than no answer. A part that cannot carry one (a `text`, a `table`) is refused, naming its kind |
@@ -4080,6 +4082,16 @@ addresses — so a menu takes no name, and `on open_file.triggered` names the
 item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
 `checked:` reach it through the same by-name property route every widget option
 uses.
+
+**An item may answer to several shortcuts.** `shortcut:` takes one text or a
+**list of alternatives**: `item bigger( label: "Bigger", shortcut: ["Ctrl++",
+"Ctrl+="] )`. Both are needed for zoom-in on a US layout, where plain Ctrl+=
+delivers `=` and matches no `Ctrl++`. A comma *inside* one text is something
+else, a chord pressed in turn (`"Ctrl+K, Ctrl+C"`). A misspelled key is
+refused by name rather than bound to nothing, a list of several is refused on
+a widget that takes one shortcut (a `button`), and `qt.set(win, part,
+"shortcut", [...])` takes the same list. `qt.read(win, part, "shortcut")`
+reports only the first; `qt.shortcuts` reports them all.
 
 **A table can ask for its cells instead of being shown them.** `table x to show
 <list>` holds every row; `table x to ask <function>` keeps none and asks for

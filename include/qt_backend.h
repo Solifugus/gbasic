@@ -239,6 +239,20 @@ int gb_qt_write(void *window, const char *name, const char *text,
  * declaration's options go through, reached by NAME at run time rather than by
  * node at construction. Three entry points for the same reason the three
  * setters above have three: the gBASIC value kind decides the QVariant. */
+/* A LIST of texts for one property; only `shortcut` takes one (several
+ * shortcuts on a menu or toolbar item). */
+int gb_qt_set_text_list(void *widget, const char *prop,
+                        const char *const *values, size_t count, char *err,
+                        size_t err_size);
+int gb_qt_set_part_text_list(void *window, const char *name, const char *prop,
+                             const char *const *values, size_t count,
+                             char *err, size_t err_size);
+/* Every shortcut a part answers to, newline-joined and malloc'd, or NULL. */
+char *gb_qt_shortcuts(void *window, const char *name, char *err,
+                      size_t err_size);
+/* Press one key combination on a part, through Qt's shortcut map. */
+int gb_qt_key(void *window, const char *name, const char *keys, int *handled,
+              char *err, size_t err_size);
 int gb_qt_set_part_text(void *window, const char *name, const char *prop,
                         const char *value, char *err, size_t err_size);
 int gb_qt_set_part_number(void *window, const char *name, const char *prop,
