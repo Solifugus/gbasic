@@ -137,18 +137,62 @@ G-Dash's staging store (`gdash/src/gdash_store.bas`) shows its data pattern dire
 - **Polling:** the browser polls a small JSON endpoint, so many small concurrent reads arrive through `workers: N` processes, which are owner clients under §6.1.
 - **The money boundary is hand-built:** about 100 lines (`to_minor` and its helpers) carry money and integers above 2^53 through SQLite as decimal text, because SQLite's binding loses them. **G-SQL exists to delete that code**, and doing so is an acceptance case (§6).
 
-What that asks of the engine, beyond the generic workloads:
+**Volumes, answered by G-Dash** (`gdash/docs/platform_answer_gsql_volumes.md`, 2026-10-21). G-Dash has **never been deployed**, so most figures are design-intent guesses; the answer labels each as measured, structural (enforced by code) or a guess, and that labelling is kept here:
+
+| quantity | figure | kind |
+|---|---|---|
+| rows per dataset | typically 10²–10⁴, largest ~10⁶ | guess |
+| row width | 3–10 columns, ~50–150 bytes; short text keys, ISO dates, integers | guess |
+| money columns | 10–30% of columns; integers above 2^53 rare | guess |
+| datasets per dashboard | 2–5, occasionally 15–20; capped at 11 today by SQLite | guess / structural |
+| datasets per deployment | 10²–10³ files, multiplied by tenants | guess |
+| datasets one query reads | 1–2, though it **attaches all** of its dashboard's datasets, because nothing parses the SQL to say which | structural |
+| refresh cadence | 5–15 minutes for operational figures, nightly for most; always a whole-dataset rewrite, overlapping with reads by design | guess / structural |
+| refresh duration | **not measured** | — |
+| poll | every 5 s per tab, and it **never reads a dataset** (it reads a version file); 30 tabs cost one worker nothing measurable | measured |
+| page load | 57 ms per full page on one worker, ~20 pages/s; a burst of 20 loads finishes in under 1 s | measured |
+| peak query rate | ~10–100 dataset queries/s, near zero otherwise | guess |
+| query shape | almost all `sum … group by` over a whole dataset; filters are an equality or range on one or two columns; results of 1–100 rows | structural / guess |
+
+**What this changes in the evaluation:**
+
+- **G-Dash is not a volume stress.** Its largest dataset is about 10⁶ rows of ~100 bytes, roughly 100 MB. The 10⁷-row workloads stay, for WorkSplicer and the generic set, but G-Dash's measurements are taken at 10², 10⁴ and 10⁶.
+- **Scans and opening matter more than indexes.** G-Dash's own conclusion: "an index matters much less than scanning fast and opening/attaching cheaply". Because its datasets are written once, sequentially, and never updated in place, page locality for scans should be excellent under every candidate. The measurement should confirm that rather than assume it.
+- **Per-request cost counts as much as query speed.** Workers share no state, so every visual query opens, attaches, queries and closes. Under §6.1 that becomes connecting to an owner and starting a snapshot.
+
+The G-Dash workloads, revised:
 
 | id | workload | why |
 |---|---|---|
-| G1 | **replace a whole table atomically** while readers keep reading the old one, at 10⁵ and 10⁷ rows | G-Dash's refresh. Under §2.A this is a new tree plus a root swap; under §2.B and §2.C it is a bulk write plus a catalog change. Readers' snapshots must keep the old table alive until they finish |
-| G2 | aggregate scans (`GROUP BY` over a few columns, filters) across several tables, during G1 | the dashboard read path |
-| G3 | many small concurrent reads through the owner socket, 8 to 64 clients | the poll endpoint, and the §5.5 round-trip gate in its real shape |
-| G4 | a **read-only transaction refusing every write at the engine level** | G-Dash's safety net for model-written SQL must survive the move off SQLite. It is cheap at the storage interface (a read-only snapshot has no write path) and impossible to retrofit safely above it |
+| G1 | **write a fresh dataset and make it live atomically** while readers keep the old one, at 10², 10⁴ and 10⁶ rows | G-Dash's refresh. Readers' snapshots keep the old data until they finish ("stale but coherent") |
+| G2 | whole-dataset `sum … group by`, with and without a one-column filter, at the same sizes, during G1 | the dominant query |
+| G3 | the per-request cost: connect, snapshot, a one-row query, release; at 10–100 requests/s from 1–8 workers | G-Dash's "cheap open" requirement, and §5.5's round-trip gate in its real shape |
+| G4 | a **read-only transaction refusing every write at the engine level** | G-Dash's safety net for model-written SQL must survive the move off SQLite |
+| G5 | **bounded-memory bulk write**: stream 10⁶ rows into one transaction with peak memory recorded | G-Dash's third want: the dataset ceiling should be disk, not RAM. The engine must take a large write without holding it all; under §2.A that means writing dirty pages out before commit |
+| G6 | a query naming 2 of 20 datasets, against one naming all 20 | G-Dash's second want: no attach cap, and touching only what a query names |
 
-**Open, raised by G-Dash:** G-Dash uses **one file per dataset** so that a refresh is one rename and a dataset can be attached read-only. In G-SQL, the same guarantees can come from one database with snapshot-isolated table replacement (G1) and read-only transactions (G4), or from attaching several G-SQL files. This is §7's single-file question with a concrete case attached.
+**What G-Dash wants, in its own order:** a native money type with its scale stored with it; reading across many datasets with no cap, touching only those a query names; and bounded-memory writes. It **does not want** partial or incremental refresh: whole replacement is its coherence model, and G-SQL should keep that cheap rather than replace it.
 
-**Known:** at most 11 datasets in one query today, but that is SQLite's attach cap (one opened plus ten attached), not a G-Dash requirement. **Asked, awaiting an answer:** representative volumes (rows and width per dataset, datasets per deployment, refresh frequency and duration, read load, query shape), in `gdash/docs/platform_ask_gsql_volumes.md` (2026-10-21).
+**Money comparisons in model-written SQL, raised by the answer:** today stored values are minor units, so generated SQL compares cents to dollars, and G-Dash has to warn about it. Native money removes the unit confusion, but leaves one question for `gsql_design.md` §3.3: what `amount > 100` means when `amount` is `MONEY(USD)` and `100` is a plain number. gBASIC's own answer for that comparison must be the SQL answer.
+
+### 5.1.1a The finding: one owner per file does not fit file-per-dataset
+
+G-Dash keeps **one file per dataset, 10²–10³ of them per deployment**, and makes a refresh live by renaming a fresh file over the old one. Under `gsql_design.md` §6.1 every database file has its own owning process, so this arrangement would mean:
+- **hundreds of owner processes**;
+- a dashboard query reading several datasets would span **several owners**, which is a distributed query;
+- a rename-in would need the old file's owner to notice its file was replaced and hand over.
+
+None of that is worth building. Two ways out:
+
+1. **Recommended: datasets are tables in one database**, one per deployment or one per tenant. A refresh writes a new table in a single transaction (G5) and swaps it in through the catalog (G1); readers keep their snapshots of the old table, which is exactly G-Dash's stale-but-coherent model without a rename. All three of G-Dash's wants then follow from the design rather than being added:
+   - one owner per deployment, not per dataset;
+   - cross-dataset queries with **no attach cap**, where the planner touches only the tables a query names;
+   - per-request cost is a socket round trip, not opening eleven files.
+
+   The costs, stated: a dataset is no longer a file an operator can copy, inspect or delete on its own (the engine's backup and integrity check, §6.3 of the main document, replace that); and one database holds every dataset, so corruption and recovery are per database. One database per tenant keeps tenants apart, which is also what G-Dash's multi-tenant design needs.
+2. **Alternative: one owner process per directory**, owning many files and treating each as a dataset it can attach. This keeps G-Dash's file model, at the price of an owner that must manage many files, detect a file renamed in under it, and coordinate snapshots across them.
+
+**This is a decision for G-Dash and the project together**, and it answers §7's single-file question for G-Dash's case. Option 1 changes G-Dash's storage design; G-Dash's own seam (`gdash_store.bas` is the only module that touches storage, and its header says a backend swap "is this module's rewrite") is what makes that affordable.
 
 #### 5.1.2 WorkSplicer, the provisional future profile
 
@@ -239,12 +283,12 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 
 ## 7. Open questions
 
-1. G-Dash volumes (§5.1.1); WorkSplicer's profile once its redesign settles (§5.1.2).
+1. *(G-Dash volumes answered, §5.1.1.)* WorkSplicer's profile once its redesign settles (§5.1.2); G-Dash's refresh duration, which it has never measured.
 2. The unified number encoding: exact integers and doubles in one order, plus NaN and signed zero (§3.2).
 3. Whether an untyped `MONEY` column may be indexed (§3.2).
 4. *(Settled 2026-10-21: the §2.D reading is right, and G-SQL is a new development.)*
 5. The round-trip threshold for accepting the single-protocol rule (§5.5), agreed after first numbers.
-6. Whether a database should ever span several files, or always be one file plus at most a log. G-Dash's file-per-dataset arrangement (§5.1.1) and AmorphDB's per-zone files are the two precedents.
+6. Whether a database should ever span several files, or always be one file plus at most a log. For G-Dash this becomes §5.1.1a: datasets as tables in one database (recommended), or one owner per directory of files. AmorphDB's per-zone files are the other precedent.
 
 ## 8. Reading list
 
