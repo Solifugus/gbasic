@@ -2944,6 +2944,18 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
             "there is one");
         return 0;
     }
+    /* A PALETTE'S TEXT FORM IS EMPTY TOO, measured, so it is rendered here as
+     * the two colours a reader means by "the editor's colours": the text on
+     * the background, `#rrggbb on #rrggbb`. Without it a theme that changed
+     * nothing would read back exactly like one that worked. */
+    if (v.typeId() == QMetaType::QPalette) {
+        QPalette pal = v.value<QPalette>();
+        QByteArray bytes = (pal.color(QPalette::Text).name() + " on " +
+                            pal.color(QPalette::Base).name()).toUtf8();
+        *kind = 't';
+        *text = strdup(bytes.constData());
+        return *text ? 1 : 0;
+    }
     switch (v.typeId()) {
     case QMetaType::Bool:
         *kind = 'b';
@@ -4256,6 +4268,59 @@ extern "C" int gb_qt_mark_get(void *window, const char *name, int kind,
     return n;
 }
 
+#if HAVE_KSYNTAX
+static KSyntaxHighlighting::Theme theme_named(QPlainTextEdit *e, const char *theme) {
+    if (theme && strcmp(theme, "dark") == 0) {
+        return repo()->defaultTheme(KSyntaxHighlighting::Repository::DarkTheme);
+    }
+    if (theme && strcmp(theme, "light") == 0) {
+        return repo()->defaultTheme(KSyntaxHighlighting::Repository::LightTheme);
+    }
+    return repo()->themeForPalette(e->palette());
+}
+
+/* THE EDITOR'S OWN COLOURS MUST FOLLOW THE THEME, or a dark theme paints dark
+ * text on the widget's light background and the result is less readable than
+ * no highlighting at all -- the one case where doing half the job is worse
+ * than doing none. Shared by a highlighted `source` and a themed plain one, so
+ * the two cannot disagree about what a theme's colours are. */
+static void apply_theme_colours(QPlainTextEdit *e,
+                                const KSyntaxHighlighting::Theme &th) {
+    if (!th.isValid()) {
+        return;
+    }
+    QColor bg(QRgb(th.editorColor(KSyntaxHighlighting::Theme::BackgroundColor)));
+    QColor fg(QRgb(th.textColor(KSyntaxHighlighting::Theme::Normal)));
+    QPalette pal = e->palette();
+    pal.setColor(QPalette::Base, bg);
+    pal.setColor(QPalette::Text, fg);
+    e->setPalette(pal);
+}
+#endif
+
+/* A THEMED PLAIN EDITOR: a `source` with `theme:` and no `language:` (asked for
+ * by gBASIC Studio, whose editor for an unknown file was the one light pane in
+ * a dark window). It takes the theme's background and text colours and no
+ * highlighter, which is exactly what a theme means for text with no syntax. */
+extern "C" int gb_qt_theme_plain(void *window, const char *name,
+                                 const char *theme, char *err, size_t err_size) {
+    QPlainTextEdit *e = source_named(window, name, err, err_size);
+    if (!e) {
+        return 0;
+    }
+#if HAVE_KSYNTAX
+    apply_theme_colours(e, theme_named(e, theme));
+    return 1;
+#else
+    (void)theme;
+    say(err, err_size,
+        QByteArray("`source ") + name +
+            "` cannot take a theme's colours: this gBASIC was built without "
+            "KSyntaxHighlighting, which is where themes come from");
+    return 0;
+#endif
+}
+
 extern "C" int gb_qt_highlight(void *window, const char *name,
                                const char *language, const char *theme,
                                char *err, size_t err_size) {
@@ -4290,28 +4355,9 @@ extern "C" int gb_qt_highlight(void *window, const char *name,
         hl->setParent(e);
     }
     hl->setDefinition(def);
-    KSyntaxHighlighting::Theme th;
-    if (theme && strcmp(theme, "dark") == 0) {
-        th = repo()->defaultTheme(KSyntaxHighlighting::Repository::DarkTheme);
-    } else if (theme && strcmp(theme, "light") == 0) {
-        th = repo()->defaultTheme(KSyntaxHighlighting::Repository::LightTheme);
-    } else {
-        th = repo()->themeForPalette(e->palette());
-    }
+    KSyntaxHighlighting::Theme th = theme_named(e, theme);
     hl->setTheme(th);
-    /* THE EDITOR'S OWN COLOURS MUST FOLLOW THE THEME, or a dark theme paints
-     * dark text on the widget's light background and the result is less
-     * readable than no highlighting at all -- the one case where doing half
-     * the job is worse than doing none. */
-    if (th.isValid()) {
-        QColor bg(QRgb(th.editorColor(
-            KSyntaxHighlighting::Theme::BackgroundColor)));
-        QColor fg(QRgb(th.textColor(KSyntaxHighlighting::Theme::Normal)));
-        QPalette pal = e->palette();
-        pal.setColor(QPalette::Base, bg);
-        pal.setColor(QPalette::Text, fg);
-        e->setPalette(pal);
-    }
+    apply_theme_colours(e, th);
     return 1;
 #else
     (void)language;

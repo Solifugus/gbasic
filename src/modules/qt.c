@@ -1479,20 +1479,39 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             qt_raise(message);
             return 0;
         }
-        if (thm && !lang) {
-            /* A THEME WITH NOTHING TO COLOUR. Refused rather than ignored:
-             * the theme is applied with the definition, so on its own it is
-             * silent, and a `source` whose author asked for `theme: "dark"`
-             * and got nothing has no way to tell. */
-            snprintf(message, sizeof(message),
-                     "window: `source %s( theme: ... )` needs a `language:` "
-                     "too -- a theme colours a definition, and alone it would "
-                     "do nothing", name ? name : "?");
-            qt_raise(message);
-            return 0;
+        /* THE THEME IS CHECKED FIRST, because it means something with or
+         * without a language: with one it colours the definition, without
+         * one it gives a plain editor the theme's own background and text
+         * (asked for by gBASIC Studio, whose editor for an unknown file was
+         * the one light pane in a dark window). */
+        const char *theme_text = NULL;
+        if (is_source && thm && thm->value) {
+            if (thm->value->kind != VALUE_STRING) {
+                snprintf(message, sizeof(message),
+                         "window: `source %s( theme: ... )` needs \"light\" "
+                         "or \"dark\" as text, and it holds %s",
+                         name ? name : "?",
+                         value_kind_name(thm->value->kind));
+                qt_raise(message);
+                return 0;
+            }
+            theme_text = thm->value->as.string;
+            /* SPELLED OUT, because an unrecognised word would fall through to
+             * asking Qt's palette -- which answers something reasonable, so
+             * `theme: "Dark"` would look like a theme that does not work
+             * rather than a word that is not one. */
+            if (strcmp(theme_text, "light") != 0 &&
+                strcmp(theme_text, "dark") != 0) {
+                snprintf(message, sizeof(message),
+                         "window: `source %s( theme: \"%s\" )` is not a "
+                         "theme; write \"light\" or \"dark\", or leave it "
+                         "out to follow the window's own colours",
+                         name ? name : "?", theme_text);
+                qt_raise(message);
+                return 0;
+            }
         }
         if (is_source && lang && lang->value) {
-            const char *theme_text = NULL;
             if (lang->value->kind != VALUE_STRING) {
                 snprintf(message, sizeof(message),
                          "window: `source %s( language: ... )` needs the "
@@ -1501,32 +1520,6 @@ static int qt_build_item(void *parent, Value *item, void *root) {
                          value_kind_name(lang->value->kind));
                 qt_raise(message);
                 return 0;
-            }
-            if (thm && thm->value) {
-                if (thm->value->kind != VALUE_STRING) {
-                    snprintf(message, sizeof(message),
-                             "window: `source %s( theme: ... )` needs \"light\" "
-                             "or \"dark\" as text, and it holds %s",
-                             name ? name : "?",
-                             value_kind_name(thm->value->kind));
-                    qt_raise(message);
-                    return 0;
-                }
-                theme_text = thm->value->as.string;
-                /* SPELLED OUT, because an unrecognised word would fall
-                 * through to asking Qt's palette -- which answers something
-                 * reasonable, so `theme: "Dark"` would look like a theme that
-                 * does not work rather than a word that is not one. */
-                if (strcmp(theme_text, "light") != 0 &&
-                    strcmp(theme_text, "dark") != 0) {
-                    snprintf(message, sizeof(message),
-                             "window: `source %s( theme: \"%s\" )` is not a "
-                             "theme; write \"light\" or \"dark\", or leave it "
-                             "out to follow the window's own colours",
-                             name ? name : "?", theme_text);
-                    qt_raise(message);
-                    return 0;
-                }
             }
             err[0] = '\0';
             if (!gb_qt_highlight(root, name, lang->value->as.string,
@@ -1542,6 +1535,14 @@ static int qt_build_item(void *parent, Value *item, void *root) {
                 warn_fmt(2115, "highlighting", "window: %s",
                          err[0] ? err : "the syntax definition could not be "
                                         "applied");
+            }
+        } else if (theme_text) {
+            err[0] = '\0';
+            if (!gb_qt_theme_plain(root, name, theme_text, err, sizeof(err))) {
+                /* A WARNING for the same reason as above: the editor works,
+                 * only its colours are missing, and that has to be said. */
+                warn_fmt(2115, "highlighting", "window: %s",
+                         err[0] ? err : "the theme could not be applied");
             }
         }
     }

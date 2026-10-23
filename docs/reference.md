@@ -4360,8 +4360,13 @@ and plausibly, FreeBASIC being a near neighbour. `theme:` is `"light"` or
 `"dark"`, and is **declared** rather than inferred because `qt.theme` sets a
 stylesheet and a stylesheet does not move Qt's palette, so a dark application
 with an inferred theme would get light highlighting on a dark background.
-A `theme:` with no `language:` is refused, since the theme is applied with the
-definition and alone would do nothing.
+A `theme:` with **no `language:`** gives a plain editor the theme's background
+and text colours and no highlighting, for a file with no syntax (a `.txt`, a
+`LICENSE`), so it matches a themed window rather than staying light. On a build
+without KSyntaxHighlighting, where themes come from, it warns (2115) and keeps
+its own colours. `qt.read(win, part, "palette")` answers the editor's colours as
+`"#rrggbb on #rrggbb"`, the text then the background, since a palette has no
+text form of its own.
 
 A `source` **binds in a form** like a `field` or a `memo`, which is what makes
 it useful: the text of whichever file is open is a record field like any other.

@@ -199,7 +199,6 @@ program main()
     ' backend's whole failure class.
     refuse("a language on a button",
            "only a `source` carries `language`")
-    refuse("a theme with no language", "needs a `language:` too")
     refuse("a theme that is not one", "is not a theme")
     refuse("a language that is not text", "needs the language's name as text")
     ' AND THE NEIGHBOUR, WHICH IS THE LOAD-BEARING HALF: the same two options
@@ -215,6 +214,36 @@ program main()
     qt.open(legal)
     check("while a real source takes both language and theme",
           qt.highlighting(legal, "s").language, "gBASIC")
+
+    print "-- a theme with no language: a themed plain editor"
+    ' ASKED FOR BY gBASIC STUDIO: its editor for a file with no syntax (a .txt,
+    ' a LICENSE) could not take a theme, so in a dark Studio it was the one
+    ' light pane. A theme alone now gives the editor the theme's background and
+    ' text and NO highlighter. The colours are read back through the palette,
+    ' because a QPalette's own text form is empty (measured) and a theme that
+    ' did nothing would otherwise read back exactly like one that worked.
+    themed = { kind: "window", name: "themed", options: { title: "Themed" },
+               items: [ { kind: "container", word: "column", options: {},
+                          items: [ { kind: "part", word: "source", name: "d",
+                                     options: { theme: "dark" } },
+                                   { kind: "part", word: "source", name: "l",
+                                     options: { theme: "light" } } ] } ] }
+    qt.open(themed)
+    dark = qt.read(themed, "d", "palette")
+    light = qt.read(themed, "l", "palette")
+    check("a dark theme alone gives a dark background", brightness(base_of(dark)) < 384, true)
+    check("with text lighter than it",
+          brightness(text_of(dark)) > brightness(base_of(dark)), true)
+    check("a light theme alone gives a light background", brightness(base_of(light)) > 384, true)
+    check("the same colours a highlighted dark source gets",
+          dark, qt.read(ed, "code", "palette"))
+    check("and no highlighter, since there is no language",
+          is_unknown(qt.highlighting(themed, "d")), true)
+    ' THE CONTROL: an editor asking for no theme keeps its own colours, or
+    ' "a theme alone applies" is satisfied by colouring every source dark.
+    check("while a source with no theme keeps its own background",
+          base_of(qt.read(ed, "plain", "palette")) = base_of(dark), false)
+    qt.close(themed)
 
     ' ---- THE CARET (§0.32) ---------------------------------------------
     ' ASKED FOR BY THE CONSUMER WITH THE USE THAT JUSTIFIES IT: *"stopped at
@@ -317,15 +346,26 @@ caught:
     return nothing
 end function
 
+' "#rrggbb on #rrggbb": the text colour, then the background.
+function text_of(pal)
+    return mid(pal, 1, 6)
+end function
+
+function base_of(pal)
+    return mid(pal, len(pal) - 6, 6)
+end function
+
+function brightness(hex6)
+    return (number("0x" + mid(hex6, 0, 2)) + number("0x" + mid(hex6, 2, 2)) +
+            number("0x" + mid(hex6, 4, 2)))
+end function
+
 function refusal_window(what)
     opts = {}
     word = "source"
     if what = "a language on a button" then
         word = "button"
         opts = { label: "Go", language: "gBASIC" }
-    end if
-    if what = "a theme with no language" then
-        opts = { theme: "dark" }
     end if
     if what = "a theme that is not one" then
         opts = { language: "gBASIC", theme: "Dark" }

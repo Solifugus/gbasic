@@ -260,6 +260,10 @@ int gb_qt_column_align(void *table_node, int col, const char *align, char *err,
                        size_t err_size);
 const char *gb_qt_cell_alignment(void *window, const char *name, int row,
                                  int col);
+/* A `source` with a theme and no language: the theme's colours, no
+ * highlighter. Fails (with err) on a build without KSyntaxHighlighting. */
+int gb_qt_theme_plain(void *window, const char *name, const char *theme,
+                      char *err, size_t err_size);
 int gb_qt_set_part_text(void *window, const char *name, const char *prop,
                         const char *value, char *err, size_t err_size);
 int gb_qt_set_part_number(void *window, const char *name, const char *prop,
