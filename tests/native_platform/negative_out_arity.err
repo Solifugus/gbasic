@@ -1,1 +1,0 @@
-runtime error at tests/native_platform/negative_out_arity.bas:7:1: gi.invoke: ascii_string_to_unsigned expects 4 argument(s)

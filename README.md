@@ -6,14 +6,14 @@ gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
 databases, a hardened web server, spreadsheets, statistics, charts, PDF
-documents, native GUI and an AI stack — and sixty-eight pure-gBASIC libraries
+documents, native GUI and an AI stack — and sixty-two pure-gBASIC libraries
 covering double-entry accounting, loan servicing, deposits, credit analytics,
 securities analysis and more. A gBASIC program is meant to be a real
 application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.10.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**205 test suites** gate every change, goldens are byte-exact, and the claims in
+**198 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -34,8 +34,8 @@ linked `gbasic.exe` that needs nothing beside it. The distinction worth knowing
 is that it is **built and tested by hand rather than in CI**, so it is a weaker
 guarantee than the Linux figure above; `tests/run_windows_suite.sh` runs on
 *every* platform, which is how a Windows-only assumption shows up on Linux too.
-Three things are deliberately absent there and say so when called: POSIX
-signals, the prompt's line editor, and the GTK bindings. WSL2 still runs the
+Two things are deliberately absent there and say so when called: POSIX
+signals and the prompt's line editor. WSL2 still runs the
 Linux build unchanged if you prefer it.
 
 **macOS is not supported, and is now measured rather than untested.** The
@@ -161,8 +161,7 @@ records, and no module system beyond `load`.
 | **Actors** — shared-nothing multiprocessing | Shipped | — | [design](docs/multiprocessing_design.md) |
 | **LDAP** — bind and search against a directory | Shipped | libldap | [design](docs/ldap_design.md) |
 | **Cryptography** — hashing, HMAC, AES-GCM, Ed25519, JWT | Shipped | libcrypto | [reference](docs/reference.md#cryptography) |
-| **`gi`** — GObject-Introspection bridge (GTK 4) | Shipped | libgirepository | [tutorial](docs/gui_tutorial.md) · [cookbook](docs/gui_cookbook.md) |
-| **`gui`** — GTK 3 declarative windows | Proof of concept | GTK 3 | [reference](docs/reference.md#gui-gtk-3-module--experimental) |
+| **`qt`** — native windows, declared as data (Qt 6) | Shipped | Qt 6 Widgets | [design](docs/qt_gui_design.md) · [cookbook](docs/qt_cookbook.md) |
 
 Every optional dependency is detected at build time. **The interpreter always
 builds**; a missing library turns its module into a clean runtime error rather
@@ -195,7 +194,7 @@ Two of these deserve a sentence more than a table row:
 
 ### The standard library
 
-Sixty-eight pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
+Sixty-two pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
 because they are not at the same maturity and a uniform list would imply they
 are.
 
@@ -315,10 +314,6 @@ are.
 - **fabricated data** (`fake`) — realistic populations that are pure functions
   of (seed, index), so a fixture cannot silently rot, plus `fake.plant` for a
   clean population with a known defect in a known place.
-- **GUI toolkits** (`gtk`, `gtkui`, `gtkui_gtk`, `datagrid`, `sourceeditor`, `gui`) — a
-  declarative widget-tree reconciler, a virtualized data grid, and a
-  syntax-highlighting editor over `gi`; `gui` is the older GTK 3 proof of
-  concept. [Tutorial](docs/gui_tutorial.md)
 - **business automation reasoning** (`reasoning`, `insight`, `decision`,
   `automation`) — **experimental, and more so than anything else here.** A
   design laboratory rather than a toolkit: *did anything happen, does it mean
@@ -441,8 +436,6 @@ On Linux, with a C11 compiler, `make` and `bison`. Everything else is optional:
 | libcrypto (OpenSSL) | cryptography builtins, `load crypto` |
 | libssl | TLS in the WebServer |
 | libxcrypt | `password_hash` / `password_verify` — **optional**: where it is absent the vendored yescrypt (`third_party/yescrypt`) provides them instead, writing and reading the same `$y$` hashes. That is what the Windows build and **both Linux downloads** use; a from-source build prefers libxcrypt when it finds it. The one difference is that only libxcrypt reads the legacy `$6$`/`$2b$` schemes, and the vendored backend refuses them by name rather than answering `false` |
-| GTK 3 | `load gui` |
-| libgirepository-2.0 (GLib ≥ 2.80) | `load gi`, and the GTK 4 libraries above |
 | Qt 6 Widgets + `moc` | the `qt` module — rendering a `window` declaration. Needs **both**: Qt's signal/slot syntax is not C++, so a QObject subclass needs a generated translation unit, and Qt6 can be installed without its tools. Dynamically linked, unlike the statically linked libraries above, because Qt is LGPL-3 |
 | KSyntaxHighlighting (KF6) | syntax highlighting in a `source` widget — **optional**: without it a `source` is still a working code editor and warns once (2115) that it is not highlighting, since an absent definition is invisible rather than obviously broken. Rides Qt's switch, having nothing to attach to otherwise. Detected by header and library, not `pkg-config`: KDE Frameworks ship CMake config files and no `.pc` at all |
 
@@ -469,9 +462,9 @@ source tree: `GBASIC_PATH=stdlib ./gbasic program.bas`. Remove with
 
 `make install` is for a developer. To hand an application to someone else,
 `packaging/build-deb.sh <app-dir>` builds a `.deb` carrying **its own**
-interpreter and standard library, built lean — a server application drops GTK,
-GObject-introspection, PostgreSQL, libxml2 and libcurl, taking the interpreter
-from 48 shared libraries to 10 — while using the system's OpenSSL, SQLite and
+interpreter and standard library, built lean — a server application drops the GUI
+toolkit, PostgreSQL, libxml2 and libcurl (measured at 48 shared libraries down to
+10 while GTK was still one of them) — while using the system's OpenSSL, SQLite and
 zlib rather than vendoring them, so an auditor can see them.
 `packaging/example-app` is a working loopback service you can build and run.
 
@@ -523,7 +516,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 205 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 198 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite
@@ -566,7 +559,7 @@ index, or if the index links to something that is not there.
 **Cookbooks** — task-oriented, with runnable examples. Every code block and
 every output block on these pages is owned by a file that is executed by the
 test suite and compared byte for byte, so a page cannot drift from the product
-without a test going red. Seventeen of them:
+without a test going red. Sixteen of them:
 
 *Money and business*
 
@@ -610,8 +603,6 @@ without a test going red. Seventeen of them:
   rendered with Qt 6: a form bound to a record, a list feeding it, menus,
   layout, tabs, theming, a code editor, a window built from data, and the
   event loop that keeps gBASIC's own work running while Qt holds the thread
-- [GUI with GTK](docs/gui_tutorial.md) and its [cookbook](docs/gui_cookbook.md)
-  — the older GTK 4 path, built as a record tree rather than a declaration
 - [EDGAR securities analysis](docs/edgar_tutorial.md) — build a forensic
   dossier on a filer
 - Statistics: [social & behavioral](docs/cookbook_social_behavioral.md) ·
@@ -644,8 +635,6 @@ Known edges, stated plainly rather than discovered later:
   workloads, not a JIT
 - there are no closures; a function cannot rebind a variable in an enclosing
   scope, and doing so silently creates a local instead (it warns)
-- the GTK 3 `gui` module is a proof of concept; `gi` (GTK 4) is the supported
-  path
 - the WebServer does not do WebSockets or chunked request bodies
 - the business-automation-reasoning libraries are a design laboratory, and
   every measurement behind them is on generated data

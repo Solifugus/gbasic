@@ -1,1 +1,0 @@
-runtime error at tests/gi/negative_gi_invoke_static_unknown_function.bas:5:1: gi.invoke: Gio.File has no function nope

@@ -9,8 +9,8 @@ set -euo pipefail
 # product actually needs:
 #
 #   * The dependency set is the APPLICATION's. A lean build for a server drops
-#     GTK, GObject-introspection, libpq, libxml2 and libcurl -- measured, 48
-#     shared libraries down to 10 -- so installing a file-transfer service does
+#     the GUI toolkit, libpq, libxml2 and libcurl -- measured at 48 shared
+#     libraries down to 10 while GTK was still one of them -- so installing a file-transfer service does
 #     not pull a desktop toolkit onto a server, which is an objection a
 #     customer's security review will actually raise.
 #   * The application cannot change under the operator. A system-wide

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# GATE-SCOPE: whole-tree -- checks all three generated editor definitions against the interpreter's own keyword and builtin lists
-# The editor definitions, held to the language. THREE OF THEM SINCE 2026-10-18:
-# the VS Code grammar (editors/vscode/gbasic), the Kate/KSyntaxHighlighting
-# definition (editors/kate/gbasic.xml) and the GtkSourceView one
-# (stdlib/gtksourceview/gbasic.lang) all come from one generator, and `--check`
-# covers all three -- proven red for each by name.
+# GATE-SCOPE: whole-tree -- checks the generated editor definitions against the interpreter's own keyword and builtin lists
+# The editor definitions, held to the language: the VS Code grammar
+# (editors/vscode/gbasic) and the Kate/KSyntaxHighlighting definition
+# (editors/kate/gbasic.xml) both come from one generator, and `--check` covers
+# both. A third, GtkSourceView's stdlib/gtksourceview/gbasic.lang, was generated
+# here from 2026-10-18 until GTK and gi were removed on 2026-10-22.
 #
 # THE TWO HAND-COPIED ONES HAD ROTTED EXACTLY AS THIS SUITE'S OWN HEADER
 # PREDICTED, in both directions: five keywords behind the lexer (`do`, `until`,

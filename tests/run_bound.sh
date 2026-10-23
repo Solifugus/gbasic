@@ -9,9 +9,9 @@
 #
 #   examples/automation_lab/08_what_price.bas  "the 10.00 is written in", so
 #       pricing a second product means a second identical function
-#   stdlib/datagrid.bas  the GTK handler reaches its grid through a
-#       program-global `_DATAGRID` registry, which a LIBRARY cannot create --
-#       so the workaround leaked into the API of every program using it
+#   the GTK DataGrid library (removed with GTK and gi on 2026-10-22), whose
+#       handler reached its grid through a program-global registry a LIBRARY
+#       cannot create, so the workaround leaked into every caller's API
 #
 # NOT A CLOSURE, and that is why it is affordable: a closure captures an
 # ENVIRONMENT implicitly and by reference; this captures ONE NAMED VALUE, by
@@ -24,9 +24,10 @@
 #
 # TIER 3 IS THE LOAD-BEARING ONE AND IT EXISTS BECAUSE `bound` INTRODUCED A
 # SILENT FAILURE. Several paths keep only a function's NAME, and measured
-# before the guard, `gi.connect(obj, sig, bound(h, ctx))` ran the handler with
-# the context SILENTLY GONE -- `ctx = nothing`, no error, exit 0. The refusal
-# ships WITH the feature rather than after somebody loses a context to it.
+# before the guard, the gi bridge's `gi.connect(obj, sig, bound(h, ctx))` ran
+# the handler with the context SILENTLY GONE -- `ctx = nothing`, no error, exit
+# 0. The refusal ships WITH the feature rather than after somebody loses a
+# context to it. (gi was removed with GTK on 2026-10-22, which took its tiers.)
 . "$(dirname "$0")/portable.sh"
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -101,38 +102,11 @@ want() {
         *) printf 'MISMATCH %s\n  want: %s\n  got:  %s\n' "$1" "$3" "$got"; status=1 ;;
     esac
 }
-# THE PROBE IS A REAL FILE, not /dev/stdin. Written the latter way it reported
-# "gi unavailable" on a machine where gi plainly works, SKIPPING the tier that
-# carries this suite -- and a skip reads like a pass in scroll-back, which is
-# the way run_all.sh says a gate goes quiet.
-printf 'load gi\nprogram main(args)\nend program\n' > "$tmp/gi_probe.bas"
-if GBASIC_PATH=stdlib ./gbasic "$tmp/gi_probe.bas" >/dev/null 2>&1; then
-    # `gi.connect` CARRIES A BOUND CONTEXT SINCE 0.6.0. This tier pinned the
-    # REFUSAL that stood here, which was correct for what the closure then held --
-    # a name and nothing else, so a context could only have been dropped in
-    # silence. The closure holds the context now, so the pin becomes its opposite,
-    # and it going red is what pins are for.
-    #
-    # THE BEHAVIOUR LIVES IN run_gi.sh (tests/gi/gi_bound_context_test.bas: two
-    # contexts through one function, two connections on one object, the copy, the
-    # event sources, and valgrind over the owned context). What belongs HERE is
-    # that `bound` reaches that door at all -- this suite's subject is `bound`.
-    want 'gi.connect carries a bound context' 'load gi
-gi.require("Gio", "2.0")
-c = gi.new("Gio.Cancellable")
-function h(s, ctx)
-    print "ctx=" + ctx.tag
-    return nothing
-end function
-gi.connect(c, "cancelled", bound(h, { tag: "carried" }))
-gi.call(c, "cancel")' 'ctx=carried'
-    # AND THE REMAINING REFUSAL IS STILL A REFUSAL: `webserver.on_request` keeps
-    # only the name, so it must go on raising rather than dropping a context. The
-    # pair is what says the rule is "refuse where it cannot travel" rather than
-    # "it used to be refused everywhere and now it never is".
-    # It takes (server, function, context), so the probe needs all three; what is
-    # under test is that the FUNCTION may not be a bound one.
-    want 'webserver.on_request still refuses one' 'load webserver
+# `webserver.on_request` keeps only the function's name, so a bound function
+# must be refused there rather than having its context dropped. It takes
+# (server, function, context), so the probe needs all three; what is under test
+# is that the FUNCTION may not be a bound one.
+want 'webserver.on_request refuses a bound function' 'load webserver
 function h(req, ctx)
     return nothing
 end function
@@ -140,20 +114,6 @@ program main( args )
     sv = webserver.listen(0)
     webserver.on_request(sv, bound(h, { a: 1 }), nothing)
 end program' 'cannot take a bound function'
-    # CONTROL: a PLAIN function still connects, or the change would be
-    # indistinguishable from breaking gi.connect.
-    want 'gi.connect still takes a plain function' 'load gi
-gi.require("Gio", "2.0")
-c = gi.new("Gio.Cancellable")
-function h(s)
-    print "ran"
-    return nothing
-end function
-gi.connect(c, "cancelled", h)
-gi.call(c, "cancel")' 'ran'
-else
-    printf 'SKIP gi tiers (gi unavailable in this build)\n'
-fi
 
 echo "--- TIER 4: valgrind ---"
 . "$(dirname "$0")/valgrind_tier.sh"

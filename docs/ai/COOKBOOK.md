@@ -33,13 +33,6 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
-- **A GTK signal handler that needs state** — `gi.connect(w, "sig", bound(fn,
-  ctx))` *(since 0.6.0)*; same for `gi.timeout`/`gi.idle`/`gi.watch_fd`. The
-  context arrives as the handler's LAST parameter and belongs to the CONNECTION, so
-  one function can serve many widgets with different state. Do not put a GObject in
-  the context when the closure is attached to that same object — it cycles and
-  GObject cannot collect it (carry an id or ordinal instead).
-  → `tests/gi/gi_bound_context_test.bas`
 - **Large integers are exact** *(0.6.0; completed 0.8.1)* — a decimal or hex
   integer literal that fits int64 is EXACT, and so is `number("…")` on integer
   text and a count from `len`/`count`/`byte_count`/`find`/`epoch`. ONE RULE
@@ -297,8 +290,8 @@ for error handling, `ERRORS.md`.
 - **Turning a program into an installable package** — `packaging/build-deb.sh
   <app-dir>` builds a .deb carrying its OWN interpreter and stdlib under
   `/usr/lib/<app>/`, built lean (optional modules are compile-time gated: a
-  server build drops GTK, GObject-introspection, PostgreSQL, libxml2 and
-  libcurl — 48 shared libraries down to 10). System libssl/libcrypto/sqlite3
+  server build drops the GUI toolkit, PostgreSQL, libxml2 and libcurl — measured
+  at 48 shared libraries down to 10 while GTK was still one of them). System libssl/libcrypto/sqlite3
   are used, NOT vendored. Full guide: `docs/shipping_applications.md`.
   → `packaging/example-app/app/notesd.bas`
 - **A shipped app must load stdlib by ABSOLUTE PATH** — bare `load NAME`
@@ -330,11 +323,12 @@ for error handling, `ERRORS.md`.
   not a way to launch a daemon, and a process that must survive belongs to a
   service manager. → `tests/run_process_lifetime.sh`
 - **Supervising a child from a GUI loop** — compose the two: `process.start`,
-  then a `gi.timeout` callback that polls and reads each tick. No actor and no
-  mailbox are needed, because `start`/`poll`/`read` never block, so a GUI loop
-  can drive a live child without a worker. → `tests/native_platform/plat_proc_basic.bas`
-  (the non-blocking primitives), `tests/native_platform/loop_timeout.bas` (the
-  GTK timeout that drives them)
+  then a `timer.every` watcher that polls and reads each tick; a gBASIC timer
+  keeps firing while `qt.run()` holds the thread. No actor and no mailbox are
+  needed, because `start`/`poll`/`read` never block, so a GUI loop can drive a
+  live child without a worker. → `tests/native_platform/plat_proc_basic.bas`
+  (the non-blocking primitives), `examples/qt/clock.bas` (a timer under
+  `qt.run()`)
 - **Seeing a child's output while it runs** — a gBASIC child's stdout is BLOCK-buffered
   on a pipe, so short output only appears when it exits, and output still buffered when
   the child is killed is lost outright. Start the child with `--line-buffered` as its
@@ -418,24 +412,17 @@ for error handling, `ERRORS.md`.
   → `examples/password_hash_test.bas`, `examples/secure_token_test.bas`
 - **Cryptography (`load crypto`)** — signed cookies, CSRF, JWT/HS256, flat JSON.
   → `examples/crypto_compose_test.bas`
-- **Desktop UI, where to start** — `gtk` constructors + `gi.connect`, which is
-  what gBASIC Studio is built from (86 `gtk.` calls, 72 `gi.`, zero `gtkui`).
-  `gtkui` is for a CHANGING KEYED LIST, not for the frame around it; `gi.new`
-  is the escape hatch for the ~90% of GTK `gtk.bas` does not wrap. Tutorial:
-  `docs/gui_tutorial.md`; recipes: `docs/gui_cookbook.md`.
-  → `examples/gui_cookbook/01_first_window.bas`
-- **STATE IN A GUI CALLBACK MUST LIVE IN A RECORD** — gBASIC has no closures,
-  so a handler assigning to an outer scalar silently makes a function-local and
-  the outer value never changes: a counter stuck at 1, a loop that never quits.
-  Mutate a field of a shared record instead. This is the single most common way
-  gBASIC GUI code fails, and it fails silently.
-  → `examples/gui_cookbook/02_state_in_callbacks.bas`
-- **Testing GUI code** — `gtk.init()` needs a display but SHOWING does not, so
-  a suite builds real widgets and interrogates them with nothing on screen.
-  Run under `G_DEBUG=fatal-criticals`. No signal can be emitted from gBASIC, so
-  drive behaviour with `gi.timeout` or verify by hand.
-  → `examples/gui_cookbook/08_testing_gui_code.bas`
-- **GObject-Introspection (`gi`, GTK 4)** — the canonical `GtkApplication` idiom:
-  construct-time properties via `gi.new`, the app drives its own `run` loop, the
-  window is built in the `activate` handler. Manual (needs a display); guarded by
-  the parse-only smoke. → `examples/gi/gtk4_hello.bas`
+- **Desktop UI, where to start** — a `window` declaration opened with
+  `qt.open`, which is what gBASIC Studio is built on. A window is a record, so
+  the same thing can be declared or built from data. Recipes:
+  `docs/qt_cookbook.md`. → `examples/qt_cookbook/01_first_window.bas`
+- **STATE IN A GUI HANDLER MUST LIVE IN A RECORD** — gBASIC has no closures,
+  so a handler can READ a variable in `main` and cannot REBIND one: assigning
+  makes a function-local and the outer value never changes (warning 2104 names
+  the remedy). Keep the program's state in one record and mutate its fields.
+  This is the single most common way gBASIC GUI code fails.
+  → `examples/qt_cookbook/03_state_in_handlers.bas`
+- **Testing GUI code** — `QT_QPA_PLATFORM=offscreen` builds real widgets with
+  nothing on screen, and `qt.invoke`, `qt.key`, `qt.right_click` and
+  `qt.scroll` drive them the way a person would, so a suite asserts behaviour
+  without a display. → `examples/qt_cookbook/13_the_event_loop.bas`

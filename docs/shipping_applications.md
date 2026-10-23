@@ -21,9 +21,9 @@ stdlib**, under `/usr/lib/<app>/`. It does not depend on a system `gbasic`
 package. That costs about 2 MB and buys three things:
 
 - **The dependency set is the application's.** gBASIC's optional modules are
-  compile-time gated, so a build for a server drops GTK, GObject-introspection,
-  PostgreSQL, libxml2 and libcurl. Measured on the example: **48 shared
-  libraries down to 10**, 1.7 MB to 1.1 MB. Installing a file-transfer service
+  compile-time gated, so a build for a server drops the GUI toolkit,
+  PostgreSQL, libxml2 and libcurl. Measured on the example while GTK was still
+  one of them: **48 shared libraries down to 10**, 1.7 MB to 1.1 MB. Installing a file-transfer service
   should not pull a desktop toolkit onto a server, and a customer's security
   review will ask.
 - **The application cannot change underneath the operator.** A system-wide
@@ -44,8 +44,7 @@ Start from nothing and add what the application actually loads:
 
 | Flag | Turns off | Needed when the app uses |
 |---|---|---|
-| `GTK_AVAILABLE=0` | GTK 3 `gui` | a GTK 3 desktop UI |
-| `GIR_AVAILABLE=0` `GIO_AVAILABLE=0` | the `gi` bridge, `gtk`, `gtkui`, `datagrid`, `sourceeditor` | any GTK 4 desktop UI |
+| `QT_AVAILABLE=0` | the `qt` module (`window` declarations) | a desktop UI |
 | `LIBPQ_AVAILABLE=0` | `pg` | PostgreSQL |
 | `LIBXML2_AVAILABLE=0` | `xml`, and `xlsx` | XML or spreadsheets |
 | `LIBCURL_AVAILABLE=0` | `webclient`, and the EDGAR/LLM network paths | outbound HTTP |

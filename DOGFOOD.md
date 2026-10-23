@@ -1098,15 +1098,6 @@ what proves the live probes are running anything at all.
   record-only. A newline bails out, since a clause already could not span one
   while a record literal spans lines routinely.
   `tests/run_limitations.sh` carries the control both ways.
-- No `gi.emit` — the per-widget signal-synthesis catalogue (2026-07-31) covers
-  testing; Studio's display tiers run on it.
-- ~~gi cannot call STATIC class functions (`Gtk.StyleContext.add_provider_for_display`)
-  — per-instance routes exist (2026-08-22).~~ **RESOLVED 2026-09-23** (struck).
-  `gi.invoke("Namespace.Type.function", ...)` resolves a static on an object,
-  interface, struct, union or enum. A method is still refused (it needs an
-  instance; `gi.call`), and so is a constructor (`gi.new`), because a
-  constructor hands back a reference whose ownership this path has never had to
-  answer for.
 - ~~No exponent literal — `1e20` lexes as a duration with a misleading message;
   `number("1e20")` is the idiom.~~ **RESOLVED 2026-09-23** (struck). `1e20`,
   `6.02e23`, `1.5e-3` and `2E10` are number literals. At least one digit must

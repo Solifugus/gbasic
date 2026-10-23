@@ -1,1 +1,0 @@
-runtime error at tests/native_platform/negative_array_heterogeneous.bas:6:1: gi.invoke: strjoinv array element expects a string

@@ -31,7 +31,7 @@ unset GBASIC_ENV_TEST_MISSING
 examples=(
     arithmetic_number_modifier_test.bas
     array_append_prepend_test.bas
-    gui_fields_test.bas
+    record_method_dispatch_test.bas
     array_cow_test.bas
     utf8_bom_test.bas
     array_insert_remove_test.bas

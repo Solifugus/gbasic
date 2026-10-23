@@ -197,10 +197,10 @@
 # `smtp` and the libcrypto builtins -- exactly the database, internet and AI
 # chapters DOGFOOD 44 is about. `xml`, `xlsx` and `password_hash` are no longer
 # on the cost side: BOTH tiers have them.
-# libpq, unixODBC, OpenLDAP, GTK and GObject-Introspection stay out. The first
-# two are candidates for dlopen if a consumer asks; GTK and GI are refused by
-# BOTH techniques and that is the answer rather than a gap, because they need
-# runtime data a binary cannot carry (typelibs, themes, schemas, a display).
+# libpq, unixODBC and OpenLDAP stay out; the first two are candidates for
+# dlopen if a consumer asks. (GTK and GObject-Introspection stayed out for the
+# same reason Qt does -- runtime data a binary cannot carry -- until they were
+# removed from gBASIC on 2026-10-22.)
 #
 # THE LINK SET IS ASSERTED, not counted. `ldd | wc -l < 20` would have passed a
 # binary carrying libcrypt, which is what happened while measuring: a count
@@ -306,8 +306,7 @@ case "$TIER" in
         # tests/run_packaging.sh already fails if a switch exists that nothing
         # names.
         TIER_PACKAGES="pkg-config zlib1g-dev"
-        TIER_MAKE_ARGS="GIO_AVAILABLE=0 GIR_AVAILABLE=0 GTK_AVAILABLE=0 \
-            LDAP_AVAILABLE=0 LIBCRYPTO_AVAILABLE=0 LIBCURL_AVAILABLE=0 \
+        TIER_MAKE_ARGS="LDAP_AVAILABLE=0 LIBCRYPTO_AVAILABLE=0 LIBCURL_AVAILABLE=0 \
             LIBPQ_AVAILABLE=0 LIBSSL_AVAILABLE=0 LIBXCRYPT_AVAILABLE=0 \
             ODBC_AVAILABLE=0 QT_AVAILABLE=0 ZLIB_AVAILABLE=1 \
             YESCRYPT_VENDORED=1"
@@ -333,8 +332,7 @@ case "$TIER" in
         # rather than left to detection for the reason the paragraph above
         # gives: a new optional module must default to OFF here rather than to
         # whatever the build image happens to carry.
-        TIER_MAKE_ARGS="LIBXCRYPT_AVAILABLE=0 GIO_AVAILABLE=0 GIR_AVAILABLE=0 \
-            GTK_AVAILABLE=0 LDAP_AVAILABLE=0 LIBPQ_AVAILABLE=0 ODBC_AVAILABLE=0 \
+        TIER_MAKE_ARGS="LIBXCRYPT_AVAILABLE=0 LDAP_AVAILABLE=0 LIBPQ_AVAILABLE=0 ODBC_AVAILABLE=0 \
             QT_AVAILABLE=0 ZLIB_AVAILABLE=1 YESCRYPT_VENDORED=1"
         EXPECTED_NEEDED="libc.so.6 libcrypto.so.3 libcurl.so.4 libm.so.6 libssl.so.3"
         TIER_SUFFIX="-full"

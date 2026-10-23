@@ -1,9 +1,0 @@
-name = Example
-counts:
-  [0] = 1
-  [1] = 2
-  [2] = 3
-config:
-  enabled = true
-  threshold = 0.75
-

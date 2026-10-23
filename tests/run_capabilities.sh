@@ -97,9 +97,6 @@ want spawn     "actors"
 # xml.parse_file, xml.read and xml.reader, so it reads the filesystem. Pinned
 # because the next person will make the same assumption.
 want xml       "fs:read"
-# `gi` can instantiate anything with a typelib, so its reach is NOT bounded by
-# this table and the label has to say so.
-want gi        "ffi display"
 # And the control that stops "label everything dangerous": a module with no
 # external effect reports none.
 want money     "-"
@@ -107,15 +104,15 @@ want timer     "-"
 
 echo
 echo "--- TIER 5: ONE SENTENCE FOR AN UNKNOWN VERB, BUILT IN ONE PLACE ---"
-# Nine module dispatchers answer a verb they do not have -- webclient, http,
-# timer, webserver, sqlite, odbc, pg, gi, money -- and each used to build
+# Eight module dispatchers answer a verb they do not have -- webclient, http,
+# timer, webserver, sqlite, odbc, pg, money -- and each used to build
 # `invalid function call: odbc.vacuum` from its own snprintf. The text said the
-# wrong thing for all nine: the problem is not that the CALL is invalid, it is
+# wrong thing for all of them: the problem is not that the CALL is invalid, it is
 # that the NAME does not exist, and a sentence about the call sends a reader to
 # check their arguments. Reported by the gbasic-books session 2026-10-02 against
 # `is_money`; the same complaint one namespace over.
 #
-# A RULE RE-ESTABLISHED AT NINE CALL SITES IS ONE A TENTH MODULE LEAVES OUT,
+# A RULE RE-ESTABLISHED AT EIGHT CALL SITES IS ONE A NINTH MODULE LEAVES OUT,
 # which is the lesson `first_raise_wins` produced from the other direction, so
 # the format lives in `module_unknown_verb` and this tier fails if a second
 # construction site appears. Sited HERE because this suite's subject is the
@@ -148,7 +145,7 @@ fi
 # of the module list this tier probes rather than a literal, so the two cannot
 # disagree about how many modules there are.
 checks=$((checks + 1))
-mod_list="webclient http timer webserver sqlite odbc pg gi money"
+mod_list="webclient http timer webserver sqlite odbc pg money"
 want_calls="$(printf '%s\n' $mod_list | grep -c .)"
 # One definition plus one call per module.
 got_calls="$(( $(grep -c 'module_unknown_verb(' src/eval.c) - 1 ))"
@@ -170,11 +167,7 @@ for mod in $mod_list; do
     case "$out" in
         *"undefined function: $mod.definitely_not_a_verb"*)
             printf 'ok   %s names the verb it does not define\n' "$mod" ;;
-        # The third spelling is gi's ("gobject-introspection support is
-        # unavailable; install ..."), the one tests/build_has.sh already
-        # counts as a build refusal; without it any build lacking GI -- Windows,
-        # or a lean Linux build -- failed here rather than skipping.
-        *"not available in this build"*|*"was not built with"*|*"support is unavailable"*)
+        *"not available in this build"*|*"was not built with"*)
             printf 'ok   %s (compiled out; nothing to ask)\n' "$mod" ;;
         *)
             printf 'MISMATCH %s: [%s]\n' "$mod" "$(printf '%s' "$out" | tail -1)"

@@ -34,7 +34,7 @@
 build_has() {
     local probe
     case "$1" in
-        sqlite|pg|odbc|http|webclient|smtp|ldap|xml|gi) probe="load $1" ;;
+        sqlite|pg|odbc|http|webclient|smtp|ldap|xml) probe="load $1" ;;
         # `qt` TAKES NO `load` -- a window block implies no import, so neither
         # does rendering one -- so the probe is a CALL. `qt.run` with nothing
         # open refuses for an ordinary reason on a build WITH Qt and with the
@@ -77,8 +77,7 @@ build_has() {
     printf '%s\n' "$probe" > "$f"
     out="$(./gbasic "$f" 2>&1)"
     rm -f "$f"
-    # (`gi` words its refusal "gobject-introspection support is unavailable".)
-    if printf '%s' "$out" | grep -qE 'not available in this build|requires OpenSSL|not available on Windows|support is unavailable'; then
+    if printf '%s' "$out" | grep -qE 'not available in this build|requires OpenSSL|not available on Windows'; then
         return 1
     fi
     return 0

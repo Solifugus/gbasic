@@ -12,8 +12,8 @@
 # (a stale pin, the GUI libraries, then this) before anything asked the question
 # mechanically.
 #
-# THE DEPENDENCY IS TRANSITIVE AND THAT IS THE HALF A GREP MISSES. `gtk` loads
-# `gi`; `finio_all` loads `finio_camt` which loads `xml`; `ari_advisor` loads
+# THE DEPENDENCY IS TRANSITIVE AND THAT IS THE HALF A GREP MISSES. `finio_all`
+# loads `finio_camt` which loads `xml`; `ari_advisor` loads
 # `llm` which loads `webclient`. A direct scan reports `finio_all` as needing
 # nothing, and it cannot be loaded at all without libxml2. So this iterates to
 # a fixpoint rather than reading one level.
@@ -125,8 +125,6 @@ awk '
       else if (dep == "http")      c = "libcurl"
       else if (dep == "smtp")      c = "libcurl"
       else if (dep == "xml")       c = "libxml2"
-      else if (dep == "gui")       c = "GTK 3"
-      else if (dep == "gi")        c = "GObject-Introspection"
       else if (dep == "webserver") c = ""     # always built; no dependency
 
       if (c != "") {

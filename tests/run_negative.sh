@@ -276,13 +276,6 @@ cases=(
     negative_bitwise_arity
     negative_decode_malformed
     negative_quote_record
-    negative_gui_duplicate_id
-    negative_gui_unknown_field
-    negative_gui_missing_id
-    negative_gui_unknown_component
-    negative_gui_invalid_spacing
-    negative_gui_reserved_id
-    negative_gui_invalid_id
     negative_watcher_cycle
     negative_chr_arity
     negative_chr_type
@@ -407,12 +400,8 @@ for name in "${cases[@]}"; do
     expected="tests/$name.err"
     stdout_file="$(mktemp)"
     stderr_file="$(mktemp)"
-    run_prefix=()
-    if [[ "$name" == negative_gui_* ]]; then
-        run_prefix=(env GBASIC_PATH=stdlib)
-    fi
 
-    if "${run_prefix[@]}" ./gbasic "$source" >"$stdout_file" 2>"$stderr_file"; then
+    if ./gbasic "$source" >"$stdout_file" 2>"$stderr_file"; then
         printf 'FAIL %s\n' "$source"
         printf 'expected nonzero exit\n'
         rm -f "$stdout_file" "$stderr_file"

@@ -40,9 +40,6 @@ libcrypto|libssl-dev|crypto builtins (hashing, HMAC, AES-GCM, Ed25519) + crypto.
 libcurl|libcurl4-openssl-dev|webclient module
 libpq|libpq-dev|pg.* PostgreSQL module (its tests are opt-in regardless)
 libxcrypt|libcrypt-dev|password_hash / password_verify
-gtk+-3.0|libgtk-3-dev|the GTK 3 gui.* module
-girepository-2.0|libgirepository-2.0-dev|the gi.* GObject-Introspection bridge (GTK 4 path)
-gio-2.0|libglib2.0-dev|gi.* support types
 "
 
 REQUIRED="cc|build-essential|the C11 compiler
@@ -104,8 +101,6 @@ if [ -z "$(echo "$missing" | tr -d ' ')" ]; then
 fi
 
 printf 'To install what is missing (Debian/Ubuntu):\n\n    sudo apt-get install %s\n\n' "$missing"
-printf 'Skip the GTK and girepository entries if you do not need the GUI modules;\n'
-printf 'their test suites require a display and skip cleanly without one.\n'
 
 if [ "$install" = "1" ]; then
     printf '\nRunning it now...\n'

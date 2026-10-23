@@ -1,4 +1,0 @@
-signals: first:1 second:2 plain
-two on one object: x y
-context is a copy: before
-sources: idle-A bare tick-B

@@ -13,6 +13,29 @@ Current behavior is documented in:
 - `docs/tutorial.md`
 - the current module design documents
 
+## GTK and the gi bridge, removed 2026-10-22
+
+gBASIC's native GUI is Qt (the `qt` module and `window` declarations,
+`docs/qt_gui_design.md`). The GTK stack it replaced was removed in one change on
+2026-10-22, at Matthew's direction, once gBASIC Studio had moved entirely to Qt.
+**The last commit containing it is `d997c94`**; check that out to read or run any
+of it.
+
+What went:
+- the GTK 3 `gui` module and the `gi` GObject-Introspection bridge (GTK 4), with
+  the `gobject`/`gboxed` value kinds and the `rowmodel` GListModel adapter;
+- the `gtk`, `gtkui`, `gtkui_gtk`, `gui`, `sourceeditor` and `datagrid` libraries
+  and `stdlib/gtksourceview/`;
+- their examples, test suites, cookbook and tutorial, the native-application
+  platform plan, and the `HAVE_GTK`/`HAVE_GIR`/`HAVE_GIO` build switches.
+
+**Why `gi` went too, not just GTK:** measured across the tree and gBASIC Studio,
+nothing used it for anything but GTK. Its 75 Gio/GLib test uses existed to test
+the bridge headlessly. Its remaining reach (D-Bus, GStreamer and other Linux
+GObject libraries) was potential, Linux-only and costly to keep correct; a
+focused module, likely over Qt's own D-Bus or multimedia support, is the
+recorded alternative if a real need appears.
+
 ## Early v0.1 Design Documents
 
 The following early documents were superseded by the current core grammar,

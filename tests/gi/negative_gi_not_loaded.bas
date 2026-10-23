@@ -1,1 +1,0 @@
-gi.new("Gio.Cancellable")

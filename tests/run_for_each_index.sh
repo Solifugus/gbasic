@@ -212,8 +212,11 @@ BAS
 # costs the channel its credibility, so the cost is taken -- and ASSERTED here,
 # rather than left as a comment, so that anyone who later makes this warn again
 # is told what they are trading. The other half of the argument, that the
-# silence is CORRECT for a handle, needs a reference-kinded value and is
-# asserted in run_gi.sh.
+# silence is CORRECT for a handle, needed a reference-kinded value and was
+# asserted in run_gi.sh -- removed with GTK and gi on 2026-10-22. No remaining
+# value kind has fields a write can reach THROUGH the copy, so the one-hop stop
+# could now be widened again; it is left alone, since staying quiet costs
+# nothing, and widening it would need its own false-positive measurement.
 cat > "$work/twohop.bas" <<'BAS'
 rows = [ { inner: { n: 1 } } ]
 for each item in rows

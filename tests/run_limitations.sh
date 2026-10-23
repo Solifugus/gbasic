@@ -49,8 +49,7 @@
 #              PLAT-CONT), each of which owns a suite of its own but none of
 #              which knows this ledger cites it.
 #
-# Headless, GI-independent. Never skips except the two gi bullets, which need
-# a typelib.
+# Headless, GI-independent. Never skips.
 
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
@@ -116,7 +115,6 @@ PROBES="
 atomic_replace_inode|gives dest the temp's inode
 callresult_method_stmt|method call on a call-result receiver
 unnormalized_load_path|print the load path unnormalized
-gi_emit|No \`gi.emit\`
 spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
@@ -397,21 +395,6 @@ probe_unnormalized_load_path() {
     fi
 }
 
-probe_gi_emit() {
-    printf 'load gi\nprint 1\n' > "$WORK/p.bas"
-    if run "$WORK/p.bas" | grep -q 'not available in this build'; then
-        skipped "gi.emit (gi not in this build)"
-        return
-    fi
-    # gi.* is dispatched by name in eval.c; `emit` is not among the verbs.
-    printf 'load gi\non error goto next\nx = gi.emit(1, "a")\nif error then\n  print "refused: " + error.message\n  error.clear()\nelse\n  print "gi.emit ran"\nend if\n' > "$WORK/p.bas"
-    if run "$WORK/p.bas" | grep -q 'gi.emit ran'; then
-        fixed "gi.emit now exists"
-    else
-        ok "gi still has no emit verb"
-    fi
-}
-
 while IFS='|' read -r key marker; do
     [ -z "$key" ] && continue
     "probe_$key"
@@ -432,7 +415,6 @@ line_continuation|No line continuation
 inline_modifier|do not work postfix in expression position
 dir_ref_and_make_dir|rejects a dir reference
 exponent_literal|No exponent literal
-gi_static|cannot call STATIC class functions
 "
 
 # Red here means a fix REGRESSED, or this suite stopped actually running
@@ -605,31 +587,6 @@ control_inline_modifier() {
         ok "CONTROL: a modifier applies inline in expression position"
     else
         regressed "CONTROL: the inline type modifier is gone (got: $out)"
-    fi
-}
-
-control_gi_static() {
-    # THE ONE CONTROL HERE THAT CAN LEGITIMATELY NOT RUN, and it says so rather
-    # than passing: without libgirepository in the build there is no typelib to
-    # resolve anything against, and a green line would claim a fix nobody
-    # exercised.
-    printf 'load gi\nprint 1\n' > "$WORK/c.bas"
-    if ! run "$WORK/c.bas" | grep -q '^1$'; then
-        skipped "CONTROL: gi statics (gi not in this build)"
-        return
-    fi
-    # BOTH HALVES. The static must resolve AND an instance method must still be
-    # refused -- "Type.function works" alone is satisfied by a change that
-    # invokes anything spelled with three parts, receiver or no receiver, which
-    # would call a method with a NULL instance.
-    printf 'load gi\ngi.require("GLib", "2.0")\nprint gi.invoke("GLib.Checksum.type_get_length", 2)\n' > "$WORK/c.bas"
-    a=$(run "$WORK/c.bas")
-    printf 'load gi\ngi.require("Gio", "2.0")\non error goto next\nx = gi.invoke("Gio.File.get_path")\nif error then\n  print "refused"\n  error.clear()\nelse\n  print "INVOKED A METHOD"\nend if\n' > "$WORK/c.bas"
-    b=$(run "$WORK/c.bas")
-    if [ "$a" = "32" ] && printf '%s' "$b" | grep -q '^refused$'; then
-        ok "CONTROL: a class static resolves, and an instance method is still refused"
-    else
-        regressed "CONTROL: gi statics are gone or reach instance methods (static: $a / method: $b)"
     fi
 }
 

@@ -755,7 +755,7 @@ is no implicit numeric/string coercion in a comparison any more than in
 arithmetic, so a string is never equal to a number — `0 = "stop"`, `0 = ""` and
 `1 = "1"` are all **false** — and `1 > "stop"` **raises**, naming both kinds.
 The same rule already governs arrays, records, functions, watchers, regexes,
-gobjects, boxed values, money and date/time: `=` and `!=` are questions with
+money and date/time: `=` and `!=` are questions with
 answers, ordering is not a question at all.
 
 Numbers and booleans are the exception and coerce as they always have: `0 =
@@ -1176,7 +1176,7 @@ this.helper()               ' the current receiver
 ```
 
 The receiver is evaluated **once**, then dispatched by runtime kind (a record
-method binds `this`; a GObject/boxed value routes through `gi`). An lvalue receiver
+method binds `this`). An lvalue receiver
 (a variable/field/index chain) binds `this` to the live cell, so a record method's
 `this.x = …` writes through exactly as for `obj.method()`; a call-result receiver
 binds `this` to the temporary. Chained method calls never form an lvalue, so
@@ -4697,457 +4697,6 @@ An option on a part that is not one of the layout words (`label`, `margin`,
 the widget's class. `type:`, `show:` and `edit:` are carried by the declaration
 and not yet acted on; see `docs/qt_gui_design.md` §0.4.
 
-## GUI (GTK 3) Module — experimental
-
-`gui` is an **experimental proof of concept** (Stage 6A), enabled only when
-gBASIC is built with GTK 3 development files. It renders a record-defined window
-tree, exposes widgets as addressable fields, and routes GTK-originated changes
-back through ordinary watchers:
-
-<!--fragment: an API shape or a deliberately invalid form, not a program-->
-```basic
-GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas
-```
-
-Because it is a POC on GTK 3 and its surface is likely to evolve, it is
-documented by its design notes rather than pinned here: see
-`docs/gui_design.md` and `examples/gui/README.md` for the implemented scope and
-manual verification steps. For new GUI work prefer the `gi` bridge below, which
-is the conventional route and targets current GTK (4). The two cannot be used in
-the same process (see the note in the `gi` section).
-
-## GObject-Introspection (GUI) Module
-
-The `gi` module is a generic bridge to any GObject-based library — GTK 4, GLib,
-Gio, and so on — driven at runtime by the library's GObject-Introspection
-typelib. It is the path to native graphical applications; GTK 4 is the first
-target toolkit, but nothing GTK is linked directly. It is available when gBASIC
-is built with libgirepository-2.0 (GLib >= 2.80); otherwise `load gi` raises a
-clean runtime error (`error.source = "gi"`), the same way the other optional
-modules degrade.
-
-```basic
-load gi
-gi.require("Gio", "2.0")
-gi.require("Gtk", "4.0")
-
-function on_click(source)
-    gi.set(source, "label", "Clicked!")
-end function
-
-function on_activate(app)
-    win = gi.new("Gtk.ApplicationWindow", "application", app)
-    gi.set(win, "title", "Hello from gBASIC")
-    button = gi.new("Gtk.Button")
-    gi.set(button, "label", "Click me")
-    gi.connect(button, "clicked", on_click)
-    gi.call(win, "set_child", button)
-    gi.call(win, "present")
-end function
-
-app = gi.new("Gtk.Application", "application-id", "org.example.Hello")
-gi.connect(app, "activate", on_activate)
-gi.call(app, "run", 0, nothing)
-```
-
-Native objects are opaque `gobject` values. Each underlying GObject maps to
-exactly one wrapper, so identity is stable: `a = b` is true when they wrap the
-same object. A wrapper's reference is released during interpreter cleanup;
-freshly constructed objects have their floating reference sunk, and objects an
-external owner already adopted at construction (for example a window whose
-construct-time `application` adds it to the `Gtk.Application`) are ref-counted so
-the program does not destroy them out from under the toolkit.
-
-The module provides:
-
-- `gi.require(namespace[, version])` — load a typelib namespace (for example
-  `gi.require("Gtk", "4.0")`) so its types resolve. Must precede any use of the
-  namespace.
-- `gi.new(type_name[, prop, value, ...])` — construct an object by qualified
-  type name (`"Gtk.Button"`). Trailing name/value pairs set construct-time
-  properties, including construct-only ones such as
-  `gi.new("Gtk.ApplicationWindow", "application", app)`.
-  **A Gtk widget may not be constructed before the toolkit is initialized**
-  (*since 0.2.2*). It used to crash; it now raises, naming `gtk.init()` and the
-  `Gtk.Application` `activate` handler as the two places initialization happens.
-  Only widgets are affected — measured: `Gtk.StringList`, `Gtk.CssProvider`,
-  `Gtk.TextBuffer`, `Gtk.ListStore`, `Gtk.EntryBuffer` and `Gtk.SizeGroup`
-  construct fine with no initialization, while every `GtkWidget` descendant
-  tried did not. The state is read from GTK, so a toolkit initialized by a
-  `Gtk.Application` counts.
-- `gi.get(object, property)` / `gi.set(object, property, value)` — read and
-  write a GObject property.
-- `gi.call(object, method[, args...])` — call an instance method, resolved by
-  walking the class hierarchy and implemented interfaces. Array/list parameters
-  accept `nothing` for a NULL pointer (for example `gi.call(app, "run", 0, nothing)`).
-- `gi.invoke("Namespace.function"[, args...])` — call a function that needs no
-  receiver, such as `gi.invoke("Gtk.init")` or
-  `gi.invoke("GLib.markup_escape_text", "<a>", -1)`.
-
-  **A string argument containing an interior NUL is refused** (*since 0.2.2*),
-  rather than arriving truncated. A GObject string parameter is a
-  NUL-terminated C string by construction, so there is no length to pass
-  alongside it and no encoding in which the remaining bytes could arrive; this
-  is the same answer `pg`, `xlsx` and `xml` give, and for the same reason. Where
-  the byte matters, `hex_encode` it or strip it.
-
-  A three-part name calls a **static on a class**:
-  `gi.invoke("Gdk.Display.get_default")`,
-  `gi.invoke("Gtk.StyleContext.add_provider_for_display", display, provider, 800)`.
-  The type may be an object, an interface, a struct, a union or an enum. The
-  static must be declared on the type named — ancestors are not searched, since
-  a static belongs to the class that declares it.
-
-  Two shapes are refused rather than guessed at. A **method** needs an
-  instance, so it is refused with a pointer to `gi.call`; a **constructor** is
-  refused with a pointer to `gi.new`, because a constructor hands back a
-  reference (a `GtkWidget`'s is floating) and who owns it is a question this
-  path does not answer.
-- `gi.connect(object, signal, function)` — connect a gBASIC function to a
-  signal; returns a numeric handler id. The handler is called with the signal's
-  arguments (the emitter, then any signal parameters).
-- `gi.disconnect(object, handler_id)` — disconnect a previously connected
-  handler.
-- `gi.enum("Namespace.Enum.MEMBER")` — resolve an enum or flags member to its
-  numeric value, for example `gi.enum("Gtk.Orientation.VERTICAL")`.
-- `gi.is_a(object, type_name)` — true when the object is, or derives from, the
-  named type.
-- `gi.type_name(object)` — the object's GType name as a string.
-- `gi.main()` / `gi.quit()` — run and stop a toolkit-agnostic GLib main loop
-  owned by the program; an alternative to driving `GApplication.run` yourself.
-
-Value mapping covers booleans, numbers (every integer and floating GValue type,
-plus enums and flags as numbers), UTF-8 strings, objects (`gobject`), and
-`nothing`/NULL. Unsupported types raise rather than silently mis-convert.
-Container marshalling (arrays, lists, hashes) is not implemented beyond passing
-`nothing` for a NULL pointer, and `out`/`inout` method parameters are not
-supported. A signal handler that raises does not corrupt the outer program: the
-error is surfaced, any running `gi.main()` loop ends, and the program's
-error/line state is restored.
-
-The GTK 3 `gui` module and the GTK 4 `gi` bridge cannot be used in the same
-process; loading one after the other has taken the opposite GTK version raises a
-structured error. Errors from the module use `error.source = "gi"`.
-
-## GTK 4 helpers and SourceEditor
-
-> Guided introduction: [`docs/gui_tutorial.md`](gui_tutorial.md). Task-by-task
-> recipes, all executed by the suite: [`docs/gui_cookbook.md`](gui_cookbook.md).
-
-Two **pure-gBASIC** stdlib libraries make native GTK 4 code readable over the raw
-`gi` bridge. They add no native code and hide no GTK semantics — every wrapper
-returns the underlying GObject, so you drop to `gi` (`obj.method(...)`,
-`obj.prop = ...`, `gi.connect`) for anything not wrapped. Load them with
-`GBASIC_PATH` pointing at the dev tree's `stdlib` (or the installed path):
-
-```sh
-GBASIC_PATH=stdlib ./gbasic examples/native_editor/editor_demo.bas
-```
-
-Both require the GTK 4 / GtkSource 5 introspection typelibs at runtime
-(`gir1.2-gtk-4.0`, `gir1.2-gtksource-5`), loaded through `gi` (not linked).
-
-### `gtk` (`load gtk`)
-
-Thin GTK 4 constructors, each returning the GTK GObject:
-
-- `gtk.init()` — initialize GTK (needed before building widgets; needs a display).
-- `gtk.application(app_id)` / `gtk.application_window(app)` / `gtk.window()`.
-  **`gtk.application` is SINGLE-INSTANCE**, because it builds a `Gtk.Application`
-  with GTK's default flags and that is GTK's default. A second run of your
-  program then does not open a second window: it registers as a remote, forwards
-  `activate` to the process already running, and exits. The running process gets
-  an *extra* `activate` — so if your handler builds a shell over globals, it
-  builds a second one and every signal handler is now doubled. Both halves of
-  that cost gBASIC Studio a day. If you want independent windows, build the
-  application object by hand with `NON_UNIQUE`:
-
-  ```basic
-  gi.require("Gio", "2.0")
-  solo = gi.enum("Gio.ApplicationFlags.NON_UNIQUE")
-  app = gi.new("Gtk.Application", "application-id", "com.example.App", "flags", solo)
-  ```
-
-  `gtk` has no flags parameter on purpose — it wraps GTK rather than replacing
-  it, so anything unwrapped is reached through `gi`.
-- `gtk.box(orientation, spacing)` / `gtk.paned(orientation)` — `orientation` is
-  `"h"`/`"horizontal"` or `"v"`/`"vertical"`.
-- `gtk.scrolled(child)` / `gtk.stack()` / `gtk.notebook()` / `gtk.listbox()`.
-- `gtk.button(label)` / `gtk.label(text)`.
-- `gtk.connect(widget, signal, handler)` — alias for `gi.connect` (named
-  `connect`, not `on`, because `on` is a reserved keyword).
-- `gtk.enum("Gtk.Orientation.VERTICAL")` — resolve an enum/flags member to its int.
-- `gtk.require()` — ensure the GTK 4 namespace is loaded. Safe to call
-  repeatedly; every other `gtk.*` constructor calls it, so you only need it
-  directly when reaching for `gi.*` before any `gtk.*` call.
-
-This is a thin convenience layer, **not** a new widget framework and not the
-declarative reconciler planned for a later phase.
-
-### `sourceeditor` (`load sourceeditor`)
-
-A reusable source/text editor over GtkSourceView 5. General-purpose — nothing is
-named after or specific to any application. An editor is a plain gBASIC record
-holding its `GtkSourceBuffer` plus methods; the `GtkSourceView` **widget** is
-created lazily on first `view()`/`scroll_to()`/`add_inline()`, so the text,
-language, cursor, mark, and highlight operations work **headlessly** (a buffer is
-not a widget) and only the view-dependent operations need an initialized GTK and a
-display.
-
-- `sourceeditor.create()` — a new editor (buffer only until a view is needed).
-- `sourceeditor.language(id)` / `sourceeditor.language_manager()` — resolve a
-  `GtkSourceLanguage` / a search-path'd `GtkSourceLanguageManager` (headless).
-- editor methods (call on the returned record):
-  - `.get_text()` / `.set_text(s)`
-  - `.set_language(id)` — assign a language (e.g. `"gbasic"`); raises if unknown.
-  - `.cursor()` → `{line, column}` (0-based) / `.set_cursor(line, column)`
-  - `.mark(line, category)` → a `GtkSourceMark` (the category string's meaning is
-    the caller's — bookmark, diagnostic, breakpoint, …; not fixed by the library).
-  - `.highlight(start_line, end_line, color)` → a `GtkTextTag` (whole-line
-    background highlight) / `.unhighlight(tag)`.
-  - `.on_change(fn)` — call `fn` on every buffer edit.
-  - `.view()` — the `GtkSourceView` widget (created on first use; needs a display).
-  - `.scroll_to(line)` / `.add_inline(line, widget)` — scroll to a line; anchor a
-    generic GTK widget at a source line via `GtkTextChildAnchor` (needs a display).
-
-### `gbasic.lang` (syntax definition)
-
-gBASIC syntax highlighting is a GtkSourceView language definition shipped at
-`stdlib/gtksourceview/gbasic.lang` (grounded in `docs/TOKENS.md`: comments,
-strings with escapes, decimal/hex numbers, the case-insensitive keyword set,
-`true`/`false` and `nothing`/`unknown` literals, declarations). `sourceeditor`
-locates it by adding the stdlib's `gtksourceview/` directory to a
-`GtkSourceLanguageManager` search path at runtime — derived from `GBASIC_PATH`
-(dev tree) plus the documented install location
-(`/usr/local/share/gbasic/stdlib/gtksourceview` by default). After `make install`
-the `.lang` installs alongside the rest of the stdlib.
-
-### `gtkui` — declarative widget-tree reconciler (`load gtkui`)
-
-A **pure-gBASIC** dynamic reconciler over a **backend you supply** *(since
-0.8.1; before that it was welded to GTK)*. You describe a UI as a tree of
-records; `gtkui` builds the real widget tree and, on each `update`, mutates
-the *existing* widgets in place — changing only the properties that changed,
-inserting/removing/reordering children, and replacing a widget only when its type
-or identity changes. This is the dynamic tree mutation the old GTK 3 `gui` module
-never had. It is **not** a closed widget system: every node maps to a real GTK
-object you can reach and mix with hand-built widgets.
-
-**Node schema** (a record; every field optional except one of `type`/`widget`):
-
-- `type` — a **type name the backend understands** (`"Gtk.Button"` with the GTK
-  backend); built generically, so any type the backend can make works with no new
-  code here.
-- `widget` — an already-created GObject: the **native escape hatch**. `gtkui`
-  parents it and (optionally) connects its signals, but does not manage its props
-  or children — use it to embed a manual `GtkGrid`, a `sourceeditor` view, or any
-  other component the reconciler did not build.
-- `key` — stable identity string within a sibling list.
-- `props` — record of property → value (with the GTK backend, `gi.set`; enums as
-  ints via `gi.enum`).
-- `signals` — record of signal-name → handler function.
-- `children` — array of child nodes.
-
-**API:**
-
-- `gtkui.mount(backend, parent, desc)` → a handle; builds `desc` and attaches its
-  root to the existing `parent` container. **Only `mount` takes the backend** —
-  the handle carries it, so the four calls below are unchanged.
-- `gtkui.update(handle, desc)` → **a new handle**; reconciles and returns the
-  updated handle (records are copy-on-write, so reassign: `h = gtkui.update(h, d)`).
-- `gtkui.unmount(handle)` — detach the root and disconnect every handler.
-- `gtkui.root(handle)` → the root widget (raw, for interop).
-- `gtkui.lookup(handle, key)` → the widget for a keyed node, or `nothing`.
-
-### `gtkui_gtk` — the GTK 4 backend for `gtkui` (`load gtkui_gtk`)
-
-*(since 0.8.1)* The half that knows what a widget is. `gtkui` reconciles a record
-tree; this library creates GTK widgets, sets their properties, connects their
-signals and parents their children.
-
-```basic
-load gtkui
-load gtkui_gtk
-h = gtkui.mount(gtkui_gtk.backend(), window, desc)
-```
-
-- `gtkui_gtk.backend()` → the backend record `gtkui.mount` takes. The twelve
-  entries are `name`, `create`, `set_prop`, `connect`, `disconnect`, `kind`,
-  `attach`, `detach`, `reorder_after`, `parent_attach`, `parent_detach` and
-  `describe`; each is a function value, and the individual functions below are
-  public so a backend can be assembled or wrapped.
-- `gtkui_gtk.kind(type)` → `"box"`, `"single"`, `"paned"` or `"leaf"` — how that
-  GTK type parents children. **The four kinds are the seam's vocabulary, not
-  GTK's**; a backend maps its own types onto them, which is why the reconciler
-  never learns a GTK type name.
-- `gtkui_gtk.create(type)` → a widget. `gtkui_gtk.set_prop(w, name, value)`,
-  `gtkui_gtk.connect(w, signal, handler)` → a handler id, and
-  `gtkui_gtk.disconnect(w, id)` — one widget at a time, over `gi`.
-- `gtkui_gtk.attach(container, kind, child, key)` and
-  `gtkui_gtk.detach(container, kind, child, key)` add and remove a child;
-  `gtkui_gtk.reorder_after(container, child, prev)` places one after another
-  (`nothing` means first).
-- `gtkui_gtk.parent_attach(parent, child)` and
-  `gtkui_gtk.parent_detach(parent, child)` handle the **foreign** container a
-  tree is mounted into. These dispatch on the *object* (`gi.is_a`) rather than a
-  declared type, because that container was built by the caller and the
-  reconciler never saw it made.
-- `gtkui_gtk.describe(w)` → the GTK type name, for diagnostics.
-
-**Why the split exists.** `docs/gui_addressability_design.md` §0.3 decided
-(2026-09-29) on "`gui`'s identity rules, `gtkui`'s mechanism, GTK behind a seam",
-because a second backend is foreseeable. The reconciler has **no `load` of its
-own**, and that is what makes the seam real rather than tidy: `load` is a
-declaration and cannot be conditional, so while the reconciler carried `load gi`
-it could not run at all without GObject-Introspection, whatever backend it was
-given. `tests/gtkui/seam.bas` drives it over a recording backend with no GTK, no
-typelib and no display — a seam with one implementation is indistinguishable from
-no seam.
-
-**Identity.** When *every* child in a sibling list carries a `key`, children are
-matched by key — enabling insert, remove, and **reorder** with the same widget
-instances preserved (and their cursor/scroll/selection/focus state with them).
-Otherwise matching is positional by index. Text/labels are never used as identity.
-
-**Reconciliation.** A node whose `type` (or native identity) is unchanged reuses
-its widget; only changed properties are re-applied (unchanged ones are left alone,
-so widget state is preserved). A property dropped from the description is **not**
-reverted — set it explicitly to change it. A type/identity change under a slot
-replaces the widget (old detached and destroyed, new created and inserted).
-
-**Signals.** Each reconcile disconnects the handlers it previously connected (by
-recorded id) and connects exactly those in the new description — so there is
-always exactly one connection per declared signal, always the current handler,
-never a duplicate across repeated `update`s.
-
-**Container adapters** (extensible kind table): `Gtk.Box` (ordered multi-child:
-append/remove/reorder), single-child containers (`Gtk.Window`,
-`Gtk.ApplicationWindow`, `Gtk.ScrolledWindow`, `Gtk.Frame`: `set_child`), and
-`Gtk.Paned` (two keyed slots, `"start"`/`"end"`). Other widget types are leaves
-(no children). New container kinds are added by extending the table, not the core.
-
-**Limitations (v1):** the widget subset above (other containers are one table
-entry away); mixed keyed/unkeyed sibling lists fall back to positional matching;
-dropped properties are not auto-reverted. See `examples/native_ui/dynamic_list.bas`
-for a worked demo.
-
-**SourceEditor vs. gBASIC Studio:** `sourceeditor` is a reusable, general editor
-component. It is deliberately free of Studio concepts (projects, execution
-boundaries, branches, inspector); a future gBASIC Studio would *use* this library,
-not the other way around.
-
-### `datagrid` — virtualized data grid (`load datagrid`)
-
-A general, reusable table for large tabular datasets. It displays 10⁴–10⁶+ rows
-in a `GtkColumnView` **without building one widget per row or per cell**: GTK
-realizes cell widgets only for the rows on screen (plus recycling slack), so a
-million-row grid costs a few hundred widgets, not a million. It is a general
-component (ledgers, admin tables, database browsers, ETL monitors, scientific
-data), not tied to any application.
-
-**Why a native piece exists.** GTK4 virtualizes only when fed a `GListModel`,
-which is a GObject *interface* — implementing it from gBASIC would require runtime
-interface subclassing, which the platform avoids. So one small fixed C GType
-(`rowmodel.*`, the `GbRowModel` adapter) supplies the row **count** and lazy
-index-carrying row **proxies** to GTK, and nothing else. It holds NO row data and
-never calls back into the interpreter. Everything above it — columns, factories,
-formatting, selection, refresh — is gBASIC over `gi`. The only gBASIC re-entry is
-the `GtkSignalListItemFactory` "bind" signal, on the GTK main-loop / interpreter
-thread through the normal, error-contained `gi.connect` path. **Main-thread rule:**
-like all of `gi`, a grid is built and updated only on the interpreter's thread.
-
-**Setup (one line, at program scope):**
-
-```basic
-load datagrid
-_DATAGRID = datagrid.new_registry()
-```
-
-The factory bind handler, which GTK calls with only `(factory, item)` and which
-gBASIC (no closures) cannot give a captured grid, finds its grid through the
-program-global registry `_DATAGRID`. It must be created at program scope.
-
-**Source modes:**
-
-- **Array-backed** — `datagrid.create(rows)` where `rows` is an array of records,
-  of arrays, or of scalars. COW arrays make row access O(1) (`tests/run_arridx.sh`),
-  so the array is never copied into native storage. `create` takes a **COW snapshot**: it shares
-  the backing store until either side mutates. Later mutation of your variable
-  does *not* change the grid, and the grid never touches your variable; call
-  `datagrid.set_rows` to show new data. A deliberate, predictable rule.
-- **Virtual/generated** — `datagrid.create_virtual(count_fn, cell_fn)`. Nothing is
-  materialized: `count_fn()` returns the logical row count and `cell_fn(row, col)`
-  computes a cell on demand. This is the path for database cursors, generated
-  data, or datasets too large to hold in memory, and scales to 10⁶+ logical rows.
-
-**API:**
-
-- `datagrid.new_registry()` → registry (assign to `_DATAGRID`).
-- `datagrid.create(rows)` / `datagrid.create_virtual(count_fn, cell_fn)` → handle.
-- `datagrid.add_column(handle, spec)` → handle. `spec`: `title`, `field` (record
-  field) or `index` (element index; omit both for a scalar source), `resizable`
-  (default true), `format` (optional `(value)->string`).
-- `datagrid.widget(handle)` → the `GtkColumnView` (embed / customize directly).
-- `datagrid.selection(handle)` → the `GtkSingleSelection`; `datagrid.selected(handle)`
-  → selected logical row index, or −1 (GTK single-selection autoselects row 0 by
-  default).
-- `datagrid.cell(handle, row, col)` → the exact string a cell displays (the same
-  path bind uses); reads grid values without a rendered window.
-- `datagrid.row_count(handle)`; `datagrid.set_rows(handle, rows)` (array source);
-  `datagrid.refresh(handle)`; `datagrid.set_count(handle, n)` (virtual source).
-- `datagrid.destroy(handle)` / `datagrid.destroyed(handle)` — lifecycle. Exact
-  semantics:
-  - `destroy` releases the **registry-owned** state: the grid's `GtkColumnView`,
-    selection model, native row model, columns, factories, and the callback-reachable
-    source and `format` function values.
-  - It does **not** destroy an enclosing window or container. Native widgets remain
-    subject to ordinary GTK ownership: anything still parented is owned by its parent
-    and goes away when that parent does. Destroy the window separately.
-  - The registry **slot is tombstoned, not removed**, so grid ids stay stable — the
-    bind handler resolves its grid by id (an index into `grids`), and removing an
-    element would shift every later grid's id.
-  - `destroy` is idempotent; `destroyed(handle)` reports the state. A late in-flight
-    bind on a destroyed grid renders an empty cell rather than unwinding through GTK.
-  - Other accessors (`widget`, `cell`, `refresh`, …) on a destroyed handle currently
-    **raise** — but with an internal message (`unknown record field: view`) rather
-    than a purposeful one. Check `destroyed(handle)` first. Tidying that message is
-    deferred (it would change just-accepted behavior).
-  - Tombstones are constant-size records holding no factories or callbacks, so
-    create/destroy cycles retain nothing; the `grids` array itself still grows by
-    the create count (deferred).
-- `datagrid.model(handle)` — the native `GbRowModel` (a `GListModel`) behind the
-  grid. Mainly for instrumentation: `rowmodel.item_requests(datagrid.model(h))`
-  reports how many rows GTK actually realized, which is how the 1M-row
-  virtualization claim is measured rather than asserted.
-- `datagrid.accesses()` / `datagrid.setups()` / `datagrid.reset_accesses()` —
-  bind and setup counters (instrumentation; `reset_accesses` zeroes both).
-
-**Updates** go through the model's `items-changed`, so `GtkColumnView` re-binds
-visible rows rather than rebuilding widgets.
-
-**Sorting/filtering** are not built in for v1: sort/filter your source (or wrap
-the model in `GtkSortListModel`/`GtkFilterListModel` via `gi` on
-`datagrid.widget`) and `datagrid.refresh`. Kept out of v1 so they don't complicate
-the virtualization core.
-
-**Errors** in an array-backed lookup (out-of-range row, missing field) render as
-empty text rather than raising. A virtual `cell_fn` that raises is contained by
-the `gi` signal machinery (it does not crash GTK or unwind through C), so keep
-`cell_fn` total where possible.
-
-**Ownership:** the handle is the only thing you need to keep. The registry entry
-retains the view, selection, native model, and every column's factory and format
-function for as long as the grid lives, so factories stay internal — you never
-need to hold one in a variable of your own for rendering to work. (An earlier
-NAP-12 note claiming otherwise was a measurement artifact and has been retracted;
-see DOGFOOD and `tests/datagrid/lifetime.bas`.)
-
-**Measuring binds:** `GtkColumnView` realizes and binds its visible rows when the
-view is first given a size — when it is added to a window — *not* on `present()`
-and not when the main loop runs. Reset the counters before building the widget
-tree; resetting afterwards zeroes work already done and makes a healthy grid look
-inert. Worked demo: `examples/native_ui/datagrid_demo.bas`.
-
 ## PDF documents (`gpdf`)
 
 `load gpdf` — pure gBASIC, written from ISO 32000. The document, the core-14
@@ -5619,8 +5168,9 @@ and reads `launch_failed` instead of checking first.
   in this version).
 - **Blocking** — `process.run` waits for the child to finish and captures its output
   fully into memory (no streaming; large output uses proportional memory). To keep a
-  GUI responsive, run it inside a spawned actor and deliver the result to the main
-  loop via `gi.watch_mailbox` (the actor + event-loop pattern).
+  GUI responsive, run it inside a spawned actor and receive the result with a
+  `watch(inbox.messages)` watcher, which the event loop delivers (the actor +
+  event-loop pattern).
 
 ### Live child control
 
@@ -5783,8 +5333,8 @@ the process that started it.
 (no `load`) for debuggers, IDE variable inspectors, AI/Agent tools, serializers, and
 testing tools. It exposes small **composable** primitives so a consumer can explore a
 value **lazily**, rather than one recursive dump that would copy a huge or deeply
-nested graph. **Reflectable is broader than serializable**: a live GObject is
-reflectable (its kind and type) but not serializable.
+nested graph. **Reflectable is broader than serializable**: a live process
+handle is reflectable (its kind and type) but not serializable.
 
 Environment:
 
@@ -5795,14 +5345,14 @@ Environment:
 Value description (each takes one value):
 
 - `reflect.kind(v)` → the value kind: `"number"`, `"string"`, `"boolean"`,
-  `"nothing"`, `"unknown"`, `"array"`, `"record"`, `"function"`, `"gobject"`,
-  `"gboxed"`, `"gvariant"`, `"datetime"`, `"duration"`, `"money"`, `"file"`,
+  `"nothing"`, `"unknown"`, `"array"`, `"record"`, `"function"`,
+  `"datetime"`, `"duration"`, `"money"`, `"file"`,
   `"directory"`, `"actor"`, database-connection kinds, …
-- `reflect.type(v)` → a refined type: a **GType name** for a live gobject/boxed value
-  (e.g. `"GtkButton"`, `"GVariant"`), otherwise the kind. Never a raw pointer.
+- `reflect.type(v)` → the value's type, which today is its kind. Never a raw
+  pointer.
 - `reflect.category(v)` → `"scalar"`, `"container"`, `"function"`, or `"foreign"`.
 - `reflect.serializable(v)` → boolean; **true** iff the value (recursively, for
-  arrays/records) can be `serialize`d. Foreign/live handles (gobject, gboxed, actor,
+  arrays/records) can be `serialize`d. Foreign/live handles (actors, processes,
   DB connections) are `false`.
 - `reflect.count(v)` → element count (array), field count (record), or byte length
   (string). Raises otherwise.
@@ -5846,8 +5396,8 @@ Scope and semantics:
 
 **Reflectable vs. serializable**: reflection describes a value's shape and identity of
 kind without requiring it to be encodable; `serialize` encodes a value's data. A
-gobject is `reflect.inspect`-able as `kind=gobject, type=GtkButton, serializable=false`
-without exposing its internals.
+process handle is `reflect.inspect`-able as `kind=process, category=foreign,
+serializable=false` without exposing its internals.
 
 ## Core Builtin Functions
 
@@ -6354,7 +5904,6 @@ cannot keep a paragraph on this page either.
 | typed values | `datetime`, `duration`, `money`, `file`, `directory` |
 | language | `function`, `regex`, `watcher`, `actor`, `process` |
 | handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `xml_reader`, `http`, `workbook` |
-| GObject bridge | `gobject`, `gboxed`, `gvariant` |
 <!--/TYPEKINDS-->
 
 **Two answers are not the word you wrote**, and both read as a bug in your own
@@ -6619,23 +6168,6 @@ function's arity depend on how often the value had been bound, which nothing at
 the call site shows. A bound value is still `type()` `"function"`, and a record
 field holding one works as a method, so two objects can share one function with
 different configuration.
-
-**A GTK signal handler and a gi event-source callback carry their context**
-*(since 0.6.0)*. This is what `bound` was for: GTK calls a handler with the
-arguments the *signal* defines and nothing else, so anything else a handler needed
-had to be smuggled — through a program-global registry, or inside an object the
-signal happens to hand back.
-
-```basic
-gi.connect(factory, "bind", bound(on_bind, { gid: 3, ordinal: 1 }))
-gi.timeout(200, bound(poll, { endpoint: url }))
-```
-
-The context belongs to the **connection**, not to the object or the function, so
-one object may carry two handlers of the same function that differ only in what
-they were bound with. It is copied at connect time and freed with the closure — a
-closure outlives the statement that created it, which is what connecting a signal
-means, so it cannot be a borrow into the caller's frame.
 
 **Where a context still cannot travel it is refused, not dropped.**
 `webserver.on_request` keeps only the function's *name*, so it raises rather than
@@ -8233,7 +7765,6 @@ other one is pure gBASIC over the core and works on any build.
 | --- | --- |
 | `agent` | libcurl |
 | `ari_advisor` | libcurl |
-| `datagrid` | GObject-Introspection |
 | `dbframe` | libsqlite3 |
 | `discovery` | unixODBC |
 | `edgar` | libcurl, libsqlite3 |
@@ -8241,8 +7772,6 @@ other one is pure gBASIC over the core and works on any build.
 | `finio_camt` | libxml2 |
 | `finio_iso20022` | libxml2 |
 | `finio_pain001` | libxml2 |
-| `gtk` | GObject-Introspection |
-| `gtkui_gtk` | GObject-Introspection |
 | `insiders` | libcurl, libsqlite3, libxml2 |
 | `llm` | libcurl |
 | `market` | libcurl |
@@ -8251,7 +7780,6 @@ other one is pure gBASIC over the core and works on any build.
 | `ownership` | libxml2 |
 | `retrieval` | libpq |
 | `screener` | libsqlite3 |
-| `sourceeditor` | GObject-Introspection |
 <!--LIBNEEDS:end-->
 
 **The column is what to install, not what the error says.** The modules refuse
@@ -8321,8 +7849,12 @@ hash gBASIC did not write: legacy `crypt(3)` schemes (`$6$`, `$2b$`, `$1$`) are
 
 | | can load | cannot |
 | --- | --- | --- |
-| lean (`libc`, `libm` only) | 52 of 66 | **14** — the libcurl, libpq, unixODBC and GObject-Introspection rows |
-| `-full` (+ libcurl, libssl, libcrypto) | 60 of 66 | **6** — `discovery` (unixODBC), `retrieval` (libpq), and the four GObject-Introspection libraries |
+| lean (`libc`, `libm` only) | 52 of 62 | **10** — the libcurl, libpq and unixODBC rows |
+| `-full` (+ libcurl, libssl, libcrypto) | 60 of 62 | **2** — `discovery` (unixODBC) and `retrieval` (libpq) |
+
+*(Derived from the table above after GTK and gi were removed on 2026-10-22,
+which took four libraries off each tier's "cannot" list; the release build
+re-measures these and refuses to publish if they differ.)*
 
 **The 0.7.0 archives predate this** and carry 44 and 52 of 65 respectively,
 with libxml2 in neither; the figures above describe what the release build
@@ -8331,13 +7863,10 @@ library against the binary it just made and refuses to publish an archive whose
 unloadable set is not what the derivation above predicts.
 
 What is left needs a build from source, and that is a measured decision rather
-than an oversight. libpq, unixODBC and GTK are **not installed on an ordinary
+than an oversight. libpq and unixODBC are **not installed on an ordinary
 machine**, and a linked binary that cannot find one does not start at all — a
-library refusing with a message naming what to install is strictly better.
-GObject-Introspection additionally needs runtime data a binary cannot carry
-(typelibs, icon themes, GSettings schemas, a display), so neither linking nor
-`dlopen` reaches it; `tools/build-deb.sh` is the route there. The reasoning and
-the measurements are in `docs/dependency_linking_design.md`.
+library refusing with a message naming what to install is strictly better. The
+reasoning and the measurements are in `docs/dependency_linking_design.md`.
 
 General-purpose:
 
@@ -10305,13 +9834,6 @@ whole program without needing a call site.
   header is indistinguishable from its first heading, so one page is not
   evidence of furniture and the honest answer names what is missing.
 - `llm` — a chat-completion client (`docs/llm_design.md`).
-- `gui` — the declarative layer for the experimental GTK 3 `gui` module
-  (`docs/gui_design.md`).
-- `gtk` — thin ergonomic GTK 4 constructors over the `gi` bridge (see
-  [GTK 4 helpers and SourceEditor](#gtk-4-helpers-and-sourceeditor)).
-- `sourceeditor` — a reusable GtkSourceView 5 source/text editor (same section).
-- `gtkui` — a dynamic declarative widget-tree reconciler over `gi` (state → record
-  tree → in-place GTK 4 mutation; see [gtkui](#gtkui--declarative-widget-tree-reconciler-load-gtkui)).
 
 EDGAR / SEC-filings suite (governed by `docs/edgar_design.md`, with
 `docs/edgar_reference.md` and `docs/edgar_tutorial.md`):
@@ -10338,8 +9860,8 @@ said plainly for that reason. `tests/run_windows_suite.sh` runs its fixtures on
 *every* platform, so a Windows-only assumption fails on Linux too.
 
 Deliberately absent on Windows, each refusing by name when called: POSIX signals
-(`process.stop` ends a child with a console control event instead), the prompt's
-line editor, and the GTK bindings. `docs/windows_port_status.md` records what was
+(`process.stop` ends a child with a console control event instead), and the prompt's
+line editor. `docs/windows_port_status.md` records what was
 measured.
 
 **macOS is not supported, and the honest word is now *measured* rather than

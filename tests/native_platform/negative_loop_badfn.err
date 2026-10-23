@@ -1,1 +1,0 @@
-runtime error at tests/native_platform/negative_loop_badfn.bas:5:1: gi.timeout expects a function

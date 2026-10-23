@@ -623,12 +623,9 @@ if [ -f Makefile ] && [ -f README.md ]; then
     deptable=$(awk '/^\| Dependency \| Enables \|/{f=1} f&&/^```/{exit} f' README.md)
     for m in $(grep -oE 'HAVE_[A-Z0-9_]+' Makefile | sort -u); do
         case "$m" in
-            HAVE_GIO) continue ;;                       # ships with HAVE_GIR
             # Vendored source, nothing to install; it stands in for libxcrypt,
             # and the libxcrypt row says so.
             HAVE_YESCRYPT) want='third_party/yescrypt' ;;
-            HAVE_GIR)      want='girepository' ;;
-            HAVE_GTK)      want='GTK 3' ;;
             HAVE_SQLITE3)  want='sqlite3' ;;
             HAVE_LIBPQ)    want='libpq' ;;
             HAVE_ODBC)     want='ODBC' ;;

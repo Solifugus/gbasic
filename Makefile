@@ -38,9 +38,6 @@ CFLAGS += -DGBASIC_DEFAULT_SYNTAX='"$(SYNTAXDIR)"'
 # the macro, so only they rebuild when it changes. The rule itself lives further
 # down, below `all` -- a target defined up here would become the DEFAULT GOAL and
 # a bare `make` would build nothing but the stamp.
-GTK_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gtk+-3.0 && printf 1 || printf 0)
-GTK_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags gtk+-3.0 2>/dev/null)
-GTK_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs gtk+-3.0 2>/dev/null)
 LIBPQ_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libpq && printf 1 || printf 0)
 LIBPQ_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libpq 2>/dev/null)
 LIBPQ_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libpq 2>/dev/null)
@@ -85,28 +82,6 @@ ZLIB_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --
 ZLIB_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags zlib 2>/dev/null)
 ZLIB_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs zlib 2>/dev/null)
 
-# GObject-Introspection bridge (gi.* module). Targets the modern GLib-merged
-# libgirepository (girepository-2.0, gi_repository_* API, GLib >= 2.80); the
-# legacy 1.x gobject-introspection-1.0 API is intentionally NOT supported.
-#
-# `--exists` IS the version floor here, and deliberately so: girepository-2.0
-# did not exist before GLib 2.80 (that is the release the library was merged
-# into GLib), so a system that has the module has at least 2.80.
-#
-# The floor that bites is therefore not this one but the API's own. Symbols kept
-# arriving after 2.80, and using one adds a floor NOTHING HERE CHECKS -- the
-# build simply fails to LINK, and it takes the whole gbasic binary with it, not
-# just the gi module. That happened: gi_repository_dup_default() is absent in
-# 2.80.0 (Ubuntu 24.04 LTS) and 2.84.1 (25.04) and present in 2.88.0, so the
-# current LTS could not build gBASIC at all while every dev box here was fine.
-# Fixed by using gi_repository_new(), which exists across all three.
-#
-# So: when adding a gi_* call, check it exists in 2.80, or raise this floor to
-# a `--atleast-version` and say why. Verified by BUILDING in an ubuntu:24.04
-# container, which is the only thing that actually proves it.
-GIR_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists girepository-2.0 && printf 1 || printf 0)
-GIR_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags girepository-2.0 2>/dev/null)
-GIR_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs girepository-2.0 2>/dev/null)
 
 # QT 6 (the `qt` module, docs/qt_gui_design.md). TWO THINGS MUST BE PRESENT and
 # the second is easy to forget: the LIBRARIES, and `moc`. Qt's signal/slot
@@ -137,13 +112,6 @@ QT_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs Qt
 CXX ?= c++
 QT_CXXFLAGS := -std=c++17 -fPIC -Wall -Wextra -Iinclude -Isrc/modules -g
 
-# GIO (NAP-12 row-model adapter). `GListModel` is a GIO interface, and
-# girepository-2.0 links only gobject/glib — so the DataGrid's native
-# adapter needs gio-2.0 explicitly. Independent of GTK: the adapter
-# implements a GIO interface and is never linked against GTK itself.
-GIO_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gio-2.0 && printf 1 || printf 0)
-GIO_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags gio-2.0 2>/dev/null)
-GIO_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs gio-2.0 2>/dev/null)
 
 # WINDOWS: NO OPTIONAL MODULE IS AUTO-DETECTED. An MSYS2 install carries
 # libcurl, OpenSSL, libxml2, sqlite3 and zlib as other packages' dependencies,
@@ -154,7 +122,6 @@ GIO_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs g
 # M5 libcurl), with its static link worked out and measured. A command-line
 # override (make LIBXML2_AVAILABLE=1) still wins over these, as it does on Linux.
 ifeq ($(OS),Windows_NT)
-GTK_AVAILABLE := 0
 LIBPQ_AVAILABLE := 0
 # M4: sqlite, STATICALLY. One library and zlib (its pkg-config Libs.private),
 # and its header declares no dllimport, so no _STATIC define is needed the way
@@ -218,8 +185,6 @@ LIBXML2_LIBS := -lxml2 -lbcrypt -lz
 ZLIB_AVAILABLE := 1
 ZLIB_CFLAGS :=
 ZLIB_LIBS := -lz
-GIR_AVAILABLE := 0
-GIO_AVAILABLE := 0
 # Qt on Windows is a milestone of its own, and QSocketNotifier there works on
 # SOCKETS ONLY -- so direction A needs QWinEventNotifier for any source that is
 # not one (docs/qt_gui_design.md §5.1 names it rather than leaving it to be
@@ -227,13 +192,7 @@ GIO_AVAILABLE := 0
 QT_AVAILABLE := 0
 endif
 
-ifeq ($(GTK_AVAILABLE),1)
-CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
-LDLIBS += $(GTK_LIBS) -lm
-else
-CFLAGS += -DHAVE_GTK=0
 LDLIBS += -lm
-endif
 
 ifeq ($(LIBPQ_AVAILABLE),1)
 CFLAGS += -DHAVE_LIBPQ=1 $(LIBPQ_CFLAGS)
@@ -334,19 +293,7 @@ else
 CFLAGS += -DHAVE_ZLIB=0
 endif
 
-ifeq ($(GIR_AVAILABLE),1)
-CFLAGS += -DHAVE_GIR=1 $(GIR_CFLAGS)
-LDLIBS += $(GIR_LIBS)
-else
-CFLAGS += -DHAVE_GIR=0
-endif
 
-ifeq ($(GIO_AVAILABLE),1)
-CFLAGS += -DHAVE_GIO=1 $(GIO_CFLAGS)
-LDLIBS += $(GIO_LIBS)
-else
-CFLAGS += -DHAVE_GIO=0
-endif
 
 # KSYNTAXHIGHLIGHTING -- the `source` widget's highlighter (docs/qt_gui_design.md
 # §0.14). DETECTED BY HEADER AND LIBRARY RATHER THAN pkg-config, which is not a
@@ -537,7 +484,7 @@ FORCE:
 # `^[A-Z0-9_]+_AVAILABLE` from COLUMN ONE, and a name used only inside this
 # variable never appears there -- so tests/run_library_tiers.sh asserts the
 # names in this line are all assigned, which catches the NEXT one.
-BUILD_SWITCH_SIG := $(GIO_AVAILABLE)|$(GIR_AVAILABLE)|$(GTK_AVAILABLE)|$(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(QT_AVAILABLE)|$(KSYNTAX_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)
+BUILD_SWITCH_SIG := $(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(QT_AVAILABLE)|$(KSYNTAX_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)
 .buildswitch-stamp: FORCE
 	@printf '%s' '$(BUILD_SWITCH_SIG)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(BUILD_SWITCH_SIG)' > $@
 
@@ -561,7 +508,7 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/rowmodel.c src/modules/xlsx.c src/modules/qt.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h .stdlibdir-stamp .buildswitch-stamp
+src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # THE QT BACKEND: moc, then C++. The generated unit is `#include`d by the .cpp
@@ -609,8 +556,6 @@ install: gbasic
 	install -m 0755 gbasic $(DESTDIR)$(BINDIR)/gbasic
 	install -d $(DESTDIR)$(STDLIBDIR)
 	install -m 0644 stdlib/*.bas $(DESTDIR)$(STDLIBDIR)/
-	install -d $(DESTDIR)$(STDLIBDIR)/gtksourceview
-	install -m 0644 stdlib/gtksourceview/gbasic.lang $(DESTDIR)$(STDLIBDIR)/gtksourceview/
 	install -d $(DESTDIR)$(SYNTAXDIR)/syntax
 	install -m 0644 editors/kate/gbasic.xml $(DESTDIR)$(SYNTAXDIR)/syntax/
 	install -d $(DESTDIR)$(DOCDIR)

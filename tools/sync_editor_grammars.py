@@ -164,47 +164,12 @@ def kate(keywords, calls):
     return path, text
 
 
-def gtksourceview(keywords):
-    """stdlib/gtksourceview/gbasic.lang -- the four keyword contexts.
-
-    KEYWORDS ONLY, which is this file's own stated design (its header grounds
-    it in docs/TOKENS.md) rather than an omission -- it carries no builtin list
-    and adding one would be a change in kind, not a repair. What is repaired is
-    the rot: five keywords missing and `resume`, which the language retired.
-    """
-    path = ROOT / "stdlib/gtksourceview/gbasic.lang"
-    text = path.read_text(encoding="utf-8")
-    # THE WORD OPERATORS GO IN HERE, because this file has no operator style of
-    # its own -- Kate has a third list for them and GtkSourceView does not, so
-    # leaving them out of both dropped `and`, `or` and `not` from the only
-    # place this file could colour them. A regression caught by checking the
-    # GENERATED files against the lexer rather than by trusting the generator.
-    plain = (keywords | WORD_OPERATORS) - DECLARATIONS - set(CONTEXTUAL)
-    for cid, words in (("boolean", {"true", "false"}),
-                       ("constant", CONSTANTS - {"true", "false"}),
-                       ("declarations", DECLARATIONS),
-                       ("keywords", plain)):
-        body = "\n" + "".join(f"      <keyword>{w}</keyword>\n"
-                               for w in sorted(words)) + "    "
-        # The opener carries the id, so find it and then the first `>` after.
-        marker = f'<context id="{cid}"'
-        i = text.find(marker)
-        if i < 0:
-            sys.exit(f"sync_editor_grammars: gtksourceview: no context {cid!r}")
-        head = text.find(">", i) + 1
-        j = text.find("</context>", head)
-        if j < 0:
-            sys.exit(f"sync_editor_grammars: gtksourceview: {cid} is never closed")
-        text = text[:head] + body + text[j:]
-    return path, text
-
-
 def main():
     text, nk, nb = render()
     reserved = lexer_keywords()
     keywords = (reserved - CONSTANTS - WORD_OPERATORS) | set(CONTEXTUAL)
     calls = builtins() - reserved
-    outputs = [(GRAMMAR, text), kate(keywords, calls), gtksourceview(keywords)]
+    outputs = [(GRAMMAR, text), kate(keywords, calls)]
 
     if "--check" in sys.argv[1:]:
         stale = [p for p, want in outputs
@@ -213,7 +178,7 @@ def main():
             names = ", ".join(str(p.relative_to(ROOT)) for p in stale)
             sys.exit(f"out of date with the lexer/builtins: {names} -- "
                      "run python3 tools/sync_editor_grammars.py")
-        print(f"all three current: {nk} keywords, {nb} builtins")
+        print(f"all current: {nk} keywords, {nb} builtins")
         return
     for p, want in outputs:
         p.write_text(want, encoding="utf-8", newline="\n")

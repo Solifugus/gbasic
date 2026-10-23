@@ -14,7 +14,7 @@ Copyright 2026 Matthew C. Tedder.
 **Write gBASIC programs, embed the interpreter, build a product on any of it,
 ship it closed-source — nothing here restricts you.** That covers the language,
 the `gbasic` binary, every C module compiled into it — including the whole xlsx
-engine — and all 68 standard libraries.
+engine — and all 62 standard libraries.
 
 There is no copyleft library in this tree, no commercial license to buy, and no
 part of the standard library that reaches into your program's licensing.
@@ -28,19 +28,19 @@ Everything:
   (the ZIP container, formula evaluator and recalculation engine),
   `src/modules/xml.c`, `src/modules/smtp.c`, `src/modules/ldap.c` and
   `src/modules/rowmodel.c`
-- All 68 standard libraries in `stdlib/`:
+- All 62 standard libraries in `stdlib/`:
 
   `accounting` `agent` `ari_advisor` `ari` `ari_discover` `automation`
-  `chart` `consolidate` `credit` `crypto` `datagrid` `dates` `dbframe`
+  `chart` `consolidate` `credit` `crypto` `dates` `dbframe`
   `decision` `deposits` `discovery` `edgar` `estate` `fake` `filetree`
   `finance` `finio_all` `finio_bai2` `finio` `finio_camt` `finio_iso20022`
   `finio_nacha` `finio_ofx` `finio_pain001` `finio_rates` `finio_registry`
   `finio_watch` `forensics` `frame` `fundamentals` `gpdf` `gpdf_metrics`
-  `grid` `gtk` `gtkui` `gtkui_gtk` `gui` `insiders` `insight` `intake` `lending`
+  `grid` `insiders` `insight` `intake` `lending`
   `llm` `mail`
   `market` `matrix` `mcp` `mdna` `nlq` `notation` `ocr` `otp` `ownership`
   `persist` `reasoning` `retrieval` `rules` `schedule` `scoring` `screener`
-  `sourceeditor` `stats` `tools` `web`
+  `stats` `tools` `web`
 
 ## Why there is only one license
 

@@ -502,13 +502,12 @@ document list, with a status column, is `docs/README.md`.
   `insiders` and `ownership` (Form 4 / 13F / 13D-G), `mdna` (MD&A + LLM panel),
   `llm` (chat client), and `screener` (whole-market scoring). See
   `docs/edgar_tutorial.md` and `docs/edgar_reference.md`.
-- **application platform** — `web` (routing), `gtk`/`gtkui`/`gtkui_gtk`/`datagrid`/
-  `sourceeditor` (GTK 4 over `gi`), `filetree`, `persist` (crash-safe versioned
+- **application platform** — `web` (routing), `filetree`, `persist` (crash-safe versioned
   storage), `intake` (what arrived, what was taken, what to keep),
   `dates`/`schedule` (business calendars, appointment slots), `ari`
   (anchor-relative report parsing), `matrix`, `crypto` (JWT, CSRF, signed
-  cookies), `mail` (RFC 5322 composition, for the native SMTP transport), and
-  the GTK 3 `gui` proof of concept.
+  cookies), and `mail` (RFC 5322 composition, for the native SMTP transport).
+  Native windows are the Qt module, not a library.
 
 Loadable names are exactly the filenames in `stdlib/`; `tests/run_docs_gate.sh`
 checks this list against that directory, because it previously named two
