@@ -125,12 +125,63 @@ AmorphDB (`~/development/amorphdb/internal/storage`) stores attributes, instance
 
 These are designed once and used by all three spikes, so the comparison measures the engines and not three different encodings.
 
-### 3.1 Page format
+### 3.1 Page format (laid out 2026-10-22)
 
-- **Header:** magic and format version, page type, page number, the transaction id (or log sequence number) that wrote it, and a **checksum** over the whole page. CRC32C has hardware support on x86 and ARM; measure it against xxHash before choosing.
-- **Reserved from version one:** 12 bytes of nonce and 16 bytes of authentication tag, unused while encryption is off (§6.4 of the main document).
-- **Page size** is measured, not chosen: 4 KiB, 8 KiB and 16 KiB.
-- **Values larger than a page** go to overflow pages. The threshold is measured, since it moves the balance between point-read speed and space.
+**Everything on disk is little-endian, by declaration.** A database file must open on any machine gBASIC runs on, and this project builds for big-endian s390x as well as x86 and RISC-V, so byte order is a property of the format, never of the machine that wrote it. A big-endian reader pays a byte swap per field; that is the whole cost.
+
+**Page size** is measured, not chosen (4, 8 or 16 KiB, §5); it is fixed per file at creation and recorded in the header. **Page numbers are 64-bit**, so no file size limit is designed in.
+
+#### 3.1.1 The file header (page 0)
+
+| offset | size | field |
+|---|---|---|
+| 0 | 8 | magic `GSQLDB\0\x01` |
+| 8 | 2 | format major (a reader refuses a major it does not know, `FORMAT`) |
+| 10 | 2 | format minor (a reader accepts a newer minor, which may only add) |
+| 12 | 4 | page size |
+| 16 | 16 | **file identity**, random at creation: what encryption binds a page to (§6.4 of the main document), and what tells a backup of this database from another one |
+| 32 | 8 | creation time (seconds) |
+| 40 | 4 | flags (bit 0: encrypted) |
+| 44 | 36 | the key-check block when encrypted: a known plaintext sealed with the key, so a wrong key is refused at open by name rather than discovered as checksum failures on every page |
+| 80 | — | **candidate-specific root area**: two meta slots for §2.A, the log's position for §2.B, the manifest's location for §2.C |
+| end − 4 | 4 | header checksum |
+
+#### 3.1.2 The page header (every page)
+
+| offset | size | field |
+|---|---|---|
+| 0 | 1 | page type (tree interior, tree leaf, overflow, free-list, version store, meta) |
+| 1 | 1 | flags |
+| 2 | 2 | reserved, zero |
+| 4 | 4 | **checksum** of the whole page with this field zeroed (CRC32C unless the §5 measurement prefers another) |
+| 8 | 8 | **page number**: a page read from the wrong place is detected, not trusted |
+| 16 | 8 | **commit id** that wrote it |
+| 24 | 12 | **nonce**, zero while encryption is off |
+| 36 | 4 | reserved, zero |
+| end − 16 | 16 | **authentication tag**, zero while encryption is off |
+
+**With encryption on**, the page body between the header and the tag is sealed with AES-256-GCM, and the header itself (type, page number, commit id) is the **associated data**, so a page copied to another position or another file fails authentication. The checksum still covers the whole page, which keeps corruption and a wrong key apart: a bad checksum is damage, while a good checksum with a failed tag is tampering or the wrong key.
+
+So the usable body is the page size minus 56 bytes: 4,040 bytes of a 4 KiB page.
+
+#### 3.1.3 A tree page (§2.A and §2.B)
+
+A **slotted page**, the layout SQLite and PostgreSQL use: a slot array growing from the front, and cells growing from the back.
+
+- **Body header:** cell count (u16), start of the free gap (u16), end of the free gap (u16), fragmented free bytes (u16), and for an interior page the **leftmost child** (u64).
+- **Slot array:** u16 offsets to cells, **in key order**, so a binary search over the slots finds a key without touching the cells.
+- **Leaf cell:** key length and value length (LEB128 varints), a flags byte (bit 0: value is in overflow pages), the key, then the value, or for an overflow value its total length (u64) and first overflow page (u64).
+- **Interior cell:** key length, the separator key, and the child page (u64) holding keys at or above it.
+- **A value is stored inline when its cell fits in a quarter of the page body**, so every page holds at least four cells; above that it overflows. The threshold is one of §5's measurements.
+- **Leaf sibling links differ by candidate, and this is a real difference.** §2.B links each leaf to the next, so a range scan walks leaves. §2.A **cannot**: under copy-on-write, a sibling pointer would force rewriting the neighbour on every change, so its scans walk back up through the parent. That cost is part of what §5's scan workloads compare.
+- **Prefix compression** of keys within a page is deliberately not in the first format. The flags byte has room for it, and the §3.2 encoding (`memcmp` order, self-delimiting components) is what makes it possible later.
+
+#### 3.1.4 Other pages
+
+- **Overflow:** body header of next page (u64) and bytes used (u32), then the bytes.
+- **Free list:** for §2.A, a tree keyed by the commit id that freed each page, which is what lets a page be reused only once no snapshot can see it. For §2.B, trunk pages listing free page numbers.
+- **The catalog** is itself a tree, mapping a tree's name to its root page, its id and its kind. A table, an index and the version store are all ordinary trees, so nothing needs a page type of its own.
+- **§2.C's sorted files** use their own block format (data blocks, an index block, a bloom filter and a footer), carrying the same checksum, nonce and tag fields per block.
 
 ### 3.2 Key encoding: byte order must equal gBASIC order (designed 2026-10-22)
 
@@ -167,13 +218,35 @@ A tree compares keys with `memcmp`, so each key is encoded such that **byte orde
 
 **The oracle is gBASIC itself, and nothing above is accepted on reasoning alone.** Phase 0a's first artefact is the encoder with a test that generates value pairs, encodes both, and requires `memcmp` order to equal gBASIC's comparison for every pair. It covers: the exactness edge (2^53 ± 1, ±2^63), subnormals, ±0, ±inf, every kind against itself, absence in both directions, money with guard digits, and composite keys mixing directions. **NaN is the one exception, and it is a stated one:** until the language gets the total order, gBASIC has no order for NaN to agree with, so the test asserts the documented position rather than comparing.
 
-### 3.3 Row encoding
+### 3.3 Row encoding: one portable value encoding (designed 2026-10-22)
 
-A row value is the gBASIC values of its columns. The format is versioned and self-describing per column, so `ALTER TABLE ADD COLUMN` does not rewrite old rows; missing trailing columns read as their default. It reuses the type knowledge of `serialize`, which requires `exact_number_design.md`'s increment 4 (exact integers through the binary serializer) to land first.
+**Rows cannot use `serialize` as it stands, which was measured rather than assumed.** `serialize` writes its integers by copying them in the machine's own byte order (`serbuf_u64` is a `memcpy`), which its own comment justifies: "round-trips are always same-binary". That holds for actors and is false for a database file, which is copied between machines and outlives the binary that wrote it.
 
-**Record-valued columns** (`gsql_design.md` §3.5) are encoded the same way, recursively, with each field's name before its value. Two things are measured here rather than assumed:
+**So G-SQL defines a portable value encoding, and it should become `serialize`'s next version.** Little-endian fixed fields and LEB128 lengths, versioned, with the same tags `serialize` already has (number, string, boolean, money, the temporal kinds, array, record, absence). Three consumers would then share one codec:
+- **rows on disk** (here);
+- **the client protocol** (`gsql_design.md` §6.5), which carries values between processes that may be different gBASIC versions;
+- **`serialize` version 3**, which also completes `exact_number_design.md`'s increment 4 (exact integers through the binary format) as part of the same change, since the number encoding records exactness. The reader keeps accepting versions 1 and 2, because those payloads are in files already.
+
+That turns the serializer prerequisite into one piece of work with three uses, rather than three encodings that could drift apart.
+
+**The encoding of a value:**
+
+| kind | bytes after the tag |
+|---|---|
+| absence | none |
+| boolean | 1 byte |
+| number | 1 byte: exact or inexact; then an int64 (exact) or an IEEE double (inexact) |
+| string | LEB128 length, then the bytes |
+| money | currency code (3 bytes), storage exponent (1 byte), then the exact int64 |
+| date, time, datetime, duration | their exact integer representations, fixed width |
+| array | LEB128 count, then each value |
+| record | LEB128 field count, then per field its name (LEB128 length and bytes) and value |
+
+**A row** is a format byte, a LEB128 column count, then each column's value in declared order. Columns added later by `ALTER TABLE ADD COLUMN` are simply absent from older rows and read as their default, so adding a column never rewrites a table.
+
+**Record-valued columns** (`gsql_design.md` §3.5) use the record encoding, recursively. Two things are measured here rather than assumed:
 - **field-name overhead**, since every row repeats its field names, against an alternative storing names once per column;
-- **field extraction cost**, since a field index and a residual filter both read one field without decoding the whole record, which argues for an encoding with field offsets.
+- **field extraction cost**, since a field index and a residual filter both read one field without decoding the whole record. That argues for a per-record offset table, measured against the plain form.
 
 A **field index** keys on the field's value with the §3.2 encoding, and an absent field is keyed as an absence.
 
@@ -447,7 +520,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 
 ### 5.5 The owner round trip and the handoff (§6.1 gates)
 
-- **Round trip:** client to owner and back over the local socket, for an empty request, a point read and a batch of 100 rows, against the same operation called in-process. The protocol is accepted if the added cost is small next to the work of a typical query; the threshold is agreed after the first numbers rather than guessed now.
+- **Round trip** (the protocol is `gsql_design.md` §6.5): client to owner and back over the local socket, for an empty request, a point read and a batch of 100 rows, against the same operation called in-process. The protocol is accepted if the added cost is small next to the work of a typical query; the threshold is agreed after the first numbers rather than guessed now.
 - **Handoff:** owner exits (cleanly, and by kill -9) → a client takes the lock → opens → recovers → serves. Total time, per candidate and per log size.
 - **Many owners on one machine:** one database per tenant (WorkSplicer) means a multi-tenant deployment runs **one owner per active tenant**. Measure an idle owner's memory and file-descriptor cost, and **cold start**: the first request to a tenant whose owner is not running, including recovery. Measure at 1, 100 and 1,000 tenant databases. This decides whether an owner should stay up while it has clients or start on demand per request burst.
 

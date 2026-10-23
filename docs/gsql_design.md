@@ -341,6 +341,58 @@ Three levels, and the engine owns only the middle one:
 
 **Decision for the page format now, even if level 2 ships later:** reserve space in every page for a nonce and authentication tag from the first format version. Retrofitting encryption would otherwise change the page layout and force a format migration. Nonce uniqueness must be guaranteed per write; a copy-on-write engine, which never rewrites a page in place, makes this simpler, and §6.2's comparison should record that. **Open:** key rotation (re-encrypting every page, online or offline) and the backup of encrypted databases (a backup stays encrypted under the same key).
 
+### 6.5 The client protocol (designed 2026-10-22)
+
+How a client process talks to a database's owner (§6.1). The protocol is the same whether the client is the only one or one of many, so it is the one path every query takes.
+
+**Transport: a local stream socket with length-prefixed frames.** `AF_UNIX` with `SOCK_STREAM`, because that is what Windows supports: the actor wire uses `SOCK_SEQPACKET` on POSIX and has to fall back to a stream on Windows (`src/actor.c`). A stream has no message boundaries, so every frame starts with its length. One frame:
+
+| bytes | field |
+|---|---|
+| 4 | length of the rest of the frame, little-endian |
+| 1 | message type |
+| 4 | request id, chosen by the client, echoed in every reply |
+| rest | the body: values in the portable value encoding (`gsql_storage_design.md` §3.3), the same codec rows use |
+
+A frame is at most 16 MiB. Large results never need a bigger one, because rows travel in batches (below), and a single value larger than that is refused by name.
+
+**Where the socket lives.** Not beside the database: a Unix socket path is limited to about 108 bytes, so a database deep in a directory tree would have no socket path at all. The Windows actor code checks the same limit. Instead, the socket lives in the user's private runtime directory (`$XDG_RUNTIME_DIR/gbasic/` on Linux, mode 0700), named from the database file's **identity on disk**, its device and inode (on Windows, its file ID). Two paths reaching one file through a symlink or a bind mount then find one owner, which a name built from the path would not.
+
+**The lock decides, the socket is only a hint.** The owner holds the database's exclusive lock (`gsql_storage_design.md` §1.1). A client connects to the socket; if nothing answers, it starts an owner, a dedicated `gbasic` process, which tries the lock:
+- If it gets the lock, it is the owner. A socket file left by a crashed owner is removed and bound again, which is safe because holding the lock proves no other owner exists.
+- If it doesn't, another owner already won a race; it exits, and the client retries the connection.
+
+Two clients arriving at once therefore need no coordination beyond the lock itself.
+
+**The owner is always a separate process,** never a client serving others from inside its own program. A gBASIC program is single-threaded and its event loop belongs to it, so serving other processes from inside one would make its work and theirs wait on each other. The owner is the child of the client that started it and dies with it (§6.1's handoff), and the measurement in `gsql_storage_design.md` §5.5 says what a handoff costs.
+
+**Handshake.** The client sends `HELLO` (protocol major and minor, its gBASIC version, its process id). The owner answers `WELCOME` (protocol version, owner process id, the database's file identity and format version) or `REFUSED`. A different **protocol major** is refused, naming both versions, so an upgraded client meeting an older owner gets a sentence and not a misread frame. A newer minor may only add message types.
+
+**Messages:**
+
+| client sends | owner answers |
+|---|---|
+| `QUERY` (SQL text or a prepared id, parameters, how many rows per batch) | `ROWS` (column names and kinds in the first batch, a batch of rows, whether more remain, a cursor id) or `DONE` (rows affected, the commit id if it wrote) |
+| `FETCH` (cursor id, how many) | the next `ROWS` |
+| `CLOSE` (cursor id) | `DONE` |
+| `PREPARE` (SQL text) | `PREPARED` (an id, the parameter and column descriptions) |
+| `BEGIN` (read or write), `COMMIT`, `ROLLBACK` | `DONE` |
+| `CANCEL` (a request id) | the cancelled request ends with `ERROR` (cancelled) |
+| `PING` | `PONG` |
+| `BYE` | the connection closes |
+
+Any request may instead be answered `ERROR`: a closed set of codes matching the storage errors (`gsql_storage_design.md` §1.4) plus SQL's own (parse, binding, constraint), a message, and the position in the SQL where there is one.
+
+**Rows are pulled, not pushed.** A query sends one batch and waits for `FETCH`, so neither side ever holds more than a batch, however large the result. The cursor holds its snapshot in the owner meanwhile. An idle cursor is closed after a timeout (proposed 5 minutes), because under §2.A a snapshot pins the pages it can see and an abandoned one would grow the file; the next `FETCH` gets an error saying why.
+
+**Requests are answered in order, and may be pipelined.** One connection's requests are processed in the order sent; the request id is what lets a client send several before reading replies. `CANCEL` is honoured between batches and at the engine's checkpoints in long operations such as a large sort. A single-threaded owner cannot interrupt arbitrary work, and the protocol does not pretend it can.
+
+**A transaction belongs to its connection.** If the connection drops, its write transaction is rolled back and its snapshots and cursors are released.
+
+**When the owner disappears** (§6.1's handoff), a client sees its connection end. Whatever was in flight fails, with a gBASIC error saying the owner exited and the transaction was rolled back; an open cursor is lost with it, since its snapshot lived in the owner's memory. **Nothing is retried silently**: the program decides whether to retry, which is the only safe answer for a write. The client's next request reconnects, starting an owner if needed.
+
+**Identity, for the audit history.** Each request carries the client's current `principal()`, which the version store records as a change's author (`gsql_storage_design.md` §4). The owner **trusts** it: every client is the same operating-system user, since the socket's directory is private to that user, so this is attribution, not authentication. Access control between applications, or between operating-system users, is out of scope for the first release (§1's scope rule).
+
 ## 7. Statistical integration
 
 The repository already contains extensive statistics capabilities, including descriptive reductions, distributions, regression/GLMs, ANOVA, clustering/PCA, time-series methods, and econometrics. Preserve its established architecture: **numerical primitives in the runtime, statistical compositions in gBASIC**. Do not reimplement the statistics library as a second SQL statistics engine.
@@ -433,7 +485,7 @@ Before indexes are finalized, specify:
 
 | Improvement | Plan | Timing |
 |---|---|---|
-| Exact integers **through the binary serializer** | The type question is closed (§3.2). What remains is `exact_number_design.md`'s increment 4: `serialize`/`deserialize` loses exactness, and that is the row format's and the actor wire's door. Plus the division/mixed-arithmetic specification | Before G-SQL |
+| **A portable value encoding**, as `serialize` version 3 | The type question is closed (§3.2). `serialize` loses exactness (`exact_number_design.md`'s increment 4) **and** writes integers in the machine's native byte order, so it can serve neither a database file copied between machines nor a protocol between gBASIC versions. One little-endian, versioned encoding fixes both and serves rows, the client protocol (§6.5) and `serialize` alike (`gsql_storage_design.md` §3.3); the reader keeps accepting versions 1 and 2 | Before G-SQL |
 | Connector conversions | Shared semantic contract for integer, decimal, money, temporal, binary, and NULL; adapter-specific mappings remain explicit | Before G-SQL |
 | Binary database support | **The value-kind question is already answered**: PLAT-NUL's door sweep settled it per door — sqlite was truncating and is fixed, PostgreSQL `text` *refuses* 0x00 and the answer was a refusal naming `bytea`, and ODBC's `SQL_C_CHAR` is NUL-terminated by construction and documented. gBASIC strings carry arbitrary bytes, so **no dedicated binary value is needed**; the work is BLOB/`bytea` binding and results | Prefer before G-SQL |
 | Streaming and batching | Source-independent iterator lifecycle, bounded buffering, cursor-based row consumption, batch operations | Core before G-SQL; extend later |
