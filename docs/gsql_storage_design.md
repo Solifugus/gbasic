@@ -14,24 +14,68 @@
 | Values are gBASIC values (§3) | Keys need an **order-preserving encoding** that agrees with gBASIC comparison (§3 of this document) |
 | Selective temporal history, current-first and backward-linked (§10D) | A **version store** is needed whatever the engine (§4) |
 
-## 1. The storage interface (the seam)
+## 1. The storage interface (the seam) (specified 2026-10-22)
 
 All candidates implement one interface, so one workload harness and one crash harness drive all of them. The relational layer (tables, indexes, the catalog) is built on it later and is not part of Phase 0a.
 
-**Shape: an ordered key-value store with multiple named trees and snapshot transactions.** This is how SQLite, LMDB and most relational engines divide the work: a table is a tree keyed by its primary key, and a secondary index is a tree keyed by (indexed value, primary key).
+**Shape: an ordered key-value store with named trees and snapshot transactions.** This is how SQLite, LMDB and most relational engines divide the work: a table is a tree keyed by its primary key, and a secondary index is a tree keyed by (indexed value, primary key). Keys and values are **bytes** at this boundary; turning gBASIC values into bytes is a shared component (§3), so encoding cost is measured once and identically for every candidate.
 
-| operation | meaning |
+**The interface lives inside the owner process (`gsql_design.md` §6.1), which is single-threaded.** Nothing below is called concurrently, so the interface has no locks of its own; "concurrent readers" means several open snapshots interleaved by the owner, not threads.
+
+### 1.1 Operations
+
+| group | operation | contract |
+|---|---|---|
+| database | `open(path, options)` | Opens or creates; **runs recovery** before returning; takes the file's exclusive lock and refuses a second opener with `BUSY`. Refuses a file whose format version is newer than it understands (`FORMAT`). Options: `create`, `page_size` (at creation only), `cache_bytes`, and the I/O layer to use (§3.4), so the harness can substitute its own |
+| | `close(db)` | Refused while a transaction or snapshot is open; the owner closes those first |
+| snapshots | `begin_read(db)` | A consistent view as of the **last durable commit** (§1.3). Cheap; any number may be open |
+| | `begin_write(db)` | At most one at a time. A second call answers `BUSY` at once, and the owner queues the request (§1.4) |
+| | `commit(txn, sync)` | Returns the commit's **commit id**, a strictly increasing integer that the version store (§4) and audit history key on. With `sync = true` it is durable on return. With `sync = false` it is ordered but not yet durable (group commit, §1.3) |
+| | `sync(db)` | Makes every commit so far durable, returns the highest durable commit id |
+| | `abort(txn)` / `release(snapshot)` | Always succeed |
+| trees | `tree_create`, `tree_drop`, `tree_list` | In a write transaction. Names are byte strings; the catalog of trees is itself a tree |
+| | `tree_replace(txn, target, source)` | **Atomically makes `source`'s contents `target`'s**, dropping the old ones. This is G-Dash's whole-dataset refresh (§5.1.1, G1): readers holding older snapshots keep reading the old contents until they release them |
+| records | `get(txn, tree, key)` | The value, or `NOT_FOUND` |
+| | `put(txn, tree, key, value, flags)` | `NO_OVERWRITE` refuses an existing key (`EXISTS`); `APPEND` promises the key is greater than every key in the tree, which lets a bulk load fill pages in order (G5) and is checked, not trusted (`ORDER`) |
+| | `delete(txn, tree, key)` | Answers whether the key was there |
+| cursors | `cursor_open(txn, tree)` | Within a snapshot or the write transaction |
+| | `seek(cursor, key, mode)` | `mode` is `ge`, `gt`, `le`, `lt` or `exact`; answers whether a record is positioned |
+| | `next`, `prev`, `key`, `value` | `key` and `value` are borrowed until the cursor moves or closes |
+| | `cursor_put`, `cursor_delete` | Modify at the cursor's position, keeping that cursor valid; this is how an `UPDATE` walks and writes |
+| maintenance | `backup(snapshot, dest)` | A consistent copy as of the snapshot, while writes continue (`gsql_design.md` §6.3). Written to a temporary file, flushed, then renamed into place, so an interrupted backup never leaves a file that looks complete |
+| | `check(db)` | Verifies every page checksum and structural invariant; returns a report, never repairs |
+| | `stats(db)` | Pages read and written, bytes written, flushes, cache hits: what §5.2's write and read amplification are computed from |
+
+### 1.2 Limits
+
+- **A key is at most 1,024 bytes.** Keys live in interior pages, and a bound is what keeps fan-out predictable. A longer key is refused (`TOO_LARGE`), never truncated. The relational layer keeps index keys within it; the bound is revisited if a real schema hits it.
+- **A value has no size limit** beyond the file's; large values go to overflow pages (§3.1).
+- **A write transaction's memory is bounded by `cache_bytes`, however large the transaction.** A candidate must spill dirty pages before commit rather than hold them, which is G-Dash's third want (bounded-memory writes, G5) and is asserted by measuring peak memory during a 10⁶-row transaction.
+
+### 1.3 Durability and visibility
+
+- **A commit becomes visible to new snapshots only once it is durable.** Under group commit (§5.4), a commit made with `sync = false` is held back from other readers until a `sync` covers it, so **no client ever reads data a crash could remove**. The writing transaction itself sees its own writes. The cost is that a second client's read-after-write waits up to one group-commit interval, which §5.4 measures.
+- **A failed flush makes the database unusable until it is reopened, and the flush is never retried.** After an `fsync` failure the operating system may already have discarded the dirty pages it could not write, so a retry that succeeds proves nothing (PostgreSQL's 2018 "fsyncgate"). The commit reports `IO`, every later operation reports `FAILED`, and reopening runs recovery from what is really on disk.
+
+### 1.4 Errors, as values
+
+Every operation answers success or one of a closed set, so the owner can map each to a gBASIC error without guessing:
+
+| error | meaning |
 |---|---|
-| open / close | open a file, running recovery if needed |
-| read snapshot | a consistent view as of the last commit, held until released |
-| write transaction | at most one at a time (the owner serializes them) |
-| get, put, delete | on (tree, key bytes) → value bytes |
-| cursor | ordered iteration over a key range within a snapshot, forward and backward |
-| commit / abort | commit is durable when it returns |
-| backup | write a consistent copy as of a snapshot, while writes continue |
-| check | verify every checksum and structural invariant |
+| `NOT_FOUND` | no such key |
+| `EXISTS` | `NO_OVERWRITE` met an existing key |
+| `ORDER` | an `APPEND` key was not greater than the last |
+| `BUSY` | a write transaction is already open, or another process holds the file |
+| `TOO_LARGE` | a key over the limit |
+| `INVALIDATED` | a cursor whose tree was modified other than through it; it never returns stale data |
+| `CORRUPT` | a checksum or structural check failed, naming the page |
+| `IO` | an operating-system error, naming the operation and errno |
+| `FULL` | the disk is full; the transaction is aborted and the database stays usable |
+| `FAILED` | an earlier flush failed; reopen to recover |
+| `FORMAT` | not a G-SQL file, or a newer format |
 
-Keys and values are **bytes** at this boundary. Turning gBASIC values into bytes is a shared component (§3), so encoding cost is measured once and identically for every candidate.
+The owner's policy for `BUSY` on `begin_write`, decided here because it changes what a client sees: requests are **queued in arrival order**, and a write transaction **idle longer than a timeout** (proposed 30 s, configurable) is aborted, so one slow client cannot stop every writer. The aborted client is told why.
 
 The spikes are standalone C11 programs under a research directory outside `src/`. Nothing in them is linked into `gbasic`, they are not run by the gate, and a written-off candidate is deleted with its numbers recorded here.
 
@@ -127,13 +171,31 @@ A tree compares keys with `memcmp`, so each key is encoded such that **byte orde
 
 A row value is the gBASIC values of its columns. The format is versioned and self-describing per column, so `ALTER TABLE ADD COLUMN` does not rewrite old rows; missing trailing columns read as their default. It reuses the type knowledge of `serialize`, which requires `exact_number_design.md`'s increment 4 (exact integers through the binary serializer) to land first.
 
-### 3.4 The I/O layer, and why it is not optional
+### 3.4 The I/O layer, and why it is not optional (specified 2026-10-22)
 
-Every candidate does all file I/O through one small layer (open, read at, write at, flush, truncate, rename, directory flush), in the role SQLite's VFS plays. That layer is what makes the crash harness possible (§5.3), and it is where platform durability differences are handled once:
-- `fdatasync` on Linux;
+Every candidate does all file I/O through one small layer, in the role SQLite's VFS plays. It has **two implementations behind one interface**: the real one, which the performance measurements use, and a simulated one, which the crash harness uses (§5.3).
+
+**Operations:** `open(path, create | exclusive | read_only)`, `read_at(file, offset, n)`, `write_at(file, offset, bytes)`, `sync(file)`, `size(file)`, `truncate(file, n)`, `close(file)`, and on paths `rename(from, to)`, `remove(path)`, `sync_dir(dir)` and `lock(file, nonblocking)`. A read past the end answers short rather than failing.
+
+**The durability contract is the minimal one POSIX actually gives, and an engine may assume nothing stronger.** Every candidate must be correct under exactly these rules:
+
+1. **A write is durable only after `sync` of that file returns success.**
+2. **A file's creation, a rename and a removal are durable only after `sync_dir` of its directory.** Crash-consistency research (the ALICE study, OSDI 2014) found applications routinely forgetting this.
+3. **A write is atomic only per 512-byte sector.** A page write interrupted by power loss may leave any prefix of its sectors new and the rest old.
+4. **Unflushed writes may reach the disk in any order**, and any subset of them may.
+5. **After a failed `sync`, the state of every unflushed write is unknown** (§1.3).
+
+Behaviour that ext4's default `data=ordered` mode, or a particular SSD, happens to give is **not** relied on: a design correct only on the developer's filesystem is the failure this contract exists to prevent.
+
+**The real implementation** handles platform differences once:
+- `pread`/`pwrite` and `fdatasync` on Linux;
 - `F_FULLFSYNC` on macOS, because plain `fsync` there does not reach the platter;
-- `FlushFileBuffers` on Windows;
-- flushing the **directory** after creating or renaming a file, which crash-consistency research (the ALICE study, OSDI 2014) found applications routinely forget.
+- `FlushFileBuffers` on Windows, and directory durability through its own route there;
+- `flock` for the exclusive lock.
+
+**The simulated implementation** keeps files in memory, split into a **durable** image and a list of **pending** operations since the last `sync`. It records every operation in order, numbered, and can stop the world at any operation and produce the disk as a crash would leave it (§5.3). It also injects failures on request: `sync` failing, `write_at` answering `ENOSPC`, `read_at` answering `EIO`.
+
+**The risk of two implementations is that they diverge**, which would make the crash harness test a disk that does not exist. Two defences: the simulated layer's own tests check it against the five rules above, and every candidate is also crash-tested against the **real** layer by kill -9, the one crash mode a real kill can produce.
 
 ## 4. The version store (temporal history, §10D)
 
@@ -274,21 +336,40 @@ Each at two sizes: data that fits in memory, and data several times larger than 
 
 Every run records hardware, filesystem, page size and options. This machine (22 cores, 62 GiB RAM, NVMe, ext4) is one configuration, not the reference. At least one slower storage device must be measured, since NVMe flatters the designs that flush most.
 
-### 5.3 Crash correctness: the gate
+### 5.3 Crash correctness: the gate (specified 2026-10-22)
 
-**A kill -9 alone does not test power loss.** After a process dies the operating system's page cache still writes its data out, so a kill-only harness never sees a lost or torn write. That is why the I/O layer (§3.4) exists. The harness uses it in three modes:
+**A kill -9 alone does not test power loss.** After a process dies the operating system's page cache still writes its data out, so a kill-only harness never sees a lost or torn write. That is why the simulated I/O layer (§3.4) exists.
 
-1. **Process crash:** kill -9 at the Nth I/O operation, for every N across a workload.
-2. **Power loss:** at a chosen point, discard every write not yet flushed and stop.
-3. **Torn write:** write only a prefix of the last unflushed page, in 512-byte sectors.
+**The run is deterministic.** The engine is single-threaded and the simulated layer is in memory, so a workload plus a seed produce the same sequence of I/O operations every time. A failing case is reported as **(candidate, workload, seed, operation number, crash mode)**, and replaying those five reproduces it exactly. A small workload is crashed at **every** operation; a large one at operations chosen by the seed.
 
-After each, recover and check against a **model**: the harness records every transaction whose commit *returned*, and the recovered state must equal the state after some prefix of all commits. That prefix must include every returned commit, and at most the one commit in flight may or may not appear. A checksum failure on a torn page must be detected, never read as data. Plus `check` passes.
+**Crash modes,** applied at operation N:
+
+| mode | the disk left behind |
+|---|---|
+| process crash | every write so far, durable or pending, applied in order (the page cache survived) |
+| power loss | the durable image, plus a **seed-chosen subset** of pending writes applied **in a seed-chosen order** (rules 3 and 4) |
+| torn write | as power loss, and one of the applied pending writes keeps only a seed-chosen prefix of its sectors (rule 3) |
+| failed sync | the next `sync` fails; the engine must report `IO`, refuse further work with `FAILED`, and recover correctly when reopened (rule 5) |
+| full disk | a `write_at` answers `ENOSPC`; the transaction aborts, the database stays usable, and nothing committed is lost |
+
+**The oracle is a model, not the engine.** The workload generator records what each transaction wrote and whether its commit **returned durable** (synced, or covered by a returned `sync`). After the crash, the harness reopens the database, which runs recovery, and reads every tree. The recovered state must equal the model's state after **some prefix P** of commits, where:
+- P includes every commit that returned durable;
+- P includes nothing that never reached commit;
+- commits made but not yet durable may or may not be in P, **as a prefix**, never with a gap.
+
+Beyond the state itself:
+- **A torn page is detected**, by its checksum, and never read as data. Recovery either repairs it from the log or copy that the design keeps, or reports `CORRUPT`; returning garbage is a failure.
+- **`check` passes** after recovery.
+- **Recovery is idempotent:** reopening a second time gives the same state.
+- **A crash during recovery is survivable.** The harness crashes the recovery itself at every operation, then recovers again, and the result must still satisfy the oracle. This matters more than usual here, because the owner handoff (`gsql_design.md` §6.1) runs recovery on every takeover.
+- **A crash during backup** leaves the source untouched and no file at the destination that passes `check`.
+- **Work continues after recovery:** a further workload runs, crashes and recovers correctly.
 
 **Gate:** zero violations across at least 10,000 injected crashes per mode per candidate, before any performance number is considered. A candidate failing the gate is fixed and rerun, or eliminated.
 
 ### 5.4 Group commit
 
-The owner serves every client, so it can **group commits**: hold acknowledgements briefly and make one flush cover several clients' transactions. This changes the comparison, since it narrows 2.B's one-flush advantage over 2.A's two. W2 is measured with and without it, at 1, 8 and 64 concurrent clients.
+The owner serves every client, so it can **group commits**: hold acknowledgements briefly and make one flush cover several clients' transactions. This changes the comparison, since it narrows 2.B's one-flush advantage over 2.A's two. W2 is measured with and without it, at 1, 8 and 64 concurrent clients. Because a commit becomes visible only once durable (§1.3), group commit also delays a **second** client's read-after-write by up to one interval; that latency is measured beside throughput, and the interval is chosen from both.
 
 ### 5.5 The owner round trip and the handoff (§6.1 gates)
 
