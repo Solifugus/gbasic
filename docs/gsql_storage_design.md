@@ -171,6 +171,12 @@ A tree compares keys with `memcmp`, so each key is encoded such that **byte orde
 
 A row value is the gBASIC values of its columns. The format is versioned and self-describing per column, so `ALTER TABLE ADD COLUMN` does not rewrite old rows; missing trailing columns read as their default. It reuses the type knowledge of `serialize`, which requires `exact_number_design.md`'s increment 4 (exact integers through the binary serializer) to land first.
 
+**Record-valued columns** (`gsql_design.md` §3.5) are encoded the same way, recursively, with each field's name before its value. Two things are measured here rather than assumed:
+- **field-name overhead**, since every row repeats its field names, against an alternative storing names once per column;
+- **field extraction cost**, since a field index and a residual filter both read one field without decoding the whole record, which argues for an encoding with field offsets.
+
+A **field index** keys on the field's value with the §3.2 encoding, and an absent field is keyed as an absence.
+
 ### 3.4 The I/O layer, and why it is not optional (specified 2026-10-22)
 
 Every candidate does all file I/O through one small layer, in the role SQLite's VFS plays. It has **two implementations behind one interface**: the real one, which the performance measurements use, and a simulated one, which the crash harness uses (§5.3).
@@ -322,6 +328,14 @@ None of that is worth building. Two ways out:
 | S6 | **list edit:** insert an asset mid-list and renumber, in one write transaction | small transactions touching several rows |
 | S7 | **trigger scan:** read every trigger per tick, at 10², 10⁴ and 10⁵ triggers | what a scan-all trigger design costs, to inform WorkSplicer's |
 | S8 | a temporal column on `tasks` updated by state changes | §4's version-store cost under orchestration's update pattern |
+
+**Confirmed (2026-10-22):** both readings above are right, and this schema should be close to what general work orchestration needs.
+
+**Per-type parameters, decided:** each asset type needs its own parameters, and they live in a record-valued column on `task_assets` (`gsql_design.md` §3.5), PostgreSQL's `jsonb` with gBASIC's types, with field indexes for the parameters queried by. One more workload follows:
+
+| id | workload | why |
+|---|---|---|
+| S9 | assets of one type queried by one parameter, with and without a field index, at 10³ and 10⁶ assets | what the field index buys, and what a residual scan costs |
 
 **Needed from WorkSplicer** when its redesign settles:
 - rough volumes per tenant (tasks, assignments, log rows per day, triggers);

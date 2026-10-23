@@ -189,7 +189,20 @@ That is `exact_number_design.md`'s **increment 4**, recorded as the only one sti
 
 ### 3.4 Persistence subset
 
-Persist stable, serializable value kinds, not executable/process-bound values such as functions, watchers, handles, or actors. Arrays and records as column values are future extensions, not prerequisites for the relational core. Disk representation must be versioned and independent of process pointers and in-memory layout.
+Persist stable, serializable value kinds, not executable/process-bound values such as functions, watchers, handles, or actors. Disk representation must be versioned and independent of process pointers and in-memory layout.
+
+### 3.5 Record-valued columns (decided 2026-10-22, first release)
+
+**A column may hold a gBASIC record**, declared `RECORD`, and its fields may hold any persistable value, arrays and nested records included. This was a "future extension" until WorkSplicer's asset types needed it: each type of asset carries its own parameters, and the usual answers each fail one way. Attribute-per-row (EAV) tables are flexible, slow and make every value text. A table per type is fast and typed, but every new type is a schema change and generic code has to know every table.
+
+**It is PostgreSQL's `jsonb` with gBASIC's types.** That is what an application would use on PostgreSQL, and G-SQL can do one thing `jsonb` cannot: the fields keep their real kinds, so money stays exact money and a date stays a date, with no conversion in or out (§1's guiding principle). A whole record is read with its row, in one fetch.
+
+- **Field indexes.** An index may be declared on one field of a record column, e.g. the `vendor` field of `task_assets.params`. That is a narrow case of the expression indexes deferred in §5.2, and a safe one: extracting a field is a fixed rule of the engine, not a library function whose version could change under the index. A record without the field is indexed as an absence. Indexes on arbitrary expressions stay deferred.
+- **Without a field index, a query on a field is a residual filter**, a scan of the rows the other predicates leave, which `EXPLAIN` reports as such.
+- **Validation against a type's declared fields belongs to the application** (WorkSplicer's write path, against `asset_types`), under the scope rule: it is a check across two tables, and G-SQL's engine holds only what gBASIC cannot do as well. Constraints the engine itself enforces on a record column (`NOT NULL`, the persistable-value rule) are unchanged.
+- **Cost to measure:** each row repeats its field names, as `jsonb` does. If that proves significant, the engine can store field names once per column; the storage measurements decide (`gsql_storage_design.md` §3.3).
+- **Open: the field-access syntax in SQL.** `params.vendor` is ambiguous in SQL, where `a.b` means table `a`, column `b`; PostgreSQL resolves it with `(params).vendor` or with `->`. G-SQL needs one spelling, priced against the SQL grammar before it is chosen.
+- **Prerequisite:** records cross the same binary serializer as exact integers (§3.2), so `exact_number_design.md`'s increment 4 covers both.
 
 ## 4. SQL functionality
 
@@ -245,7 +258,7 @@ Expected plan shape: index seek on `account_id`, then residual evaluation of `st
 - Function purity is **not** equivalent to SARGability.
 - A deterministic function over constants can be folded; a function over a column is normally a residual predicate.
 - Algebraic/monotonic rewrites (e.g. a valid inverse-CDF bound) require function-specific metadata, domain checks, correct handling of floating-point boundaries and `unknown`, and proofs/tests. Defer.
-- Expression indexes are later work: function versions and library changes must not silently corrupt index meaning.
+- Expression indexes are later work: function versions and library changes must not silently corrupt index meaning. **The exception is an index on one field of a record column** (§3.5), which is in the first release: extracting a field is a fixed rule of the engine, so nothing can change its meaning under the index.
 - Show residual predicates and index choices in `EXPLAIN`; never imply an index was used when it was not.
 
 ## 6. Transactions, concurrency, and durability
@@ -649,6 +662,7 @@ ROLLUP/GROUPING, grouping sets/CUBE, richer windows, sophisticated optimizer, im
 15. `unknown`'s truth tables are SQL's, except that procedural control flow (`if`, `while`, `until`) still raises on `unknown` (§3.1.1).
 13. The storage engine is chosen by measurement before the SQL layer is implemented (§6.2).
 16. In the first release, one query reads one database; cross-database queries are added only when a real application needs them. A database holds many tables and views, and multi-tenant applications use one database per tenant (WorkSplicer's arrangement).
+17. Record-valued columns and indexes on one record field are in the first release (§3.5), so per-type parameters (WorkSplicer's asset types) need neither EAV tables nor a table per type.
 14. The engine holds only what cannot be done as well in gBASIC (§1): access control, admin tools, import/export and migration tooling are gBASIC's.
 
 ## 13. Questions requiring a final engineering decision
