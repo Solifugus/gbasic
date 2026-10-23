@@ -219,12 +219,37 @@ The same in every candidate, and taken from AmorphDB's instance chain:
 
 **How databases fit (clarified 2026-10-21).** A G-SQL **database** is one file (plus at most a log) holding **many tables, views and indexes**, as a SQLite file or a PostgreSQL database does. One owning process serves one database however many tables it holds (`gsql_design.md` §6.1). The normal application opens **one** database, sometimes a few (one per tenant, or an archive). WorkSplicer, with hundreds of tables and views in one database, is the shape the engine is designed for.
 
-**Consumers (decided 2026-10-21).** G-SQL serves many applications; no single one shapes it.
-- **G-Dash is the first consumer.** It has real code to read and has supplied numbers, so it gives concrete workloads now.
-- **WorkSplicer** is the more demanding future case: many tables and views, many small write transactions, and a platform for enterprise vertical applications. **It uses one database per tenant** (decided 2026-10-21). It is being redesigned, so its profile (§5.1.2) is provisional.
-- **The generic workloads** (§5.1.4) keep the comparison from fitting any one application.
+**Four tiers, and the first is the yardstick (decided 2026-10-22).** G-SQL serves many applications, and G-Dash and WorkSplicer are its first, not its last. So the evaluation is built **application-independent first**:
 
-#### 5.1.1 G-Dash, the primary profile (read from its source)
+1. **Standard workloads (§5.1.0), the primary yardstick:** YCSB, a TPC-C transaction mix and the Star Schema Benchmark. Their shapes are published and widely run, so the comparison rests on workloads nobody here designed. The reference engines (SQLite, LMDB, RocksDB) are run **on the same machine under the same workloads**, because published figures come from other hardware and do not transfer.
+2. **Engine-specific workloads (§5.1.4)** that the standards do not reach: a reader holding a snapshot for a minute, space reclamation, large values, temporal history.
+3. **Application profiles, as named examples:** G-Dash (§5.1.1), the first consumer, with real code and supplied numbers; and WorkSplicer (§5.1.2), the more demanding future case, which uses **one database per tenant** and is provisional while it is redesigned.
+4. **estateforge (§5.1.3):** messy, realistic schemas and data, and later an answer key for the SQL layer.
+
+**No single application's profile may dominate the weighting** (§6), which is fixed before results are seen. An application profile can veto a design that fails it outright, but it cannot choose among designs that all serve it.
+
+#### 5.1.0 Standard workloads
+
+**YCSB** (Yahoo! Cloud Serving Benchmark) is the key-value standard, and maps directly onto the storage interface (§1). Records of ten 100-byte fields, Zipfian key choice unless stated:
+
+| workload | mix | exposes |
+|---|---|---|
+| A | 50% read, 50% update | update-heavy contention |
+| B | 95% read, 5% update | the read-mostly common case |
+| C | 100% read | the read path alone |
+| D | 95% read, 5% insert, reads favouring the newest records | recency |
+| E | 95% short range scans (up to 100 records), 5% insert | scans under inserts |
+| F | 50% read, 50% read-modify-write | a transaction reading then writing |
+
+Plus YCSB's **load phase**, an ordered bulk insert, which is the ingestion case §2.C exists for.
+
+**TPC-C** is the transactional standard: nine tables (warehouse, district, customer, history, new_order, order, order_line, item, stock), sized by the number of warehouses, and five transactions in a fixed mix: New-Order (~45%), Payment (~43%), Order-Status, Delivery and Stock-Level (~4% each). It is the workload with **real multi-table transactions**, which YCSB has none of. Phase 0a runs it **hand-coded over the storage interface** (each table a tree with composite keys), because the SQL layer does not exist yet. That makes it **TPC-C-like**, as sysbench-tpcc and HammerDB's default are: the transaction mix without the specification's terminal think times, so its throughput is **not comparable to an official tpmC** and must never be reported as one.
+
+**The Star Schema Benchmark (SSB)** is the analytic standard: one fact table (lineorder, about 6 million rows at scale factor 1) and four dimensions, with thirteen queries in four flights. It is a simplification of TPC-H that keeps the scan-filter-aggregate shape. Phase 0a runs **flight 1** (a filtered scan of the fact table joined to one dimension and summed), hand-coded, since that measures the scan path dashboards depend on. The full SSB, and TPC-H's twenty-two queries, belong to the **SQL layer's** evaluation later, run against PostgreSQL, SQLite and DuckDB as references.
+
+**The reference engines** are the honest comparison: SQLite (installed), LMDB and RocksDB (Ubuntu packages, installed when the harness is built). They are measurement tools here, never shipped. Each is driven by the same workload generator through a thin adapter, with its durability set to match G-SQL's: synchronous commit, and SQLite in WAL mode with `synchronous=FULL`. Otherwise one engine would be measured flushing and the other not.
+
+#### 5.1.1 G-Dash, the first consumer's profile (read from its source)
 
 G-Dash's staging store (`gdash/src/gdash_store.bas`) shows its data pattern directly:
 
@@ -355,9 +380,9 @@ Its role in G-SQL, by phase:
 
 **Gap:** estateforge's demo estate is about 4,800 rows, and its row loading goes through SQL inserts (12.7 ms/row on SQL Server, from its EF-4 report). The volume workloads here need 10⁵ to 10⁷ rows. So either estateforge gains a bulk export mode that the harness loads directly, or the harness generates volume from estateforge's schemas and distributions. **Decide with estateforge's session** when the harness is designed.
 
-#### 5.1.4 Generic workloads
+#### 5.1.4 Engine-specific workloads
 
-Kept so the comparison is not shaped by one application:
+What the standard workloads do not reach. W1 to W3 and W5 overlap YCSB (C, A, the load phase and E respectively); they stay because they isolate one cost each, where YCSB mixes them:
 
 | id | workload | what it exposes |
 |---|---|---|
@@ -431,7 +456,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 1. **Gate:** crash correctness (§5.3). Absolute.
 2. **Hard requirements:** online backup without stopping writers; bounded recovery time; a correct long-reader story; nonce uniqueness for encryption; atomic table replacement under live readers (G1); engine-enforced read-only transactions (G4).
 3. **Acceptance for the chosen design, before the SQL layer is accepted:** G-Dash's staging store can be rewritten against G-SQL with its decimal-text money boundary deleted, and its results are identical.
-4. **Weighed, with weights fixed before results are seen:** latency and throughput on the agreed workloads, space amplification, handoff time, and **implementation complexity**: lines of code, and the number of invariants a reader must hold to change it safely. Complexity counts because the engine is maintained for the life of the language.
+4. **Weighed, with weights fixed before results are seen:** latency and throughput on the **standard workloads first** (§5.1.0), then the engine-specific ones, with each application profile able to veto a design that fails it outright but not to choose among designs that serve it, space amplification, handoff time, and **implementation complexity**: lines of code, and the number of invariants a reader must hold to change it safely. Complexity counts because the engine is maintained for the life of the language.
 
 **Predictions, written now so measurement can refute them:**
 - 2.A wins recovery and handoff time (near constant), backup simplicity and the long-reader story, and is the simplest to make correct. It loses single-row commit latency without group commit, and space during W6.
