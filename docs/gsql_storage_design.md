@@ -286,13 +286,48 @@ None of that is worth building. Two ways out:
 
 #### 5.1.2 WorkSplicer, the provisional future profile
 
-Work orchestration has a different shape from dashboards: **many small write transactions** (state transitions on work items), a **queue claim** (find the next ready item and mark it taken, atomically), an **audit history** of every transition (§4's version store), and **per-scope numbering** (`gsql_design.md` §10E). Provisionally:
+**The core schema, as Matthew described it (2026-10-22), provisional while WorkSplicer is redesigned.** One database per tenant (§5.1).
+
+| table | columns |
+|---|---|
+| `tasks` | task_id, label, start_time, due_time |
+| `task_triggers` | task_id, condition, consequence |
+| `task_log` | task_log_id, task_id, user_id, log_time, message |
+| `task_assets` | asset_id, asset_type_id, list_position, label, detail |
+| `asset_types` | asset_type_id, name |
+| `task_users` | task_id, user_id, enabled_time, disabled_time, role (observer, performer or assessor) |
+| `users` | user_id, super_id, display_name, name |
+
+**Read as I have read it, to be confirmed:** the second `task_users` in the description is taken to be `users`, and `task_assets` is taken to carry a `task_id` (its `list_position` orders assets within a task).
+
+**What the schema asks of the engine:**
+
+- **Work by time.** "What starts or falls due now" is a range scan on `start_time` and `due_time`, which a scheduler runs on every tick, so it is an index the engine must keep cheap under constant small writes.
+- **A person's current work.** "My tasks as performer, now" joins `task_users` to `tasks` on `user_id` and `role`, filtered to assignments where `enabled_time <= now` and `disabled_time` is absent or later. That filter is on an interval, so an index on `(user_id, role)` narrows the rows and the interval is a residual filter (`gsql_design.md` §5.2).
+- **Two different kinds of time, which must not be conflated.** `task_users`' enabled/disabled times are **business-effective time**, modelled explicitly in the data, saying when an assignment holds. G-SQL's `TEMPORAL` columns (§4) are **recorded time**, saying when a value changed and who changed it. WorkSplicer needs both: the assignment interval as data, and the audit of who edited it.
+- **A hierarchy.** `users.super_id` makes "everyone under this supervisor" a **recursive** query. `gsql_design.md` defers recursive CTEs to its last phase (§4.2), and WorkSplicer argues for moving them earlier. The alternative is to walk the hierarchy in gBASIC, which is also how it is done today on databases without recursion.
+- **An append-only log.** `task_log` grows forever, written by every action and read per task in time order, so its key is `(task_id, log_time, task_log_id)`. `task_log_id` is a natural **per-task serial** (`SERIAL OF task_id`, §10E). How much of it the `TEMPORAL` version store would duplicate is a question for WorkSplicer's design, not the engine's.
+- **An ordered list.** `list_position` renumbers every later asset on a mid-list insert unless positions leave gaps or are fractional. That is the application's choice, but the engine should make the renumbering cheap: one write transaction over a handful of rows.
+- **Triggers.** `condition` → `consequence` reads as work for the `rules` library. The storage question is how triggers are **found**: by time, by event, or by scanning all of them on each tick. Scanning is a full read of `task_triggers` per tick, which bounds how often a tick can run.
+
+**The workloads this gives:**
 
 | id | workload | why |
 |---|---|---|
-| S1 | claim the next ready item by index order and update its state, one transaction per claim, 1 to 64 clients | the queue; the single writer makes a claim a plain write transaction, with no row locks to design |
-| S2 | state-transition updates with a temporal state column | §4's version-store cost under the update pattern orchestration actually has |
-| S3 | scoped serial allocation under concurrency | §10E's numbering |
+| S1 | **due-work scan:** a range scan on `due_time` (and `start_time`) every tick, under a steady stream of small writes | the scheduler's read path, contending with ordinary updates |
+| S2 | **assignment lookup:** a user's current tasks by role, with the interval as a residual filter, at 10², 10⁴ and 10⁶ assignments | "my work", the commonest interactive query |
+| S3 | **log append:** single-row inserts into `task_log` under concurrency, keyed per task with a scoped serial | the write-heavy path; group commit's main beneficiary (§5.4) |
+| S4 | **per-task history:** a task's log in time order, 10 to 10⁴ entries | the read side of S3 |
+| S5 | **hierarchy walk:** everyone under a supervisor, 3 to 10 levels deep | whether recursion is needed in the first release |
+| S6 | **list edit:** insert an asset mid-list and renumber, in one write transaction | small transactions touching several rows |
+| S7 | **trigger scan:** read every trigger per tick, at 10², 10⁴ and 10⁵ triggers | what a scan-all trigger design costs, to inform WorkSplicer's |
+| S8 | a temporal column on `tasks` updated by state changes | §4's version-store cost under orchestration's update pattern |
+
+**Needed from WorkSplicer** when its redesign settles:
+- rough volumes per tenant (tasks, assignments, log rows per day, triggers);
+- how triggers are found;
+- whether task state lives in a column or is derived from the log and triggers;
+- how many tenants one machine serves (§5.5's many-owners measurement).
 
 #### 5.1.3 estateforge: realistic data, and an answer key no engine wrote
 
