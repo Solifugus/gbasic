@@ -88,17 +88,40 @@ These are designed once and used by all three spikes, so the comparison measures
 - **Page size** is measured, not chosen: 4 KiB, 8 KiB and 16 KiB.
 - **Values larger than a page** go to overflow pages. The threshold is measured, since it moves the balance between point-read speed and space.
 
-### 3.2 Key encoding: byte order must equal gBASIC order
+### 3.2 Key encoding: byte order must equal gBASIC order (designed 2026-10-22)
 
 A tree compares keys with `memcmp`, so each key is encoded such that **byte order is exactly the order gBASIC's own comparison gives**. That is §9's critical invariant from `gsql_design.md`; an index that disagrees with the language returns wrong answers. The alternative, a typed comparator called per comparison, is slower and blocks prefix compression. Prior art: the order-preserving encodings of FoundationDB's tuple layer and CockroachDB.
 
-- **A type tag first**, with a fixed order between kinds.
-- **`unknown` sorts last**, ascending, matching gBASIC's ruling on absences. Descending order is a separate encoding (inverted bytes) rather than a reversed scan, so a composite index can mix directions.
-- **Numbers are the hard case.** An exact integer beyond 2^53 and a double must interleave in mathematical order, because gBASIC compares them mathematically: `9007199254740993 > 9007199254740992.0`. The standard trick of flipping a double's bits orders doubles alone. A unified encoding (sign, magnitude class, integer part, fraction) is required, and NaN and signed zero need a stated place. **Open.**
-- **Strings:** UTF-8 bytes, which order by codepoint, with terminator escaping so a prefix sorts before its extensions. Other collations are later work (§9).
-- **Money:** a `MONEY(USD)` column holds one currency, so its key is the exact minor-unit integer. An untyped `MONEY` column orders by (currency, amount), since gBASIC refuses to order different currencies. **Open:** whether an untyped money column may be indexed at all.
-- **Dates and times:** the existing exact representations, encoded as integers.
-- **The oracle is gBASIC itself:** generate value pairs, encode both, and require `memcmp` order to equal gBASIC's comparison. Include the exactness edge, every pair of kinds, `unknown` in both directions, and money. Nothing about this encoding is accepted on reasoning alone.
+**gBASIC's ordering, measured first** (a scratch program per rule, 2026-10-22):
+
+| rule | measured |
+|---|---|
+| exact integers and doubles interleave by mathematical value | `9007199254740993 > 9007199254740992.0` is true, and `sort([2, 1.5, 9007199254740993, 9007199254740992.0])` is correct |
+| a number equals its value in the other form | `9007199254740993 - 1 = 9007199254740992.0` is true |
+| −0 equals 0, but is a different value | `0.0 = -0.0` is true, and `string(-0.0)` is `-0` |
+| strings order by byte, which is codepoint order for UTF-8 | `["B","Z","a","b","e","é"]`, and `"a" < "a"+chr(0) < "ab"` |
+| `false < true` | true |
+| money of one currency orders by its exact value, guard digits included; different currencies **refuse** to order | `{USD}"1.00001" > {USD}"1.00"` is true; USD against EUR raises |
+| an absence sorts **last** ascending and **first** descending | the 2026-10-07 ruling, in `docs/reference.md` |
+| a date orders against a datetime, yet a date never **equals** the datetime at its midnight | both measured |
+| **NaN has no place at all** | every comparison with it is false, so `sort` puts it wherever the input had it (`sort([1, nan, 1])` is unsorted) — a language defect, recorded in DOGFOOD 2026-10-22 |
+
+**The encoding, per component.** Every component is self-delimiting, so a composite key is the concatenation of its components, and a `DESC` component is the same bytes **inverted**. Inversion is what puts an absence first under `DESC`, which is exactly the documented rule, with no second mechanism.
+
+- **Absence** (`unknown`; a bound `nothing` was already normalized to it): one byte `0xF0`, above every value's tag, so it sorts last ascending.
+- **Boolean:** tag `0x10`, then `0x00` or `0x01`.
+- **Number: a class byte, then for finite non-zero values a 2-byte exponent and an 8-byte fraction**, 11 bytes in all.
+  - Classes in order: `0x21` −inf, `0x22` negative, `0x23` zero, `0x24` positive, `0x25` +inf, `0x26` NaN.
+  - **Every number is a dyadic rational**, an int64 as much as a double, so each is written as 1.f × 2^E, normalized. An int64 needs at most 63 fraction bits and a double 52, so a 63-bit fraction, left-aligned, holds either **without loss**. E spans −1074 (the smallest subnormal) to 1023 and is stored big-endian with a bias of 1100. A negative number's exponent and fraction bytes are inverted, so a larger magnitude sorts first.
+  - **The key encodes the mathematical value, not the representation.** Exact 5 and double 5.0 produce the same key, which agrees with gBASIC's `5 = 5.0`. Whether a value is exact lives in the **row**, so an index-only scan must not hand back a value without consulting the row.
+  - **−0 is keyed as zero**, agreeing with `0.0 = -0.0`; the row keeps the −0.
+  - **NaN gets a fixed place: after +inf, equal to itself**, which is PostgreSQL's rule. That is the "not distinct" equality `gsql_design.md` §3.1.1 already requires for `GROUP BY`, `DISTINCT` and the language's own `sort`/`unique`/`contains`, so the index is not a second rule. Expression equality stays IEEE (`nan = nan` is false), so the planner **must not** turn `WHERE x = <NaN>` into an index seek; it is a residual filter that matches nothing.
+- **String:** tag `0x30`, then the UTF-8 bytes with `0x00` written as `0x00 0xFF`, then the terminator `0x00 0x00`. That preserves the measured `"a" < "a"+chr(0) < "ab"`. Other collations are later work (`gsql_design.md` §9).
+- **Money, typed column (`MONEY(USD)`):** tag `0x40`, then the exact stored integer (its guard digits included) as a sign-flipped big-endian int64. The currency's scale is fixed, so integer order is value order.
+- **Money, untyped column (`MONEY`): decided, it may be indexed.** Tag `0x41`, the 3-letter currency code, then the amount as above. Keys group by currency; equality lookups and ranges **within one currency** use the index. A sort or range that would order **different currencies** against each other raises at execution, exactly as gBASIC does, so the index's grouping by code is a storage detail and never an answer.
+- **Dates, times and datetimes:** one tag each (`0x50`, `0x51`, `0x52`), then the exact integer representation the value already has, sign-flipped and big-endian. **A column holds one temporal kind.** gBASIC orders a date against a datetime but never makes them equal, which is not a total order an index can hold, so G-SQL refuses a value of another temporal kind on write rather than mixing them.
+
+**The oracle is gBASIC itself, and nothing above is accepted on reasoning alone.** Phase 0a's first artefact is the encoder with a test that generates value pairs, encodes both, and requires `memcmp` order to equal gBASIC's comparison for every pair. It covers: the exactness edge (2^53 ± 1, ±2^63), subnormals, ±0, ±inf, every kind against itself, absence in both directions, money with guard digits, and composite keys mixing directions. **NaN is the one exception, and it is a stated one:** until the language gets the total order, gBASIC has no order for NaN to agree with, so the test asserts the documented position rather than comparing.
 
 ### 3.3 Row encoding
 
@@ -290,8 +313,8 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 ## 7. Open questions
 
 1. *(G-Dash volumes answered, §5.1.1.)* WorkSplicer's profile once its redesign settles (§5.1.2); G-Dash's refresh duration, which it has never measured.
-2. The unified number encoding: exact integers and doubles in one order, plus NaN and signed zero (§3.2).
-3. Whether an untyped `MONEY` column may be indexed (§3.2).
+2. *(Designed 2026-10-22, §3.2: one 11-byte number encoding for exact integers and doubles; −0 keyed as 0; NaN after +inf and equal to itself.)* To verify with the oracle.
+3. *(Decided 2026-10-22, §3.2: an untyped `MONEY` column may be indexed, grouped by currency; ordering across currencies raises.)*
 4. *(Settled 2026-10-21: the §2.D reading is right, and G-SQL is a new development.)*
 5. The round-trip threshold for accepting the single-protocol rule (§5.5), agreed after first numbers.
 6. **Cross-database queries.** **Decided (2026-10-21) for the first release: one query reads one database.** SQLite's `ATTACH` (several databases in one query) is not offered at first, because across owners it is a distributed query; it is added only if a real application needs it. Separately: whether one database is always one file plus at most a log (proposed: yes). G-Dash's case is §5.1.1a.

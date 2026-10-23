@@ -13085,3 +13085,24 @@ release script is the one place to change, and it wants watching.
   consecutive clean runs of the tier that crashed three in five. The crash is
   still there for anyone whose shell redraws more bluntly, which is the obvious
   thing to write.
+
+## 2026-10-22 — CC — while: designing G-SQL's order-preserving key encoding
+- **Type:** bug
+- **Severity:** medium
+- **What:** **`sort` has no consistent place for NaN, so its result depends on
+  the input order.** Measured: `sort([3, nan, 1, -inf, inf, 2])` gives
+  `[-inf,1,2,3,nan,inf]`, `sort([nan, 3, 1, 2])` gives `[nan,1,2,3]`,
+  `sort([3, 1, 2, nan])` gives `[1,2,3,nan]`, and `sort([1, nan, 1])` comes back
+  **unsorted**, `[1,nan,1]`. Every comparison with NaN answers false, which is
+  IEEE-correct for `<` and `=`, and a sort built on `<` then has no total order
+  to follow. The neighbours disagree too: `max([1, nan, 3])` is 3 while
+  `min([nan, 1, 3])` is nan, `unique([nan, nan])` keeps both, and
+  `contains([nan], nan)` is false.
+- **Why it matters beyond NaN:** an index needs every value in exactly one place.
+  G-SQL's design (`docs/gsql_storage_design.md` §3.2) therefore gives NaN a fixed
+  key position, after +inf with NaN equal to NaN, PostgreSQL's rule, and that is
+  the same "not distinct" equality `docs/gsql_design.md` §3.1.1 already says
+  gBASIC's `sort`, `unique` and `contains` need for `unknown`. One increment can
+  give the language both.
+- **Workaround:** none needed in the tree today (no fixture sorts NaN). A
+  program can filter NaN out before sorting.
