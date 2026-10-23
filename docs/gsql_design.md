@@ -659,11 +659,11 @@ ROLLUP/GROUPING, grouping sets/CUBE, richer windows, sophisticated optimizer, im
 10. Protect SARGability through access/residual predicate separation and transparent `EXPLAIN` output.
 11. Defer costly advanced features where a clear initial benefit has not been demonstrated.
 12. One owning process per database file; every other process is a client. When the owner exits, a surviving client becomes the next owner and runs recovery; no owner outlives the processes that started it (§6.1).
-15. `unknown`'s truth tables are SQL's, except that procedural control flow (`if`, `while`, `until`) still raises on `unknown` (§3.1.1).
 13. The storage engine is chosen by measurement before the SQL layer is implemented (§6.2).
+14. The engine holds only what cannot be done as well in gBASIC (§1): access control, admin tools, import/export and migration tooling are gBASIC's.
+15. `unknown`'s truth tables are SQL's, except that procedural control flow (`if`, `while`, `until`) still raises on `unknown` (§3.1.1).
 16. In the first release, one query reads one database; cross-database queries are added only when a real application needs them. A database holds many tables and views, and multi-tenant applications use one database per tenant (WorkSplicer's arrangement).
 17. Record-valued columns and indexes on one record field are in the first release (§3.5), so per-type parameters (WorkSplicer's asset types) need neither EAV tables nor a table per type.
-14. The engine holds only what cannot be done as well in gBASIC (§1): access control, admin tools, import/export and migration tooling are gBASIC's.
 
 ## 13. Questions requiring a final engineering decision
 
