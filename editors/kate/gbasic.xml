@@ -6,7 +6,7 @@
   See editors/README.md for details.
 -->
 <language name="gBASIC"
-          version="1"
+          version="2"
           kateversion="5.0"
           section="Sources"
           extensions="*.bas;*.gb"
@@ -321,13 +321,13 @@
 
     <itemDatas>
       <itemData name="Normal Text" defStyleNum="dsNormal"/>
-      <itemData name="Keyword"     defStyleNum="dsKeyword"     color="#0000ff" selColor="#0000ff" bold="1"/>
-      <itemData name="Constant"    defStyleNum="dsConstant"    color="#228b22" selColor="#228b22"/>
+      <itemData name="Keyword"     defStyleNum="dsKeyword"     bold="1"/>
+      <itemData name="Constant"    defStyleNum="dsConstant"/>
       <itemData name="Operator"    defStyleNum="dsOperator"/>
       <itemData name="Builtin"     defStyleNum="dsBuiltIn"/>
-      <itemData name="Number"      defStyleNum="dsDecVal"      color="#228b22" selColor="#228b22"/>
-      <itemData name="String"      defStyleNum="dsString"      color="#228b22" selColor="#228b22"/>
-      <itemData name="String Char" defStyleNum="dsSpecialChar" color="#228b22" selColor="#228b22"/>
+      <itemData name="Number"      defStyleNum="dsDecVal"/>
+      <itemData name="String"      defStyleNum="dsString"/>
+      <itemData name="String Char" defStyleNum="dsSpecialChar"/>
       <itemData name="Comment"     defStyleNum="dsComment"/>
       <itemData name="Symbol"      defStyleNum="dsOperator"/>
     </itemDatas>
