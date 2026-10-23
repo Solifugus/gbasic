@@ -624,6 +624,23 @@ static int wa_option_true(const void *p, const char *option) {
     }
     return 0;
 }
+static size_t wa_option_count(const void *p) {
+    return ((const AstWindowItem *)p)->options.count;
+}
+static const char *wa_option_name(const void *p, size_t i) {
+    return ((const AstWindowItem *)p)->options.items[i].name;
+}
+static const char *wa_option_text(const void *p, const char *option) {
+    const AstWindowItem *it = (const AstWindowItem *)p;
+    for (size_t i = 0; i < it->options.count; i++) {
+        if (it->options.items[i].name &&
+            strcmp(it->options.items[i].name, option) == 0) {
+            const AstExpr *v = it->options.items[i].value;
+            return (v && v->kind == AST_EXPR_STRING) ? v->as.string : NULL;
+        }
+    }
+    return NULL;
+}
 static size_t wa_entry_count(const void *p) {
     return ((const AstWindowItem *)p)->entries.count;
 }
@@ -682,7 +699,8 @@ static void win_check_window(WinCheck *chk, const AstStmt *stmt) {
         wa_win_item,
         wa_kind, wa_word, wa_name, wa_label, wa_subject, wa_direction,
         wa_close_word, wa_target, wa_signal, wa_handler_callable,
-        wa_option_true, wa_entry_count, wa_entry,
+        wa_option_true, wa_option_count, wa_option_name, wa_option_text,
+        wa_entry_count, wa_entry,
         wa_report, NULL
     };
     GbWinModel m = model;

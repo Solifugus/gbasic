@@ -932,6 +932,66 @@ static void win_check_item(WinRun *run, const void *item,
                               word);
                     continue;
                 }
+                /* A COLUMN'S OPTIONS ARE A CLOSED SET, unlike a leaf's: the
+                 * backend READS them (the caption, a fold's type, the depth,
+                 * the alignment) rather than handing them to a widget, so an
+                 * unknown one did NOTHING -- measured, `alignn: "right"` and
+                 * `bogus: 1` opened without a word. Refused by name, with the
+                 * near miss, because `align` is exactly the option that gets
+                 * misspelled. */
+                if (M->option_count && M->option_name) {
+                    static const char *column_options[] = {
+                        "label", "type", "depth", "align", NULL};
+                    size_t oc = M->option_count(part);
+                    for (size_t o = 0; o < oc; o++) {
+                        const char *on = M->option_name(part, o);
+                        int known = 0;
+                        for (size_t k = 0; column_options[k]; k++) {
+                            if (on && strcmp(on, column_options[k]) == 0) {
+                                known = 1;
+                                break;
+                            }
+                        }
+                        if (known) {
+                            continue;
+                        }
+                        const char *near = on ? gb_nearest_word(on, column_options)
+                                              : NULL;
+                        if (near) {
+                            win_error(run, part,
+                                      "window: a %s's column takes `label`, "
+                                      "`type`, `depth` and `align`, and '%s' "
+                                      "is none of them -- did you mean '%s'?",
+                                      word, on ? on : "?", near);
+                        } else {
+                            win_error(run, part,
+                                      "window: a %s's column takes `label`, "
+                                      "`type`, `depth` and `align`, and '%s' "
+                                      "is none of them", word, on ? on : "?");
+                        }
+                    }
+                }
+                if (M->option_text && M->option_count) {
+                    int has_align = 0;
+                    size_t oc = M->option_count(part);
+                    for (size_t o = 0; o < oc; o++) {
+                        const char *on = M->option_name(part, o);
+                        if (on && strcmp(on, "align") == 0) {
+                            has_align = 1;
+                        }
+                    }
+                    const char *al = has_align ? M->option_text(part, "align")
+                                               : NULL;
+                    if (has_align &&
+                        (!al || (strcmp(al, "left") != 0 &&
+                                 strcmp(al, "right") != 0 &&
+                                 strcmp(al, "center") != 0))) {
+                        win_error(run, part,
+                                  "window: `align:` on column '%s' is "
+                                  "\"left\", \"right\" or \"center\"",
+                                  pn);
+                    }
+                }
                 if (M->option_true && M->option_true(part, "depth")) {
                     depth_fields++;
                     if (depth_fields > 1) {

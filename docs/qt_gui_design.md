@@ -4228,3 +4228,13 @@ indices, which no slot here takes — nobody has asked.
 
 **The load-bearing check is a difference** (`tests/run_qt_keys.sh`): the same press of Ctrl+= does nothing against the single `Ctrl++` (Studio's bug, reproduced) and fires once the list is set. Either half alone passes on a backend that ignores the list, or on a `qt.key` that fires everything. Its control is that a key nothing takes answers `false`. Four perturbations proven red: a list keeping only its first entry, no unknown-key check, the window not made active, and `qt.key` always answering `true`.
 
+## 0.35 A column's alignment (2026-10-22)
+
+**Asked for by gBASIC Studio:** Matthew wants numbers right-aligned in its grid, an asking table. Studio could not do it, because `GbQtAskModel::data` answered only `DisplayRole`, so a column's kind was gone before Qt saw it and nothing set `Qt::TextAlignmentRole`. Studio's cells reach it as display strings, so an automatic "numbers go right" rule would not help it; it already knows which columns are numeric, since it sorts them numerically. So the answer is **per column**: `align:` on a table's or tree's `field`.
+
+**One option, three table kinds, one rule.** The asking model answers `TextAlignmentRole` from a per-column table; a held table and a tree keep the alignment on the view and apply it to every cell as it is created, which is why a row added by `qt.refresh` is aligned too. Set after the table is built and before it is populated.
+
+**And a defect found on the way.** A column's options were read for `label`, `type` and `depth` and nothing else, so any other option was ignored in silence: measured, `alignn: "right"` and `bogus: 1` opened without a word. Unlike a leaf's options, which are widget properties and an open set, a column's are read by the backend, so the set **can** be closed. It is now, in the shared load-time pass (`src/window_check.c`), so a declared window and a built one refuse identically, with the near miss. That needed three accessors on the checker's model (an item's option names and a literal text value), implemented by both adapters. Measured before closing it: no column in this tree or in Studio uses any other option.
+
+**The oracle is Qt.** `qt.alignment` reads the model's alignment role or the cell item's alignment, never the declaration, so a backend that stored `align:` and never applied it is caught. Five perturbations proven red: the model ignoring it, the held table ignoring it, the tree ignoring it, unknown column options accepted, and the value unchecked (`tests/run_qt_align.sh`).
+

@@ -253,6 +253,13 @@ char *gb_qt_shortcuts(void *window, const char *name, char *err,
 /* Press one key combination on a part, through Qt's shortcut map. */
 int gb_qt_key(void *window, const char *name, const char *keys, int *handled,
               char *err, size_t err_size);
+/* A table or tree column's alignment ("left", "right" or "center"), set after
+ * the table is built and applied to every cell; and the alignment Qt would
+ * paint a cell with, or NULL for a cell outside the table. */
+int gb_qt_column_align(void *table_node, int col, const char *align, char *err,
+                       size_t err_size);
+const char *gb_qt_cell_alignment(void *window, const char *name, int row,
+                                 int col);
 int gb_qt_set_part_text(void *window, const char *name, const char *prop,
                         const char *value, char *err, size_t err_size);
 int gb_qt_set_part_number(void *window, const char *name, const char *prop,

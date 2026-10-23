@@ -89,6 +89,14 @@ struct GbWinModel {
      * would be a declaration with two answers. May be NULL in a model that
      * cannot answer it; every caller tests before calling. */
     int (*option_true)(const void *item, const char *option);
+    /* AN ITEM'S OPTION NAMES, and one option's value when it is a literal
+     * text (NULL otherwise). Used only where an option set IS closed: a
+     * table's or tree's COLUMN, whose options are read by the backend rather
+     * than passed to a widget, so an unknown one would do nothing at all.
+     * May be NULL in a model that cannot answer; callers test first. */
+    size_t (*option_count)(const void *item);
+    const char *(*option_name)(const void *item, size_t i);
+    const char *(*option_text)(const void *item, const char *option);
     size_t (*entry_count)(const void *item);
     const void *(*entry)(const void *item, size_t i);
 

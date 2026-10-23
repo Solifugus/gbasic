@@ -3849,6 +3849,7 @@ end program
 | `qt.selected(win, table)` | which row a person has chosen, as an **index** so it composes with the list the program holds; `unknown` when none is — not `-1` and not `0`, both of which are valid-looking indices |
 | `qt.select(win, table, row)` | choose a row from the program, for a window that opens with one highlighted; `unknown` chooses nothing |
 | `qt.cell(win, table, row, column)` | one cell, addressed by the **column's own name** rather than its position |
+| `qt.alignment(win, table, row, column)` | where that cell's text sits, `"left"`, `"right"` or `"center"`, **asked of Qt** (an asking table's model, or the cell item) rather than of the declaration, so an `align:` declared and never applied cannot pass. Addressed and refused exactly as `qt.cell` is |
 | `qt.heading(win, table, column)` | a column's caption, by its name **or** its position |
 | `qt.options(win, part, list)` | fill a `choice`'s list from data, answering how many items it put in. Clearing **resets the selection**, deliberately: a list that has changed may not contain what was chosen, and an index into a list that has moved is how a form reports a value nobody picked |
 | `qt.rows(win, table)` / `qt.rows(win, table, n)` | how many rows a **`to ask`** table has, or tell it. A verb rather than part of the declaration because it changes — a results grid is refilled by every query — and setting it is also how *"the data changed"* is said, since it resets the model and Qt re-asks. A negative count is refused rather than shown as empty |
@@ -4007,6 +4008,16 @@ tree files to show rows
     field depth( depth: true )
 end tree
 ```
+
+**A column's options are a closed set:** `label` (the caption), `type` (how an
+edited value folds back), `depth` (a tree's undrawn depth column) and **`align`**,
+which is `"left"`, `"right"` or `"center"` and applies to every cell of that
+column, in a held table, an asking table and a tree alike:
+`field amount( label: "Amount", align: "right" )`. Anything else is refused at
+load by name, with the near miss: a column's options are read by the backend
+rather than handed to a widget, so before 2026-10-22 a misspelled one did nothing
+at all. `qt.alignment(win, table, row, column)` answers where a cell's text sits,
+asked of Qt itself.
 
 The column marked `depth: true` is **declared and not drawn**: it supplies the
 nesting, so a flat list of records becomes a tree, each row attached under the

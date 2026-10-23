@@ -187,6 +187,28 @@ static int qr_option_true(const void *p, const char *option) {
             f->value->as.boolean) ? 1 : 0;
 }
 
+static size_t qr_option_count(const void *p) {
+    RecordField *f = record_find(((const QtCheckItem *)p)->value, "options");
+    if (!f || !f->value || f->value->kind != VALUE_RECORD) {
+        return 0;
+    }
+    return f->value->as.record.count;
+}
+static const char *qr_option_name(const void *p, size_t i) {
+    RecordField *f = record_find(((const QtCheckItem *)p)->value, "options");
+    return f->value->as.record.fields[i].name;
+}
+static const char *qr_option_text(const void *p, const char *option) {
+    const QtCheckItem *it = (const QtCheckItem *)p;
+    RecordField *opts = record_find(it->value, "options");
+    if (!opts || !opts->value || opts->value->kind != VALUE_RECORD) {
+        return NULL;
+    }
+    RecordField *f = record_find(opts->value, option);
+    return (f && f->value && f->value->kind == VALUE_STRING)
+               ? f->value->as.string : NULL;
+}
+
 static int qr_handler_callable(const void *p) {
     const QtCheckItem *it = (const QtCheckItem *)p;
     RecordField *f = record_find(it->value, "handler");
@@ -420,7 +442,8 @@ static int qt_check_window_record(Value *win, char *message, size_t cap) {
         qr_win_item,
         qr_kind, qr_word, qr_name, qr_label, qr_subject, qr_direction,
         qr_close_word, qr_target, qr_signal, qr_handler_callable,
-        qr_option_true, qr_entry_count, qr_entry,
+        qr_option_true, qr_option_count, qr_option_name, qr_option_text,
+        qr_entry_count, qr_entry,
         qr_report, NULL
     };
     QtCheckSink sink;
@@ -1272,7 +1295,8 @@ static int qt_build_item(void *parent, Value *item, void *root) {
                         cols->value->as.array.store)
                            ? cols->value->as.array.store->count : 0;
         const char **headers = ncols ? calloc(ncols, sizeof(char *)) : NULL;
-        if (ncols && !headers) {
+        const char **aligns = ncols ? calloc(ncols, sizeof(char *)) : NULL;
+        if (ncols && (!headers || !aligns)) {
             abort();
         }
         size_t at = 0;
@@ -1309,6 +1333,9 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             if (!cap) {
                 cap = qt_record_text(col, "name");
             }
+            aligns[at] = (copts && copts->value &&
+                          copts->value->kind == VALUE_RECORD)
+                             ? qt_record_text(copts->value, "align") : NULL;
             headers[at++] = cap ? cap : "";
         }
         /* `to ask` BUILDS A DIFFERENT WIDGET, and it has to be decided HERE
@@ -1331,11 +1358,24 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         }
         free((void *)headers);
         if (!tnode) {
+            free((void *)aligns);
             snprintf(message, sizeof(message), "window: %s",
                      err[0] ? err : "that table could not be built");
             qt_raise(message);
             return 0;
         }
+        /* A COLUMN'S `align:`, set before the table is populated so every
+         * cell is made with it. The value was checked at load (window_check). */
+        for (size_t c = 0; c < at; c++) {
+            if (aligns[c] && !gb_qt_column_align(tnode, (int)c, aligns[c], err,
+                                                 sizeof(err))) {
+                free((void *)aligns);
+                snprintf(message, sizeof(message), "window: %s", err);
+                qt_raise(message);
+                return 0;
+            }
+        }
+        free((void *)aligns);
         return qt_apply_options(tnode, opts ? opts->value : NULL, word, name, 1);
     }
 
@@ -3609,9 +3649,17 @@ static Value qt_eval_call(AstExpr *expr) {
      * ADDRESSED BY NAME, NOT BY COLUMN NUMBER, because a number is the one
      * thing that changes when the declaration is reordered -- and then it
      * reads a real value from the wrong column, which is a plausible answer. */
-    if (strcmp(verb, "cell") == 0) {
+    if (strcmp(verb, "cell") == 0 || strcmp(verb, "alignment") == 0) {
+        /* `qt.alignment` IS `qt.cell` ASKING A DIFFERENT QUESTION OF THE SAME
+         * CELL: where its text sits, as Qt would paint it ("left", "right" or
+         * "center"). One branch, so the two address a cell identically and
+         * refuse identically. */
+        int is_align = strcmp(verb, "alignment") == 0;
+        const char *vn = is_align ? "qt.alignment" : "qt.cell";
         if (argc != 4) {
-            qt_raise("qt.cell expects a window, a table, a row and a column name");
+            snprintf(message, sizeof(message),
+                     "%s expects a window, a table, a row and a column name", vn);
+            qt_raise(message);
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -3623,11 +3671,13 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(rowv); value_free(colv);
             return value_null();
         }
-        if (!qt_window_record(&win, "cell") || which.kind != VALUE_STRING ||
+        if (!qt_window_record(&win, verb) || which.kind != VALUE_STRING ||
             colv.kind != VALUE_STRING || rowv.kind != VALUE_NUMBER) {
             if (!error_action_pending()) {
-                qt_raise("qt.cell expects the table's name as text, a row "
-                         "number and the column's name as text");
+                snprintf(message, sizeof(message),
+                         "%s expects the table's name as text, a row number "
+                         "and the column's name as text", vn);
+                qt_raise(message);
             }
             value_free(win); value_free(which);
             value_free(rowv); value_free(colv);
@@ -3650,8 +3700,8 @@ static Value qt_eval_call(AstExpr *expr) {
                            : NULL;
         if (!table) {
             snprintf(message, sizeof(message),
-                     "qt.cell: window `%s` declares no table named `%s`",
-                     wname ? wname : "", which.as.string);
+                     "%s: window `%s` declares no table named `%s`",
+                     vn, wname ? wname : "", which.as.string);
             qt_raise(message);
             value_free(win); value_free(which);
             value_free(rowv); value_free(colv);
@@ -3661,20 +3711,27 @@ static Value qt_eval_call(AstExpr *expr) {
         if (col < 0) {
             snprintf(message, sizeof(message),
                      col == -2
-                         ? "qt.cell: `%s`'s `%s` column carries the depth and "
+                         ? "%s: `%s`'s `%s` column carries the depth and "
                            "is not drawn, so it holds no cell -- qt.depth "
                            "answers it"
-                         : "qt.cell: table `%s` has no `%s` column",
-                     which.as.string, colv.as.string);
+                         : "%s: table `%s` has no `%s` column",
+                     vn, which.as.string, colv.as.string);
             qt_raise(message);
             value_free(win); value_free(which);
             value_free(rowv); value_free(colv);
             return value_null();
         }
-        char *text = gb_qt_table_get(root, which.as.string,
-                                     (int)rowv.as.num.value, col);
+        char *text;
+        if (is_align) {
+            const char *where = gb_qt_cell_alignment(
+                root, which.as.string, (int)rowv.as.num.value, col);
+            text = where ? copy_string(where) : NULL;
+        } else {
+            text = gb_qt_table_get(root, which.as.string,
+                                   (int)rowv.as.num.value, col);
+        }
         snprintf(message, sizeof(message),
-                 "qt.cell: table `%s` has no row %ld", which.as.string,
+                 "%s: table `%s` has no row %ld", vn, which.as.string,
                  (long)rowv.as.num.value);
         value_free(win); value_free(which);
         value_free(rowv); value_free(colv);

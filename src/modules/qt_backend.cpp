@@ -558,6 +558,11 @@ public:
     QByteArray cell_fn;
     QStringList headers;
     int rows = 0;
+    /* A COLUMN'S DECLARED ALIGNMENT (`align:`), answered for
+     * Qt::TextAlignmentRole. The model knew only DisplayRole, so a column of
+     * numbers could not be right-aligned at all (asked for by gBASIC Studio):
+     * the value's kind is gone before Qt sees the text. */
+    QHash<int, int> aligns;
     int rowCount(const QModelIndex &parent) const override {
         return parent.isValid() ? 0 : rows;
     }
@@ -575,6 +580,10 @@ public:
         return headers.at(section);
     }
     QVariant data(const QModelIndex &ix, int role) const override {
+        if (role == Qt::TextAlignmentRole && ix.isValid()) {
+            auto it = aligns.constFind(ix.column());
+            return it == aligns.constEnd() ? QVariant() : QVariant(it.value());
+        }
         if (role != Qt::DisplayRole || !ix.isValid() || !g_cell ||
             cell_fn.isEmpty()) {
             return QVariant();
@@ -4496,6 +4505,90 @@ extern "C" int gb_qt_table_size(void *window, const char *name, int rows,
     return 1;
 }
 
+/* A HELD TABLE'S OR TREE'S COLUMN ALIGNMENT, kept on the view as a dynamic
+ * property per column and applied to every cell as it is created, so a
+ * refresh keeps it. 0 means "not declared", which leaves Qt's default. */
+static int stored_alignment(QObject *view, int col) {
+    QVariant v = view->property(QByteArray("_gb_align_") + QByteArray::number(col));
+    return v.isValid() ? v.toInt() : 0;
+}
+
+static int alignment_from_text(const char *align) {
+    if (!align) {
+        return -1;
+    }
+    if (strcmp(align, "left") == 0) {
+        return (int)(Qt::AlignLeft | Qt::AlignVCenter);
+    }
+    if (strcmp(align, "right") == 0) {
+        return (int)(Qt::AlignRight | Qt::AlignVCenter);
+    }
+    if (strcmp(align, "center") == 0) {
+        return (int)(Qt::AlignHCenter | Qt::AlignVCenter);
+    }
+    return -1;
+}
+
+static const char *alignment_text(int flags) {
+    if (flags & Qt::AlignRight) {
+        return "right";
+    }
+    if (flags & Qt::AlignHCenter) {
+        return "center";
+    }
+    return "left";
+}
+
+extern "C" int gb_qt_column_align(void *table_node, int col, const char *align,
+                                  char *err, size_t err_size) {
+    GbQtNode *n = (GbQtNode *)table_node;
+    QWidget *w = n ? n->widget : nullptr;
+    int flags = alignment_from_text(align);
+    if (!w || flags < 0) {
+        say(err, err_size, "`align:` is \"left\", \"right\" or \"center\"");
+        return 0;
+    }
+    if (QTableView *v = qobject_cast<QTableView *>(w)) {
+        if (GbQtAskModel *m = dynamic_cast<GbQtAskModel *>(v->model())) {
+            m->aligns.insert(col, flags);
+            return 1;
+        }
+    }
+    w->setProperty(QByteArray("_gb_align_") + QByteArray::number(col), flags);
+    return 1;
+}
+
+/* WHERE A CELL'S TEXT SITS, asked of what Qt itself would paint with: the
+ * model's TextAlignmentRole for an asking table, the item's own alignment for
+ * a held table or a tree. Asked of the cell rather than of what was declared,
+ * so a backend that stored the alignment and never applied it is caught. */
+extern "C" const char *gb_qt_cell_alignment(void *window, const char *name,
+                                            int row, int col) {
+    if (GbQtAskModel *m = ask_model_of(window, name)) {
+        if (row < 0 || row >= m->rows || col < 0 ||
+            col >= (int)m->headers.size()) {
+            return nullptr;
+        }
+        QVariant v = m->data(m->index(row, col), Qt::TextAlignmentRole);
+        return alignment_text(v.isValid() ? v.toInt() : 0);
+    }
+    if (QTreeWidget *tr = tree_of(window, name)) {
+        QTreeWidgetItem *item = tree_item_at(tr, row);
+        if (!item || col < 0 || col >= tr->columnCount()) {
+            return nullptr;
+        }
+        return alignment_text(item->textAlignment(col));
+    }
+    QTableWidget *t = table_of(window, name);
+    if (!t || row < 0 || row >= t->rowCount() || col < 0 ||
+        col >= t->columnCount()) {
+        return nullptr;
+    }
+    QTableWidgetItem *cell = t->item(row, col);
+    return alignment_text(cell ? cell->textAlignment()
+                               : stored_alignment(t, col));
+}
+
 extern "C" int gb_qt_table_set(void *window, const char *name, int row,
                                int col, const char *text, char *err,
                                size_t err_size) {
@@ -4508,7 +4601,11 @@ extern "C" int gb_qt_table_set(void *window, const char *name, int row,
         say(err, err_size, "that cell is outside the table");
         return 0;
     }
-    t->setItem(row, col, new QTableWidgetItem(QString::fromUtf8(text)));
+    QTableWidgetItem *item = new QTableWidgetItem(QString::fromUtf8(text));
+    if (int flags = stored_alignment(t, col)) {
+        item->setTextAlignment(Qt::Alignment(flags));
+    }
+    t->setItem(row, col, item);
     return 1;
 }
 
@@ -5840,6 +5937,9 @@ extern "C" int gb_qt_tree_add(void *window, const char *name, int depth,
     QTreeWidgetItem *item = new QTreeWidgetItem();
     for (int i = 0; i < columns; i++) {
         item->setText(i, QString::fromUtf8(cells && cells[i] ? cells[i] : ""));
+        if (int flags = stored_alignment(t, i)) {
+            item->setTextAlignment(i, Qt::Alignment(flags));
+        }
     }
     if (depth <= 0) {
         t->addTopLevelItem(item);
