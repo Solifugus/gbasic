@@ -310,10 +310,9 @@ program main( args )
     check("a fraction stays inexact ", decode("0.5") + 0.25, 0.75)
     check("past int64 degrades      ", decode("99999999999999999999") > 0, true)
     check("and a string is a string ", decode("\"9007199254740993\""), "9007199254740993")
-    ' `serialize` IS INCREMENT 4 AND STILL OPEN -- a NEGATIVE CONTROL, so it goes
-    ' red when that increment lands and names itself as the line to update. It
-    ' needs a SER_VERSION bump, the payload carrying only the double today.
-    check("serialize still loses it ", deserialize(serialize(b)) = b, false)
+    ' `serialize` WAS INCREMENT 4 and this line was its NEGATIVE CONTROL until
+    ' version 3 carried exactness (tests/run_serialize.sh owns the format now).
+    check("serialize keeps it       ", deserialize(serialize(b)) = b, true)
 
     print "-- CONTROLS, each a settled decision rather than caution"
     ' WITHOUT THESE, "exactness reaches the builtins" is satisfied by calling

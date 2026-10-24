@@ -78,7 +78,10 @@ program demo(args)
 
     frame.write_csv(df, "examples/tmp_frame_out.csv")
     df2 = frame.read_csv("examples/tmp_frame_out.csv")
-    print("csv_roundtrip " + string(serialize(df2) = serialize(df)))
+    ' `=`, not a comparison of `serialize` output: since version 3 that records
+    ' whether a number is EXACT, and "7.0" read, written as "7" and read again is
+    ' an exact 7 where it was an inexact 7.0 -- equal, and serialized differently.
+    print("csv_roundtrip " + string(df2 = df))
 
     ' --- show ---
     print("--- show ---")

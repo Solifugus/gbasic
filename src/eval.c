@@ -14699,10 +14699,20 @@ static Value builtin_encode_value(Value value) {
 /* --- Multiprocessing Phase 0: value serialization ----------------------------
  * (docs/multiprocessing_design.md §5). `serialize(value)` produces a binary-safe
  * string of bytes; `deserialize(string)` reconstructs the value. The wire format
- * is a small self-describing, length-prefixed binary encoding. It is the shared
- * foundation the future actor transport (fork+exec of the same `gbasic`) sends
- * over a mailbox; because round-trips are always same-binary, native fixed-width
- * encodings are written directly. Non-sendable kinds (live DB connections) and
+ * is a small self-describing, length-prefixed binary encoding, shared by the
+ * actor transport and the public builtin.
+ *
+ * VERSION 3 IS PORTABLE, and versions 1 and 2 were not: they copied integers in
+ * the MACHINE's byte order, justified by "round-trips are always same-binary".
+ * That holds for an actor and is false for a payload in a file, which is copied
+ * between machines and outlives the binary that wrote it -- and it is false for
+ * G-SQL's rows and client protocol, which use this encoding
+ * (docs/gsql_storage_design.md §3.3). So every fixed field is LITTLE-ENDIAN
+ * whatever the host, every length and count is unsigned LEB128, and a number
+ * records whether it is EXACT, which closes exact_number_design.md's increment
+ * 4: until v3 an exact integer above 2^53 lost its last digit crossing the
+ * boundary. The reader still accepts 1 and 2, which are in files right now.
+ * Non-sendable kinds (live DB connections) and
  * over-deep/cyclic structures raise a structured `actor` error. Records lose PBI
  * policy on the round-trip (a snapshot is plain `copy`), matching §6. */
 
@@ -14713,7 +14723,7 @@ static Value builtin_encode_value(Value value) {
  * ACCEPTS BOTH: v1 payloads hold a bare int64 of cents and are rescaled, never
  * refused, because `serialize` is a public builtin and those payloads are in
  * files right now. */
-#define SER_VERSION 2
+#define SER_VERSION 3
 #define SER_VERSION_MIN 1
 #define SER_MAX_DEPTH 256
 
@@ -14841,13 +14851,35 @@ static void serbuf_u8(SerBuf *b, unsigned char v) {
     serbuf_append(b, &v, 1);
 }
 
-static void serbuf_u64(SerBuf *b, uint64_t v) {
-    serbuf_append(b, &v, sizeof v);
+/* Version 3's portable primitives. Bytes are produced by SHIFTING rather than
+ * by copying an integer's storage, which is what makes them the same on every
+ * host: a memcpy writes whatever order the machine keeps. */
+static void serbuf_uleb(SerBuf *b, uint64_t v) {
+    do {
+        unsigned char byte = (unsigned char)(v & 0x7f);
+        v >>= 7;
+        if (v) {
+            byte |= 0x80;
+        }
+        serbuf_u8(b, byte);
+    } while (v);
+}
+
+static void serbuf_le(SerBuf *b, uint64_t v, int width) {
+    unsigned char bytes[8];
+    for (int i = 0; i < width; i++) {
+        bytes[i] = (unsigned char)(v >> (8 * i));
+    }
+    serbuf_append(b, bytes, (size_t)width);
+}
+
+static void serbuf_i32(SerBuf *b, int v) {
+    serbuf_le(b, (uint64_t)(uint32_t)v, 4);
 }
 
 /* Append `len` length-prefixed bytes (used for strings, paths, field names). */
 static void serbuf_blob(SerBuf *b, const char *data, size_t len) {
-    serbuf_u64(b, (uint64_t)len);
+    serbuf_uleb(b, (uint64_t)len);
     serbuf_append(b, data, len);
 }
 
@@ -14871,8 +14903,20 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         serbuf_u8(b, v.as.boolean ? 1 : 0);
         return 1;
     case VALUE_NUMBER:
+        /* EXACTNESS TRAVELS. An exact integer is its int64, never the double
+         * beside it, which is the lossy view and the reason increment 4 existed:
+         * 2^53 + 1 came back as 2^53. An inexact number is the double's bit
+         * pattern, so -0, the infinities and every NaN payload survive. */
         serbuf_u8(b, SER_NUMBER);
-        serbuf_append(b, &v.as.num.value, sizeof v.as.num.value);
+        if (v.as.num.is_exact) {
+            serbuf_u8(b, 1);
+            serbuf_le(b, (uint64_t)v.as.num.exact, 8);
+        } else {
+            uint64_t bits;
+            memcpy(&bits, &v.as.num.value, sizeof bits);
+            serbuf_u8(b, 0);
+            serbuf_le(b, bits, 8);
+        }
         return 1;
     case VALUE_STRING:
         serbuf_u8(b, SER_STRING);
@@ -14880,7 +14924,7 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         return 1;
     case VALUE_ARRAY:
         serbuf_u8(b, SER_ARRAY);
-        serbuf_u64(b, (uint64_t)v.as.array.store->count);
+        serbuf_uleb(b, (uint64_t)v.as.array.store->count);
         for (size_t i = 0; i < v.as.array.store->count; i++) {
             if (!serialize_value(b, v.as.array.store->items[i], depth + 1)) {
                 return 0;
@@ -14889,7 +14933,7 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         return 1;
     case VALUE_RECORD:
         serbuf_u8(b, SER_RECORD);
-        serbuf_u64(b, (uint64_t)v.as.record.count);
+        serbuf_uleb(b, (uint64_t)v.as.record.count);
         for (size_t i = 0; i < v.as.record.count; i++) {
             RecordField *f = &v.as.record.fields[i];
             if (active_serialize_strict && f->policy == AST_FIELD_POLICY_LINK) {
@@ -14910,24 +14954,57 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
             }
         }
         return 1;
-    case VALUE_DATETIME:
+    case VALUE_DATETIME: {
+        /* FIELD BY FIELD, never the struct: a struct's layout and padding are
+         * the compiler's, and v2 wrote them -- padding bytes included. */
+        DateTime dt = v.as.datetime;
         serbuf_u8(b, SER_DATETIME);
-        serbuf_append(b, &v.as.datetime, sizeof v.as.datetime);
+        serbuf_i32(b, dt.year);
+        serbuf_i32(b, dt.month);
+        serbuf_i32(b, dt.day);
+        serbuf_i32(b, dt.hour);
+        serbuf_i32(b, dt.minute);
+        serbuf_i32(b, dt.second);
+        serbuf_u8(b, dt.time_only ? 1 : 0);
+        serbuf_u8(b, (unsigned char)dt.precision);
         return 1;
-    case VALUE_DURATION:
+    }
+    case VALUE_DURATION: {
+        Duration d = v.as.duration;
         serbuf_u8(b, SER_DURATION);
-        serbuf_append(b, &v.as.duration, sizeof v.as.duration);
+        serbuf_i32(b, d.years);
+        serbuf_i32(b, d.months);
+        serbuf_i32(b, d.weeks);
+        serbuf_i32(b, d.days);
+        serbuf_i32(b, d.hours);
+        serbuf_i32(b, d.minutes);
+        serbuf_i32(b, d.seconds);
         return 1;
+    }
     case VALUE_MONEY:
         /* Self-describing: units, currency AND exponent. Without the exponent
          * a value would be meaningful only to a program holding the same
          * currency table -- and `serialize` is a public builtin, so values
          * persist on disk, while actors are fork+exec, so a currency
          * registered in the parent is not registered in the child. */
+        /*
+         * VERSION 3 ALSO CARRIES THE ALPHABETIC CODE, because the numeric one is
+         * only portable for ISO currencies: a REGISTERED currency's number is
+         * handed out in registration order (MONEY_REGISTERED_BASE upwards), so
+         * the same number names different currencies in two programs that
+         * registered in a different order. The reader prefers the code and
+         * falls back to the number only when the code is not known there,
+         * which is v2's behaviour for that case. */
         serbuf_u8(b, SER_MONEY);
-        serbuf_append(b, &v.as.money.units, sizeof v.as.money.units);
-        serbuf_append(b, &v.as.money.currency, sizeof v.as.money.currency);
-        serbuf_append(b, &v.as.money.exponent, sizeof v.as.money.exponent);
+        serbuf_le(b, (uint64_t)v.as.money.units, 8);
+        serbuf_u8(b, v.as.money.exponent);
+        serbuf_le(b, v.as.money.currency, 2);
+        {
+            const char *alpha = currency_alpha_of(v.as.money.currency);
+            size_t alen = alpha ? strlen(alpha) : 0;
+            serbuf_u8(b, (unsigned char)alen);
+            serbuf_append(b, alpha ? alpha : "", alen);
+        }
         return 1;
     case VALUE_FILE:
         serbuf_u8(b, SER_FILE);
@@ -14984,7 +15061,7 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
             }
             spawn_xfer_record(x, dup_fd);
             serbuf_u8(b, SER_ACTOR);
-            serbuf_u64(b, (uint64_t)dup_fd);
+            serbuf_uleb(b, (uint64_t)dup_fd);
             return 1;
         }
         if (active_msg_send) {
@@ -15000,7 +15077,7 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
             uint64_t index = (uint64_t)m->count;
             m->fds[m->count++] = v.as.actor->write_fd;   /* borrowed, not closed */
             serbuf_u8(b, SER_ACTOR);
-            serbuf_u64(b, index);
+            serbuf_uleb(b, index);
             return 1;
         }
         runtime_error_raise("serialize: actor handles cannot be serialized",
@@ -15116,10 +15193,55 @@ static unsigned char serread_u8(SerReader *r) {
     return v;
 }
 
+/* Versions 1 and 2 only: an integer in the WRITING machine's byte order. */
 static uint64_t serread_u64(SerReader *r) {
     uint64_t v = 0;
     serread_bytes(r, &v, sizeof v);
     return v;
+}
+
+/* Version 3: unsigned LEB128. At most ten bytes, and the tenth may carry only
+ * the top bit of a uint64 -- anything longer or wider is corruption, refused
+ * rather than wrapped, since a wrapped length is a plausible wrong length. */
+static uint64_t serread_uleb(SerReader *r) {
+    uint64_t v = 0;
+    for (int shift = 0; shift < 70; shift += 7) {
+        unsigned char byte = serread_u8(r);
+        if (!r->ok) {
+            return 0;
+        }
+        if (shift == 63 && (byte & 0x7e)) {
+            r->ok = 0;
+            return 0;
+        }
+        v |= (uint64_t)(byte & 0x7f) << shift;
+        if (!(byte & 0x80)) {
+            return v;
+        }
+    }
+    r->ok = 0;
+    return 0;
+}
+
+static uint64_t serread_le(SerReader *r, int width) {
+    unsigned char bytes[8] = {0};
+    if (!serread_bytes(r, bytes, (size_t)width)) {
+        return 0;
+    }
+    uint64_t v = 0;
+    for (int i = 0; i < width; i++) {
+        v |= (uint64_t)bytes[i] << (8 * i);
+    }
+    return v;
+}
+
+static int serread_i32(SerReader *r) {
+    return (int)(int32_t)(uint32_t)serread_le(r, 4);
+}
+
+/* A length or a count, in whichever form this payload's version wrote. */
+static uint64_t serread_count(SerReader *r) {
+    return r->version >= 3 ? serread_uleb(r) : serread_u64(r);
 }
 
 /* Reconstruct one value. On malformed/truncated input sets `r->ok = 0` and
@@ -15141,6 +15263,20 @@ static Value deserialize_value(SerReader *r, int depth) {
     case SER_BOOL:
         return value_bool(serread_u8(r) ? 1 : 0);
     case SER_NUMBER: {
+        if (r->version >= 3) {
+            unsigned char exact = serread_u8(r);
+            uint64_t bits = serread_le(r, 8);
+            if (!r->ok || exact > 1) {
+                r->ok = 0;
+                return value_null();
+            }
+            if (exact) {
+                return value_number_exact((long long)bits);
+            }
+            double d;
+            memcpy(&d, &bits, sizeof d);
+            return value_number(d);
+        }
         double d = 0;
         serread_bytes(r, &d, sizeof d);
         return value_number(d);
@@ -15148,7 +15284,7 @@ static Value deserialize_value(SerReader *r, int depth) {
     case SER_STRING:
     case SER_FILE:
     case SER_DIR: {
-        uint64_t len = serread_u64(r);
+        uint64_t len = serread_count(r);
         if (!r->ok || len > r->len - r->pos) {
             r->ok = 0;
             return value_null();
@@ -15174,7 +15310,7 @@ static Value deserialize_value(SerReader *r, int depth) {
         return v;
     }
     case SER_ARRAY: {
-        uint64_t count = serread_u64(r);
+        uint64_t count = serread_count(r);
         /* Each element is at least one tag byte, so a count larger than the
          * bytes left is corrupt — guard before allocating. */
         if (!r->ok || count > r->len - r->pos) {
@@ -15198,7 +15334,7 @@ static Value deserialize_value(SerReader *r, int depth) {
         return value_array(items, (size_t)count);
     }
     case SER_RECORD: {
-        uint64_t count = serread_u64(r);
+        uint64_t count = serread_count(r);
         if (!r->ok || count > r->len - r->pos) {
             r->ok = 0;
             return value_null();
@@ -15208,7 +15344,7 @@ static Value deserialize_value(SerReader *r, int depth) {
             abort();
         }
         for (uint64_t i = 0; i < count; i++) {
-            uint64_t nlen = serread_u64(r);
+            uint64_t nlen = serread_count(r);
             if (!r->ok || nlen > r->len - r->pos) {
                 r->ok = 0;
                 Value partial = value_record(fields, (size_t)i);
@@ -15236,19 +15372,68 @@ static Value deserialize_value(SerReader *r, int depth) {
     case SER_DATETIME: {
         Value v = {0};
         v.kind = VALUE_DATETIME;
+        if (r->version >= 3) {
+            DateTime *dt = &v.as.datetime;
+            dt->year = serread_i32(r);
+            dt->month = serread_i32(r);
+            dt->day = serread_i32(r);
+            dt->hour = serread_i32(r);
+            dt->minute = serread_i32(r);
+            dt->second = serread_i32(r);
+            unsigned char time_only = serread_u8(r);
+            unsigned char precision = serread_u8(r);
+            if (!r->ok || time_only > 1 ||
+                precision < PREC_YEAR || precision > PREC_SECOND) {
+                r->ok = 0;
+                return value_null();
+            }
+            dt->time_only = time_only;
+            dt->precision = (DateTimePrecision)precision;
+            return v;
+        }
         serread_bytes(r, &v.as.datetime, sizeof v.as.datetime);
         return v;
     }
     case SER_DURATION: {
         Value v = {0};
         v.kind = VALUE_DURATION;
+        if (r->version >= 3) {
+            Duration *d = &v.as.duration;
+            d->years = serread_i32(r);
+            d->months = serread_i32(r);
+            d->weeks = serread_i32(r);
+            d->days = serread_i32(r);
+            d->hours = serread_i32(r);
+            d->minutes = serread_i32(r);
+            d->seconds = serread_i32(r);
+            if (!r->ok) {
+                return value_null();
+            }
+            return v;
+        }
         serread_bytes(r, &v.as.duration, sizeof v.as.duration);
         return v;
     }
     case SER_MONEY: {
         Value v = {0};
         v.kind = VALUE_MONEY;
-        if (r->version >= 2) {
+        if (r->version >= 3) {
+            v.as.money.units = (long long)serread_le(r, 8);
+            v.as.money.exponent = serread_u8(r);
+            v.as.money.currency = (unsigned short)serread_le(r, 2);
+            unsigned char alen = serread_u8(r);
+            char alpha[8];
+            if (!r->ok || alen >= sizeof alpha ||
+                !serread_bytes(r, alpha, alen)) {
+                r->ok = 0;
+                return value_null();
+            }
+            alpha[alen] = '\0';
+            unsigned short local = 0;
+            if (alen && currency_find_alpha(alpha, &local, NULL, NULL)) {
+                v.as.money.currency = local;
+            }
+        } else if (r->version >= 2) {
             serread_bytes(r, &v.as.money.units, sizeof v.as.money.units);
             serread_bytes(r, &v.as.money.currency, sizeof v.as.money.currency);
             serread_bytes(r, &v.as.money.exponent, sizeof v.as.money.exponent);
@@ -15264,7 +15449,7 @@ static Value deserialize_value(SerReader *r, int depth) {
         return v;
     }
     case SER_ACTOR: {
-        uint64_t ref = serread_u64(r);
+        uint64_t ref = serread_count(r);
         if (!r->ok) {
             return value_null();
         }
@@ -15287,7 +15472,7 @@ static Value deserialize_value(SerReader *r, int depth) {
         return value_null();
     }
     case SER_FUNCTION: {
-        uint64_t nlen = serread_u64(r);
+        uint64_t nlen = serread_count(r);
         if (!r->ok || nlen > r->len - r->pos) {
             r->ok = 0;
             return value_null();
@@ -15303,7 +15488,7 @@ static Value deserialize_value(SerReader *r, int depth) {
         char *library = NULL;
         unsigned char has_library = serread_u8(r);
         if (r->ok && has_library) {
-            uint64_t llen = serread_u64(r);
+            uint64_t llen = serread_count(r);
             if (!r->ok || llen > r->len - r->pos) {
                 free(name);
                 r->ok = 0;
@@ -15337,14 +15522,14 @@ static Value deserialize_value(SerReader *r, int depth) {
         return v;
     }
     case SER_REGEX: {
-        uint64_t plen = serread_u64(r);
+        uint64_t plen = serread_count(r);
         if (!r->ok || plen > r->len - r->pos) {
             r->ok = 0;
             return value_null();
         }
         const char *pattern = r->data + r->pos;
         r->pos += (size_t)plen;
-        uint64_t flen = serread_u64(r);
+        uint64_t flen = serread_count(r);
         if (!r->ok || flen > r->len - r->pos) {
             r->ok = 0;
             return value_null();

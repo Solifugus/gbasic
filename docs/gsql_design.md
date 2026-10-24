@@ -173,9 +173,9 @@ So **"primary keys and indexes compare full 64-bit values exactly" is already tr
 |---|---|---|
 | `string(b)` | exact | |
 | `encode(b)` → `decode` | exact | the JSON route |
-| `serialize(b)` → `deserialize` | **loses it** — `+ 1` gives `…992` | the **binary** route |
+| `serialize(b)` → `deserialize` | **lost it** until 2026-10-23; **keeps it** since `serialize` version 3 | the **binary** route |
 
-That is `exact_number_design.md`'s **increment 4**, recorded as the only one still open, and it covers both the binary serializer and **the actor wire**. It is therefore the real pre-G-SQL item: a durable row format and a worker pool both cross it. Finishing one increment on an existing serializer is a different and much smaller commitment than adding a numeric type to the language.
+That was `exact_number_design.md`'s **increment 4**, and it **shipped 2026-10-23** as `serialize` version 3. It covered both the binary serializer and **the actor wire**. It is therefore the real pre-G-SQL item: a durable row format and a worker pool both cross it. Finishing one increment on an existing serializer is a different and much smaller commitment than adding a numeric type to the language.
 
 - Still to specify, and unchanged from v0.2: division and mixed exact/inexact arithmetic at the boundaries, and the overflow policy. Overflow **degrades with warning 2112** today rather than refusing — deliberately, so a program that answers keeps answering — and a database **must not** inherit that for a key column: a silently inexact key is the one place the language's chosen default is the wrong one, and G-SQL should refuse rather than degrade. That difference is a decision this document is making, not a restatement.
 - A column declared `INT64` must reject a value that is not an exact integer, rather than rounding it. The language's degradation is a convenience for arithmetic; a stored key is a contract.
@@ -511,7 +511,7 @@ Before indexes are finalized, specify:
 
 | Improvement | Plan | Timing |
 |---|---|---|
-| **A portable value encoding**, as `serialize` version 3 | The type question is closed (§3.2). `serialize` loses exactness (`exact_number_design.md`'s increment 4) **and** writes integers in the machine's native byte order, so it can serve neither a database file copied between machines nor a protocol between gBASIC versions. One little-endian, versioned encoding fixes both and serves rows, the client protocol (§6.5) and `serialize` alike (`gsql_storage_design.md` §3.3); the reader keeps accepting versions 1 and 2 | Before G-SQL |
+| **A portable value encoding**, as `serialize` version 3 — **shipped 2026-10-23** (`tests/run_serialize.sh`) | The type question is closed (§3.2). `serialize` loses exactness (`exact_number_design.md`'s increment 4) **and** writes integers in the machine's native byte order, so it can serve neither a database file copied between machines nor a protocol between gBASIC versions. One little-endian, versioned encoding fixes both and serves rows, the client protocol (§6.5) and `serialize` alike (`gsql_storage_design.md` §3.3); the reader keeps accepting versions 1 and 2 | Before G-SQL |
 | Connector conversions | Shared semantic contract for integer, decimal, money, temporal, binary, and NULL; adapter-specific mappings remain explicit | Before G-SQL |
 | Binary database support | **The value-kind question is already answered**: PLAT-NUL's door sweep settled it per door — sqlite was truncating and is fixed, PostgreSQL `text` *refuses* 0x00 and the answer was a refusal naming `bytea`, and ODBC's `SQL_C_CHAR` is NUL-terminated by construction and documented. gBASIC strings carry arbitrary bytes, so **no dedicated binary value is needed**; the work is BLOB/`bytea` binding and results | Prefer before G-SQL |
 | Streaming and batching | Source-independent iterator lifecycle, bounded buffering, cursor-based row consumption, batch operations | Core before G-SQL; extend later |

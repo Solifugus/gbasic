@@ -2,8 +2,9 @@
 
 **Status: SHIPPED, increments 1-3 (0.6.0, 2026-10-07), `number("…")` as a
 source of exactness (2026-10-12), and increment 5 — `pow`, `mod`, the counting
-builtins, the selectors and `sort`'s ordering (2026-10-13). Increment 4
-(`serialize` / the actor wire) is the only one open.**
+builtins, the selectors and `sort`'s ordering (2026-10-13), and increment 4 —
+`serialize` and the actor wire, as `SER_VERSION` 3 (2026-10-23). Every numbered
+increment is shipped.**
 Decided 2026-10-05 after costing the alternatives; the costs below are measured,
 not estimated. Each section is annotated where building it contradicted what was
 written here.
@@ -412,9 +413,14 @@ division exact, which is a claim about `/` that this design has twice decided
 against. It would also need a range guard, `floor(1e300)` having no `int64`. Left
 as it is, recorded here so that changing it is a decision rather than a drift.
 
-**Still open:** increment 4 (`serialize` / the actor wire, needing a
-`SER_VERSION` bump) is now the only numbered increment left, and it is asserted
-as a **negative control** in the fixture — `deserialize(serialize(b)) = b` must
-be FALSE — so it goes red when that increment lands rather than being a note
-somebody has to remember. The reference's "exact binary round-trip" wording is
-corrected to say what it means: every TYPE survives, not every DIGIT.
+**Increment 4 shipped 2026-10-23** as `serialize` version 3, which is also the
+portable value encoding G-SQL's rows and protocol use
+(`docs/gsql_storage_design.md` §3.3). A number is written with an exactness
+byte, then its int64 (exact) or its double's bits (inexact), so -0, the
+infinities and NaN survive as well as 2^53 + 1. The fixture's negative control
+went red when it landed, as designed, and is a positive check now;
+`tests/run_serialize.sh` owns the format. **One consequence elsewhere:** `frame`
+groups rows by comparing serializations, and an exact 3 and a computed 3.0 now
+serialize differently while `=` calls them equal, so `frame` signs a number by
+its double whenever the double holds it without loss. A number nested inside a
+record or array key is still signed as it is.

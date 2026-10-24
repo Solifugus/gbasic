@@ -445,7 +445,20 @@ library frame
     ' Value equality that also works for `unknown` and mixed kinds (compares
     ' canonical serializations), used for grouping and join keys.
     function _same(a, b)
-        return serialize(a) = serialize(b)
+        return _sig(a) = _sig(b)
+    end function
+
+    ' A grouping signature. `serialize` records whether a number is EXACT since
+    ' version 3, and `=` does not ask: an exact 3 and a computed 3.0 are equal
+    ' and must be one group. So a number the double holds without loss is
+    ' signed by its double, and one it cannot hold (an exact integer past 2^53)
+    ' keeps its exact form, which is what `=` decides too. A number nested
+    ' inside a record or array key is signed as it is.
+    function _sig(v)
+        if type(v) = "number" then
+            if v * 1.0 = v then return serialize(v * 1.0)
+        end if
+        return serialize(v)
     end function
 
     ' --- Group / summarize (split-apply-combine) ---
@@ -465,7 +478,7 @@ library frame
         groupkeys = []
         i = 0
         while i < n
-            s = serialize(df[by][i])
+            s = _sig(df[by][i])
             if not contains(sigs, s) then
                 append(sigs, s)
                 append(groupkeys, df[by][i])
@@ -488,7 +501,7 @@ library frame
             sub = _empty_like(df)
             i = 0
             while i < n
-                if serialize(df[by][i]) = gsig then
+                if _sig(df[by][i]) = gsig then
                     c = 0
                     while c < len(names)
                         append(sub[names[c]], df[names[c]][i])

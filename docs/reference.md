@@ -1609,8 +1609,12 @@ The built-in table is the **current** ISO 4217 list, so withdrawn currencies
 
 A serialized money value carries its currency **and its exponent**, so it is
 self-describing: actors are separate processes and a currency registered in
-the parent is not registered in the child. `SER_VERSION` 1 payloads (a bare
-integer of cents) still deserialize, rescaled and assumed USD.
+the parent is not registered in the child. Since `SER_VERSION` 3 it also
+carries the currency's **code**, and the reader looks the code up first: a
+registered currency's number depends on the order a program registered things
+in, so the same number can name different currencies in two programs.
+`SER_VERSION` 1 payloads (a bare integer of cents) still deserialize, rescaled
+and assumed USD.
 
 #### Allocation (*since 0.1.0-rc9*)
 
@@ -6266,11 +6270,17 @@ count({})                      ' 0
 - `json_encodable(value)` - preflight predicate: would `json_encode` succeed?
 - `quote(value)` - gBASIC source code literal with escaping
 - `serialize(value)` - exact binary round-trip serialization (see below).
-  **"Exact" here means every TYPE survives, not every digit:** a `number`'s
-  exactness is *not* yet carried, so an exact integer above 2^53 comes back
-  inexact. Closing that needs a `SER_VERSION` bump and is the one open increment
-  of `docs/exact_number_design.md`
-- `deserialize(bytes)` - reconstruct a value from `serialize` output
+  Every type survives and, since version 3, so does every digit: a `number`
+  records whether it is exact, so `deserialize(serialize(9007199254740993))`
+  is that integer and not 2^53. **The bytes are the same on every machine**
+  (little-endian fixed fields, LEB128 lengths), so a payload written on one
+  machine reads on another; versions 1 and 2 used the writing machine's byte
+  order. The layout is specified in `docs/gsql_storage_design.md` §3.3, because
+  G-SQL's rows and client protocol use the same encoding
+- `deserialize(bytes)` - reconstruct a value from `serialize` output. It reads
+  versions 1, 2 and 3, since older payloads are already in files. A truncated,
+  overlong or otherwise malformed payload raises *corrupt or truncated
+  serialized data*; it never answers a partial value
 
 ### Four serializers, four jobs
 

@@ -218,7 +218,9 @@ A tree compares keys with `memcmp`, so each key is encoded such that **byte orde
 
 **The oracle is gBASIC itself, and nothing above is accepted on reasoning alone.** Phase 0a's first artefact is the encoder with a test that generates value pairs, encodes both, and requires `memcmp` order to equal gBASIC's comparison for every pair. It covers: the exactness edge (2^53 ± 1, ±2^63), subnormals, ±0, ±inf, every kind against itself, absence in both directions, money with guard digits, and composite keys mixing directions. **NaN is the one exception, and it is a stated one:** until the language gets the total order, gBASIC has no order for NaN to agree with, so the test asserts the documented position rather than comparing.
 
-### 3.3 Row encoding: one portable value encoding (designed 2026-10-22)
+### 3.3 Row encoding: one portable value encoding (designed 2026-10-22, value encoding shipped 2026-10-23 as `serialize` version 3)
+
+**Status:** the value encoding below is built and is `serialize` version 3 (`src/eval.c`, `tests/run_serialize.sh`). The **row** framing and the record-column measurements are not built yet. Building it changed two rows of the table, marked *as built*.
 
 **Rows cannot use `serialize` as it stands, which was measured rather than assumed.** `serialize` writes its integers by copying them in the machine's own byte order (`serbuf_u64` is a `memcpy`), which its own comment justifies: "round-trips are always same-binary". That holds for actors and is false for a database file, which is copied between machines and outlives the binary that wrote it.
 
@@ -235,11 +237,13 @@ That turns the serializer prerequisite into one piece of work with three uses, r
 |---|---|
 | absence | none |
 | boolean | 1 byte |
-| number | 1 byte: exact or inexact; then an int64 (exact) or an IEEE double (inexact) |
+| number | 1 byte: exact (1) or inexact (0); then an int64 (exact) or an IEEE double's bits (inexact), both LE. Any other flag byte is refused |
 | string | LEB128 length, then the bytes |
-| money | currency code (3 bytes), storage exponent (1 byte), then the exact int64 |
-| date, time, datetime, duration | their exact integer representations, fixed width |
+| money | *as built:* the exact int64 (LE), the storage exponent (1 byte), the numeric code (u16 LE), then the alphabetic code (1-byte length, then the letters). A registered currency's numeric code depends on the order a program registered things in, so the reader looks the alphabetic code up first and uses the number only when the code is unknown there. Codes run to 7 letters, so 3 fixed bytes was too few |
+| date, time, datetime | *as built:* year, month, day, hour, minute, second as int32 LE, then a time-only byte and a precision byte (1 = year … 6 = second). The reader refuses a precision outside that range |
+| duration | years, months, weeks, days, hours, minutes, seconds as int32 LE |
 | array | LEB128 count, then each value |
+| file, dir, function, regex | as in v2, with LEB128 lengths (paths, a function's name and library, a regex's pattern and flags) |
 | record | LEB128 field count, then per field its name (LEB128 length and bytes) and value |
 
 **A row** is a format byte, a LEB128 column count, then each column's value in declared order. Columns added later by `ALTER TABLE ADD COLUMN` are simply absent from older rows and read as their default, so adding a column never rewrites a table.
