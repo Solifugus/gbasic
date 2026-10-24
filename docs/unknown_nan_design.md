@@ -1,9 +1,17 @@
 # `unknown` truth tables and the NaN order — design
 
-**Status: PROPOSAL, measured 2026-10-23. Nothing here is built.** The direction
-was agreed in `docs/gsql_design.md` §3.1.1; this note measures what it changes
-in the tree, splits it into two increments, and names the three decisions still
-open (§6).
+**Status: PARTIAL. Increment A shipped 2026-10-23 (`tests/run_same_value.sh`);
+increment B is not built.** The direction was agreed in `docs/gsql_design.md`
+§3.1.1; this note measures what it changes in the tree and splits it into two
+increments. **The three decisions in §6 were taken 2026-10-23 as recommended:**
+NaN keeps IEEE under the operators, string `+` keeps rendering an `unknown`, and
+`nothing` stays two-valued; so does compound `=` keep the "same value" answer.
+
+**Increment A, as built, found one more defect:** the deep comparison behind
+compound `=`, `contains` on nested values and the watchers compared numbers by
+their DOUBLE, so `[9007199254740993] = [9007199254740992]` answered `true`. Both
+rules live in one place now, `number_same_value` and `number_order` in
+`src/eval.c`.
 
 ## 1. What is already decided
 

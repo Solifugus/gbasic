@@ -6604,6 +6604,21 @@ Before that its comparator compared doubles, so `sort([9007199254740993,
 stable — while `a > b` on the same two values answered correctly. Both routes go
 through one comparison now.
 
+**NaN has one place, after `+inf` and before any absence** *(after 0.10.0)*, and
+`min`, `max`, `median` and the percentile family use the same order: so
+`sort([nan, 1, nan, 0])` is `[0, 1, nan, nan]`, `min([nan, 1])` is `1` and
+`max([nan, 1])` is `nan`. Before that a NaN stopped the *other* elements sorting,
+because a comparator answering "tie" for every pair touching NaN is not an order.
+
+**Two equalities.** `contains`, `find`, `remove_value`, `unique`, the deep
+comparison of an array or a record, and a watcher's change test ask whether two
+values are **the same value**, SQL's "not distinct". That is the `=` operator's
+answer for every pair but one: NaN is the same value as NaN there, while
+`nan = nan` stays `false` and `nan < 1` stays `false`, IEEE's answer. So
+`contains([nan], nan)` and `[nan] = [nan]` are `true`. The deep comparison is
+also **exact** *(after 0.10.0)*: `[9007199254740993] = [9007199254740992]` is
+`false`, as the scalar comparison always said (`docs/unknown_nan_design.md`).
+
 #### Sorting records — `sort(rows, { by: … })`
 
 *(since 0.6.0)* `sort` takes an optional second argument, an options record:

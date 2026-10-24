@@ -13097,3 +13097,12 @@ release script is the one place to change, and it wants watching.
   give the language both.
 - **Workaround:** none needed in the tree today (no fixture sorts NaN). A
   program can filter NaN out before sorting.
+- **RESOLVED 2026-10-23** (docs/unknown_nan_design.md, increment A;
+  `tests/run_same_value.sh`): `sort`, `min`, `max`, `median` and the percentile
+  family share one order with NaN one value after +inf and before an absence, so
+  `sort([1, nan, 1])` is `[1, 1, nan]`, `min([nan, 1, 3])` is 1 and
+  `max([1, nan, 3])` is nan; `contains`, `find`, `unique` and a compound's
+  deep comparison treat NaN as the same value as NaN. The `=` and `<`
+  operators keep IEEE's answer, by decision. Found on the way: the deep
+  comparison compared doubles, so `[9007199254740993] = [9007199254740992]` was
+  true; it compares exactly now.

@@ -1710,6 +1710,39 @@ static int number_compare_exactly(const Value *left, const Value *right) {
     return (a > b) - (a < b);
 }
 
+static int number_is_nan(const Value *v) {
+    return !v->as.num.is_exact && v->as.num.value != v->as.num.value;
+}
+
+/* THE SECOND EQUALITY (docs/unknown_nan_design.md §4): is this the SAME VALUE,
+ * which is what `contains`, `find`, `unique`, a compound's deep comparison and
+ * a watcher's change test ask -- SQL's "not distinct". It differs from the `=`
+ * operator in exactly one place, NaN, which is the same value as NaN here and
+ * unequal to everything under the operator, IEEE's rule (decision D1). And it
+ * compares EXACTLY: the deep comparison used to compare doubles, so
+ * `[9007199254740993] = [9007199254740992]` answered true while the scalar
+ * comparison of the same two numbers answered false. */
+static int number_same_value(const Value *left, const Value *right) {
+    int ln = number_is_nan(left), rn = number_is_nan(right);
+    if (ln || rn) {
+        return ln && rn;
+    }
+    return number_compare_exactly(left, right) == 0;
+}
+
+/* THE ORDER `sort`, `sort_by`, `min`, `max`, `median` and the percentile family
+ * share: total, with NaN one value placed after +inf (PostgreSQL's place, and
+ * G-SQL's index keys'). A comparator answering "tie" for every pair touching a
+ * NaN is not an order at all, which is why `sort([nan, 1, nan, 0])` used to
+ * leave the 1 and the 0 unsorted. Absences are ranked by the caller. */
+static int number_order(const Value *left, const Value *right) {
+    int ln = number_is_nan(left), rn = number_is_nan(right);
+    if (ln || rn) {
+        return ln - rn;
+    }
+    return number_compare_exactly(left, right);
+}
+
 /* Binary-safe string constructor: copies `length` bytes (interior NULs allowed). */
 static Value value_string_n(const char *bytes, size_t length) {
     Value value = {0};
@@ -5915,8 +5948,7 @@ static int value_storage_equal(const Value *left, const Value *right) {
     case VALUE_UNKNOWN:
         return 1;
     case VALUE_NUMBER:
-        /* If NaN enters the runtime through native code, treat it as changed. */
-        return left->as.num.value == right->as.num.value;
+        return number_same_value(left, right);
     case VALUE_STRING:
         return string_value_equal(left->as.string, right->as.string);
     case VALUE_BOOL:
@@ -12859,6 +12891,14 @@ static void call_label(AstExpr *expr, char *buffer, size_t size) {
 }
 
 static int values_equal(Value left, Value right) {
+    /* A ROUTE, not the operator: the "same value" question (see
+     * number_same_value). Only two numbers need answering here; every other
+     * pair goes through the operator's comparison, which is already a
+     * "same value" answer for them -- including `0 = false`, a coercion the
+     * routes have always shared with `=`. */
+    if (left.kind == VALUE_NUMBER && right.kind == VALUE_NUMBER) {
+        return number_same_value(&left, &right);
+    }
     AstExpr fake = {0};
     fake.kind = AST_EXPR_BINARY;
     fake.as.binary.op = "=";
@@ -13699,8 +13739,7 @@ static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
          * An unordered pair (NaN) is reported as a tie here, which is what the
          * double comparison already did, since `<` and `>` are both false for
          * it; a sort has no third answer to give. */
-        int cmp = number_compare_exactly(left, right);
-        return cmp == 2 ? 0 : cmp;
+        return number_order(left, right);
     }
     if (left->kind == VALUE_STRING) {
         return string_value_compare(left->as.string, right->as.string);
@@ -36193,8 +36232,8 @@ static Value eval_call(AstExpr *expr) {
         int want_max = strcmp(name, "max") == 0;
         size_t best = 0;
         for (size_t i = 1; i < count; i++) {
-            int cmp = number_compare_exactly(&arg.as.array.store->items[i],
-                                             &arg.as.array.store->items[best]);
+            int cmp = number_order(&arg.as.array.store->items[i],
+                                   &arg.as.array.store->items[best]);
             /* A NaN is unordered, so it never displaces the incumbent -- which is
              * what the double comparisons here did, `<` and `>` both being false
              * for it. */
