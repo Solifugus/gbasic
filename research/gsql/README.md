@@ -113,3 +113,57 @@ The comparison is meant to measure the engines, not two independently written tr
 | 2.C: replay ignores record checksums | torn only (1): the records' own lengths reject most tears |
 | 2.C: recovery leaves the log tail in place | **green**: a stale record survives only if a new commit is exactly the size of a lost one |
 | 2.C: compaction ignores snapshots; retired trees reclaimed under snapshots | **green, legitimately**: readers pin their version (above) |
+
+## First measurements (2026-10-24)
+
+`results/2026-10-24/` holds the raw lines (`python3 bench_table.py FILE`
+prints them). 100,000 records of 1,023 bytes, 20,000 ops, Zipfian keys,
+every commit synced, ext4 on NVMe, one run each and no repeats -- treat
+differences under about 20% as noise.
+
+| ops/s | cow 2.A | wal 2.B | lsm 2.C | sqlite | lmdb | rocksdb |
+|---|---|---|---|---|---|---|
+| YCSB-A 50/50 | 1,066 | 3,505 | **4,970** | 2,668 | 2,187 | 3,311 |
+| YCSB-B 95/5 | 14,822 | 46,572 | **60,644** | 33,664 | 24,804 | 18,447 |
+| YCSB-C reads | 571,148 | 480,360 | 510,145 | 103,685 | **1,679,319** | 350,691 |
+| YCSB-E scans | 5,507 | 8,127 | **25,261** | 10,193 | 18,334 | 17,188 |
+| W2 writes | 590 | 2,029 | **2,943** | 1,999 | 1,177 | 1,702 |
+| W6 held snapshot | 3,373 | 4,276 | **9,696** | 2,669 | 3,904 | 7,897 |
+| W8 100 KiB values | 1,196 | 2,298 | 786 | 1,011 | **2,419** | 2,146 |
+| group-64 | 2,538 | 16,369 | **49,675** | (synced) | (synced) | (synced) |
+| write amp, YCSB-A | 54.6 | 21.9 | 3.5 | 19.3 | 31.0 | (1.0, see below) |
+| space amp | 4.2-7.5 | 4.1-7.3 | 1.1-1.3 | 4.7 | 2.2 | 0.5 (compressed) |
+| reopen after crash | 0.7 ms | 3.4 ms | 6.3 ms | 1.6 ms | 0.2 ms | 78 ms |
+
+What the table does not say by itself:
+
+- **RocksDB's write amplification of ~1.0 is not earned.** 20,000 updates
+  of 1 KiB is 20 MB, under its 64 MB memtable, so it never flushed or
+  compacted inside the measured window. 2.C did compact (3.5 on A). A run
+  long enough to force RocksDB's compaction is needed before this axis
+  compares anything.
+- **The references ignore group commit.** The adapters' sync-off flag is
+  unused for SQLite (synchronous=FULL), LMDB and RocksDB (sync write
+  options), so their group-N rows are synced commits again and are not
+  shown. Only the three candidates honour it.
+- **2.C has no value separation, and W8 shows it.** At 100 KiB values it
+  is the slowest engine (786 ops/s, write p99 19 ms, write amp 11): the
+  values themselves are rewritten by compaction. The B+trees put large
+  values in overflow pages and stay near 1.5-2.2. A WiscKey-style value
+  log is the known remedy and would be a design addition, not a tuning.
+- **2.A pays two flushes per commit** (pages, then the meta page) and path
+  copying, so it is the slowest writer everywhere and barely benefits from
+  group commit (it still copies the path every commit). It is
+  competitive only on reads.
+- **The B+trees' space amplification of ~4 is the 1 KiB record
+  overflowing a quarter of a 4 KiB page** (noted above); an 8 KiB page
+  variant is the test of whether that is a page-size artefact.
+- **2.A's file grows 1.8x in the recovery run**: the child's unsynced
+  commits allocate pages that the crash then orphans, and reuse waits for
+  a durable freeing commit. Bounded, but worth a reclaim-on-open check.
+- Recovery here is small (20,000 unsynced updates); every candidate
+  reopens in under 7 ms. A recovery figure that matters needs a much
+  longer log.
+
+Not yet run: TPC-C-like, SSB flight 1, the 8 KiB page variant, and a long
+enough write run to make RocksDB compact.

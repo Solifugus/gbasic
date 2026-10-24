@@ -29,6 +29,11 @@ for wl, rs in by_wl.items():
         if "failed" in r:
             print(f"  {r['engine']:7} FAILED ({r['failed']})")
             continue
+        if wl == "recovery":
+            # No measured ops: the child crashed after its updates, and what
+            # is timed is the reopen plus a first get.
+            print(f"  {r['engine']:7} reopen {r['recover_ms']:,.2f} ms   file growth {r.get('file_growth', 0):.2f}")
+            continue
         n = r.get("ops") or r.get("records")
         thr = r.get("ops_s", r.get("load_ops_s"))
         fl = r.get("flushes")
