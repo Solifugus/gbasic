@@ -34,7 +34,10 @@ static void *a_open(GsqlIo *io, const char *dir, int *err) {
     /* GS_TUNE_A / GS_TUNE_B override the candidate knobs: §2.B's checkpoint
      * threshold decides how long stale frames stay in its log */
     const char *ta = getenv("GS_TUNE_A"), *tb = getenv("GS_TUNE_B");
-    GsOptions o = {1, page_size, 16 * page_size, io, ta ? strtoull(ta, NULL, 10) : 24, tb ? strtoull(tb, NULL, 10) : 3};
+    /* defaults chosen to reach each candidate's background work often: §2.B
+     * checkpoints every 24 frames, §2.C flushes a 2,000-byte memtable */
+    uint64_t da = strcmp(E->name, "lsm") ? 24 : 2000;
+    GsOptions o = {1, page_size, 16 * page_size, io, ta ? strtoull(ta, NULL, 10) : da, tb ? strtoull(tb, NULL, 10) : 3};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     if (rc) { *err = map(rc); return NULL; }

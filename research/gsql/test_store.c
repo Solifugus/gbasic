@@ -25,7 +25,8 @@
 #include <stdlib.h>
 
 static unsigned checks, failures;
-#define CHECK(cond, ...) do { checks++; if (!(cond)) { failures++; if (failures <= 25) { printf("MISMATCH "); printf(__VA_ARGS__); printf("\n"); } } } while (0)
+int quiet;
+#define CHECK(cond, ...) do { checks++; if (!(cond)) { failures++; if (!quiet && failures <= 25) { printf("MISMATCH "); printf(__VA_ARGS__); printf("\n"); } } } while (0)
 
 static uint64_t rng;
 static uint64_t rnd(void) {
@@ -136,7 +137,28 @@ static int list_each(void *ctx, GsBytes name) {
     return 0;
 }
 
-static void compare_view(GsTxn *t, MState *want, const char *what) {
+void compare_view(GsTxn *t, MState *want, const char *what);
+
+/* Silent: does the view hold exactly `want`? (the comparison, run with its
+ * reports suppressed and its counts put back) */
+static int view_is(GsTxn *t, MState *want) {
+    unsigned f0 = failures, c0 = checks;
+    quiet = 1;
+    compare_view(t, want, "probe");
+    quiet = 0;
+    int same = failures == f0;
+    failures = f0;
+    checks = c0;
+    return same;
+}
+
+/* A snapshot sees what is durable. An engine may make a commit durable on its
+ * own (§2.C's memtable flush writes every commit so far to a flushed file), so
+ * what it sees is the durable state OR the committed one; seeing the second
+ * moves the model's durable state up to it. */
+static void settle_durable(GsTxn *t, MState *durable, MState *committed);
+
+void compare_view(GsTxn *t, MState *want, const char *what) {
     ListCtx k = {want, 0, what};
     list_i = 0;
     int rc = E->tree_list(t, list_each, &k);
@@ -162,6 +184,11 @@ static void compare_view(GsTxn *t, MState *want, const char *what) {
         CHECK(rc == GS_OK && j == mt->n, "%s: tree %zu scan matched %zu of %zu (rc %s)", what, i, j, mt->n, gs_status_name(rc));
         E->cursor_close(c);
     }
+}
+
+static void settle_durable(GsTxn *t, MState *durable, MState *committed) {
+    if (view_is(t, durable)) return;
+    if (view_is(t, committed)) { ms_free(durable); ms_copy(durable, committed); }
 }
 
 /* ---- the run ---- */
@@ -238,7 +265,7 @@ int main(int argc, char **argv) {
             } else if (!rd[r].live && rnd() % 4 == 0) {
                 rc = E->begin_read(db, &rd[r].t);
                 CHECK(rc == GS_OK, "begin_read answered %s", gs_status_name(rc));
-                if (rc == GS_OK) { ms_copy(&rd[r].m, &durable); rd[r].live = 1; }
+                if (rc == GS_OK) { settle_durable(rd[r].t, &durable, &committed); ms_copy(&rd[r].m, &durable); rd[r].live = 1; }
             }
         }
         GsTxn *w;
@@ -405,6 +432,7 @@ int main(int argc, char **argv) {
         /* a snapshot begun now sees exactly what is durable */
         GsTxn *r;
         if (E->begin_read(db, &r) == GS_OK) {
+            settle_durable(r, &durable, &committed);
             if (round % 5 == 0) compare_view(r, &durable, "a fresh snapshot");
             if (round % 37 == 0) {
                 rc = E->backup(r, bpath);

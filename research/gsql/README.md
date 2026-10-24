@@ -23,6 +23,7 @@ GATE_SCALE=quick research/gsql/run.sh
 | `cow.c` | **§2.A**, the copy-on-write B+tree |
 | `wal.c` | **§2.B**, the B+tree with a write-ahead log |
 | `util.c` | page lists and sets, and a page cache keyed by (page, version) |
+| `lsm.c` | **§2.C**, the log-structured merge tree |
 | `test_btree.c` | the B+tree against a model, over an in-memory pager in both modes |
 | `test_store.c` | the interface against a model, for any candidate |
 | `crash_store.c` | a candidate under the crash harness |
@@ -59,6 +60,16 @@ The comparison is meant to measure the engines, not two independently written tr
   - The single durable commit it had before could not see an engine that accepts **stale log frames**: the frames a lost commit leaves behind, partly overwritten later. Removing 2.B's checksum chain passed 44,000 crashes. With the continuation it is caught (4 power and 1 torn violations in 45,000 crashes, and 5 and 9 in 350,000 at rare checkpoints), with the correct engines clean.
   - It is a rare case, because each log reset changes the salt and invalidates stale frames anyway.
 
+- **2.C must flush the directory before renaming a manifest into place, as well as after.** A compaction creates new sorted files, then renames a manifest naming them. Pending namespace operations survive power loss as any subsequence, so the rename could survive while the creations did not, and recovery found a manifest naming files that were not there. The crash harness found it, as both a recovery failure and a continuation coming back as no prefix. It costs one extra directory flush per manifest write. A journalling filesystem would usually preserve the order, but rule 2 does not promise it.
+- **2.C's readers pin the version they began with**: the files and the memtable. A flush makes a new version with an empty memtable, so an older reader keeps the old memtable and the old files, which between them hold the same data.
+  - The first draft cleared the memtable in place, freeing nodes an open reader was pointing at.
+  - Because of the pinning, compaction's "keep every version a snapshot needs" rule is not load-bearing. Perturbing it, and reclaiming retired trees under open snapshots, both pass every test. It would matter if readers used the current version filtered by sequence, as LevelDB's snapshots do. The cost of pinning is space while a reader is held (W6), the same shape as 2.A's pinned pages.
+- **A flush in 2.C makes unsynced commits durable**, since their data is now in a flushed file. So a fresh snapshot may see more than the last synced commit. The functional test's model accepts the durable or the committed state, and treats the latter as now durable.
+- **2.C does not meet G5 yet.** A write transaction's buffer is held in memory. Bounding it needs an ingest path that turns spilled runs into level-0 files at commit.
+- **2.C has no block cache yet**, so every block read goes to disk: the functional test reads about 33,000 blocks against 2.A's 2,800 pages. That must be fixed before performance is measured, or 2.C loses for a reason that is not its design.
+- **2.C needs several files**: a manifest, logs, sorted files and a lock file. That is not "one file plus at most a log" (§7 question 6). Folding them into one needs an extent allocator the other two do not have.
+- **2.C takes the full 1,024-byte key at any block size.** It has no page-fill constraint, where 2.A and 2.B cap at 984 bytes at 4 KiB.
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -74,3 +85,9 @@ The comparison is meant to measure the engines, not two independently written tr
 | 2.B: no checksum chain | only the continuation stage (4 and 1); see above |
 | 2.B: checkpoint ignores open readers | `test_store` (17), invisible to the crash workload, which holds no readers |
 | 2.B: reset ignores open readers | **green, legitimately**: implied by the checkpoint's limit |
+| 2.C: no directory flush before the manifest rename | power (63), torn (56) |
+| 2.C: a sorted file not flushed before a manifest names it | power (158), torn (161) |
+| 2.C: commit ignores its sync flag | power (67), torn (37) |
+| 2.C: replay ignores record checksums | torn only (1): the records' own lengths reject most tears |
+| 2.C: recovery leaves the log tail in place | **green**: a stale record survives only if a new commit is exactly the size of a lost one |
+| 2.C: compaction ignores snapshots; retired trees reclaimed under snapshots | **green, legitimately**: readers pin their version (above) |

@@ -532,7 +532,10 @@ static void run_crash_points(Ctx *c, const Workload *w) {
     }
     uint64_t limit = c->cfg->crash_limit && c->cfg->crash_limit < total ? c->cfg->crash_limit : total;
     uint64_t points = c->cfg->sample_points && c->cfg->sample_points < limit ? c->cfg->sample_points : limit;
+    /* GSQL_CRASH_ONLY=N: just that crash point, to reproduce one report */
+    const char *only = getenv("GSQL_CRASH_ONLY");
     for (uint64_t j = 1; j <= points; j++) {
+        if (only) { if (j > 1) break; }
         uint64_t n;
         if (points == limit) n = j;
         else if (j % 2 == 0 && flushes && nflush && flushes[0] <= limit)
@@ -542,6 +545,7 @@ static void run_crash_points(Ctx *c, const Workload *w) {
             if (n > limit) n = flushes[0];
         }
         else n = 1 + mix(c->cfg->workload_seed, j, 0xc0ffee) % limit;
+        if (only) n = strtoull(only, NULL, 10);
         GsqlIo *io = gsql_io_sim();
         gsql_io_sim_crash_at(io, n);
         RunOutcome o = run_workload(c->e, io, w);
