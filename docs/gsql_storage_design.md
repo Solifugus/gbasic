@@ -261,6 +261,8 @@ A **field index** keys on the field's value with the §3.2 encoding, and an abse
 
 ### 3.4 The I/O layer, and why it is not optional (specified 2026-10-22)
 
+**Status: built** (2026-10-24) as `include/gsql_io.h`, `src/gsql/io.c` (the dispatch and the real layer) and `src/gsql/io_sim.c` (the simulated one), held to the rules below by `tests/run_gsql_io.sh`. Choices made in building it are marked *as built*.
+
 Every candidate does all file I/O through one small layer, in the role SQLite's VFS plays. It has **two implementations behind one interface**: the real one, which the performance measurements use, and a simulated one, which the crash harness uses (§5.3).
 
 **Operations:** `open(path, create | exclusive | read_only)`, `read_at(file, offset, n)`, `write_at(file, offset, bytes)`, `sync(file)`, `size(file)`, `truncate(file, n)`, `close(file)`, and on paths `rename(from, to)`, `remove(path)`, `sync_dir(dir)` and `lock(file, nonblocking)`. A read past the end answers short rather than failing.
@@ -284,6 +286,14 @@ Behaviour that ext4's default `data=ordered` mode, or a particular SSD, happens 
 **The simulated implementation** keeps files in memory, split into a **durable** image and a list of **pending** operations since the last `sync`. It records every operation in order, numbered, and can stop the world at any operation and produce the disk as a crash would leave it (§5.3). It also injects failures on request: `sync` failing, `write_at` answering `ENOSPC`, `read_at` answering `EIO`.
 
 **The risk of two implementations is that they diverge**, which would make the crash harness test a disk that does not exist. Two defences: the simulated layer's own tests check it against the five rules above, and every candidate is also crash-tested against the **real** layer by kill -9, the one crash mode a real kill can produce.
+
+*As built:*
+- **Every rule is tested as a difference.** "An unsynced write may be lost" requires it lost by some power-loss image and kept by another, because a layer that always did one would pass a one-sided check. Rule 3 is checked against a write that spans four sectors at absolute offsets: every kept prefix (0 to 3 sectors) is produced, and no tear falls at an offset counted from the write's own start.
+- **Rule 5 is modelled as Linux behaves:** after a failed `sync`, each of that file's pending writes either reached the disk or was lost, decided by a seed; either way it leaves the pending list. So a retry `sync` that succeeds does not make a lost write durable, and the process still reads the new data. That is the fsyncgate trap, and the tests assert all three parts.
+- **Two places are deliberately harsher than a real filesystem.** Pending namespace operations survive as any subsequence (a journalling filesystem loses a suffix). Pending data writes survive in any subset and order. An engine correct here is correct there; the converse is what this layer exists to prevent.
+- **A cross-directory rename is refused (`EXDEV`) by the simulated layer** rather than modelled loosely. Its durability needs both directories synced, and no candidate needs it.
+- **Parity with the real layer is a tier of its own.** One seeded sequence of 3,000 operations over four files runs through both layers: opens of every kind, writes and reads at random offsets, truncation, sync, rename, remove, `sync_dir` and locking. Every answer, every byte read and every file's final contents must agree. A census requires each run to meet at least 50 errors and to read back at least 100 KB, so it cannot agree about nothing.
+- **Windows is not implemented.** Its `open` answers `ENOSYS` rather than shipping a layer nobody here has run.
 
 ## 4. The version store (temporal history, §10D)
 
@@ -522,6 +532,23 @@ Beyond the state itself:
 - **Work continues after recovery:** a further workload runs, crashes and recovers correctly.
 
 **Gate:** zero violations across at least 10,000 injected crashes per mode per candidate, before any performance number is considered. A candidate failing the gate is fixed and rerun, or eliminated.
+
+**Status: the harness is built** (2026-10-24) as `include/gsql_crash.h` and `src/gsql/crash.c`, behind an engine interface that is the slice of §1 it needs: commits of puts and deletes, `sync`, and a full read. A candidate adapts its own interface to that slice. *As built:*
+- **The harness has to prove that it bites.** One reporting zero violations cannot be told apart from one that checks nothing. So `tests/run_gsql_io.sh` runs it over a toy engine (an append-only log of checksummed commit records) and over eight broken copies of the toy. Each copy omits one thing correctness rests on, and each must be caught by the check written for it, not merely caught:
+
+  | broken copy | mode that catches it | check that fires |
+  |---|---|---|
+  | does not flush on commit | power loss | the recovered state is missing a commit that returned durable |
+  | never syncs the directory after creating the log | power loss | recovery found an empty database, though commits returned durable |
+  | trusts a record without its checksum | torn write | the recovered state matches no prefix of the commits |
+  | leaves a damaged tail and appends after it | power loss | a commit made after recovery is lost by the next crash |
+  | reports a failed flush as success | failed sync | the failure is reported as success |
+  | reports a failed flush, then keeps accepting work | failed sync | later work is not refused with `FAILED` |
+  | moves the end of the log past a write the full disk refused | full disk | a commit is lost |
+  | recovery empties the log and syncs before writing it back | power loss, crashing the recovery itself | a recovery-stage violation; with that stage turned off it passes, which shows that stage is what caught it |
+- **The correct toy clears the gate** with zero violations: about 19,000 to 21,000 crashes per mode for process, power and torn (120 workloads), and over 10,000 for failed sync (1,000 workloads) and full disk (700 workloads). A crash of the recovery itself counts as a crash. Each run reports a census: commits that had not returned durable must be both **kept** by some crash and **dropped** by another, so the oracle's whole range is exercised.
+- **Workloads vary how often they sync.** Odd seeds sync 20% of commits and even seeds 80%. A workload that syncs most commits leaves few writes pending at a crash, and rules 3 and 4 can only act on pending writes. Measured: at two-thirds synced, the no-checksum copy was caught in only 3 of 20 workloads.
+- **The toy's own parser is a partial integrity check, and that blinds a checksum test.** A torn append usually leaves zeros where its tail should be, which fails parsing whether or not the checksum is checked. So the no-checksum copy is caught only when a tear falls inside the last value of a record. Several disks per crash point (`images_per_point`) and rarely-syncing workloads are what make that case common enough to see.
 
 ### 5.4 Group commit
 
