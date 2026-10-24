@@ -42,12 +42,17 @@ The comparison is meant to measure the engines, not two independently written tr
 - **The header checksum covers only page 0's fixed 76 bytes.** It sits at bytes 76 to 80, the end of the unused key-check block. Each candidate's root area changes after creation, so a checksum over the whole of page 0 would go stale on every commit.
 - **2.A's free list is a tree keyed by the commit that freed each page**, as LMDB has it and as §3.1.4 proposed.
   - **The first version was a blob, BoltDB's shape**, rewritten at every durable commit to pages taken from the end of the file. Its cost grew with the list, and the list grew with its own old copies. A 20,000-commit YCSB-A run **wrote 419 GB and filled this machine's disk** before it was stopped. `bench.sh` now caps every file at 20 GB and will not start a run with under 50 GB free.
-  - **How it works now:** a commit adds one record, its freed pages under its commit id. A write transaction takes reusable records out of the tree at its start, and again whenever an allocation finds none left (LMDB's lazy refill). Pages it took and did not use go back under key 0. While the tree itself is being written, allocations come from the end of the file, so writing it never consumes what it records.
+  - **How it works now:** a commit adds one record, its freed pages under its commit id. A write transaction takes reusable records out of the tree at its start, and again whenever an allocation finds none left (LMDB's lazy refill). Pages it took and did not use go back under key 0. While the tree itself is being written it is never refilled from (a nested take would edit it mid-edit), but it does use pages already taken out of it.
   - **Building it found four defects**, all as leaks reported by `check`, or as a settle loop that never ended:
     1. a record long enough to overflow freed its own chain on each rewrite, and the freed pages joined the list being written. Records are now chunked so they always fit inline;
     2. deleting and re-inserting the chunks merged and split nodes every round. Chunks are now replaced in place;
     3. a transaction took only part of key 0, and the commit's rewrite then overwrote the chunks it had not taken;
     4. a nested take re-loaded records the outer one had not yet deleted.
+  - **A fifth defect survived every test until the benchmarks ran long enough: the file grew without bound.** Writing the free tree only at the end of the file meant each commit grew the file by the tree's own path copy (two or three pages) and handed as many pages back to a list that only grew. The file reached 9.4× the data after 40,000 updates of 20,000 records, synced or not, and passed the 20 GB cap on a million. `check` saw nothing, since every page was accounted for, just on a list nobody drew from. The first write-up's 2.A space figures (5.9 on YCSB-A, 1.8× growth in the recovery run) were this, not a page-fit cost or orphaned allocations.
+  - **The fix needed the settle loop to change twice, and each wrong version was caught:**
+    - Comparing the lists' LENGTHS let a round take page X for the tree's own write while a page freed in passing came back. The length was the same, so the loop stopped with key 0 listing X, now live, as free. A later reuse overwrote it, and `test_store` failed 19 checks while the crash gate reported 27 violations in two modes.
+    - Comparing MOVEMENT instead never terminated. Key 0 at 28 pages needs a second chunk, writing it takes two pages, at 26 the surplus chunk is deleted, the merge frees the two, and it is 28 again. That is LMDB's freelist oscillation, met as a commit answering CORRUPT after 32 rounds.
+    - Only round 0 may take from the reusable pages now. Later rounds allocate from the end, so the list can only grow and the loop is monotone. The file now holds at 1.00× over a million updates.
   - **Both reuse conditions are proven by perturbation.** "Durable" is caught by the crash tiers (115 power and 96 torn violations); "no older snapshot" by `test_store` (222 failures).
 - **At 4 KiB pages, a YCSB record overflows.** A 1,000-byte value plus a 23-byte key makes a cell of about 1,029 bytes, over the quarter-page inline limit of 1,004, so each record takes its own overflow page, about 25% full. Load space amplification is 4.2. The design names this threshold as a measurement (§3.1.3); SQLite's inline limit at 4 KiB is nearly the same.
 - **A `sync = false` commit in 2.A writes its pages but no meta page.** The next sync, or the next synced commit, writes one meta covering every commit since (group commit). A page freed by a commit is reusable only once that commit is durable and no open snapshot predates it.
@@ -61,6 +66,9 @@ The comparison is meant to measure the engines, not two independently written tr
 
 - **2.B's checkpoint copies only durable frames**, and none past the oldest open reader. Copying a frame of a commit that is not yet durable puts a page into the main file that a crash can leave without its log; that perturbation was caught at 588 violations in 9,153 crashes.
   - The log is reset (a new salt and epoch, then truncated) only when every frame is in the main file. The reset's own test that no reader needs the log is implied by the checkpoint's limit, so a perturbation removing it is legitimately green; it stays as a guard.
+- **2.B's log never reset under group commit**, so it grew to 166× the data over a million group-64 updates. A checkpoint ran only at a commit, and the reset needs every frame durable, which the commit that triggers a checkpoint almost never is under group commit. A sync now checkpoints once the log is a checkpoint long. Measured both ways:
+  - testing instead for "a checkpoint's worth is un-backfilled" left the growth exactly as it was (8.4× at 40,000 updates), because the commit-time checkpoints keep that count under the threshold;
+  - fixed, the file holds at 1.00× and group-64 rises from 16,600 to 21,000 updates/s.
 - **2.B's creation writes the header last.** The state page and the catalog are written and flushed, and only then the header. The other way round, a power loss kept the header and lost what followed, and recovery found a database it could not read. The crash harness found this twice: first a missing state page, then, once that was checked, a missing catalog. The fix is the write order, not more checks.
 - **A commit in 2.B answers IO if the checkpoint after it fails a flush**, even though the commit itself is durable. Answering OK hid that the store had become unusable, and the harness found it. IO is the honest answer, and it is safe, since a commit reported as failed may be either kept or lost.
 - **2.B keeps commits that had not returned durable far more often than 2.A**: in 12,893 of 18,672 power-loss crashes in the first run, against a few hundred for 2.A. Its log frames can land and stay valid without a flush, while 2.A recovers only what a meta page names.
@@ -113,57 +121,97 @@ The comparison is meant to measure the engines, not two independently written tr
 | 2.C: replay ignores record checksums | torn only (1): the records' own lengths reject most tears |
 | 2.C: recovery leaves the log tail in place | **green**: a stale record survives only if a new commit is exactly the size of a lost one |
 | 2.C: compaction ignores snapshots; retired trees reclaimed under snapshots | **green, legitimately**: readers pin their version (above) |
+| 2.A: the settle loop compares lengths, not movement | `test_store` (19), failed-sync and full-disk crash tiers (27) |
+| 2.A: every settle round may take reusable pages | `test_store`: the commit never settles and answers CORRUPT |
+| 2.A: free-tree writes always from the end of the file | no test: the file grows 9.4× in 40,000 updates (the bench measures it) |
+| 2.B: no checkpoint at a sync | no test: the log grows 8.4× in 40,000 group-64 updates (the bench measures it) |
 
-## First measurements (2026-10-24)
 
-`results/2026-10-24/` holds the raw lines (`python3 bench_table.py FILE`
-prints them). 100,000 records of 1,023 bytes, 20,000 ops, Zipfian keys,
-every commit synced, ext4 on NVMe, one run each and no repeats -- treat
-differences under about 20% as noise.
+## Measurements (2026-10-24)
 
-| ops/s | cow 2.A | wal 2.B | lsm 2.C | sqlite | lmdb | rocksdb |
+`results/2026-10-24/` holds the raw lines, one file per run (`python3 bench_table.py FILE` prints them). `superseded/` holds the first round, invalidated by the two file leaks above and by compressible values (below), and kept as the record of what was first reported.
+
+**Setup.** 100,000 YCSB records (23-byte key, 1,000-byte value), 20,000 operations, Zipfian keys, every commit synced unless the workload is group-N. One process per run on a fresh directory, ext4 on NVMe, 64 MiB engine cache, OS page cache **not** dropped (that needs root). One run each, no repeats, so treat differences under about 20% as noise. Values are random printable bytes, as YCSB's are.
+
+| ops/s, 4 KiB pages | 2.A cow | 2.B wal | 2.C lsm | SQLite | LMDB | RocksDB |
 |---|---|---|---|---|---|---|
-| YCSB-A 50/50 | 1,066 | 3,505 | **4,970** | 2,668 | 2,187 | 3,311 |
-| YCSB-B 95/5 | 14,822 | 46,572 | **60,644** | 33,664 | 24,804 | 18,447 |
-| YCSB-C reads | 571,148 | 480,360 | 510,145 | 103,685 | **1,679,319** | 350,691 |
-| YCSB-E scans | 5,507 | 8,127 | **25,261** | 10,193 | 18,334 | 17,188 |
-| W2 writes | 590 | 2,029 | **2,943** | 1,999 | 1,177 | 1,702 |
-| W6 held snapshot | 3,373 | 4,276 | **9,696** | 2,669 | 3,904 | 7,897 |
-| W8 100 KiB values | 1,196 | 2,298 | 786 | 1,011 | **2,419** | 2,146 |
-| group-64 | 2,538 | 16,369 | **49,675** | (synced) | (synced) | (synced) |
-| write amp, YCSB-A | 54.6 | 21.9 | 3.5 | 19.3 | 31.0 | (1.0, see below) |
-| space amp | 4.2-7.5 | 4.1-7.3 | 1.1-1.3 | 4.7 | 2.2 | 0.5 (compressed) |
-| reopen after crash | 0.7 ms | 3.4 ms | 6.3 ms | 1.6 ms | 0.2 ms | 78 ms |
+| YCSB load | 80,133 | 51,303 | 72,983 | 31,029 | 109,435 | **172,929** |
+| YCSB-A 50/50 | 1,441 | 3,230 | **4,965** | 3,213 | 2,608 | 3,387 |
+| YCSB-B 95/5 | 11,355 | 47,677 | **64,742** | 34,412 | 24,446 | 19,192 |
+| YCSB-C reads | 621,564 | 482,524 | 539,856 | 111,363 | **1,876,449** | 371,443 |
+| YCSB-D latest | 10,652 | 47,782 | **65,374** | 18,984 | 15,153 | 21,818 |
+| YCSB-E scans | 5,365 | 8,424 | **27,238** | 10,777 | 19,196 | 12,924 |
+| YCSB-F read-modify-write | 1,053 | 3,251 | **5,009** | 3,204 | 2,564 | 3,094 |
+| W1 uniform reads | 320,831 | 274,373 | 333,285 | 95,171 | **1,565,788** | 278,818 |
+| W2 synced writes | 769 | 2,359 | **2,480** | 1,785 | 1,402 | 1,551 |
+| W5 100-row scans | 4,493 | 4,611 | 22,133 | 11,586 | **148,307** | 28,270 |
+| W6 held snapshot | 3,727 | 3,732 | **9,495** | 2,705 | 3,916 | 7,903 |
+| W7 1,000-key hot set | 858 | 2,063 | **2,936** | 2,434 | 1,297 | 1,734 |
+| W8 100 KiB values | 1,156 | 1,990 | 743 | 1,233 | **2,043** | 1,789 |
+| group-8 | 1,398 | 10,041 | **20,197** | 9,454 | 10,711 | 5,625 |
+| group-64 | 2,465 | 20,447 | 46,943 | 19,841 | 24,386 | **55,217** |
+| TPC-C-like, tx/s | 773 | 1,938 | **2,200** | 2,039 | 1,354 | 1,169 |
+| SSB Q1.1, ms (6.0 M rows) | 1,048 | 1,074 | 1,325 | 501 | **109** | 1,582 |
+| reopen after a crash | 0.78 ms | 2.58 ms | 8.42 ms | 1.31 ms | **0.23 ms** | 86.9 ms |
 
-What the table does not say by itself:
+| amplification | 2.A | 2.B | 2.C | SQLite | LMDB | RocksDB |
+|---|---|---|---|---|---|---|
+| write, W2 (bytes written per logical byte) | 36.2 | 23.9 | 7.5 | 23.2 | 31.1 | **1.0** |
+| write, a million group-64 updates | 32.3 | 24.0 | 8.6 | 28.3 | 31.1 | **2.2** |
+| write, TPC-C-like | 38.0 | 25.5 | 10.0 | 29.4 | 33.5 | **1.5** |
+| space, YCSB at 4 KiB pages | 4.41 | 4.14 | **1.12** | 4.73 | 2.16 | 1.01 |
+| space, YCSB at 8 KiB pages | 1.86 | 1.75 | **1.11** | 1.58 | -- | 1.01 |
+| space, W6 (one snapshot held) | 5.58 | 4.73 | **1.16** | 5.13 | 3.09 | 1.05 |
+| space, SSB lineorder (100-byte rows, key order) | 2.34 | 2.11 | 1.21 | 1.22 | 1.14 | **0.68** |
+| file growth, a million updates | 1.00 | 1.00 | 1.30 | 1.00 | 1.00 | 1.74 |
 
-- **RocksDB's write amplification of ~1.0 is not earned.** 20,000 updates
-  of 1 KiB is 20 MB, under its 64 MB memtable, so it never flushed or
-  compacted inside the measured window. 2.C did compact (3.5 on A). A run
-  long enough to force RocksDB's compaction is needed before this axis
-  compares anything.
-- **The references ignore group commit.** The adapters' sync-off flag is
-  unused for SQLite (synchronous=FULL), LMDB and RocksDB (sync write
-  options), so their group-N rows are synced commits again and are not
-  shown. Only the three candidates honour it.
-- **2.C has no value separation, and W8 shows it.** At 100 KiB values it
-  is the slowest engine (786 ops/s, write p99 19 ms, write amp 11): the
-  values themselves are rewritten by compaction. The B+trees put large
-  values in overflow pages and stay near 1.5-2.2. A WiscKey-style value
-  log is the known remedy and would be a design addition, not a tuning.
-- **2.A pays two flushes per commit** (pages, then the meta page) and path
-  copying, so it is the slowest writer everywhere and barely benefits from
-  group commit (it still copies the path every commit). It is
-  competitive only on reads.
-- **The B+trees' space amplification of ~4 is the 1 KiB record
-  overflowing a quarter of a 4 KiB page** (noted above); an 8 KiB page
-  variant is the test of whether that is a page-size artefact.
-- **2.A's file grows 1.8x in the recovery run**: the child's unsynced
-  commits allocate pages that the crash then orphans, and reuse waits for
-  a durable freeing commit. Bounded, but worth a reclaim-on-open check.
-- Recovery here is small (20,000 unsynced updates); every candidate
-  reopens in under 7 ms. A recovery figure that matters needs a much
-  longer log.
+The **TPC-C-like** run is one warehouse, the standard mix, synced commits and no think times, so it is **not a tpmC**. New-Order p50/p99 in µs: 2.A 1,356/5,165, 2.B 570/4,587, 2.C 328/2,280, SQLite 549/3,433, LMDB 838/1,375, RocksDB 759/4,534. The **SSB** run is scale factor 1, with every engine's revenue checked against the answer key the harness computes while generating the data. All six agree.
 
-Not yet run: TPC-C-like, SSB flight 1, the 8 KiB page variant, and a long
-enough write run to make RocksDB compact.
+What the tables do not say by themselves:
+
+- **The 4× space cost of the B+trees is the page size, as suspected.** A 1,023-byte record is over a quarter of a 4 KiB page, so each takes its own overflow page. At 8 KiB the cost falls to 1.86 (2.A) and 1.75 (2.B), against SQLite's 1.58.
+  - At 8 KiB, throughput is roughly level on reads, and TPC-C on 2.A rises from 773 to 1,026 tx/s.
+  - 2.A's write amplification doubles at 8 KiB (64 on W2), because each path copy is twice the bytes.
+- **The B+trees fill pages half-full on key-order insert.** At 100-byte rows (SSB) they take 2.1-2.3× the data where SQLite and LMDB take 1.1-1.2. Both split at the middle, and a split that favours the right edge is the known fix.
+- **2.A's commit is its weakness, and group commit does not close it.** At group-64 2.A reaches 2,465 updates/s against 20,447 for 2.B and 46,943 for 2.C. Its cost is the path copy (32× write amplification), not the flushes, which group commit already removes (0.03 per update).
+- **Every candidate's scan path is slow, and that is code, not design.**
+  - Our two B+trees scan 5.7 M rows/s on SSB, against 55 M for LMDB and 12 M for SQLite; 2.C does 4.5 M against RocksDB's 3.8 M.
+  - W5's 100-row scan is 4.5 k/s on the B+trees against 148 k/s on LMDB.
+  - The B+trees share one cursor (`btree.c`), so this is one piece of work, needed whichever wins.
+- **RocksDB's write amplification is low because the data set is small.**
+  - Now that values are incompressible, RocksDB does flush and compact over a million updates (2.2, file growth 1.74). But 100 MB sits in its first level or two.
+  - 2.C writes 8.6 on the same run, so its compaction policy is several times dearer than RocksDB's at this size.
+  - Neither figure says anything about W4's 10 million rows.
+- **2.C has no value separation, and W8 shows it**: the slowest engine at 100 KiB values (743 ops/s, write p99 18 ms, write amplification 11). The values are rewritten by compaction. A WiscKey-style value log is the known remedy, and it would be a design addition, not a tuning.
+- **Recovery is small for everyone.** 20,000 unsynced updates replay in under 9 ms on every candidate. A recovery figure that tests "bounded" needs a much longer log.
+- **Lines of code are close.** Comment and blank lines excluded:
+  - 2.A is 2,045 (773 own, plus the shared B+tree's 1,272);
+  - 2.B is 2,129;
+  - 2.C is 2,136.
+  - The invariant count, §6's other half of complexity, has not been counted.
+
+### Against §6's predictions
+
+| prediction | measured |
+|---|---|
+| 2.A wins recovery and handoff time | **holds among the candidates** (0.78 ms against 2.58 and 8.42), though LMDB is faster still; not yet measured at a long log |
+| 2.A loses single-row commit latency without group commit | **holds**: W2 at 769/s against 2,359 and 2,480 |
+| ...with group commit closing most of the gap | **refuted**: at group-64 it is 8× behind 2.B and 19× behind 2.C. The path copy, not the flush, is the cost |
+| 2.A loses space during W6 | **holds**: 5.58 against 4.73 (2.B) and 1.16 (2.C) |
+| 2.B wins single-row commit latency | **refuted, narrowly**: W2 p50 316 µs against 2.C's 257 µs |
+| 2.B wins space efficiency | **refuted**: 4.14 against 2.C's 1.12 (1.75 against 1.11 at 8 KiB) |
+| 2.B's recovery grows with the log | not tested: the log here is too short |
+| 2.C wins W4 by a wide margin | not tested: W4 (10 M rows) has not run. At 100 k, 2.C's load is 73 k/s against 2.A's 80 k/s |
+| 2.C loses W1 tail latency | **refuted**: W1 p99 4.4 µs, the best of the three |
+| 2.C has the highest complexity | **not shown by lines** (2,136 against 2,045 and 2,129); invariants are not counted |
+| overall: 2.A | **refuted on the standard workloads.** 2.C leads YCSB A, B, D, E and F, W2, TPC-C and group commit; 2.A leads none of them among the candidates |
+
+### Not yet measured, and needed before §6 can decide
+
+- **The weights.** §6 says they are fixed before results are seen, and no numeric weights were written down. They should be fixed now, before the remaining runs, and the record should say they were fixed after the first ones.
+- **W3, W4 and W9.** W9 needs the version store, which does not exist.
+- **The larger-than-memory size, with the page cache dropped.** That needs root.
+- **A slower storage device**, which §5.1.4 requires, since NVMe flatters the designs that flush most.
+- **The hard requirements**: online backup without stopping writers, bounded recovery at a long log, the long-reader story, nonce uniqueness, G1 and G4.
+- **The G-Dash profile** (§5.1.1) and the owner round trip (§5.5).
+- **2.C at large values**, since W8 is the one standard-or-specific workload where it is the worst engine, and value separation would change it.

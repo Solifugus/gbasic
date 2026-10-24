@@ -574,6 +574,17 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 - G-Dash's profile (G1, G2, G3) favours 2.A further: table replacement is a root swap and its readers keep their snapshot for free.
 - **Overall prediction: 2.A, with group commit closing most of the commit-latency gap.** If 2.B or 2.C wins on the agreed workloads, that is the answer, and this paragraph stays as the record of what was expected.
 
+**First measurements, 2026-10-24** (`research/gsql/README.md`, "Measurements", has the tables and the raw lines). These cover the standard workloads (YCSB, TPC-C-like, SSB flight 1) and W1, W2 and W5 to W8, at 4 and 8 KiB pages, against SQLite, LMDB and RocksDB, on this machine only.
+- **The overall prediction is refuted on the standard workloads.**
+  - 2.C leads YCSB A, B, D, E and F, W2, the TPC-C-like mix and group commit.
+  - 2.A leads none of them among the candidates.
+  - Group commit does not close 2.A's gap: at group-64 it is 8× behind 2.B and 19× behind 2.C, because its cost is the path copy (32× write amplification), not the flush.
+- **2.B's predicted wins in commit latency and space did not appear.** 2.C is narrowly faster to commit and far smaller.
+- **2.C's predicted weakness in W1 tail latency did not appear either.** Its real weakness is W8: it is the slowest engine at 100 KiB values, for want of value separation.
+- **Lines of code are close across all three**, about 2,050 to 2,140.
+- **Running these found two defects that grew the candidates' files without bound**, one in 2.A's free tree and one in 2.B's checkpoint under group commit. Both are fixed and gated, and both are recorded in that README.
+- **No decision is taken here.** The weights were never fixed numerically. W3, W4 and W9, the larger-than-memory size, a slower device, the hard requirements of point 2 and the G-Dash profile are not yet measured.
+
 ## 7. Open questions
 
 1. *(G-Dash volumes answered, §5.1.1.)* WorkSplicer's profile once its redesign settles (§5.1.2); G-Dash's refresh duration, which it has never measured.
