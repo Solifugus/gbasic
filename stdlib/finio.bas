@@ -593,7 +593,7 @@ function check_registry_entry(entry)
     ' §12/Axiom 12: implementing a format nobody is allowed to implement is a
     ' legal problem, not a technical one, and the registry is where it is seen.
     if contains([ "implemented", "verified" ], st) then
-        if _default(entry, "implementation_allowed", unknown) != true then
+        if _default(entry, "implementation_allowed", false) != true then
             error ("finio.check_registry_entry: '" + id + "' is '" + st + "' without implementation_allowed being true (Axiom 12)")
         end if
     end if

@@ -187,7 +187,7 @@ end function
 check("a custom type capturing unconvertible text answers unknown",
       custom_money("12.345.678", "/([0-9.,]+)/ -> as decimal"), unknown)
 check("it does not raise and sink the parse",
-      custom_money("12.345.678", "/([0-9.,]+)/ -> as decimal") = "RAISED", false)
+      string(custom_money("12.345.678", "/([0-9.,]+)/ -> as decimal")) = "RAISED", false)
 check("control: a custom type capturing a real amount still converts",
       string(custom_money("1,234.56", "/([0-9.,]+)/ -> as decimal")), "1234.56")
 

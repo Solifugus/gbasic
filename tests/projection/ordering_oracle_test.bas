@@ -97,12 +97,13 @@ program main( args )
     agree("mixed kinds ", 1, "a")
 
     print "-- THE ONE DELIBERATE DIVERGENCE: an absence"
-    ' `<` refuses because there is no answer; `sort` must place it, and ranks it
+    ' `<` answers `unknown` because there is no answer (three-valued since
+    ' unknown_nan_design increment B; it used to refuse); `sort` must place it, and ranks it
     ' AFTER every ordinary value (ruled 2026-10-07, matching `frame.sort_by` and
     ' PostgreSQL's `ORDER BY ... ASC`). If this ever starts agreeing, either `<` has
     ' begun inventing an order or `sort` has begun refusing arrays with holes --
     ' and the second would break `sort([1, unknown, 3])`, which works today.
-    fails("`<` refuses an absence   ", operator_answers(unknown, 1), false)
+    fails("`<` has no answer for one ", string(unknown < 1), "unknown")
     fails("sort places an absence   ", sorter_answers(unknown, 1), true)
     fails("and ranks it last        ", string(sort([3, unknown, 1])), "[1,3,unknown]")
     ' AND THE TWO ABSENCES ARE NOT ORDERED AGAINST EACH OTHER: the old comparator

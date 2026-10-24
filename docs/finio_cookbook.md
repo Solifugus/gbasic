@@ -345,7 +345,7 @@ program main()
     fld = bdoc.records[2].fields.amount
     print ("  amount           status " + fld.status)
     print ("  value is unknown: " + string(is_unknown(fld.value))
-           + "   (and NOT zero: " + string(fld.value = 0) + ")")
+           + "   (compared with 0: " + string(fld.value = 0) + ")")
     print ("  raw [" + fld.raw + "]  — the bytes are kept, so you can see what was there")
     print ("  why: " + string(fld.why))
     print ""
@@ -365,7 +365,7 @@ end program
 
 -- the same file with one character changed
   amount           status invalid
-  value is unknown: true   (and NOT zero: false)
+  value is unknown: true   (compared with 0: unknown)
   raw [00001X5000]  — the bytes are kept, so you can see what was there
   why: an amount field must be digits
 

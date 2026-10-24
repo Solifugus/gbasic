@@ -4,7 +4,7 @@
 
 -- the same file with one character changed
   amount           status invalid
-  value is unknown: true   (and NOT zero: false)
+  value is unknown: true   (compared with 0: unknown)
   raw [00001X5000]  — the bytes are kept, so you can see what was there
   why: an amount field must be digits
 

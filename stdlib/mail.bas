@@ -103,7 +103,7 @@ library mail
 
     ' Accepts a single address or an array of them; always answers an array.
     function _as_list(value)
-        if value = unknown or value = nothing then
+        if is_unknown(value) or value = nothing then
             return []
         end if
         if type(value) = "array" then
@@ -380,7 +380,7 @@ library mail
 
         ' Structure: alternative when there is html, mixed when there are
         ' attachments, mixed wrapping alternative when there are both.
-        if html != unknown then
+        if not is_unknown(html) then
             content = _multipart("alternative", [_text_part(body, "text/plain"),
                                                 _text_part(html, "text/html")])
         else

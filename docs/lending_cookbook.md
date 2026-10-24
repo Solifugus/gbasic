@@ -637,7 +637,7 @@ debt service coverage: 1.3
 
 with no income on file:
   is it unknown?  true
-  is it zero?     false
+  is it zero?     unknown
 with an income of exactly zero:
   is it unknown?  true
 ```

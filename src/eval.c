@@ -12899,6 +12899,12 @@ static int values_equal(Value left, Value right) {
     if (left.kind == VALUE_NUMBER && right.kind == VALUE_NUMBER) {
         return number_same_value(&left, &right);
     }
+    /* `unknown` is the same value as `unknown` and as nothing else -- SQL's
+     * "not distinct". The operator answers `unknown` here, so the routes must
+     * not ask it. */
+    if (left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) {
+        return left.kind == right.kind;
+    }
     AstExpr fake = {0};
     fake.kind = AST_EXPR_BINARY;
     fake.as.binary.op = "=";
@@ -36984,6 +36990,20 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     const char *op = expr->as.binary.op;
     int result = 0;
 
+    /* AN UNKNOWN OPERAND MAKES THE COMPARISON UNKNOWN (docs/unknown_nan_design.md
+     * increment B): SQL's three-valued rule, so `unknown = 1`, `unknown > 1` and
+     * `unknown = unknown` all answer `unknown`. Before any modifier or lens,
+     * because "is a missing fact equal to this" has no answer whichever lens it
+     * is asked through. The "same value" routes do NOT come here for an unknown
+     * (values_equal and values_equal_for_consider answer first), which is what
+     * keeps `contains([unknown], unknown)` true. Control flow still refuses an
+     * unknown, so `if x = 1` with `x` unknown RAISES where it used to be false. */
+    if (left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) {
+        value_free(left);
+        value_free(right);
+        return value_unknown();
+    }
+
     /* PLAT-WARN row 7 (`unknown-compare`) was built here and REVERTED
      * 2026-08-23 after measurement. Comparing an index read that came back
      * `unknown` against a value looked like a clean signal for a misspelled
@@ -37686,50 +37706,53 @@ static Value eval_binary(AstExpr *expr) {
         return value_array(items, kept);
     }
 
-    if (strcmp(op, "and") == 0) {
+    /* `and` / `or`: KLEENE'S THREE-VALUED LOGIC (docs/unknown_nan_design.md
+     * increment B), the tables SQL uses for NULL. Commutative, so `unknown and
+     * false` is false exactly as `false and unknown` is; the right operand is
+     * skipped only when the LEFT DETERMINES the answer (false for `and`, true for
+     * `or`) -- an unknown left does not, so the right is evaluated. Any operand
+     * other than `unknown` keeps its ordinary truthiness. */
+    int is_and = strcmp(op, "and") == 0;
+    if (is_and || strcmp(op, "or") == 0) {
         int refused = 0;
         Value left = eval_expr(expr->as.binary.left);
-        int left_truth = value_truthy(left, &refused);
+        int left_unknown = left.kind == VALUE_UNKNOWN;
+        int left_truth = 0;
+        if (!left_unknown && !error_action_pending()) {
+            left_truth = value_truthy(left, &refused);
+        }
         value_free(left);
-        if (refused) {
+        if (refused || error_action_pending()) {
             current_line = previous_line;
             current_column = previous_column;
             return value_null();
         }
-        if (!left_truth) {
+        if (!left_unknown && left_truth != is_and) {
+            /* false and _  /  true or _ */
             current_line = previous_line;
             current_column = previous_column;
-            return value_bool(0);
+            return value_bool(!is_and);
         }
         Value right = eval_expr(expr->as.binary.right);
-        int right_truth = value_truthy(right, &refused);
+        int right_unknown = right.kind == VALUE_UNKNOWN;
+        int right_truth = 0;
+        if (!right_unknown && !error_action_pending()) {
+            right_truth = value_truthy(right, &refused);
+        }
         value_free(right);
         current_line = previous_line;
         current_column = previous_column;
-        return refused ? value_null() : value_bool(right_truth);
-    }
-
-    if (strcmp(op, "or") == 0) {
-        int refused = 0;
-        Value left = eval_expr(expr->as.binary.left);
-        int left_truth = value_truthy(left, &refused);
-        value_free(left);
-        if (refused) {
-            current_line = previous_line;
-            current_column = previous_column;
+        if (refused || error_action_pending()) {
             return value_null();
         }
-        if (left_truth) {
-            current_line = previous_line;
-            current_column = previous_column;
-            return value_bool(1);
+        if (!right_unknown && right_truth != is_and) {
+            /* _ and false  /  _ or true: decided by the right alone */
+            return value_bool(!is_and);
         }
-        Value right = eval_expr(expr->as.binary.right);
-        int right_truth = value_truthy(right, &refused);
-        value_free(right);
-        current_line = previous_line;
-        current_column = previous_column;
-        return refused ? value_null() : value_bool(right_truth);
+        if (left_unknown || right_unknown) {
+            return value_unknown();
+        }
+        return value_bool(is_and);
     }
 
     Value left = eval_expr(expr->as.binary.left);
@@ -37762,6 +37785,20 @@ static Value eval_binary(AstExpr *expr) {
         current_line = previous_line;
         current_column = previous_column;
         return result;
+    }
+
+    /* ARITHMETIC PROPAGATES `unknown`: a sum with a missing term is a missing
+     * sum. THE ONE EXCEPTION IS STRING `+` (decision D2): `"a" + x` renders its
+     * operands, which is how a program builds a message, so a string beside an
+     * unknown still renders it as the word. */
+    if ((left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) &&
+        !(strcmp(op, "+") == 0 &&
+          (left.kind == VALUE_STRING || right.kind == VALUE_STRING))) {
+        value_free(left);
+        value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_unknown();
     }
 
     if ((strcmp(op, "+") == 0 || strcmp(op, "-") == 0) &&
@@ -38175,6 +38212,11 @@ static Value eval_binary(AstExpr *expr) {
 }
 
 static int values_equal_for_consider(Value subject, Value candidate) {
+    /* `consider` is a route: a branch written `unknown` matches an unknown
+     * subject, as it always has. */
+    if (subject.kind == VALUE_UNKNOWN || candidate.kind == VALUE_UNKNOWN) {
+        return subject.kind == candidate.kind;
+    }
     AstExpr comparison = {0};
     comparison.kind = AST_EXPR_BINARY;
     comparison.as.binary.op = "=";
@@ -38791,12 +38833,18 @@ static Value eval_expr(AstExpr *expr) {
     case AST_EXPR_UNARY: {
         Value value = eval_expr(expr->as.unary.expr);
         if (strcmp(expr->as.unary.op, "not") == 0) {
+            if (value.kind == VALUE_UNKNOWN) {
+                return value_unknown();   /* Kleene: not unknown is unknown */
+            }
             int refused = 0;
             int result = !value_truthy(value, &refused);
             value_free(value);
             return refused ? value_null() : value_bool(result);
         }
         if (strcmp(expr->as.unary.op, "-") == 0) {
+            if (value.kind == VALUE_UNKNOWN) {
+                return value_unknown();   /* arithmetic propagates unknown */
+            }
             int previous_line = current_line;
             int previous_column = current_column;
             if (expr->line > 0) {

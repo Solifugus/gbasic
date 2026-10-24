@@ -1,17 +1,27 @@
 # `unknown` truth tables and the NaN order — design
 
-**Status: PARTIAL. Increment A shipped 2026-10-23 (`tests/run_same_value.sh`);
-increment B is not built.** The direction was agreed in `docs/gsql_design.md`
-§3.1.1; this note measures what it changes in the tree and splits it into two
-increments. **The three decisions in §6 were taken 2026-10-23 as recommended:**
-NaN keeps IEEE under the operators, string `+` keeps rendering an `unknown`, and
-`nothing` stays two-valued; so does compound `=` keep the "same value" answer.
+**Status: SHIPPED.** Increment A 2026-10-23 (`tests/run_same_value.sh`),
+increment B 2026-10-24 (`tests/run_three_valued.sh`). The direction was agreed in
+`docs/gsql_design.md` §3.1.1; this note measures what it changes in the tree and
+splits it into two increments. **The three decisions in §6 were taken 2026-10-23
+as recommended:** NaN keeps IEEE under the operators, string `+` keeps rendering
+an `unknown`, and `nothing` stays two-valued; so does compound `=` keep the "same
+value" answer.
 
 **Increment A, as built, found one more defect:** the deep comparison behind
 compound `=`, `contains` on nested values and the watchers compared numbers by
 their DOUBLE, so `[9007199254740993] = [9007199254740992]` answered `true`. Both
 rules live in one place now, `number_same_value` and `number_order` in
 `src/eval.c`.
+
+**Increment B, as built** (§7 has the detail): the unknown check sits at the
+top of `eval_comparison`, before any modifier or lens, and the two routes that
+reach that function (`values_equal` and `values_equal_for_consider`) answer an
+unknown themselves first, so the routes stayed "not distinct" by construction.
+Run unmigrated, the gate went red in 14 suites and every line it pointed at was
+one §3 named or a test assertion: 8 program lines (in 7 files), the two examples
+about the distinction and the tutorial's block, 3 cookbook recipes, and 10 test
+assertions. Nothing outside §3's list turned up.
 
 ## 1. What is already decided
 
@@ -197,3 +207,43 @@ stays `true`, and `unknown = nothing` becomes `unknown`, since one side is
 or the "same value" equality. Recommended: the "same value" equality, since
 compound `=` is already answered by the PLAT-EQ deep comparison that watchers
 use. SQL's row comparison would answer NULL, so this is a stated deviation.
+
+## 7. Increment B, as built
+
+**Where.** `eval_comparison` returns `unknown` when either operand is one,
+before compare modifiers and datetime lenses, since "is a missing fact equal to
+this" has no answer whichever lens asks it. `and`/`or` are one block in
+`eval_binary`: an `unknown` left operand is not a deciding one, so the right is
+evaluated; a deciding right (`… and false`, `… or true`) answers alone; otherwise
+any unknown makes the answer unknown. `not` and unary minus pass an unknown
+through. Arithmetic passes it through after the comparison dispatch, **except**
+`+` with a string on either side (D2).
+
+**The routes.** `values_equal` (behind `contains`, `find`, `remove_value`,
+`unique`, `excluding`/`intersecting`) and `values_equal_for_consider` answer
+`unknown` vs anything themselves, so they never see the operator's `unknown`.
+Compound `=` goes through the PLAT-EQ deep comparison and was never affected.
+`compare(a, op, b)` follows the operator.
+
+**What the gate found, measured by running it unmigrated** (14 suites red):
+
+- **Programs**, the seven §3 named: `13_the_whole_loop.bas:297`,
+  `edgar.bas:268`, `mail.bas:106` and `:383`, `finio.bas:596` (its default is
+  `false` now, which says the same), `tests/mcp/server.bas:36`,
+  `tests/windows/actor_transport.bas:113` and `path_builtins_test.bas:26`. Each
+  became `not is_unknown(x) and x = …`, which the new `and` makes safe since
+  `false and …` never looks right.
+- **The two examples about the distinction** (`unknown_test`,
+  `unknown_nothing_distinction_integration_test`) now print `unknown != nothing`
+  as `unknown` and test the distinction with `is_unknown`/`is_nothing`; the
+  tutorial's block the same.
+- **Three cookbook recipes** print `unknown` where they printed `false`; finio's
+  label changed from "and NOT zero" to "compared with 0", which reads correctly
+  with either answer.
+- **Ten test assertions**: helpers comparing `got = want` (serialize) and
+  checks asserting `x = v` is `false` for an absent `x` (ari, decision, glob,
+  qt_chooser, equality_scalar, equality_routes). The "is it not v" checks became
+  `contains([v], x)`, a route, which is the question they were asking. The
+  ordering oracle's "`<` refuses an absence" became "`<` has no answer for one",
+  and `negative_unknown_order` now pins the `if` refusing the `unknown` the
+  comparison produced.

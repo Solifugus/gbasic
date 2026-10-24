@@ -172,7 +172,7 @@ nothresh = decision.evaluate(broad, { objectives: ctx.objectives,
                              options, { sizing: "aggregate", sensitivity_range: [0, 2] })
 check("with no threshold declared, materiality is unknown",
       is_unknown(nothresh.materiality.is_material), true)
-check("and it is not false", nothresh.materiality.is_material = false, false)
+check("and it is not false", contains([false], nothresh.materiality.is_material), false)
 check("and it says why", contains(nothresh.materiality.why, "no threshold declared"), true)
 
 ' --- TIER: assurance is a SENSITIVITY, not a feeling -----------------------

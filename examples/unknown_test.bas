@@ -10,7 +10,8 @@ end if
 
 print(x)
 
-if unknown != nothing then
+print(unknown != nothing)        ' unknown: a missing fact compared is a missing answer
+if is_unknown(unknown) and is_nothing(nothing) then
     print("distinct")
 end if
 

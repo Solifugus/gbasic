@@ -180,8 +180,8 @@ nothing_open:
     g.mode = "cancel"
     none = qt.choose_file(app, { folder: work, name: "have.txt" })
     check("cancel is unknown", is_unknown(none), true)
-    check("and not the empty string", none = "", false)
-    check("and not the file it opened on", none = here, false)
+    check("and not the empty string", contains([""], none), false)
+    check("and not the file it opened on", contains([here], none), false)
     ' ASSERTED AS A DIFFERENCE, since "it answers unknown" alone passes on a
     ' chooser that never answers anything.
     g.mode = "path"

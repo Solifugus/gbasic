@@ -758,6 +758,40 @@ The same rule already governs arrays, records, functions, watchers, regexes,
 money and date/time: `=` and `!=` are questions with
 answers, ordering is not a question at all.
 
+**`unknown` is three-valued** *(after 0.10.0)*. `unknown` is gBASIC's SQL
+`NULL` — a fact nobody has — and it follows SQL's rules:
+
+| | `true` | `false` | `unknown` |
+|---|---|---|---|
+| `not` | `false` | `true` | `unknown` |
+| `unknown and` … | `unknown` | `false` | `unknown` |
+| `unknown or` … | `true` | `unknown` | `unknown` |
+
+`and` and `or` are commutative, so `unknown and false` is `false` exactly as
+`false and unknown` is, and the right operand is skipped only when the left
+**decides** the answer (`false and …`, `true or …`). A comparison or an
+arithmetic operation with an `unknown` operand answers `unknown`:
+`unknown = 1`, `unknown > 1`, `unknown + 1` and `-unknown` are all `unknown`,
+and so is **`unknown = unknown`**. Three things deliberately do not follow SQL:
+
+- **`if`, `while` and `until` refuse an `unknown`** with *unknown cannot be used
+  as a condition*. SQL's `WHERE` silently drops a `NULL` row; gBASIC says so.
+  So `if r["b"] = 1` with no `b` in `r` **raises**, where through 0.10.0 it was
+  quietly `false`. Ask first: `if not is_unknown(r["b"]) and r["b"] = 1`, which
+  the table above makes safe, since `false and …` never looks at the right.
+  The commonest place to meet it is `env("NAME") = "..."`, because `env`
+  answers `unknown` for a variable that is not set.
+- **String `+` still renders it**: `"total: " + unknown` is
+  `"total: unknown"`, because `+` on a string builds a message.
+- **`nothing` stays two-valued**: `nothing = nothing` is `true` and
+  `not nothing` is `true`. It is "no value here", not a missing fact.
+  `unknown = nothing` is `unknown`, because one side is.
+
+The "same value" routes below (`contains`, `find`, `unique`, `consider`, a
+compound's `=`) are unchanged: `unknown` is the same value as `unknown` there,
+so `contains([unknown], unknown)` and `[unknown] = [unknown]` are `true`.
+`compare(a, op, b)` follows the operator. See `docs/unknown_nan_design.md`.
+
 Numbers and booleans are the exception and coerce as they always have: `0 =
 false` and `1 = true` are true, and `1 > false` orders. That is a real
 coercion the language uses — measured at 1,472 of the 1,500 mixed-kind

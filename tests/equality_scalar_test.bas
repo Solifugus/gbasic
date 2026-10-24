@@ -104,7 +104,7 @@ check("1 > false still orders", 1 > false, true)
 
 ' --- CONTROL: nothing and unknown are unchanged (their own branch above) -----
 check("0 = nothing is false", 0 = nothing, false)
-check("0 = unknown is false", 0 = unknown, false)
+check("0 = unknown is unknown (three-valued, unknown_nan_design B)", is_unknown(0 = unknown), true)
 check("\"\" = nothing is false", "" = nothing, false)
 
 ' --- THE SHAPE THAT FOUND IT: a sentinel in a message loop ------------------

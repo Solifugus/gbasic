@@ -110,7 +110,7 @@ function attempt_send(target, msg)
     return "sent"
 end function
 
-on_windows = env("OS") = "Windows_NT"
+on_windows = not is_unknown(env("OS")) and env("OS") = "Windows_NT"
 
 print("-- self --")
 send(self(), ["to", "me"])

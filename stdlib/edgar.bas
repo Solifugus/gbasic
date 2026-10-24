@@ -265,7 +265,7 @@ library edgar
         cut = count(accs)
         i = 0
         while i < count(accs)
-            if accs[i] = last_seen then
+            if not is_unknown(last_seen) and accs[i] = last_seen then
                 cut = i
                 i = count(accs)
             else

@@ -672,7 +672,7 @@ nothing was charged off in September:
   loans in the bucket:  0
   roll to current:      unknown
   is that unknown?      true
-  is that zero?         false
+  is that zero?         unknown
 ```
 
 ---

@@ -51,7 +51,14 @@ function routes(label, a, b, want)
     else
         con = false
     end consider
-    check(label + " -- operator", op, want)
+    ' The OPERATOR is three-valued for an unknown operand (unknown_nan_design
+    ' increment B) while every route still answers the "same value" question,
+    ' so for that pair the routes are compared with each other, not with `=`.
+    if is_unknown(a) or is_unknown(b) then
+        check(label + " -- operator is unknown", is_unknown(op), true)
+    else
+        check(label + " -- operator", op, want)
+    end if
     check(label + " -- contains", has, want)
     check(label + " -- contains, reversed", idx, want)
     check(label + " -- remove_value removed it", gone, want)

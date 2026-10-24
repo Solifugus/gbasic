@@ -358,7 +358,9 @@ gBASIC has **two** absence values, and the distinction matters:
 x = nothing      ' deliberate absence — "there is none"
 y = unknown      ' exists, but the value is not known yet
 
-if x != y then
+print(x = nothing)    ' true:    nothing is an ordinary value
+print(y = unknown)    ' unknown: a fact nobody has equals nothing, not even itself
+if is_nothing(x) and is_unknown(y) then
     print("distinct")
 end if
 ```
@@ -371,6 +373,12 @@ end if
 > `unknown` for an unset variable. Keeping them distinct lets you branch on
 > "not set yet" without mistaking it for "set to empty." Test with `is_nothing`
 > and `is_unknown`.
+>
+> `unknown` follows SQL's rules for `NULL`: comparing or adding to it answers
+> `unknown`, and `unknown and false` is `false` while `unknown and true` is
+> `unknown`. An `if` refuses an `unknown` rather than guessing, so
+> `if r["b"] = 1` raises when `r` has no `b`. Ask first:
+> `if not is_unknown(r["b"]) and r["b"] = 1`.
 
 ## Control flow
 

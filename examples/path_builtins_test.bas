@@ -23,7 +23,7 @@ end function
 ' `exists` takes a FILE reference, so it cannot answer this; `file_type` can,
 ' which is the hole the builtin fills.
 home {dir}= "examples/tmp_pathprobe"
-if file_type("examples/tmp_pathprobe") = "folder" then
+if not is_unknown(file_type("examples/tmp_pathprobe")) and file_type("examples/tmp_pathprobe") = "folder" then
     remove_dir(home)
 end if
 make_dir(home)

@@ -13,7 +13,7 @@
 
 function check(what, got, want)
     tally.checks = tally.checks + 1
-    if type(got) = type(want) and got = want then
+    if type(got) = type(want) and contains([want], got) then
         print "ok   " + what
     else
         tally.mismatches = tally.mismatches + 1

@@ -33,7 +33,7 @@ program main( args )
     ])
 
     opts = { name: "bank-mcp", version: "1.0.0" }
-    if env("MCP_PRINCIPAL") != "" then
+    if not is_unknown(env("MCP_PRINCIPAL")) and env("MCP_PRINCIPAL") != "" then
         opts = { name: "bank-mcp", version: "1.0.0",
                  principal: { user: env("MCP_PRINCIPAL"), groups: ["tellers"] },
                  max_groups: 2 }

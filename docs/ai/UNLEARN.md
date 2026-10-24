@@ -50,6 +50,17 @@ the standing ones.
   `0` and `""` are values and pass through. Prefer it to the
   `if is_unknown(x) then x = ...` dance.
 
+- **`unknown` is SQL's NULL, so comparing it is not `false`** *(after 0.10.0)*.
+  `unknown = 1`, `unknown != 1`, `unknown > 1`, `unknown + 1` and even
+  `unknown = unknown` are all `unknown`; `unknown and false` is `false`,
+  `unknown or true` is `true`, anything else with an unknown is `unknown`. And an
+  `if`/`while`/`until` REFUSES an unknown, so `if env("DEBUG") = "1"` with the
+  variable unset RAISES where it used to be quietly false. Write
+  `if default(env("DEBUG"), "") = "1"` or `if not is_unknown(x) and x = v` —
+  `false and …` never evaluates its right side. The routes (`contains`, `find`,
+  `unique`, `consider`, compound `=`) still treat unknown as the same value as
+  unknown, and `nothing` is unchanged: `nothing = nothing` is `true`.
+
 ## Control flow
 
 - **The counted `for` exists as of 2026-08-16, with BASIC semantics, not C's.**

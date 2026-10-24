@@ -177,7 +177,7 @@ program main( args )
     ' about this entry".
     f = folders(d, "2026")[0]
     want("a folder's size is unknown", is_unknown(f.size), true)
-    want("a folder's size is not zero", f.size = 0, false)
+    want("a folder's size is not zero", contains([0], f.size), false)
     want("a folder still has a modified", is_unknown(f.modified), false)
     want("type is folder", f.type, "folder")
 

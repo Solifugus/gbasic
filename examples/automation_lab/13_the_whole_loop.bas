@@ -294,7 +294,7 @@ function level_of(st, cell, m)
   ' closes 0.24 on its own -- an extreme reverts whether or not you act, which
   ' is exactly why the holdout has to exist (recipe 7, R10).
   frac = 0.24
-  if st.treated[cell] = true then
+  if not is_unknown(st.treated[cell]) and st.treated[cell] = true then
     frac = 0.62
   end if
   wobble = (fake.between(31, index_of(cell) * 7 + m, 0, 60) - 30) / 1000
