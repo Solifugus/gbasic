@@ -7,23 +7,25 @@
  * valid one with the higher transaction id, so it needs no log.
  *
  * File layout: page 0 the header (§3.1.1); pages 1 and 2 the two meta slots;
- * everything else tree, overflow and free-list pages.
+ * everything else tree, overflow and free-tree pages.
  *
  * As built (recorded in the design):
  *   - the meta slots are whole PAGES 1 and 2, not slots inside page 0's root
  *     area: at a 512-byte page, page 0 is a single sector and two slots in it
- *     could not be written independently (rule 3), and writing a slot means
- *     writing whatever sector it sits in;
- *   - the free list is a blob written at each durable commit (BoltDB's
- *     shape), not a tree keyed by commit id: inline in the meta page when it
- *     fits, else a chain of pages taken from the end of the file so that
- *     writing it never consumes the list it is recording;
- *   - a commit with sync = false writes its pages but no meta. The meta that
- *     makes it durable is written by the next sync, or the next commit with
- *     sync = true, and covers every commit since (group commit, §5.4). A
- *     page freed by a commit is reusable only once that commit is durable AND
- *     no open snapshot predates it -- the first condition is what keeps a
- *     fallback to the older meta safe.
+ *     could not be written independently (rule 3);
+ *   - the FREE TREE is a B+tree keyed by the commit id that freed each page,
+ *     LMDB's shape and the design's (§3.1.4). A commit adds ONE record, its
+ *     freed pages. A write transaction takes reusable records out at its
+ *     start; pages it took and did not use go back under key 0. The first
+ *     version kept the whole free list as a blob rewritten at every durable
+ *     commit (BoltDB's shape), written to pages from the end of the file: its
+ *     cost grew with the list, the list grew with its own old copies, and a
+ *     20,000-commit benchmark wrote 419 GB before it was stopped;
+ *   - a commit with sync = false writes its pages but no meta; the next sync,
+ *     or synced commit, writes one meta covering every commit since (group
+ *     commit, §5.4). A page freed by commit F is reusable only once F is
+ *     durable AND no open snapshot predates F -- the first condition keeps a
+ *     fall-back to the older meta safe.
  */
 
 #include "btengine.h"
@@ -41,25 +43,16 @@
 #define M_TXN 40
 #define M_CATALOG 48
 #define M_HW 56
-#define M_BLOB_LEN 64
-#define M_BLOB_HEAD 72
-#define M_INLINE 80
+#define M_FREE 64
 
-/* free-list chain page */
-#define F_NEXT 40
-#define F_USED 48
-#define F_DATA 56
+/* a write transaction takes out at least this many reusable pages at its start */
+#define TAKE_PAGES 64
 
 /* ---- the store ----------------------------------------------------------- */
 
 typedef struct {
-    uint64_t txn, catalog, hw;
+    uint64_t txn, catalog, hw, free;
 } Root;
-
-typedef struct {
-    uint64_t freed_by; /* the commit id that freed them */
-    U64s pages;
-} Pending;
 
 struct GsTxn;
 
@@ -75,14 +68,10 @@ struct GsStore {
     int durable_slot;    /* META_A or META_B: which page holds `durable` */
     uint64_t hw;         /* pages [0, hw) exist in the format */
     uint64_t file_pages; /* pages the file physically holds: grown in zeroed chunks */
-    U64s free_pages;     /* reusable now */
-    Pending *pending;
-    size_t npending, cappending;
-    U64s blob_pages;     /* the chain holding the tip's free list */
     U64s readers;        /* snapshot txn ids, one per open snapshot */
     struct GsTxn *writer;
     int failed;
-    int unsynced;        /* pages written since the last flush */
+    int unsynced;
     GsStats st;
 };
 
@@ -100,7 +89,14 @@ struct GsTxn {
     Set fresh;        /* write: pages allocated by this txn */
     U64s freed;       /* write: pages this txn frees (live until it is durable) */
     U64s zombies;     /* fresh pages freed in the current operation */
+    U64s avail;       /* write: reusable pages taken out of the free tree */
+    uint64_t free;    /* write: the free tree's root in this txn */
+    int no_reuse;     /* write: allocate from the end of the file only */
+    uint64_t limit;   /* write: records freed by commits up to this are reusable */
+    int exhausted;    /* write: no reusable record is left to take */
 };
+
+static int take_free(struct GsTxn *t);
 
 static int io_err(GsStore *db, int rc) {
     (void)db;
@@ -198,7 +194,21 @@ static int pg_get(BtPager *b, uint64_t pgno, unsigned char **page) {
 
 static int take_page(struct GsTxn *t, uint64_t *pgno) {
     GsStore *db = t->db;
-    uint64_t p = db->free_pages.n ? db->free_pages.v[--db->free_pages.n] : db->hw++;
+    /* reusable pages this txn took out of the free tree, else the end of the
+     * file -- always the end while the free tree itself is being written, so
+     * writing it never consumes what it records */
+    if (!t->no_reuse && !t->avail.n && !t->exhausted) {
+        /* Refill now, as LMDB does: take the next reusable records out of the
+         * free tree. Taking only at the start left a transaction that needed
+         * more growing the file while free pages piled up (space 5.6x on YCSB
+         * A). Nested inside another tree's operation, which is safe: nothing
+         * is evicted mid-operation, a page taken here was freed by an earlier
+         * commit so the outer operation cannot hold it, and the nested change
+         * allocates from the end of the file, so it cannot recurse. */
+        int rc = take_free(t);
+        if (rc) return rc;
+    }
+    uint64_t p = (!t->no_reuse && t->avail.n) ? t->avail.v[--t->avail.n] : db->hw++;
     if (!set_add(&t->fresh, p)) return GS_IO;
     *pgno = p;
     return GS_OK;
@@ -281,80 +291,14 @@ static void after_op(BeTxn *be) {
         CPage *p = cache_find(&db->cache, pgno, 0);
         if (p) cache_remove(&db->cache, p);
         set_del(&t->fresh, pgno);
-        u64_push(&db->free_pages, pgno);
+        u64_push(&t->avail, pgno);
     }
     t->zombies.n = 0;
     evict(db, t->be.write ? t : db->writer);
 }
 
-/* ---- the free list blob --------------------------------------------------- */
 
-static int blob_build(GsStore *db, GsBuf *out) {
-    out->n = 0;
-    unsigned char b[8];
-    put64(b, db->free_pages.n);
-    if (!gsbuf_append(out, b, 8)) return GS_IO;
-    for (size_t i = 0; i < db->free_pages.n; i++) { put64(b, db->free_pages.v[i]); gsbuf_append(out, b, 8); }
-    put64(b, db->npending);
-    gsbuf_append(out, b, 8);
-    for (size_t i = 0; i < db->npending; i++) {
-        put64(b, db->pending[i].freed_by);
-        gsbuf_append(out, b, 8);
-        put64(b, db->pending[i].pages.n);
-        gsbuf_append(out, b, 8);
-        for (size_t j = 0; j < db->pending[i].pages.n; j++) { put64(b, db->pending[i].pages.v[j]); gsbuf_append(out, b, 8); }
-    }
-    return GS_OK;
-}
-
-static void pending_clear(GsStore *db) {
-    for (size_t i = 0; i < db->npending; i++) u64_free(&db->pending[i].pages);
-    db->npending = 0;
-}
-
-static int pending_add(GsStore *db, uint64_t freed_by, U64s *pages) {
-    if (db->npending == db->cappending) {
-        size_t cap = db->cappending ? db->cappending * 2 : 8;
-        Pending *v = realloc(db->pending, cap * sizeof *v);
-        if (!v) return GS_IO;
-        db->pending = v;
-        db->cappending = cap;
-    }
-    db->pending[db->npending].freed_by = freed_by;
-    db->pending[db->npending].pages = *pages;
-    memset(pages, 0, sizeof *pages);
-    db->npending++;
-    return GS_OK;
-}
-
-static int blob_parse(GsStore *db, const unsigned char *p, size_t n) {
-    size_t at = 0;
-#define NEED(k) do { if (at + (k) > n) return GS_CORRUPT; } while (0)
-    NEED(8);
-    uint64_t nf = get64(p);
-    at = 8;
-    if (nf > n / 8) return GS_CORRUPT;
-    NEED(nf * 8);
-    db->free_pages.n = 0;
-    for (uint64_t i = 0; i < nf; i++, at += 8) u64_push(&db->free_pages, get64(p + at));
-    NEED(8);
-    uint64_t np = get64(p + at);
-    at += 8;
-    pending_clear(db);
-    for (uint64_t i = 0; i < np; i++) {
-        NEED(16);
-        uint64_t by = get64(p + at), cnt = get64(p + at + 8);
-        at += 16;
-        if (cnt > n / 8) return GS_CORRUPT;
-        NEED(cnt * 8);
-        U64s pages = {0};
-        for (uint64_t j = 0; j < cnt; j++, at += 8) u64_push(&pages, get64(p + at));
-        int rc = pending_add(db, by, &pages);
-        if (rc) return rc;
-    }
-#undef NEED
-    return at == n ? GS_OK : GS_CORRUPT;
-}
+/* ---- the free tree ---------------------------------------------------------- */
 
 static uint64_t oldest_reader(GsStore *db) {
     uint64_t m = UINT64_MAX;
@@ -363,96 +307,149 @@ static uint64_t oldest_reader(GsStore *db) {
     return m;
 }
 
-/* Pages freed by commit F become reusable once F is durable and no snapshot
- * older than F is open (a snapshot at S < F can still reach them). */
-static void release_pending(GsStore *db) {
-    uint64_t oldest = oldest_reader(db);
-    size_t keep = 0;
-    for (size_t i = 0; i < db->npending; i++) {
-        Pending *pe = &db->pending[i];
-        if (pe->freed_by <= db->durable.txn && pe->freed_by <= oldest) {
-            for (size_t j = 0; j < pe->pages.n; j++) u64_push(&db->free_pages, pe->pages.v[j]);
-            u64_free(&pe->pages);
-        } else {
-            db->pending[keep++] = *pe;
-        }
+static int encode_pages(const U64s *pages, GsBuf *out) {
+    out->n = 0;
+    if (!gsbuf_reserve(out, pages->n * 8 + 1)) return GS_IO;
+    for (size_t i = 0; i < pages->n; i++) put64(out->p + 8 * i, pages->v[i]);
+    out->n = pages->n * 8;
+    return GS_OK;
+}
+
+/* Page numbers per record: few enough that a record is always stored inline.
+ * An overflowing value is rewritten by freeing its chain and writing a new
+ * one, and in the commit's settle loop those freed pages become part of the
+ * list being recorded -- so the record grew every round and never settled
+ * (found at the 51st commit of a debugging run). Inline, a rewrite frees
+ * nothing. */
+static size_t chunk_pages(uint32_t ps) {
+    size_t cell = (ps - GS_PAGE_TAG - 56) / 4 - 2;   /* the tree's largest inline cell */
+    return (cell - (1 + 1 + 1 + 16)) / 8;            /* less the cell's own overhead */
+}
+
+static void fkey(unsigned char k[16], uint64_t id, uint64_t chunk) { put64be(k, id); put64be(k + 8, chunk); }
+
+/* Replace every record of commit `id` with `pages`, in inline chunks: each
+ * chunk is replaced in place and only surplus ones are deleted, so a rewrite
+ * that changes little changes no structure. (Deleting the lot and inserting
+ * again merged and split nodes every round of the settle loop, and the nodes
+ * it freed grew the list: it never settled.) */
+static int free_put(struct GsTxn *t, uint64_t id, const U64s *pages) {
+    unsigned char k[16];
+    int rc = GS_OK;
+    size_t per = chunk_pages(t->db->ps), chunks = (pages->n + per - 1) / per;
+    GsBuf v = {0};
+    for (size_t at = 0, chunk = 0; rc == GS_OK && at < pages->n; at += per, chunk++) {
+        U64s part = {pages->v + at, pages->n - at < per ? pages->n - at : per, 0};
+        rc = encode_pages(&part, &v);
+        fkey(k, id, chunk);
+        if (rc == GS_OK) rc = bt_put(&t->pager.base, &t->free, gsb(k, 16), gsb(v.p, v.n), 0);
     }
-    db->npending = keep;
+    gsbuf_free(&v);
+    for (uint64_t chunk = chunks; rc == GS_OK; chunk++) {
+        fkey(k, id, chunk);
+        rc = bt_del(&t->pager.base, &t->free, gsb(k, 16));
+        if (rc == GS_NOT_FOUND) { rc = GS_OK; break; }
+    }
+    return rc;
+}
+
+/* At a write transaction's start: take reusable records out of the free tree
+ * -- freed by a commit that is durable and older than every open snapshot, or
+ * filed under key 0 as reusable already -- until it holds TAKE_PAGES. They
+ * leave the tree in THIS transaction, so if it aborts they are still there. */
+static int take_free_inner(struct GsTxn *t);
+
+/* Allocation from the end of the file while the free tree is being taken
+ * from: otherwise deleting the records just loaded allocates, finds the list
+ * empty, and a nested take loads the same records a second time. */
+static int take_free(struct GsTxn *t) {
+    int saved = t->no_reuse;
+    t->no_reuse = 1;
+    int rc = take_free_inner(t);
+    t->no_reuse = saved;
+    return rc;
+}
+
+static int take_free_inner(struct GsTxn *t) {
+    uint64_t limit = t->limit;
+    BtCursor c;
+    bt_cursor_init(&c, &t->pager.base, t->free);
+    U64s keys = {0};
+    int rc;
+    for (rc = bt_first(&c); rc == GS_OK && c.positioned; rc = bt_next(&c)) {
+        if (c.key.n != 16) { rc = GS_CORRUPT; break; }
+        uint64_t f = get64be(c.key.p);
+        if (f > limit) break;
+        /* ALL of key 0, always: the commit rewrites key 0 from chunk 0 up,
+         * so a chunk left behind would be overwritten with its pages in no
+         * list at all (found as leaks by check) */
+        if (f != 0 && t->avail.n >= TAKE_PAGES) break;
+        if ((rc = bt_cursor_value(&c))) break;
+        if (c.value.n % 8) { rc = GS_CORRUPT; break; }
+        for (size_t i = 0; i < c.value.n; i += 8) u64_push(&t->avail, get64(c.value.p + i));
+        u64_push(&keys, f);
+        u64_push(&keys, get64be(c.key.p + 8));
+    }
+    if (rc == GS_OK && !c.positioned) t->exhausted = 1;
+    if (rc == GS_OK && c.positioned && c.key.n == 16 && get64be(c.key.p) > limit) t->exhausted = 1;
+    bt_cursor_free(&c);
+    for (size_t i = 0; rc == GS_OK && i < keys.n; i += 2) {
+        unsigned char k[16];
+        fkey(k, keys.v[i], keys.v[i + 1]);
+        rc = bt_del(&t->pager.base, &t->free, gsb(k, 16));
+    }
+    u64_free(&keys);
+    return rc;
+}
+
+/* At commit: record what this transaction freed under its own id, and put
+ * back what it took out and did not use, under key 0. Writing the tree frees
+ * and allocates pages of its own, so repeat until nothing moves; allocations
+ * come from the end of the file meanwhile, so the loop cannot feed itself. */
+static int record_free(struct GsTxn *t) {
+    t->no_reuse = 1;
+    int rc = GS_OK;
+    for (int round = 0; rc == GS_OK && round < 32; round++) {
+        size_t nf = t->freed.n, na = t->avail.n;
+        rc = free_put(t, t->id, &t->freed);
+        if (rc == GS_OK) rc = free_put(t, 0, &t->avail);
+        /* a fresh page the tree freed in passing is reusable: into avail */
+        for (size_t i = 0; i < t->zombies.n; i++) {
+            uint64_t pgno = t->zombies.v[i];
+            CPage *p = cache_find(&t->db->cache, pgno, 0);
+            if (p) cache_remove(&t->db->cache, p);
+            set_del(&t->fresh, pgno);
+            u64_push(&t->avail, pgno);
+        }
+        t->zombies.n = 0;
+        if (t->freed.n == nf && t->avail.n == na) { t->no_reuse = 0; return rc; }
+    }
+    t->no_reuse = 0;
+    return rc ? rc : GS_CORRUPT; /* did not settle: never seen, and not hidden */
 }
 
 /* ---- meta pages ----------------------------------------------------------- */
 
-static uint32_t inline_cap(uint32_t ps) { return ps - GS_PAGE_TAG - M_INLINE; }
-static uint32_t chain_cap(uint32_t ps) { return ps - GS_PAGE_TAG - F_DATA; }
-
-/* Write the free list (chain pages from the end of the file if it does not fit
- * inline) and then the meta page for `r` into the slot not holding durable. */
 static int write_meta(GsStore *db, const Root *r) {
-    /* The chain naming the previous durable free list is freed by THIS meta,
-     * and the list being written must say so -- recorded only in memory, it
-     * was lost at the next reopen and those pages leaked (found by check). It
-     * is reusable once this meta is durable: until then, a torn write of this
-     * meta falls back to the previous one, which still needs it. */
-    size_t pending_before = db->npending;
-    if (db->blob_pages.n) {
-        U64s old = {0};
-        for (size_t i = 0; i < db->blob_pages.n; i++) u64_push(&old, db->blob_pages.v[i]);
-        if (pending_add(db, r->txn, &old)) return GS_IO;
-    }
-    GsBuf blob = {0};
-    int rc = blob_build(db, &blob);
     unsigned char *page = calloc(1, db->ps);
-    if (!page || rc) { free(page); gsbuf_free(&blob); return GS_IO; }
-    uint64_t head = 0;
-    U64s chain = {0};
-    if (blob.n > inline_cap(db->ps)) {
-        size_t cap = chain_cap(db->ps), pages = (blob.n + cap - 1) / cap;
-        uint64_t first = db->hw;
-        unsigned char *cp = calloc(1, db->ps);
-        for (size_t i = 0; i < pages && rc == GS_OK; i++) {
-            memset(cp, 0, db->ps);
-            cp[0] = GS_PT_FREELIST;
-            size_t take = blob.n - i * cap < cap ? blob.n - i * cap : cap;
-            memcpy(cp + F_DATA, blob.p + i * cap, take);
-            put32(cp + F_USED, (uint32_t)take);
-            put64(cp + F_NEXT, i + 1 < pages ? first + i + 1 : 0);
-            rc = write_page(db, first + i, cp, r->txn);
-            u64_push(&chain, first + i);
-        }
-        free(cp);
-        head = first;
-        db->hw = first + pages;
-        /* the chain must be on disk before the meta that names it */
-        if (rc == GS_OK) rc = flush(db);
-    }
+    if (!page) return GS_IO;
+    page[0] = GS_PT_META;
+    put64(page + M_TXN, r->txn);
+    put64(page + M_CATALOG, r->catalog);
+    put64(page + M_HW, r->hw);
+    put64(page + M_FREE, r->free);
+    int slot = db->durable_slot == META_A ? META_B : META_A;
+    int rc = write_page(db, (uint64_t)slot, page, r->txn);
+    if (rc == GS_OK) rc = flush(db);
     if (rc == GS_OK) {
-        page[0] = GS_PT_META;
-        put64(page + M_TXN, r->txn);
-        put64(page + M_CATALOG, r->catalog);
-        put64(page + M_HW, db->hw);
-        put64(page + M_BLOB_LEN, blob.n);
-        put64(page + M_BLOB_HEAD, head);
-        if (!head) memcpy(page + M_INLINE, blob.p, blob.n);
-        int slot = db->durable_slot == META_A ? META_B : META_A;
-        rc = write_page(db, (uint64_t)slot, page, r->txn);
-        if (rc == GS_OK) rc = flush(db);
-        if (rc == GS_OK) {
-            u64_free(&db->blob_pages);
-            db->blob_pages = chain;
-            memset(&chain, 0, sizeof chain);
-            db->durable_slot = slot;
-            db->durable = *r;
-            db->durable.hw = db->hw;
-        }
+        db->durable_slot = slot;
+        db->durable = *r;
     }
-    if (rc) while (db->npending > pending_before) u64_free(&db->pending[--db->npending].pages);
-    u64_free(&chain);
     free(page);
-    gsbuf_free(&blob);
     return rc;
 }
 
-static int read_meta(GsStore *db, uint64_t slot, Root *r, uint64_t *blob_len, uint64_t *blob_head, unsigned char *page) {
+static int read_meta(GsStore *db, uint64_t slot, Root *r, unsigned char *page) {
     size_t got;
     int rc = gsql_io_read_at(db->f, slot * db->ps, page, db->ps, &got);
     if (rc) return io_err(db, rc);
@@ -460,14 +457,20 @@ static int read_meta(GsStore *db, uint64_t slot, Root *r, uint64_t *blob_len, ui
     r->txn = get64(page + M_TXN);
     r->catalog = get64(page + M_CATALOG);
     r->hw = get64(page + M_HW);
-    *blob_len = get64(page + M_BLOB_LEN);
-    *blob_head = get64(page + M_BLOB_HEAD);
-    if (r->hw < FIRST_DATA + 1 || r->catalog < FIRST_DATA || r->catalog >= r->hw) return GS_CORRUPT;
-    if (!*blob_head && *blob_len > inline_cap(db->ps)) return GS_CORRUPT;
+    r->free = get64(page + M_FREE);
+    if (r->hw < FIRST_DATA + 2 || r->catalog < FIRST_DATA || r->catalog >= r->hw || r->free < FIRST_DATA || r->free >= r->hw)
+        return GS_CORRUPT;
     return GS_OK;
 }
 
 /* ---- open, create, recover ------------------------------------------------ */
+
+static void empty_leaf(unsigned char *page, uint32_t ps) {
+    memset(page, 0, ps);
+    page[0] = GS_PT_LEAF;
+    put16(page + 42, 56);
+    put16(page + 44, (uint16_t)(ps - GS_PAGE_TAG));
+}
 
 static int create_fresh(GsStore *db) {
     unsigned char *page = calloc(1, db->ps);
@@ -481,18 +484,12 @@ static int create_fresh(GsStore *db) {
     /* the header holds page 0: growth starts after it, or the first chunk of
      * zeros would be written over it */
     db->file_pages = 1;
-    /* the catalog: an empty leaf at page 3 */
-    if (rc == GS_OK) {
-        memset(page, 0, db->ps);
-        page[0] = GS_PT_LEAF;
-        put16(page + 40, 0);
-        put16(page + 42, 56);
-        put16(page + 44, (uint16_t)(db->ps - GS_PAGE_TAG));
-        rc = write_page(db, FIRST_DATA, page, 1);
-    }
-    db->hw = FIRST_DATA + 1;
+    /* the catalog at page 3 and the free tree at page 4, both empty leaves */
+    if (rc == GS_OK) { empty_leaf(page, db->ps); rc = write_page(db, FIRST_DATA, page, 1); }
+    if (rc == GS_OK) { empty_leaf(page, db->ps); rc = write_page(db, FIRST_DATA + 1, page, 1); }
+    db->hw = FIRST_DATA + 2;
     db->durable_slot = META_B; /* so the first meta goes to META_A */
-    Root r = {1, FIRST_DATA, db->hw};
+    Root r = {1, FIRST_DATA, db->hw, FIRST_DATA + 1};
     if (rc == GS_OK) rc = flush(db);
     if (rc == GS_OK) rc = write_meta(db, &r);
     if (rc == GS_OK && db->dir) rc = io_err(db, gsql_io_sync_dir(db->io, db->dir));
@@ -501,58 +498,25 @@ static int create_fresh(GsStore *db) {
     return rc;
 }
 
+/* Recovery reads two pages: no log, no free list to load. */
 static int recover(GsStore *db) {
     unsigned char *page = malloc(db->ps);
     if (!page) return GS_IO;
     Root a, b;
-    uint64_t al, ah, bl, bh;
-    int va = read_meta(db, META_A, &a, &al, &ah, page) == GS_OK;
-    unsigned char *pageb = malloc(db->ps);
-    int vb = read_meta(db, META_B, &b, &bl, &bh, pageb) == GS_OK;
-    if (!va && !vb) { free(page); free(pageb); return GS_CORRUPT; }
+    int va = read_meta(db, META_A, &a, page) == GS_OK;
+    int vb = read_meta(db, META_B, &b, page) == GS_OK;
+    free(page);
+    if (!va && !vb) return GS_CORRUPT;
     int use_a = va && (!vb || a.txn > b.txn);
     Root r = use_a ? a : b;
-    uint64_t len = use_a ? al : bl, head = use_a ? ah : bh;
-    unsigned char *src = use_a ? page : pageb;
     db->durable_slot = use_a ? META_A : META_B;
     db->hw = r.hw;
-    GsBuf blob = {0};
-    int rc = GS_OK;
-    u64_free(&db->blob_pages);
-    if (!head) {
-        gsbuf_set(&blob, src + M_INLINE, (size_t)len);
-    } else {
-        uint64_t pg = head;
-        unsigned char *cp = malloc(db->ps);
-        size_t guard = (size_t)(len / chain_cap(db->ps)) + 2;
-        while (rc == GS_OK && blob.n < len) {
-            if (!pg || pg >= r.hw || guard-- == 0) { rc = GS_CORRUPT; break; }
-            if ((rc = read_page(db, pg, cp))) break;
-            if (cp[0] != GS_PT_FREELIST) { rc = GS_CORRUPT; break; }
-            uint32_t used = get32(cp + F_USED);
-            if (used > chain_cap(db->ps) || blob.n + used > len) { rc = GS_CORRUPT; break; }
-            gsbuf_append(&blob, cp + F_DATA, used);
-            u64_push(&db->blob_pages, pg);
-            pg = get64(cp + F_NEXT);
-        }
-        free(cp);
-    }
-    if (rc == GS_OK) rc = blob_parse(db, blob.p, blob.n);
-    gsbuf_free(&blob);
-    free(page);
-    free(pageb);
-    if (rc) return rc;
     db->durable = db->tip = r;
-    release_pending(db);
     return GS_OK;
 }
 
 static void store_free(GsStore *db) {
     cache_free(&db->cache);
-    u64_free(&db->free_pages);
-    pending_clear(db);
-    free(db->pending);
-    u64_free(&db->blob_pages);
     u64_free(&db->readers);
     if (db->own_io) gsql_io_free(db->io);
     free(db->path);
@@ -572,10 +536,7 @@ static int cow_open(const char *path, const GsOptions *opt, GsStore **out) {
     cache_init(&db->cache);
     int hdr_ok = 0;
     int rc = gsql_io_open(db->io, path, 0, &db->f);
-    if (rc == ENOENT && opt && opt->create) {
-        rc = gsql_io_open(db->io, path, GSQL_IO_CREATE, &db->f);
-
-    }
+    if (rc == ENOENT && opt && opt->create) rc = gsql_io_open(db->io, path, GSQL_IO_CREATE, &db->f);
     rc = rc == ENOENT ? GS_NOT_FOUND : io_err(db, rc);
     if (rc == GS_OK) rc = io_err(db, gsql_io_lock(db->f, 1));
     if (rc == GS_OK) {
@@ -592,26 +553,22 @@ static int cow_open(const char *path, const GsOptions *opt, GsStore **out) {
             rc = rc ? rc : hrc;
         }
         /* Creation never finished when no meta names a commit: creation writes
-         * meta 1, and every commit writes a higher one, so a store with no
-         * valid meta above 1 holds nothing anybody committed. (This was a
-         * file-size test, which chunked growth broke: an unfinished file is
-         * now 65 pages long.) Asked with the page size the caller gives, since
-         * an unfinished header may not say one. */
+         * meta 1 and every commit a higher one, so with no valid meta above 1
+         * nothing was ever committed. (This was a file-size test, which growth
+         * in chunks broke.) Asked with the caller's page size, since an
+         * unfinished header may not say one. */
         if ((rc == GS_CORRUPT || rc == GS_FORMAT) && opt && opt->create) {
             uint32_t ps = opt->page_size ? opt->page_size : 4096;
             uint32_t keep = db->ps;
             db->ps = hdr_ok ? db->ps : ps;
             unsigned char *pg = malloc(db->ps);
             Root r;
-            uint64_t l, h;
-            int committed = (read_meta(db, META_A, &r, &l, &h, pg) == GS_OK && r.txn > 1) ||
-                            (read_meta(db, META_B, &r, &l, &h, pg) == GS_OK && r.txn > 1);
+            int committed = (read_meta(db, META_A, &r, pg) == GS_OK && r.txn > 1) ||
+                            (read_meta(db, META_B, &r, pg) == GS_OK && r.txn > 1);
             free(pg);
             db->ps = keep;
             if (!committed) {
                 db->ps = ps;
-                pending_clear(db);
-                db->free_pages.n = 0;
                 rc = create_fresh(db);
             }
         }
@@ -641,8 +598,7 @@ static int cow_close(GsStore *db) {
 
 /* ---- transactions -------------------------------------------------------- */
 
-static struct GsTxn *txn_new(GsStore *db, int write) {
-    (void)write;
+static struct GsTxn *txn_new(GsStore *db) {
     struct GsTxn *t = calloc(1, sizeof *t);
     if (!t) return NULL;
     t->db = db;
@@ -656,9 +612,18 @@ static struct GsTxn *txn_new(GsStore *db, int write) {
     return t;
 }
 
+static void txn_release(struct GsTxn *t) {
+    be_txn_free(&t->be);
+    set_clear(&t->fresh);
+    u64_free(&t->freed);
+    u64_free(&t->zombies);
+    u64_free(&t->avail);
+    free(t);
+}
+
 static int cow_begin_read(GsStore *db, struct GsTxn **out) {
     if (db->failed) return GS_FAILED;
-    struct GsTxn *t = txn_new(db, 0);
+    struct GsTxn *t = txn_new(db);
     if (!t) return GS_IO;
     t->snap = db->durable; /* §1.3: only what is durable is visible */
     t->id = t->snap.txn;
@@ -669,26 +634,25 @@ static int cow_begin_read(GsStore *db, struct GsTxn **out) {
     return GS_OK;
 }
 
+static void cow_abort(struct GsTxn *t);
+
 static int cow_begin_write(GsStore *db, struct GsTxn **out) {
     if (db->failed) return GS_FAILED;
     if (db->writer) return GS_BUSY;
-    release_pending(db);
-    struct GsTxn *t = txn_new(db, 1);
+    struct GsTxn *t = txn_new(db);
     if (!t) return GS_IO;
     t->id = db->tip.txn + 1;
+    t->free = db->tip.free;
+    t->limit = db->durable.txn;
+    uint64_t o = oldest_reader(db);
+    if (o < t->limit) t->limit = o;
     be_txn_init(&t->be, &t->pager.base, db->tip.catalog, 1);
     t->be.after_op = after_op;
     db->writer = t;
+    int rc = take_free(t);
+    if (rc) { cow_abort(t); return rc; }
     *out = t;
     return GS_OK;
-}
-
-static void txn_release(struct GsTxn *t) {
-    be_txn_free(&t->be);
-    set_clear(&t->fresh);
-    u64_free(&t->freed);
-    u64_free(&t->zombies);
-    free(t);
 }
 
 static void cow_abort(struct GsTxn *t) {
@@ -699,15 +663,20 @@ static void cow_abort(struct GsTxn *t) {
         txn_release(t);
         return;
     }
-    /* every page this txn allocated goes back; the ones it freed stay live */
-    after_op(&t->be);
+    /* Everything this txn allocated is unreferenced: the pages it took from
+     * the free tree are still in the tree as the tip has it, and the pages
+     * past the tip's end go with the end. */
     for (size_t i = 0; i < t->fresh.cap; i++) {
         uint64_t p = t->fresh.slot[i];
         if (!p || p == UINT64_MAX) continue;
         CPage *c = cache_find(&db->cache, p, 0);
         if (c) cache_remove(&db->cache, c);
-        u64_push(&db->free_pages, p);
     }
+    for (size_t i = 0; i < t->zombies.n; i++) {
+        CPage *c = cache_find(&db->cache, t->zombies.v[i], 0);
+        if (c) cache_remove(&db->cache, c);
+    }
+    db->hw = db->tip.hw;
     db->writer = NULL;
     txn_release(t);
 }
@@ -719,6 +688,7 @@ static int cow_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     if (t->be.failed) { int rc = t->be.failed; cow_abort(t); return rc; }
     int rc = be_flush(&t->be);
     after_op(&t->be);
+    if (rc == GS_OK) rc = record_free(t);
     if (rc) { cow_abort(t); return rc; }
     /* every dirty page in the cache is this txn's (nothing else writes) */
     for (CPage *p = db->cache.lru.next; p != &db->cache.lru && rc == GS_OK; p = p->next)
@@ -728,12 +698,7 @@ static int cow_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
         cow_abort(t);
         return rc;
     }
-    Root r = {t->id, t->be.catalog, db->hw};
-    size_t pending_before = db->npending;
-    U64s freed = t->freed;
-    memset(&t->freed, 0, sizeof t->freed);
-    if (freed.n && pending_add(db, t->id, &freed)) { u64_free(&freed); cow_abort(t); return GS_IO; }
-    u64_free(&freed);
+    Root r = {t->id, t->be.catalog, db->hw, t->free};
     if (sync) {
         /* pages first, then the meta that names them: two flushes */
         rc = flush(db);
@@ -741,7 +706,6 @@ static int cow_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
         if (rc) {
             /* not durable and not visible. FULL: roll back, the database stays
              * usable. IO: a flush failed, so it is not (§1.3). */
-            while (db->npending > pending_before) u64_free(&db->pending[--db->npending].pages);
             cow_abort(t);
             if (rc != GS_FULL) db->failed = 1;
             return rc == GS_FULL ? GS_FULL : GS_IO;
@@ -750,7 +714,6 @@ static int cow_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     for (CPage *p = db->cache.lru.next; p != &db->cache.lru; p = p->next) p->dirty = 0;
     db->tip = r;
     db->writer = NULL;
-    set_clear(&t->fresh); /* committed pages are ordinary pages now */
     txn_release(t);
     if (commit_id) *commit_id = r.txn;
     return GS_OK;
@@ -790,16 +753,16 @@ static int cow_cursor_put(GsCursor *c, GsBytes v) { return be_cursor_put((BeCurs
 static int cow_cursor_delete(GsCursor *c) { return be_cursor_delete((BeCursor *)c); }
 static void cow_cursor_close(GsCursor *c) { be_cursor_close((BeCursor *)c); }
 
+
 /* ---- check, backup, stats ------------------------------------------------- */
 
 typedef struct {
     struct GsTxn *t;
-    unsigned char *seen; /* per page: 0 unseen, 1 reachable, 2 free */
+    unsigned char *seen; /* per page: 0 unseen, 1 reachable, 2 listed free */
     uint64_t hw;
     void (*report)(void *, const char *);
     void *ctx;
     int bad;
-    GsBuf names;
 } CheckCtx;
 
 static void say(CheckCtx *k, const char *fmt, uint64_t a, uint64_t b) {
@@ -819,12 +782,6 @@ static int mark_live(void *ctx, uint64_t pgno) {
     return 0;
 }
 
-static void mark_free(CheckCtx *k, uint64_t pgno, unsigned kind) {
-    if (pgno < FIRST_DATA || pgno >= k->hw) { say(k, "free page %llu is out of range (%llu)", pgno, k->hw); return; }
-    if (k->seen[pgno]) say(k, "page %llu is both live and free (kind %llu)", pgno, k->seen[pgno]);
-    k->seen[pgno] = (unsigned char)kind;
-}
-
 static void forward_report(void *ctx, const char *line) {
     CheckCtx *k = ctx;
     k->bad = 1;
@@ -839,36 +796,66 @@ static int check_tree(void *ctx, GsBytes name, uint64_t root) {
     return 0;
 }
 
+/* Every page below the end is exactly one of: reachable from the catalog, a
+ * tree or the free tree; or listed in the free tree. */
 static int cow_check(GsStore *db, void (*report)(void *, const char *), void *ctx) {
     if (db->writer) return GS_MISUSE;
-    struct GsTxn *t = txn_new(db, 0);
+    struct GsTxn *t = txn_new(db);
     if (!t) return GS_IO;
-    CheckCtx k = {t, calloc(db->hw + 1, 1), db->hw, report, ctx, 0, {0}};
+    CheckCtx k = {t, calloc(db->hw + 1, 1), db->hw, report, ctx, 0};
     unsigned char *page = malloc(db->ps);
     Root r;
-    uint64_t l, h;
-    int va = read_meta(db, META_A, &r, &l, &h, page) == GS_OK, vb = read_meta(db, META_B, &r, &l, &h, page) == GS_OK;
+    int va = read_meta(db, META_A, &r, page) == GS_OK, vb = read_meta(db, META_B, &r, page) == GS_OK;
     if (!va && !vb) say(&k, "neither meta page is valid (%llu%llu)", 0, 0);
     free(page);
-    /* the tip: the catalog tree, then every tree it names */
-    if (bt_check(&t->pager.base, db->tip.catalog, forward_report, &k, NULL) != GS_OK) k.bad = 1;
-    bt_walk(&t->pager.base, db->tip.catalog, mark_live, &k);
+    check_tree(&k, gss("catalog"), db->tip.catalog);
     be_roots(&t->pager.base, db->tip.catalog, check_tree, &k);
-    for (size_t i = 0; i < db->free_pages.n; i++) mark_free(&k, db->free_pages.v[i], 2);
-    for (size_t i = 0; i < db->npending; i++)
-        for (size_t j = 0; j < db->pending[i].pages.n; j++) {
-            /* pending pages are still reachable from older snapshots, never from the tip */
-            uint64_t p = db->pending[i].pages.v[j];
-            if (p < k.hw && k.seen[p] == 1) say(&k, "page %llu is pending free yet reachable (%llu)", p, 0);
-            else if (p < k.hw) k.seen[p] = 3;
+    check_tree(&k, gss("free"), db->tip.free);
+    BtCursor c;
+    bt_cursor_init(&c, &t->pager.base, db->tip.free);
+    int rc;
+    for (rc = bt_first(&c); rc == GS_OK && c.positioned; rc = bt_next(&c)) {
+        if (bt_cursor_value(&c) || c.value.n % 8) { say(&k, "a free-tree record is unreadable (%llu%llu)", 0, 0); break; }
+        for (size_t i = 0; i < c.value.n; i += 8) {
+            uint64_t p = get64(c.value.p + i);
+            if (p < FIRST_DATA || p >= k.hw) say(&k, "free page %llu is out of range (%llu)", p, k.hw);
+            else if (k.seen[p]) say(&k, "page %llu is listed free and is also %llu", p, k.seen[p]);
+            else k.seen[p] = 2;
         }
-    for (size_t i = 0; i < db->blob_pages.n; i++) mark_free(&k, db->blob_pages.v[i], 4);
+    }
+    bt_cursor_free(&c);
     for (uint64_t p = FIRST_DATA; p < k.hw; p++)
         if (!k.seen[p]) say(&k, "page %llu is neither reachable nor free (a leak, of %llu)", p, k.hw);
     free(k.seen);
     txn_release(t);
     return k.bad ? GS_CORRUPT : GS_OK;
 }
+
+/* A pager over the backup's own pages: what building its free tree needs. */
+typedef struct {
+    BtPager base;
+    unsigned char **pages;
+    uint64_t first, n;
+} DestPager;
+
+static int dp_get(BtPager *b, uint64_t pgno, unsigned char **page) {
+    DestPager *d = (DestPager *)b;
+    if (pgno < d->first || pgno >= d->first + d->n) return GS_CORRUPT;
+    *page = d->pages[pgno - d->first];
+    return GS_OK;
+}
+static int dp_alloc(BtPager *b, uint64_t *pgno, unsigned char **page) {
+    DestPager *d = (DestPager *)b;
+    unsigned char **v = realloc(d->pages, (d->n + 1) * sizeof *v);
+    if (!v) return GS_IO;
+    d->pages = v;
+    d->pages[d->n] = calloc(1, b->page_size);
+    *pgno = d->first + d->n;
+    *page = d->pages[d->n++];
+    return GS_OK;
+}
+static int dp_write(BtPager *b, uint64_t pgno, uint64_t *out, unsigned char **page) { *out = pgno; return dp_get(b, pgno, page); }
+static int dp_free(BtPager *b, uint64_t pgno) { (void)b; (void)pgno; return GS_OK; }
 
 typedef struct {
     struct GsTxn *t;
@@ -896,6 +883,8 @@ static int copy_tree(void *ctx, GsBytes name, uint64_t root) {
     return k->rc != GS_OK;
 }
 
+/* The pages the snapshot reaches, at their own numbers, and a new free tree
+ * listing every other page below its end (one record, key 0). */
 static int cow_backup(struct GsTxn *snap, const char *dest) {
     GsStore *db = snap->db;
     if (snap->be.write) return GS_MISUSE;
@@ -907,7 +896,6 @@ static int cow_backup(struct GsTxn *snap, const char *dest) {
     CopyCtx k = {snap, dst, calloc(snap->snap.hw + 1, 1), snap->snap.hw, GS_OK};
     unsigned char *page = calloc(1, db->ps);
     if (rc == GS_OK) {
-        /* page 0: the same header, the same identity -- it is this database */
         size_t got;
         rc = gs_io_status(gsql_io_read_at(db->f, 0, page, db->ps, &got));
         if (rc == GS_OK) rc = gs_io_status(gsql_io_write_at(dst, 0, page, db->ps));
@@ -917,46 +905,40 @@ static int cow_backup(struct GsTxn *snap, const char *dest) {
         if (k.rc == GS_OK) be_roots(&snap->pager.base, snap->snap.catalog, copy_tree, &k);
         rc = k.rc;
     }
+    DestPager dp = {{db->ps, 0, dp_get, dp_write, dp_alloc, dp_free}, NULL, k.hw, 0};
+    uint64_t froot = 0;
     if (rc == GS_OK) {
-        /* every page the snapshot does not reach is free in the copy */
-        GsBuf blob = {0};
-        uint64_t nfree = 0;
-        unsigned char b[8];
-        gsbuf_append(&blob, b, 8);
-        for (uint64_t p = FIRST_DATA; p < k.hw; p++)
-            if (!k.seen[p]) { put64(b, p); gsbuf_append(&blob, b, 8); nfree++; }
-        put64(blob.p, nfree);
-        put64(b, 0);
-        gsbuf_append(&blob, b, 8);
-        uint64_t head = 0, hw = k.hw;
-        size_t cap = chain_cap(db->ps);
-        if (blob.n > inline_cap(db->ps)) {
-            size_t pages = (blob.n + cap - 1) / cap;
-            head = hw;
-            for (size_t i = 0; i < pages && rc == GS_OK; i++) {
-                memset(page, 0, db->ps);
-                page[0] = GS_PT_FREELIST;
-                size_t take = blob.n - i * cap < cap ? blob.n - i * cap : cap;
-                memcpy(page + F_DATA, blob.p + i * cap, take);
-                put32(page + F_USED, (uint32_t)take);
-                put64(page + F_NEXT, i + 1 < pages ? head + i + 1 : 0);
-                gs_page_seal(page, db->ps, head + i, snap->snap.txn);
-                rc = gs_io_status(gsql_io_write_at(dst, (head + i) * db->ps, page, db->ps));
-            }
-            hw += pages;
+        U64s spare = {0};
+        for (uint64_t p = FIRST_DATA; p < k.hw; p++) if (!k.seen[p]) u64_push(&spare, p);
+        rc = bt_create(&dp.base, &froot);
+        size_t per = chunk_pages(db->ps);
+        GsBuf v = {0};
+        for (size_t at = 0, chunk = 0; rc == GS_OK && at < spare.n; at += per, chunk++) {
+            U64s part = {spare.v + at, spare.n - at < per ? spare.n - at : per, 0};
+            encode_pages(&part, &v);
+            unsigned char key[16];
+            fkey(key, 0, chunk);
+            rc = bt_put(&dp.base, &froot, gsb(key, 16), gsb(v.p, v.n), 0);
         }
+        gsbuf_free(&v);
+        u64_free(&spare);
+        for (uint64_t i = 0; rc == GS_OK && i < dp.n; i++) {
+            gs_page_seal(dp.pages[i], db->ps, dp.first + i, snap->snap.txn);
+            rc = gs_io_status(gsql_io_write_at(dst, (dp.first + i) * db->ps, dp.pages[i], db->ps));
+        }
+    }
+    if (rc == GS_OK) {
         memset(page, 0, db->ps);
         page[0] = GS_PT_META;
         put64(page + M_TXN, snap->snap.txn);
         put64(page + M_CATALOG, snap->snap.catalog);
-        put64(page + M_HW, hw);
-        put64(page + M_BLOB_LEN, blob.n);
-        put64(page + M_BLOB_HEAD, head);
-        if (!head) memcpy(page + M_INLINE, blob.p, blob.n);
+        put64(page + M_HW, k.hw + dp.n);
+        put64(page + M_FREE, froot);
         gs_page_seal(page, db->ps, META_A, snap->snap.txn);
-        if (rc == GS_OK) rc = gs_io_status(gsql_io_write_at(dst, (uint64_t)META_A * db->ps, page, db->ps));
-        gsbuf_free(&blob);
+        rc = gs_io_status(gsql_io_write_at(dst, (uint64_t)META_A * db->ps, page, db->ps));
     }
+    for (uint64_t i = 0; i < dp.n; i++) free(dp.pages[i]);
+    free(dp.pages);
     /* flushed, then renamed into place, then the directory flushed: an
      * interrupted backup never leaves a file that looks complete (§1.1) */
     if (rc == GS_OK) rc = gs_io_status(gsql_io_sync(dst));
