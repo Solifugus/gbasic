@@ -226,6 +226,12 @@ Persist stable, serializable value kinds, not executable/process-bound values su
 
 **Where PostgreSQL and SQLite disagree** (string concatenation and `LIKE` case-sensitivity, `LIMIT`/`OFFSET` forms, date functions, `||` against `CONCAT`, boolean literals, `RETURNING`, upsert spelling), G-SQL chooses per item, preferring PostgreSQL's where it is the SQL standard's. The list is to be **measured, not guessed**: G-Dash's dataset SQL, the queries `nlq` generates against estateforge, and the SQL in this repository's tests are the corpus, and each construct they use is recorded as supported, deviating, or refused.
 
+**G-Dash's corpus is ready** (2026-10-23): `gdash/docs/gdash_sql_corpus.json` (gdash `da48831`), 29 statements generated from gdash's own code by `scripts/gen_sql_corpus.py`, and gdash's suite fails if the committed copy goes stale. Each entry carries `kind`, `runs_on`, `origin` and `where`. How to weight it, per gdash:
+- **visual SQL (7) and `gdash_store`'s own statements (14, as templates)** are what runs on SQLite today and would run on G-SQL: the primary evidence;
+- **dataset SQL (5)** has `runs_on: "source"`: it runs on the customer's PostgreSQL or ODBC database at refresh, never on the staging store, so it is evidence about source dialects, not about G-SQL;
+- **`ask` SQL (3)** comes from hand-written canned model replies in gdash's tests; no real model output has been captured, so these are shapes gdash accepts, not model behaviour;
+- **schema-qualified names** (`orders.orders`) exist only because of SQLite's `ATTACH`, and disappear under one database per tenant.
+
 **For `nlq` and `ask`:** the prompt names the dialect and lists the deviations, so the model is told about `MONEY` and record fields rather than discovering them by failing.
 
 **Open:** the measured disagreement list above; and whether a small compatibility mode for SQLite spellings is worth having during G-Dash's migration, or whether converting G-Dash's queries once is simpler. The default answer is to convert once, since a compatibility mode is a second dialect to keep correct.
