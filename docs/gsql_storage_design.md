@@ -583,7 +583,32 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 - **2.C's predicted weakness in W1 tail latency did not appear either.** Its real weakness is W8: it is the slowest engine at 100 KiB values, for want of value separation.
 - **Lines of code are close across all three**, about 2,050 to 2,140.
 - **Running these found two defects that grew the candidates' files without bound**, one in 2.A's free tree and one in 2.B's checkpoint under group commit. Both are fixed and gated, and both are recorded in that README.
-- **No decision is taken here.** The weights were never fixed numerically. W3, W4 and W9, the larger-than-memory size, a slower device, the hard requirements of point 2 and the G-Dash profile are not yet measured.
+- **No final decision is taken here.** W3, W4 and W9, the larger-than-memory size, a slower device, the hard requirements of point 2 and the G-Dash profile are not yet measured.
+
+**Weights, fixed 2026-10-24, after the first measurements.** Point 4 asked for weights before results were seen, and that did not happen. They are fixed now, and the record says so, so that a reader can judge how much the weighting could have been bent towards the result already in hand.
+
+| Criterion | Weight | Measured by |
+|---|---|---|
+| Standard workloads (YCSB A–F, TPC-C-like, SSB flight 1) | 35 | throughput, with p99 where reported |
+| Engine-specific workloads (W1–W9) | 20 | throughput, with p99 where reported |
+| Implementation complexity | 20 | lines of code, and invariants a reader must hold |
+| Space amplification | 15 | file size against live data, during and after W7 |
+| Recovery and handoff time | 10 | reopen time, and against log size where one exists |
+
+- **Scoring.** Within a criterion, each engine scores the geometric mean, over that criterion's workloads, of its result divided by the best candidate's (inverted where lower is better). A workload an engine cannot run scores zero for that workload.
+- **Vetoes stay outside the weights.** The crash gate (point 1), the hard requirements (point 2) and an application profile failed outright each remove a candidate whatever its score.
+- **Sensitivity, checked against the first measurements.** No weighting within reason changes the order of 2.C and 2.A. 2.B overtakes 2.C only if recovery and handoff time carries most of the weight, since 2.B reopens in 2.58 ms against 8.42 ms and the two are otherwise close on complexity. Neither figure matters to a user at that size.
+
+**Provisional choice, 2026-10-24: 2.C, with 2.B as the fallback; 2.A is retired.**
+- **2.C** leads the standard workloads and space, and its code is no larger than the others'.
+- **2.B** is kept because it is the lower-risk design, and its two worst numbers (space at 4 KiB, half-full pages) are largely fixed by 8 KiB pages and right-edge splits. If 2.C fails a confirming test, the answer is 2.B, not 2.A.
+- **2.A** is retired because its loss is structural. Every commit copies its path (32× write amplification), which group commit cannot remove. Its one distinctive strength, cheap snapshots, 2.C also provides by pinning versions.
+- **What would overturn 2.C**, in the order it is to be tested:
+  1. W3, W4, a larger-than-memory size and one slower device, with 2.B run alongside.
+  2. Value separation (a WiscKey-style value log) prototyped in 2.C and W8 measured again.
+  3. The hard requirements of point 2, checked against 2.C with 2.B alongside: online backup (expected to be a hard-link snapshot of immutable files), bounded recovery on a long log, held-snapshot space, G1 and G4.
+  4. Open question 6, whether a database may be more than one file plus a log, since 2.C needs a manifest, logs and sorted files.
+- **Common to every outcome:** the scan path is about 10× slower than LMDB's in all three candidates, and is fixed whichever engine is chosen.
 
 ## 7. Open questions
 
