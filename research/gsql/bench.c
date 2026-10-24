@@ -31,9 +31,16 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 #ifdef HAVE_SQLITE
 #include <sqlite3.h>
+#endif
+#ifdef HAVE_LMDB
+#include <lmdb.h>
+#endif
+#ifdef HAVE_ROCKSDB
+#include <rocksdb/c.h>
 #endif
 
 /* ---- a tiny key-value interface over every engine ------------------------- */
@@ -51,6 +58,9 @@ typedef struct {
     int (*end)(BKV *, int commit, int sync);                   /* commit or abort/release */
     void (*counters)(BKV *, uint64_t *flushes, uint64_t *pages_read);
     uint64_t (*file_bytes)(BKV *);
+    int (*sync)(BKV *);        /* make every commit so far durable (group commit) */
+    int (*hold)(BKV *);        /* open a long-lived read snapshot (W6) */
+    void (*release)(BKV *);
 } BEngine;
 
 /* ---- the candidates, through store.h -------------------------------------- */
@@ -58,12 +68,25 @@ typedef struct {
 struct BKV {
     const GsEngine *e;
     GsStore *db;
-    GsTxn *t;
+    GsTxn *t, *held;
     int write;
     char dir[512];
 #ifdef HAVE_SQLITE
-    sqlite3 *sq;
+    sqlite3 *sq, *sq2;
     sqlite3_stmt *s_put, *s_get, *s_del, *s_scan, *s_begin_r, *s_begin_w, *s_commit, *s_rollback;
+#endif
+#ifdef HAVE_LMDB
+    MDB_env *env;
+    MDB_dbi dbi;
+    MDB_txn *lt, *lheld;
+#endif
+#ifdef HAVE_ROCKSDB
+    rocksdb_t *rdb;
+    rocksdb_options_t *ropt;
+    rocksdb_writeoptions_t *wsync;
+    rocksdb_readoptions_t *ropts;
+    rocksdb_writebatch_t *batch;
+    const rocksdb_snapshot_t *rsnap;
 #endif
 };
 
@@ -140,8 +163,12 @@ static uint64_t dir_bytes(const char *dir) {
     return total;
 }
 static uint64_t c_file_bytes(BKV *b) { return dir_bytes(b->dir); }
+static int c_sync(BKV *b) { return b->e->sync(b->db, NULL); }
+static int c_hold(BKV *b) { return b->e->begin_read(b->db, &b->held); }
+static void c_release(BKV *b) { if (b->held) b->e->abort(b->held); b->held = NULL; }
 
-static const BEngine cand_engine = {"candidate", c_open, c_close, c_begin, c_put, c_get, c_del, c_scan, c_end, c_counters, c_file_bytes};
+static const BEngine cand_engine = {"candidate", c_open, c_close, c_begin, c_put, c_get, c_del, c_scan, c_end, c_counters, c_file_bytes,
+                                    c_sync, c_hold, c_release};
 
 /* ---- SQLite, the reference that is installed ------------------------------ */
 
@@ -208,7 +235,145 @@ static int q_end(BKV *b, int commit, int sync) {
 }
 static void q_counters(BKV *b, uint64_t *fl, uint64_t *pr) { (void)b; *fl = (uint64_t)-1; *pr = (uint64_t)-1; }
 static uint64_t q_file_bytes(BKV *b) { return dir_bytes(b->dir); }
-static const BEngine sqlite_engine = {"sqlite", q_open, q_close, q_begin, q_put, q_get, q_del, q_scan, q_end, q_counters, q_file_bytes};
+static int q_sync(BKV *b) { (void)b; return 0; } /* synchronous=FULL: already durable */
+static int q_hold(BKV *b) {
+    char path[600];
+    snprintf(path, sizeof path, "%s/db.sqlite", b->dir);
+    if (sqlite3_open(path, &b->sq2) != SQLITE_OK) return -1;
+    /* a read transaction that has read something holds its snapshot */
+    sqlite3_exec(b->sq2, "BEGIN; SELECT count(*) FROM (SELECT 1 FROM kv LIMIT 1);", NULL, NULL, NULL);
+    return 0;
+}
+static void q_release(BKV *b) { if (b->sq2) { sqlite3_exec(b->sq2, "COMMIT", NULL, NULL, NULL); sqlite3_close(b->sq2); b->sq2 = NULL; } }
+static const BEngine sqlite_engine = {"sqlite", q_open, q_close, q_begin, q_put, q_get, q_del, q_scan, q_end, q_counters, q_file_bytes,
+                                      q_sync, q_hold, q_release};
+#endif
+
+/* ---- LMDB: the copy-on-write reference ------------------------------------ */
+
+#ifdef HAVE_LMDB
+static BKV *l_open(const char *dir, uint64_t cache, uint32_t page) {
+    (void)cache; (void)page; /* LMDB uses the OS page cache and the system page size */
+    BKV *b = calloc(1, sizeof *b);
+    snprintf(b->dir, sizeof b->dir, "%s", dir);
+    mdb_env_create(&b->env);
+    mdb_env_set_mapsize(b->env, 64ull << 30);
+    /* default flags: every commit is durable (two fsyncs, as 2.A) */
+    if (mdb_env_open(b->env, dir, MDB_NOTLS, 0644)) { free(b); return NULL; }
+    MDB_txn *t;
+    mdb_txn_begin(b->env, NULL, 0, &t);
+    mdb_dbi_open(t, NULL, 0, &b->dbi);
+    mdb_txn_commit(t);
+    return b;
+}
+static void l_close(BKV *b) { mdb_env_close(b->env); free(b); }
+static int l_begin(BKV *b, int write) { b->write = write; return mdb_txn_begin(b->env, NULL, write ? 0 : MDB_RDONLY, &b->lt) ? -1 : 0; }
+static int l_put(BKV *b, const void *k, size_t kn, const void *v, size_t vn) {
+    MDB_val K = {kn, (void *)k}, V = {vn, (void *)v};
+    return mdb_put(b->lt, b->dbi, &K, &V, 0) ? -1 : 0;
+}
+static int l_get(BKV *b, const void *k, size_t kn, size_t *vn) {
+    MDB_val K = {kn, (void *)k}, V;
+    int rc = mdb_get(b->lt, b->dbi, &K, &V);
+    if (rc == MDB_NOTFOUND) return 1;
+    if (rc) return -1;
+    *vn = V.mv_size;
+    return 0;
+}
+static int l_del(BKV *b, const void *k, size_t kn) {
+    MDB_val K = {kn, (void *)k};
+    int rc = mdb_del(b->lt, b->dbi, &K, NULL);
+    return rc == MDB_NOTFOUND ? 1 : rc ? -1 : 0;
+}
+static int l_scan(BKV *b, const void *k, size_t kn, int count, int *got, uint64_t *bytes) {
+    MDB_cursor *c;
+    if (mdb_cursor_open(b->lt, b->dbi, &c)) return -1;
+    MDB_val K = {kn, (void *)k}, V;
+    *got = 0;
+    for (int rc = mdb_cursor_get(c, &K, &V, MDB_SET_RANGE); rc == 0 && *got < count; rc = mdb_cursor_get(c, &K, &V, MDB_NEXT)) {
+        *bytes += V.mv_size;
+        (*got)++;
+    }
+    mdb_cursor_close(c);
+    return 0;
+}
+static int l_end(BKV *b, int commit, int sync) {
+    (void)sync;
+    if (b->write && commit) return mdb_txn_commit(b->lt) ? -1 : 0;
+    mdb_txn_abort(b->lt);
+    return 0;
+}
+static void l_counters(BKV *b, uint64_t *fl, uint64_t *pr) { (void)b; *fl = (uint64_t)-1; *pr = (uint64_t)-1; }
+static uint64_t l_file_bytes(BKV *b) { return dir_bytes(b->dir); }
+static int l_sync(BKV *b) { return mdb_env_sync(b->env, 1) ? -1 : 0; }
+static int l_hold(BKV *b) { return mdb_txn_begin(b->env, NULL, MDB_RDONLY, &b->lheld) ? -1 : 0; }
+static void l_release(BKV *b) { if (b->lheld) mdb_txn_abort(b->lheld); b->lheld = NULL; }
+static const BEngine lmdb_engine = {"lmdb", l_open, l_close, l_begin, l_put, l_get, l_del, l_scan, l_end, l_counters, l_file_bytes,
+                                    l_sync, l_hold, l_release};
+#endif
+
+/* ---- RocksDB: the LSM reference ------------------------------------------- */
+
+#ifdef HAVE_ROCKSDB
+static BKV *r_open(const char *dir, uint64_t cache, uint32_t page) {
+    BKV *b = calloc(1, sizeof *b);
+    snprintf(b->dir, sizeof b->dir, "%s", dir);
+    b->ropt = rocksdb_options_create();
+    rocksdb_options_set_create_if_missing(b->ropt, 1);
+    rocksdb_block_based_table_options_t *t = rocksdb_block_based_options_create();
+    rocksdb_block_based_options_set_block_size(t, page);
+    rocksdb_cache_t *c = rocksdb_cache_create_lru(cache);
+    rocksdb_block_based_options_set_block_cache(t, c);
+    rocksdb_block_based_options_set_filter_policy(t, rocksdb_filterpolicy_create_bloom(10));
+    rocksdb_options_set_block_based_table_factory(b->ropt, t);
+    char *err = NULL;
+    b->rdb = rocksdb_open(b->ropt, dir, &err);
+    if (err) { fprintf(stderr, "rocksdb: %s\n", err); free(b); return NULL; }
+    b->wsync = rocksdb_writeoptions_create();
+    rocksdb_writeoptions_set_sync(b->wsync, 1); /* every commit durable, as the others */
+    b->ropts = rocksdb_readoptions_create();
+    b->batch = rocksdb_writebatch_create();
+    return b;
+}
+static void r_close(BKV *b) { rocksdb_close(b->rdb); free(b); }
+static int r_begin(BKV *b, int write) { b->write = write; rocksdb_writebatch_clear(b->batch); return 0; }
+static int r_put(BKV *b, const void *k, size_t kn, const void *v, size_t vn) { rocksdb_writebatch_put(b->batch, k, kn, v, vn); return 0; }
+static int r_get(BKV *b, const void *k, size_t kn, size_t *vn) {
+    char *err = NULL;
+    char *v = rocksdb_get(b->rdb, b->ropts, k, kn, vn, &err);
+    if (err) return -1;
+    if (!v) return 1;
+    rocksdb_free(v);
+    return 0;
+}
+static int r_del(BKV *b, const void *k, size_t kn) { rocksdb_writebatch_delete(b->batch, k, kn); return 0; }
+static int r_scan(BKV *b, const void *k, size_t kn, int count, int *got, uint64_t *bytes) {
+    rocksdb_iterator_t *it = rocksdb_create_iterator(b->rdb, b->ropts);
+    *got = 0;
+    for (rocksdb_iter_seek(it, k, kn); rocksdb_iter_valid(it) && *got < count; rocksdb_iter_next(it)) {
+        size_t vn;
+        (void)rocksdb_iter_value(it, &vn);
+        *bytes += vn;
+        (*got)++;
+    }
+    rocksdb_iter_destroy(it);
+    return 0;
+}
+static int r_end(BKV *b, int commit, int sync) {
+    (void)sync;
+    if (!b->write || !commit) return 0;
+    char *err = NULL;
+    rocksdb_write(b->rdb, b->wsync, b->batch, &err);
+    rocksdb_writebatch_clear(b->batch);
+    return err ? -1 : 0;
+}
+static void r_counters(BKV *b, uint64_t *fl, uint64_t *pr) { (void)b; *fl = (uint64_t)-1; *pr = (uint64_t)-1; }
+static uint64_t r_file_bytes(BKV *b) { return dir_bytes(b->dir); }
+static int r_sync(BKV *b) { char *err = NULL; rocksdb_flush_wal(b->rdb, 1, &err); return err ? -1 : 0; }
+static int r_hold(BKV *b) { b->rsnap = rocksdb_create_snapshot(b->rdb); return 0; }
+static void r_release(BKV *b) { if (b->rsnap) rocksdb_release_snapshot(b->rdb, b->rsnap); b->rsnap = NULL; }
+static const BEngine rocksdb_engine = {"rocksdb", r_open, r_close, r_begin, r_put, r_get, r_del, r_scan, r_end, r_counters, r_file_bytes,
+                                       r_sync, r_hold, r_release};
 #endif
 
 /* ---- measurement ----------------------------------------------------------- */
@@ -318,10 +483,11 @@ typedef struct {
     uint64_t records;
 } Run;
 
-static unsigned char value[VALUE * 4];
+static size_t vsize = VALUE;       /* W8 sets 100 KiB */
+static unsigned char *value;
 
 static void fill_value(uint64_t seed) {
-    for (size_t i = 0; i < VALUE; i++) value[i] = (unsigned char)(seed * 31 + i * 7);
+    for (size_t i = 0; i < vsize; i++) value[i] = (unsigned char)(seed * 31 + i * 7);
 }
 
 static int do_insert_batch(Run *r, uint64_t from, uint64_t to, size_t vn) {
@@ -331,6 +497,7 @@ static int do_insert_batch(Run *r, uint64_t from, uint64_t to, size_t vn) {
         size_t kn = ycsb_key(k, i);
         fill_value(i);
         if (r->e->put(r->kv, k, kn, value, vn)) { r->errors++; }
+        (void)0;
         r->logical_written += kn + vn;
     }
     return r->e->end(r->kv, 1, 1);
@@ -349,6 +516,8 @@ static void op_read(Run *r, uint64_t keynum) {
     r->ops++;
 }
 
+static int group_every; /* group-N: commit without sync, sync every N commits */
+
 static void op_update(Run *r, uint64_t keynum, int rmw) {
     char k[32];
     size_t kn = ycsb_key(k, keynum), vn;
@@ -356,10 +525,12 @@ static void op_update(Run *r, uint64_t keynum, int rmw) {
     double t0 = now_us();
     r->e->begin(r->kv, 1);
     if (rmw) r->e->get(r->kv, k, kn, &vn);
-    if (r->e->put(r->kv, k, kn, value, VALUE)) r->errors++;
-    if (r->e->end(r->kv, 1, 1)) r->errors++;
+    if (r->e->put(r->kv, k, kn, value, vsize)) r->errors++;
+    int sync = !group_every;
+    if (r->e->end(r->kv, 1, sync)) r->errors++;
+    if (group_every && (r->ops + 1) % (uint64_t)group_every == 0 && r->e->sync(r->kv)) r->errors++;
     lat_add(&r->write, now_us() - t0);
-    r->logical_written += kn + VALUE;
+    r->logical_written += kn + vsize;
     r->ops++;
 }
 
@@ -393,6 +564,9 @@ int main(int argc, char **argv) {
     const char *pg = getenv("BENCH_PAGE"), *cs = getenv("BENCH_CACHE");
     uint32_t page = pg ? (uint32_t)atoi(pg) : 4096;
     uint64_t cache = cs ? strtoull(cs, NULL, 10) : 64ull << 20;
+    if (!strcmp(wl, "w8")) { vsize = 100 * 1024; if (records > 2000) records = 2000; }
+    if (!strncmp(wl, "group-", 6)) group_every = atoi(wl + 6);
+    value = malloc(vsize);
     Run r;
     memset(&r, 0, sizeof r);
     r.records = records;
@@ -401,6 +575,12 @@ int main(int argc, char **argv) {
     else if (!strcmp(engine, "lsm")) { cand = &gs_engine_lsm; r.e = &cand_engine; }
 #ifdef HAVE_SQLITE
     else if (!strcmp(engine, "sqlite")) r.e = &sqlite_engine;
+#endif
+#ifdef HAVE_LMDB
+    else if (!strcmp(engine, "lmdb")) r.e = &lmdb_engine;
+#endif
+#ifdef HAVE_ROCKSDB
+    else if (!strcmp(engine, "rocksdb")) r.e = &rocksdb_engine;
 #endif
     else { fprintf(stderr, "unknown engine %s\n", engine); return 2; }
 
@@ -415,7 +595,7 @@ int main(int argc, char **argv) {
     double t_load0 = now_us();
     int is_load = !strcmp(wl, "ycsb-load");
     for (uint64_t i = 0; i < records; i += 1000)
-        if (do_insert_batch(&r, i, i + 1000 < records ? i + 1000 : records, VALUE)) { fprintf(stderr, "load failed\n"); return 1; }
+        if (do_insert_batch(&r, i, i + 1000 < records ? i + 1000 : records, vsize)) { fprintf(stderr, "load failed\n"); return 1; }
     double load_s = (now_us() - t_load0) / 1e6;
     if (!is_load) {
         r.logical_written = 0;
@@ -424,6 +604,35 @@ int main(int argc, char **argv) {
         r.e->counters(r.kv, &fl0, &pr0);
     }
 
+    uint64_t file_before = r.e->file_bytes(r.kv);
+    double recover_ms = -1;
+    if (!strcmp(wl, "recovery")) {
+        /* a child writes `ops` durable commits and dies without closing;
+         * the parent times the reopen, which is the handoff cost (§5.5) */
+        r.e->close(r.kv);
+        fflush(stdout);
+        pid_t pid = fork();
+        if (pid == 0) {
+            BKV *kv = r.e->open(dir, cache, page);
+            Run c = r;
+            c.kv = kv;
+            for (uint64_t i = 0; i < ops; i++) op_update(&c, rnd() % records, 0);
+            _exit(0); /* no close: whatever recovery has to do, it does at the next open */
+        }
+        int st;
+        waitpid(pid, &st, 0);
+        double t1 = now_us();
+        r.kv = r.e->open(dir, cache, page);
+        size_t vn;
+        char k[32];
+        size_t kn = ycsb_key(k, 0);
+        r.e->begin(r.kv, 0);
+        r.e->get(r.kv, k, kn, &vn);
+        r.e->end(r.kv, 0, 0);
+        recover_ms = (now_us() - t1) / 1e3;
+        ops = 0;
+    }
+    if (!strcmp(wl, "w6") && r.e->hold(r.kv)) { fprintf(stderr, "hold failed\n"); return 1; }
     double t0 = now_us();
     Zipf z;
     if (!is_load) zipf_init(&z, records);
@@ -447,6 +656,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(wl, "w5-1")) op_scan(&r, rnd() % records, 1);
         else if (!strcmp(wl, "w5-100")) op_scan(&r, rnd() % records, 100);
         else if (!strcmp(wl, "w5-10000")) { op_scan(&r, rnd() % records, 10000); if (i >= 200) break; }
+        else if (!strcmp(wl, "w6")) { if (u < 0.8) op_read(&r, rnd() % records); else op_update(&r, rnd() % records, 0); }
+        else if (!strcmp(wl, "w7")) op_update(&r, rnd() % (records < 1000 ? records : 1000), 0);
+        else if (!strcmp(wl, "w8")) { if (u < 0.5) op_read(&r, rnd() % records); else op_update(&r, rnd() % records, 0); }
+        else if (!strncmp(wl, "group-", 6)) op_update(&r, rnd() % records, 0);
+        else if (!strcmp(wl, "recovery")) break;
         else { fprintf(stderr, "unknown workload %s\n", wl); return 2; }
     }
     double secs = (now_us() - t0) / 1e6;
@@ -454,6 +668,7 @@ int main(int argc, char **argv) {
     r.e->counters(r.kv, &fl1, &pr1);
     uint64_t wrote = proc_io("wchar") - w0, readb = proc_io("rchar") - rd0;
     uint64_t fbytes = r.e->file_bytes(r.kv);
+    if (!strcmp(wl, "w6")) r.e->release(r.kv);
     r.e->close(r.kv);
 
     printf("{\"engine\": \"%s\", \"workload\": \"%s\", \"records\": %llu, \"page\": %u, \"cache\": %llu", engine, wl,
@@ -467,8 +682,11 @@ int main(int argc, char **argv) {
            (unsigned long long)wrote, (unsigned long long)r.logical_written,
            r.logical_written ? (double)wrote / (double)r.logical_written : 0.0, (unsigned long long)readb);
     if (fl1 != (uint64_t)-1) printf(", \"flushes\": %llu, \"pages_read\": %llu", (unsigned long long)(fl1 - fl0), (unsigned long long)(pr1 - pr0));
+    printf(", \"file_before\": %llu, \"file_growth\": %.2f", (unsigned long long)file_before,
+           file_before ? (double)fbytes / (double)file_before : 0.0);
+    if (recover_ms >= 0) printf(", \"recover_ms\": %.2f", recover_ms);
     printf(", \"file_bytes\": %llu, \"space_amp\": %.2f, \"peak_rss_kb\": %llu, \"errors\": %llu, \"notfound\": %llu",
-           (unsigned long long)fbytes, (double)fbytes / (double)(inserted * (VALUE + 23)), (unsigned long long)peak_rss_kb(),
+           (unsigned long long)fbytes, (double)fbytes / (double)(inserted * (vsize + 23)), (unsigned long long)peak_rss_kb(),
            (unsigned long long)r.errors, (unsigned long long)r.notfound);
     print_lat("read", &r.read);
     print_lat("write", &r.write);
