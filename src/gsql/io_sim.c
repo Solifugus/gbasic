@@ -56,6 +56,13 @@ typedef struct {
 } Pend;
 
 typedef struct {
+    unsigned char *v;
+    size_t n, cap;
+} U8s;
+
+enum { K_OPEN, K_READ, K_WRITE, K_SYNC, K_SIZE, K_TRUNC, K_CLOSE, K_RENAME, K_REMOVE, K_SYNC_DIR, K_LOCK };
+
+typedef struct {
     GsqlIo base;
     Inode **inodes;
     size_t inode_count, inode_cap;
@@ -64,6 +71,7 @@ typedef struct {
     size_t pend_count, pend_cap;
     uint64_t ops, crash_at;
     int crashed;
+    U8s kinds;             /* the kind of every numbered operation, for the harness */
     unsigned fail_in[4];   /* indexed by GsqlIoFault: countdown, 0 = disarmed */
     uint64_t seed;
 } Sim;
@@ -278,8 +286,14 @@ static int apply_name(Names *ns, const Pend *p) {
 
 /* Every operation passes through here first: it is numbered, and from the
  * crash point on nothing happens. */
-static int tick(Sim *s) {
+static int tick(Sim *s, unsigned kind) {
     s->ops++;
+    if (s->kinds.n == s->kinds.cap) {
+        size_t cap = s->kinds.cap ? s->kinds.cap * 2 : 1024;
+        unsigned char *v = realloc(s->kinds.v, cap);
+        if (v) { s->kinds.v = v; s->kinds.cap = cap; }
+    }
+    if (s->kinds.n < s->kinds.cap) s->kinds.v[s->kinds.n++] = (unsigned char)kind;
     if (s->crashed) return GSQL_IO_CRASHED;
     if (s->crash_at && s->ops >= s->crash_at) {
         s->crashed = 1;
@@ -297,7 +311,7 @@ static int fault_fires(Sim *s, GsqlIoFault f) {
 
 static int sim_open(GsqlIo *io, const char *path, int flags, GsqlFile **out) {
     Sim *s = (Sim *)io;
-    int rc = tick(s);
+    int rc = tick(s, K_OPEN);
     if (rc) return rc;
     long at = names_find(&s->view_names, path);
     size_t inode;
@@ -327,7 +341,7 @@ static int sim_open(GsqlIo *io, const char *path, int flags, GsqlFile **out) {
 static int sim_read_at(GsqlFile *base, uint64_t offset, void *buf, size_t n, size_t *got) {
     SimFile *f = (SimFile *)base;
     Sim *s = (Sim *)base->io;
-    int rc = tick(s);
+    int rc = tick(s, K_READ);
     if (rc) return rc;
     if (fault_fires(s, GSQL_IO_FAIL_READ)) return EIO;
     const Buf *b = &s->inodes[f->inode]->view;
@@ -342,7 +356,7 @@ static int sim_read_at(GsqlFile *base, uint64_t offset, void *buf, size_t n, siz
 static int sim_write_at(GsqlFile *base, uint64_t offset, const void *buf, size_t n) {
     SimFile *f = (SimFile *)base;
     Sim *s = (Sim *)base->io;
-    int rc = tick(s);
+    int rc = tick(s, K_WRITE);
     if (rc) return rc;
     if (f->read_only) return EBADF;
     if (fault_fires(s, GSQL_IO_FAIL_WRITE)) return ENOSPC;
@@ -368,7 +382,7 @@ static void pend_remove(Sim *s, size_t i) {
 static int sim_sync(GsqlFile *base) {
     SimFile *f = (SimFile *)base;
     Sim *s = (Sim *)base->io;
-    int rc = tick(s);
+    int rc = tick(s, K_SYNC);
     if (rc) return rc;
     int failed = fault_fires(s, GSQL_IO_FAIL_SYNC);
     Inode *in = s->inodes[f->inode];
@@ -392,7 +406,7 @@ static int sim_sync(GsqlFile *base) {
 static int sim_size(GsqlFile *base, uint64_t *out) {
     SimFile *f = (SimFile *)base;
     Sim *s = (Sim *)base->io;
-    int rc = tick(s);
+    int rc = tick(s, K_SIZE);
     if (rc) return rc;
     *out = s->inodes[f->inode]->view.len;
     return 0;
@@ -401,7 +415,7 @@ static int sim_size(GsqlFile *base, uint64_t *out) {
 static int sim_truncate(GsqlFile *base, uint64_t n) {
     SimFile *f = (SimFile *)base;
     Sim *s = (Sim *)base->io;
-    int rc = tick(s);
+    int rc = tick(s, K_TRUNC);
     if (rc) return rc;
     if (f->read_only) return EBADF;
     Pend *p = pend_push(s, P_TRUNC);
@@ -414,7 +428,7 @@ static int sim_truncate(GsqlFile *base, uint64_t n) {
 static int sim_close(GsqlFile *base) {
     SimFile *f = (SimFile *)base;
     Sim *s = (Sim *)base->io;
-    int rc = tick(s);
+    int rc = tick(s, K_CLOSE);
     if (s->inodes[f->inode]->lock_holder == f) s->inodes[f->inode]->lock_holder = NULL;
     free(f);
     return rc;
@@ -422,7 +436,7 @@ static int sim_close(GsqlFile *base) {
 
 static int sim_rename(GsqlIo *io, const char *from, const char *to) {
     Sim *s = (Sim *)io;
-    int rc = tick(s);
+    int rc = tick(s, K_RENAME);
     if (rc) return rc;
     /* Durability of a cross-directory rename needs both directories synced, a
      * case no candidate needs; refused rather than modelled loosely. */
@@ -442,7 +456,7 @@ static int sim_rename(GsqlIo *io, const char *from, const char *to) {
 
 static int sim_remove(GsqlIo *io, const char *path) {
     Sim *s = (Sim *)io;
-    int rc = tick(s);
+    int rc = tick(s, K_REMOVE);
     if (rc) return rc;
     if (names_find(&s->view_names, path) < 0) return ENOENT;
     Pend *p = pend_push(s, P_REMOVE);
@@ -455,7 +469,7 @@ static int sim_remove(GsqlIo *io, const char *path) {
 
 static int sim_sync_dir(GsqlIo *io, const char *dir) {
     Sim *s = (Sim *)io;
-    int rc = tick(s);
+    int rc = tick(s, K_SYNC_DIR);
     if (rc) return rc;
     for (size_t i = 0; i < s->pend_count;) {
         Pend *p = &s->pend[i];
@@ -472,7 +486,7 @@ static int sim_sync_dir(GsqlIo *io, const char *dir) {
 static int sim_lock(GsqlFile *base, int nonblocking) {
     SimFile *f = (SimFile *)base;
     Sim *s = (Sim *)base->io;
-    int rc = tick(s);
+    int rc = tick(s, K_LOCK);
     if (rc) return rc;
     Inode *in = s->inodes[f->inode];
     if (in->lock_holder && in->lock_holder != f)
@@ -494,6 +508,7 @@ static void sim_free(GsqlIo *io) {
     names_free(&s->view_names);
     for (size_t i = 0; i < s->pend_count; i++) pend_clear(&s->pend[i]);
     free(s->pend);
+    free(s->kinds.v);
     free(s);
 }
 
@@ -513,6 +528,17 @@ GsqlIo *gsql_io_sim(void) {
 void gsql_io_sim_crash_at(GsqlIo *io, uint64_t n) { ((Sim *)io)->crash_at = n; }
 uint64_t gsql_io_sim_ops(const GsqlIo *io) { return ((const Sim *)io)->ops; }
 int gsql_io_sim_crashed(const GsqlIo *io) { return ((const Sim *)io)->crashed; }
+
+size_t gsql_io_sim_flush_points(const GsqlIo *io, uint64_t *out, size_t max) {
+    const Sim *s = (const Sim *)io;
+    size_t n = 0;
+    for (size_t i = 0; i < s->kinds.n; i++)
+        if (s->kinds.v[i] == K_SYNC || s->kinds.v[i] == K_SYNC_DIR) {
+            if (n < max) out[n] = (uint64_t)i + 1;
+            n++;
+        }
+    return n;
+}
 void gsql_io_sim_seed(GsqlIo *io, uint64_t seed) { ((Sim *)io)->seed = seed; }
 
 void gsql_io_sim_fail(GsqlIo *io, GsqlIoFault fault, unsigned nth) {

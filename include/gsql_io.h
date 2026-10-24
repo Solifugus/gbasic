@@ -80,6 +80,12 @@ void gsql_io_sim_crash_at(GsqlIo *io, uint64_t n);
 /* How many operations have been numbered so far. */
 uint64_t gsql_io_sim_ops(const GsqlIo *io);
 int gsql_io_sim_crashed(const GsqlIo *io);
+/* The numbers of every sync and sync_dir operation so far, up to `max` of
+ * them; answers how many there were. The moments just before a flush are when
+ * the most is pending, so a harness that samples crash points draws half of
+ * them here: sampled uniformly, a run of thousands of operations rarely lands
+ * on the one flush that makes a meta page durable. */
+size_t gsql_io_sim_flush_points(const GsqlIo *io, uint64_t *out, size_t max);
 
 typedef enum {
     /* The fault is armed for the `nth` future call of that operation (1 = the

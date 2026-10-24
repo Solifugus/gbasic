@@ -151,13 +151,13 @@ typedef struct {
     GsqlCrashPut *puts;
 } Workload;
 
-#define KEYSPACE 12
 
 static int workload_make(Workload *w, const GsqlCrashConfig *cfg) {
     memset(w, 0, sizeof *w);
     uint64_t rng = cfg->workload_seed * 0x2545F4914F6CDD1DULL + 7;
     size_t T = cfg->transactions;
-    size_t max_puts = 4;
+    size_t max_puts = cfg->max_puts ? cfg->max_puts : 4;
+    size_t keyspace = cfg->keyspace ? cfg->keyspace : 12;
     size_t arena_cap = T * max_puts * (cfg->max_value + 16) + 16;
     w->arena = malloc(arena_cap);
     w->puts = malloc((T * max_puts + 1) * sizeof *w->puts);
@@ -172,9 +172,11 @@ static int workload_make(Workload *w, const GsqlCrashConfig *cfg) {
         for (size_t i = 0; i < n; i++) {
             GsqlCrashPut *p = &w->puts[np++];
             unsigned char *k = w->arena + used;
-            used += (size_t)snprintf((char *)k, 8, "k%02u", (unsigned)(splitmix(&rng) % KEYSPACE));
+            unsigned id = (unsigned)(splitmix(&rng) % keyspace);
+            size_t kl = (size_t)(keyspace <= 100 ? snprintf((char *)k, 8, "k%02u", id) : snprintf((char *)k, 8, "k%06u", id));
+            used += kl;
             p->key = k;
-            p->key_len = 3;
+            p->key_len = kl;
             if (splitmix(&rng) % 8 == 0) {
                 p->value = NULL;
                 p->value_len = 0;
@@ -429,13 +431,27 @@ static void run_crash_points(Ctx *c, const Workload *w) {
     GsqlIo *base = gsql_io_sim();
     RunOutcome full = run_workload(c->e, base, w);
     uint64_t total = gsql_io_sim_ops(base);
+    size_t nflush = gsql_io_sim_flush_points(base, NULL, 0);
+    uint64_t *flushes = malloc((nflush + 1) * sizeof *flushes);
+    if (flushes) gsql_io_sim_flush_points(base, flushes, nflush);
     gsql_io_free(base);
     if (full.stopped_rc) {
         report(c, 0, 0, "", "the uncrashed workload did not complete");
+        free(flushes);
         return;
     }
     uint64_t limit = c->cfg->crash_limit && c->cfg->crash_limit < total ? c->cfg->crash_limit : total;
-    for (uint64_t n = 1; n <= limit; n++) {
+    uint64_t points = c->cfg->sample_points && c->cfg->sample_points < limit ? c->cfg->sample_points : limit;
+    for (uint64_t j = 1; j <= points; j++) {
+        uint64_t n;
+        if (points == limit) n = j;
+        else if (j % 2 == 0 && flushes && nflush && flushes[0] <= limit)
+            /* half the samples land on a flush, crashing just before it */
+        {
+            n = flushes[mix(c->cfg->workload_seed, j, 0xf1u) % nflush];
+            if (n > limit) n = flushes[0];
+        }
+        else n = 1 + mix(c->cfg->workload_seed, j, 0xc0ffee) % limit;
         GsqlIo *io = gsql_io_sim();
         gsql_io_sim_crash_at(io, n);
         RunOutcome o = run_workload(c->e, io, w);
@@ -450,8 +466,9 @@ static void run_crash_points(Ctx *c, const Workload *w) {
             gsql_io_free(disk);
         }
         gsql_io_free(io);
-        if (c->res->violations > c->cfg->max_reports) return;
+        if (c->res->violations > c->cfg->max_reports) break;
     }
+    free(flushes);
 }
 
 /* Failed sync: the k-th flush fails. The engine must report it, refuse further
@@ -466,7 +483,7 @@ static void run_failed_sync(Ctx *c, const Workload *w) {
         int err = 0;
         RunOutcome o = {0, 0, 0, 0, 0};
         void *db = c->e->open(io, DIR, &err);
-        int refused_ok = 1, reported = 0;
+        int refused_ok = 1, reported = 0, fired_in_work = 1;
         if (!db) {
             reported = 1;
         } else {
@@ -497,6 +514,10 @@ static void run_failed_sync(Ctx *c, const Workload *w) {
                     break;
                 }
             }
+            /* Asked BEFORE close: a close may flush, and the interface gives it
+             * no way to report a failure, so a fault that fires there is not
+             * one the engine swallowed. The disk it leaves is still judged. */
+            fired_in_work = !gsql_io_sim_fault_armed(io, GSQL_IO_FAIL_SYNC);
             c->e->close(db);
         }
         int fired = !gsql_io_sim_fault_armed(io, GSQL_IO_FAIL_SYNC);
@@ -505,7 +526,7 @@ static void run_failed_sync(Ctx *c, const Workload *w) {
             return; /* past the last flush the workload makes */
         }
         c->res->crashes++;
-        if (!reported) report(c, seed, k, "", "a failed flush was reported as success");
+        if (!reported && fired_in_work) report(c, seed, k, "", "a failed flush was reported as success");
         else if (!refused_ok)
             report(c, seed, k, "", "after a failed flush the engine did not refuse further work with FAILED");
         GsqlIo *disk = gsql_io_sim_crash_image(io, GSQL_CRASH_POWER, seed);
@@ -534,16 +555,23 @@ static void run_full_disk(Ctx *c, const Workload *w) {
                 int rc = st->is_sync ? c->e->sync(db) : c->e->commit(db, &st->txn, st->sync);
                 if (rc == 0) {
                     if (!st->is_sync) state_apply(&want, &st->txn);
-                } else if (rc != GSQL_E_FULL || st->is_sync) {
-                    snprintf(msg, sizeof msg, "a full disk gave error %d at step %zu, not FULL on a commit", rc, s);
+                } else if (rc != GSQL_E_FULL) {
+                    /* FULL from a sync is allowed: a sync is not a transaction,
+                     * and the commits it could not make durable stay committed */
+                    snprintf(msg, sizeof msg, "a full disk gave error %d at step %zu, not FULL", rc, s);
                     report(c, k, k, "", msg);
                     bad = 1;
                 }
             }
             if (!bad) {
                 /* Durable now, so a power loss must keep all of it. */
-                if (c->e->sync(db) != 0) {
-                    report(c, k, k, "", "the database was not usable after a full disk");
+                int src = c->e->sync(db);
+                /* the fault may land on this very sync; it fires once, so a
+                 * usable database takes the retry */
+                if (src == GSQL_E_FULL) src = c->e->sync(db);
+                if (src != 0) {
+                    snprintf(msg, sizeof msg, "the database was not usable after a full disk (sync gave %d)", src);
+                    report(c, k, k, "", msg);
                     bad = 1;
                 }
             }

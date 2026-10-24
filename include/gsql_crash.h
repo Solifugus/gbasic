@@ -79,6 +79,13 @@ typedef struct {
     /* Crash every operation from 1 up to this many (0 = every operation the
      * uncrashed run performs). */
     uint64_t crash_limit;
+    /* Instead of every operation, this many crash points chosen by the seed
+     * across the whole run (0 = every one). A large workload performs tens of
+     * thousands of operations and crashing at each is quadratic; §5.3 crashes
+     * a large one "at operations chosen by the seed". */
+    uint64_t sample_points;
+    size_t keyspace;   /* distinct keys the workload writes (0 = 12) */
+    size_t max_puts;   /* puts per transaction, at most (0 = 4) */
     /* How many different disks to build from each crash point, each from its
      * own seed (0 means 1). A process crash leaves only one, so this counts for
      * the power-loss and torn modes. */

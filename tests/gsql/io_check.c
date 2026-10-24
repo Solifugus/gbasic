@@ -389,6 +389,22 @@ static void contract(void) {
     gsql_io_close(h);
     gsql_io_free(c);
 
+    /* Flush points name exactly the sync and sync_dir operations. */
+    GsqlIo *fp = gsql_io_sim();
+    GsqlFile *q = must_open(fp, "d/q", GSQL_IO_CREATE); /* op 1 */
+    gsql_io_sync_dir(fp, "d");                          /* op 2 */
+    fill(q, 0, 'q', 8);                                 /* op 3 */
+    gsql_io_sync(q);                                    /* op 4 */
+    fill(q, 8, 'q', 8);                                 /* op 5 */
+    gsql_io_sync(q);                                    /* op 6 */
+    uint64_t pts[8] = {0};
+    size_t npts = gsql_io_sim_flush_points(fp, pts, 8);
+    check(npts == 3 && pts[0] == 2 && pts[1] == 4 && pts[2] == 6,
+          "flush points are the sync_dir and sync operations, by number (2, 4, 6)");
+    check(gsql_io_sim_flush_points(fp, NULL, 0) == 3, "flush points count without copying");
+    gsql_io_close(q);
+    gsql_io_free(fp);
+
     /* Determinism: one seed, one disk; different seeds, different disks. */
     GsqlIo *d = gsql_io_sim();
     GsqlFile *m = must_open(d, "d/m", GSQL_IO_CREATE);
