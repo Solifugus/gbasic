@@ -90,8 +90,10 @@ struct GsTxn {
     U64s freed;       /* write: pages this txn frees (live until it is durable) */
     U64s zombies;     /* fresh pages freed in the current operation */
     U64s avail;       /* write: reusable pages taken out of the free tree */
+    uint64_t avail_used; /* write: pages handed out of `avail`, ever */
     uint64_t free;    /* write: the free tree's root in this txn */
-    int no_reuse;     /* write: allocate from the end of the file only */
+    int no_refill;    /* write: the free tree is being written; never take from it */
+    int end_only;     /* write: allocate from the end of the file (the settle loop's later rounds) */
     uint64_t limit;   /* write: records freed by commits up to this are reusable */
     int exhausted;    /* write: no reusable record is left to take */
 };
@@ -195,9 +197,15 @@ static int pg_get(BtPager *b, uint64_t pgno, unsigned char **page) {
 static int take_page(struct GsTxn *t, uint64_t *pgno) {
     GsStore *db = t->db;
     /* reusable pages this txn took out of the free tree, else the end of the
-     * file -- always the end while the free tree itself is being written, so
-     * writing it never consumes what it records */
-    if (!t->no_reuse && !t->avail.n && !t->exhausted) {
+     * file. While the free tree itself is being written it is never REFILLED
+     * from -- a nested take would edit the tree mid-edit -- but pages already
+     * taken out of it are used. The first version used the end of the file
+     * for every free-tree write, so each commit grew the file by the tree's
+     * own path copy and handed as many pages back to a list that only grew:
+     * 9.4x the data after 40,000 updates of 20,000 records, synced or not, and
+     * past the 20 GB cap on a million. The commit's settle loop rewrites key 0
+     * until `avail` stops moving, so a page consumed here leaves no list. */
+    if (!t->no_refill && !t->avail.n && !t->exhausted) {
         /* Refill now, as LMDB does: take the next reusable records out of the
          * free tree. Taking only at the start left a transaction that needed
          * more growing the file while free pages piled up (space 5.6x on YCSB
@@ -208,7 +216,7 @@ static int take_page(struct GsTxn *t, uint64_t *pgno) {
         int rc = take_free(t);
         if (rc) return rc;
     }
-    uint64_t p = (!t->no_reuse && t->avail.n) ? t->avail.v[--t->avail.n] : db->hw++;
+    uint64_t p = (!t->end_only && t->avail.n) ? (t->avail_used++, t->avail.v[--t->avail.n]) : db->hw++;
     if (!set_add(&t->fresh, p)) return GS_IO;
     *pgno = p;
     return GS_OK;
@@ -359,14 +367,14 @@ static int free_put(struct GsTxn *t, uint64_t id, const U64s *pages) {
  * leave the tree in THIS transaction, so if it aborts they are still there. */
 static int take_free_inner(struct GsTxn *t);
 
-/* Allocation from the end of the file while the free tree is being taken
- * from: otherwise deleting the records just loaded allocates, finds the list
- * empty, and a nested take loads the same records a second time. */
+/* No refill while the free tree is being taken from: otherwise deleting the
+ * records just loaded allocates, finds the list empty, and a nested take
+ * loads the same records a second time. */
 static int take_free(struct GsTxn *t) {
-    int saved = t->no_reuse;
-    t->no_reuse = 1;
+    int saved = t->no_refill;
+    t->no_refill = 1;
     int rc = take_free_inner(t);
-    t->no_reuse = saved;
+    t->no_refill = saved;
     return rc;
 }
 
@@ -404,13 +412,23 @@ static int take_free_inner(struct GsTxn *t) {
 
 /* At commit: record what this transaction freed under its own id, and put
  * back what it took out and did not use, under key 0. Writing the tree frees
- * and allocates pages of its own, so repeat until nothing moves; allocations
- * come from the end of the file meanwhile, so the loop cannot feed itself. */
+ * and allocates pages of its own, so repeat until nothing moves (see the
+ * loop for why only the first round takes from `avail`). */
 static int record_free(struct GsTxn *t) {
-    t->no_reuse = 1;
+    t->no_refill = 1;
     int rc = GS_OK;
     for (int round = 0; rc == GS_OK && round < 32; round++) {
+        /* Round 0 may take pages from `avail`, which is nearly all the reuse
+         * there is (the free tree's path copy). Later rounds allocate from the
+         * end, so `avail` can then only GROW, and the loop must stop. Letting
+         * every round consume it does not terminate, and that was measured:
+         * key 0 at 28 pages needs a second chunk, its write takes two pages,
+         * at 26 the surplus chunk is deleted, the merge frees two, and it is
+         * 28 again -- LMDB's freelist oscillation, which the store tier met
+         * as a commit answering CORRUPT after 32 rounds. */
+        t->end_only = round > 0;
         size_t nf = t->freed.n, na = t->avail.n;
+        uint64_t used = t->avail_used;
         rc = free_put(t, t->id, &t->freed);
         if (rc == GS_OK) rc = free_put(t, 0, &t->avail);
         /* a fresh page the tree freed in passing is reusable: into avail */
@@ -422,9 +440,15 @@ static int record_free(struct GsTxn *t) {
             u64_push(&t->avail, pgno);
         }
         t->zombies.n = 0;
-        if (t->freed.n == nf && t->avail.n == na) { t->no_reuse = 0; return rc; }
+        /* Settled only when nothing MOVED, not when the lengths match: a round
+         * can take page X out of `avail` for the tree's own write while a page
+         * it freed in passing comes back, leaving the length the same and key
+         * 0 listing X -- now live -- as free (found by the store tier and the
+         * crash gate, the first time the free tree could use `avail`). */
+        if (t->freed.n == nf && t->avail.n == na && t->avail_used == used) { t->no_refill = 0; t->end_only = 0; return rc; }
     }
-    t->no_reuse = 0;
+    t->no_refill = 0;
+    t->end_only = 0;
     return rc ? rc : GS_CORRUPT; /* did not settle: never seen, and not hidden */
 }
 

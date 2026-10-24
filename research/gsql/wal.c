@@ -887,6 +887,18 @@ static int wal_sync(GsStore *db, uint64_t *durable) {
         rc = flush_file(db, db->log);
         if (rc == GS_OK) { db->durable_end = db->nframes; db->durable_commit = db->tip_commit; }
     }
+    /* The log resets only when every frame is durable, and under group commit
+     * the commit that triggers a checkpoint is almost never synced -- so it was
+     * attempted only where it could not finish, and a million group-64 updates
+     * grew the log to 166x the data. A sync is the one moment the condition
+     * holds, so a checkpoint runs here once the LOG is a checkpoint long --
+     * not once that much is un-backfilled, which the commit-time checkpoints
+     * keep below the threshold by backfilling every durable frame (measured:
+     * that test alone left the growth exactly as it was). */
+    if (rc == GS_OK && db->nframes >= db->ckpt_frames) {
+        rc = checkpoint(db);
+        if (rc == GS_IO || db->failed) rc = GS_IO;
+    }
     if (durable) *durable = db->durable_commit;
     return rc;
 }
