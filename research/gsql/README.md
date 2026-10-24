@@ -21,6 +21,8 @@ GATE_SCALE=quick research/gsql/run.sh
 | `btree.c` | **one** B+tree over slotted pages and a small pager interface, shared by §2.A and §2.B |
 | `btengine.c` | above the pager, shared by §2.A and §2.B: the catalog of named trees, a transaction's view of it, records, cursors and cursor invalidation |
 | `cow.c` | **§2.A**, the copy-on-write B+tree |
+| `wal.c` | **§2.B**, the B+tree with a write-ahead log |
+| `util.c` | page lists and sets, and a page cache keyed by (page, version) |
 | `test_btree.c` | the B+tree against a model, over an in-memory pager in both modes |
 | `test_store.c` | the interface against a model, for any candidate |
 | `crash_store.c` | a candidate under the crash harness |
@@ -48,6 +50,15 @@ The comparison is meant to measure the engines, not two independently written tr
   - Measured on 2.A: unsynced commits kept by a crash rose from 150 to 636 in the same run, so far more of the oracle's range is exercised.
   - The single-slot perturbation went from 1 violation to 5.
 
+- **2.B's checkpoint copies only durable frames**, and none past the oldest open reader. Copying a frame of a commit that is not yet durable puts a page into the main file that a crash can leave without its log; that perturbation was caught at 588 violations in 9,153 crashes.
+  - The log is reset (a new salt and epoch, then truncated) only when every frame is in the main file. The reset's own test that no reader needs the log is implied by the checkpoint's limit, so a perturbation removing it is legitimately green; it stays as a guard.
+- **2.B's creation writes the header last.** The state page and the catalog are written and flushed, and only then the header. The other way round, a power loss kept the header and lost what followed, and recovery found a database it could not read. The crash harness found this twice: first a missing state page, then, once that was checked, a missing catalog. The fix is the write order, not more checks.
+- **A commit in 2.B answers IO if the checkpoint after it fails a flush**, even though the commit itself is durable. Answering OK hid that the store had become unusable, and the harness found it. IO is the honest answer, and it is safe, since a commit reported as failed may be either kept or lost.
+- **2.B keeps commits that had not returned durable far more often than 2.A**: in 12,893 of 18,672 power-loss crashes in the first run, against a few hundred for 2.A. Its log frames can land and stay valid without a flush, while 2.A recovers only what a meta page names.
+- **The crash harness gained a continuation stage** (§5.3: "a further workload runs, crashes and recovers correctly"). After recovery it runs a continuation of mixed synced and unsynced commits, crashes it at a seeded point, and judges the result against the recovered state plus a prefix of the continuation.
+  - The single durable commit it had before could not see an engine that accepts **stale log frames**: the frames a lost commit leaves behind, partly overwritten later. Removing 2.B's checksum chain passed 44,000 crashes. With the continuation it is caught (4 power and 1 torn violations in 45,000 crashes, and 5 and 9 in 350,000 at rare checkpoints), with the correct engines clean.
+  - It is a rare case, because each log reset changes the salt and invalidates stale frames anyway.
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -57,3 +68,9 @@ The comparison is meant to measure the engines, not two independently written tr
 | 2.A: reuse pages freed by a non-durable commit | power and torn (90 each) |
 | 2.A: recovery takes the older meta | power and torn (96 each) |
 | 2.A: every meta into one slot | the heavy torn tier only (5); safe and green in light workloads, for the reason above |
+| 2.B: checkpoint copies non-durable frames | power (588), torn (698) |
+| 2.B: recovery takes frames past the last commit marker | power (183), torn (302) |
+| 2.B: commit ignores its sync flag | power (261), torn (268) |
+| 2.B: no checksum chain | only the continuation stage (4 and 1); see above |
+| 2.B: checkpoint ignores open readers | `test_store` (17), invisible to the crash workload, which holds no readers |
+| 2.B: reset ignores open readers | **green, legitimately**: implied by the checkpoint's limit |

@@ -27,6 +27,7 @@
  */
 
 #include "btengine.h"
+#include "util.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -48,153 +49,6 @@
 #define F_NEXT 40
 #define F_USED 48
 #define F_DATA 56
-
-/* ---- small containers ---------------------------------------------------- */
-
-typedef struct {
-    uint64_t *v;
-    size_t n, cap;
-} U64s;
-
-static int u64_push(U64s *a, uint64_t x) {
-    if (a->n == a->cap) {
-        size_t cap = a->cap ? a->cap * 2 : 16;
-        uint64_t *v = realloc(a->v, cap * sizeof *v);
-        if (!v) return 0;
-        a->v = v;
-        a->cap = cap;
-    }
-    a->v[a->n++] = x;
-    return 1;
-}
-static void u64_free(U64s *a) { free(a->v); memset(a, 0, sizeof *a); }
-
-/* An open-addressing set of page numbers (0 is never a member). */
-typedef struct {
-    uint64_t *slot;
-    size_t cap, n;
-} Set;
-
-static size_t set_hash(uint64_t x, size_t cap) {
-    x ^= x >> 33;
-    x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33;
-    return (size_t)x & (cap - 1);
-}
-static int set_has(const Set *s, uint64_t x) {
-    if (!s->cap) return 0;
-    for (size_t i = set_hash(x, s->cap);; i = (i + 1) & (s->cap - 1)) {
-        if (s->slot[i] == x) return 1;
-        if (s->slot[i] == 0) return 0;
-    }
-}
-static int set_add(Set *s, uint64_t x);
-static int set_grow(Set *s) {
-    Set t = {calloc(s->cap ? s->cap * 2 : 64, sizeof(uint64_t)), s->cap ? s->cap * 2 : 64, 0};
-    if (!t.slot) return 0;
-    for (size_t i = 0; i < s->cap; i++)
-        if (s->slot[i] && s->slot[i] != UINT64_MAX) set_add(&t, s->slot[i]);
-    free(s->slot);
-    *s = t;
-    return 1;
-}
-static int set_add(Set *s, uint64_t x) {
-    if ((s->n + 1) * 2 > s->cap && !set_grow(s)) return 0;
-    size_t tomb = SIZE_MAX;
-    for (size_t i = set_hash(x, s->cap);; i = (i + 1) & (s->cap - 1)) {
-        if (s->slot[i] == x) return 1;
-        if (s->slot[i] == UINT64_MAX && tomb == SIZE_MAX) tomb = i;
-        if (s->slot[i] == 0) {
-            s->slot[tomb != SIZE_MAX ? tomb : i] = x;
-            s->n++;
-            return 1;
-        }
-    }
-}
-static void set_del(Set *s, uint64_t x) {
-    if (!s->cap) return;
-    for (size_t i = set_hash(x, s->cap);; i = (i + 1) & (s->cap - 1)) {
-        if (s->slot[i] == x) { s->slot[i] = UINT64_MAX; return; } /* tombstone; n keeps counting it */
-        if (s->slot[i] == 0) return;
-    }
-}
-static void set_clear(Set *s) { free(s->slot); memset(s, 0, sizeof *s); }
-
-/* ---- the page cache ------------------------------------------------------ */
-
-typedef struct CPage {
-    uint64_t pgno;
-    unsigned char *buf;
-    int dirty;
-    int dead; /* freed in this operation: dropped when it ends */
-    struct CPage *hnext, *prev, *next;
-} CPage;
-
-typedef struct {
-    CPage **bucket;
-    size_t nbucket, count;
-    CPage lru; /* sentinel: lru.next is the most recently used */
-} Cache;
-
-static void lru_unlink(CPage *p) { p->prev->next = p->next; p->next->prev = p->prev; }
-static void lru_front(Cache *c, CPage *p) {
-    p->next = c->lru.next;
-    p->prev = &c->lru;
-    c->lru.next->prev = p;
-    c->lru.next = p;
-}
-static void cache_init(Cache *c) {
-    memset(c, 0, sizeof *c);
-    c->nbucket = 1024;
-    c->bucket = calloc(c->nbucket, sizeof *c->bucket);
-    c->lru.next = c->lru.prev = &c->lru;
-}
-static CPage *cache_find(Cache *c, uint64_t pgno) {
-    for (CPage *p = c->bucket[set_hash(pgno, c->nbucket)]; p; p = p->hnext)
-        if (p->pgno == pgno) return p;
-    return NULL;
-}
-static void cache_rehash(Cache *c) {
-    size_t nb = c->nbucket * 2;
-    CPage **b = calloc(nb, sizeof *b);
-    if (!b) return;
-    for (size_t i = 0; i < c->nbucket; i++)
-        for (CPage *p = c->bucket[i], *n; p; p = n) {
-            n = p->hnext;
-            size_t h = set_hash(p->pgno, nb);
-            p->hnext = b[h];
-            b[h] = p;
-        }
-    free(c->bucket);
-    c->bucket = b;
-    c->nbucket = nb;
-}
-static CPage *cache_insert(Cache *c, uint64_t pgno, unsigned char *buf) {
-    if (c->count > c->nbucket) cache_rehash(c);
-    CPage *p = calloc(1, sizeof *p);
-    if (!p) return NULL;
-    p->pgno = pgno;
-    p->buf = buf;
-    size_t h = set_hash(pgno, c->nbucket);
-    p->hnext = c->bucket[h];
-    c->bucket[h] = p;
-    lru_front(c, p);
-    c->count++;
-    return p;
-}
-static void cache_remove(Cache *c, CPage *p) {
-    CPage **pp = &c->bucket[set_hash(p->pgno, c->nbucket)];
-    while (*pp != p) pp = &(*pp)->hnext;
-    *pp = p->hnext;
-    lru_unlink(p);
-    free(p->buf);
-    free(p);
-    c->count--;
-}
-static void cache_free(Cache *c) {
-    while (c->lru.next != &c->lru) cache_remove(c, c->lru.next);
-    free(c->bucket);
-}
 
 /* ---- the store ----------------------------------------------------------- */
 
@@ -286,7 +140,7 @@ static int flush(GsStore *db) {
 }
 
 static int get_cached(GsStore *db, uint64_t pgno, CPage **out) {
-    CPage *p = cache_find(&db->cache, pgno);
+    CPage *p = cache_find(&db->cache, pgno, 0);
     if (p) {
         db->st.cache_hits++;
         lru_unlink(p);
@@ -298,7 +152,7 @@ static int get_cached(GsStore *db, uint64_t pgno, CPage **out) {
     if (!buf) return GS_IO;
     int rc = read_page(db, pgno, buf);
     if (rc) { free(buf); return rc; }
-    p = cache_insert(&db->cache, pgno, buf);
+    p = cache_insert(&db->cache, pgno, 0, buf);
     if (!p) { free(buf); return GS_IO; }
     *out = p;
     return GS_OK;
@@ -329,10 +183,10 @@ static int pg_alloc(BtPager *b, uint64_t *pgno, unsigned char **page) {
     GsStore *db = t->db;
     int rc = take_page(t, pgno);
     if (rc) return rc;
-    CPage *old = cache_find(&db->cache, *pgno);
+    CPage *old = cache_find(&db->cache, *pgno, 0);
     if (old) cache_remove(&db->cache, old); /* a stale copy from before it was freed */
     unsigned char *buf = calloc(1, db->ps);
-    CPage *p = buf ? cache_insert(&db->cache, *pgno, buf) : NULL;
+    CPage *p = buf ? cache_insert(&db->cache, *pgno, 0, buf) : NULL;
     if (!p) { free(buf); return GS_IO; }
     p->dirty = 1;
     *page = buf;
@@ -398,7 +252,7 @@ static void after_op(BeTxn *be) {
     GsStore *db = t->db;
     for (size_t i = 0; i < t->zombies.n; i++) {
         uint64_t pgno = t->zombies.v[i];
-        CPage *p = cache_find(&db->cache, pgno);
+        CPage *p = cache_find(&db->cache, pgno, 0);
         if (p) cache_remove(&db->cache, p);
         set_del(&t->fresh, pgno);
         u64_push(&db->free_pages, pgno);
@@ -809,7 +663,7 @@ static void cow_abort(struct GsTxn *t) {
     for (size_t i = 0; i < t->fresh.cap; i++) {
         uint64_t p = t->fresh.slot[i];
         if (!p || p == UINT64_MAX) continue;
-        CPage *c = cache_find(&db->cache, p);
+        CPage *c = cache_find(&db->cache, p, 0);
         if (c) cache_remove(&db->cache, c);
         u64_push(&db->free_pages, p);
     }

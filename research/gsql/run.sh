@@ -22,7 +22,7 @@ fi
 DEFS=""
 [ -f wal.c ] && DEFS="$DEFS -DHAVE_WAL"
 [ -f lsm.c ] && DEFS="$DEFS -DHAVE_LSM"
-ENGINE_SRC="cow.c btengine.c btree.c common.c"
+ENGINE_SRC="cow.c btengine.c btree.c common.c util.c"
 [ -f wal.c ] && ENGINE_SRC="$ENGINE_SRC wal.c"
 [ -f lsm.c ] && ENGINE_SRC="$ENGINE_SRC lsm.c"
 status=0

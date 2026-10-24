@@ -302,6 +302,107 @@ static long match_prefix(const Workload *w, const GsqlCrashState *st, size_t lo,
 
 static GsqlIo *clone_disk(GsqlIo *io) { return gsql_io_sim_crash_image(io, GSQL_CRASH_PROCESS, 0); }
 
+static uint64_t mix(uint64_t a, uint64_t b, uint64_t c) {
+    uint64_t s = a * 0x9E3779B97F4A7C15ULL ^ b * 0xC2B2AE3D27D4EB4FULL ^ c;
+    return splitmix(&s);
+}
+
+static GsqlCrashMode disk_mode(GsqlCrashCase m) {
+    switch (m) {
+    case GSQL_CRASH_MODE_PROCESS: return GSQL_CRASH_PROCESS;
+    case GSQL_CRASH_MODE_TORN: return GSQL_CRASH_TORN;
+    default: return GSQL_CRASH_POWER;
+    }
+}
+
+/* §5.3: "Work continues after recovery: a further workload runs, crashes and
+ * recovers correctly." A continuation of mixed synced and unsynced commits is
+ * run on the recovered disk, crashed at a seeded point, and judged against the
+ * recovered state plus a prefix of the continuation. A single durable commit
+ * after recovery could not see an engine that accepts STALE log frames -- the
+ * ones a lost commit left behind, partly overwritten by later ones -- because
+ * nothing unsynced was ever written over them (found by perturbing §2.B's
+ * checksum chain away: 44,000 crashes and no violation). */
+static void continuation(Ctx *c, const Workload *w, GsqlIo *disk, const GsqlCrashState *base,
+                         uint64_t seed, uint64_t op) {
+    size_t K = w->txn_count < 8 ? w->txn_count : 8;
+    if (!K) return;
+    uint64_t rng = seed ^ 0x51ed270b27f1a3cdULL;
+    int syncs[8];
+    for (size_t k = 0; k < K; k++) syncs[k] = splitmix(&rng) % 2 == 0;
+    GsqlCrashState *states = calloc(K + 1, sizeof *states);
+    state_copy(&states[0], base);
+    for (size_t k = 1; k <= K; k++) {
+        state_copy(&states[k], &states[k - 1]);
+        state_apply(&states[k], &w->txns[(k - 1) % w->txn_count]);
+        state_sort(&states[k]);
+    }
+    state_sort(&states[0]);
+    /* a dry run, to know how many operations there are to crash among */
+    GsqlIo *x = clone_disk(disk);
+    int err = 0;
+    void *db = c->e->open(x, DIR, &err);
+    uint64_t start = gsql_io_sim_ops(x), total = 0;
+    if (db) {
+        for (size_t k = 0; k < K; k++)
+            if (c->e->commit(db, &w->txns[k % w->txn_count], syncs[k])) break;
+        total = gsql_io_sim_ops(x) - start;
+        c->e->close(db);
+    }
+    gsql_io_free(x);
+    if (!db || !total) goto out;
+    x = clone_disk(disk);
+    gsql_io_sim_crash_at(x, start + 1 + splitmix(&rng) % total);
+    size_t reached = 0, durable = 0;
+    db = c->e->open(x, DIR, &err);
+    if (db) {
+        for (size_t k = 0; k < K; k++) {
+            reached = k + 1;
+            int rc = c->e->commit(db, &w->txns[k % w->txn_count], syncs[k]);
+            if (rc) break;
+            if (syncs[k]) durable = k + 1;
+        }
+        c->e->close(db);
+    }
+    {
+        uint64_t s2 = mix(seed, op, 0xc0de);
+        GsqlIo *img = gsql_io_sim_crash_image(x, disk_mode(c->mode), s2);
+        c->res->crashes++;
+        GsqlIo *y = clone_disk(img);
+        void *d2 = c->e->open(y, DIR, &err);
+        char msg[200];
+        if (!d2) {
+            snprintf(msg, sizeof msg, "recovery after a crashed continuation failed (error %d)", err);
+            report(c, s2, op, "continuation", msg);
+        } else {
+            GsqlCrashState got;
+            memset(&got, 0, sizeof got);
+            int rrc = c->e->read_all(d2, &got);
+            state_sort(&got);
+            long p = -1;
+            for (size_t k = durable; !rrc && k <= reached; k++)
+                if (state_equal(&got, &states[k])) { p = (long)k; break; }
+            if (p < 0) {
+                long any = -1;
+                for (size_t k = 0; !rrc && k <= K; k++)
+                    if (state_equal(&got, &states[k])) { any = (long)k; break; }
+                snprintf(msg, sizeof msg,
+                         "after recovery, a continuation crashed and came back as %s%ld of its commits (durable %zu, reached %zu)",
+                         any >= 0 ? "" : "NO prefix; nearest ", any, durable, reached);
+                report(c, s2, op, "continuation", msg);
+            }
+            state_free(&got);
+            c->e->close(d2);
+        }
+        gsql_io_free(y);
+        gsql_io_free(img);
+    }
+    gsql_io_free(x);
+out:
+    for (size_t k = 0; k <= K; k++) state_free(&states[k]);
+    free(states);
+}
+
 /* Recover from `disk` and judge it. With `full`, also the idempotence and
  * work-continues checks, on clones so `disk` stays pristine. */
 static void judge(Ctx *c, const Workload *w, GsqlIo *disk, size_t lo, size_t hi,
@@ -384,23 +485,12 @@ static void judge(Ctx *c, const Workload *w, GsqlIo *disk, size_t lo, size_t hi,
                 state_free(&want);
             }
         }
+        continuation(c, w, disk, &st, seed, op);
     }
     state_free(&st);
     gsql_io_free(a);
 }
 
-static GsqlCrashMode disk_mode(GsqlCrashCase m) {
-    switch (m) {
-    case GSQL_CRASH_MODE_PROCESS: return GSQL_CRASH_PROCESS;
-    case GSQL_CRASH_MODE_TORN: return GSQL_CRASH_TORN;
-    default: return GSQL_CRASH_POWER;
-    }
-}
-
-static uint64_t mix(uint64_t a, uint64_t b, uint64_t c) {
-    uint64_t s = a * 0x9E3779B97F4A7C15ULL ^ b * 0xC2B2AE3D27D4EB4FULL ^ c;
-    return splitmix(&s);
-}
 
 /* Crash the RECOVERY of `disk` at each of its operations, then recover again. */
 static void crash_recovery(Ctx *c, const Workload *w, GsqlIo *disk, size_t lo, size_t hi,

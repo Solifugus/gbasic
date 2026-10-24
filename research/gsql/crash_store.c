@@ -31,7 +31,10 @@ static void *a_open(GsqlIo *io, const char *dir, int *err) {
     char path[256];
     snprintf(path, sizeof path, "%s/db", dir);
     /* a small cache, so the bigger transactions spill (G5) inside the crash runs */
-    GsOptions o = {1, page_size, 16 * page_size, io, 24, 3};
+    /* GS_TUNE_A / GS_TUNE_B override the candidate knobs: §2.B's checkpoint
+     * threshold decides how long stale frames stay in its log */
+    const char *ta = getenv("GS_TUNE_A"), *tb = getenv("GS_TUNE_B");
+    GsOptions o = {1, page_size, 16 * page_size, io, ta ? strtoull(ta, NULL, 10) : 24, tb ? strtoull(tb, NULL, 10) : 3};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     if (rc) { *err = map(rc); return NULL; }
