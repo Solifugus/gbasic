@@ -48,6 +48,9 @@
 #define TYPE_DEL 0
 #define TYPE_PUT 1
 #define ID_LEN 8
+/* sequences a write transaction gives its own spilled runs until it commits:
+ * above every real sequence and below the buffer's (UINT64_MAX) */
+#define TXN_SEQ_BASE (UINT64_MAX - (1ULL << 32))
 #define CATALOG_ID 0
 #define FIRST_TREE_ID 2
 
@@ -196,6 +199,10 @@ typedef struct FileMeta {
     uint64_t num, size, entries;
     GsBuf smallest, largest;   /* internal keys (tree id + key) */
     uint64_t small_seq, large_seq;
+    /* Every entry's sequence, when nonzero: a write transaction's spilled run
+     * is written before its commit has a sequence, so the run's entries carry
+     * 0 and the commit gives the whole file one (its keys are distinct). */
+    uint64_t seq_over;
     int refs;                  /* versions holding it */
     int obsolete;              /* dropped by a compaction; delete at refs 0 */
     /* opened lazily */
@@ -239,6 +246,8 @@ struct GsStore {
     char *path, *dir;
     uint32_t block;           /* data block target size (the page size option) */
     uint64_t memtable_limit, l0_trigger;
+    uint64_t cache_bytes, bcache_bytes;
+    Cache bcache;             /* decoded blocks, keyed (file number, block + 1) */
     GsqlFile *log, *lockf;
     uint64_t log_num, log_end;
     uint64_t next_file;
@@ -545,6 +554,8 @@ static int file_open(GsStore *db, FileMeta *m) {
     return rc;
 }
 
+static uint64_t eseq(const FileMeta *m, uint64_t s) { return m->seq_over ? m->seq_over : s; }
+
 static int bloom_may(const FileMeta *m, const unsigned char *k, size_t kn) {
     uint64_t h = key_hash64(k, kn), d = (h >> 33) | (h << 31);
     for (unsigned j = 0; j < 7; j++) {
@@ -556,14 +567,16 @@ static int bloom_may(const FileMeta *m, const unsigned char *k, size_t kn) {
 
 /* A decoded data block: entries point into `raw`. */
 typedef struct {
-    unsigned char *raw;
+    unsigned char *raw; /* owned, or NULL for a view into the block cache */
     Ent *e;
     size_t n;
+    size_t bytes;       /* in the cache: the whole allocation */
 } Block;
 
 static void block_free(Block *b) { free(b->raw); free(b->e); memset(b, 0, sizeof *b); }
 
 static int block_read(GsStore *db, FileMeta *m, size_t bi, Block *out) {
+    memset(out, 0, sizeof *out); /* an error path frees it */
     IdxEntry *ie = &m->index[bi];
     out->raw = malloc(ie->size ? ie->size : 1);
     int rc = read_exact(db, m->f, ie->off, out->raw, ie->size);
@@ -596,6 +609,61 @@ static int block_read(GsStore *db, FileMeta *m, size_t bi, Block *out) {
     return rc;
 }
 
+/* ---- the block cache -------------------------------------------------------
+ * A decoded block is ONE allocation -- its entry table, then its bytes -- so
+ * the cache can free it with free(). A block an iterator stands on is pinned
+ * (the cache entry's `dirty` field counts pins) and is never evicted. */
+
+static void bcache_evict(GsStore *db) {
+    CPage *p = db->bcache.lru.prev;
+    while (db->bcache_bytes > db->cache_bytes && p != &db->bcache.lru) {
+        CPage *prev = p->prev;
+        if (!p->dirty) {
+            db->bcache_bytes -= ((Block *)p->buf)->bytes;
+            cache_remove(&db->bcache, p);
+        }
+        p = prev;
+    }
+}
+
+static int block_fetch(GsStore *db, FileMeta *m, size_t bi, CPage **pin, Block *view) {
+    CPage *p = cache_find(&db->bcache, m->num, bi + 1);
+    if (p) {
+        db->st.cache_hits++;
+        lru_unlink(p);
+        lru_front(&db->bcache, p);
+    } else {
+        Block b;
+        int rc = block_read(db, m, bi, &b);
+        if (rc) return rc;
+        size_t raw = m->index[bi].size, total = sizeof(Block) + b.n * sizeof(Ent) + raw;
+        unsigned char *buf = malloc(total);
+        if (!buf) { block_free(&b); return GS_IO; }
+        Block *hb = (Block *)buf;
+        Ent *ents = (Ent *)(buf + sizeof(Block));
+        unsigned char *r = (unsigned char *)(ents + b.n);
+        memcpy(r, b.raw, raw);
+        for (size_t i = 0; i < b.n; i++) {
+            ents[i] = b.e[i];
+            ents[i].k = r + (b.e[i].k - b.raw);
+            ents[i].v = r + (b.e[i].v - b.raw);
+        }
+        hb->raw = NULL;
+        hb->e = ents;
+        hb->n = b.n;
+        hb->bytes = total;
+        block_free(&b);
+        p = cache_insert(&db->bcache, m->num, bi + 1, buf);
+        if (!p) { free(buf); return GS_IO; }
+        db->bcache_bytes += total;
+    }
+    p->dirty++;
+    *pin = p;
+    *view = *(Block *)p->buf;
+    bcache_evict(db);
+    return GS_OK;
+}
+
 /* ---- iterators over internal entries --------------------------------------- */
 
 /* One source: the memtable, a txn buffer, one level-0 file, or a whole level
@@ -607,20 +675,28 @@ typedef struct {
     FileMeta **files;
     size_t nfiles, fi;   /* current file */
     size_t bi;           /* current block in it */
-    Block blk;
+    Block blk;           /* a view of the pinned cached block */
+    CPage *pin;
+    int priv;            /* the writer's own buffer or spilled run: always visible */
     size_t ei;           /* current entry in it */
     int valid;
     GsStore *db;
     int rc;
 } Src;
 
-static void src_reset(Src *s) { block_free(&s->blk); s->valid = 0; }
+static void src_unpin(Src *s) {
+    if (s->pin) s->pin->dirty--;
+    s->pin = NULL;
+    memset(&s->blk, 0, sizeof s->blk);
+}
+
+static void src_reset(Src *s) { src_unpin(s); s->valid = 0; }
 
 static int src_load(Src *s, size_t fi, size_t bi) {
-    block_free(&s->blk);
+    src_unpin(s);
     FileMeta *m = s->files[fi];
     int rc = file_open(s->db, m);
-    if (!rc) rc = block_read(s->db, m, bi, &s->blk);
+    if (!rc) rc = block_fetch(s->db, m, bi, &s->pin, &s->blk);
     if (rc) { s->rc = rc; s->valid = 0; return rc; }
     s->fi = fi;
     s->bi = bi;
@@ -629,7 +705,9 @@ static int src_load(Src *s, size_t fi, size_t bi) {
 
 static Ent src_ent(const Src *s) {
     if (s->kind == 0) return sk_ent(s->node);
-    return s->blk.e[s->ei];
+    Ent e = s->blk.e[s->ei];
+    e.seq = eseq(s->files[s->fi], e.seq);
+    return e;
 }
 
 /* first entry >= (k, seq) */
@@ -640,13 +718,13 @@ static void src_seek(Src *s, const unsigned char *k, size_t kn, uint64_t seq) {
         s->valid = s->node != NULL;
         return;
     }
-    block_free(&s->blk);
+    src_unpin(s);
     /* the first file whose largest key is >= k */
     size_t lo = 0, hi = s->nfiles;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
         FileMeta *m = s->files[mid];
-        if (ent_cmp(m->largest.p, m->largest.n, m->large_seq, k, kn, seq) < 0) lo = mid + 1;
+        if (ent_cmp(m->largest.p, m->largest.n, eseq(m, m->large_seq), k, kn, seq) < 0) lo = mid + 1;
         else hi = mid;
     }
     for (size_t fi = lo; fi < s->nfiles; fi++) {
@@ -656,7 +734,7 @@ static void src_seek(Src *s, const unsigned char *k, size_t kn, uint64_t seq) {
         while (blo < bhi) {
             size_t mid = (blo + bhi) / 2;
             IdxEntry *e = &m->index[mid];
-            if (ent_cmp(e->last, e->lastn, e->lastseq, k, kn, seq) < 0) blo = mid + 1;
+            if (ent_cmp(e->last, e->lastn, eseq(m, e->lastseq), k, kn, seq) < 0) blo = mid + 1;
             else bhi = mid;
         }
         if (blo == m->nindex) continue;
@@ -665,7 +743,7 @@ static void src_seek(Src *s, const unsigned char *k, size_t kn, uint64_t seq) {
         while (elo < ehi) {
             size_t mid = (elo + ehi) / 2;
             Ent *e = &s->blk.e[mid];
-            if (ent_cmp(e->k, e->kn, e->seq, k, kn, seq) < 0) elo = mid + 1;
+            if (ent_cmp(e->k, e->kn, eseq(m, e->seq), k, kn, seq) < 0) elo = mid + 1;
             else ehi = mid;
         }
         if (elo < s->blk.n) { s->ei = elo; s->valid = 1; return; }
@@ -707,7 +785,7 @@ static void src_seek_lt(Src *s, const unsigned char *k, size_t kn, uint64_t seq)
         for (;;) {
             if (bi > 0) bi--;
             else {
-                if (fi == 0) { s->valid = 0; block_free(&s->blk); return; }
+                if (fi == 0) { s->valid = 0; src_unpin(s); return; }
                 fi--;
                 if (file_open(s->db, s->files[fi])) { s->rc = GS_CORRUPT; s->valid = 0; return; }
                 if (!s->files[fi]->nindex) continue;
@@ -840,6 +918,7 @@ static int manifest_write(GsStore *db) {
             put_u64(&b, m->small_seq);
             put_bytes(&b, m->largest.p, m->largest.n);
             put_u64(&b, m->large_seq);
+            put_u64(&b, m->seq_over);
         }
     }
     put_u64(&b, db->ndead);
@@ -917,7 +996,7 @@ static int manifest_read(GsStore *db, const unsigned char *p, size_t n) {
             if ((rc = get_u64(p, end, &at, &m->num)) || (rc = get_u64(p, end, &at, &m->size)) ||
                 (rc = get_u64(p, end, &at, &m->entries)) || (rc = get_bytes(p, end, &at, &m->smallest)) ||
                 (rc = get_u64(p, end, &at, &m->small_seq)) || (rc = get_bytes(p, end, &at, &m->largest)) ||
-                (rc = get_u64(p, end, &at, &m->large_seq))) {
+                (rc = get_u64(p, end, &at, &m->large_seq)) || (rc = get_u64(p, end, &at, &m->seq_over))) {
                 file_free(m);
                 return rc;
             }
@@ -1028,6 +1107,7 @@ static void store_free(GsStore *db) {
     if (db->log) gsql_io_close(db->log);
     if (db->lockf) gsql_io_close(db->lockf);
     version_unref(db, db->cur);
+    if (db->bcache.bucket) cache_free(&db->bcache);
     free(db->dead);
     u64_free(&db->garbage);
     free(db->snaps);
@@ -1066,6 +1146,8 @@ static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
     db->block = opt && opt->page_size ? opt->page_size : 4096;
     db->memtable_limit = opt && opt->tune_a ? opt->tune_a : 4u << 20;
     db->l0_trigger = opt && opt->tune_b ? opt->tune_b : 4;
+    db->cache_bytes = opt && opt->cache_bytes ? opt->cache_bytes : 64u << 20;
+    cache_init(&db->bcache);
     /* BUSY: the log and the manifest are both replaced over a store's life, so
      * the exclusive lock is on a file of its own */
     char *lockname = gs_path_with(path, ".lock");
@@ -1410,11 +1492,21 @@ struct GsTxn {
     struct GsCursor *cursors;
     uint64_t next_id;  /* write: the next tree id, computed once */
     int failed;
+    /* write: the buffer spilled to sorted runs (G5), oldest first, owned by
+     * the txn until its commit names them in a manifest */
+    FileMeta **runs;
+    size_t nruns;
+    uint64_t spills;   /* bumped by each spill: cursors rebuild their sources */
 };
 
 static int txn_sources(struct GsTxn *t, Src *src, size_t *n) {
     size_t k = 0;
-    if (t->write) { src[k].kind = 0; src[k].sk = &t->buf; k++; }
+    if (t->write) {
+        src[k].kind = 0; src[k].sk = &t->buf; src[k].priv = 1; k++;
+        for (size_t r = t->nruns; r-- > 0;) {
+            src[k].kind = 1; src[k].db = t->db; src[k].files = &t->runs[r]; src[k].nfiles = 1; src[k].priv = 1; k++;
+        }
+    }
     src[k].kind = 0; src[k].sk = &t->v->mem->sk; k++;
     Version *v = t->v;
     for (size_t i = v->nfiles[0]; i-- > 0;) {
@@ -1426,7 +1518,35 @@ static int txn_sources(struct GsTxn *t, Src *src, size_t *n) {
     return GS_OK;
 }
 
-static size_t max_sources(struct GsTxn *t) { return 2 + t->v->nfiles[0] + LEVELS; }
+static size_t max_sources(struct GsTxn *t) { return 2 + t->nruns + t->v->nfiles[0] + LEVELS; }
+
+/* The newest version of `k` in one file, read at `seq`: 1 found (alive or a
+ * deletion, *del says which), 0 not there, <0 an error. */
+static int file_lookup(GsStore *db, FileMeta *m, const unsigned char *k, size_t kn, uint64_t seq, Ent *out, GsBuf *keep, int *del) {
+    if (bytes_cmp(gsb(k, kn), gsb(m->smallest.p, m->smallest.n)) < 0 || bytes_cmp(gsb(k, kn), gsb(m->largest.p, m->largest.n)) > 0)
+        return 0;
+    int rc = file_open(db, m);
+    if (rc) return -rc;
+    if (!bloom_may(m, k, kn)) return 0;
+    Src s = {0};
+    s.kind = 1;
+    s.db = db;
+    s.files = &m;
+    s.nfiles = 1;
+    src_seek(&s, k, kn, seq);
+    if (s.rc) { src_reset(&s); return -s.rc; }
+    int found = 0;
+    if (s.valid) {
+        Ent e = src_ent(&s);
+        if (e.kn == kn && !memcmp(e.k, k, kn)) {
+            found = 1;
+            *del = e.type == TYPE_DEL;
+            if (!*del) { gsbuf_set(keep, e.v, e.vn); *out = e; out->v = keep->p; out->k = k; }
+        }
+    }
+    src_reset(&s);
+    return found;
+}
 
 /* The newest version of `k` visible to the txn: GS_OK with *e, GS_NOT_FOUND
  * if absent or deleted. */
@@ -1440,6 +1560,11 @@ static int lookup(struct GsTxn *t, const unsigned char *k, size_t kn, Ent *out, 
             *out = sk_ent(n);
             out->v = keep->p;
             return GS_OK;
+        }
+        for (size_t r = t->nruns; r-- > 0;) {
+            int del = 0, f = file_lookup(db, t->runs[r], k, kn, UINT64_MAX, out, keep, &del);
+            if (f < 0) return -f;
+            if (f) return del ? GS_NOT_FOUND : GS_OK;
         }
     }
     SkNode *n = sk_ge(&t->v->mem->sk, k, kn, t->snap);
@@ -1516,6 +1641,42 @@ static int buf_put(struct GsTxn *t, uint64_t id, GsBytes key, int type, GsBytes 
     put_ukey(k, id, key);
     int rc = sk_insert(&t->buf, k, ID_LEN + key.n, UINT64_MAX, type, value.p, value.n, 1);
     free(k);
+    return rc;
+}
+
+/* G5: a write transaction's memory is bounded. Past half the cache, the
+ * buffer becomes a sorted run file -- written and flushed, but named in no
+ * manifest until the commit does it -- and the buffer starts empty. */
+static int spill_buffer(struct GsTxn *t) {
+    GsStore *db = t->db;
+    if (!t->buf.count) return GS_OK;
+    Builder b;
+    int rc = bld_open(db, &b);
+    for (SkNode *n = t->buf.head->next[0]; n && rc == GS_OK; n = n->next[0]) {
+        Ent e = sk_ent(n);
+        e.seq = 0; /* the commit gives the whole run one sequence */
+        bld_add(&b, &e);
+        rc = b.rc;
+    }
+    FileMeta *fm = NULL;
+    int r2 = b.f ? bld_close(&b, &fm) : rc;
+    if (rc == GS_OK) rc = r2;
+    if (rc) { if (fm) file_free(fm); return rc; }
+    fm->seq_over = TXN_SEQ_BASE + t->nruns;
+    FileMeta **v = realloc(t->runs, (t->nruns + 1) * sizeof *v);
+    if (!v) { file_free(fm); return GS_IO; }
+    t->runs = v;
+    t->runs[t->nruns++] = fm;
+    sk_free(&t->buf);
+    sk_init(&t->buf);
+    t->spills++;
+    return GS_OK;
+}
+
+static int maybe_spill(struct GsTxn *t) {
+    if (t->buf.bytes <= t->db->cache_bytes / 2) return GS_OK;
+    int rc = spill_buffer(t);
+    if (rc) t->failed = rc;
     return rc;
 }
 
@@ -1644,7 +1805,7 @@ static int lsm_put(struct GsTxn *t, GsBytes tree, GsBytes key, GsBytes value, un
     rc = buf_put(t, t->trees[i].id, key, TYPE_PUT, value);
     if (rc) { t->failed = rc; return rc; }
     t->trees[i].mods++;
-    return GS_OK;
+    return maybe_spill(t);
 }
 
 static int lsm_del(struct GsTxn *t, GsBytes tree, GsBytes key) {
@@ -1660,7 +1821,7 @@ static int lsm_del(struct GsTxn *t, GsBytes tree, GsBytes key) {
     rc = buf_put(t, t->trees[i].id, key, TYPE_DEL, gsb("", 0));
     if (rc) { t->failed = rc; return rc; }
     t->trees[i].mods++;
-    return GS_OK;
+    return maybe_spill(t);
 }
 
 /* ---- the merging cursor ----------------------------------------------------------- */
@@ -1674,6 +1835,7 @@ typedef struct GsCursor {
     int forward;          /* the sources sit just past `key` going forwards */
     int positioned;
     int between;          /* after cursor_delete: rests between the neighbours of `key` */
+    uint64_t spills;      /* the txn's spill count when the sources were built */
     GsBuf key;            /* tree id + key */
     GsBuf value;
     unsigned char lo[ID_LEN], hi[ID_LEN];
@@ -1681,8 +1843,8 @@ typedef struct GsCursor {
 } Cur;
 
 static int visible(const Cur *c, int si, const Ent *e) {
-    /* a txn buffer's entries (source 0 of a write txn) are always visible */
-    return (c->t->write && si == 0) || e->seq <= c->t->snap;
+    /* the writer's own buffer and runs are always visible to it */
+    return c->src[si].priv || e->seq <= c->t->snap;
 }
 
 static void all_seek(Cur *c, const unsigned char *k, size_t kn, uint64_t seq) {
@@ -1710,9 +1872,9 @@ static int find_forward(Cur *c) {
             }
             if (!s->valid) continue;
             Ent e = src_ent(s);
-            /* between sources at one key, the txn buffer, then the highest sequence */
-            uint64_t eseq = (c->t->write && i == 0) ? UINT64_MAX : e.seq;
-            if (best < 0 || ent_cmp(e.k, e.kn, eseq, be.k, be.kn, be.seq) < 0) { best = (int)i; be = e; be.seq = eseq; }
+            /* between sources at one key, the highest sequence: the buffer's is
+             * UINT64_MAX and a spilled run's sits above every real one */
+            if (best < 0 || ent_cmp(e.k, e.kn, e.seq, be.k, be.kn, be.seq) < 0) { best = (int)i; be = e; }
         }
         int rc = any_rc(c);
         if (rc) return rc;
@@ -1765,12 +1927,12 @@ static int find_backward(Cur *c, const unsigned char *limit, size_t ln) {
         int found = 0, live = 0;
         uint64_t bseq = 0;
         for (size_t i = 0; i < c->ns; i++) {
-            int buf = c->t->write && i == 0;
-            src_seek(&c->src[i], best.p, best.n, buf ? UINT64_MAX : c->t->snap);
+            int priv = c->src[i].priv;
+            src_seek(&c->src[i], best.p, best.n, priv ? UINT64_MAX : c->t->snap);
             if (!c->src[i].valid) continue;
             Ent e = src_ent(&c->src[i]);
             if (e.kn != best.n || memcmp(e.k, best.p, best.n)) continue;
-            uint64_t s = buf ? UINT64_MAX : e.seq;
+            uint64_t s = e.seq;
             if (!found || s > bseq) {
                 found = 1;
                 bseq = s;
@@ -1794,6 +1956,18 @@ static int find_backward(Cur *c, const unsigned char *limit, size_t ln) {
 static int cur_live(Cur *c) {
     TreeRef *tr = &c->t->trees[c->tree];
     if (tr->mods != c->mods || tr->id != c->id || !tr->id) return GS_INVALIDATED;
+    if (c->spills != c->t->spills) {
+        /* the txn spilled its buffer (a change to ANOTHER tree may do it): the
+         * sources are rebuilt and put back just past the current key, which is
+         * where they stood -- transparent, since this tree did not change */
+        for (size_t i = 0; i < c->ns; i++) src_reset(&c->src[i]);
+        free(c->src);
+        c->src = calloc(max_sources(c->t), sizeof *c->src);
+        txn_sources(c->t, c->src, &c->ns);
+        c->spills = c->t->spills;
+        if (c->key.n) all_seek(c, c->key.p, c->key.n, 0);
+        c->forward = 1;
+    }
     return GS_OK;
 }
 
@@ -1808,6 +1982,7 @@ static int lsm_cursor_open(struct GsTxn *t, GsBytes tree, GsCursor **out) {
     c->tree = i;
     c->mods = t->trees[i].mods;
     c->id = t->trees[i].id;
+    c->spills = t->spills;
     c->src = calloc(max_sources(t), sizeof *c->src);
     txn_sources(t, c->src, &c->ns);
     put64be(c->lo, c->id);
@@ -2033,6 +2208,15 @@ static int lsm_begin_write(GsStore *db, struct GsTxn **out) {
 
 static void txn_free(struct GsTxn *t) {
     while (t->cursors) lsm_cursor_close(t->cursors);
+    /* runs still owned here were never committed: they go */
+    for (size_t r = 0; r < t->nruns; r++) {
+        char *name = file_name(t->db, t->runs[r]->num);
+        file_close(t->runs[r]);
+        gsql_io_remove(t->db->io, name);
+        free(name);
+        file_free(t->runs[r]);
+    }
+    free(t->runs);
     snap_del(t->db, t->snap);
     version_unref(t->db, t->v);
     if (t->write) { sk_free(&t->buf); u64_free(&t->retired); }
@@ -2047,11 +2231,58 @@ static void lsm_abort(struct GsTxn *t) {
     txn_free(t);
 }
 
+/* A transaction that spilled commits by naming its runs in ONE manifest: the
+ * memtable is flushed first (so every older version sits in a file before the
+ * runs in level 0), the rest of the buffer becomes the last run, each run gets
+ * its sequence, and the manifest's rename is the commit. Nothing of it is in
+ * the log, so no part of it can survive without the rest -- which a log record
+ * for the buffer beside runs named earlier would have allowed. Always durable,
+ * whatever `sync` said. */
+static int commit_runs(struct GsTxn *t, uint64_t *commit_id) {
+    GsStore *db = t->db;
+    int rc = flush_memtable(db);
+    if (rc == GS_OK) rc = spill_buffer(t);
+    if (rc) { lsm_abort(t); return rc == GS_FULL ? GS_FULL : GS_IO; }
+    uint64_t base = db->last_seq + 1, commit = base + t->nruns - 1;
+    Version *nv = version_copy(db->cur);
+    for (size_t r = 0; r < t->nruns; r++) {
+        t->runs[r]->seq_over = base + r;
+        version_add(nv, 0, t->runs[r]);
+    }
+    size_t ndead_before = db->ndead;
+    for (size_t i = 0; i < t->retired.n; i++) dead_add(db, t->retired.v[i], commit);
+    Version *old = db->cur;
+    uint64_t last_before = db->last_seq;
+    db->cur = nv;
+    db->last_seq = commit;
+    rc = manifest_write(db);
+    if (rc) {
+        db->cur = old;
+        db->last_seq = last_before;
+        db->ndead = ndead_before;
+        /* the version took the runs: let it drop them, as garbage */
+        for (size_t r = 0; r < t->nruns; r++) t->runs[r]->obsolete = 1;
+        t->nruns = 0;
+        version_unref(db, nv);
+        lsm_abort(t);
+        return rc == GS_FULL ? GS_FULL : GS_IO;
+    }
+    version_unref(db, old);
+    t->nruns = 0; /* the version owns them now */
+    db->durable_seq = commit;
+    if (commit_id) *commit_id = commit;
+    db->writer = NULL;
+    txn_free(t);
+    rc = maybe_compact(db);
+    return rc == GS_IO || db->failed ? GS_IO : GS_OK;
+}
+
 static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     GsStore *db = t->db;
     if (!t->write) return GS_MISUSE;
     if (db->failed) { lsm_abort(t); return GS_FAILED; }
     if (t->failed) { int rc = t->failed; lsm_abort(t); return rc; }
+    if (t->nruns) return commit_runs(t, commit_id);
     /* one log record: the whole transaction, sequences from base */
     uint64_t base = db->last_seq + 1, count = t->buf.count;
     GsBuf rec = {0};

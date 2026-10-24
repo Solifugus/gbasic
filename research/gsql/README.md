@@ -65,8 +65,12 @@ The comparison is meant to measure the engines, not two independently written tr
   - The first draft cleared the memtable in place, freeing nodes an open reader was pointing at.
   - Because of the pinning, compaction's "keep every version a snapshot needs" rule is not load-bearing. Perturbing it, and reclaiming retired trees under open snapshots, both pass every test. It would matter if readers used the current version filtered by sequence, as LevelDB's snapshots do. The cost of pinning is space while a reader is held (W6), the same shape as 2.A's pinned pages.
 - **A flush in 2.C makes unsynced commits durable**, since their data is now in a flushed file. So a fresh snapshot may see more than the last synced commit. The functional test's model accepts the durable or the committed state, and treats the latter as now durable.
-- **2.C does not meet G5 yet.** A write transaction's buffer is held in memory. Bounding it needs an ingest path that turns spilled runs into level-0 files at commit.
-- **2.C has no block cache yet**, so every block read goes to disk: the functional test reads about 33,000 blocks against 2.A's 2,800 pages. That must be fixed before performance is measured, or 2.C loses for a reason that is not its design.
+- **2.C meets G5 by spilling to sorted runs.** Past half of `cache_bytes`, a write transaction's buffer becomes a sorted run file. It is written and flushed, but no manifest names it yet. Its entries carry a placeholder sequence, and the file carries an override in a private range that only the writer sees.
+  - A transaction that spilled commits by flushing the memtable, spilling the rest of its buffer as a last run, and naming every run in one manifest with its final sequence. The manifest's rename is the commit, so no part of the transaction can survive without the rest. That is why the remainder is not written to the log beside runs named earlier: that would have allowed half a transaction to survive a crash.
+  - Such a commit is always durable, whatever `sync` said. A spill rebuilds every open cursor's sources, which is transparent, since a spill changes no tree.
+  - In one crash workload the path ran 1,658 spills and 865 run commits under every crash point.
+- **2.C has a block cache**: decoded blocks keyed by (file, block), each one allocation, with a block an iterator stands on pinned against eviction. It cut the functional test's block reads from about 33,000 to about 3,300.
+  - Building it found an uninitialised block, freed on a read error, which is the error a crashed disk produces.
 - **2.C needs several files**: a manifest, logs, sorted files and a lock file. That is not "one file plus at most a log" (§7 question 6). Folding them into one needs an extent allocator the other two do not have.
 - **2.C takes the full 1,024-byte key at any block size.** It has no page-fill constraint, where 2.A and 2.B cap at 984 bytes at 4 KiB.
 
