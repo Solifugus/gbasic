@@ -57,6 +57,11 @@ int gsql_io_sync_dir(GsqlIo *io, const char *dir);
  * with EWOULDBLOCK when `nonblocking`. */
 int gsql_io_lock(GsqlFile *f, int nonblocking);
 void gsql_io_free(GsqlIo *io);
+/* Random bytes, which are input from the environment like a file: the real
+ * layer reads /dev/urandom, the simulated one draws from a seeded generator so
+ * a crash run replays exactly. Each crash image draws from its own seed, so a
+ * recovered disk does not repeat the draws its parent already made. */
+void gsql_io_random(GsqlIo *io, void *out, size_t n);
 
 /* ---- the real layer ---------------------------------------------------- */
 

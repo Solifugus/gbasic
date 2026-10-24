@@ -20,6 +20,7 @@ typedef struct GsqlIoOps {
     int (*sync_dir)(GsqlIo *, const char *);
     int (*lock)(GsqlFile *, int);
     void (*free)(GsqlIo *);
+    void (*random)(GsqlIo *, void *, size_t);
 } GsqlIoOps;
 
 struct GsqlIo {

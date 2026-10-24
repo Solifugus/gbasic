@@ -74,6 +74,7 @@ typedef struct {
     U8s kinds;             /* the kind of every numbered operation, for the harness */
     unsigned fail_in[4];   /* indexed by GsqlIoFault: countdown, 0 = disarmed */
     uint64_t seed;
+    uint64_t rng;          /* what gsql_io_random draws from */
 } Sim;
 
 typedef struct SimFile {
@@ -512,9 +513,17 @@ static void sim_free(GsqlIo *io) {
     free(s);
 }
 
+static void sim_random(GsqlIo *io, void *out, size_t n) {
+    Sim *s = (Sim *)io;
+    for (size_t i = 0; i < n; i += 8) {
+        uint64_t r = splitmix(&s->rng);
+        for (size_t j = 0; j < 8 && i + j < n; j++) ((unsigned char *)out)[i + j] = (unsigned char)(r >> (8 * j));
+    }
+}
+
 static const GsqlIoOps sim_ops = {
     sim_open, sim_read_at, sim_write_at, sim_sync, sim_size, sim_truncate,
-    sim_close, sim_rename, sim_remove, sim_sync_dir, sim_lock, sim_free
+    sim_close, sim_rename, sim_remove, sim_sync_dir, sim_lock, sim_free, sim_random
 };
 
 GsqlIo *gsql_io_sim(void) {
@@ -522,6 +531,7 @@ GsqlIo *gsql_io_sim(void) {
     if (!s) return NULL;
     s->base.ops = &sim_ops;
     s->seed = 1;
+    s->rng = 0x6a09e667f3bcc908ULL;
     return &s->base;
 }
 
@@ -559,6 +569,9 @@ GsqlIo *gsql_io_sim_crash_image(const GsqlIo *io, GsqlCrashMode mode, uint64_t s
     if (!t) return NULL;
     uint64_t rng = seed ^ 0xA0761D6478BD642FULL;
     int ok = 1;
+    /* its own draws: never a replay of the parent's */
+    t->rng = s->rng ^ (seed * 0x9E3779B97F4A7C15ULL) ^ 0xbb67ae8584caa73bULL;
+    t->rng ^= (uint64_t)mode << 56;
 
     /* The same inode numbering, so names keep meaning the same files. */
     for (size_t i = 0; ok && i < s->inode_count; i++) {

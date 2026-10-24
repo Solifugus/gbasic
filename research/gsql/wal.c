@@ -461,13 +461,27 @@ static int checkpoint(GsStore *db) {
     if (db->backfilled == db->nframes && db->nframes > 0 && db->durable_end == db->nframes) {
         for (size_t i = 0; i < db->nreaders; i++)
             if (db->readers[i].v.epoch == db->epoch && db->readers[i].v.end != db->nframes) return GS_OK;
+        /* salt2 is RANDOM: computed from the old salt, a reset whose header
+         * a crash lost would be repeated with the same salt, and the frames
+         * written in the lost epoch -- no longer truncated away -- would read
+         * as valid again (found by the crash harness: a continuation came back
+         * with a commit it never reached) */
+        unsigned char rnd[16];
+        gs_identity_new(db->io, rnd);
         db->salt1++;
-        uint32_t s2 = db->salt2;
-        s2 = s2 * 1103515245u + 12345u;
-        db->salt2 = s2 ^ (uint32_t)db->epoch;
+        db->salt2 = get32(rnd);
         db->epoch++;
         if ((rc = write_log_header(db))) return rc;
-        if ((rc = gs_io_status(gsql_io_truncate(db->log, LOG_HDR)))) return rc;
+        /* The log is NOT truncated: frames past the new end carry the old salt
+         * and are refused by recovery, and writing over existing bytes keeps a
+         * commit's flush from also committing a change of file size -- on this
+         * machine 250 us against 1 ms (SQLite reuses its WAL the same way). It
+         * is truncated only when it has grown past four checkpoints' worth. */
+        uint64_t sz = 0;
+        gsql_io_size(db->log, &sz);
+        if (sz > LOG_HDR + 4 * db->ckpt_frames * (uint64_t)(FH + db->ps) &&
+            (rc = gs_io_status(gsql_io_truncate(db->log, LOG_HDR))))
+            return rc;
         if ((rc = flush_file(db, db->log))) return rc;
         idx_clear(&db->idx);
         db->nframes = db->durable_end = db->backfilled = 0;
@@ -507,7 +521,7 @@ static int create_main(GsStore *db) {
     if (rc == GS_OK) rc = flush_file(db, db->f);
     memset(page, 0, db->ps);
     GsFileHeader h = {GS_FORMAT_MAJOR, 0, db->ps, {0}, 0, 0};
-    gs_identity_new(h.identity);
+    gs_identity_new(db->io, h.identity);
     gs_header_write(page, &h);
     if (rc == GS_OK) rc = gs_io_status(gsql_io_write_at(db->f, 0, page, db->ps));
     if (rc == GS_OK) rc = flush_file(db, db->f);
@@ -519,7 +533,7 @@ static int new_log(GsStore *db) {
     db->epoch++;
     db->salt1 = (uint32_t)(db->epoch * 2654435761u);
     unsigned char id[16];
-    gs_identity_new(id);
+    gs_identity_new(db->io, id);
     db->salt2 = get32(id);
     int rc = gs_io_status(gsql_io_truncate(db->log, 0));
     if (rc == GS_OK) rc = write_log_header(db);
@@ -572,6 +586,21 @@ static int recover_log(GsStore *db) {
             db->end_chk = c;
             db->tip_commit = get64(frame + 8);
         }
+    }
+    /* Truncate at the committed end. Frames past it belong to commits a
+     * crash lost, and they can sit ANYWHERE beyond -- behind a torn frame as
+     * well as right after the end. Left there, a new commit that writes the
+     * SAME bytes at the same positions (the same transaction run again)
+     * continues their checksum chain, and the lost commit after it comes back
+     * (found by the crash harness's continuation stage; a first fix that
+     * erased frames up to the first salt mismatch stopped at the torn frame
+     * and missed the ones behind it). Recovery is rare, so the log regrowing
+     * by appends until its next reset is the cheap part. */
+    uint64_t lsz = 0;
+    gsql_io_size(db->log, &lsz);
+    if (rc == GS_OK && lsz > frame_off(db, db->nframes)) {
+        rc = gs_io_status(gsql_io_truncate(db->log, frame_off(db, db->nframes)));
+        if (rc == GS_OK) rc = flush_file(db, db->log);
     }
     free(frame);
     u64_free(&pend_pg);

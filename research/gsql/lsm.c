@@ -1095,6 +1095,37 @@ static int replay_log(GsStore *db, GsqlFile *f, uint64_t *end) {
 
 /* ---- creation, recovery --------------------------------------------------------- */
 
+/* A new log is filled with zeros up to twice the memtable's size, so commit
+ * records overwrite existing bytes and a commit's flush does not also commit
+ * a change of file size (250 us against 1 ms on this machine). Replay stops at
+ * the first record whose length is zero, so the zeros read as the end. */
+static int prefill_log(GsStore *db, GsqlFile *f, uint64_t from) {
+    uint64_t size = db->memtable_limit * 2 + 65536;
+    if (from >= size) return GS_OK;
+    static const unsigned char zero[65536];
+    for (uint64_t at = from; at < size;) {
+        size_t n = size - at < sizeof zero ? (size_t)(size - at) : sizeof zero;
+        int rc = ioerr(gsql_io_write_at(f, at, zero, n));
+        if (rc) return rc;
+        db->st.bytes_written += n;
+        at += n;
+    }
+    return GS_OK;
+}
+
+/* After replay: whatever a lost commit left past the last valid record goes.
+ * It can sit anywhere beyond -- behind a lost chunk as well as right after the
+ * end -- and a record carries its own checksum, so a stale one is accepted
+ * wherever a new record happens to end where it begins (2.B's crash run found
+ * the same hole in its log: stopping at the first gap misses what is behind
+ * it). Truncate, then refill with zeros. Recovery is rare; it pays the refill. */
+static int zero_tail(GsStore *db, GsqlFile *f, uint64_t from) {
+    int rc = ioerr(gsql_io_truncate(f, from));
+    if (rc == GS_OK) rc = prefill_log(db, f, from);
+    if (rc == GS_OK) rc = flush_file(db, f);
+    return rc;
+}
+
 static int open_log(GsStore *db, uint64_t num, int create) {
     char *name = log_name(db->path, num);
     int rc = ioerr(gsql_io_open(db->io, name, create ? GSQL_IO_CREATE : 0, &db->log));
@@ -1121,7 +1152,7 @@ static int create_db(GsStore *db) {
     db->next_file = 1;
     db->log_num = 1;
     db->last_seq = 1;
-    gs_identity_new(db->identity);
+    gs_identity_new(db->io, db->identity);
     db->cur = version_copy(NULL);
     /* the log first, then the manifest naming it; the manifest's directory
      * flush makes both names durable */
@@ -1130,6 +1161,8 @@ static int create_db(GsStore *db) {
     free(name);
     int rc = open_log(db, 1, 1);
     if (rc == GS_OK) rc = ioerr(gsql_io_truncate(db->log, 0));
+    if (rc == GS_OK) rc = prefill_log(db, db->log, 0);
+    if (rc == GS_OK) rc = flush_file(db, db->log);
     if (rc == GS_OK) rc = manifest_write(db);
     db->log_end = 0;
     db->durable_seq = db->last_seq;
@@ -1203,10 +1236,7 @@ static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
         if (rc == GS_OK) {
             uint64_t sz = 0;
             gsql_io_size(db->log, &sz);
-            if (sz != db->log_end) {
-                rc = ioerr(gsql_io_truncate(db->log, db->log_end));
-                if (rc == GS_OK) rc = flush_file(db, db->log);
-            }
+            if (sz > db->log_end) rc = zero_tail(db, db->log, db->log_end);
         }
         db->durable_seq = db->last_seq;
     } else {
@@ -1428,6 +1458,8 @@ static int flush_memtable(GsStore *db) {
     GsqlFile *nl = NULL;
     int rc = ioerr(gsql_io_open(db->io, name, GSQL_IO_CREATE, &nl));
     if (rc == GS_OK) rc = ioerr(gsql_io_truncate(nl, 0));
+    if (rc == GS_OK) rc = prefill_log(db, nl, 0);
+    if (rc == GS_OK) rc = flush_file(db, nl);
     free(name);
     if (rc) { if (nl) gsql_io_close(nl); return rc; }
     Builder b;

@@ -107,15 +107,8 @@ int gs_header_read(const unsigned char *p, size_t n, GsFileHeader *h) {
     return GS_OK;
 }
 
-void gs_identity_new(unsigned char out[16]) {
-    FILE *f = fopen("/dev/urandom", "rb");
-    size_t got = f ? fread(out, 1, 16, f) : 0;
-    if (f) fclose(f);
-    if (got != 16) {
-        uint64_t t = (uint64_t)time(NULL) ^ (uint64_t)(uintptr_t)out;
-        for (int i = 0; i < 16; i++) { t = t * 6364136223846793005ULL + 1442695040888963407ULL; out[i] = (unsigned char)(t >> 56); }
-    }
-}
+/* Through the I/O layer, so the simulated disk makes it deterministic. */
+void gs_identity_new(GsqlIo *io, unsigned char out[16]) { gsql_io_random(io, out, 16); }
 
 /* ---- the page header ---------------------------------------------------- */
 

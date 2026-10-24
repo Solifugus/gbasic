@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 int gsql_io_open(GsqlIo *io, const char *path, int flags, GsqlFile **out) {
     *out = NULL;
@@ -37,6 +38,16 @@ int gsql_io_lock(GsqlFile *f, int nonblocking) { return f->io->ops->lock(f, nonb
 void gsql_io_free(GsqlIo *io) {
     if (io) io->ops->free(io);
 }
+void gsql_io_random(GsqlIo *io, void *out, size_t n) { io->ops->random(io, out, n); }
+
+static void urandom(GsqlIo *io, void *out, size_t n) {
+    (void)io;
+    FILE *f = fopen("/dev/urandom", "rb");
+    size_t got = f ? fread(out, 1, n, f) : 0;
+    if (f) fclose(f);
+    /* no urandom: the clock, which is weak and still not a constant */
+    for (size_t i = got; i < n; i++) ((unsigned char *)out)[i] = (unsigned char)(clock() * 2654435761u >> (8 * (i % 4)));
+}
 
 #if defined(_WIN32)
 
@@ -55,7 +66,7 @@ static int win_unused_rename(GsqlIo *io, const char *a, const char *b) {
 static void win_free(GsqlIo *io) { free(io); }
 static const GsqlIoOps real_ops = {
     win_open, NULL, NULL, NULL, NULL, NULL, NULL,
-    win_unused_rename, win_unused_io, win_unused_io, NULL, win_free
+    win_unused_rename, win_unused_io, win_unused_io, NULL, win_free, urandom
 };
 
 #else
@@ -186,7 +197,7 @@ static void real_free(GsqlIo *io) { free(io); }
 
 static const GsqlIoOps real_ops = {
     real_open, real_read_at, real_write_at, real_sync, real_size, real_truncate,
-    real_close, real_rename, real_remove, real_sync_dir, real_lock, real_free
+    real_close, real_rename, real_remove, real_sync_dir, real_lock, real_free, urandom
 };
 
 #endif

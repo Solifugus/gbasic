@@ -73,7 +73,7 @@ typedef struct {
  * unused while encryption is off. */
 void gs_header_write(unsigned char *p, const GsFileHeader *h);
 int gs_header_read(const unsigned char *p, size_t n, GsFileHeader *h); /* GS_OK, GS_FORMAT, GS_CORRUPT */
-void gs_identity_new(unsigned char out[16]);
+void gs_identity_new(GsqlIo *io, unsigned char out[16]);
 
 /* ---- §3.1.2 the page header (every page) -------------------------------- */
 

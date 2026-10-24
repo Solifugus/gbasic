@@ -74,6 +74,7 @@ struct GsStore {
     Root durable, tip;
     int durable_slot;    /* META_A or META_B: which page holds `durable` */
     uint64_t hw;         /* pages [0, hw) exist in the format */
+    uint64_t file_pages; /* pages the file physically holds: grown in zeroed chunks */
     U64s free_pages;     /* reusable now */
     Pending *pending;
     size_t npending, cappending;
@@ -117,7 +118,32 @@ static int read_page(GsStore *db, uint64_t pgno, unsigned char *buf) {
     return gs_page_verify(buf, db->ps, pgno);
 }
 
+/* Grow the file in zero-filled chunks ahead of use, so a commit writes over
+ * bytes that exist and its flush does not also commit a change of file size
+ * (250 us against 1 ms on this machine). A zero page is never read: only pages
+ * below a meta's high-water mark are, and every one of those was written. */
+static int grow(GsStore *db, uint64_t need) {
+    if (need <= db->file_pages) return GS_OK;
+    uint64_t target = db->file_pages + (db->file_pages / 8 > 64 ? db->file_pages / 8 : 64);
+    if (target < need) target = need;
+    static unsigned char zero[65536];
+    uint64_t from = db->file_pages * db->ps, to = target * db->ps;
+    for (uint64_t at = from; at < to;) {
+        size_t n = to - at < sizeof zero ? (size_t)(to - at) : sizeof zero;
+        int rc = gsql_io_write_at(db->f, at, zero, n);
+        if (rc) return gs_io_status(rc);
+        db->st.bytes_written += n;
+        at += n;
+    }
+    db->file_pages = target;
+    return GS_OK;
+}
+
 static int write_page(GsStore *db, uint64_t pgno, unsigned char *buf, uint64_t commit) {
+    if (pgno >= db->file_pages) {
+        int g = grow(db, pgno + 1);
+        if (g) return g;
+    }
     gs_page_seal(buf, db->ps, pgno, commit);
     int rc = gsql_io_write_at(db->f, pgno * db->ps, buf, db->ps);
     if (rc) return io_err(db, rc);
@@ -447,11 +473,14 @@ static int create_fresh(GsStore *db) {
     unsigned char *page = calloc(1, db->ps);
     if (!page) return GS_IO;
     GsFileHeader h = {GS_FORMAT_MAJOR, 0, db->ps, {0}, 0, 0};
-    gs_identity_new(h.identity);
+    gs_identity_new(db->io, h.identity);
     gs_header_write(page, &h);
     int rc = gsql_io_truncate(db->f, 0);
     if (rc == 0) rc = gsql_io_write_at(db->f, 0, page, db->ps);
     rc = io_err(db, rc);
+    /* the header holds page 0: growth starts after it, or the first chunk of
+     * zeros would be written over it */
+    db->file_pages = 1;
     /* the catalog: an empty leaf at page 3 */
     if (rc == GS_OK) {
         memset(page, 0, db->ps);
@@ -541,11 +570,11 @@ static int cow_open(const char *path, const GsOptions *opt, GsStore **out) {
     db->ps = opt && opt->page_size ? opt->page_size : 4096;
     db->cache_bytes = opt && opt->cache_bytes ? opt->cache_bytes : 64u << 20;
     cache_init(&db->cache);
-    int created = 0;
+    int hdr_ok = 0;
     int rc = gsql_io_open(db->io, path, 0, &db->f);
     if (rc == ENOENT && opt && opt->create) {
         rc = gsql_io_open(db->io, path, GSQL_IO_CREATE, &db->f);
-        created = 1;
+
     }
     rc = rc == ENOENT ? GS_NOT_FOUND : io_err(db, rc);
     if (rc == GS_OK) rc = io_err(db, gsql_io_lock(db->f, 1));
@@ -555,22 +584,31 @@ static int cow_open(const char *path, const GsOptions *opt, GsStore **out) {
         rc = io_err(db, gsql_io_read_at(db->f, 0, hdr, sizeof hdr, &got));
         GsFileHeader h;
         int hrc = rc ? rc : gs_header_read(hdr, got, &h);
-        if (rc == GS_OK && hrc == GS_OK) {
+        hdr_ok = rc == GS_OK && hrc == GS_OK;
+        if (hdr_ok) {
             db->ps = h.page_size;
             rc = recover(db);
         } else {
             rc = rc ? rc : hrc;
         }
-        /* A header or both metas missing in a file of at most four pages means
-         * creation never finished: no commit is possible before the open that
-         * creates the file returns, and the first commit grows the file. Start
-         * again when asked to create; anything larger is damage, not reported
-         * as an empty database. */
+        /* Creation never finished when no meta names a commit: creation writes
+         * meta 1, and every commit writes a higher one, so a store with no
+         * valid meta above 1 holds nothing anybody committed. (This was a
+         * file-size test, which chunked growth broke: an unfinished file is
+         * now 65 pages long.) Asked with the page size the caller gives, since
+         * an unfinished header may not say one. */
         if ((rc == GS_CORRUPT || rc == GS_FORMAT) && opt && opt->create) {
-            uint64_t sz = 0;
             uint32_t ps = opt->page_size ? opt->page_size : 4096;
-            gsql_io_size(db->f, &sz);
-            if (created || sz <= (uint64_t)ps * (FIRST_DATA + 1)) {
+            uint32_t keep = db->ps;
+            db->ps = hdr_ok ? db->ps : ps;
+            unsigned char *pg = malloc(db->ps);
+            Root r;
+            uint64_t l, h;
+            int committed = (read_meta(db, META_A, &r, &l, &h, pg) == GS_OK && r.txn > 1) ||
+                            (read_meta(db, META_B, &r, &l, &h, pg) == GS_OK && r.txn > 1);
+            free(pg);
+            db->ps = keep;
+            if (!committed) {
                 db->ps = ps;
                 pending_clear(db);
                 db->free_pages.n = 0;
@@ -584,6 +622,9 @@ static int cow_open(const char *path, const GsOptions *opt, GsStore **out) {
         store_free(db);
         return rc;
     }
+    uint64_t sz = 0;
+    gsql_io_size(db->f, &sz);
+    db->file_pages = sz / db->ps;
     *out = db;
     return GS_OK;
 }

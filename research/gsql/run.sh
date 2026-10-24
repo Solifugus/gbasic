@@ -38,7 +38,7 @@ build() { # out flags sources...
     fi
 }
 SAN="-g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer"
-build test_btree "$SAN" test_btree.c btree.c common.c || exit 1
+build test_btree "$SAN" test_btree.c btree.c common.c $IO || exit 1
 build test_store "$SAN" test_store.c $ENGINE_SRC $IO || exit 1
 build crash_store "-g -O2" crash_store.c $ENGINE_SRC $IO ../../src/gsql/crash.c || exit 1
 
