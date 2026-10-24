@@ -1,6 +1,6 @@
 # `unknown` truth tables and the NaN order — design
 
-**Status: PROPOSED, measured 2026-10-23. Nothing here is built.** The direction
+**Status: PROPOSAL, measured 2026-10-23. Nothing here is built.** The direction
 was agreed in `docs/gsql_design.md` §3.1.1; this note measures what it changes
 in the tree, splits it into two increments, and names the three decisions still
 open (§6).
