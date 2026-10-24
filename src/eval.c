@@ -14727,23 +14727,7 @@ static Value builtin_encode_value(Value value) {
 #define SER_VERSION_MIN 1
 #define SER_MAX_DEPTH 256
 
-typedef enum {
-    SER_NULL = 1,
-    SER_UNKNOWN,
-    SER_BOOL,
-    SER_NUMBER,
-    SER_STRING,
-    SER_ARRAY,
-    SER_RECORD,
-    SER_DATETIME,
-    SER_DURATION,
-    SER_MONEY,
-    SER_FILE,
-    SER_DIR,
-    SER_ACTOR,  /* spawn-args only: an actor handle, realized by an inherited fd */
-    SER_FUNCTION, /* a function value: registered name (+ optional library), §10 */
-    SER_REGEX   /* a compiled regex: its pattern + flags; the receiver recompiles */
-} SerTag;
+#include "serialize_tags.h"
 
 /* --- fd transfer for spawn arguments (docs/multiprocessing_design.md §4.1) ----
  * Actor handles are a live capability, not plain data, so serialize()/send()
