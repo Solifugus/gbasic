@@ -210,6 +210,26 @@ Persist stable, serializable value kinds, not executable/process-bound values su
 
 ## 4. SQL functionality
 
+### 4.0 Which SQL: the dialect (proposed 2026-10-23)
+
+**The semantics are specified (§3); the spelling is not, and the spelling has a real downstream cost.** Three things already written in SQL would have to change with it:
+- **existing applications' SQL.** G-Dash's dataset SQL and visual SQL are SQLite dialect today (gdash's own assessment, 2026-10-23);
+- **SQL written by a language model.** G-Dash's `ask` and the `nlq` library prompt a model to write SQL, and models write PostgreSQL and SQLite well and anything else badly. A new dialect would make every generated query less likely to be right;
+- **people's habits.** A reader who knows SQL should not have to learn a new one.
+
+**Recommendation: the subset PostgreSQL and SQLite share, with deviations only where gBASIC's semantics require them, each one documented.** Most portable SQL then runs unchanged, and a model can be told "PostgreSQL-like" rather than be taught a new language. The deviations this design already implies:
+- **types:** `MONEY` / `MONEY(USD)`, the temporal kinds, `RECORD`, and `INT64`/`INTEGER` as constraints on `number` (§3);
+- **record fields:** `params.vendor` and `params[:field]` (§3.5);
+- **`unknown`:** SQL's truth tables, with `NULL` and `UNKNOWN` as two spellings (§3.1.1);
+- **parameters:** `:name`, which both PostgreSQL drivers and SQLite accept;
+- **anything requiring an implicit cast:** refused rather than coerced (§9), which is stricter than SQLite.
+
+**Where PostgreSQL and SQLite disagree** (string concatenation and `LIKE` case-sensitivity, `LIMIT`/`OFFSET` forms, date functions, `||` against `CONCAT`, boolean literals, `RETURNING`, upsert spelling), G-SQL chooses per item, preferring PostgreSQL's where it is the SQL standard's. The list is to be **measured, not guessed**: G-Dash's dataset SQL, the queries `nlq` generates against estateforge, and the SQL in this repository's tests are the corpus, and each construct they use is recorded as supported, deviating, or refused.
+
+**For `nlq` and `ask`:** the prompt names the dialect and lists the deviations, so the model is told about `MONEY` and record fields rather than discovering them by failing.
+
+**Open:** the measured disagreement list above; and whether a small compatibility mode for SQLite spellings is worth having during G-Dash's migration, or whether converting G-Dash's queries once is simpler. The default answer is to convert once, since a compatibility mode is a second dialect to keep correct.
+
 ### 4.1 Initial relational foundation
 
 - `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE ADD COLUMN` (further migrations later).
@@ -723,16 +743,17 @@ ROLLUP/GROUPING, grouping sets/CUBE, richer windows, sophisticated optimizer, im
 
 ## 13. Questions requiring a final engineering decision
 
-1. Literal and mixed-arithmetic exactness are already specified (`exact_number_design.md`). What remains is G-SQL's side: does an `INT64` column refuse an inexact value on write, and refuse on overflow instead of degrading with warning 2112? §3.2 proposes yes to both.
-2. Decided: SQL's (§3.1.1), with `if unknown` still raising in procedural code.
-3. Which persistent value kinds and date/time variants are supported in the first release?
-4. Which storage design wins the §6.2 measurements, and how long does an owner handoff take (§6.1)?
-5. What are the first-release collation and comparison rules?
-6. Do foreign keys and `CHECK` constraints ship in the first release or the next?
-7. How are schema changes, function versions, and prepared plans invalidated?
-8. How are large SQL results converted to frames without exhausting memory?
-9. Which SQL-callable function contract is safest and simplest to implement first?
-10. Which actual workloads (G-Dash, WorkSplicer, Transcend, gProperties) define the initial performance benchmarks?
+1. The SQL dialect's exact disagreement list between PostgreSQL and SQLite, measured over G-Dash's, `nlq`'s and this repository's SQL (§4.0).
+2. Literal and mixed-arithmetic exactness are already specified (`exact_number_design.md`). What remains is G-SQL's side: does an `INT64` column refuse an inexact value on write, and refuse on overflow instead of degrading with warning 2112? §3.2 proposes yes to both.
+3. Decided: SQL's (§3.1.1), with `if unknown` still raising in procedural code.
+4. Which persistent value kinds and date/time variants are supported in the first release?
+5. Which storage design wins the §6.2 measurements, and how long does an owner handoff take (§6.1)?
+6. What are the first-release collation and comparison rules?
+7. Do foreign keys and `CHECK` constraints ship in the first release or the next?
+8. How are schema changes, function versions, and prepared plans invalidated?
+9. How are large SQL results converted to frames without exhausting memory?
+10. Which SQL-callable function contract is safest and simplest to implement first?
+11. Which actual workloads (G-Dash, WorkSplicer, Transcend, gProperties) define the initial performance benchmarks?
 
 ## 14. Acceptance criteria and representative tests
 
