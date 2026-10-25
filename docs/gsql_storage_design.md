@@ -610,6 +610,14 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
   4. Open question 6, whether a database may be more than one file plus a log, since 2.C needs a manifest, logs and sorted files.
 - **Common to every outcome:** the scan path is about 10× slower than LMDB's in all three candidates, and is fixed whichever engine is chosen.
 
+**Test 1 run, 2026-10-25: it does not overturn 2.C** (`research/gsql/README.md`, "Confirming tests", has the tables). It covered W3, W4 at 10 M rows, 5 M rows under a 1 GiB memory cap, a SATA SSD over USB and a USB flash stick.
+- **The slower devices widen 2.C's lead.** On the flash stick 2.C makes 410 durable commits a second, against 26 for 2.B and 1 for 2.A. 2.A and LMDB both collapse there, because every copy-on-write commit writes scattered pages and flushes twice. That settles 2.A's retirement.
+- **Larger than memory, 2.C leads or ties everything but W3**, and its 100-row scans are 9× faster than either B+tree's.
+- **It added two items to 2.C's list of fixes**, both engineering rather than structure:
+  - **The bulk load.** At its default sizes 2.C loads 10 M random rows at 14 k/s, against 36 k/s for 2.A and 32 k/s for RocksDB, the opposite of the §6 prediction. A 64 MB memtable recovers 2.5× of it. A trivial move, which 2.C lacks, would recover the rest of the sorted case.
+  - **Commit stalls.** W3's p99 is 1.85 s against RocksDB's 35 ms, because compaction runs inside the commit that triggers it. Moving compaction off the commit path is the fix.
+- **Tests 2 to 4 remain.** Before the choice is final, 2.C is to be rebuilt with value separation, larger levels, a trivial move and compaction off the commit path, and measured again.
+
 ## 7. Open questions
 
 1. *(G-Dash volumes answered, §5.1.1.)* WorkSplicer's profile once its redesign settles (§5.1.2); G-Dash's refresh duration, which it has never measured.

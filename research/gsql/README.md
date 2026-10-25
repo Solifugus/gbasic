@@ -201,17 +201,85 @@ What the tables do not say by themselves:
 | 2.B wins single-row commit latency | **refuted, narrowly**: W2 p50 316 µs against 2.C's 257 µs |
 | 2.B wins space efficiency | **refuted**: 4.14 against 2.C's 1.12 (1.75 against 1.11 at 8 KiB) |
 | 2.B's recovery grows with the log | not tested: the log here is too short |
-| 2.C wins W4 by a wide margin | not tested: W4 (10 M rows) has not run. At 100 k, 2.C's load is 73 k/s against 2.A's 80 k/s |
+| 2.C wins W4 by a wide margin | **refuted at its defaults** (2026-10-25, below): at 10 M random keys 2.C loads 14,336/s against 2.A's 36,326 and RocksDB's 32,304. A larger memtable recovers most of it |
 | 2.C loses W1 tail latency | **refuted**: W1 p99 4.4 µs, the best of the three |
 | 2.C has the highest complexity | **not shown by lines** (2,136 against 2,045 and 2,129); invariants are not counted |
 | overall: 2.A | **refuted on the standard workloads.** 2.C leads YCSB A, B, D, E and F, W2, TPC-C and group commit; 2.A leads none of them among the candidates |
 
+## Confirming tests (2026-10-25)
+
+Run after §6 took 2.C provisionally, to try to overturn it. Raw lines are `results-w3`, `-w4`, `-ltm`, `-ssd` and `-usb.jsonl` in `results/2026-10-24/` (the directory is named for the round, not the day). One run each, so treat differences under about 20% as noise.
+
+**Devices.** Both slower devices negotiated USB 3 at 5 Gb/s, so the link is not the limit in either case.
+- **ssd**: a Samsung 860 EVO SATA SSD behind an ASMedia ASM1153e USB-C bridge, ext4.
+- **usb**: a generic USB 3.0 flash stick on a USB-A port, reformatted as ext4 for this, so that the device is the only difference from the other runs.
+
+**Larger than memory.** 5 M records (about 5 GB) under a 1 GiB memory cgroup with swap off. Page cache is charged to the cgroup, so this is genuinely larger than memory and needs neither root nor cache dropping (`BENCH_MEM`). SQLite hit the one-hour limit on all six workloads and is absent.
+
+| ops/s, larger than memory | 2.A | 2.B | 2.C | LMDB | RocksDB |
+|---|---|---|---|---|---|
+| W1 uniform reads | 10,498 | 5,398 | 10,472 | 2,525 | 4,588 |
+| YCSB-B | 6,966 | 12,986 | 12,586 | 3,453 | 4,475 |
+| YCSB-C | 13,863 | 10,526 | **15,634** | 4,508 | 7,841 |
+| W2 durable commits | 648 | **1,520** | 1,329 | 609 | 871 |
+| W5, 100-row scans | 135 | 132 | **1,249** | 90 | 574 |
+| W3, 1,000-row batches (rows/s) | 8,307 | 8,491 | 9,030 | 2,222 | **107,340** |
+| W3 p99 per batch | 257 ms | 249 ms | **1,851 ms** | 1,117 ms | 35 ms |
+
+**W4, a 10 M-row bulk load** (about 10 GB), NVMe, rows/s:
+
+| | 2.A | 2.B | 2.C | SQLite | LMDB | RocksDB |
+|---|---|---|---|---|---|---|
+| sorted keys | 77,410 | 46,782 | 52,702 | 45,637 | **185,089** | 162,226 |
+| random keys | **36,326** | 28,650 | 14,336 | 13,082 | 34,835 | 32,304 |
+| write amp, random | 14.6 | 16.2 | 25.5 | 29.3 | 11.1 | 8.2 |
+| space amp | 4.36 | 4.07 | **1.04** | 4.59 | 2.02 | 1.02 |
+
+**2.C's W4 loss is mostly its defaults.** At 2 M rows on NVMe:
+
+| 2.C memtable | random load (rows/s) | write amp | sorted load (rows/s) | write amp |
+|---|---|---|---|---|
+| 4 MB (default) | 24,405 | 17.9 | 56,870 | 7.0 |
+| 16 MB | 38,593 | 12.7 | 75,738 | 6.2 |
+| 64 MB | 61,384 | 8.4 | 97,119 | 5.9 |
+| RocksDB | 115,225 | 4.7 | | |
+
+Level sizes follow the memtable, so a 4 MB memtable means a 40 MB level 1 and five or so levels for 10 GB. The sorted load stays near 6× because 2.C has no trivial move: RocksDB moves a file down a level without rewriting it when nothing below overlaps it, and writes 2.0× on sorted input. The rest of the gap to RocksDB is its background compaction threads.
+
+**Slower devices**, 100 k records, ops/s (TPC-C-like in tx/s):
+
+| | device | 2.A | 2.B | 2.C | SQLite | LMDB | RocksDB |
+|---|---|---|---|---|---|---|---|
+| W2 durable commits | ssd | 203 | 800 | 764 | 822 | 556 | 591 |
+| | usb | 1 | 26 | **410** | 30 | 2 | 90 |
+| group-8 | ssd | 1,213 | 3,799 | **7,575** | 4,952 | 2,644 | 4,086 |
+| | usb | 1 | 23 | **3,067** | 1,733 | 3 | 738 |
+| group-64 | ssd | 1,654 | 6,915 | 21,648 | 10,818 | 3,931 | **24,328** |
+| | usb | 9 | 19 | **18,035** | 1,205 | 15 | 4,377 |
+| YCSB-A | ssd | 846 | 2,069 | **2,482** | 2,038 | 1,110 | 1,165 |
+| | usb | 2 | 51 | **1,001** | 70 | 10 | 127 |
+| W3 (rows/s) | ssd | 15,865 | 11,600 | 30,879 | 8,748 | 19,982 | **107,668** |
+| | usb | 100 | 93 | 2,961 | 77 | 132 | **41,105** |
+| TPC-C-like | ssd | 357 | 806 | **1,069** | 794 | 452 | 557 |
+| | usb | 0.4 | 18 | **339** | 33 | 1 | 69 |
+| recovery (ms) | ssd | 1.87 | 5.72 | 25.33 | 1.37 | 0.16 | 130.19 |
+| | usb | 545 | 27.3 | 80.6 | 1.04 | 0.21 | 74.8 |
+
+The ssd runs used 20,000 operations; the usb runs used 1,000, because 2.A could not finish 20,000 durable commits on the stick within the hour (two timed-out lines are kept outside the results).
+
+**What the confirming tests show.**
+- **The slower devices widen 2.C's lead.** On the stick, copy-on-write collapses: 2.A and LMDB manage one or two durable commits a second with p99s of 2 to 4 s, because every commit writes scattered pages and flushes twice. 2.C appends to a log and commits 410 a second, 16× 2.B.
+- **2.B's group commit does nothing on the stick**, an unexplained result. Its flushes fall as they should (134 for 1,000 commits at group-8, 24 at group-64), and its throughput does not rise (26, 23, 19/s). The cost is therefore the volume or pattern of its page writes, not the flush count. This is not yet investigated.
+- **Larger than memory, 2.C leads or ties everything but W3**, and its 100-row scans are 9× faster than either B+tree's.
+- **2.C has two weaknesses, both engineering rather than structure.**
+  1. Its bulk load needs bigger levels and a trivial move.
+  2. Its commit can stall: W3's p99 is 1.85 s against RocksDB's 35 ms, because compaction runs in the foreground, inside the commit that triggers it. §6 predicted a tail-latency weakness for 2.C, and it appears only at scale.
+- **2.A's recovery advantage disappears on the stick** (545 ms, the slowest), while LMDB's and SQLite's stay near 1 ms.
+
 ### Not yet measured, and needed before §6 can decide
 
-- **The weights.** §6 says they are fixed before results are seen, and no numeric weights were written down. They should be fixed now, before the remaining runs, and the record should say they were fixed after the first ones.
-- **W3, W4 and W9.** W9 needs the version store, which does not exist.
-- **The larger-than-memory size, with the page cache dropped.** That needs root.
-- **A slower storage device**, which §5.1.4 requires, since NVMe flatters the designs that flush most.
+- **W9**, which needs the version store, which does not exist.
 - **The hard requirements**: online backup without stopping writers, bounded recovery at a long log, the long-reader story, nonce uniqueness, G1 and G4.
 - **The G-Dash profile** (§5.1.1) and the owner round trip (§5.5).
-- **2.C at large values**, since W8 is the one standard-or-specific workload where it is the worst engine, and value separation would change it.
+- **2.C with its known fixes**: value separation (W8), larger default levels and a trivial move (W4), and compaction off the commit path (W3's p99). Each should be measured again once built.
+- **2.B's group commit on slow flash**, unexplained (above).
