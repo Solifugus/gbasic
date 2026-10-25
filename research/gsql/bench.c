@@ -465,8 +465,10 @@ static uint64_t fnv64(uint64_t x) {
 
 /* "user" + the FNV hash of the record number, as YCSB builds keys: the load
  * inserts in record order, which is random order in key space */
+static int sorted_keys; /* w4-sorted: key order is insertion order */
 static size_t ycsb_key(char *out, uint64_t keynum) {
-    return (size_t)snprintf(out, 32, "user%019llu", (unsigned long long)(fnv64(keynum) % 10000000000000000000ULL));
+    uint64_t n = sorted_keys ? keynum : fnv64(keynum) % 10000000000000000000ULL;
+    return (size_t)snprintf(out, 32, "user%019llu", (unsigned long long)n);
 }
 
 static uint64_t rng_state = 0x853c49e6748fea9bULL;
@@ -576,6 +578,24 @@ static void op_update(Run *r, uint64_t keynum, int rmw) {
     lat_add(&r->write, now_us() - t0);
     r->logical_written += kn + vsize;
     r->ops++;
+}
+
+/* W3: one durable transaction of `n` updates at random keys; the latency
+ * recorded is the whole transaction's, and each row counts as one op */
+static void op_batch(Run *r, uint64_t records, int n) {
+    char k[32];
+    double t0 = now_us();
+    r->e->begin(r->kv, 1);
+    for (int j = 0; j < n; j++) {
+        uint64_t keynum = rnd() % records;
+        size_t kn = ycsb_key(k, keynum);
+        fill_value(keynum + r->ops);
+        if (r->e->put(r->kv, k, kn, value, vsize)) r->errors++;
+        r->logical_written += kn + vsize;
+        r->ops++;
+    }
+    if (r->e->end(r->kv, 1, 1)) r->errors++;
+    lat_add(&r->write, now_us() - t0);
 }
 
 static void op_scan(Run *r, uint64_t keynum, int len) {
@@ -1125,7 +1145,8 @@ int main(int argc, char **argv) {
     /* every workload but the load starts from a loaded store: that load is
      * not measured */
     double t_load0 = now_us();
-    int is_load = !strcmp(wl, "ycsb-load");
+    if (!strcmp(wl, "w4-sorted")) sorted_keys = 1;
+    int is_load = !strcmp(wl, "ycsb-load") || !strncmp(wl, "w4-", 3);
     for (uint64_t i = 0; i < records; i += 1000)
         if (do_insert_batch(&r, i, i + 1000 < records ? i + 1000 : records, vsize)) { fprintf(stderr, "load failed\n"); return 1; }
     double load_s = (now_us() - t_load0) / 1e6;
@@ -1185,6 +1206,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(wl, "w1-uniform")) op_read(&r, rnd() % records);
         else if (!strcmp(wl, "w1-zipf")) op_read(&r, scrambled(&z));
         else if (!strcmp(wl, "w2")) op_update(&r, rnd() % records, 0);
+        else if (!strcmp(wl, "w3")) { op_batch(&r, records, 1000); i = r.ops - 1; }
         else if (!strcmp(wl, "w5-1")) op_scan(&r, rnd() % records, 1);
         else if (!strcmp(wl, "w5-100")) op_scan(&r, rnd() % records, 100);
         else if (!strcmp(wl, "w5-10000")) { op_scan(&r, rnd() % records, 10000); if (i >= 200) break; }
