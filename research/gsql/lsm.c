@@ -261,6 +261,7 @@ struct GsStore {
     size_t nsnaps, capsnaps;
     struct GsTxn *writer;
     uint64_t compact_ptr[LEVELS];
+    struct Comp *comp;        /* a compaction in progress, or NULL */
     int failed;
     unsigned char identity[16];
     GsStats st;
@@ -897,6 +898,32 @@ static void put_bytes(GsBuf *b, const unsigned char *p, size_t n) {
 }
 static void put_u64(GsBuf *b, uint64_t v) { unsigned char t[8]; put64(t, v); gsbuf_append(b, t, 8); }
 
+/* A compaction in progress. It runs in slices, a little in each commit, so
+ * that no one commit pays for a whole merge (measured before this: a 1.85 s
+ * p99 on W3 larger than memory, against RocksDB's 35 ms). Only one runs at a
+ * time; the only thing that changes the levels meanwhile is a flush, which
+ * adds to level 0 and touches none of the inputs. */
+typedef struct Comp {
+    int level, next, bottom;
+    FileMeta **inputs;
+    size_t nin, first_below;
+    Src *src;
+    size_t ns;
+    Builder b;
+    int open;
+    GsBuf cur;
+    int have_cur, kept_visible;
+    uint64_t keep_after, target;
+    FileMeta **outs;
+    size_t nouts;
+    /* Every output's number, finished or not. They are named in no version
+     * until the compaction installs, and a flush meanwhile writes a manifest
+     * with a higher next-file number, so a crash would orphan them for good.
+     * Every manifest written meanwhile lists them as garbage instead, and the
+     * next open deletes them. */
+    U64s pending;
+} Comp;
+
 static int manifest_write(GsStore *db) {
     GsBuf b = {0};
     unsigned char hdr[GS_HEADER_FIXED];
@@ -923,8 +950,10 @@ static int manifest_write(GsStore *db) {
     }
     put_u64(&b, db->ndead);
     for (size_t i = 0; i < db->ndead; i++) { put_u64(&b, db->dead[i].id); put_u64(&b, db->dead[i].death); }
-    put_u64(&b, db->garbage.n);
+    size_t npend = db->comp ? db->comp->pending.n : 0;
+    put_u64(&b, db->garbage.n + npend);
     for (size_t i = 0; i < db->garbage.n; i++) put_u64(&b, db->garbage.v[i]);
+    for (size_t i = 0; i < npend; i++) put_u64(&b, db->comp->pending.v[i]);
     unsigned char t[4];
     put32(t, crc32c(b.p, b.n));
     gsbuf_append(&b, t, 4);
@@ -1134,7 +1163,10 @@ static int open_log(GsStore *db, uint64_t num, int create) {
     return rc;
 }
 
+static void comp_free(GsStore *db, int abandon);
+
 static void store_free(GsStore *db) {
+    comp_free(db, 1); /* an unfinished compaction's outputs are named nowhere */
     if (db->log) gsql_io_close(db->log);
     if (db->lockf) gsql_io_close(db->lockf);
     version_unref(db, db->cur);
@@ -1292,58 +1324,6 @@ static int merge_min(Merge *m) {
     return best;
 }
 
-/* Merge `inputs` into files at `level`, split at `target` bytes and only
- * between keys. `bottom`: no level below holds data, so a deletion that no
- * snapshot needs can go too. */
-static int merge_into(GsStore *db, Src *inputs, size_t n, int level, int bottom, uint64_t target, Version *nv) {
-    Merge m = {inputs, n};
-    uint64_t keep_after = oldest_snapshot(db);
-    Builder b;
-    int open = 0, rc = GS_OK;
-    GsBuf cur = {0};
-    int have_cur = 0, kept_visible = 0;
-    for (size_t i = 0; i < n; i++) if (inputs[i].rc) rc = inputs[i].rc;
-    while (rc == GS_OK) {
-        int i = merge_min(&m);
-        if (i < 0) break;
-        Ent e = src_ent(&inputs[i]);
-        int new_key = !have_cur || cur.n != e.kn || memcmp(cur.p, e.k, e.kn);
-        if (new_key) {
-            if (open && b.off + b.block.n >= target) {
-                FileMeta *fm;
-                open = 0; /* closed whatever it answers: never close it twice */
-                if ((rc = bld_close(&b, &fm))) break;
-                if (fm) version_add(nv, level, fm);
-            }
-            gsbuf_set(&cur, e.k, e.kn);
-            have_cur = 1;
-            kept_visible = 0;
-        }
-        int keep;
-        uint64_t death = e.kn >= ID_LEN ? death_of(db, ukey_id(e.k)) : 0;
-        if (death && death <= keep_after) keep = 0;        /* a retired tree no snapshot can see */
-        else if (e.seq > keep_after) keep = 1;              /* newer than every snapshot */
-        else if (!kept_visible) {                           /* what the oldest snapshot sees */
-            kept_visible = 1;
-            keep = !(bottom && e.type == TYPE_DEL);
-        } else keep = 0;                                    /* shadowed for everyone */
-        if (keep) {
-            if (!open) { if ((rc = bld_open(db, &b))) break; open = 1; }
-            bld_add(&b, &e);
-        }
-        src_next(&inputs[i]);
-        if (inputs[i].rc) rc = inputs[i].rc;
-    }
-    if (open) {
-        FileMeta *fm;
-        int r2 = bld_close(&b, &fm);
-        if (rc == GS_OK) rc = r2;
-        if (fm) version_add(nv, level, fm);
-    }
-    gsbuf_free(&cur);
-    return rc;
-}
-
 static uint64_t level_bytes(Version *v, int l) {
     uint64_t s = 0;
     for (size_t i = 0; i < v->nfiles[l]; i++) s += v->files[l][i]->size;
@@ -1388,7 +1368,120 @@ static int moveable(FileMeta **in, size_t n) {
     return 1;
 }
 
-static int compact_level(GsStore *db, int level) {
+/* Drop a compaction. `abandon`: its outputs are named nowhere, so they go;
+ * otherwise the version that installed it owns them. */
+static void comp_free(GsStore *db, int abandon) {
+    Comp *c = db->comp;
+    if (!c) return;
+    for (size_t i = 0; i < c->ns; i++) src_reset(&c->src[i]);
+    free(c->src);
+    if (c->open) {
+        FileMeta *fm = NULL;
+        bld_close(&c->b, &fm);
+        if (fm) { c->outs = realloc(c->outs, (c->nouts + 1) * sizeof *c->outs); c->outs[c->nouts++] = fm; }
+    }
+    if (abandon) {
+        for (size_t i = 0; i < c->nouts; i++) file_free(c->outs[i]);
+        for (size_t i = 0; i < c->pending.n; i++) {
+            char *name = file_name(db, c->pending.v[i]);
+            gsql_io_remove(db->io, name);
+            free(name);
+        }
+    }
+    free(c->outs);
+    free(c->inputs);
+    gsbuf_free(&c->cur);
+    u64_free(&c->pending);
+    free(c);
+    db->comp = NULL;
+}
+
+static int comp_open_output(GsStore *db, Comp *c) {
+    int rc = bld_open(db, &c->b);
+    u64_push(&c->pending, c->b.num); /* garbage from now until installed */
+    if (rc == GS_OK) c->open = 1;
+    return rc;
+}
+
+static int comp_close_output(Comp *c) {
+    FileMeta *fm = NULL;
+    c->open = 0; /* closed whatever it answers: never close it twice */
+    int rc = bld_close(&c->b, &fm);
+    if (fm) { c->outs = realloc(c->outs, (c->nouts + 1) * sizeof *c->outs); c->outs[c->nouts++] = fm; }
+    return rc;
+}
+
+/* Install a finished compaction over whatever version is current now: a
+ * flush may have added to level 0 since it began, and none of that is an
+ * input. */
+static int comp_install(GsStore *db) {
+    Comp *c = db->comp;
+    Version *nv = version_copy(db->cur);
+    for (size_t i = 0; i < c->first_below; i++) version_remove(db, nv, c->level, c->inputs[i]);
+    for (size_t i = c->first_below; i < c->nin; i++) version_remove(db, nv, c->next, c->inputs[i]);
+    for (size_t i = 0; i < c->nouts; i++) version_add(nv, c->next, c->outs[i]);
+    /* the outputs are named by the version now, so no longer garbage; if the
+     * manifest write fails they become garbage again */
+    U64s pend = c->pending;
+    memset(&c->pending, 0, sizeof c->pending);
+    int rc = install(db, nv, c->inputs, c->nin);
+    if (rc) {
+        for (size_t i = 0; i < pend.n; i++) u64_push(&db->garbage, pend.v[i]);
+    }
+    u64_free(&pend);
+    c->nouts = 0; /* the version took them, or dropped them as garbage */
+    comp_free(db, 0);
+    return rc;
+}
+
+/* Merge up to `budget` input bytes. `*done` reports whether it finished. Keep
+ * each version a live snapshot needs; `bottom`: no level below holds data, so
+ * a deletion no snapshot needs can go too. The snapshot boundary is the one
+ * taken at the start, which stays safe as it runs: a snapshot opened since is
+ * newer than every input entry, and needs only the newest of each key. */
+static int comp_step(GsStore *db, uint64_t budget, uint64_t *used) {
+    Comp *c = db->comp;
+    Merge m = {c->src, c->ns};
+    int rc = GS_OK;
+    uint64_t work = 0;
+    for (size_t i = 0; i < c->ns; i++) if (c->src[i].rc) rc = c->src[i].rc;
+    while (rc == GS_OK && work < budget) {
+        int i = merge_min(&m);
+        if (i < 0) break;
+        Ent e = src_ent(&c->src[i]);
+        int new_key = !c->have_cur || c->cur.n != e.kn || memcmp(c->cur.p, e.k, e.kn);
+        if (new_key) {
+            if (c->open && c->b.off + c->b.block.n >= c->target && (rc = comp_close_output(c))) break;
+            gsbuf_set(&c->cur, e.k, e.kn);
+            c->have_cur = 1;
+            c->kept_visible = 0;
+        }
+        int keep;
+        uint64_t death = e.kn >= ID_LEN ? death_of(db, ukey_id(e.k)) : 0;
+        if (death && death <= c->keep_after) keep = 0;        /* a retired tree no snapshot can see */
+        else if (e.seq > c->keep_after) keep = 1;              /* newer than every snapshot */
+        else if (!c->kept_visible) {                           /* what the oldest snapshot sees */
+            c->kept_visible = 1;
+            keep = !(c->bottom && e.type == TYPE_DEL);
+        } else keep = 0;                                       /* shadowed for everyone */
+        if (keep) {
+            if (!c->open && (rc = comp_open_output(db, c))) break;
+            bld_add(&c->b, &e);
+        }
+        work += e.kn + e.vn + 16;
+        src_next(&c->src[i]);
+        if (c->src[i].rc) rc = c->src[i].rc;
+    }
+    if (used) *used = work;
+    if (rc) { comp_free(db, 1); return rc; }
+    if (merge_min(&m) >= 0) return GS_OK; /* paused: more next time */
+    if (c->open && (rc = comp_close_output(c))) { comp_free(db, 1); return rc; }
+    return comp_install(db);
+}
+
+/* Begin compacting `level` into the next. A trivial move finishes here and
+ * leaves no compaction in progress. */
+static int comp_start(GsStore *db, int level) {
     Version *v = db->cur;
     FileMeta **inputs = NULL;
     size_t nin = 0;
@@ -1420,6 +1513,8 @@ static int compact_level(GsStore *db, int level) {
             inputs = realloc(inputs, (nin + 1) * sizeof *inputs);
             inputs[nin++] = v->files[next][i];
         }
+    gsbuf_free(&lo);
+    gsbuf_free(&hi);
     /* A trivial move: nothing below overlaps, and the inputs do not overlap
      * each other, so the files go down a level as they are, unrewritten. A
      * sorted load is all such moves (RocksDB writes 2.0x on one; this wrote
@@ -1431,50 +1526,66 @@ static int compact_level(GsStore *db, int level) {
             version_add(nv, next, inputs[i]);
             version_remove(db, nv, level, inputs[i]);
         }
-        int rc = install(db, nv, NULL, 0);
         free(inputs);
-        gsbuf_free(&lo);
-        gsbuf_free(&hi);
-        return rc;
+        return install(db, nv, NULL, 0);
     }
-    int bottom = 1;
-    for (int l = next + 1; l < LEVELS; l++) if (v->nfiles[l]) bottom = 0;
+    Comp *c = calloc(1, sizeof *c);
+    c->level = level;
+    c->next = next;
+    c->inputs = inputs;
+    c->nin = nin;
+    c->first_below = first_below;
+    c->bottom = 1;
+    for (int l = next + 1; l < LEVELS; l++) if (v->nfiles[l]) c->bottom = 0;
+    c->keep_after = oldest_snapshot(db);
+    c->target = db->memtable_limit * 2;
     /* sources: each upper input alone, the lower ones as one run */
-    Src *src = calloc(nin + 1, sizeof *src);
-    size_t ns = 0;
+    c->src = calloc(nin + 1, sizeof *c->src);
     for (size_t i = 0; i < first_below; i++) {
-        src[ns].kind = 1; src[ns].db = db; src[ns].files = &inputs[i]; src[ns].nfiles = 1;
-        src_seek(&src[ns], (const unsigned char *)"", 0, UINT64_MAX);
-        ns++;
+        Src *sr = &c->src[c->ns++];
+        sr->kind = 1; sr->db = db; sr->files = &c->inputs[i]; sr->nfiles = 1;
+        src_seek(sr, (const unsigned char *)"", 0, UINT64_MAX);
     }
     if (nin > first_below) {
-        src[ns].kind = 1; src[ns].db = db; src[ns].files = &inputs[first_below]; src[ns].nfiles = nin - first_below;
-        src_seek(&src[ns], (const unsigned char *)"", 0, UINT64_MAX);
-        ns++;
+        Src *sr = &c->src[c->ns++];
+        sr->kind = 1; sr->db = db; sr->files = &c->inputs[first_below]; sr->nfiles = nin - first_below;
+        src_seek(sr, (const unsigned char *)"", 0, UINT64_MAX);
     }
-    Version *nv = version_copy(v);
-    for (size_t i = 0; i < first_below; i++) version_remove(db, nv, level, inputs[i]);
-    for (size_t i = first_below; i < nin; i++) version_remove(db, nv, next, inputs[i]);
-    int rc = merge_into(db, src, ns, next, bottom, db->memtable_limit * 2, nv);
-    for (size_t i = 0; i < ns; i++) src_reset(&src[i]);
-    free(src);
-    if (rc == GS_OK) rc = install(db, nv, inputs, nin);
-    else version_unref(db, nv);
-    free(inputs);
-    gsbuf_free(&lo);
-    gsbuf_free(&hi);
-    if (rc == GS_OK) db->st.cache_hits += 0;
-    return rc;
+    db->comp = c;
+    return GS_OK;
 }
 
-static int maybe_compact(GsStore *db) {
+/* The level, if any, that needs compacting now. */
+static int comp_wanted(GsStore *db) {
+    if (db->cur->nfiles[0] >= db->l0_trigger) return 0;
+    for (int l = 1; l < LEVELS - 1; l++)
+        if (db->cur->nfiles[l] && level_bytes(db->cur, l) > level_limit(db, l)) return l;
+    return -1;
+}
+
+/* Spend up to `budget` bytes of merge work, starting compactions as they are
+ * wanted. The budget is a commit's share (COMP_CREDIT times what it wrote),
+ * so the work keeps pace with the writing that creates it. If level 0 backs
+ * up past COMP_STALL times its trigger anyway, the merge in progress is
+ * finished outright: the writer waits, as RocksDB's does at its stall
+ * threshold, and that bounds both the debt and the tail. */
+#define COMP_CREDIT 32
+#define COMP_STALL 3
+static int maybe_compact(GsStore *db, uint64_t budget) {
     for (int guard = 0; guard < 64; guard++) {
-        int rc = GS_OK, did = 0;
-        if (db->cur->nfiles[0] >= db->l0_trigger) { rc = compact_level(db, 0); did = 1; }
-        else
-            for (int l = 1; l < LEVELS - 1; l++)
-                if (db->cur->nfiles[l] && level_bytes(db->cur, l) > level_limit(db, l)) { rc = compact_level(db, l); did = 1; break; }
-        if (rc || !did) return rc;
+        int rc;
+        if (!db->comp) {
+            int l = comp_wanted(db);
+            if (l < 0) return GS_OK;
+            if ((rc = comp_start(db, l))) return rc;
+            if (!db->comp) continue; /* a trivial move */
+        }
+        int stall = db->cur->nfiles[0] >= db->l0_trigger * COMP_STALL;
+        if (!stall && !budget) return GS_OK;
+        uint64_t used = 0;
+        if ((rc = comp_step(db, stall ? UINT64_MAX : budget, &used))) return rc;
+        if (db->comp && !stall) return GS_OK; /* paused, the budget spent */
+        if (!stall) budget = used >= budget ? 0 : budget - used;
     }
     return GS_OK;
 }
@@ -1530,7 +1641,7 @@ static int flush_memtable(GsStore *db) {
     gsql_io_remove(db->io, name);
     free(name);
     db->durable_seq = db->last_seq; /* everything is in a flushed file */
-    return maybe_compact(db);
+    return maybe_compact(db, 0);
 }
 
 /* ---- transactions ---------------------------------------------------------------- */
@@ -2332,12 +2443,14 @@ static int commit_runs(struct GsTxn *t, uint64_t *commit_id) {
         return rc == GS_FULL ? GS_FULL : GS_IO;
     }
     version_unref(db, old);
+    uint64_t wrote = 0;
+    for (size_t r = 0; r < t->nruns; r++) wrote += t->runs[r]->size;
     t->nruns = 0; /* the version owns them now */
     db->durable_seq = commit;
     if (commit_id) *commit_id = commit;
     db->writer = NULL;
     txn_free(t);
-    rc = maybe_compact(db);
+    rc = maybe_compact(db, wrote * COMP_CREDIT);
     return rc == GS_IO || db->failed ? GS_IO : GS_OK;
 }
 
@@ -2378,6 +2491,7 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
         return rc == GS_FULL ? GS_FULL : GS_IO;
     }
     db->log_end += rec.n;
+    uint64_t wrote = rec.n;
     gsbuf_free(&rec);
     uint64_t seq = base;
     for (SkNode *n = t->buf.head->next[0]; n && rc == GS_OK; n = n->next[0]) rc = sk_insert(&db->cur->mem->sk, n->k, n->kn, seq++, n->type, n->v, n->vn, 0);
@@ -2394,6 +2508,9 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
         /* the commit stands either way; a failed flush made the store unusable */
         if (rc == GS_IO || db->failed) return GS_IO;
     }
+    /* this commit's share of the merge work its writing created */
+    rc = maybe_compact(db, wrote * COMP_CREDIT);
+    if (rc == GS_IO || db->failed) return GS_IO;
     return GS_OK;
 }
 
