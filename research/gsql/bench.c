@@ -101,7 +101,9 @@ static BKV *c_open(const char *dir, uint64_t cache, uint32_t page) {
     snprintf(b->dir, sizeof b->dir, "%s", dir);
     char path[600];
     snprintf(path, sizeof path, "%s/db", dir);
-    GsOptions o = {1, page, cache, NULL, 0, 0};
+    /* BENCH_TUNE_A / BENCH_TUNE_B: the candidates' own knobs (store.h) */
+    const char *ta = getenv("BENCH_TUNE_A"), *tb = getenv("BENCH_TUNE_B");
+    GsOptions o = {1, page, cache, NULL, ta ? strtoull(ta, NULL, 10) : 0, tb ? strtoull(tb, NULL, 10) : 0};
     if (b->e->open(path, &o, &b->db)) { free(b); return NULL; }
     GsTxn *t;
     b->e->begin_write(b->db, &t);
