@@ -1177,7 +1177,12 @@ static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
     db->path = gs_path_with(path, "");
     db->dir = gs_dirname(path);
     db->block = opt && opt->page_size ? opt->page_size : 4096;
-    db->memtable_limit = opt && opt->tune_a ? opt->tune_a : 4u << 20;
+    /* 32 MB: level 1 is ten times this and each level ten times the last,
+     * so at the first default (4 MB) a 10 GB store was five or six levels
+     * deep and a random load rewrote every row at each (measured: 25.5x
+     * write amplification at 10 M rows against RocksDB's 8.2x). The cost is
+     * a longer log to replay on open, and a larger zero-filled log. */
+    db->memtable_limit = opt && opt->tune_a ? opt->tune_a : 32u << 20;
     db->l0_trigger = opt && opt->tune_b ? opt->tune_b : 4;
     db->cache_bytes = opt && opt->cache_bytes ? opt->cache_bytes : 64u << 20;
     cache_init(&db->bcache);
@@ -1373,6 +1378,16 @@ static int install(GsStore *db, Version *nv, FileMeta **gone, size_t ngone) {
     return GS_OK;
 }
 
+/* Whether these files' key ranges are pairwise disjoint. */
+static int moveable(FileMeta **in, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        for (size_t j = i + 1; j < n; j++)
+            if (bytes_cmp(gsb(in[i]->largest.p, in[i]->largest.n), gsb(in[j]->smallest.p, in[j]->smallest.n)) >= 0 &&
+                bytes_cmp(gsb(in[j]->largest.p, in[j]->largest.n), gsb(in[i]->smallest.p, in[i]->smallest.n)) >= 0)
+                return 0;
+    return 1;
+}
+
 static int compact_level(GsStore *db, int level) {
     Version *v = db->cur;
     FileMeta **inputs = NULL;
@@ -1405,6 +1420,23 @@ static int compact_level(GsStore *db, int level) {
             inputs = realloc(inputs, (nin + 1) * sizeof *inputs);
             inputs[nin++] = v->files[next][i];
         }
+    /* A trivial move: nothing below overlaps, and the inputs do not overlap
+     * each other, so the files go down a level as they are, unrewritten. A
+     * sorted load is all such moves (RocksDB writes 2.0x on one; this wrote
+     * 7.0x by rewriting at every level). Nothing is dropped on the way, which
+     * is safe: a move only keeps what a merge might have discarded. */
+    if (nin == first_below && moveable(inputs, nin)) {
+        Version *nv = version_copy(v);
+        for (size_t i = 0; i < nin; i++) {
+            version_add(nv, next, inputs[i]);
+            version_remove(db, nv, level, inputs[i]);
+        }
+        int rc = install(db, nv, NULL, 0);
+        free(inputs);
+        gsbuf_free(&lo);
+        gsbuf_free(&hi);
+        return rc;
+    }
     int bottom = 1;
     for (int l = next + 1; l < LEVELS; l++) if (v->nfiles[l]) bottom = 0;
     /* sources: each upper input alone, the lower ones as one run */
