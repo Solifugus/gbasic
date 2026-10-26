@@ -232,7 +232,8 @@ int main(int argc, char **argv) {
     GsqlIo *io = real ? gsql_io_real() : gsql_io_sim();
     snprintf(path, sizeof path, "%s/db", real ? argv[4] : "d");
     snprintf(bpath, sizeof bpath, "%s/backup", real ? argv[4] : "d");
-    GsOptions opt = {1, 1024, 256 * 1024, io, 40, 3};
+    /* §2.C: values of 64 bytes or more go to blob files, about a third here */
+    GsOptions opt = {1, 1024, 256 * 1024, io, 40, 3, 64};
     GsStore *db;
     int rc = E->open(path, &opt, &db);
     CHECK(rc == GS_OK, "open answered %s", gs_status_name(rc));

@@ -47,6 +47,7 @@ typedef struct {
      * checkpoint, a compaction) and for the measurements. 0 = the default. */
     uint64_t tune_a;        /* B: checkpoint after this many log frames. C: memtable bytes */
     uint64_t tune_b;        /* C: L0 files before compaction */
+    uint64_t tune_c;        /* C: values at least this long go to a blob file */
 } GsOptions;
 
 typedef struct GsStore GsStore;

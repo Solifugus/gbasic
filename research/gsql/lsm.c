@@ -47,6 +47,10 @@
 
 #define TYPE_DEL 0
 #define TYPE_PUT 1
+/* A value kept in a blob file; the entry's value is a pointer to it:
+ * u64 blob file number, u64 offset, u32 length, u32 crc32c of the value. */
+#define TYPE_BLOB 2
+#define BLOB_PTR 24
 #define ID_LEN 8
 /* sequences a write transaction gives its own spilled runs until it commits:
  * above every real sequence and below the buffer's (UINT64_MAX) */
@@ -203,6 +207,13 @@ typedef struct FileMeta {
      * is written before its commit has a sequence, so the run's entries carry
      * 0 and the commit gives the whole file one (its keys are distinct). */
     uint64_t seq_over;
+    /* The blob files this file points into, its own among them. Each one is
+     * counted for as long as this record lives, so a version a snapshot still
+     * holds keeps its blobs: a blob file goes when the last record pointing
+     * into it is freed. */
+    U64s blobs;
+    uint64_t own_blob;         /* the blob file written with it, or 0 */
+    struct GsStore *db;
     int refs;                  /* versions holding it */
     int obsolete;              /* dropped by a compaction; delete at refs 0 */
     /* opened lazily */
@@ -246,10 +257,21 @@ struct GsStore {
     char *path, *dir;
     uint32_t block;           /* data block target size (the page size option) */
     uint64_t memtable_limit, l0_trigger;
+    uint64_t vsep;            /* values this long or longer go to blob files; 0: none */
+    struct Blob *blob;        /* every blob file a live record points into */
+    size_t nblob, capblob;
     uint64_t cache_bytes, bcache_bytes;
     Cache bcache;             /* decoded blocks, keyed (file number, block + 1) */
     GsqlFile *log, *lockf;
     uint64_t log_num, log_end;
+    /* The oldest log whose records the memtable still holds, which is where
+     * the next open must begin replaying. Not always log_num: an open replays
+     * every log from the manifest's onward into one memtable, and before
+     * this the manifest recorded the last of them -- so a manifest written
+     * before the next flush (a compaction installing, which the incremental
+     * compaction made common) dropped the earlier logs' commits from every
+     * later recovery. Found by the crash gate as a durable commit lost. */
+    uint64_t log_first;
     uint64_t next_file;
     uint64_t last_seq;        /* the last sequence number handed out */
     uint64_t durable_seq;     /* the last one on disk */
@@ -275,6 +297,98 @@ static char *file_name(const GsStore *db, uint64_t num) {
     char suf[48];
     snprintf(suf, sizeof suf, ".%llu.sst", (unsigned long long)num);
     return gs_path_with(db->path, suf);
+}
+
+static char *blob_name(const GsStore *db, uint64_t num) {
+    char suf[48];
+    snprintf(suf, sizeof suf, ".%llu.blob", (unsigned long long)num);
+    return gs_path_with(db->path, suf);
+}
+
+/* ---- blob files ----------------------------------------------------------- */
+
+/* Long values live in blob files written beside the sorted file they were
+ * flushed with (WiscKey's separation, in the shape RocksDB's integrated blob
+ * files take): a compaction copies the 24-byte pointer and never the value,
+ * which is what made 100 KiB values the one workload where this design was
+ * the slowest engine measured. */
+typedef struct Blob {
+    uint64_t num;
+    uint64_t refs;  /* file records pointing into it */
+    GsqlFile *f;    /* opened at the first read */
+} Blob;
+
+static int u64_cmp(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+static int u64_has(const U64s *u, uint64_t v) {
+    for (size_t i = 0; i < u->n; i++) if (u->v[i] == v) return 1;
+    return 0;
+}
+
+static Blob *blob_find(GsStore *db, uint64_t num) {
+    for (size_t i = 0; i < db->nblob; i++) if (db->blob[i].num == num) return &db->blob[i];
+    return NULL;
+}
+
+static void blob_ref(GsStore *db, uint64_t num) {
+    Blob *b = blob_find(db, num);
+    if (!b) {
+        if (db->nblob == db->capblob) { db->capblob = db->capblob ? db->capblob * 2 : 16; db->blob = realloc(db->blob, db->capblob * sizeof *db->blob); }
+        b = &db->blob[db->nblob++];
+        memset(b, 0, sizeof *b);
+        b->num = num;
+    }
+    b->refs++;
+}
+
+/* A record pointing into it is freed. `del`: the record's sorted file was
+ * itself deleted (obsolete), so if it was the last, the blob file goes too.
+ * A record freed because the store is closing deletes nothing (an early
+ * draft did, which would have deleted every blob at close). If a deletion
+ * is lost to a crash, the next open finds the blob in the manifest's list
+ * of live blobs with nothing pointing into it, and deletes it then. */
+static void blob_unref(GsStore *db, uint64_t num, int del) {
+    Blob *b = blob_find(db, num);
+    if (!b || --b->refs > 0) return;
+    if (b->f) gsql_io_close(b->f);
+    if (del) {
+        char *name = blob_name(db, num);
+        gsql_io_remove(db->io, name);
+        free(name);
+    }
+    *b = db->blob[--db->nblob];
+}
+
+static int blob_read(GsStore *db, const unsigned char *ptr, size_t pn, GsBuf *out) {
+    if (pn != BLOB_PTR) return GS_CORRUPT;
+    uint64_t num = get64(ptr), off = get64(ptr + 8);
+    uint32_t len = get32(ptr + 16), crc = get32(ptr + 20);
+    Blob *b = blob_find(db, num);
+    if (!b) return GS_CORRUPT;
+    if (!b->f) {
+        char *name = blob_name(db, num);
+        int rc = gsql_io_open(db->io, name, 0, &b->f);
+        free(name);
+        if (rc) { b->f = NULL; return rc == ENOENT ? GS_CORRUPT : ioerr(rc); }
+    }
+    gsbuf_reserve(out, len + 1);
+    size_t got = 0;
+    int rc = ioerr(gsql_io_read_at(b->f, off, out->p, len, &got));
+    if (rc) return rc;
+    if (got != len || crc32c(out->p, len) != crc) return GS_CORRUPT;
+    out->n = len;
+    db->st.pages_read++;
+    return GS_OK;
+}
+
+/* An entry's value into `out`, following a blob pointer. */
+static int val_copy(GsStore *db, int type, const unsigned char *v, size_t vn, GsBuf *out) {
+    if (type == TYPE_BLOB) return blob_read(db, v, vn, out);
+    gsbuf_set(out, v, vn);
+    return GS_OK;
 }
 
 static char *log_name(const char *path, uint64_t num) {
@@ -311,6 +425,11 @@ typedef struct {
     GsBuf smallest;
     uint64_t small_seq;
     int rc;
+    /* the blob file for this file's long values, opened at the first one */
+    GsqlFile *bf;
+    uint64_t bnum, boff;
+    U64s blobs;             /* every blob file an entry points into */
+    U64s *track;            /* where to note bnum when it is taken (or NULL) */
 } Builder;
 
 static uint64_t key_hash64(const unsigned char *k, size_t n) {
@@ -326,6 +445,12 @@ static int bld_open(GsStore *db, Builder *b) {
     memset(b, 0, sizeof *b);
     b->db = db;
     b->num = db->next_file++;
+    /* A number may be taken again after a crash, and sorted files and blob
+     * files share the numbers: a blob file left from before must not stay
+     * beside the sorted file that took its number (it did, unnamed). */
+    char *other = blob_name(db, b->num);
+    gsql_io_remove(db->io, other);
+    free(other);
     char *name = file_name(db, b->num);
     /* CREATE without EXCLUSIVE, then truncate: a crash between writing a file
      * and naming it in the manifest leaves an orphan whose number the next
@@ -379,8 +504,56 @@ static void bld_finish_block(Builder *b) {
     b->nblock_ents = 0;
 }
 
-static void bld_add(Builder *b, const Ent *e) {
+/* Write a long value to this builder's blob file; `ptr` gets the pointer. */
+static int bld_blob(Builder *b, const unsigned char *v, size_t vn, unsigned char *ptr) {
+    GsStore *db = b->db;
+    if (!b->bf) {
+        b->bnum = db->next_file++;
+        if (b->track) u64_push(b->track, b->bnum); /* garbage until named */
+        char *name = file_name(db, b->bnum); /* the other kind, as bld_open does */
+        gsql_io_remove(db->io, name);
+        free(name);
+        name = blob_name(db, b->bnum);
+        int rc = ioerr(gsql_io_open(db->io, name, GSQL_IO_CREATE, &b->bf));
+        if (rc == GS_OK) rc = ioerr(gsql_io_truncate(b->bf, 0));
+        if (rc) {
+            if (b->bf) gsql_io_close(b->bf);
+            b->bf = NULL;
+            gsql_io_remove(db->io, name);
+            free(name);
+            return rc;
+        }
+        free(name);
+        b->boff = 0;
+        u64_push(&b->blobs, b->bnum);
+    }
+    int rc = ioerr(gsql_io_write_at(b->bf, b->boff, v, vn));
+    if (rc) return rc;
+    db->st.bytes_written += vn;
+    put64(ptr, b->bnum);
+    put64(ptr + 8, b->boff);
+    put32(ptr + 16, (uint32_t)vn);
+    put32(ptr + 20, crc32c(v, vn));
+    b->boff += vn;
+    return GS_OK;
+}
+
+static void bld_add(Builder *b, const Ent *in) {
     if (b->rc) return;
+    Ent sep;
+    const Ent *e = in;
+    unsigned char ptr[BLOB_PTR];
+    if (in->type == TYPE_PUT && b->db->vsep && in->vn >= b->db->vsep) {
+        if ((b->rc = bld_blob(b, in->v, in->vn, ptr))) return;
+        sep = *in;
+        sep.type = TYPE_BLOB;
+        sep.v = ptr;
+        sep.vn = BLOB_PTR;
+        e = &sep;
+    } else if (in->type == TYPE_BLOB && in->vn == BLOB_PTR) {
+        uint64_t num = get64(in->v);
+        if (!u64_has(&b->blobs, num)) u64_push(&b->blobs, num);
+    }
     if (!b->entries) { gsbuf_set(&b->smallest, e->k, e->kn); b->small_seq = e->seq; }
     /* one hash per distinct key: a version of the same key adds nothing */
     if (!b->entries || b->last.n != e->kn || memcmp(b->last.p, e->k, e->kn)) u64_push(&b->hashes, key_hash64(e->k, e->kn));
@@ -441,7 +614,11 @@ static int bld_close(Builder *b, FileMeta **out) {
     put64(foot + 32, SST_MAGIC);
     put32(foot + 44, crc32c(foot, 44));
     bld_write(b, foot, FOOTER);
+    /* the blob file before the sorted file: nothing may point at a value
+     * that a power loss could take */
+    if (b->rc == GS_OK && b->bf) b->rc = flush_file(b->db, b->bf);
     if (b->rc == GS_OK) b->rc = flush_file(b->db, b->f);
+    if (b->bf) { gsql_io_close(b->bf); b->bf = NULL; }
     gsbuf_free(&bloom);
     gsbuf_free(&b->block);
     gsbuf_free(&b->index);
@@ -457,6 +634,10 @@ static int bld_close(Builder *b, FileMeta **out) {
         gsbuf_set(&m->largest, b->last.p, b->last.n);
         m->large_seq = b->lastseq;
         m->f = b->f;
+        m->db = b->db;
+        m->blobs = b->blobs;
+        m->own_blob = b->bnum;
+        for (size_t i = 0; i < m->blobs.n; i++) blob_ref(b->db, m->blobs.v[i]);
         *out = m;
     } else {
         gsbuf_free(&b->smallest);
@@ -469,6 +650,8 @@ static int bld_close(Builder *b, FileMeta **out) {
         char *name = file_name(b->db, b->num);
         gsql_io_remove(b->db->io, name);
         free(name);
+        if (b->bnum) { name = blob_name(b->db, b->bnum); gsql_io_remove(b->db->io, name); free(name); }
+        u64_free(&b->blobs);
     }
     gsbuf_free(&b->last);
     return rc;
@@ -489,6 +672,8 @@ static void file_close(FileMeta *m) {
 
 static void file_free(FileMeta *m) {
     file_close(m);
+    if (m->db) for (size_t i = 0; i < m->blobs.n; i++) blob_unref(m->db, m->blobs.v[i], m->obsolete);
+    u64_free(&m->blobs);
     gsbuf_free(&m->smallest);
     gsbuf_free(&m->largest);
     free(m);
@@ -932,6 +1117,12 @@ typedef struct Comp {
      * Every manifest written meanwhile lists them as garbage instead, and the
      * next open deletes them. */
     U64s pending;
+    /* Blob space comes back by relocation: a value this compaction keeps
+     * from a blob file numbered below gc_below is written again, into the
+     * output's own blob, so the oldest files lose their pointers and go.
+     * Without it a file stays whole while any one of its values is live. */
+    uint64_t gc_below;
+    GsBuf reloc;
 } Comp;
 
 static int manifest_write(GsStore *db) {
@@ -942,7 +1133,7 @@ static int manifest_write(GsStore *db) {
     gs_header_write(hdr, &h);
     gsbuf_append(&b, hdr, sizeof hdr);
     put_u64(&b, db->next_file);
-    put_u64(&b, db->log_num);
+    put_u64(&b, db->log_first);
     put_u64(&b, db->last_seq);
     for (int l = 0; l < LEVELS; l++) {
         put_u64(&b, db->cur->nfiles[l]);
@@ -956,8 +1147,15 @@ static int manifest_write(GsStore *db) {
             put_bytes(&b, m->largest.p, m->largest.n);
             put_u64(&b, m->large_seq);
             put_u64(&b, m->seq_over);
+            put_u64(&b, m->own_blob);
+            put_u64(&b, m->blobs.n);
+            for (size_t j = 0; j < m->blobs.n; j++) put_u64(&b, m->blobs.v[j]);
         }
     }
+    /* every blob file alive now, so an open can delete one whose deletion a
+     * crash undid: listed here, pointed into by nothing in the version */
+    put_u64(&b, db->nblob);
+    for (size_t i = 0; i < db->nblob; i++) put_u64(&b, db->blob[i].num);
     put_u64(&b, db->ndead);
     for (size_t i = 0; i < db->ndead; i++) { put_u64(&b, db->dead[i].id); put_u64(&b, db->dead[i].death); }
     size_t npend = db->comp ? db->comp->pending.n : 0;
@@ -1035,11 +1233,35 @@ static int manifest_read(GsStore *db, const unsigned char *p, size_t n) {
             if ((rc = get_u64(p, end, &at, &m->num)) || (rc = get_u64(p, end, &at, &m->size)) ||
                 (rc = get_u64(p, end, &at, &m->entries)) || (rc = get_bytes(p, end, &at, &m->smallest)) ||
                 (rc = get_u64(p, end, &at, &m->small_seq)) || (rc = get_bytes(p, end, &at, &m->largest)) ||
-                (rc = get_u64(p, end, &at, &m->large_seq)) || (rc = get_u64(p, end, &at, &m->seq_over))) {
+                (rc = get_u64(p, end, &at, &m->large_seq)) || (rc = get_u64(p, end, &at, &m->seq_over)) ||
+                (rc = get_u64(p, end, &at, &m->own_blob))) {
                 file_free(m);
                 return rc;
             }
+            uint64_t nb;
+            if ((rc = get_u64(p, end, &at, &nb)) || nb > end) { file_free(m); return rc ? rc : GS_CORRUPT; }
+            for (uint64_t j = 0; j < nb; j++) {
+                uint64_t bn;
+                if ((rc = get_u64(p, end, &at, &bn))) { file_free(m); return rc; }
+                u64_push(&m->blobs, bn);
+            }
+            m->db = db;
+            for (size_t j = 0; j < m->blobs.n; j++) blob_ref(db, m->blobs.v[j]);
             version_add(db->cur, l, m);
+        }
+    }
+    uint64_t nlive;
+    if ((rc = get_u64(p, end, &at, &nlive))) return rc;
+    if (nlive > end) return GS_CORRUPT;
+    for (uint64_t i = 0; i < nlive; i++) {
+        uint64_t bn;
+        if ((rc = get_u64(p, end, &at, &bn))) return rc;
+        if (!blob_find(db, bn)) {
+            /* listed alive, and nothing in the version points into it: its
+             * last reference went and the deletion did not survive */
+            char *name = blob_name(db, bn);
+            gsql_io_remove(db->io, name);
+            free(name);
         }
     }
     uint64_t nd;
@@ -1180,6 +1402,8 @@ static void store_free(GsStore *db) {
     if (db->log) gsql_io_close(db->log);
     if (db->lockf) gsql_io_close(db->lockf);
     version_unref(db, db->cur);
+    for (size_t i = 0; i < db->nblob; i++) if (db->blob[i].f) gsql_io_close(db->blob[i].f);
+    free(db->blob);
     if (db->bcache.bucket) cache_free(&db->bcache);
     free(db->dead);
     u64_free(&db->garbage);
@@ -1193,6 +1417,7 @@ static void store_free(GsStore *db) {
 static int create_db(GsStore *db) {
     db->next_file = 1;
     db->log_num = 1;
+    db->log_first = 1;
     db->last_seq = 1;
     gs_identity_new(db->io, db->identity);
     db->cur = version_copy(NULL);
@@ -1226,6 +1451,8 @@ static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
      * a longer log to replay on open, and a larger zero-filled log. */
     db->memtable_limit = opt && opt->tune_a ? opt->tune_a : 32u << 20;
     db->l0_trigger = opt && opt->tune_b ? opt->tune_b : 4;
+    /* 4 KiB: a YCSB row (1,000 bytes) stays inline, a 100 KiB value does not */
+    db->vsep = opt && opt->tune_c ? opt->tune_c : 4096;
     db->cache_bytes = opt && opt->cache_bytes ? opt->cache_bytes : 64u << 20;
     cache_init(&db->bcache);
     /* BUSY: the log and the manifest are both replaced over a store's life, so
@@ -1255,13 +1482,18 @@ static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
         gsql_io_close(mf);
         /* finish deleting what the last manifest said was garbage */
         for (size_t i = 0; rc == GS_OK && i < db->garbage.n; i++) {
+            /* one number space: a garbage number is a sorted file or a blob */
             char *name = file_name(db, db->garbage.v[i]);
+            gsql_io_remove(db->io, name);
+            free(name);
+            name = blob_name(db, db->garbage.v[i]);
             gsql_io_remove(db->io, name);
             free(name);
         }
         db->garbage.n = 0;
         /* replay every log from the manifest's onward */
         uint64_t k = db->log_num;
+        db->log_first = k;
         while (rc == GS_OK) {
             GsqlFile *lf = NULL;
             char *name = log_name(db->path, k);
@@ -1396,11 +1628,15 @@ static void comp_free(GsStore *db, int abandon) {
             char *name = file_name(db, c->pending.v[i]);
             gsql_io_remove(db->io, name);
             free(name);
+            name = blob_name(db, c->pending.v[i]);
+            gsql_io_remove(db->io, name);
+            free(name);
         }
     }
     free(c->outs);
     free(c->inputs);
     gsbuf_free(&c->cur);
+    gsbuf_free(&c->reloc);
     u64_free(&c->pending);
     free(c);
     db->comp = NULL;
@@ -1409,6 +1645,7 @@ static void comp_free(GsStore *db, int abandon) {
 static int comp_open_output(GsStore *db, Comp *c) {
     int rc = bld_open(db, &c->b);
     u64_push(&c->pending, c->b.num); /* garbage from now until installed */
+    c->b.track = &c->pending;        /* and so is its blob file, when it takes one */
     if (rc == GS_OK) c->open = 1;
     return rc;
 }
@@ -1476,6 +1713,12 @@ static int comp_step(GsStore *db, uint64_t budget, uint64_t *used) {
         } else keep = 0;                                       /* shadowed for everyone */
         if (keep) {
             if (!c->open && (rc = comp_open_output(db, c))) break;
+            if (e.type == TYPE_BLOB && e.vn == BLOB_PTR && get64(e.v) < c->gc_below) {
+                if ((rc = blob_read(db, e.v, e.vn, &c->reloc))) break;
+                e.type = TYPE_PUT;
+                e.v = c->reloc.p;
+                e.vn = c->reloc.n;
+            }
             bld_add(&c->b, &e);
         }
         work += e.kn + e.vn + 16;
@@ -1549,6 +1792,14 @@ static int comp_start(GsStore *db, int level) {
     for (int l = next + 1; l < LEVELS; l++) if (v->nfiles[l]) c->bottom = 0;
     c->keep_after = oldest_snapshot(db);
     c->target = db->memtable_limit * 2;
+    if (db->nblob >= 4) {
+        /* the oldest quarter of the blob files, by number */
+        uint64_t *nums = malloc(db->nblob * sizeof *nums);
+        for (size_t i = 0; i < db->nblob; i++) nums[i] = db->blob[i].num;
+        qsort(nums, db->nblob, sizeof *nums, u64_cmp);
+        c->gc_below = nums[db->nblob / 4];
+        free(nums);
+    }
     /* sources: each upper input alone, the lower ones as one run */
     c->src = calloc(nin + 1, sizeof *c->src);
     for (size_t i = 0; i < first_below; i++) {
@@ -1631,6 +1882,8 @@ static int flush_memtable(GsStore *db) {
     nv->mem = mem_new();
     if (fm) version_add(nv, 0, fm);
     db->log_num = oldnum + 1;
+    uint64_t first_before = db->log_first;
+    db->log_first = oldnum + 1; /* the memtable is in the file now */
     /* the manifest names the file and the new log; its directory flush makes
      * the new names durable before any commit lands in the new log */
     Version *old = db->cur;
@@ -1639,6 +1892,7 @@ static int flush_memtable(GsStore *db) {
     if (rc) {
         db->cur = old;
         db->log_num = oldnum;
+        db->log_first = first_before;
         /* the new file is named by no manifest: it goes (left, it stayed on
          * disk for good once a later manifest's next-file number passed it) */
         if (fm) fm->obsolete = 1;
@@ -1650,9 +1904,13 @@ static int flush_memtable(GsStore *db) {
     gsql_io_close(oldlog);
     db->log = nl;
     db->log_end = 0;
-    name = log_name(db->path, oldnum);
-    gsql_io_remove(db->io, name);
-    free(name);
+    /* every log the memtable held, not only the last: an open may have
+     * replayed several into it */
+    for (uint64_t k = first_before; k <= oldnum; k++) {
+        name = log_name(db->path, k);
+        gsql_io_remove(db->io, name);
+        free(name);
+    }
     db->durable_seq = db->last_seq; /* everything is in a flushed file */
     return maybe_compact(db, 0);
 }
@@ -1729,7 +1987,11 @@ static int file_lookup(GsStore *db, FileMeta *m, const unsigned char *k, size_t 
         if (e.kn == kn && !memcmp(e.k, k, kn)) {
             found = 1;
             *del = e.type == TYPE_DEL;
-            if (!*del) { gsbuf_set(keep, e.v, e.vn); *out = e; out->v = keep->p; out->k = k; }
+            if (!*del) {
+                int vr = val_copy(db, e.type, e.v, e.vn, keep);
+                if (vr) { src_reset(&s); return -vr; }
+                *out = e; out->v = keep->p; out->vn = keep->n; out->k = k; out->type = TYPE_PUT;
+            }
         }
     }
     src_reset(&s);
@@ -1785,7 +2047,11 @@ static int lookup(struct GsTxn *t, const unsigned char *k, size_t kn, Ent *out, 
                 Ent e = src_ent(&s);
                 if (e.kn == kn && !memcmp(e.k, k, kn)) {
                     int del = e.type == TYPE_DEL;
-                    if (!del) { gsbuf_set(keep, e.v, e.vn); *out = e; out->v = keep->p; out->k = k; }
+                    if (!del) {
+                        int vr = val_copy(db, e.type, e.v, e.vn, keep);
+                        if (vr) { src_reset(&s); return vr; }
+                        *out = e; out->v = keep->p; out->vn = keep->n; out->k = k; out->type = TYPE_PUT;
+                    }
                     src_reset(&s);
                     return del ? GS_NOT_FOUND : GS_OK;
                 }
@@ -2025,7 +2291,9 @@ typedef struct GsCursor {
     int between;          /* after cursor_delete: rests between the neighbours of `key` */
     uint64_t spills;      /* the txn's spill count when the sources were built */
     GsBuf key;            /* tree id + key */
-    GsBuf value;
+    GsBuf value;          /* the entry's value as stored: a blob pointer if vblob */
+    int vblob;
+    GsBuf vres;           /* a blob pointer's value, read when asked for */
     unsigned char lo[ID_LEN], hi[ID_LEN];
     struct GsCursor *next;
 } Cur;
@@ -2071,8 +2339,8 @@ static int find_forward(Cur *c) {
             return GS_OK; /* past this tree */
         GsBuf k = {0};
         gsbuf_set(&k, be.k, be.kn);
-        int live = be.type == TYPE_PUT;
-        if (live) gsbuf_set(&c->value, be.v, be.vn);
+        int live = be.type != TYPE_DEL;
+        if (live) { gsbuf_set(&c->value, be.v, be.vn); c->vblob = be.type == TYPE_BLOB; }
         /* every source past this key */
         for (size_t i = 0; i < c->ns; i++) {
             Src *s = &c->src[i];
@@ -2124,8 +2392,8 @@ static int find_backward(Cur *c, const unsigned char *limit, size_t ln) {
             if (!found || s > bseq) {
                 found = 1;
                 bseq = s;
-                live = e.type == TYPE_PUT;
-                if (live) gsbuf_set(&c->value, e.v, e.vn);
+                live = e.type != TYPE_DEL;
+                if (live) { gsbuf_set(&c->value, e.v, e.vn); c->vblob = e.type == TYPE_BLOB; }
             }
         }
         if ((rc = any_rc(c))) { gsbuf_free(&best); gsbuf_free(&lim); return rc; }
@@ -2275,6 +2543,12 @@ static int lsm_value(GsCursor *c, GsBytes *value) {
     int rc = cur_live(c);
     if (rc) return rc;
     if (!c->positioned) return GS_NOT_FOUND;
+    if (c->vblob) {
+        /* read only when asked for: a scan that wants keys reads no blobs */
+        if ((rc = blob_read(c->t->db, c->value.p, c->value.n, &c->vres))) return rc;
+        *value = gsb(c->vres.p, c->vres.n);
+        return GS_OK;
+    }
     *value = gsb(c->value.p, c->value.n);
     return GS_OK;
 }
@@ -2290,6 +2564,7 @@ static int lsm_cursor_put(GsCursor *c, GsBytes value) {
     t->trees[c->tree].mods++;
     c->mods = t->trees[c->tree].mods;
     gsbuf_set(&c->value, value.p, value.n);
+    c->vblob = 0;
     /* the buffer changed under the sources: re-seek past this key */
     all_seek(c, c->key.p, c->key.n, 0);
     c->forward = 1;
@@ -2323,6 +2598,7 @@ static void lsm_cursor_close(GsCursor *c) {
     free(c->src);
     gsbuf_free(&c->key);
     gsbuf_free(&c->value);
+    gsbuf_free(&c->vres);
     free(c);
 }
 
@@ -2402,6 +2678,7 @@ static void txn_free(struct GsTxn *t) {
         file_close(t->runs[r]);
         gsql_io_remove(t->db->io, name);
         free(name);
+        t->runs[r]->obsolete = 1; /* and its blob file, if nothing else points into it */
         file_free(t->runs[r]);
     }
     free(t->runs);
@@ -2433,11 +2710,17 @@ static int commit_runs(struct GsTxn *t, uint64_t *commit_id) {
      * a crash between the two left them on disk for good (found by checking
      * every recovery for unnamed files). That manifest lists them as
      * garbage, and the commit's names them. */
-    for (size_t r = 0; r < t->nruns; r++) u64_push(&db->garbage, t->runs[r]->num);
+    U64s mine = {0};
+    for (size_t r = 0; r < t->nruns; r++) {
+        u64_push(&mine, t->runs[r]->num);
+        if (t->runs[r]->own_blob) u64_push(&mine, t->runs[r]->own_blob);
+    }
+    for (size_t i = 0; i < mine.n; i++) u64_push(&db->garbage, mine.v[i]);
     int rc = flush_memtable(db);
-    for (size_t r = 0; r < t->nruns; r++) /* by value: the flush may have added its own */
+    for (size_t r = 0; r < mine.n; r++) /* by value: the flush may have added its own */
         for (size_t i = 0; i < db->garbage.n; i++)
-            if (db->garbage.v[i] == t->runs[r]->num) { db->garbage.v[i] = db->garbage.v[--db->garbage.n]; break; }
+            if (db->garbage.v[i] == mine.v[r]) { db->garbage.v[i] = db->garbage.v[--db->garbage.n]; break; }
+    u64_free(&mine);
     if (rc == GS_OK) rc = spill_buffer(t);
     if (rc) { lsm_abort(t); return rc == GS_FULL ? GS_FULL : GS_IO; }
     uint64_t base = db->last_seq + 1, commit = base + t->nruns - 1;
@@ -2583,6 +2866,14 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
                     Ent *e = &b.e[ei];
                     if (n && ent_cmp(prev.p, prev.n, pseq, e->k, e->kn, e->seq) >= 0) rsay(&r, "file %llu: entries out of order at %llu", m->num, n);
                     if (!bloom_may(m, e->k, e->kn)) rsay(&r, "file %llu: the bloom filter misses entry %llu", m->num, n);
+                    if (e->type == TYPE_BLOB) {
+                        GsBuf bv = {0};
+                        if (e->vn != BLOB_PTR || !u64_has(&m->blobs, get64(e->v)))
+                            rsay(&r, "file %llu: entry %llu points into a blob file it does not list", m->num, n);
+                        else if (blob_read(db, e->v, e->vn, &bv))
+                            rsay(&r, "file %llu: entry %llu's blob does not read back", m->num, n);
+                        gsbuf_free(&bv);
+                    }
                     gsbuf_set(&prev, e->k, e->kn);
                     pseq = e->seq;
                 }
@@ -2603,19 +2894,28 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
      * defect that grew 2.A and 2.B without bound. Data files are numbered
      * below next_file, so asking for each one needs no directory listing. */
     for (uint64_t num = 1; num < db->next_file; num++) {
-        int named = 0;
-        for (int l = 0; l < LEVELS && !named; l++)
-            for (size_t i = 0; i < v->nfiles[l] && !named; i++) named = v->files[l][i]->num == num;
-        for (size_t i = 0; i < db->garbage.n && !named; i++) named = db->garbage.v[i] == num;
-        for (size_t i = 0; db->comp && i < db->comp->pending.n && !named; i++) named = db->comp->pending.v[i] == num;
-        if (named) continue;
-        char *name = file_name(db, num);
-        GsqlFile *f = NULL;
-        if (gsql_io_open(db->io, name, 0, &f) == 0) {
-            gsql_io_close(f);
-            rsay(&r, "file %llu exists and nothing names it (next file %llu)", (unsigned long long)num, (unsigned long long)db->next_file);
+        /* garbage and an unfinished compaction's outputs may be either kind */
+        int either = 0, sorted = 0;
+        for (size_t i = 0; i < db->garbage.n && !either; i++) either = db->garbage.v[i] == num;
+        for (size_t i = 0; db->comp && i < db->comp->pending.n && !either; i++) either = db->comp->pending.v[i] == num;
+        if (either) continue;
+        for (int l = 0; l < LEVELS && !sorted; l++)
+            for (size_t i = 0; i < v->nfiles[l] && !sorted; i++) sorted = v->files[l][i]->num == num;
+        int blob = blob_find(db, num) != NULL;
+        /* each name stands for itself: a sorted file 8 does not account
+         * for a blob file 8 (it was exactly such a pair that leaked) */
+        for (int kind = 0; kind < 2; kind++) {
+            if (kind ? blob : sorted) continue;
+            char *name = kind ? blob_name(db, num) : file_name(db, num);
+            GsqlFile *f = NULL;
+            if (gsql_io_open(db->io, name, 0, &f) == 0) {
+                gsql_io_close(f);
+                rsay(&r, kind ? "blob file %llu exists and nothing points into it (next file %llu)"
+                              : "file %llu exists and nothing names it (next file %llu)",
+                     (unsigned long long)num, (unsigned long long)db->next_file);
+            }
+            free(name);
         }
-        free(name);
     }
     return r.bad ? GS_CORRUPT : GS_OK;
 }
@@ -2631,9 +2931,11 @@ static int lsm_backup(struct GsTxn *snap, const char *dest) {
     tmp.dir = gs_dirname(dest);
     tmp.block = db->block;
     tmp.memtable_limit = db->memtable_limit;
+    tmp.vsep = db->vsep;
     memcpy(tmp.identity, db->identity, 16);
     tmp.next_file = 1;
     tmp.log_num = 1;
+    tmp.log_first = 1;
     tmp.cur = version_copy(NULL);
     Builder b;
     int rc = bld_open(&tmp, &b);
@@ -2649,9 +2951,16 @@ static int lsm_backup(struct GsTxn *snap, const char *dest) {
     uint64_t seq = 1;
     for (int frc = find_forward(&c); rc == GS_OK && frc == GS_OK && c.positioned; frc = find_forward(&c)) {
         Ent e = {c.key.p, c.key.n, seq, TYPE_PUT, c.value.p, c.value.n};
+        if (c.vblob) {
+            /* the copy gets the value itself, and writes blobs of its own */
+            if ((rc = blob_read(db, c.value.p, c.value.n, &c.vres))) break;
+            e.v = c.vres.p;
+            e.vn = c.vres.n;
+        }
         bld_add(&b, &e);
         rc = b.rc;
     }
+    gsbuf_free(&c.vres);
     for (size_t i = 0; i < c.ns; i++) src_reset(&c.src[i]);
     free(c.src);
     gsbuf_free(&c.key);
@@ -2675,6 +2984,8 @@ static int lsm_backup(struct GsTxn *snap, const char *dest) {
     tmp.dead = NULL;
     tmp.ndead = 0;
     version_unref(&tmp, tmp.cur);
+    for (size_t i = 0; i < tmp.nblob; i++) if (tmp.blob[i].f) gsql_io_close(tmp.blob[i].f);
+    free(tmp.blob);
     u64_free(&tmp.garbage);
     free(tmp.path);
     free(tmp.dir);

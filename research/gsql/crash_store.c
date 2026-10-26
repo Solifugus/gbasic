@@ -33,11 +33,13 @@ static void *a_open(GsqlIo *io, const char *dir, int *err) {
     /* a small cache, so the bigger transactions spill (G5) inside the crash runs */
     /* GS_TUNE_A / GS_TUNE_B override the candidate knobs: §2.B's checkpoint
      * threshold decides how long stale frames stay in its log */
-    const char *ta = getenv("GS_TUNE_A"), *tb = getenv("GS_TUNE_B");
+    const char *ta = getenv("GS_TUNE_A"), *tb = getenv("GS_TUNE_B"), *tc = getenv("GS_TUNE_C");
     /* defaults chosen to reach each candidate's background work often: §2.B
      * checkpoints every 24 frames, §2.C flushes a 2,000-byte memtable */
     uint64_t da = strcmp(E->name, "lsm") ? 24 : 2000;
-    GsOptions o = {1, page_size, 16 * page_size, io, ta ? strtoull(ta, NULL, 10) : da, tb ? strtoull(tb, NULL, 10) : 3};
+    /* §2.C separates values of 24 bytes or more, so both kinds are crashed */
+    GsOptions o = {1, page_size, 16 * page_size, io, ta ? strtoull(ta, NULL, 10) : da, tb ? strtoull(tb, NULL, 10) : 3,
+                   tc ? strtoull(tc, NULL, 10) : 24};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     if (rc) { *err = map(rc); return NULL; }
