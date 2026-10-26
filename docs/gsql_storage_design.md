@@ -631,7 +631,24 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
   - **A flush still runs inside a commit**, which is most of W3's remaining p99 larger than memory.
   - **Point reads are 10 to 20% lower.**
   - Each is engineering rather than structure.
-- **Tests 3 and 4 remain:** the hard requirements, and open question 6.
+- **Tests 3 and 4 remained:** the hard requirements, and open question 6.
+
+**Test 3 run, 2026-10-26: the hard requirements; 2.C stands, with backup the one requirement unmet as built** (`research/gsql/README.md`, "Test 3", has the tables; `research/gsql/hardreq.c` checks every claim it reports).
+- **Met by 2.C:**
+  - **G4.** A read-only transaction refuses every write, and nothing changes. This is true of all three candidates.
+  - **G1.** The old reader keeps the old dataset, new readers see only the new one, and the swap is O(1) (0.004 ms at 10⁶ rows, against 102 ms for 2.B, whose B+tree frees the old tree's pages).
+  - **Bounded recovery.** About 100 ms after 10⁶ commits, held reader or not, bounded by the memtable.
+  - **Held-snapshot space.** A held reader costs the data at its snapshot and nothing more.
+- **Not met as built, by either candidate: online backup without stopping writers.** Both backups are consistent, but each is one blocking call in a single-threaded owner, and a 10⁶-row backup holds writers for 326 ms in 2.C and 157 ms in 2.B. Meeting it needs a backup taken in slices between commits, an interface change. **The designs pay for that differently, which is the structural result:**
+  - a sliced 2.C backup pins its snapshot's immutable files;
+  - a sliced 2.B backup is a long reader, and a long reader stops 2.B's log reset, so its log and its recovery time grow with every write made meanwhile (827 MB and 656 ms after 10⁵ commits).
+- **It found four defects, all fixed and gated:**
+  - **2.C's version retention used the oldest open snapshot as its horizon.** Readers pin their versions, so that kept versions nobody could read: one held reader cost space in proportion to writes, 301 MB left after a release that needed 1.4 MB. The same rule, copied into a new sweep of dropped trees, also deleted a tree whose drop was not yet durable, and a new reader saw 78 of 300 of its records. The horizon is now the last durable commit.
+  - **2.B's log never reset** under group commit written as synced commits: 8.3 GB and 6.1 s to recover after 10⁶ commits. Now 4.2 MB and 3 ms.
+  - **A replaced dataset in 2.C kept its space** until a compaction reached it. Its files are now dropped whole.
+  - **2.C's flushes wrote every version**, not only each key's newest.
+- **Two blind spots in the suites are closed.** No workload had put two versions of one key in a memtable at a flush, and the crash gate had never crashed a dropped or replaced tree.
+- **Test 4 remains:** open question 6, together with the sliced backup, which changes the §1 interface.
 
 ## 7. Open questions
 

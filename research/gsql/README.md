@@ -27,6 +27,7 @@ GATE_SCALE=quick research/gsql/run.sh
 | `test_btree.c` | the B+tree against a model, over an in-memory pager in both modes |
 | `test_store.c` | the interface against a model, for any candidate |
 | `crash_store.c` | a candidate under the crash harness |
+| `hardreq.c`, `hardreq.sh` | Test 3: the hard requirements, every claim checked by the program |
 
 ## Why §2.A and §2.B share one tree
 
@@ -79,7 +80,7 @@ The comparison is meant to measure the engines, not two independently written tr
 - **2.C must flush the directory before renaming a manifest into place, as well as after.** A compaction creates new sorted files, then renames a manifest naming them. Pending namespace operations survive power loss as any subsequence, so the rename could survive while the creations did not, and recovery found a manifest naming files that were not there. The crash harness found it, as both a recovery failure and a continuation coming back as no prefix. It costs one extra directory flush per manifest write. A journalling filesystem would usually preserve the order, but rule 2 does not promise it.
 - **2.C's readers pin the version they began with**: the files and the memtable. A flush makes a new version with an empty memtable, so an older reader keeps the old memtable and the old files, which between them hold the same data.
   - The first draft cleared the memtable in place, freeing nodes an open reader was pointing at.
-  - Because of the pinning, compaction's "keep every version a snapshot needs" rule is not load-bearing. Perturbing it, and reclaiming retired trees under open snapshots, both pass every test. It would matter if readers used the current version filtered by sequence, as LevelDB's snapshots do. The cost of pinning is space while a reader is held (W6), the same shape as 2.A's pinned pages.
+  - Because of the pinning, compaction's "keep every version a snapshot needs" rule was not load-bearing: perturbing it passed every test. Test 3 found it was pure cost (a held reader kept every version written after it) and replaced it with the last durable commit as the horizon. What pinning does NOT cover is a reader that has not begun: it starts at the last durable commit, so a retired tree must survive until its retirement is durable (Test 3, below). The cost of pinning is the data at the snapshot while a reader is held, the same shape as 2.A's pinned pages.
 - **A flush in 2.C makes unsynced commits durable**, since their data is now in a flushed file. So a fresh snapshot may see more than the last synced commit. The functional test's model accepts the durable or the committed state, and treats the latter as now durable.
 - **2.C meets G5 by spilling to sorted runs.** Past half of `cache_bytes`, a write transaction's buffer becomes a sorted run file. It is written and flushed, but no manifest names it yet. Its entries carry a placeholder sequence, and the file carries an override in a private range that only the writer sees.
   - A transaction that spilled commits by flushing the memtable, spilling the rest of its buffer as a last run, and naming every run in one manifest with its final sequence. The manifest's rename is the commit, so no part of the transaction can survive without the rest. That is why the remainder is not written to the log beside runs named earlier: that would have allowed half a transaction to survive a crash.
@@ -151,6 +152,62 @@ The comparison is meant to measure the engines, not two independently written tr
 - **W8's blob space is not coming back fast enough.** Relocation only touches the oldest quarter of the blob files, and only when a compaction passes through, so overwritten large values keep their space. It needs a trigger based on how much of a file is dead. The crash gate reached relocation in only 5 cases.
 - **A flush still runs inside the commit that fills the memtable.** That is most of W3's remaining p99 larger than memory (150 ms against RocksDB's 35).
 
+## Test 3: the hard requirements (2026-10-26)
+
+§6 point 2's hard requirements, checked against 2.C with 2.B alongside and 2.A as a reference. `hardreq.c` drives every candidate through `store.h`; `hardreq.sh` runs the set and writes `results/2026-10-26/results-hardreq.jsonl`. **Every claim a line makes is checked by the program, not inferred.** A G1 line saying the old snapshot kept the old data has scanned that snapshot. A backup line saying the copy matches has reopened the copy and compared it. A recovery line has read back the last durable commit. One run each, NVMe, 100-byte values.
+
+**The verdicts, after the fixes below:**
+
+| requirement | 2.C | 2.B |
+|---|---|---|
+| G4: read-only enforced by the engine | **met** | **met** |
+| G1: atomic replacement under a live reader | **met**, the swap is O(1) | met, the swap is O(rows) |
+| bounded recovery on a long log | **met**: bounded by the memtable | met only with no reader held |
+| held-snapshot space | **met**: the data at the snapshot, and no more | the log grows with every write while a reader is held |
+| online backup without stopping writers | consistent; **not met as built** (one blocking call) | consistent; not met as built |
+
+**Measured** (after the fixes; 2.A as a reference only):
+
+| | 2.A cow | 2.B wal | 2.C lsm |
+|---|---|---|---|
+| G1 at 10^6 rows: the swap call | 141 ms | 102 ms | **0.004 ms** |
+| G1 at 10^6 rows: the replacing commit | 172 ms | 160 ms | 405 ms |
+| G1: space with the old reader held / after release | 253 / 253 MB | 125 / 250 MB | 276 / **138 MB** |
+| backup of 10^6 rows (writers wait for all of it) | 154 ms | 157 ms | 326 ms |
+| 20 k updates, held snapshot: peak space | 590 MB | 167 MB of log | **0.2 KB** (all in the memtable) |
+| 2 M updates of 1 k keys, held snapshot: peak / after release | | | **2.5 / 1.4 MB** |
+| 200 k updates, held snapshot: 2.B's log | | 1.66 GB | |
+| recovery after 10^6 commits, no reader | | **3.1 ms** (4.2 MB log) | 103 ms |
+| recovery after 10^5 commits, a reader held | | 656 ms (827 MB log) | **122 ms** |
+| recovery after 10^6 commits, a reader held | | not run (would be ~8 GB) | **99 ms** |
+
+- **2.A's file never shrinks**, and a held snapshot costs it 30 KB a commit; nothing new, 2.A being retired.
+- **2.B's space after G1 is two datasets** because the B+tree reuses freed pages rather than shrinking the file; the old pages are free, not lost.
+- **With no reader held, 2.B recovers fastest** now that its log resets. 2.C's recovery is bounded by the memtable (up to 32 MB of log) at about 100 ms, whatever the history and whatever is held.
+
+**What it found, in order of importance:**
+
+1. **A long reader cost 2.C space in proportion to writes, not keys, and the rule behind it also lost data.**
+   - **The rule.** Compaction kept every version newer than the oldest open snapshot, and dropped a retired tree's records once the retirement was older than it (or than the last commit, with no snapshot open).
+   - **Too much kept.** Every reader pins the version it began with, the files and the memtable (above), so a snapshot never reads a compaction's outputs. The kept versions were readable by nobody. 2 M updates of 1,000 keys under one held snapshot left 301 MB after the release; the held snapshot needed 1.4 MB.
+   - **Too little kept.** A new reader begins at the last *durable* commit (§1.3), not the last commit. The dead-file sweep this test added (item 3) was written with the same rule, and dropped the files of a tree whose drop was not yet durable: a new reader saw 78 of 300 of its records. Compaction's copy of the rule was not reached by any workload tried, and is fixed by the same argument.
+   - **The fix is one function, `horizon`: the last durable commit.** A new version serves only readers that have not begun yet, and they begin there. The README's earlier note, that the snapshot rule was "not load-bearing", was right, and stopped short: not load-bearing meant pure cost.
+2. **2.B's log never reset under group commit written as "every Nth commit syncs".** The log resets only when every frame is durable. Test 1 fixed this for `sync()`, but a synced *commit* is the same moment and did not get the same rule. Over 10^6 commits the log reached 8.3 GB and took 6.1 s to recover. A synced commit now checkpoints by `sync()`'s rule.
+3. **A replaced dataset kept its space in 2.C until a compaction happened to reach it.** A 10^6-row dataset's 138 MB survived its replacement, the reader's release and 2,000 further commits. A sorted file whose every record belongs to a retired tree is now dropped whole (`sweep_dead`).
+4. **A flush in 2.C wrote every version in the memtable.** For 1,000 hot keys, level 0 held about 100 MB of shadowed versions. A flush now writes only each key's newest version. By the horizon argument nothing can read the others.
+
+**Two blind spots in the suites, both closed.**
+- **No workload had ever put two versions of one key in a memtable when it flushed.** The crash workloads write 40 to 60 transactions over 200 to 3,000 keys, and `test_store`'s store flushes a 40-byte memtable on every commit. So a flush keeping the *oldest* version of each key passed both, while a direct read went stale after 25 commits. Two additions catch it: `test_store`'s `hot_keys` (five keys, 3,000 commits, a snapshot held throughout, every read checked) and two hot-key crash specs in `run.sh` (300 transactions over 6 keys).
+- **The crash gate never dropped or replaced a tree**, so `tree_replace` had never been crashed in any engine. The adapter now commits one transaction in four by a whole-tree refresh: copy the tree, apply the puts there, `tree_replace`. The model is unchanged, and the choice comes from the transaction itself, so every replay makes it the same way. The sweep fires in the gate (about 1,500 files dropped in one seed range). It never fires there with a retirement still unsynced, so the visibility rule is held by `test_store`'s `dropped_not_durable`, not by the gate.
+
+**What is left:**
+- **Online backup.**
+  - **As built.** Both candidates' backups are consistent: a backup taken while commits continue holds exactly the snapshot. But each is one blocking call, and the owner is single-threaded, so writers wait for the whole of it, about 2.3 ms per MB for 2.C (a logical rewrite) and 1.3 ms per MB for 2.B (a page copy).
+  - **Meeting the requirement needs a backup taken in slices between commits**, which is an interface change (`backup_begin`, `backup_step`, `backup_end`).
+  - **The two designs pay for slicing differently, and that is the structural result.** A sliced 2.C backup pins its snapshot's immutable files, a cost bounded by the data at the snapshot. A sliced 2.B backup is a long reader, so its log grows with every write made during the backup, and its recovery time grows with the log.
+  - **A hard-link backup**, which §6 expected for 2.C, needs a link operation the shared I/O layer does not have.
+- **2.B's long-reader cost is structural**: an open reader stops the log reset, so recovery time follows write volume for as long as the reader lives. SQLite has the same property ("checkpoint starvation").
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -171,11 +228,14 @@ The comparison is meant to measure the engines, not two independently written tr
 | 2.C: commit ignores its sync flag | power (67), torn (37) |
 | 2.C: replay ignores record checksums | torn only (1): the records' own lengths reject most tears |
 | 2.C: recovery leaves the log tail in place | **green**: a stale record survives only if a new commit is exactly the size of a lost one |
-| 2.C: compaction ignores snapshots; retired trees reclaimed under snapshots | **green, legitimately**: readers pin their version (above) |
+| 2.C: compaction ignores snapshots; retired trees reclaimed under snapshots | **green, legitimately**: readers pin their version (above); the rule is gone since Test 3 |
+| 2.C: the horizon is the last commit, not the last durable one | `test_store`'s `dropped_not_durable` (78 of 300 records); **green in the crash gate**, which never sweeps with a retirement unsynced |
+| 2.C: a flush keeps each key's oldest version, not its newest | `test_store`'s `hot_keys` (484 stale reads) and the hot-key crash specs; **green in every suite before Test 3** |
 | 2.A: the settle loop compares lengths, not movement | `test_store` (19), failed-sync and full-disk crash tiers (27) |
 | 2.A: every settle round may take reusable pages | `test_store`: the commit never settles and answers CORRUPT |
 | 2.A: free-tree writes always from the end of the file | no test: the file grows 9.4× in 40,000 updates (the bench measures it) |
 | 2.B: no checkpoint at a sync | no test: the log grows 8.4× in 40,000 group-64 updates (the bench measures it) |
+| 2.B: no checkpoint at a synced commit | no test: the log reached 8.3 GB over 10^6 commits (`hardreq recovery` measures it) |
 | 2.C: the trivial move made unconditional (overlapping files moved) | `test_store` and every crash tier |
 | 2.C: a pausing compaction's outputs not listed as garbage | every crash tier (6,071), once recoveries were checked; **green before that check existed** |
 | 2.C: spilled runs not listed during the pre-commit flush | every crash tier (17,528) |
@@ -340,7 +400,7 @@ The ssd runs used 20,000 operations; the usb runs used 1,000, because 2.A could 
 ### Not yet measured, and needed before §6 can decide
 
 - **W9**, which needs the version store, which does not exist.
-- **The hard requirements**: online backup without stopping writers, bounded recovery at a long log, the long-reader story, nonce uniqueness, G1 and G4.
+- **The hard requirements**: measured in Test 3 (above), except nonce uniqueness, which waits for encryption. Online backup is not met as built.
 - **The G-Dash profile** (§5.1.1) and the owner round trip (§5.5).
 - **2.C's remaining items** (above): blob reclamation by dead space, a frozen memtable flushed in slices, and recovery time against memtable size.
 - **2.B's group commit on slow flash**, unexplained.
