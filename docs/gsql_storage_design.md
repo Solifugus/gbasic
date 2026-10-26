@@ -618,6 +618,21 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
   - **Commit stalls.** W3's p99 is 1.85 s against RocksDB's 35 ms, because compaction runs inside the commit that triggers it. Moving compaction off the commit path is the fix.
 - **Tests 2 to 4 remain.** Before the choice is final, 2.C is to be rebuilt with value separation, larger levels, a trivial move and compaction off the commit path, and measured again.
 
+**Test 2 run, 2026-10-26: 2.C rebuilt and measured again; it stands** (`research/gsql/README.md`, "The 2.C rebuild", has the tables).
+- **All four items are built and pass the crash gate**: value separation into blob files, a 32 MB default memtable, a trivial move, and compaction in slices across commits.
+- **W3 and W8 change most.**
+  - W3 runs at 242 k rows/s with a 4.3 ms p99, against 21 k and 724 ms before, and against RocksDB's 93 k.
+  - W8 runs at 2,081 ops/s, the best of the six engines, where it was the slowest.
+- **The bulk loads and group-64 improve too.** The YCSB load and group-64 now beat RocksDB. W4 random doubles but still trails 2.A.
+- **Building it found a durable-commit loss in 2.C, present from the start.** A manifest written before the first flush after an open recorded the wrong log to replay from. Three file leaks also turned up, found by checking every recovered store. All are fixed and gated.
+- **What it costs, and what is left:**
+  - **Recovery** is 53 ms on NVMe and 1.3 s on the flash stick, against 8 and 81 ms before, because the memtable is larger.
+  - **Blob space** is not reclaimed fast enough: W8's space amplification is 2.91.
+  - **A flush still runs inside a commit**, which is most of W3's remaining p99 larger than memory.
+  - **Point reads are 10 to 20% lower.**
+  - Each is engineering rather than structure.
+- **Tests 3 and 4 remain:** the hard requirements, and open question 6.
+
 ## 7. Open questions
 
 1. *(G-Dash volumes answered, §5.1.1.)* WorkSplicer's profile once its redesign settles (§5.1.2); G-Dash's refresh duration, which it has never measured.

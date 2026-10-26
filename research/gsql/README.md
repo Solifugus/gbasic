@@ -100,6 +100,57 @@ The comparison is meant to measure the engines, not two independently written tr
   - **Recovery must remove every stale record past the committed end, not just the first.** A crash can leave a lost commit's frames behind a torn one. A transaction run again writes byte-identical frames at the same positions and continues their checksum chain, and the lost commit after it comes back. A first fix stopped at the torn frame and missed the ones behind it. Both 2.B and 2.C now truncate at recovery (2.C then refills). **The pushed 2.B already had this hole latently**: it never truncated at recovery.
 - **Randomness is input from the environment, so it comes through the I/O layer** (`gsql_io_random`). The real layer reads `/dev/urandom`; the simulated one is seeded, differently in each crash image, so a crash run replays exactly.
 
+## The 2.C rebuild (2026-10-25 to 26)
+
+§6's confirming tests left 2.C four items: value separation (W8), larger levels and a trivial move (W4), and compaction off the commit path (W3's p99). All four are in `lsm.c` now.
+
+- **Larger levels.** The default memtable is 32 MB, up from 4 MB, and level sizes follow it (level 1 is ten times the memtable). At 4 MB a 10 GB store was five or six levels deep, and a random load rewrote every row at each.
+- **A trivial move.** When nothing below overlaps, files go down a level as they are, unrewritten.
+- **Compaction in slices.** A compaction's state lives in the store and runs a little in each commit, a budget of 32 times what the commit wrote. If level 0 backs up past three times its trigger, the merge in progress is finished outright, which is RocksDB's write stall. A pausing compaction's outputs are listed as garbage in every manifest written meanwhile.
+- **Value separation.**
+  - **Blob files.** Values of 4 KiB or more go to a blob file written beside the sorted file they are flushed with. The entry holds a 24-byte pointer carrying the value's checksum, and compaction copies the pointer, never the value.
+  - **Deletion.** A blob file goes when the last record pointing into it is freed as obsolete, never at close; an early draft deleted every blob at close. The manifest lists live blob files, so an open can delete one whose deletion a crash undid.
+  - **Relocation.** Compactions rewrite values out of the oldest quarter of blob files, so their space comes back.
+
+**What the rebuild found:**
+- **A durable commit could be lost, and the defect was there from the start.**
+  - **The mechanism.** An open replays every log from the manifest's onward into one memtable. The manifest then recorded the last of those logs as where replay starts, so a manifest written before the next flush dropped the earlier logs' commits from every later recovery.
+  - **Why it stayed hidden.** Nothing wrote a manifest in that window until compaction began installing between flushes.
+  - **The fix has two parts.** The manifest records the oldest log the memtable needs, and a flush deletes every log the memtable held, not just the last one.
+  - **What the gate catches.** On the workload that found it, each part alone is enough: reverting either leaves the gate green, and reverting both reproduces the loss. So the gate guards the pair, and neither part on its own.
+- **Three file leaks, all already in 2.C, found by a new check.**
+  - **The check.** The crash adapter now checks every recovered store, and 2.C's check requires every numbered file on disk to be named by something. Before this, recovery was only read back, which cannot see a file nothing names.
+  - **What it found:**
+    1. a large transaction's spilled runs, orphaned by a crash between the flush that precedes its commit and the commit's own manifest;
+    2. a file whose writing failed on a full disk, closed and kept;
+    3. a flush whose manifest failed, its finished file named by nothing.
+  - **Each grew the store without bound.** A fourth "fix", for deletions lost to a crash, was written on a theory and taken out when reverting it alone stayed green: the manifest that first omits a deleted file makes its deletion durable.
+- **Sorted and blob files share one number space**, and a number may be taken again after a crash. A stale blob file therefore survived beside the sorted file that took its number. Taking a number now clears the other kind's file. The check had been blind to this too: it treated a number as accounted for when either kind was named, and now it judges each kind on its own.
+
+**Measured after the rebuild** (`results/2026-10-26/`, 2.C only; the other engines' figures are the earlier rounds', on the same machine and harness). One run each.
+
+| | before | after | best reference |
+|---|---|---|---|
+| W3 rows/s, NVMe | 20,667 | **242,199** | RocksDB 92,645 |
+| W3 p99, NVMe | 724 ms | **4.3 ms** | |
+| W3 rows/s, larger than memory | 9,030 | 30,945 | RocksDB 107,340 |
+| W3 p99, larger than memory | 1,851 ms | 150 ms | RocksDB 35 ms |
+| YCSB load | 72,983 | **177,641** | RocksDB 172,929 |
+| W4 sorted, 10 M rows | 52,702 | 130,858 | LMDB 185,089 |
+| W4 random, 10 M rows | 14,336 | 27,977 | 2.A 36,326 |
+| group-64 | 46,943 | **85,459** | RocksDB 55,217 |
+| W8, 100 KiB values | 743 | **2,081** | LMDB 2,043 |
+| W8 space amp | 1.21 | **2.91** | LMDB 1.04 |
+| recovery, NVMe | 8.4 ms | 53 ms | LMDB 0.23 ms |
+| recovery, flash stick | 81 ms | **1,279 ms** | LMDB 0.21 ms |
+
+**What it cost:**
+- **Recovery time grows with the memtable.** A 32 MB memtable means up to 32 MB of log to replay, which takes 1.3 s on the flash stick.
+- **Space at 100 k records rises to 1.62**, mostly the log's 64 MB of zero prefill counted in the file size. At 10 M records it is 1.04, as before.
+- **Point reads are 10 to 20% lower** on YCSB-C, W1 and YCSB-F, and 22% on W1 larger than memory. These are single runs, so part may be noise.
+- **W8's blob space is not coming back fast enough.** Relocation only touches the oldest quarter of the blob files, and only when a compaction passes through, so overwritten large values keep their space. It needs a trigger based on how much of a file is dead. The crash gate reached relocation in only 5 cases.
+- **A flush still runs inside the commit that fills the memtable.** That is most of W3's remaining p99 larger than memory (150 ms against RocksDB's 35).
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -125,6 +176,16 @@ The comparison is meant to measure the engines, not two independently written tr
 | 2.A: every settle round may take reusable pages | `test_store`: the commit never settles and answers CORRUPT |
 | 2.A: free-tree writes always from the end of the file | no test: the file grows 9.4× in 40,000 updates (the bench measures it) |
 | 2.B: no checkpoint at a sync | no test: the log grows 8.4× in 40,000 group-64 updates (the bench measures it) |
+| 2.C: the trivial move made unconditional (overlapping files moved) | `test_store` and every crash tier |
+| 2.C: a pausing compaction's outputs not listed as garbage | every crash tier (6,071), once recoveries were checked; **green before that check existed** |
+| 2.C: spilled runs not listed during the pre-commit flush | every crash tier (17,528) |
+| 2.C: a failed file kept, or a flush's file kept when its manifest failed | full-disk (96 each) |
+| 2.C: the manifest records the last replayed log, **and** a flush deletes only the last log | failed-sync (1); **either alone is green**, see above |
+| 2.C: blob files never deleted | every crash tier (25,525) |
+| 2.C: a compaction's pointers into a blob not counted | every crash tier (1,374) |
+| 2.C: a reused number does not clear the other kind's file | every crash tier (125) |
+| 2.C: an open does not delete live-listed blobs nothing points into | every crash tier (25,518) |
+| 2.C: relocation aborted when reached | crash tiers (5): reached, though rarely |
 
 
 ## Measurements (2026-10-24)
@@ -281,5 +342,5 @@ The ssd runs used 20,000 operations; the usb runs used 1,000, because 2.A could 
 - **W9**, which needs the version store, which does not exist.
 - **The hard requirements**: online backup without stopping writers, bounded recovery at a long log, the long-reader story, nonce uniqueness, G1 and G4.
 - **The G-Dash profile** (§5.1.1) and the owner round trip (§5.5).
-- **2.C with its known fixes**: value separation (W8), larger default levels and a trivial move (W4), and compaction off the commit path (W3's p99). Each should be measured again once built.
-- **2.B's group commit on slow flash**, unexplained (above).
+- **2.C's remaining items** (above): blob reclamation by dead space, a frozen memtable flushed in slices, and recovery time against memtable size.
+- **2.B's group commit on slow flash**, unexplained.
