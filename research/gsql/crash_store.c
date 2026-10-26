@@ -52,12 +52,50 @@ static void *a_open(GsqlIo *io, const char *dir, int *err) {
 
 static const unsigned char TREE[] = "t";
 
+/* Some commits are written the way a whole-dataset refresh (G1) writes: the
+ * tree is copied into a new one, the puts applied there, and the copy put in
+ * place with tree_replace -- the same contents by a different route, so the
+ * harness's model is unchanged while retiring a tree, and whatever reclaims a
+ * retired tree, is crashed like everything else. Chosen from the transaction
+ * itself, so a replay of the workload chooses the same. GS_CRASH_REPLACE=N
+ * takes one in N (default 4; 0 never). */
+static int replace_this(const GsqlCrashTxn *txn) {
+    const char *e = getenv("GS_CRASH_REPLACE");
+    unsigned n = e ? (unsigned)atoi(e) : 4;
+    if (!n || !txn->count) return 0;
+    uint32_t h = crc32c(txn->puts[0].key, txn->puts[0].key_len) + (uint32_t)txn->count;
+    return h % n == 0;
+}
+
+static int copy_tree(GsTxn *t, GsBytes from, GsBytes to) {
+    int rc = E->tree_create(t, to);
+    if (rc) return rc;
+    GsCursor *c;
+    rc = E->cursor_open(t, from, &c);
+    if (rc == GS_NOT_FOUND) return GS_OK;
+    if (rc) return rc;
+    int pos;
+    for (rc = E->first(c, &pos); rc == GS_OK && pos; rc = E->next(c, &pos)) {
+        GsBytes k, v;
+        if ((rc = E->key(c, &k)) || (rc = E->value(c, &v))) break;
+        if ((rc = E->put(t, to, k, v, GS_APPEND))) break;
+    }
+    E->cursor_close(c);
+    return rc;
+}
+
 static int a_commit(void *dbp, const GsqlCrashTxn *txn, int sync) {
     GsStore *db = dbp;
     GsTxn *t;
     int rc = E->begin_write(db, &t);
     if (rc) return map(rc);
     GsBytes tree = gsb(TREE, 1);
+    int via = replace_this(txn);
+    static const unsigned char NEXT[] = "t.next";
+    if (via) {
+        rc = copy_tree(t, tree, gsb(NEXT, 6));
+        tree = gsb(NEXT, 6);
+    }
     for (size_t i = 0; i < txn->count && rc == GS_OK; i++) {
         const GsqlCrashPut *p = &txn->puts[i];
         GsBytes k = gsb(p->key, p->key_len);
@@ -70,6 +108,13 @@ static int a_commit(void *dbp, const GsqlCrashTxn *txn, int sync) {
         } else {
             rc = E->del(t, tree, k);
             if (rc == GS_NOT_FOUND) rc = GS_OK;
+        }
+    }
+    if (via && rc == GS_OK) {
+        rc = E->tree_replace(t, gsb(TREE, 1), tree);
+        if (rc == GS_NOT_FOUND) { /* no "t" yet: the copy is simply renamed by being the first */
+            rc = E->tree_create(t, gsb(TREE, 1));
+            if (rc == GS_OK) rc = E->tree_replace(t, gsb(TREE, 1), tree);
         }
     }
     if (rc) { E->abort(t); return map(rc); }

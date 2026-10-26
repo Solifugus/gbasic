@@ -284,6 +284,7 @@ struct GsStore {
     struct GsTxn *writer;
     uint64_t compact_ptr[LEVELS];
     struct Comp *comp;        /* a compaction in progress, or NULL */
+    int sweep;                /* a retired tree or a released snapshot may have freed whole files */
     int failed;
     unsigned char identity[16];
     GsStats st;
@@ -1539,6 +1540,7 @@ static void snap_add(GsStore *db, uint64_t s) {
     db->snaps[db->nsnaps++] = s;
 }
 static void snap_del(GsStore *db, uint64_t s) {
+    if (db->ndead) db->sweep = 1;
     for (size_t i = 0; i < db->nsnaps; i++) if (db->snaps[i] == s) { db->snaps[i] = db->snaps[--db->nsnaps]; return; }
 }
 
@@ -1816,6 +1818,51 @@ static int comp_start(GsStore *db, int level) {
     return GS_OK;
 }
 
+/* A file whose every record belongs to a tree retired before the oldest
+ * snapshot is read by nobody, and is dropped whole rather than left until a
+ * compaction happens to rewrite it. Without this a replaced dataset (G1) kept
+ * its space for as long as no compaction reached its files -- measured, a 10^6
+ * row dataset's 138 MB survived its replacement, its reader's release and
+ * 2,000 further commits. The ids in the file's range must ALL be dead: ids
+ * are handed out in order, so one in between is a tree, live or retired, and
+ * a range spanning more than a few is left to compaction. Waits while a
+ * compaction is paused, which may hold the same file as an input. */
+static int file_all_dead(GsStore *db, FileMeta *m, uint64_t keep_after) {
+    if (m->smallest.n < ID_LEN || m->largest.n < ID_LEN) return 0;
+    uint64_t a = ukey_id(m->smallest.p), b = ukey_id(m->largest.p);
+    if (b < a || b - a > 64) return 0;
+    for (uint64_t id = a;; id++) {
+        uint64_t death = death_of(db, id);
+        if (!death || death > keep_after) return 0;
+        if (id == b) return 1;
+    }
+}
+
+static int sweep_dead(GsStore *db) {
+    if (db->comp) return GS_OK; /* the flag stays: try again after it */
+    db->sweep = 0;
+    if (!db->ndead) return GS_OK;
+    uint64_t keep_after = oldest_snapshot(db);
+    Version *v = db->cur, *nv = NULL;
+    FileMeta **gone = NULL;
+    size_t ngone = 0;
+    for (int l = 0; l < LEVELS; l++)
+        for (size_t i = 0; i < v->nfiles[l]; i++) {
+            FileMeta *m = v->files[l][i];
+            if (!file_all_dead(db, m, keep_after)) continue;
+            if (!nv) nv = version_copy(v);
+            gone = realloc(gone, (ngone + 1) * sizeof *gone);
+            gone[ngone++] = m;
+        }
+    if (!nv) return GS_OK;
+    for (size_t i = 0; i < ngone; i++)
+        for (int l = 0; l < LEVELS; l++) version_remove(db, nv, l, gone[i]);
+    int rc = install(db, nv, gone, ngone);
+    free(gone);
+    if (rc) db->sweep = 1;
+    return rc;
+}
+
 /* The level, if any, that needs compacting now. */
 static int comp_wanted(GsStore *db) {
     if (db->cur->nfiles[0] >= db->l0_trigger) return 0;
@@ -1832,7 +1879,9 @@ static int comp_wanted(GsStore *db) {
  * threshold, and that bounds both the debt and the tail. */
 #define COMP_CREDIT 32
 #define COMP_STALL 3
+static int sweep_dead(GsStore *db);
 static int maybe_compact(GsStore *db, uint64_t budget) {
+    if (db->sweep) { int rc = sweep_dead(db); if (rc) return rc; }
     for (int guard = 0; guard < 64; guard++) {
         int rc;
         if (!db->comp) {
@@ -2731,6 +2780,7 @@ static int commit_runs(struct GsTxn *t, uint64_t *commit_id) {
     }
     size_t ndead_before = db->ndead;
     for (size_t i = 0; i < t->retired.n; i++) dead_add(db, t->retired.v[i], commit);
+    if (t->retired.n) db->sweep = 1;
     Version *old = db->cur;
     uint64_t last_before = db->last_seq;
     db->cur = nv;
@@ -2802,6 +2852,7 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     for (SkNode *n = t->buf.head->next[0]; n && rc == GS_OK; n = n->next[0]) rc = sk_insert(&db->cur->mem->sk, n->k, n->kn, seq++, n->type, n->v, n->vn, 0);
     uint64_t commit = count ? base + count - 1 : base;
     for (size_t i = 0; i < t->retired.n; i++) dead_add(db, t->retired.v[i], commit);
+    if (t->retired.n) db->sweep = 1;
     db->last_seq = commit;
     if (sync) db->durable_seq = commit;
     if (commit_id) *commit_id = commit;
