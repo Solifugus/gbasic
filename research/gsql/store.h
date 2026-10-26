@@ -53,6 +53,7 @@ typedef struct {
 typedef struct GsStore GsStore;
 typedef struct GsTxn GsTxn;
 typedef struct GsCursor GsCursor;
+typedef struct GsBackup GsBackup;
 
 typedef struct {
     uint64_t pages_read, pages_written, bytes_written, flushes, cache_hits;
@@ -107,6 +108,16 @@ typedef struct GsEngine {
     void (*cursor_close)(GsCursor *c);
 
     int (*backup)(GsTxn *snapshot, const char *dest);
+    /* The same backup in slices, so writers commit between them: the owner is
+     * single-threaded (§1), and one call blocks every writer for the whole
+     * copy (Test 3: 326 ms for 10^6 rows in 2.C). begin names the snapshot,
+     * which must stay open until end; each step copies about `budget` bytes
+     * and sets *done once the copy is complete and durable; end frees the
+     * job, discarding the copy if it is not done. A copy is never left at
+     * `dest` looking complete until it is. `backup` is begin, steps, end. */
+    int (*backup_begin)(GsTxn *snapshot, const char *dest, GsBackup **out);
+    int (*backup_step)(GsBackup *b, uint64_t budget, int *done);
+    void (*backup_end)(GsBackup *b);
     /* Verifies every checksum and invariant; writes a report line per problem
      * to `report` (may be NULL) and answers GS_CORRUPT if any. */
     int (*check)(GsStore *db, void (*report)(void *ctx, const char *line), void *ctx);

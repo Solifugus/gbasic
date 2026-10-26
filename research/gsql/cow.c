@@ -984,6 +984,32 @@ static void cow_stats(GsStore *db, GsStats *out) {
     out->file_bytes = sz;
 }
 
+/* §2.A is retired (§6), so its sliced backup is the whole copy in one step:
+ * the interface is met, the slicing is not. */
+struct GsBackup {
+    struct GsTxn *snap;
+    char *dest;
+    int done;
+};
+static int cow_backup_begin(struct GsTxn *snap, const char *dest, GsBackup **out) {
+    GsBackup *b = calloc(1, sizeof *b);
+    b->snap = snap;
+    b->dest = gs_path_with(dest, "");
+    *out = b;
+    return GS_OK;
+}
+static int cow_backup_step(GsBackup *b, uint64_t budget, int *done) {
+    (void)budget;
+    int rc = b->done ? GS_OK : cow_backup(b->snap, b->dest);
+    if (rc == GS_OK) b->done = 1;
+    *done = b->done;
+    return rc;
+}
+static void cow_backup_end(GsBackup *b) {
+    free(b->dest);
+    free(b);
+}
+
 const GsEngine gs_engine_cow = {
     "cow",
     cow_open, cow_close,
@@ -992,5 +1018,5 @@ const GsEngine gs_engine_cow = {
     cow_get, cow_put, cow_del,
     cow_cursor_open, cow_seek, cow_first, cow_last, cow_next, cow_prev, cow_key, cow_value,
     cow_cursor_put, cow_cursor_delete, cow_cursor_close,
-    cow_backup, cow_check, cow_stats,
+    cow_backup, cow_backup_begin, cow_backup_step, cow_backup_end, cow_check, cow_stats,
 };

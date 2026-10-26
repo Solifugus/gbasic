@@ -175,6 +175,158 @@ static void hot_keys(const char *base, GsqlIo *io) {
     E->close(db);
 }
 
+/* The sliced backup (store.h): a snapshot, then updates and a tree dropped
+ * after it, then the backup in small slices with a commit between every two.
+ * The copy must hold exactly the snapshot -- including the tree dropped
+ * after it, which must STAY whole in the copy once the copy's own commits
+ * pass the drop's sequence (2.C's logical backup copied every retirement,
+ * including later ones, so the copy's compactions would have dropped a tree
+ * its own catalog called live). Then an abandoned backup must leave nothing
+ * that opens, and a backup into a place an earlier one used must pass check
+ * (no file left that nothing names). */
+static void put_gen(GsStore *db, const char *tree, unsigned i, unsigned gen, int sync) {
+    GsTxn *w;
+    char k[32], v[80];
+    E->begin_write(db, &w);
+    int kn = snprintf(k, sizeof k, "k%06u", i);
+    int vn = snprintf(v, sizeof v, "g%06u-value-%06u-padding-padding-padding", gen, i);
+    if (E->put(w, gss(tree), gsb(k, (size_t)kn), gsb(v, (size_t)vn), 0) == GS_NOT_FOUND) {
+        E->tree_create(w, gss(tree));
+        E->put(w, gss(tree), gsb(k, (size_t)kn), gsb(v, (size_t)vn), 0);
+    }
+    E->commit(w, sync, NULL);
+}
+/* how many records the tree holds, and how many of them are generation gen */
+static unsigned count_gen(GsTxn *t, const char *tree, unsigned gen, unsigned *match) {
+    GsCursor *c;
+    unsigned n = 0;
+    *match = 0;
+    if (E->cursor_open(t, gss(tree), &c) != GS_OK) return 0;
+    int pos;
+    char want[16];
+    snprintf(want, sizeof want, "g%06u-", gen);
+    for (int rc = E->first(c, &pos); rc == GS_OK && pos; rc = E->next(c, &pos)) {
+        GsBytes v;
+        E->value(c, &v);
+        n++;
+        if (v.n > 8 && memcmp(v.p, want, 8) == 0) (*match)++;
+    }
+    E->cursor_close(c);
+    return n;
+}
+/* how many of the tree's keys hold exactly the generation the model says */
+static unsigned match_model(GsTxn *t, const char *tree, const unsigned *gen, unsigned n) {
+    unsigned ok = 0;
+    for (unsigned i = 0; i < n; i++) {
+        char k[32], want[16];
+        int kn = snprintf(k, sizeof k, "k%06u", i);
+        snprintf(want, sizeof want, "g%06u-", gen[i]);
+        GsBytes v;
+        if (E->get(t, gss(tree), gsb(k, (size_t)kn), &v) == GS_OK && v.n > 8 && memcmp(v.p, want, 8) == 0) ok++;
+    }
+    return ok;
+}
+static void sliced_backup(const char *base, GsqlIo *io) {
+    unsigned ga[300];
+    for (unsigned i = 0; i < 300; i++) ga[i] = 1;
+    char path[600], dest[600], dest2[600];
+    snprintf(path, sizeof path, "%s.bk", base);
+    snprintf(dest, sizeof dest, "%s.bk-copy", base);
+    snprintf(dest2, sizeof dest2, "%s.bk-copy2", base);
+    GsOptions o = {1, 512, 0, io, 2000, 2, 32};
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the backup store answered %s", gs_status_name(rc));
+    if (rc) return;
+    for (unsigned i = 0; i < 300; i++) put_gen(db, "a", i, 1, i % 16 == 15);
+    for (unsigned i = 0; i < 200; i++) put_gen(db, "x", i, 1, i % 16 == 15);
+    E->sync(db, NULL);
+    GsTxn *snap;
+    E->begin_read(db, &snap);
+    for (unsigned i = 0; i < 150; i++) { put_gen(db, "a", i, 2, i % 8 == 7); ga[i] = 2; }
+    GsTxn *w;
+    E->begin_write(db, &w);
+    E->tree_drop(w, gss("x"));
+    E->commit(w, 1, NULL);
+    GsBackup *bk = NULL;
+    rc = E->backup_begin(snap, dest, &bk);
+    CHECK(rc == GS_OK, "backup_begin answered %s", gs_status_name(rc));
+    int done = 0;
+    unsigned steps = 0;
+    while (rc == GS_OK && !done && steps < 100000) {
+        rc = E->backup_step(bk, 4096, &done);
+        steps++;
+        put_gen(db, "a", steps % 300, 3, steps % 8 == 0); /* writers carry on between slices */
+        ga[steps % 300] = 3;
+    }
+    CHECK(rc == GS_OK && done, "the sliced backup finished (%s after %u steps)", gs_status_name(rc), steps);
+    E->backup_end(bk);
+    E->abort(snap);
+    GsOptions bo = o;
+    bo.create = 0;
+    GsStore *b;
+    rc = E->open(dest, &bo, &b);
+    CHECK(rc == GS_OK, "opening the sliced backup answered %s", gs_status_name(rc));
+    if (rc == GS_OK) {
+        CHECK(E->check(b, print_report, NULL) == GS_OK, "the sliced backup passes check");
+        GsTxn *r;
+        unsigned m, n;
+        E->begin_read(b, &r);
+        n = count_gen(r, "a", 1, &m);
+        CHECK(n == 300 && m == 300, "the backup's tree a: %u records, %u of the snapshot's", n, m);
+        n = count_gen(r, "x", 1, &m);
+        CHECK(n == 200 && m == 200, "the backup's tree x (dropped after the snapshot): %u records, %u of them", n, m);
+        E->abort(r);
+        /* the copy lives on: enough commits to pass the source's drop */
+        for (unsigned i = 0; i < 1500; i++) put_gen(b, "f", i % 50, 9, 1);
+        E->begin_read(b, &r);
+        n = count_gen(r, "x", 1, &m);
+        CHECK(n == 200 && m == 200, "after 1,500 commits in the copy, its tree x holds %u records, %u of them", n, m);
+        E->abort(r);
+        CHECK(E->check(b, print_report, NULL) == GS_OK, "the copy passes check after its own commits");
+        E->close(b);
+    }
+    /* abandoned part way: nothing at dest2 opens. A few unsynced updates
+     * first, so the snapshot's memtable holds versions newer than it */
+    E->sync(db, NULL);
+    unsigned gs2[300];
+    memcpy(gs2, ga, sizeof gs2);
+    GsTxn *s2;
+    E->begin_read(db, &s2);
+    for (unsigned i = 0; i < 4; i++) put_gen(db, "a", i, 4, 0);
+    bk = NULL;
+    rc = E->backup_begin(s2, dest2, &bk);
+    for (int i = 0; rc == GS_OK && i < 3; i++) rc = E->backup_step(bk, 4096, &done);
+    E->backup_end(bk);
+    GsStore *gone = NULL;
+    rc = E->open(dest2, &bo, &gone);
+    if (rc == GS_OK && gone) E->close(gone);
+    CHECK(rc != GS_OK || done, "an abandoned backup left a store that opens");
+    /* and into both places again, over what was there */
+    rc = E->backup(s2, dest2);
+    CHECK(rc == GS_OK, "a backup over an abandoned one answered %s", gs_status_name(rc));
+    rc = E->backup(s2, dest);
+    CHECK(rc == GS_OK, "a backup over a finished one answered %s", gs_status_name(rc));
+    E->abort(s2);
+    const char *places[2] = {dest, dest2};
+    for (int p = 0; p < 2; p++) {
+        rc = E->open(places[p], &bo, &b);
+        CHECK(rc == GS_OK, "reopening backup %d answered %s", p, gs_status_name(rc));
+        if (rc) continue;
+        CHECK(E->check(b, print_report, NULL) == GS_OK, "a backup made over another passes check (%d)", p);
+        GsTxn *r;
+        unsigned m;
+        E->begin_read(b, &r);
+        (void)m;
+        unsigned ok = match_model(r, "a", gs2, 300);
+        CHECK(ok == 300, "backup %d: %u of tree a's 300 keys hold the snapshot's version", p, ok);
+        CHECK(E->cursor_open(r, gss("x"), &(GsCursor *){NULL}) == GS_NOT_FOUND, "backup %d no longer holds tree x", p);
+        E->abort(r);
+        E->close(b);
+    }
+    E->close(db);
+}
+
 /* ---- the model ---- */
 
 typedef struct { GsBuf k, v; } Rec;
@@ -673,6 +825,7 @@ int main(int argc, char **argv) {
     E->close(db);
     dropped_not_durable(path, io);
     hot_keys(path, io);
+    sliced_backup(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);

@@ -31,9 +31,8 @@
  *     latency, which is where it belongs in the comparison;
  *   - a write transaction's buffer is held in memory: G5 (a transaction
  *     bigger than the cache) is NOT met by this version;
- *   - backup is logical -- the snapshot's view written as one sorted file --
- *     since a physical copy of the files would carry versions newer than the
- *     snapshot;
+ *   - backup is physical and sliced: the snapshot's pinned files copied as
+ *     they are, and its memtable's view written as one more file (Test 4);
  *   - recovery truncates the last log at its last valid record and flushes,
  *     so a record a lost commit left behind can never follow a new one.
  */
@@ -2997,75 +2996,276 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
     return r.bad ? GS_CORRUPT : GS_OK;
 }
 
-static int lsm_backup(struct GsTxn *snap, const char *dest) {
-    GsStore *db = snap->db;
-    if (snap->write) return GS_MISUSE;
-    /* a fresh store at `dest` holding the snapshot's view as one file */
-    GsStore tmp;
-    memset(&tmp, 0, sizeof tmp);
-    tmp.io = db->io;
-    tmp.path = gs_path_with(dest, "");
-    tmp.dir = gs_dirname(dest);
-    tmp.block = db->block;
-    tmp.memtable_limit = db->memtable_limit;
-    tmp.vsep = db->vsep;
-    memcpy(tmp.identity, db->identity, 16);
-    tmp.next_file = 1;
-    tmp.log_num = 1;
-    tmp.log_first = 1;
-    tmp.cur = version_copy(NULL);
+/* A backup in slices, PHYSICAL: the snapshot's version is copied file by
+ * file, byte for byte, and its memtable's view written as one more level-0
+ * file. The files are immutable and the snapshot pins them, so they cannot
+ * change or go while the copy runs -- what slicing costs here is only that
+ * pinning, bounded by the data at the snapshot (Test 3, against 2.B's log).
+ * The first backup was LOGICAL, the snapshot rewritten as one sorted file,
+ * which cost writers 326 ms for 10^6 rows in a single call.
+ *
+ * Every file in the snapshot's version holds only commits at or before the
+ * snapshot: a flush makes what it writes durable, and a reader begins at the
+ * last durable commit, so a file is in a version a reader pins only if it was
+ * there when the reader began. The memtable is shared with later commits, so
+ * its entries are filtered by sequence.
+ *
+ * At `dest`: the manifest is written last, through the store's own
+ * tmp-and-rename, so an interrupted backup leaves no manifest. Before
+ * anything else, `dest.pending` records the highest file number the copy may
+ * use, durably, so a later backup to the same place can clear what an
+ * interrupted one left: the I/O layer has no directory listing, and numbers
+ * are kept from the source because a blob pointer names its blob file. */
+typedef struct { char *src, *dst; uint64_t size, off; } CopyJob;
+struct GsBackup {
+    struct GsTxn *snap;
+    GsStore *db;
+    GsStore tmp;       /* the store being built at dest */
+    char *dest, *pending;
+    CopyJob *jobs;
+    size_t njobs, at;
+    GsqlFile *src, *dst;
     Builder b;
-    int rc = bld_open(&tmp, &b);
-    /* every visible live record of every tree, newest version only */
-    Cur c;
-    memset(&c, 0, sizeof c);
-    c.t = snap;
-    c.src = calloc(max_sources(snap), sizeof *c.src);
-    txn_sources(snap, c.src, &c.ns);
-    put64be(c.lo, 0);
-    memset(c.hi, 0xFF, ID_LEN);
-    all_seek(&c, c.lo, ID_LEN, UINT64_MAX);
-    uint64_t seq = 1;
-    for (int frc = find_forward(&c); rc == GS_OK && frc == GS_OK && c.positioned; frc = find_forward(&c)) {
-        Ent e = {c.key.p, c.key.n, seq, TYPE_PUT, c.value.p, c.value.n};
-        if (c.vblob) {
-            /* the copy gets the value itself, and writes blobs of its own */
-            if ((rc = blob_read(db, c.value.p, c.value.n, &c.vres))) break;
-            e.v = c.vres.p;
-            e.vn = c.vres.n;
+    int building;      /* the memtable's file is open */
+    SkNode *mem;       /* the next memtable entry */
+    GsBuf lastkey;
+    int havekey;
+    int done;
+    unsigned char *chunk;
+};
+
+#define BACKUP_CHUNK (1u << 20)
+
+static uint64_t read_bound(GsqlIo *io, const char *name, int manifest) {
+    GsqlFile *f = NULL;
+    uint64_t bound = 0, n = 0;
+    if (gsql_io_open(io, name, GSQL_IO_READ_ONLY, &f)) return 0;
+    gsql_io_size(f, &n);
+    if (n >= 12 && n < (1u << 30)) {
+        unsigned char *p = malloc((size_t)n);
+        size_t got = 0;
+        if (p && gsql_io_read_at(f, 0, p, (size_t)n, &got) == 0 && got == n && get32(p + n - 4) == crc32c(p, (size_t)n - 4)) {
+            size_t at = manifest ? GS_HEADER_FIXED : 0;
+            if (at + 8 <= n - 4) bound = get64(p + at);
         }
-        bld_add(&b, &e);
-        rc = b.rc;
+        free(p);
     }
-    gsbuf_free(&c.vres);
-    for (size_t i = 0; i < c.ns; i++) src_reset(&c.src[i]);
-    free(c.src);
-    gsbuf_free(&c.key);
-    gsbuf_free(&c.value);
-    FileMeta *fm = NULL;
-    int r2 = bld_close(&b, &fm);
-    if (rc == GS_OK) rc = r2;
-    if (fm) { version_add(tmp.cur, LEVELS - 1, fm); fm->f = NULL; gsql_io_close(b.f); }
-    tmp.last_seq = seq;
-    tmp.dead = db->dead; /* retired ids stay retired, or a new tree could reuse one */
-    tmp.ndead = db->ndead;
-    char *ln = log_name(dest, 1);
+    gsql_io_close(f);
+    return bound;
+}
+
+/* Whatever an earlier backup, finished or not, left at dest: the manifest
+ * first, so the place is never a mix of two backups that looks like one. */
+static int backup_clear(GsStore *db, const char *dest, const char *pending) {
+    char *mpath = gs_path_with(dest, ""), *ddir = gs_dirname(dest), *mtmp = gs_path_with(dest, ".tmp");
+    uint64_t a = read_bound(db->io, mpath, 1), b = read_bound(db->io, pending, 0), bound = a > b ? a : b;
+    gsql_io_remove(db->io, mpath);
+    gsql_io_remove(db->io, mtmp);
+    int rc = ioerr(gsql_io_sync_dir(db->io, ddir));
+    GsStore probe;
+    memset(&probe, 0, sizeof probe);
+    probe.path = mpath;
+    for (uint64_t num = 1; num < bound; num++) {
+        char *x = file_name(&probe, num), *y = blob_name(&probe, num);
+        gsql_io_remove(db->io, x);
+        gsql_io_remove(db->io, y);
+        free(x);
+        free(y);
+    }
+    for (uint64_t k = 1; k <= 64; k++) { char *ln = log_name(dest, k); gsql_io_remove(db->io, ln); free(ln); }
+    free(mpath);
+    free(ddir);
+    free(mtmp);
+    return rc;
+}
+
+static int lsm_backup_begin(struct GsTxn *snap, const char *dest, GsBackup **out) {
+    GsStore *db = snap->db;
+    *out = NULL;
+    if (snap->write) return GS_MISUSE;
+    if (db->failed) return GS_FAILED;
+    GsBackup *b = calloc(1, sizeof *b);
+    b->snap = snap;
+    b->db = db;
+    b->dest = gs_path_with(dest, "");
+    b->pending = gs_path_with(dest, ".pending");
+    b->chunk = malloc(BACKUP_CHUNK);
+    *out = b;
+    int rc = backup_clear(db, dest, b->pending);
+    /* the bound first, durably: every number this copy can use is below it */
+    uint64_t bound = db->next_file + 1;
+    if (rc == GS_OK) {
+        unsigned char rec[12];
+        put64(rec, bound);
+        put32(rec + 8, crc32c(rec, 8));
+        GsqlFile *f = NULL;
+        rc = ioerr(gsql_io_open(db->io, b->pending, GSQL_IO_CREATE, &f));
+        if (rc == GS_OK) rc = ioerr(gsql_io_truncate(f, 0));
+        if (rc == GS_OK) rc = ioerr(gsql_io_write_at(f, 0, rec, sizeof rec));
+        if (rc == GS_OK) rc = ioerr(gsql_io_sync(f));
+        if (f) gsql_io_close(f);
+        char *ddir = gs_dirname(dest);
+        if (rc == GS_OK) rc = ioerr(gsql_io_sync_dir(db->io, ddir));
+        free(ddir);
+    }
+    GsStore *t = &b->tmp;
+    t->io = db->io;
+    t->path = gs_path_with(dest, "");
+    t->dir = gs_dirname(dest);
+    t->block = db->block;
+    t->memtable_limit = db->memtable_limit;
+    t->vsep = db->vsep;
+    memcpy(t->identity, db->identity, 16);
+    t->next_file = db->next_file; /* the memtable's file: above every copied number */
+    t->log_num = t->log_first = 1;
+    t->last_seq = t->durable_seq = snap->snap;
+    t->cur = version_copy(NULL);
+    /* only retirements the snapshot sees: one after it names a tree that is
+     * live in the copy's catalog, whose data the copy's own compactions would
+     * otherwise drop once its sequences passed the retirement. The logical
+     * backup copied them all. */
+    for (size_t i = 0; i < db->ndead; i++)
+        if (db->dead[i].death <= snap->snap) dead_add(t, db->dead[i].id, db->dead[i].death);
+    /* the copy list: every sorted file of the version, and every blob file
+     * one of them points into, each once */
+    Version *v = snap->v;
+    U64s seen = {0};
+    for (int l = 0; rc == GS_OK && l < LEVELS; l++)
+        for (size_t i = 0; i < v->nfiles[l]; i++) {
+            FileMeta *m = v->files[l][i], *c = calloc(1, sizeof *c);
+            c->num = m->num; c->size = m->size; c->entries = m->entries;
+            gsbuf_set(&c->smallest, m->smallest.p, m->smallest.n);
+            gsbuf_set(&c->largest, m->largest.p, m->largest.n);
+            c->small_seq = m->small_seq; c->large_seq = m->large_seq; c->seq_over = m->seq_over;
+            c->own_blob = m->own_blob;
+            c->db = t;
+            for (size_t j = 0; j < m->blobs.n; j++) { u64_push(&c->blobs, m->blobs.v[j]); blob_ref(t, m->blobs.v[j]); }
+            version_add(t->cur, l, c);
+            b->jobs = realloc(b->jobs, (b->njobs + 1 + m->blobs.n) * sizeof *b->jobs);
+            CopyJob *j = &b->jobs[b->njobs++];
+            j->src = file_name(db, m->num); j->dst = file_name(t, m->num); j->size = m->size; j->off = 0;
+            for (size_t k = 0; k < m->blobs.n; k++) {
+                if (u64_has(&seen, m->blobs.v[k])) continue;
+                u64_push(&seen, m->blobs.v[k]);
+                j = &b->jobs[b->njobs++];
+                j->src = blob_name(db, m->blobs.v[k]); j->dst = blob_name(t, m->blobs.v[k]); j->size = UINT64_MAX; j->off = 0;
+            }
+        }
+    u64_free(&seen);
+    b->mem = v->mem->sk.head->next[0];
+    return rc;
+}
+
+static int lsm_backup_step(GsBackup *bk, uint64_t budget, int *done) {
+    GsStore *db = bk->db, *t = &bk->tmp;
+    int rc = GS_OK;
+    uint64_t spent = 0;
+    *done = bk->done;
+    if (bk->done) return GS_OK;
+    if (db->failed) return GS_FAILED;
+    /* the files, a chunk at a time */
+    while (bk->at < bk->njobs && spent < budget) {
+        CopyJob *j = &bk->jobs[bk->at];
+        if (!bk->src) {
+            if ((rc = ioerr(gsql_io_open(db->io, j->src, GSQL_IO_READ_ONLY, &bk->src)))) return rc;
+            if (j->size == UINT64_MAX && (rc = ioerr(gsql_io_size(bk->src, &j->size)))) return rc;
+            gsql_io_remove(db->io, j->dst);
+            if ((rc = ioerr(gsql_io_open(db->io, j->dst, GSQL_IO_CREATE | GSQL_IO_EXCLUSIVE, &bk->dst)))) return rc;
+        }
+        while (j->off < j->size && spent < budget) {
+            size_t want = j->size - j->off < BACKUP_CHUNK ? (size_t)(j->size - j->off) : BACKUP_CHUNK, got = 0;
+            if ((rc = ioerr(gsql_io_read_at(bk->src, j->off, bk->chunk, want, &got)))) return rc;
+            if (got != want) return GS_CORRUPT; /* a pinned immutable file is shorter than it was */
+            if ((rc = ioerr(gsql_io_write_at(bk->dst, j->off, bk->chunk, want)))) return rc;
+            j->off += want;
+            spent += want;
+        }
+        if (j->off < j->size) return GS_OK;
+        rc = ioerr(gsql_io_sync(bk->dst));
+        gsql_io_close(bk->dst);
+        gsql_io_close(bk->src);
+        bk->dst = bk->src = NULL;
+        if (rc) return rc;
+        bk->at++;
+    }
+    if (bk->at < bk->njobs) return GS_OK;
+    /* the memtable's view: each key's newest version at or before the
+     * snapshot, as one more level-0 file, newest of them all */
+    while (bk->mem && spent < budget) {
+        SkNode *n = bk->mem;
+        bk->mem = n->next[0];
+        if (n->seq > bk->snap->snap) continue;
+        if (bk->havekey && bk->lastkey.n == n->kn && memcmp(bk->lastkey.p, n->k, n->kn) == 0) continue;
+        gsbuf_set(&bk->lastkey, n->k, n->kn);
+        bk->havekey = 1;
+        if (!bk->building) { if ((rc = bld_open(t, &bk->b))) return rc; bk->building = 1; }
+        Ent e = sk_ent(n);
+        bld_add(&bk->b, &e);
+        if ((rc = bk->b.rc)) return rc;
+        spent += n->kn + n->vn + 16;
+    }
+    if (bk->mem) return GS_OK;
+    if (bk->building) {
+        FileMeta *fm = NULL;
+        rc = bld_close(&bk->b, &fm);
+        bk->building = 0;
+        if (rc) return rc;
+        if (fm) { version_add(t->cur, 0, fm); fm->f = NULL; gsql_io_close(bk->b.f); }
+    }
+    /* an empty log, then the manifest that makes it a store */
+    char *ln = log_name(bk->dest, 1);
     GsqlFile *lf = NULL;
     gsql_io_remove(db->io, ln);
-    if (rc == GS_OK) rc = ioerr(gsql_io_open(db->io, ln, GSQL_IO_CREATE, &lf));
-    if (lf) gsql_io_close(lf);
+    rc = ioerr(gsql_io_open(db->io, ln, GSQL_IO_CREATE, &lf));
+    if (lf) { if (rc == GS_OK) rc = ioerr(gsql_io_sync(lf)); gsql_io_close(lf); }
     free(ln);
-    /* the manifest last, through the same tmp-and-rename, so an interrupted
-     * backup leaves no manifest at `dest` */
-    if (rc == GS_OK) rc = manifest_write(&tmp);
-    tmp.dead = NULL;
-    tmp.ndead = 0;
-    version_unref(&tmp, tmp.cur);
-    for (size_t i = 0; i < tmp.nblob; i++) if (tmp.blob[i].f) gsql_io_close(tmp.blob[i].f);
-    free(tmp.blob);
-    u64_free(&tmp.garbage);
-    free(tmp.path);
-    free(tmp.dir);
+    if (rc == GS_OK) rc = manifest_write(t);
+    if (rc == GS_OK) {
+        gsql_io_remove(db->io, bk->pending);
+        bk->done = *done = 1;
+    }
+    return rc;
+}
+
+static void lsm_backup_end(GsBackup *bk) {
+    if (!bk) return;
+    if (bk->src) gsql_io_close(bk->src);
+    if (bk->dst) gsql_io_close(bk->dst);
+    if (bk->building && bk->b.f) gsql_io_close(bk->b.f);
+    GsStore *t = &bk->tmp;
+    if (!bk->done && t->path) {
+        /* what was written goes; the pending record stays until it has */
+        for (size_t i = 0; i < bk->njobs; i++) gsql_io_remove(bk->db->io, bk->jobs[i].dst);
+        for (uint64_t num = bk->db->next_file; num < t->next_file; num++) {
+            char *x = file_name(t, num), *y = blob_name(t, num);
+            gsql_io_remove(bk->db->io, x);
+            gsql_io_remove(bk->db->io, y);
+            free(x);
+            free(y);
+        }
+        gsql_io_remove(bk->db->io, bk->pending);
+    }
+    for (size_t i = 0; i < bk->njobs; i++) { free(bk->jobs[i].src); free(bk->jobs[i].dst); }
+    free(bk->jobs);
+    if (t->cur) version_unref(t, t->cur);
+    for (size_t i = 0; i < t->nblob; i++) if (t->blob[i].f) gsql_io_close(t->blob[i].f);
+    free(t->blob);
+    free(t->dead);
+    u64_free(&t->garbage);
+    free(t->path);
+    free(t->dir);
+    gsbuf_free(&bk->lastkey);
+    free(bk->chunk);
+    free(bk->dest);
+    free(bk->pending);
+    free(bk);
+}
+
+static int lsm_backup(struct GsTxn *snap, const char *dest) {
+    GsBackup *b = NULL;
+    int done = 0, rc = lsm_backup_begin(snap, dest, &b);
+    while (rc == GS_OK && !done) rc = lsm_backup_step(b, UINT64_MAX, &done);
+    lsm_backup_end(b);
     return rc;
 }
 
@@ -3086,5 +3286,5 @@ const GsEngine gs_engine_lsm = {
     lsm_get, lsm_put, lsm_del,
     lsm_cursor_open, lsm_seek, lsm_first, lsm_last, lsm_next, lsm_prev, lsm_key, lsm_value,
     lsm_cursor_put, lsm_cursor_delete, lsm_cursor_close,
-    lsm_backup, lsm_check, lsm_stats,
+    lsm_backup, lsm_backup_begin, lsm_backup_step, lsm_backup_end, lsm_check, lsm_stats,
 };

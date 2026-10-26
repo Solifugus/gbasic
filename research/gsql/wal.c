@@ -1003,36 +1003,85 @@ static int wal_check(GsStore *db, void (*report)(void *, const char *), void *ct
     return k.bad ? GS_CORRUPT : GS_OK;
 }
 
-static int wal_backup(struct GsTxn *snap, const char *dest) {
+/* A backup in slices: every page as the snapshot sees it, into a temporary
+ * main file with no log, renamed into place once complete. Between slices
+ * the snapshot is an open reader like any other, and that is what slicing
+ * costs here: a reader stops the log reset (checkpoint), so the log grows
+ * with every write made while the backup runs (Test 3). */
+struct GsBackup {
+    struct GsTxn *snap;
+    GsStore *db;
+    char *dest, *tmp, *ddir, *dlog;
+    GsqlFile *dst;
+    uint64_t next, pages;
+    int done;
+};
+
+static int wal_backup_begin(struct GsTxn *snap, const char *dest, GsBackup **out) {
     GsStore *db = snap->db;
+    *out = NULL;
     if (snap->be.write) return GS_MISUSE;
-    char *tmp = gs_path_with(dest, ".tmp"), *ddir = gs_dirname(dest), *dlog = gs_path_with(dest, "-wal");
-    gsql_io_remove(db->io, tmp);
-    GsqlFile *dst = NULL;
-    int rc = gs_io_status(gsql_io_open(db->io, tmp, GSQL_IO_CREATE | GSQL_IO_EXCLUSIVE, &dst));
-    unsigned char *page = malloc(db->ps);
+    if (db->failed) return GS_FAILED;
+    GsBackup *b = calloc(1, sizeof *b);
+    b->snap = snap;
+    b->db = db;
+    b->dest = gs_path_with(dest, "");
+    b->tmp = gs_path_with(dest, ".tmp");
+    b->ddir = gs_dirname(dest);
+    b->dlog = gs_path_with(dest, "-wal");
+    gsql_io_remove(db->io, b->tmp);
+    int rc = gs_io_status(gsql_io_open(db->io, b->tmp, GSQL_IO_CREATE | GSQL_IO_EXCLUSIVE, &b->dst));
     if (rc == GS_OK) {
+        unsigned char *page = malloc(db->ps);
         size_t got;
         rc = gs_io_status(gsql_io_read_at(db->f, 0, page, db->ps, &got));
-        if (rc == GS_OK) rc = gs_io_status(gsql_io_write_at(dst, 0, page, db->ps));
+        if (rc == GS_OK) rc = gs_io_status(gsql_io_write_at(b->dst, 0, page, db->ps));
+        free(page);
     }
-    /* every page as the snapshot sees it, into a main file with no log */
-    uint64_t pages = rc == GS_OK ? state_pages(db, snap) : 0;
-    for (uint64_t p = 1; p < pages && rc == GS_OK; p++) {
+    b->pages = rc == GS_OK ? state_pages(db, snap) : 0;
+    b->next = 1;
+    *out = b;
+    return rc;
+}
+
+static int wal_backup_step(GsBackup *b, uint64_t budget, int *done) {
+    GsStore *db = b->db;
+    int rc = GS_OK;
+    *done = b->done;
+    if (b->done) return GS_OK;
+    if (!b->dst) return GS_MISUSE;
+    for (uint64_t spent = 0; b->next < b->pages && rc == GS_OK && spent < budget; spent += db->ps, b->next++) {
         unsigned char *src;
-        rc = pg_get(&snap->pager.base, p, &src);
-        if (rc == GS_OK) rc = gs_io_status(gsql_io_write_at(dst, p * db->ps, src, db->ps));
+        rc = pg_get(&b->snap->pager.base, b->next, &src);
+        if (rc == GS_OK) rc = gs_io_status(gsql_io_write_at(b->dst, b->next * db->ps, src, db->ps));
     }
-    if (rc == GS_OK) rc = gs_io_status(gsql_io_sync(dst));
-    if (dst) gsql_io_close(dst);
-    gsql_io_remove(db->io, dlog); /* a stale log beside the destination would be replayed into it */
-    if (rc == GS_OK) rc = gs_io_status(gsql_io_rename(db->io, tmp, dest));
-    if (rc == GS_OK) rc = gs_io_status(gsql_io_sync_dir(db->io, ddir));
-    if (rc) gsql_io_remove(db->io, tmp);
-    free(page);
-    free(tmp);
-    free(ddir);
-    free(dlog);
+    if (rc || b->next < b->pages) return rc;
+    rc = gs_io_status(gsql_io_sync(b->dst));
+    gsql_io_close(b->dst);
+    b->dst = NULL;
+    gsql_io_remove(db->io, b->dlog); /* a stale log beside the destination would be replayed into it */
+    if (rc == GS_OK) rc = gs_io_status(gsql_io_rename(db->io, b->tmp, b->dest));
+    if (rc == GS_OK) rc = gs_io_status(gsql_io_sync_dir(db->io, b->ddir));
+    if (rc == GS_OK) b->done = *done = 1;
+    return rc;
+}
+
+static void wal_backup_end(GsBackup *b) {
+    if (!b) return;
+    if (b->dst) gsql_io_close(b->dst);
+    if (!b->done) gsql_io_remove(b->db->io, b->tmp);
+    free(b->dest);
+    free(b->tmp);
+    free(b->ddir);
+    free(b->dlog);
+    free(b);
+}
+
+static int wal_backup(struct GsTxn *snap, const char *dest) {
+    GsBackup *b = NULL;
+    int done = 0, rc = wal_backup_begin(snap, dest, &b);
+    while (rc == GS_OK && !done) rc = wal_backup_step(b, UINT64_MAX, &done);
+    wal_backup_end(b);
     return rc;
 }
 
@@ -1052,5 +1101,5 @@ const GsEngine gs_engine_wal = {
     wal_get, wal_put, wal_del,
     wal_cursor_open, wal_seek, wal_first, wal_last, wal_next, wal_prev, wal_key, wal_value,
     wal_cursor_put, wal_cursor_delete, wal_cursor_close,
-    wal_backup, wal_check, wal_stats,
+    wal_backup, wal_backup_begin, wal_backup_step, wal_backup_end, wal_check, wal_stats,
 };
