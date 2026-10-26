@@ -257,7 +257,6 @@ struct GsStore {
     Dead *dead;
     size_t ndead, capdead;
     U64s garbage;             /* obsolete file numbers not yet known deleted */
-    U64s removed;             /* deleted since the last manifest: not yet durably */
     uint64_t *snaps;          /* open snapshots' sequences */
     size_t nsnaps, capsnaps;
     struct GsTxn *writer;
@@ -851,16 +850,12 @@ static void file_drop_ref(GsStore *db, FileMeta *m) {
         char *name = file_name(db, m->num);
         file_close(m);
         gsql_io_remove(db->io, name);
-        /* Deleted, but a deletion is durable only after a directory flush,
-         * and a crash before one brings the file back. It used to leave the
-         * garbage list here, so a manifest written meanwhile no longer named
-         * it and the returned file stayed for good (found by checking every
-         * recovery for unnamed files). It stays listed until the next
-         * manifest, whose directory flushes make the deletion durable;
-         * deleting an already-gone file at open costs nothing. */
+        /* No longer garbage. The deletion is not durable yet, and needs no
+         * list of its own: the manifest that first omits this file flushes
+         * the directory before its rename, which makes the deletion durable,
+         * and until then the manifest on disk still lists it as garbage. */
         for (size_t i = 0; i < db->garbage.n; i++)
             if (db->garbage.v[i] == m->num) { db->garbage.v[i] = db->garbage.v[--db->garbage.n]; break; }
-        u64_push(&db->removed, m->num);
         free(name);
     }
     file_free(m);
@@ -965,10 +960,9 @@ static int manifest_write(GsStore *db) {
     }
     put_u64(&b, db->ndead);
     for (size_t i = 0; i < db->ndead; i++) { put_u64(&b, db->dead[i].id); put_u64(&b, db->dead[i].death); }
-    size_t npend = db->comp ? db->comp->pending.n : 0, nrem = db->removed.n;
-    put_u64(&b, db->garbage.n + npend + nrem);
+    size_t npend = db->comp ? db->comp->pending.n : 0;
+    put_u64(&b, db->garbage.n + npend);
     for (size_t i = 0; i < db->garbage.n; i++) put_u64(&b, db->garbage.v[i]);
-    for (size_t i = 0; i < nrem; i++) put_u64(&b, db->removed.v[i]);
     for (size_t i = 0; i < npend; i++) put_u64(&b, db->comp->pending.v[i]);
     unsigned char t[4];
     put32(t, crc32c(b.p, b.n));
@@ -998,11 +992,6 @@ static int manifest_write(GsStore *db) {
         rc = ioerr(gsql_io_sync_dir(db->io, db->dir));
         db->st.flushes++;
         if (rc) db->failed = 1;
-    }
-    /* every deletion before this manifest's first directory flush is durable */
-    if (rc == GS_OK) {
-        memmove(db->removed.v, db->removed.v + nrem, (db->removed.n - nrem) * sizeof *db->removed.v);
-        db->removed.n -= nrem;
     }
     if (rc && rc != GS_IO) gsql_io_remove(db->io, tmp);
     free(tmp);
@@ -1194,7 +1183,6 @@ static void store_free(GsStore *db) {
     if (db->bcache.bucket) cache_free(&db->bcache);
     free(db->dead);
     u64_free(&db->garbage);
-    u64_free(&db->removed);
     free(db->snaps);
     if (db->own_io) gsql_io_free(db->io);
     free(db->path);
