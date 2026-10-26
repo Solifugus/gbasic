@@ -36,6 +36,145 @@ static uint64_t rnd(void) {
     return z ^ (z >> 31);
 }
 
+/* A tree dropped by a commit that is not yet durable is still what a NEW
+ * reader sees (§1.3), whole, until a sync or a flush makes the drop durable.
+ * Its own store, with a memtable big enough that commits do not each flush:
+ * that is the window. 2.C's first dead-file sweep dropped such a tree's files
+ * as soon as the drop was before the last commit, and a new reader saw 78 of
+ * 300 records (Test 3, 2026-10-26). */
+static const GsEngine *E;
+static void print_report(void *ctx, const char *line);
+static void put_one(GsStore *db, const char *tree, unsigned i, int sync) {
+    GsTxn *w;
+    char k[32], v[64];
+    E->begin_write(db, &w);
+    int kn = snprintf(k, sizeof k, "k%06u", i);
+    int vn = snprintf(v, sizeof v, "value-%06u-padding-padding", i);
+    if (E->put(w, gss(tree), gsb(k, (size_t)kn), gsb(v, (size_t)vn), 0) == GS_NOT_FOUND) {
+        E->tree_create(w, gss(tree));
+        E->put(w, gss(tree), gsb(k, (size_t)kn), gsb(v, (size_t)vn), 0);
+    }
+    E->commit(w, sync, NULL);
+}
+static void dropped_not_durable(const char *base, GsqlIo *io) {
+    char path[600];
+    snprintf(path, sizeof path, "%s.drop", base);
+    GsOptions o = {1, 512, 0, io, 2000, 2, 0};
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the drop store answered %s", gs_status_name(rc));
+    if (rc) return;
+    for (unsigned i = 0; i < 300; i++) put_one(db, "t", i, 1);
+    for (unsigned i = 0; i < 400; i++) put_one(db, "f", i, 1);
+    GsTxn *w;
+    E->begin_write(db, &w);
+    E->tree_drop(w, gss("t"));
+    E->commit(w, 0, NULL);
+    unsigned worst = 300, seen = 0;
+    for (unsigned j = 0; j < 400; j++) {
+        GsTxn *x;
+        char k[8];
+        E->begin_write(db, &x);
+        int kn = snprintf(k, sizeof k, "z%03u", j % 3);
+        E->put(x, gss("f"), gsb(k, (size_t)kn), gss("x"), 0);
+        E->commit(x, 0, NULL);
+        GsTxn *r;
+        E->begin_read(db, &r);
+        GsCursor *c;
+        unsigned n = 0;
+        int pos, gone = E->cursor_open(r, gss("t"), &c) != GS_OK;
+        if (!gone) {
+            for (rc = E->first(c, &pos); rc == GS_OK && pos; rc = E->next(c, &pos)) n++;
+            E->cursor_close(c);
+        }
+        E->abort(r);
+        if (gone) break; /* the drop became durable: a flush, or a checkpoint */
+        seen++;
+        if (n < worst) worst = n;
+    }
+    CHECK(worst == 300, "a new reader saw %u of 300 records of a tree whose drop was not durable", worst);
+    CHECK(E->sync(db, NULL) == GS_OK, "sync after the drop");
+    GsTxn *r;
+    GsCursor *c;
+    E->begin_read(db, &r);
+    CHECK(E->cursor_open(r, gss("t"), &c) == GS_NOT_FOUND, "after a sync, the dropped tree is gone");
+    E->abort(r);
+    CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the drop");
+    E->close(db);
+    (void)seen;
+}
+
+/* Many versions of a few keys, so a memtable holds several versions of one
+ * key when it flushes and compaction meets them across files, with a snapshot
+ * held from the start: every read is checked as it happens, the snapshot
+ * must still read the first values at the end, and so must a reopen read the
+ * last. The random workload above never put two versions of a key in one
+ * memtable, so a flush that kept the OLDEST version passed it and the crash
+ * gate alike while a direct read went stale after 25 commits (Test 3). */
+static void hot_keys(const char *base, GsqlIo *io) {
+    char path[600];
+    snprintf(path, sizeof path, "%s.hot", base);
+    GsOptions o = {1, 512, 0, io, 2000, 2, 0};
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the hot-key store answered %s", gs_status_name(rc));
+    if (rc) return;
+    enum { KEYS = 5, ROUNDS = 3000 };
+    unsigned last[KEYS];
+    for (unsigned k = 0; k < KEYS; k++) { put_one(db, "h", k, 1); last[k] = k; }
+    GsTxn *held;
+    E->begin_read(db, &held);
+    unsigned stale = 0;
+    for (unsigned i = 0; i < ROUNDS; i++) {
+        unsigned k = (unsigned)(rnd() % KEYS), v = KEYS + i;
+        GsTxn *w;
+        char kb[32], vb2[64];
+        int kn = snprintf(kb, sizeof kb, "k%06u", k);
+        int vn = snprintf(vb2, sizeof vb2, "value-%06u-padding-padding", v);
+        E->begin_write(db, &w);
+        E->put(w, gss("h"), gsb(kb, (size_t)kn), gsb(vb2, (size_t)vn), 0);
+        E->commit(w, i % 8 == 7, NULL); /* a group of eight per flush */
+        last[k] = v;
+        if (i % 8 != 7) continue;
+        GsTxn *r;
+        E->begin_read(db, &r);
+        for (unsigned q = 0; q < KEYS; q++) {
+            GsBytes got;
+            kn = snprintf(kb, sizeof kb, "k%06u", q);
+            vn = snprintf(vb2, sizeof vb2, "value-%06u-padding-padding", last[q]);
+            if (E->get(r, gss("h"), gsb(kb, (size_t)kn), &got) != GS_OK || got.n != (size_t)vn || memcmp(got.p, vb2, (size_t)vn)) stale++;
+        }
+        E->abort(r);
+    }
+    CHECK(stale == 0, "%u reads of a hot key returned something other than its last durable value", stale);
+    unsigned moved = 0;
+    for (unsigned q = 0; q < KEYS; q++) {
+        GsBytes got;
+        char kb[32], vb2[64];
+        int kn = snprintf(kb, sizeof kb, "k%06u", q), vn = snprintf(vb2, sizeof vb2, "value-%06u-padding-padding", q);
+        if (E->get(held, gss("h"), gsb(kb, (size_t)kn), &got) != GS_OK || got.n != (size_t)vn || memcmp(got.p, vb2, (size_t)vn)) moved++;
+    }
+    CHECK(moved == 0, "a snapshot held across %u commits saw %u of its %u keys change", (unsigned)ROUNDS, moved, (unsigned)KEYS);
+    E->abort(held);
+    CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the hot keys");
+    E->close(db);
+    rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "reopening the hot-key store answered %s", gs_status_name(rc));
+    if (rc) return;
+    GsTxn *r;
+    E->begin_read(db, &r);
+    unsigned wrong = 0;
+    for (unsigned q = 0; q < KEYS; q++) {
+        GsBytes got;
+        char kb[32], vb2[64];
+        int kn = snprintf(kb, sizeof kb, "k%06u", q), vn = snprintf(vb2, sizeof vb2, "value-%06u-padding-padding", last[q]);
+        if (E->get(r, gss("h"), gsb(kb, (size_t)kn), &got) != GS_OK || got.n != (size_t)vn || memcmp(got.p, vb2, (size_t)vn)) wrong++;
+    }
+    CHECK(wrong == 0, "after reopening, %u hot keys did not read their last value", wrong);
+    E->abort(r);
+    E->close(db);
+}
+
 /* ---- the model ---- */
 
 typedef struct { GsBuf k, v; } Rec;
@@ -125,7 +264,6 @@ static int mt_del(MTree *t, GsBytes k) {
 
 /* ---- comparing a whole view against a model state ---- */
 
-static const GsEngine *E;
 
 typedef struct { MState *want; int bad; const char *what; } ListCtx;
 static size_t list_i;
@@ -533,6 +671,8 @@ int main(int argc, char **argv) {
     GsStats st;
     E->stats(db, &st);
     E->close(db);
+    dropped_not_durable(path, io);
+    hot_keys(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);

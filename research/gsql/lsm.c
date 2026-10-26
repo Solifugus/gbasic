@@ -1529,18 +1529,31 @@ static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
 
 /* ---- snapshots and the oldest one ------------------------------------------- */
 
-static uint64_t oldest_snapshot(GsStore *db) {
-    uint64_t m = db->last_seq;
-    for (size_t i = 0; i < db->nsnaps; i++) if (db->snaps[i] < m) m = db->snaps[i];
-    return m;
-}
+/* What a new version must serve: a reader that has not begun yet. Every open
+ * transaction pins the version it began with -- its files AND its memtable --
+ * so a compaction's outputs, a flush's file and a swept file's absence are
+ * seen only by readers that begin after them, and a reader begins at the last
+ * DURABLE commit (§1.3). So that, not the oldest open snapshot, is the
+ * horizon below which a shadowed version or a retired tree may go.
+ *
+ * The first version of this used the oldest snapshot, or the last commit when
+ * none was open, and was wrong both ways (Test 3, 2026-10-26):
+ *   - too much kept: a compaction under a held snapshot kept EVERY version
+ *     written since it, which nobody could read -- the snapshot reads its own
+ *     pinned inputs -- so one long reader cost space in proportion to writes,
+ *     not to keys (2 M updates of 1,000 keys: 301 MB left after the release);
+ *   - too little: a retired tree's records went once the retirement was
+ *     before the last commit, while a new reader still began before it when
+ *     that commit was not yet durable. The dead-file sweep, written with the
+ *     same rule, showed it: a new reader saw 78 of 300 records of a tree whose
+ *     drop was not yet durable. */
+static uint64_t horizon(GsStore *db) { return db->durable_seq; }
 
 static void snap_add(GsStore *db, uint64_t s) {
     if (db->nsnaps == db->capsnaps) { db->capsnaps = db->capsnaps ? db->capsnaps * 2 : 8; db->snaps = realloc(db->snaps, db->capsnaps * sizeof *db->snaps); }
     db->snaps[db->nsnaps++] = s;
 }
 static void snap_del(GsStore *db, uint64_t s) {
-    if (db->ndead) db->sweep = 1;
     for (size_t i = 0; i < db->nsnaps; i++) if (db->snaps[i] == s) { db->snaps[i] = db->snaps[--db->nsnaps]; return; }
 }
 
@@ -1792,7 +1805,7 @@ static int comp_start(GsStore *db, int level) {
     c->first_below = first_below;
     c->bottom = 1;
     for (int l = next + 1; l < LEVELS; l++) if (v->nfiles[l]) c->bottom = 0;
-    c->keep_after = oldest_snapshot(db);
+    c->keep_after = horizon(db);
     c->target = db->memtable_limit * 2;
     if (db->nblob >= 4) {
         /* the oldest quarter of the blob files, by number */
@@ -1818,8 +1831,9 @@ static int comp_start(GsStore *db, int level) {
     return GS_OK;
 }
 
-/* A file whose every record belongs to a tree retired before the oldest
- * snapshot is read by nobody, and is dropped whole rather than left until a
+/* A file whose every record belongs to a tree retired at or before the last
+ * durable commit (the horizon) is read by nobody new, and is dropped whole --
+ * the readers already open keep their pinned copy -- rather than left until a
  * compaction happens to rewrite it. Without this a replaced dataset (G1) kept
  * its space for as long as no compaction reached its files -- measured, a 10^6
  * row dataset's 138 MB survived its replacement, its reader's release and
@@ -1840,9 +1854,11 @@ static int file_all_dead(GsStore *db, FileMeta *m, uint64_t keep_after) {
 
 static int sweep_dead(GsStore *db) {
     if (db->comp) return GS_OK; /* the flag stays: try again after it */
+    uint64_t keep_after = horizon(db);
+    /* a retirement not yet durable: try again at a later commit */
     db->sweep = 0;
+    for (size_t i = 0; i < db->ndead; i++) if (db->dead[i].death > keep_after) db->sweep = 1;
     if (!db->ndead) return GS_OK;
-    uint64_t keep_after = oldest_snapshot(db);
     Version *v = db->cur, *nv = NULL;
     FileMeta **gone = NULL;
     size_t ngone = 0;
@@ -1917,8 +1933,18 @@ static int flush_memtable(GsStore *db) {
     if (rc) { if (nl) gsql_io_close(nl); return rc; }
     Builder b;
     rc = bld_open(db, &b);
+    /* Only the newest version of each key, and nothing of a retired tree: the
+     * file is read only by readers that begin after this flush, which makes
+     * every commit in it durable (see horizon). Writing every version left
+     * level 0 holding ~100 MB of shadowed versions for 1,000 hot keys. */
+    const SkNode *prev = NULL;
     for (SkNode *n = mem->head->next[0]; n && rc == GS_OK; n = n->next[0]) {
         Ent e = sk_ent(n);
+        int same = prev && prev->kn == n->kn && memcmp(prev->k, n->k, n->kn) == 0;
+        prev = n;
+        if (same) continue;
+        uint64_t death = e.kn >= ID_LEN ? death_of(db, ukey_id(e.k)) : 0;
+        if (death && death <= db->last_seq) continue;
         bld_add(&b, &e);
         rc = b.rc;
     }
