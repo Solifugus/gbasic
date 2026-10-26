@@ -869,7 +869,11 @@ static int wal_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     if (commit_id) *commit_id = t->commit;
     db->writer = NULL;
     txn_release(t);
-    if (db->nframes - db->backfilled >= db->ckpt_frames) {
+    /* A synced commit is the moment wal_sync describes below -- every frame
+     * durable -- and gets its rule: without it, group commit written as "every
+     * Nth commit syncs" never reset the log, which reached 8.3 GB over 10^6
+     * commits and took 6.1 s to recover (Test 3, 2026-10-26). */
+    if (sync ? db->nframes >= db->ckpt_frames : db->nframes - db->backfilled >= db->ckpt_frames) {
         rc = checkpoint(db);
         /* The commit itself may be durable, but the checkpoint after it failed
          * a flush and the store is now unusable (§1.3). Answering OK hid that
