@@ -41,6 +41,10 @@ static void *a_open(GsqlIo *io, const char *dir, int *err) {
     GsStore *db;
     int rc = E->open(path, &o, &db);
     if (rc) { *err = map(rc); return NULL; }
+    /* every recovery is checked as well as read back: a store whose contents
+     * are right can still have leaked files a later open never deletes,
+     * which no read can see */
+    if (E->check(db, NULL, NULL) != GS_OK) { E->close(db); *err = GSQL_E_CORRUPT; return NULL; }
     return db;
 }
 

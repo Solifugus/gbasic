@@ -257,6 +257,7 @@ struct GsStore {
     Dead *dead;
     size_t ndead, capdead;
     U64s garbage;             /* obsolete file numbers not yet known deleted */
+    U64s removed;             /* deleted since the last manifest: not yet durably */
     uint64_t *snaps;          /* open snapshots' sequences */
     size_t nsnaps, capsnaps;
     struct GsTxn *writer;
@@ -333,7 +334,14 @@ static int bld_open(GsStore *db, Builder *b) {
     int rc = ioerr(gsql_io_open(db->io, name, GSQL_IO_CREATE, &b->f));
     free(name);
     if (rc == GS_OK) rc = ioerr(gsql_io_truncate(b->f, 0));
-    if (rc && b->f) { gsql_io_close(b->f); b->f = NULL; }
+    if (rc && b->f) {
+        /* created and then refused (a full disk): named nowhere, so it goes */
+        gsql_io_close(b->f);
+        b->f = NULL;
+        char *nm = file_name(db, b->num);
+        gsql_io_remove(db->io, nm);
+        free(nm);
+    }
     b->rc = rc;
     return rc;
 }
@@ -455,12 +463,13 @@ static int bld_close(Builder *b, FileMeta **out) {
         gsbuf_free(&b->smallest);
         gsql_io_close(b->f);
         *out = NULL;
-        if (rc == GS_OK) {
-            /* nothing went in: the empty file is not kept */
-            char *name = file_name(b->db, b->num);
-            gsql_io_remove(b->db->io, name);
-            free(name);
-        }
+        /* Nothing went in, or writing it failed: either way nothing names it,
+         * so it goes. A failed one used to stay, and once a later manifest
+         * carried a higher next-file number it stayed for good (found on a
+         * full disk, where every retried flush left one more). */
+        char *name = file_name(b->db, b->num);
+        gsql_io_remove(b->db->io, name);
+        free(name);
     }
     gsbuf_free(&b->last);
     return rc;
@@ -841,11 +850,17 @@ static void file_drop_ref(GsStore *db, FileMeta *m) {
     if (m->obsolete) {
         char *name = file_name(db, m->num);
         file_close(m);
-        if (gsql_io_remove(db->io, name) == 0 || 1) {
-            /* removed (or already gone): no longer garbage */
-            for (size_t i = 0; i < db->garbage.n; i++)
-                if (db->garbage.v[i] == m->num) { db->garbage.v[i] = db->garbage.v[--db->garbage.n]; break; }
-        }
+        gsql_io_remove(db->io, name);
+        /* Deleted, but a deletion is durable only after a directory flush,
+         * and a crash before one brings the file back. It used to leave the
+         * garbage list here, so a manifest written meanwhile no longer named
+         * it and the returned file stayed for good (found by checking every
+         * recovery for unnamed files). It stays listed until the next
+         * manifest, whose directory flushes make the deletion durable;
+         * deleting an already-gone file at open costs nothing. */
+        for (size_t i = 0; i < db->garbage.n; i++)
+            if (db->garbage.v[i] == m->num) { db->garbage.v[i] = db->garbage.v[--db->garbage.n]; break; }
+        u64_push(&db->removed, m->num);
         free(name);
     }
     file_free(m);
@@ -950,9 +965,10 @@ static int manifest_write(GsStore *db) {
     }
     put_u64(&b, db->ndead);
     for (size_t i = 0; i < db->ndead; i++) { put_u64(&b, db->dead[i].id); put_u64(&b, db->dead[i].death); }
-    size_t npend = db->comp ? db->comp->pending.n : 0;
-    put_u64(&b, db->garbage.n + npend);
+    size_t npend = db->comp ? db->comp->pending.n : 0, nrem = db->removed.n;
+    put_u64(&b, db->garbage.n + npend + nrem);
     for (size_t i = 0; i < db->garbage.n; i++) put_u64(&b, db->garbage.v[i]);
+    for (size_t i = 0; i < nrem; i++) put_u64(&b, db->removed.v[i]);
     for (size_t i = 0; i < npend; i++) put_u64(&b, db->comp->pending.v[i]);
     unsigned char t[4];
     put32(t, crc32c(b.p, b.n));
@@ -982,6 +998,11 @@ static int manifest_write(GsStore *db) {
         rc = ioerr(gsql_io_sync_dir(db->io, db->dir));
         db->st.flushes++;
         if (rc) db->failed = 1;
+    }
+    /* every deletion before this manifest's first directory flush is durable */
+    if (rc == GS_OK) {
+        memmove(db->removed.v, db->removed.v + nrem, (db->removed.n - nrem) * sizeof *db->removed.v);
+        db->removed.n -= nrem;
     }
     if (rc && rc != GS_IO) gsql_io_remove(db->io, tmp);
     free(tmp);
@@ -1173,6 +1194,7 @@ static void store_free(GsStore *db) {
     if (db->bcache.bucket) cache_free(&db->bcache);
     free(db->dead);
     u64_free(&db->garbage);
+    u64_free(&db->removed);
     free(db->snaps);
     if (db->own_io) gsql_io_free(db->io);
     free(db->path);
@@ -1629,6 +1651,9 @@ static int flush_memtable(GsStore *db) {
     if (rc) {
         db->cur = old;
         db->log_num = oldnum;
+        /* the new file is named by no manifest: it goes (left, it stayed on
+         * disk for good once a later manifest's next-file number passed it) */
+        if (fm) fm->obsolete = 1;
         version_unref(db, nv);
         gsql_io_close(nl);
         return rc;
@@ -2415,7 +2440,16 @@ static void lsm_abort(struct GsTxn *t) {
  * whatever `sync` said. */
 static int commit_runs(struct GsTxn *t, uint64_t *commit_id) {
     GsStore *db = t->db;
+    /* The flush writes a manifest whose next-file number is past the runs
+     * already spilled, which nothing names until the commit's own manifest:
+     * a crash between the two left them on disk for good (found by checking
+     * every recovery for unnamed files). That manifest lists them as
+     * garbage, and the commit's names them. */
+    for (size_t r = 0; r < t->nruns; r++) u64_push(&db->garbage, t->runs[r]->num);
     int rc = flush_memtable(db);
+    for (size_t r = 0; r < t->nruns; r++) /* by value: the flush may have added its own */
+        for (size_t i = 0; i < db->garbage.n; i++)
+            if (db->garbage.v[i] == t->runs[r]->num) { db->garbage.v[i] = db->garbage.v[--db->garbage.n]; break; }
     if (rc == GS_OK) rc = spill_buffer(t);
     if (rc) { lsm_abort(t); return rc == GS_FULL ? GS_FULL : GS_IO; }
     uint64_t base = db->last_seq + 1, commit = base + t->nruns - 1;
@@ -2574,6 +2608,26 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
                                             gsb(m->smallest.p, m->smallest.n)) >= 0)
                 rsay(&r, "level %llu: file %llu overlaps the one before it", (unsigned long long)l, m->num);
         }
+    }
+    /* Nothing on disk that nothing names. A file the version does not hold
+     * must be garbage (deleted at the next open) or an unfinished
+     * compaction's output; anything else grows the store for good, the
+     * defect that grew 2.A and 2.B without bound. Data files are numbered
+     * below next_file, so asking for each one needs no directory listing. */
+    for (uint64_t num = 1; num < db->next_file; num++) {
+        int named = 0;
+        for (int l = 0; l < LEVELS && !named; l++)
+            for (size_t i = 0; i < v->nfiles[l] && !named; i++) named = v->files[l][i]->num == num;
+        for (size_t i = 0; i < db->garbage.n && !named; i++) named = db->garbage.v[i] == num;
+        for (size_t i = 0; db->comp && i < db->comp->pending.n && !named; i++) named = db->comp->pending.v[i] == num;
+        if (named) continue;
+        char *name = file_name(db, num);
+        GsqlFile *f = NULL;
+        if (gsql_io_open(db->io, name, 0, &f) == 0) {
+            gsql_io_close(f);
+            rsay(&r, "file %llu exists and nothing names it (next file %llu)", (unsigned long long)num, (unsigned long long)db->next_file);
+        }
+        free(name);
     }
     return r.bad ? GS_CORRUPT : GS_OK;
 }
