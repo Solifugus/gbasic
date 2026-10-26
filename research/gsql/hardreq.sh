@@ -3,7 +3,9 @@
 # 2.C with 2.B alongside and 2.A as a reference. One JSON line per case on
 # stdout; see hardreq.c for what each line has checked.
 #
-#   research/gsql/hardreq.sh [OUT.jsonl]
+#   research/gsql/hardreq.sh [OUT.jsonl]          Test 3
+#   SET=test4 research/gsql/hardreq.sh [OUT.jsonl] Test 4: the sliced backup, and
+#                                                  open question 6's file counts
 #
 # Data goes under BENCH_DIR (default /var/tmp/gsql-bench, ext4: never tmpfs),
 # each case in its own directory, removed when the case ends. A case is
@@ -32,6 +34,18 @@ run() { # test engine args...
         printf '{"test":"%s","engine":"%s","args":"%s","failed":"exit %s: %s"}\n' "$t" "$e" "$*" "$?" "$(tail -1 "$d.err" | tr -d '"')" >> "$OUT"
     rm -rf "$d" "$d.err"
 }
+
+if [ "${SET:-test3}" = test4 ]; then
+    # one step (the monolithic backup) against slices, a write between each
+    for b in 18446744073709551615 4194304 1048576 262144; do
+        for e in wal lsm; do run sbackup $e 1000000 $b; done
+    done
+    run sbackup cow 1000000 1048576
+    for e in wal lsm; do run sbackup $e 10000000 1048576; done
+    for n in 10000 100000 1000000 10000000; do for e in cow wal lsm; do run files $e $n; done; done
+    rm -f "$bin"
+    exit 0
+fi
 
 for e in cow wal lsm; do run g4 $e; done
 for n in 100 10000 1000000; do for e in cow wal lsm; do run g1 $e $n; done; done

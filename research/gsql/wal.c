@@ -1055,8 +1055,10 @@ static int wal_backup_step(GsBackup *b, uint64_t budget, int *done) {
         rc = pg_get(&b->snap->pager.base, b->next, &src);
         if (rc == GS_OK) rc = gs_io_status(gsql_io_write_at(b->dst, b->next * db->ps, src, db->ps));
     }
+    /* each slice flushes what it wrote: synced only at the end, the whole
+     * copy's flush fell to the last step (228 ms for 1.25 GB) */
+    if (rc == GS_OK) rc = gs_io_status(gsql_io_sync(b->dst));
     if (rc || b->next < b->pages) return rc;
-    rc = gs_io_status(gsql_io_sync(b->dst));
     gsql_io_close(b->dst);
     b->dst = NULL;
     gsql_io_remove(db->io, b->dlog); /* a stale log beside the destination would be replayed into it */

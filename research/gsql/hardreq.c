@@ -6,6 +6,8 @@
  *   hardreq backup   ENGINE DIR ROWS COMMITS_AFTER_SNAPSHOT
  *   hardreq held     ENGINE DIR COMMITS HOLD(0|1)
  *   hardreq recovery ENGINE DIR COMMITS HOLD(0|1)
+ *   hardreq sbackup  ENGINE DIR ROWS BUDGET     (Test 4: the backup in slices)
+ *   hardreq files    ENGINE DIR ROWS            (Test 4: open question 6)
  *
  * Each prints one JSON line. Every claim a line makes is CHECKED here, not
  * inferred: a G1 line saying the old snapshot kept the old data has scanned
@@ -439,6 +441,157 @@ static int t_recovery(uint64_t commits, int hold) {
     return finish("recovery", fields);
 }
 
+/* ---- the backup in slices, with a commit between every two ---------------- */
+
+static int dcmp(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return x < y ? -1 : x > y; }
+
+static int t_sbackup(uint64_t rows, uint64_t budget) {
+    GsStore *db = open_store(g_path, 1);
+    if (!db) return finish("sbackup", "");
+    int rc = load(db, "t", rows, 1, 1);
+    REQUIRE(rc == GS_OK, "load answered %s%lld", gs_status_name(rc), 0);
+    uint64_t base = dir_bytes(g_dir) + log_bytes(g_dir), peak = base;
+    GsTxn *snap;
+    E->begin_read(db, &snap);
+    char bdir[700], bpath[720];
+    snprintf(bdir, sizeof bdir, "%s/backup", g_dir);
+    mkdir(bdir, 0700);
+    snprintf(bpath, sizeof bpath, "%s/db", bdir);
+    GsBackup *bk = NULL;
+    double t0 = now_ms(), step_max = 0, commit_max = 0;
+    rc = E->backup_begin(snap, bpath, &bk);
+    double begin_ms = now_ms() - t0;
+    int done = 0;
+    uint64_t steps = 0, commits = 0;
+    double *lat = NULL;
+    size_t nlat = 0, caplat = 0;
+    while (rc == GS_OK && !done) {
+        double a = now_ms();
+        rc = E->backup_step(bk, budget, &done);
+        double d = now_ms() - a;
+        if (d > step_max) step_max = d;
+        if (nlat == caplat) { caplat = caplat ? caplat * 2 : 1024; lat = realloc(lat, caplat * sizeof *lat); }
+        lat[nlat++] = d;
+        steps++;
+        a = now_ms();
+        if (update_one(db, "t", (commits * 7919) % rows, 2, commits % 64 == 63)) break;
+        d = now_ms() - a;
+        if (d > commit_max) commit_max = d;
+        commits++;
+        if (steps % 64 == 0) { uint64_t b = dir_bytes(g_dir) + log_bytes(g_dir); if (b > peak) peak = b; }
+    }
+    double total = now_ms() - t0;
+    qsort(lat, nlat, sizeof *lat, dcmp);
+    double p50 = nlat ? lat[nlat / 2] : 0, p99 = nlat ? lat[(nlat * 99) / 100 < nlat ? (nlat * 99) / 100 : nlat - 1] : 0;
+    free(lat);
+    REQUIRE(rc == GS_OK && done, "the backup answered %s after %lld steps", gs_status_name(rc), steps);
+    E->backup_end(bk);
+    E->abort(snap);
+    uint64_t at_end = dir_bytes(g_dir) + log_bytes(g_dir), backup_bytes = dir_bytes_of(bdir, 2);
+    E->close(db);
+    GsStore *b = open_store(bpath, 0);
+    if (b) {
+        GsTxn *r;
+        uint64_t cnt, m;
+        E->begin_read(b, &r);
+        rc = scan_gen(r, "t", 1, &cnt, &m);
+        REQUIRE(rc == GS_OK && cnt == rows && m == rows, "the backup held %s%lld records of the snapshot", "", (long long)m);
+        E->abort(r);
+        REQUIRE(E->check(b, NULL, NULL) == GS_OK, "the backup fails check%s%lld", "", 0);
+        E->close(b);
+    }
+    char fields[600];
+    snprintf(fields, sizeof fields,
+             "\"rows\":%llu,\"budget\":%llu,\"begin_ms\":%.2f,\"steps\":%llu,\"step_p50_ms\":%.2f,\"step_p99_ms\":%.2f,\"step_max_ms\":%.2f,\"commits_during\":%llu,"
+             "\"commit_max_ms\":%.2f,\"total_ms\":%.0f,\"base_bytes\":%llu,\"peak_bytes\":%llu,\"end_bytes\":%llu,\"backup_bytes\":%llu,",
+             (unsigned long long)rows, (unsigned long long)budget, begin_ms, (unsigned long long)steps, p50, p99, step_max,
+             (unsigned long long)commits, commit_max, total, (unsigned long long)base, (unsigned long long)peak,
+             (unsigned long long)at_end, (unsigned long long)backup_bytes);
+    return finish("sbackup", fields);
+}
+
+/* ---- open question 6: how many files, and how many held open ------------- */
+
+static unsigned open_fds(void) {
+    DIR *d = opendir("/proc/self/fd");
+    unsigned n = 0;
+    if (!d) return 0;
+    struct dirent *de;
+    while ((de = readdir(d))) if (de->d_name[0] != '.') n++;
+    closedir(d);
+    return n - 1; /* the listing's own */
+}
+
+static void count_kinds(const char *dir, unsigned *total, unsigned *sst, unsigned *blob, unsigned *logs, unsigned *other) {
+    DIR *d = opendir(dir);
+    *total = *sst = *blob = *logs = *other = 0;
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        if (de->d_name[0] == '.') continue;
+        (*total)++;
+        if (strstr(de->d_name, ".sst")) (*sst)++;
+        else if (strstr(de->d_name, ".blob")) (*blob)++;
+        else if (is_log(de->d_name)) (*logs)++;
+        else (*other)++;
+    }
+    closedir(d);
+}
+
+static uint64_t scramble(uint64_t i) { i ^= i >> 31; i *= 0x9E3779B97F4A7C15ULL; return i ^ (i >> 29); }
+
+static int t_files(uint64_t rows) {
+    unsigned fd0 = open_fds();
+    GsStore *db = open_store(g_path, 1);
+    if (!db) return finish("files", "");
+    GsTxn *w;
+    E->begin_write(db, &w);
+    E->tree_create(w, gss("t"));
+    E->commit(w, 1, NULL);
+    char k[32];
+    unsigned char v[VLEN];
+    int rc = GS_OK;
+    double t0 = now_ms();
+    for (uint64_t i = 0; i < rows && rc == GS_OK;) {
+        E->begin_write(db, &w);
+        for (uint64_t j = 0; j < 10000 && i < rows && rc == GS_OK; j++, i++) {
+            size_t kn = key_of(k, scramble(i) % (rows * 4));
+            value_of(v, 1, i);
+            rc = E->put(w, gss("t"), gsb(k, kn), gsb(v, VLEN), 0);
+        }
+        if (rc == GS_OK) rc = E->commit(w, 1, NULL); else E->abort(w);
+    }
+    double load_ms = now_ms() - t0;
+    REQUIRE(rc == GS_OK, "the load answered %s%lld", gs_status_name(rc), 0);
+    unsigned fd_loaded = open_fds() - fd0;
+    E->close(db);
+    unsigned tot, sst, blob, logs, other;
+    count_kinds(g_dir, &tot, &sst, &blob, &logs, &other);
+    t0 = now_ms();
+    db = open_store(g_path, 0);
+    double open_ms = now_ms() - t0;
+    unsigned fd_open = open_fds() - fd0;
+    if (db) {
+        GsTxn *r;
+        E->begin_read(db, &r);
+        for (uint64_t i = 0; i < 2000; i++) {
+            GsBytes val;
+            size_t kn = key_of(k, scramble(i * 7919 % rows) % (rows * 4));
+            E->get(r, gss("t"), gsb(k, kn), &val);
+        }
+        E->abort(r);
+    }
+    unsigned fd_read = open_fds() - fd0;
+    if (db) E->close(db);
+    char fields[500];
+    snprintf(fields, sizeof fields,
+             "\"rows\":%llu,\"load_ms\":%.0f,\"files\":%u,\"sst\":%u,\"blob\":%u,\"logs\":%u,\"other\":%u,"
+             "\"bytes\":%llu,\"fds_after_load\":%u,\"fds_after_open\":%u,\"fds_after_reads\":%u,\"open_ms\":%.1f,",
+             (unsigned long long)rows, load_ms, tot, sst, blob, logs, other, (unsigned long long)dir_bytes_of(g_dir, 2),
+             fd_loaded, fd_open, fd_read, open_ms);
+    return finish("files", fields);
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) {
         fprintf(stderr, "usage: hardreq g4|g1|backup|held|recovery ENGINE DIR [ARGS]\n");
@@ -452,6 +605,8 @@ int main(int argc, char **argv) {
     if (!strcmp(t, "backup")) return t_backup(a, b);
     if (!strcmp(t, "held")) return t_held(a, (int)b);
     if (!strcmp(t, "recovery")) return t_recovery(a, (int)b);
+    if (!strcmp(t, "sbackup")) return t_sbackup(a, b);
+    if (!strcmp(t, "files")) return t_files(a);
     fprintf(stderr, "unknown test %s\n", t);
     return 2;
 }

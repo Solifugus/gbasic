@@ -3174,14 +3174,18 @@ static int lsm_backup_step(GsBackup *bk, uint64_t budget, int *done) {
         }
         while (j->off < j->size && spent < budget) {
             size_t want = j->size - j->off < BACKUP_CHUNK ? (size_t)(j->size - j->off) : BACKUP_CHUNK, got = 0;
+            if (want > budget - spent) want = (size_t)(budget - spent); /* a slice is the budget, not a chunk */
             if ((rc = ioerr(gsql_io_read_at(bk->src, j->off, bk->chunk, want, &got)))) return rc;
             if (got != want) return GS_CORRUPT; /* a pinned immutable file is shorter than it was */
             if ((rc = ioerr(gsql_io_write_at(bk->dst, j->off, bk->chunk, want)))) return rc;
             j->off += want;
             spent += want;
         }
-        if (j->off < j->size) return GS_OK;
+        /* each slice flushes what it wrote: a file synced only when finished
+         * left its whole flush to one step (64 MB of dirty pages, ~6 ms) */
         rc = ioerr(gsql_io_sync(bk->dst));
+        if (rc) return rc;
+        if (j->off < j->size) return GS_OK;
         gsql_io_close(bk->dst);
         gsql_io_close(bk->src);
         bk->dst = bk->src = NULL;
