@@ -35,8 +35,14 @@ typedef struct {
 
 typedef struct {
     char *path;
-    size_t inode;
+    size_t inode;          /* DIR_INODE for a directory made by mkdir */
 } Name;
+
+/* A directory MADE by mkdir is a name like a file's, created and made durable
+ * the same way (rule 2, through its parent). A directory nobody made -- the
+ * part of a path before its last '/' -- is implicit and always there, which is
+ * how every existing caller uses this layer. */
+#define DIR_INODE ((size_t)-1)
 
 typedef struct {
     Name *items;
@@ -60,13 +66,14 @@ typedef struct {
     size_t n, cap;
 } U8s;
 
-enum { K_OPEN, K_READ, K_WRITE, K_SYNC, K_SIZE, K_TRUNC, K_CLOSE, K_RENAME, K_REMOVE, K_SYNC_DIR, K_LOCK };
+enum { K_OPEN, K_READ, K_WRITE, K_SYNC, K_SIZE, K_TRUNC, K_CLOSE, K_RENAME, K_REMOVE, K_SYNC_DIR, K_LOCK, K_MKDIR, K_LIST };
 
 typedef struct {
     GsqlIo base;
     Inode **inodes;
     size_t inode_count, inode_cap;
     Names durable_names, view_names;
+    Names made;            /* every directory mkdir made, so a crash image can drop what was beneath a lost one */
     Pend *pend;
     size_t pend_count, pend_cap;
     uint64_t ops, crash_at;
@@ -316,6 +323,7 @@ static int sim_open(GsqlIo *io, const char *path, int flags, GsqlFile **out) {
     if (rc) return rc;
     long at = names_find(&s->view_names, path);
     size_t inode;
+    if (at >= 0 && s->view_names.items[at].inode == DIR_INODE) return EISDIR;
     if (at < 0) {
         if (!(flags & GSQL_IO_CREATE)) return ENOENT;
         long made = new_inode(s);
@@ -444,6 +452,7 @@ static int sim_rename(GsqlIo *io, const char *from, const char *to) {
     if (!same_dir(from, to)) return EXDEV;
     long at = names_find(&s->view_names, from);
     if (at < 0) return ENOENT;
+    if (s->view_names.items[at].inode == DIR_INODE) return EISDIR; /* not modelled: no caller renames one */
     if (strcmp(from, to) == 0) return 0;
     size_t inode = s->view_names.items[at].inode;
     Pend *p = pend_push(s, P_RENAME);
@@ -459,7 +468,9 @@ static int sim_remove(GsqlIo *io, const char *path) {
     Sim *s = (Sim *)io;
     int rc = tick(s, K_REMOVE);
     if (rc) return rc;
-    if (names_find(&s->view_names, path) < 0) return ENOENT;
+    long at = names_find(&s->view_names, path);
+    if (at < 0) return ENOENT;
+    if (s->view_names.items[at].inode == DIR_INODE) return EISDIR; /* unlink's answer */
     Pend *p = pend_push(s, P_REMOVE);
     if (!p) return ENOMEM;
     p->path = dup_str(path);
@@ -497,6 +508,70 @@ static int sim_lock(GsqlFile *base, int nonblocking) {
     return 0;
 }
 
+/* Whether anything in the current view lies beneath `dir` (its length dl). */
+static int has_beneath(const Sim *s, const char *dir, size_t dl) {
+    for (size_t i = 0; i < s->view_names.count; i++) {
+        const char *p = s->view_names.items[i].path;
+        if (strncmp(p, dir, dl) == 0 && p[dl] == '/') return 1;
+    }
+    return 0;
+}
+
+static int sim_mkdir(GsqlIo *io, const char *path) {
+    Sim *s = (Sim *)io;
+    int rc = tick(s, K_MKDIR);
+    if (rc) return rc;
+    if (names_find(&s->view_names, path) >= 0 || has_beneath(s, path, strlen(path))) return EEXIST;
+    Pend *p = pend_push(s, P_CREATE);
+    if (!p) return ENOMEM;
+    p->inode = DIR_INODE;
+    p->path = dup_str(path);
+    if (!p->path || !names_set(&s->view_names, path, DIR_INODE) || !names_set(&s->made, path, 0)) return ENOMEM;
+    return 0;
+}
+
+static int sim_list(GsqlIo *io, const char *dir, int (*each)(void *, const char *), void *ctx) {
+    Sim *s = (Sim *)io;
+    int rc = tick(s, K_LIST);
+    if (rc) return rc;
+    size_t dl = strlen(dir);
+    while (dl > 0 && dir[dl - 1] == '/') dl--;
+    long self = -1;
+    for (size_t i = 0; i < s->view_names.count; i++)
+        if (strlen(s->view_names.items[i].path) == dl && strncmp(s->view_names.items[i].path, dir, dl) == 0) self = (long)i;
+    if (self >= 0 && s->view_names.items[self].inode != DIR_INODE) return ENOTDIR;
+    char **names = NULL;
+    size_t n = 0, cap = 0;
+    for (size_t i = 0; i < s->view_names.count; i++) {
+        const char *p = s->view_names.items[i].path;
+        if (dl ? (strncmp(p, dir, dl) != 0 || p[dl] != '/') : 0) continue;
+        const char *rest = dl ? p + dl + 1 : p;
+        const char *slash = strchr(rest, '/');
+        size_t len = slash ? (size_t)(slash - rest) : strlen(rest);
+        /* an implicit subdirectory appears once, as a real one would */
+        int dup = 0;
+        for (size_t j = 0; j < n && !dup; j++) dup = strlen(names[j]) == len && strncmp(names[j], rest, len) == 0;
+        if (dup || !len) continue;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 16;
+            char **q = realloc(names, cap * sizeof *q);
+            if (!q) { rc = ENOMEM; break; }
+            names = q;
+        }
+        if (!(names[n] = malloc(len + 1))) { rc = ENOMEM; break; }
+        memcpy(names[n], rest, len);
+        names[n][len] = 0;
+        n++;
+    }
+    if (!rc && !n && self < 0 && dl) rc = ENOENT;
+    if (rc) {
+        for (size_t i = 0; i < n; i++) free(names[i]);
+        free(names);
+        return rc;
+    }
+    return gsql_io_walk_names(names, n, each, ctx);
+}
+
 static void sim_free(GsqlIo *io) {
     Sim *s = (Sim *)io;
     for (size_t i = 0; i < s->inode_count; i++) {
@@ -507,6 +582,7 @@ static void sim_free(GsqlIo *io) {
     free(s->inodes);
     names_free(&s->durable_names);
     names_free(&s->view_names);
+    names_free(&s->made);
     for (size_t i = 0; i < s->pend_count; i++) pend_clear(&s->pend[i]);
     free(s->pend);
     free(s->kinds.v);
@@ -523,7 +599,8 @@ static void sim_random(GsqlIo *io, void *out, size_t n) {
 
 static const GsqlIoOps sim_ops = {
     sim_open, sim_read_at, sim_write_at, sim_sync, sim_size, sim_truncate,
-    sim_close, sim_rename, sim_remove, sim_sync_dir, sim_lock, sim_free, sim_random
+    sim_close, sim_rename, sim_remove, sim_sync_dir, sim_lock, sim_free, sim_random,
+    sim_mkdir, sim_list
 };
 
 GsqlIo *gsql_io_sim(void) {
@@ -624,6 +701,20 @@ GsqlIo *gsql_io_sim_crash_image(const GsqlIo *io, GsqlCrashMode mode, uint64_t s
         free(data);
     }
 
+    /* A directory mkdir made whose creation this disk lost takes everything
+     * beneath it: a name under a missing directory is unreachable, whatever
+     * was synced inside (rule 2). */
+    for (size_t d = 0; ok && d < s->made.count; d++) {
+        const char *dir = s->made.items[d].path;
+        size_t dl = strlen(dir);
+        if (names_find(&t->durable_names, dir) >= 0) { ok = names_set(&t->made, dir, 0); continue; }
+        for (size_t i = 0; i < t->durable_names.count;) {
+            const char *p = t->durable_names.items[i].path;
+            if (strncmp(p, dir, dl) == 0 && p[dl] == '/') names_del(&t->durable_names, p);
+            else i++;
+        }
+    }
+
     /* The new disk has nothing pending: its view IS its durable image. */
     for (size_t i = 0; ok && i < t->inode_count; i++)
         ok = buf_copy(&t->inodes[i]->view, &t->inodes[i]->durable);
@@ -639,7 +730,7 @@ unsigned char *gsql_io_sim_contents(const GsqlIo *io, const char *path, size_t *
     const Sim *s = (const Sim *)io;
     *len = 0;
     long at = names_find(&s->view_names, path);
-    if (at < 0) return NULL;
+    if (at < 0 || s->view_names.items[at].inode == DIR_INODE) return NULL;
     const Buf *b = &s->inodes[s->view_names.items[at].inode]->view;
     unsigned char *out = malloc(b->len ? b->len : 1);
     if (!out) return NULL;
@@ -648,4 +739,9 @@ unsigned char *gsql_io_sim_contents(const GsqlIo *io, const char *path, size_t *
     return out;
 }
 
-size_t gsql_io_sim_file_count(const GsqlIo *io) { return ((const Sim *)io)->view_names.count; }
+size_t gsql_io_sim_file_count(const GsqlIo *io) {
+    const Sim *s = (const Sim *)io;
+    size_t n = 0;
+    for (size_t i = 0; i < s->view_names.count; i++) n += s->view_names.items[i].inode != DIR_INODE;
+    return n;
+}

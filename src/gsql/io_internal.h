@@ -21,7 +21,12 @@ typedef struct GsqlIoOps {
     int (*lock)(GsqlFile *, int);
     void (*free)(GsqlIo *);
     void (*random)(GsqlIo *, void *, size_t);
+    int (*mkdir)(GsqlIo *, const char *);
+    int (*list)(GsqlIo *, const char *, int (*)(void *, const char *), void *);
 } GsqlIoOps;
+
+/* io.c: sort the names (malloc'd, freed here), then hand each to `each`. */
+int gsql_io_walk_names(char **names, size_t n, int (*each)(void *, const char *), void *ctx);
 
 struct GsqlIo {
     const GsqlIoOps *ops;

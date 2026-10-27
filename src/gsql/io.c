@@ -39,6 +39,22 @@ void gsql_io_free(GsqlIo *io) {
     if (io) io->ops->free(io);
 }
 void gsql_io_random(GsqlIo *io, void *out, size_t n) { io->ops->random(io, out, n); }
+int gsql_io_mkdir(GsqlIo *io, const char *path) { return io->ops->mkdir(io, path); }
+int gsql_io_list(GsqlIo *io, const char *dir, int (*each)(void *, const char *), void *ctx) {
+    return io->ops->list(io, dir, each, ctx);
+}
+
+/* Shared by both layers: the names in byte order, then the walk, so the two
+ * cannot disagree about order and a parity test compares like with like. */
+static int name_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+int gsql_io_walk_names(char **names, size_t n, int (*each)(void *, const char *), void *ctx) {
+    qsort(names, n, sizeof *names, name_cmp);
+    int rc = 0;
+    for (size_t i = 0; i < n && !rc; i++) rc = each(ctx, names[i]);
+    for (size_t i = 0; i < n; i++) free(names[i]);
+    free(names);
+    return rc;
+}
 
 static void urandom(GsqlIo *io, void *out, size_t n) {
     (void)io;
@@ -64,13 +80,18 @@ static int win_unused_rename(GsqlIo *io, const char *a, const char *b) {
     return ENOSYS;
 }
 static void win_free(GsqlIo *io) { free(io); }
+static int win_list(GsqlIo *io, const char *d, int (*e)(void *, const char *), void *c) {
+    (void)io; (void)d; (void)e; (void)c;
+    return ENOSYS;
+}
 static const GsqlIoOps real_ops = {
     win_open, NULL, NULL, NULL, NULL, NULL, NULL,
-    win_unused_rename, win_unused_io, win_unused_io, NULL, win_free, urandom
+    win_unused_rename, win_unused_io, win_unused_io, NULL, win_free, urandom, win_unused_io, win_list
 };
 
 #else
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -195,9 +216,43 @@ static int real_lock(GsqlFile *base, int nonblocking) {
 
 static void real_free(GsqlIo *io) { free(io); }
 
+static int real_mkdir(GsqlIo *io, const char *path) {
+    (void)io;
+    return mkdir(path, 0700) == 0 ? 0 : errno;
+}
+
+static int real_list(GsqlIo *io, const char *dir, int (*each)(void *, const char *), void *ctx) {
+    (void)io;
+    DIR *d = opendir(dir[0] ? dir : ".");
+    if (!d) return errno;
+    char **names = NULL;
+    size_t n = 0, cap = 0;
+    struct dirent *de;
+    int rc = 0;
+    while ((de = readdir(d))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 16;
+            char **p = realloc(names, cap * sizeof *p);
+            if (!p) { rc = ENOMEM; break; }
+            names = p;
+        }
+        if (!(names[n] = strdup(de->d_name))) { rc = ENOMEM; break; }
+        n++;
+    }
+    closedir(d);
+    if (rc) {
+        for (size_t i = 0; i < n; i++) free(names[i]);
+        free(names);
+        return rc;
+    }
+    return gsql_io_walk_names(names, n, each, ctx);
+}
+
 static const GsqlIoOps real_ops = {
     real_open, real_read_at, real_write_at, real_sync, real_size, real_truncate,
-    real_close, real_rename, real_remove, real_sync_dir, real_lock, real_free, urandom
+    real_close, real_rename, real_remove, real_sync_dir, real_lock, real_free, urandom,
+    real_mkdir, real_list
 };
 
 #endif

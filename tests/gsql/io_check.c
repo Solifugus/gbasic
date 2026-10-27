@@ -172,6 +172,46 @@ static void rule2(void) {
     gsql_io_free(io);
 }
 
+/* rule 2 for a directory mkdir made: its NAME is in its parent, so it is
+ * durable only after sync_dir of the parent, and losing it loses everything
+ * beneath it however well that was synced */
+static int list_into(void *ctx, const char *name) {
+    char *acc = ctx;
+    strncat(acc, name, 255 - strlen(acc));
+    strncat(acc, "|", 255 - strlen(acc));
+    return 0;
+}
+static void rule2_dirs(void) {
+    GsqlIo *io = gsql_io_sim();
+    check(gsql_io_mkdir(io, "p/m") == 0, "mkdir answers 0");
+    GsqlFile *f = must_open(io, "p/m/f", GSQL_IO_CREATE);
+    fill(f, 0, 'x', 4);
+    gsql_io_sync(f);
+    gsql_io_sync_dir(io, "p/m"); /* the file's name is durable IN the directory */
+    int seen = 0, missing = 0;
+    for (uint64_t s = 0; s < IMAGES; s++) {
+        GsqlIo *img = gsql_io_sim_crash_image(io, GSQL_CRASH_POWER, s);
+        if (exists(img, "p/m/f")) seen = 1; else missing = 1;
+        gsql_io_free(img);
+    }
+    check(seen && missing, "rule 2: a file in an unsynced new directory is kept by some power loss and lost by another");
+    gsql_io_sync_dir(io, "p");
+    int always = 1;
+    for (uint64_t s = 0; s < IMAGES; s++) {
+        GsqlIo *img = gsql_io_sim_crash_image(io, GSQL_CRASH_POWER, s);
+        if (byte_at(img, "p/m/f", 0) != 'x') always = 0;
+        gsql_io_free(img);
+    }
+    check(always, "rule 2: once the parent is synced, the new directory's file survives every power loss");
+    /* a process crash keeps everything, the directory included */
+    GsqlIo *img = gsql_io_sim_crash_image(io, GSQL_CRASH_PROCESS, 0);
+    char acc[256] = "";
+    check(gsql_io_list(img, "p/m", list_into, acc) == 0 && strcmp(acc, "f|") == 0, "a process crash keeps a directory and its file");
+    gsql_io_free(img);
+    gsql_io_close(f);
+    gsql_io_free(io);
+}
+
 /* ---- rule 3: atomic per 512-byte sector, at absolute offsets ------------ */
 static void rule3(void) {
     GsqlIo *io = gsql_io_sim();
@@ -322,6 +362,27 @@ static void rule5(void) {
 }
 
 /* ---- the rest of the contract ------------------------------------------- */
+static void contract_dirs(void) {
+    GsqlIo *io = gsql_io_sim();
+    char acc[256] = "";
+    check(gsql_io_list(io, "nowhere", list_into, acc) == ENOENT, "listing a directory that is not there answers ENOENT");
+    check(gsql_io_mkdir(io, "d") == 0, "mkdir answers 0");
+    check(gsql_io_mkdir(io, "d") == EEXIST, "a second mkdir answers EEXIST");
+    check(gsql_io_list(io, "d", list_into, acc) == 0 && acc[0] == 0, "a new directory lists empty");
+    GsqlFile *f;
+    gsql_io_close(must_open(io, "d/b", GSQL_IO_CREATE));
+    gsql_io_close(must_open(io, "d/a", GSQL_IO_CREATE));
+    gsql_io_close(must_open(io, "d/sub/c", GSQL_IO_CREATE));
+    acc[0] = 0;
+    check(gsql_io_list(io, "d/", list_into, acc) == 0 && strcmp(acc, "a|b|sub|") == 0,
+          "a listing is in byte order, names one level down once, and takes a trailing slash");
+    check(gsql_io_open(io, "d", 0, &f) == EISDIR, "opening a directory as a file answers EISDIR");
+    check(gsql_io_remove(io, "d") == EISDIR, "removing a directory as a file answers EISDIR");
+    check(gsql_io_list(io, "d/a", list_into, acc) == ENOTDIR, "listing a file answers ENOTDIR");
+    check(gsql_io_sim_file_count(io) == 3, "the file count counts files, not directories");
+    gsql_io_free(io);
+}
+
 static void contract(void) {
     GsqlIo *io = gsql_io_sim();
     GsqlFile *f = must_open(io, "d/c", GSQL_IO_CREATE);
@@ -457,12 +518,15 @@ static int parity(const char *dir, uint64_t seed, unsigned ops) {
     memset(ro, 0, sizeof ro);
     char paths[NAMES][512];
     for (int i = 0; i < NAMES; i++) snprintf(paths[i], sizeof paths[i], "%s/f%d", dir, i);
+    char sub[520];
+    snprintf(sub, sizeof sub, "%s/sub", dir);
+    gsql_io_mkdir(io[1], dir); /* the real one exists already; made, it lists empty as a real one does */
     uint64_t rng = seed;
     unsigned char buf[2][5000], data[5000];
     unsigned agreed = 0, errors = 0;
     unsigned long long bytes_read = 0;
     for (unsigned op = 1; op <= ops; op++) {
-        unsigned kind = (unsigned)(splitmix(&rng) % 12);
+        unsigned kind = (unsigned)(splitmix(&rng) % 14);
         int slot = (int)(splitmix(&rng) % SLOTS);
         int name = (int)(splitmix(&rng) % NAMES), name2 = (int)(splitmix(&rng) % NAMES);
         uint64_t off = splitmix(&rng) % 6000;
@@ -525,10 +589,23 @@ static int parity(const char *dir, uint64_t seed, unsigned ops) {
         } else if (kind == 10) {
             for (int k = 0; k < 2; k++) rc[k] = gsql_io_sync_dir(io[k], dir);
             snprintf(what, sizeof what, "sync_dir");
-        } else {
+        } else if (kind == 11) {
             if (!h[0][slot]) continue;
             for (int k = 0; k < 2; k++) rc[k] = gsql_io_lock(h[k][slot], 1);
             snprintf(what, sizeof what, "lock");
+        } else if (kind == 12) {
+            char acc[2][256] = {"", ""};
+            for (int k = 0; k < 2; k++) rc[k] = gsql_io_list(io[k], dir, list_into, acc[k]);
+            snprintf(what, sizeof what, "list");
+            checks++;
+            if (strcmp(acc[0], acc[1]) != 0) {
+                printf("MISMATCH parity seed=%llu op=%u list: real \"%s\", simulated \"%s\"\n",
+                       (unsigned long long)seed, op, acc[0], acc[1]);
+                mismatches++;
+            }
+        } else {
+            for (int k = 0; k < 2; k++) rc[k] = gsql_io_mkdir(io[k], sub);
+            snprintf(what, sizeof what, "mkdir sub");
         }
         checks++;
         agreed++;
@@ -582,10 +659,12 @@ int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "rules") == 0) {
         rule1();
         rule2();
+        rule2_dirs();
         rule3();
         rule4();
         rule5();
         contract();
+        contract_dirs();
     } else if (argc == 5 && strcmp(argv[1], "parity") == 0) {
         int done = parity(argv[2], strtoull(argv[3], NULL, 10), (unsigned)strtoul(argv[4], NULL, 10));
         printf("ops %d\n", done);

@@ -53,6 +53,17 @@ int gsql_io_close(GsqlFile *f);
 int gsql_io_rename(GsqlIo *io, const char *from, const char *to);
 int gsql_io_remove(GsqlIo *io, const char *path);
 int gsql_io_sync_dir(GsqlIo *io, const char *dir);
+/* Creates a directory: EEXIST if the name is taken. Durable, like any
+ * creation, only after `sync_dir` of its PARENT (rule 2); a crash that loses
+ * it loses every file beneath it, whatever was synced inside. */
+int gsql_io_mkdir(GsqlIo *io, const char *path);
+/* Every name directly in `dir`, files and directories alike, in byte order;
+ * `each` stops the walk by answering nonzero, which is then the answer. ENOENT
+ * for a directory that is not there. Names only, never "." or "..". It exists
+ * so a database can own a directory (gsql_storage_design.md §7 question 6):
+ * then anything in it the database does not name is garbage, the one rule
+ * that replaces tracking every file a crash might strand. */
+int gsql_io_list(GsqlIo *io, const char *dir, int (*each)(void *ctx, const char *name), void *ctx);
 /* An exclusive lock held until the handle closes; a second holder is refused
  * with EWOULDBLOCK when `nonblocking`. */
 int gsql_io_lock(GsqlFile *f, int nonblocking);
