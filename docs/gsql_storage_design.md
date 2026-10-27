@@ -650,6 +650,14 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 - **Two blind spots in the suites are closed.** No workload had put two versions of one key in a memtable at a flush, and the crash gate had never crashed a dropped or replaced tree.
 - **Test 4 remains:** open question 6, together with the sliced backup, which changes the §1 interface.
 
+**Test 4 run, 2026-10-26: online backup met by a sliced backup; 2.C stands; open question 6 answered with a recommendation** (`research/gsql/README.md`, "Test 4").
+- **§1.1's `backup` gains a sliced form**: `backup_begin(snapshot, dest)`, `backup_step(job, budget, &done)`, `backup_end(job)`. Writers commit between slices, and the one-call `backup` is the same path run to completion. Ending a job that is not done discards it, and nothing at `dest` looks complete until it is.
+- **2.C's backup is physical now**: the snapshot's pinned, immutable files copied as they are, then the memtable's view, then the manifest.
+- **Online backup is met by both remaining candidates.** At 10⁷ rows with 1 MB slices, the longest slice is 6.2 ms (2.C) and 3.7 ms (2.B), and the longest commit made during the backup is 0.4 and 1.4 ms. They pay for it differently:
+  - **2.C's open snapshot costs nothing more** than the files it already pinned.
+  - **2.B's is a reader**, whose log grows about 8 KB with every commit made while the backup runs, for as long as the backup takes.
+- **It found a latent defect in 2.C's old backup.** The copy took every retired tree, including trees retired after the snapshot, which the copy's own compactions would have deleted while its catalog still listed them. Fixed and gated.
+
 ## 7. Open questions
 
 1. *(G-Dash volumes answered, §5.1.1.)* WorkSplicer's profile once its redesign settles (§5.1.2); G-Dash's refresh duration, which it has never measured.
@@ -657,7 +665,13 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 3. *(Decided 2026-10-22, §3.2: an untyped `MONEY` column may be indexed, grouped by currency; ordering across currencies raises.)*
 4. *(Settled 2026-10-21: the §2.D reading is right, and G-SQL is a new development.)*
 5. The round-trip threshold for accepting the single-protocol rule (§5.5), agreed after first numbers.
-6. **Cross-database queries.** **Decided (2026-10-21) for the first release: one query reads one database.** SQLite's `ATTACH` (several databases in one query) is not offered at first, because across owners it is a distributed query; it is added only if a real application needs it. Separately: whether one database is always one file plus at most a log (proposed: yes). G-Dash's case is §5.1.1a.
+6. **Cross-database queries.** **Decided (2026-10-21) for the first release: one query reads one database.** SQLite's `ATTACH` (several databases in one query) is not offered at first, because across owners it is a distributed query; it is added only if a real application needs it. Separately: whether one database is always one file plus at most a log (proposed: yes). **Test 4 (2026-10-26) recommends no: a database is a directory.**
+   - **The files.** 2.C is a manifest, a lock, a log and one sorted file per ~64 MB: 22 files at 10⁷ rows, about 16,000 at 1 TB.
+   - **One file would need an extent allocator inside it**, a second space manager neither B+tree candidate needed.
+   - **The sibling layout as built** interleaves two databases' files in one directory.
+   - **What a directory buys.** Copy, move and delete become one operation each (`cp -r`, an atomic rename, `remove_tree`). It also closes the quieter hazard 2.B shares with SQLite: copying the main file without its log silently loses every commit not yet checkpointed.
+   - **Separately, 2.C needs a cap on open sorted files**, since read files stay open and 1 TB would exceed the default 1,024 descriptors. That is engineering.
+   - **Not yet decided:** this is the project's decision, and G-Dash's §5.1.1a is the application it most affects. G-Dash's case is §5.1.1a.
 
 ## 8. Reading list
 

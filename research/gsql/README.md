@@ -208,6 +208,53 @@ The comparison is meant to measure the engines, not two independently written tr
   - **A hard-link backup**, which §6 expected for 2.C, needs a link operation the shared I/O layer does not have.
 - **2.B's long-reader cost is structural**: an open reader stops the log reset, so recovery time follows write volume for as long as the reader lives. SQLite has the same property ("checkpoint starvation").
 
+## Test 4: the sliced backup, and open question 6 (2026-10-26)
+
+Test 3 left online backup unmet by both candidates as built, because each was one blocking call in a single-threaded owner. Test 4 builds the backup in slices and measures what open question 6 turns on: how many files a database is. `SET=test4 hardreq.sh` writes `results/2026-10-26/results-test4.jsonl`.
+
+**The interface.** `backup_begin(snapshot, dest)`, `backup_step(job, budget_bytes, &done)` and `backup_end(job)`. Ending a job that is not done discards the partial copy. The one-call `backup` is now begin, steps and end, so one path serves both.
+- **2.C's backup is physical now.** It copies the snapshot's pinned files as they are, in chunks, then writes the snapshot's memtable view as one more level-0 file, then the manifest. The files cannot change or go while the copy runs, because they are immutable and pinned.
+- **2.B copies pages through the snapshot**, a slice at a time, into a temporary file renamed into place.
+- **2.A, retired, does the whole copy in one step.**
+
+**Measured, 10^6 and 10^7 rows, one group-committed write between every two slices** (each copy reopened and compared with the snapshot):
+
+| | 2.B, 10^6 | 2.C, 10^6 | 2.B, 10^7 | 2.C, 10^7 |
+|---|---|---|---|---|
+| one step (the old monolithic backup) | 161 ms | **73 ms** | | |
+| 1 MB slices: median / p99 / longest slice | 2.0 / 3.1 / 3.2 ms | 1.3 / 7.3 / 7.4 ms | 1.9 / 3.1 / 3.7 ms | 1.2 / 2.1 / 6.2 ms |
+| 1 MB slices: longest commit during the backup | 1.1 ms | 0.4 ms | 1.4 ms | 0.4 ms |
+| 1 MB slices: whole backup | 261 ms | 252 ms | 2.5 s | 1.7 s |
+| space growth while the backup ran | +0.5 MB, the log (120 commits) | **none** | +9.5 MB, the log (1,192 commits) | **none** |
+
+- **The requirement is met by both**, at a few milliseconds a slice. What differs is the cost of the open snapshot. 2.C's pins files it already had. 2.B's is a reader, so its log grows about 8 KB with every commit made during the backup, and the backup's length is set by the data size. A 100 GB 2.B backup taken under a steady write load holds the log open for its whole duration.
+- **2.C's physical copy is 4.5× faster than the logical rewrite it replaced** (73 ms against 326 ms in one step).
+
+**Found by building it:**
+- **2.C's logical backup copied every retired tree into the copy, including trees retired after the snapshot.** In the copy, such a tree is live in its catalog and marked retired in its manifest, so the copy's own compactions would drop its data once its sequences passed the retirement. `test_store`'s `sliced_backup` reproduces it on the old rule: 173 of 200 records left after 1,500 commits in the copy. The copy now takes only retirements at or before the snapshot.
+- **One slice ran far longer than its budget, three ways.**
+  - A slice copied a whole 1 MB chunk whatever its budget, so 256 KB and 1 MB budgets made the same 131 steps.
+  - 2.C flushed a copied file only when it was finished, about 6 ms for 64 MB.
+  - 2.B flushed the whole copy at the end: one 228 ms step for 1.25 GB.
+  - Each slice now copies at most its budget and flushes what it wrote.
+- **An interrupted backup could leave files that a later one cannot find.** The I/O layer has no directory listing, and file numbers are kept from the source, because a blob pointer names its blob file. `begin` therefore writes a durable `dest.pending` record of the highest number the copy may use, before anything else. Clearing a destination reads it and any old manifest, and removes the manifest first, so the place never holds a mix of two backups that looks like one.
+- **Three perturbations are caught**: copying every retirement, not clearing the destination, and copying memtable entries newer than the snapshot. The last was green until the test compared every key's version against a model kept by the test, not record counts. The crash gate does not exercise backup.
+
+**Open question 6: how many files a database is.** Random-order loads, 100-byte values:
+
+| rows | 2.A files | 2.B files | 2.C files (sorted) | 2.C descriptors after 2,000 reads | 2.C reopen |
+|---|---|---|---|---|---|
+| 10^4 | 1 | 2 | 3 (0) | 2 | 30 ms |
+| 10^6 | 1 | 2 | 6 (3) | 5 | 41 ms |
+| 10^7 | 1 | 2 | 22 (19) | 21 | 66 ms |
+
+- **2.C is a manifest, a lock file, a log and one sorted file per ~64 MB**, plus blob files for long values. A 1 TB store would be about 16,000 sorted files.
+- **Sorted files stay open once read**, so descriptors follow the file count. At 1 TB that exceeds the default soft limit of 1,024 per process. RocksDB caps open files with a handle cache (`max_open_files`), and 2.C needs one. That is engineering, not structure.
+- **The layout as built scatters siblings beside the path** (`db`, `db.lock`, `db.log.13`, `db.42.sst`). Two databases in one directory interleave their files, deleting one needs a glob, and copying `db` alone copies only the manifest. Opening such a copy fails, loudly, because the files it names are missing.
+- **2.B has the quieter form of the same hazard.** Copying the main file without its `-wal` opens cleanly and has silently lost every commit not yet checkpointed, the SQLite trap.
+- **One file for 2.C needs an extent allocator inside the file.** That is a second space manager, with hole punching or a second compaction to give space back, which neither B+tree candidate needed and 2.C was built without.
+- **Recommendation: a database is a directory**, holding its manifest, lock, logs and data files, as RocksDB, LevelDB and PostgreSQL do. Copy, move and delete each become one operation: `cp -r`, an atomic rename, and the `remove_tree` gBASIC already has. Nothing in a directory belongs to another database. For 2.C it is a naming change, not a new mechanism.
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -230,6 +277,9 @@ The comparison is meant to measure the engines, not two independently written tr
 | 2.C: recovery leaves the log tail in place | **green**: a stale record survives only if a new commit is exactly the size of a lost one |
 | 2.C: compaction ignores snapshots; retired trees reclaimed under snapshots | **green, legitimately**: readers pin their version (above); the rule is gone since Test 3 |
 | 2.C: the horizon is the last commit, not the last durable one | `test_store`'s `dropped_not_durable` (78 of 300 records); **green in the crash gate**, which never sweeps with a retirement unsynced |
+| 2.C backup: every retirement copied, including later ones (the logical backup's rule) | `test_store`'s `sliced_backup` (173 of 200 records after 1,500 commits in the copy) |
+| 2.C backup: the destination not cleared first | `test_store`: every backup made over another fails check |
+| 2.C backup: memtable entries newer than the snapshot copied | `test_store`'s `sliced_backup` (298 of 300 keys); **green until the test compared versions, not counts** |
 | 2.C: a flush keeps each key's oldest version, not its newest | `test_store`'s `hot_keys` (484 stale reads) and the hot-key crash specs; **green in every suite before Test 3** |
 | 2.A: the settle loop compares lengths, not movement | `test_store` (19), failed-sync and full-disk crash tiers (27) |
 | 2.A: every settle round may take reusable pages | `test_store`: the commit never settles and answers CORRUPT |
