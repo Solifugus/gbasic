@@ -292,6 +292,15 @@ Test 4 left one item that would break at scale: 2.C kept every sorted file and b
   - The index and the Bloom filter stay in memory when the handle closes. They are what a read consults first, so a closed handle costs a reopen only when a block is actually read.
   - The default cap is 512, half the usual limit, leaving the rest to the application. `GsOptions.tune_d` sets it. The crash gate runs at a cap of 4, so closing and reopening handles is crashed as well.
 - **A second defect came with it: running out of descriptors was reported as a damaged store.** `file_open` turned every failure to open a sorted file into `CORRUPT`, and four cursor paths did the same for any failure from `file_open`. Now a missing file is `CORRUPT` and anything else is the I/O layer's own answer. `many_files` checks this by reopening with the cap lifted past the limit: a scan must answer `IO`.
+- **What eviction costs, measured.** YCSB C on 10⁶ rows (1.4 GB, about 22 sorted files), 200,000 reads, two runs each on NVMe. With the cap far below the file count, nearly every block read from disk reopens a file:
+
+  | cap | ops/s | p99 |
+  |---|---|---|
+  | 512 (default; nothing is closed) | 290 k, 284 k | 8.8, 8.9 µs |
+  | 4 | 259 k, 263 k | 10.3, 10.2 µs |
+  | 2 | 263 k, 262 k | 10.3, 10.5 µs |
+
+  So the worst case is about 9% of throughput. It is paid only by a store with more files than the cap, which at the default means more than about 30 GB.
 - **`many_files`** builds 200 overlapping level-0 files and reads every key twice, scans, runs `check` (which reads every file), reopens and reads again. In the real layer the process limit is lowered first. A get stops at the newest file holding its key, which is never far down here, so the descriptor-exhaustion check uses a scan, which merges every file.
 
 ## Perturbations proven red
@@ -339,6 +348,10 @@ Test 4 left one item that would break at scale: 2.C kept every sorted file and b
 | the simulated layer keeps files beneath a directory a crash lost | `run_gsql_io`'s rule-2 directory difference |
 | 2.C: an open does not delete live-listed blobs nothing points into | every crash tier (25,518) |
 | 2.C: relocation aborted when reached | crash tiers (5): reached, though rarely |
+| 2.C: no cap on read handles (`hnd_make_room` does nothing) | `test_store`'s `many_files` in the real layer: commits answer `IO` after ~37 flushes, 40 reads wrong, `check` fails; **green in the simulated layer**, which has no descriptor limit |
+| 2.C: closing a handle does not close its descriptor | `many_files`: the store cannot even open (`IO`); LeakSanitizer (12,635 leaked handles) |
+| 2.C: a closed handle keeps its stale pointer | ASan use-after-free, in both layers |
+| 2.C: every failure to open a sorted file is `CORRUPT` | `many_files`: out of descriptors, a scan answered `CORRUPT` |
 
 
 ## Measurements (2026-10-24)
