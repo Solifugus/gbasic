@@ -215,8 +215,8 @@ typedef struct FileMeta {
     struct GsStore *db;
     int refs;                  /* versions holding it */
     int obsolete;              /* dropped by a compaction; delete at refs 0 */
-    /* opened lazily */
-    GsqlFile *f;
+    /* opened lazily; the index and bloom stay when the handle is closed */
+    struct Hnd *h;
     IdxEntry *index;
     size_t nindex;
     unsigned char *bloom;
@@ -262,6 +262,10 @@ struct GsStore {
     uint64_t cache_bytes, bcache_bytes;
     Cache bcache;             /* decoded blocks, keyed (file number, block + 1) */
     GsqlFile *log, *lockf;
+    /* Read handles on sorted and blob files, at most max_open of them open,
+     * the least recently used closed to make room (hnd_get). */
+    struct Hnd *lru_head, *lru_tail;
+    size_t nopen, max_open;
     uint64_t log_num, log_end;
     /* The oldest log whose records the memtable still holds, which is where
      * the next open must begin replaying. Not always log_num: an open replays
@@ -293,6 +297,87 @@ struct GsStore {
 
 static int ioerr(int rc) { return gs_io_status(rc); }
 
+/* ---- read handles ------------------------------------------------------------ */
+
+/* A store keeps a sorted or blob file open between reads, but only up to
+ * max_open of them. Before this every file stayed open from its first read,
+ * or from the flush that wrote it, until it was deleted: a store needed a
+ * descriptor per file, 22 at 10^7 rows and about 16,000 at 1 TB, against a
+ * default limit of 1,024 per process. Under a lowered limit the commits
+ * themselves failed, a flush being unable to open its next file (Test 4's
+ * follow-up). A handle remembers its file's name, so it can be closed at any
+ * moment and reopened at the next read; the owner is single-threaded and
+ * every read takes its descriptor from hnd_get just before using it. */
+typedef struct Hnd {
+    GsqlFile *f;               /* NULL while closed */
+    char *name;
+    int flags;
+    struct Hnd *prev, *next;   /* the store's list, most recent first; linked only while open */
+} Hnd;
+
+static Hnd *hnd_new(char *name, int flags) {
+    Hnd *h = calloc(1, sizeof *h);
+    h->name = name;
+    h->flags = flags;
+    return h;
+}
+
+static void hnd_unlink(GsStore *db, Hnd *h) {
+    if (h->prev) h->prev->next = h->next; else db->lru_head = h->next;
+    if (h->next) h->next->prev = h->prev; else db->lru_tail = h->prev;
+    h->prev = h->next = NULL;
+}
+
+static void hnd_link(GsStore *db, Hnd *h) {
+    h->prev = NULL;
+    h->next = db->lru_head;
+    if (db->lru_head) db->lru_head->prev = h; else db->lru_tail = h;
+    db->lru_head = h;
+}
+
+static void hnd_close(GsStore *db, Hnd *h) {
+    if (!h || !h->f) return;
+    hnd_unlink(db, h);
+    gsql_io_close(h->f);
+    h->f = NULL;
+    db->nopen--;
+}
+
+static void hnd_free(GsStore *db, Hnd *h) {
+    if (!h) return;
+    hnd_close(db, h);
+    free(h->name);
+    free(h);
+}
+
+static void hnd_make_room(GsStore *db) {
+    while (db->nopen >= db->max_open && db->lru_tail) hnd_close(db, db->lru_tail);
+}
+
+/* An already open file, a flush's output, becomes the handle's. */
+static void hnd_adopt(GsStore *db, Hnd *h, GsqlFile *f) {
+    hnd_make_room(db);
+    h->f = f;
+    hnd_link(db, h);
+    db->nopen++;
+}
+
+/* The handle's descriptor, opened if it was closed. An I/O layer code. */
+static int hnd_get(GsStore *db, Hnd *h, GsqlFile **f) {
+    if (h->f) {
+        if (db->lru_head != h) { hnd_unlink(db, h); hnd_link(db, h); }
+        *f = h->f;
+        return 0;
+    }
+    hnd_make_room(db);
+    int rc = gsql_io_open(db->io, h->name, h->flags, &h->f);
+    if (rc) { h->f = NULL; return rc; }
+    hnd_link(db, h);
+    db->nopen++;
+    *f = h->f;
+    return 0;
+}
+
 static char *file_name(const GsStore *db, uint64_t num) {
     char suf[48];
     snprintf(suf, sizeof suf, ".%llu.sst", (unsigned long long)num);
@@ -315,7 +400,7 @@ static char *blob_name(const GsStore *db, uint64_t num) {
 typedef struct Blob {
     uint64_t num;
     uint64_t refs;  /* file records pointing into it */
-    GsqlFile *f;    /* opened at the first read */
+    struct Hnd *h;  /* its read handle, made at the first read */
 } Blob;
 
 static int u64_cmp(const void *a, const void *b) {
@@ -348,12 +433,12 @@ static void blob_ref(GsStore *db, uint64_t num) {
  * itself deleted (obsolete), so if it was the last, the blob file goes too.
  * A record freed because the store is closing deletes nothing (an early
  * draft did, which would have deleted every blob at close). If a deletion
- * is lost to a crash, the next open finds the blob in the manifest's list
- * of live blobs with nothing pointing into it, and deletes it then. */
+ * is lost to a crash, the next open finds a blob file the manifest does not
+ * name, and deletes it then (sweep_dir). */
 static void blob_unref(GsStore *db, uint64_t num, int del) {
     Blob *b = blob_find(db, num);
     if (!b || --b->refs > 0) return;
-    if (b->f) gsql_io_close(b->f);
+    hnd_free(db, b->h);
     if (del) {
         char *name = blob_name(db, num);
         gsql_io_remove(db->io, name);
@@ -368,15 +453,13 @@ static int blob_read(GsStore *db, const unsigned char *ptr, size_t pn, GsBuf *ou
     uint32_t len = get32(ptr + 16), crc = get32(ptr + 20);
     Blob *b = blob_find(db, num);
     if (!b) return GS_CORRUPT;
-    if (!b->f) {
-        char *name = blob_name(db, num);
-        int rc = gsql_io_open(db->io, name, 0, &b->f);
-        free(name);
-        if (rc) { b->f = NULL; return rc == ENOENT ? GS_CORRUPT : ioerr(rc); }
-    }
+    if (!b->h) b->h = hnd_new(blob_name(db, num), 0);
+    GsqlFile *f;
+    int rc = hnd_get(db, b->h, &f);
+    if (rc) return rc == ENOENT ? GS_CORRUPT : ioerr(rc);
     gsbuf_reserve(out, len + 1);
     size_t got = 0;
-    int rc = ioerr(gsql_io_read_at(b->f, off, out->p, len, &got));
+    rc = ioerr(gsql_io_read_at(f, off, out->p, len, &got));
     if (rc) return rc;
     if (got != len || crc32c(out->p, len) != crc) return GS_CORRUPT;
     out->n = len;
@@ -629,8 +712,9 @@ static int bld_close(Builder *b, FileMeta **out) {
         m->small_seq = b->small_seq;
         gsbuf_set(&m->largest, b->last.p, b->last.n);
         m->large_seq = b->lastseq;
-        m->f = b->f;
         m->db = b->db;
+        m->h = hnd_new(file_name(b->db, b->num), GSQL_IO_READ_ONLY);
+        hnd_adopt(b->db, m->h, b->f);
         m->blobs = b->blobs;
         m->own_blob = b->bnum;
         for (size_t i = 0; i < m->blobs.n; i++) blob_ref(b->db, m->blobs.v[i]);
@@ -656,8 +740,8 @@ static int bld_close(Builder *b, FileMeta **out) {
 /* ---- reading a sorted file -------------------------------------------------- */
 
 static void file_close(FileMeta *m) {
-    if (m->f) gsql_io_close(m->f);
-    m->f = NULL;
+    if (m->h) hnd_free(m->db, m->h);
+    m->h = NULL;
     for (size_t i = 0; i < m->nindex; i++) free(m->index[i].last);
     free(m->index);
     m->index = NULL;
@@ -688,28 +772,36 @@ static int check_block(const unsigned char *b, size_t n) {
     return get32(b + n - 4) == crc32c(b, n - 4) ? GS_OK : GS_CORRUPT;
 }
 
+/* A sorted file's descriptor. A named file that is gone is CORRUPT; any
+ * other failure is the I/O layer's own answer. (This used to make every
+ * failure to open CORRUPT, so a process out of descriptors was told its
+ * store was damaged.) */
+static int file_fd(GsStore *db, FileMeta *m, GsqlFile **f) {
+    GsStore *own = m->db ? m->db : db;
+    if (!m->h) m->h = hnd_new(file_name(own, m->num), GSQL_IO_READ_ONLY);
+    int rc = hnd_get(own, m->h, f);
+    if (rc && getenv("GS_DEBUG")) fprintf(stderr, "lsm: %s does not open (%d)\n", m->h->name, rc);
+    if (rc) return rc == ENOENT ? GS_CORRUPT : ioerr(rc);
+    return GS_OK;
+}
+
 static int file_open(GsStore *db, FileMeta *m) {
     if (m->index) return GS_OK;
-    int rc = GS_OK;
-    if (!m->f) {
-        char *name = file_name(db, m->num);
-        rc = ioerr(gsql_io_open(db->io, name, GSQL_IO_READ_ONLY, &m->f));
-        if (rc && getenv("GS_DEBUG")) fprintf(stderr, "lsm: %s is missing\n", name);
-        free(name);
-        if (rc) { m->f = NULL; return rc == GS_IO ? GS_CORRUPT : rc; } /* a named file that is gone */
-    }
+    GsqlFile *f;
+    int rc = file_fd(db, m, &f);
+    if (rc) return rc;
     uint64_t size = 0;
-    gsql_io_size(m->f, &size);
+    gsql_io_size(f, &size);
     if (size < FOOTER) return GS_CORRUPT;
     unsigned char foot[FOOTER];
-    if ((rc = read_exact(db, m->f, size - FOOTER, foot, FOOTER))) return rc;
+    if ((rc = read_exact(db, f, size - FOOTER, foot, FOOTER))) return rc;
     if (get64(foot + 32) != SST_MAGIC || get32(foot + 44) != crc32c(foot, 44)) return GS_CORRUPT;
     uint64_t ioff = get64(foot), boff = get64(foot + 12);
     uint32_t isz = get32(foot + 8), bsz = get32(foot + 20);
     if (ioff + isz > size || boff + bsz > size) return GS_CORRUPT;
     unsigned char *ib = malloc(isz ? isz : 1), *bb = malloc(bsz ? bsz : 1);
-    if ((rc = read_exact(db, m->f, ioff, ib, isz)) || (rc = check_block(ib, isz)) ||
-        (rc = read_exact(db, m->f, boff, bb, bsz)) || (rc = check_block(bb, bsz))) {
+    if ((rc = read_exact(db, f, ioff, ib, isz)) || (rc = check_block(ib, isz)) ||
+        (rc = read_exact(db, f, boff, bb, bsz)) || (rc = check_block(bb, bsz))) {
         free(ib); free(bb); return rc ? rc : GS_CORRUPT;
     }
     size_t at = 0, end = isz - 8, cap = 16;
@@ -768,8 +860,11 @@ static void block_free(Block *b) { free(b->raw); free(b->e); memset(b, 0, sizeof
 static int block_read(GsStore *db, FileMeta *m, size_t bi, Block *out) {
     memset(out, 0, sizeof *out); /* an error path frees it */
     IdxEntry *ie = &m->index[bi];
+    GsqlFile *f;
+    int rc = file_fd(db, m, &f);
+    if (rc) return rc;
     out->raw = malloc(ie->size ? ie->size : 1);
-    int rc = read_exact(db, m->f, ie->off, out->raw, ie->size);
+    rc = read_exact(db, f, ie->off, out->raw, ie->size);
     if (!rc) rc = check_block(out->raw, ie->size);
     if (rc) { block_free(out); return rc ? rc : GS_CORRUPT; }
     uint32_t count = get32(out->raw + ie->size - 8);
@@ -919,7 +1014,7 @@ static void src_seek(Src *s, const unsigned char *k, size_t kn, uint64_t seq) {
     }
     for (size_t fi = lo; fi < s->nfiles; fi++) {
         FileMeta *m = s->files[fi];
-        if (file_open(s->db, m)) { s->rc = GS_CORRUPT; return; }
+        if ((s->rc = file_open(s->db, m))) return;
         size_t blo = 0, bhi = m->nindex;
         while (blo < bhi) {
             size_t mid = (blo + bhi) / 2;
@@ -948,7 +1043,7 @@ static void src_next(Src *s) {
     for (;;) {
         if (bi >= s->files[fi]->nindex) {
             if (++fi >= s->nfiles) { s->valid = 0; return; }
-            if (file_open(s->db, s->files[fi])) { s->rc = GS_CORRUPT; s->valid = 0; return; }
+            if ((s->rc = file_open(s->db, s->files[fi]))) { s->valid = 0; return; }
             bi = 0;
             continue;
         }
@@ -977,7 +1072,7 @@ static void src_seek_lt(Src *s, const unsigned char *k, size_t kn, uint64_t seq)
             else {
                 if (fi == 0) { s->valid = 0; src_unpin(s); return; }
                 fi--;
-                if (file_open(s->db, s->files[fi])) { s->rc = GS_CORRUPT; s->valid = 0; return; }
+                if ((s->rc = file_open(s->db, s->files[fi]))) { s->valid = 0; return; }
                 if (!s->files[fi]->nindex) continue;
                 bi = s->files[fi]->nindex - 1;
             }
@@ -988,7 +1083,7 @@ static void src_seek_lt(Src *s, const unsigned char *k, size_t kn, uint64_t seq)
     /* nothing >= target: the very last entry, if any */
     for (size_t fi = s->nfiles; fi-- > 0;) {
         FileMeta *m = s->files[fi];
-        if (file_open(s->db, m)) { s->rc = GS_CORRUPT; return; }
+        if ((s->rc = file_open(s->db, m))) return;
         for (size_t bi = m->nindex; bi-- > 0;) {
             if (src_load(s, fi, bi)) return;
             if (s->blk.n) { s->ei = s->blk.n - 1; s->valid = 1; return; }
@@ -1031,10 +1126,10 @@ static void file_drop_ref(GsStore *db, FileMeta *m) {
         char *name = file_name(db, m->num);
         file_close(m);
         gsql_io_remove(db->io, name);
-        /* No longer garbage. The deletion is not durable yet, and needs no
-         * list of its own: the manifest that first omits this file flushes
-         * the directory before its rename, which makes the deletion durable,
-         * and until then the manifest on disk still lists it as garbage. */
+        /* No longer garbage (the in-memory list `check` reads). The deletion
+         * is not durable yet and needs nothing more: if a crash loses it, the
+         * next open finds a file the manifest does not name and deletes it
+         * (sweep_dir). */
         for (size_t i = 0; i < db->garbage.n; i++)
             if (db->garbage.v[i] == m->num) { db->garbage.v[i] = db->garbage.v[--db->garbage.n]; break; }
         free(name);
@@ -1375,7 +1470,7 @@ static void store_free(GsStore *db) {
     if (db->log) gsql_io_close(db->log);
     if (db->lockf) gsql_io_close(db->lockf);
     version_unref(db, db->cur);
-    for (size_t i = 0; i < db->nblob; i++) if (db->blob[i].f) gsql_io_close(db->blob[i].f);
+    for (size_t i = 0; i < db->nblob; i++) hnd_free(db, db->blob[i].h);
     free(db->blob);
     if (db->bcache.bucket) cache_free(&db->bcache);
     free(db->dead);
@@ -1491,6 +1586,9 @@ static int lsm_open_base(const char *path, const GsOptions *opt, GsStore **out) 
     /* 4 KiB: a YCSB row (1,000 bytes) stays inline, a 100 KiB value does not */
     db->vsep = opt && opt->tune_c ? opt->tune_c : 4096;
     db->cache_bytes = opt && opt->cache_bytes ? opt->cache_bytes : 64u << 20;
+    /* 512: half the usual per-process limit, leaving the rest to the
+     * application; RocksDB's equivalent (max_open_files) defaults to no cap */
+    db->max_open = opt && opt->tune_d ? opt->tune_d : 512;
     cache_init(&db->bcache);
     /* BUSY: the log and the manifest are both replaced over a store's life, so
      * the exclusive lock is on a file of its own */
@@ -2809,8 +2907,10 @@ static int commit_runs(struct GsTxn *t, uint64_t *commit_id) {
     /* The flush writes a manifest whose next-file number is past the runs
      * already spilled, which nothing names until the commit's own manifest:
      * a crash between the two left them on disk for good (found by checking
-     * every recovery for unnamed files). That manifest lists them as
-     * garbage, and the commit's names them. */
+     * every recovery for unnamed files). An open now deletes anything the
+     * manifest does not name (sweep_dir), which covers that crash; while the
+     * store stays open they are garbage, so `check` accepts them until the
+     * commit's manifest names them. */
     U64s mine = {0};
     for (size_t r = 0; r < t->nruns; r++) {
         u64_push(&mine, t->runs[r]->num);
@@ -3114,6 +3214,7 @@ static int lsm_backup_begin(struct GsTxn *snap, const char *dest, GsBackup **out
     rc = backup_clear(db->io, t->dir, base);
     t->block = db->block;
     t->memtable_limit = db->memtable_limit;
+    t->max_open = db->max_open;
     t->vsep = db->vsep;
     memcpy(t->identity, db->identity, 16);
     t->next_file = db->next_file; /* the memtable's file: above every copied number */
@@ -3214,7 +3315,7 @@ static int lsm_backup_step(GsBackup *bk, uint64_t budget, int *done) {
         rc = bld_close(&bk->b, &fm);
         bk->building = 0;
         if (rc) return rc;
-        if (fm) { version_add(t->cur, 0, fm); fm->f = NULL; gsql_io_close(bk->b.f); }
+        if (fm) { version_add(t->cur, 0, fm); hnd_close(t, fm->h); }
     }
     /* an empty log, then the manifest that makes it a store */
     char *ln = log_name(bk->dest, 1);
@@ -3238,7 +3339,7 @@ static void lsm_backup_end(GsBackup *bk) {
     for (size_t i = 0; i < bk->njobs; i++) { free(bk->jobs[i].src); free(bk->jobs[i].dst); }
     free(bk->jobs);
     if (t->cur) version_unref(t, t->cur);
-    for (size_t i = 0; i < t->nblob; i++) if (t->blob[i].f) gsql_io_close(t->blob[i].f);
+    for (size_t i = 0; i < t->nblob; i++) hnd_free(t, t->blob[i].h);
     free(t->blob);
     free(t->dead);
     u64_free(&t->garbage);

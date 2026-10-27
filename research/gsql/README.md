@@ -282,6 +282,18 @@ Open question 6 is decided: **a database is a directory**, and owns everything i
   - a plain file passed as the path is refused;
   - four store-shaped strays are reported by `check` and deleted at the next open.
 
+## A cap on open files (2026-10-27)
+
+Test 4 left one item that would break at scale: 2.C kept every sorted file and blob file open from its first read, or from the flush that wrote it, until the file was deleted. A store needed one descriptor per file: 22 at 10⁷ rows, about 16,000 at 1 TB, against a default limit of 1,024 per process.
+
+- **It was worse than Test 4 reported.** Test 4 said files stay open once *read*. A flush also hands its output's descriptor to the new file and never closes it, so a store with no readers at all still holds one per file. Under a limit 40 descriptors above what the process held, `test_store`'s new `many_files` case failed its **commits** with `IO` after about 37 flushes.
+- **The fix is a handle list with a cap** (`hnd_get` in `lsm.c`), the shape of RocksDB's table cache.
+  - A handle remembers its file's name, so it can be closed at any moment and reopened at the next read. The least recently used is closed to make room.
+  - The index and the Bloom filter stay in memory when the handle closes. They are what a read consults first, so a closed handle costs a reopen only when a block is actually read.
+  - The default cap is 512, half the usual limit, leaving the rest to the application. `GsOptions.tune_d` sets it. The crash gate runs at a cap of 4, so closing and reopening handles is crashed as well.
+- **A second defect came with it: running out of descriptors was reported as a damaged store.** `file_open` turned every failure to open a sorted file into `CORRUPT`, and four cursor paths did the same for any failure from `file_open`. Now a missing file is `CORRUPT` and anything else is the I/O layer's own answer. `many_files` checks this by reopening with the cap lifted past the limit: a scan must answer `IO`.
+- **`many_files`** builds 200 overlapping level-0 files and reads every key twice, scans, runs `check` (which reads every file), reopens and reads again. In the real layer the process limit is lowered first. A get stops at the newest file holding its key, which is never far down here, so the descriptor-exhaustion check uses a scan, which merges every file.
+
 ## Perturbations proven red
 
 | broken | caught by |

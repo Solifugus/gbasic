@@ -39,7 +39,9 @@ static void *a_open(GsqlIo *io, const char *dir, int *err) {
     uint64_t da = strcmp(E->name, "lsm") ? 24 : 2000;
     /* §2.C separates values of 24 bytes or more, so both kinds are crashed */
     GsOptions o = {1, page_size, 16 * page_size, io, ta ? strtoull(ta, NULL, 10) : da, tb ? strtoull(tb, NULL, 10) : 3,
-                   tc ? strtoull(tc, NULL, 10) : 24};
+                   tc ? strtoull(tc, NULL, 10) : 24,
+                   /* a small cap, so closing and reopening read handles is crashed too */
+                   getenv("GS_TUNE_D") ? strtoull(getenv("GS_TUNE_D"), NULL, 10) : 4};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     if (rc) { *err = map(rc); return NULL; }

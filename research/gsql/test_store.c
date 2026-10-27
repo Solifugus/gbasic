@@ -23,6 +23,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/resource.h>
+#include <unistd.h>
 
 static unsigned checks, failures;
 int quiet;
@@ -59,7 +61,7 @@ static void put_one(GsStore *db, const char *tree, unsigned i, int sync) {
 static void dropped_not_durable(const char *base, GsqlIo *io) {
     char path[600];
     snprintf(path, sizeof path, "%s.drop", base);
-    GsOptions o = {1, 512, 0, io, 2000, 2, 0};
+    GsOptions o = {1, 512, 0, io, 2000, 2, 0, 0};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the drop store answered %s", gs_status_name(rc));
@@ -104,6 +106,128 @@ static void dropped_not_durable(const char *base, GsqlIo *io) {
     (void)seen;
 }
 
+/* More sorted files than the process may hold open, every one of them read.
+ * 2.C kept a file open from its first read until it was deleted, so a store
+ * of N files needed N descriptors: about 16,000 at 1 TB against a default
+ * limit of 1,024 (Test 4). Here two hundred level-0 files, all overlapping,
+ * and reads that touch each of them, with the store's cap at 8; in the real
+ * layer the process's own limit is lowered to 40 descriptors above what it
+ * already holds, so a store that ignored the cap fails to open a file. Every
+ * read is checked, then a full scan, `check` (which reads every file) and a
+ * reopen. */
+static void many_files(const char *base, GsqlIo *io, int real) {
+    char path[600];
+    snprintf(path, sizeof path, "%s.many", base);
+    GsOptions o = {1, 512, 0, io, 4096, 1000, 0, 8};
+    struct rlimit was;
+    int lowered = 0;
+    if (real && getrlimit(RLIMIT_NOFILE, &was) == 0) {
+        int probe = dup(0);
+        if (probe >= 0) {
+            close(probe);
+            struct rlimit lim = was;
+            lim.rlim_cur = (rlim_t)probe + 40;
+            if (lim.rlim_cur < was.rlim_cur) lowered = setrlimit(RLIMIT_NOFILE, &lim) == 0;
+        }
+        CHECK(lowered, "could not lower the descriptor limit, so the cap was not measured");
+    }
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the many-file store answered %s", gs_status_name(rc));
+    if (rc) goto out;
+    enum { ROUNDS = 200, PER = 70, KEYS = 997 };
+    unsigned *last = calloc(KEYS, sizeof *last);
+    for (unsigned i = 0; i < ROUNDS * PER; i++) {
+        unsigned k = (unsigned)((i * 7919u) % KEYS);
+        GsTxn *w;
+        char kb[32], v[64];
+        int kn = snprintf(kb, sizeof kb, "k%06u", k), vn = snprintf(v, sizeof v, "value-%06u-padding-padding", i + 1);
+        E->begin_write(db, &w);
+        if (i == 0) E->tree_create(w, gss("m"));
+        E->put(w, gss("m"), gsb(kb, (size_t)kn), gsb(v, (size_t)vn), 0);
+        rc = E->commit(w, i % PER == PER - 1, NULL);
+        if (rc) break;
+        last[k] = i + 1;
+    }
+    CHECK(rc == GS_OK, "a commit among %u answered %s", ROUNDS * PER, gs_status_name(rc));
+    GsStats st;
+    E->stats(db, &st);
+    for (int pass = 0; pass < 2; pass++) {
+        unsigned wrong = 0, errs = 0;
+        int first_err = GS_OK;
+        GsTxn *r;
+        E->begin_read(db, &r);
+        for (unsigned q = 0; q < KEYS; q++) {
+            GsBytes got;
+            char kb[32], v[64];
+            int kn = snprintf(kb, sizeof kb, "k%06u", q), vn = snprintf(v, sizeof v, "value-%06u-padding-padding", last[q]);
+            int g = E->get(r, gss("m"), gsb(kb, (size_t)kn), &got);
+            if (!last[q]) { if (g != GS_NOT_FOUND) wrong++; continue; }
+            if (g != GS_OK) { if (!errs++) first_err = g; continue; }
+            if (got.n != (size_t)vn || memcmp(got.p, v, (size_t)vn)) wrong++;
+        }
+        unsigned n = 0;
+        GsCursor *c;
+        int pos;
+        if (E->cursor_open(r, gss("m"), &c) == GS_OK) {
+            for (rc = E->first(c, &pos); rc == GS_OK && pos; rc = E->next(c, &pos)) n++;
+            if (rc && !errs++) first_err = rc;
+            E->cursor_close(c);
+        }
+        E->abort(r);
+        CHECK(errs == 0, "pass %d: %u reads failed, the first with %s", pass, errs, gs_status_name(first_err));
+        CHECK(wrong == 0, "pass %d: %u reads returned the wrong value", pass, wrong);
+        CHECK(n == KEYS, "pass %d: a scan saw %u of %u keys", pass, n, (unsigned)KEYS);
+    }
+    CHECK(E->check(db, print_report, NULL) == GS_OK, "check over the many files");
+    E->close(db);
+    rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "reopening the many-file store answered %s", gs_status_name(rc));
+    if (rc == GS_OK) {
+        GsTxn *r;
+        unsigned wrong = 0;
+        E->begin_read(db, &r);
+        for (unsigned q = 0; q < KEYS; q++) {
+            GsBytes got;
+            char kb[32], v[64];
+            int kn = snprintf(kb, sizeof kb, "k%06u", q), vn = snprintf(v, sizeof v, "value-%06u-padding-padding", last[q]);
+            if (E->get(r, gss("m"), gsb(kb, (size_t)kn), &got) != GS_OK || got.n != (size_t)vn || memcmp(got.p, v, (size_t)vn)) wrong++;
+        }
+        E->abort(r);
+        CHECK(wrong == 0, "after a reopen, %u reads went wrong", wrong);
+        E->close(db);
+    }
+    /* With the cap lifted past the limit, reads run out of descriptors: that
+     * is the I/O layer's failure, and must not be reported as a damaged store
+     * (every failure to open a sorted file used to be CORRUPT). */
+    if (lowered && E == &gs_engine_lsm) {
+        o.create = 0;
+        o.tune_d = 100000;
+        rc = E->open(path, &o, &db);
+        CHECK(rc == GS_OK, "reopening with no cap answered %s", gs_status_name(rc));
+        if (rc == GS_OK) {
+            GsTxn *r;
+            int first = GS_OK;
+            E->begin_read(db, &r);
+            /* a scan, not gets: a get stops at the newest file holding its
+             * key, and here that is never far down; a scan merges them all */
+            GsCursor *c;
+            int pos;
+            first = E->cursor_open(r, gss("m"), &c);
+            if (first == GS_OK) {
+                for (first = E->first(c, &pos); first == GS_OK && pos; first = E->next(c, &pos)) {}
+                E->cursor_close(c);
+            }
+            E->abort(r);
+            CHECK(first == GS_IO, "out of descriptors, a read answered %s, not IO", gs_status_name(first));
+            E->close(db);
+        }
+    }
+    free(last);
+out:
+    if (lowered) setrlimit(RLIMIT_NOFILE, &was);
+}
+
 /* Many versions of a few keys, so a memtable holds several versions of one
  * key when it flushes and compaction meets them across files, with a snapshot
  * held from the start: every read is checked as it happens, the snapshot
@@ -114,7 +238,7 @@ static void dropped_not_durable(const char *base, GsqlIo *io) {
 static void hot_keys(const char *base, GsqlIo *io) {
     char path[600];
     snprintf(path, sizeof path, "%s.hot", base);
-    GsOptions o = {1, 512, 0, io, 2000, 2, 0};
+    GsOptions o = {1, 512, 0, io, 2000, 2, 0, 0};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the hot-key store answered %s", gs_status_name(rc));
@@ -233,7 +357,7 @@ static void sliced_backup(const char *base, GsqlIo *io) {
     snprintf(path, sizeof path, "%s.bk", base);
     snprintf(dest, sizeof dest, "%s.bk-copy", base);
     snprintf(dest2, sizeof dest2, "%s.bk-copy2", base);
-    GsOptions o = {1, 512, 0, io, 2000, 2, 32};
+    GsOptions o = {1, 512, 0, io, 2000, 2, 32, 0};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the backup store answered %s", gs_status_name(rc));
@@ -349,7 +473,7 @@ static void directory_rules(const char *base, GsqlIo *io) {
     snprintf(stranger, sizeof stranger, "%s/notes.txt", dir);
     gsql_io_mkdir(io, dir);
     touch(io, stranger);
-    GsOptions o = {1, 512, 0, io, 2000, 2, 0};
+    GsOptions o = {1, 512, 0, io, 2000, 2, 0, 0};
     GsStore *db = NULL;
     int rc = E->open(dir, &o, &db);
     if (rc == GS_OK) E->close(db);
@@ -586,7 +710,7 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "%s/db", real ? argv[4] : "d");
     snprintf(bpath, sizeof bpath, "%s/backup", real ? argv[4] : "d");
     /* §2.C: values of 64 bytes or more go to blob files, about a third here */
-    GsOptions opt = {1, 1024, 256 * 1024, io, 40, 3, 64};
+    GsOptions opt = {1, 1024, 256 * 1024, io, 40, 3, 64, 0};
     GsStore *db;
     int rc = E->open(path, &opt, &db);
     CHECK(rc == GS_OK, "open answered %s", gs_status_name(rc));
@@ -890,6 +1014,7 @@ int main(int argc, char **argv) {
     hot_keys(path, io);
     sliced_backup(path, io);
     directory_rules(path, io);
+    many_files(path, io, real);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);

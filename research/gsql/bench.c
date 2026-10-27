@@ -104,7 +104,8 @@ static BKV *c_open(const char *dir, uint64_t cache, uint32_t page) {
     /* BENCH_TUNE_A / BENCH_TUNE_B: the candidates' own knobs (store.h) */
     const char *ta = getenv("BENCH_TUNE_A"), *tb = getenv("BENCH_TUNE_B"), *tc = getenv("BENCH_TUNE_C");
     GsOptions o = {1, page, cache, NULL, ta ? strtoull(ta, NULL, 10) : 0, tb ? strtoull(tb, NULL, 10) : 0,
-                   tc ? strtoull(tc, NULL, 10) : 0};
+                   tc ? strtoull(tc, NULL, 10) : 0,
+                   getenv("BENCH_TUNE_D") ? strtoull(getenv("BENCH_TUNE_D"), NULL, 10) : 0};
     if (b->e->open(path, &o, &b->db)) { free(b); return NULL; }
     GsTxn *t;
     b->e->begin_write(b->db, &t);

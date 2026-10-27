@@ -48,6 +48,7 @@ typedef struct {
     uint64_t tune_a;        /* B: checkpoint after this many log frames. C: memtable bytes */
     uint64_t tune_b;        /* C: L0 files before compaction */
     uint64_t tune_c;        /* C: values at least this long go to a blob file */
+    uint64_t tune_d;        /* C: read handles kept open (sorted and blob files) */
 } GsOptions;
 
 typedef struct GsStore GsStore;
