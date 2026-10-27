@@ -26,7 +26,7 @@ All candidates implement one interface, so one workload harness and one crash ha
 
 | group | operation | contract |
 |---|---|---|
-| database | `open(path, options)` | Opens or creates; **runs recovery** before returning; takes the file's exclusive lock and refuses a second opener with `BUSY`. Refuses a file whose format version is newer than it understands (`FORMAT`). Options: `create`, `page_size` (at creation only), `cache_bytes`, and the I/O layer to use (§3.4), so the harness can substitute its own |
+| database | `open(path, options)` | `path` names a **directory**, which the database owns (§7 question 6). Opens or creates; **runs recovery** before returning; takes the file's exclusive lock and refuses a second opener with `BUSY`. Refuses a file whose format version is newer than it understands (`FORMAT`). Options: `create`, `page_size` (at creation only), `cache_bytes`, and the I/O layer to use (§3.4), so the harness can substitute its own |
 | | `close(db)` | Refused while a transaction or snapshot is open; the owner closes those first |
 | snapshots | `begin_read(db)` | A consistent view as of the **last durable commit** (§1.3). Cheap; any number may be open |
 | | `begin_write(db)` | At most one at a time. A second call answers `BUSY` at once, and the owner queues the request (§1.4) |
@@ -265,7 +265,7 @@ A **field index** keys on the field's value with the §3.2 encoding, and an abse
 
 Every candidate does all file I/O through one small layer, in the role SQLite's VFS plays. It has **two implementations behind one interface**: the real one, which the performance measurements use, and a simulated one, which the crash harness uses (§5.3).
 
-**Operations:** `open(path, create | exclusive | read_only)`, `read_at(file, offset, n)`, `write_at(file, offset, bytes)`, `sync(file)`, `size(file)`, `truncate(file, n)`, `close(file)`, and on paths `rename(from, to)`, `remove(path)`, `sync_dir(dir)` and `lock(file, nonblocking)`. A read past the end answers short rather than failing.
+**Operations:** `open(path, create | exclusive | read_only)`, `read_at(file, offset, n)`, `write_at(file, offset, bytes)`, `sync(file)`, `size(file)`, `truncate(file, n)`, `close(file)`, and on paths `rename(from, to)`, `remove(path)`, `sync_dir(dir)` and `lock(file, nonblocking)`, and on directories `mkdir(path)` and `list(dir)` (*added 2026-10-26* for §7 question 6: a made directory is a name in its parent, durable only after the parent's `sync_dir`, and losing it loses everything beneath it). A read past the end answers short rather than failing.
 
 **The durability contract is the minimal one POSIX actually gives, and an engine may assume nothing stronger.** Every candidate must be correct under exactly these rules:
 
@@ -671,7 +671,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
    - **The sibling layout as built** interleaves two databases' files in one directory.
    - **What a directory buys.** Copy, move and delete become one operation each (`cp -r`, an atomic rename, `remove_tree`). It also closes the quieter hazard 2.B shares with SQLite: copying the main file without its log silently loses every commit not yet checkpointed.
    - **Separately, 2.C needs a cap on open sorted files**, since read files stay open and 1 TB would exceed the default 1,024 descriptors. That is engineering.
-   - **Not yet decided:** this is the project's decision, and G-Dash's §5.1.1a is the application it most affects. G-Dash's case is §5.1.1a.
+   - **Decided 2026-10-26: a database is a directory, and owns everything in it.** A database opens only if every name in its directory is one it could have written, so a stranger's file is refused, never deleted. At open, anything store-shaped that the database does not name is garbage and is deleted. That one rule replaced four kinds of crash bookkeeping, measured redundant and removed. For a multi-tenant deployment (G-Dash, WorkSplicer) it means one directory per tenant under a common root. A single-file artifact, where one is wanted, is the backup's or an export's output, not the live store's. The I/O layer gained `mkdir` and `list` for it (§3.4); `research/gsql/README.md`, "The directory layout", has the measurements. G-Dash's case is §5.1.1a.
 
 ## 8. Reading list
 

@@ -255,6 +255,33 @@ Test 3 left online backup unmet by both candidates as built, because each was on
 - **One file for 2.C needs an extent allocator inside the file.** That is a second space manager, with hole punching or a second compaction to give space back, which neither B+tree candidate needed and 2.C was built without.
 - **Recommendation: a database is a directory**, holding its manifest, lock, logs and data files, as RocksDB, LevelDB and PostgreSQL do. Copy, move and delete each become one operation: `cp -r`, an atomic rename, and the `remove_tree` gBASIC already has. Nothing in a directory belongs to another database. For 2.C it is a naming change, not a new mechanism.
 
+## The directory layout (2026-10-26)
+
+Open question 6 is decided: **a database is a directory**, and owns everything in it (`docs/gsql_storage_design.md` §7).
+
+- **The I/O layer gained `mkdir` and `list`** (`include/gsql_io.h`), in the real layer and the simulated one.
+  - A directory `mkdir` made is a name in its parent, so it is durable only after the parent's `sync_dir`. A crash that loses it loses everything beneath it, however well that was synced. `tests/run_gsql_io.sh` holds that as a rule-2 difference, and turning it off is caught.
+  - A listing is in byte order through one walk shared by both layers, and the parity tier compares it.
+- **Every candidate's `open` takes a directory** (`gs_db_dir` in `common.c`), and keeps its old file names inside it (`db`, `db.lock`, `db.log.3`, `db.17.sst`).
+  - A directory opens only if every name in it is one an engine could write: `db`, or `db` followed by `.` or `-`. Anything else is refused with `FORMAT`.
+  - **That refusal is what makes the rest safe, and the test shows why.** With it turned off, the open's sweep deleted the stranger's file.
+  - With `create` an absent directory is made, and its parent synced.
+- **2.C deletes at open whatever it does not name** (`sweep_dir`), and its `check` lists the directory instead of probing every number below `next_file`.
+- **Four mechanisms were measured redundant under the sweep, and removed.**
+  - **The removed mechanisms:**
+    1. the manifest's garbage list;
+    2. its list of live blob files;
+    3. clearing a reused number's file of the other kind;
+    4. the backup's `dest.pending` record.
+  - **How each was measured.** Each was disabled with the sweep kept, and the crash gate stayed at 0 violations.
+  - **Why the measurement means something.** With the sweep also disabled, almost every recovery checked failed (process 794 of 794, power 1,206 of 1,206).
+  - **What it buys.** 2.C is the same size (3,294 lines before, 3,293 after), so the gain is in the mechanism, not the line count. Four separate answers to "what can a crash strand?", each added when a leak was found, became one rule that covers files nobody has thought of yet.
+- **A backup's destination is a database directory too**, so clearing it is listing and removing.
+- **Directed tests** (`test_store`'s `directory_rules`) cover these cases, each proven red:
+  - a stranger's file is refused, and left alone;
+  - a plain file passed as the path is refused;
+  - four store-shaped strays are reported by `check` and deleted at the next open.
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -293,7 +320,11 @@ Test 3 left online backup unmet by both candidates as built, because each was on
 | 2.C: the manifest records the last replayed log, **and** a flush deletes only the last log | failed-sync (1); **either alone is green**, see above |
 | 2.C: blob files never deleted | every crash tier (25,525) |
 | 2.C: a compaction's pointers into a blob not counted | every crash tier (1,374) |
-| 2.C: a reused number does not clear the other kind's file | every crash tier (125) |
+| 2.C: a reused number does not clear the other kind's file | every crash tier (125); **green since the directory layout**, whose sweep covers it, and the clearing is removed |
+| 2.C: the open-time sweep disabled (and the garbage and live-blob lists with it) | every crash tier (process 794 of 794, power 1,206 of 1,206), and `test_store`'s `directory_rules` |
+| 2.C: the manifest's garbage and live-blob lists disabled, the sweep kept | **green, legitimately**: the sweep covers both, and they are removed |
+| a database directory holding a stranger's file accepted | `test_store`'s `directory_rules`: the sweep then DELETED the stranger's file |
+| the simulated layer keeps files beneath a directory a crash lost | `run_gsql_io`'s rule-2 directory difference |
 | 2.C: an open does not delete live-listed blobs nothing points into | every crash tier (25,518) |
 | 2.C: relocation aborted when reached | crash tiers (5): reached, though rarely |
 
