@@ -62,11 +62,15 @@ static uint64_t dir_bytes_of(const char *dir, int which) {
     char p[1024];
     while ((de = readdir(d))) {
         if (de->d_name[0] == '.') continue;
-        if (which == 0 && is_log(de->d_name)) continue;
-        if (which == 1 && !is_log(de->d_name)) continue;
         snprintf(p, sizeof p, "%s/%s", dir, de->d_name);
         struct stat st;
-        if (stat(p, &st) == 0 && S_ISREG(st.st_mode)) total += (uint64_t)st.st_size;
+        if (stat(p, &st) != 0) continue;
+        /* a store is a directory now (§7 question 6), so its files are one
+         * level down: counting only this level would read every store as 0 */
+        if (S_ISDIR(st.st_mode)) { total += dir_bytes_of(p, which); continue; }
+        if (which == 0 && is_log(de->d_name)) continue;
+        if (which == 1 && !is_log(de->d_name)) continue;
+        if (S_ISREG(st.st_mode)) total += (uint64_t)st.st_size;
     }
     closedir(d);
     return total;
@@ -566,7 +570,7 @@ static int t_files(uint64_t rows) {
     unsigned fd_loaded = open_fds() - fd0;
     E->close(db);
     unsigned tot, sst, blob, logs, other;
-    count_kinds(g_dir, &tot, &sst, &blob, &logs, &other);
+    count_kinds(g_path, &tot, &sst, &blob, &logs, &other); /* the store's own directory */
     t0 = now_ms();
     db = open_store(g_path, 0);
     double open_ms = now_ms() - t0;

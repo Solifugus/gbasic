@@ -113,4 +113,18 @@ char *gs_path_with(const char *path, const char *suffix);
 /* Map an I/O layer errno to a status. */
 int gs_io_status(int rc);
 
+/* A database is a DIRECTORY (gsql_storage_design.md §7 question 6, decided
+ * 2026-10-26), and owns everything in it: an engine names its files inside as
+ * GS_DB_BASE plus a suffix, and treats anything else of that shape it does not
+ * name as garbage. So a directory is opened only if every name in it is one an
+ * engine could have written -- GS_DB_BASE itself, or GS_DB_BASE followed by
+ * '.' or '-' -- and anything else is refused with FORMAT rather than risk
+ * deleting a stranger's file. With `create` an absent directory is made, and
+ * made durable (its parent synced). *base gets "dir/db" for the engine's own
+ * names; the caller frees it. */
+#define GS_DB_BASE "db"
+int gs_db_dir(GsqlIo *io, const char *dir, int create, char **base);
+/* Whether a name inside a database directory is one an engine could own. */
+int gs_db_owned(const char *name);
+
 #endif

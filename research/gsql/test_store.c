@@ -327,6 +327,69 @@ static void sliced_backup(const char *base, GsqlIo *io) {
     E->close(db);
 }
 
+/* A database is a directory (§7 question 6). Refused: a directory holding a
+ * file no engine writes -- the database would delete it, since it owns
+ * everything in its directory -- and a path that is a plain file. 2.C deletes
+ * at open whatever store-shaped file it does not name, and its check reports
+ * one while it is open. */
+static void touch(GsqlIo *io, const char *path) {
+    GsqlFile *f = NULL;
+    if (gsql_io_open(io, path, GSQL_IO_CREATE, &f) == 0) { gsql_io_write_at(f, 0, "x", 1); gsql_io_sync(f); gsql_io_close(f); }
+}
+static int present(GsqlIo *io, const char *path) {
+    GsqlFile *f = NULL;
+    if (gsql_io_open(io, path, GSQL_IO_READ_ONLY, &f)) return 0;
+    gsql_io_close(f);
+    return 1;
+}
+static void count_reports(void *ctx, const char *line) { (void)line; (*(unsigned *)ctx)++; }
+static void directory_rules(const char *base, GsqlIo *io) {
+    char dir[600], stranger[700], plain[600];
+    snprintf(dir, sizeof dir, "%s.foreign", base);
+    snprintf(stranger, sizeof stranger, "%s/notes.txt", dir);
+    gsql_io_mkdir(io, dir);
+    touch(io, stranger);
+    GsOptions o = {1, 512, 0, io, 2000, 2, 0};
+    GsStore *db = NULL;
+    int rc = E->open(dir, &o, &db);
+    if (rc == GS_OK) E->close(db);
+    CHECK(rc == GS_FORMAT, "a directory holding a stranger's file opened (%s), not refused with FORMAT", gs_status_name(rc));
+    CHECK(present(io, stranger), "the stranger's file was touched");
+    snprintf(plain, sizeof plain, "%s.plain", base);
+    touch(io, plain);
+    rc = E->open(plain, &o, &db);
+    if (rc == GS_OK) E->close(db);
+    CHECK(rc == GS_FORMAT, "a plain file as the path answered %s, not FORMAT", gs_status_name(rc));
+
+    snprintf(dir, sizeof dir, "%s.own", base);
+    rc = E->open(dir, &o, &db);
+    CHECK(rc == GS_OK, "creating a store in a new directory answered %s", gs_status_name(rc));
+    if (rc) return;
+    for (unsigned i = 0; i < 200; i++) put_one(db, "t", i, 1);
+    if (strcmp(E->name, "lsm") == 0) {
+        const char *strays[] = {"db.999.sst", "db.998.blob", "db.log.997", "db.tmp"};
+        char path[800];
+        for (int i = 0; i < 4; i++) { snprintf(path, sizeof path, "%s/%s", dir, strays[i]); touch(io, path); }
+        unsigned reports = 0;
+        CHECK(E->check(db, count_reports, &reports) == GS_CORRUPT && reports == 4,
+              "check reported %u of 4 store-shaped files nothing names", reports);
+        E->close(db);
+        rc = E->open(dir, &o, &db);
+        CHECK(rc == GS_OK, "reopening after strays answered %s", gs_status_name(rc));
+        if (rc) return;
+        unsigned left = 0;
+        for (int i = 0; i < 4; i++) { snprintf(path, sizeof path, "%s/%s", dir, strays[i]); left += present(io, path); }
+        CHECK(left == 0, "the open left %u of 4 stray files in place", left);
+        CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the sweep");
+    }
+    GsTxn *r;
+    unsigned m;
+    E->begin_read(db, &r);
+    CHECK(count_gen(r, "t", 0, &m) == 200, "the store kept its 200 records through all of it");
+    E->abort(r);
+    E->close(db);
+}
+
 /* ---- the model ---- */
 
 typedef struct { GsBuf k, v; } Rec;
@@ -826,6 +889,7 @@ int main(int argc, char **argv) {
     dropped_not_durable(path, io);
     hot_keys(path, io);
     sliced_backup(path, io);
+    directory_rules(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);

@@ -446,11 +446,10 @@ static int bld_open(GsStore *db, Builder *b) {
     b->db = db;
     b->num = db->next_file++;
     /* A number may be taken again after a crash, and sorted files and blob
-     * files share the numbers: a blob file left from before must not stay
-     * beside the sorted file that took its number (it did, unnamed). */
-    char *other = blob_name(db, b->num);
-    gsql_io_remove(db->io, other);
-    free(other);
+     * files share the numbers. A stale file of the other kind used to be
+     * removed here; the open's sweep now deletes every unnamed file before any
+     * number can be reused, and with this removed the crash gate stays at 0
+     * violations (Test 4). */
     char *name = file_name(db, b->num);
     /* CREATE without EXCLUSIVE, then truncate: a crash between writing a file
      * and naming it in the manifest leaves an orphan whose number the next
@@ -510,10 +509,7 @@ static int bld_blob(Builder *b, const unsigned char *v, size_t vn, unsigned char
     if (!b->bf) {
         b->bnum = db->next_file++;
         if (b->track) u64_push(b->track, b->bnum); /* garbage until named */
-        char *name = file_name(db, b->bnum); /* the other kind, as bld_open does */
-        gsql_io_remove(db->io, name);
-        free(name);
-        name = blob_name(db, b->bnum);
+        char *name = blob_name(db, b->bnum);
         int rc = ioerr(gsql_io_open(db->io, name, GSQL_IO_CREATE, &b->bf));
         if (rc == GS_OK) rc = ioerr(gsql_io_truncate(b->bf, 0));
         if (rc) {
@@ -1111,11 +1107,10 @@ typedef struct Comp {
     uint64_t keep_after, target;
     FileMeta **outs;
     size_t nouts;
-    /* Every output's number, finished or not. They are named in no version
-     * until the compaction installs, and a flush meanwhile writes a manifest
-     * with a higher next-file number, so a crash would orphan them for good.
-     * Every manifest written meanwhile lists them as garbage instead, and the
-     * next open deletes them. */
+    /* Every output's number, finished or not: named in no version until the
+     * compaction installs, so check must not call them leaks meanwhile. A
+     * crash leaves them unnamed, and the next open's sweep deletes them (the
+     * manifest once listed them as garbage for that). */
     U64s pending;
     /* Blob space comes back by relocation: a value this compaction keeps
      * from a blob file numbered below gc_below is written again, into the
@@ -1152,16 +1147,16 @@ static int manifest_write(GsStore *db) {
             for (size_t j = 0; j < m->blobs.n; j++) put_u64(&b, m->blobs.v[j]);
         }
     }
-    /* every blob file alive now, so an open can delete one whose deletion a
-     * crash undid: listed here, pointed into by nothing in the version */
-    put_u64(&b, db->nblob);
-    for (size_t i = 0; i < db->nblob; i++) put_u64(&b, db->blob[i].num);
+    /* No list of garbage and no list of live blob files: the store owns its
+     * directory, and an open deletes whatever in it the version does not name
+     * (sweep_dir). Both lists were here for what a crash strands -- a pausing
+     * compaction's outputs, files whose deletion did not survive, a blob
+     * nothing pointed into -- and measured redundant once the sweep existed:
+     * with both removed and the sweep kept, the crash gate saw 0 violations in
+     * 185,861 crashes; with the sweep removed too, every recovery checked
+     * failed. */
     put_u64(&b, db->ndead);
     for (size_t i = 0; i < db->ndead; i++) { put_u64(&b, db->dead[i].id); put_u64(&b, db->dead[i].death); }
-    size_t npend = db->comp ? db->comp->pending.n : 0;
-    put_u64(&b, db->garbage.n + npend);
-    for (size_t i = 0; i < db->garbage.n; i++) put_u64(&b, db->garbage.v[i]);
-    for (size_t i = 0; i < npend; i++) put_u64(&b, db->comp->pending.v[i]);
     unsigned char t[4];
     put32(t, crc32c(b.p, b.n));
     gsbuf_append(&b, t, 4);
@@ -1250,20 +1245,6 @@ static int manifest_read(GsStore *db, const unsigned char *p, size_t n) {
             version_add(db->cur, l, m);
         }
     }
-    uint64_t nlive;
-    if ((rc = get_u64(p, end, &at, &nlive))) return rc;
-    if (nlive > end) return GS_CORRUPT;
-    for (uint64_t i = 0; i < nlive; i++) {
-        uint64_t bn;
-        if ((rc = get_u64(p, end, &at, &bn))) return rc;
-        if (!blob_find(db, bn)) {
-            /* listed alive, and nothing in the version points into it: its
-             * last reference went and the deletion did not survive */
-            char *name = blob_name(db, bn);
-            gsql_io_remove(db->io, name);
-            free(name);
-        }
-    }
     uint64_t nd;
     if ((rc = get_u64(p, end, &at, &nd))) return rc;
     if (nd > end) return GS_CORRUPT;
@@ -1272,14 +1253,6 @@ static int manifest_read(GsStore *db, const unsigned char *p, size_t n) {
         if ((rc = get_u64(p, end, &at, &d.id)) || (rc = get_u64(p, end, &at, &d.death))) return rc;
         if (db->ndead == db->capdead) { db->capdead = db->capdead ? db->capdead * 2 : 8; db->dead = realloc(db->dead, db->capdead * sizeof *db->dead); }
         db->dead[db->ndead++] = d;
-    }
-    uint64_t ng;
-    if ((rc = get_u64(p, end, &at, &ng))) return rc;
-    if (ng > end) return GS_CORRUPT;
-    for (uint64_t i = 0; i < ng; i++) {
-        uint64_t g;
-        if ((rc = get_u64(p, end, &at, &g))) return rc;
-        u64_push(&db->garbage, g);
     }
     return at == end ? GS_OK : GS_CORRUPT;
 }
@@ -1436,7 +1409,71 @@ static int create_db(GsStore *db) {
     return rc;
 }
 
-static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
+/* What a name in the database directory is: the store's own file kinds, or
+ * not one of them. */
+typedef enum { N_OTHER, N_MANIFEST, N_LOCK, N_LOG, N_SST, N_BLOB } NameKind;
+static NameKind name_kind(const char *name, uint64_t *num) {
+    unsigned long long v = 0;
+    int end = 0;
+    *num = 0;
+    if (!strcmp(name, GS_DB_BASE)) return N_MANIFEST;
+    if (!strcmp(name, GS_DB_BASE ".lock")) return N_LOCK;
+    if (sscanf(name, GS_DB_BASE ".log.%llu%n", &v, &end) == 1 && name[end] == 0) { *num = v; return N_LOG; }
+    if (sscanf(name, GS_DB_BASE ".%llu.sst%n", &v, &end) == 1 && name[end] == 0) { *num = v; return N_SST; }
+    if (sscanf(name, GS_DB_BASE ".%llu.blob%n", &v, &end) == 1 && name[end] == 0) { *num = v; return N_BLOB; }
+    return N_OTHER;
+}
+
+static int in_version(Version *v, uint64_t num) {
+    for (int l = 0; l < LEVELS; l++)
+        for (size_t i = 0; i < v->nfiles[l]; i++) if (v->files[l][i]->num == num) return 1;
+    return 0;
+}
+
+/* Whether the store, as it stands, names this file. At open nothing else can
+ * need one: no compaction is running and no transaction is open. */
+static int named(GsStore *db, NameKind k, uint64_t num) {
+    switch (k) {
+    case N_MANIFEST: case N_LOCK: return 1;
+    case N_LOG: return num >= db->log_first && num <= db->log_num;
+    case N_SST: return in_version(db->cur, num);
+    case N_BLOB: return blob_find(db, num) != NULL;
+    default: return 0;
+    }
+}
+
+typedef struct { GsStore *db; char **names; size_t n; } Sweep;
+static int sweep_one(void *ctx, const char *name) {
+    Sweep *w = ctx;
+    uint64_t num;
+    NameKind k = name_kind(name, &num);
+    if (named(w->db, k, num)) return 0;
+    char *full = malloc(strlen(w->db->dir) + strlen(name) + 2);
+    sprintf(full, "%s/%s", w->db->dir, name);
+    w->names = realloc(w->names, (w->n + 1) * sizeof *w->names);
+    w->names[w->n++] = full;
+    return 0;
+}
+
+/* The directory is the store's own (gs_db_dir refused it otherwise), so
+ * anything in it the store does not name is garbage: an interrupted
+ * compaction's output, a flush whose manifest never landed, a blob whose
+ * deletion a crash undid, the manifest's own temporary. One rule, in place of
+ * tracking each file a crash might strand -- which is how four leaks were
+ * found one at a time (the rebuild's check, and Test 3). Removals need no
+ * flush: one a crash undoes is made again at the next open. */
+static int sweep_dir(GsStore *db) {
+    Sweep w = {db, NULL, 0};
+    int rc = gsql_io_list(db->io, db->dir, sweep_one, &w);
+    for (size_t i = 0; i < w.n; i++) {
+        if (rc == 0) gsql_io_remove(db->io, w.names[i]);
+        free(w.names[i]);
+    }
+    free(w.names);
+    return ioerr(rc);
+}
+
+static int lsm_open_base(const char *path, const GsOptions *opt, GsStore **out) {
     GsStore *db = calloc(1, sizeof *db);
     if (!db) return GS_IO;
     db->io = opt && opt->io ? opt->io : NULL;
@@ -1480,17 +1517,6 @@ static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
         if (rc == GS_OK) rc = got == size ? manifest_read(db, p, (size_t)size) : GS_CORRUPT;
         free(p);
         gsql_io_close(mf);
-        /* finish deleting what the last manifest said was garbage */
-        for (size_t i = 0; rc == GS_OK && i < db->garbage.n; i++) {
-            /* one number space: a garbage number is a sorted file or a blob */
-            char *name = file_name(db, db->garbage.v[i]);
-            gsql_io_remove(db->io, name);
-            free(name);
-            name = blob_name(db, db->garbage.v[i]);
-            gsql_io_remove(db->io, name);
-            free(name);
-        }
-        db->garbage.n = 0;
         /* replay every log from the manifest's onward */
         uint64_t k = db->log_num;
         db->log_first = k;
@@ -1521,6 +1547,7 @@ static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
     } else {
         rc = ioerr(rc);
     }
+    if (rc == GS_OK) rc = sweep_dir(db);
     if (rc) { store_free(db); return rc; }
     *out = db;
     return GS_OK;
@@ -2926,6 +2953,31 @@ static void rsay(Rep *r, const char *fmt, unsigned long long a, unsigned long lo
     if (r->report) { char line[160]; snprintf(line, sizeof line, fmt, a, b); r->report(r->ctx, line); }
 }
 
+typedef struct { GsStore *db; Rep *rep; } CheckDir;
+static int check_one(void *ctx, const char *name) {
+    CheckDir *cd = ctx;
+    GsStore *db = cd->db;
+    uint64_t num;
+    NameKind k = name_kind(name, &num);
+    if (named(db, k, num)) return 0;
+    /* garbage and an unfinished compaction's outputs may be either kind */
+    if (k == N_SST || k == N_BLOB) {
+        for (size_t i = 0; i < db->garbage.n; i++) if (db->garbage.v[i] == num) return 0;
+        for (size_t i = 0; db->comp && i < db->comp->pending.n; i++) if (db->comp->pending.v[i] == num) return 0;
+    }
+    /* each name stands for itself: a sorted file 8 does not account for a
+     * blob file 8 (it was exactly such a pair that leaked) */
+    Rep *r = cd->rep;
+    r->bad = 1;
+    if (r->report) {
+        char line[400];
+        snprintf(line, sizeof line, "%s exists and nothing names it (next file %llu, logs %llu..%llu)", name,
+                 (unsigned long long)db->next_file, (unsigned long long)db->log_first, (unsigned long long)db->log_num);
+        r->report(r->ctx, line);
+    }
+    return 0;
+}
+
 static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ctx) {
     Rep r = {report, ctx, 0};
     Version *v = db->cur;
@@ -2964,35 +3016,15 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
                 rsay(&r, "level %llu: file %llu overlaps the one before it", (unsigned long long)l, m->num);
         }
     }
-    /* Nothing on disk that nothing names. A file the version does not hold
-     * must be garbage (deleted at the next open) or an unfinished
-     * compaction's output; anything else grows the store for good, the
-     * defect that grew 2.A and 2.B without bound. Data files are numbered
-     * below next_file, so asking for each one needs no directory listing. */
-    for (uint64_t num = 1; num < db->next_file; num++) {
-        /* garbage and an unfinished compaction's outputs may be either kind */
-        int either = 0, sorted = 0;
-        for (size_t i = 0; i < db->garbage.n && !either; i++) either = db->garbage.v[i] == num;
-        for (size_t i = 0; db->comp && i < db->comp->pending.n && !either; i++) either = db->comp->pending.v[i] == num;
-        if (either) continue;
-        for (int l = 0; l < LEVELS && !sorted; l++)
-            for (size_t i = 0; i < v->nfiles[l] && !sorted; i++) sorted = v->files[l][i]->num == num;
-        int blob = blob_find(db, num) != NULL;
-        /* each name stands for itself: a sorted file 8 does not account
-         * for a blob file 8 (it was exactly such a pair that leaked) */
-        for (int kind = 0; kind < 2; kind++) {
-            if (kind ? blob : sorted) continue;
-            char *name = kind ? blob_name(db, num) : file_name(db, num);
-            GsqlFile *f = NULL;
-            if (gsql_io_open(db->io, name, 0, &f) == 0) {
-                gsql_io_close(f);
-                rsay(&r, kind ? "blob file %llu exists and nothing points into it (next file %llu)"
-                              : "file %llu exists and nothing names it (next file %llu)",
-                     (unsigned long long)num, (unsigned long long)db->next_file);
-            }
-            free(name);
-        }
-    }
+    /* Nothing on disk that nothing names, asked of the DIRECTORY, which the
+     * store owns: a file the version does not hold must be garbage (deleted
+     * at the next open) or an unfinished compaction's output; anything else
+     * grows the store for good, the defect that grew 2.A and 2.B without
+     * bound. Before the store had a directory this probed every number below
+     * next_file, which could not see a file outside that range or of a shape
+     * it did not know -- a stale log, a stray temporary. */
+    CheckDir cd = {db, &r};
+    if (gsql_io_list(db->io, db->dir, check_one, &cd)) rsay(&r, "the store's directory does not list", 0, 0);
     return r.bad ? GS_CORRUPT : GS_OK;
 }
 
@@ -3010,18 +3042,18 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
  * there when the reader began. The memtable is shared with later commits, so
  * its entries are filtered by sequence.
  *
- * At `dest`: the manifest is written last, through the store's own
- * tmp-and-rename, so an interrupted backup leaves no manifest. Before
- * anything else, `dest.pending` records the highest file number the copy may
- * use, durably, so a later backup to the same place can clear what an
- * interrupted one left: the I/O layer has no directory listing, and numbers
- * are kept from the source because a blob pointer names its blob file. */
+ * `dest` is a database directory like any (gs_db_dir: made if absent,
+ * refused if it holds a stranger's file), so it is cleared by listing it:
+ * everything in it is a database's. The manifest is written last, through the
+ * store's own tmp-and-rename, so an interrupted backup leaves no manifest.
+ * (Before the store had a directory, a durable `dest.pending` record of the
+ * highest number the copy might use stood in for the listing.) */
 typedef struct { char *src, *dst; uint64_t size, off; } CopyJob;
 struct GsBackup {
     struct GsTxn *snap;
     GsStore *db;
     GsStore tmp;       /* the store being built at dest */
-    char *dest, *pending;
+    char *dest;
     CopyJob *jobs;
     size_t njobs, at;
     GsqlFile *src, *dst;
@@ -3036,46 +3068,28 @@ struct GsBackup {
 
 #define BACKUP_CHUNK (1u << 20)
 
-static uint64_t read_bound(GsqlIo *io, const char *name, int manifest) {
-    GsqlFile *f = NULL;
-    uint64_t bound = 0, n = 0;
-    if (gsql_io_open(io, name, GSQL_IO_READ_ONLY, &f)) return 0;
-    gsql_io_size(f, &n);
-    if (n >= 12 && n < (1u << 30)) {
-        unsigned char *p = malloc((size_t)n);
-        size_t got = 0;
-        if (p && gsql_io_read_at(f, 0, p, (size_t)n, &got) == 0 && got == n && get32(p + n - 4) == crc32c(p, (size_t)n - 4)) {
-            size_t at = manifest ? GS_HEADER_FIXED : 0;
-            if (at + 8 <= n - 4) bound = get64(p + at);
-        }
-        free(p);
-    }
-    gsql_io_close(f);
-    return bound;
+/* Everything in a backup's directory goes: it is a database's (gs_db_dir
+ * said so), and an earlier backup, finished or not, is all it can hold. The
+ * manifest first, so the place never holds a mix of two that looks like one. */
+typedef struct { const char *dir; char **names; size_t n; } Clear;
+static int clear_one(void *ctx, const char *name) {
+    Clear *c = ctx;
+    char *full = malloc(strlen(c->dir) + strlen(name) + 2);
+    sprintf(full, "%s/%s", c->dir, name);
+    c->names = realloc(c->names, (c->n + 1) * sizeof *c->names);
+    c->names[c->n++] = full;
+    return 0;
 }
-
-/* Whatever an earlier backup, finished or not, left at dest: the manifest
- * first, so the place is never a mix of two backups that looks like one. */
-static int backup_clear(GsStore *db, const char *dest, const char *pending) {
-    char *mpath = gs_path_with(dest, ""), *ddir = gs_dirname(dest), *mtmp = gs_path_with(dest, ".tmp");
-    uint64_t a = read_bound(db->io, mpath, 1), b = read_bound(db->io, pending, 0), bound = a > b ? a : b;
-    gsql_io_remove(db->io, mpath);
-    gsql_io_remove(db->io, mtmp);
-    int rc = ioerr(gsql_io_sync_dir(db->io, ddir));
-    GsStore probe;
-    memset(&probe, 0, sizeof probe);
-    probe.path = mpath;
-    for (uint64_t num = 1; num < bound; num++) {
-        char *x = file_name(&probe, num), *y = blob_name(&probe, num);
-        gsql_io_remove(db->io, x);
-        gsql_io_remove(db->io, y);
-        free(x);
-        free(y);
+static int backup_clear(GsqlIo *io, const char *dir, const char *manifest) {
+    Clear c = {dir, NULL, 0};
+    int rc = ioerr(gsql_io_list(io, dir, clear_one, &c));
+    gsql_io_remove(io, manifest);
+    if (rc == GS_OK) rc = ioerr(gsql_io_sync_dir(io, dir));
+    for (size_t i = 0; i < c.n; i++) {
+        gsql_io_remove(io, c.names[i]);
+        free(c.names[i]);
     }
-    for (uint64_t k = 1; k <= 64; k++) { char *ln = log_name(dest, k); gsql_io_remove(db->io, ln); free(ln); }
-    free(mpath);
-    free(ddir);
-    free(mtmp);
+    free(c.names);
     return rc;
 }
 
@@ -3084,34 +3098,20 @@ static int lsm_backup_begin(struct GsTxn *snap, const char *dest, GsBackup **out
     *out = NULL;
     if (snap->write) return GS_MISUSE;
     if (db->failed) return GS_FAILED;
+    char *base = NULL;
+    int rc = gs_db_dir(db->io, dest, 1, &base);
+    if (rc) return rc;
     GsBackup *b = calloc(1, sizeof *b);
     b->snap = snap;
     b->db = db;
-    b->dest = gs_path_with(dest, "");
-    b->pending = gs_path_with(dest, ".pending");
+    b->dest = base;
     b->chunk = malloc(BACKUP_CHUNK);
     *out = b;
-    int rc = backup_clear(db, dest, b->pending);
-    /* the bound first, durably: every number this copy can use is below it */
-    uint64_t bound = db->next_file + 1;
-    if (rc == GS_OK) {
-        unsigned char rec[12];
-        put64(rec, bound);
-        put32(rec + 8, crc32c(rec, 8));
-        GsqlFile *f = NULL;
-        rc = ioerr(gsql_io_open(db->io, b->pending, GSQL_IO_CREATE, &f));
-        if (rc == GS_OK) rc = ioerr(gsql_io_truncate(f, 0));
-        if (rc == GS_OK) rc = ioerr(gsql_io_write_at(f, 0, rec, sizeof rec));
-        if (rc == GS_OK) rc = ioerr(gsql_io_sync(f));
-        if (f) gsql_io_close(f);
-        char *ddir = gs_dirname(dest);
-        if (rc == GS_OK) rc = ioerr(gsql_io_sync_dir(db->io, ddir));
-        free(ddir);
-    }
     GsStore *t = &b->tmp;
     t->io = db->io;
-    t->path = gs_path_with(dest, "");
-    t->dir = gs_dirname(dest);
+    t->path = gs_path_with(base, "");
+    t->dir = gs_dirname(base);
+    rc = backup_clear(db->io, t->dir, base);
     t->block = db->block;
     t->memtable_limit = db->memtable_limit;
     t->vsep = db->vsep;
@@ -3224,10 +3224,7 @@ static int lsm_backup_step(GsBackup *bk, uint64_t budget, int *done) {
     if (lf) { if (rc == GS_OK) rc = ioerr(gsql_io_sync(lf)); gsql_io_close(lf); }
     free(ln);
     if (rc == GS_OK) rc = manifest_write(t);
-    if (rc == GS_OK) {
-        gsql_io_remove(db->io, bk->pending);
-        bk->done = *done = 1;
-    }
+    if (rc == GS_OK) bk->done = *done = 1;
     return rc;
 }
 
@@ -3237,18 +3234,7 @@ static void lsm_backup_end(GsBackup *bk) {
     if (bk->dst) gsql_io_close(bk->dst);
     if (bk->building && bk->b.f) gsql_io_close(bk->b.f);
     GsStore *t = &bk->tmp;
-    if (!bk->done && t->path) {
-        /* what was written goes; the pending record stays until it has */
-        for (size_t i = 0; i < bk->njobs; i++) gsql_io_remove(bk->db->io, bk->jobs[i].dst);
-        for (uint64_t num = bk->db->next_file; num < t->next_file; num++) {
-            char *x = file_name(t, num), *y = blob_name(t, num);
-            gsql_io_remove(bk->db->io, x);
-            gsql_io_remove(bk->db->io, y);
-            free(x);
-            free(y);
-        }
-        gsql_io_remove(bk->db->io, bk->pending);
-    }
+    if (!bk->done && t->dir) backup_clear(bk->db->io, t->dir, t->path); /* a partial copy goes whole */
     for (size_t i = 0; i < bk->njobs; i++) { free(bk->jobs[i].src); free(bk->jobs[i].dst); }
     free(bk->jobs);
     if (t->cur) version_unref(t, t->cur);
@@ -3261,7 +3247,6 @@ static void lsm_backup_end(GsBackup *bk) {
     gsbuf_free(&bk->lastkey);
     free(bk->chunk);
     free(bk->dest);
-    free(bk->pending);
     free(bk);
 }
 
@@ -3280,6 +3265,20 @@ static void lsm_stats(GsStore *db, GsStats *out) {
         for (size_t i = 0; i < db->cur->nfiles[l]; i++) total += db->cur->files[l][i]->size;
     if (db->log) { gsql_io_size(db->log, &sz); total += sz; }
     out->file_bytes = total;
+}
+
+
+/* A database is a directory (§7 question 6): resolve it, then open the files
+ * inside it by their old names. */
+static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
+    GsqlIo *io = opt && opt->io ? opt->io : gsql_io_real();
+    char *base = NULL;
+    int rc = gs_db_dir(io, path, opt && opt->create, &base);
+    if (!(opt && opt->io)) gsql_io_free(io);
+    if (rc) return rc;
+    rc = lsm_open_base(base, opt, out);
+    free(base);
+    return rc;
 }
 
 const GsEngine gs_engine_lsm = {

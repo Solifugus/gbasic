@@ -548,7 +548,7 @@ static void store_free(GsStore *db) {
     free(db);
 }
 
-static int cow_open(const char *path, const GsOptions *opt, GsStore **out) {
+static int cow_open_base(const char *path, const GsOptions *opt, GsStore **out) {
     GsStore *db = calloc(1, sizeof *db);
     if (!db) return GS_IO;
     db->io = opt && opt->io ? opt->io : NULL;
@@ -909,7 +909,18 @@ static int copy_tree(void *ctx, GsBytes name, uint64_t root) {
 
 /* The pages the snapshot reaches, at their own numbers, and a new free tree
  * listing every other page below its end (one record, key 0). */
+static int cow_backup_base(struct GsTxn *snap, const char *dest);
+/* the destination is a database directory too: made if absent, refused if
+ * it holds anything a database would not */
 static int cow_backup(struct GsTxn *snap, const char *dest) {
+    if (snap->be.write) return GS_MISUSE;
+    char *base = NULL;
+    int rc = gs_db_dir(snap->db->io, dest, 1, &base);
+    if (rc == GS_OK) rc = cow_backup_base(snap, base);
+    free(base);
+    return rc;
+}
+static int cow_backup_base(struct GsTxn *snap, const char *dest) {
     GsStore *db = snap->db;
     if (snap->be.write) return GS_MISUSE;
     char *tmp = gs_path_with(dest, ".tmp");
@@ -1008,6 +1019,20 @@ static int cow_backup_step(GsBackup *b, uint64_t budget, int *done) {
 static void cow_backup_end(GsBackup *b) {
     free(b->dest);
     free(b);
+}
+
+
+/* A database is a directory (§7 question 6): resolve it, then open the files
+ * inside it by their old names. */
+static int cow_open(const char *path, const GsOptions *opt, GsStore **out) {
+    GsqlIo *io = opt && opt->io ? opt->io : gsql_io_real();
+    char *base = NULL;
+    int rc = gs_db_dir(io, path, opt && opt->create, &base);
+    if (!(opt && opt->io)) gsql_io_free(io);
+    if (rc) return rc;
+    rc = cow_open_base(base, opt, out);
+    free(base);
+    return rc;
 }
 
 const GsEngine gs_engine_cow = {

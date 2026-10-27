@@ -48,7 +48,7 @@ int gsql_io_list(GsqlIo *io, const char *dir, int (*each)(void *, const char *),
  * cannot disagree about order and a parity test compares like with like. */
 static int name_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 int gsql_io_walk_names(char **names, size_t n, int (*each)(void *, const char *), void *ctx) {
-    qsort(names, n, sizeof *names, name_cmp);
+    if (n) qsort(names, n, sizeof *names, name_cmp);
     int rc = 0;
     for (size_t i = 0; i < n && !rc; i++) rc = each(ctx, names[i]);
     for (size_t i = 0; i < n; i++) free(names[i]);

@@ -164,7 +164,10 @@ static uint64_t dir_bytes(const char *dir) {
         if (de->d_name[0] == '.') continue;
         snprintf(p, sizeof p, "%s/%s", dir, de->d_name);
         struct stat st;
-        if (stat(p, &st) == 0 && S_ISREG(st.st_mode)) total += (uint64_t)st.st_size;
+        if (stat(p, &st) != 0) continue;
+        /* a candidate's store is a directory (§7 question 6): one level down */
+        if (S_ISDIR(st.st_mode)) total += dir_bytes(p);
+        else if (S_ISREG(st.st_mode)) total += (uint64_t)st.st_size;
     }
     closedir(d);
     return total;

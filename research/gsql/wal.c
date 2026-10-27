@@ -622,7 +622,7 @@ static void store_free(GsStore *db) {
     free(db);
 }
 
-static int wal_open(const char *path, const GsOptions *opt, GsStore **out) {
+static int wal_open_base(const char *path, const GsOptions *opt, GsStore **out) {
     GsStore *db = calloc(1, sizeof *db);
     if (!db) return GS_IO;
     db->io = opt && opt->io ? opt->io : NULL;
@@ -1022,13 +1022,16 @@ static int wal_backup_begin(struct GsTxn *snap, const char *dest, GsBackup **out
     *out = NULL;
     if (snap->be.write) return GS_MISUSE;
     if (db->failed) return GS_FAILED;
+    char *base = NULL;
+    int drc = gs_db_dir(db->io, dest, 1, &base); /* a database directory, like any */
+    if (drc) return drc;
     GsBackup *b = calloc(1, sizeof *b);
     b->snap = snap;
     b->db = db;
-    b->dest = gs_path_with(dest, "");
-    b->tmp = gs_path_with(dest, ".tmp");
-    b->ddir = gs_dirname(dest);
-    b->dlog = gs_path_with(dest, "-wal");
+    b->dest = base;
+    b->tmp = gs_path_with(base, ".tmp");
+    b->ddir = gs_dirname(base);
+    b->dlog = gs_path_with(base, "-wal");
     gsql_io_remove(db->io, b->tmp);
     int rc = gs_io_status(gsql_io_open(db->io, b->tmp, GSQL_IO_CREATE | GSQL_IO_EXCLUSIVE, &b->dst));
     if (rc == GS_OK) {
@@ -1093,6 +1096,20 @@ static void wal_stats(GsStore *db, GsStats *out) {
     gsql_io_size(db->f, &a);
     gsql_io_size(db->log, &b);
     out->file_bytes = a + b;
+}
+
+
+/* A database is a directory (§7 question 6): resolve it, then open the files
+ * inside it by their old names. */
+static int wal_open(const char *path, const GsOptions *opt, GsStore **out) {
+    GsqlIo *io = opt && opt->io ? opt->io : gsql_io_real();
+    char *base = NULL;
+    int rc = gs_db_dir(io, path, opt && opt->create, &base);
+    if (!(opt && opt->io)) gsql_io_free(io);
+    if (rc) return rc;
+    rc = wal_open_base(base, opt, out);
+    free(base);
+    return rc;
 }
 
 const GsEngine gs_engine_wal = {

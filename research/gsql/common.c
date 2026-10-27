@@ -180,6 +180,42 @@ char *gs_path_with(const char *path, const char *suffix) {
     return p;
 }
 
+int gs_db_owned(const char *name) {
+    size_t b = strlen(GS_DB_BASE);
+    if (strncmp(name, GS_DB_BASE, b) != 0) return 0;
+    return name[b] == 0 || name[b] == '.' || name[b] == '-';
+}
+
+typedef struct { int foreign, any; } DirScan;
+static int scan_one(void *ctx, const char *name) {
+    DirScan *s = ctx;
+    s->any = 1;
+    if (!gs_db_owned(name)) s->foreign = 1;
+    return 0;
+}
+
+int gs_db_dir(GsqlIo *io, const char *dir, int create, char **base) {
+    *base = NULL;
+    DirScan s = {0, 0};
+    int rc = gsql_io_list(io, dir, scan_one, &s);
+    if (rc == ENOENT) {
+        if (!create) return GS_NOT_FOUND;
+        if ((rc = gsql_io_mkdir(io, dir))) return gs_io_status(rc);
+        char *parent = gs_dirname(dir);
+        rc = gsql_io_sync_dir(io, parent);
+        free(parent);
+        if (rc) return gs_io_status(rc);
+    } else if (rc) {
+        return rc == ENOTDIR ? GS_FORMAT : gs_io_status(rc);
+    } else if (s.foreign) {
+        return GS_FORMAT; /* not ours: it holds a file no engine would write */
+    }
+    *base = malloc(strlen(dir) + strlen(GS_DB_BASE) + 2);
+    if (!*base) return GS_IO;
+    sprintf(*base, "%s/%s", dir, GS_DB_BASE);
+    return GS_OK;
+}
+
 int gs_io_status(int rc) {
     if (rc == 0) return GS_OK;
     if (rc == ENOSPC) return GS_FULL;
