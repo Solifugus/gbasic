@@ -211,6 +211,11 @@ typedef struct FileMeta {
      * holds keeps its blobs: a blob file goes when the last record pointing
      * into it is freed. */
     U64s blobs;
+    /* blob_bytes[i]: the bytes its pointers into blobs[i] cover. The live
+     * bytes of a blob file are the sum over the current version, so how much
+     * of it is dead is derived rather than counted on the side, and lsm_check
+     * recounts it from the pointers. */
+    U64s blob_bytes;
     uint64_t own_blob;         /* the blob file written with it, or 0 */
     struct GsStore *db;
     int refs;                  /* versions holding it */
@@ -287,6 +292,8 @@ struct GsStore {
     struct GsTxn *writer;
     uint64_t compact_ptr[LEVELS];
     struct Comp *comp;        /* a compaction in progress, or NULL */
+    uint64_t vgen;            /* installs so far: what gc_start last looked at */
+    uint64_t gc_seen;         /* the vgen at which no blob file was worth collecting */
     int sweep;                /* a retired tree or a released snapshot may have freed whole files */
     int failed;
     unsigned char identity[16];
@@ -400,13 +407,9 @@ static char *blob_name(const GsStore *db, uint64_t num) {
 typedef struct Blob {
     uint64_t num;
     uint64_t refs;  /* file records pointing into it */
+    uint64_t total; /* its size, 0 until known: set when written, else read once */
     struct Hnd *h;  /* its read handle, made at the first read */
 } Blob;
-
-static int u64_cmp(const void *a, const void *b) {
-    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
-    return x < y ? -1 : x > y;
-}
 
 static int u64_has(const U64s *u, uint64_t v) {
     for (size_t i = 0; i < u->n; i++) if (u->v[i] == v) return 1;
@@ -512,6 +515,7 @@ typedef struct {
     GsqlFile *bf;
     uint64_t bnum, boff;
     U64s blobs;             /* every blob file an entry points into */
+    U64s blob_bytes;        /* and the bytes those entries cover in each */
     U64s *track;            /* where to note bnum when it is taken (or NULL) */
 } Builder;
 
@@ -586,6 +590,14 @@ static void bld_finish_block(Builder *b) {
     b->nblock_ents = 0;
 }
 
+/* Note `n` bytes pointed at in blob file `num`. */
+static void bld_ref(Builder *b, uint64_t num, uint64_t n) {
+    for (size_t i = 0; i < b->blobs.n; i++)
+        if (b->blobs.v[i] == num) { b->blob_bytes.v[i] += n; return; }
+    u64_push(&b->blobs, num);
+    u64_push(&b->blob_bytes, n);
+}
+
 /* Write a long value to this builder's blob file; `ptr` gets the pointer. */
 static int bld_blob(Builder *b, const unsigned char *v, size_t vn, unsigned char *ptr) {
     GsStore *db = b->db;
@@ -604,7 +616,6 @@ static int bld_blob(Builder *b, const unsigned char *v, size_t vn, unsigned char
         }
         free(name);
         b->boff = 0;
-        u64_push(&b->blobs, b->bnum);
     }
     int rc = ioerr(gsql_io_write_at(b->bf, b->boff, v, vn));
     if (rc) return rc;
@@ -614,6 +625,7 @@ static int bld_blob(Builder *b, const unsigned char *v, size_t vn, unsigned char
     put32(ptr + 16, (uint32_t)vn);
     put32(ptr + 20, crc32c(v, vn));
     b->boff += vn;
+    bld_ref(b, b->bnum, vn);
     return GS_OK;
 }
 
@@ -630,8 +642,7 @@ static void bld_add(Builder *b, const Ent *in) {
         sep.vn = BLOB_PTR;
         e = &sep;
     } else if (in->type == TYPE_BLOB && in->vn == BLOB_PTR) {
-        uint64_t num = get64(in->v);
-        if (!u64_has(&b->blobs, num)) u64_push(&b->blobs, num);
+        bld_ref(b, get64(in->v), get32(in->v + 16));
     }
     if (!b->entries) { gsbuf_set(&b->smallest, e->k, e->kn); b->small_seq = e->seq; }
     /* one hash per distinct key: a version of the same key adds nothing */
@@ -716,8 +727,10 @@ static int bld_close(Builder *b, FileMeta **out) {
         m->h = hnd_new(file_name(b->db, b->num), GSQL_IO_READ_ONLY);
         hnd_adopt(b->db, m->h, b->f);
         m->blobs = b->blobs;
+        m->blob_bytes = b->blob_bytes;
         m->own_blob = b->bnum;
         for (size_t i = 0; i < m->blobs.n; i++) blob_ref(b->db, m->blobs.v[i]);
+        if (b->bnum) blob_find(b->db, b->bnum)->total = b->boff;
         *out = m;
     } else {
         gsbuf_free(&b->smallest);
@@ -732,6 +745,7 @@ static int bld_close(Builder *b, FileMeta **out) {
         free(name);
         if (b->bnum) { name = blob_name(b->db, b->bnum); gsql_io_remove(b->db->io, name); free(name); }
         u64_free(&b->blobs);
+        u64_free(&b->blob_bytes);
     }
     gsbuf_free(&b->last);
     return rc;
@@ -754,6 +768,7 @@ static void file_free(FileMeta *m) {
     file_close(m);
     if (m->db) for (size_t i = 0; i < m->blobs.n; i++) blob_unref(m->db, m->blobs.v[i], m->obsolete);
     u64_free(&m->blobs);
+    u64_free(&m->blob_bytes);
     gsbuf_free(&m->smallest);
     gsbuf_free(&m->largest);
     free(m);
@@ -1208,11 +1223,13 @@ typedef struct Comp {
      * manifest once listed them as garbage for that). */
     U64s pending;
     /* Blob space comes back by relocation: a value this compaction keeps
-     * from a blob file numbered below gc_below is written again, into the
-     * output's own blob, so the oldest files lose their pointers and go.
-     * Without it a file stays whole while any one of its values is live. */
-    uint64_t gc_below;
+     * from a blob file in `gc` -- one at least GC_DEAD_PCT dead when it
+     * began -- is written again, into the output's own blob, so those files
+     * lose their pointers and go. Without it a file stays whole while any
+     * one of its values is live. */
+    U64s gc;
     GsBuf reloc;
+    int for_gc;           /* begun by gc_start: paced by GC_CREDIT, not COMP_CREDIT */
 } Comp;
 
 static int manifest_write(GsStore *db) {
@@ -1239,7 +1256,7 @@ static int manifest_write(GsStore *db) {
             put_u64(&b, m->seq_over);
             put_u64(&b, m->own_blob);
             put_u64(&b, m->blobs.n);
-            for (size_t j = 0; j < m->blobs.n; j++) put_u64(&b, m->blobs.v[j]);
+            for (size_t j = 0; j < m->blobs.n; j++) { put_u64(&b, m->blobs.v[j]); put_u64(&b, m->blob_bytes.v[j]); }
         }
     }
     /* No list of garbage and no list of live blob files: the store owns its
@@ -1331,9 +1348,10 @@ static int manifest_read(GsStore *db, const unsigned char *p, size_t n) {
             uint64_t nb;
             if ((rc = get_u64(p, end, &at, &nb)) || nb > end) { file_free(m); return rc ? rc : GS_CORRUPT; }
             for (uint64_t j = 0; j < nb; j++) {
-                uint64_t bn;
-                if ((rc = get_u64(p, end, &at, &bn))) { file_free(m); return rc; }
+                uint64_t bn, bb;
+                if ((rc = get_u64(p, end, &at, &bn)) || (rc = get_u64(p, end, &at, &bb))) { file_free(m); return rc; }
                 u64_push(&m->blobs, bn);
+                u64_push(&m->blob_bytes, bb);
             }
             m->db = db;
             for (size_t j = 0; j < m->blobs.n; j++) blob_ref(db, m->blobs.v[j]);
@@ -1736,6 +1754,7 @@ static int install(GsStore *db, Version *nv, FileMeta **gone, size_t ngone) {
         return rc;
     }
     version_unref(db, old);
+    db->vgen++;
     return GS_OK;
 }
 
@@ -1776,6 +1795,7 @@ static void comp_free(GsStore *db, int abandon) {
     free(c->inputs);
     gsbuf_free(&c->cur);
     gsbuf_free(&c->reloc);
+    u64_free(&c->gc);
     u64_free(&c->pending);
     free(c);
     db->comp = NULL;
@@ -1852,7 +1872,7 @@ static int comp_step(GsStore *db, uint64_t budget, uint64_t *used) {
         } else keep = 0;                                       /* shadowed for everyone */
         if (keep) {
             if (!c->open && (rc = comp_open_output(db, c))) break;
-            if (e.type == TYPE_BLOB && e.vn == BLOB_PTR && get64(e.v) < c->gc_below) {
+            if (e.type == TYPE_BLOB && e.vn == BLOB_PTR && u64_has(&c->gc, get64(e.v))) {
                 if ((rc = blob_read(db, e.v, e.vn, &c->reloc))) break;
                 e.type = TYPE_PUT;
                 e.v = c->reloc.p;
@@ -1869,6 +1889,91 @@ static int comp_step(GsStore *db, uint64_t budget, uint64_t *used) {
     if (merge_min(&m) >= 0) return GS_OK; /* paused: more next time */
     if (c->open && (rc = comp_close_output(c))) { comp_free(db, 1); return rc; }
     return comp_install(db);
+}
+
+/* ---- reclaiming blob space ------------------------------------------------- */
+
+/* A blob file at least this much dead has its live values relocated by the
+ * next compaction to pass through them, and gc_start begins one that does
+ * when no other is wanted. It bounds a blob file's space at about twice its
+ * live bytes. The rule it replaced -- relocate out of the oldest quarter of
+ * the blob files, by number -- left W8 at 2.91x its live data: age is not
+ * deadness, and nothing began a compaction for it. */
+#define GC_DEAD_PCT 50
+
+static uint64_t blob_total(GsStore *db, Blob *b) {
+    if (!b->total) {
+        if (!b->h) b->h = hnd_new(blob_name(db, b->num), 0);
+        GsqlFile *f;
+        uint64_t sz = 0;
+        if (hnd_get(db, b->h, &f) == 0 && gsql_io_size(f, &sz) == 0) b->total = sz;
+    }
+    return b->total;
+}
+
+/* The blob files at least GC_DEAD_PCT dead, into `out`; and into `*deadest`
+ * the deadest (by fraction) that the current version still points into, or
+ * 0. A file only an older version points into is dead whole and needs no
+ * collecting: it goes when that version is released. */
+static void gc_collect(GsStore *db, U64s *out, uint64_t *deadest) {
+    uint64_t *live = calloc(db->nblob + 1, sizeof *live);
+    Version *v = db->cur;
+    for (int l = 0; l < LEVELS; l++)
+        for (size_t i = 0; i < v->nfiles[l]; i++) {
+            FileMeta *m = v->files[l][i];
+            for (size_t j = 0; j < m->blobs.n && j < m->blob_bytes.n; j++) {
+                Blob *b = blob_find(db, m->blobs.v[j]);
+                if (b) live[b - db->blob] += m->blob_bytes.v[j];
+            }
+        }
+    uint64_t bd = 0, bt = 1;
+    if (deadest) *deadest = 0;
+    for (size_t i = 0; i < db->nblob; i++) {
+        uint64_t tot = blob_total(db, &db->blob[i]);
+        if (!tot || live[i] > tot) continue;
+        uint64_t dead = tot - live[i];
+        if (dead * 100 < tot * GC_DEAD_PCT) continue;
+        if (out) u64_push(out, db->blob[i].num);
+        /* dead/tot > bd/bt, without dividing */
+        if (deadest && live[i] && (unsigned __int128)dead * bt > (unsigned __int128)bd * tot) {
+            bd = dead;
+            bt = tot;
+            *deadest = db->blob[i].num;
+        }
+    }
+    free(live);
+}
+
+/* A compaction of `inputs` (the first `first_below` from `level`, the rest
+ * from `next`) into `next`, in progress. `level` may equal `next`: one file
+ * rewritten where it is, for its blob space (gc_start). */
+static int comp_make(GsStore *db, int level, int next, FileMeta **inputs, size_t nin, size_t first_below) {
+    Version *v = db->cur;
+    Comp *c = calloc(1, sizeof *c);
+    c->level = level;
+    c->next = next;
+    c->inputs = inputs;
+    c->nin = nin;
+    c->first_below = first_below;
+    c->bottom = 1;
+    for (int l = next + 1; l < LEVELS; l++) if (v->nfiles[l]) c->bottom = 0;
+    c->keep_after = horizon(db);
+    c->target = db->memtable_limit * 2;
+    gc_collect(db, &c->gc, NULL);
+    /* sources: each upper input alone, the lower ones as one run */
+    c->src = calloc(nin + 1, sizeof *c->src);
+    for (size_t i = 0; i < first_below; i++) {
+        Src *sr = &c->src[c->ns++];
+        sr->kind = 1; sr->db = db; sr->files = &c->inputs[i]; sr->nfiles = 1;
+        src_seek(sr, (const unsigned char *)"", 0, UINT64_MAX);
+    }
+    if (nin > first_below) {
+        Src *sr = &c->src[c->ns++];
+        sr->kind = 1; sr->db = db; sr->files = &c->inputs[first_below]; sr->nfiles = nin - first_below;
+        src_seek(sr, (const unsigned char *)"", 0, UINT64_MAX);
+    }
+    db->comp = c;
+    return GS_OK;
 }
 
 /* Begin compacting `level` into the next. A trivial move finishes here and
@@ -1921,38 +2026,40 @@ static int comp_start(GsStore *db, int level) {
         free(inputs);
         return install(db, nv, NULL, 0);
     }
-    Comp *c = calloc(1, sizeof *c);
-    c->level = level;
-    c->next = next;
-    c->inputs = inputs;
-    c->nin = nin;
-    c->first_below = first_below;
-    c->bottom = 1;
-    for (int l = next + 1; l < LEVELS; l++) if (v->nfiles[l]) c->bottom = 0;
-    c->keep_after = horizon(db);
-    c->target = db->memtable_limit * 2;
-    if (db->nblob >= 4) {
-        /* the oldest quarter of the blob files, by number */
-        uint64_t *nums = malloc(db->nblob * sizeof *nums);
-        for (size_t i = 0; i < db->nblob; i++) nums[i] = db->blob[i].num;
-        qsort(nums, db->nblob, sizeof *nums, u64_cmp);
-        c->gc_below = nums[db->nblob / 4];
-        free(nums);
+    return comp_make(db, level, next, inputs, nin, first_below);
+}
+
+/* Begin a compaction for blob space when no other is wanted: the file with
+ * the most bytes in the deadest blob file, rewritten where it is if it is
+ * below level 0 (one file, nothing merged), or level 0 compacted if only
+ * level-0 files point there. Each one ends at least one file's pointers
+ * into a collectable blob file, so it cannot repeat itself. The scan is
+ * skipped until the version changes, since nothing else changes its answer. */
+static int gc_start(GsStore *db) {
+    if (db->gc_seen == db->vgen + 1) return GS_OK;
+    uint64_t deadest;
+    gc_collect(db, NULL, &deadest);
+    if (!deadest) { db->gc_seen = db->vgen + 1; return GS_OK; }
+    Version *v = db->cur;
+    FileMeta *pick = NULL;
+    int plevel = 0;
+    uint64_t most = 0;
+    for (int l = 1; l < LEVELS; l++)
+        for (size_t i = 0; i < v->nfiles[l]; i++) {
+            FileMeta *m = v->files[l][i];
+            for (size_t j = 0; j < m->blobs.n && j < m->blob_bytes.n; j++)
+                if (m->blobs.v[j] == deadest && m->blob_bytes.v[j] > most) { most = m->blob_bytes.v[j]; pick = m; plevel = l; }
+        }
+    if (!pick) {
+        int rc = comp_start(db, 0);
+        if (rc == GS_OK && db->comp) db->comp->for_gc = 1;
+        return rc;
     }
-    /* sources: each upper input alone, the lower ones as one run */
-    c->src = calloc(nin + 1, sizeof *c->src);
-    for (size_t i = 0; i < first_below; i++) {
-        Src *sr = &c->src[c->ns++];
-        sr->kind = 1; sr->db = db; sr->files = &c->inputs[i]; sr->nfiles = 1;
-        src_seek(sr, (const unsigned char *)"", 0, UINT64_MAX);
-    }
-    if (nin > first_below) {
-        Src *sr = &c->src[c->ns++];
-        sr->kind = 1; sr->db = db; sr->files = &c->inputs[first_below]; sr->nfiles = nin - first_below;
-        src_seek(sr, (const unsigned char *)"", 0, UINT64_MAX);
-    }
-    db->comp = c;
-    return GS_OK;
+    FileMeta **inputs = malloc(sizeof *inputs);
+    inputs[0] = pick;
+    int rc = comp_make(db, plevel, plevel, inputs, 1, 1);
+    if (rc == GS_OK && db->comp) db->comp->for_gc = 1;
+    return rc;
 }
 
 /* A file whose every record belongs to a tree retired at or before the last
@@ -2019,6 +2126,11 @@ static int comp_wanted(GsStore *db) {
  * threshold, and that bounds both the debt and the tail. */
 #define COMP_CREDIT 32
 #define COMP_STALL 3
+/* A compaction for blob space only has to keep pace with the garbage being
+ * made: past GC_DEAD_PCT dead, a byte relocated frees at least a byte. Spent
+ * at COMP_CREDIT it tripled W8's p99 write (945 to 3,350 us), because the
+ * credit a shaped tree leaves unspent became every commit's work. */
+#define GC_CREDIT 4
 static int sweep_dead(GsStore *db);
 static int maybe_compact(GsStore *db, uint64_t budget) {
     if (db->sweep) { int rc = sweep_dead(db); if (rc) return rc; }
@@ -2026,12 +2138,24 @@ static int maybe_compact(GsStore *db, uint64_t budget) {
         int rc;
         if (!db->comp) {
             int l = comp_wanted(db);
-            if (l < 0) return GS_OK;
-            if ((rc = comp_start(db, l))) return rc;
-            if (!db->comp) continue; /* a trivial move */
+            if (l < 0) {
+                /* nothing the shape needs: spend what is left on blob space */
+                if (!budget || (rc = gc_start(db))) return rc ? rc : GS_OK;
+                if (!db->comp) return GS_OK;
+            } else {
+                if ((rc = comp_start(db, l))) return rc;
+                if (!db->comp) continue; /* a trivial move */
+            }
         }
         int stall = db->cur->nfiles[0] >= db->l0_trigger * COMP_STALL;
         if (!stall && !budget) return GS_OK;
+        if (!stall && db->comp->for_gc && comp_wanted(db) < 0) {
+            /* a commit's GC share, and no more after it this commit; once
+             * the shape wants a compaction, this one is in its way and is
+             * finished at the ordinary pace */
+            uint64_t share = budget / COMP_CREDIT * GC_CREDIT;
+            return comp_step(db, share ? share : 1, NULL);
+        }
         uint64_t used = 0;
         if ((rc = comp_step(db, stall ? UINT64_MAX : budget, &used))) return rc;
         if (db->comp && !stall) return GS_OK; /* paused, the budget spent */
@@ -3087,6 +3211,7 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
             if (file_open(db, m)) { rsay(&r, "file %llu (level %llu) does not open", m->num, (unsigned long long)l); continue; }
             GsBuf prev = {0};
             uint64_t pseq = 0, n = 0;
+            uint64_t *counted = calloc(m->blobs.n + 1, sizeof *counted);
             for (size_t bi = 0; bi < m->nindex; bi++) {
                 Block b;
                 if (block_read(db, m, bi, &b)) { rsay(&r, "file %llu block %llu fails its checksum", m->num, bi); break; }
@@ -3101,6 +3226,8 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
                         else if (blob_read(db, e->v, e->vn, &bv))
                             rsay(&r, "file %llu: entry %llu's blob does not read back", m->num, n);
                         gsbuf_free(&bv);
+                        for (size_t j = 0; e->vn == BLOB_PTR && j < m->blobs.n; j++)
+                            if (m->blobs.v[j] == get64(e->v)) counted[j] += get32(e->v + 16);
                     }
                     gsbuf_set(&prev, e->k, e->kn);
                     pseq = e->seq;
@@ -3110,6 +3237,15 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
                 block_free(&b);
             }
             if (n != m->entries) rsay(&r, "file %llu holds %llu entries", m->num, n);
+            /* the bytes the dead-fraction trigger works from: a count that
+             * drifted from the pointers would collect too early (losing
+             * nothing, costing writes) or never (the space stays) */
+            if (m->blob_bytes.n != m->blobs.n) rsay(&r, "file %llu: %llu blob byte counts for its blob files", m->num, m->blob_bytes.n);
+            else
+                for (size_t j = 0; j < m->blobs.n; j++)
+                    if (counted[j] != m->blob_bytes.v[j] || !counted[j])
+                        rsay(&r, "file %llu: its byte count for blob file %llu disagrees with its pointers", m->num, m->blobs.v[j]);
+            free(counted);
             gsbuf_free(&prev);
             if (l > 0 && i > 0 && bytes_cmp(gsb(v->files[l][i - 1]->largest.p, v->files[l][i - 1]->largest.n),
                                             gsb(m->smallest.p, m->smallest.n)) >= 0)
@@ -3240,7 +3376,11 @@ static int lsm_backup_begin(struct GsTxn *snap, const char *dest, GsBackup **out
             c->small_seq = m->small_seq; c->large_seq = m->large_seq; c->seq_over = m->seq_over;
             c->own_blob = m->own_blob;
             c->db = t;
-            for (size_t j = 0; j < m->blobs.n; j++) { u64_push(&c->blobs, m->blobs.v[j]); blob_ref(t, m->blobs.v[j]); }
+            for (size_t j = 0; j < m->blobs.n; j++) {
+                u64_push(&c->blobs, m->blobs.v[j]);
+                u64_push(&c->blob_bytes, m->blob_bytes.v[j]);
+                blob_ref(t, m->blobs.v[j]);
+            }
             version_add(t->cur, l, c);
             b->jobs = realloc(b->jobs, (b->njobs + 1 + m->blobs.n) * sizeof *b->jobs);
             CopyJob *j = &b->jobs[b->njobs++];
@@ -3364,6 +3504,9 @@ static void lsm_stats(GsStore *db, GsStats *out) {
     uint64_t total = 0, sz = 0;
     for (int l = 0; l < LEVELS; l++)
         for (size_t i = 0; i < db->cur->nfiles[l]; i++) total += db->cur->files[l][i]->size;
+    /* and the blob files, which this left out: a test bounding space through
+     * it could not see the files blob reclamation is about */
+    for (size_t i = 0; i < db->nblob; i++) total += blob_total(db, &db->blob[i]);
     if (db->log) { gsql_io_size(db->log, &sz); total += sz; }
     out->file_bytes = total;
 }

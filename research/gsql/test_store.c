@@ -106,6 +106,117 @@ static void dropped_not_durable(const char *base, GsqlIo *io) {
     (void)seen;
 }
 
+/* Measured 1.00 with gc_start and 1.58 without it (the 70%-dead blob files
+ * left whole). The general bound is about 2x, from GC_DEAD_PCT. */
+#define BLOB_SPACE_BOUND 1.25
+
+typedef struct { GsqlIo *io; const char *dir; uint64_t bytes; unsigned files; } BlobSum;
+static int blob_sum(void *ctx, const char *name) {
+    BlobSum *b = ctx;
+    size_t n = strlen(name);
+    if (n < 5 || strcmp(name + n - 5, ".blob")) return 0;
+    char p[900];
+    snprintf(p, sizeof p, "%s/%s", b->dir, name);
+    GsqlFile *f;
+    uint64_t sz = 0;
+    if (gsql_io_open(b->io, p, GSQL_IO_READ_ONLY, &f) == 0) {
+        gsql_io_size(f, &sz);
+        gsql_io_close(f);
+    }
+    b->bytes += sz;
+    b->files++;
+    return 0;
+}
+
+/* Long values that die where no compaction will pass again: tree "b" is
+ * loaded, 70% of it overwritten, and then only tree "s" is written, small
+ * values whose key range overlaps nothing of b's. b's blob files are then
+ * mostly dead and only a compaction begun for their sake gets the space
+ * back -- relocating only from the oldest quarter of the blob files, and
+ * only when a compaction happened by, left W8 at 2.91x its live data.
+ * Nothing else checks space at all, so a trigger that never fired would pass
+ * every crash tier. A reader held from the load must still read the load at
+ * the end, since its version keeps the blob files the current one has
+ * relocated out of. lsm only. */
+static void blob_space(const char *base, GsqlIo *io) {
+    if (strcmp(E->name, "lsm")) return;
+    char path[600];
+    snprintf(path, sizeof path, "%s.blobspace", base);
+    /* a memtable that holds the end of the load and all of the overwrite, so
+     * the values die inside one level-0 merge, whose relocation set was fixed
+     * before they did: from then on only gc_start can reach them */
+    GsOptions o = {1, 512, 0, io, 350000, 2, 64, 0};
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the blob-space store answered %s", gs_status_name(rc));
+    if (rc) return;
+    enum { KEYS = 400, VAL = 1000, SMALL = 3000 };
+    unsigned char v[VAL];
+    GsTxn *held = NULL;
+    for (unsigned round = 1; round <= 2 && rc == GS_OK; round++)
+        for (unsigned k = 0; k < KEYS && rc == GS_OK; k++) {
+            if (round == 2 && k % 10 >= 7) continue; /* 70% overwritten */
+            char kb[16];
+            int kn = snprintf(kb, sizeof kb, "k%04u", k);
+            memset(v, 'a' + (int)round, sizeof v);
+            snprintf((char *)v, 16, "%04u-%04u", round, k);
+            GsTxn *w;
+            E->begin_write(db, &w);
+            if (round == 1 && k == 0) { E->tree_create(w, gss("b")); E->tree_create(w, gss("s")); }
+            E->put(w, gss("b"), gsb(kb, (size_t)kn), gsb(v, sizeof v), 0);
+            rc = E->commit(w, k % 10 == 9, NULL);
+            if (round == 1 && k == KEYS - 1 && rc == GS_OK) E->begin_read(db, &held);
+        }
+    for (unsigned i = 0; i < SMALL && rc == GS_OK; i++) {
+        char kb[16];
+        int kn = snprintf(kb, sizeof kb, "s%05u", i % 500);
+        GsTxn *w;
+        E->begin_write(db, &w);
+        E->put(w, gss("s"), gsb(kb, (size_t)kn), gss("x"), 0);
+        rc = E->commit(w, i % 10 == 9, NULL);
+        if (i == SMALL / 2 && held) {
+            unsigned wrong = 0;
+            for (unsigned k = 0; k < KEYS; k++) {
+                char key[16], want[16];
+                int kn2 = snprintf(key, sizeof key, "k%04u", k);
+                snprintf(want, sizeof want, "%04u-%04u", 1u, k);
+                GsBytes got;
+                if (E->get(held, gss("b"), gsb(key, (size_t)kn2), &got) != GS_OK || got.n != VAL || memcmp(got.p, want, 9)) wrong++;
+            }
+            CHECK(wrong == 0, "a reader held from the load read %u of %u of its values wrong", wrong, (unsigned)KEYS);
+            E->abort(held);
+            held = NULL;
+        }
+    }
+    CHECK(rc == GS_OK, "a commit answered %s", gs_status_name(rc));
+    CHECK(E->sync(db, NULL) == GS_OK, "sync after the overwrites");
+    unsigned wrong = 0;
+    GsTxn *r;
+    E->begin_read(db, &r);
+    for (unsigned k = 0; k < KEYS; k++) {
+        char key[16], want[16];
+        int kn = snprintf(key, sizeof key, "k%04u", k);
+        snprintf(want, sizeof want, "%04u-%04u", k % 10 >= 7 ? 1u : 2u, k);
+        GsBytes got;
+        if (E->get(r, gss("b"), gsb(key, (size_t)kn), &got) != GS_OK || got.n != VAL || memcmp(got.p, want, 9)) wrong++;
+    }
+    E->abort(r);
+    CHECK(wrong == 0, "after the collection %u of %u values read wrong", wrong, (unsigned)KEYS);
+    /* the blob files on disk, asked of the directory rather than the store */
+    BlobSum bs = {io, path, 0, 0};
+    CHECK(gsql_io_list(io, path, blob_sum, &bs) == 0, "listing the blob-space store");
+    double amp = (double)bs.bytes / (KEYS * VAL);
+    if (getenv("GS_SHOW_SPACE")) fprintf(stderr, "blob_space: %u blob files, %llu bytes, %.2fx the live values\n", bs.files, (unsigned long long)bs.bytes, amp);
+    CHECK(amp <= BLOB_SPACE_BOUND, "with 70%% of its long values dead the blob files are %.2fx the live values, over %.2f", amp,
+          BLOB_SPACE_BOUND);
+    GsStats st;
+    E->stats(db, &st);
+    CHECK(st.file_bytes >= bs.bytes, "stats counts %llu file bytes, under the %llu in blob files alone",
+          (unsigned long long)st.file_bytes, (unsigned long long)bs.bytes);
+    CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the overwrites");
+    E->close(db);
+}
+
 /* More sorted files than the process may hold open, every one of them read.
  * 2.C kept a file open from its first read until it was deleted, so a store
  * of N files needed N descriptors: about 16,000 at 1 TB against a default
@@ -1015,6 +1126,7 @@ int main(int argc, char **argv) {
     sliced_backup(path, io);
     directory_rules(path, io);
     many_files(path, io, real);
+    blob_space(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);
