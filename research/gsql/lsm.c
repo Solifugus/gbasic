@@ -1686,15 +1686,6 @@ static int lsm_open_base(const char *path, const GsOptions *opt, GsStore **out) 
             gsql_io_size(db->log, &sz);
             if (sz > db->log_end) rc = zero_tail(db, db->log, db->log_end);
         }
-        /* The live log may be a spare made ahead of time, which no manifest
-         * named and whose name was not yet durable when the crash came: the
-         * disk can show it while the name stays pending, so a commit synced
-         * into it after recovery was lost by the next power loss (the crash
-         * gate's hot-key power tier). Make its name durable now. */
-        if (rc == GS_OK) {
-            rc = ioerr(gsql_io_sync_dir(db->io, db->dir));
-            db->st.flushes++;
-        }
         db->durable_seq = db->last_seq;
     } else {
         rc = ioerr(rc);
