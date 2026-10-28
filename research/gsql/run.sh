@@ -67,11 +67,14 @@ for e in "${ENGINES[@]}"; do
     # hot: 300 transactions over 6 keys, so a memtable holds several
     # versions of one key when it flushes -- no other workload does, and a
     # flush keeping the OLDEST version passed every one of them (Test 3).
-    if [ "${GATE_SCALE:-full}" = quick ]; then P="1-3" L="1-2" F="1-8" FLOOR=0; else P="1-28" L="1-16" F="1-200" FLOOR=10000; fi
+    # The hot specs run 64 seeds in full: a manifest recording the death of a
+    # tree whose commit was not yet durable failed 1 crash in 403,033, at
+    # seed 35, and the 16 they ran before never reached it.
+    if [ "${GATE_SCALE:-full}" = quick ]; then P="1-3" L="1-2" F="1-8" H="1-2" FLOOR=0; else P="1-28" L="1-16" F="1-200" H="1-64" FLOOR=10000; fi
     for spec in "process $P 40 200 8 2000 1 60 512" "power $L 40 200 8 2000 1 60 512" \
                 "torn $L 40 200 8 2000 1 60 512" "failed-sync $F 40 200 8 2000 1 60 512" \
                 "full-disk $L 40 200 8 2000 1 60 512" "torn 1-8 60 3000 24 2000 0 120 4096" \
-                "process $P 300 6 3 40 1 60 512" "power $L 300 6 3 40 1 60 512"; do
+                "process $H 300 6 3 40 1 60 512" "power $H 300 6 3 40 1 60 512"; do
         set -- $spec
         mode=$1 seeds=$2
         summary=$(GSQL_CRASH_REPORTS=5 timeout -k 5 3600 "$work/crash_store" "$e" "$@" 2>&1)
