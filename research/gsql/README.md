@@ -406,6 +406,63 @@ So the p99 commits (141 to 156 ms) were a flush and a slice together. The flush 
 - **Measured on the code from before this change**, over the hot-key power spec: 1 violation in 403,033 crashes, at seed 35. The same code with only this fix: 0. The gate ran seeds 1–16, so its hot specs run 1–64 now.
 - **A first fix went in on a wrong theory and came out again.** It was a directory sync at open, for a spare log a crash might have left with a pending name. Reverting it alone stayed green over 188,299 crashes. A crash image *is* the disk after the crash, so a file recovery can see is on it.
 
+## Recovery, and compaction paced by debt (2026-10-28)
+
+**Recovery against memtable size, measured first** (`hardreq recovery`, NVMe, the open timed inside the engine; `HARDREQ_MEMTABLE` sets the memtable).
+
+| memtable | log replayed | replay | zeroing the log's tail |
+|---|---|---|---|
+| 8 MB | 7 MB | 36 ms | 8 ms |
+| 32 MB (the default) | 15 MB | 79 ms | 29 ms |
+| 128 MB | 44 MB | 279 ms | 104 ms |
+
+- **Replay** runs at 150–180 MB/s of log, inserting into the skiplist. It grows with the memtable, and is the price of a larger one.
+- **Zeroing** cost about 0.4 ms per MB of log file at every open, whether or not anything had crashed, and whatever was replayed. It also zeroed the spare, which is already clean. It existed because a commit a crash lost can leave a later record on disk behind it, and a new commit landing in the gap could end exactly where that record begins.
+
+**What changed: the log's records are chained, and nothing is zeroed at open.**
+- **The chain.** Each record carries the checksum of the record before it in the same file. The first record of a file carries a seed made from the file's number. Replay stops at a record that does not chain.
+  - A stale record chains to the lost record it followed, not to the new one in its place.
+  - A recycled log's old records chain to their old number's seed. So the chain also does the job of the log number, whose 8 bytes it replaces: the header is still 20 bytes.
+- **A value drawn at every open** goes in every record. A new commit can be byte for byte the commit a crash lost: the same sequence, the same contents, which is what a program that retries writes. Then it has the lost one's checksum, and the record behind it would chain to it. The value is the only difference between them.
+  - It comes from `/dev/urandom` and the clock, not the I/O layer. It is no data, and only has to differ from the previous open's, which nothing recorded.
+  - It is 32 bits, as are the chain and the record checksum. A stale record is accepted only if a new record ends exactly where it begins **and** the two 32-bit values collide.
+
+**Recovery, before and after, two runs each:**
+
+| memtable | 1,000 commits | 10⁶ commits |
+|---|---|---|
+| 8 MB | 11.9, 12.2 → **3.3, 3.2** ms | 42.5, 42.8 → 35.5, 36.1 ms |
+| 32 MB | 30.9, 30.9 → **3.5, 4.9** ms | 103.7, 103.5 → 78.2, 79.4 ms |
+| 128 MB | 119.2, 122.4 → **3.1, 3.2** ms | 388.0, 388.4 → 285.8, 289.8 ms |
+
+- **A short log now opens in about 3 ms whatever the memtable.** Before, it paid for the whole file.
+- **What is left is replay**, in proportion to the memtable. Making it faster is the next lever, and is not done.
+- **Not measured:** the bench's W8, YCSB and W3 with the new format. The header is the same size, and a commit now computes no more than before.
+
+**Two perturbations, and why there is a test for the second:**
+- **Without the chain check** (and with no zeroing), every crash tier goes red: process 204, power 144, torn 144, failed-sync 32, hot-key process 54, hot-key power 110 (quick scale).
+- **With the per-open value a constant, every crash tier stays green.** The gate never builds the case it guards: its continuations do not rewrite a lost commit byte for byte.
+  - So `test_store`'s `lost_twin` builds it on the log's bytes: three commits, then the middle record zeroed (the third kept). Reopen, commit the middle one's twin, and reopen again. The third must not come back.
+  - With the value constant it comes back. With it drawn at open it does not, in the simulated layer and the real one.
+
+**Compaction paced by debt: tried, and left at a constant.** The credit is a function of the pressure now: the worst of level 0's file count over its trigger and each level's bytes over its limit. It rises from `COMP_CREDIT_MIN` to `COMP_CREDIT_MAX` as the pressure nears `COMP_STALL`. The defaults are 32 and 32, so nothing changed until a run asks for a ramp.
+
+**W3, 5 M records under a 1 GiB cap, two runs each, alternated:**
+
+| credit | rows/s | mean | p50 | p99 | p999 | write amp |
+|---|---|---|---|---|---|---|
+| 32 (as pushed) | 34,570 / 38,964 | 28.7 / 25.5 ms | 7.5 / 5.7 ms | 104 / 82 ms | 126 / 88 ms | 12.51 |
+| 8 → 64 | 27,454 / 27,234 | 36.2 / 36.5 ms | 36.0 / 36.1 ms | 66 / 70 ms | 68 / 76 ms | 17.67 |
+| 12 → 96 | 36,574 / 36,308 | 27.1 / 27.3 ms | 26.1 / 26.7 ms | 67 / 76 ms | 74 / 80 ms | 13.22 |
+| 16 → 64 | 20,413 / 27,798 | 48.8 / 35.8 ms | 44.7 / 38.4 ms | 113 / 72 ms | 117 / 75 ms | 17.43 |
+
+- **The best ramp (12 → 96) does not change the mean.** It cuts the p99 by about 20 ms and the p999 by about 10 ms, and raises the p50 from about 6 ms to 26.
+- **This is the arithmetic of the design, not a tuning miss.** Compaction runs inside commits, so its total work sets the mean commit, and pacing can only choose how that work is shared out.
+  - At a constant credit, two thirds of commits pay nothing and a third pay a whole slice.
+  - Spread out by debt, every commit pays about the mean.
+- **Two ramps did worse on every count.** 8 → 64 and 16 → 64 raised write amp to 17.5, because a slower compaction lets the levels overrun and the merges grow.
+- **What would lower W3's tail is less compaction work, or work off the commit path.** Less work means a lower write amp than 12.5. Off the commit path means a background thread, which RocksDB's 35 ms p99 has. Neither is a pacing question.
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -425,7 +482,7 @@ So the p99 commits (141 to 156 ms) were a flush and a slice together. The flush 
 | 2.C: a sorted file not flushed before a manifest names it | power (158), torn (161) |
 | 2.C: commit ignores its sync flag | power (67), torn (37) |
 | 2.C: replay ignores record checksums | torn only (1): the records' own lengths reject most tears |
-| 2.C: recovery leaves the log tail in place | **green**: a stale record survives only if a new commit is exactly the size of a lost one |
+| 2.C: recovery leaves the log tail in place | **green**: a stale record survives only if a new commit is exactly the size of a lost one. Since 2026-10-28 the tail is left in place by design, and the chain rejects it |
 | 2.C: compaction ignores snapshots; retired trees reclaimed under snapshots | **green, legitimately**: readers pin their version (above); the rule is gone since Test 3 |
 | 2.C: the horizon is the last commit, not the last durable one | `test_store`'s `dropped_not_durable` (78 of 300 records); **green in the crash gate**, which never sweeps with a retirement unsynced |
 | 2.C backup: every retirement copied, including later ones (the logical backup's rule) | `test_store`'s `sliced_backup` (173 of 200 records after 1,500 commits in the copy) |
@@ -464,6 +521,8 @@ So the p99 commits (141 to 156 ms) were a flush and a slice together. The flush 
 | 2.C: the install moves no logs forward but deletes them | `test_store` (3), process (601), power (714) |
 | 2.C: a spare used before its name is durable | the hot-key power tier (136) |
 | 2.C: replay ignores a record's log number (a recycled log's records replayed) | process (214), power (154), hot-key power (490) |
+| 2.C: replay ignores the record chain (2026-10-28, with no zeroing at open) | process (204), power (144), torn (144), failed-sync (32), hot-key process (54) and power (110), at quick scale |
+| 2.C: the per-open value a constant | `test_store`'s `lost_twin` **and nothing else**: every crash tier is green, since none rewrites a lost commit byte for byte |
 | 2.C: the log recycled before the install's manifest | process (1), power (5): the window is one rename wide |
 | 2.C: the manifest records deaths of commits not yet durable | the hot-key power tier (105); the pre-change code, 1 in 403,033 at seed 35 |
 | 2.C: the flush drops trees retired since the freeze | the hot-key power tier (47) |
@@ -630,5 +689,7 @@ The ssd runs used 20,000 operations; the usb runs used 1,000, because 2.A could 
 - **W9**, which needs the version store, which does not exist.
 - **The hard requirements**: measured in Test 3 (above), except nonce uniqueness, which waits for encryption. Online backup is not met as built.
 - **The G-Dash profile** (§5.1.1) and the owner round trip (§5.5).
-- **2.C's remaining items** (above): recovery time against memtable size, and compaction pacing that answers to debt (W3's remaining p99 is compaction slices). Blob reclamation by dead space and the flush off the commit path are done (2026-10-27).
+- **2.C's remaining items are finished** (2026-10-28):
+  - **Recovery** no longer zeroes the log at open: a short log opens in about 3 ms whatever the memtable. What is left is replay, in proportion to the memtable.
+  - **Compaction pacing by debt** was measured and left at a constant. It trades the p50 for the p99 at the same mean. W3's tail needs less compaction work or a background thread ("Recovery, and compaction paced by debt").
 - **2.B's group commit on slow flash**, unexplained.
