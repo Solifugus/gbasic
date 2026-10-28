@@ -304,6 +304,13 @@ The same in every candidate, and taken from AmorphDB's instance chain:
 - Each version carries the **commit id** (not a timestamp: the clock is second-resolution and commits are ordered), the commit's **author** (the `principal()` that made it, as AmorphDB records the author of every instance) and the commit time.
 - `AS OF t` maps t to a commit id through a small commit-time index, then seeks.
 - Measured with the candidates: the cost of history on update throughput, and the `AS OF` read cost against depth of history.
+- **Built and measured 2026-10-28** (`research/gsql/README.md`, "The version store, and W9"), once over the bench's interface, so all six engines pay for the same layout. A model check covering `AS OF` by commit and by second, rows that never existed, and the counter recovered across a reopen is green on all six and runs in the research gate. Two things were settled in building it:
+  - The commit-time index holds **one entry per second**, the last commit made in it, because the clock can say no more. Ids and seconds both only grow, so a floor seek maps a second to a commit.
+  - The version is keyed by the id its value **started** at, so `AS OF A` is a single floor seek.
+  - Measured:
+    - W9 costs the B+trees 3–17% of W2's throughput, and the LSMs about nothing.
+    - An `AS OF` read takes 1–16 µs at 1,000 versions per row, all six engines.
+    - In 2.A, unsynced commits hold every page they free until a sync. A build of large unsynced commits grew its file 5×.
 
 ## 5. The evaluation harness
 
@@ -583,7 +590,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 - **2.C's predicted weakness in W1 tail latency did not appear either.** Its real weakness is W8: it is the slowest engine at 100 KiB values, for want of value separation.
 - **Lines of code are close across all three**, about 2,050 to 2,140.
 - **Running these found two defects that grew the candidates' files without bound**, one in 2.A's free tree and one in 2.B's checkpoint under group commit. Both are fixed and gated, and both are recorded in that README.
-- **No final decision is taken here.** W3, W4 and W9, the larger-than-memory size, a slower device, the hard requirements of point 2 and the G-Dash profile are not yet measured.
+- **No final decision is taken here.** W3, W4 and W9 (W9 now measured, above), the larger-than-memory size, a slower device, the hard requirements of point 2 and the G-Dash profile are not yet measured.
 
 **Weights, fixed 2026-10-24, after the first measurements.** Point 4 asked for weights before results were seen, and that did not happen. They are fixed now, and the record says so, so that a reader can judge how much the weighting could have been bent towards the result already in hand.
 

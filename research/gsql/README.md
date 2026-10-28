@@ -467,6 +467,70 @@ So the p99 commits (141 to 156 ms) were a flush and a slice together. The flush 
 - **Two ramps did worse on every count.** 8 → 64 and 16 → 64 raised write amp to 17.5, because a slower compaction lets the levels overrun and the merges grow.
 - **What would lower W3's tail is less compaction work, or work off the commit path.** Less work means a lower write amp than 12.5. Off the commit path means a background thread, which RocksDB's 35 ms p99 has. Neither is a pacing question.
 
+## The version store, and W9 (2026-10-28)
+
+**Built once, over the bench's interface, so all six engines pay for the same layout** (`bench.c`, "the version store"). A table is a leading byte of the key, as the application workloads already do:
+
+| key | value |
+|---|---|
+| the row's key | a 20-byte header (start commit id, commit second, author), then the row |
+| `h` key column start-id | the old header and the old temporal column |
+| `c` second | the last commit id made in that second |
+
+- **The current value lives in the row**, so an ordinary read never touches history. An update moves the old temporal column, with the header saying which commit made it, to history under the id that version **started** at. The row keeps no pointer (§4).
+- **`AS OF` commit A** is the row if its start is at most A. Otherwise it is the greatest history key at or below (row, column, A). That version started by A and the next one after it, so it is the one that was current. **`AS OF` a second** maps through the commit-time index. Ids and seconds both only grow, so the floor of a second is the last commit made by then.
+- **One index entry per second, not per commit.** The clock is second-resolution, so that is all the index can say. Every commit in a second overwrites the entry.
+- **The commit id is the version store's own here.** The reference engines have none. A candidate's id is known only after commit, and the version has to be written inside the transaction. With one writer, the next id is known at begin, which is what the engine will hand the version store when it moves in (step 5). The counter is recovered at open from the commit-time index's last entry, so it needs no key of its own.
+- **W9 is W2 with field 0 of the YCSB row temporal.** The rest of the row is not versioned. Each update reads the old row (130 bytes of it) and writes three keys: the row, a 130-byte version and the 17-byte index entry.
+
+**The model check (`bench ENGINE w9-check`), green on all six engines, 17,381 checks each.**
+- It runs 2,000 commits of 1 to 3 distinct rows on a simulated clock. Several commits share a second, and there are empty seconds between, so the index is both overwritten and floored across gaps. The store is closed and reopened halfway, which tests the counter's recovery.
+- Every row is then read `AS OF` each of its versions' ids, one either side of each, the load and the last commit. Every second is mapped. Rows that never existed must read as absent: that is where the floor lands in **another row's** history.
+- **It runs in `run.sh` for every candidate, under ASan.** Six perturbations were proven red on two engines each:
+
+| perturbation | mismatches |
+|---|---|
+| no check that the floor landed in this row's history | 50 (every never-existed row) |
+| history keyed by the superseding id, not the start id | 12,193 |
+| no archiving | 12,193 |
+| the index written by one commit in five | 521 |
+| the counter not recovered at open | 1 (its own check) |
+| the row's own start compared with `<`, not `<=` | 260 |
+
+**W9 against W2: the cost of history on update throughput** (NVMe, 100,000 records, 20,000 durable single-row updates, one run each):
+
+| engine | W2 ops/s | W9 ops/s | change | write amp W2 → W9 |
+|---|---|---|---|---|
+| 2.A cow | 835 | 810 | −3% | 36.2 → 39.2 |
+| 2.B wal | 2,339 | 2,084 | −11% | 23.9 → 31.3 |
+| 2.C lsm | 2,973 | 2,879 | −3% | 1.84 → 2.00 |
+| SQLite | 1,954 | 1,620 | −17% | 23.2 → 33.6 |
+| LMDB | 1,391 | 1,156 | −17% | 31.1 → 43.5 |
+| RocksDB | 1,544 | 1,624 | +5% | 1.02 → 1.06 |
+
+- **History costs the B+trees in pages and the LSMs almost nothing.** A version lands on a different leaf from its row, so a B+tree writes or logs a second page per commit. In an LSM it is a 150-byte append to the same log record.
+- 2.A loses only 3% because its path copy (36× write amp) already dwarfs one more leaf. RocksDB's +5% is within one run's noise.
+- **Write amp here counts the row as the logical write**, so history shows up as overhead, which is the cost being measured.
+
+**`AS OF` reads against depth of history** (the first 1,000 rows given 10, 100 or 1,000 versions each; reads at a commit chosen uniformly over the whole history; mean µs, one run each):
+
+| engine | depth 10 | depth 100 | depth 1,000 |
+|---|---|---|---|
+| 2.A cow | 1.2 | 2.5 | 4.3 |
+| 2.B wal | 1.2 | 2.5 | 4.0 |
+| 2.C lsm | 1.9 | 4.1 | 7.6 |
+| SQLite | 11.8 | 11.2 | 14.7 |
+| LMDB | 0.5 | 0.9 | 1.2 |
+| RocksDB | 5.0 | 9.2 | 16.2 |
+
+- **An `AS OF` read is one point read plus at most one floor seek, however deep the history.** The growth in the table tracks the history's total size (10⁴ to 10⁶ versions), which deepens the tree or adds levels. The depth of one row's chain plays no part, and this run does not separate the two.
+- **No read missed or returned a version newer than asked** (0 errors, 0 not found, all six).
+
+**Found on the way: in 2.A, a run of large unsynced commits holds every page they free.** At depth 1,000, 2.A's file was 13.7 GB against 2.B's 0.7 GB. The build commits 1,000 rows per transaction without sync, and 2.A frees a page only once its commit is durable (above, "A `sync = false` commit in 2.A"). So none of the pages freed during the build could be reused.
+- **Measured both ways at depth 200:** 2.6 GB when those commits are unsynced, 0.5 GB when each is synced.
+- **This is a cost of the stated rule, not a new defect.** Nothing had measured it before: group commit's earlier runs used single-row commits, which free a page or two. Under group commit, 2.A's file grows by each unsynced commit's rewritten pages until the next sync. That is a space amplification §6 should weigh alongside W6's.
+- **The `AS OF` reads above are unaffected**, since they touch only live pages. The depth-1,000 file size is an artefact of the build, not of history.
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -690,7 +754,8 @@ The ssd runs used 20,000 operations; the usb runs used 1,000, because 2.A could 
 
 ### Not yet measured, and needed before §6 can decide
 
-- **W9**, which needs the version store, which does not exist.
+- **W9 is measured** (2026-10-28, "The version store, and W9"). History costs the B+trees 3–17% of update throughput and the LSMs almost nothing. An `AS OF` read is one point read and one floor seek.
+- **2.A's space under group commit**, now that unsynced commits that rewrite many pages are known to hold them all until a sync.
 - **The hard requirements**: measured in Test 3 (above), except nonce uniqueness, which waits for encryption. Online backup is not met as built.
 - **The G-Dash profile** (§5.1.1) and the owner round trip (§5.5).
 - **2.C's remaining items are finished** (2026-10-28):
