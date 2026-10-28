@@ -63,7 +63,21 @@ typedef struct {
     int (*sync)(BKV *);        /* make every commit so far durable (group commit) */
     int (*hold)(BKV *);        /* open a long-lived read snapshot (W6) */
     void (*release)(BKV *);
+    /* The version store's one read (§4): the key exactly, or with `floor`
+     * the greatest key <= k. Copies the key found (up to 64 bytes) and up to
+     * `vcap` bytes of its value; *von is the value's whole length. 0 found,
+     * 1 none, <0 error. Inside a transaction. */
+    int (*fetch)(BKV *, const void *k, size_t kn, int floor, unsigned char *ko, size_t *kon, unsigned char *vo, size_t vcap,
+                 size_t *von);
 } BEngine;
+
+static void fetch_copy(const void *k, size_t kn, const void *v, size_t vn, unsigned char *ko, size_t *kon, unsigned char *vo,
+                       size_t vcap, size_t *von) {
+    *kon = kn < 64 ? kn : 64;
+    memcpy(ko, k, *kon);
+    *von = vn;
+    memcpy(vo, v, vn < vcap ? vn : vcap);
+}
 
 /* ---- the candidates, through store.h -------------------------------------- */
 
@@ -76,7 +90,7 @@ struct BKV {
 #ifdef HAVE_SQLITE
     sqlite3 *sq, *sq2;
     int sq_sync; /* 0 unknown, 1 OFF, 2 FULL */
-    sqlite3_stmt *s_put, *s_get, *s_del, *s_scan, *s_begin_r, *s_begin_w, *s_commit, *s_rollback;
+    sqlite3_stmt *s_put, *s_get, *s_del, *s_scan, *s_begin_r, *s_begin_w, *s_commit, *s_rollback, *s_floor;
 #endif
 #ifdef HAVE_LMDB
     MDB_env *env;
@@ -178,8 +192,31 @@ static int c_sync(BKV *b) { return b->e->sync(b->db, NULL); }
 static int c_hold(BKV *b) { return b->e->begin_read(b->db, &b->held); }
 static void c_release(BKV *b) { if (b->held) b->e->abort(b->held); b->held = NULL; }
 
+static int c_fetch(BKV *b, const void *k, size_t kn, int fl, unsigned char *ko, size_t *kon, unsigned char *vo, size_t vcap,
+                   size_t *von) {
+    if (!fl) {
+        GsBytes v;
+        int rc = b->e->get(b->t, gss("t"), gsb(k, kn), &v);
+        if (rc == GS_NOT_FOUND) return 1;
+        if (rc) return -rc;
+        fetch_copy(k, kn, v.p, v.n, ko, kon, vo, vcap, von);
+        return 0;
+    }
+    GsCursor *c;
+    int rc = b->e->cursor_open(b->t, gss("t"), &c), pos = 0;
+    if (rc) return -rc;
+    rc = b->e->seek(c, gsb(k, kn), GS_SEEK_LE, &pos);
+    if (!rc && pos) {
+        GsBytes K, V;
+        b->e->key(c, &K);
+        b->e->value(c, &V);
+        fetch_copy(K.p, K.n, V.p, V.n, ko, kon, vo, vcap, von);
+    }
+    b->e->cursor_close(c);
+    return rc ? -rc : pos ? 0 : 1;
+}
 static const BEngine cand_engine = {"candidate", c_open, c_close, c_begin, c_put, c_get, c_del, c_scan, c_end, c_counters, c_file_bytes,
-                                    c_sync, c_hold, c_release};
+                                    c_sync, c_hold, c_release, c_fetch};
 
 /* ---- SQLite, the reference that is installed ------------------------------ */
 
@@ -199,6 +236,7 @@ static BKV *q_open(const char *dir, uint64_t cache, uint32_t page) {
     sqlite3_prepare_v2(b->sq, "SELECT v FROM kv WHERE k=?", -1, &b->s_get, NULL);
     sqlite3_prepare_v2(b->sq, "DELETE FROM kv WHERE k=?", -1, &b->s_del, NULL);
     sqlite3_prepare_v2(b->sq, "SELECT v FROM kv WHERE k>=? ORDER BY k LIMIT ?", -1, &b->s_scan, NULL);
+    sqlite3_prepare_v2(b->sq, "SELECT k, v FROM kv WHERE k<=? ORDER BY k DESC LIMIT 1", -1, &b->s_floor, NULL);
     sqlite3_prepare_v2(b->sq, "BEGIN", -1, &b->s_begin_r, NULL);
     sqlite3_prepare_v2(b->sq, "BEGIN IMMEDIATE", -1, &b->s_begin_w, NULL);
     sqlite3_prepare_v2(b->sq, "COMMIT", -1, &b->s_commit, NULL);
@@ -206,7 +244,7 @@ static BKV *q_open(const char *dir, uint64_t cache, uint32_t page) {
     return b;
 }
 static void q_close(BKV *b) {
-    sqlite3_stmt *all[] = {b->s_put, b->s_get, b->s_del, b->s_scan, b->s_begin_r, b->s_begin_w, b->s_commit, b->s_rollback};
+    sqlite3_stmt *all[] = {b->s_put, b->s_get, b->s_del, b->s_scan, b->s_begin_r, b->s_begin_w, b->s_commit, b->s_rollback, b->s_floor};
     for (size_t i = 0; i < sizeof all / sizeof *all; i++) sqlite3_finalize(all[i]);
     sqlite3_close(b->sq);
     free(b);
@@ -280,8 +318,22 @@ static int q_hold(BKV *b) {
     return 0;
 }
 static void q_release(BKV *b) { if (b->sq2) { sqlite3_exec(b->sq2, "COMMIT", NULL, NULL, NULL); sqlite3_close(b->sq2); b->sq2 = NULL; } }
+static int q_fetch(BKV *b, const void *k, size_t kn, int fl, unsigned char *ko, size_t *kon, unsigned char *vo, size_t vcap,
+                   size_t *von) {
+    sqlite3_stmt *s = fl ? b->s_floor : b->s_get;
+    sqlite3_bind_blob(s, 1, k, (int)kn, SQLITE_STATIC);
+    int rc = sqlite3_step(s), out = 1;
+    if (rc == SQLITE_ROW) {
+        if (fl) fetch_copy(sqlite3_column_blob(s, 0), (size_t)sqlite3_column_bytes(s, 0), sqlite3_column_blob(s, 1),
+                           (size_t)sqlite3_column_bytes(s, 1), ko, kon, vo, vcap, von);
+        else fetch_copy(k, kn, sqlite3_column_blob(s, 0), (size_t)sqlite3_column_bytes(s, 0), ko, kon, vo, vcap, von);
+        out = 0;
+    } else if (rc != SQLITE_DONE) out = -1;
+    sqlite3_reset(s);
+    return out;
+}
 static const BEngine sqlite_engine = {"sqlite", q_open, q_close, q_begin, q_put, q_get, q_del, q_scan, q_end, q_counters, q_file_bytes,
-                                      q_sync, q_hold, q_release};
+                                      q_sync, q_hold, q_release, q_fetch};
 #endif
 
 /* ---- LMDB: the copy-on-write reference ------------------------------------ */
@@ -348,8 +400,28 @@ static uint64_t l_file_bytes(BKV *b) { return dir_bytes(b->dir); }
 static int l_sync(BKV *b) { return mdb_env_sync(b->env, 1) ? -1 : 0; }
 static int l_hold(BKV *b) { return mdb_txn_begin(b->env, NULL, MDB_RDONLY, &b->lheld) ? -1 : 0; }
 static void l_release(BKV *b) { if (b->lheld) mdb_txn_abort(b->lheld); b->lheld = NULL; }
+static int l_fetch(BKV *b, const void *k, size_t kn, int fl, unsigned char *ko, size_t *kon, unsigned char *vo, size_t vcap,
+                   size_t *von) {
+    MDB_val K = {kn, (void *)k}, V;
+    if (!fl) {
+        int rc = mdb_get(b->lt, b->dbi, &K, &V);
+        if (rc == MDB_NOTFOUND) return 1;
+        if (rc) return -1;
+        fetch_copy(k, kn, V.mv_data, V.mv_size, ko, kon, vo, vcap, von);
+        return 0;
+    }
+    MDB_cursor *c;
+    if (mdb_cursor_open(b->lt, b->dbi, &c)) return -1;
+    /* the first key >= k; then back one unless it is k itself */
+    int rc = mdb_cursor_get(c, &K, &V, MDB_SET_RANGE);
+    if (rc == MDB_NOTFOUND) rc = mdb_cursor_get(c, &K, &V, MDB_LAST);
+    else if (rc == 0 && (K.mv_size != kn || memcmp(K.mv_data, k, kn))) rc = mdb_cursor_get(c, &K, &V, MDB_PREV);
+    if (rc == 0) fetch_copy(K.mv_data, K.mv_size, V.mv_data, V.mv_size, ko, kon, vo, vcap, von);
+    mdb_cursor_close(c);
+    return rc == MDB_NOTFOUND ? 1 : rc ? -1 : 0;
+}
 static const BEngine lmdb_engine = {"lmdb", l_open, l_close, l_begin, l_put, l_get, l_del, l_scan, l_end, l_counters, l_file_bytes,
-                                    l_sync, l_hold, l_release};
+                                    l_sync, l_hold, l_release, l_fetch};
 #endif
 
 /* ---- RocksDB: the LSM reference ------------------------------------------- */
@@ -413,8 +485,34 @@ static uint64_t r_file_bytes(BKV *b) { return dir_bytes(b->dir); }
 static int r_sync(BKV *b) { char *err = NULL; rocksdb_flush_wal(b->rdb, 1, &err); return err ? -1 : 0; }
 static int r_hold(BKV *b) { b->rsnap = rocksdb_create_snapshot(b->rdb); return 0; }
 static void r_release(BKV *b) { if (b->rsnap) rocksdb_release_snapshot(b->rdb, b->rsnap); b->rsnap = NULL; }
+static int r_fetch(BKV *b, const void *k, size_t kn, int fl, unsigned char *ko, size_t *kon, unsigned char *vo, size_t vcap,
+                   size_t *von) {
+    /* reads the committed store, not the open batch, as r_get does: every
+     * caller here reads a key before its transaction writes it */
+    if (!fl) {
+        char *err = NULL;
+        size_t vn;
+        char *v = rocksdb_get(b->rdb, b->ropts, k, kn, &vn, &err);
+        if (err) return -1;
+        if (!v) return 1;
+        fetch_copy(k, kn, v, vn, ko, kon, vo, vcap, von);
+        rocksdb_free(v);
+        return 0;
+    }
+    rocksdb_iterator_t *it = rocksdb_create_iterator(b->rdb, b->ropts);
+    rocksdb_iter_seek_for_prev(it, k, kn);
+    int out = 1;
+    if (rocksdb_iter_valid(it)) {
+        size_t K, V;
+        const char *kp = rocksdb_iter_key(it, &K), *vp = rocksdb_iter_value(it, &V);
+        fetch_copy(kp, K, vp, V, ko, kon, vo, vcap, von);
+        out = 0;
+    }
+    rocksdb_iter_destroy(it);
+    return out;
+}
 static const BEngine rocksdb_engine = {"rocksdb", r_open, r_close, r_begin, r_put, r_get, r_del, r_scan, r_end, r_counters, r_file_bytes,
-                                       r_sync, r_hold, r_release};
+                                       r_sync, r_hold, r_release, r_fetch};
 #endif
 
 /* ---- measurement ----------------------------------------------------------- */
@@ -543,14 +641,171 @@ static void fill_random(unsigned char *out, size_t n, uint64_t seed) {
 }
 static void fill_value(uint64_t seed) { fill_random(value, vsize, seed); }
 
+/* ---- the version store (§4) -------------------------------------------------
+ *
+ * One implementation over the interface above, so every engine pays for the
+ * same layout and a difference between engines is the engine's. A table is a
+ * leading byte of the key here, as the application workloads below do, so the
+ * version store's two key spaces sort apart from the rows ("user...") without
+ * a tree of their own:
+ *
+ *   row         key -> header(start id, commit second, author) + the row
+ *   history     'h' key col start-id -> the old header + the old column
+ *   commit time 'c' second -> the last commit id of that second
+ *
+ * The current value lives in the row, so an ordinary read never touches
+ * history. An update moves the old temporal column, with the header that
+ * says which commit made it, to history under the id it STARTED at; the row
+ * keeps no pointer. AS OF commit A is then the row if its start is <= A, and
+ * otherwise the greatest history key <= (row, col, A) -- a version found
+ * there started at or before A, and the next one started after A, so it is
+ * the one that was current. AS OF a second maps through the commit-time
+ * index: commit ids and commit seconds both only grow, so the floor of a
+ * second is the last commit made by then. One entry per SECOND, not per
+ * commit, because the clock is second-resolution and that is the most the
+ * index can say; it is overwritten by every commit in that second.
+ *
+ * Commit ids are the version store's own here: the reference engines have
+ * none, and a candidate's id is known only after commit while the version
+ * must be written inside the transaction. With one writer the next id is
+ * known at begin, which is what the engine will hand the version store when
+ * it moves in (step 5). The counter is recovered at open from the
+ * commit-time index's last entry, so it needs no key of its own. Id 0 is the
+ * load. Field 0 of the YCSB row is the temporal column (W9: "W2 with a
+ * temporal column"); the rest of the row is not versioned. */
+
+#define VS_HDR 20   /* start id (8), commit second (8), author (4) */
+#define VS_FIELD 100
+static int temporal;          /* the w9 workloads: rows carry a header */
+static uint64_t vs_last;      /* the last commit id handed out */
+static uint64_t vs_clock;     /* nonzero: the commit second, set by the check */
+static unsigned char *vs_row; /* VS_HDR + vsize */
+
+static void vs_be64(unsigned char *p, uint64_t x) { for (int i = 7; i >= 0; i--, x >>= 8) p[i] = (unsigned char)x; }
+static uint64_t vs_rd64(const unsigned char *p) { uint64_t x = 0; for (int i = 0; i < 8; i++) x = x << 8 | p[i]; return x; }
+static uint64_t vs_now(void) { return vs_clock ? vs_clock : (uint64_t)time(NULL); }
+static size_t vs_hkey(unsigned char *o, const char *k, size_t kn, int col, uint64_t start) {
+    o[0] = 'h';
+    memcpy(o + 1, k, kn);
+    o[1 + kn] = (unsigned char)col;
+    vs_be64(o + 2 + kn, start);
+    return kn + 10;
+}
+static size_t vs_ckey(unsigned char *o, uint64_t sec) { o[0] = 'c'; vs_be64(o + 1, sec); return 9; }
+
+/* writes the row (header + `value`), first moving its old temporal column to
+ * history; inside a write transaction */
+static int vs_write(Run *r, const char *k, size_t kn, uint64_t id, uint64_t sec, int archive) {
+    unsigned char ko[64], old[VS_HDR + VS_FIELD], hk[64];
+    size_t kon, von;
+    if (archive) {
+        int rc = r->e->fetch(r->kv, k, kn, 0, ko, &kon, old, sizeof old, &von);
+        if (rc < 0) return rc;
+        if (rc == 0) {
+            if (von < sizeof old) return -1;
+            size_t hn = vs_hkey(hk, k, kn, 0, vs_rd64(old));
+            if (r->e->put(r->kv, hk, hn, old, sizeof old)) return -1;
+            r->logical_written += hn + sizeof old;
+        }
+    }
+    vs_be64(vs_row, id);
+    vs_be64(vs_row + 8, sec);
+    vs_row[16] = 0, vs_row[17] = 0, vs_row[18] = 0, vs_row[19] = 1; /* one author: the bench's principal */
+    memcpy(vs_row + VS_HDR, value, vsize);
+    return r->e->put(r->kv, k, kn, vs_row, VS_HDR + vsize);
+}
+/* records that commit `id` happened in second `sec` */
+static int vs_mark(Run *r, uint64_t id, uint64_t sec) {
+    unsigned char ck[9], v[8];
+    vs_be64(v, id);
+    return r->e->put(r->kv, ck, vs_ckey(ck, sec), v, 8);
+}
+/* the last commit id made by the end of second `sec`; 0 (the load) if none */
+static int vs_id_at(Run *r, uint64_t sec, uint64_t *id) {
+    unsigned char ck[9], ko[64], v[8];
+    size_t kon, von;
+    int rc = r->e->fetch(r->kv, ck, vs_ckey(ck, sec), 1, ko, &kon, v, sizeof v, &von);
+    if (rc < 0) return rc;
+    *id = rc == 0 && kon == 9 && ko[0] == 'c' && von == 8 ? vs_rd64(v) : 0;
+    return 0;
+}
+/* the counter, from the commit-time index's last entry */
+static int vs_recover(Run *r) {
+    if (r->e->begin(r->kv, 0)) return -1;
+    int rc = vs_id_at(r, UINT64_MAX, &vs_last);
+    r->e->end(r->kv, 0, 0);
+    return rc;
+}
+/* the temporal column (with its header) as of commit `asof`: 0 found, 1 the
+ * row did not exist then, <0 error */
+static int vs_read_asof(Run *r, const char *k, size_t kn, uint64_t asof, unsigned char out[VS_HDR + VS_FIELD]) {
+    unsigned char ko[64], hk[64];
+    size_t kon, von;
+    int rc = r->e->fetch(r->kv, k, kn, 0, ko, &kon, out, VS_HDR + VS_FIELD, &von);
+    if (rc < 0) return rc;
+    if (rc == 0 && von >= VS_HDR + VS_FIELD && vs_rd64(out) <= asof) return 0;
+    size_t hn = vs_hkey(hk, k, kn, 0, asof);
+    rc = r->e->fetch(r->kv, hk, hn, 1, ko, &kon, out, VS_HDR + VS_FIELD, &von);
+    if (rc) return rc;
+    /* another row's history, or before this row's first version */
+    if (kon != hn || memcmp(ko, hk, hn - 8) || von != VS_HDR + VS_FIELD) return 1;
+    return 0;
+}
+
+/* W9: W2's durable single-row update, with the temporal column versioned */
+static void op_update_temporal(Run *r, uint64_t keynum) {
+    char k[32];
+    size_t kn = ycsb_key(k, keynum);
+    fill_value(keynum + r->ops);
+    double t0 = now_us();
+    r->e->begin(r->kv, 1);
+    uint64_t id = ++vs_last, sec = vs_now();
+    if (vs_write(r, k, kn, id, sec, 1) || vs_mark(r, id, sec)) r->errors++;
+    if (r->e->end(r->kv, 1, 1)) r->errors++;
+    lat_add(&r->write, now_us() - t0);
+    r->logical_written += kn + vsize; /* the row only: history counts as overhead */
+    r->ops++;
+}
+
+/* w9-asof-D: give the first K rows D versions each (unmeasured, in
+ * transactions of K updates, synced once at the end), then time AS OF reads
+ * at a commit id chosen uniformly over the whole history */
+static int build_history(Run *r, uint64_t k_rows, int depth) {
+    char k[32];
+    for (int d = 0; d < depth; d++) {
+        if (r->e->begin(r->kv, 1)) return -1;
+        uint64_t id = ++vs_last, sec = vs_now();
+        for (uint64_t j = 0; j < k_rows; j++) {
+            size_t kn = ycsb_key(k, j);
+            fill_value(j * 7919 + (uint64_t)d);
+            if (vs_write(r, k, kn, id, sec, 1)) return -1;
+        }
+        if (vs_mark(r, id, sec) || r->e->end(r->kv, 1, 0)) return -1;
+    }
+    return r->e->sync(r->kv);
+}
+static void op_read_asof(Run *r, uint64_t keynum, uint64_t asof) {
+    char k[32];
+    unsigned char out[VS_HDR + VS_FIELD];
+    size_t kn = ycsb_key(k, keynum);
+    double t0 = now_us();
+    r->e->begin(r->kv, 0);
+    int rc = vs_read_asof(r, k, kn, asof, out);
+    if (rc < 0) r->errors++;
+    else if (rc == 1) r->notfound++;
+    else if (vs_rd64(out) > asof) r->errors++;
+    r->e->end(r->kv, 0, 0);
+    lat_add(&r->read, now_us() - t0);
+    r->ops++;
+}
+
 static int do_insert_batch(Run *r, uint64_t from, uint64_t to, size_t vn) {
     char k[32];
     if (r->e->begin(r->kv, 1)) return -1;
     for (uint64_t i = from; i < to; i++) {
         size_t kn = ycsb_key(k, i);
         fill_value(i);
-        if (r->e->put(r->kv, k, kn, value, vn)) { r->errors++; }
-        (void)0;
+        if (temporal ? vs_write(r, k, kn, 0, vs_now(), 0) : r->e->put(r->kv, k, kn, value, vn)) r->errors++;
         r->logical_written += kn + vn;
     }
     return r->e->end(r->kv, 1, 1);
@@ -1113,6 +1368,122 @@ static int run_ssb(Run *r, const char *engine, uint32_t page, uint64_t cache) {
 }
 
 
+/* w9-check: the version store against a model, on any engine. Commits of one
+ * to three distinct rows on a simulated clock several commits to the second
+ * with gaps, so the commit-time index is overwritten within a second and
+ * floored across empty ones; the store is closed and reopened halfway, so
+ * the counter's recovery is exercised; then every row is read AS OF every
+ * commit id that matters to it (each version's id, one either side, the
+ * load, the last) and every second is mapped, against the model. Rows that
+ * never existed must read as absent, which is the case where the floor lands
+ * in ANOTHER row's history. One JSON line; exits 1 on any mismatch. */
+typedef struct { uint64_t id, seed; } VsVer;
+static int run_vs_check(Run *r, const char *engine, const char *dir, uint64_t cache, uint32_t page, uint64_t ops) {
+    uint64_t n = r->records, mismatches = 0, checks = 0, versions = n;
+    VsVer **hist = calloc(n, sizeof *hist);
+    size_t *cnt = calloc(n, sizeof *cnt), *cap = calloc(n, sizeof *cap);
+    uint64_t *csec = calloc(ops + 1, sizeof *csec);
+    csec[0] = vs_clock;
+    for (uint64_t j = 0; j < n; j++) {
+        cap[j] = 4;
+        hist[j] = malloc(cap[j] * sizeof **hist);
+        hist[j][cnt[j]++] = (VsVer){0, j};
+    }
+    char k[32];
+    for (uint64_t i = 1; i <= ops; i++) {
+        if (i == ops / 2) {
+            uint64_t want = vs_last;
+            if (r->e->sync(r->kv)) mismatches++;
+            r->e->close(r->kv);
+            r->kv = r->e->open(dir, cache, page);
+            if (!r->kv) { fprintf(stderr, "reopen failed\n"); return 1; }
+            vs_last = 0;
+            checks++;
+            if (vs_recover(r) || vs_last != want) {
+                fprintf(stderr, "MISMATCH counter after reopen: %llu, want %llu\n", (unsigned long long)vs_last,
+                        (unsigned long long)want);
+                mismatches++;
+                vs_last = want;
+            }
+        }
+        vs_clock = 1000 + i / 5 + (i / 50) * 3;
+        uint64_t id = ++vs_last, rows[3];
+        int m = 1 + (int)(rnd() % 3);
+        if (r->e->begin(r->kv, 1)) return 1;
+        for (int q = 0; q < m; q++) {
+            uint64_t j;
+            int dup;
+            do {
+                j = rnd() % n;
+                dup = 0;
+                for (int z = 0; z < q; z++) dup |= rows[z] == j;
+            } while (dup);
+            rows[q] = j;
+            uint64_t seed = rnd();
+            fill_value(seed);
+            size_t kn = ycsb_key(k, j);
+            if (vs_write(r, k, kn, id, vs_clock, 1)) mismatches++;
+            if (cnt[j] == cap[j]) hist[j] = realloc(hist[j], (cap[j] *= 2) * sizeof **hist);
+            hist[j][cnt[j]++] = (VsVer){id, seed};
+            versions++;
+        }
+        if (vs_mark(r, id, vs_clock) || r->e->end(r->kv, 1, i % 16 == 0)) mismatches++;
+        csec[id] = vs_clock;
+    }
+    unsigned char out[VS_HDR + VS_FIELD], want[VS_FIELD];
+    if (r->e->begin(r->kv, 0)) return 1;
+    for (uint64_t j = 0; j < n; j++) {
+        size_t kn = ycsb_key(k, j);
+        for (size_t v = 0; v < cnt[j]; v++) {
+            uint64_t probes[4] = {hist[j][v].id, hist[j][v].id + 1, hist[j][v].id ? hist[j][v].id - 1 : 0, vs_last};
+            for (int p = 0; p < 4; p++) {
+                uint64_t a = probes[p];
+                size_t e = 0; /* the model: the last version started at or before a */
+                while (e + 1 < cnt[j] && hist[j][e + 1].id <= a) e++;
+                fill_random(want, VS_FIELD, hist[j][e].seed);
+                int rc = vs_read_asof(r, k, kn, a, out);
+                checks++;
+                if (rc || vs_rd64(out) != hist[j][e].id || memcmp(out + VS_HDR, want, VS_FIELD)) {
+                    if (mismatches < 5)
+                        fprintf(stderr, "MISMATCH row %llu as of %llu: rc %d start %llu, want start %llu\n", (unsigned long long)j,
+                                (unsigned long long)a, rc, rc ? 0ULL : (unsigned long long)vs_rd64(out),
+                                (unsigned long long)hist[j][e].id);
+                    mismatches++;
+                }
+            }
+        }
+    }
+    for (uint64_t j = n; j < n + 50; j++) {
+        size_t kn = ycsb_key(k, j);
+        uint64_t a = rnd() % (vs_last + 1);
+        checks++;
+        if (vs_read_asof(r, k, kn, a, out) != 1) {
+            if (mismatches < 5) fprintf(stderr, "MISMATCH row %llu never existed but read as present\n", (unsigned long long)j);
+            mismatches++;
+        }
+    }
+    for (uint64_t sec = 990; sec <= csec[vs_last] + 3; sec++) {
+        uint64_t got, want_id = 0;
+        for (uint64_t c = 1; c <= vs_last; c++) if (csec[c] <= sec) want_id = c;
+        checks++;
+        if (vs_id_at(r, sec, &got) || got != want_id) {
+            if (mismatches < 5)
+                fprintf(stderr, "MISMATCH second %llu: commit %llu, want %llu\n", (unsigned long long)sec, (unsigned long long)got,
+                        (unsigned long long)want_id);
+            mismatches++;
+        }
+    }
+    r->e->end(r->kv, 0, 0);
+    r->e->close(r->kv);
+    printf("{\"engine\": \"%s\", \"workload\": \"w9-check\", \"records\": %llu, \"commits\": %llu, \"versions\": %llu, "
+           "\"checks\": %llu, \"mismatches\": %llu}\n",
+           engine, (unsigned long long)n, (unsigned long long)vs_last, (unsigned long long)versions, (unsigned long long)checks,
+           (unsigned long long)mismatches);
+    for (uint64_t j = 0; j < n; j++) free(hist[j]);
+    free(hist), free(cnt), free(cap), free(csec);
+    return mismatches ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) { fprintf(stderr, "usage: bench ENGINE WORKLOAD DIR [RECORDS [OPS]]\n"); return 2; }
     const char *engine = argv[1], *wl = argv[2], *dir = argv[3];
@@ -1124,6 +1495,9 @@ int main(int argc, char **argv) {
     if (!strcmp(wl, "w8")) { vsize = 100 * 1024; if (records > 2000) records = 2000; }
     if (!strncmp(wl, "group-", 6)) group_every = atoi(wl + 6);
     value = malloc(vsize);
+    temporal = !strncmp(wl, "w9", 2);
+    vs_row = malloc(VS_HDR + vsize);
+    if (!strcmp(wl, "w9-check")) vs_clock = 1000;
     Run r;
     memset(&r, 0, sizeof r);
     r.records = records;
@@ -1157,6 +1531,10 @@ int main(int argc, char **argv) {
     for (uint64_t i = 0; i < records; i += 1000)
         if (do_insert_batch(&r, i, i + 1000 < records ? i + 1000 : records, vsize)) { fprintf(stderr, "load failed\n"); return 1; }
     double load_s = (now_us() - t_load0) / 1e6;
+    if (!strcmp(wl, "w9-check")) return run_vs_check(&r, engine, dir, cache, page, ops);
+    int depth = !strncmp(wl, "w9-asof-", 8) ? atoi(wl + 8) : 0;
+    uint64_t vs_rows = records < 1000 ? records : 1000;
+    if (depth && build_history(&r, vs_rows, depth)) { fprintf(stderr, "history build failed\n"); return 1; }
     if (!is_load) {
         r.logical_written = 0;
         w0 = proc_io("wchar");
@@ -1213,6 +1591,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(wl, "w1-uniform")) op_read(&r, rnd() % records);
         else if (!strcmp(wl, "w1-zipf")) op_read(&r, scrambled(&z));
         else if (!strcmp(wl, "w2")) op_update(&r, rnd() % records, 0);
+        else if (!strcmp(wl, "w9")) op_update_temporal(&r, rnd() % records);
+        else if (depth) op_read_asof(&r, rnd() % vs_rows, rnd() % (vs_last + 1));
         else if (!strcmp(wl, "w3")) { op_batch(&r, records, 1000); i = r.ops - 1; }
         else if (!strcmp(wl, "w5-1")) op_scan(&r, rnd() % records, 1);
         else if (!strcmp(wl, "w5-100")) op_scan(&r, rnd() % records, 100);
@@ -1246,6 +1626,7 @@ int main(int argc, char **argv) {
     printf(", \"file_before\": %llu, \"file_growth\": %.2f", (unsigned long long)file_before,
            file_before ? (double)fbytes / (double)file_before : 0.0);
     if (recover_ms >= 0) printf(", \"recover_ms\": %.2f", recover_ms);
+    if (temporal) printf(", \"commit_ids\": %llu, \"history_depth\": %d", (unsigned long long)vs_last, depth);
     printf(", \"file_bytes\": %llu, \"space_amp\": %.2f, \"peak_rss_kb\": %llu, \"errors\": %llu, \"notfound\": %llu",
            (unsigned long long)fbytes, (double)fbytes / (double)(inserted * (vsize + 23)), (unsigned long long)peak_rss_kb(),
            (unsigned long long)r.errors, (unsigned long long)r.notfound);
