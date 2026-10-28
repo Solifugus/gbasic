@@ -43,6 +43,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define TYPE_DEL 0
 #define TYPE_PUT 1
@@ -276,6 +277,12 @@ struct GsStore {
     struct Hnd *lru_head, *lru_tail;
     size_t nopen, max_open;
     uint64_t log_num, log_end;
+    /* The log's chain: each record carries the checksum of the record before
+     * it in the same file (the first, a seed from the file's number), and a
+     * value drawn at every open. So a record a lost commit left past the end
+     * cannot follow a new one: it chains to the record it followed, which a
+     * new record differs from even when its contents are the same. */
+    uint32_t log_prev, log_nonce;
     /* The oldest log whose records the memtable still holds, which is where
      * the next open must begin replaying. Not always log_num: an open replays
      * every log from the manifest's onward into one memtable, and before
@@ -1414,10 +1421,29 @@ static int dead_add(GsStore *db, uint64_t id, uint64_t death) {
     return GS_OK;
 }
 
+/* The chain's first link in log `num`: distinct for every number below 2^32,
+ * so a recycled log's old records (flush_install) chain to a seed that is
+ * not this file's, and replay stops at them. */
+static uint32_t log_seed(uint64_t num) { return (uint32_t)num * 0x9E3779B1u ^ 0x5BD1E995u; }
+
+/* A value for this open's records. Not from the I/O layer: it is no data, and
+ * only has to differ from the last open's, which nothing recorded. */
+static uint32_t log_nonce_new(GsStore *db) {
+    uint32_t v = 0;
+    FILE *u = fopen("/dev/urandom", "rb");
+    if (u) { if (fread(&v, sizeof v, 1, u) != 1) v = 0; fclose(u); }
+    static uint32_t opens;
+    struct timespec ts = {0};
+    timespec_get(&ts, TIME_UTC);
+    return v ^ (uint32_t)ts.tv_nsec ^ (uint32_t)ts.tv_sec * 2654435761u ^ (uint32_t)(uintptr_t)db ^ ++opens * 0x85EBCA6Bu;
+}
+
 /* Replay log `num` into the memtable; *end gets the offset after its last
- * valid record. A record carrying another log's number is the end: the file
- * was that log once, and was recycled (flush_install). */
-static int replay_log(GsStore *db, GsqlFile *f, uint64_t num, uint64_t *end) {
+ * valid record and *prev its checksum (the seed, if none). A record that does
+ * not chain to the one before it is the end: either it was left past the end
+ * by a commit an earlier crash lost, or the file was another log once. */
+static int replay_log(GsStore *db, GsqlFile *f, uint64_t num, uint64_t *end, uint32_t *prev_out) {
+    uint32_t prev = log_seed(num);
     uint64_t size = 0;
     gsql_io_size(f, &size);
     uint64_t at = 0;
@@ -1437,7 +1463,7 @@ static int replay_log(GsStore *db, GsqlFile *f, uint64_t num, uint64_t *end) {
         size_t q = 20;
         uint64_t base = get64(p);
         uint32_t count = get32(p + 8);
-        if (get64(p + 12) != num) break;
+        if (get32(p + 12) != prev) break;
         int bad = 0;
         for (uint32_t i = 0; i < count && !bad; i++) {
             uint64_t kn, vn;
@@ -1460,9 +1486,11 @@ static int replay_log(GsStore *db, GsqlFile *f, uint64_t num, uint64_t *end) {
         for (uint32_t i = 0; i < nret; i++) dead_add(db, get64(p + q + 8 * i), commit);
         if (commit > db->last_seq) db->last_seq = commit;
         at += 8 + len;
+        prev = crc;
     }
     gsbuf_free(&rec);
     *end = at;
+    *prev_out = prev;
     return rc;
 }
 
@@ -1484,19 +1512,6 @@ static int prefill_log(GsStore *db, GsqlFile *f, uint64_t from) {
         at += n;
     }
     return GS_OK;
-}
-
-/* After replay: whatever a lost commit left past the last valid record goes.
- * It can sit anywhere beyond -- behind a lost chunk as well as right after the
- * end -- and a record carries its own checksum, so a stale one is accepted
- * wherever a new record happens to end where it begins (2.B's crash run found
- * the same hole in its log: stopping at the first gap misses what is behind
- * it). Truncate, then refill with zeros. Recovery is rare; it pays the refill. */
-static int zero_tail(GsStore *db, GsqlFile *f, uint64_t from) {
-    int rc = ioerr(gsql_io_truncate(f, from));
-    if (rc == GS_OK) rc = prefill_log(db, f, from);
-    if (rc == GS_OK) rc = flush_file(db, f);
-    return rc;
 }
 
 static int open_log(GsStore *db, uint64_t num, int create) {
@@ -1548,6 +1563,8 @@ static int create_db(GsStore *db) {
     if (rc == GS_OK) rc = flush_file(db, db->log);
     if (rc == GS_OK) rc = manifest_write(db);
     db->log_end = 0;
+    db->log_prev = log_seed(1);
+    db->log_nonce = log_nonce_new(db);
     db->durable_seq = db->last_seq;
     return rc;
 }
@@ -1674,21 +1691,21 @@ static int lsm_open_base(const char *path, const GsOptions *opt, GsStore **out) 
             if (orc == ENOENT) break;
             if (orc) { rc = ioerr(orc); break; }
             uint64_t end = 0;
-            rc = replay_log(db, lf, k, &end);
+            uint32_t prev = 0;
+            rc = replay_log(db, lf, k, &end, &prev);
             if (db->log) gsql_io_close(db->log);
             db->log = lf;
             db->log_num = k;
             db->log_end = end;
+            db->log_prev = prev;
             k++;
         }
-        if (rc == GS_OK && !db->log) rc = open_log(db, db->log_num, 1);
-        /* truncate the live log at its last valid record and flush it, so a
-         * record a lost commit left past that point can never follow a new one */
-        if (rc == GS_OK) {
-            uint64_t sz = 0;
-            gsql_io_size(db->log, &sz);
-            if (sz > db->log_end) rc = zero_tail(db, db->log, db->log_end);
-        }
+        if (rc == GS_OK && !db->log) { rc = open_log(db, db->log_num, 1); db->log_prev = log_seed(db->log_num); }
+        /* Whatever a lost commit left past the last valid record stays: its
+         * records chain to the ones they followed, not to this open's. This
+         * used to truncate and refill the rest of the log with zeros, synced:
+         * 29 ms at every open with the default memtable, 104 at 128 MB. */
+        db->log_nonce = log_nonce_new(db);
         db->durable_seq = db->last_seq;
     } else {
         rc = ioerr(rc);
@@ -2360,6 +2377,7 @@ static int freeze(GsStore *db) {
     db->log = db->spare;
     db->log_num++;
     db->log_end = 0;
+    db->log_prev = log_seed(db->log_num);
     db->spare = NULL;
     db->spare_ready = 0;
     db->spare_filled = 0;
@@ -3359,9 +3377,11 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     gsbuf_append(&rec, h, 8); /* len, crc */
     put64(h, base);
     put32(h + 8, (uint32_t)count);
-    /* the log's own number: a recycled log still holds the records of the
-     * log it was, checksums intact, and replay must stop at them */
-    put64(h + 12, db->log_num);
+    /* the chain (see log_prev): a recycled log still holds the records of
+     * the log it was, and a crashed one what lost commits left, checksums
+     * intact, and replay must stop at both */
+    put32(h + 12, db->log_prev);
+    put32(h + 16, db->log_nonce);
     gsbuf_append(&rec, h, 20);
     for (SkNode *n = t->buf.head->next[0]; n; n = n->next[0]) {
         unsigned char b[12];
@@ -3386,6 +3406,7 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
         return rc == GS_FULL ? GS_FULL : GS_IO;
     }
     db->log_end += rec.n;
+    db->log_prev = get32(rec.p + 4);
     uint64_t wrote = rec.n;
     gsbuf_free(&rec);
     uint64_t seq = base;
