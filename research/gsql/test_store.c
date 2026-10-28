@@ -461,6 +461,97 @@ static unsigned match_model(GsTxn *t, const char *tree, const unsigned *gen, uns
     }
     return ok;
 }
+/* how many keys a scan finds holding exactly the generation the model says,
+ * and how many it finds at all */
+static unsigned scan_model(GsTxn *t, const char *tree, const unsigned *gen, unsigned n, unsigned *seen) {
+    GsCursor *c;
+    unsigned ok = 0;
+    *seen = 0;
+    if (E->cursor_open(t, gss(tree), &c) != GS_OK) return 0;
+    int pos;
+    for (int rc = E->first(c, &pos); rc == GS_OK && pos; rc = E->next(c, &pos)) {
+        GsBytes k, v;
+        E->key(c, &k);
+        E->value(c, &v);
+        (*seen)++;
+        unsigned i;
+        char want[16];
+        if (k.n != 7 || sscanf((const char *)k.p + 1, "%6u", &i) != 1 || i >= n) continue;
+        snprintf(want, sizeof want, "g%06u-", gen[i]);
+        if (v.n > 8 && memcmp(v.p, want, 8) == 0) ok++;
+    }
+    E->cursor_close(c);
+    return ok;
+}
+
+/* Reads while a frozen memtable is being flushed. 2.C freezes a full
+ * memtable and writes it out a slice per commit; meanwhile it is read
+ * between the live memtable and level 0, by point reads, cursors and the
+ * backup. The crash gate never sees one: it reads only after recovery,
+ * which has none. With a 3,000-byte memtable and every commit synced, a
+ * freeze comes every few dozen commits and its flush takes about half as
+ * many again, so about half of these reads run with one present. Every key
+ * is read back every ten commits and scanned every fifty, and a backup is
+ * taken every 97 commits and compared with the model as it stood. Level 0
+ * is left to grow (a trigger of 1,000), so no compaction moves the data. */
+static void frozen_reads(const char *base, GsqlIo *io) {
+    char path[600];
+    snprintf(path, sizeof path, "%s.frozen", base);
+    GsOptions o = {1, 512, 0, io, 3000, 1000, 0, 0};
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the frozen-read store answered %s", gs_status_name(rc));
+    if (rc) return;
+    enum { KEYS = 120, COMMITS = 1200 };
+    unsigned gen[KEYS] = {0}, wrong = 0, scans = 0, bad_scans = 0, backups = 0, bad_backups = 0;
+    for (unsigned c = 1; c <= COMMITS; c++) {
+        unsigned k = (c * 37u) % KEYS;
+        put_gen(db, "f", k, c, 1);
+        gen[k] = c;
+        GsTxn *r;
+        if (c % 10 == 0) {
+            E->begin_read(db, &r);
+            unsigned live = 0;
+            for (unsigned i = 0; i < KEYS; i++) live += gen[i] != 0;
+            unsigned ok = match_model(r, "f", gen, KEYS);
+            if (ok != live) wrong++;
+            if (c % 50 == 0) {
+                unsigned seen, sok = scan_model(r, "f", gen, KEYS, &seen);
+                scans++;
+                if (seen != live || sok != live) bad_scans++;
+            }
+            E->abort(r);
+        }
+        if (c % 97 == 0) {
+            char dest[700];
+            snprintf(dest, sizeof dest, "%s.frozen-copy%u", base, c);
+            E->begin_read(db, &r);
+            rc = E->backup(r, dest);
+            E->abort(r);
+            backups++;
+            GsOptions bo = o;
+            bo.create = 0;
+            GsStore *b = NULL;
+            if (rc == GS_OK) rc = E->open(dest, &bo, &b);
+            if (rc == GS_OK) {
+                E->begin_read(b, &r);
+                unsigned live = 0;
+                for (unsigned i = 0; i < KEYS; i++) live += gen[i] != 0;
+                unsigned seen, sok = scan_model(r, "f", gen, KEYS, &seen);
+                if (seen != live || sok != live || match_model(r, "f", gen, KEYS) != live) bad_backups++;
+                E->abort(r);
+                if (E->check(b, print_report, NULL) != GS_OK) bad_backups++;
+                E->close(b);
+            } else bad_backups++;
+        }
+    }
+    CHECK(wrong == 0, "%u of %u rounds of point reads disagreed with the model", wrong, (unsigned)COMMITS / 10);
+    CHECK(bad_scans == 0, "%u of %u scans disagreed with the model", bad_scans, scans);
+    CHECK(bad_backups == 0, "%u of %u backups disagreed with the model", bad_backups, backups);
+    CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the frozen reads");
+    E->close(db);
+}
+
 static void sliced_backup(const char *base, GsqlIo *io) {
     unsigned ga[300];
     for (unsigned i = 0; i < 300; i++) ga[i] = 1;
@@ -1127,6 +1218,7 @@ int main(int argc, char **argv) {
     directory_rules(path, io);
     many_files(path, io, real);
     blob_space(path, io);
+    frozen_reads(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);

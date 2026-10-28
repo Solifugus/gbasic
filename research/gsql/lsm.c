@@ -244,6 +244,10 @@ typedef struct Version {
     FileMeta **files[LEVELS];
     size_t nfiles[LEVELS];
     Mem *mem;
+    /* A memtable frozen when it filled, being written to level 0 a slice per
+     * commit (struct Flush), or NULL. Older than mem and newer than every
+     * file, and read between them. */
+    Mem *imm;
     int refs;
 } Version;
 
@@ -293,6 +297,12 @@ struct GsStore {
     uint64_t compact_ptr[LEVELS];
     struct Comp *comp;        /* a compaction in progress, or NULL */
     uint64_t vgen;            /* installs so far: what gc_start last looked at */
+    struct Flush *fl;         /* the frozen memtable's flush in progress, or NULL */
+    /* The next log, made ahead of time: log_num + 1, filled with zeros a
+     * slice per commit and then synced, so a freeze only switches to it. */
+    GsqlFile *spare;
+    uint64_t spare_filled;
+    int spare_ready;
     uint64_t gc_seen;         /* the vgen at which no blob file was worth collecting */
     int sweep;                /* a retired tree or a released snapshot may have freed whole files */
     int failed;
@@ -1121,7 +1131,7 @@ static void mem_unref(Mem *m) {
 
 static Version *version_copy(const Version *v) {
     Version *n = calloc(1, sizeof *n);
-    if (v) { n->mem = v->mem; n->mem->refs++; }
+    if (v) { n->mem = v->mem; n->mem->refs++; n->imm = v->imm; if (n->imm) n->imm->refs++; }
     else n->mem = mem_new();
     for (int l = 0; l < LEVELS; l++) {
         n->nfiles[l] = v ? v->nfiles[l] : 0;
@@ -1159,6 +1169,7 @@ static void version_unref(GsStore *db, Version *v) {
         free(v->files[l]);
     }
     mem_unref(v->mem);
+    mem_unref(v->imm);
     free(v);
 }
 
@@ -1267,8 +1278,20 @@ static int manifest_write(GsStore *db) {
      * with both removed and the sweep kept, the crash gate saw 0 violations in
      * 185,861 crashes; with the sweep removed too, every recovery checked
      * failed. */
-    put_u64(&b, db->ndead);
-    for (size_t i = 0; i < db->ndead; i++) { put_u64(&b, db->dead[i].id); put_u64(&b, db->dead[i].death); }
+    /* Only the deaths of DURABLE commits. A manifest is written whenever a
+     * flush or a compaction installs, which is often between a commit and
+     * the sync that makes it durable; written then, it recorded the death
+     * of a tree a crash could still bring back -- the commit retiring it
+     * lost, the manifest saying it was dead -- and the next compaction
+     * dropped the live tree whole. A death not yet durable is in the log,
+     * and replay restores it (found by the crash gate's hot-key power tier
+     * once the sliced flush made such manifests common; compaction installs
+     * could always write one). */
+    uint64_t nd = 0;
+    for (size_t i = 0; i < db->ndead; i++) nd += db->dead[i].death <= db->durable_seq;
+    put_u64(&b, nd);
+    for (size_t i = 0; i < db->ndead; i++)
+        if (db->dead[i].death <= db->durable_seq) { put_u64(&b, db->dead[i].id); put_u64(&b, db->dead[i].death); }
     unsigned char t[4];
     put32(t, crc32c(b.p, b.n));
     gsbuf_append(&b, t, 4);
@@ -1482,9 +1505,13 @@ static int open_log(GsStore *db, uint64_t num, int create) {
 }
 
 static void comp_free(GsStore *db, int abandon);
+static void flush_drop(GsStore *db);
 
 static void store_free(GsStore *db) {
     comp_free(db, 1); /* an unfinished compaction's outputs are named nowhere */
+    flush_drop(db); /* and so are an unfinished flush's; its logs replay */
+    /* a spare log stays: the next open replays it (zeros) and writes to it */
+    if (db->spare) gsql_io_close(db->spare);
     if (db->log) gsql_io_close(db->log);
     if (db->lockf) gsql_io_close(db->lockf);
     version_unref(db, db->cur);
@@ -1548,7 +1575,7 @@ static int in_version(Version *v, uint64_t num) {
 static int named(GsStore *db, NameKind k, uint64_t num) {
     switch (k) {
     case N_MANIFEST: case N_LOCK: return 1;
-    case N_LOG: return num >= db->log_first && num <= db->log_num;
+    case N_LOG: return (num >= db->log_first && num <= db->log_num) || (db->spare && num == db->log_num + 1);
     case N_SST: return in_version(db->cur, num);
     case N_BLOB: return blob_find(db, num) != NULL;
     default: return 0;
@@ -1658,6 +1685,15 @@ static int lsm_open_base(const char *path, const GsOptions *opt, GsStore **out) 
             uint64_t sz = 0;
             gsql_io_size(db->log, &sz);
             if (sz > db->log_end) rc = zero_tail(db, db->log, db->log_end);
+        }
+        /* The live log may be a spare made ahead of time, which no manifest
+         * named and whose name was not yet durable when the crash came: the
+         * disk can show it while the name stays pending, so a commit synced
+         * into it after recovery was lost by the next power loss (the crash
+         * gate's hot-key power tier). Make its name durable now. */
+        if (rc == GS_OK) {
+            rc = ioerr(gsql_io_sync_dir(db->io, db->dir));
+            db->st.flushes++;
         }
         db->durable_seq = db->last_seq;
     } else {
@@ -2164,77 +2200,221 @@ static int maybe_compact(GsStore *db, uint64_t budget) {
     return GS_OK;
 }
 
-/* Write the memtable to a level-0 file and start a new log. */
-static int flush_memtable(GsStore *db) {
-    Skip *mem = &db->cur->mem->sk;
-    if (!mem->count) return GS_OK;
-    /* the new log first: commits after this go to it */
-    GsqlFile *oldlog = db->log;
-    uint64_t oldnum = db->log_num;
-    char *name = log_name(db->path, oldnum + 1);
-    GsqlFile *nl = NULL;
-    int rc = ioerr(gsql_io_open(db->io, name, GSQL_IO_CREATE, &nl));
-    if (rc == GS_OK) rc = ioerr(gsql_io_truncate(nl, 0));
-    if (rc == GS_OK) rc = prefill_log(db, nl, 0);
-    if (rc == GS_OK) rc = flush_file(db, nl);
-    free(name);
-    if (rc) { if (nl) gsql_io_close(nl); return rc; }
+/* ---- the memtable's flush, off the commit path --------------------------------- */
+
+/* A flush used to run inside the commit that filled the memtable: ~75 ms on
+ * W3 larger than memory, 26 of them preparing the next log (64 MB of zeros,
+ * synced) and ~40 writing the level-0 file. Now the full memtable is FROZEN
+ * -- it stays in the version as `imm`, read between the live memtable and
+ * level 0, and commits go on into a new one -- and written out a slice per
+ * commit. The next log is made ahead of time the same way. A freeze costs a
+ * sync of the old log (so `durable_seq`, one high-water mark, stays true for
+ * the frozen commits) and a version switch. If the new memtable fills before
+ * the flush is done, the flush is finished outright: the writer waits, as it
+ * does for compaction (COMP_STALL). Recovery needs nothing new: until the
+ * flush installs, the manifest still replays every log from the frozen
+ * memtable's first. */
+typedef struct Flush {
     Builder b;
-    rc = bld_open(db, &b);
-    /* Only the newest version of each key, and nothing of a retired tree: the
-     * file is read only by readers that begin after this flush, which makes
-     * every commit in it durable (see horizon). Writing every version left
-     * level 0 holding ~100 MB of shadowed versions for 1,000 hot keys. */
-    const SkNode *prev = NULL;
-    for (SkNode *n = mem->head->next[0]; n && rc == GS_OK; n = n->next[0]) {
-        Ent e = sk_ent(n);
-        int same = prev && prev->kn == n->kn && memcmp(prev->k, n->k, n->kn) == 0;
-        prev = n;
-        if (same) continue;
-        uint64_t death = e.kn >= ID_LEN ? death_of(db, ukey_id(e.k)) : 0;
-        if (death && death <= db->last_seq) continue;
-        bld_add(&b, &e);
-        rc = b.rc;
+    int open;
+    SkNode *at;            /* the next entry of imm to write */
+    const SkNode *prev;
+    uint64_t upto;         /* last_seq at the freeze: imm's newest commit */
+    uint64_t first, last;  /* the logs imm's commits are in */
+    U64s pending;          /* its file numbers, named nowhere until it installs */
+} Flush;
+
+/* Bytes of flush work, and of the spare log's zeros, a commit pays for each
+ * byte it wrote: the flush finishes by the time the new memtable is half
+ * full, and the spare's zeros (twice the memtable) by then too. */
+#define FLUSH_CREDIT 2
+#define SPARE_CREDIT 4
+
+static uint64_t log_size(const GsStore *db) { return db->memtable_limit * 2 + 65536; }
+
+/* Fill the spare log with zeros, up to `budget` bytes of it, each slice
+ * synced as it goes so no single commit pays for the whole file. Ready once
+ * full, synced and its name durable: a commit landing in a log whose name a
+ * power loss could take would be lost with it. */
+static int spare_step(GsStore *db, uint64_t budget) {
+    if (db->spare_ready) return GS_OK;
+    int rc = GS_OK;
+    if (!db->spare) {
+        char *name = log_name(db->path, db->log_num + 1);
+        rc = ioerr(gsql_io_open(db->io, name, GSQL_IO_CREATE, &db->spare));
+        free(name);
+        if (rc == GS_OK) rc = ioerr(gsql_io_truncate(db->spare, 0));
+        if (rc) { if (db->spare) gsql_io_close(db->spare); db->spare = NULL; return rc; }
+        db->spare_filled = 0;
     }
-    FileMeta *fm = NULL;
-    int r2 = rc == GS_OK || b.f ? bld_close(&b, &fm) : rc;
-    if (rc == GS_OK) rc = r2;
-    if (rc) { gsql_io_close(nl); if (fm) file_free(fm); return rc; }
+    static const unsigned char zero[65536];
+    uint64_t size = log_size(db), spent = 0;
+    while (db->spare_filled < size && spent < budget) {
+        size_t n = size - db->spare_filled < sizeof zero ? (size_t)(size - db->spare_filled) : sizeof zero;
+        if ((rc = ioerr(gsql_io_write_at(db->spare, db->spare_filled, zero, n)))) return rc;
+        db->st.bytes_written += n;
+        db->spare_filled += n;
+        spent += n;
+    }
+    if (spent && (rc = flush_file(db, db->spare))) return rc;
+    if (db->spare_filled < size) return GS_OK;
+    rc = ioerr(gsql_io_sync_dir(db->io, db->dir));
+    db->st.flushes++;
+    if (rc) return rc;
+    db->spare_ready = 1;
+    return GS_OK;
+}
+
+/* Drop a flush's file: its builder and anything it wrote. The frozen
+ * memtable stays, to be flushed again from its start. */
+static void flush_abandon(GsStore *db) {
+    Flush *f = db->fl;
+    if (!f) return;
+    if (f->open) {
+        FileMeta *fm = NULL;
+        f->open = 0;
+        bld_close(&f->b, &fm);
+        if (fm) { fm->obsolete = 1; file_free(fm); }
+    }
+    for (size_t i = 0; i < f->pending.n; i++) {
+        char *name = file_name(db, f->pending.v[i]);
+        gsql_io_remove(db->io, name);
+        free(name);
+        name = blob_name(db, f->pending.v[i]);
+        gsql_io_remove(db->io, name);
+        free(name);
+    }
+    f->pending.n = 0;
+    f->at = db->cur->imm ? db->cur->imm->sk.head->next[0] : NULL;
+    f->prev = NULL;
+}
+
+static void flush_drop(GsStore *db) {
+    if (!db->fl) return;
+    flush_abandon(db);
+    u64_free(&db->fl->pending);
+    free(db->fl);
+    db->fl = NULL;
+}
+
+/* Freeze the full memtable and switch to the spare log. */
+static int freeze(GsStore *db) {
+    if (db->fl || !db->cur->mem->sk.count) return GS_OK;
+    int rc = spare_step(db, UINT64_MAX); /* not ready yet: finish it now */
+    if (rc) return rc;
+    /* the frozen commits not yet synced are in the old log, which nothing
+     * will sync after this: sync it now, so durable_seq covers them */
+    if (db->durable_seq != db->last_seq) {
+        if ((rc = flush_file(db, db->log))) { db->failed = 1; return rc; }
+        db->durable_seq = db->last_seq;
+    }
     Version *nv = version_copy(db->cur);
-    mem_unref(nv->mem);
+    nv->imm = nv->mem; /* the copy's reference, moved */
     nv->mem = mem_new();
+    Version *old = db->cur;
+    db->cur = nv;
+    version_unref(db, old);
+    db->vgen++;
+    Flush *f = calloc(1, sizeof *f);
+    f->at = nv->imm->sk.head->next[0];
+    f->upto = db->last_seq;
+    f->first = db->log_first;
+    f->last = db->log_num;
+    db->fl = f;
+    gsql_io_close(db->log);
+    db->log = db->spare;
+    db->log_num++;
+    db->log_end = 0;
+    db->spare = NULL;
+    db->spare_ready = 0;
+    db->spare_filled = 0;
+    return GS_OK;
+}
+
+/* Install the finished flush: one manifest names the file and moves the
+ * first log to replay past the frozen memtable's; then its logs go. */
+static int flush_install(GsStore *db) {
+    Flush *f = db->fl;
+    FileMeta *fm = NULL;
+    int rc = GS_OK;
+    if (f->open) {
+        f->open = 0;
+        rc = bld_close(&f->b, &fm);
+        if (rc) { flush_abandon(db); return rc; }
+    }
+    Version *nv = version_copy(db->cur);
+    mem_unref(nv->imm);
+    nv->imm = NULL;
     if (fm) version_add(nv, 0, fm);
-    db->log_num = oldnum + 1;
     uint64_t first_before = db->log_first;
-    db->log_first = oldnum + 1; /* the memtable is in the file now */
-    /* the manifest names the file and the new log; its directory flush makes
-     * the new names durable before any commit lands in the new log */
+    db->log_first = f->last + 1;
     Version *old = db->cur;
     db->cur = nv;
     rc = manifest_write(db);
     if (rc) {
         db->cur = old;
-        db->log_num = oldnum;
         db->log_first = first_before;
-        /* the new file is named by no manifest: it goes (left, it stayed on
-         * disk for good once a later manifest's next-file number passed it) */
+        /* the file is named by no manifest: it goes, and the flush starts over */
         if (fm) fm->obsolete = 1;
         version_unref(db, nv);
-        gsql_io_close(nl);
+        f->pending.n = 0; /* fm's own deletion covers its files */
+        flush_abandon(db);
         return rc;
     }
     version_unref(db, old);
-    gsql_io_close(oldlog);
-    db->log = nl;
-    db->log_end = 0;
-    /* every log the memtable held, not only the last: an open may have
-     * replayed several into it */
-    for (uint64_t k = first_before; k <= oldnum; k++) {
-        name = log_name(db->path, k);
+    db->vgen++;
+    for (uint64_t k = f->first; k <= f->last; k++) {
+        char *name = log_name(db->path, k);
         gsql_io_remove(db->io, name);
         free(name);
     }
-    db->durable_seq = db->last_seq; /* everything is in a flushed file */
+    u64_free(&f->pending);
+    free(f);
+    db->fl = NULL;
+    return GS_OK;
+}
+
+/* Write up to `budget` bytes of the frozen memtable; install when it is all
+ * written. Only the newest version of each key, and nothing of a tree
+ * retired by the freeze: the file is read only by readers that begin after
+ * it installs, whose snapshots are past every frozen commit (the freeze made
+ * them durable). Writing every version left level 0 holding ~100 MB of
+ * shadowed versions for 1,000 hot keys. */
+static int flush_step(GsStore *db, uint64_t budget) {
+    Flush *f = db->fl;
+    if (!f) return GS_OK;
+    uint64_t spent = 0;
+    int rc = GS_OK;
+    while (f->at && spent < budget) {
+        SkNode *n = f->at;
+        f->at = n->next[0];
+        int same = f->prev && f->prev->kn == n->kn && memcmp(f->prev->k, n->k, n->kn) == 0;
+        f->prev = n;
+        if (same) continue;
+        Ent e = sk_ent(n);
+        uint64_t death = e.kn >= ID_LEN ? death_of(db, ukey_id(e.k)) : 0;
+        if (death && death <= f->upto) continue;
+        if (!f->open) {
+            if ((rc = bld_open(db, &f->b))) { flush_abandon(db); return rc; }
+            u64_push(&f->pending, f->b.num);
+            f->b.track = &f->pending;
+            f->open = 1;
+        }
+        bld_add(&f->b, &e);
+        if ((rc = f->b.rc)) { flush_abandon(db); return rc; }
+        spent += n->kn + n->vn + 16;
+    }
+    if (f->at) return GS_OK;
+    return flush_install(db);
+}
+
+/* Flush every memtable now, the frozen one and the live one: before a large
+ * transaction's spilled runs go into level 0 above them. */
+static int flush_memtable(GsStore *db) {
+    int rc = flush_step(db, UINT64_MAX);
+    if (rc == GS_OK && db->cur->mem->sk.count) rc = freeze(db);
+    if (rc == GS_OK) rc = flush_step(db, UINT64_MAX);
+    if (rc) return rc;
     return maybe_compact(db, 0);
 }
 
@@ -2277,6 +2457,7 @@ static int txn_sources(struct GsTxn *t, Src *src, size_t *n) {
         }
     }
     src[k].kind = 0; src[k].sk = &t->v->mem->sk; k++;
+    if (t->v->imm) { src[k].kind = 0; src[k].sk = &t->v->imm->sk; k++; }
     Version *v = t->v;
     for (size_t i = v->nfiles[0]; i-- > 0;) {
         src[k].kind = 1; src[k].db = t->db; src[k].files = &v->files[0][i]; src[k].nfiles = 1; k++;
@@ -2287,7 +2468,7 @@ static int txn_sources(struct GsTxn *t, Src *src, size_t *n) {
     return GS_OK;
 }
 
-static size_t max_sources(struct GsTxn *t) { return 2 + t->nruns + t->v->nfiles[0] + LEVELS; }
+static size_t max_sources(struct GsTxn *t) { return 3 + t->nruns + t->v->nfiles[0] + LEVELS; }
 
 /* The newest version of `k` in one file, read at `seq`: 1 found (alive or a
  * deletion, *del says which), 0 not there, <0 an error. */
@@ -2340,13 +2521,17 @@ static int lookup(struct GsTxn *t, const unsigned char *k, size_t kn, Ent *out, 
             if (f) return del ? GS_NOT_FOUND : GS_OK;
         }
     }
-    SkNode *n = sk_ge(&t->v->mem->sk, k, kn, t->snap);
-    if (n && n->kn == kn && !memcmp(n->k, k, kn)) {
-        if (n->type == TYPE_DEL) return GS_NOT_FOUND;
-        gsbuf_set(keep, n->v, n->vn);
-        *out = sk_ent(n);
-        out->v = keep->p;
-        return GS_OK;
+    for (int which = 0; which < 2; which++) {
+        Mem *mm = which ? t->v->imm : t->v->mem;
+        if (!mm) continue;
+        SkNode *n = sk_ge(&mm->sk, k, kn, t->snap);
+        if (n && n->kn == kn && !memcmp(n->k, k, kn)) {
+            if (n->type == TYPE_DEL) return GS_NOT_FOUND;
+            gsbuf_set(keep, n->v, n->vn);
+            *out = sk_ent(n);
+            out->v = keep->p;
+            return GS_OK;
+        }
     }
     Version *v = t->v;
     for (int l = 0; l < LEVELS; l++) {
@@ -3058,13 +3243,17 @@ static int commit_runs(struct GsTxn *t, uint64_t *commit_id) {
     for (size_t i = 0; i < t->retired.n; i++) dead_add(db, t->retired.v[i], commit);
     if (t->retired.n) db->sweep = 1;
     Version *old = db->cur;
-    uint64_t last_before = db->last_seq;
+    uint64_t last_before = db->last_seq, durable_before = db->durable_seq;
     db->cur = nv;
     db->last_seq = commit;
+    /* this manifest is what makes the commit durable, so it records the
+     * commit's deaths (manifest_write writes only durable ones) */
+    db->durable_seq = commit;
     rc = manifest_write(db);
     if (rc) {
         db->cur = old;
         db->last_seq = last_before;
+        db->durable_seq = durable_before;
         db->ndead = ndead_before;
         /* the version took the runs: let it drop them, as garbage */
         for (size_t r = 0; r < t->nruns; r++) t->runs[r]->obsolete = 1;
@@ -3135,11 +3324,18 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     db->writer = NULL;
     txn_free(t);
     if (rc) { db->failed = 1; return GS_IO; }
+    /* the commit stands whatever these answer; a failed flush made the store
+     * unusable, and anything else is tried again at a later commit */
     if (db->cur->mem->sk.bytes >= db->memtable_limit) {
-        rc = flush_memtable(db);
-        /* the commit stands either way; a failed flush made the store unusable */
+        if (db->fl) rc = flush_step(db, UINT64_MAX); /* the last one is not done: wait for it */
+        if (rc == GS_OK) rc = freeze(db);
         if (rc == GS_IO || db->failed) return GS_IO;
     }
+    /* this commit's share of the frozen memtable's flush, and of the next log */
+    rc = flush_step(db, wrote * FLUSH_CREDIT);
+    if (rc == GS_IO || db->failed) return GS_IO;
+    rc = spare_step(db, wrote * SPARE_CREDIT);
+    if (rc == GS_IO || db->failed) return GS_IO;
     /* this commit's share of the merge work its writing created */
     rc = maybe_compact(db, wrote * COMP_CREDIT);
     if (rc == GS_IO || db->failed) return GS_IO;
@@ -3188,6 +3384,7 @@ static int check_one(void *ctx, const char *name) {
     if (k == N_SST || k == N_BLOB) {
         for (size_t i = 0; i < db->garbage.n; i++) if (db->garbage.v[i] == num) return 0;
         for (size_t i = 0; db->comp && i < db->comp->pending.n; i++) if (db->comp->pending.v[i] == num) return 0;
+        for (size_t i = 0; db->fl && i < db->fl->pending.n; i++) if (db->fl->pending.v[i] == num) return 0;
     }
     /* each name stands for itself: a sorted file 8 does not account for a
      * blob file 8 (it was exactly such a pair that leaked) */
@@ -3296,6 +3493,7 @@ struct GsBackup {
     Builder b;
     int building;      /* the memtable's file is open */
     SkNode *mem;       /* the next memtable entry */
+    SkNode *then;      /* the live memtable, when `mem` walks the frozen one */
     GsBuf lastkey;
     int havekey;
     int done;
@@ -3393,7 +3591,9 @@ static int lsm_backup_begin(struct GsTxn *snap, const char *dest, GsBackup **out
             }
         }
     u64_free(&seen);
-    b->mem = v->mem->sk.head->next[0];
+    /* the frozen memtable first, as the older level-0 file */
+    if (v->imm) { b->mem = v->imm->sk.head->next[0]; b->then = v->mem->sk.head->next[0]; }
+    else b->mem = v->mem->sk.head->next[0];
     return rc;
 }
 
@@ -3434,28 +3634,36 @@ static int lsm_backup_step(GsBackup *bk, uint64_t budget, int *done) {
         bk->at++;
     }
     if (bk->at < bk->njobs) return GS_OK;
-    /* the memtable's view: each key's newest version at or before the
-     * snapshot, as one more level-0 file, newest of them all */
-    while (bk->mem && spent < budget) {
-        SkNode *n = bk->mem;
-        bk->mem = n->next[0];
-        if (n->seq > bk->snap->snap) continue;
-        if (bk->havekey && bk->lastkey.n == n->kn && memcmp(bk->lastkey.p, n->k, n->kn) == 0) continue;
-        gsbuf_set(&bk->lastkey, n->k, n->kn);
-        bk->havekey = 1;
-        if (!bk->building) { if ((rc = bld_open(t, &bk->b))) return rc; bk->building = 1; }
-        Ent e = sk_ent(n);
-        bld_add(&bk->b, &e);
-        if ((rc = bk->b.rc)) return rc;
-        spent += n->kn + n->vn + 16;
-    }
-    if (bk->mem) return GS_OK;
-    if (bk->building) {
-        FileMeta *fm = NULL;
-        rc = bld_close(&bk->b, &fm);
-        bk->building = 0;
-        if (rc) return rc;
-        if (fm) { version_add(t->cur, 0, fm); hnd_close(t, fm->h); }
+    /* the memtables' view: each key's newest version at or before the
+     * snapshot, as one more level-0 file, newest of them all -- two, when a
+     * frozen memtable was still being flushed, it first: a key's newest
+     * version at the snapshot may be in either */
+    for (;;) {
+        while (bk->mem && spent < budget) {
+            SkNode *n = bk->mem;
+            bk->mem = n->next[0];
+            if (n->seq > bk->snap->snap) continue;
+            if (bk->havekey && bk->lastkey.n == n->kn && memcmp(bk->lastkey.p, n->k, n->kn) == 0) continue;
+            gsbuf_set(&bk->lastkey, n->k, n->kn);
+            bk->havekey = 1;
+            if (!bk->building) { if ((rc = bld_open(t, &bk->b))) return rc; bk->building = 1; }
+            Ent e = sk_ent(n);
+            bld_add(&bk->b, &e);
+            if ((rc = bk->b.rc)) return rc;
+            spent += n->kn + n->vn + 16;
+        }
+        if (bk->mem) return GS_OK;
+        if (bk->building) {
+            FileMeta *fm = NULL;
+            rc = bld_close(&bk->b, &fm);
+            bk->building = 0;
+            if (rc) return rc;
+            if (fm) { version_add(t->cur, 0, fm); hnd_close(t, fm->h); }
+        }
+        if (!bk->then) break;
+        bk->mem = bk->then;
+        bk->then = NULL;
+        bk->havekey = 0;
     }
     /* an empty log, then the manifest that makes it a store */
     char *ln = log_name(bk->dest, 1);
@@ -3508,6 +3716,7 @@ static void lsm_stats(GsStore *db, GsStats *out) {
      * it could not see the files blob reclamation is about */
     for (size_t i = 0; i < db->nblob; i++) total += blob_total(db, &db->blob[i]);
     if (db->log) { gsql_io_size(db->log, &sz); total += sz; }
+    if (db->spare) { sz = 0; gsql_io_size(db->spare, &sz); total += sz; }
     out->file_bytes = total;
 }
 
