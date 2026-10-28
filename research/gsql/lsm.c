@@ -1241,7 +1241,7 @@ typedef struct Comp {
      * one of its values is live. */
     U64s gc;
     GsBuf reloc;
-    int for_gc;           /* begun by gc_start: paced by GC_CREDIT, not COMP_CREDIT */
+    int for_gc;           /* begun by gc_start: paced by GC_CREDIT, not the ordinary credit */
 } Comp;
 
 static int manifest_write(GsStore *db) {
@@ -2148,22 +2148,49 @@ static int comp_wanted(GsStore *db) {
     return -1;
 }
 
-/* Spend up to `budget` bytes of merge work, starting compactions as they are
- * wanted. The budget is a commit's share (COMP_CREDIT times what it wrote),
- * so the work keeps pace with the writing that creates it. If level 0 backs
- * up past COMP_STALL times its trigger anyway, the merge in progress is
+/* Spend a commit's share of merge work, starting compactions as they are
+ * wanted. The share is the credit times what the commit wrote, so the work
+ * keeps pace with the writing that creates it, and the credit answers to the
+ * DEBT: COMP_CREDIT_MIN while the tree is just over its shape, rising to
+ * COMP_CREDIT_MAX as the pressure (the worst of level 0's file count over its
+ * trigger and each level's bytes over its limit) nears COMP_STALL. If level 0
+ * backs up past COMP_STALL times its trigger anyway, the merge in progress is
  * finished outright: the writer waits, as RocksDB's does at its stall
  * threshold, and that bounds both the debt and the tail. */
-#define COMP_CREDIT 32
+#ifndef COMP_CREDIT_MIN
+#define COMP_CREDIT_MIN 32
+#endif
+#ifndef COMP_CREDIT_MAX
+#define COMP_CREDIT_MAX 32
+#endif
 #define COMP_STALL 3
 /* A compaction for blob space only has to keep pace with the garbage being
  * made: past GC_DEAD_PCT dead, a byte relocated frees at least a byte. Spent
- * at COMP_CREDIT it tripled W8's p99 write (945 to 3,350 us), because the
+ * at the ordinary credit it tripled W8's p99 write (945 to 3,350 us), because the
  * credit a shaped tree leaves unspent became every commit's work. */
 #define GC_CREDIT 4
 static int sweep_dead(GsStore *db);
-static int maybe_compact(GsStore *db, uint64_t budget) {
+/* The pressure, in thousandths: 1000 is the shape's limit. */
+static uint64_t comp_pressure(GsStore *db) {
+    uint64_t p = (uint64_t)db->cur->nfiles[0] * 1000 / db->l0_trigger;
+    for (int l = 1; l < LEVELS - 1; l++) {
+        uint64_t lim = level_limit(db, l), b = level_bytes(db->cur, l);
+        if (b / 1000 >= lim) return UINT64_MAX / 2;
+        if (b * 1000 / lim > p) p = b * 1000 / lim;
+    }
+    return p;
+}
+
+static uint64_t comp_credit(GsStore *db) {
+    uint64_t p = comp_pressure(db);
+    if (p <= 1000) return COMP_CREDIT_MIN;
+    if (p >= COMP_STALL * 1000) return COMP_CREDIT_MAX;
+    return COMP_CREDIT_MIN + (COMP_CREDIT_MAX - COMP_CREDIT_MIN) * (p - 1000) / ((COMP_STALL - 1) * 1000);
+}
+
+static int maybe_compact(GsStore *db, uint64_t wrote) {
     if (db->sweep) { int rc = sweep_dead(db); if (rc) return rc; }
+    uint64_t budget = wrote * comp_credit(db);
     for (int guard = 0; guard < 64; guard++) {
         int rc;
         if (!db->comp) {
@@ -2183,7 +2210,7 @@ static int maybe_compact(GsStore *db, uint64_t budget) {
             /* a commit's GC share, and no more after it this commit; once
              * the shape wants a compaction, this one is in its way and is
              * finished at the ordinary pace */
-            uint64_t share = budget / COMP_CREDIT * GC_CREDIT;
+            uint64_t share = wrote * GC_CREDIT;
             return comp_step(db, share ? share : 1, NULL);
         }
         uint64_t used = 0;
@@ -3315,7 +3342,7 @@ static int commit_runs(struct GsTxn *t, uint64_t *commit_id) {
     if (commit_id) *commit_id = commit;
     db->writer = NULL;
     txn_free(t);
-    rc = maybe_compact(db, wrote * COMP_CREDIT);
+    rc = maybe_compact(db, wrote);
     return rc == GS_IO || db->failed ? GS_IO : GS_OK;
 }
 
@@ -3386,7 +3413,7 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     if (!db->fl) rc = spare_step(db, wrote * SPARE_CREDIT);
     if (rc == GS_IO || db->failed) return GS_IO;
     /* this commit's share of the merge work its writing created */
-    rc = maybe_compact(db, wrote * COMP_CREDIT);
+    rc = maybe_compact(db, wrote);
     if (rc == GS_IO || db->failed) return GS_IO;
     return GS_OK;
 }

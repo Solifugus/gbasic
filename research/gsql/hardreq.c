@@ -81,7 +81,9 @@ static uint64_t dir_bytes(const char *dir) { return dir_bytes_of(dir, 0); }
 static uint64_t log_bytes(const char *dir) { return dir_bytes_of(dir, 1); }
 
 static GsStore *open_store(const char *path, int create) {
-    GsOptions o = {create, 4096, 0, NULL, 0, 0, 0, 0};
+    /* HARDREQ_MEMTABLE sets 2.C's memtable bytes, for recovery against memtable size */
+    const char *mt = getenv("HARDREQ_MEMTABLE");
+    GsOptions o = {create, 4096, 0, NULL, mt ? strtoull(mt, NULL, 10) : 0, 0, 0, 0};
     GsStore *db = NULL;
     int rc = E->open(path, &o, &db);
     if (rc) { fail("open answered %s%lld", gs_status_name(rc), 0); return NULL; }
