@@ -41,6 +41,8 @@ SAN="-g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer"
 build test_btree "$SAN" test_btree.c btree.c common.c $IO || exit 1
 build test_store "$SAN" test_store.c $ENGINE_SRC $IO || exit 1
 build crash_store "-g -O2" crash_store.c $ENGINE_SRC $IO ../../src/gsql/crash.c || exit 1
+# the bench, for its version-store check (§4): the candidates only, no reference engines
+build bench "$SAN" bench.c $ENGINE_SRC $IO -lm || exit 1
 
 printf 'TIER btree: the shared B+tree against a model, both pager modes, under ASan\n'
 for seed in 1 2 3; do
@@ -59,6 +61,15 @@ for e in "${ENGINES[@]}"; do
     mkdir -p "$work/real-$e"
     out=$("$work/test_store" "$e" 9 real "$work/real-$e" 2>&1 | tail -1)
     case "$out" in ok*) pass "real filesystem: $out" ;; *) fail "real filesystem: $out" ;; esac
+
+    printf 'TIER version/%s: the version store (§4) against a model, under ASan\n' "$e"
+    # AS OF every commit that matters to each row, every second mapped, rows
+    # that never existed, and the counter recovered across a reopen
+    mkdir -p "$work/vs-$e"
+    out=$("$work/bench" "$e" w9-check "$work/vs-$e" 200 2000 2>&1)
+    case "$out" in *'"mismatches": 0}'*) pass "$(printf '%s' "$out" | grep -o '"checks": [0-9]*, "mismatches": 0')" ;;
+        *) printf '%s\n' "$out" | grep MISMATCH | head -5; fail "version store: $(printf '%s' "$out" | tail -1)" ;; esac
+    rm -rf "$work/vs-$e"
 
     printf 'TIER crash/%s: the gate, 10,000 crashes per mode, zero violations\n' "$e"
     # light: 512-byte pages, small workloads crashed at sampled points with
