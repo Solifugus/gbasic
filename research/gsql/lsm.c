@@ -301,7 +301,7 @@ struct GsStore {
     /* The next log, made ahead of time: log_num + 1, filled with zeros a
      * slice per commit and then synced, so a freeze only switches to it. */
     GsqlFile *spare;
-    uint64_t spare_filled;
+    uint64_t spare_filled, spare_credit;
     int spare_ready;
     uint64_t gc_seen;         /* the vgen at which no blob file was worth collecting */
     int sweep;                /* a retired tree or a released snapshot may have freed whole files */
@@ -1413,9 +1413,10 @@ static int dead_add(GsStore *db, uint64_t id, uint64_t death) {
     return GS_OK;
 }
 
-/* Replay one log into the memtable; *end gets the offset after its last valid
- * record. */
-static int replay_log(GsStore *db, GsqlFile *f, uint64_t *end) {
+/* Replay log `num` into the memtable; *end gets the offset after its last
+ * valid record. A record carrying another log's number is the end: the file
+ * was that log once, and was recycled (flush_install). */
+static int replay_log(GsStore *db, GsqlFile *f, uint64_t num, uint64_t *end) {
     uint64_t size = 0;
     gsql_io_size(f, &size);
     uint64_t at = 0;
@@ -1427,14 +1428,15 @@ static int replay_log(GsStore *db, GsqlFile *f, uint64_t *end) {
         if (at + 8 > size) break;
         if ((rc = ioerr(gsql_io_read_at(f, at, h, 8, &got))) || got != 8) break;
         uint32_t len = get32(h), crc = get32(h + 4);
-        if (len < 16 || at + 8 + len > size) break;
+        if (len < 24 || at + 8 + len > size) break;
         if (!gsbuf_reserve(&rec, len)) { rc = GS_IO; break; }
         if ((rc = ioerr(gsql_io_read_at(f, at + 8, rec.p, len, &got))) || got != len) break;
         if (crc32c(rec.p, len) != crc) break;
         const unsigned char *p = rec.p;
-        size_t q = 12;
+        size_t q = 20;
         uint64_t base = get64(p);
         uint32_t count = get32(p + 8);
+        if (get64(p + 12) != num) break;
         int bad = 0;
         for (uint32_t i = 0; i < count && !bad; i++) {
             uint64_t kn, vn;
@@ -1671,7 +1673,7 @@ static int lsm_open_base(const char *path, const GsOptions *opt, GsStore **out) 
             if (orc == ENOENT) break;
             if (orc) { rc = ioerr(orc); break; }
             uint64_t end = 0;
-            rc = replay_log(db, lf, &end);
+            rc = replay_log(db, lf, k, &end);
             if (db->log) gsql_io_close(db->log);
             db->log = lf;
             db->log_num = k;
@@ -2220,6 +2222,13 @@ typedef struct Flush {
  * full, and the spare's zeros (twice the memtable) by then too. */
 #define FLUSH_CREDIT 2
 #define SPARE_CREDIT 4
+/* a read's share of a pending flush (lsm_begin_read) */
+#define READ_FLUSH_SLICE (256u << 10)
+/* The spare's zeros are written and synced this much at a time: credit
+ * builds up across commits until there is a chunk. Synced every slice, it
+ * cost every commit while it filled one more fsync -- W8's p99 write went
+ * from 1.0 to 2.3 ms. */
+#define SPARE_CHUNK (4u << 20)
 
 static uint64_t log_size(const GsStore *db) { return db->memtable_limit * 2 + 65536; }
 
@@ -2229,6 +2238,12 @@ static uint64_t log_size(const GsStore *db) { return db->memtable_limit * 2 + 65
  * power loss could take would be lost with it. */
 static int spare_step(GsStore *db, uint64_t budget) {
     if (db->spare_ready) return GS_OK;
+    if (budget != UINT64_MAX) {
+        db->spare_credit += budget;
+        if (db->spare_credit < SPARE_CHUNK && db->spare_filled + db->spare_credit < log_size(db)) return GS_OK;
+        budget = db->spare_credit;
+    }
+    db->spare_credit = 0;
     int rc = GS_OK;
     if (!db->spare) {
         char *name = log_name(db->path, db->log_num + 1);
@@ -2319,6 +2334,7 @@ static int freeze(GsStore *db) {
     db->spare = NULL;
     db->spare_ready = 0;
     db->spare_filled = 0;
+    db->spare_credit = 0;
     return GS_OK;
 }
 
@@ -2354,7 +2370,29 @@ static int flush_install(GsStore *db) {
     }
     version_unref(db, old);
     db->vgen++;
+    /* The newest of the frozen logs becomes the next spare, renamed: it is
+     * already full size and synced, so the spare costs no zeros (writing
+     * them, even in slices, cost W8's p99 write 1.0 -> 2.3 ms or more). Its
+     * records carry its old number, so replay stops at them. Only now, with
+     * the manifest durable: renamed before it, a crash left the manifest
+     * replaying from a log that was gone. Its new name is made durable by
+     * spare_step before any commit lands in it. The rest go. */
+    uint64_t keep = 0;
+    if (!db->spare) {
+        char *from = log_name(db->path, f->last), *to = log_name(db->path, db->log_num + 1);
+        if (gsql_io_rename(db->io, from, to) == 0 &&
+            gsql_io_open(db->io, to, 0, &db->spare) == 0) {
+            uint64_t sz = 0;
+            gsql_io_size(db->spare, &sz);
+            db->spare_filled = sz >= log_size(db) ? log_size(db) : 0;
+            if (!db->spare_filled) { gsql_io_close(db->spare); db->spare = NULL; gsql_io_remove(db->io, to); }
+            else keep = f->last;
+        }
+        free(from);
+        free(to);
+    }
     for (uint64_t k = f->first; k <= f->last; k++) {
+        if (k == keep) continue;
         char *name = log_name(db->path, k);
         gsql_io_remove(db->io, name);
         free(name);
@@ -3143,6 +3181,12 @@ static int lsm_tree_list(struct GsTxn *t, int (*each)(void *, GsBytes), void *ct
 
 static int lsm_begin_read(GsStore *db, struct GsTxn **out) {
     if (db->failed) return GS_FAILED;
+    /* A flush advances only with commits, so a store that stopped writing
+     * kept its frozen memtable for good, and every read searched two
+     * memtables (YCSB C, read-only after its load: 494 k reads/s down to
+     * 388 k). A read moves it on too, a small slice at a time; not while a
+     * writer is open, whose spilled runs no manifest may yet pass. */
+    if (db->fl && !db->writer) flush_step(db, READ_FLUSH_SLICE);
     struct GsTxn *t = calloc(1, sizeof *t);
     t->db = db;
     t->snap = db->durable_seq; /* §1.3: only what is durable is visible */
@@ -3274,11 +3318,14 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     /* one log record: the whole transaction, sequences from base */
     uint64_t base = db->last_seq + 1, count = t->buf.count;
     GsBuf rec = {0};
-    unsigned char h[16] = {0};
+    unsigned char h[20] = {0};
     gsbuf_append(&rec, h, 8); /* len, crc */
     put64(h, base);
     put32(h + 8, (uint32_t)count);
-    gsbuf_append(&rec, h, 12);
+    /* the log's own number: a recycled log still holds the records of the
+     * log it was, checksums intact, and replay must stop at them */
+    put64(h + 12, db->log_num);
+    gsbuf_append(&rec, h, 20);
     for (SkNode *n = t->buf.head->next[0]; n; n = n->next[0]) {
         unsigned char b[12];
         b[0] = (unsigned char)n->type;
@@ -3325,7 +3372,8 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     /* this commit's share of the frozen memtable's flush, and of the next log */
     rc = flush_step(db, wrote * FLUSH_CREDIT);
     if (rc == GS_IO || db->failed) return GS_IO;
-    rc = spare_step(db, wrote * SPARE_CREDIT);
+    /* not while a flush is pending: its install recycles a log as the spare */
+    if (!db->fl) rc = spare_step(db, wrote * SPARE_CREDIT);
     if (rc == GS_IO || db->failed) return GS_IO;
     /* this commit's share of the merge work its writing created */
     rc = maybe_compact(db, wrote * COMP_CREDIT);
