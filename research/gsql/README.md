@@ -111,7 +111,7 @@ The comparison is meant to measure the engines, not two independently written tr
 - **Value separation.**
   - **Blob files.** Values of 4 KiB or more go to a blob file written beside the sorted file they are flushed with. The entry holds a 24-byte pointer carrying the value's checksum, and compaction copies the pointer, never the value.
   - **Deletion.** A blob file goes when the last record pointing into it is freed as obsolete, never at close; an early draft deleted every blob at close. The manifest lists live blob files, so an open can delete one whose deletion a crash undid.
-  - **Relocation.** Compactions rewrite values out of the oldest quarter of blob files, so their space comes back.
+  - **Relocation.** Compactions rewrite values out of the oldest quarter of blob files, so their space comes back. *(Replaced 2026-10-27 by relocation from any blob file at least half dead, and a trigger: "Blob space by dead fraction", below.)*
 
 **What the rebuild found:**
 - **A durable commit could be lost, and the defect was there from the start.**
@@ -149,7 +149,7 @@ The comparison is meant to measure the engines, not two independently written tr
 - **Recovery time grows with the memtable.** A 32 MB memtable means up to 32 MB of log to replay, which takes 1.3 s on the flash stick.
 - **Space at 100 k records rises to 1.62**, mostly the log's 64 MB of zero prefill counted in the file size. At 10 M records it is 1.04, as before.
 - **Point reads are 10 to 20% lower** on YCSB-C, W1 and YCSB-F, and 22% on W1 larger than memory. These are single runs, so part may be noise.
-- **W8's blob space is not coming back fast enough.** Relocation only touches the oldest quarter of the blob files, and only when a compaction passes through, so overwritten large values keep their space. It needs a trigger based on how much of a file is dead. The crash gate reached relocation in only 5 cases.
+- **W8's blob space is not coming back fast enough.** Relocation only touches the oldest quarter of the blob files, and only when a compaction passes through, so overwritten large values keep their space. It needs a trigger based on how much of a file is dead. The crash gate reached relocation in only 5 cases. *(Done 2026-10-27: "Blob space by dead fraction", below. W8 is 1.96.)*
 - **A flush still runs inside the commit that fills the memtable.** That is most of W3's remaining p99 larger than memory (150 ms against RocksDB's 35).
 
 ## Test 3: the hard requirements (2026-10-26)
@@ -303,6 +303,38 @@ Test 4 left one item that would break at scale: 2.C kept every sorted file and b
   So the worst case is about 9% of throughput. It is paid only by a store with more files than the cap, which at the default means more than about 30 GB.
 - **`many_files`** builds 200 overlapping level-0 files and reads every key twice, scans, runs `check` (which reads every file), reopens and reads again. In the real layer the process limit is lowered first. A get stops at the newest file holding its key, which is never far down here, so the descriptor-exhaustion check uses a scan, which merges every file.
 
+## Blob space by dead fraction (2026-10-27)
+
+The 2.C rebuild left W8 at 2.91 times its live data (2.74 on this round's runs). Two things were wrong with the old relocation rule. It moved values out of the **oldest** quarter of the blob files, and age is not deadness. And it acted only when a compaction happened to pass through, which stops once writing moves elsewhere.
+
+- **Each sorted file records the bytes its pointers cover in every blob file it points into.** A blob file's live bytes are then a sum over the current version, and its dead fraction is 1 − live / its size. It is derived from the version, not kept as a separate garbage counter that a crash could leave wrong. The counts go in the manifest, and `check` recounts each one from the file's pointers.
+- **A compaction relocates out of every blob file at least half dead** (`GC_DEAD_PCT`), as judged when it begins.
+- **When the tree's shape wants no compaction, `gc_start` begins one for blob space.**
+  - **Which file.** It picks the file with the most bytes in the deadest blob file. A file below level 0 is rewritten at its own level, with nothing merged; a level-0 file gets an ordinary level-0 compaction.
+  - **Why it cannot loop.** Each rewrite ends at least one file's pointers into a collectable blob file.
+  - **When it looks.** The scan reruns only after a new version is installed, since nothing else changes its answer.
+- **It has its own pace.** A GC compaction gets 4 times what the commit wrote, not the 32 the tree's shape gets. Above half dead, a byte relocated frees at least a byte. If the shape comes to want a compaction while a GC one is running, the GC one is finished at full pace, since it is in the way.
+- **`lsm_stats` now counts blob files.** It reported "every file the store owns" and summed only the sorted files and the log. The benchmark measures the directory, so W8's figures were right all along; a test bounding space through `stats` would not have been.
+
+**W8, two runs of each build alternated on NVMe** (2,000 records of 100 KiB, 20,000 operations):
+
+| | before | after |
+|---|---|---|
+| space amp | 2.74, 2.74 | **1.96, 1.96** |
+| write amp | 4.09, 4.09 | 4.28, 4.28 |
+| ops/s | 2,084, 2,089 | 2,059, 2,037 |
+| write p99 | 935, 955 µs | 992, 1,029 µs |
+| write p999 | 53.6, 53.6 ms | 55.2, 54.2 ms |
+
+- **The first version tripled the p99** (3,375 and 3,322 µs). It spent GC work at the shaping credit, so the credit a shaped tree leaves unspent became every commit's work. The separate credit brought it back.
+- **The threshold is a trade, measured at one end.** Relocating out of **every** blob file gives space 1.64, but write amp 5.57, 1,777 ops/s and a p99 of 3,535 µs.
+- **YCSB-A is unchanged; two of its runs looked otherwise.** Its values are under the 4 KiB separation threshold, and its flush and page counters were identical across builds. Its timings on this disk are **bimodal whatever the build**: four runs gave about 7,300 ops/s with a 430 µs p99, or about 5,000 with 2,300 µs. The first pair happened to land one build in each mode and read as a 32% regression, so one pair of timings here proves nothing.
+- **What reaches it now.** In two short crash runs (process and power, 512-byte pages), relocation ran 1,564 and 2,392 times and `gc_start` began 501 and 648 compactions. The rebuild's gate reached relocation in 5 cases. The level-0 path was never taken (0 of 1,149); it is the ordinary level-0 compaction, which the gate already covers.
+- **`test_store`'s `blob_space` is the only check on space.** Nothing in the crash gate measures it, so a trigger that never fired would pass every tier.
+  - **The setup.** It loads 400 values of 1,000 bytes and overwrites 70% of them, with a memtable sized so the values die inside one level-0 merge. That merge's relocation set was fixed before they died, so after it only `gc_start` can reach them. It then writes small values to another tree, whose key range overlaps nothing.
+  - **What it asserts.** The `.blob` files on disk, listed through the I/O layer, must be at most 1.25 times the live values. They measure 1.00, and 1.58 without the trigger. A reader held from the load must still read the load, and `stats` must count at least the blob bytes.
+- **Seen on the way, and not changed: a commit hands back only `IO` from the compaction it runs.** Any other failure is dropped, because the commit itself succeeded. So a compaction that fails on every relocation shows up only in `check`, and as space that does not come back (see the table below).
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -347,7 +379,13 @@ Test 4 left one item that would break at scale: 2.C kept every sorted file and b
 | a database directory holding a stranger's file accepted | `test_store`'s `directory_rules`: the sweep then DELETED the stranger's file |
 | the simulated layer keeps files beneath a directory a crash lost | `run_gsql_io`'s rule-2 directory difference |
 | 2.C: an open does not delete live-listed blobs nothing points into | every crash tier (25,518) |
-| 2.C: relocation aborted when reached | crash tiers (5): reached, though rarely |
+| 2.C: relocation aborted when reached | crash tiers (5): reached, though rarely. **Since dead-fraction relocation, green in the crash tiers**, which reach it over a thousand times a run: the commit that runs a compaction drops any failure but `IO`. Caught by `blob_space` (1.58x) |
+| 2.C: no dead-fraction trigger (`gc_start` does nothing) | `blob_space`: 1.58x against 1.25; **green in every crash tier**, which measures no space |
+| 2.C: never relocate | `blob_space` (1.58x); green in the crash tiers |
+| 2.C: a passed-through pointer counted as 0 bytes | `check`'s byte recount, in `test_store` (20) and every crash recovery (901 of 901, 768 of 768) |
+| 2.C: the manifest writes the byte counts as 0 | `check` after a reopen, the backup's `check`, and every crash recovery (984 of 984, 1,416 of 1,416) |
+| 2.C: relocate out of every blob file, whatever its dead fraction | **green**: a cost, not a fault. W8 space 1.64, write amp 5.57 against 4.28, p99 3,535 µs; `blob_space`'s bytes written differ by only 7% |
+| 2.C: GC compactions paced at the shaping credit | no test: W8's write p99 3,350 µs against 1,010 (measured above) |
 | 2.C: no cap on read handles (`hnd_make_room` does nothing) | `test_store`'s `many_files` in the real layer: commits answer `IO` after ~37 flushes, 40 reads wrong, `check` fails; **green in the simulated layer**, which has no descriptor limit |
 | 2.C: closing a handle does not close its descriptor | `many_files`: the store cannot even open (`IO`); LeakSanitizer (12,635 leaked handles) |
 | 2.C: a closed handle keeps its stale pointer | ASan use-after-free, in both layers |
@@ -508,5 +546,5 @@ The ssd runs used 20,000 operations; the usb runs used 1,000, because 2.A could 
 - **W9**, which needs the version store, which does not exist.
 - **The hard requirements**: measured in Test 3 (above), except nonce uniqueness, which waits for encryption. Online backup is not met as built.
 - **The G-Dash profile** (§5.1.1) and the owner round trip (§5.5).
-- **2.C's remaining items** (above): blob reclamation by dead space, a frozen memtable flushed in slices, and recovery time against memtable size.
+- **2.C's remaining items** (above): a frozen memtable flushed in slices, and recovery time against memtable size. Blob reclamation by dead space is done (2026-10-27).
 - **2.B's group commit on slow flash**, unexplained.

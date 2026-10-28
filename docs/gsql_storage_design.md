@@ -627,7 +627,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 - **Building it found a durable-commit loss in 2.C, present from the start.** A manifest written before the first flush after an open recorded the wrong log to replay from. Three file leaks also turned up, found by checking every recovered store. All are fixed and gated.
 - **What it costs, and what is left:**
   - **Recovery** is 53 ms on NVMe and 1.3 s on the flash stick, against 8 and 81 ms before, because the memtable is larger.
-  - **Blob space** is not reclaimed fast enough: W8's space amplification is 2.91.
+  - **Blob space** is not reclaimed fast enough: W8's space amplification is 2.91. **Done 2026-10-27**: a compaction relocates out of any blob file at least half dead, and when nothing else is wanted one is begun for the deadest; W8 is 1.96, at write amp 4.28 against 4.09 (`research/gsql/README.md`, "Blob space by dead fraction").
   - **A flush still runs inside a commit**, which is most of W3's remaining p99 larger than memory.
   - **Point reads are 10 to 20% lower.**
   - Each is engineering rather than structure.
