@@ -437,7 +437,11 @@ So the p99 commits (141 to 156 ms) were a flush and a slice together. The flush 
 
 - **A short log now opens in about 3 ms whatever the memtable.** Before, it paid for the whole file.
 - **What is left is replay**, in proportion to the memtable. Making it faster is the next lever, and is not done.
-- **Not measured:** the bench's W8, YCSB and W3 with the new format. The header is the same size, and a commit now computes no more than before.
+- **The bench, old format against new, two runs each (NVMe):**
+  - **Recovery:** 57.4 and 56.6 ms become **28.8 and 29.1**.
+  - **W8:** 2,246 / 2,218 against 2,231 / 2,233 ops/s, and a write p999 of 14.4 / 15.0 against 14.2 / 14.6 ms. Level.
+  - **YCSB load:** 0.499 / 0.498 s against 0.494 / 0.490. Level.
+  - **W3 was not rerun.** The header is the same size, and a commit computes no more than before.
 
 **Two perturbations, and why there is a test for the second:**
 - **Without the chain check** (and with no zeroing), every crash tier goes red: process 204, power 144, torn 144, failed-sync 32, hot-key process 54, hot-key power 110 (quick scale).
