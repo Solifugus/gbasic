@@ -494,6 +494,82 @@ static unsigned scan_model(GsTxn *t, const char *tree, const unsigned *gen, unsi
  * is read back every ten commits and scanned every fifty, and a backup is
  * taken every 97 commits and compared with the model as it stood. Level 0
  * is left to grow (a trigger of 1,000), so no compaction moves the data. */
+/* A commit a crash lost can leave a later one on disk behind it: power loss
+ * keeps any subset of the unsynced writes. Recovery stops at the gap, and the
+ * next commit lands in it. If that commit is byte for byte the one lost --
+ * the same sequence, the same contents, which is exactly what a program that
+ * retries after a crash writes -- its checksum is the lost one's too, and the
+ * record behind it chains to it. The value drawn at every open is the only
+ * thing that tells them apart, and the crash gate never builds this case
+ * (measured: with that value constant every tier stays green). So it is built
+ * here, on the log's bytes: three commits, the middle one's record zeroed. Its
+ * twin is committed after the reopen; the third must not come back. lsm only. */
+static int put_kv(GsStore *db, const char *k, const char *v, int create, int sync) {
+    GsTxn *w;
+    int rc = E->begin_write(db, &w);
+    if (rc) return rc;
+    if (create) E->tree_create(w, gss("t"));
+    E->put(w, gss("t"), gss(k), gss(v), 0);
+    return E->commit(w, sync, NULL);
+}
+
+static int has_key(GsStore *db, const char *k) {
+    GsTxn *r;
+    GsBytes got;
+    E->begin_read(db, &r);
+    int rc = E->get(r, gss("t"), gss(k), &got);
+    E->abort(r);
+    return rc == GS_OK;
+}
+
+static void lost_twin(const char *base, GsqlIo *io) {
+    if (strcmp(E->name, "lsm")) return;
+    char path[600], logp[700];
+    snprintf(path, sizeof path, "%s.twin", base);
+    snprintf(logp, sizeof logp, "%s/db.log.1", path);
+    GsOptions o = {1, 512, 0, io, 0, 0, 0, 0};
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the twin store answered %s", gs_status_name(rc));
+    if (rc) return;
+    rc = put_kv(db, "a", "1", 1, 1);
+    if (rc == GS_OK) rc = put_kv(db, "b", "2", 0, 0);
+    if (rc == GS_OK) rc = put_kv(db, "c", "3", 0, 0);
+    CHECK(rc == GS_OK, "the three commits answered %s", gs_status_name(rc));
+    E->close(db);
+    /* the second record's bytes, lost; the third's kept */
+    GsqlFile *f;
+    CHECK(gsql_io_open(io, logp, 0, &f) == 0, "opening %s", logp);
+    uint64_t at = 0;
+    for (int i = 0; i < 2; i++) {
+        unsigned char h[4];
+        size_t got = 0;
+        gsql_io_read_at(f, at, h, 4, &got);
+        uint32_t len = (uint32_t)h[0] | (uint32_t)h[1] << 8 | (uint32_t)h[2] << 16 | (uint32_t)h[3] << 24;
+        if (i == 1) {
+            unsigned char z[4096] = {0};
+            CHECK(len && len + 8 <= sizeof z, "the second record is %u bytes", len);
+            gsql_io_write_at(f, at, z, len + 8);
+        }
+        at += 8 + len;
+    }
+    gsql_io_sync(f);
+    gsql_io_close(f);
+    o.create = 0;
+    rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "reopening the twin store answered %s", gs_status_name(rc));
+    if (rc) return;
+    CHECK(has_key(db, "a") && !has_key(db, "b") && !has_key(db, "c"), "after the loss only the first commit stands");
+    CHECK(put_kv(db, "b", "2", 0, 1) == GS_OK, "the lost commit's twin");
+    E->close(db);
+    rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "the last reopen answered %s", gs_status_name(rc));
+    if (rc) return;
+    CHECK(has_key(db, "a") && has_key(db, "b"), "the first commit and the twin stand");
+    CHECK(!has_key(db, "c"), "a commit lost before the reopen came back behind its predecessor's twin");
+    E->close(db);
+}
+
 static void frozen_reads(const char *base, GsqlIo *io) {
     char path[600];
     snprintf(path, sizeof path, "%s.frozen", base);
@@ -1219,6 +1295,7 @@ int main(int argc, char **argv) {
     many_files(path, io, real);
     blob_space(path, io);
     frozen_reads(path, io);
+    lost_twin(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);
