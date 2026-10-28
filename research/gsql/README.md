@@ -150,7 +150,7 @@ The comparison is meant to measure the engines, not two independently written tr
 - **Space at 100 k records rises to 1.62**, mostly the log's 64 MB of zero prefill counted in the file size. At 10 M records it is 1.04, as before.
 - **Point reads are 10 to 20% lower** on YCSB-C, W1 and YCSB-F, and 22% on W1 larger than memory. These are single runs, so part may be noise.
 - **W8's blob space is not coming back fast enough.** Relocation only touches the oldest quarter of the blob files, and only when a compaction passes through, so overwritten large values keep their space. It needs a trigger based on how much of a file is dead. The crash gate reached relocation in only 5 cases. *(Done 2026-10-27: "Blob space by dead fraction", below. W8 is 1.96.)*
-- **A flush still runs inside the commit that fills the memtable.** That is most of W3's remaining p99 larger than memory (150 ms against RocksDB's 35).
+- **A flush still runs inside the commit that fills the memtable.** That is most of W3's remaining p99 larger than memory (150 ms against RocksDB's 35). *(Wrong about the share, measured 2026-10-27: a flush is about half of a p99 commit, and a compaction slice of the same size lands in about a third of all commits. The flush is off the commit path now: "The flush off the commit path", below.)*
 
 ## Test 3: the hard requirements (2026-10-26)
 
@@ -335,6 +335,77 @@ The 2.C rebuild left W8 at 2.91 times its live data (2.74 on this round's runs).
   - **What it asserts.** The `.blob` files on disk, listed through the I/O layer, must be at most 1.25 times the live values. They measure 1.00, and 1.58 without the trigger. A reader held from the load must still read the load, and `stats` must count at least the blob bytes.
 - **Seen on the way, and not changed: a commit hands back only `IO` from the compaction it runs.** Any other failure is dropped, because the commit itself succeeded. So a compaction that fails on every relocation shows up only in `check`, and as space that does not come back (see the table below).
 
+## The flush off the commit path (2026-10-27)
+
+**What a W3 commit waited for, measured first** (5 M records under a 1 GiB memory cap, timed inside the engine).
+
+| part of the slow commit | cost |
+|---|---|
+| the flush, which lands in about 3% of commits | about 75 ms |
+| — creating the next log, and writing and syncing its 64 MB of zeros | 26 ms |
+| — writing the level-0 file | about 40 ms |
+| — the manifest | 5 ms |
+| — deleting the old logs | 3 ms |
+| a compaction slice (32 times what the commit wrote), in about a third of commits | 60 to 90 ms |
+
+So the p99 commits (141 to 156 ms) were a flush and a slice together. The flush was half of a p99 commit, not most of it.
+
+**What changed:**
+- **A full memtable is frozen and flushed in slices.**
+  - **Freezing.** The memtable stays in the version as `imm`, read between the live memtable and level 0 by point reads, cursors and the backup. Commits go on into a new memtable.
+  - **Slicing.** Each commit writes twice what it wrote (`FLUSH_CREDIT`) of the frozen memtable to its level-0 file.
+  - **Installing.** When it is all written, one manifest names the file and moves the first log to replay. The old logs go only after that.
+  - **The fallback.** If the new memtable fills first, the flush is finished outright, as compaction does at `COMP_STALL`.
+- **A freeze syncs the old log.** `durable_seq` is one high-water mark. A later sync of the *new* log would otherwise also vouch for frozen commits that sit unsynced in the old one.
+- **The next log is the frozen memtable's own, recycled.** Once the install's manifest is durable, the newest frozen log is renamed to be the spare. It is already full size and synced. Its new name is made durable before any commit lands in it.
+  - **Each log record now carries its log's number**, so replay stops at a recycled file's old records, which still have valid checksums.
+  - **Zeros are written only for the first freeze after an open**, in 4 MB chunks.
+  - **Why recycle.** Zeroing every spare in slices cost W8's p99 write: 1.0 ms became 2.3 ms with a sync per slice, and 3.6 ms with 4 MB chunks.
+- **A read moves a pending flush on once writing has stopped:** 64 reads with no commit between them, 256 KB a time.
+  - **Why.** A flush otherwise advanced only with commits, so a store that stopped writing kept its frozen memtable for good, and with it the memory and a second memtable to search.
+  - **Why so many reads.** Done at every read, it doubled W8's p99 read. With "no commit since the last read" the p99 read was still 210 µs, since two reads in a row are common in a 50/50 mix.
+
+**W3, 5 M records under a 1 GiB cap, three runs each alternated with the pushed build:**
+
+| | rows/s | p99 | p999 | write amp | peak RSS |
+|---|---|---|---|---|---|
+| before | 36,614 / 37,325 / *26,604* | 121 / 121 / *161* ms | 138 / 136 / *213* ms | 14.38 | 140 MB |
+| after | *28,952* / 38,789 / 38,067 | *130* / 86 / 87 ms | *140* / 90 / 94 ms | 12.51 | 157 MB |
+
+- **The machine runs in two modes**, whatever the build. Each build had one run in the slow mode (italic).
+- **In the fast mode** the p99 falls from 121 ms to 86–87 and the p999 from 136–138 to 90–94. What is left of the p99 is compaction slices.
+- **The cost:** the p50 rises from 4.4 ms to 5.6, now that the flush's work is shared by ordinary commits. Peak memory rises 17 MB, since a frozen memtable and a live one coexist.
+
+**The rest, 100 k records on NVMe, two runs each:**
+
+| | before | after |
+|---|---|---|
+| W8 ops/s | 2,028 / 2,047 | **2,234 / 2,219** |
+| W8 write p99 | 1,019 / 1,000 µs | 1,007 / 1,122 µs |
+| W8 write p999 | 57 / 55 ms | **15 / 14 ms** |
+| W8 read p99 | 100 / 97 µs | 94 / 96 µs |
+| W8 write amp | 4.28 | **2.32** |
+| YCSB load, rows/s | 177 k / 176 k | **195 k / 200 k** |
+| YCSB load, write amp | 3.94 | 2.47 |
+| YCSB load, space amp | 1.62 | **2.12** |
+| YCSB C, 2 M reads | 718 k | 715 k |
+| recovery | 53.1, 52.9, 52.4 ms | 58.4, 56.9, 55.8 ms |
+
+- **Write amplification falls because the zeros are gone.** Before, every flush wrote 64 MB of them.
+- **Space at 100 k records rises.** The spare is one more 64 MB log, which matters only while a store is small.
+- **Recovery is 4 ms slower.** An open replays the spare as well, if only to find it empty or recycled.
+- **YCSB C** finishes its frozen memtable in the read-only phase, and is level over 2 M reads.
+- **The first comparison at 20,000 reads showed a 40% loss, and it was the window, not the read path.** The pages read were identical (6,312 against 6,316). The four syncs of the flush's install, about 30 ms, fell inside a 41 ms phase.
+- **YCSB-A and W2 are bimodal** on this disk in both builds and are not recorded.
+- **A smaller compaction credit is a trap.** At 8 instead of 32, W3's p99 halves (45 ms), but compaction falls behind until level 0 stalls, and the stall finishes the merge outright: a p999 of 2.6 **seconds**, and write amp 18.9. The p99 left needs pacing that answers to debt, not a smaller constant.
+
+**Found on the way: a manifest recorded the death of a tree whose commit was not yet durable.** This defect was already in the pushed code.
+- **What it did.** A tree replacement retires the old tree, and every manifest wrote the death list whole. Suppose a crash then lost the commit. Recovery brought back the state before it, in which the "dead" tree is the live one, and the first compaction after recovery dropped every row of it.
+- **Why it surfaced now.** The sliced flush installs a couple of commits after each freeze, while the new memtable holds unsynced commits, so manifests in that window became common. Compaction installs could always write one.
+- **The fix.** A manifest records only deaths at or below `durable_seq`; replay restores the rest from the log. A large transaction's commit, whose manifest is what makes it durable, raises `durable_seq` first.
+- **Measured on the code from before this change**, over the hot-key power spec: 1 violation in 403,033 crashes, at seed 35. The same code with only this fix: 0. The gate ran seeds 1–16, so its hot specs run 1–64 now.
+- **A first fix went in on a wrong theory and came out again.** It was a directory sync at open, for a spare log a crash might have left with a pending name. Reverting it alone stayed green over 188,299 crashes. A crash image *is* the disk after the crash, so a file recovery can see is on it.
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -386,6 +457,19 @@ The 2.C rebuild left W8 at 2.91 times its live data (2.74 on this round's runs).
 | 2.C: the manifest writes the byte counts as 0 | `check` after a reopen, the backup's `check`, and every crash recovery (984 of 984, 1,416 of 1,416) |
 | 2.C: relocate out of every blob file, whatever its dead fraction | **green**: a cost, not a fault. W8 space 1.64, write amp 5.57 against 4.28, p99 3,535 µs; `blob_space`'s bytes written differ by only 7% |
 | 2.C: GC compactions paced at the shaping credit | no test: W8's write p99 3,350 µs against 1,010 (measured above) |
+| 2.C: point reads skip the frozen memtable | `test_store` (11): dropped-not-durable, hot keys, the sliced backup |
+| 2.C: cursors skip the frozen memtable | `test_store`'s `frozen_reads` (6 of 24 scans) **and nothing else** |
+| 2.C: the backup skips the frozen memtable | `test_store`'s backup checks (5) |
+| 2.C: a freeze does not sync the old log | the hot-key power tier (716); green on the others |
+| 2.C: the install moves no logs forward but deletes them | `test_store` (3), process (601), power (714) |
+| 2.C: a spare used before its name is durable | the hot-key power tier (136) |
+| 2.C: replay ignores a record's log number (a recycled log's records replayed) | process (214), power (154), hot-key power (490) |
+| 2.C: the log recycled before the install's manifest | process (1), power (5): the window is one rename wide |
+| 2.C: the manifest records deaths of commits not yet durable | the hot-key power tier (105); the pre-change code, 1 in 403,033 at seed 35 |
+| 2.C: the flush drops trees retired since the freeze | the hot-key power tier (47) |
+| 2.C: a large transaction's manifest omits its own deaths | **green**: every read stays right, since the catalog no longer points at the retired tree, but its space is never reclaimed. A leak no tier measures |
+| 2.C: the directory sync at open removed | **green, legitimately** (188,299 crashes): written on a wrong theory, and taken out |
+| 2.C: a read never moves a pending flush on | no test: a store that stops writing keeps its frozen memtable (the frozen memtable is not visible through `store.h`); YCSB C's 4 installs in its read-only phase measure it |
 | 2.C: no cap on read handles (`hnd_make_room` does nothing) | `test_store`'s `many_files` in the real layer: commits answer `IO` after ~37 flushes, 40 reads wrong, `check` fails; **green in the simulated layer**, which has no descriptor limit |
 | 2.C: closing a handle does not close its descriptor | `many_files`: the store cannot even open (`IO`); LeakSanitizer (12,635 leaked handles) |
 | 2.C: a closed handle keeps its stale pointer | ASan use-after-free, in both layers |
@@ -546,5 +630,5 @@ The ssd runs used 20,000 operations; the usb runs used 1,000, because 2.A could 
 - **W9**, which needs the version store, which does not exist.
 - **The hard requirements**: measured in Test 3 (above), except nonce uniqueness, which waits for encryption. Online backup is not met as built.
 - **The G-Dash profile** (§5.1.1) and the owner round trip (§5.5).
-- **2.C's remaining items** (above): a frozen memtable flushed in slices, and recovery time against memtable size. Blob reclamation by dead space is done (2026-10-27).
+- **2.C's remaining items** (above): recovery time against memtable size, and compaction pacing that answers to debt (W3's remaining p99 is compaction slices). Blob reclamation by dead space and the flush off the commit path are done (2026-10-27).
 - **2.B's group commit on slow flash**, unexplained.

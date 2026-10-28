@@ -628,7 +628,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 - **What it costs, and what is left:**
   - **Recovery** is 53 ms on NVMe and 1.3 s on the flash stick, against 8 and 81 ms before, because the memtable is larger.
   - **Blob space** is not reclaimed fast enough: W8's space amplification is 2.91. **Done 2026-10-27**: a compaction relocates out of any blob file at least half dead, and when nothing else is wanted one is begun for the deadest; W8 is 1.96, at write amp 4.28 against 4.09 (`research/gsql/README.md`, "Blob space by dead fraction").
-  - **A flush still runs inside a commit**, which is most of W3's remaining p99 larger than memory.
+  - **A flush still runs inside a commit**, which is most of W3's remaining p99 larger than memory. **Done 2026-10-27, and the share was wrong:** a flush was about half of a p99 commit, and compaction slices the rest. The memtable is now frozen and flushed in slices, its next log recycled from the frozen one. W3's fast-mode p99 is 86–87 ms against 121, and W8's p999 write 14–15 ms against 55–57; the p50 rises from 4.4 to 5.6 ms. It also found a manifest recording deaths of commits not yet durable, which could drop a live tree after a crash, present before it (`research/gsql/README.md`, "The flush off the commit path").
   - **Point reads are 10 to 20% lower.**
   - Each is engineering rather than structure.
 - **Tests 3 and 4 remained:** the hard requirements, and open question 6.
