@@ -302,6 +302,7 @@ struct GsStore {
      * slice per commit and then synced, so a freeze only switches to it. */
     GsqlFile *spare;
     uint64_t spare_filled, spare_credit;
+    uint64_t read_seen, read_idle; /* last_seq at the last read, and reads since a commit */
     int spare_ready;
     uint64_t gc_seen;         /* the vgen at which no blob file was worth collecting */
     int sweep;                /* a retired tree or a released snapshot may have freed whole files */
@@ -2224,6 +2225,7 @@ typedef struct Flush {
 #define SPARE_CREDIT 4
 /* a read's share of a pending flush (lsm_begin_read) */
 #define READ_FLUSH_SLICE (256u << 10)
+#define READ_IDLE 64
 /* The spare's zeros are written and synced this much at a time: credit
  * builds up across commits until there is a chunk. Synced every slice, it
  * cost every commit while it filled one more fsync -- W8's p99 write went
@@ -3183,10 +3185,18 @@ static int lsm_begin_read(GsStore *db, struct GsTxn **out) {
     if (db->failed) return GS_FAILED;
     /* A flush advances only with commits, so a store that stopped writing
      * kept its frozen memtable for good, and every read searched two
-     * memtables (YCSB C, read-only after its load: 494 k reads/s down to
-     * 388 k). A read moves it on too, a small slice at a time; not while a
-     * writer is open, whose spilled runs no manifest may yet pass. */
-    if (db->fl && !db->writer) flush_step(db, READ_FLUSH_SLICE);
+     * memtables. A read moves it on too, a small slice at a time, but only
+     * once writing has stopped -- READ_IDLE reads in a row with no commit
+     * between. Done at every read it doubled W8's p99 read (102 to 235 us)
+     * while commits were flushing it anyway, and "no commit since the last
+     * read" still left it at 210, since half of W8's operations are reads
+     * and two in a row are common. Not while a writer is open, whose
+     * spilled runs no manifest may yet pass. */
+    if (db->fl && !db->writer) {
+        db->read_idle = db->read_seen == db->last_seq ? db->read_idle + 1 : 0;
+        db->read_seen = db->last_seq;
+        if (db->read_idle >= READ_IDLE) flush_step(db, READ_FLUSH_SLICE);
+    }
     struct GsTxn *t = calloc(1, sizeof *t);
     t->db = db;
     t->snap = db->durable_seq; /* §1.3: only what is durable is visible */
