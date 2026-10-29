@@ -227,11 +227,24 @@ probe_deep_value_teardown() {
         printf '     CONTROL half is unavailable and the crash half alone proves nothing)\n'
         return
     fi
+    # A TIMEOUT IS NOT A FIX. Each run takes about 41 s on an idle machine
+    # (measured 2026-10-29), and inside the parallel gate the 8 MB run passed
+    # the old 180 s bound -- whereupon exit 124 fell into the "fixed" branch
+    # below and the suite announced the limitation GONE, the opposite of what
+    # was measured (twice in one day, once with the machine otherwise idle).
+    # The bound is a hang-guard, so it is wide, and a timeout is reported as
+    # what it is. Suppressing the core file was tried and saved nothing here:
+    # this machine's core handler does not honour ulimit -c.
     local small large
-    ( ulimit -s 8192;  GBASIC_PATH=stdlib timeout -k 5 180 ./gbasic --line-buffered \
+    ( ulimit -s 8192;  GBASIC_PATH=stdlib timeout -k 5 600 ./gbasic --line-buffered \
         "$WORK/deep.bas" >/dev/null 2>&1 ); small=$?
-    ( ulimit -s 65536; GBASIC_PATH=stdlib timeout -k 5 180 ./gbasic --line-buffered \
+    ( ulimit -s 65536; GBASIC_PATH=stdlib timeout -k 5 600 ./gbasic --line-buffered \
         "$WORK/deep.bas" >/dev/null 2>&1 ); large=$?
+    if [ "$small" -eq 124 ] || [ "$small" -eq 137 ] || [ "$large" -eq 124 ] || [ "$large" -eq 137 ]; then
+        fail "deep value teardown: a run TIMED OUT (8 MB exit $small, 64 MB exit $large), so"
+        printf '     nothing was measured either way -- not a fixed limitation\n'
+        return
+    fi
     if [ "$large" -ne 0 ]; then
         fail "deep value teardown: the 64 MB CONTROL did not succeed (exit $large), so"
         printf '     nothing was established -- the fixture itself may not be running\n'
