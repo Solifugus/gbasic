@@ -77,6 +77,7 @@ printf 'TIER build: the engine, the version store and the harnesses, -Wpedantic 
 built=1
 for spec in "store_test:-g -O1 $SAN:tests/gsql/store_test.c $ENGINE" \
             "version_test:-g -O1 $SAN:tests/gsql/version_test.c src/gsql/version.c $ENGINE" \
+            "format_test:-g -O1 $SAN:tests/gsql/format_test.c $ENGINE" \
             "crash_store:-g -O2:tests/gsql/crash_store.c src/gsql/crash.c $ENGINE"; do
     name=${spec%%:*}; rest=${spec#*:}; flags=${rest%%:*}; srcs=${rest#*:}
     # shellcheck disable=SC2086
@@ -121,6 +122,46 @@ for seed in 1 2 3 real; do
     elif [ -n "$n" ]; then fail "$where: only $n checks ran"
     else grep MISMATCH "$work/version.$seed" | head -6; fail "$where: $last"; fi
 done
+
+printf 'TIER format: format 1 is fixed -- the committed database opens, an independent reader agrees, the refusals hold\n'
+# a COPY: an open sweeps, salts and may write, and the fixture is committed
+cp -r tests/gsql/format1 "$work/fixture"
+out=$(bounded 120 "$work/format_test" read "$work/fixture" 2>&1)
+case "$(printf '%s\n' "$out" | tail -1)" in
+    ok*) pass "the committed format-1 database reads back exactly: $(printf '%s\n' "$out" | tail -1)" ;;
+    *) printf '%s\n' "$out" | grep -E 'MISMATCH|check:' | head -8
+       fail "the committed format-1 database (tests/gsql/format1) no longer reads: this build changed the format" ;;
+esac
+mkdir -p "$work/refuse"
+out=$(bounded 120 "$work/format_test" refuse "$work/refuse" 2>&1)
+case "$(printf '%s\n' "$out" | tail -1)" in
+    ok*) pass "another database's file, a renumbered one, sealed and newer-format units refused, each beside its control: $(printf '%s\n' "$out" | tail -1)" ;;
+    *) printf '%s\n' "$out" | grep MISMATCH | head -8; fail "the format's refusals" ;;
+esac
+if command -v python3 >/dev/null 2>&1; then
+    # every other check reads the store back through the engine's own reader,
+    # so a writer and reader agreeing on a wrong layout pass them all
+    for which in committed busy; do
+        if [ "$which" = busy ]; then
+            if ! bounded 300 "$work/format_test" busy "$work/busy" > "$work/busy.out" 2>&1; then
+                head -5 "$work/busy.out"; fail "the busy store did not write"; continue
+            fi
+            dir="$work/busy"
+        else
+            dir=tests/gsql/format1
+        fi
+        out=$(python3 tests/gsql/format_check.py "$dir" 2>&1)
+        census=$(printf '%s\n' "$out" | grep '^census' | sed 's/^census //')
+        if [ "$(printf '%s\n' "$out" | tail -1)" = ok ]; then
+            pass "format_check.py decodes the $which store from the design's own layout ($census)"
+        else
+            printf '%s\n' "$out" | grep MISMATCH | head -8
+            fail "format_check.py disagrees with the $which store"
+        fi
+    done
+else
+    printf '  SKIP the independent reader (no python3): the layout was cross-checked by NOTHING but the engine'"'"'s own reader\n'
+fi
 
 printf 'TIER crash: the §5.3 gate, at least 10,000 crashes per mode, zero violations\n'
 if [ "${GSQL_GATE_SCALE:-gate}" = full ]; then

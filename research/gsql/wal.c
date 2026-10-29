@@ -520,7 +520,7 @@ static int create_main(GsStore *db) {
     if (rc == GS_OK) rc = gs_io_status(gsql_io_write_at(db->f, 2 * (uint64_t)db->ps, page, db->ps));
     if (rc == GS_OK) rc = flush_file(db, db->f);
     memset(page, 0, db->ps);
-    GsFileHeader h = {GS_FORMAT_MAJOR, 0, db->ps, {0}, 0, 0};
+    GsFileHeader h = {GS_SPIKE_MAJOR, 0, db->ps, {0}, 0, 0};
     gs_identity_new(db->io, h.identity);
     gs_header_write(page, &h);
     if (rc == GS_OK) rc = gs_io_status(gsql_io_write_at(db->f, 0, page, db->ps));
@@ -645,7 +645,7 @@ static int wal_open_base(const char *path, const GsOptions *opt, GsStore **out) 
         size_t got = 0;
         GsFileHeader h;
         rc = gs_io_status(gsql_io_read_at(db->f, 0, hdr, sizeof hdr, &got));
-        int hrc = rc ? rc : gs_header_read(hdr, got, &h);
+        int hrc = rc ? rc : gs_header_read(hdr, got, GS_SPIKE_MAJOR, &h);
         if (rc == GS_OK && hrc == GS_OK) {
             db->ps = h.page_size;
         } else if (rc == GS_OK && create) {

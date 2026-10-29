@@ -132,12 +132,12 @@ void gs_header_write(unsigned char *p, const GsFileHeader *h) {
     put32(p + 76, crc32c(p, 76));
 }
 
-int gs_header_read(const unsigned char *p, size_t n, GsFileHeader *h) {
+int gs_header_read(const unsigned char *p, size_t n, uint16_t major, GsFileHeader *h) {
     if (n < GS_HEADER_FIXED || memcmp(p, GS_MAGIC, 8) != 0) return GS_FORMAT;
     if (get32(p + 76) != crc32c(p, 76)) return GS_CORRUPT;
     h->major = get16(p + 8);
     h->minor = get16(p + 10);
-    if (h->major != GS_FORMAT_MAJOR) return GS_FORMAT;
+    if (h->major != major) return GS_FORMAT;
     h->page_size = get32(p + 12);
     memcpy(h->identity, p + 16, 16);
     h->created = get64(p + 32);

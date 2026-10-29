@@ -57,6 +57,34 @@
 #define CATALOG_ID 0
 #define FIRST_TREE_ID 2
 
+/* The format (docs/gsql_storage_design.md §3.1.5, fixed 2026-10-29). Every
+ * unit a key would seal -- a sorted file's blocks and footer, a blob value,
+ * a log record, the manifest's body -- carries room for AES-256-GCM's nonce
+ * and tag, zero while encryption is off, so turning it on later is a flag and
+ * not a new major. The checksum covers them, as it covers everything: a bad
+ * checksum is damage, a good one with a failed tag a wrong key or tampering. */
+#define SEAL 28            /* a 12-byte nonce, then a 16-byte tag */
+/* A sorted or blob file opens with a header naming the database it belongs
+ * to and the number it was written under, so a file restored from another
+ * database, or under another number, is refused rather than read:
+ *   0 8 magic (the manifest's)   8 2 major   10 2 minor   12 1 kind
+ *   13 1 flags (bit 0: encrypted)   14 2 reserved   16 16 database identity
+ *   32 8 file number   40 4 key epoch (which key sealed it; 0 while off)
+ *   44 16 reserved   60 4 checksum of the 60 before */
+#define FHDR 64
+enum { FK_SORTED = 1, FK_BLOB = 2 };
+/* A block ends: u32 (its count, or the index's entries, or the bloom's
+ * bits), the seal, then the checksum of everything before it. */
+#define TRAIL (4 + SEAL + 4)
+/* A blob value is stored as the seal then the value; the pointer's length is
+ * the value's, its checksum covers both, and a blob file's live bytes count
+ * the seal with the value. */
+#define BLOB_REC(n) ((uint64_t)(n) + SEAL)
+/* A log record: u32 length and u32 checksum of what follows, then
+ * u8 flags (bit 0: sealed), 3 reserved, u32 key epoch, the seal, and the
+ * payload (see lsm_commit). The length counts all of it but the first 8. */
+#define LOG_PRE (8 + 1 + 3 + 4 + SEAL)
+
 /* ---- an entry -------------------------------------------------------------- */
 
 typedef struct {
@@ -189,8 +217,11 @@ static Ent sk_ent(const SkNode *n) {
 
 /* ---- sorted files ---------------------------------------------------------- */
 
-#define SST_MAGIC 0x4C534D53514C5347ULL /* "GSQLSMSL" */
-#define FOOTER 48
+/* A sorted file: its header, data blocks, the index block, the bloom
+ * block, and the footer -- u64 index offset, u32 index size, u64 bloom
+ * offset, u32 bloom size, u64 entries, the seal, u32 checksum of the 60
+ * bytes before it. */
+#define FOOTER 64
 
 typedef struct {
     unsigned char *last; size_t lastn;
@@ -282,7 +313,7 @@ struct GsStore {
      * value drawn at every open. So a record a lost commit left past the end
      * cannot follow a new one: it chains to the record it followed, which a
      * new record differs from even when its contents are the same. */
-    uint32_t log_prev, log_nonce;
+    uint32_t log_prev, log_salt;
     /* The oldest log whose records the memtable still holds, which is where
      * the next open must begin replaying. Not always log_num: an open replays
      * every log from the manifest's onward into one memtable, and before
@@ -416,6 +447,34 @@ static char *blob_name(const GsStore *db, uint64_t num) {
     return gs_path_with(db->path, suf);
 }
 
+/* ---- a file's header ------------------------------------------------------ */
+
+static void fhdr_build(const GsStore *db, int kind, uint64_t num, unsigned char *p) {
+    memset(p, 0, FHDR);
+    memcpy(p, GS_MAGIC, 8);
+    put16(p + 8, GS_FORMAT_MAJOR);
+    put16(p + 10, GS_FORMAT_MINOR);
+    p[12] = (unsigned char)kind;
+    memcpy(p + 16, db->identity, 16);
+    put64(p + 32, num);
+    put32(p + 60, crc32c(p, 60));
+}
+
+/* FORMAT for a major this build does not read and for a sealed file, which
+ * it cannot (encryption is reserved, not built); CORRUPT for damage, the
+ * wrong kind, another database's file, or a file under another number. */
+static int fhdr_check(const GsStore *db, int kind, uint64_t num, const unsigned char *p) {
+    if (memcmp(p, GS_MAGIC, 8) || get32(p + 60) != crc32c(p, 60)) return GS_CORRUPT;
+    if (get16(p + 8) != GS_FORMAT_MAJOR) return GS_FORMAT;
+    if (p[13] & 1) return GS_FORMAT;
+    if ((p[13] & ~1u) && get16(p + 10) <= GS_FORMAT_MINOR) return GS_CORRUPT; /* a flag only a newer minor may set */
+    if (p[12] != kind || memcmp(p + 16, db->identity, 16) || get64(p + 32) != num) {
+        if (getenv("GS_DEBUG")) fprintf(stderr, "lsm: file %llu belongs to another database or number\n", (unsigned long long)num);
+        return GS_CORRUPT;
+    }
+    return GS_OK;
+}
+
 /* ---- blob files ----------------------------------------------------------- */
 
 /* Long values live in blob files written beside the sorted file they were
@@ -428,6 +487,7 @@ typedef struct Blob {
     uint64_t refs;  /* file records pointing into it */
     uint64_t total; /* its size, 0 until known: set when written, else read once */
     struct Hnd *h;  /* its read handle, made at the first read */
+    int checked;    /* its header read and found to be this database's */
 } Blob;
 
 static int u64_has(const U64s *u, uint64_t v) {
@@ -479,11 +539,20 @@ static int blob_read(GsStore *db, const unsigned char *ptr, size_t pn, GsBuf *ou
     GsqlFile *f;
     int rc = hnd_get(db, b->h, &f);
     if (rc) return rc == ENOENT ? GS_CORRUPT : ioerr(rc);
-    gsbuf_reserve(out, len + 1);
     size_t got = 0;
-    rc = ioerr(gsql_io_read_at(f, off, out->p, len, &got));
+    if (!b->checked) {
+        unsigned char hd[FHDR];
+        rc = ioerr(gsql_io_read_at(f, 0, hd, FHDR, &got));
+        if (rc) return rc;
+        if (got != FHDR) return GS_CORRUPT;
+        if ((rc = fhdr_check(db, FK_BLOB, num, hd))) return rc;
+        b->checked = 1;
+    }
+    if (off < FHDR || !gsbuf_reserve(out, (size_t)BLOB_REC(len) + 1)) return off < FHDR ? GS_CORRUPT : GS_IO;
+    rc = ioerr(gsql_io_read_at(f, off, out->p, (size_t)BLOB_REC(len), &got));
     if (rc) return rc;
-    if (got != len || crc32c(out->p, len) != crc) return GS_CORRUPT;
+    if (got != BLOB_REC(len) || crc32c(out->p, (size_t)BLOB_REC(len)) != crc) return GS_CORRUPT;
+    memmove(out->p, out->p + SEAL, len);
     out->n = len;
     db->st.pages_read++;
     return GS_OK;
@@ -547,6 +616,8 @@ static uint64_t key_hash64(const unsigned char *k, size_t n) {
     return h;
 }
 
+static void bld_write(Builder *b, const void *p, size_t n);
+
 static int bld_open(GsStore *db, Builder *b) {
     memset(b, 0, sizeof *b);
     b->db = db;
@@ -572,7 +643,12 @@ static int bld_open(GsStore *db, Builder *b) {
         free(nm);
     }
     b->rc = rc;
-    return rc;
+    if (rc == GS_OK) {
+        unsigned char hd[FHDR];
+        fhdr_build(db, FK_SORTED, b->num, hd);
+        bld_write(b, hd, FHDR);
+    }
+    return b->rc;
 }
 
 static void bld_write(Builder *b, const void *p, size_t n) {
@@ -585,9 +661,10 @@ static void bld_write(Builder *b, const void *p, size_t n) {
 }
 
 static void seal_block(GsBuf *blk, uint32_t count) {
-    unsigned char t[8];
+    unsigned char t[4 + SEAL];
+    memset(t, 0, sizeof t);
     put32(t, count);
-    gsbuf_append(blk, t, 4);
+    gsbuf_append(blk, t, sizeof t);
     put32(t, crc32c(blk->p, blk->n));
     gsbuf_append(blk, t, 4);
 }
@@ -634,17 +711,24 @@ static int bld_blob(Builder *b, const unsigned char *v, size_t vn, unsigned char
             return rc;
         }
         free(name);
-        b->boff = 0;
+        unsigned char hd[FHDR];
+        fhdr_build(db, FK_BLOB, b->bnum, hd);
+        rc = ioerr(gsql_io_write_at(b->bf, 0, hd, FHDR));
+        if (rc) return rc;
+        db->st.bytes_written += FHDR;
+        b->boff = FHDR;
     }
-    int rc = ioerr(gsql_io_write_at(b->bf, b->boff, v, vn));
+    static const unsigned char seal[SEAL];
+    int rc = ioerr(gsql_io_write_at(b->bf, b->boff, seal, SEAL));
+    if (rc == GS_OK) rc = ioerr(gsql_io_write_at(b->bf, b->boff + SEAL, v, vn));
     if (rc) return rc;
-    db->st.bytes_written += vn;
+    db->st.bytes_written += BLOB_REC(vn);
     put64(ptr, b->bnum);
     put64(ptr + 8, b->boff);
     put32(ptr + 16, (uint32_t)vn);
-    put32(ptr + 20, crc32c(v, vn));
-    b->boff += vn;
-    bld_ref(b, b->bnum, vn);
+    put32(ptr + 20, crc32c_extend(crc32c(seal, SEAL), v, vn));
+    b->boff += BLOB_REC(vn);
+    bld_ref(b, b->bnum, BLOB_REC(vn));
     return GS_OK;
 }
 
@@ -661,7 +745,7 @@ static void bld_add(Builder *b, const Ent *in) {
         sep.vn = BLOB_PTR;
         e = &sep;
     } else if (in->type == TYPE_BLOB && in->vn == BLOB_PTR) {
-        bld_ref(b, get64(in->v), get32(in->v + 16));
+        bld_ref(b, get64(in->v), BLOB_REC(get32(in->v + 16)));
     }
     if (!b->entries) { gsbuf_set(&b->smallest, e->k, e->kn); b->small_seq = e->seq; }
     /* one hash per distinct key: a version of the same key adds nothing */
@@ -688,11 +772,7 @@ static void bld_add(Builder *b, const Ent *in) {
 static int bld_close(Builder *b, FileMeta **out) {
     bld_finish_block(b);
     uint64_t index_off = b->off;
-    unsigned char t[8];
-    put32(t, (uint32_t)b->entries);
-    gsbuf_append(&b->index, t, 4);
-    put32(t, crc32c(b->index.p, b->index.n));
-    gsbuf_append(&b->index, t, 4);
+    seal_block(&b->index, (uint32_t)b->entries);
     bld_write(b, b->index.p, b->index.n);
     /* bloom: 10 bits a key, 7 probes (~1% false positives) */
     size_t bits = b->hashes.n * 10 + 64;
@@ -708,10 +788,7 @@ static int bld_close(Builder *b, FileMeta **out) {
         }
     }
     uint64_t bloom_off = b->off;
-    put32(t, (uint32_t)bits);
-    gsbuf_append(&bloom, t, 4);
-    put32(t, crc32c(bloom.p, bloom.n));
-    gsbuf_append(&bloom, t, 4);
+    seal_block(&bloom, (uint32_t)bits);
     bld_write(b, bloom.p, bloom.n);
     unsigned char foot[FOOTER];
     memset(foot, 0, sizeof foot);
@@ -720,8 +797,8 @@ static int bld_close(Builder *b, FileMeta **out) {
     put64(foot + 12, bloom_off);
     put32(foot + 20, (uint32_t)bloom.n);
     put64(foot + 24, b->entries);
-    put64(foot + 32, SST_MAGIC);
-    put32(foot + 44, crc32c(foot, 44));
+    /* 32: the seal */
+    put32(foot + 60, crc32c(foot, 60));
     bld_write(b, foot, FOOTER);
     /* the blob file before the sorted file: nothing may point at a value
      * that a power loss could take */
@@ -802,7 +879,7 @@ static int read_exact(GsStore *db, GsqlFile *f, uint64_t off, unsigned char *buf
 }
 
 static int check_block(const unsigned char *b, size_t n) {
-    if (n < 8) return GS_CORRUPT;
+    if (n < TRAIL) return GS_CORRUPT;
     return get32(b + n - 4) == crc32c(b, n - 4) ? GS_OK : GS_CORRUPT;
 }
 
@@ -826,10 +903,12 @@ static int file_open(GsStore *db, FileMeta *m) {
     if (rc) return rc;
     uint64_t size = 0;
     gsql_io_size(f, &size);
-    if (size < FOOTER) return GS_CORRUPT;
+    if (size < FHDR + FOOTER) return GS_CORRUPT;
+    unsigned char hd[FHDR];
+    if ((rc = read_exact(db, f, 0, hd, FHDR)) || (rc = fhdr_check(db, FK_SORTED, m->num, hd))) return rc;
     unsigned char foot[FOOTER];
     if ((rc = read_exact(db, f, size - FOOTER, foot, FOOTER))) return rc;
-    if (get64(foot + 32) != SST_MAGIC || get32(foot + 44) != crc32c(foot, 44)) return GS_CORRUPT;
+    if (get32(foot + 60) != crc32c(foot, 60)) return GS_CORRUPT;
     uint64_t ioff = get64(foot), boff = get64(foot + 12);
     uint32_t isz = get32(foot + 8), bsz = get32(foot + 20);
     if (ioff + isz > size || boff + bsz > size) return GS_CORRUPT;
@@ -838,7 +917,7 @@ static int file_open(GsStore *db, FileMeta *m) {
         (rc = read_exact(db, f, boff, bb, bsz)) || (rc = check_block(bb, bsz))) {
         free(ib); free(bb); return rc ? rc : GS_CORRUPT;
     }
-    size_t at = 0, end = isz - 8, cap = 16;
+    size_t at = 0, end = isz - TRAIL, cap = 16;
     m->index = malloc(cap * sizeof *m->index);
     m->nindex = 0;
     while (at < end) {
@@ -855,13 +934,13 @@ static int file_open(GsStore *db, FileMeta *m) {
         e->off = get64(ib + at + 8);
         e->size = get32(ib + at + 16);
         at += 20;
-        if (e->off + e->size > ioff) { rc = GS_CORRUPT; break; }
+        if (e->off < FHDR || e->off + e->size > ioff) { rc = GS_CORRUPT; break; }
     }
     free(ib);
     if (rc == GS_OK) {
-        m->bloom_bits = get32(bb + bsz - 8);
+        m->bloom_bits = get32(bb + bsz - TRAIL);
         m->bloom = bb;
-        if (m->bloom_bits / 8 + 1 != bsz - 8) rc = GS_CORRUPT;
+        if (m->bloom_bits / 8 + 1 != bsz - TRAIL) rc = GS_CORRUPT;
     } else {
         free(bb);
     }
@@ -894,7 +973,7 @@ static void block_free(Block *b) { free(b->raw); free(b->e); memset(b, 0, sizeof
 /* Parse a checked block's entries into `e` (room for `count`), pointing into
  * `raw`. The one parser, for block_read and for the cache's own load. */
 static int block_parse(const unsigned char *raw, size_t size, uint32_t count, Ent *e, size_t *n) {
-    size_t end = size - 8, at = 0;
+    size_t end = size - TRAIL, at = 0;
     *n = 0;
     while (at < end && *n < count) {
         uint64_t kn, vn;
@@ -927,7 +1006,7 @@ static int block_read(GsStore *db, FileMeta *m, size_t bi, Block *out) {
     rc = read_exact(db, f, ie->off, out->raw, ie->size);
     if (!rc) rc = check_block(out->raw, ie->size);
     if (rc) { block_free(out); return rc ? rc : GS_CORRUPT; }
-    uint32_t count = get32(out->raw + ie->size - 8);
+    uint32_t count = get32(out->raw + ie->size - TRAIL);
     if (count > ie->size) { block_free(out); return GS_CORRUPT; } /* an entry is never under a byte */
     out->e = malloc((count + 1) * sizeof *out->e);
     rc = block_parse(out->raw, ie->size, count, out->e, &out->n);
@@ -970,7 +1049,7 @@ static int block_fetch(GsStore *db, FileMeta *m, size_t bi, CPage **pin, Block *
         if (!gsbuf_reserve(&db->rbuf, ie->size ? ie->size : 1)) return GS_IO;
         if ((rc = read_exact(db, f, ie->off, db->rbuf.p, ie->size)) || (rc = check_block(db->rbuf.p, ie->size)))
             return rc;
-        uint32_t count = get32(db->rbuf.p + ie->size - 8);
+        uint32_t count = get32(db->rbuf.p + ie->size - TRAIL);
         if (count > ie->size) return GS_CORRUPT; /* an entry is never under a byte */
         size_t raw = ie->size, total = sizeof(Block) + (size_t)count * sizeof(Ent) + raw;
         unsigned char *buf = malloc(total);
@@ -1093,7 +1172,7 @@ static int src_load_ahead(Src *s, size_t fi, size_t bi) {
     const unsigned char *raw = s->ra + (ie->off - s->ra_off);
     uint32_t count = 0;
     if ((rc = check_block(raw, ie->size)) == GS_OK) {
-        count = get32(raw + ie->size - 8);
+        count = get32(raw + ie->size - TRAIL);
         if (count > ie->size) rc = GS_CORRUPT;
     }
     if (rc == GS_OK && count > s->owncap) {
@@ -1350,12 +1429,18 @@ typedef struct Comp {
     int for_gc;           /* begun by gc_start: paced by GC_CREDIT, not the ordinary credit */
 } Comp;
 
+/* The manifest: the §3.1.1 header, u32 key epoch and the seal over the body
+ * that follows (both zero while encryption is off), the body, and a checksum
+ * of everything before it. A newer minor may add to the body's end. */
+#define MANIFEST_SEAL (4 + SEAL)
+
 static int manifest_write(GsStore *db) {
     GsBuf b = {0};
-    unsigned char hdr[GS_HEADER_FIXED];
-    GsFileHeader h = {GS_FORMAT_MAJOR, 0, db->block, {0}, 0, 0};
+    unsigned char hdr[GS_HEADER_FIXED + MANIFEST_SEAL];
+    GsFileHeader h = {GS_FORMAT_MAJOR, GS_FORMAT_MINOR, db->block, {0}, 0, 0};
     memcpy(h.identity, db->identity, 16);
     gs_header_write(hdr, &h);
+    memset(hdr + GS_HEADER_FIXED, 0, MANIFEST_SEAL); /* key epoch, then the seal */
     gsbuf_append(&b, hdr, sizeof hdr);
     put_u64(&b, db->next_file);
     put_u64(&b, db->log_first);
@@ -1450,13 +1535,16 @@ static int get_u64(const unsigned char *p, size_t n, size_t *at, uint64_t *v) {
 }
 
 static int manifest_read(GsStore *db, const unsigned char *p, size_t n) {
-    if (n < GS_HEADER_FIXED + 4 || get32(p + n - 4) != crc32c(p, n - 4)) return GS_CORRUPT;
+    int newer;
+    if (n < GS_HEADER_FIXED + MANIFEST_SEAL + 4 || get32(p + n - 4) != crc32c(p, n - 4)) return GS_CORRUPT;
     GsFileHeader h;
-    int rc = gs_header_read(p, n, &h);
+    int rc = gs_header_read(p, n, GS_FORMAT_MAJOR, &h);
     if (rc) return rc;
+    if (h.flags & 1) return GS_FORMAT; /* sealed: encryption is reserved, not built */
+    newer = h.minor > GS_FORMAT_MINOR;
     db->block = h.page_size;
     memcpy(db->identity, h.identity, 16);
-    size_t at = GS_HEADER_FIXED, end = n - 4;
+    size_t at = GS_HEADER_FIXED + MANIFEST_SEAL, end = n - 4;
     if ((rc = get_u64(p, end, &at, &db->next_file)) || (rc = get_u64(p, end, &at, &db->log_num)) ||
         (rc = get_u64(p, end, &at, &db->last_seq)))
         return rc;
@@ -1497,13 +1585,15 @@ static int manifest_read(GsStore *db, const unsigned char *p, size_t n) {
         if (db->ndead == db->capdead) { db->capdead = db->capdead ? db->capdead * 2 : 8; db->dead = realloc(db->dead, db->capdead * sizeof *db->dead); }
         db->dead[db->ndead++] = d;
     }
-    return at == end ? GS_OK : GS_CORRUPT;
+    return at == end || (newer && at < end) ? GS_OK : GS_CORRUPT;
 }
 
 /* ---- the log ------------------------------------------------------------------ */
 
-/* record: u32 len, u32 crc, payload:
- *   u64 base seq, u32 count, count x (u8 type, varint klen, key, varint vlen, value),
+/* record: u32 len, u32 crc, u8 flags, 3 reserved, u32 key epoch, the seal
+ * (LOG_PRE bytes in all), then the payload:
+ *   u64 base seq, u32 count, u32 chain, u32 salt,
+ *   count x (u8 type, varint klen, key, varint vlen, value),
  *   u32 retired, retired x u64 id */
 
 static int dead_add(GsStore *db, uint64_t id, uint64_t death) {
@@ -1527,7 +1617,7 @@ static uint32_t log_seed(uint64_t num) { return (uint32_t)num * 0x9E3779B1u ^ 0x
 
 /* A value for this open's records. Not from the I/O layer: it is no data, and
  * only has to differ from the last open's, which nothing recorded. */
-static uint32_t log_nonce_new(GsStore *db) {
+static uint32_t log_salt_new(GsStore *db) {
     uint32_t v = 0;
     FILE *u = fopen("/dev/urandom", "rb");
     if (u) { if (fread(&v, sizeof v, 1, u) != 1) v = 0; fclose(u); }
@@ -1553,16 +1643,21 @@ static int replay_log(GsStore *db, GsqlFile *f, uint64_t num, uint64_t *end, uin
         size_t got;
         if (at + 8 > size) break;
         if ((rc = ioerr(gsql_io_read_at(f, at, h, 8, &got))) || got != 8) break;
-        uint32_t len = get32(h), crc = get32(h + 4);
-        if (len < 24 || at + 8 + len > size) break;
-        if (!gsbuf_reserve(&rec, len)) { rc = GS_IO; break; }
-        if ((rc = ioerr(gsql_io_read_at(f, at + 8, rec.p, len, &got))) || got != len) break;
-        if (crc32c(rec.p, len) != crc) break;
-        const unsigned char *p = rec.p;
+        uint32_t rlen = get32(h), crc = get32(h + 4);
+        if (rlen < LOG_PRE - 8 + 24 || at + 8 + rlen > size) break;
+        if (!gsbuf_reserve(&rec, rlen)) { rc = GS_IO; break; }
+        if ((rc = ioerr(gsql_io_read_at(f, at + 8, rec.p, rlen, &got))) || got != rlen) break;
+        if (crc32c(rec.p, rlen) != crc) break;
+        const unsigned char *p = rec.p + (LOG_PRE - 8);
+        uint32_t len = rlen - (LOG_PRE - 8);
         size_t q = 20;
         uint64_t base = get64(p);
         uint32_t count = get32(p + 8);
         if (get32(p + 12) != prev) break;
+        /* a record of this chain that is sealed, or flagged by a format this
+         * build does not know: stopping here would silently drop durable
+         * commits, so the open is refused */
+        if (rec.p[0] || get32(rec.p + 4)) { rc = GS_FORMAT; break; }
         int bad = 0;
         for (uint32_t i = 0; i < count && !bad; i++) {
             uint64_t kn, vn;
@@ -1585,7 +1680,7 @@ static int replay_log(GsStore *db, GsqlFile *f, uint64_t num, uint64_t *end, uin
         for (uint32_t i = 0; i < nret; i++) dead_add(db, get64(p + q + 8 * i), commit);
         if (commit > db->last_seq) db->last_seq = commit;
         db->st.replayed++;
-        at += 8 + len;
+        at += 8 + rlen;
         prev = crc;
     }
     gsbuf_free(&rec);
@@ -1685,7 +1780,7 @@ static int create_db(GsStore *db) {
     db->log_end = 0;
     db->log_filled = log_step(db);
     db->log_prev = log_seed(1);
-    db->log_nonce = log_nonce_new(db);
+    db->log_salt = log_salt_new(db);
     db->durable_seq = db->last_seq;
     return rc;
 }
@@ -1831,7 +1926,7 @@ static int lsm_open_base(const char *path, const GsOptions *opt, GsStore **out) 
          * records chain to the ones they followed, not to this open's. This
          * used to truncate and refill the rest of the log with zeros, synced:
          * 29 ms at every open with the default memtable, 104 at 128 MB. */
-        db->log_nonce = log_nonce_new(db);
+        db->log_salt = log_salt_new(db);
         db->durable_seq = db->last_seq;
     } else {
         rc = ioerr(rc);
@@ -1898,7 +1993,10 @@ static int merge_min(Merge *m) {
 
 static uint64_t level_bytes(Version *v, int l) {
     uint64_t s = 0;
-    for (size_t i = 0; i < v->nfiles[l]; i++) s += v->files[l][i]->size;
+    /* past each file's header: the sizes that pace compaction are of data, and
+     * with a header counted the gate's 40-byte memtable cut every output
+     * after its first key (compactions begun 1,339 -> 3,242) */
+    for (size_t i = 0; i < v->nfiles[l]; i++) s += v->files[l][i]->size - FHDR;
     return s;
 }
 
@@ -2030,7 +2128,7 @@ static int comp_step(GsStore *db, uint64_t budget, uint64_t *used) {
         Ent e = src_ent(&c->src[i]);
         int new_key = !c->have_cur || c->cur.n != e.kn || memcmp(c->cur.p, e.k, e.kn);
         if (new_key) {
-            if (c->open && c->b.off + c->b.block.n >= c->target && (rc = comp_close_output(c))) break;
+            if (c->open && c->b.off - FHDR + c->b.block.n >= c->target && (rc = comp_close_output(c))) break;
             gsbuf_set(&c->cur, e.k, e.kn);
             c->have_cur = 1;
             c->kept_visible = 0;
@@ -3530,15 +3628,15 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     /* one log record: the whole transaction, sequences from base */
     uint64_t base = db->last_seq + 1, count = t->buf.count;
     GsBuf rec = {0};
-    unsigned char h[20] = {0};
-    gsbuf_append(&rec, h, 8); /* len, crc */
+    unsigned char h[LOG_PRE + 20] = {0};
+    gsbuf_append(&rec, h, LOG_PRE); /* len, crc, flags, key epoch, seal */
     put64(h, base);
     put32(h + 8, (uint32_t)count);
     /* the chain (see log_prev): a recycled log still holds the records of
      * the log it was, and a crashed one what lost commits left, checksums
      * intact, and replay must stop at both */
     put32(h + 12, db->log_prev);
-    put32(h + 16, db->log_nonce);
+    put32(h + 16, db->log_salt);
     gsbuf_append(&rec, h, 20);
     for (SkNode *n = t->buf.head->next[0]; n; n = n->next[0]) {
         unsigned char b[12];
@@ -3565,7 +3663,11 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     }
     db->log_end += rec.n;
     db->log_prev = get32(rec.p + 4);
-    uint64_t wrote = rec.n;
+    /* what the commit pays background work for: its record without the
+     * format's fixed reserve, so a small commit buys the background work it
+     * bought before the reserve existed (the credits are tuned against what
+     * a commit adds to the memtable, which the reserve does not) */
+    uint64_t wrote = rec.n - (LOG_PRE - 8);
     gsbuf_free(&rec);
     uint64_t seq = base;
     for (SkNode *n = t->buf.head->next[0]; n && rc == GS_OK; n = n->next[0]) rc = sk_insert(&db->cur->mem->sk, n->k, n->kn, seq++, n->type, n->v, n->vn, 0);
@@ -3760,7 +3862,7 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
                             rsay(&r, "file %llu: entry %llu's blob does not read back", m->num, n);
                         gsbuf_free(&bv);
                         for (size_t j = 0; e->vn == BLOB_PTR && j < m->blobs.n; j++)
-                            if (m->blobs.v[j] == get64(e->v)) counted[j] += get32(e->v + 16);
+                            if (m->blobs.v[j] == get64(e->v)) counted[j] += BLOB_REC(get32(e->v + 16));
                     }
                     gsbuf_set(&prev, e->k, e->kn);
                     pseq = e->seq;

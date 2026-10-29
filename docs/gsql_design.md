@@ -709,7 +709,7 @@ Representative tests to add when the corresponding feature is implemented:
 
 ### Phase 0a: Storage-engine design by measurement (decided, v0.4)
 
-Build the §6.2 candidates far enough to run the workload, crash and round-trip harnesses; choose; record the losing designs and their numbers. Measure the §6.1 handoff (takeover, reconnect and recovery time). Fix the page format, including the reserved encryption fields (§6.4). Nothing in Phase 1 is coded before this is decided.
+Build the §6.2 candidates far enough to run the workload, crash and round-trip harnesses; choose; record the losing designs and their numbers. Measure the §6.1 handoff (takeover, reconnect and recovery time). Fix the page format, including the reserved encryption fields (§6.4). Nothing in Phase 1 is coded before this is decided. **Done 2026-10-29**: the engine is 2.C (`src/gsql/lsm.c`), and its format, major 1, is fixed with the encryption fields reserved (`docs/gsql_storage_design.md` §3.1.5, §6 "Step 6").
 
 ### Phase 0: Semantic contracts and test harness
 

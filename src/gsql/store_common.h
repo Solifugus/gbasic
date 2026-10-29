@@ -59,7 +59,13 @@ static inline GsBytes gss(const char *s) { return gsb(s, strlen(s)); }
 /* ---- §3.1.1 the file header (page 0, first 80 bytes) -------------------- */
 
 #define GS_MAGIC "GSQLDB\0\x01"
-#define GS_FORMAT_MAJOR 0   /* a spike format: no compatibility promised */
+/* 2.C's format, fixed 2026-10-29 (docs/gsql_storage_design.md §3.1.5): from
+ * here a database this build writes is one every later build opens. A reader
+ * refuses a major it does not know (FORMAT) and accepts a newer minor, which
+ * may only add where the format leaves room. */
+#define GS_FORMAT_MAJOR 1
+#define GS_FORMAT_MINOR 0
+#define GS_SPIKE_MAJOR 0    /* research/gsql's 2.B: a spike, no compatibility promised */
 #define GS_HEADER_FIXED 80  /* the root area begins here */
 
 typedef struct {
@@ -76,7 +82,8 @@ typedef struct {
  * fixed 76 bytes and sits at [76, 80), the end of the key-check block, which is
  * unused while encryption is off. */
 void gs_header_write(unsigned char *p, const GsFileHeader *h);
-int gs_header_read(const unsigned char *p, size_t n, GsFileHeader *h); /* GS_OK, GS_FORMAT, GS_CORRUPT */
+/* `major`: the one the caller reads; any other is FORMAT */
+int gs_header_read(const unsigned char *p, size_t n, uint16_t major, GsFileHeader *h); /* GS_OK, GS_FORMAT, GS_CORRUPT */
 void gs_identity_new(GsqlIo *io, unsigned char out[16]);
 
 /* ---- §3.1.2 the page header (every page) -------------------------------- */
