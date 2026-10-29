@@ -587,6 +587,38 @@ static void crc_agreement(void) {
         }
     CHECK(bad == 0, "CRC32C: %u of %u lengths and alignments disagree with the portable version", bad, n);
 }
+/* An EMPTY database's size on disk, at the default memtable. Its logs were
+ * zero-filled to twice the memtable when made, so a database holding ten rows
+ * took 134 MB (2026-10-29), which one owner per tenant multiplies by the
+ * tenants. The zeros now grow ahead of the log a step at a time. Correctness
+ * never rested on them -- replay stops at the end of a file as well as at
+ * zeros -- so this check, and the latency the prefill buys, are all that can
+ * see the prefill go wrong. */
+static void empty_footprint(const char *base, GsqlIo *io) {
+    if (strcmp(E->name, "lsm")) return;
+    char path[600], k[16];
+    snprintf(path, sizeof path, "%s.small", base);
+    GsOptions o = {1, 0, 0, io, 0, 0, 0, 0}; /* every size at its default */
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the small store answered %s", gs_status_name(rc));
+    if (rc) return;
+    for (int i = 0; i < 10 && rc == GS_OK; i++) {
+        snprintf(k, sizeof k, "k%d", i);
+        rc = put_kv(db, k, "v", i == 0, 1);
+    }
+    if (E->flush) E->flush(db);
+    E->close(db);
+    o.create = 0;
+    rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "reopening the small store answered %s", gs_status_name(rc));
+    if (rc) return;
+    GsStats st;
+    E->stats(db, &st);
+    CHECK(st.file_bytes < (4u << 20), "a ten-row database takes %llu bytes, over 4 MB", (unsigned long long)st.file_bytes);
+    CHECK(count_keys(db) == 10, "the small store holds %d of 10 rows", count_keys(db));
+    E->close(db);
+}
 static int real_fs;
 static void flushed_handoff(const char *base, GsqlIo *io) {
     if (!E->flush) return;
@@ -1430,6 +1462,7 @@ int main(int argc, char **argv) {
     real_fs = real;
     flushed_handoff(path, io);
     crc_agreement();
+    empty_footprint(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);

@@ -276,6 +276,7 @@ struct GsStore {
     struct Hnd *lru_head, *lru_tail;
     size_t nopen, max_open;
     uint64_t log_num, log_end;
+    uint64_t log_filled;   /* the current log's zeros reach here: see log_room */
     /* The log's chain: each record carries the checksum of the record before
      * it in the same file (the first, a seed from the file's number), and a
      * value drawn at every open. So a record a lost commit left past the end
@@ -1595,22 +1596,41 @@ static int replay_log(GsStore *db, GsqlFile *f, uint64_t num, uint64_t *end, uin
 
 /* ---- creation, recovery --------------------------------------------------------- */
 
-/* A new log is filled with zeros up to twice the memtable's size, so commit
- * records overwrite existing bytes and a commit's flush does not also commit
- * a change of file size (250 us against 1 ms on this machine). Replay stops at
- * the first record whose length is zero, so the zeros read as the end. */
-static int prefill_log(GsStore *db, GsqlFile *f, uint64_t from) {
-    uint64_t size = db->memtable_limit * 2 + 65536;
-    if (from >= size) return GS_OK;
+/* A log is filled with zeros AHEAD of its end, so a commit's record
+ * overwrites existing bytes and its flush does not also commit a change of
+ * file size: a synced commit into a log that is not prefilled took 515 us at
+ * the median against 252 (2026-10-29). Replay stops at the first record whose
+ * length is zero, so the zeros read as the end.
+ *
+ * The zeros go a step at a time, not all at once. A log used to be filled to
+ * twice the memtable when it was made, 64 MB at the default, and with a spare
+ * beside it an EMPTY database took 134 MB on disk -- one owner per tenant
+ * made that 134 GB of zeros for 1,000 tenants. Now a log starts with
+ * one step and the commit that would cross its zeros writes the next step
+ * first, unsynced: that commit's own flush carries them, once a megabyte.
+ * A step is at most the memtable, since a log never holds more than one
+ * memtable's commits -- which is also what puts the crossing inside the
+ * crash gate, whose 2,000-byte memtable crosses on nearly every commit. */
+#define LOG_STEP (1u << 20)
+static uint64_t log_step(const GsStore *db) { return db->memtable_limit < LOG_STEP ? db->memtable_limit : LOG_STEP; }
+static int zero_fill(GsStore *db, GsqlFile *f, uint64_t from, uint64_t to) {
     static const unsigned char zero[65536];
-    for (uint64_t at = from; at < size;) {
-        size_t n = size - at < sizeof zero ? (size_t)(size - at) : sizeof zero;
+    for (uint64_t at = from; at < to;) {
+        size_t n = to - at < sizeof zero ? (size_t)(to - at) : sizeof zero;
         int rc = ioerr(gsql_io_write_at(f, at, zero, n));
         if (rc) return rc;
         db->st.bytes_written += n;
         at += n;
     }
     return GS_OK;
+}
+/* Room for `need` more bytes of record in the current log. */
+static int log_room(GsStore *db, uint64_t need) {
+    if (db->log_end + need <= db->log_filled) return GS_OK;
+    uint64_t to = db->log_end + need + log_step(db);
+    int rc = zero_fill(db, db->log, db->log_filled, to);
+    if (rc == GS_OK) db->log_filled = to;
+    return rc;
 }
 
 static int open_log(GsStore *db, uint64_t num, int create) {
@@ -1659,10 +1679,11 @@ static int create_db(GsStore *db) {
     free(name);
     int rc = open_log(db, 1, 1);
     if (rc == GS_OK) rc = ioerr(gsql_io_truncate(db->log, 0));
-    if (rc == GS_OK) rc = prefill_log(db, db->log, 0);
+    if (rc == GS_OK) rc = zero_fill(db, db->log, 0, log_step(db));
     if (rc == GS_OK) rc = flush_file(db, db->log);
     if (rc == GS_OK) rc = manifest_write(db);
     db->log_end = 0;
+    db->log_filled = log_step(db);
     db->log_prev = log_seed(1);
     db->log_nonce = log_nonce_new(db);
     db->durable_seq = db->last_seq;
@@ -1801,6 +1822,11 @@ static int lsm_open_base(const char *path, const GsOptions *opt, GsStore **out) 
             k++;
         }
         if (rc == GS_OK && !db->log) { rc = open_log(db, db->log_num, 1); db->log_prev = log_seed(db->log_num); }
+        /* whatever the file holds past the last record is zeros or what lost
+         * commits left, which the chain stops at: either way, room */
+        db->log_filled = 0;
+        if (rc == GS_OK) gsql_io_size(db->log, &db->log_filled);
+        if (db->log_filled < db->log_end) db->log_filled = db->log_end;
         /* Whatever a lost commit left past the last valid record stays: its
          * records chain to the ones they followed, not to this open's. This
          * used to truncate and refill the rest of the log with zeros, synced:
@@ -2392,7 +2418,9 @@ typedef struct Flush {
  * from 1.0 to 2.3 ms. */
 #define SPARE_CHUNK (4u << 20)
 
-static uint64_t log_size(const GsStore *db) { return db->memtable_limit * 2 + 65536; }
+/* What a spare is filled to before a freeze may switch to it: one step, as a
+ * new log is (see log_room). */
+static uint64_t log_size(const GsStore *db) { return log_step(db); }
 
 /* Fill the spare log with zeros, up to `budget` bytes of it, each slice
  * synced as it goes so no single commit pays for the whole file. Ready once
@@ -2493,6 +2521,7 @@ static int freeze(GsStore *db) {
     db->log = db->spare;
     db->log_num++;
     db->log_end = 0;
+    db->log_filled = db->spare_filled;
     db->log_prev = log_seed(db->log_num);
     db->spare = NULL;
     db->spare_ready = 0;
@@ -2547,7 +2576,7 @@ static int flush_install(GsStore *db) {
             gsql_io_open(db->io, to, 0, &db->spare) == 0) {
             uint64_t sz = 0;
             gsql_io_size(db->spare, &sz);
-            db->spare_filled = sz >= log_size(db) ? log_size(db) : 0;
+            db->spare_filled = sz >= log_size(db) ? sz : 0;
             if (!db->spare_filled) { gsql_io_close(db->spare); db->spare = NULL; gsql_io_remove(db->io, to); }
             else keep = f->last;
         }
@@ -3523,7 +3552,8 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     for (size_t i = 0; i < t->retired.n; i++) put_u64(&rec, t->retired.v[i]);
     put32(rec.p, (uint32_t)(rec.n - 8));
     put32(rec.p + 4, crc32c(rec.p + 8, rec.n - 8));
-    int rc = ioerr(gsql_io_write_at(db->log, db->log_end, rec.p, rec.n));
+    int rc = log_room(db, rec.n);
+    if (rc == GS_OK) rc = ioerr(gsql_io_write_at(db->log, db->log_end, rec.p, rec.n));
     if (rc == GS_OK) { db->st.bytes_written += rec.n; db->st.pages_written++; }
     if (rc == GS_OK && sync) rc = flush_file(db, db->log);
     if (rc) {
@@ -3644,6 +3674,7 @@ static int lsm_flush(GsStore *db) {
             db->log = db->spare;
             db->log_num++;
             db->log_end = 0;
+            db->log_filled = db->spare_filled;
             db->log_prev = log_seed(db->log_num);
             db->spare = NULL;
             db->spare_ready = 0;
