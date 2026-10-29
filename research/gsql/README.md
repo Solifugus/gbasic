@@ -672,6 +672,53 @@ The stick runs (2026-10-25) predate `b6b21f7` (2026-10-26), which made 2.B reset
 
 Raw lines: `results/2026-10-28/round-*.jsonl` and `rep2-*`, `rep3-*`; scores: `score-PAGE-repN.json`.
 
+## Step 5: the owner round trip, many owners, and the planned handoff (2026-10-29)
+
+`roundtrip.c` measures §5.5's last two items over the chosen engine, now `src/gsql/lsm.c`. An owner process serves one store on an `AF_UNIX` stream socket with §6.5's frames (`le32` length, a type byte, a `le32` request id, the body), single-threaded and polling its connections. The bodies are storage requests, not SQL, since there is no SQL layer yet: so what is measured is what the protocol adds, and a query's own work is the same on both paths. **Every reply is checked**: a GET against the value its key was loaded with, a SCAN for 100 rows in order from the key asked for, and the request id echoed. NVMe, one run of each against the same store. Raw lines: `results/2026-10-29/`.
+
+### The round trip
+
+10⁶ rows of 100 bytes, 20,000 requests of each kind, three runs (µs, the middle run's figures; the other two agree within 0.4 µs on means):
+
+| request | in process: mean / p50 / p99 | through the owner: mean / p50 / p99 | added |
+|---|---|---|---|
+| empty | 0.02 / 0.02 / 0.02 | 5.81 / 4.97 / 11.17 | ~5.6 |
+| point read | 3.73 / 3.98 / 6.54 | 11.69 / 11.22 / 22.50 | ~8.0 |
+| 100 rows | 17.19 / 18.16 / 25.22 | 28.39 / 28.52 / 52.34 | ~11.2 |
+
+- **The protocol costs 5 to 12 µs a request.** About 5.5 µs is the floor, an empty request, and a 100-row batch adds about 6 µs more for its 13 KB.
+- **Against a query's own work it is small but not nothing.** A point read becomes about 3× slower, and a 100-row batch 1.65×. G-Dash's measured page queries take 120 to 160 ms for a 10⁶-row scan (§5.1.1), against which the round trip is noise.
+- **The threshold is open question 5, and it is not mine to set.** These are the first numbers the design asked for before agreeing one.
+
+### Many owners on one machine
+
+`roundtrip tenants ROOT N` starts N owners, one database each (100 rows), each the child of the measuring client. Cold start is from the fork to the first verified GET; the databases were flushed, so nothing is replayed.
+
+| owners | memtable | idle RSS per owner | descriptors per owner | cold start mean / p99 | disk per empty database |
+|---|---|---|---|---|---|
+| 1 | default (32 MB) | 2.25 MB | 8 | 1.30 ms | **134 MB** |
+| 100 | default | 2.28 MB | 8 | 0.86 / 1.78 ms | **134 MB** |
+| 1 | 1 MiB | 2.26 MB | 8 | 0.89 ms | 4.3 MB |
+| 1,000 | 1 MiB | 2.28 MB | 8 | 0.92 / 1.32 ms | 4.3 MB |
+
+- **An idle owner costs about 2.3 MB and 8 descriptors**, constant from 1 to 1,000 owners, and starts in under 1 ms when it has nothing to replay. 1,000 tenants is about 2.3 GB of memory. So an owner per active tenant is affordable, and starting one on demand costs about a millisecond plus its replay (up to about 110 ms with a full memtable, the handoff below).
+- **An empty database takes 134 MB on disk at the default memtable**: two logs, each preallocated at twice the memtable size and zero-filled. 1,000 tenants at the default would be 134 GB of zeros. With a 1 MiB memtable it is 4.3 MB. **This is the finding that matters for multi-tenant use**, and it is a cost of the log prefill, whose own justification did not reappear here (see the planned handoff below). Recorded, not changed.
+- **The first run reported 57 and 507 descriptors per owner at 100 and 1,000.** That was the harness: its client sockets were not close-on-exec, so each new owner inherited the client's connections to the earlier ones. The engine's own files are opened `O_CLOEXEC` (`src/gsql/io.c`). Fixed in the harness, and the corrected lines are the ones above.
+
+### The planned handoff
+
+`hardreq handoff lsm DIR COMMITS 2` is the planned form: the old owner calls `flush` (step 5) and closes, timed from the decision to hand over; then the next owner opens and reads. Two runs each, ms:
+
+| commits | plain close: close + first read = total | flush + close + first read = total |
+|---|---|---|
+| 100 | 0.4 + 3.0 = 3.4 | 8.6–12.5 + 0.1 = 8.7–12.6 |
+| 10⁴ | 1.0 + 13–16 = 14–17 | 9.5–10.7 + 0.3 = 9.7–11.0 |
+| 10⁵ | 13–14 + 107–116 = 120–130 | 30–33 + 0.3 = 30–33 |
+
+- **The next owner's open drops to 0.1–0.3 ms**, since there is nothing to replay. A flush pays off once the memtable holds a few thousand commits, and is about four times cheaper with a full one.
+- **The first `flush` cost about 34 ms however little it moved** (35 against 3.5 ms after 100 commits). A freeze needs a ready spare log, and making one ready is 64 MB of zeros, synced. `flush` now freezes into an **empty** log, which is correct (replay stops at its end, and the checksum chain at anything stale). The commit path keeps its paced, zero-filled spare.
+- **The empty log costs the next owner nothing measurable.** 2,000 synced single-row commits after each handoff: 260–271 µs a commit after a flushed one, 262–267 µs with a zero-filled log (three runs each, 10⁴ commits). The prefill was justified by a synced commit that changes the file's size costing 1 ms against 250 µs (`lsm.c`, `prefill_log`); that difference did not appear. Whether the prefill is still needed is a question for its own measurement.
+
 ## Perturbations proven red
 
 | broken | caught by |

@@ -41,6 +41,10 @@ static inline uint64_t get64be(const unsigned char *p) {
 
 uint32_t crc32c(const void *data, size_t n);
 uint32_t crc32c_extend(uint32_t crc, const void *data, size_t n);
+/* The table-driven version, always: the oracle the processor's is held to. */
+uint32_t crc32c_extend_portable(uint32_t crc, const void *data, size_t n);
+/* Whether crc32c is using the processor's instruction. */
+int crc32c_accelerated(void);
 
 /* LEB128. put answers the bytes written (<= 10); get answers bytes read, 0 on
  * a truncated or overlong encoding. */

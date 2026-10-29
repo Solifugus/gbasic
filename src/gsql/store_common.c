@@ -22,7 +22,7 @@ static void crc_init(void) {
     crc_ready = 1;
 }
 
-uint32_t crc32c_extend(uint32_t crc, const void *data, size_t n) {
+uint32_t crc32c_extend_portable(uint32_t crc, const void *data, size_t n) {
     if (!crc_ready) crc_init();
     const unsigned char *p = data;
     uint32_t c = ~crc;
@@ -37,6 +37,45 @@ uint32_t crc32c_extend(uint32_t crc, const void *data, size_t n) {
     while (n--) c = (c >> 8) ^ crc_table[0][(c ^ *p++) & 0xFF];
     return ~c;
 }
+
+/* The processor's own CRC32C where there is one. A scan larger than the
+ * block cache checks every block it reads, and table-driven CRC32C was about
+ * 3 instructions a byte of it (measured with callgrind, 2026-10-29). x86-64
+ * only so far, behind a runtime check, so a build for any x86-64 still runs
+ * on a processor without SSE4.2; everywhere else, and when GSQL_CRC=portable
+ * is set, the portable version above. tests/gsql/store_test.c holds the two
+ * to the same answers. */
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+__attribute__((target("sse4.2"))) static uint32_t crc_hw(uint32_t crc, const void *data, size_t n) {
+    const unsigned char *p = data;
+    uint64_t c = (uint32_t)~crc;
+    while (n && ((uintptr_t)p & 7)) { c = __builtin_ia32_crc32qi((uint32_t)c, *p++); n--; }
+    while (n >= 8) {
+        uint64_t w;
+        memcpy(&w, p, 8); /* little-endian, the byte order the instruction folds in */
+        c = __builtin_ia32_crc32di(c, w);
+        p += 8;
+        n -= 8;
+    }
+    while (n--) c = __builtin_ia32_crc32qi((uint32_t)c, *p++);
+    return ~(uint32_t)c;
+}
+static int crc_mode; /* 0 not yet decided, 1 portable, 2 the instruction */
+static int crc_decide(void) {
+    const char *f = getenv("GSQL_CRC");
+    __builtin_cpu_init();
+    crc_mode = (f && !strcmp(f, "portable")) || !__builtin_cpu_supports("sse4.2") ? 1 : 2;
+    return crc_mode;
+}
+uint32_t crc32c_extend(uint32_t crc, const void *data, size_t n) {
+    int m = crc_mode ? crc_mode : crc_decide();
+    return m == 2 ? crc_hw(crc, data, n) : crc32c_extend_portable(crc, data, n);
+}
+int crc32c_accelerated(void) { return (crc_mode ? crc_mode : crc_decide()) == 2; }
+#else
+uint32_t crc32c_extend(uint32_t crc, const void *data, size_t n) { return crc32c_extend_portable(crc, data, n); }
+int crc32c_accelerated(void) { return 0; }
+#endif
 
 uint32_t crc32c(const void *data, size_t n) { return crc32c_extend(0, data, n); }
 

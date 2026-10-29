@@ -315,6 +315,7 @@ struct GsStore {
     int failed;
     unsigned char identity[16];
     GsStats st;
+    GsBuf rbuf;        /* a block being read into the cache, before it is checked */
 };
 
 /* ---- a few helpers ---------------------------------------------------------- */
@@ -889,6 +890,32 @@ typedef struct {
 
 static void block_free(Block *b) { free(b->raw); free(b->e); memset(b, 0, sizeof *b); }
 
+/* Parse a checked block's entries into `e` (room for `count`), pointing into
+ * `raw`. The one parser, for block_read and for the cache's own load. */
+static int block_parse(const unsigned char *raw, size_t size, uint32_t count, Ent *e, size_t *n) {
+    size_t end = size - 8, at = 0;
+    *n = 0;
+    while (at < end && *n < count) {
+        uint64_t kn, vn;
+        size_t a = varint_get(raw + at, end - at, &kn);
+        if (!a || at + a + kn + 9 > end) return GS_CORRUPT;
+        Ent *x = &e[*n];
+        x->k = raw + at + a;
+        x->kn = (size_t)kn;
+        at += a + kn;
+        x->seq = get64(raw + at);
+        x->type = raw[at + 8];
+        at += 9;
+        a = varint_get(raw + at, end - at, &vn);
+        if (!a || at + a + vn > end) return GS_CORRUPT;
+        x->v = raw + at + a;
+        x->vn = (size_t)vn;
+        at += a + vn;
+        (*n)++;
+    }
+    return *n == count && at == end ? GS_OK : GS_CORRUPT;
+}
+
 static int block_read(GsStore *db, FileMeta *m, size_t bi, Block *out) {
     memset(out, 0, sizeof *out); /* an error path frees it */
     IdxEntry *ie = &m->index[bi];
@@ -900,28 +927,9 @@ static int block_read(GsStore *db, FileMeta *m, size_t bi, Block *out) {
     if (!rc) rc = check_block(out->raw, ie->size);
     if (rc) { block_free(out); return rc ? rc : GS_CORRUPT; }
     uint32_t count = get32(out->raw + ie->size - 8);
-    size_t end = ie->size - 8, at = 0;
+    if (count > ie->size) { block_free(out); return GS_CORRUPT; } /* an entry is never under a byte */
     out->e = malloc((count + 1) * sizeof *out->e);
-    out->n = 0;
-    while (at < end && out->n < count) {
-        uint64_t kn, vn;
-        size_t a = varint_get(out->raw + at, end - at, &kn);
-        if (!a || at + a + kn + 9 > end) { rc = GS_CORRUPT; break; }
-        Ent *e = &out->e[out->n];
-        e->k = out->raw + at + a;
-        e->kn = (size_t)kn;
-        at += a + kn;
-        e->seq = get64(out->raw + at);
-        e->type = out->raw[at + 8];
-        at += 9;
-        a = varint_get(out->raw + at, end - at, &vn);
-        if (!a || at + a + vn > end) { rc = GS_CORRUPT; break; }
-        e->v = out->raw + at + a;
-        e->vn = (size_t)vn;
-        at += a + vn;
-        out->n++;
-    }
-    if (rc == GS_OK && (out->n != count || at != end)) rc = GS_CORRUPT;
+    rc = block_parse(out->raw, ie->size, count, out->e, &out->n);
     if (rc) block_free(out);
     return rc;
 }
@@ -950,26 +958,33 @@ static int block_fetch(GsStore *db, FileMeta *m, size_t bi, CPage **pin, Block *
         lru_unlink(p);
         lru_front(&db->bcache, p);
     } else {
-        Block b;
-        int rc = block_read(db, m, bi, &b);
+        /* read into the store's own buffer, checked, then ONE allocation the
+         * entries are parsed straight into: three allocations, two frees and
+         * two copies a block before, which a scan larger than the cache pays
+         * for every block (2026-10-29) */
+        IdxEntry *ie = &m->index[bi];
+        GsqlFile *f;
+        int rc = file_fd(db, m, &f);
         if (rc) return rc;
-        size_t raw = m->index[bi].size, total = sizeof(Block) + b.n * sizeof(Ent) + raw;
+        if (!gsbuf_reserve(&db->rbuf, ie->size ? ie->size : 1)) return GS_IO;
+        if ((rc = read_exact(db, f, ie->off, db->rbuf.p, ie->size)) || (rc = check_block(db->rbuf.p, ie->size)))
+            return rc;
+        uint32_t count = get32(db->rbuf.p + ie->size - 8);
+        if (count > ie->size) return GS_CORRUPT; /* an entry is never under a byte */
+        size_t raw = ie->size, total = sizeof(Block) + (size_t)count * sizeof(Ent) + raw;
         unsigned char *buf = malloc(total);
-        if (!buf) { block_free(&b); return GS_IO; }
+        if (!buf) return GS_IO;
         Block *hb = (Block *)buf;
         Ent *ents = (Ent *)(buf + sizeof(Block));
-        unsigned char *r = (unsigned char *)(ents + b.n);
-        memcpy(r, b.raw, raw);
-        for (size_t i = 0; i < b.n; i++) {
-            ents[i] = b.e[i];
-            ents[i].k = r + (b.e[i].k - b.raw);
-            ents[i].v = r + (b.e[i].v - b.raw);
-        }
+        unsigned char *r = (unsigned char *)(ents + count);
+        memcpy(r, db->rbuf.p, raw);
+        size_t n;
+        if ((rc = block_parse(r, raw, count, ents, &n))) { free(buf); return rc; }
+        memset(hb, 0, sizeof *hb);
         hb->raw = NULL;
         hb->e = ents;
-        hb->n = b.n;
+        hb->n = n;
         hb->bytes = total;
-        block_free(&b);
         p = cache_insert(&db->bcache, m->num, bi + 1, buf);
         if (!p) { free(buf); return GS_IO; }
         db->bcache_bytes += total;
@@ -1530,6 +1545,7 @@ static void store_free(GsStore *db) {
     flush_drop(db); /* and so are an unfinished flush's; its logs replay */
     /* a spare log stays: the next open replays it (zeros) and writes to it */
     if (db->spare) gsql_io_close(db->spare);
+    gsbuf_free(&db->rbuf);
     if (db->log) gsql_io_close(db->log);
     if (db->lockf) gsql_io_close(db->lockf);
     version_unref(db, db->cur);
@@ -2894,6 +2910,7 @@ typedef struct GsCursor {
     GsBuf value;          /* the entry's value as stored: a blob pointer if vblob */
     int vblob;
     GsBuf vres;           /* a blob pointer's value, read when asked for */
+    GsBuf next_key;       /* find_forward's scratch, swapped with `key`: no malloc per row */
     unsigned char lo[ID_LEN], hi[ID_LEN];
     struct GsCursor *next;
 } Cur;
@@ -2918,16 +2935,18 @@ static int find_forward(Cur *c) {
     c->forward = 1;
     for (;;) {
         int best = -1;
+        size_t nvalid = 0;
         Ent be = {0};
         for (size_t i = 0; i < c->ns; i++) {
             Src *s = &c->src[i];
+            Ent e;
             while (s->valid) {
-                Ent e = src_ent(s);
+                e = src_ent(s);
                 if (visible(c, (int)i, &e)) break;
                 src_next(s); /* newer than the snapshot: not there for us */
             }
             if (!s->valid) continue;
-            Ent e = src_ent(s);
+            nvalid++;
             /* between sources at one key, the highest sequence: the buffer's is
              * UINT64_MAX and a spilled run's sits above every real one */
             if (best < 0 || ent_cmp(e.k, e.kn, e.seq, be.k, be.kn, be.seq) < 0) { best = (int)i; be = e; }
@@ -2935,28 +2954,34 @@ static int find_forward(Cur *c) {
         int rc = any_rc(c);
         if (rc) return rc;
         if (best < 0) return GS_OK;
-        if (bytes_cmp(gsb(be.k, be.kn), gsb(c->hi, ID_LEN)) >= 0 || bytes_cmp(gsb(be.k, be.kn), gsb(c->lo, ID_LEN)) < 0)
-            return GS_OK; /* past this tree */
-        GsBuf k = {0};
-        gsbuf_set(&k, be.k, be.kn);
+        /* past this tree: a key is in it exactly when it begins with its id
+         * (one comparison of 8 bytes, where testing [lo, hi) was two of the
+         * whole key, about a tenth of a scan) */
+        if (be.kn < ID_LEN || memcmp(be.k, c->lo, ID_LEN)) return GS_OK;
+        GsBuf *k = &c->next_key;
+        if (!gsbuf_set(k, be.k, be.kn)) return GS_IO;
         int live = be.type != TYPE_DEL;
-        if (live) { gsbuf_set(&c->value, be.v, be.vn); c->vblob = be.type == TYPE_BLOB; }
-        /* every source past this key */
-        for (size_t i = 0; i < c->ns; i++) {
+        if (live) {
+            if (!gsbuf_set(&c->value, be.v, be.vn)) return GS_IO;
+            c->vblob = be.type == TYPE_BLOB;
+        }
+        /* every source past this key: with one source left, which is a scan
+         * of settled data, only that one can hold it */
+        for (size_t i = nvalid == 1 ? (size_t)best : 0; i < (nvalid == 1 ? (size_t)best + 1 : c->ns); i++) {
             Src *s = &c->src[i];
             while (s->valid) {
                 Ent e = src_ent(s);
-                if (e.kn != k.n || memcmp(e.k, k.p, k.n)) break;
+                if (e.kn != k->n || memcmp(e.k, k->p, k->n)) break;
                 src_next(s);
             }
         }
         if (live) {
-            gsbuf_free(&c->key);
-            c->key = k;
+            GsBuf was = c->key;
+            c->key = *k;
+            *k = was;
             c->positioned = 1;
             return any_rc(c);
         }
-        gsbuf_free(&k);
     }
 }
 
@@ -3197,6 +3222,7 @@ static void lsm_cursor_close(GsCursor *c) {
     for (size_t i = 0; i < c->ns; i++) src_reset(&c->src[i]);
     free(c->src);
     gsbuf_free(&c->key);
+    gsbuf_free(&c->next_key);
     gsbuf_free(&c->value);
     gsbuf_free(&c->vres);
     free(c);
@@ -3216,6 +3242,7 @@ static int last_key_of(struct GsTxn *t, uint64_t id, GsBuf *out, int *found) {
     for (size_t i = 0; i < c.ns; i++) src_reset(&c.src[i]);
     free(c.src);
     gsbuf_free(&c.key);
+    gsbuf_free(&c.next_key);
     gsbuf_free(&c.value);
     return rc;
 }
@@ -3236,6 +3263,7 @@ static int lsm_tree_list(struct GsTxn *t, int (*each)(void *, GsBytes), void *ct
     for (size_t i = 0; i < c.ns; i++) src_reset(&c.src[i]);
     free(c.src);
     gsbuf_free(&c.key);
+    gsbuf_free(&c.next_key);
     gsbuf_free(&c.value);
     return rc;
 }
@@ -3469,11 +3497,52 @@ static int lsm_sync(GsStore *db, uint64_t *durable) {
 /* The memtable written out and the log retired with it. flush_memtable is
  * what a spilled transaction's commit runs, so this adds no new path: a
  * finished flush's manifest names the next log, and that log is empty. */
+/* A spare log made ready NOW, empty rather than zero-filled. A freeze needs
+ * a ready spare, and filling one is 2 x the memtable of zeros, synced: 64 MB
+ * at the default, which made `flush` cost about 34 ms however little it had
+ * to move (measured 2026-10-29: 35 ms against a plain close's 3.5 after 100
+ * commits). An empty log is a correct log -- replay stops at its end, and
+ * the checksum chain at anything stale -- whose commits merely extend the
+ * file until the next freeze, by when the old log, recycled at full size,
+ * is the spare again. Only `flush` takes this: the commit path keeps its
+ * paced, zero-filled spare.
+ *
+ * The directory sync below is the invariant spare_step states (a log is
+ * named durably before any commit lands in it), and inside `flush` it is
+ * NOT load-bearing, measured: removed, store_test's power losses after the
+ * flush stay green, because the flush installs before returning and the
+ * install's own directory sync covers the new name too. Kept so the
+ * invariant does not depend on that order. */
+static int spare_now(GsStore *db) {
+    if (db->spare_ready) return GS_OK;
+    int rc = GS_OK;
+    if (!db->spare) {
+        char *name = log_name(db->path, db->log_num + 1);
+        rc = ioerr(gsql_io_open(db->io, name, GSQL_IO_CREATE, &db->spare));
+        free(name);
+        if (rc == GS_OK) rc = ioerr(gsql_io_truncate(db->spare, 0));
+        if (rc) { if (db->spare) gsql_io_close(db->spare); db->spare = NULL; return rc; }
+        db->spare_filled = 0;
+    }
+    if ((rc = flush_file(db, db->spare))) return rc;
+    if ((rc = ioerr(gsql_io_sync_dir(db->io, db->dir)))) return rc;
+    db->st.flushes++;
+    db->spare_ready = 1;
+    return GS_OK;
+}
+
 static int lsm_flush(GsStore *db) {
     if (db->failed) return GS_FAILED;
     if (db->writer) return GS_MISUSE;
     int rc = lsm_sync(db, NULL);
-    if (rc == GS_OK) rc = flush_memtable(db);
+    /* flush_memtable's steps, with the spare made ready without zeros */
+    if (rc == GS_OK) rc = flush_step(db, UINT64_MAX);
+    if (rc == GS_OK && db->cur->mem->sk.count) {
+        rc = spare_now(db);
+        if (rc == GS_OK) rc = freeze(db);
+    }
+    if (rc == GS_OK) rc = flush_step(db, UINT64_MAX);
+    if (rc == GS_OK) rc = maybe_compact(db, 0);
     /* as after a commit: a failed flush of a file made the store unusable
      * (flush_file says so), and anything else can be tried again */
     if (db->failed) return GS_IO;

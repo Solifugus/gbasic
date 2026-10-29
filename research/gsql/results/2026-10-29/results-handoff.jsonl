@@ -1,0 +1,12 @@
+{"test":"handoff","engine":"lsm","mode":"clean","commits":100,"log_bytes":72286208,"open_ms":2.92,"to_first_read_ms":2.97,"old_owner_close_ms":0.43,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"clean","commits":100,"log_bytes":72286208,"open_ms":2.95,"to_first_read_ms":2.99,"old_owner_close_ms":0.41,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"flushed","commits":100,"log_bytes":0,"open_ms":0.04,"to_first_read_ms":0.12,"old_owner_close_ms":8.60,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"flushed","commits":100,"log_bytes":0,"open_ms":0.04,"to_first_read_ms":0.16,"old_owner_close_ms":12.47,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"clean","commits":10000,"log_bytes":76546048,"open_ms":15.83,"to_first_read_ms":15.97,"old_owner_close_ms":0.96,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"clean","commits":10000,"log_bytes":76546048,"open_ms":12.82,"to_first_read_ms":12.95,"old_owner_close_ms":1.14,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"flushed","commits":10000,"log_bytes":4259840,"open_ms":0.08,"to_first_read_ms":0.26,"old_owner_close_ms":9.45,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"flushed","commits":10000,"log_bytes":4259840,"open_ms":0.08,"to_first_read_ms":0.26,"old_owner_close_ms":10.69,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"clean","commits":100000,"log_bytes":146972000,"open_ms":115.64,"to_first_read_ms":115.77,"old_owner_close_ms":13.95,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"clean","commits":100000,"log_bytes":146972000,"open_ms":107.00,"to_first_read_ms":107.16,"old_owner_close_ms":12.78,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"flushed","commits":100000,"log_bytes":63897600,"open_ms":0.09,"to_first_read_ms":0.31,"old_owner_close_ms":32.81,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}
+{"test":"handoff","engine":"lsm","mode":"flushed","commits":100000,"log_bytes":63897600,"open_ms":0.10,"to_first_read_ms":0.33,"old_owner_close_ms":29.58,"unsynced_keys_kept":0,"ok":true,"flush":"empty spare"}

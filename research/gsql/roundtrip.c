@@ -22,6 +22,7 @@
  * the value that key was loaded with, and a SCAN answers N rows in order
  * starting at the key asked for. */
 
+#define _GNU_SOURCE /* accept4 */
 #include "store_common.h"
 
 #include <errno.h>
@@ -112,7 +113,7 @@ static int listen_on(const char *path) {
     if (strlen(path) >= sizeof a.sun_path) return -1;
     strcpy(a.sun_path, path);
     unlink(path); /* the lock decides (§6.5), and this process holds it */
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (s < 0 || bind(s, (struct sockaddr *)&a, sizeof a) || listen(s, 64)) return -1;
     return s;
 }
@@ -170,7 +171,7 @@ static int owner(const char *dir, const char *sock) {
     while (!done) {
         if (poll(fds, (nfds_t)n, -1) < 0) { if (errno == EINTR) continue; break; }
         if (fds[0].revents & POLLIN) {
-            int c = accept(ls, NULL, NULL);
+            int c = accept4(ls, NULL, NULL, SOCK_CLOEXEC);
             if (c >= 0 && n < 256) { fds[n].fd = c; fds[n].events = POLLIN; fds[n].revents = 0; n++; }
             else if (c >= 0) close(c);
         }
@@ -204,7 +205,7 @@ static int connect_to(const char *path) {
     memset(&a, 0, sizeof a);
     a.sun_family = AF_UNIX;
     strcpy(a.sun_path, path);
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (s < 0) return -1;
     if (connect(s, (struct sockaddr *)&a, sizeof a)) { close(s); return -1; }
     return s;

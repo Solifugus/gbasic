@@ -1,0 +1,18 @@
+{"test":"roundtrip","request":"empty","path":"in process","n":20000,"mean_us":0.02,"p50_us":0.02,"p99_us":0.02,"bad_replies":0}
+{"test":"roundtrip","request":"point read","path":"in process","n":20000,"mean_us":3.67,"p50_us":3.92,"p99_us":6.47,"bad_replies":0}
+{"test":"roundtrip","request":"100 rows","path":"in process","n":20000,"mean_us":17.06,"p50_us":18.12,"p99_us":24.98,"bad_replies":0}
+{"test":"roundtrip","request":"empty","path":"owner","n":20000,"mean_us":5.44,"p50_us":4.77,"p99_us":11.04,"bad_replies":0}
+{"test":"roundtrip","request":"point read","path":"owner","n":20000,"mean_us":11.44,"p50_us":10.93,"p99_us":22.58,"bad_replies":0}
+{"test":"roundtrip","request":"100 rows","path":"owner","n":20000,"mean_us":28.83,"p50_us":28.08,"p99_us":63.64,"bad_replies":0}
+{"test":"roundtrip","request":"empty","path":"in process","n":20000,"mean_us":0.02,"p50_us":0.02,"p99_us":0.02,"bad_replies":0}
+{"test":"roundtrip","request":"point read","path":"in process","n":20000,"mean_us":3.73,"p50_us":3.98,"p99_us":6.54,"bad_replies":0}
+{"test":"roundtrip","request":"100 rows","path":"in process","n":20000,"mean_us":17.19,"p50_us":18.16,"p99_us":25.22,"bad_replies":0}
+{"test":"roundtrip","request":"empty","path":"owner","n":20000,"mean_us":5.81,"p50_us":4.97,"p99_us":11.17,"bad_replies":0}
+{"test":"roundtrip","request":"point read","path":"owner","n":20000,"mean_us":11.69,"p50_us":11.22,"p99_us":22.50,"bad_replies":0}
+{"test":"roundtrip","request":"100 rows","path":"owner","n":20000,"mean_us":28.39,"p50_us":28.52,"p99_us":52.34,"bad_replies":0}
+{"test":"roundtrip","request":"empty","path":"in process","n":20000,"mean_us":0.02,"p50_us":0.02,"p99_us":0.02,"bad_replies":0}
+{"test":"roundtrip","request":"point read","path":"in process","n":20000,"mean_us":3.79,"p50_us":4.06,"p99_us":6.53,"bad_replies":0}
+{"test":"roundtrip","request":"100 rows","path":"in process","n":20000,"mean_us":17.19,"p50_us":18.25,"p99_us":25.32,"bad_replies":0}
+{"test":"roundtrip","request":"empty","path":"owner","n":20000,"mean_us":5.55,"p50_us":5.16,"p99_us":10.80,"bad_replies":0}
+{"test":"roundtrip","request":"point read","path":"owner","n":20000,"mean_us":11.34,"p50_us":11.11,"p99_us":18.99,"bad_replies":0}
+{"test":"roundtrip","request":"100 rows","path":"owner","n":20000,"mean_us":30.69,"p50_us":30.14,"p99_us":66.23,"bad_replies":0}

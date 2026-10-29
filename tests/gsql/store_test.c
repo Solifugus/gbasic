@@ -549,8 +549,48 @@ static int count_keys(GsStore *db) {
     E->abort(r);
     return n;
 }
+/* Power losses of the store's disk at this moment, several seeds: each must
+ * open, pass check, and hold `want` keys. */
+static void power_check(GsqlIo *io, const char *path, int want, const char *when) {
+    for (uint64_t seed = 1; seed <= 6; seed++) {
+        GsqlIo *img = gsql_io_sim_crash_image(io, GSQL_CRASH_POWER, seed);
+        GsOptions o = {0, 512, 0, img, 1 << 20, 0, 0, 0};
+        GsStore *db;
+        int rc = E->open(path, &o, &db);
+        CHECK(rc == GS_OK, "%s, power loss %llu: open answered %s", when, (unsigned long long)seed, gs_status_name(rc));
+        if (rc == GS_OK) {
+            int n = count_keys(db);
+            CHECK(n == want, "%s, power loss %llu: %d of %d commits", when, (unsigned long long)seed, n, want);
+            CHECK(E->check(db, print_report, NULL) == GS_OK, "%s, power loss %llu: check", when, (unsigned long long)seed);
+            E->close(db);
+        }
+        gsql_io_free(img);
+    }
+}
+/* CRC32C: whatever crc32c uses (the processor's instruction where it has
+ * one) against the portable table-driven version, at every alignment and
+ * many lengths, and both against the standard check value. Every checksum
+ * on disk goes through this, so a wrong fast path would make every store
+ * unreadable by a build without it -- or worse, readable and agreeing only
+ * with itself. */
+static void crc_agreement(void) {
+    CHECK(crc32c("123456789", 9) == 0xE3069283u, "CRC32C(\"123456789\") is %08x, want e3069283", crc32c("123456789", 9));
+    CHECK(crc32c_extend_portable(0, "123456789", 9) == 0xE3069283u, "the portable CRC32C of the check string");
+    unsigned char buf[4200];
+    for (size_t i = 0; i < sizeof buf; i++) buf[i] = (unsigned char)rnd();
+    unsigned bad = 0, n = 0;
+    for (size_t off = 0; off < 16; off++)
+        for (size_t len = 0; len + off <= sizeof buf; len += 1 + len / 3) {
+            uint32_t seed = (uint32_t)rnd();
+            if (crc32c_extend(seed, buf + off, len) != crc32c_extend_portable(seed, buf + off, len)) bad++;
+            n++;
+        }
+    CHECK(bad == 0, "CRC32C: %u of %u lengths and alignments disagree with the portable version", bad, n);
+}
+static int real_fs;
 static void flushed_handoff(const char *base, GsqlIo *io) {
     if (!E->flush) return;
+    int real = real_fs;
     for (int flushed = 0; flushed < 2; flushed++) {
         char path[600], k[16];
         snprintf(path, sizeof path, "%s.handoff%d", base, flushed);
@@ -572,7 +612,23 @@ static void flushed_handoff(const char *base, GsqlIo *io) {
             E->abort(w);
             CHECK(E->flush(db) == GS_OK, "flush");
             CHECK(E->flush(db) == GS_OK, "a second flush, with nothing to move");
+            /* With 250 small commits the spare log is not yet filled, so the
+             * flush freezes into an EMPTY one (spare_now), the one path the
+             * crash gate's workloads never reach: their spare is always ready
+             * by the time they flush (measured with a probe). So power losses
+             * are built here, right after the flush and again after commits
+             * into the short log, and every durable commit must survive. */
+            if (!real) {
+                for (int i = 250; i < 300 && rc == GS_OK; i++) {
+                    if (i == 275) power_check(io, path, 275, "after the flush and 25 commits into the short log");
+                    snprintf(k, sizeof k, "k%04d", i);
+                    rc = put_kv(db, k, "value", 0, 1);
+                }
+                power_check(io, path, 300, "after 50 commits into the short log");
+                CHECK(E->flush(db) == GS_OK, "flush again, out of the short log");
+            }
         }
+        int total = flushed && !real ? 300 : 250;
         CHECK(E->close(db) == GS_OK, "close the handoff store");
         rc = E->open(path, &o, &db);
         CHECK(rc == GS_OK, "reopening the handoff store answered %s", gs_status_name(rc));
@@ -582,13 +638,13 @@ static void flushed_handoff(const char *base, GsqlIo *io) {
         if (flushed) CHECK(st.replayed == 0, "after flush the open replayed %llu records", (unsigned long long)st.replayed);
         else CHECK(st.replayed >= 250, "after a plain close the open replayed %llu records, want at least 250",
                    (unsigned long long)st.replayed);
-        CHECK(count_keys(db) == 250, "%s: %d of 250 commits after the reopen", flushed ? "flushed" : "plain", count_keys(db));
+        CHECK(count_keys(db) == total, "%s: %d of %d commits after the reopen", flushed ? "flushed" : "plain", count_keys(db), total);
         rc = put_kv(db, "after", "x", 0, 1);
         CHECK(rc == GS_OK, "a commit after the reopen answered %s", gs_status_name(rc));
         CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the handoff");
         E->close(db);
         rc = E->open(path, &o, &db);
-        CHECK(rc == GS_OK && count_keys(db) == 251 && has_key(db, "after"), "%s: the commit after the handoff survives",
+        CHECK(rc == GS_OK && count_keys(db) == total + 1 && has_key(db, "after"), "%s: the commit after the handoff survives",
               flushed ? "flushed" : "plain");
         if (rc == GS_OK) E->close(db);
     }
@@ -1368,7 +1424,9 @@ int main(int argc, char **argv) {
     blob_space(path, io);
     frozen_reads(path, io);
     lost_twin(path, io);
+    real_fs = real;
     flushed_handoff(path, io);
+    crc_agreement();
     ms_free(&committed);
     ms_free(&durable);
     free(vb);

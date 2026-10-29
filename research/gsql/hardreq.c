@@ -880,6 +880,7 @@ static int t_handoff(uint64_t commits, int kill_it) {
     db = open_store(g_path, 0);
     double open_ms = now_ms() - t0, first_ms = 0;
     uint64_t kept = 0;
+    double after_us = 0;
     if (db) {
         /* the first request, and the last durable commit is there */
         GsTxn *r;
@@ -897,14 +898,20 @@ static int t_handoff(uint64_t commits, int kill_it) {
             if (E->get(r, gss("t"), gsb(k, kn), &v) == GS_OK) kept++;
         }
         E->abort(r);
+        /* the new owner's own durable commits: after a flushed handoff its
+         * log may be one that grows with every commit, not a prefilled one */
+        double tc = now_ms();
+        for (uint64_t i = 0; i < 2000; i++)
+            if (update_one(db, "t", (i * 31) % 10000, 900000 + (uint32_t)i, 1)) { fail("a commit after the handoff failed%s%lld", "", 0); break; }
+        after_us = (now_ms() - tc) * 1000.0 / 2000;
         E->close(db);
     }
-    char fields[360];
+    char fields[400];
     snprintf(fields, sizeof fields,
              "\"mode\":\"%s\",\"commits\":%llu,\"log_bytes\":%llu,\"open_ms\":%.2f,\"to_first_read_ms\":%.2f,"
-             "\"old_owner_close_ms\":%.2f,\"unsynced_keys_kept\":%llu,",
+             "\"old_owner_close_ms\":%.2f,\"synced_commit_after_us\":%.1f,\"unsynced_keys_kept\":%llu,",
              kill_it == 1 ? "sigkill" : kill_it == 2 ? "flushed" : "clean", (unsigned long long)commits,
-             (unsigned long long)log_at, open_ms, first_ms, close_ms, (unsigned long long)kept);
+             (unsigned long long)log_at, open_ms, first_ms, close_ms, after_us, (unsigned long long)kept);
     return finish("handoff", fields);
 }
 

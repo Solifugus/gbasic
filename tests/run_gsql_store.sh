@@ -35,6 +35,13 @@
 #            25 minutes for 2.C alone (measured 2026-10-29: 181-211 s per
 #            512-byte mode).
 #
+# `flush` freezes into an EMPTY spare log when the paced one is not ready
+# (it was 64 MB of zeros, about 34 ms however little it moved). The crash
+# workloads below never reach that path -- their spare is always ready by
+# the time they flush, measured with a probe -- so store_test builds power
+# losses around it directly: after the flush, and after commits into the
+# short log.
+#
 # Perturbations proven red (2026-10-29), each against the version tier:
 # history kept under the new id rather than the old (16,389 of 37,789 checks),
 # a removal that records nothing (3,616), no clamp on a stepped-back clock
