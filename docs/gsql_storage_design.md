@@ -636,7 +636,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 **Test 2 run, 2026-10-26: 2.C rebuilt and measured again; it stands** (`research/gsql/README.md`, "The 2.C rebuild", has the tables).
 - **All four items are built and pass the crash gate**: value separation into blob files, a 32 MB default memtable, a trivial move, and compaction in slices across commits.
 - **W3 and W8 change most.**
-  - W3 runs at 242 k rows/s with a 4.3 ms p99, against 21 k and 724 ms before, and against RocksDB's 93 k.
+  - W3 runs at 40–52 k rows/s at 10⁶ records with a 100–120 ms p99, against 21 k and 724 ms before, and against RocksDB's 93 to 99 k. *(Corrected 2026-10-29: this line first said 242 k and 4.3 ms, which was a 10⁵-record run compared with 10⁶-record ones.)*
   - W8 runs at 2,081 ops/s, the best of the six engines, where it was the slowest.
 - **The bulk loads and group-64 improve too.** The YCSB load and group-64 now beat RocksDB. W4 random doubles but still trails 2.A.
 - **Building it found a durable-commit loss in 2.C, present from the start.** A manifest written before the first flush after an open recorded the wrong log to replay from. Three file leaks also turned up, found by checking every recovered store. All are fixed and gated.
@@ -681,6 +681,15 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 - **Space under group commit is a new cost of 2.A, and none of 2.C's.** With 1,000-row transactions synced every 64 commits, 2.A's file reaches 21.9× its data and keeps it. 2.B's log grows 9× and is truncated back. 2.C is unaffected by the group size.
 - **2.B's group commit on the flash stick is still unexplained.** The log-reset fix is ruled out on NVMe; the checkpoint's write order is next, and needs the stick.
 - **Left for step 3:** nothing that can be measured without the owner, except the stick. Step 4, re-scoring under the fixed weights, can begin.
+
+**Step 4, 2026-10-29: scored under the fixed weights, the choice is 2.C, with 2.B as the fallback** (`research/gsql/README.md`, "Step 4"; `research/gsql/score.py`, committed before the round's numbers existed).
+- **One fresh round on one day's code, the deciding parts three times.** Mean points out of 100, with the B+trees at 8 KiB pages, which is what they would ship with: **2.C 73.8, 2.A 69.1, 2.B 66.6.** At 4 KiB: 2.C 79.2, 2.B 57.4, 2.A 57.3.
+- **2.C's lead is performance**: 49 of the 55 workload points, against 25 and 32. It gives back 6.3 points of complexity (3,095 lines against 2,118 and 2,210) and, at 8 KiB, about 3 of space on a 10⁵-record store, where its two 64 MB logs are half the file.
+- **Robust to the two rule details that decide the margin.** Measuring space at 10⁷ rows, or flooring recovery at 20 ms, 2.C leads in 17 of 18 scorings and ties the last, within single-run noise. Both variants were chosen after seeing the numbers and are reported as sensitivity, not as the rule.
+- **2.A stays retired although it scores second at 8 KiB.** The weights hold no slow device: on the flash stick it makes 1 durable commit a second against 2.C's 410. Its group-commit gap is structural, and under large unsynced commits its file grows 21.9× and keeps the space. A veto for a device class is not in point 2's list; this paragraph records that the retirement rests on those measurements, not on the score.
+- **Corrected on the way:** 2.C's W3 after the rebuild is 40–52 k rows/s at 10⁶ records, not the 242 k recorded (a 10⁵-record run). RocksDB still leads W3 by 2×.
+- **What 2.C still owes, carried into step 5:** the scan path (common to every candidate, and where G-Dash's page time goes); W3's tail, which wants compaction on a thread of its own; point reads in a short read run after a load (about 32% below the build before the flush change); a flush at close, so a planned handoff does not replay; and the invariant count, never made for any candidate.
+- **Not measured, and needed by step 5 rather than by the choice:** the owner round trip and many owners per machine (§5.5), and 2.B's flash-stick group commit, which matters only if the fallback is taken.
 
 ## 7. Open questions
 

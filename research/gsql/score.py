@@ -2,7 +2,10 @@
 """Step 4 of docs/gsql_storage_design.md §6: score the candidates under the
 weights fixed on 2026-10-24.
 
-    python3 research/gsql/score.py [--page8k]
+    python3 research/gsql/score.py [--page8k] [--rep N] [--space-at-scale] [--recovery-floor MS]
+
+The last two are SENSITIVITY variants, not the rule: space measured at 10^7
+rows instead of W7's 10^5, and recovery times under MS counted as MS.
 
 Reads the 2026-10-28 round (results/2026-10-28/round-*.jsonl), the handoff
 lines (results-gdash.jsonl) and counts lines of code in the sources. Prints
@@ -51,8 +54,13 @@ def index(files, page=4096):
     return by
 
 
-def ratio_score(vals, higher_better):
+FLOOR = None  # --recovery-floor MS: SENSITIVITY, a time at or under MS counts as MS
+
+
+def ratio_score(vals, higher_better, floor=None):
     """vals: engine -> value or None. Returns engine -> ratio to the best."""
+    if floor is not None:
+        vals = {e: (None if v is None else max(v, floor)) for e, v in vals.items()}
     ok = {e: v for e, v in vals.items() if v is not None and v > 0}
     if not ok:
         return {e: None for e in vals}
@@ -90,12 +98,18 @@ def loc_of(files):
 
 
 def main():
+    global FLOOR
     page = 8192 if "--page8k" in sys.argv else 4096
-    files = ["round-main.jsonl", "round-tpcc.jsonl", "round-ssb.jsonl", "round-w3.jsonl", "round-w4.jsonl"]
+    if "--recovery-floor" in sys.argv:
+        FLOOR = float(sys.argv[sys.argv.index("--recovery-floor") + 1])
+    # --rep N reads repetition N of everything but W4, which was run once (rep 1 is the round)
+    rep = sys.argv[sys.argv.index("--rep") + 1] if "--rep" in sys.argv else "1"
+    pre = "round-" if rep == "1" else f"rep{rep}-"
+    files = [pre + "main.jsonl", pre + "tpcc.jsonl", pre + "ssb.jsonl", pre + "w3.jsonl", "round-w4.jsonl", "round-w4-carried.jsonl"]
     by = index(files)
     if page == 8192:
         # the B+trees at 8 KiB where the round ran them; W3 and W4 were run at 4 KiB only
-        by8 = index(["round-page8k.jsonl"], 8192)
+        by8 = index([pre + "page8k.jsonl"], 8192)
         for k, v in by8.items():
             by[k] = v
     out = []
@@ -136,18 +150,24 @@ def main():
             [("lines (" + ", ".join(f"{NAMES[e]} {loc[e]:,}" for e in CANDS) + ")", ratio_score(loc, False))],
             "complexity")
 
-    v = {e: by.get((e, "w7"), {}).get("space_amp") for e in CANDS}
-    section("Space amplification (15): W7, as the weights table names it",
-            [("w7 space amp (" + ", ".join(f"{NAMES[e]} {v[e]}" for e in CANDS) + ")", ratio_score(v, False))], "space")
+    if "--space-at-scale" in sys.argv:
+        # SENSITIVITY, not the rule: space at 10^7 rows, where a fixed log reservation is noise
+        v = {e: by.get((e, "w4-random"), {}).get("space_amp") for e in CANDS}
+        section("Space amplification (15), SENSITIVITY: W4 random at 10⁷ rows",
+                [("w4-random space amp (" + ", ".join(f"{NAMES[e]} {v[e]}" for e in CANDS) + ")", ratio_score(v, False))], "space")
+    else:
+        v = {e: by.get((e, "w7"), {}).get("space_amp") for e in CANDS}
+        section("Space amplification (15): W7, as the weights table names it",
+                [("w7 space amp (" + ", ".join(f"{NAMES[e]} {v[e]}" for e in CANDS) + ")", ratio_score(v, False))], "space")
 
     rec = []
     v = {e: by.get((e, "recovery"), {}).get("recover_ms") for e in CANDS}
-    rec.append(("reopen after a crash (bench, ms)", ratio_score(v, False)))
+    rec.append(("reopen after a crash (bench, ms)", ratio_score(v, False, FLOOR)))
     hand = [r for r in lines(os.path.join(R, "results-gdash.jsonl")) if r.get("test") == "handoff" and r.get("mode") == "sigkill"]
     for c in sorted({r["commits"] for r in hand}):
         v = {e: next((r["to_first_read_ms"] for r in hand if r["engine"] == e and r["commits"] == c), None) for e in CANDS}
-        rec.append((f"handoff by SIGKILL after {c:,} commits (ms)", ratio_score(v, False)))
-    section("Recovery and handoff time (10)", rec, "recovery")
+        rec.append((f"handoff by SIGKILL after {c:,} commits (ms)", ratio_score(v, False, FLOOR)))
+    section("Recovery and handoff time (10)" + (f", SENSITIVITY: floored at {FLOOR:g} ms" if FLOOR else ""), rec, "recovery")
 
     out.append("\n**Weighted total (out of 100)**\n")
     out.append("| | " + " | ".join(NAMES[e] for e in CANDS) + " |")
@@ -160,7 +180,8 @@ def main():
     out.append("| **total** | " + " | ".join(f"**{tot[e]:.1f}**" for e in CANDS) + " |")
     print(f"page size for the B+trees: {page}")
     print("\n".join(out))
-    json.dump({"page": page, "criteria": crit, "total": tot}, open(os.path.join(R, f"score-{page}.json"), "w"), indent=1)
+    if FLOOR is None and "--space-at-scale" not in sys.argv:
+        json.dump({"page": page, "rep": rep, "criteria": crit, "total": tot}, open(os.path.join(R, f"score-{page}-rep{rep}.json"), "w"), indent=1)
 
 
 if __name__ == "__main__":

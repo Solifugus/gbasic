@@ -132,7 +132,7 @@ The comparison is meant to measure the engines, not two independently written tr
 
 | | before | after | best reference |
 |---|---|---|---|
-| W3 rows/s, NVMe | 20,667 | **242,199** | RocksDB 92,645 |
+| W3 rows/s, NVMe | 20,667 | ~~**242,199**~~ 40–52 k at the same size (corrected 2026-10-29, below) | RocksDB 92,645 |
 | W3 p99, NVMe | 724 ms | **4.3 ms** | |
 | W3 rows/s, larger than memory | 9,030 | 30,945 | RocksDB 107,340 |
 | W3 p99, larger than memory | 1,851 ms | 150 ms | RocksDB 35 ms |
@@ -144,6 +144,8 @@ The comparison is meant to measure the engines, not two independently written tr
 | W8 space amp | 1.21 | **2.91** | LMDB 1.04 |
 | recovery, NVMe | 8.4 ms | 53 ms | LMDB 0.23 ms |
 | recovery, flash stick | 81 ms | **1,279 ms** | LMDB 0.21 ms |
+
+- **Corrected 2026-10-29: the W3 row compared two sizes.** 242,199 rows/s was a 10⁵-record run (20,000 rows inside one memtable, write amp 1.01), while 20,667 and RocksDB's 92,645 were 10⁶. At 10⁶ the rebuild's build (`83f5b75`) gives 42–52 k rows/s, run again for step 4, against 99 k for RocksDB on the same day: a 2 to 2.5× gain, not 12×, and RocksDB still leads W3 by 2×. The p99 at 10⁶ is 100–120 ms, not 4.3 ms. Every 2.C build since gives the same, so nothing regressed; the figure was wrong when written.
 
 **What it cost:**
 - **Recovery time grows with the memtable.** A 32 MB memtable means up to 32 MB of log to replay, which takes 1.3 s on the flash stick.
@@ -625,6 +627,48 @@ The stick runs (2026-10-25) predate `b6b21f7` (2026-10-26), which made 2.B reset
 - **The fix changes nothing here**, and the bench's `group-N` path (commits with `sync = false`, then `sync()`) is not the one it fixed (synced commits under a grouping caller). So it does not explain the stick.
 - **On NVMe 2.B and SQLite are equal at every group size**, with the same bytes per commit (about 24 KB) and the same flush counts. On the stick, SQLite reached 1,733 commits a second at group-8 (38 MB/s) where 2.B made 23 (0.5 MB/s). The stick's bandwidth is therefore not the limit: something in 2.B's write pattern is, and NVMe does not show it.
 - **The next candidate:** 2.B's checkpoint writes pages in its frame index's hash-bucket order, where SQLite's goes in ascending page order. Scattered writes inside one flush are what a flash stick's translation layer punishes. This needs the stick attached, and it was not, on 2026-10-28.
+
+## Step 4: the candidates scored under the fixed weights (2026-10-28 to 29)
+
+**`score.py`**, committed before the round's numbers existed (`f280255`), applies §6's weights to the three candidates. Within a workload: the throughput ratio to the best candidate, and where a p99 is reported the geometric mean of that and the inverted p99 ratio. Space is W7's, as the weights table names it. Recovery is the bench's reopen and the three SIGKILL handoffs. Complexity is lines of code alone: the invariant count was never made.
+
+**The round.** Every engine on one day's code, NVMe only (the stick and the SATA SSD were not attached), then the deciding parts twice more: the main set, TPC-C-like, SSB and W3 for the candidates, and the B+trees at 8 KiB pages. W4 ran once.
+- **W4's B+trees are carried from 2026-10-24** (`round-w4-carried.jsonl`). At 4 KiB pages they need about 44 GB at 10⁷ rows, past the 20 GB file-size cap, and died of SIGXFSZ. Since then their code changed only in the backup, the directory layout and 2.B's checkpoint rule for synced commits, which resets its log sooner and so cannot slow a load. W3 and W4 are at 4 KiB in the 8 KiB scoring too.
+- **The machine was busy:** a game on one core at the start, and two compiles from another session through the first repetition. The engines alternate within each workload, so steady load falls on all of them, and the three repetitions bound the noise.
+
+**Points out of 100, mean of three repetitions (range of totals):**
+
+| criterion (weight) | 2.A @4K | 2.B @4K | 2.C | 2.A @8K | 2.B @8K | 2.C |
+|---|---|---|---|---|---|---|
+| standard workloads (35) | 13.2 | 20.4 | 32.6 | 16.3 | 21.6 | 31.5 |
+| engine-specific (20) | 6.4 | 9.3 | 17.9 | 8.7 | 10.5 | 17.1 |
+| complexity (20) | 20.0 | 19.2 | 13.7 | 20.0 | 19.2 | 13.7 |
+| space (15) | 7.8 | 8.3 | 15.0 | 14.1 | 15.0 | 11.5 |
+| recovery and handoff (10) | 10.0 | 0.2 | 0.1 | 10.0 | 0.2 | 0.1 |
+| **total** | **57.3** (56.1–59.1) | **57.4** (53.6–60.9) | **79.2** (78.9–79.5) | **69.1** (67.1–72.3) | **66.6** (64.2–70.0) | **73.8** (73.7–74.0) |
+
+2.C's scores differ between the two halves because the best candidate in each workload changes with the B+trees' page size.
+
+**Two details of the rule decide the margin at 8 KiB, so each was varied.** These are sensitivity checks, chosen after seeing the numbers, not the rule:
+- **Space at 10⁵ records charges 2.C for its two preallocated 64 MB logs**, about 100% of a 100 MB store (W7: 2.28). `--space-at-scale` takes space from W4's 10⁷ rows instead, where 2.C is 1.04.
+- **Recovery as a ratio is winner-take-all**: 2.A's 0.1 ms against 10 ms leaves the others 0.01. `--recovery-floor 20` counts anything under 20 ms as 20.
+
+| totals, per repetition | 2.A | 2.B | 2.C |
+|---|---|---|---|
+| 8 KiB, the rule | 72.3 / 67.1 / 67.8 | 70.0 / 64.2 / 65.4 | **73.9 / 74.0 / 73.7** |
+| 8 KiB, space at scale | 61.9 / 56.7 / 57.4 | 59.0 / 53.2 / 54.4 | **77.4 / 77.4 / 77.2** |
+| 8 KiB, recovery floored | 72.3 / 67.1 / 67.8 | **79.8** / 73.9 / 75.2 | 79.6 / **79.9 / 79.5** |
+| 4 KiB, any of the three | 52.1–59.1 | 49.4–70.7 | **78.9–85.3** |
+
+- **2.C leads in 17 of 18 scorings, and ties the eighteenth** (2.B 79.8 against 79.6, in the repetition the game ran through).
+- **Its lead is all performance.** It takes 49 of the 55 workload points against 25 (2.A) and 32 (2.B) at 8 KiB. It gives back 6.3 points of complexity, since the rebuild took it to 3,095 lines against 2,118 and 2,210, and at 8 KiB it gives back 2.6 to 3.5 of space at small sizes.
+- **2.A comes second at 8 KiB on these weights**, through its complexity and recovery points. Its retirement rests on what the weights do not hold: the flash stick (1 durable commit a second against 2.C's 410), group commit that cannot close its path copy, and space that grows with unsynced commits (21.9×, kept).
+- **The fresh round moved three things the score does not show:**
+  - 2.C's point reads are about 32% lower than before the flush moved off the commit path, in a short read run right after a load (YCSB-C 210 k against 310 k, the two builds alternated). A frozen memtable is being flushed by the reads. Over 2 million reads it is 515 k.
+  - RocksDB still leads W3 by 2× at 10⁶ records. The 242 k recorded after the rebuild was a 10⁵-record run (corrected in "The 2.C rebuild").
+  - 2.C's W7 space is its fixed log reservation, not amplification; it matters only while a store is small.
+
+Raw lines: `results/2026-10-28/round-*.jsonl` and `rep2-*`, `rep3-*`; scores: `score-PAGE-repN.json`.
 
 ## Perturbations proven red
 

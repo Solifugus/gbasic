@@ -1,0 +1,4 @@
+ 23:30:33 up 7 days,  2:28,  1 user,  load average: 1.68, 1.86, 2.34
+ 00:29:33 up 7 days,  3:27,  1 user,  load average: 2.56, 2.83, 2.82
+ 00:41:01 up 7 days,  3:39,  1 user,  load average: 2.49, 2.37, 2.54
+ 01:11:35 up 7 days,  4:09,  1 user,  load average: 1.18, 1.17, 1.35
