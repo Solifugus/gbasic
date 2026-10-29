@@ -6,6 +6,8 @@
 #   research/gsql/hardreq.sh [OUT.jsonl]          Test 3
 #   SET=test4 research/gsql/hardreq.sh [OUT.jsonl] Test 4: the sliced backup, and
 #                                                  open question 6's file counts
+#   SET=gdash research/gsql/hardreq.sh [OUT.jsonl] the G-Dash profile (§5.1.1: G2,
+#                                                  G3, G5, G6) and the handoff (§5.5)
 #
 # Data goes under BENCH_DIR (default /var/tmp/gsql-bench, ext4: never tmpfs),
 # each case in its own directory, removed when the case ends. A case is
@@ -43,6 +45,16 @@ if [ "${SET:-test3}" = test4 ]; then
     run sbackup cow 1000000 1048576
     for e in wal lsm; do run sbackup $e 10000000 1048576; done
     for n in 10000 100000 1000000 10000000; do for e in cow wal lsm; do run files $e $n; done; done
+    rm -f "$bin"
+    exit 0
+fi
+
+if [ "${SET:-test3}" = gdash ]; then
+    for n in 100 10000 1000000; do for e in cow wal lsm; do run g2 $e $n; done; done
+    for t in 1 20 1000; do for e in cow wal lsm; do run g3 $e $t 1000; done; done
+    for n in 100000 1000000 10000000; do for e in cow wal lsm; do run g5 $e $n 0; done; done
+    for e in cow wal lsm; do run g5 $e 1000000 1; done
+    for c in 100 10000 100000; do for e in cow wal lsm; do for k in 0 1; do run handoff $e $c $k; done; done; done
     rm -f "$bin"
     exit 0
 fi

@@ -8,6 +8,10 @@
  *   hardreq recovery ENGINE DIR COMMITS HOLD(0|1)
  *   hardreq sbackup  ENGINE DIR ROWS BUDGET     (Test 4: the backup in slices)
  *   hardreq files    ENGINE DIR ROWS            (Test 4: open question 6)
+ *   hardreq g2       ENGINE DIR ROWS            (G-Dash: group-by, idle and mid-refresh)
+ *   hardreq g3       ENGINE DIR TREES ROWS      (G-Dash: per-request cost; G6 at >= 20)
+ *   hardreq g5       ENGINE DIR ROWS RANDOM     (G-Dash: peak memory of one large write)
+ *   hardreq handoff  ENGINE DIR COMMITS KILL    (§5.5: owner dies, a new one serves)
  *
  * Each prints one JSON line. Every claim a line makes is CHECKED here, not
  * inferred: a G1 line saying the old snapshot kept the old data has scanned
@@ -22,6 +26,7 @@
 #include "common.h"
 
 #include <dirent.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -598,6 +603,304 @@ static int t_files(uint64_t rows) {
     return finish("files", fields);
 }
 
+/* ---- the G-Dash profile (§5.1.1) and the handoff (§5.5) ------------------- */
+
+/* A G-Dash row: a group column (20 groups), a filter column (10 values) and
+ * an amount, inside the same 100-byte value every other test here writes. The
+ * expected answers are computed from i by a plain loop, not read back. */
+#define GD_GROUPS 20
+static unsigned gd_group(uint64_t i) { return (unsigned)((i * 7) % GD_GROUPS); }
+static unsigned gd_flt(uint64_t i) { return (unsigned)(i % 10); }
+static uint64_t gd_amount(uint64_t i, uint32_t gen) { return i % 997 + gen; }
+static void gd_value(unsigned char *v, uint32_t gen, uint64_t i) {
+    value_of(v, gen, i);
+    v[12] = (unsigned char)gd_group(i);
+    v[13] = (unsigned char)gd_flt(i);
+    put64(v + 14, gd_amount(i, gen));
+}
+static int gd_load(GsStore *db, const char *tree, uint64_t rows, uint32_t gen) {
+    GsTxn *w;
+    int rc = E->begin_write(db, &w);
+    if (rc) return rc;
+    if ((rc = E->tree_create(w, gss(tree)))) { E->abort(w); return rc; }
+    char k[32];
+    unsigned char v[VLEN];
+    for (uint64_t i = 0; i < rows && rc == GS_OK; i++) {
+        size_t kn = key_of(k, i);
+        gd_value(v, gen, i);
+        rc = E->put(w, gss(tree), gsb(k, kn), gsb(v, VLEN), GS_APPEND);
+    }
+    if (rc) { E->abort(w); return rc; }
+    return E->commit(w, 1, NULL);
+}
+/* sum(amount) group by group, optionally where flt = want; every row read */
+static int gd_query(GsTxn *t, const char *tree, int want, uint64_t *sums, uint64_t *rows) {
+    GsCursor *c;
+    memset(sums, 0, GD_GROUPS * sizeof *sums);
+    *rows = 0;
+    int rc = E->cursor_open(t, gss(tree), &c);
+    if (rc) return rc;
+    int pos;
+    for (rc = E->first(c, &pos); rc == GS_OK && pos; rc = E->next(c, &pos)) {
+        GsBytes v;
+        E->value(c, &v);
+        (*rows)++;
+        if (v.n != VLEN || v.p[12] >= GD_GROUPS) return GS_CORRUPT;
+        if (want >= 0 && v.p[13] != want) continue;
+        sums[v.p[12]] += get64(v.p + 14);
+    }
+    E->cursor_close(c);
+    return rc;
+}
+static int gd_expect(uint64_t rows, uint32_t gen, int want, const uint64_t *sums) {
+    uint64_t e[GD_GROUPS] = {0};
+    for (uint64_t i = 0; i < rows; i++)
+        if (want < 0 || (int)gd_flt(i) == want) e[gd_group(i)] += gd_amount(i, gen);
+    return memcmp(e, sums, sizeof e) == 0;
+}
+static double median5(double *x) { qsort(x, 5, sizeof *x, dcmp); return x[2]; }
+
+/* G2: the dominant query, idle and with a refresh half written */
+static int t_g2(uint64_t rows) {
+    GsStore *db = open_store(g_path, 1);
+    if (!db) return finish("g2", "");
+    int rc = gd_load(db, "ds", rows, 1);
+    REQUIRE(rc == GS_OK, "the load answered %s%lld", gs_status_name(rc), 0);
+    uint64_t sums[GD_GROUPS], n;
+    double t[2][2][5]; /* [during][filtered][rep] */
+    for (int during = 0; during < 2 && !g_failed; during++) {
+        GsTxn *w = NULL;
+        if (during) {
+            /* G1's refresh, half written and not committed: the query must
+             * still answer from the live dataset, at its own cost */
+            E->begin_write(db, &w);
+            E->tree_create(w, gss("ds.new"));
+            char k[32];
+            unsigned char v[VLEN];
+            for (uint64_t i = 0; i < rows / 2 && rc == GS_OK; i++) {
+                size_t kn = key_of(k, i);
+                gd_value(v, 2, i);
+                rc = E->put(w, gss("ds.new"), gsb(k, kn), gsb(v, VLEN), GS_APPEND);
+            }
+            REQUIRE(rc == GS_OK, "the half refresh answered %s%lld", gs_status_name(rc), 0);
+        }
+        for (int f = 0; f < 2; f++)
+            for (int r = 0; r < 5; r++) {
+                GsTxn *rd;
+                double t0 = now_ms();
+                rc = E->begin_read(db, &rd);
+                if (rc == GS_OK) { rc = gd_query(rd, "ds", f ? 3 : -1, sums, &n); E->abort(rd); }
+                t[during][f][r] = now_ms() - t0;
+                REQUIRE(rc == GS_OK && n == rows, "the query answered %s, %lld rows", gs_status_name(rc), n);
+                REQUIRE(gd_expect(rows, 1, f ? 3 : -1, sums), "the sums were wrong%s (during=%lld)", "", during);
+            }
+        if (w) E->abort(w);
+    }
+    E->close(db);
+    char fields[400];
+    double a = median5(t[0][0]), b = median5(t[0][1]), c = median5(t[1][0]), d = median5(t[1][1]);
+    snprintf(fields, sizeof fields,
+             "\"rows\":%llu,\"query_ms\":%.3f,\"filtered_ms\":%.3f,\"during_refresh_ms\":%.3f,"
+             "\"during_refresh_filtered_ms\":%.3f,\"rows_per_s\":%.0f,",
+             (unsigned long long)rows, a, b, c, d, a > 0 ? rows / a * 1e3 : 0);
+    return finish("g2", fields);
+}
+
+/* G3 and G6: the per-request cost against how many datasets the store holds,
+ * and a query naming 2 of 20 against one naming all 20 */
+static int t_g3(uint64_t trees, uint64_t rows) {
+    GsStore *db = open_store(g_path, 1);
+    if (!db) return finish("g3", "");
+    char name[32];
+    int rc = GS_OK;
+    double t0 = now_ms();
+    for (uint64_t d = 0; d < trees && rc == GS_OK; d++) {
+        snprintf(name, sizeof name, "ds%05llu", (unsigned long long)d);
+        rc = gd_load(db, name, rows, 1);
+    }
+    double load_ms = now_ms() - t0;
+    REQUIRE(rc == GS_OK, "the load answered %s%lld", gs_status_name(rc), 0);
+    /* the request: snapshot, one row from one dataset, release */
+    enum { REQ = 20000 };
+    static double lat[REQ];
+    char k[32];
+    for (int r = 0; r < REQ && !g_failed; r++) {
+        uint64_t d = scramble((uint64_t)r) % trees, i = scramble((uint64_t)r + 77) % rows;
+        snprintf(name, sizeof name, "ds%05llu", (unsigned long long)d);
+        size_t kn = key_of(k, i);
+        GsTxn *rd;
+        GsBytes v;
+        double s = now_ms();
+        rc = E->begin_read(db, &rd);
+        if (rc == GS_OK) { rc = E->get(rd, gss(name), gsb(k, kn), &v); if (rc == GS_OK && (v.n != VLEN || get64(v.p + 4) != i)) rc = GS_CORRUPT; E->abort(rd); }
+        lat[r] = now_ms() - s;
+        REQUIRE(rc == GS_OK, "a request answered %s%lld", gs_status_name(rc), 0);
+    }
+    double sum = 0;
+    for (int r = 0; r < REQ; r++) sum += lat[r];
+    qsort(lat, REQ, sizeof *lat, dcmp);
+    /* G6, when there are at least 20: 2 named against all 20 */
+    double two = 0, all = 0;
+    if (trees >= 20 && !g_failed) {
+        uint64_t sums[GD_GROUPS], n, tot[GD_GROUPS];
+        for (int pass = 0; pass < 2; pass++) {
+            int named = pass ? 20 : 2;
+            double x[5];
+            for (int r = 0; r < 5; r++) {
+                GsTxn *rd;
+                memset(tot, 0, sizeof tot);
+                double s = now_ms();
+                E->begin_read(db, &rd);
+                for (int d = 0; d < named && rc == GS_OK; d++) {
+                    snprintf(name, sizeof name, "ds%05d", d * (pass ? 1 : 7)); /* 0 and 7 */
+                    rc = gd_query(rd, name, -1, sums, &n);
+                    for (int g = 0; g < GD_GROUPS; g++) tot[g] += sums[g];
+                }
+                E->abort(rd);
+                x[r] = now_ms() - s;
+                REQUIRE(rc == GS_OK, "a G6 query answered %s%lld", gs_status_name(rc), 0);
+                for (int g = 0; g < GD_GROUPS; g++) sums[g] = tot[g] / (uint64_t)named;
+                REQUIRE(gd_expect(rows, 1, -1, sums) && tot[0] % (uint64_t)named == 0, "G6 sums were wrong%s%lld", "", named);
+            }
+            if (pass) all = median5(x); else two = median5(x);
+        }
+    }
+    E->close(db);
+    char fields[400];
+    snprintf(fields, sizeof fields,
+             "\"trees\":%llu,\"rows\":%llu,\"load_ms\":%.0f,\"request_mean_us\":%.2f,\"request_p50_us\":%.2f,"
+             "\"request_p99_us\":%.2f,\"g6_two_ms\":%.3f,\"g6_all_ms\":%.3f,",
+             (unsigned long long)trees, (unsigned long long)rows, load_ms, sum / REQ * 1e3, lat[REQ / 2] * 1e3,
+             lat[REQ * 99 / 100] * 1e3, two, all);
+    return finish("g3", fields);
+}
+
+/* G5: one transaction of ROWS rows, peak memory against the memory at open.
+ * The bound is the engine's own cache and buffers, whatever ROWS is. */
+static uint64_t status_kb(const char *field) {
+    FILE *f = fopen("/proc/self/status", "r");
+    char line[256];
+    uint64_t kb = 0;
+    size_t fl = strlen(field);
+    while (f && fgets(line, sizeof line, f))
+        if (!strncmp(line, field, fl)) { kb = strtoull(line + fl + 1, NULL, 10); break; }
+    if (f) fclose(f);
+    return kb;
+}
+static int t_g5(uint64_t rows, int random) {
+    GsStore *db = open_store(g_path, 1);
+    if (!db) return finish("g5", "");
+    uint64_t base = status_kb("VmRSS");
+    GsTxn *w;
+    E->begin_write(db, &w);
+    int rc = E->tree_create(w, gss("ds"));
+    char k[32];
+    unsigned char v[VLEN];
+    double t0 = now_ms();
+    for (uint64_t i = 0; i < rows && rc == GS_OK; i++) {
+        uint64_t key = random ? scramble(i) : i;
+        size_t kn = key_of(k, key);
+        gd_value(v, 1, key);
+        rc = E->put(w, gss("ds"), gsb(k, kn), gsb(v, VLEN), random ? 0 : GS_APPEND);
+    }
+    if (rc == GS_OK) rc = E->commit(w, 1, NULL); else E->abort(w);
+    double ms = now_ms() - t0;
+    REQUIRE(rc == GS_OK, "the transaction answered %s%lld", gs_status_name(rc), 0);
+    uint64_t peak = status_kb("VmHWM");
+    /* the whole transaction is there */
+    uint64_t sums[GD_GROUPS], n = 0;
+    GsTxn *rd;
+    E->begin_read(db, &rd);
+    rc = gd_query(rd, "ds", -1, sums, &n);
+    E->abort(rd);
+    REQUIRE(rc == GS_OK && n == rows, "after the commit %s%lld rows", "", (long long)n);
+    E->close(db);
+    char fields[300];
+    snprintf(fields, sizeof fields,
+             "\"rows\":%llu,\"keys\":\"%s\",\"ms\":%.0f,\"rss_at_open_kb\":%llu,\"peak_kb\":%llu,\"peak_over_open_kb\":%llu,"
+             "\"data_kb\":%llu,",
+             (unsigned long long)rows, random ? "random" : "sequential", ms, (unsigned long long)base,
+             (unsigned long long)peak, (unsigned long long)(peak - base), (unsigned long long)(dir_bytes_of(g_dir, 2) >> 10));
+    return finish("g5", fields);
+}
+
+/* The handoff (§5.5): an owner serving writes dies, cleanly or by SIGKILL in
+ * the middle of an unsynced stream, and a new process takes the store, opens
+ * it and serves its first request. The lock is the store's own, so taking it
+ * is inside the open. COMMITS sets how much log the dead owner leaves. */
+static int t_handoff(uint64_t commits, int kill_it) {
+    GsStore *db = open_store(g_path, 1);
+    if (!db) return finish("handoff", "");
+    int rc = load(db, "t", 10000, 1, 1);
+    REQUIRE(rc == GS_OK, "load answered %s%lld", gs_status_name(rc), 0);
+    E->close(db);
+    int p[2];
+    if (pipe(p)) { fail("pipe%s%lld", "", 0); return finish("handoff", ""); }
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(p[0]);
+        GsStore *c = open_store(g_path, 0);
+        if (!c) _exit(3);
+        for (uint64_t i = 0; i < commits; i++)
+            if (update_one(c, "t", (i * 7919) % 10000, 2 + (uint32_t)i, (i % 64) == 63 || i + 1 == commits)) _exit(4);
+        if (!kill_it) {
+            if (E->close(c)) _exit(5);
+            (void)!write(p[1], "x", 1);
+            _exit(0);
+        }
+        (void)!write(p[1], "x", 1);
+        /* unsynced writes to keys nobody checks, until the signal */
+        for (uint64_t i = 0;; i++) update_one(c, "t", 10000 + i % 50000, 1, 0);
+    }
+    close(p[1]);
+    char b;
+    REQUIRE(read(p[0], &b, 1) == 1, "the writing child failed%s%lld", "", 0);
+    close(p[0]);
+    double t_dead = 0;
+    if (kill_it) {
+        struct timespec ts = {0, 20 * 1000000};
+        nanosleep(&ts, NULL);
+        kill(pid, SIGKILL);
+    }
+    int st;
+    waitpid(pid, &st, 0);
+    t_dead = now_ms(); /* the owner is gone: the handoff starts here */
+    REQUIRE(kill_it ? (WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL) : (WIFEXITED(st) && WEXITSTATUS(st) == 0),
+            "the child ended unexpectedly%s (%lld)", "", st);
+    uint64_t log_at = log_bytes(g_dir);
+    double t0 = now_ms();
+    db = open_store(g_path, 0);
+    double open_ms = now_ms() - t0, first_ms = 0;
+    uint64_t kept = 0;
+    if (db) {
+        /* the first request, and the last durable commit is there */
+        GsTxn *r;
+        GsBytes v;
+        char k[32];
+        size_t kn = key_of(k, ((commits - 1) * 7919) % 10000);
+        E->begin_read(db, &r);
+        rc = E->get(r, gss("t"), gsb(k, kn), &v);
+        first_ms = now_ms() - t_dead;
+        REQUIRE(rc == GS_OK && v.n == VLEN && get32(v.p) == 2 + (uint32_t)(commits - 1),
+                "the last durable commit was lost%s%lld", "", 0);
+        /* informative: how many of the unsynced writes came through */
+        for (uint64_t i = 0; i < 50000; i++) {
+            kn = key_of(k, 10000 + i);
+            if (E->get(r, gss("t"), gsb(k, kn), &v) == GS_OK) kept++;
+        }
+        E->abort(r);
+        E->close(db);
+    }
+    char fields[300];
+    snprintf(fields, sizeof fields,
+             "\"mode\":\"%s\",\"commits\":%llu,\"log_bytes\":%llu,\"open_ms\":%.2f,\"to_first_read_ms\":%.2f,"
+             "\"unsynced_keys_kept\":%llu,",
+             kill_it ? "sigkill" : "clean", (unsigned long long)commits, (unsigned long long)log_at, open_ms, first_ms,
+             (unsigned long long)kept);
+    return finish("handoff", fields);
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) {
         fprintf(stderr, "usage: hardreq g4|g1|backup|held|recovery ENGINE DIR [ARGS]\n");
@@ -613,6 +916,10 @@ int main(int argc, char **argv) {
     if (!strcmp(t, "recovery")) return t_recovery(a, (int)b);
     if (!strcmp(t, "sbackup")) return t_sbackup(a, b);
     if (!strcmp(t, "files")) return t_files(a);
+    if (!strcmp(t, "g2")) return t_g2(a);
+    if (!strcmp(t, "g3")) return t_g3(a, b);
+    if (!strcmp(t, "g5")) return t_g5(a, (int)b);
+    if (!strcmp(t, "handoff")) return t_handoff(a, (int)b);
     fprintf(stderr, "unknown test %s\n", t);
     return 2;
 }
