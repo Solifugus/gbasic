@@ -4,6 +4,7 @@
  * every row, over the chosen engine.
  *
  *   scanbench DIR ROWS [REPEATS]
+ *   scanbench lmdb DIR ROWS [REPEATS]    the same, over LMDB (built with -DHAVE_LMDB -llmdb)
  *
  * Loads ROWS rows of 100 bytes in key order, flushes so they sit in sorted
  * files, reopens, then times REPEATS full scans (first scan included: the
@@ -30,7 +31,61 @@ static double now_ms(void) {
 }
 static size_t key_of(char *k, uint64_t i) { return (size_t)snprintf(k, 32, "k%015llu", (unsigned long long)i); }
 
+#ifdef HAVE_LMDB
+#include <lmdb.h>
+/* LMDB, the reference the design's "about 10x" was measured against: the
+ * same rows, the same scan, the same checks. */
+static int lmdb_main(const char *dir, uint64_t rows, int reps) {
+    MDB_env *env;
+    MDB_dbi dbi;
+    MDB_txn *t;
+    if (mdb_env_create(&env) || mdb_env_set_mapsize(env, (size_t)rows * 400 + (64u << 20)) || mdb_env_open(env, dir, MDB_NOSYNC, 0644)) return 1;
+    mdb_txn_begin(env, NULL, 0, &t);
+    mdb_dbi_open(t, NULL, 0, &dbi);
+    uint64_t sum = 0;
+    for (uint64_t i = 0; i < rows; i++) {
+        char k[32];
+        unsigned char v[VLEN];
+        size_t kn = key_of(k, i);
+        for (int j = 0; j < VLEN; j++) v[j] = (unsigned char)(i * 31 + (uint64_t)j);
+        sum += v[0] + v[VLEN - 1];
+        MDB_val mk = {kn, k}, mv = {VLEN, v};
+        if (mdb_put(t, dbi, &mk, &mv, MDB_APPEND)) return 1;
+    }
+    if (mdb_txn_commit(t) || mdb_env_sync(env, 1)) return 1;
+    double best = 1e30, first = 0;
+    int bad = 0;
+    for (int r = 0; r < reps; r++) {
+        MDB_cursor *c;
+        MDB_val k, v;
+        uint64_t n = 0, s = 0;
+        double t0 = now_ms();
+        mdb_txn_begin(env, NULL, MDB_RDONLY, &t);
+        mdb_cursor_open(t, dbi, &c);
+        for (int rc = mdb_cursor_get(c, &k, &v, MDB_FIRST); rc == 0; rc = mdb_cursor_get(c, &k, &v, MDB_NEXT)) {
+            const unsigned char *p = v.mv_data;
+            if (v.mv_size != VLEN) bad++;
+            s += p[0] + p[VLEN - 1];
+            n++;
+        }
+        mdb_cursor_close(c);
+        mdb_txn_abort(t);
+        double ms = now_ms() - t0;
+        if (n != rows || s != sum) bad++;
+        if (r == 0) first = ms;
+        if (ms < best) best = ms;
+    }
+    mdb_env_close(env);
+    printf("{\"test\":\"scan\",\"engine\":\"lmdb\",\"rows\":%llu,\"first_ms\":%.1f,\"best_ms\":%.1f,\"rows_per_s\":%.0f,\"bad\":%d}\n",
+           (unsigned long long)rows, first, best, rows / (best / 1e3), bad);
+    return bad != 0;
+}
+#endif
+
 int main(int argc, char **argv) {
+#ifdef HAVE_LMDB
+    if (argc >= 4 && !strcmp(argv[1], "lmdb")) return lmdb_main(argv[2], strtoull(argv[3], NULL, 10), argc > 4 ? atoi(argv[4]) : 5);
+#endif
     if (argc < 3) { fprintf(stderr, "usage: scanbench DIR ROWS [REPEATS]\n"); return 2; }
     uint64_t rows = strtoull(argv[2], NULL, 10);
     int reps = argc > 3 ? atoi(argv[3]) : 5;

@@ -735,7 +735,7 @@ Raw lines: `results/2026-10-28/round-*.jsonl` and `rep2-*`, `rep3-*`; scores: `s
 - **CRC32C was about 3 instructions a byte**, slicing-by-8. It now uses SSE4.2's instruction where the processor has one (x86-64, checked at run time), and the portable version elsewhere or with `GSQL_CRC=portable`. `store_test` holds the two to the same answers at every alignment and to the standard check value, **and that check is the only one that can fail**: with the fast path broken, 2 of 11,474 checks failed, because every store's writer and reader agreed on the wrong checksum.
 - **Read-ahead takes a rule, and the first rule was wrong.** Bypassing the cache after two blocks made the 10⁶-row scan 78 ms, and made the small table 17.6 ms where the cache had given it 10.3, which is G-Dash's real pattern: modest datasets scanned on every page load. A scan now goes through the cache until it has read half the cache's size, and only then reads up to 128 KB of consecutive blocks in one call into a buffer of its own and stops filling the cache.
 - **G2 at 10⁶ rows** (`hardreq g2`, the G-Dash query): 160 ms before (2026-10-28), 69–86 ms now.
-- **Not yet compared with LMDB** on the same day, so the "about 10×" gap of §6 is narrowed, not re-measured.
+- **Against LMDB the same day** (`scanbench lmdb`, built with `-DHAVE_LMDB`, the same rows and checks, two runs): 10⁶ rows in 14.8–15.0 ms against 2.C's 78–80, and 2 × 10⁵ in 2.8–2.9 ms against 12.4. **The gap is about 5×, where §6 recorded about 10×.** LMDB reads in place from a memory map; what 2.C still copies is each row's key and value into the cursor, and each block once into the cache.
 
 ## Perturbations proven red
 
