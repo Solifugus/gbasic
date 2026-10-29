@@ -179,6 +179,7 @@ That was `exact_number_design.md`'s **increment 4**, and it **shipped 2026-10-23
 
 - Still to specify, and unchanged from v0.2: division and mixed exact/inexact arithmetic at the boundaries, and the overflow policy. Overflow **degrades with warning 2112** today rather than refusing — deliberately, so a program that answers keeps answering — and a database **must not** inherit that for a key column: a silently inexact key is the one place the language's chosen default is the wrong one, and G-SQL should refuse rather than degrade. That difference is a decision this document is making, not a restatement.
 - A column declared `INT64` must reject a value that is not an exact integer, rather than rounding it. The language's degradation is a convenience for arithmetic; a stored key is a contract.
+- **Decided 2026-10-29 (§13 question 2): refuse, both ways.** A value written to an integer column that is not an exact integer, or that overflows, is refused with an error; it is never replaced by a nearby value. Matthew: "don't silently replace the value -- refuse"; the reason is the integrity of business data.
 
 ### 3.3 Money
 
@@ -190,6 +191,8 @@ That was `exact_number_design.md`'s **increment 4**, and it **shipped 2026-10-23
 ### 3.4 Persistence subset
 
 Persist stable, serializable value kinds, not executable/process-bound values such as functions, watchers, handles, or actors. Disk representation must be versioned and independent of process pointers and in-memory layout.
+
+**Decided 2026-10-29 (§13 question 4): the first release stores** numbers (exact integers and decimals), strings (which carry any bytes, so no separate binary kind), booleans, dates, times and date-times, money, and records (§3.5), with `unknown` (SQL's `NULL`; the two spellings interchangeable, §3.1) in any column. **Left out of the first release:** durations, which have no single sort order and so could be stored but never indexed (`gsql_storage_design.md` §3.2), and arrays, which records cover for now; and everything process-bound, as above.
 
 ### 3.5 Record-valued columns (decided 2026-10-22, first release)
 
@@ -217,14 +220,14 @@ Persist stable, serializable value kinds, not executable/process-bound values su
 - **SQL written by a language model.** G-Dash's `ask` and the `nlq` library prompt a model to write SQL, and models write PostgreSQL and SQLite well and anything else badly. A new dialect would make every generated query less likely to be right;
 - **people's habits.** A reader who knows SQL should not have to learn a new one.
 
-**Recommendation: the subset PostgreSQL and SQLite share, with deviations only where gBASIC's semantics require them, each one documented.** Most portable SQL then runs unchanged, and a model can be told "PostgreSQL-like" rather than be taught a new language. The deviations this design already implies:
+**Decided direction (2026-10-29, §13 question 1): standard SQL where it makes sense, PostgreSQL's choice where the standard is silent, never SQLite's over either.** The recommendation below stands within that: start from the subset PostgreSQL and SQLite share, with deviations only where gBASIC's semantics require them, each one documented. Most portable SQL then runs unchanged, and a model can be told "PostgreSQL-like" rather than be taught a new language. The deviations this design already implies:
 - **types:** `MONEY` / `MONEY(USD)`, the temporal kinds, `RECORD`, and `INT64`/`INTEGER` as constraints on `number` (§3);
 - **record fields:** `params.vendor` and `params[:field]` (§3.5);
 - **`unknown`:** SQL's truth tables, with `NULL` and `UNKNOWN` as two spellings (§3.1.1);
 - **parameters:** `:name`, which both PostgreSQL drivers and SQLite accept;
 - **anything requiring an implicit cast:** refused rather than coerced (§9), which is stricter than SQLite.
 
-**Where PostgreSQL and SQLite disagree** (string concatenation and `LIKE` case-sensitivity, `LIMIT`/`OFFSET` forms, date functions, `||` against `CONCAT`, boolean literals, `RETURNING`, upsert spelling), G-SQL chooses per item, preferring PostgreSQL's where it is the SQL standard's. The list is to be **measured, not guessed**: G-Dash's dataset SQL, the queries `nlq` generates against estateforge, and the SQL in this repository's tests are the corpus, and each construct they use is recorded as supported, deviating, or refused.
+**Where PostgreSQL and SQLite disagree** (string concatenation and `LIKE` case-sensitivity, `LIMIT`/`OFFSET` forms, date functions, `||` against `CONCAT`, boolean literals, `RETURNING`, upsert spelling), G-SQL takes the SQL standard's answer, and PostgreSQL's where the standard has none. The list is to be **measured, not guessed**: G-Dash's dataset SQL, the queries `nlq` generates against estateforge, and the SQL in this repository's tests are the corpus, and each construct they use is recorded as supported, deviating, or refused.
 
 **G-Dash's corpus is ready** (2026-10-23): `gdash/docs/gdash_sql_corpus.json` (gdash `da48831`), 29 statements generated from gdash's own code by `scripts/gen_sql_corpus.py`, and gdash's suite fails if the committed copy goes stale. Each entry carries `kind`, `runs_on`, `origin` and `where`. How to weight it, per gdash:
 - **visual SQL (7) and `gdash_store`'s own statements (14, as templates)** are what runs on SQLite today and would run on G-SQL: the primary evidence;
@@ -496,6 +499,11 @@ Before indexes are finalized, specify:
 
 **Critical invariant:** an index comparator must agree with query equality/order semantics for the types and collation it indexes, or the optimizer may return incorrect results.
 
+**Decided 2026-10-29 (§13 question 6): strings compare the way gBASIC compares them**, which is plain character order, and is what PostgreSQL's `C` collation and SQLite's default do. Matthew: "let's be consistent with our default." So a program and its database never disagree about order, and the index key encoding already matches it (`gsql_storage_design.md` §3.2, held to gBASIC's own answers by `tests/run_gsql_key.sh`).
+- Equality is exact: no trailing-space padding and no case folding.
+- **No Unicode normalization**, documented rather than hidden: "é" written as one character and as "e" plus a combining accent are different strings, in gBASIC and therefore in G-SQL.
+- **Later, opt-in per column:** case-insensitive comparison (names, e-mail addresses). Language-aware collation only if a real application asks, since it differs between machines and library versions, and an index built under one sorts wrongly under another.
+
 ## 10. Security and resource management
 
 - Typed bound parameters, never textual interpolation of values.
@@ -749,13 +757,13 @@ ROLLUP/GROUPING, grouping sets/CUBE, richer windows, sophisticated optimizer, im
 
 ## 13. Questions requiring a final engineering decision
 
-1. The SQL dialect's exact disagreement list between PostgreSQL and SQLite, measured over G-Dash's, `nlq`'s and this repository's SQL (§4.0).
-2. Literal and mixed-arithmetic exactness are already specified (`exact_number_design.md`). What remains is G-SQL's side: does an `INT64` column refuse an inexact value on write, and refuse on overflow instead of degrading with warning 2112? §3.2 proposes yes to both.
+1. *(Direction decided 2026-10-29.)* The SQL dialect: **standard SQL where it makes sense, PostgreSQL's choice where the standard is silent or impractical, and never SQLite's over either** (Matthew: "Postgres over SQLite although I hope we take standard SQL over either where it makes sense"). The item-by-item disagreement list is still to be measured over G-Dash's, `nlq`'s and this repository's SQL (§4.0).
+2. *(Decided 2026-10-29.)* An integer column **refuses** an inexact value on write, and refuses on overflow rather than degrading with warning 2112 (§3.2).
 3. Decided: SQL's (§3.1.1), with `if unknown` still raising in procedural code.
-4. Which persistent value kinds and date/time variants are supported in the first release?
+4. *(Decided 2026-10-29.)* Numbers, strings, booleans, dates, times and date-times, money and records, with `unknown` in any column; not durations or arrays (§3.4).
 5. Which storage design wins the §6.2 measurements, and how long does an owner handoff take (§6.1)?
-6. What are the first-release collation and comparison rules?
-7. Do foreign keys and `CHECK` constraints ship in the first release or the next?
+6. *(Decided 2026-10-29.)* gBASIC's own string order, exact equality, no normalization; case-insensitive comparison later and opt-in (§9).
+7. *(Decided 2026-10-29: constraints arrive over a couple of releases, each carefully.)* The first release has `NOT NULL`, `PRIMARY KEY` and `UNIQUE`, which indexes depend on; `FOREIGN KEY` and `CHECK` follow in the next, each with its own tests.
 8. How are schema changes, function versions, and prepared plans invalidated?
 9. How are large SQL results converted to frames without exhausting memory?
 10. Which SQL-callable function contract is safest and simplest to implement first?
