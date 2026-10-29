@@ -313,7 +313,7 @@ These are non-negotiable architectural requirements even if the first implementa
 
 **Proposed shape, to be validated by the storage-design measurements (§6.2):**
 - The owner holds an exclusive lock on the file and listens on a local socket beside it (`business.gsql` → a socket the engine names; AF_UNIX on Linux, and Windows 10+ supports AF_UNIX too). A process opening the database tries to connect first; if nothing answers, it takes the lock and becomes the owner, or starts one.
-- **One protocol, always**, including for a program that is the only client. A second, in-process path would be a second implementation that can disagree with the first, the drift this project tripwires against. Whether the round trip is affordable is **measured before it is accepted** (a design gate in §6.2), not assumed.
+- **One protocol, always**, including for a program that is the only client. A second, in-process path would be a second implementation that can disagree with the first, the drift this project tripwires against. Whether the round trip is affordable is **measured before it is accepted** (a design gate in §6.2), not assumed. **Measured and accepted 2026-10-29** (`gsql_storage_design.md` §5.5, §7 question 5): the owner adds 5.6 to 11 µs a request, and simplicity is worth more than that.
 - **The owner's own concurrency:** proposed single-threaded, serving requests in order, with long queries made incremental (a cursor returns a batch per request) so one client cannot stall the others. Measure before adding threads.
 
 **Decided (v0.4): the owner's lifetime is handed off, never detached.**
