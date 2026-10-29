@@ -12,6 +12,7 @@
  *   hardreq g3       ENGINE DIR TREES ROWS      (G-Dash: per-request cost; G6 at >= 20)
  *   hardreq g5       ENGINE DIR ROWS RANDOM     (G-Dash: peak memory of one large write)
  *   hardreq handoff  ENGINE DIR COMMITS KILL    (§5.5: owner dies, a new one serves)
+ *   hardreq gspace   ENGINE DIR K G             (space: K-row txns, synced every G)
  *
  * Each prints one JSON line. Every claim a line makes is CHECKED here, not
  * inferred: a G1 line saying the old snapshot kept the old data has scanned
@@ -901,6 +902,53 @@ static int t_handoff(uint64_t commits, int kill_it) {
     return finish("handoff", fields);
 }
 
+/* Space under group commit: COMMITS transactions of K random updates each,
+ * synced every G commits, over a 10^5-row table. 2.A frees a page only once
+ * the commit that freed it is durable, so unsynced commits that each rewrite
+ * many pages hold them all until the next sync (found building W9). */
+static int t_gspace(uint64_t k, uint64_t g) {
+    GsStore *db = open_store(g_path, 1);
+    if (!db) return finish("gspace", "");
+    const uint64_t rows = 100000, commits = 2000;
+    int rc = load(db, "t", rows, 1, 1);
+    REQUIRE(rc == GS_OK, "load answered %s%lld", gs_status_name(rc), 0);
+    E->sync(db, NULL);
+    uint64_t base = dir_bytes_of(g_dir, 2), peak = base;
+    char kb[32];
+    unsigned char v[VLEN];
+    double t0 = now_ms();
+    for (uint64_t c = 0; c < commits && rc == GS_OK; c++) {
+        GsTxn *w;
+        E->begin_write(db, &w);
+        for (uint64_t j = 0; j < k && rc == GS_OK; j++) {
+            uint64_t i = scramble(c * k + j) % rows;
+            size_t kn = key_of(kb, i);
+            value_of(v, 2, i);
+            rc = E->put(w, gss("t"), gsb(kb, kn), gsb(v, VLEN), 0);
+        }
+        if (rc == GS_OK) rc = E->commit(w, 0, NULL); else E->abort(w);
+        if (rc == GS_OK && (c + 1) % g == 0) rc = E->sync(db, NULL);
+        if (c % 50 == 49) { uint64_t b = dir_bytes_of(g_dir, 2); if (b > peak) peak = b; }
+    }
+    if (rc == GS_OK) rc = E->sync(db, NULL);
+    double ms = now_ms() - t0;
+    REQUIRE(rc == GS_OK, "a commit answered %s%lld", gs_status_name(rc), 0);
+    uint64_t end = dir_bytes_of(g_dir, 2), cnt, m;
+    GsTxn *r;
+    E->begin_read(db, &r);
+    rc = scan_gen(r, "t", 1, &cnt, &m);
+    E->abort(r);
+    REQUIRE(rc == GS_OK && cnt == rows, "the table has %s%lld rows", "", (long long)cnt);
+    E->close(db);
+    char fields[300];
+    snprintf(fields, sizeof fields,
+             "\"rows_per_txn\":%llu,\"sync_every\":%llu,\"commits\":%llu,\"ms\":%.0f,\"base_bytes\":%llu,"
+             "\"peak_bytes\":%llu,\"end_bytes\":%llu,\"peak_over_base\":%.2f,",
+             (unsigned long long)k, (unsigned long long)g, (unsigned long long)commits, ms, (unsigned long long)base,
+             (unsigned long long)peak, (unsigned long long)end, (double)peak / (double)base);
+    return finish("gspace", fields);
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) {
         fprintf(stderr, "usage: hardreq g4|g1|backup|held|recovery ENGINE DIR [ARGS]\n");
@@ -920,6 +968,7 @@ int main(int argc, char **argv) {
     if (!strcmp(t, "g3")) return t_g3(a, b);
     if (!strcmp(t, "g5")) return t_g5(a, (int)b);
     if (!strcmp(t, "handoff")) return t_handoff(a, (int)b);
+    if (!strcmp(t, "gspace")) return t_gspace(a, b);
     fprintf(stderr, "unknown test %s\n", t);
     return 2;
 }
