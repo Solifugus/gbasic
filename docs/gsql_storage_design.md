@@ -32,6 +32,8 @@ All candidates implement one interface, so one workload harness and one crash ha
 | | `begin_write(db)` | At most one at a time. A second call answers `BUSY` at once, and the owner queues the request (§1.4) |
 | | `commit(txn, sync)` | Returns the commit's **commit id**, a strictly increasing integer that the version store (§4) and audit history key on. With `sync = true` it is durable on return. With `sync = false` it is ordered but not yet durable (group commit, §1.3) |
 | | `sync(db)` | Makes every commit so far durable, returns the highest durable commit id |
+| | `txn_id(txn)` | *(Added in step 5, 2026-10-29.)* The id a write transaction is known by before it commits: greater than every commit id answered before it began, and no greater than its own. The version store (§4) keys a version by it, since a version is written inside the transaction that makes it |
+| | `flush(db)` | *(Added in step 5.)* `sync`, and every commit moved out of the log, so the next open replays nothing: what an owner calls before a **planned** handoff (§5.5). `close` does not do it, since that would cost every short session a sorted file |
 | | `abort(txn)` / `release(snapshot)` | Always succeed |
 | trees | `tree_create`, `tree_drop`, `tree_list` | In a write transaction. Names are byte strings; the catalog of trees is itself a tree |
 | | `tree_replace(txn, target, source)` | **Atomically makes `source`'s contents `target`'s**, dropping the old ones. This is G-Dash's whole-dataset refresh (§5.1.1, G1): readers holding older snapshots keep reading the old contents until they release them |
@@ -311,6 +313,7 @@ The same in every candidate, and taken from AmorphDB's instance chain:
     - W9 costs the B+trees 3–17% of W2's throughput, and the LSMs about nothing.
     - An `AS OF` read takes 1–16 µs at 1,000 versions per row, all six engines.
     - In 2.A, unsynced commits hold every page they free until a sync. A build of large unsynced commits grew its file 5×.
+- **Moved into the tree in step 5 (2026-10-29)**: `src/gsql/version.c`, over the storage interface itself and keyed by the engine's `txn_id` rather than a counter of its own, with removals kept as versions and the commit second clamped never to go back (§6, "Step 5").
 
 ## 5. The evaluation harness
 
@@ -690,6 +693,19 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 - **Corrected on the way:** 2.C's W3 after the rebuild is 40–52 k rows/s at 10⁶ records, not the 242 k recorded (a 10⁵-record run). RocksDB still leads W3 by 2×.
 - **What 2.C still owes, carried into step 5:** the scan path (common to every candidate, and where G-Dash's page time goes); W3's tail, which wants compaction on a thread of its own; point reads in a short read run after a load (about 32% below the build before the flush change); a flush at close, so a planned handoff does not replay; and the invariant count, never made for any candidate.
 - **Not measured, and needed by step 5 rather than by the choice:** the owner round trip and many owners per machine (§5.5), and 2.B's flash-stick group commit, which matters only if the fallback is taken.
+
+**Step 5, 2026-10-29: 2.C moved into the tree, under the gate** (`tests/run_gsql_store.sh`).
+- **What moved.** The engine is `src/gsql/lsm.c`, the interface `include/gsql_store.h`, the shared field helpers `src/gsql/store_common.c` and `store_util.c`, and the functional test and crash adapter `tests/gsql/store_test.c` and `crash_store.c`. 2.A and 2.B stay in `research/gsql`, whose `run.sh` builds 2.C from its new place beside them, so the fallback is held to the same tests as the choice.
+- **The gate suite** runs the build under `-Wpedantic -Werror`, the interface against its model under ASan and UBSan, the version store against a model, and the §5.3 crash gate at a reduced seed range with every mode past 10,000 crashes. About 2.5 minutes; `GSQL_GATE_SCALE=full` runs the research ranges (about 25 minutes for 2.C).
+- **The version store takes the engine's commit id** (`src/gsql/version.c`, `include/gsql_version.h`). The bench's version store kept a counter of its own; the engine now names a write transaction before it commits (`txn_id`, §1.1). Built over the storage interface rather than the bench's, on two trees whose names begin with a NUL byte. Two rules the bench's version did not need:
+  - **A removal is a version.** A row deleted at D is kept with a removed flag at D, or `AS OF` any id after the delete would answer the value before it.
+  - **A second is clamped never to go back**, so a clock stepped backwards cannot break the floor seek that maps a second to an id. The stamp records the second actually indexed.
+- **`flush` for a planned handoff** (§1.1), checked through a new `replayed` statistic: a plain close replays at least 250 records of 250 commits, a flushed one none, and both hold every commit. Its cost is measured below.
+- **Moving it found three things:**
+  - **An `unsigned __int128`** in the blob collector, a GCC extension that MSVC lacks, so the engine would not have compiled for Windows. Replaced with a portable 64×64-bit product.
+  - **A gap in the shared crash harness.** A `flush` made a no-op passed every crash spec. The sampler crashed just before flushes, and a no-op sync issues none, so its window (the one or two operations before the next synced commit) was almost never sampled; the gate's 2,000-byte memtable also fsyncs the log on nearly every commit, which masks it further. `src/gsql/crash.c` now lands a quarter of its samples just after a sync step returns, and the gate adds a power-loss spec with a 1 MiB memtable. The same no-op gives 0 violations under the old sampler and 131 under the new. A broken toy, `syncstep`, holds the check in `tests/run_gsql_io.sh`.
+  - **One guard that is a saving, not a rule.** The version store does not keep a value its own transaction made. Removing the guard leaves the model check green, because such a value sits at the transaction's own id, which no read below it reaches and the current row covers above it. It is recorded as a saving.
+- **Still owed by 2.C** (unchanged from step 4): the scan path, W3's tail, point reads after a load, and the invariant count.
 
 ## 7. Open questions
 

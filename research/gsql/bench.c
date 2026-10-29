@@ -20,7 +20,8 @@
  *     larger than the cache" means larger than the ENGINE's cache only. */
 
 #define _POSIX_C_SOURCE 200809L
-#include "common.h"
+#include "store_common.h"
+#include "store.h"
 
 #include <dirent.h>
 #include <math.h>

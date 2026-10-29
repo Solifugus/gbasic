@@ -31,7 +31,7 @@
  */
 
 #include "btengine.h"
-#include "util.h"
+#include "store_util.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -1121,4 +1121,6 @@ const GsEngine gs_engine_wal = {
     wal_cursor_open, wal_seek, wal_first, wal_last, wal_next, wal_prev, wal_key, wal_value,
     wal_cursor_put, wal_cursor_delete, wal_cursor_close,
     wal_backup, wal_backup_begin, wal_backup_step, wal_backup_end, wal_check, wal_stats,
+    NULL, /* txn_id: the bench keeps its own counter */
+    NULL, /* flush: not built for the research engines */
 };

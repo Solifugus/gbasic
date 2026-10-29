@@ -7,6 +7,8 @@ The storage-engine candidates of `docs/gsql_storage_design.md`, built small enou
 
 The shared pieces they stand on, the I/O layer and the crash harness, are in the tree proper (`src/gsql/`) and gated by `tests/run_gsql_io.sh`.
 
+**Since step 5 (2026-10-29) the chosen engine is in the tree proper too.** §2.C moved to `src/gsql/lsm.c`, the interface to `include/gsql_store.h`, the shared field helpers to `src/gsql/store_common.c` and `store_util.c`, and the functional test and the crash adapter to `tests/gsql/`. It is gated by `tests/run_gsql_store.sh`. What stays here is 2.A (retired), 2.B (the fallback) and the bench, and `run.sh` still builds 2.C from its new place beside them, so the fallback is held to the same tests as the choice.
+
 ```sh
 research/gsql/run.sh              # build, test and crash-gate every candidate (~35 s per engine)
 GATE_SCALE=quick research/gsql/run.sh
@@ -16,17 +18,17 @@ GATE_SCALE=quick research/gsql/run.sh
 
 | file | what |
 |---|---|
-| `store.h` | the §1 storage interface as a vtable: one functional test, one crash adapter and one workload harness drive every candidate |
-| `common.c` | little-endian fields, CRC32C, varints, the file header and the page header (§3.1) |
+| `../../include/gsql_store.h` | the §1 storage interface as a vtable: one functional test, one crash adapter and one workload harness drive every engine. `store.h` here adds the research engines' names |
+| `../../src/gsql/store_common.c` | little-endian fields, CRC32C, varints, the file header and the page header (§3.1) |
 | `btree.c` | **one** B+tree over slotted pages and a small pager interface, shared by §2.A and §2.B |
 | `btengine.c` | above the pager, shared by §2.A and §2.B: the catalog of named trees, a transaction's view of it, records, cursors and cursor invalidation |
-| `cow.c` | **§2.A**, the copy-on-write B+tree |
-| `wal.c` | **§2.B**, the B+tree with a write-ahead log |
-| `util.c` | page lists and sets, and a page cache keyed by (page, version) |
-| `lsm.c` | **§2.C**, the log-structured merge tree |
+| `cow.c` | **§2.A**, the copy-on-write B+tree (retired) |
+| `wal.c` | **§2.B**, the B+tree with a write-ahead log (the fallback) |
+| `../../src/gsql/store_util.c` | page lists and sets, and a page cache keyed by (page, version) |
+| `../../src/gsql/lsm.c` | **§2.C**, the log-structured merge tree (chosen; moved in step 5) |
 | `test_btree.c` | the B+tree against a model, over an in-memory pager in both modes |
-| `test_store.c` | the interface against a model, for any candidate |
-| `crash_store.c` | a candidate under the crash harness |
+| `../../tests/gsql/store_test.c` | the interface against a model, for any engine |
+| `../../tests/gsql/crash_store.c` | an engine under the crash harness |
 | `hardreq.c`, `hardreq.sh` | Test 3: the hard requirements, every claim checked by the program |
 
 ## Why §2.A and §2.B share one tree

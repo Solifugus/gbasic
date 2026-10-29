@@ -6,7 +6,16 @@
  * sample per workload (0 = every operation). The adapter maps the harness's
  * one-keyspace engine onto one tree, "t", created on first use. */
 
-#include "common.h"
+#include "store_common.h"
+
+/* The research candidates, when research/gsql/run.sh builds this beside them
+ * (the gate builds the chosen engine alone). */
+#ifdef HAVE_COW
+extern const GsEngine gs_engine_cow;
+#endif
+#ifdef HAVE_WAL
+extern const GsEngine gs_engine_wal;
+#endif
 #include "gsql_crash.h"
 
 #include <errno.h>
@@ -27,6 +36,8 @@ static int map(int rc) {
     }
 }
 
+static unsigned syncs; /* since the last open: see a_sync */
+
 static void *a_open(GsqlIo *io, const char *dir, int *err) {
     char path[256];
     snprintf(path, sizeof path, "%s/db", dir);
@@ -43,6 +54,7 @@ static void *a_open(GsqlIo *io, const char *dir, int *err) {
                    /* a small cap, so closing and reopening read handles is crashed too */
                    getenv("GS_TUNE_D") ? strtoull(getenv("GS_TUNE_D"), NULL, 10) : 4};
     GsStore *db;
+    syncs = 0;
     int rc = E->open(path, &o, &db);
     if (rc) { *err = map(rc); return NULL; }
     /* every recovery is checked as well as read back: a store whose contents
@@ -123,7 +135,15 @@ static int a_commit(void *dbp, const GsqlCrashTxn *txn, int sync) {
     return map(E->commit(t, sync, NULL));
 }
 
-static int a_sync(void *db) { return map(E->sync(db, NULL)); }
+/* Every other sync is a `flush` where the engine has one (step 5): it makes
+ * the same promise and more, and is the path a planned handoff takes, so a
+ * crash in the middle of moving the memtable out of the log is crashed like
+ * everything else. Counted from each open, so every replay of a workload,
+ * and every recovery, chooses the same way. */
+static int a_sync(void *db) {
+    if (E->flush && syncs++ % 2) return map(E->flush(db));
+    return map(E->sync(db, NULL));
+}
 
 static int a_read_all(void *db, GsqlCrashState *out) {
     GsTxn *t;
@@ -151,12 +171,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: crash_store ENGINE MODE SEEDS TXNS KEYS PUTS MAX_VALUE RECOVERY POINTS [PAGE]\n");
         return 2;
     }
-    if (!strcmp(argv[1], "cow")) E = &gs_engine_cow;
+    if (!strcmp(argv[1], "lsm")) E = &gs_engine_lsm;
+#ifdef HAVE_COW
+    else if (!strcmp(argv[1], "cow")) E = &gs_engine_cow;
+#endif
 #ifdef HAVE_WAL
     else if (!strcmp(argv[1], "wal")) E = &gs_engine_wal;
-#endif
-#ifdef HAVE_LSM
-    else if (!strcmp(argv[1], "lsm")) E = &gs_engine_lsm;
 #endif
     else { fprintf(stderr, "unknown engine\n"); return 2; }
     static const char *modes[] = {"", "process", "power", "torn", "failed-sync", "full-disk"};

@@ -15,7 +15,7 @@
 #
 # THE HARNESS IS HELD TO A HARDER STANDARD THAN "IT FOUND NOTHING": a harness
 # reporting zero violations is indistinguishable from one that checks nothing.
-# So it is pointed at a correct toy engine AND at eight deliberately broken
+# So it is pointed at a correct toy engine AND at nine deliberately broken
 # copies, each omitting one thing correctness rests on, and each must be caught
 # BY THE CHECK WRITTEN FOR IT in the mode that can see it -- not merely caught,
 # since a defect caught only by a neighbouring check says the check written
@@ -148,6 +148,7 @@ swallow|failed-sync|1-20|a failed flush was reported as success
 carryon|failed-sync|1-20|did not refuse further work with FAILED
 fullskip|full-disk|1-20|a commit made before or after the full disk was lost
 rewrite|power|1-5|stage=recovery-op-
+syncstep|power|1-20|recovered the state after
 EOF
 # And the stage that crashes the recovery is the ONLY one that sees rewrite:
 # with it turned off, a recovery that is correct when uninterrupted passes.

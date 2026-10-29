@@ -1,5 +1,5 @@
-#ifndef GSQL_RESEARCH_UTIL_H
-#define GSQL_RESEARCH_UTIL_H
+#ifndef GSQL_STORE_UTIL_H
+#define GSQL_STORE_UTIL_H
 
 #include <stddef.h>
 #include <stdint.h>

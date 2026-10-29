@@ -29,7 +29,7 @@
  */
 
 #include "btengine.h"
-#include "util.h"
+#include "store_util.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -1044,4 +1044,6 @@ const GsEngine gs_engine_cow = {
     cow_cursor_open, cow_seek, cow_first, cow_last, cow_next, cow_prev, cow_key, cow_value,
     cow_cursor_put, cow_cursor_delete, cow_cursor_close,
     cow_backup, cow_backup_begin, cow_backup_step, cow_backup_end, cow_check, cow_stats,
+    NULL, /* txn_id: the bench keeps its own counter */
+    NULL, /* flush: not built for the research engines */
 };

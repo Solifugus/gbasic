@@ -1,44 +1,43 @@
-/* §2.C: the log-structured merge tree (RocksDB's and LevelDB's shape).
+/* §2.C: the log-structured merge tree (RocksDB's and LevelDB's shape), the
+ * engine G-SQL's Phase 0a chose (docs/gsql_storage_design.md §6, step 4,
+ * 2026-10-29). Built in research/gsql against 2.A and 2.B and moved here in
+ * step 5; its gate suite is tests/run_gsql_store.sh, and research/gsql/run.sh
+ * still runs it beside 2.B, the fallback.
  *
  * Writes go to a log and an in-memory sorted table (a skiplist). When that
- * fills it is written out as an immutable sorted file at level 0, and
- * compaction merges files level by level. A snapshot is a sequence number;
- * compaction keeps every version a live snapshot needs.
+ * fills it is frozen and written out, in slices across later commits, as an
+ * immutable sorted file at level 0, and compaction merges files level by
+ * level, also in slices. A snapshot is a sequence number; compaction keeps
+ * every version a live snapshot needs.
  *
  * Keys. Every tree's records share one keyspace: the internal key is the tree
  * id (8 bytes, big-endian) followed by the user's key, and each version
  * carries a sequence number. Order: key ascending, sequence DESCENDING, so the
  * newest version of a key comes first. The catalog is tree 0: name -> id.
- * Dropping or replacing a tree retires its id; compaction reclaims that id's
- * data once no snapshot older than the retirement is open.
+ * Dropping or replacing a tree retires its id; its files are dropped whole
+ * once the retirement is durable and no snapshot older than it is open.
  *
- * Files, named from the path the caller opens:
- *   path              the MANIFEST: header (§3.1.1), the files per level, the
- *                     log number, retired ids. Rewritten whole: written to
- *                     path.tmp, flushed, renamed, directory flushed.
- *   path.log.K        the log for the memtable; K counts up, so recovery finds
- *                     every log by probing K, K+1, ... (the I/O layer has no
- *                     directory listing)
- *   path.N.sst        sorted files: data blocks, an index block, a bloom
- *                     filter and a footer, each block carrying a CRC32C.
+ * A database is a DIRECTORY and owns everything in it (§7 question 6): the
+ * MANIFEST (rewritten whole: temp file, flush, rename, directory flush), a
+ * lock, the logs, the sorted files and the blob files holding large values
+ * (value separation, WiscKey's shape). Anything store-shaped the manifest
+ * does not name is garbage and is deleted at open; anything else refuses the
+ * open with FORMAT.
  *
- * As built (recorded in the design):
- *   - SEVERAL FILES, not "one file plus at most a log" (§7 question 6):
- *     folding sorted files into one would need an extent allocator the other
- *     two candidates do not have;
- *   - compaction runs in the foreground, inside the commit that triggers it,
- *     because the owner is single-threaded: its cost shows up as commit tail
- *     latency, which is where it belongs in the comparison;
- *   - a write transaction's buffer is held in memory: G5 (a transaction
- *     bigger than the cache) is NOT met by this version;
+ * As built, and measured in research/gsql/README.md:
+ *   - flushes and compaction run in the one owner thread, a slice inside each
+ *     commit, so their cost shows up as commit tail latency;
+ *   - a write transaction's buffer spills to sorted runs past half the cache,
+ *     so a transaction larger than memory is bounded (G5);
  *   - backup is physical and sliced: the snapshot's pinned files copied as
  *     they are, and its memtable's view written as one more file (Test 4);
- *   - recovery truncates the last log at its last valid record and flushes,
- *     so a record a lost commit left behind can never follow a new one.
+ *   - the log's records are chained by checksum with a value drawn at every
+ *     open, so a record a lost commit left behind can never follow a new one,
+ *     and nothing is zeroed at recovery.
  */
 
-#include "common.h"
-#include "util.h"
+#include "store_common.h"
+#include "store_util.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -1485,6 +1484,7 @@ static int replay_log(GsStore *db, GsqlFile *f, uint64_t num, uint64_t *end, uin
         uint64_t commit = count ? base + count - 1 : base;
         for (uint32_t i = 0; i < nret; i++) dead_add(db, get64(p + q + 8 * i), commit);
         if (commit > db->last_seq) db->last_seq = commit;
+        db->st.replayed++;
         at += 8 + len;
         prev = crc;
     }
@@ -1958,6 +1958,22 @@ static uint64_t blob_total(GsStore *db, Blob *b) {
     return b->total;
 }
 
+/* a * b > c * d over the full 128-bit products, in portable C: the compiler's
+ * __int128 is not ISO C and MSVC has none. */
+static void mul128(uint64_t a, uint64_t b, uint64_t *hi, uint64_t *lo) {
+    uint64_t al = a & 0xffffffffu, ah = a >> 32, bl = b & 0xffffffffu, bh = b >> 32;
+    uint64_t ll = al * bl, lh = al * bh, hl = ah * bl, hh = ah * bh;
+    uint64_t mid = (ll >> 32) + (lh & 0xffffffffu) + (hl & 0xffffffffu);
+    *lo = (mid << 32) | (ll & 0xffffffffu);
+    *hi = hh + (lh >> 32) + (hl >> 32) + (mid >> 32);
+}
+static int mul_gt(uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
+    uint64_t h1, l1, h2, l2;
+    mul128(a, b, &h1, &l1);
+    mul128(c, d, &h2, &l2);
+    return h1 > h2 || (h1 == h2 && l1 > l2);
+}
+
 /* The blob files at least GC_DEAD_PCT dead, into `out`; and into `*deadest`
  * the deadest (by fraction) that the current version still points into, or
  * 0. A file only an older version points into is dead whole and needs no
@@ -1982,7 +1998,7 @@ static void gc_collect(GsStore *db, U64s *out, uint64_t *deadest) {
         if (dead * 100 < tot * GC_DEAD_PCT) continue;
         if (out) u64_push(out, db->blob[i].num);
         /* dead/tot > bd/bt, without dividing */
-        if (deadest && live[i] && (unsigned __int128)dead * bt > (unsigned __int128)bd * tot) {
+        if (deadest && live[i] && mul_gt(dead, bt, bd, tot)) {
             bd = dead;
             bt = tot;
             *deadest = db->blob[i].num;
@@ -3450,6 +3466,20 @@ static int lsm_sync(GsStore *db, uint64_t *durable) {
     return rc;
 }
 
+/* The memtable written out and the log retired with it. flush_memtable is
+ * what a spilled transaction's commit runs, so this adds no new path: a
+ * finished flush's manifest names the next log, and that log is empty. */
+static int lsm_flush(GsStore *db) {
+    if (db->failed) return GS_FAILED;
+    if (db->writer) return GS_MISUSE;
+    int rc = lsm_sync(db, NULL);
+    if (rc == GS_OK) rc = flush_memtable(db);
+    /* as after a commit: a failed flush of a file made the store unusable
+     * (flush_file says so), and anything else can be tried again */
+    if (db->failed) return GS_IO;
+    return rc == GS_OK ? GS_OK : rc == GS_FULL ? GS_FULL : GS_IO;
+}
+
 static int lsm_close(GsStore *db) {
     if (db->writer || db->nsnaps) return GS_MISUSE;
     if (!db->failed) lsm_sync(db, NULL);
@@ -3820,6 +3850,17 @@ static void lsm_stats(GsStore *db, GsStats *out) {
 
 /* A database is a directory (§7 question 6): resolve it, then open the files
  * inside it by their old names. */
+/* With one writer the id is known at begin: every sequence this transaction
+ * takes starts here, and its commit id is the last of them (or this one, for
+ * a transaction that wrote nothing), so it is past every earlier commit and
+ * at most its own. Nothing else moves last_seq while a writer is open:
+ * flushes and compactions run inside commits, after the writer is gone. */
+static int lsm_txn_id(struct GsTxn *t, uint64_t *id) {
+    if (!t->write) return GS_MISUSE;
+    *id = t->db->last_seq + 1;
+    return GS_OK;
+}
+
 static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
     GsqlIo *io = opt && opt->io ? opt->io : gsql_io_real();
     char *base = NULL;
@@ -3840,4 +3881,5 @@ const GsEngine gs_engine_lsm = {
     lsm_cursor_open, lsm_seek, lsm_first, lsm_last, lsm_next, lsm_prev, lsm_key, lsm_value,
     lsm_cursor_put, lsm_cursor_delete, lsm_cursor_close,
     lsm_backup, lsm_backup_begin, lsm_backup_step, lsm_backup_end, lsm_check, lsm_stats,
+    lsm_txn_id, lsm_flush,
 };

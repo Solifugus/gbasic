@@ -236,8 +236,11 @@ typedef struct {
     int opened;
 } RunOutcome;
 
-/* Run the workload against `io` until the first error. */
-static RunOutcome run_workload(const GsqlCrashEngine *e, GsqlIo *io, const Workload *w) {
+/* Run the workload against `io` until the first error. `after_sync`, when
+ * given, collects the number of the first operation after each sync step
+ * that succeeded (room for every step is the caller's). */
+static RunOutcome run_workload_at(const GsqlCrashEngine *e, GsqlIo *io, const Workload *w,
+                                  uint64_t *after_sync, size_t *nafter) {
     RunOutcome o = {0, 0, 0, 0, 0};
     int err = 0;
     void *db = e->open(io, DIR, &err);
@@ -253,6 +256,7 @@ static RunOutcome run_workload(const GsqlCrashEngine *e, GsqlIo *io, const Workl
         if (st->is_sync) {
             rc = e->sync(db);
             if (rc == 0) o.durable = o.committed;
+            if (rc == 0 && after_sync) after_sync[(*nafter)++] = gsql_io_sim_ops(io) + 1;
         } else {
             o.reached = ++ci;
             rc = e->commit(db, &st->txn, st->sync);
@@ -268,6 +272,9 @@ static RunOutcome run_workload(const GsqlCrashEngine *e, GsqlIo *io, const Workl
     }
     e->close(db);
     return o;
+}
+static RunOutcome run_workload(const GsqlCrashEngine *e, GsqlIo *io, const Workload *w) {
+    return run_workload_at(e, io, w, NULL, NULL);
 }
 
 typedef struct {
@@ -519,7 +526,15 @@ static void crash_recovery(Ctx *c, const Workload *w, GsqlIo *disk, size_t lo, s
 
 static void run_crash_points(Ctx *c, const Workload *w) {
     GsqlIo *base = gsql_io_sim();
-    RunOutcome full = run_workload(c->e, base, w);
+    /* the operation just after each sync step: a sync that answers success
+     * and flushes nothing is visible ONLY from there to the next flush, which
+     * for 2.C is one or two operations. Sampled uniformly the gate missed it
+     * at 50,625 crashes with zero violations (found 2026-10-29 by making
+     * 2.C's `flush` a no-op), and sampling just before flushes cannot see it,
+     * since a no-op sync issues none. */
+    uint64_t *after = malloc((w->step_count + 1) * sizeof *after);
+    size_t nafter = 0;
+    RunOutcome full = run_workload_at(c->e, base, w, after, after ? &nafter : NULL);
     uint64_t total = gsql_io_sim_ops(base);
     size_t nflush = gsql_io_sim_flush_points(base, NULL, 0);
     uint64_t *flushes = malloc((nflush + 1) * sizeof *flushes);
@@ -528,6 +543,7 @@ static void run_crash_points(Ctx *c, const Workload *w) {
     if (full.stopped_rc) {
         report(c, 0, 0, "", "the uncrashed workload did not complete");
         free(flushes);
+        free(after);
         return;
     }
     uint64_t limit = c->cfg->crash_limit && c->cfg->crash_limit < total ? c->cfg->crash_limit : total;
@@ -538,6 +554,11 @@ static void run_crash_points(Ctx *c, const Workload *w) {
         if (only) { if (j > 1) break; }
         uint64_t n;
         if (points == limit) n = j;
+        else if (j % 4 == 0 && nafter && after[0] <= limit) {
+            /* a quarter just after a sync step returned */
+            n = after[mix(c->cfg->workload_seed, j, 0x5a1u) % nafter];
+            if (n > limit) n = after[0];
+        }
         else if (j % 2 == 0 && flushes && nflush && flushes[0] <= limit)
             /* half the samples land on a flush, crashing just before it */
         {
@@ -563,6 +584,7 @@ static void run_crash_points(Ctx *c, const Workload *w) {
         if (c->res->violations > c->cfg->max_reports) break;
     }
     free(flushes);
+    free(after);
 }
 
 /* Failed sync: the k-th flush fails. The engine must report it, refuse further

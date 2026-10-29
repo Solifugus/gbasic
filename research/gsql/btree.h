@@ -14,7 +14,8 @@
  * Page pointers handed out by a pager stay valid until the engine's operation
  * ends (the pager evicts only between operations). */
 
-#include "common.h"
+#include "store_common.h"
+#include "store.h"
 
 typedef struct BtPager BtPager;
 struct BtPager {

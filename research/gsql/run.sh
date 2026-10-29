@@ -11,20 +11,21 @@ cd "$(dirname "$0")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 CC=${CC:-cc}
-INC="-I../../include -I."
+INC="-I../../include -I../../src/gsql -I."
 IO="../../src/gsql/io.c ../../src/gsql/io_sim.c"
 ENGINES=("$@")
 if [ ${#ENGINES[@]} -eq 0 ]; then
     ENGINES=(cow)
     [ -f wal.c ] && ENGINES+=(wal)
-    [ -f lsm.c ] && ENGINES+=(lsm)
+    ENGINES+=(lsm)
 fi
-DEFS=""
+# 2.C is src/gsql/lsm.c since step 5; the gate's own suite is
+# tests/run_gsql_store.sh, and this script keeps it beside the candidates
+DEFS="-DHAVE_COW"
 [ -f wal.c ] && DEFS="$DEFS -DHAVE_WAL"
-[ -f lsm.c ] && DEFS="$DEFS -DHAVE_LSM"
-ENGINE_SRC="cow.c btengine.c btree.c common.c util.c"
+ST=../../src/gsql
+ENGINE_SRC="cow.c btengine.c btree.c $ST/store_common.c $ST/store_util.c $ST/lsm.c"
 [ -f wal.c ] && ENGINE_SRC="$ENGINE_SRC wal.c"
-[ -f lsm.c ] && ENGINE_SRC="$ENGINE_SRC lsm.c"
 status=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
@@ -38,9 +39,9 @@ build() { # out flags sources...
     fi
 }
 SAN="-g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer"
-build test_btree "$SAN" test_btree.c btree.c common.c $IO || exit 1
-build test_store "$SAN" test_store.c $ENGINE_SRC $IO || exit 1
-build crash_store "-g -O2" crash_store.c $ENGINE_SRC $IO ../../src/gsql/crash.c || exit 1
+build test_btree "$SAN" test_btree.c btree.c $ST/store_common.c $IO || exit 1
+build test_store "$SAN" ../../tests/gsql/store_test.c $ENGINE_SRC $IO || exit 1
+build crash_store "-g -O2" ../../tests/gsql/crash_store.c $ENGINE_SRC $IO ../../src/gsql/crash.c || exit 1
 # the bench, for its version-store check (§4): the candidates only, no reference engines
 build bench "$SAN" bench.c $ENGINE_SRC $IO -lm || exit 1
 
@@ -85,10 +86,19 @@ for e in "${ENGINES[@]}"; do
     for spec in "process $P 40 200 8 2000 1 60 512" "power $L 40 200 8 2000 1 60 512" \
                 "torn $L 40 200 8 2000 1 60 512" "failed-sync $F 40 200 8 2000 1 60 512" \
                 "full-disk $L 40 200 8 2000 1 60 512" "torn 1-8 60 3000 24 2000 0 120 4096" \
-                "process $H 300 6 3 40 1 60 512" "power $H 300 6 3 40 1 60 512"; do
+                "process $H 300 6 3 40 1 60 512" "power $H 300 6 3 40 1 60 512" \
+                "bigmem power $L 40 200 8 2000 1 60 512"; do
+        # bigmem: a large memtable (tests/run_gsql_store.sh says why)
+        # 2.C only: in 2.B the same knob is the checkpoint interval, and a
+        # million frames grows the simulated log past what a run can hold
+        tune=""; case "$spec" in bigmem\ *) [ "$e" = lsm ] || continue; spec=${spec#bigmem }; tune=1048576 ;; esac
         set -- $spec
         mode=$1 seeds=$2
-        summary=$(GSQL_CRASH_REPORTS=5 timeout -k 5 3600 "$work/crash_store" "$e" "$@" 2>&1)
+        if [ -n "$tune" ]; then
+            summary=$(GS_TUNE_A=$tune GSQL_CRASH_REPORTS=5 timeout -k 5 3600 "$work/crash_store" "$e" "$@" 2>&1)
+        else
+            summary=$(GSQL_CRASH_REPORTS=5 timeout -k 5 3600 "$work/crash_store" "$e" "$@" 2>&1)
+        fi
         last=$(printf '%s\n' "$summary" | tail -1)
         crashes=$(printf '%s' "$last" | sed -n 's/.*crashes=\([0-9]*\).*/\1/p')
         violations=$(printf '%s' "$last" | sed -n 's/.*violations=\([0-9]*\).*/\1/p')

@@ -1,4 +1,4 @@
-#include "common.h"
+#include "store_common.h"
 
 #include <errno.h>
 #include <stdio.h>

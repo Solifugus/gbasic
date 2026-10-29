@@ -14,6 +14,9 @@
  *   rewrite    recovery empties the log, syncs, then writes it back -- correct
  *              unless recovery ITSELF is interrupted, so only the harness's
  *              crash-the-recovery stage can see it
+ *   syncstep   a sync STEP answers success and flushes nothing, while a
+ *              synced commit still flushes (added 2026-10-29: a no-op
+ *              `flush` in 2.C passed the sampled gate, see crash.c)
  *
  * The harness must report zero violations for the correct toy and at least one
  * for each broken copy IN THE MODE THAT CAN SEE IT. A harness that cannot tell
@@ -30,7 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { V_OK, V_NOSYNC, V_NODIRSYNC, V_NOCRC, V_NOTRUNC, V_SWALLOW, V_CARRYON, V_FULLSKIP, V_REWRITE };
+enum { V_OK, V_NOSYNC, V_NODIRSYNC, V_NOCRC, V_NOTRUNC, V_SWALLOW, V_CARRYON, V_FULLSKIP, V_REWRITE, V_SYNCSTEP };
 static int variant = V_OK;
 
 /* ---- the toy engine ------------------------------------------------------ */
@@ -233,6 +236,10 @@ static int toy_commit(void *db, const GsqlCrashTxn *txn, int sync) {
 static int toy_sync(void *db) {
     Toy *t = db;
     if (t->failed) return GSQL_E_FAILED;
+    /* the defect: a sync STEP that answers success and flushes nothing, while
+     * a synced commit still flushes -- what a `sync` or `flush` that forgot
+     * its work looks like (found 2026-10-29 by making 2.C's flush a no-op) */
+    if (variant == V_SYNCSTEP) return 0;
     return toy_flush(t);
 }
 
@@ -256,11 +263,11 @@ int main(int argc, char **argv) {
         return 2;
     }
     static const char *variants[] = {"ok", "nosync", "nodirsync", "nocrc", "notrunc",
-                                     "swallow", "carryon", "fullskip", "rewrite"};
+                                     "swallow", "carryon", "fullskip", "rewrite", "syncstep"};
     static const char *modes[] = {"", "process", "power", "torn", "failed-sync", "full-disk"};
     int mode = 0;
     variant = -1;
-    for (int i = 0; i < 9; i++) if (strcmp(argv[1], variants[i]) == 0) variant = i;
+    for (int i = 0; i < 10; i++) if (strcmp(argv[1], variants[i]) == 0) variant = i;
     for (int i = 1; i <= 5; i++) if (strcmp(argv[2], modes[i]) == 0) mode = i;
     if (variant < 0 || !mode) {
         fprintf(stderr, "unknown variant or mode\n");

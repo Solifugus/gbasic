@@ -1,5 +1,5 @@
-#ifndef GSQL_RESEARCH_COMMON_H
-#define GSQL_RESEARCH_COMMON_H
+#ifndef GSQL_STORE_COMMON_H
+#define GSQL_STORE_COMMON_H
 
 /* Shared by every candidate (docs/gsql_storage_design.md §3.1): little-endian
  * fields by declaration, CRC32C, LEB128 varints, the file header and the page
@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "store.h"
+#include "gsql_store.h"
 
 static inline void put16(unsigned char *p, uint16_t v) { p[0] = (unsigned char)v; p[1] = (unsigned char)(v >> 8); }
 static inline void put32(unsigned char *p, uint32_t v) {

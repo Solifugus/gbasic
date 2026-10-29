@@ -1,7 +1,7 @@
 /* Small containers shared by the candidates: page-number lists and sets, and
  * a page cache keyed by (page, version) with an LRU list. */
 
-#include "util.h"
+#include "store_util.h"
 
 #include <stdlib.h>
 #include <string.h>

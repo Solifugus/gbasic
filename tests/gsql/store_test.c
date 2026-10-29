@@ -19,7 +19,16 @@
  *   - a transaction many times larger than the cache (G5).
  * Prints "ok N checks" or MISMATCH lines. */
 
-#include "common.h"
+#include "store_common.h"
+
+/* The research candidates, when research/gsql/run.sh builds this beside them
+ * (the gate builds the chosen engine alone). */
+#ifdef HAVE_COW
+extern const GsEngine gs_engine_cow;
+#endif
+#ifdef HAVE_WAL
+extern const GsEngine gs_engine_wal;
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -522,6 +531,69 @@ static int has_key(GsStore *db, const char *k) {
     return rc == GS_OK;
 }
 
+/* `flush` (step 5): a planned handoff that replays nothing. Asserted as a
+ * DIFFERENCE, since "nothing was replayed" alone is satisfied by an open that
+ * never replays and loses the memtable: the same commits closed plainly must
+ * replay, and both stores must hold every commit afterwards, including the
+ * unsynced ones close or flush made durable, and go on taking commits that
+ * survive a further reopen. */
+static int count_keys(GsStore *db) {
+    GsTxn *r;
+    GsCursor *c;
+    int pos, n = 0;
+    if (E->begin_read(db, &r)) return -1;
+    if (E->cursor_open(r, gss("t"), &c) == GS_OK) {
+        for (int rc = E->first(c, &pos); rc == GS_OK && pos; rc = E->next(c, &pos)) n++;
+        E->cursor_close(c);
+    }
+    E->abort(r);
+    return n;
+}
+static void flushed_handoff(const char *base, GsqlIo *io) {
+    if (!E->flush) return;
+    for (int flushed = 0; flushed < 2; flushed++) {
+        char path[600], k[16];
+        snprintf(path, sizeof path, "%s.handoff%d", base, flushed);
+        /* a memtable large enough that nothing flushes on its own */
+        GsOptions o = {1, 512, 0, io, 1 << 20, 0, 0, 0};
+        GsStore *db;
+        int rc = E->open(path, &o, &db);
+        CHECK(rc == GS_OK, "opening the handoff store answered %s", gs_status_name(rc));
+        if (rc) return;
+        for (int i = 0; i < 250 && rc == GS_OK; i++) {
+            snprintf(k, sizeof k, "k%04d", i);
+            rc = put_kv(db, k, "value", i == 0, i < 200);
+        }
+        CHECK(rc == GS_OK, "the handoff commits answered %s", gs_status_name(rc));
+        if (flushed) {
+            GsTxn *w;
+            E->begin_write(db, &w);
+            CHECK(E->flush(db) == GS_MISUSE, "flush is refused while a write transaction is open");
+            E->abort(w);
+            CHECK(E->flush(db) == GS_OK, "flush");
+            CHECK(E->flush(db) == GS_OK, "a second flush, with nothing to move");
+        }
+        CHECK(E->close(db) == GS_OK, "close the handoff store");
+        rc = E->open(path, &o, &db);
+        CHECK(rc == GS_OK, "reopening the handoff store answered %s", gs_status_name(rc));
+        if (rc) return;
+        GsStats st;
+        E->stats(db, &st);
+        if (flushed) CHECK(st.replayed == 0, "after flush the open replayed %llu records", (unsigned long long)st.replayed);
+        else CHECK(st.replayed >= 250, "after a plain close the open replayed %llu records, want at least 250",
+                   (unsigned long long)st.replayed);
+        CHECK(count_keys(db) == 250, "%s: %d of 250 commits after the reopen", flushed ? "flushed" : "plain", count_keys(db));
+        rc = put_kv(db, "after", "x", 0, 1);
+        CHECK(rc == GS_OK, "a commit after the reopen answered %s", gs_status_name(rc));
+        CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the handoff");
+        E->close(db);
+        rc = E->open(path, &o, &db);
+        CHECK(rc == GS_OK && count_keys(db) == 251 && has_key(db, "after"), "%s: the commit after the handoff survives",
+              flushed ? "flushed" : "plain");
+        if (rc == GS_OK) E->close(db);
+    }
+}
+
 static void lost_twin(const char *base, GsqlIo *io) {
     if (strcmp(E->name, "lsm")) return;
     char path[600], logp[700];
@@ -973,12 +1045,12 @@ typedef struct { GsTxn *t; MState m; int live; } Reader;
 
 int main(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: test_store ENGINE SEED [real DIR]\n"); return 2; }
-    if (!strcmp(argv[1], "cow")) E = &gs_engine_cow;
+    if (!strcmp(argv[1], "lsm")) E = &gs_engine_lsm;
+#ifdef HAVE_COW
+    else if (!strcmp(argv[1], "cow")) E = &gs_engine_cow;
+#endif
 #ifdef HAVE_WAL
     else if (!strcmp(argv[1], "wal")) E = &gs_engine_wal;
-#endif
-#ifdef HAVE_LSM
-    else if (!strcmp(argv[1], "lsm")) E = &gs_engine_lsm;
 #endif
     else { fprintf(stderr, "unknown engine\n"); return 2; }
     rng = strtoull(argv[2], NULL, 10);
@@ -1296,6 +1368,7 @@ int main(int argc, char **argv) {
     blob_space(path, io);
     frozen_reads(path, io);
     lost_twin(path, io);
+    flushed_handoff(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);

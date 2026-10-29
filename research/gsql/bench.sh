@@ -28,8 +28,8 @@ trap 'rm -f "$bin"; rm -rf "$base"/run-*' EXIT
 extra_defs="" extra_libs=""
 [ -f /usr/include/lmdb.h ] && { extra_defs="$extra_defs -DHAVE_LMDB"; extra_libs="$extra_libs -llmdb"; }
 [ -f /usr/include/rocksdb/c.h ] && { extra_defs="$extra_defs -DHAVE_ROCKSDB"; extra_libs="$extra_libs -lrocksdb"; }
-cc -std=c11 -O2 -g -DHAVE_WAL -DHAVE_LSM -DHAVE_SQLITE $extra_defs -I../../include -I. -o "$bin" bench.c cow.c wal.c lsm.c \
-    btengine.c btree.c common.c util.c ../../src/gsql/io.c ../../src/gsql/io_sim.c -lsqlite3 -lm $extra_libs || exit 1
+cc -std=c11 -O2 -g -DHAVE_WAL -DHAVE_LSM -DHAVE_SQLITE $extra_defs -I../../include -I../../src/gsql -I. -o "$bin" bench.c cow.c wal.c ../../src/gsql/lsm.c \
+    btengine.c btree.c ../../src/gsql/store_common.c ../../src/gsql/store_util.c ../../src/gsql/io.c ../../src/gsql/io_sim.c -lsqlite3 -lm $extra_libs || exit 1
 # A runaway engine must not fill the disk (one did: 419 GB, from 2.A's first
 # free list). Every file is capped, and a run does not start without room.
 cap_gb=${BENCH_CAP_GB:-20}

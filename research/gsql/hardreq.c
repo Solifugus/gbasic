@@ -24,7 +24,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 #include "store.h"
-#include "common.h"
+#include "store_common.h"
 
 #include <dirent.h>
 #include <signal.h>
@@ -845,21 +845,27 @@ static int t_handoff(uint64_t commits, int kill_it) {
         if (!c) _exit(3);
         for (uint64_t i = 0; i < commits; i++)
             if (update_one(c, "t", (i * 7919) % 10000, 2 + (uint32_t)i, (i % 64) == 63 || i + 1 == commits)) _exit(4);
-        if (!kill_it) {
+        if (kill_it != 1) {
+            /* mode 2, a PLANNED handoff: the log emptied first (`flush`,
+             * step 5), timed from the decision to hand over */
+            double t_ho = now_ms();
+            if (kill_it == 2 && (!E->flush || E->flush(c))) _exit(6);
             if (E->close(c)) _exit(5);
-            (void)!write(p[1], "x", 1);
+            double ho = now_ms() - t_ho;
+            (void)!write(p[1], &ho, sizeof ho);
             _exit(0);
         }
-        (void)!write(p[1], "x", 1);
+        double none = 0;
+        (void)!write(p[1], &none, sizeof none);
         /* unsynced writes to keys nobody checks, until the signal */
         for (uint64_t i = 0;; i++) update_one(c, "t", 10000 + i % 50000, 1, 0);
     }
     close(p[1]);
-    char b;
-    REQUIRE(read(p[0], &b, 1) == 1, "the writing child failed%s%lld", "", 0);
+    double close_ms = 0;
+    REQUIRE(read(p[0], &close_ms, sizeof close_ms) == sizeof close_ms, "the writing child failed%s%lld", "", 0);
     close(p[0]);
     double t_dead = 0;
-    if (kill_it) {
+    if (kill_it == 1) {
         struct timespec ts = {0, 20 * 1000000};
         nanosleep(&ts, NULL);
         kill(pid, SIGKILL);
@@ -867,7 +873,7 @@ static int t_handoff(uint64_t commits, int kill_it) {
     int st;
     waitpid(pid, &st, 0);
     t_dead = now_ms(); /* the owner is gone: the handoff starts here */
-    REQUIRE(kill_it ? (WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL) : (WIFEXITED(st) && WEXITSTATUS(st) == 0),
+    REQUIRE(kill_it == 1 ? (WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL) : (WIFEXITED(st) && WEXITSTATUS(st) == 0),
             "the child ended unexpectedly%s (%lld)", "", st);
     uint64_t log_at = log_bytes(g_dir);
     double t0 = now_ms();
@@ -893,12 +899,12 @@ static int t_handoff(uint64_t commits, int kill_it) {
         E->abort(r);
         E->close(db);
     }
-    char fields[300];
+    char fields[360];
     snprintf(fields, sizeof fields,
              "\"mode\":\"%s\",\"commits\":%llu,\"log_bytes\":%llu,\"open_ms\":%.2f,\"to_first_read_ms\":%.2f,"
-             "\"unsynced_keys_kept\":%llu,",
-             kill_it ? "sigkill" : "clean", (unsigned long long)commits, (unsigned long long)log_at, open_ms, first_ms,
-             (unsigned long long)kept);
+             "\"old_owner_close_ms\":%.2f,\"unsynced_keys_kept\":%llu,",
+             kill_it == 1 ? "sigkill" : kill_it == 2 ? "flushed" : "clean", (unsigned long long)commits,
+             (unsigned long long)log_at, open_ms, first_ms, close_ms, (unsigned long long)kept);
     return finish("handoff", fields);
 }
 
