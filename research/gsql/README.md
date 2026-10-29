@@ -531,6 +531,101 @@ So the p99 commits (141 to 156 ms) were a flush and a slice together. The flush 
 - **This is a cost of the stated rule, not a new defect.** Nothing had measured it before: group commit's earlier runs used single-row commits, which free a page or two. Under group commit, 2.A's file grows by each unsynced commit's rewritten pages until the next sync. That is a space amplification §6 should weigh alongside W6's.
 - **The `AS OF` reads above are unaffected**, since they touch only live pages. The depth-1,000 file size is an artefact of the build, not of history.
 
+## The G-Dash profile, the handoff and space under group commit (2026-10-28)
+
+**`SET=gdash hardreq.sh`** (`hardreq.c`: `g2`, `g3`, `g5`, `handoff`, `gspace`). NVMe, the three candidates, one run each unless stated. Every line checks its answer: a query's sums are compared with sums computed from the row index, and a handoff reads back the last durable commit. Raw lines: `results/2026-10-28/results-gdash.jsonl` and `results-gspace.jsonl`.
+
+### G2: the dominant query
+
+`sum(amount) group by` one of 20 groups over a whole dataset, and the same with an equality filter on a second column. The rows are G-Dash's shape: 100 bytes, written once in key order. Median of five, ms:
+
+| rows | 2.A cow | 2.B wal | 2.C lsm |
+|---|---|---|---|
+| 10² | 0.010 | 0.012 | 0.004 |
+| 10⁴ | 0.67 | 0.64 | 0.40 |
+| 10⁶ | 119 | 141 | 160 |
+
+- **A 10⁶-row dataset answers in 120 to 160 ms**, a scan of 6 to 8 million rows a second. At that rate one query fits inside G-Dash's measured 57 ms page load only up to about half a million rows. The scan path is the one already known to be about 10× slower than LMDB's in all three candidates (§6, "Common to every outcome"), so this is where that fix pays.
+- **The filter costs nothing and saves nothing.** With no index the query still reads every row, and the filter only skips the addition.
+- **A refresh half written alongside changes nothing.** With half the replacement dataset written and not committed, the same query takes the same time (within 8%, all three), and answers from the live dataset.
+- **2.C is fastest while the dataset sits in its memtable (10⁴) and slowest once it is in sorted files (10⁶).**
+
+### G3 and G6: the per-request cost, and touching only what a query names
+
+The request is a snapshot, one row read from one dataset, and a release, 20,000 times (µs):
+
+| datasets × rows | 2.A mean / p99 | 2.B mean / p99 | 2.C mean / p99 |
+|---|---|---|---|
+| 1 × 1,000 | 0.36 / 0.42 | 0.41 / 0.79 | 0.31 / 0.80 |
+| 20 × 1,000 | 0.45 / 0.92 | 0.58 / 3.83 | 0.63 / 1.41 |
+| 1,000 × 20 | 0.50 / 1.29 | 0.72 / 4.13 | 0.83 / 1.53 |
+| 1,000 × 1,000 | 2.55 / 6.36 | 3.51 / 7.65 | 5.28 / 6.62 |
+
+- **The number of datasets costs almost nothing.** The same 20,000 rows held as 20 datasets or as 1,000 give requests within 0.2 µs of each other. The first run held 1,000 datasets of 1,000 rows, 120 MB against a 64 MB cache, and its slower requests are random reads outside the cache, not the dataset count. The control row (1,000 × 20) is what separates the two.
+- **A request costs under a microsecond in process.** G-Dash's 10 to 100 requests a second are nothing to the engine; the owner's round trip (§5.5), not yet built, will be the cost.
+- **G6: a query naming 2 datasets of 20 costs a tenth of one naming all 20** (0.10 to 0.15 ms against 0.96 to 1.37 ms at 1,000 rows each). Nothing is opened or read for a dataset a query does not name, in any candidate.
+
+### G5: one large write, peak memory against memory at open
+
+| rows in one transaction | 2.A cow | 2.B wal | 2.C lsm |
+|---|---|---|---|
+| 10⁵ sequential | 12.7 MB | 13.3 MB | 41.5 MB |
+| 10⁶ sequential | 67.6 MB | 37.1 MB | 44.0 MB |
+| 10⁷ sequential | 79.1 MB | **146.3 MB** | 79.8 MB |
+| 10⁶ random | 68.7 MB | 61.0 MB | 77.4 MB |
+
+- **2.A and 2.C are bounded by their buffers**: a 64 MB cache, and in 2.C a 32 MB memtable and half a cache of transaction buffer before a spill. Ten times the rows adds 12 MB in 2.A and 36 MB in 2.C, and both stop near 80 MB.
+- **2.B's write memory grows with the transaction**, about 400 bytes per spilled page (110 MB across the 9 × 10⁶ rows between the last two sizes). Each spilled page gets a hash entry and its own vector of frame numbers in the index of spilled frames. SQLite's equivalent, the WAL index, spends a few bytes per frame. It is engineering, not structure, and 2.B is the fallback; at 10⁸ rows it would be about 1.4 GB.
+- **One cost of 2.C's spill shows up here: a 10⁷-row transaction takes 27.9 s, against 5.6 s in 2.A and 9.5 s in 2.B.** Each spill is a sorted run written and flushed, and the commit flushes the memtable and names every run. With random keys the order reverses (2.C 1.6 s, 2.A 3.5 s, 2.B 8.0 s at 10⁶).
+
+### The handoff (§5.5)
+
+An owner makes COMMITS single-row commits, synced every 64 and at the last, then either closes and exits, or keeps writing unsynced and is killed with SIGKILL 20 ms later. The time runs from the owner's death to the new owner's first read. Taking the lock is inside the open, since the lock is the store's own.
+
+| commits | 2.A clean / kill | 2.B clean / kill | 2.C clean / kill |
+|---|---|---|---|
+| 100 | 0.05 / 0.12 ms | 0.99 / 9.01 ms | 2.91 / 10.76 ms |
+| 10⁴ | 0.13 / 0.13 ms | 1.83 / 14.98 ms | 11.43 / 21.03 ms |
+| 10⁵ | 0.12 / 0.10 ms | 2.09 / 9.63 ms | 94.60 / 106.70 ms |
+
+- **2.A's handoff is constant**, as §6 predicted, at about 0.1 ms.
+- **2.B's is bounded by its checkpoint**, about 10 to 15 ms after a kill, whatever the count: its log never holds more than about four checkpoints' frames.
+- **2.C's grows with its memtable**, up to about 100 ms when the memtable is full, the replay §6 already records. A clean close does not flush the memtable, so a clean handoff replays too. Flushing at close would make a planned handoff cheap; whether it is worth the close's own time is a choice for the owner.
+- **A kill keeps unsynced commits in 2.B and 2.C** (1,100 to 15,000 of the unsynced writes came through), because a process kill is not a power loss and their log frames survive in the page cache. 2.A recovers only what a meta page names. Correctness is the same either way: a commit not returned durable may be kept or lost.
+- **Perturbed:** with the child's final synced commit removed, 2.A's line reports the last durable commit lost, and 2.B's and 2.C's do not, for the reason above.
+- **Not measured: many owners on one machine, and cold start per tenant** (§5.5's third item). Both need the owner, which is part of step 5.
+
+### Space under group commit (`gspace`)
+
+2,000 transactions of K random updates over a 10⁵-row table, synced every G commits. Peak store size against the size after the load (2.C's includes its preallocated log, about 100 MB):
+
+| K rows per txn | sync every | 2.A peak (end) | 2.B peak (end) | 2.C peak (end) |
+|---|---|---|---|---|
+| 1 | 64 | 1.12 (1.12) | 1.00 (1.00) | 1.00 (1.00) |
+| 100 | 1 | 1.12 (1.12) | 1.00 (1.00) | 1.26 (1.26) |
+| 100 | 64 | 3.65 (3.65) | 1.51 (0.76) | 1.26 (1.26) |
+| 1,000 | 1 | 1.44 (1.44) | 1.00 (1.00) | 1.59 (1.55) |
+| 1,000 | 8 | 3.74 (3.74) | 1.34 (0.50) | 1.59 (1.55) |
+| 1,000 | 64 | **21.9 (21.9)** | 9.18 (0.50) | 1.59 (1.55) |
+
+- **2.A's file grows with K × G and never shrinks.** It frees a page only once the commit that freed it is durable, so every unsynced commit's rewritten path is held until the next sync. The growth is the file's high-water mark, so the space stays allocated after the sync.
+- **2.B's log grows the same way and is given back.** Frames past the last durable commit cannot be checkpointed, so the log holds them until the sync, then resets and is truncated (the end figure falls below the start, because the start included the load's log).
+- **2.C does not depend on G at all.** An unsynced commit is a log append, and the memtable's flush, not the sync, decides when it reaches a sorted file.
+- **What it means for the owner:** a group interval sized for single-row commits is safe for all three. With large transactions, 2.A's space amplification is unbounded by anything but the group size, which the owner would have to cap by pages freed rather than by commits or time. 2.A is retired, so this is recorded rather than fixed.
+
+### 2.B's group commit on the flash stick: one explanation ruled out
+
+The stick runs (2026-10-25) predate `b6b21f7` (2026-10-26), which made 2.B reset its log under group commit. A growing log would make every flush commit a change of file size. Rebuilt from both sides of that commit and run twice each on NVMe, at 10⁵ records and 20,000 commits (ops/s, mean of two):
+
+| build | 2.B W2 | 2.B group-8 | 2.B group-64 | SQLite group-8 | SQLite group-64 |
+|---|---|---|---|---|---|
+| before `b6b21f7` | 2,080 | 8,870 | 17,076 | 8,469 | 14,882 |
+| after | 2,105 | 8,816 | 16,235 | 8,236 | 15,320 |
+
+- **The fix changes nothing here**, and the bench's `group-N` path (commits with `sync = false`, then `sync()`) is not the one it fixed (synced commits under a grouping caller). So it does not explain the stick.
+- **On NVMe 2.B and SQLite are equal at every group size**, with the same bytes per commit (about 24 KB) and the same flush counts. On the stick, SQLite reached 1,733 commits a second at group-8 (38 MB/s) where 2.B made 23 (0.5 MB/s). The stick's bandwidth is therefore not the limit: something in 2.B's write pattern is, and NVMe does not show it.
+- **The next candidate:** 2.B's checkpoint writes pages in its frame index's hash-bucket order, where SQLite's goes in ascending page order. Scattered writes inside one flush are what a flash stick's translation layer punishes. This needs the stick attached, and it was not, on 2026-10-28.
+
 ## Perturbations proven red
 
 | broken | caught by |
@@ -755,10 +850,10 @@ The ssd runs used 20,000 operations; the usb runs used 1,000, because 2.A could 
 ### Not yet measured, and needed before §6 can decide
 
 - **W9 is measured** (2026-10-28, "The version store, and W9"). History costs the B+trees 3–17% of update throughput and the LSMs almost nothing. An `AS OF` read is one point read and one floor seek.
-- **2.A's space under group commit**, now that unsynced commits that rewrite many pages are known to hold them all until a sync.
+- **2.A's space under group commit is measured** (2026-10-28, "The G-Dash profile, the handoff and space under group commit"): 21.9× at 1,000-row transactions synced every 64, and never given back. 2.B's log grows and is truncated back; 2.C does not depend on the group size.
 - **The hard requirements**: measured in Test 3 (above), except nonce uniqueness, which waits for encryption. Online backup is not met as built.
-- **The G-Dash profile** (§5.1.1) and the owner round trip (§5.5).
+- **The G-Dash profile is measured in process** (G2, G3, G5, G6, same section; G1 and G4 in Test 3). **The handoff is measured**, clean and by SIGKILL. **Not measured: the owner round trip and many owners on one machine** (§5.5), which need the owner (step 5). 2.B's write memory grows with a transaction, about 400 bytes per spilled page.
 - **2.C's remaining items are finished** (2026-10-28):
   - **Recovery** no longer zeroes the log at open: a short log opens in about 3 ms whatever the memtable. What is left is replay, in proportion to the memtable.
   - **Compaction pacing by debt** was measured and left at a constant. It trades the p50 for the p99 at the same mean. W3's tail needs less compaction work or a background thread ("Recovery, and compaction paced by debt").
-- **2.B's group commit on slow flash**, unexplained.
+- **2.B's group commit on slow flash**, still unexplained. The log-reset fix is ruled out (no change on NVMe, and not the bench's path); the next candidate is its checkpoint's write order, which needs the stick attached.

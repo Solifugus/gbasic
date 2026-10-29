@@ -391,6 +391,12 @@ The G-Dash workloads, revised:
 | G5 | **bounded-memory bulk write**: stream 10⁶ rows into one transaction with peak memory recorded | G-Dash's third want: the dataset ceiling should be disk, not RAM. The engine must take a large write without holding it all; under §2.A that means writing dirty pages out before commit |
 | G6 | a query naming 2 of 20 datasets, against one naming all 20 | G-Dash's second want: no attach cap, and touching only what a query names |
 
+**Measured 2026-10-28, in process** (`research/gsql/README.md`, "The G-Dash profile, the handoff and space under group commit"; G1 and G4 in Test 3, §6):
+- **G2:** a 10⁶-row `sum … group by` takes 120 to 160 ms in every candidate, the same with a refresh half written alongside. A filter changes nothing without an index.
+- **G3:** a request (snapshot, one row, release) costs under 1 µs, and holding 1,000 datasets instead of 20 adds about 0.2 µs. The owner's round trip, not yet built, will be the cost.
+- **G5:** 2.A and 2.C stay near 80 MB at 10⁷ rows in one transaction. 2.B grows with the transaction (146 MB at 10⁷), about 400 bytes per spilled page in its frame index: engineering, not structure.
+- **G6:** a query naming 2 datasets of 20 costs a tenth of one naming all 20.
+
 **What G-Dash wants, in its own order:** a native money type with its scale stored with it; reading across many datasets with no cap, touching only those a query names; and bounded-memory writes. It **does not want** partial or incremental refresh: whole replacement is its coherence model, and G-SQL should keep that cheap rather than replace it.
 
 **Money comparisons in model-written SQL, raised by the answer:** today stored values are minor units, so generated SQL compares cents to dollars, and G-Dash has to warn about it. Native money removes the unit confusion, but leaves one question for `gsql_design.md` §3.3: what `amount > 100` means when `amount` is `MONEY(USD)` and `100` is a plain number. gBASIC's own answer for that comparison must be the SQL answer.
@@ -567,6 +573,8 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 - **Handoff:** owner exits (cleanly, and by kill -9) → a client takes the lock → opens → recovers → serves. Total time, per candidate and per log size.
 - **Many owners on one machine:** one database per tenant (WorkSplicer) means a multi-tenant deployment runs **one owner per active tenant**. Measure an idle owner's memory and file-descriptor cost, and **cold start**: the first request to a tenant whose owner is not running, including recovery. Measure at 1, 100 and 1,000 tenant databases. This decides whether an owner should stay up while it has clients or start on demand per request burst.
 
+- **Measured 2026-10-28** (same README section): the **handoff**, from the owner's death to the new owner's first read, is about 0.1 ms in 2.A at any log size, 1 to 2 ms (clean) and 9 to 15 ms (SIGKILL) in 2.B, and 3 to 107 ms in 2.C, growing with the memtable it replays. 2.C's close does not flush its memtable, so a clean handoff replays too. The **round trip** and **many owners** wait for the owner (step 5).
+
 ## 6. How the choice is made
 
 1. **Gate:** crash correctness (§5.3). Absolute.
@@ -590,7 +598,7 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
 - **2.C's predicted weakness in W1 tail latency did not appear either.** Its real weakness is W8: it is the slowest engine at 100 KiB values, for want of value separation.
 - **Lines of code are close across all three**, about 2,050 to 2,140.
 - **Running these found two defects that grew the candidates' files without bound**, one in 2.A's free tree and one in 2.B's checkpoint under group commit. Both are fixed and gated, and both are recorded in that README.
-- **No final decision is taken here.** W3, W4 and W9 (W9 now measured, above), the larger-than-memory size, a slower device, the hard requirements of point 2 and the G-Dash profile are not yet measured.
+- **No final decision is taken here.** W3, W4 and W9 (W9 now measured, above), the larger-than-memory size, a slower device, the hard requirements of point 2 and the G-Dash profile are not yet measured. *(All since measured: Tests 1 to 4 and the 2026-10-28 paragraphs below.)*
 
 **Weights, fixed 2026-10-24, after the first measurements.** Point 4 asked for weights before results were seen, and that did not happen. They are fixed now, and the record says so, so that a reader can judge how much the weighting could have been bent towards the result already in hand.
 
@@ -666,6 +674,13 @@ The owner serves every client, so it can **group commits**: hold acknowledgement
   - **2.C's open snapshot costs nothing more** than the files it already pinned.
   - **2.B's is a reader**, whose log grows about 8 KB with every commit made while the backup runs, for as long as the backup takes.
 - **It found a latent defect in 2.C's old backup.** The copy took every retired tree, including trees retired after the snapshot, which the copy's own compactions would have deleted while its catalog still listed them. Fixed and gated.
+
+**The G-Dash profile, the handoff and space under group commit, 2026-10-28: 2.C stands** (`research/gsql/README.md`, the section of that name).
+- **G-Dash vetoes no candidate.** Its queries are scans of up to 10⁶ rows at 120 to 160 ms in all three, a request costs under a microsecond in process, and the number of datasets barely matters. The scan path, already the common fix, is where G-Dash's page time goes.
+- **2.A's predicted handoff win holds** (0.1 ms, constant), and 2.C's is the slowest at up to about 100 ms with a full memtable. The 2026-10-24 sensitivity check found recovery time reorders the candidates only if it carries most of the weight; it carries 10 of 100, and step 4 re-scores with these figures.
+- **Space under group commit is a new cost of 2.A, and none of 2.C's.** With 1,000-row transactions synced every 64 commits, 2.A's file reaches 21.9× its data and keeps it. 2.B's log grows 9× and is truncated back. 2.C is unaffected by the group size.
+- **2.B's group commit on the flash stick is still unexplained.** The log-reset fix is ruled out on NVMe; the checkpoint's write order is next, and needs the stick.
+- **Left for step 3:** nothing that can be measured without the owner, except the stick. Step 4, re-scoring under the fixed weights, can begin.
 
 ## 7. Open questions
 
