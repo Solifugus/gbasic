@@ -719,6 +719,24 @@ Raw lines: `results/2026-10-28/round-*.jsonl` and `rep2-*`, `rep3-*`; scores: `s
 - **The first `flush` cost about 34 ms however little it moved** (35 against 3.5 ms after 100 commits). A freeze needs a ready spare log, and making one ready is 64 MB of zeros, synced. `flush` now freezes into an **empty** log, which is correct (replay stops at its end, and the checksum chain at anything stale). The commit path keeps its paced, zero-filled spare.
 - **The empty log costs the next owner nothing measurable.** 2,000 synced single-row commits after each handoff: 260–271 µs a commit after a flushed one, 262–267 µs with a zero-filled log (three runs each, 10⁴ commits). The prefill was justified by a synced commit that changes the file's size costing 1 ms against 250 µs (`lsm.c`, `prefill_log`); that difference did not appear. Whether the prefill is still needed is a question for its own measurement.
 
+### The scan path
+
+`scanbench DIR ROWS` loads ROWS rows of 100 bytes in key order, flushes them to sorted files, reopens, and times full scans that read every key and value, checking count, order and a checksum of the values. Best of five, NVMe, ms:
+
+| build | 2 × 10⁵ rows (fits the cache) | 10⁶ rows (130 MB, twice the cache) |
+|---|---|---|
+| before | 10.3–10.7 | 166–169 |
+| a reused key buffer, the tree bound as one 8-byte compare, one valid source advanced alone | — | 150–151 |
+| the processor's CRC32C | — | 116–118 |
+| one allocation per cached block (was three, with two frees and two copies) | — | 108–109 |
+| read ahead past half the cache, not filling it | 11.5 | **74–75** |
+
+- **What the scan was paying for was the cache, not the merge.** A table that fits ran at 18.7 M rows/s once warm, and one twice the cache size at 6 M, because every block was read, checksummed and decoded into a new allocation, then evicted again, on every scan. Instruction counts (callgrind) fell 20% from the first change and the time 10%, which is what said so.
+- **CRC32C was about 3 instructions a byte**, slicing-by-8. It now uses SSE4.2's instruction where the processor has one (x86-64, checked at run time), and the portable version elsewhere or with `GSQL_CRC=portable`. `store_test` holds the two to the same answers at every alignment and to the standard check value, **and that check is the only one that can fail**: with the fast path broken, 2 of 11,474 checks failed, because every store's writer and reader agreed on the wrong checksum.
+- **Read-ahead takes a rule, and the first rule was wrong.** Bypassing the cache after two blocks made the 10⁶-row scan 78 ms, and made the small table 17.6 ms where the cache had given it 10.3, which is G-Dash's real pattern: modest datasets scanned on every page load. A scan now goes through the cache until it has read half the cache's size, and only then reads up to 128 KB of consecutive blocks in one call into a buffer of its own and stops filling the cache.
+- **G2 at 10⁶ rows** (`hardreq g2`, the G-Dash query): 160 ms before (2026-10-28), 69–86 ms now.
+- **Not yet compared with LMDB** on the same day, so the "about 10×" gap of §6 is narrowed, not re-measured.
+
 ## Perturbations proven red
 
 | broken | caught by |

@@ -1014,6 +1014,15 @@ typedef struct {
     int valid;
     GsStore *db;
     int rc;
+    /* A forward scan's own blocks (src_load_ahead): consecutive blocks read
+     * in one call into `ra`, decoded into `own`, never put in the cache */
+    unsigned steps;      /* blocks stepped forward since the last seek */
+    uint64_t stepped;    /* and their bytes */
+    unsigned char *ra;
+    size_t racap, ra_len;
+    uint64_t ra_off, ra_file;
+    Ent *own;
+    size_t owncap;
 } Src;
 
 static void src_unpin(Src *s) {
@@ -1022,7 +1031,19 @@ static void src_unpin(Src *s) {
     memset(&s->blk, 0, sizeof s->blk);
 }
 
-static void src_reset(Src *s) { src_unpin(s); s->valid = 0; }
+/* every Src is discarded through here, so it owns its scan buffers' end */
+static void src_reset(Src *s) {
+    src_unpin(s);
+    s->valid = 0;
+    free(s->ra);
+    free(s->own);
+    s->ra = NULL;
+    s->own = NULL;
+    s->racap = s->ra_len = s->owncap = 0;
+    s->ra_off = s->ra_file = 0;
+    s->steps = 0;
+    s->stepped = 0;
+}
 
 static int src_load(Src *s, size_t fi, size_t bi) {
     src_unpin(s);
@@ -1030,6 +1051,61 @@ static int src_load(Src *s, size_t fi, size_t bi) {
     int rc = file_open(s->db, m);
     if (!rc) rc = block_fetch(s->db, m, bi, &s->pin, &s->blk);
     if (rc) { s->rc = rc; s->valid = 0; return rc; }
+    s->fi = fi;
+    s->bi = bi;
+    return GS_OK;
+}
+
+/* A forward scan that has read half the cache reads ahead and does not fill
+ * it. Through the cache, a scan larger than it paid a system call, an
+ * allocation and an eviction for every block and evicted everything a point
+ * read had warmed, for blocks nobody will ask for again (RocksDB's
+ * fill_cache=false, for the same reason). A block already cached is still
+ * taken from the cache. */
+#define READ_AHEAD (128u << 10)
+static int src_load_ahead(Src *s, size_t fi, size_t bi) {
+    FileMeta *m = s->files[fi];
+    int rc = file_open(s->db, m);
+    if (rc) { s->rc = rc; s->valid = 0; return rc; }
+    if (cache_find(&s->db->bcache, m->num, bi + 1)) return src_load(s, fi, bi);
+    IdxEntry *ie = &m->index[bi];
+    if (!(s->ra && s->ra_file == m->num && ie->off >= s->ra_off && ie->off + ie->size <= s->ra_off + s->ra_len)) {
+        uint64_t end = ie->off + ie->size;
+        for (size_t j = bi + 1; j < m->nindex && m->index[j].off + m->index[j].size - ie->off <= READ_AHEAD; j++)
+            end = m->index[j].off + m->index[j].size;
+        size_t len = (size_t)(end - ie->off);
+        if (len > s->racap) {
+            unsigned char *b = realloc(s->ra, len);
+            if (!b) { s->rc = GS_IO; s->valid = 0; return GS_IO; }
+            s->ra = b;
+            s->racap = len;
+        }
+        GsqlFile *f;
+        s->ra_len = 0;
+        if ((rc = file_fd(s->db, m, &f)) || (rc = read_exact(s->db, f, ie->off, s->ra, len))) {
+            s->rc = rc; s->valid = 0; return rc;
+        }
+        s->ra_off = ie->off;
+        s->ra_len = len;
+        s->ra_file = m->num;
+    }
+    const unsigned char *raw = s->ra + (ie->off - s->ra_off);
+    uint32_t count = 0;
+    if ((rc = check_block(raw, ie->size)) == GS_OK) {
+        count = get32(raw + ie->size - 8);
+        if (count > ie->size) rc = GS_CORRUPT;
+    }
+    if (rc == GS_OK && count > s->owncap) {
+        Ent *e = realloc(s->own, count * sizeof *e);
+        if (!e) rc = GS_IO;
+        else { s->own = e; s->owncap = count; }
+    }
+    size_t n = 0;
+    if (rc == GS_OK) rc = block_parse(raw, ie->size, count, s->own, &n);
+    src_unpin(s);
+    if (rc) { s->rc = rc; s->valid = 0; return rc; }
+    s->blk.e = s->own;
+    s->blk.n = n;
     s->fi = fi;
     s->bi = bi;
     return GS_OK;
@@ -1045,6 +1121,8 @@ static Ent src_ent(const Src *s) {
 /* first entry >= (k, seq) */
 static void src_seek(Src *s, const unsigned char *k, size_t kn, uint64_t seq) {
     s->valid = 0;
+    s->steps = 0;
+    s->stepped = 0;
     if (s->kind == 0) {
         s->node = sk_ge(s->sk, k, kn, seq);
         s->valid = s->node != NULL;
@@ -1094,7 +1172,13 @@ static void src_next(Src *s) {
             bi = 0;
             continue;
         }
-        if (src_load(s, fi, bi)) return;
+        /* through the cache until this scan has read half of it, so a table
+         * that fits is cached by its first scan (a 2 x 10^5-row table
+         * scanned again ran 10.3 ms cached against 17.6 read ahead), and
+         * only one that cannot fit stops filling it */
+        s->steps++;
+        s->stepped += s->files[fi]->index[bi].size;
+        if (s->steps >= 2 && s->stepped > s->db->cache_bytes / 2 ? src_load_ahead(s, fi, bi) : src_load(s, fi, bi)) return;
         if (s->blk.n) { s->ei = 0; return; }
         bi++;
     }
