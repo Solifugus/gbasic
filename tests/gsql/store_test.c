@@ -615,17 +615,20 @@ static void flushed_handoff(const char *base, GsqlIo *io) {
             /* With 250 small commits the spare log is not yet filled, so the
              * flush freezes into an EMPTY one (spare_now), the one path the
              * crash gate's workloads never reach: their spare is always ready
-             * by the time they flush (measured with a probe). So power losses
-             * are built here, right after the flush and again after commits
-             * into the short log, and every durable commit must survive. */
+             * by the time they flush (measured with a probe). The flush then
+             * moves its writing to the frozen log it recycled at full size,
+             * so the commits after it land there. Power losses are built here,
+             * after the flush and again after commits made after it, and every
+             * durable commit must survive: with that log's name not made
+             * durable first, 25 of 275 were lost. */
             if (!real) {
                 for (int i = 250; i < 300 && rc == GS_OK; i++) {
-                    if (i == 275) power_check(io, path, 275, "after the flush and 25 commits into the short log");
+                    if (i == 275) power_check(io, path, 275, "after the flush and 25 commits");
                     snprintf(k, sizeof k, "k%04d", i);
                     rc = put_kv(db, k, "value", 0, 1);
                 }
-                power_check(io, path, 300, "after 50 commits into the short log");
-                CHECK(E->flush(db) == GS_OK, "flush again, out of the short log");
+                power_check(io, path, 300, "after the flush and 50 commits");
+                CHECK(E->flush(db) == GS_OK, "flush again");
             }
         }
         int total = flushed && !real ? 300 : 250;

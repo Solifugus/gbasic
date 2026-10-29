@@ -3621,11 +3621,36 @@ static int lsm_flush(GsStore *db) {
     int rc = lsm_sync(db, NULL);
     /* flush_memtable's steps, with the spare made ready without zeros */
     if (rc == GS_OK) rc = flush_step(db, UINT64_MAX);
+    int short_log = 0;
     if (rc == GS_OK && db->cur->mem->sk.count) {
+        short_log = !db->spare_ready;
         rc = spare_now(db);
         if (rc == GS_OK) rc = freeze(db);
     }
     if (rc == GS_OK) rc = flush_step(db, UINT64_MAX);
+    /* The log spare_now gave is not prefilled, and a synced commit that grows
+     * its file costs about twice one that does not (515 against 252 us at
+     * the median, measured 2026-10-29) -- which an owner that goes on writing
+     * after its own flush paid until its next freeze. The install recycled
+     * the frozen log at full size as the spare, so write into that instead:
+     * the state the next open would make, which probes the logs in order and
+     * keeps the last (the empty one stays on disk, named, until the next
+     * flush removes both). Its name is made durable first, by spare_step,
+     * as for any log a commit lands in. */
+    if (rc == GS_OK && short_log && !db->fl && db->spare && db->spare_filled >= log_size(db) && db->log_end == 0) {
+        rc = spare_step(db, UINT64_MAX);
+        if (rc == GS_OK) {
+            gsql_io_close(db->log);
+            db->log = db->spare;
+            db->log_num++;
+            db->log_end = 0;
+            db->log_prev = log_seed(db->log_num);
+            db->spare = NULL;
+            db->spare_ready = 0;
+            db->spare_filled = 0;
+            db->spare_credit = 0;
+        }
+    }
     if (rc == GS_OK) rc = maybe_compact(db, 0);
     /* as after a commit: a failed flush of a file made the store unusable
      * (flush_file says so), and anything else can be tried again */
