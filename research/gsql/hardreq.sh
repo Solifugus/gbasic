@@ -21,7 +21,7 @@ MIN_FREE=${BENCH_MIN_FREE_GB:-50}
 mkdir -p "$BENCH_DIR"
 bin="$BENCH_DIR/hardreq.bin"
 cc -std=c11 -O2 -g -Wall -Wextra -Werror -DHAVE_WAL -DHAVE_LSM -I../../include -I../../src/gsql -I. -o "$bin" hardreq.c \
-    cow.c btengine.c btree.c ../../src/gsql/store_common.c ../../src/gsql/store_util.c wal.c ../../src/gsql/lsm.c ../../src/gsql/io.c ../../src/gsql/io_sim.c || exit 1
+    btengine.c btree.c ../../src/gsql/store_common.c ../../src/gsql/store_util.c wal.c ../../src/gsql/lsm.c ../../src/gsql/io.c ../../src/gsql/io_sim.c || exit 1
 
 run() { # test engine args...
     local free
@@ -43,30 +43,29 @@ if [ "${SET:-test3}" = test4 ]; then
     for b in 18446744073709551615 4194304 1048576 262144; do
         for e in wal lsm; do run sbackup $e 1000000 $b; done
     done
-    run sbackup cow 1000000 1048576
     for e in wal lsm; do run sbackup $e 10000000 1048576; done
-    for n in 10000 100000 1000000 10000000; do for e in cow wal lsm; do run files $e $n; done; done
+    for n in 10000 100000 1000000 10000000; do for e in wal lsm; do run files $e $n; done; done
     rm -f "$bin"
     exit 0
 fi
 
 if [ "${SET:-test3}" = gdash ]; then
-    for n in 100 10000 1000000; do for e in cow wal lsm; do run g2 $e $n; done; done
-    for t in 1 20 1000; do for e in cow wal lsm; do run g3 $e $t 1000; done; done
-    for n in 100000 1000000 10000000; do for e in cow wal lsm; do run g5 $e $n 0; done; done
-    for e in cow wal lsm; do run g5 $e 1000000 1; done
-    for c in 100 10000 100000; do for e in cow wal lsm; do for k in 0 1; do run handoff $e $c $k; done; done; done
+    for n in 100 10000 1000000; do for e in wal lsm; do run g2 $e $n; done; done
+    for t in 1 20 1000; do for e in wal lsm; do run g3 $e $t 1000; done; done
+    for n in 100000 1000000 10000000; do for e in wal lsm; do run g5 $e $n 0; done; done
+    for e in wal lsm; do run g5 $e 1000000 1; done
+    for c in 100 10000 100000; do for e in wal lsm; do for k in 0 1; do run handoff $e $c $k; done; done; done
     # the confound in G3: the same 20,000 rows as 20 datasets and as 1,000
-    for t in "20 1000" "1000 20"; do for e in cow wal lsm; do run g3 $e $t; done; done
-    for k in 1 100 1000; do for g in 1 8 64; do for e in cow wal lsm; do run gspace $e $k $g; done; done; done
+    for t in "20 1000" "1000 20"; do for e in wal lsm; do run g3 $e $t; done; done
+    for k in 1 100 1000; do for g in 1 8 64; do for e in wal lsm; do run gspace $e $k $g; done; done; done
     rm -f "$bin"
     exit 0
 fi
 
-for e in cow wal lsm; do run g4 $e; done
-for n in 100 10000 1000000; do for e in cow wal lsm; do run g1 $e $n; done; done
-for n in 10000 1000000; do for e in cow wal lsm; do run backup $e $n 1000; done; done
-for e in cow wal lsm; do for h in 0 1; do run held $e 20000 $h; done; done
+for e in wal lsm; do run g4 $e; done
+for n in 100 10000 1000000; do for e in wal lsm; do run g1 $e $n; done; done
+for n in 10000 1000000; do for e in wal lsm; do run backup $e $n 1000; done; done
+for e in wal lsm; do for h in 0 1; do run held $e 20000 $h; done; done
 for e in wal lsm; do for h in 0 1; do run held $e 200000 $h; done; done
 for h in 0 1; do run held lsm 2000000 $h; done
 for c in 1000 10000 100000 1000000; do

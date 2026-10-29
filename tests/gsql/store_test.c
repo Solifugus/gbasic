@@ -23,9 +23,6 @@
 
 /* The research candidates, when research/gsql/run.sh builds this beside them
  * (the gate builds the chosen engine alone). */
-#ifdef HAVE_COW
-extern const GsEngine gs_engine_cow;
-#endif
 #ifdef HAVE_WAL
 extern const GsEngine gs_engine_wal;
 #endif
@@ -1137,9 +1134,6 @@ typedef struct { GsTxn *t; MState m; int live; } Reader;
 int main(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: test_store ENGINE SEED [real DIR]\n"); return 2; }
     if (!strcmp(argv[1], "lsm")) E = &gs_engine_lsm;
-#ifdef HAVE_COW
-    else if (!strcmp(argv[1], "cow")) E = &gs_engine_cow;
-#endif
 #ifdef HAVE_WAL
     else if (!strcmp(argv[1], "wal")) E = &gs_engine_wal;
 #endif

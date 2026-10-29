@@ -88,9 +88,18 @@ def workload_terms(by, wl, cands, thr_key="ops_s"):
     return t, thr, p99
 
 
+# 2.A's cow.c was deleted once retired (step 6); its count, measured by this
+# function on the last tree that held it (428ec8c), is kept so a re-score of
+# the recorded results still has every candidate's complexity.
+RECORDED_LOC = {"cow.c": 833}
+
+
 def loc_of(files):
     n = 0
     for f in files:
+        if f in RECORDED_LOC and not os.path.exists(os.path.join(HERE, f)):
+            n += RECORDED_LOC[f]
+            continue
         text = open(os.path.join(HERE, f)).read()
         text = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
         n += sum(1 for l in text.split("\n") if re.sub(r"//.*", "", l).strip())
@@ -144,7 +153,7 @@ def main():
         spec.append((wl + " (10⁷ rows)", ratio_score(v, True)))
     section("Engine-specific workloads (20)", spec, "specific")
 
-    src = {"cow": ["cow.c", "btree.c", "btengine.c"], "wal": ["wal.c", "btree.c", "btengine.c"], "lsm": ["lsm.c"]}
+    src = {"cow": ["cow.c", "btree.c", "btengine.c"], "wal": ["wal.c", "btree.c", "btengine.c"], "lsm": ["../../src/gsql/lsm.c"]}
     loc = {e: loc_of(src[e]) for e in CANDS}
     section("Implementation complexity (20): lines of code, comments and blanks excluded",
             [("lines (" + ", ".join(f"{NAMES[e]} {loc[e]:,}" for e in CANDS) + ")", ratio_score(loc, False))],

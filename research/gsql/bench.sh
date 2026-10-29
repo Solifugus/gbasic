@@ -17,7 +17,7 @@ shift $(( $# < 3 ? $# : 3 ))
 [ "${1:-}" = "--" ] && shift
 workloads=("$@")
 [ ${#workloads[@]} -eq 0 ] && workloads=(ycsb-load ycsb-a ycsb-b ycsb-c ycsb-d ycsb-e ycsb-f w1-uniform w2 w5-100)
-engines=(${BENCH_ENGINES:-cow wal lsm sqlite lmdb rocksdb})
+engines=(${BENCH_ENGINES:-wal lsm sqlite lmdb rocksdb})
 base=${BENCH_DIR:-/var/tmp/gsql-bench}
 fs=$(findmnt -no FSTYPE -T "$(dirname "$base")" 2>/dev/null || echo unknown)
 if [ "$fs" = tmpfs ]; then echo "refusing: $base is on tmpfs, where a flush costs nothing" >&2; exit 2; fi
@@ -28,7 +28,7 @@ trap 'rm -f "$bin"; rm -rf "$base"/run-*' EXIT
 extra_defs="" extra_libs=""
 [ -f /usr/include/lmdb.h ] && { extra_defs="$extra_defs -DHAVE_LMDB"; extra_libs="$extra_libs -llmdb"; }
 [ -f /usr/include/rocksdb/c.h ] && { extra_defs="$extra_defs -DHAVE_ROCKSDB"; extra_libs="$extra_libs -lrocksdb"; }
-cc -std=c11 -O2 -g -DHAVE_WAL -DHAVE_LSM -DHAVE_SQLITE $extra_defs -I../../include -I../../src/gsql -I. -o "$bin" bench.c cow.c wal.c ../../src/gsql/lsm.c \
+cc -std=c11 -O2 -g -DHAVE_WAL -DHAVE_LSM -DHAVE_SQLITE $extra_defs -I../../include -I../../src/gsql -I. -o "$bin" bench.c wal.c ../../src/gsql/lsm.c \
     btengine.c btree.c ../../src/gsql/store_common.c ../../src/gsql/store_util.c ../../src/gsql/io.c ../../src/gsql/io_sim.c -lsqlite3 -lm $extra_libs || exit 1
 # A runaway engine must not fill the disk (one did: 419 GB, from 2.A's first
 # free list). Every file is capped, and a run does not start without room.

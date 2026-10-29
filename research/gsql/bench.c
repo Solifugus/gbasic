@@ -4,7 +4,7 @@
  *
  *   bench ENGINE WORKLOAD DIR [RECORDS [OPS]]
  *
- * ENGINE: cow, wal, lsm (the candidates), sqlite (and lmdb, rocksdb when
+ * ENGINE: wal, lsm (the candidates; 2.A's cow was deleted, retired), sqlite (and lmdb, rocksdb when
  * built with them). WORKLOAD: ycsb-load, ycsb-a ... ycsb-f, w1 ... (see
  * main), tpcc and ssb1 (below). Prints ONE JSON line of metrics on stdout. Each run is meant to be a
  * fresh process on a fresh directory, so peak memory is the run's own.
@@ -1502,8 +1502,7 @@ int main(int argc, char **argv) {
     Run r;
     memset(&r, 0, sizeof r);
     r.records = records;
-    if (!strcmp(engine, "cow")) { cand = &gs_engine_cow; r.e = &cand_engine; }
-    else if (!strcmp(engine, "wal")) { cand = &gs_engine_wal; r.e = &cand_engine; }
+    if (!strcmp(engine, "wal")) { cand = &gs_engine_wal; r.e = &cand_engine; }
     else if (!strcmp(engine, "lsm")) { cand = &gs_engine_lsm; r.e = &cand_engine; }
 #ifdef HAVE_SQLITE
     else if (!strcmp(engine, "sqlite")) r.e = &sqlite_engine;

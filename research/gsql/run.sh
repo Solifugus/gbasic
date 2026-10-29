@@ -15,16 +15,16 @@ INC="-I../../include -I../../src/gsql -I."
 IO="../../src/gsql/io.c ../../src/gsql/io_sim.c"
 ENGINES=("$@")
 if [ ${#ENGINES[@]} -eq 0 ]; then
-    ENGINES=(cow)
+    ENGINES=()
     [ -f wal.c ] && ENGINES+=(wal)
     ENGINES+=(lsm)
 fi
 # 2.C is src/gsql/lsm.c since step 5; the gate's own suite is
 # tests/run_gsql_store.sh, and this script keeps it beside the candidates
-DEFS="-DHAVE_COW"
-[ -f wal.c ] && DEFS="$DEFS -DHAVE_WAL"
+DEFS=""
+[ -f wal.c ] && DEFS="-DHAVE_WAL"
 ST=../../src/gsql
-ENGINE_SRC="cow.c btengine.c btree.c $ST/store_common.c $ST/store_util.c $ST/lsm.c"
+ENGINE_SRC="btengine.c btree.c $ST/store_common.c $ST/store_util.c $ST/lsm.c"
 [ -f wal.c ] && ENGINE_SRC="$ENGINE_SRC wal.c"
 status=0
 pass() { printf '  ok   %s\n' "$1"; }

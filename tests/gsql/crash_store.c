@@ -10,9 +10,6 @@
 
 /* The research candidates, when research/gsql/run.sh builds this beside them
  * (the gate builds the chosen engine alone). */
-#ifdef HAVE_COW
-extern const GsEngine gs_engine_cow;
-#endif
 #ifdef HAVE_WAL
 extern const GsEngine gs_engine_wal;
 #endif
@@ -172,9 +169,6 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (!strcmp(argv[1], "lsm")) E = &gs_engine_lsm;
-#ifdef HAVE_COW
-    else if (!strcmp(argv[1], "cow")) E = &gs_engine_cow;
-#endif
 #ifdef HAVE_WAL
     else if (!strcmp(argv[1], "wal")) E = &gs_engine_wal;
 #endif

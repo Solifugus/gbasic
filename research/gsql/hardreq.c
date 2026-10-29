@@ -151,8 +151,7 @@ static int update_one(GsStore *db, const char *tree, uint64_t i, uint32_t gen, i
 }
 
 static void setup(const char *engine, const char *dir) {
-    if (!strcmp(engine, "cow")) E = &gs_engine_cow;
-    else if (!strcmp(engine, "wal")) E = &gs_engine_wal;
+    if (!strcmp(engine, "wal")) E = &gs_engine_wal;
     else if (!strcmp(engine, "lsm")) E = &gs_engine_lsm;
     else { fprintf(stderr, "unknown engine %s\n", engine); exit(2); }
     snprintf(g_dir, sizeof g_dir, "%s", dir);
