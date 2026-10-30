@@ -10,7 +10,7 @@
  *   owner_test noservice DIR      an owner with no SQL layer
  *   owner_test timeouts DIR       idle writers, snapshots and cursors
  *   owner_test stall DIR          a half-sent frame and an unread backlog
- *   owner_test race DIR N         N clients find no owner at once
+ *   owner_test race DIR N [R]     N clients find no owner at once, R times
  *   owner_test paths DIR          symlinks, stale sockets, runtime dirs
  *   owner_test handoff DIR        the owner killed, and SIGTERM's handoff
  *   owner_test lifetime DIR       the client killed: its owner goes too
@@ -1377,15 +1377,18 @@ static int stall_main(const char *dir) {
 
 /* ==== race =============================================================== */
 
-static int race_main(const char *dir, int n) {
+static int race_round(const char *dir, int round, int n) {
     if (n < 1 || n > 200) {
         fprintf(stderr, "race: between 1 and 200 clients\n");
         return 2;
     }
     char db[600];
-    snprintf(db, sizeof db, "%s/race", dir);
-    int go[2], rep[2];
-    if (pipe(go) || pipe(rep)) {
+    snprintf(db, sizeof db, "%s/race%d", dir, round);
+    /* a pipe to start everyone and ANOTHER to release them: on one pipe a
+     * fast child took a slow one's start byte as its release, exited, and
+     * left the slow one waiting for ever (it hung 3 runs in 30) */
+    int go[2], rep[2], hold[2];
+    if (pipe(go) || pipe(rep) || pipe(hold)) {
         return 1;
     }
     pid_t *kids = calloc((size_t)n, sizeof *kids);
@@ -1394,6 +1397,7 @@ static int race_main(const char *dir, int n) {
         if (kids[i] == 0) {
             close(go[1]);
             close(rep[0]);
+            close(hold[1]);
             char x;
             if (read(go[0], &x, 1) != 1) {
                 _exit(2);
@@ -1416,7 +1420,7 @@ static int race_main(const char *dir, int n) {
                 _exit(3);
             }
             /* hold the connection until the parent has read everyone */
-            if (read(go[0], &x, 1) < 0) {
+            if (read(hold[0], &x, 1) < 0) {
                 _exit(4);
             }
             gsql_client_close(c);
@@ -1425,6 +1429,7 @@ static int race_main(const char *dir, int n) {
     }
     close(go[0]);
     close(rep[1]);
+    close(hold[0]);
     char start[256];
     memset(start, 'g', sizeof start);
     /* everyone at once: one byte each */
@@ -1452,11 +1457,23 @@ static int race_main(const char *dir, int n) {
            same ? "all one owner" : "MORE THAN ONE OWNER");
     EXPECT(starters == 1, "%d clients racing: %d of them hold a running owner they started (one should)", n, starters);
     EXPECT(pinged == n, "%d of %d racing clients were served", pinged, n);
-    close(go[1]);   /* EOF: the children close and exit */
+    close(go[1]);
+    close(hold[1]);   /* EOF: the children close and exit */
     for (int i = 0; i < n; i++) {
         waitpid(kids[i], NULL, 0);
     }
     free(kids);
+    return 0;
+}
+
+/* Several rounds, each a fresh database: whether two creators collide is a
+ * matter of timing, and with the EEXIST fix in gs_db_dir reverted one round
+ * of 24 clients fails about one time in three (10 of 30, measured), so one
+ * round would pass on the defect two times in three. */
+static int race_main(const char *dir, int n, int rounds) {
+    for (int r = 0; r < rounds; r++) {
+        race_round(dir, r, n);
+    }
     return finish();
 }
 
@@ -1923,7 +1940,7 @@ int main(int argc, char **argv) {
         return stall_main(argv[2]);
     }
     if (argc >= 4 && !strcmp(argv[1], "race")) {
-        return race_main(argv[2], atoi(argv[3]));
+        return race_main(argv[2], atoi(argv[3]), argc >= 5 ? atoi(argv[4]) : 1);
     }
     if (argc >= 3 && !strcmp(argv[1], "paths")) {
         return paths_main(argv[2]);
@@ -1938,6 +1955,6 @@ int main(int argc, char **argv) {
         return cost_main(argv[2], atol(argv[3]));
     }
     fprintf(stderr, "usage: owner_test owner DB FD MODE | wire | protocol DIR | noservice DIR | timeouts DIR | stall DIR "
-                    "| race DIR N | paths DIR | handoff DIR | lifetime DIR | cost DIR ITERS\n");
+                    "| race DIR N [ROUNDS] | paths DIR | handoff DIR | lifetime DIR | cost DIR ITERS\n");
     return 2;
 }

@@ -117,7 +117,7 @@ tier protocol "the handshake, transactions, the writer queue, CANCEL, cursors, p
 tier noservice "an owner with no SQL layer refuses statements by name and still runs transactions" 60
 tier timeouts "an idle writer, snapshot and cursor are ended, each beside one that is kept alive" 60
 tier stall "half a frame and an unread backlog stall nobody, and nothing is lost" 120
-tier race "twelve clients find no owner at once, and exactly one owner results" 120 12
+tier race "24 clients find no owner at once, 20 times over, and each time exactly one owner results" 300 24 20
 tier paths "a symlink finds the same owner, a stale socket is replaced, the runtime directory is checked" 60
 tier handoff "the owner killed: the transaction fails, commits survive, nothing is retried; SIGTERM replays nothing" 60
 tier lifetime "the client killed: the owner it started goes too, taking the planned handoff" 60
