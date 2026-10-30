@@ -41493,7 +41493,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         Value limit_v = eval_expr(stmt->as.for_range.limit);
         Value step_v = stmt->as.for_range.step
             ? eval_expr(stmt->as.for_range.step)
-            : value_number(1);
+            : value_number_exact(1);
         if (error_generation != before_error) {
             value_free(start_v); value_free(limit_v); value_free(step_v);
             current_line = previous_line;
@@ -41512,6 +41512,18 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         double start = start_v.as.num.value;
         double limit = limit_v.as.num.value;
         double step = step_v.as.num.value;
+        /* THE COUNTER IS EXACT WHEN ITS START AND STEP ARE, which is
+         * exact_number_design.md's propagation rule applied to the one place
+         * that made a number by itself: the counter was rebuilt from a double
+         * every pass, so `for i = 1 to 3` handed the body INEXACT integers --
+         * invisible below 2^53, refused by any typed integer column (G-SQL
+         * refuses an inexact value there whatever it holds), and one short in
+         * `i + 2^53`. Found writing the first program that put a loop counter
+         * into a database. The limit is only compared, so it may be either. */
+        int exact = value_is_exact(start_v) && value_is_exact(step_v);
+        long long xstart = start_v.as.num.exact, xstep = step_v.as.num.exact;
+        int xlimit_exact = value_is_exact(limit_v);
+        long long xlimit = limit_v.as.num.exact;
         value_free(start_v); value_free(limit_v); value_free(step_v);
         /* Refused rather than run: `step 0` cannot reach any limit, so it is a
          * hang, and a hang is the least debuggable outcome available. */
@@ -41522,8 +41534,21 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             return eval_error_result();
         }
         loop_depth++;
-        for (double i = start; step > 0 ? i <= limit : i >= limit; i += step) {
-            env_set(stmt->as.for_range.name, value_number(i));
+        long long xi = xstart;
+        for (double i = start; ; ) {
+            if (exact) {
+                int in = xlimit_exact ? (xstep > 0 ? xi <= xlimit : xi >= xlimit)
+                                      : (xstep > 0 ? (double)xi <= limit : (double)xi >= limit);
+                if (!in) {
+                    break;
+                }
+                env_set(stmt->as.for_range.name, value_number_exact(xi));
+            } else {
+                if (!(step > 0 ? i <= limit : i >= limit)) {
+                    break;
+                }
+                env_set(stmt->as.for_range.name, value_number(i));
+            }
             EvalResult result = eval_stmt_list(stmt->as.for_range.body);
             if ((result.did_break || result.did_continue) &&
                 !loop_claims_flow(result, stmt->as.for_range.name)) {
@@ -41539,13 +41564,20 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
             if (result.did_continue) {
                 value_free(result.value);
-                continue;
-            }
-            if (eval_result_exits_block(result)) {
+            } else if (eval_result_exits_block(result)) {
                 loop_depth--;
                 current_line = previous_line;
                 current_column = previous_column;
                 return result;
+            }
+            if (exact) {
+                /* past int64 there is no next counter: the limit, which is
+                   within int64, has been passed */
+                if (__builtin_add_overflow(xi, xstep, &xi)) {
+                    break;
+                }
+            } else {
+                i += step;
             }
         }
         loop_depth--;

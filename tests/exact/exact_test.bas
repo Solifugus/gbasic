@@ -350,6 +350,46 @@ program main( args )
     check("round still rounds halves", round(2.5), 3)
     check("text min still picks     ", min(["b", "a"]), "a")
 
+    print "-- A COUNTED LOOP'S COUNTER, the one place that made a number by itself"
+    ' It was rebuilt from a double every pass, so `for i = 1 to 3` handed the
+    ' body INEXACT integers: invisible below 2^53, refused by a typed integer
+    ' column in G-SQL, one short in `i + 2^53` -- and a loop starting at 2^53
+    ' NEVER ENDED, since in doubles 2^53 + 1 is 2^53 and the counter stopped
+    ' moving. Found by putting a loop counter into a database.
+    firsts = []
+    for i = 1 to 2
+        append(firsts, i + b - 1)
+    next
+    check("a counter plus 2^53      ", firsts[0], 9007199254740993)
+    check("is exact every pass      ", firsts[1], 9007199254740994)
+    edge = []
+    for k = 9007199254740992 to 9007199254740994
+        append(edge, k)
+    next
+    check("a loop at 2^53 ends      ", len(edge), 3)
+    check("on the right counter     ", edge[2], 9007199254740994)
+    top = 0
+    for k = 9223372036854775806 to 9223372036854775807
+        top = top + 1
+    next
+    check("a loop at the int64 edge ", top, 2)
+    down = []
+    for k = 10 to 1 step 0 - 3
+        append(down, k)
+    next
+    check("a negative step          ", string(down), "[10,7,4,1]")
+    ' CONTROLS: a fractional start or step is inexact, as its own value is
+    halves = []
+    for x = 1 to 2 step 0.5
+        append(halves, x)
+    next
+    check("a fractional step        ", string(halves), "[1,1.5,2]")
+    count = 0
+    for k = 1 to 2.5
+        count = count + 1
+    next
+    check("an inexact limit         ", count, 2)
+
     print "-- CONTROLS: ordinary arithmetic is where it was"
     check("2 + 2                    ", 2 + 2, 4)
     check("2 * 3                    ", 2 * 3, 6)
