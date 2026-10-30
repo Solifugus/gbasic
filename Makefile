@@ -374,15 +374,16 @@ PLATFORM_OBJ ?= src/platform_posix.o
 # protocol, and the SQL layer, linked since increment 3 gave the owner
 # something to answer (docs/gsql_sql_design.md). POSIX only for now: the owner
 # is fork, poll and a local socket, and Windows has an increment of its own.
-# Not a HAVE_* dependency, since it needs nothing installed.
+# Not a HAVE_* switch, which names an optional LIBRARY (run_docs_gate.sh holds
+# each one to a README row): this needs nothing installed, and is per platform.
 ifeq ($(OS),Windows_NT)
 GSQL_OBJS :=
-CFLAGS += -DHAVE_GSQL=0
+CFLAGS += -DGBASIC_GSQL=0
 else
 GSQL_OBJS := src/gsql/lsm.o src/gsql/store_common.o src/gsql/store_util.o src/gsql/io.o src/gsql/key.o \
              src/gsql/v3.o src/gsql/table.o src/gsql/wire.o src/gsql/owner.o src/gsql/client.o \
              src/gsql/sql_parse.o src/gsql/sql_plan.o src/gsql/sql_exec.o
-CFLAGS += -DHAVE_GSQL=1
+CFLAGS += -DGBASIC_GSQL=1
 endif
 
 LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS) $(GSQL_OBJS)

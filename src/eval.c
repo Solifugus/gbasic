@@ -42771,7 +42771,7 @@ void gb_session_list_vars(FILE *out) {
 
 /* G-SQL's host (docs/gsql_sql_design.md §2): last, because it is made of the
  * evaluator's own functions. */
-#if HAVE_GSQL
+#if GBASIC_GSQL
 #include "modules/gsql.c"
 #else
 int gb_gsql_owner_main(int argc, char **argv) {
