@@ -51,4 +51,11 @@ void gsql_key_free(GsqlKey *key);
 GsqlKeyStatus gsql_key_append(GsqlKey *key, const unsigned char *value,
                               size_t length, size_t *used, unsigned flags);
 
+/* The length of the ONE component at the start of `bytes`, written with
+ * `flags` (only GSQL_KEY_DESC matters: a descending component is read
+ * inverted). How a non-unique index entry, which is its columns followed by
+ * the row key, gives the row key back (docs/gsql_table_design.md §6).
+ * GSQL_KEY_CORRUPT if the bytes are not one well-formed component. */
+GsqlKeyStatus gsql_key_skip(const unsigned char *bytes, size_t length, unsigned flags, size_t *used);
+
 #endif

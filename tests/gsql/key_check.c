@@ -199,6 +199,54 @@ int main(void) {
         }
     }
 
+    /* SKIP: gsql_key_skip must find exactly where each component ends, in both
+     * directions, with bytes after it (another component, as in an index
+     * entry), or a non-unique index would hand back the wrong row key. The
+     * trailing bytes are a string's terminator pattern on purpose: a skip that
+     * scanned for 00 00 rather than following the layout stops inside them. */
+    long skips = 0;
+    for (int i = 0; i < nvalues; i++) {
+        if (!val[i]) continue;
+        for (int d = 0; d < 2; d++) {
+            unsigned flags = d ? GSQL_KEY_DESC : 0;
+            GsqlKey k;
+            gsql_key_init(&k);
+            size_t used = 0;
+            if (gsql_key_append(&k, val[i] + 4, vlen[i] - 4, NULL, flags) != GSQL_KEY_OK) {
+                gsql_key_free(&k);
+                continue;   /* an unindexable value: refused above */
+            }
+            size_t own = k.length;
+            static const unsigned char tail[] = {0x00, 0x00, 0x30, 0xFF, 0x00};
+            for (size_t t = 0; t < sizeof tail; t++) {
+                unsigned char b = (unsigned char)(d ? ~tail[t] : tail[t]);
+                gsql_key_append(&k, (const unsigned char *)"\x02", 1, NULL, 0); /* an absence */
+                k.bytes[k.length - 1] = b;
+            }
+            checks++;
+            skips++;
+            if (gsql_key_skip(k.bytes, k.length, flags, &used) != GSQL_KEY_OK || used != own) {
+                mismatches++;
+                if (mismatches <= 20) {
+                    printf("MISMATCH value %d (%s): skip found %zu of a %zu-byte component\n", i,
+                           d ? "desc" : "asc", used, own);
+                }
+            }
+            /* Every strict prefix of the component alone is refused. */
+            for (size_t n = 0; n < own; n++) {
+                checks++;
+                if (gsql_key_skip(k.bytes, n, flags, &used) == GSQL_KEY_OK) {
+                    mismatches++;
+                    if (mismatches <= 20) {
+                        printf("MISMATCH value %d (%s): a %zu-byte prefix of a %zu-byte component skipped as %zu\n",
+                               i, d ? "desc" : "asc", n, own, used);
+                    }
+                }
+            }
+            gsql_key_free(&k);
+        }
+    }
+
     /* NaN: the stated exception. After +inf, equal to itself, below absence. */
     int nan_index = -1, inf_index = -1, absent_index = -1;
     for (int i = 0; i < nvalues; i++) {
@@ -256,7 +304,11 @@ int main(void) {
         printf("MISMATCH %d of %d unindexable values were refused\n", refused, refusals);
     }
 
-    printf("pairs %zu, composites %ld, truncations %ld\n", npairs, composites, truncations);
+    printf("pairs %zu, composites %ld, truncations %ld, skips %ld\n", npairs, composites, truncations, skips);
+    if (skips < 100) {
+        mismatches++;
+        printf("MISMATCH only %ld skips were checked\n", skips);
+    }
     printf("ok %ld checks, %ld mismatches\n", checks, mismatches);
     return mismatches ? 1 : 0;
 }

@@ -324,3 +324,93 @@ GsqlKeyStatus gsql_key_append(GsqlKey *key, const unsigned char *value,
     }
     return GSQL_KEY_OK;
 }
+
+/* The inverse of every writer above, for length only. A descending component
+ * is every byte inverted, so each byte is read through `x`. */
+GsqlKeyStatus gsql_key_skip(const unsigned char *bytes, size_t length, unsigned flags, size_t *used) {
+    unsigned x = (flags & GSQL_KEY_DESC) ? 0xFF : 0x00;
+    size_t n = 0;
+    if (length < 1) {
+        return GSQL_KEY_CORRUPT;
+    }
+    unsigned tag = bytes[0] ^ x;
+    switch (tag) {
+    case KEY_ABSENT:
+    case KEY_NEG_INF:
+    case KEY_ZERO:
+    case KEY_POS_INF:
+    case KEY_NAN:
+        n = 1;
+        break;
+    case KEY_BOOL:
+        n = 2;
+        break;
+    case KEY_NEGATIVE:
+    case KEY_POSITIVE:
+        n = 11;
+        break;
+    case KEY_MONEY_TYPED:
+        n = 9;
+        break;
+    case KEY_MONEY: {
+        if (length < 2) {
+            return GSQL_KEY_CORRUPT;
+        }
+        if ((bytes[1] ^ x) == 0x01) {
+            n = 1 + 1 + 2 + 8;
+        } else {
+            size_t i = 1;
+            while (i < length && (bytes[i] ^ x) != 0x00) {
+                i++;
+            }
+            if (i >= length) {
+                return GSQL_KEY_CORRUPT;
+            }
+            n = i + 1 + 8;
+        }
+        break;
+    }
+    case KEY_DATETIME: {
+        if (length < 2) {
+            return GSQL_KEY_CORRUPT;
+        }
+        unsigned time_only = bytes[1] ^ x;
+        if (time_only > 1) {
+            return GSQL_KEY_CORRUPT;
+        }
+        n = 2 + (time_only ? 3 : 6) * 4 + 1;
+        break;
+    }
+    case KEY_STRING: {
+        size_t i = 1;
+        for (;;) {
+            if (i + 1 >= length) {
+                return GSQL_KEY_CORRUPT;
+            }
+            if ((bytes[i] ^ x) == 0x00) {
+                unsigned next = bytes[i + 1] ^ x;
+                if (next == 0x00) {
+                    n = i + 2;
+                    break;
+                }
+                if (next != 0xFF) {
+                    return GSQL_KEY_CORRUPT;
+                }
+                i += 2;
+            } else {
+                i++;
+            }
+        }
+        break;
+    }
+    default:
+        return GSQL_KEY_CORRUPT;
+    }
+    if (n > length) {
+        return GSQL_KEY_CORRUPT;
+    }
+    if (used) {
+        *used = n;
+    }
+    return GSQL_KEY_OK;
+}
