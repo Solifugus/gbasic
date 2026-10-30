@@ -127,7 +127,8 @@ static int svc_writes(void *ctx, const GsqlStatement *s, GsqlError *err) {
     if (parse(s, &st, err)) {
         return -1;
     }
-    if (!strcmp(st.word, "put") || !strcmp(st.word, "dup") || !strcmp(st.word, "poison")) {
+    if (!strcmp(st.word, "put") || !strcmp(st.word, "dup") || !strcmp(st.word, "poison") ||
+        !strcmp(st.word, "crash_once")) {
         return 1;
     }
     if (!strcmp(st.word, "get") || !strcmp(st.word, "scan") || !strcmp(st.word, "count") ||
@@ -230,6 +231,34 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
         if (rc) {
             snprintf(err->message, sizeof err->message, "put: %s", gs_status_name(rc));
             return err->code = GSQL_STORAGE;
+        }
+        out->has_affected = 1;
+        out->affected = 1;
+        return GSQL_OK;
+    }
+    if (!strcmp(st.word, "crash_once")) {
+        /* the owner dies HALFWAY THROUGH a request, with a write made and not
+         * committed -- the first time; once its marker exists it succeeds,
+         * so a client that quietly repeated it would get an answer */
+        char *mark = st.n >= 1 ? v3_read_text(st.p[0].p, st.p[0].n) : NULL;
+        if (!mark) {
+            snprintf(err->message, sizeof err->message, "crash_once takes a marker path");
+            return err->code = GSQL_SCHEMA;
+        }
+        struct stat ms;
+        int first = stat(mark, &ms) != 0;
+        if (first) {
+            FILE *f = fopen(mark, "w");
+            if (f) {
+                fclose(f);
+            }
+        }
+        free(mark);
+        e->tree_create(t, tree());
+        GsBytes kb = { (const unsigned char *)"crashed", 7 }, vb = { (const unsigned char *)"\x05\x01x", 3 };
+        e->put(t, tree(), kb, vb, 0);
+        if (first) {
+            _exit(9);
         }
         out->has_affected = 1;
         out->affected = 1;
@@ -1629,6 +1658,21 @@ static int handoff_main(const char *dir) {
            "the second client reached owner %ld, the first %ld", (long)gsql_client_owner_pid(b),
            (long)gsql_client_owner_pid(a));
     printf("handoff_ms %.2f\n", handoff);
+
+    /* the owner dying MID-REQUEST: the request is reported lost, its write is
+     * not there, and it was not repeated -- the control beside it is that the
+     * same statement, run again on purpose, succeeds, so a client that had
+     * repeated it would have had an answer to give */
+    {
+        char mark[700];
+        snprintf(mark, sizeof mark, "%s.crashed", db);
+        const char *p[] = { mark };
+        EXPECT(!strcmp(q(a, "crash_once", 1, p), "client:LOST") && strstr(last_message, "nothing was retried"),
+               "a request the owner died in the middle of answered %s: %s", last_word, last_message);
+        EXPECT(has(a, "crashed") == 0, "the write of a request the owner died during survived, or the request was repeated");
+        EXPECT(!strcmp(q(a, "crash_once", 1, p), "DONE"), "the same statement run again on purpose answered %s", last_word);
+        EXPECT(has(a, "crashed") == 1, "the statement run again on purpose did not write");
+    }
 
     /* SIGTERM is the planned handoff: the next open replays nothing, where
      * a kill -9 leaves the log to replay */

@@ -435,7 +435,7 @@ static void storage_failed(Owner *o, Conn *c, const char *what) {
         o->writer = NULL;
     }
     c->tx = TX_FAILED;
-    snprintf(c->why, sizeof c->why, "an earlier statement failed in the engine (%s)", what);
+    snprintf(c->why, sizeof c->why, "an earlier statement failed in the engine (%.200s)", what);
 }
 
 static int do_query(Owner *o, Conn *c, Req *r) {

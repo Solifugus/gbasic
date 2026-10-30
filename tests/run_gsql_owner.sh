@@ -80,8 +80,12 @@ tier() {
     mkdir -p "$dir"
     printf 'TIER %s: %s\n' "$mode" "$claim"
     local out rc
-    out=$(bounded "$limit" "$work/owner_test" "$mode" "$dir" "$@" 2>"$work/$mode.err")
+    # to a FILE, not a command substitution: an owner that outlived its test
+    # process would hold the substitution's pipe open, and the suite would
+    # wait on it for ever instead of reporting the leak below
+    bounded "$limit" "$work/owner_test" "$mode" "$dir" "$@" >"$work/$mode.out" 2>"$work/$mode.err"
     rc=$?
+    out=$(cat "$work/$mode.out")
     local last
     last=$(printf '%s\n' "$out" | tail -1)
     if grep -q 'runtime error\|ERROR: AddressSanitizer\|ERROR: LeakSanitizer' "$work/$mode.err"; then
@@ -101,7 +105,8 @@ tier() {
 }
 
 printf 'TIER wire: frames split at every byte, coalesced, at the limit and past it\n'
-out=$(bounded 60 "$work/owner_test" wire 2>&1)
+bounded 60 "$work/owner_test" wire >"$work/wire.out" 2>&1
+out=$(cat "$work/wire.out")
 last=$(printf '%s\n' "$out" | tail -1)
 case "$last" in
     "ok "*" 0 mismatches") pass "wire: $last" ;;
@@ -119,7 +124,8 @@ tier lifetime "the client killed: the owner it started goes too, taking the plan
 
 printf 'TIER cost: the round trip against the same point read in process (-O2, no sanitizers)\n'
 mkdir -p "$work/costdir"
-out=$(bounded 120 "$work/owner_cost" cost "$work/costdir" 20000 2>&1)
+bounded 120 "$work/owner_cost" cost "$work/costdir" 20000 >"$work/cost.out" 2>&1
+out=$(cat "$work/cost.out")
 last=$(printf '%s\n' "$out" | tail -1)
 case "$last" in
     "ok "*" 0 mismatches") pass "cost: $(printf '%s\n' "$out" | grep '^cost' | sed 's/^cost //')" ;;
