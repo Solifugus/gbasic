@@ -1413,9 +1413,9 @@ static int exists(const char *p) {
 }
 
 static int paths_main(const char *dir) {
-    char real[600], link[600], sock[200];
+    char real[600], lnk[600], sock[200];
     snprintf(real, sizeof real, "%s/real", dir);
-    snprintf(link, sizeof link, "%s/link", dir);
+    snprintf(lnk, sizeof lnk, "%s/link", dir);
     GsqlError err;
     uint64_t d, i;
 
@@ -1433,10 +1433,10 @@ static int paths_main(const char *dir) {
     if (!a) {
         return finish();
     }
-    if (symlink(real, link) != 0) {
+    if (symlink(real, lnk) != 0) {
         mismatch("symlink: %s", strerror(errno));
     }
-    GsqlClient *b = open_db(link, 0);
+    GsqlClient *b = open_db(lnk, 0);
     EXPECT(b && gsql_client_owner_pid(b) == gsql_client_owner_pid(a) && gsql_client_started(b) == 0,
            "a symlink to the database reached another owner");
     gsql_client_close(b);
@@ -1454,6 +1454,41 @@ static int paths_main(const char *dir) {
     EXPECT(gsql_client_owner_pid(a) != first && gsql_client_started(a) == gsql_client_owner_pid(a),
            "the new owner is not one this client started");
     gsql_client_close(a);
+
+    /* a socket leading to ANOTHER database's owner is refused: the WELCOME
+     * names the database it holds, and the client compares */
+    {
+        char other[700], osock[200];
+        snprintf(other, sizeof other, "%s/other", dir);
+        GsqlClient *x = open_db(real, 0);
+        GsqlClientOptions o;
+        memset(&o, 0, sizeof o);
+        o.owner_argv = OWNER_ARGV;
+        o.create = 1;
+        GsqlClient *y = NULL;
+        gsql_client_open(other, &o, &y, &err);
+        pid_t yowner = y ? gsql_client_owner_pid(y) : 0;
+        gsql_client_close(y);
+        if (yowner > 0) {
+            kill(yowner, SIGTERM);
+            waitpid(yowner, NULL, 0);
+        }
+        /* `other` has no owner now; its socket's name is made to lead to
+         * `real`'s owner */
+        gsql_socket_path(other, osock, sizeof osock, &d, &i, &err);
+        gsql_socket_path(real, sock, sizeof sock, &d, &i, &err);
+        if (x && link(sock, osock) != 0) {
+            mismatch("link: %s", strerror(errno));
+        }
+        o.create = 0;
+        o.owner_argv = NULL;   /* never start one: only the misdirected socket answers */
+        int rc = gsql_client_open(other, &o, &y, &err);
+        EXPECT(rc == GSQL_PROTOCOL && strstr(err.message, "different database"),
+               "a socket leading to another database's owner answered %s: %s", gsql_error_name(rc), err.message);
+        gsql_client_close(y);
+        unlink(osock);
+        gsql_client_close(x);
+    }
 
     /* the runtime directory is checked, not trusted */
     /* beside the runtime directory in use, since that one is short enough for
