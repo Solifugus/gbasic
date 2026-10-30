@@ -2434,6 +2434,62 @@ refuses one that returns none, saying that it ran. If the owner exits, the
 request in flight fails with `LOST` and nothing is retried; the next call
 starts a new owner.
 
+### The `database` and `sql` blocks
+
+A program can declare its database and its statements instead of passing
+strings:
+
+```basic
+load gsql
+
+database shop( file: "shop.gsql", create: true )
+
+sql cheap on shop
+    select id, name, price
+    from item
+    where price < :limit
+    order by id
+end sql
+
+sql add on shop
+    insert into item (id, name, price) values (:id, :name, :price)
+end sql
+
+id = 1
+name = "apple"
+price = {USD}"0.50"
+gsql.exec(add)
+
+limit = {USD}"1.00"
+for each row in cheap
+    print row.name
+next
+```
+
+- `database NAME( file: "path"[, create: true] )` binds `NAME` to a
+  connection, the same kind `gsql.connect` answers, so every `gsql.` verb takes
+  it. It **connects on first use**: declaring a database starts nothing. The
+  options are literals; a database chosen at run time is `gsql.connect`. A
+  relative `file:` is found from the current directory, as `gsql.connect`'s is.
+- `sql NAME on DATABASE` … `end sql` binds `NAME` to one statement, a value of
+  kind `gsql_statement`. The block ends at a line reading `end sql`, not `end`,
+  because SQL's `CASE` has an `END` of its own.
+- **Each `:name` parameter is read from the variable of that name where the
+  block runs**, every time it runs: inside a function, that function's own
+  variable. A parameter with no variable is refused (`PARAMETER`); a block
+  cannot use `$1`, since nothing could supply it.
+- `for each row in NAME` runs a `select` block and hands over **one row per
+  pass**, fetching a batch at a time, so a result is never held whole. The loop
+  owns the result: leaving it early by `break`, `return` or a raise ends it.
+- `gsql.query(NAME)` answers every row as an array, and `gsql.exec(NAME)`
+  answers `{ command, rows_affected }`. Either takes the block alone.
+
+When the program loads, the statement is parsed, so **a mistake in the SQL is
+reported at its line and column in the program**, before anything runs; so is
+an `on` naming no `database` block, an unknown or non-literal option, or a
+block inside a function. The blocks are declarations: at the top level, or
+directly in `program`. A program holding one must `load gsql`.
+
 On Windows, `load gsql` answers that G-SQL is not yet available there.
 
 ## PostgreSQL Module
@@ -5990,7 +6046,7 @@ cannot keep a paragraph on this page either.
 | core | `number`, `string`, `boolean`, `array`, `record`, `nothing`, `unknown` |
 | typed values | `datetime`, `duration`, `money`, `file`, `directory` |
 | language | `function`, `regex`, `watcher`, `actor`, `process` |
-| handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `gsql_connection`, `xml_reader`, `http`, `workbook` |
+| handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `gsql_connection`, `gsql_statement`, `xml_reader`, `http`, `workbook` |
 <!--/TYPEKINDS-->
 
 **Two answers are not the word you wrote**, and both read as a bug in your own
