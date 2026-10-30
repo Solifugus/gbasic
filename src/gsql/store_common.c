@@ -239,7 +239,15 @@ int gs_db_dir(GsqlIo *io, const char *dir, int create, char **base) {
     int rc = gsql_io_list(io, dir, scan_one, &s);
     if (rc == ENOENT) {
         if (!create) return GS_NOT_FOUND;
-        if ((rc = gsql_io_mkdir(io, dir))) return gs_io_status(rc);
+        rc = gsql_io_mkdir(io, dir);
+        if (rc == EEXIST) {
+            /* Another creator made it between the scan and the mkdir: two
+             * owners racing to create one database (docs/gsql_owner_design.md
+             * §6). It is somebody's directory now, so it is scanned again as
+             * one that existed, and the lock decides which owner it is. */
+            return gs_db_dir(io, dir, 0, base);
+        }
+        if (rc) return gs_io_status(rc);
         char *parent = gs_dirname(dir);
         rc = gsql_io_sync_dir(io, parent);
         free(parent);
