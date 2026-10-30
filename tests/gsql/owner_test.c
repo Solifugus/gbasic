@@ -852,6 +852,32 @@ static int protocol_main(const char *dir) {
     EXPECT(has(a, "k1") == 1, "a reader waited behind the writer");
     EXPECT(!strcmp(call(b, GSQL_M_ROLLBACK, NULL), "DONE"), "ROLLBACK answered %s", last_word);
 
+    /* the writer queue is first come, first served: C, connected after B,
+     * asks first and must be served first -- the owner visits connections in
+     * the order they arrived, so without the queue B would win */
+    {
+        GsqlClient *c3 = open_db(db, 0);
+        uint32_t c3id, b2id;
+        EXPECT(!strcmp(begin(a, "write"), "DONE"), "BEGIN WRITE answered %s", last_word);
+        gsql_client_send(c3, GSQL_M_BEGIN, &body, &c3id, &err);
+        sleep_ms(50);
+        gsql_client_send(b, GSQL_M_BEGIN, &body, &b2id, &err);
+        sleep_ms(50);
+        EXPECT(!strcmp(call(a, GSQL_M_COMMIT, NULL), "DONE"), "COMMIT answered %s", last_word);
+        struct pollfd p3 = { gsql_client_fd(c3), POLLIN, 0 };
+        EXPECT(poll(&p3, 1, 2000) == 1, "the first in the writer queue was not served when the writer committed");
+        struct pollfd pb = { gsql_client_fd(b), POLLIN, 0 };
+        EXPECT(poll(&pb, 1, 150) == 0, "the second in the writer queue was served before the first");
+        gsql_client_recv(c3, &last, &err);
+        EXPECT(last.id == c3id && last.type == GSQL_M_DONE, "the first waiter was answered %s", gsql_msg_name((int)last.type));
+        EXPECT(!strcmp(call(c3, GSQL_M_ROLLBACK, NULL), "DONE"), "ROLLBACK answered %s", last_word);
+        gsql_client_recv(b, &last, &err);
+        EXPECT(last.id == b2id && last.type == GSQL_M_DONE, "the second waiter was answered %s",
+               gsql_msg_name((int)last.type));
+        EXPECT(!strcmp(call(b, GSQL_M_ROLLBACK, NULL), "DONE"), "ROLLBACK answered %s", last_word);
+        gsql_client_close(c3);
+    }
+
     /* CANCEL of a waiting request */
     EXPECT(!strcmp(begin(a, "write"), "DONE"), "BEGIN WRITE answered %s", last_word);
     gsql_client_send(b, GSQL_M_BEGIN, &body, &bid, &err);
