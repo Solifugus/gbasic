@@ -102,4 +102,10 @@ void gb_session_list_vars(FILE *out);
  * shipped with over a system install of a different version. */
 const char *gb_exe_relative_stdlib(void);
 
+/* `gbasic --gsql-owner DB FD create|open`: the G-SQL owner process a client
+ * starts (docs/gsql_owner_design.md §6), serving the SQL layer with this
+ * interpreter as its host (docs/gsql_sql_design.md §2). Returns an exit
+ * status. */
+int gb_gsql_owner_main(int argc, char **argv);
+
 #endif

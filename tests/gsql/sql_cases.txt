@@ -1,0 +1,332 @@
+# G-SQL's SQL semantics, in process against the interpreter's host
+# (tests/gsql/sql_test.c script). Generated from tests/gsql/gen_sql_cases.py;
+# every answer is written by hand there, never captured from a run.
+
+# ---- constants: gBASIC's numbers, text and logic ---------------------
+> SELECT 1 + 2, 'a' || 'b', 5 / 2, 6 / 2, 7 % 3, 2 * 3.5
+= 3, 'ab', 2.5, 3.0, 1, 7.0
+> SELECT 9007199254740993 + 1, 9007199254740992.0 + 1
+= 9007199254740994, 9007199254740992.0
+> SELECT 9223372036854775807 + 1
+= 9.223372036854776e+18
+> SELECT NULL = NULL, NULL <> 1, 1 < NULL, NOT NULL
+= NULL, NULL, NULL, NULL
+> SELECT NULL AND FALSE, FALSE AND NULL, NULL OR TRUE, TRUE OR NULL, NULL AND TRUE, NULL OR FALSE
+= FALSE, FALSE, TRUE, TRUE, NULL, NULL
+> SELECT NULL IS NULL, 1 IS NULL, NULL IS NOT NULL, 1 IS NOT NULL, UNKNOWN IS NULL
+= TRUE, FALSE, FALSE, TRUE, TRUE
+> SELECT 1 IN (1, 2), 3 IN (1, 2), 3 IN (1, NULL), 1 IN (NULL, 1), 3 NOT IN (1, 2), 3 NOT IN (1, NULL)
+= TRUE, FALSE, NULL, TRUE, TRUE, NULL
+> SELECT 2 BETWEEN 1 AND 3, 4 BETWEEN 1 AND 3, 2 NOT BETWEEN 1 AND 3, NULL BETWEEN 1 AND 3, 5 BETWEEN NULL AND 3
+= TRUE, FALSE, FALSE, NULL, FALSE
+> SELECT 'abc' < 'abd', 'b' > 'abc', 'A' = 'a', 'x' <> 'y'
+= TRUE, TRUE, FALSE, TRUE
+> SELECT 'apple' LIKE 'a%', 'apple' LIKE '_pple', 'apple' LIKE 'b%', 'héllo' LIKE 'h_llo', 'x' NOT LIKE '%', NULL LIKE 'a'
+= TRUE, TRUE, FALSE, TRUE, FALSE, NULL
+> SELECT 'a' || NULL, NULL || 'b', 'a' || 'b' || 'c'
+= NULL, NULL, 'abc'
+> SELECT CASE WHEN 1 > 2 THEN 'x' WHEN NULL THEN 'y' ELSE 'z' END, CASE 2 WHEN 1 THEN 'one' WHEN 2 THEN 'two' END, CASE 3 WHEN 1 THEN 'one' END
+= 'z', 'two', NULL
+> SELECT coalesce(NULL, NULL, 3, 4), coalesce(NULL), nullif(1, 1), nullif(1, 2)
+= 3, NULL, NULL, 1
+> SELECT lower('AbC'), upper('abc'), length('héllo'), char_length(''), trim('  a b  '), abs(-3), abs(-2.5), mod(7, 3)
+= 'abc', 'ABC', 5, 0, 'a b', 3, 2.5, 1
+> SELECT lower(NULL), length(NULL), abs(NULL), round(NULL)
+= NULL, NULL, NULL, NULL
+> SELECT -5, - -5, -(2 - 7), -NULL
+= -5, 5, 5, NULL
+> SELECT 1 WHERE 1 = 2
+= (none)
+> SELECT 1 WHERE NULL
+= (none)
+> SELECT 1 WHERE 1 = 1
+= 1
+
+# ---- no implicit casts (§2): each refusal beside the spelling that works -
+> SELECT '1' = 1
+! EXPRESSION 12 = compares text with a number
+> SELECT CAST('1' AS INTEGER) = 1
+= TRUE
+> SELECT 'a' + 1
+! EXPRESSION 12 join text with ||
+> SELECT 'a' || CAST(1 AS TEXT)
+= 'a1'
+> SELECT TRUE + 1
+! EXPRESSION 13 one side is a boolean
+> SELECT 1 || 'a'
+! EXPRESSION 10 || joins text, and one side is a number
+> SELECT 1 AND TRUE
+! EXPRESSION 10 AND works on booleans, and was given a number
+> SELECT NOT 'x'
+! EXPRESSION 8 NOT works on booleans, and was given text
+> SELECT 1 WHERE 1
+! EXPRESSION 16 WHERE needs a boolean, and this condition is a number
+> SELECT lower(1)
+! EXPRESSION 8 lower works on text, and was given a number
+> SELECT 'a' LIKE 1
+! EXPRESSION 12 LIKE matches text, and was given a number
+> SELECT 1 IN (1, 'a')
+= TRUE
+> SELECT 3 IN (1, 'a')
+! EXPRESSION 10 = compares a number with text
+> SELECT 1 / 0
+! EXPRESSION 10 division by zero
+> SELECT CAST('x' AS INTEGER)
+! EXPRESSION 8 expects a valid number string
+> SELECT CAST(2.5 AS INTEGER)
+! EXPRESSION 8 CAST to INTEGER does not round
+> SELECT CAST('2.5' AS NUMBER), CAST(3 AS INTEGER), CAST('true' AS BOOLEAN)
+= 2.5, 3, TRUE
+
+# ---- money and dates are gBASIC's ------------------------------------
+> SELECT CAST('1.25' AS MONEY(USD)) + CAST('2.50' AS MONEY(USD)), CAST('1.25' AS MONEY(USD)) * 2
+= money 3.75, money 2.50
+> SELECT CAST('1.00' AS MONEY(USD)) + CAST('1.00' AS MONEY(EUR))
+! EXPRESSION 35 cannot add money in different currencies (USD and EUR)
+> SELECT CAST('1.00' AS MONEY(USD)) = CAST('1.00' AS MONEY(EUR))
+= FALSE
+> SELECT CAST('1.00' AS MONEY(USD)) < CAST('1.00' AS MONEY(EUR))
+! EXPRESSION 35 cannot order money in different currencies
+> SELECT CAST('1.00' AS MONEY)
+! EXPRESSION 8 CAST to MONEY needs its currency
+> SELECT DATE '2026-10-30' < DATE '2026-11-01', DATE '2026-10-30' = DATE '2026-10-30'
+= TRUE, TRUE
+> SELECT DATE 'not a date'
+! EXPRESSION 8 expects an ISO-like date string
+
+# ---- a table: types, keys, NULL and defaults -------------------------
+> CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price MONEY(USD), qty INTEGER DEFAULT 1, made DATE)
+= done 0
+> INSERT INTO t (id, name, price, made) VALUES (1, 'apple', CAST('1.50' AS MONEY(USD)), DATE '2026-01-05'), (2, 'pear', NULL, NULL), (3, 'fig', CAST('0.75' AS MONEY(USD)), DATE '2026-03-01')
+= done 3
+> SELECT * FROM t
+% id:integer, name:string, price:money(USD), qty:integer, made:date
+= 1, 'apple', money 1.50, 1, datetime 2026-01-05 | 2, 'pear', NULL, 1, NULL | 3, 'fig', money 0.75, 1, datetime 2026-03-01
+> SELECT name, qty * 2 AS twice, price FROM t WHERE id = 3
+% name:string, twice:any, price:money(USD)
+= 'fig', 2, money 0.75
+> INSERT INTO t VALUES (4, 'kiwi', NULL, NULL, NULL)
+= done 1
+> SELECT qty FROM t WHERE id = 4
+= NULL
+> INSERT INTO t VALUES (5, 'lime', NULL, DEFAULT, NULL)
+= done 1
+> SELECT qty FROM t WHERE id = 5
+= 1
+> INSERT INTO t (id, name) VALUES (1, 'again')
+! DUPLICATE 0 the primary key already holds that value
+> INSERT INTO t (id) VALUES (6)
+! NOT_NULL 0 t.name is NOT NULL
+> INSERT INTO t (id, name, qty) VALUES (6, 'x', 6 / 2)
+! TYPE 0 t.qty is integer, and the number is not an exact integer
+> INSERT INTO t (id, name, qty) VALUES (6, 'x', 3)
+= done 1
+> INSERT INTO t (id, name, made) VALUES (7, 'x', TIMESTAMP '2026-01-05 10:00')
+! TYPE 0 t.made is date, and the value is a date and time
+> INSERT INTO t (id, name, price) VALUES (7, 'x', CAST('1' AS MONEY(EUR)))
+! TYPE 0 t.price is money(USD), and the money is in EUR
+> INSERT INTO t (id, name) VALUES (7)
+! SYNTAX 1 INSERT has 1 value for 2 columns
+> INSERT INTO t (id, nope) VALUES (7, 1)
+! NOT_FOUND 15 table t has no column `nope`
+> INSERT INTO t (id, id) VALUES (7, 1)
+! SYNTAX 15 the column list names id twice
+> INSERT INTO t (id, name) VALUES (7, name)
+! SYNTAX 37 VALUES cannot read a column
+> INSERT INTO nope VALUES (1)
+! NOT_FOUND 1 there is no table `nope`
+> SELECT nope FROM t
+! NOT_FOUND 8 table t has no column `nope`
+> SELECT t.name, x.name FROM t x
+! NOT_FOUND 8 the table is called `x` in this statement
+> SELECT x.name FROM t x WHERE x.id = 1
+= 'apple'
+> SELECT name.first FROM t
+! TYPE 8 column name is string, so it has no field `first`
+> SELECT nope(1)
+! NOT_FOUND 8 `nope` is not a G-SQL function
+> SELECT max(id) FROM t
+! UNSUPPORTED 8 aggregates are not in this release
+> SELECT abs(1, 2)
+! SYNTAX 8 abs takes 1 argument, and was given 2
+
+# ---- ORDER BY, LIMIT, OFFSET: NULL last ascending, first descending --
+> SELECT id, price FROM t ORDER BY price
+= 3, money 0.75 | 1, money 1.50 | 2, NULL | 4, NULL | 5, NULL | 6, NULL
+> SELECT id, price FROM t ORDER BY price DESC, id
+= 2, NULL | 4, NULL | 5, NULL | 6, NULL | 1, money 1.50 | 3, money 0.75
+> SELECT id FROM t ORDER BY id DESC LIMIT 2
+= 6 | 5
+> SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 1
+= 2 | 3
+> SELECT id FROM t ORDER BY id OFFSET 4
+= 5 | 6
+> SELECT id FROM t ORDER BY id LIMIT 0
+= (none)
+> SELECT id, name AS n FROM t ORDER BY n LIMIT 3
+= 1, 'apple' | 3, 'fig' | 4, 'kiwi'
+> SELECT id, name FROM t ORDER BY 2 DESC LIMIT 1
+= 6, 'x'
+> SELECT id FROM t ORDER BY 3
+! SYNTAX 27 ORDER BY 3 names no column: the select list has 1
+> SELECT id FROM t LIMIT -1
+! EXPRESSION 24 LIMIT needs a whole number
+> SELECT id FROM t LIMIT 1.5
+! EXPRESSION 24 LIMIT needs a whole number
+> SELECT id FROM t ORDER BY id LIMIT :n
+@ n = 3
+= 1 | 2 | 3
+
+# ---- parameters ------------------------------------------------------
+> SELECT name FROM t WHERE id = :id
+@ id = 2
+= 'pear'
+> SELECT name FROM t WHERE id = $1 OR id = $2 ORDER BY id
+@ 1 = 1
+@ 2 = 3
+= 'apple' | 'fig'
+> SELECT name FROM t WHERE id = :id
+! NOT_FOUND 31 no value was given for the parameter :id
+> SELECT name FROM t WHERE id = $1
+@ x = 1
+! NOT_FOUND 31 its parameters must be an array
+> SELECT :p
+@ p = NULL
+= NULL
+> SELECT name FROM t WHERE price = :p
+@ p = CAST('1.50' AS MONEY(USD))
+= 'apple'
+
+# ---- UPDATE and DELETE -----------------------------------------------
+> UPDATE t SET qty = qty + 10 WHERE id <= 3
+= done 3
+> SELECT id, qty FROM t WHERE id <= 3
+= 1, 11 | 2, 11 | 3, 11
+> UPDATE t SET qty = DEFAULT, price = NULL WHERE id = 1
+= done 1
+> SELECT qty, price FROM t WHERE id = 1
+= 1, NULL
+> UPDATE t SET id = id + 100 WHERE id = 6
+= done 1
+> SELECT id, name FROM t WHERE id > 5
+= 106, 'x'
+> UPDATE t SET name = NULL WHERE id = 106
+! NOT_NULL 0 t.name is NOT NULL
+> UPDATE t SET nope = 1
+! NOT_FOUND 14 table t has no column `nope` to SET
+> UPDATE t SET qty = 1, qty = 2
+! SYNTAX 14 SET assigns column qty twice
+> UPDATE t SET qty = 0 WHERE name = 'nobody'
+= done 0
+> DELETE FROM t WHERE id = 106
+= done 1
+> DELETE FROM t WHERE price IS NULL AND id > 3
+= done 2
+> SELECT id FROM t
+= 1 | 2 | 3
+
+# ---- a statement that fails part way fails its transaction (§4) ------
+> CREATE TABLE u (k INTEGER PRIMARY KEY, v TEXT UNIQUE)
+= done 0
+> INSERT INTO u VALUES (1, 'a'), (2, 'b'), (3, 'c')
+= done 3
+begin write
+> UPDATE u SET v = 'z'
+! DUPLICATE 0 u_v_key already holds that value [part way]
+rollback
+begin write
+> INSERT INTO u VALUES (4, 'd'), (5, 'a')
+! DUPLICATE 0 row 2 of VALUES [part way]
+rollback
+begin write
+> INSERT INTO u VALUES (4, 'a'), (5, 'e')
+! DUPLICATE 0 row 1 of VALUES
+> INSERT INTO u VALUES (4, 'd')
+= done 1
+commit
+> SELECT k, v FROM u
+= 1, 'a' | 2, 'b' | 3, 'c' | 4, 'd'
+
+# ---- schema ----------------------------------------------------------
+> CREATE TABLE t (a INTEGER)
+! EXISTS 0 there is already a table t
+> CREATE TABLE IF NOT EXISTS t (a INTEGER)
+= done 0
+> DROP TABLE nope
+! NOT_FOUND 0 there is no table nope
+> DROP TABLE IF EXISTS nope
+= done 0
+> ALTER TABLE t ADD COLUMN note TEXT DEFAULT 'none'
+= done 0
+> SELECT id, note FROM t
+= 1, 'none' | 2, 'none' | 3, 'none'
+> CREATE INDEX by_name ON t (name)
+= done 0
+> CREATE INDEX by_name ON u (v)
+! EXISTS 1 there is already an index `by_name`
+> CREATE INDEX IF NOT EXISTS by_name ON u (v)
+= done 0
+> CREATE UNIQUE INDEX one_qty ON t (qty)
+! DUPLICATE 0 so index one_qty cannot be unique
+> CREATE INDEX bad ON t (nope)
+! NOT_FOUND 23 table t has no column `nope`
+> DROP INDEX by_name
+= done 0
+> DROP INDEX by_name
+! NOT_FOUND 1 there is no index `by_name`
+> DROP INDEX IF EXISTS by_name
+= done 0
+> CREATE TABLE k2 (a INTEGER PRIMARY KEY, b INTEGER PRIMARY KEY)
+! SYNTAX 41 PRIMARY KEY is declared twice
+> CREATE TABLE d (a INTEGER DEFAULT 'x')
+! SCHEMA 0 the default refused by its own column
+> CREATE TABLE d (a INTEGER DEFAULT a)
+! SYNTAX 35 DEFAULT cannot read a column
+
+# ---- records (§3.5) --------------------------------------------------
+> CREATE TABLE assets (id INTEGER PRIMARY KEY, p RECORD)
+= done 0
+> INSERT INTO assets VALUES (1, :p)
+@ p = {vendor: 'acme', size: 3}
+= done 1
+> INSERT INTO assets VALUES (2, :p)
+@ p = {vendor: 'zeta'}
+= done 1
+> SELECT id, p.vendor, p.size FROM assets ORDER BY id
+= 1, 'acme', 3 | 2, 'zeta', NULL
+> SELECT id FROM assets WHERE p.vendor = 'zeta'
+= 2
+> SELECT id FROM assets WHERE p.size > 1
+= 1
+> SELECT p.vendor.x FROM assets
+! EXPRESSION 8 reads a field of a record
+
+# ---- EXPLAIN says which path, and lists only what it did not consume -
+> CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
+= done 0
+> CREATE INDEX o_cust ON o (cust, placed DESC)
+= done 0
+> EXPLAIN SELECT * FROM o WHERE id = :id
+= 'Point Read on o using the primary key (id = :id)'
+> EXPLAIN SELECT * FROM o WHERE id > 5 AND total > 1
+= 'Seek on o using the primary key (5 <= id)' | '  Filter: (total > 1)'
+> EXPLAIN SELECT * FROM o WHERE cust = 'a' AND lower(cust) = 'a'
+= 'Index Seek on o using o_cust (cust = 'a')' | '  Filter: (lower(cust) = 'a')'
+> EXPLAIN SELECT * FROM o WHERE cust = 'a' ORDER BY placed DESC LIMIT 5
+= 'Index Seek on o using o_cust (cust = 'a')' | '  Order: placed DESC (by the index)' | '  Limit: 5'
+> EXPLAIN SELECT * FROM o WHERE cust = 'a' ORDER BY placed
+= 'Index Seek on o using o_cust (cust = 'a') backward' | '  Order: placed (by the index)'
+> EXPLAIN SELECT * FROM o ORDER BY total
+= 'Scan on o' | '  Order: total (sorted)'
+> EXPLAIN SELECT * FROM o ORDER BY id DESC
+= 'Scan on o backward' | '  Order: id DESC (by the primary key)'
+> EXPLAIN SELECT * FROM o WHERE total = 5
+= 'Scan on o' | '  Filter: (total = 5)'
+> EXPLAIN SELECT * FROM o WHERE id BETWEEN 2 AND 4
+= 'Seek on o using the primary key (2 <= id <= 4)'
+> EXPLAIN UPDATE o SET total = 0 WHERE cust = :c
+= 'Update on o' | '  Index Seek on o using o_cust (cust = :c)'
+> EXPLAIN DELETE FROM o WHERE total < 0
+= 'Delete on o' | '  Scan on o' | '    Filter: (total < 0)'
+> EXPLAIN SELECT 1
+= 'Result'

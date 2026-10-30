@@ -40,6 +40,9 @@ const char *gsql_code_name(int code);
 typedef struct {
     int code;
     char message[512];
+    /* Where in the SQL text the problem is, as a 1-based character offset; 0
+     * where there is no text or no single place (the SQL layer's, §6). */
+    uint32_t position;
 } GsqlError;
 
 typedef enum {

@@ -992,6 +992,12 @@ int main(int argc, char **argv) {
         return run_actor_mode(argc, argv);
     }
 
+    /* A G-SQL owner, started by a client as its child (docs/gsql_owner_design.md
+     * §6): `--gsql-owner DB FD create|open`. */
+    if (argc >= 2 && strcmp(argv[1], "--gsql-owner") == 0) {
+        return gb_gsql_owner_main(argc - 2, argv + 2);
+    }
+
     /* When stdout is a pipe, stdio buffers it in ~4 KB blocks, so a program that
      * prints slowly appears silent to whatever is reading it until it exits. Line
      * buffering flushes at every completed line instead. Every `print` this

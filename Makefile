@@ -370,7 +370,22 @@ endif
 WIN_RES ?=
 PLATFORM_OBJ ?= src/platform_posix.o
 
-LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS)
+# G-SQL (docs/gsql_design.md): the engine, the table layer, the owner and its
+# protocol, and the SQL layer, linked since increment 3 gave the owner
+# something to answer (docs/gsql_sql_design.md). POSIX only for now: the owner
+# is fork, poll and a local socket, and Windows has an increment of its own.
+# Not a HAVE_* dependency, since it needs nothing installed.
+ifeq ($(OS),Windows_NT)
+GSQL_OBJS :=
+CFLAGS += -DHAVE_GSQL=0
+else
+GSQL_OBJS := src/gsql/lsm.o src/gsql/store_common.o src/gsql/store_util.o src/gsql/io.o src/gsql/key.o \
+             src/gsql/v3.o src/gsql/table.o src/gsql/wire.o src/gsql/owner.o src/gsql/client.o \
+             src/gsql/sql_parse.o src/gsql/sql_plan.o src/gsql/sql_exec.o
+CFLAGS += -DHAVE_GSQL=1
+endif
+
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS) $(GSQL_OBJS)
 OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
@@ -508,7 +523,10 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h .stdlibdir-stamp .buildswitch-stamp
+src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/serialize_tags.h .buildswitch-stamp
+	$(CC) $(CFLAGS) -c $< -o $@
+
+src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c src/modules/gsql.c include/gsql_sql.h include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # THE QT BACKEND: moc, then C++. The generated unit is `#include`d by the .cpp
@@ -587,3 +605,9 @@ clean:
 	rm -f .stdlibdir-stamp .buildswitch-stamp
 	rm -f src/modules/qt_backend.moc src/modules/qt_backend.o
 	rm -rf editors/kate/syntax
+
+# The libraries a C program linking libgbasic.a needs, for a suite that links
+# the archive (tests/run_gsql_sql.sh): derived from this file, never repeated.
+print-ldlibs:
+	@echo $(LDLIBS)
+.PHONY: print-ldlibs

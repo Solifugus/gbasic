@@ -177,15 +177,25 @@ static void out_frame(Conn *c, unsigned type, uint32_t id, const GsqlBuf *body) 
     gsql_frame_put(&c->out, type, id, body ? body->bytes : NULL, body ? body->length : 0);
 }
 
-static void send_error(Conn *c, uint32_t id, int code, const char *message) {
+/* `position` is where in the SQL text, 1-based; 0 for none, and then the
+ * field is absent (§2.2) */
+static void send_error_at(Conn *c, uint32_t id, int code, const char *message, uint32_t position) {
     GsqlBuf b = {0};
-    v3_w_record(&b, 2);
+    v3_w_record(&b, position ? 3 : 2);
     v3_w_name(&b, "code");
     v3_w_text(&b, gsql_error_name(code));
     v3_w_name(&b, "message");
     v3_w_text(&b, message);
+    if (position) {
+        v3_w_name(&b, "position");
+        v3_w_int(&b, position);
+    }
     out_frame(c, GSQL_M_ERROR, id, &b);
     gsql_buf_free(&b);
+}
+
+static void send_error(Conn *c, uint32_t id, int code, const char *message) {
+    send_error_at(c, id, code, message, 0);
 }
 
 static void send_errorf(Conn *c, uint32_t id, int code, const char *fmt, ...) {
@@ -423,7 +433,7 @@ static int txn_refuses(Conn *c, uint32_t id) {
     return 0;
 }
 
-static void storage_failed(Owner *o, Conn *c, const char *what) {
+static void txn_failed(Owner *o, Conn *c, const char *why) {
     /* the engine ended the transaction: everything after it must say so,
      * never carry on outside it (§5.1) */
     cursors_of_txn(o, c);
@@ -435,7 +445,13 @@ static void storage_failed(Owner *o, Conn *c, const char *what) {
         o->writer = NULL;
     }
     c->tx = TX_FAILED;
-    snprintf(c->why, sizeof c->why, "an earlier statement failed in the engine (%.200s)", what);
+    snprintf(c->why, sizeof c->why, "%s", why);
+}
+
+static void storage_failed(Owner *o, Conn *c, const char *what) {
+    char why[sizeof ((Conn *)0)->why];
+    snprintf(why, sizeof why, "an earlier statement failed in the engine (%.200s)", what);
+    txn_failed(o, c, why);
 }
 
 static int do_query(Owner *o, Conn *c, Req *r) {
@@ -470,10 +486,10 @@ static int do_query(Owner *o, Conn *c, Req *r) {
     uint64_t batch = 0;
     s.batch = field_u64(f, nf, "batch", &batch) && batch > 0 ? (batch > UINT32_MAX ? UINT32_MAX : (uint32_t)batch) : 100;
 
-    GsqlError err = { GSQL_OK, "" };
+    GsqlError err = { GSQL_OK, "", 0 };
     int w = o->svc->writes(o->svc->ctx, &s, &err);
     if (w < 0) {
-        send_error(c, r->id, err.code ? err.code : GSQL_PROTOCOL, err.message);
+        send_error_at(c, r->id, err.code ? err.code : GSQL_PROTOCOL, err.message, err.position);
         return DONE_REQ;
     }
     if (w && c->tx == TX_READ) {
@@ -517,8 +533,14 @@ static int do_query(Owner *o, Conn *c, Req *r) {
             o->e->abort(t);
         } else if (rc == GSQL_STORAGE) {
             storage_failed(o, c, err.message);
+        } else if (res.failed_part_way) {
+            /* it changed rows before it failed, and there is nothing to undo
+             * them with but the whole transaction (gsql_sql_design.md §4) */
+            char why[sizeof c->why];
+            snprintf(why, sizeof why, "an earlier statement failed part way, after changing rows (%.200s)", err.message);
+            txn_failed(o, c, why);
         }
-        send_error(c, r->id, rc, err.message);
+        send_error_at(c, r->id, rc, err.message, err.position);
         result_free(&res);
         return DONE_REQ;
     }
@@ -586,7 +608,7 @@ static int do_fetch(Owner *o, Conn *c, Req *r) {
     GsqlResult res;
     memset(&res, 0, sizeof res);
     res.cursor = k->svc;
-    GsqlError err = { GSQL_OK, "" };
+    GsqlError err = { GSQL_OK, "", 0 };
     int rc = o->svc->fetch(o->svc->ctx, k->svc, count == 0 ? 1 : (count > UINT32_MAX ? UINT32_MAX : (uint32_t)count),
                            &res, &err);
     if (rc != GSQL_OK) {
@@ -822,7 +844,7 @@ static int handle(Owner *o, Conn *c, Req *r) {
         s.statement_length = x->vlen;
         s.batch = 1;
         GsqlBuf d = {0};
-        GsqlError err = { GSQL_OK, "" };
+        GsqlError err = { GSQL_OK, "", 0 };
         int rc = o->svc->prepare(o->svc->ctx, &s, &d, &err);
         if (rc) {
             send_error(c, r->id, rc, err.message);

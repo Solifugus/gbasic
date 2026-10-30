@@ -58,7 +58,9 @@ typedef enum {
     GSQL_TIMEOUT,       /* an idle cursor or transaction, ended */
     GSQL_LOST,          /* client side: the owner exited */
     GSQL_NO_OWNER,      /* client side: no owner could be reached or started */
-    GSQL_CODE_LAST = GSQL_NO_OWNER
+    GSQL_SYNTAX,        /* SQL text that does not parse (docs/gsql_sql_design.md §6) */
+    GSQL_EXPRESSION,    /* an expression that could not be evaluated */
+    GSQL_CODE_LAST = GSQL_EXPRESSION
 } GsqlWireCode;
 
 /* Any code's name, the table layer's included; "?" for none. And back:

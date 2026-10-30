@@ -41,6 +41,10 @@ typedef struct {
     void *cursor;          /* the service's; NULL when nothing remains */
     int has_affected;
     uint64_t affected;
+    /* set with a failure: the statement changed rows before it failed, so an
+     * explicit transaction cannot carry on and is failed (gsql_sql_design.md
+     * §4); autocommit aborts it anyway */
+    int failed_part_way;
 } GsqlResult;
 
 typedef struct {

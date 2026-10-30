@@ -20,7 +20,7 @@ const char *gsql_msg_name(int type) {
 
 static const char *const wire_names[] = {
     "PROTOCOL", "VERSION", "TOO_LARGE", "CANCELLED", "UNSUPPORTED", "STATE", "READ_ONLY",
-    "FAILED", "TIMEOUT", "LOST", "NO_OWNER"
+    "FAILED", "TIMEOUT", "LOST", "NO_OWNER", "SYNTAX", "EXPRESSION"
 };
 
 const char *gsql_error_name(int code) {
