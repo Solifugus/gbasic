@@ -32,6 +32,25 @@
 #           written from the design's text with tests/serialize/decode_v3.py's
 #           reader, so a schema or row layout our writer and reader agree on
 #           wrongly is still caught.
+#
+# TWELVE PERTURBATIONS PROVEN RED (2026-10-29), each by the tier written for
+# it: an integer column taking 3.0 (kinds, refuse, model); UNIQUE treating two
+# unknowns as equal (refuse, model); an update that moved a row's key leaving
+# its index entries pointing at the old one (model, through the invariant
+# check); a row predating ADD COLUMN reading unknown instead of the default
+# (refuse, model); a bound `nothing` stored as `nothing` (model, layout); an
+# update allowed onto ANY row's unique value (model); a DROP leaving its index
+# trees (refuse, model); a datetime column taking a date (kinds, model); a
+# descending key component skipped without inverting, and a time-only one
+# skipped at a date-time's length (run_gsql_key.sh's skip tier, and the model
+# here); and a SELF-CONSISTENT one -- the schema's `columns` field renamed in
+# the writer and the reader together -- which every tier but `layout` passes.
+#
+# THE `nothing` ONE FIRST WENT RED ONLY IN `layout`, and the cause was the
+# MODEL: it normalised each value in the very buffer it handed the layer, so
+# the layer was never sent a `nothing` at all, and the floor on outcomes had
+# no line for one. The model keeps what it sends apart from what it expects
+# stored now, and requires more than ten bound nothings per run.
 . "$(dirname "$0")/portable.sh"
 set -uo pipefail
 cd "$(dirname "$0")/.."

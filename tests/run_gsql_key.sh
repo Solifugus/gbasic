@@ -18,6 +18,14 @@
 #
 # The encoder's input is a value in `serialize` version 3 -- what a G-SQL row
 # holds -- so it needs no interpreter and is compiled here on its own.
+#
+# AND `gsql_key_skip` (2026-10-29), which the table layer needs so a
+# non-unique index entry -- its columns, then the row key -- gives the row key
+# back (docs/gsql_table_design.md §6): every value's key, ascending and
+# descending and followed by bytes shaped like a string's terminator, must
+# skip to exactly its own length, and every strict prefix must be refused.
+# Proven red by reading a descending component without inverting it (160
+# mismatches) and by a time-only datetime given a date-time's length (188).
 . "$(dirname "$0")/portable.sh"
 set -uo pipefail
 cd "$(dirname "$0")/.."

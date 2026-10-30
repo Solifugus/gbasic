@@ -721,6 +721,8 @@ Freeze type mapping, `NULL`/`UNKNOWN` aliasing, `nothing` binding, money and tem
 
 File format, table storage, WAL/recovery, transactions, basic schema, DML, row iteration, primary keys/B-tree indexes, typed parameter binding, initial `SELECT`/`WHERE`/`ORDER BY`, dynamic SQL entry point and inline SQL sharing one execution path, and `EXPLAIN`. One-writer concurrency model documented and tested. Reserve a versioned representation for selective temporal history without requiring complete temporal query support on day one.
 
+Built bottom-up (`gsql_table_design.md` §1): the table layer, then the owner and its protocol, then the SQL front end with `EXPLAIN`, then the gBASIC surface. **The table layer is done 2026-10-29**: the catalog, typed rows, primary keys, unique and secondary indexes, `NOT NULL`, defaults and `ADD COLUMN` (`src/gsql/table.c`, `tests/run_gsql_table.sh`).
+
 ### Phase 2: Useful relational SQL
 
 Joins, grouping/HAVING, common aggregates, unions, subqueries, nonrecursive CTEs, views, composite indexes, query-plan caching, statistics, and efficient hash operators. Add named relationship catalog and scoped serials when their semantics/tests are settled. Introduce spill-to-disk where workloads require it.

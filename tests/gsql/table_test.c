@@ -140,7 +140,7 @@ typedef struct {
 
 #define NPOOL 48
 /* Pool positions the schemas name, checked by pool_build. */
-enum { P_INT3 = 3, P_STR_A = 11, P_TRUE = 18, P_USD1 = 19 };
+enum { P_INT3 = 3, P_STR_A = 11, P_TRUE = 18, P_USD1 = 19, P_UNKNOWN = 34, P_NOTHING = 36 };
 static PoolValue pool[NPOOL];
 static int npool;
 
@@ -182,7 +182,7 @@ static void pool_build(void) {
     pool_add(v_tag(SER_UNKNOWN), C_UNKNOWN);
     pool_add(v_tag(SER_NULL), C_NOTHING);
     if (pool[P_INT3].cls != C_INT || pool[P_STR_A].cls != C_STR || pool[P_TRUE].cls != C_BOOL ||
-        pool[P_USD1].cls != C_USD) {
+        pool[P_USD1].cls != C_USD || pool[P_UNKNOWN].cls != C_UNKNOWN || pool[P_NOTHING].cls != C_NOTHING) {
         printf("MISMATCH the pool's named positions moved\n");
         exit(1);
     }
@@ -336,6 +336,10 @@ static int model_collides(const MTable *t, const Val *vals, int self) {
 /* A value for a column: usually one its kind takes, so rows are accepted
  * often enough for duplicates and moves to happen; sometimes anything. */
 static Val pick_for(const ColSpec *c) {
+    /* an absence, explicitly: unknown, or a bound `nothing`, which must be
+     * stored as unknown -- without this the workload stored almost none and
+     * a layer keeping `nothing` passed every model check */
+    if (rnd() % 10 == 0) return pool[rnd() % 3 == 0 ? P_NOTHING : P_UNKNOWN].v;
     if (rnd() % 8 != 0) {
         for (int tries = 0; tries < 64; tries++) {
             const PoolValue *pv = &pool[rnd() % (uint64_t)npool];
@@ -513,7 +517,7 @@ static int model_run(const char *dir) {
     memset(&saved, 0, sizeof saved);
     GsqlTable *tbs[NSPECS] = {0};
     long refused[GSQL_MISUSE + 1] = {0};
-    long accepted = 0, reopens = 0, aborts = 0, moved = 0;
+    long accepted = 0, reopens = 0, aborts = 0, moved = 0, nothings = 0;
     for (int round = 0; round < 400; round++) {
         GsTxn *t;
         if ((rc = E->begin_write(db, &t))) {
@@ -552,20 +556,21 @@ static int model_run(const char *dir) {
             if (what < 45) {
                 /* insert */
                 GsqlIn in[12];
-                Val vals[12];
+                Val sent[12], vals[12];   /* what the layer is handed; what the model expects stored */
                 int want = GSQL_OK;
                 for (int c = 0; c < mt->ncols; c++) {
                     int omit = rnd() % 6 == 0;
                     in[c].present = !omit;
                     if (omit) {
-                        vals[c] = mt->cols[c].def >= 0 ? pool[mt->cols[c].def].v : v_tag(SER_UNKNOWN);
+                        sent[c] = mt->cols[c].def >= 0 ? pool[mt->cols[c].def].v : v_tag(SER_UNKNOWN);
                     } else {
-                        vals[c] = pick_for(&mt->cols[c]);
+                        sent[c] = pick_for(&mt->cols[c]);
                     }
-                    in[c].p = vals[c].b;
-                    in[c].n = vals[c].n;
-                    int f = model_fits(&mt->cols[c], &vals[c]);
+                    in[c].p = sent[c].b;
+                    in[c].n = sent[c].n;
+                    int f = model_fits(&mt->cols[c], &sent[c]);
                     if (want == GSQL_OK) want = f;
+                    vals[c] = sent[c];
                     normalize(&vals[c]);
                 }
                 if (want == GSQL_OK && model_collides(mt, vals, -1)) want = GSQL_DUPLICATE;
@@ -576,6 +581,8 @@ static int model_run(const char *dir) {
                 CHECK(rc == want, "insert into %s answered %s, the model %s (%s)", SPECS[s].name, gsql_code_name(rc),
                       gsql_code_name(want), er.message);
                 if (rc == GSQL_OK && want == GSQL_OK) {
+                    for (int c = 0; c < mt->ncols; c++)
+                        if (in[c].present && in[c].n == 1 && in[c].p[0] == SER_NULL) nothings++;
                     MRow r;
                     memset(&r, 0, sizeof r);
                     memcpy(r.key.b, key.bytes, key.length);
@@ -591,16 +598,17 @@ static int model_run(const char *dir) {
                 /* update a random subset of a row's columns */
                 int r = (int)(rnd() % (uint64_t)mt->nrows);
                 GsqlIn in[12];
-                Val vals[12];
+                Val sent[12], vals[12];
                 int want = GSQL_OK;
                 for (int c = 0; c < mt->ncols; c++) {
                     int change = rnd() % 3 == 0;
                     in[c].present = change;
-                    vals[c] = change ? pick_for(&mt->cols[c]) : mt->rows[r].v[c];
-                    in[c].p = vals[c].b;
-                    in[c].n = vals[c].n;
-                    int f = model_fits(&mt->cols[c], &vals[c]);
+                    sent[c] = change ? pick_for(&mt->cols[c]) : mt->rows[r].v[c];
+                    in[c].p = sent[c].b;
+                    in[c].n = sent[c].n;
+                    int f = model_fits(&mt->cols[c], &sent[c]);
                     if (want == GSQL_OK) want = f;
+                    vals[c] = sent[c];
                     normalize(&vals[c]);
                 }
                 if (want == GSQL_OK && model_collides(mt, vals, r)) want = GSQL_DUPLICATE;
@@ -764,11 +772,12 @@ static int model_run(const char *dir) {
     gsql_io_free(io);
     model_free(&m);
     model_free(&saved);
-    printf("accepted %ld, refused TYPE %ld NOT_NULL %ld DUPLICATE %ld, moved %ld, aborts %ld, reopens %ld\n", accepted,
-           refused[GSQL_TYPE], refused[GSQL_NOT_NULL], refused[GSQL_DUPLICATE], moved, aborts, reopens);
+    printf("accepted %ld (%ld bound nothings), refused TYPE %ld NOT_NULL %ld DUPLICATE %ld, moved %ld, aborts %ld, "
+           "reopens %ld\n", accepted, nothings, refused[GSQL_TYPE], refused[GSQL_NOT_NULL], refused[GSQL_DUPLICATE],
+           moved, aborts, reopens);
     /* The workload must have reached every outcome, or agreement says little. */
     CHECK(accepted > 300 && refused[GSQL_TYPE] > 50 && refused[GSQL_NOT_NULL] > 5 && refused[GSQL_DUPLICATE] > 10 &&
-              moved > 3 && aborts > 10 && reopens >= 10,
+              moved > 3 && aborts > 10 && reopens >= 10 && nothings > 10,
           "the workload did not reach every outcome");
     printf("ok %ld checks, %ld mismatches\n", checks, mismatches);
     return mismatches ? 1 : 0;
