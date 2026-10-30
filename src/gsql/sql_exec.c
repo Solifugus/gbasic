@@ -860,7 +860,9 @@ static int iter_open(Iter *it, X *x) {
         }
         if (!it->fell_back) {
             SqlExpr *lo = p->lo, *hi = p->hi;
-            int desc = p->keydesc && p->keydesc[p->neq];
+            /* only a range has a column after the equalities: with equality on
+             * every key column, keydesc[neq] is past the end */
+            int desc = (lo || hi) && p->keydesc && p->keydesc[p->neq];
             if (lo) {
                 int r = bound_key(it, lo, p->neq, desc ? &it->khi : &it->klo);
                 if (r < 0) {

@@ -138,6 +138,19 @@ stmt("SELECT id FROM t LIMIT -1", ("EXPRESSION", "-", "LIMIT needs a whole numbe
 stmt("SELECT id FROM t LIMIT 1.5", ("EXPRESSION", "1.5", "LIMIT needs a whole number"))
 stmt("SELECT id FROM t ORDER BY id LIMIT :n", "= 1 | 2 | 3", params=("n = 3",))
 
+sec("a bound of the wrong kind is refused, never seeks to nothing (§5)")
+# the differential tier allows the scan to refuse where the path answers, so
+# these two are asserted here: a path that skipped the refusal would answer
+# (none), and pass the comparison
+stmt("SELECT name FROM t WHERE id = '1'", ("EXPRESSION", "=", "= compares a number with text"))
+stmt("CREATE TABLE w (id INTEGER PRIMARY KEY, x MONEY)", "= done 0")
+stmt("CREATE INDEX w_x ON w (x)", "= done 0")
+stmt("INSERT INTO w VALUES (1, CAST('1' AS MONEY(USD))), (2, CAST('2' AS MONEY(EUR))), (3, CAST('3' AS MONEY(USD)))", "= done 3")
+stmt("SELECT id FROM w WHERE x > CAST('1' AS MONEY(USD))", ("EXPRESSION", ">", "cannot order money in different currencies"))
+stmt("EXPLAIN SELECT id FROM w WHERE x > CAST('1' AS MONEY(USD))", "= 'Scan on w' | '  Filter: (x > CAST('1' AS MONEY(USD)))'")
+stmt("SELECT id FROM w WHERE x = CAST('3' AS MONEY(USD))", "= 3")
+stmt("EXPLAIN SELECT id FROM w WHERE x = CAST('3' AS MONEY(USD))", "= 'Index Seek on w using w_x (x = CAST('3' AS MONEY(USD)))'")
+
 sec("parameters")
 stmt("SELECT name FROM t WHERE id = :id", "= 'pear'", params=("id = 2",))
 stmt("SELECT name FROM t WHERE id = $1 OR id = $2 ORDER BY id", "= 'apple' | 'fig'", params=("1 = 1", "2 = 3"))
