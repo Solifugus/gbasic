@@ -847,7 +847,7 @@ static int handle(Owner *o, Conn *c, Req *r) {
         GsqlError err = { GSQL_OK, "", 0 };
         int rc = o->svc->prepare(o->svc->ctx, &s, &d, &err);
         if (rc) {
-            send_error(c, r->id, rc, err.message);
+            send_error_at(c, r->id, rc, err.message, err.position);
         } else {
             GsqlBuf b = {0};
             v3_w_record(&b, 1);

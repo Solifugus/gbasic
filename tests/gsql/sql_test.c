@@ -484,6 +484,298 @@ static int open_db(const char *dir) {
     return 1;
 }
 
+
+/* ---- the differential tier ------------------------------------------- */
+
+static uint64_t rng_state;
+
+static uint64_t rnd(void) {
+    uint64_t z = (rng_state += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+static unsigned pick(unsigned n) {
+    return (unsigned)(rnd() % n);
+}
+
+/* a constant of column `col`'s kind, or now and then of another kind */
+static int odd_kinds = 1;
+
+static void constant(char *out, size_t cap, int col) {
+    static const char *const ints[] = { "0", "1", "2", "3", "5", "8", "-1", "3.0", "2.5", "NULL" };
+    static const char *const texts[] = { "''", "'a'", "'ab'", "'b'", "'ba'", "'z'", "'é'", "NULL" };
+    static const char *const nums[] = { "0", "-0.0", "1", "1.5", "2", "1e3", "-7", "CAST('NaN' AS NUMBER)",
+                                        "CAST('inf' AS NUMBER)", "NULL" };
+    static const char *const dates[] = { "DATE '2026-01-01'", "DATE '2026-01-02'", "DATE '2025-12-31'",
+                                         "DATE '2026-06-30'", "NULL" };
+    static const char *const usd[] = { "CAST('0' AS MONEY(USD))", "CAST('1.50' AS MONEY(USD))",
+                                       "CAST('2' AS MONEY(USD))", "CAST('-1' AS MONEY(USD))", "NULL" };
+    static const char *const anym[] = { "CAST('1' AS MONEY(USD))", "CAST('1' AS MONEY(EUR))",
+                                        "CAST('2' AS MONEY(JPY))", "NULL" };
+    if (odd_kinds && pick(20) == 0) {
+        /* the wrong kind: both paths must refuse it alike */
+        static const char *const odd[] = { "'3'", "3", "TRUE", "DATE '2026-01-01'" };
+        snprintf(out, cap, "%s", odd[pick(4)]);
+        return;
+    }
+    switch (col) {
+    case 0: case 1:
+        snprintf(out, cap, "%s", ints[pick(10)]);
+        return;
+    case 2:
+        snprintf(out, cap, "%s", texts[pick(8)]);
+        return;
+    case 3:
+        snprintf(out, cap, "%s", nums[pick(10)]);
+        return;
+    case 4:
+        snprintf(out, cap, "%s", dates[pick(5)]);
+        return;
+    case 5:
+        snprintf(out, cap, "%s", usd[pick(5)]);
+        return;
+    case 6:
+        snprintf(out, cap, "%s", anym[pick(4)]);
+        return;
+    default:
+        snprintf(out, cap, "%s", pick(3) == 0 ? "NULL" : pick(2) ? "TRUE" : "FALSE");
+    }
+}
+
+static const char *const dcols[] = { "id", "a", "b", "c", "d", "m", "x", "f" };
+
+static void atom(char *out, size_t cap) {
+    int col = (int)pick(8);
+    char k1[64], k2[64];
+    constant(k1, sizeof k1, col);
+    static const char *const ops[] = { "=", "<", "<=", ">", ">=", "<>" };
+    switch (pick(10)) {
+    case 0:
+        constant(k2, sizeof k2, col);
+        snprintf(out, cap, "%s BETWEEN %s AND %s", dcols[col], k1, k2);
+        return;
+    case 1:
+        constant(k2, sizeof k2, col);
+        snprintf(out, cap, "%s IN (%s, %s)", dcols[col], k1, k2);
+        return;
+    case 2:
+        snprintf(out, cap, "%s IS %sNULL", dcols[col], pick(2) ? "NOT " : "");
+        return;
+    case 3:
+        /* the constant on the left */
+        snprintf(out, cap, "%s %s %s", k1, ops[pick(6)], dcols[col]);
+        return;
+    default:
+        snprintf(out, cap, "%s %s %s", dcols[col], ops[pick(5)], k1);
+    }
+}
+
+static void predicate(char *out, size_t cap) {
+    char a[256], b[256], c[256];
+    atom(a, sizeof a);
+    atom(b, sizeof b);
+    atom(c, sizeof c);
+    switch (pick(6)) {
+    case 0:
+        snprintf(out, cap, "%s", a);
+        return;
+    case 1:
+        snprintf(out, cap, "%s OR %s", a, b);
+        return;
+    case 2:
+        snprintf(out, cap, "%s AND (%s OR %s)", a, b, c);
+        return;
+    case 3:
+        snprintf(out, cap, "NOT (%s) AND %s", a, b);
+        return;
+    default:
+        snprintf(out, cap, "%s AND %s AND %s", a, b, c);
+    }
+}
+
+/* A narrowed path reads fewer rows than the scan, so a condition that raises
+ * on some row (a cross-currency comparison) may raise in the scan and never be
+ * evaluated by the path: the scan refuses where the path answers. That is
+ * allowed, and counted (gsql_sql_design.md §5). The other way round is a
+ * defect: the path's rows are a subset of the scan's. */
+static int narrowed_past;
+static int forced_but_sought;
+
+static int diverged(int path_code, int scan_code) {
+    if (path_code == scan_code) {
+        return 0;
+    }
+    if (path_code == GSQL_OK && scan_code == GSQL_EXPRESSION) {
+        narrowed_past++;
+        return 0;
+    }
+    return 1;
+}
+
+static int both_ways(const char *q, int *seek_runs) {
+    Answer x, y;
+    unsigned long s0, c0, s1, c1;
+    gsql_sql_counts(sql, &s0, &c0);
+    gsql_sql_force_scan(sql, 0);
+    run(q, NULL, 3, &x);
+    gsql_sql_counts(sql, &s1, &c1);
+    if (s1 > s0) {
+        (*seek_runs)++;
+    }
+    gsql_sql_force_scan(sql, 1);
+    run(q, NULL, 7, &y);
+    gsql_sql_force_scan(sql, 0);
+    unsigned long s2, c2;
+    gsql_sql_counts(sql, &s2, &c2);
+    if (s2 != s1 || (y.code == GSQL_OK && c2 == c1)) {
+        /* without this, a forced scan that quietly used the paths anyway
+         * would agree with them on every query */
+        forced_but_sought++;
+    }
+    checks++;
+    char *tx = as_text(&x.text), *ty = as_text(&y.text);
+    int same = !diverged(x.code, y.code);
+    if (same && x.code == GSQL_OK && y.code == GSQL_OK) {
+        same = strcmp(tx, ty) == 0;
+    }
+    if (!same) {
+        mismatches++;
+        printf("MISMATCH %s\n  with paths: %s %s\n  scanning:   %s %s\n", q,
+               x.code ? gsql_error_name(x.code) : "", x.code ? x.err.message : tx,
+               y.code ? gsql_error_name(y.code) : "", y.code ? y.err.message : ty);
+    }
+    int refused = x.code != GSQL_OK;
+    free(tx);
+    free(ty);
+    answer_free(&x);
+    answer_free(&y);
+    return refused;
+}
+
+static int differential(const char *dir, uint64_t seed, int n) {
+    if (!open_db(dir)) {
+        return 2;
+    }
+    rng_state = seed;
+    static const char *const schema[] = {
+        "CREATE TABLE r (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, c NUMBER, d DATE, m MONEY(USD), x MONEY, f BOOLEAN)",
+        "CREATE INDEX r_a ON r (a)",
+        "CREATE INDEX r_bc ON r (b, c DESC)",
+        "CREATE INDEX r_d ON r (d DESC)",
+        "CREATE INDEX r_m ON r (m)",
+        "CREATE INDEX r_x ON r (x)",
+        "CREATE INDEX r_ab ON r (a, b)",
+        "CREATE UNIQUE INDEX r_did ON r (d, id)",
+        NULL
+    };
+    for (int k = 0; schema[k]; k++) {
+        Answer a;
+        run(schema[k], NULL, 10, &a);
+        if (a.code != GSQL_OK) {
+            fprintf(stderr, "%s: %s\n", schema[k], a.err.message);
+            return 2;
+        }
+        answer_free(&a);
+    }
+    /* the rows: values repeat, so equality finds several, and an exact and an
+     * inexact spelling of one number both appear */
+    int inserted = 0;
+    odd_kinds = 0;
+    for (int id = 1; id <= 300; id++) {
+        char q[1024], va[64], vb[64], vc[64], vd[64], vm[64], vx[64], vf[64];
+        do {
+            constant(va, sizeof va, 0);
+        } while (strchr(va, '\'') || strchr(va, '.') || strcmp(va, "TRUE") == 0 || strstr(va, "DATE"));
+        constant(vb, sizeof vb, 2);
+        constant(vc, sizeof vc, 3);
+        constant(vd, sizeof vd, 4);
+        constant(vm, sizeof vm, 5);
+        constant(vx, sizeof vx, 6);
+        constant(vf, sizeof vf, 7);
+        snprintf(q, sizeof q, "INSERT INTO r VALUES (%d, %s, %s, %s, %s, %s, %s, %s)", id, va, vb, vc, vd, vm, vx, vf);
+        Answer a;
+        run(q, NULL, 10, &a);
+        inserted += a.code == GSQL_OK;
+        answer_free(&a);
+    }
+    odd_kinds = 1;
+    int seek_runs = 0, refused = 0;
+    for (int k = 0; k < n; k++) {
+        char where[1024], q[2048];
+        predicate(where, sizeof where);
+        const char *col = dcols[pick(8)];
+        if (strcmp(col, "x") == 0 || strcmp(col, "f") == 0) {
+            col = "id";   /* a mixed-currency money or a boolean has no order */
+        }
+        switch (pick(4)) {
+        case 0:
+            snprintf(q, sizeof q, "SELECT id, a, b, c FROM r WHERE %s ORDER BY %s%s, id", where, col,
+                     pick(2) ? " DESC" : "");
+            break;
+        case 1:
+            snprintf(q, sizeof q, "SELECT id FROM r WHERE %s ORDER BY %s%s, id LIMIT %u", where, col,
+                     pick(2) ? " DESC" : "", pick(5));
+            break;
+        case 2:
+            snprintf(q, sizeof q, "SELECT * FROM r WHERE %s ORDER BY id%s", where, pick(2) ? " DESC" : "");
+            break;
+        default:
+            snprintf(q, sizeof q, "DELETE FROM r WHERE %s", where);
+            break;
+        }
+        if (strncmp(q, "DELETE", 6) == 0) {
+            /* a write, held and rolled back, so both ways see the same rows */
+            Answer x, y;
+            E->begin_write(db, &held);
+            held_write = 1;
+            gsql_sql_force_scan(sql, 0);
+            run(q, NULL, 3, &x);
+            E->abort(held);
+            E->begin_write(db, &held);
+            gsql_sql_force_scan(sql, 1);
+            run(q, NULL, 3, &y);
+            E->abort(held);
+            held = NULL;
+            gsql_sql_force_scan(sql, 0);
+            checks++;
+            char *tx = as_text(&x.text), *ty = as_text(&y.text);
+            if (diverged(x.code, y.code) || (x.code == GSQL_OK && y.code == GSQL_OK && strcmp(tx, ty) != 0)) {
+                mismatches++;
+                printf("MISMATCH %s\n  with paths: %s %s\n  scanning:   %s %s\n", q, gsql_error_name(x.code),
+                       x.code ? x.err.message : tx, gsql_error_name(y.code), y.code ? y.err.message : ty);
+            }
+            refused += x.code != GSQL_OK;
+            free(tx);
+            free(ty);
+            answer_free(&x);
+            answer_free(&y);
+            continue;
+        }
+        refused += both_ways(q, &seek_runs);
+    }
+    unsigned long seeks, scans;
+    gsql_sql_counts(sql, &seeks, &scans);
+    printf("census: %d rows, %d queries, %d used a seek, %d refused, %d refused only by the scan\n", inserted, n,
+           seek_runs, refused, narrowed_past);
+    /* a floor on what the tier exercised: a planner that never seeks, or a
+     * generator that is refused every time, agrees with the scan perfectly */
+    if (forced_but_sought) {
+        mismatches++;
+        printf("MISMATCH %d queries forced to a scan did not scan: the comparison compared a path with itself\n",
+               forced_but_sought);
+    }
+    if (inserted < 250 || seek_runs < n / 4 || refused > n / 2 || refused < 1) {
+        mismatches++;
+        printf("MISMATCH the census is below its floor: the tier measured too little\n");
+    }
+    E->close(db);
+    gsql_sql_free(sql);
+    printf("ok %d checks, %d mismatches\n", checks, mismatches);
+    return mismatches ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     if (argc == 4 && strcmp(argv[1], "script") == 0) {
         if (!open_db(argv[3])) {
@@ -501,6 +793,9 @@ int main(int argc, char **argv) {
         printf("ok %d checks, %d mismatches\n", checks, mismatches);
         return mismatches ? 1 : 0;
     }
-    fprintf(stderr, "usage: sql_test script FILE DIR\n");
+    if (argc == 5 && strcmp(argv[1], "diff") == 0) {
+        return differential(argv[2], strtoull(argv[3], NULL, 10), atoi(argv[4]));
+    }
+    fprintf(stderr, "usage: sql_test script FILE DIR | diff DIR SEED N\n");
     return 2;
 }
