@@ -13106,3 +13106,25 @@ release script is the one place to change, and it wants watching.
   operators keep IEEE's answer, by decision. Found on the way: the deep
   comparison compared doubles, so `[9007199254740993] = [9007199254740992]` was
   true; it compares exactly now.
+
+## 2026-10-30 — CC — while: building the `gsql` module (G-SQL Phase 1, increment 4)
+- **Type:** bug
+- **Severity:** medium
+- **What happened:** the first program that inserted a loop counter into a
+  G-SQL integer column was refused: `n.k is integer, and the number is not an
+  exact integer`. A counted `for` loop rebuilt its counter from a double on
+  every pass, so `for i = 1 to 3` handed the body inexact integers.
+- **Measured:** with `b = 2^53`, `for i = 1 to 2` gave `i + b` as
+  9007199254740992 and then ...994 (one short on the first pass), while
+  `j = 1` and `for each x in [1, 2]` gave the right answers. And a loop that
+  starts at 2^53, `for k = 9007199254740992 to 9007199254740994`, **never
+  ended** on the old binary: in doubles 2^53 + 1 is 2^53, so the counter stopped
+  moving. Found when the old binary hung on the new check.
+- **Why nothing saw it:** below 2^53 an exact and an inexact integer print the
+  same, and the exact-number increments enumerated builtins and operators, not
+  statements. The loop was the one place that made a number by itself.
+- **Workaround:** none needed.
+- **RESOLVED 2026-10-30** (`tests/exact/exact_test.bas`): the counter is exact
+  whenever its start and step are (the default step is an exact 1), and stops
+  at the int64 edge instead of overflowing. A fractional start or step keeps the
+  double path, as before.

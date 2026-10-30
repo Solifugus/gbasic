@@ -2392,6 +2392,50 @@ boolean storage class. Date/time values bind as ISO-like text.
 `sqlite.last_insert_rowid(connection)` returns SQLite's last inserted rowid for
 that connection as a number.
 
+## G-SQL Module
+
+G-SQL is gBASIC's own database (`docs/gsql_design.md`), and it is part of
+every build on Linux and other POSIX systems, with nothing to install. A
+database is reached through its **owner**, one process that serves every
+program using it; `gsql.connect` starts the owner when none is running, as a
+child of the program, and it ends with the program. Its SQL is described in
+`docs/gsql_sql_design.md` and this module in `docs/gsql_module_design.md`.
+
+```basic
+load gsql
+
+db = gsql.connect("shop.gsql", { create: true })
+gsql.exec(db, "create table item (id integer primary key, name string not null, price money)")
+gsql.exec(db, "insert into item (id, name, price) values (:id, :name, :price)", { id: 1, name: "apple", price: {USD}"0.50" })
+rows = gsql.query(db, "select id, name from item where price < $1", [{USD}"1.00"])
+gsql.close(db)
+```
+
+The module provides:
+
+- `gsql.connect(path[, { create: true }])` — without `create`, a database that is not there is refused
+- `gsql.query(connection, sql[, parameters])` — an array of records, fields in select-list order
+- `gsql.exec(connection, sql[, parameters])` — `{ command, rows_affected }`, as `sqlite`, `pg` and `odbc` answer; `rows_affected` is `nothing` for a statement with no count
+- `gsql.begin(connection[, "read" | "write"])` — `"write"` by default
+- `gsql.commit(connection)`, `gsql.rollback(connection)`
+- `gsql.close(connection)`
+
+Parameters are a **record** for `:name` placeholders and an **array** for `$1`,
+`$2`, … . Values cross unchanged in both directions: an exact integer stays
+exact past 2^53, money keeps its currency, a date stays a date, and SQL `NULL`
+reads back as `unknown`. A whole result is fetched before `query` answers.
+
+Every refusal raises with `error.source = "gsql"` and **`error.details.code`
+naming G-SQL's code** — `SYNTAX`, `EXPRESSION`, `NOT_FOUND`, `DUPLICATE`,
+`NOT_NULL`, `TYPE`, `READ_ONLY`, `STATE`, `LOST` and the rest — plus
+`error.details.position`, a 1-based character offset, where the statement has
+a place to point at. `exec` refuses a statement that returns rows; `query`
+refuses one that returns none, saying that it ran. If the owner exits, the
+request in flight fails with `LOST` and nothing is retried; the next call
+starts a new owner.
+
+On Windows, `load gsql` answers that G-SQL is not yet available there.
+
 ## PostgreSQL Module
 
 PostgreSQL support is available when gBASIC is built with libpq. Load the
@@ -5946,7 +5990,7 @@ cannot keep a paragraph on this page either.
 | core | `number`, `string`, `boolean`, `array`, `record`, `nothing`, `unknown` |
 | typed values | `datetime`, `duration`, `money`, `file`, `directory` |
 | language | `function`, `regex`, `watcher`, `actor`, `process` |
-| handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `xml_reader`, `http`, `workbook` |
+| handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `gsql_connection`, `xml_reader`, `http`, `workbook` |
 <!--/TYPEKINDS-->
 
 **Two answers are not the word you wrote**, and both read as a bug in your own
