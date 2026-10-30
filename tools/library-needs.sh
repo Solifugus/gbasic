@@ -126,6 +126,7 @@ awk '
       else if (dep == "smtp")      c = "libcurl"
       else if (dep == "xml")       c = "libxml2"
       else if (dep == "webserver") c = ""     # always built; no dependency
+      else if (dep == "gsql")      c = ""     # built on every POSIX build; nothing to install
 
       if (c != "") {
           if (index(" " caps[lib] " ", " " c " ") == 0) caps[lib] = caps[lib] " " c

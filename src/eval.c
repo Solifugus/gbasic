@@ -194,10 +194,13 @@ typedef struct PgConnectionValue PgConnectionValue;
 typedef struct SqliteConnectionValue SqliteConnectionValue;
 typedef struct OdbcConnectionValue OdbcConnectionValue;
 typedef struct LdapConnectionValue LdapConnectionValue;
+typedef struct GsqlConnectionValue GsqlConnectionValue;
 
 /* LDAP result codes are the server's; this is the gBASIC-side error code, in
  * the module-error range beside odbc's 2003. */
 #define LDAP_ERROR_CODE 2004
+/* G-SQL's own code is in `error.details.code`, by name; this is the number. */
+#define GSQL_ERROR_CODE 2005
 typedef struct RegexValue RegexValue;
 typedef struct XlsxWorkbook XlsxWorkbook;
 typedef struct XmlReaderValue XmlReaderValue;
@@ -231,7 +234,8 @@ typedef enum {
     VALUE_FUNCTION,
     VALUE_REGEX,
     VALUE_WATCHER,
-    VALUE_WORKBOOK
+    VALUE_WORKBOOK,
+    VALUE_GSQL_CONNECTION
 } ValueKind;
 
 typedef enum {
@@ -362,6 +366,7 @@ struct Value {
         SqliteConnectionValue *sqlite_connection;
         OdbcConnectionValue *odbc_connection;
         LdapConnectionValue *ldap_connection;
+        GsqlConnectionValue *gsql_connection;
         RegexValue *regex;
         /* A first-class watcher value: an index into the global watcher
          * registry. Indices are stable because unwatch TOMBSTONES an entry
@@ -423,6 +428,20 @@ struct OdbcConnectionValue {
 #endif
     size_t ref_count;
     int closed;
+};
+
+/* A G-SQL connection (docs/gsql_module_design.md): one client of the
+ * database's owner. Declared whatever the build, so value_free and
+ * value_copy need no guard; only the client calls are G-SQL's. */
+struct GsqlClient;
+struct GsqlConnectionValue {
+    size_t ref_count;
+    int closed;
+    struct GsqlClient *client;
+    char *path;
+    /* the owner's argv, kept for as long as the client can reconnect */
+    char *exe;
+    const char *owner_argv[3];
 };
 
 struct LdapConnectionValue {
@@ -941,6 +960,7 @@ static UsePair *use_stack = NULL;
 static size_t use_stack_count = 0;
 static int pg_library_loaded = 0;
 static int sqlite_library_loaded = 0;
+static int gsql_library_loaded = 0;
 static int odbc_library_loaded = 0;
 static int webclient_library_loaded = 0;
 static int http_library_loaded = 0;
@@ -1014,6 +1034,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "odbc_connection";
     case VALUE_LDAP_CONNECTION:
         return "ldap_connection";
+    case VALUE_GSQL_CONNECTION:
+        return "gsql_connection";
     case VALUE_XML_READER:
         return "xml_reader";
     case VALUE_ACTOR:
@@ -2577,6 +2599,13 @@ static Value value_odbc_connection(OdbcConnectionValue *connection) {
     return value;
 }
 
+static Value value_gsql_connection(GsqlConnectionValue *connection) {
+    Value value = {0};
+    value.kind = VALUE_GSQL_CONNECTION;
+    value.as.gsql_connection = connection;
+    return value;
+}
+
 static Value value_ldap_connection(LdapConnectionValue *connection) {
     Value value = {0};
     value.kind = VALUE_LDAP_CONNECTION;
@@ -3508,6 +3537,10 @@ static int eval_result_exits_block(EvalResult result) {
 
 static Value value_copy(Value value);
 static void value_free(Value value);
+#if GBASIC_GSQL
+static void gsql_connection_shut(GsqlConnectionValue *c);
+static Value gsql_eval_call(AstExpr *expr);
+#endif
 
 /* --- PLAT-HTTP: handle registry and release ------------------------------
  *
@@ -4336,6 +4369,10 @@ static Value value_copy(Value value) {
         value.as.ldap_connection->ref_count++;
         return value_ldap_connection(value.as.ldap_connection);
     }
+    if (value.kind == VALUE_GSQL_CONNECTION) {
+        value.as.gsql_connection->ref_count++;
+        return value_gsql_connection(value.as.gsql_connection);
+    }
     if (value.kind == VALUE_XML_READER) {
         value.as.xml_reader->ref_count++;
         return value_xml_reader(value.as.xml_reader);
@@ -4434,6 +4471,16 @@ static void value_free(Value value) {
                 sqlite3_close(connection->connection);
             }
 #endif
+            free(connection);
+        }
+    } else if (value.kind == VALUE_GSQL_CONNECTION) {
+        GsqlConnectionValue *connection = value.as.gsql_connection;
+        if (connection && --connection->ref_count == 0) {
+#if GBASIC_GSQL
+            gsql_connection_shut(connection);
+#endif
+            free(connection->path);
+            free(connection->exe);
             free(connection);
         }
     } else if (value.kind == VALUE_LDAP_CONNECTION) {
@@ -4643,6 +4690,14 @@ static int value_truthy(Value value, int *raised) {
         runtime_error_raise("ldap connection cannot be used as a condition",
                             LDAP_ERROR_CODE,
                             "ldap");
+        if (raised) {
+            *raised = 1;
+        }
+        return 0;
+    case VALUE_GSQL_CONNECTION:
+        runtime_error_raise("gsql connection cannot be used as a condition",
+                            GSQL_ERROR_CODE,
+                            "gsql");
         if (raised) {
             *raised = 1;
         }
@@ -6014,6 +6069,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.odbc_connection == right->as.odbc_connection;
     case VALUE_LDAP_CONNECTION:
         return left->as.ldap_connection == right->as.ldap_connection;
+    case VALUE_GSQL_CONNECTION:
+        return left->as.gsql_connection == right->as.gsql_connection;
     case VALUE_XML_READER:
         return left->as.xml_reader == right->as.xml_reader;
     case VALUE_ACTOR:
@@ -8733,7 +8790,7 @@ static size_t library_name_count = 0;
  * directions are refused rather than silently not working. */
 static int library_is_native_qualifier(const char *name) {
     static const char *native[] = {
-        "http", "ldap", "money", "odbc", "pg", "process",
+        "gsql", "http", "ldap", "money", "odbc", "pg", "process",
         "qt", "reflect", "smtp", "sqlite", "this", "timer",
         "webclient", "webserver", "xlsx", "xml", NULL
     };
@@ -8785,6 +8842,9 @@ typedef struct {
 
 static const GbCapability gb_capability_table[] = {
     /* native qualifiers -- must match library_is_native_qualifier exactly */
+    /* a database in a file, served by an owner process this one starts:
+       the process is gbasic itself, never a program the caller names */
+    { "gsql",      "db fs:write" },
     { "http",      "net" },
     { "ldap",      "net" },
     { "money",     "" },
@@ -8889,7 +8949,7 @@ int eval_is_native_module(const char *name) {
  * not). */
 int eval_module_needs_load(const char *name) {
     static const char *loadable[] = {
-        "http", "ldap", "odbc", "pg", "smtp", "sqlite",
+        "gsql", "http", "ldap", "odbc", "pg", "smtp", "sqlite",
         "webclient", "webserver", "xml", NULL
     };
     if (!name) {
@@ -9016,6 +9076,17 @@ static void library_import(const char *name, const char *path, const char *alias
         runtime_error_raise("PostgreSQL support is not available in this build",
                             2001,
                             "postgres");
+#endif
+        return;
+    }
+
+    if (!path && strcmp(name, "gsql") == 0) {
+#if GBASIC_GSQL
+        gsql_library_loaded = 1;
+#else
+        runtime_error_raise("G-SQL is not yet available on this platform",
+                            GSQL_ERROR_CODE,
+                            "gsql");
 #endif
         return;
     }
@@ -13809,6 +13880,8 @@ static const char *builtin_type_name(Value value) {
         return "odbc_connection";
     case VALUE_LDAP_CONNECTION:
         return "ldap_connection";
+    case VALUE_GSQL_CONNECTION:
+        return "gsql_connection";
     case VALUE_XML_READER:
         return "xml_reader";
     case VALUE_ACTOR:
@@ -14495,6 +14568,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_LDAP_CONNECTION:
         value_free(value);
         return value_string("<ldap_connection>");
+    case VALUE_GSQL_CONNECTION:
+        value_free(value);
+        return value_string("<gsql_connection>");
     case VALUE_XML_READER:
         value_free(value);
         return value_string("<xml_reader>");
@@ -14634,6 +14710,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
     case VALUE_SQLITE_CONNECTION:
     case VALUE_ODBC_CONNECTION:
     case VALUE_LDAP_CONNECTION:
+    case VALUE_GSQL_CONNECTION:
     case VALUE_XML_READER:
     case VALUE_ACTOR:
     case VALUE_PROCESS:
@@ -15047,6 +15124,7 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
     case VALUE_SQLITE_CONNECTION:
     case VALUE_ODBC_CONNECTION:
     case VALUE_LDAP_CONNECTION:
+    case VALUE_GSQL_CONNECTION:
     case VALUE_XML_READER:
         runtime_error_raise("serialize: database connections cannot be serialized",
                             1003, "actor");
@@ -22939,7 +23017,7 @@ static void webserver_clear(void) {
  * Guarded by the UNION of the three modules rather than left unguarded, so a
  * build with no database at all carries no unused functions.
  */
-#if HAVE_SQLITE3 || HAVE_LIBPQ || HAVE_ODBC
+#if HAVE_SQLITE3 || HAVE_LIBPQ || HAVE_ODBC || GBASIC_GSQL
 /* THE STATEMENT THAT FAILED, appended to a database diagnostic (DOGFOOD 41).
  *
  * A database's own message names a column or a table and says nothing about
@@ -28859,6 +28937,7 @@ static const char *reflect_category(Value v) {
     case VALUE_SQLITE_CONNECTION:
     case VALUE_ODBC_CONNECTION:
     case VALUE_LDAP_CONNECTION:
+    case VALUE_GSQL_CONNECTION:
     case VALUE_XML_READER:
     case VALUE_WORKBOOK:
         return "foreign";
@@ -30602,6 +30681,21 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("XML support is not available in this build",
                                 5001,
                                 "xml");
+            return value_null();
+#endif
+        }
+
+        if (strcmp(expr->as.call.library, "gsql") == 0) {
+            if (!gsql_library_loaded) {
+                runtime_error_raise("library not loaded: gsql", GSQL_ERROR_CODE, "gsql");
+                return value_null();
+            }
+#if GBASIC_GSQL
+            return gsql_eval_call(expr);
+#else
+            runtime_error_raise("G-SQL is not yet available on this platform",
+                                GSQL_ERROR_CODE,
+                                "gsql");
             return value_null();
 #endif
         }
@@ -42314,6 +42408,7 @@ static void runtime_teardown(void) {
      * collision against a library nothing had loaded yet. */
     library_names_clear();
     pg_library_loaded = 0;
+    gsql_library_loaded = 0;
     webclient_library_loaded = 0;
     smtp_library_loaded = 0;
     webserver_library_loaded = 0;

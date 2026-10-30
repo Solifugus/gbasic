@@ -413,6 +413,552 @@ void gb_gsql_host_teardown(void) {
     gsql_nwarned = 0;
 }
 
+/* ===================== the `gsql` module: a program as a client ==========
+ * (docs/gsql_module_design.md). `load gsql`, then gsql.connect, query, exec,
+ * begin, commit, rollback and close. Every call is one request to the
+ * database's owner over the protocol (docs/gsql_owner_design.md), which this
+ * process starts as its child when no owner is running.
+ *
+ * REQUESTS AND REPLIES ARE gBASIC VALUES ON BOTH SIDES OF THE WIRE: a body is
+ * a record the interpreter builds and `serialize`s, and a reply is
+ * `deserialize`d back into one, so a parameter and a column value cross by the
+ * same codec rows are stored in (v3) and an exact integer, a money amount and
+ * a date arrive as what they were. */
+
+#include "gsql_client.h"
+
+/* rows asked for per batch: enough to amortise a round trip, small enough
+ * that a batch is never most of a frame */
+#define GSQL_MODULE_BATCH 500
+
+/* A refusal from G-SQL. `error.details.code` names it, so a program can tell a
+ * duplicate from a lost owner without reading English, and `position` says
+ * where in the statement when there is a place. */
+static void gsql_module_raise(const char *verb, const char *code, const char *message, long position,
+                              const char *sql) {
+    if (raise_in_flight) {
+        return;
+    }
+    char text[1024];
+    if (position > 0) {
+        snprintf(text, sizeof text, "gsql.%s: %s [%s at character %ld]", verb, message, code, position);
+    } else {
+        snprintf(text, sizeof text, "gsql.%s: %s [%s]", verb, message, code);
+    }
+    sql_append_statement(text, sizeof text, sql);
+    Value details = value_record(NULL, 0);
+    record_set(&details, "code", value_string(code));
+    if (position > 0) {
+        record_set(&details, "position", value_number_exact(position));
+    }
+    error_set_state_full(text, GSQL_ERROR_CODE, "gsql", details, value_null(), 0, 0);
+    error_generation++;
+    raise_in_flight = 1;
+}
+
+/* A misuse the module sees before anything is sent. */
+static void gsql_module_refuse(const char *message) {
+    runtime_error_raise(message, GSQL_ERROR_CODE, "gsql");
+}
+
+static void gsql_connection_shut(GsqlConnectionValue *c) {
+    if (c->client) {
+        gsql_client_close(c->client);
+        c->client = NULL;
+    }
+    c->closed = 1;
+}
+
+/* The connection in argument `index`, borrowed (the variable still holds it),
+ * or NULL with a raise. */
+static GsqlConnectionValue *gsql_connection_arg(AstExpr *expr, const char *verb) {
+    Value v = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(v);
+        return NULL;
+    }
+    char msg[160];
+    if (v.kind != VALUE_GSQL_CONNECTION) {
+        snprintf(msg, sizeof msg, "gsql.%s expects a gsql connection first, not %s", verb, value_kind_name(v.kind));
+        value_free(v);
+        gsql_module_refuse(msg);
+        return NULL;
+    }
+    GsqlConnectionValue *c = v.as.gsql_connection;
+    value_free(v);
+    if (c->closed) {
+        snprintf(msg, sizeof msg, "gsql.%s: this connection is closed", verb);
+        gsql_module_refuse(msg);
+        return NULL;
+    }
+    return c;
+}
+
+/* A string argument, owned, or NULL with a raise. */
+static char *gsql_text_arg(AstExpr *expr, size_t index, const char *verb, const char *what) {
+    Value v = eval_expr(expr->as.call.args.items[index]);
+    if (error_action_pending()) {
+        value_free(v);
+        return NULL;
+    }
+    if (v.kind != VALUE_STRING) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "gsql.%s expects %s as text, not %s", verb, what, value_kind_name(v.kind));
+        value_free(v);
+        gsql_module_refuse(msg);
+        return NULL;
+    }
+    if (memchr(v.as.string, 0, string_length(v.as.string))) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "gsql.%s: %s holds a NUL byte", verb, what);
+        value_free(v);
+        gsql_module_refuse(msg);
+        return NULL;
+    }
+    char *s = copy_string(v.as.string);
+    value_free(v);
+    return s;
+}
+
+static Value *gsql_field(Value *record, const char *name) {
+    RecordField *f = record_find(record, name);
+    return (f && f->value) ? f->value : NULL;
+}
+
+/* One request and its reply. 1 with *reply (a record) and *type; 0 with a
+ * raise, the owner's own ERROR included. */
+static int gsql_request(GsqlConnectionValue *c, unsigned type, Value body, const char *verb, const char *sql,
+                        Value *reply, unsigned *reply_type) {
+    *reply = value_null();
+    SerBuf sb;
+    serbuf_init(&sb);
+    int ok = serialize_value(&sb, body, 0);
+    value_free(body);
+    if (!ok || error_action_pending()) {
+        free(sb.bytes);
+        return 0;
+    }
+    GsqlBuf b = { (unsigned char *)sb.bytes, sb.length, sb.capacity };
+    GsqlFrame f;
+    GsqlError err;
+    memset(&err, 0, sizeof err);
+    int rc = gsql_client_call(c->client, type, &b, &f, &err);
+    free(sb.bytes);
+    if (rc) {
+        gsql_module_raise(verb, gsql_error_name(err.code), err.message, 0, sql);
+        return 0;
+    }
+    SerReader r = { (const char *)f.body, f.length, 0, 1, SER_VERSION };
+    Value v = deserialize_value(&r, 0);
+    if (error_action_pending()) {
+        value_free(v);
+        return 0;
+    }
+    if (!r.ok || r.pos != f.length || v.kind != VALUE_RECORD) {
+        value_free(v);
+        gsql_module_raise(verb, "PROTOCOL", "the owner answered with a body this client cannot read", 0, sql);
+        return 0;
+    }
+    if (f.type == GSQL_M_ERROR) {
+        Value *code = gsql_field(&v, "code");
+        Value *message = gsql_field(&v, "message");
+        Value *position = gsql_field(&v, "position");
+        gsql_module_raise(verb, code && code->kind == VALUE_STRING ? code->as.string : "?",
+                          message && message->kind == VALUE_STRING ? message->as.string : "(no message)",
+                          position && position->kind == VALUE_NUMBER ? (long)position->as.num.value : 0, sql);
+        value_free(v);
+        return 0;
+    }
+    *reply = v;
+    *reply_type = f.type;
+    return 1;
+}
+
+/* --- connect --------------------------------------------------------------- */
+
+static Value gsql_eval_connect(AstExpr *expr) {
+    size_t argc = expr->as.call.args.count;
+    if (argc < 1 || argc > 2) {
+        gsql_module_refuse("gsql.connect expects a database path, and optionally { create: true }");
+        return value_null();
+    }
+    Value p = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(p);
+        return value_null();
+    }
+    const char *text = p.kind == VALUE_STRING ? p.as.string : p.kind == VALUE_FILE ? p.as.file_path
+                     : p.kind == VALUE_DIR ? p.as.dir_path : NULL;
+    if (!text || !*text) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "gsql.connect expects a database path as text, not %s",
+                 text ? "empty text" : value_kind_name(p.kind));
+        value_free(p);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    if (p.kind == VALUE_STRING && memchr(p.as.string, 0, string_length(p.as.string))) {
+        value_free(p);
+        gsql_module_refuse("gsql.connect: the path holds a NUL byte");
+        return value_null();
+    }
+    char *path = copy_string(text);
+    value_free(p);
+    int create = 0;
+    if (argc == 2) {
+        Value o = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(o);
+            free(path);
+            return value_null();
+        }
+        if (o.kind != VALUE_RECORD) {
+            char msg[200];
+            snprintf(msg, sizeof msg, "gsql.connect expects its options as a record, not %s", value_kind_name(o.kind));
+            value_free(o);
+            free(path);
+            gsql_module_refuse(msg);
+            return value_null();
+        }
+        /* the option set is closed: a misspelt `create` would otherwise be a
+           connect that silently refuses to make the database it was asked to */
+        RecordField *fields = o.as.record.fields;
+        for (size_t i = 0; i < o.as.record.count; i++) {
+            if (strcmp(fields[i].name, "create") != 0) {
+                char msg[300];
+                snprintf(msg, sizeof msg, "gsql.connect has no option `%s`; the one option is `create`",
+                         fields[i].name);
+                value_free(o);
+                free(path);
+                gsql_module_refuse(msg);
+                return value_null();
+            }
+            if (fields[i].value->kind != VALUE_BOOL) {
+                value_free(o);
+                free(path);
+                gsql_module_refuse("gsql.connect: `create` must be true or false");
+                return value_null();
+            }
+            create = fields[i].value->as.boolean;
+        }
+        value_free(o);
+    }
+    char exe[4096];
+    if (!gb_exe_path(exe, sizeof exe)) {
+        free(path);
+        gsql_module_raise("connect", "NO_OWNER", "this interpreter cannot find its own executable, which it runs as "
+                          "the database's owner", 0, NULL);
+        return value_null();
+    }
+    GsqlConnectionValue *c = calloc(1, sizeof *c);
+    if (!c) {
+        abort();
+    }
+    c->ref_count = 1;
+    c->path = path;
+    c->exe = copy_string(exe);
+    c->owner_argv[0] = c->exe;
+    c->owner_argv[1] = "--gsql-owner";
+    c->owner_argv[2] = NULL;
+    GsqlClientOptions opt;
+    memset(&opt, 0, sizeof opt);
+    opt.owner_argv = c->owner_argv;
+    opt.create = create;
+    opt.name = "gbasic";
+    GsqlError err;
+    memset(&err, 0, sizeof err);
+    if (gsql_client_open(c->path, &opt, &c->client, &err)) {
+        char msg[700];
+        if (err.code == GSQL_NOT_FOUND && !create) {
+            snprintf(msg, sizeof msg, "there is no database at %s; give { create: true } to make one", c->path);
+        } else {
+            snprintf(msg, sizeof msg, "%s", err.message);
+        }
+        gsql_module_raise("connect", gsql_error_name(err.code), msg, 0, NULL);
+        c->closed = 1;
+        Value dead = value_gsql_connection(c);
+        value_free(dead);
+        return value_null();
+    }
+    return value_gsql_connection(c);
+}
+
+/* --- statements ------------------------------------------------------------- */
+
+/* The request for one statement; parameters, when given, are the third
+ * argument: a record names them (:name), an array numbers them ($1). */
+static int gsql_statement_body(AstExpr *expr, const char *verb, char **sql, Value *body) {
+    size_t argc = expr->as.call.args.count;
+    if (argc < 2 || argc > 3) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "gsql.%s expects a connection, a statement, and optionally its parameters", verb);
+        gsql_module_refuse(msg);
+        return 0;
+    }
+    *sql = gsql_text_arg(expr, 1, verb, "the statement");
+    if (!*sql) {
+        return 0;
+    }
+    *body = value_record(NULL, 0);
+    record_set(body, "statement", value_string(*sql));
+    if (argc == 3) {
+        Value params = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(params);
+            value_free(*body);
+            free(*sql);
+            return 0;
+        }
+        if (params.kind != VALUE_RECORD && params.kind != VALUE_ARRAY) {
+            char msg[300];
+            snprintf(msg, sizeof msg,
+                     "gsql.%s expects its parameters as a record (for :name) or an array (for $1, $2, ...), not %s",
+                     verb, value_kind_name(params.kind));
+            value_free(params);
+            value_free(*body);
+            free(*sql);
+            gsql_module_refuse(msg);
+            return 0;
+        }
+        record_set(body, "parameters", params);
+    }
+    record_set(body, "batch", value_number_exact(GSQL_MODULE_BATCH));
+    return 1;
+}
+
+static void gsql_cursor_close(GsqlConnectionValue *c, Value *rows_reply) {
+    Value *cur = gsql_field(rows_reply, "cursor");
+    if (!cur) {
+        return;
+    }
+    Value body = value_record(NULL, 0);
+    record_set(&body, "cursor", value_copy(*cur));
+    Value reply;
+    unsigned type;
+    if (gsql_request(c, GSQL_M_CLOSE, body, "close", NULL, &reply, &type)) {
+        value_free(reply);
+    }
+}
+
+static Value gsql_eval_query(AstExpr *expr) {
+    GsqlConnectionValue *c = expr->as.call.args.count >= 1 ? gsql_connection_arg(expr, "query") : NULL;
+    if (!c) {
+        if (expr->as.call.args.count < 1) {
+            gsql_module_refuse("gsql.query expects a connection, a statement, and optionally its parameters");
+        }
+        return value_null();
+    }
+    char *sql;
+    Value body;
+    if (!gsql_statement_body(expr, "query", &sql, &body)) {
+        return value_null();
+    }
+    Value reply;
+    unsigned type;
+    if (!gsql_request(c, GSQL_M_QUERY, body, "query", sql, &reply, &type)) {
+        free(sql);
+        return value_null();
+    }
+    if (type != GSQL_M_ROWS) {
+        /* it RAN: say so, rather than let a refusal read as "nothing happened" */
+        Value *n = gsql_field(&reply, "rows");
+        char msg[200];
+        if (n && n->kind == VALUE_NUMBER) {
+            snprintf(msg, sizeof msg, "the statement returns no rows (it ran, and affected %lld); use gsql.exec for it",
+                     (long long)n->as.num.value);
+        } else {
+            snprintf(msg, sizeof msg, "the statement returns no rows (it ran); use gsql.exec for it");
+        }
+        value_free(reply);
+        gsql_module_raise("query", "STATE", msg, 0, sql);
+        free(sql);
+        return value_null();
+    }
+    /* the column names, once: two the same would make a record that keeps one
+       and silently drops the other */
+    Value *cols = gsql_field(&reply, "columns");
+    size_t ncols = cols && cols->kind == VALUE_ARRAY ? cols->as.array.store->count : 0;
+    char **names = calloc(ncols ? ncols : 1, sizeof *names);
+    if (!names) {
+        abort();
+    }
+    for (size_t i = 0; i < ncols; i++) {
+        Value col = cols->as.array.store->items[i];
+        Value *nm = col.kind == VALUE_RECORD ? gsql_field(&col, "name") : NULL;
+        names[i] = nm && nm->kind == VALUE_STRING ? nm->as.string : "?";
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(names[i], names[j]) == 0) {
+                char msg[300];
+                snprintf(msg, sizeof msg, "two result columns are named `%s`, and a row is a record; give one of them "
+                         "another name with AS", names[i]);
+                gsql_cursor_close(c, &reply);
+                value_free(reply);
+                free(names);
+                gsql_module_raise("query", "DUPLICATE", msg, 0, sql);
+                free(sql);
+                return value_null();
+            }
+        }
+    }
+    Value out = value_array(NULL, 0);
+    Value batch = reply;      /* the first batch is the reply itself */
+    int owned = 0;            /* whether `batch` is a later one, to free */
+    for (;;) {
+        Value *rows = gsql_field(&batch, "rows");
+        if (rows && rows->kind == VALUE_ARRAY) {
+            for (size_t r = 0; r < rows->as.array.store->count; r++) {
+                Value row = rows->as.array.store->items[r];
+                Value rec = value_record(NULL, 0);
+                size_t n = row.kind == VALUE_ARRAY ? row.as.array.store->count : 0;
+                for (size_t k = 0; k < ncols && k < n; k++) {
+                    record_set(&rec, names[k], value_copy(row.as.array.store->items[k]));
+                }
+                Value grown = append_to_array_ref(&out, rec, 0);
+                value_free(grown);
+            }
+        }
+        Value *cur = gsql_field(&batch, "cursor");
+        if (!cur) {
+            break;
+        }
+        Value fetch = value_record(NULL, 0);
+        record_set(&fetch, "cursor", value_copy(*cur));
+        record_set(&fetch, "count", value_number_exact(GSQL_MODULE_BATCH));
+        if (owned) {
+            value_free(batch);
+        }
+        owned = 0;
+        Value next;
+        if (!gsql_request(c, GSQL_M_FETCH, fetch, "query", sql, &next, &type)) {
+            break;
+        }
+        batch = next;
+        owned = 1;
+    }
+    if (owned) {
+        value_free(batch);
+    }
+    free(names);
+    value_free(reply);
+    free(sql);
+    if (error_action_pending()) {
+        value_free(out);
+        return value_null();
+    }
+    return out;
+}
+
+static Value gsql_eval_exec(AstExpr *expr) {
+    GsqlConnectionValue *c = expr->as.call.args.count >= 1 ? gsql_connection_arg(expr, "exec") : NULL;
+    if (!c) {
+        if (expr->as.call.args.count < 1) {
+            gsql_module_refuse("gsql.exec expects a connection, a statement, and optionally its parameters");
+        }
+        return value_null();
+    }
+    char *sql;
+    Value body;
+    if (!gsql_statement_body(expr, "exec", &sql, &body)) {
+        return value_null();
+    }
+    Value reply;
+    unsigned type;
+    if (!gsql_request(c, GSQL_M_QUERY, body, "exec", sql, &reply, &type)) {
+        free(sql);
+        return value_null();
+    }
+    if (type == GSQL_M_ROWS) {
+        gsql_cursor_close(c, &reply);
+        value_free(reply);
+        gsql_module_raise("exec", "STATE", "the statement returns rows; use gsql.query for it", 0, sql);
+        free(sql);
+        return value_null();
+    }
+    Value *n = gsql_field(&reply, "rows");
+    char *command = sql_command_name(sql);
+    Value result = value_record(NULL, 0);
+    record_set(&result, "command", value_string(command));
+    /* a count only where one means something, the rule sqlite, pg and odbc
+       share: a CREATE has no rows to have affected */
+    record_set(&result, "rows_affected",
+               sql_command_counts_rows(command) && n ? value_copy(*n) : value_null());
+    free(command);
+    value_free(reply);
+    free(sql);
+    return result;
+}
+
+/* --- transactions and close --------------------------------------------------- */
+
+static Value gsql_eval_simple(AstExpr *expr, const char *verb, unsigned type) {
+    size_t argc = expr->as.call.args.count;
+    size_t most = type == GSQL_M_BEGIN ? 2 : 1;
+    if (argc < 1 || argc > most) {
+        char msg[200];
+        snprintf(msg, sizeof msg, type == GSQL_M_BEGIN ? "gsql.begin expects a connection, and optionally \"read\" or \"write\""
+                                                       : "gsql.%s expects one connection", verb);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    GsqlConnectionValue *c = gsql_connection_arg(expr, verb);
+    if (!c) {
+        return value_null();
+    }
+    Value body = value_record(NULL, 0);
+    if (type == GSQL_M_BEGIN) {
+        char *mode = argc == 2 ? gsql_text_arg(expr, 1, verb, "the mode") : copy_string("write");
+        if (!mode) {
+            value_free(body);
+            return value_null();
+        }
+        if (strcmp(mode, "read") != 0 && strcmp(mode, "write") != 0) {
+            char msg[200];
+            snprintf(msg, sizeof msg, "gsql.begin: the mode is \"read\" or \"write\", not \"%.60s\"", mode);
+            free(mode);
+            value_free(body);
+            gsql_module_refuse(msg);
+            return value_null();
+        }
+        record_set(&body, "mode", value_string(mode));
+        free(mode);
+    }
+    Value reply;
+    unsigned rtype;
+    if (!gsql_request(c, type, body, verb, NULL, &reply, &rtype)) {
+        return value_null();
+    }
+    value_free(reply);
+    return value_bool(1);
+}
+
+static Value gsql_eval_close(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        gsql_module_refuse("gsql.close expects one connection");
+        return value_null();
+    }
+    GsqlConnectionValue *c = gsql_connection_arg(expr, "close");
+    if (!c) {
+        return value_null();
+    }
+    gsql_connection_shut(c);
+    return value_bool(1);
+}
+
+static Value gsql_eval_call(AstExpr *expr) {
+    const char *fn = expr->as.call.name;
+    if (strcmp(fn, "connect") == 0) return gsql_eval_connect(expr);
+    if (strcmp(fn, "query") == 0) return gsql_eval_query(expr);
+    if (strcmp(fn, "exec") == 0) return gsql_eval_exec(expr);
+    if (strcmp(fn, "begin") == 0) return gsql_eval_simple(expr, "begin", GSQL_M_BEGIN);
+    if (strcmp(fn, "commit") == 0) return gsql_eval_simple(expr, "commit", GSQL_M_COMMIT);
+    if (strcmp(fn, "rollback") == 0) return gsql_eval_simple(expr, "rollback", GSQL_M_ROLLBACK);
+    if (strcmp(fn, "close") == 0) return gsql_eval_close(expr);
+    char message[256];
+    module_unknown_verb(message, sizeof(message), "gsql", fn);
+    gsql_module_refuse(message);
+    return value_null();
+}
+
 #ifndef _WIN32
 /* `gbasic --gsql-owner DB FD MODE`: the owner process a client starts
  * (docs/gsql_owner_design.md §6), serving the SQL layer over this host. */
