@@ -684,6 +684,8 @@ typedef struct {
  * its own token because sharing the server block's `IDENT IDENT (` head costs
  * 2 reduce/reduce; with it, the block measures ZERO. Nothing is reserved. */
 %token WINDOW_OPEN
+%token DATABASE_OPEN SQL_OPEN
+%token <text> SQL_TEXT
 /* `as` reaches the parser ONLY as a field name; everywhere else it is consumed
  * by the lexer's modifier/lens modes. Declared so it can join field_name --
  * before this it fell through to the token mapper's default arm and was
@@ -738,6 +740,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %type <window_item> window_item
 %type <window_item_list> window_item_list
 %type <stmt> window_block
+%type <stmt> gsql_block
 %type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement unwatch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement server_statement
 %type <server_item> server_item
 %type <server_item_list> server_item_list
@@ -809,6 +812,7 @@ statement
     | call_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | with_lock_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | window_block { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | gsql_block { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | for_each_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | while_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | do_loop_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -1308,6 +1312,23 @@ server_statement
  * discipline that makes the server block cost zero conflicts, and obeying it is
  * why `stretch()` carries parentheses and why options are always parenthesised.
  * Ten shapes were measured; see docs/qt_gui_design.md §5.2 for all of them. */
+/* G-SQL'S TWO DECLARATIONS (docs/gsql_module_design.md §7). Both heads are
+ * lexer triggers, so neither word is reserved; the `sql` body arrives as ONE
+ * token of raw SQL, parsed later by G-SQL's own parser, so SQL's grammar never
+ * meets this one. */
+gsql_block
+    : DATABASE_OPEN IDENT LPAREN record_field_list RPAREN NEWLINE {
+        $$ = ast_database($2, $4, @1.first_line, @1.first_column);
+      }
+    | DATABASE_OPEN IDENT LPAREN RPAREN NEWLINE {
+        $$ = ast_database($2, ast_record_field_list_empty(), @1.first_line, @1.first_column);
+      }
+    | SQL_OPEN IDENT ON IDENT NEWLINE SQL_TEXT END IDENT NEWLINE {
+        free($8);
+        $$ = ast_sql($2, $4, $6, @6.first_line, @6.first_column, @1.first_line, @1.first_column);
+      }
+    ;
+
 window_block
     : WINDOW_OPEN IDENT LPAREN record_field_list RPAREN NEWLINE window_item_list END IDENT NEWLINE {
         ctx->window_depth--;
@@ -2537,6 +2558,11 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
          * costs nothing. It is lowered at each block's reduction. */
         ctx->window_depth++;
         return WINDOW_OPEN;
+    case TOKEN_DATABASE_OPEN: return DATABASE_OPEN;
+    case TOKEN_SQL_OPEN: return SQL_OPEN;
+    case TOKEN_SQL_TEXT:
+        lvalp->text = copy_text(token.start, token.length);
+        return SQL_TEXT;
     case TOKEN_LBRACE: return LBRACE;
     case TOKEN_RBRACE: return RBRACE;
     case TOKEN_DOT: return DOT;

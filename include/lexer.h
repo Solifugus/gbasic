@@ -109,6 +109,15 @@ typedef enum {
      * `IDENT IDENT ( ... ) NEWLINE` the parser cannot tell which body is
      * coming (measured; bison's counterexample names exactly that). */
     TOKEN_WINDOW_OPEN,
+    /* G-SQL's two declarations (docs/gsql_module_design.md §7), and nothing is
+     * reserved for them either. `database IDENT (` opens a database
+     * declaration; `sql IDENT on IDENT` at the end of a line opens a statement
+     * block, whose BODY then arrives as ONE TOKEN_SQL_TEXT holding the raw SQL
+     * up to the line reading `end sql`. The body is SQL, parsed by G-SQL's own
+     * parser, so SQL's words are never gBASIC's. */
+    TOKEN_DATABASE_OPEN,
+    TOKEN_SQL_OPEN,
+    TOKEN_SQL_TEXT,
     TOKEN_LBRACE,
     TOKEN_RBRACE,
     TOKEN_COMMA,
@@ -146,6 +155,10 @@ typedef struct {
     int bracket_depth;
     int bracket_lines[GBASIC_BRACKET_STACK];
     char bracket_chars[GBASIC_BRACKET_STACK];
+    /* An `sql` block's body: 1 once the head is lexed, 2 once its line has
+     * ended, when the next token is the raw body. */
+    int sql_body_pending;
+    int sql_open_line;
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);

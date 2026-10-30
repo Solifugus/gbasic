@@ -82,6 +82,7 @@ const char *gb_diag_code_str(gb_diag_code code) {
     case GB_DIAG_STRING_LITERAL: return "GB_DIAG_STRING_LITERAL";
     case GB_DIAG_SERVER_BLOCK:   return "GB_DIAG_SERVER_BLOCK";
     case GB_DIAG_WINDOW_BLOCK:   return "GB_DIAG_WINDOW_BLOCK";
+    case GB_DIAG_GSQL_BLOCK:     return "GB_DIAG_GSQL_BLOCK";
     case GB_DIAG_RUNTIME_ERROR:  return "GB_DIAG_RUNTIME_ERROR";
     }
     return "GB_DIAG_UNKNOWN";
@@ -121,6 +122,7 @@ const char *gb_diag_kind_str(gb_diag_code code) {
      * author it is the same thing: the file did not load and the position says
      * why. The server block set that precedent. */
     case GB_DIAG_WINDOW_BLOCK:   return "parse error";
+    case GB_DIAG_GSQL_BLOCK:     return "parse error";
     case GB_DIAG_LEX_DETAIL:
     case GB_DIAG_STRING_LITERAL:
     case GB_DIAG_RUNTIME_ERROR:  return "runtime error";

@@ -57,8 +57,15 @@ status=0
 # position-blind for the same reason a `server` one is -- the block may sit
 # beside `program main` and be named from inside it -- and its head options are
 # literals, enforced at load time, so registering it runs no user code.
-EXPECTED_KINDS='AST_STMT_FUNCTION AST_STMT_MODIFIER AST_STMT_PROGRAM AST_STMT_SERVER AST_STMT_USE AST_STMT_WINDOW'
-EXPECTED_CALLS='function_register library_import modifier_register register_hoistable_declarations register_method_bodies_in server_register window_register'
+# AST_STMT_DATABASE and AST_STMT_SQL joined it 2026-10-30, G-SQL's two
+# declarations (docs/gsql_module_design.md §7), and this suite went red naming
+# both sets before anything was committed. Position-blind for the window
+# block's reason, and registering either runs no user code: a database
+# connects on FIRST USE, so the hoist starts no owner. gBASIC Studio's STU-4B
+# mirror (a separate project) has to gain both kinds; that is recorded in the
+# commit, since this repo cannot edit it.
+EXPECTED_KINDS='AST_STMT_DATABASE AST_STMT_FUNCTION AST_STMT_MODIFIER AST_STMT_PROGRAM AST_STMT_SERVER AST_STMT_SQL AST_STMT_USE AST_STMT_WINDOW'
+EXPECTED_CALLS='database_register function_register library_import modifier_register register_hoistable_declarations register_method_bodies_in server_register sql_register window_register'
 
 # Comment lines are stripped: the set is a fact about CODE, and a comment that
 # happens to name `function_register_def` should not enter the contract.

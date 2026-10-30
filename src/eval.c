@@ -195,6 +195,7 @@ typedef struct SqliteConnectionValue SqliteConnectionValue;
 typedef struct OdbcConnectionValue OdbcConnectionValue;
 typedef struct LdapConnectionValue LdapConnectionValue;
 typedef struct GsqlConnectionValue GsqlConnectionValue;
+typedef struct GsqlStatementValue GsqlStatementValue;
 
 /* LDAP result codes are the server's; this is the gBASIC-side error code, in
  * the module-error range beside odbc's 2003. */
@@ -235,7 +236,8 @@ typedef enum {
     VALUE_REGEX,
     VALUE_WATCHER,
     VALUE_WORKBOOK,
-    VALUE_GSQL_CONNECTION
+    VALUE_GSQL_CONNECTION,
+    VALUE_GSQL_STATEMENT
 } ValueKind;
 
 typedef enum {
@@ -367,6 +369,7 @@ struct Value {
         OdbcConnectionValue *odbc_connection;
         LdapConnectionValue *ldap_connection;
         GsqlConnectionValue *gsql_connection;
+        GsqlStatementValue *gsql_statement;
         RegexValue *regex;
         /* A first-class watcher value: an index into the global watcher
          * registry. Indices are stable because unwatch TOMBSTONES an entry
@@ -442,6 +445,24 @@ struct GsqlConnectionValue {
     /* the owner's argv, kept for as long as the client can reconnect */
     char *exe;
     const char *owner_argv[3];
+    /* A `database` block's connection (docs/gsql_module_design.md §7) is made
+     * when the block is declared and CONNECTS ON FIRST USE, so a program that
+     * declares a database and never touches it starts no owner. `create` is
+     * the head's option; `decl` is the declaring statement, so reaching the
+     * statement again keeps the connection rather than replacing it. */
+    int create;
+    const void *decl;
+};
+
+/* An `sql` block: its statement, the database it is on (by NAME, looked up in
+ * the global frame when it runs), and its :name parameters in order. */
+struct GsqlStatementValue {
+    size_t ref_count;
+    char *name;
+    char *database;
+    char *sql;
+    char **params;
+    size_t nparams;
 };
 
 struct LdapConnectionValue {
@@ -1036,6 +1057,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "ldap_connection";
     case VALUE_GSQL_CONNECTION:
         return "gsql_connection";
+    case VALUE_GSQL_STATEMENT:
+        return "gsql_statement";
     case VALUE_XML_READER:
         return "xml_reader";
     case VALUE_ACTOR:
@@ -2606,6 +2629,13 @@ static Value value_gsql_connection(GsqlConnectionValue *connection) {
     return value;
 }
 
+static Value value_gsql_statement(GsqlStatementValue *statement) {
+    Value value = {0};
+    value.kind = VALUE_GSQL_STATEMENT;
+    value.as.gsql_statement = statement;
+    return value;
+}
+
 static Value value_ldap_connection(LdapConnectionValue *connection) {
     Value value = {0};
     value.kind = VALUE_LDAP_CONNECTION;
@@ -3540,6 +3570,11 @@ static void value_free(Value value);
 #if GBASIC_GSQL
 static void gsql_connection_shut(GsqlConnectionValue *c);
 static Value gsql_eval_call(AstExpr *expr);
+struct GsqlRows;
+static struct GsqlRows *gsql_block_rows(const GsqlStatementValue *st);
+static int gsql_rows_next(struct GsqlRows *r, Value *row);
+static void gsql_rows_end(struct GsqlRows *r);
+static char **gsql_statement_params(const char *sql, size_t *count);
 #endif
 
 /* --- PLAT-HTTP: handle registry and release ------------------------------
@@ -4373,6 +4408,10 @@ static Value value_copy(Value value) {
         value.as.gsql_connection->ref_count++;
         return value_gsql_connection(value.as.gsql_connection);
     }
+    if (value.kind == VALUE_GSQL_STATEMENT) {
+        value.as.gsql_statement->ref_count++;
+        return value_gsql_statement(value.as.gsql_statement);
+    }
     if (value.kind == VALUE_XML_READER) {
         value.as.xml_reader->ref_count++;
         return value_xml_reader(value.as.xml_reader);
@@ -4482,6 +4521,18 @@ static void value_free(Value value) {
             free(connection->path);
             free(connection->exe);
             free(connection);
+        }
+    } else if (value.kind == VALUE_GSQL_STATEMENT) {
+        GsqlStatementValue *statement = value.as.gsql_statement;
+        if (statement && --statement->ref_count == 0) {
+            free(statement->name);
+            free(statement->database);
+            free(statement->sql);
+            for (size_t i = 0; i < statement->nparams; i++) {
+                free(statement->params[i]);
+            }
+            free(statement->params);
+            free(statement);
         }
     } else if (value.kind == VALUE_LDAP_CONNECTION) {
         LdapConnectionValue *connection = value.as.ldap_connection;
@@ -4690,6 +4741,14 @@ static int value_truthy(Value value, int *raised) {
         runtime_error_raise("ldap connection cannot be used as a condition",
                             LDAP_ERROR_CODE,
                             "ldap");
+        if (raised) {
+            *raised = 1;
+        }
+        return 0;
+    case VALUE_GSQL_STATEMENT:
+        runtime_error_raise("an sql block cannot be used as a condition",
+                            GSQL_ERROR_CODE,
+                            "gsql");
         if (raised) {
             *raised = 1;
         }
@@ -6071,6 +6130,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.ldap_connection == right->as.ldap_connection;
     case VALUE_GSQL_CONNECTION:
         return left->as.gsql_connection == right->as.gsql_connection;
+    case VALUE_GSQL_STATEMENT:
+        return left->as.gsql_statement == right->as.gsql_statement;
     case VALUE_XML_READER:
         return left->as.xml_reader == right->as.xml_reader;
     case VALUE_ACTOR:
@@ -13882,6 +13943,8 @@ static const char *builtin_type_name(Value value) {
         return "ldap_connection";
     case VALUE_GSQL_CONNECTION:
         return "gsql_connection";
+    case VALUE_GSQL_STATEMENT:
+        return "gsql_statement";
     case VALUE_XML_READER:
         return "xml_reader";
     case VALUE_ACTOR:
@@ -14571,6 +14634,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_GSQL_CONNECTION:
         value_free(value);
         return value_string("<gsql_connection>");
+    case VALUE_GSQL_STATEMENT:
+        value_free(value);
+        return value_string("<gsql_statement>");
     case VALUE_XML_READER:
         value_free(value);
         return value_string("<xml_reader>");
@@ -14711,6 +14777,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
     case VALUE_ODBC_CONNECTION:
     case VALUE_LDAP_CONNECTION:
     case VALUE_GSQL_CONNECTION:
+    case VALUE_GSQL_STATEMENT:
     case VALUE_XML_READER:
     case VALUE_ACTOR:
     case VALUE_PROCESS:
@@ -15128,6 +15195,10 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
     case VALUE_XML_READER:
         runtime_error_raise("serialize: database connections cannot be serialized",
                             1003, "actor");
+        return 0;
+    case VALUE_GSQL_STATEMENT:
+        runtime_error_raise("serialize: an sql block cannot be serialized -- it names a "
+                            "database this process holds", 1003, "actor");
         return 0;
     case VALUE_PROCESS:
         /* A process handle owns pipe fds and a wait(2) relationship that only the
@@ -28938,6 +29009,7 @@ static const char *reflect_category(Value v) {
     case VALUE_ODBC_CONNECTION:
     case VALUE_LDAP_CONNECTION:
     case VALUE_GSQL_CONNECTION:
+    case VALUE_GSQL_STATEMENT:
     case VALUE_XML_READER:
     case VALUE_WORKBOOK:
         return "foreign";
@@ -29520,6 +29592,12 @@ static void outline_walk_stmt(OutlineCtx *c, AstStmt *stmt, int parent_id) {
         (void)id;
         break;
     }
+    case AST_STMT_DATABASE:
+        outline_emit(c, stmt, "database", stmt->as.database.name, 1, 0, 0, parent_id);
+        break;
+    case AST_STMT_SQL:
+        outline_emit(c, stmt, "sql", stmt->as.sql.name, 1, 0, 0, parent_id);
+        break;
     case AST_STMT_SERVER: {
         int id = outline_emit(c, stmt, "server", stmt->as.server.name, 1, 0, 0,
                               parent_id);
@@ -40821,6 +40899,85 @@ static void window_register(AstStmt *stmt) {
     env_set(stmt->as.window.name, window_build_value(stmt));
 }
 
+/* G-SQL'S DECLARATIONS (docs/gsql_module_design.md §7).
+ *
+ * `database shop( file: "shop.gsql" )` binds `shop` to a connection that
+ * CONNECTS ON FIRST USE: declaring a database starts no owner, and a program
+ * that never touches it never reaches one. `sql cheap on shop ... end sql`
+ * binds `cheap` to the statement, which runs each time it is iterated or
+ * handed to gsql.query/exec, reading each :name parameter from the variable of
+ * that name where it runs. The load-time pass (frontend.c) has already checked
+ * the head, the statement's syntax and that `on shop` names a declaration. */
+
+static const char *gsql_decl_option_text(const AstRecordFieldList *options, const char *name) {
+    for (size_t i = 0; i < options->count; i++) {
+        if (strcmp(options->items[i].name, name) == 0 && options->items[i].value &&
+            options->items[i].value->kind == AST_EXPR_STRING) {
+            return options->items[i].value->as.string;
+        }
+    }
+    return NULL;
+}
+
+/* A `database` or `sql` block is the gsql module's, so a program holding one
+ * loads it -- which is also what a scan of a program's `load` lines sees. */
+static int gsql_decl_require_loaded(const AstStmt *stmt) {
+#if GBASIC_GSQL
+    if (gsql_library_loaded) {
+        return 1;
+    }
+#endif
+    int line = current_line, column = current_column;
+    current_line = stmt->line;
+    current_column = stmt->column;
+    char msg[200];
+    snprintf(msg, sizeof msg, "a `%s` block is G-SQL's, and this program does not `load gsql`",
+             stmt->kind == AST_STMT_SQL ? "sql" : "database");
+    runtime_error_raise(msg, GSQL_ERROR_CODE, "gsql");
+    current_line = line;
+    current_column = column;
+    return 0;
+}
+
+static void database_register(AstStmt *stmt) {
+    Symbol *sym = env_find_in_frame(current_env, stmt->as.database.name);
+    if (sym && sym->value.kind == VALUE_GSQL_CONNECTION && sym->value.as.gsql_connection->decl == stmt) {
+        /* reached after the hoist bound it: keep the connection, and any
+           transaction on it */
+        return;
+    }
+    GsqlConnectionValue *c = calloc(1, sizeof *c);
+    if (!c) {
+        abort();
+    }
+    c->ref_count = 1;
+    const char *file = gsql_decl_option_text(&stmt->as.database.options, "file");
+    c->path = copy_string(file ? file : "");
+    for (size_t i = 0; i < stmt->as.database.options.count; i++) {
+        AstRecordField *f = &stmt->as.database.options.items[i];
+        if (strcmp(f->name, "create") == 0 && f->value && f->value->kind == AST_EXPR_BOOL) {
+            c->create = f->value->as.boolean;
+        }
+    }
+    c->decl = stmt;
+    env_set(stmt->as.database.name, value_gsql_connection(c));
+}
+
+static void sql_register(AstStmt *stmt) {
+    GsqlStatementValue *st = calloc(1, sizeof *st);
+    if (!st) {
+        abort();
+    }
+    st->ref_count = 1;
+    st->name = copy_string(stmt->as.sql.name);
+    st->database = copy_string(stmt->as.sql.database);
+    st->sql = copy_string(stmt->as.sql.text);
+#if GBASIC_GSQL
+    st->params = gsql_statement_params(st->sql, &st->nparams);
+#endif
+    env_set(stmt->as.sql.name, value_gsql_statement(st));
+}
+
 static void server_register(AstStmt *stmt) {
     server_register_scope(stmt->as.server.name, &stmt->as.server.items);
     library_import("web", NULL, NULL);
@@ -40894,6 +41051,13 @@ static void register_hoistable_declarations(AstStmtList program) {
              * (load-time enforced), so this runs no user code beyond the
              * `web` import the block is sugar for. */
             server_register(stmt);
+        } else if (stmt->kind == AST_STMT_DATABASE) {
+            /* G-SQL's declarations are position-blind for the same reason:
+             * the blocks sit beside `program main` and are used inside it.
+             * Neither runs user code -- a database connects on first use. */
+            database_register(stmt);
+        } else if (stmt->kind == AST_STMT_SQL) {
+            sql_register(stmt);
         }
         if (error_action_pending()) {
             return;
@@ -40932,6 +41096,16 @@ static void register_hoistable_declarations(AstStmtList program) {
                     return;
                 }
             }
+        }
+    }
+
+    /* A `database` or `sql` block needs `load gsql`, which is only known
+     * once the loads are imported -- after the declarations, above. */
+    for (size_t i = 0; i < program.count; i++) {
+        AstStmt *stmt = program.items[i];
+        if ((stmt->kind == AST_STMT_DATABASE || stmt->kind == AST_STMT_SQL) &&
+            !gsql_decl_require_loaded(stmt)) {
+            return;
         }
     }
 
@@ -41784,8 +41958,79 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
             break;
         }
+        if (iterable.kind == VALUE_GSQL_STATEMENT) {
+            /* --- AN `sql` BLOCK, ROW BY ROW (docs/gsql_module_design.md §7) --
+             *
+             * Each pass of the loop is one row, pulled from the batch in hand
+             * and the next batch fetched when it runs out, so a result is never
+             * held whole. THE LOOP OWNS THE CURSOR, the arrangement the file
+             * stream above has and for its reason: every exit below ends it, so
+             * an early `break`, a `return` or a raise closes it on the owner. A
+             * failure partway (the owner lost) raises after the rows already
+             * seen, which the loop has acted on -- what was done stays done. */
+#if GBASIC_GSQL
+            struct GsqlRows *rows = gsql_block_rows(iterable.as.gsql_statement);
+            if (!rows) {
+                value_free(iterable);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            loop_depth++;
+            size_t index = 0;
+            EvalResult out = eval_no_result();
+            int returning = 0;
+            Value row;
+            while (gsql_rows_next(rows, &row)) {
+                env_set(stmt->as.for_each.name, row);
+                if (stmt->as.for_each.index_name) {
+                    env_set(stmt->as.for_each.index_name,
+                            value_number_exact((long long)index));
+                }
+                index++;
+                EvalResult result = eval_stmt_list(stmt->as.for_each.body);
+                if ((result.did_break || result.did_continue) &&
+                    !loop_claims_flow(result, stmt->as.for_each.name)) {
+                    out = result;
+                    returning = 1;
+                    break;
+                }
+                if (result.did_break) {
+                    value_free(result.value);
+                    break;
+                }
+                if (result.did_continue) {
+                    value_free(result.value);
+                    continue;
+                }
+                if (eval_result_exits_block(result)) {
+                    out = result;
+                    returning = 1;
+                    break;
+                }
+            }
+            gsql_rows_end(rows);
+            loop_depth--;
+            value_free(iterable);
+            current_line = previous_line;
+            current_column = previous_column;
+            if (returning) {
+                return out;
+            }
+            if (error_action_pending()) {
+                return eval_error_result();
+            }
+            break;
+#else
+            runtime_error_raise("G-SQL is not yet available on this platform", GSQL_ERROR_CODE, "gsql");
+            value_free(iterable);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+#endif
+        }
         if (iterable.kind != VALUE_ARRAY) {
-            runtime_error_raise("for in expects an array or a file", 1003,
+            runtime_error_raise("for in expects an array, a file or an sql block", 1003,
                                 "invalid operation");
             value_free(iterable);
             current_line = previous_line;
@@ -41917,6 +42162,21 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
+        }
+        break;
+    case AST_STMT_DATABASE:
+    case AST_STMT_SQL:
+        /* hoisted when written at the top level; one written directly in
+           `program` binds here, as a server block does */
+        if (!gsql_decl_require_loaded(stmt)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        if (stmt->kind == AST_STMT_DATABASE) {
+            database_register(stmt);
+        } else {
+            sql_register(stmt);
         }
         break;
     case AST_STMT_WATCH:
@@ -42505,7 +42765,8 @@ static AstStmt *program_block_prepare(AstStmtList program) {
             AstStmt *st = program.items[i];
             if (st->kind == AST_STMT_PROGRAM || st->kind == AST_STMT_FUNCTION ||
                 st->kind == AST_STMT_MODIFIER || st->kind == AST_STMT_SERVER ||
-                st->kind == AST_STMT_WINDOW ||
+                st->kind == AST_STMT_WINDOW || st->kind == AST_STMT_DATABASE ||
+                st->kind == AST_STMT_SQL ||
                 st->kind == AST_STMT_USE || st->kind == AST_STMT_LIBRARY) {
                 continue;
             }
@@ -42542,9 +42803,37 @@ static AstStmt *program_block_prepare(AstStmtList program) {
     return program_block;
 }
 
+/* A program holding a `database` or `sql` block must `load gsql`, and the
+ * refusal comes BEFORE ANYTHING RUNS: without a `program` block, declarations
+ * bind as they are reached, so the reach-time check alone would let every
+ * statement above the block run first. Asked of the program's text -- a load
+ * at the top level or directly in `program` -- or of a load already made. */
+static void gsql_blocks_need_load(AstStmtList program) {
+    const AstStmt *decl = NULL;
+    int loads = 0;
+    for (size_t i = 0; i < program.count; i++) {
+        AstStmt *st = program.items[i];
+        AstStmtList inner = st->kind == AST_STMT_PROGRAM ? st->as.program.body : ast_stmt_list_empty();
+        for (size_t j = 0; j < 1 + inner.count; j++) {
+            const AstStmt *x = j == 0 ? st : inner.items[j - 1];
+            if (x->kind == AST_STMT_USE && x->as.use_stmt.name && strcmp(x->as.use_stmt.name, "gsql") == 0) {
+                loads = 1;
+            } else if (!decl && (x->kind == AST_STMT_DATABASE || x->kind == AST_STMT_SQL)) {
+                decl = x;
+            }
+        }
+    }
+    if (decl && !loads) {
+        gsql_decl_require_loaded(decl);
+    }
+}
+
 int eval_program(AstStmtList program) {
     active_root = program;
     AstStmt *program_block = program_block_prepare(program);
+    if (!raise_in_flight) {
+        gsql_blocks_need_load(program);
+    }
 
     /* `raise_in_flight` as well as `runtime_stopped`: a refusal from the
      * PRE-REGISTRATION pass above -- a malformed parameter list, say -- is

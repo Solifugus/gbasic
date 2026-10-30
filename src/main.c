@@ -718,6 +718,13 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
          * walk them or it would miss an import a window needs. */
         analyze_window_items(ctx, stmt->as.window.items);
         break;
+    case AST_STMT_DATABASE:
+    case AST_STMT_SQL:
+        /* G-SQL's declarations are the `gsql` module's, and the load-time
+         * check refuses a file holding one without `load gsql` -- so the tool
+         * that suggests loads must suggest this one. */
+        maybe_add_qualified(ctx, "gsql");
+        break;
     case AST_STMT_ERROR:
         analyze_expr(ctx, stmt->as.error_message);
         break;

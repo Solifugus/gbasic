@@ -258,6 +258,10 @@ static void chunk_declaration(AstStmtList program, int *kind, const char **name)
         *kind = (int)st->kind; *name = st->as.program.name; break;
     case AST_STMT_SERVER:
         *kind = (int)st->kind; *name = st->as.server.name; break;
+    case AST_STMT_DATABASE:
+        *kind = (int)st->kind; *name = st->as.database.name; break;
+    case AST_STMT_SQL:
+        *kind = (int)st->kind; *name = st->as.sql.name; break;
     default:
         break;
     }

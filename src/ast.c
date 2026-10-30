@@ -567,6 +567,32 @@ AstStmt *ast_window(char *name, AstRecordFieldList options, AstWindowItemList it
     return stmt;
 }
 
+AstStmt *ast_database(char *name, AstRecordFieldList options, int line, int column) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    memset(stmt, 0, sizeof(*stmt));
+    stmt->kind = AST_STMT_DATABASE;
+    stmt->as.database.name = name;
+    stmt->as.database.options = options;
+    stmt->line = line;
+    stmt->column = column;
+    return stmt;
+}
+
+AstStmt *ast_sql(char *name, char *database, char *text, int text_line, int text_column,
+                 int line, int column) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    memset(stmt, 0, sizeof(*stmt));
+    stmt->kind = AST_STMT_SQL;
+    stmt->as.sql.name = name;
+    stmt->as.sql.database = database;
+    stmt->as.sql.text = text;
+    stmt->as.sql.text_line = text_line;
+    stmt->as.sql.text_column = text_column;
+    stmt->line = line;
+    stmt->column = column;
+    return stmt;
+}
+
 AstServerItemList ast_server_item_list_empty(void) {
     AstServerItemList list = {NULL, 0};
     return list;
@@ -1168,6 +1194,12 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         printf("\n");
         dump_window_items(stmt->as.window.items, indent + 1);
         break;
+    case AST_STMT_DATABASE:
+        printf("Database \"%s\"\n", stmt->as.database.name);
+        break;
+    case AST_STMT_SQL:
+        printf("Sql \"%s\" on \"%s\"\n", stmt->as.sql.name, stmt->as.sql.database);
+        break;
     case AST_STMT_ON_ERROR_GOTO:
         printf("OnErrorGoto %s\n", stmt->as.on_error_label);
         break;
@@ -1560,6 +1592,15 @@ static void free_stmt(AstStmt *stmt) {
         free(stmt->as.window.subject);
         ast_free_record_field_list(stmt->as.window.options);
         ast_free_window_item_list(stmt->as.window.items);
+        break;
+    case AST_STMT_DATABASE:
+        free(stmt->as.database.name);
+        ast_free_record_field_list(stmt->as.database.options);
+        break;
+    case AST_STMT_SQL:
+        free(stmt->as.sql.name);
+        free(stmt->as.sql.database);
+        free(stmt->as.sql.text);
         break;
     }
 

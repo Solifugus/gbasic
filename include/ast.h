@@ -45,7 +45,9 @@ typedef enum {
     AST_STMT_BREAK,
     AST_STMT_CONTINUE,
     AST_STMT_SERVER,
-    AST_STMT_WINDOW
+    AST_STMT_WINDOW,
+    AST_STMT_DATABASE,
+    AST_STMT_SQL
 } AstStmtKind;
 
 typedef enum {
@@ -470,6 +472,21 @@ struct AstStmt {
             AstRecordFieldList options;
             AstWindowItemList items;
         } window;
+        /* `database shop( file: "shop.gsql" )` (docs/gsql_module_design.md §7) */
+        struct {
+            char *name;
+            AstRecordFieldList options;
+        } database;
+        /* `sql cheap on shop` ... `end sql`: the body is the raw SQL text, and
+         * text_line/text_column place its first character in the source, so a
+         * position G-SQL's parser reports can be located in the file */
+        struct {
+            char *name;
+            char *database;
+            char *text;
+            int text_line;
+            int text_column;
+        } sql;
         struct {
             char *word;          /* the block kind word; "server" is the only one today */
             char *name;          /* the declared name bound in the enclosing scope */
@@ -519,6 +536,9 @@ AstStmt *ast_window(char *name, AstRecordFieldList options, AstWindowItemList it
                     int line, int column);
 
 void ast_free_window_item_list(AstWindowItemList list);
+AstStmt *ast_database(char *name, AstRecordFieldList options, int line, int column);
+AstStmt *ast_sql(char *name, char *database, char *text, int text_line, int text_column,
+                 int line, int column);
 
 AstServerItemList ast_server_item_list_empty(void);
 AstServerItemList ast_server_item_list_append(AstServerItemList list, AstServerItem *item);

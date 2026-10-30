@@ -327,6 +327,90 @@ TokenType lexer_identifier_type(const char *start, int length) {
     return identifier_type(start, length);
 }
 
+/* Whether `IDENT on IDENT`, then only blanks or a `'` comment, follows the
+ * word `sql`: the exact head of an `sql` block. */
+static const char *sql_skip_word(const char *p) {
+    if (!(isalpha((unsigned char)*p) || *p == '_')) {
+        return NULL;
+    }
+    while (isalnum((unsigned char)*p) || *p == '_') p++;
+    return p;
+}
+
+static int sql_head_follows(const char *p) {
+    while (*p == ' ' || *p == '\t') p++;
+    const char *after = sql_skip_word(p);
+    if (!after || (*after != ' ' && *after != '\t')) return 0;
+    p = after;
+    while (*p == ' ' || *p == '\t') p++;
+    const char *on = p;
+    after = sql_skip_word(p);
+    if (!after || after - on != 2 || tolower((unsigned char)on[0]) != 'o' ||
+        tolower((unsigned char)on[1]) != 'n' || (*after != ' ' && *after != '\t')) {
+        return 0;
+    }
+    p = after;
+    while (*p == ' ' || *p == '\t') p++;
+    after = sql_skip_word(p);
+    if (!after) return 0;
+    p = after;
+    while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+    return *p == '\n' || *p == '\'' || *p == '\0';
+}
+
+static int sql_word_is(const char *p, const char *word) {
+    for (; *word; p++, word++) {
+        if (tolower((unsigned char)*p) != *word) return 0;
+    }
+    return 1;
+}
+
+/* Whether the line at `p` reads `end sql`, blanks around the words. */
+static int sql_end_line(const char *p) {
+    while (*p == ' ' || *p == '\t') p++;
+    if (!sql_word_is(p, "end") || (p[3] != ' ' && p[3] != '\t')) return 0;
+    p += 3;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!sql_word_is(p, "sql")) return 0;
+    p += 3;
+    while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+    return *p == '\n' || *p == '\'' || *p == '\0';
+}
+
+/* AN `sql` BLOCK'S BODY, raw: every line up to the one reading `end sql`, as
+ * ONE token, so SQL is never lexed as gBASIC. The block ends at `end sql`
+ * rather than a bare `end` because SQL has its own END -- a CASE expression's,
+ * which is written on a line of its own as often as not. The lexer is left at
+ * the start of the `end sql` line, which then lexes as ordinary words.
+ *
+ * Running off the end of the text is an UNCLOSED block, and the message says
+ * `unclosed '`, the shape the prompt reads as "give me the rest". */
+static Token sql_body_token(Lexer *lexer) {
+    lexer->sql_body_pending = 0;
+    const char *start = lexer->current;
+    int line = lexer->line;
+    int column = lexer->column;
+    for (;;) {
+        if (is_at_end(lexer)) {
+            char message[96];
+            snprintf(message, sizeof(message),
+                     "unclosed 'sql' block opened on line %d -- it ends at a line reading end sql",
+                     lexer->sql_open_line);
+            return error_token_message(lexer, start, line, column, message);
+        }
+        if (lexer->column == 1 && sql_end_line(lexer->current)) {
+            Token t;
+            t.type = TOKEN_SQL_TEXT;
+            t.start = start;
+            t.length = (int)(lexer->current - start);
+            t.line = line;
+            t.column = column;
+            return t;
+        }
+        advance(lexer);
+    }
+}
+
 static Token identifier_token(Lexer *lexer, const char *start, int line, int column) {
     while (isalnum((unsigned char)peek(lexer)) || peek(lexer) == '_') {
         advance(lexer);
@@ -412,6 +496,32 @@ static Token identifier_token(Lexer *lexer, const char *start, int line, int col
                 type = TOKEN_WINDOW_OPEN;
             }
         }
+    }
+
+    /* G-SQL'S DECLARATIONS, on the window block's argument (docs/gsql_design.md
+     * §2.1, measured there: ZERO instances of either shape in the tree, so no
+     * program changes meaning, and both heads cost zero conflicts).
+     *
+     * `database IDENT (` opens a database declaration. `sql IDENT on IDENT`
+     * opens a statement block, and only when nothing but blanks or a comment
+     * follows on the line -- the body starts on the next line, and the lexer
+     * delivers it whole (sql_body_token). */
+    if (type == TOKEN_IDENT && keyword_equals(start, (int)(lexer->current - start), "database")) {
+        const char *probe = lexer->current;
+        while (*probe == ' ' || *probe == '\t') probe++;
+        if (isalpha((unsigned char)*probe) || *probe == '_') {
+            while (isalnum((unsigned char)*probe) || *probe == '_') probe++;
+            while (*probe == ' ' || *probe == '\t') probe++;
+            if (*probe == '(') {
+                type = TOKEN_DATABASE_OPEN;
+            }
+        }
+    }
+    if (type == TOKEN_IDENT && keyword_equals(start, (int)(lexer->current - start), "sql") &&
+        sql_head_follows(lexer->current)) {
+        type = TOKEN_SQL_OPEN;
+        lexer->sql_body_pending = 1;
+        lexer->sql_open_line = line;
     }
 
     if (type != TOKEN_IDENT && lexer_in_brace(lexer)) {
@@ -510,6 +620,8 @@ void lexer_init_at(Lexer *lexer, const char *source, int first_line) {
     lexer->lens_content_mode = 0;
     lexer->consider_depth = 0;
     lexer->bracket_depth = 0;
+    lexer->sql_body_pending = 0;
+    lexer->sql_open_line = 0;
 }
 
 static void bracket_open(Lexer *lexer, char ch, int line) {
@@ -539,6 +651,9 @@ static void bracket_close(Lexer *lexer) {
 Token lexer_next(Lexer *lexer) {
     if (lexer->lens_content_mode) {
         return lens_content_token(lexer);
+    }
+    if (lexer->sql_body_pending == 2) {
+        return sql_body_token(lexer);
     }
 
     skip_spaces_and_comments(lexer);
@@ -574,6 +689,9 @@ Token lexer_next(Lexer *lexer) {
 
     char ch = advance(lexer);
     if (ch == '\n') {
+        if (lexer->sql_body_pending == 1) {
+            lexer->sql_body_pending = 2;
+        }
         return make_token(lexer, TOKEN_NEWLINE, start, line, column);
     }
     if (isalpha((unsigned char)ch) || ch == '_') {
@@ -918,6 +1036,9 @@ const char *token_type_name(TokenType type) {
     case TOKEN_MODIFIER_PREFIX: return "MODIFIER_PREFIX";
     case TOKEN_MODIFIER_VALUE: return "MODIFIER_VALUE";
     case TOKEN_WINDOW_OPEN: return "WINDOW_OPEN";
+    case TOKEN_DATABASE_OPEN: return "DATABASE_OPEN";
+    case TOKEN_SQL_OPEN: return "SQL_OPEN";
+    case TOKEN_SQL_TEXT: return "SQL_TEXT";
     case TOKEN_LBRACE: return "LBRACE";
     case TOKEN_RBRACE: return "RBRACE";
     case TOKEN_COMMA: return "COMMA";

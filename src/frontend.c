@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include "gbasic.h"
 
 #include <stdio.h>
@@ -33,6 +34,9 @@ typedef struct {
     gb_diagnostics *diags;
     const char *path;
     int errors;
+    /* the code srv_error reports under: 0 is the server block's, and the
+       G-SQL check borrows the option checker under its own */
+    int code;
 } SrvCheck;
 
 static void srv_error(SrvCheck *chk, int line, int column, const char *fmt, ...);
@@ -45,7 +49,23 @@ static void srv_error(SrvCheck *chk, int line, int column, const char *fmt, ...)
     vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
     gb_span span = {line, column, line, column};
-    gb_report_to(chk->diags, GB_DIAG_SERVER_BLOCK, 0, chk->path, span, message);
+    gb_report_to(chk->diags, chk->code ? (gb_diag_code)chk->code : GB_DIAG_SERVER_BLOCK, 0, chk->path,
+                 span, message);
+    chk->errors++;
+}
+
+#if GBASIC_GSQL
+#include "gsql/sql.h"
+#endif
+
+static void gsq_error(SrvCheck *chk, int line, int column, const char *fmt, ...) {
+    char message[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+    gb_span span = {line, column, line, column};
+    gb_report_to(chk->diags, GB_DIAG_GSQL_BLOCK, 0, chk->path, span, message);
     chk->errors++;
 }
 
@@ -504,6 +524,13 @@ static void srv_refuse_nested(SrvCheck *chk, const AstStmtList *list, const char
             srv_error(chk, stmt->line, stmt->column,
                       "a server block cannot be declared inside %s", inside);
             break;
+        case AST_STMT_DATABASE:
+        case AST_STMT_SQL:
+            gsq_error(chk, stmt->line, stmt->column,
+                      "a `%s` block cannot be declared inside %s -- it is a declaration, "
+                      "written at the top level or directly in `program`",
+                      stmt->kind == AST_STMT_SQL ? "sql" : "database", inside);
+            break;
         case AST_STMT_FUNCTION:
             srv_refuse_nested(chk, &stmt->as.function.body, "a function");
             break;
@@ -708,6 +735,175 @@ static void win_check_window(WinCheck *chk, const AstStmt *stmt) {
     gb_window_check(&m, stmt);
 }
 
+/* ---- G-SQL's `database` and `sql` blocks (docs/gsql_module_design.md §7) ----
+ *
+ * Everything decidable without a database is decided here, reported into the
+ * same sink as parse errors: the head's options (a closed set of literals, the
+ * server block's rule and for its reason), that `on NAME` names a `database`
+ * block in this file, that the file loads `gsql`, and THE STATEMENT ITSELF --
+ * parsed by G-SQL's own parser, so a syntax error in an `sql` block is reported
+ * at its line and column in the program before anything runs. */
+
+/* The `database` and `sql` declarations of a file, and whether it loads gsql:
+ * collected before checking, so a block may name a database declared below it. */
+typedef struct {
+    const AstStmt **decls;
+    size_t count;
+} GsqDecls;
+
+static void gsq_collect(GsqDecls *d, const AstStmtList *list, int depth) {
+    for (size_t i = 0; i < list->count; i++) {
+        const AstStmt *stmt = list->items[i];
+        if (stmt->kind == AST_STMT_DATABASE || stmt->kind == AST_STMT_SQL) {
+            const AstStmt **grown = realloc((void *)d->decls, sizeof(*grown) * (d->count + 1));
+            if (!grown) {
+                abort();
+            }
+            grown[d->count++] = stmt;
+            d->decls = grown;
+        } else if (stmt->kind == AST_STMT_PROGRAM && depth == 0) {
+            gsq_collect(d, &stmt->as.program.body, 1);
+        }
+    }
+}
+
+static const char *gsq_decl_name(const AstStmt *stmt) {
+    return stmt->kind == AST_STMT_SQL ? stmt->as.sql.name : stmt->as.database.name;
+}
+
+static const char *gsq_decl_word(const AstStmt *stmt) {
+    return stmt->kind == AST_STMT_SQL ? "sql" : "database";
+}
+
+static void gsq_check_database(SrvCheck *chk, const AstStmt *stmt) {
+    static const SrvOption options[] = {
+        {"file", AST_EXPR_STRING}, {"create", AST_EXPR_BOOL},
+    };
+    char where[192];
+    snprintf(where, sizeof(where), "database '%s'", stmt->as.database.name);
+    int code = chk->code;
+    chk->code = GB_DIAG_GSQL_BLOCK;
+    srv_check_options(chk, &stmt->as.database.options, options,
+                      sizeof(options) / sizeof(options[0]), where,
+                      "a database chosen at run time is gsql.connect(path, { create: true })",
+                      stmt->line, stmt->column);
+    chk->code = code;
+    if (!srv_option_string(&stmt->as.database.options, "file")) {
+        int given = 0;
+        for (size_t i = 0; i < stmt->as.database.options.count; i++) {
+            given |= strcmp(stmt->as.database.options.items[i].name, "file") == 0;
+        }
+        if (!given) {
+            gsq_error(chk, stmt->line, stmt->column,
+                      "%s: says which file it is with `file:` -- database %s( file: \"%s.gsql\" )",
+                      where, stmt->as.database.name, stmt->as.database.name);
+        }
+    } else if (!*srv_option_string(&stmt->as.database.options, "file")) {
+        gsq_error(chk, stmt->line, stmt->column, "%s: `file:` is empty", where);
+    }
+}
+
+/* Where character `position` (1-based) of an `sql` body is in the file. */
+static void gsq_locate(const AstStmt *stmt, long position, int *line, int *column) {
+    *line = stmt->as.sql.text_line;
+    *column = stmt->as.sql.text_column;
+    const char *t = stmt->as.sql.text;
+    /* a place at or past the statement's end ("found the end of the
+       statement") is shown just after its last character, not on the
+       `end sql` line, which is not part of it */
+    long last = 0;
+    for (long k = 0; t[k]; k++) {
+        if (!isspace((unsigned char)t[k])) {
+            last = k + 1;
+        }
+    }
+    if (position > last + 1) {
+        position = last + 1;
+    }
+    for (long k = 1; k < position && *t; k++, t++) {
+        if (*t == '\n') {
+            (*line)++;
+            *column = 1;
+        } else {
+            (*column)++;
+        }
+    }
+}
+
+static void gsq_check_sql(SrvCheck *chk, const AstStmt *stmt, const GsqDecls *d) {
+    const AstStmt *db = NULL;
+    for (size_t i = 0; i < d->count; i++) {
+        if (d->decls[i]->kind == AST_STMT_DATABASE &&
+            strcmp(d->decls[i]->as.database.name, stmt->as.sql.database) == 0) {
+            db = d->decls[i];
+        }
+    }
+    if (!db) {
+        gsq_error(chk, stmt->line, stmt->column,
+                  "sql '%s' is on `%s`, and there is no `database %s( file: ... )` in this file",
+                  stmt->as.sql.name, stmt->as.sql.database, stmt->as.sql.database);
+    }
+#if GBASIC_GSQL
+    SqlParsed parsed;
+    GsqlError err;
+    memset(&err, 0, sizeof err);
+    const char *text = stmt->as.sql.text;
+    if (sql_parse(text, strlen(text), &parsed, &err) != 0) {
+        int line, column;
+        gsq_locate(stmt, err.position > 0 ? (long)err.position : 1, &line, &column);
+        gsq_error(chk, line, column, "sql '%s': %s", stmt->as.sql.name, err.message);
+        return;
+    }
+    if (parsed.stmt->max_param_index > 0) {
+        /* at the first `$n` outside a quoted string */
+        long at = 1;
+        int quoted = 0;
+        for (long k = 0; text[k]; k++) {
+            if (text[k] == '\'') {
+                quoted = !quoted;
+            } else if (!quoted && text[k] == '$' && isdigit((unsigned char)text[k + 1])) {
+                at = k + 1;
+                break;
+            }
+        }
+        int line, column;
+        gsq_locate(stmt, at, &line, &column);
+        gsq_error(chk, line, column,
+                  "sql '%s': a block's parameters are named, :name, each read from the "
+                  "variable of that name where the block runs -- $%u has nothing to supply it",
+                  stmt->as.sql.name, parsed.stmt->max_param_index);
+    }
+    sql_parsed_free(&parsed);
+#endif
+}
+
+static void gsq_validate(SrvCheck *chk, const AstStmtList *program) {
+    GsqDecls d = {NULL, 0};
+    gsq_collect(&d, program, 0);
+    for (size_t i = 0; i < d.count; i++) {
+        const AstStmt *stmt = d.decls[i];
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(gsq_decl_name(d.decls[j]), gsq_decl_name(stmt)) == 0) {
+                gsq_error(chk, stmt->line, stmt->column,
+                          "`%s` is declared twice: a `%s` block on line %d and this `%s` block",
+                          gsq_decl_name(stmt), gsq_decl_word(d.decls[j]), d.decls[j]->line,
+                          gsq_decl_word(stmt));
+                break;
+            }
+        }
+        if (stmt->kind == AST_STMT_DATABASE) {
+            gsq_check_database(chk, stmt);
+        } else {
+            gsq_check_sql(chk, stmt, &d);
+        }
+    }
+    /* WHETHER THE FILE LOADS gsql IS NOT CHECKED HERE: `--add-loads`, the tool
+     * that would add the missing load, runs this same pass first, and a file
+     * it refused could never be fixed by it. The interpreter checks it once the
+     * program's loads are imported, before anything runs (eval.c). */
+    free((void *)d.decls);
+}
+
 static void srv_walk(SrvCheck *chk, const AstStmtList *list, int top_level,
                      const char ***names, size_t *name_count) {
     for (size_t i = 0; i < list->count; i++) {
@@ -808,11 +1004,12 @@ static void srv_walk(SrvCheck *chk, const AstStmtList *list, int top_level,
 /* Returns the number of errors reported (0 = clean). */
 static int server_blocks_validate(const AstStmtList *program, const char *path,
                                   gb_diagnostics *diags) {
-    SrvCheck chk = {diags, path, 0};
+    SrvCheck chk = {diags, path, 0, 0};
     const char **names = NULL;
     size_t name_count = 0;
     srv_walk(&chk, program, 1, &names, &name_count);
     free((void *)names);
+    gsq_validate(&chk, program);
     return chk.errors;
 }
 

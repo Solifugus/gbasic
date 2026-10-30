@@ -39,6 +39,7 @@ typedef enum {
     GB_DIAG_STRING_LITERAL = 2001,  /* parser string-literal / \u{} decode; CLI "runtime error" */
     GB_DIAG_SERVER_BLOCK   = 2002,  /* PLAT-WEB-5 load-time server-block check; CLI "parse error" */
     GB_DIAG_WINDOW_BLOCK   = 2003,  /* load-time `window`-block check; CLI "parse error"  */
+    GB_DIAG_GSQL_BLOCK     = 2004,  /* load-time `database`/`sql` check; CLI "parse error" */
     GB_DIAG_RUNTIME_ERROR  = 3000   /* evaluator; CLI kind "runtime error"                */
 } gb_diag_code;
 
