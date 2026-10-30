@@ -2,10 +2,9 @@
  * include/gsql_table.h; this file is the layout and the rules.
  *
  * EVERYTHING HERE IS DECIDED FROM `serialize` VERSION 3 BYTES. The parts:
- *   1. buffers and errors
- *   2. reading a v3 value: one walker that validates a value and reports
- *      what kind it is, bounded in depth
- *   3. writing v3 values, for the schema record
+ *   1. errors
+ *   2-3. reading and writing a v3 value, which live in src/gsql/v3.c since
+ *      the client protocol became their second user
  *   4. the schema: encoding, decoding, the handle
  *   5. the type rules (§3.1)
  *   6. keys, rows and index entries
@@ -15,6 +14,7 @@
 #include "gsql_table.h"
 #include "gsql_key.h"
 #include "serialize_tags.h"
+#include "v3.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -24,61 +24,9 @@
 #define ROW_FORMAT 1
 #define SCHEMA_FORMAT 1
 #define MAX_NAME 255
-#define MAX_DEPTH 256
 #define TREE_LEN 10
 
-/* ==== 1. buffers and errors ============================================== */
-
-void gsql_buf_free(GsqlBuf *b) {
-    free(b->bytes);
-    b->bytes = NULL;
-    b->length = b->capacity = 0;
-}
-
-static void buf_put(GsqlBuf *b, const void *p, size_t n) {
-    if (b->length + n > b->capacity) {
-        size_t cap = b->capacity ? b->capacity : 64;
-        while (b->length + n > cap) {
-            cap *= 2;
-        }
-        unsigned char *g = realloc(b->bytes, cap);
-        if (!g) {
-            abort();
-        }
-        b->bytes = g;
-        b->capacity = cap;
-    }
-    if (n) {
-        memcpy(b->bytes + b->length, p, n);
-    }
-    b->length += n;
-}
-
-static void buf_u8(GsqlBuf *b, unsigned v) {
-    unsigned char c = (unsigned char)v;
-    buf_put(b, &c, 1);
-}
-
-static void buf_le(GsqlBuf *b, uint64_t v, int width) {
-    unsigned char t[8];
-    for (int i = 0; i < width; i++) {
-        t[i] = (unsigned char)(v >> (8 * i));
-    }
-    buf_put(b, t, (size_t)width);
-}
-
-static void buf_uleb(GsqlBuf *b, uint64_t v) {
-    do {
-        unsigned c = v & 0x7f;
-        v >>= 7;
-        buf_u8(b, c | (v ? 0x80 : 0));
-    } while (v);
-}
-
-static void buf_set(GsqlBuf *b, const void *p, size_t n) {
-    b->length = 0;
-    buf_put(b, p, n);
-}
+/* ==== 1. errors ========================================================= */
 
 static const char *const code_names[] = {
     "OK", "NOT_FOUND", "EXISTS", "DUPLICATE", "NOT_NULL", "TYPE", "SCHEMA", "CORRUPT", "STORAGE", "MISUSE"
@@ -123,367 +71,6 @@ static int ok(GsqlError *err) {
 
 static int storage(GsqlError *err, int st, const char *what) {
     return fail(err, GSQL_STORAGE, "%s: the engine answered %s", what, gs_status_name(st));
-}
-
-/* ==== 2. reading a v3 value ============================================== */
-
-typedef struct {
-    const unsigned char *p;
-    size_t len, pos;
-    int ok;
-} In;
-
-static uint64_t in_le(In *in, int width) {
-    if (!in->ok || in->pos + (size_t)width > in->len) {
-        in->ok = 0;
-        return 0;
-    }
-    uint64_t v = 0;
-    for (int i = 0; i < width; i++) {
-        v |= (uint64_t)in->p[in->pos + i] << (8 * i);
-    }
-    in->pos += (size_t)width;
-    return v;
-}
-
-static uint64_t in_uleb(In *in) {
-    uint64_t v = 0;
-    for (int shift = 0; shift < 70; shift += 7) {
-        unsigned byte = (unsigned)in_le(in, 1);
-        if (!in->ok || (shift == 63 && (byte & 0x7e))) {
-            in->ok = 0;
-            return 0;
-        }
-        v |= (uint64_t)(byte & 0x7f) << shift;
-        if (!(byte & 0x80)) {
-            return v;
-        }
-    }
-    in->ok = 0;
-    return 0;
-}
-
-static void in_skip(In *in, uint64_t n) {
-    if (!in->ok || n > in->len - in->pos) {
-        in->ok = 0;
-        return;
-    }
-    in->pos += (size_t)n;
-}
-
-/* What a walk found that a column's rules turn on. */
-typedef struct {
-    unsigned tag;          /* the top-level tag */
-    unsigned exact;        /* number: the exactness byte */
-    unsigned time_only;    /* datetime */
-    unsigned precision;    /* datetime: 1 year .. 6 second */
-    char currency[8];      /* money: the alphabetic code ("" if the writer had none) */
-    unsigned bad_tag;      /* a kind nothing may store, found at some depth (0: none) */
-    int nested_array;      /* an array somewhere below the top */
-} Walk;
-
-/* Validates ONE value at in->pos and advances past it. Answers 0 when the
- * bytes are not a well-formed value (or nest deeper than MAX_DEPTH). */
-static int walk(In *in, int depth, Walk *w) {
-    if (depth > MAX_DEPTH) {
-        return 0;
-    }
-    unsigned tag = (unsigned)in_le(in, 1);
-    if (!in->ok) {
-        return 0;
-    }
-    if (depth == 0) {
-        w->tag = tag;
-    }
-    switch (tag) {
-    case SER_NULL:
-    case SER_UNKNOWN:
-        return 1;
-    case SER_BOOL: {
-        unsigned b = (unsigned)in_le(in, 1);
-        return in->ok && b <= 1;
-    }
-    case SER_NUMBER: {
-        unsigned exact = (unsigned)in_le(in, 1);
-        in_le(in, 8);
-        if (depth == 0) {
-            w->exact = exact;
-        }
-        return in->ok && exact <= 1;
-    }
-    case SER_STRING:
-        in_skip(in, in_uleb(in));
-        return in->ok;
-    case SER_MONEY: {
-        in_le(in, 8);
-        in_le(in, 1);
-        in_le(in, 2);
-        unsigned alen = (unsigned)in_le(in, 1);
-        if (!in->ok || alen > 7 || in->pos + alen > in->len) {
-            return 0;
-        }
-        if (depth == 0) {
-            memcpy(w->currency, in->p + in->pos, alen);
-            w->currency[alen] = 0;
-        }
-        in->pos += alen;
-        return 1;
-    }
-    case SER_DATETIME: {
-        for (int i = 0; i < 6; i++) {
-            in_le(in, 4);
-        }
-        unsigned time_only = (unsigned)in_le(in, 1);
-        unsigned precision = (unsigned)in_le(in, 1);
-        if (!in->ok || time_only > 1 || precision < 1 || precision > 6) {
-            return 0;
-        }
-        if (depth == 0) {
-            w->time_only = time_only;
-            w->precision = precision;
-        }
-        return 1;
-    }
-    case SER_DURATION:
-        for (int i = 0; i < 7; i++) {
-            in_le(in, 4);
-        }
-        if (!w->bad_tag) {
-            w->bad_tag = tag;
-        }
-        return in->ok;
-    case SER_ARRAY: {
-        uint64_t n = in_uleb(in);
-        if (!in->ok || n > in->len - in->pos) {
-            return 0;   /* every element is at least one byte */
-        }
-        if (depth > 0) {
-            w->nested_array = 1;
-        }
-        for (uint64_t i = 0; i < n; i++) {
-            if (!walk(in, depth + 1, w)) {
-                return 0;
-            }
-        }
-        return 1;
-    }
-    case SER_RECORD: {
-        uint64_t n = in_uleb(in);
-        if (!in->ok || n > in->len - in->pos) {
-            return 0;
-        }
-        for (uint64_t i = 0; i < n; i++) {
-            in_skip(in, in_uleb(in));
-            if (!in->ok || !walk(in, depth + 1, w)) {
-                return 0;
-            }
-        }
-        return 1;
-    }
-    case SER_FILE:
-    case SER_DIR:
-        in_skip(in, in_uleb(in));
-        if (!w->bad_tag) {
-            w->bad_tag = tag;
-        }
-        return in->ok;
-    case SER_FUNCTION:
-        in_skip(in, in_uleb(in));
-        in_skip(in, in_uleb(in));
-        if (!w->bad_tag) {
-            w->bad_tag = tag;
-        }
-        return in->ok;
-    case SER_REGEX:
-        in_skip(in, in_uleb(in));
-        in_skip(in, in_uleb(in));
-        if (!w->bad_tag) {
-            w->bad_tag = tag;
-        }
-        return in->ok;
-    default:
-        /* SER_ACTOR included: it is meaningful only in spawn arguments. */
-        return 0;
-    }
-}
-
-/* One whole value, exactly `n` bytes. */
-static int walk_whole(const unsigned char *p, size_t n, Walk *w) {
-    In in = { p, n, 0, 1 };
-    memset(w, 0, sizeof *w);
-    return walk(&in, 0, w) && in.pos == n;
-}
-
-static const char *tag_name(unsigned tag) {
-    switch (tag) {
-    case SER_NULL: return "nothing";
-    case SER_UNKNOWN: return "unknown";
-    case SER_BOOL: return "a boolean";
-    case SER_NUMBER: return "a number";
-    case SER_STRING: return "a string";
-    case SER_ARRAY: return "an array";
-    case SER_RECORD: return "a record";
-    case SER_DATETIME: return "a date-time";
-    case SER_DURATION: return "a duration";
-    case SER_MONEY: return "money";
-    case SER_FILE: return "a file";
-    case SER_DIR: return "a directory";
-    case SER_FUNCTION: return "a function";
-    case SER_REGEX: return "a regex";
-    default: return "a value";
-    }
-}
-
-/* A record's fields, borrowed from the bytes. */
-typedef struct {
-    const unsigned char *name;
-    size_t nlen;
-    const unsigned char *v;
-    size_t vlen;
-} Field;
-
-/* Splits a record value into its fields. Answers the count, or -1. */
-static long record_fields(const unsigned char *p, size_t n, Field *out, long max) {
-    In in = { p, n, 0, 1 };
-    if (in_le(&in, 1) != SER_RECORD) {
-        return -1;
-    }
-    uint64_t count = in_uleb(&in);
-    if (!in.ok || count > (uint64_t)max) {
-        return -1;
-    }
-    for (uint64_t i = 0; i < count; i++) {
-        uint64_t nl = in_uleb(&in);
-        size_t at = in.pos;
-        in_skip(&in, nl);
-        if (!in.ok) {
-            return -1;
-        }
-        size_t vstart = in.pos;
-        Walk w;
-        memset(&w, 0, sizeof w);
-        if (!walk(&in, 1, &w)) {
-            return -1;
-        }
-        out[i].name = p + at;
-        out[i].nlen = (size_t)nl;
-        out[i].v = p + vstart;
-        out[i].vlen = in.pos - vstart;
-    }
-    return in.pos == n ? (long)count : -1;
-}
-
-static const Field *field_named(const Field *f, long n, const char *name) {
-    size_t len = strlen(name);
-    for (long i = 0; i < n; i++) {
-        if (f[i].nlen == len && memcmp(f[i].name, name, len) == 0) {
-            return &f[i];
-        }
-    }
-    return NULL;
-}
-
-/* Elements of an array value, borrowed. Answers the count, or -1. */
-static long array_items(const unsigned char *p, size_t n, GsBytes *out, long max) {
-    In in = { p, n, 0, 1 };
-    if (in_le(&in, 1) != SER_ARRAY) {
-        return -1;
-    }
-    uint64_t count = in_uleb(&in);
-    if (!in.ok || count > (uint64_t)max) {
-        return -1;
-    }
-    for (uint64_t i = 0; i < count; i++) {
-        size_t at = in.pos;
-        Walk w;
-        memset(&w, 0, sizeof w);
-        if (!walk(&in, 1, &w)) {
-            return -1;
-        }
-        out[i].p = p + at;
-        out[i].n = in.pos - at;
-    }
-    return in.pos == n ? (long)count : -1;
-}
-
-static int read_u64(const unsigned char *p, size_t n, uint64_t *v) {
-    if (n != 10 || p[0] != SER_NUMBER || p[1] != 1) {
-        return 0;
-    }
-    uint64_t x = 0;
-    for (int i = 0; i < 8; i++) {
-        x |= (uint64_t)p[2 + i] << (8 * i);
-    }
-    if ((int64_t)x < 0) {
-        return 0;
-    }
-    *v = x;
-    return 1;
-}
-
-static int read_bool(const unsigned char *p, size_t n, int *v) {
-    if (n != 2 || p[0] != SER_BOOL || p[1] > 1) {
-        return 0;
-    }
-    *v = p[1];
-    return 1;
-}
-
-/* A string value as a NUL-terminated copy, refusing an interior NUL. */
-static char *read_text(const unsigned char *p, size_t n) {
-    In in = { p, n, 0, 1 };
-    if (in_le(&in, 1) != SER_STRING) {
-        return NULL;
-    }
-    uint64_t len = in_uleb(&in);
-    if (!in.ok || len != n - in.pos || memchr(p + in.pos, 0, (size_t)len)) {
-        return NULL;
-    }
-    char *s = malloc((size_t)len + 1);
-    if (!s) {
-        abort();
-    }
-    memcpy(s, p + in.pos, (size_t)len);
-    s[len] = 0;
-    return s;
-}
-
-/* ==== 3. writing v3 values =============================================== */
-
-static void w_unknown(GsqlBuf *b) { buf_u8(b, SER_UNKNOWN); }
-
-static void w_bool(GsqlBuf *b, int v) {
-    buf_u8(b, SER_BOOL);
-    buf_u8(b, v ? 1 : 0);
-}
-
-static void w_int(GsqlBuf *b, uint64_t v) {
-    buf_u8(b, SER_NUMBER);
-    buf_u8(b, 1);
-    buf_le(b, v, 8);
-}
-
-static void w_text(GsqlBuf *b, const char *s) {
-    size_t n = strlen(s);
-    buf_u8(b, SER_STRING);
-    buf_uleb(b, n);
-    buf_put(b, s, n);
-}
-
-static void w_record(GsqlBuf *b, size_t nfields) {
-    buf_u8(b, SER_RECORD);
-    buf_uleb(b, nfields);
-}
-
-static void w_array(GsqlBuf *b, size_t n) {
-    buf_u8(b, SER_ARRAY);
-    buf_uleb(b, n);
-}
-
-static void w_name(GsqlBuf *b, const char *s) {
-    size_t n = strlen(s);
-    buf_uleb(b, n);
-    buf_put(b, s, n);
 }
 
 /* ==== 4. the schema ====================================================== */
@@ -550,59 +137,59 @@ static char *dup_text(const char *s) {
 
 static void schema_encode(const GsqlTable *tb, GsqlBuf *b) {
     b->length = 0;
-    w_record(b, 6);
-    w_name(b, "format");
-    w_int(b, SCHEMA_FORMAT);
-    w_name(b, "id");
-    w_int(b, tb->id);
-    w_name(b, "version");
-    w_int(b, tb->version);
-    w_name(b, "columns");
-    w_array(b, tb->ncols);
+    v3_w_record(b, 6);
+    v3_w_name(b, "format");
+    v3_w_int(b, SCHEMA_FORMAT);
+    v3_w_name(b, "id");
+    v3_w_int(b, tb->id);
+    v3_w_name(b, "version");
+    v3_w_int(b, tb->version);
+    v3_w_name(b, "columns");
+    v3_w_array(b, tb->ncols);
     for (size_t i = 0; i < tb->ncols; i++) {
         const GsqlColumn *c = &tb->cols[i];
-        w_record(b, 5);
-        w_name(b, "name");
-        w_text(b, c->name);
-        w_name(b, "kind");
-        w_text(b, gsql_kind_name(c->kind));
-        w_name(b, "currency");
-        w_text(b, c->currency);
-        w_name(b, "not_null");
-        w_bool(b, c->not_null);
-        w_name(b, "default");
+        v3_w_record(b, 5);
+        v3_w_name(b, "name");
+        v3_w_text(b, c->name);
+        v3_w_name(b, "kind");
+        v3_w_text(b, gsql_kind_name(c->kind));
+        v3_w_name(b, "currency");
+        v3_w_text(b, c->currency);
+        v3_w_name(b, "not_null");
+        v3_w_bool(b, c->not_null);
+        v3_w_name(b, "default");
         if (c->def) {
-            buf_put(b, c->def, c->def_len);
+            v3_put(b, c->def, c->def_len);
         } else {
-            w_unknown(b);
+            v3_w_unknown(b);
         }
     }
-    w_name(b, "key");
-    w_array(b, tb->nkey);
+    v3_w_name(b, "key");
+    v3_w_array(b, tb->nkey);
     for (size_t i = 0; i < tb->nkey; i++) {
-        w_int(b, tb->key[i]);
+        v3_w_int(b, tb->key[i]);
     }
-    w_name(b, "indexes");
-    w_array(b, tb->nidx);
+    v3_w_name(b, "indexes");
+    v3_w_array(b, tb->nidx);
     for (size_t i = 0; i < tb->nidx; i++) {
         const GsqlIndex *x = &tb->idx[i];
-        w_record(b, 5);
-        w_name(b, "name");
-        w_text(b, x->name);
-        w_name(b, "id");
-        w_int(b, x->id);
-        w_name(b, "columns");
-        w_array(b, x->ncols);
+        v3_w_record(b, 5);
+        v3_w_name(b, "name");
+        v3_w_text(b, x->name);
+        v3_w_name(b, "id");
+        v3_w_int(b, x->id);
+        v3_w_name(b, "columns");
+        v3_w_array(b, x->ncols);
         for (size_t j = 0; j < x->ncols; j++) {
-            w_int(b, x->cols[j]);
+            v3_w_int(b, x->cols[j]);
         }
-        w_name(b, "descending");
-        w_array(b, x->ncols);
+        v3_w_name(b, "descending");
+        v3_w_array(b, x->ncols);
         for (size_t j = 0; j < x->ncols; j++) {
-            w_bool(b, x->desc[j]);
+            v3_w_bool(b, x->desc[j]);
         }
-        w_name(b, "unique");
-        w_bool(b, x->unique);
+        v3_w_name(b, "unique");
+        v3_w_bool(b, x->unique);
     }
 }
 
@@ -632,27 +219,27 @@ static void set_trees(GsqlTable *tb) {
 /* Builds `tb` from its stored schema. Answers 0 when the bytes do not parse
  * or do not make a consistent schema (a CORRUPT catalog). */
 static int schema_decode(const char *name, const unsigned char *p, size_t n, GsqlTable *tb, int *newer) {
-    Field f[16];
+    V3Field f[16];
     *newer = 0;
     memset(tb, 0, sizeof *tb);
-    long nf = record_fields(p, n, f, 16);
+    long nf = v3_record_fields(p, n, f, 16);
     if (nf < 0) {
         return 0;
     }
-    const Field *ff = field_named(f, nf, "format");
+    const V3Field *ff = v3_field_named(f, nf, "format");
     uint64_t format = 0;
-    if (!ff || !read_u64(ff->v, ff->vlen, &format)) {
+    if (!ff || !v3_read_u64(ff->v, ff->vlen, &format)) {
         return 0;
     }
     if (format != SCHEMA_FORMAT) {
         *newer = 1;
         return 0;
     }
-    const Field *fid = field_named(f, nf, "id"), *fver = field_named(f, nf, "version");
-    const Field *fcols = field_named(f, nf, "columns"), *fkey = field_named(f, nf, "key");
-    const Field *fidx = field_named(f, nf, "indexes");
-    if (!fid || !fver || !fcols || !fkey || !fidx || !read_u64(fid->v, fid->vlen, &tb->id) ||
-        !read_u64(fver->v, fver->vlen, &tb->version)) {
+    const V3Field *fid = v3_field_named(f, nf, "id"), *fver = v3_field_named(f, nf, "version");
+    const V3Field *fcols = v3_field_named(f, nf, "columns"), *fkey = v3_field_named(f, nf, "key");
+    const V3Field *fidx = v3_field_named(f, nf, "indexes");
+    if (!fid || !fver || !fcols || !fkey || !fidx || !v3_read_u64(fid->v, fid->vlen, &tb->id) ||
+        !v3_read_u64(fver->v, fver->vlen, &tb->version)) {
         return 0;
     }
     tb->name = dup_text(name);
@@ -660,7 +247,7 @@ static int schema_decode(const char *name, const unsigned char *p, size_t n, Gsq
     if (!items) {
         abort();
     }
-    long nc = array_items(fcols->v, fcols->vlen, items, MAX_ITEMS);
+    long nc = v3_array_items(fcols->v, fcols->vlen, items, MAX_ITEMS);
     if (nc <= 0) {
         goto bad;
     }
@@ -669,25 +256,25 @@ static int schema_decode(const char *name, const unsigned char *p, size_t n, Gsq
         abort();
     }
     for (long i = 0; i < nc; i++) {
-        Field cf[8];
-        long ncf = record_fields(items[i].p, items[i].n, cf, 8);
-        const Field *cn = ncf > 0 ? field_named(cf, ncf, "name") : NULL;
-        const Field *ck = ncf > 0 ? field_named(cf, ncf, "kind") : NULL;
-        const Field *cc = ncf > 0 ? field_named(cf, ncf, "currency") : NULL;
-        const Field *cnn = ncf > 0 ? field_named(cf, ncf, "not_null") : NULL;
-        const Field *cd = ncf > 0 ? field_named(cf, ncf, "default") : NULL;
+        V3Field cf[8];
+        long ncf = v3_record_fields(items[i].p, items[i].n, cf, 8);
+        const V3Field *cn = ncf > 0 ? v3_field_named(cf, ncf, "name") : NULL;
+        const V3Field *ck = ncf > 0 ? v3_field_named(cf, ncf, "kind") : NULL;
+        const V3Field *cc = ncf > 0 ? v3_field_named(cf, ncf, "currency") : NULL;
+        const V3Field *cnn = ncf > 0 ? v3_field_named(cf, ncf, "not_null") : NULL;
+        const V3Field *cd = ncf > 0 ? v3_field_named(cf, ncf, "default") : NULL;
         if (!cn || !ck || !cc || !cnn || !cd) {
             goto bad;
         }
         GsqlColumn *c = &tb->cols[i];
         tb->ncols = (size_t)i + 1;
-        c->name = read_text(cn->v, cn->vlen);
-        char *kind = read_text(ck->v, ck->vlen);
-        char *cur = read_text(cc->v, cc->vlen);
+        c->name = v3_read_text(cn->v, cn->vlen);
+        char *kind = v3_read_text(ck->v, ck->vlen);
+        char *cur = v3_read_text(cc->v, cc->vlen);
         int nn = 0;
         int kd = kind ? kind_from_name(kind) : 0;
         free(kind);
-        if (!c->name || !kd || !cur || strlen(cur) > 7 || !read_bool(cnn->v, cnn->vlen, &nn)) {
+        if (!c->name || !kd || !cur || strlen(cur) > 7 || !v3_read_bool(cnn->v, cnn->vlen, &nn)) {
             free(cur);
             goto bad;
         }
@@ -705,7 +292,7 @@ static int schema_decode(const char *name, const unsigned char *p, size_t n, Gsq
             c->def_len = cd->vlen;
         }
     }
-    long nk = array_items(fkey->v, fkey->vlen, items, MAX_ITEMS);
+    long nk = v3_array_items(fkey->v, fkey->vlen, items, MAX_ITEMS);
     if (nk < 0) {
         goto bad;
     }
@@ -713,35 +300,35 @@ static int schema_decode(const char *name, const unsigned char *p, size_t n, Gsq
     tb->nkey = (size_t)nk;
     for (long i = 0; i < nk; i++) {
         uint64_t v;
-        if (!read_u64(items[i].p, items[i].n, &v) || v >= tb->ncols) {
+        if (!v3_read_u64(items[i].p, items[i].n, &v) || v >= tb->ncols) {
             goto bad;
         }
         tb->key[i] = (unsigned)v;
     }
-    long ni = array_items(fidx->v, fidx->vlen, items, MAX_ITEMS);
+    long ni = v3_array_items(fidx->v, fidx->vlen, items, MAX_ITEMS);
     if (ni < 0) {
         goto bad;
     }
     tb->idx = ni ? calloc((size_t)ni, sizeof *tb->idx) : NULL;
     for (long i = 0; i < ni; i++) {
-        Field xf[8];
-        long nxf = record_fields(items[i].p, items[i].n, xf, 8);
-        const Field *xn = nxf > 0 ? field_named(xf, nxf, "name") : NULL;
-        const Field *xi = nxf > 0 ? field_named(xf, nxf, "id") : NULL;
-        const Field *xc = nxf > 0 ? field_named(xf, nxf, "columns") : NULL;
-        const Field *xd = nxf > 0 ? field_named(xf, nxf, "descending") : NULL;
-        const Field *xu = nxf > 0 ? field_named(xf, nxf, "unique") : NULL;
+        V3Field xf[8];
+        long nxf = v3_record_fields(items[i].p, items[i].n, xf, 8);
+        const V3Field *xn = nxf > 0 ? v3_field_named(xf, nxf, "name") : NULL;
+        const V3Field *xi = nxf > 0 ? v3_field_named(xf, nxf, "id") : NULL;
+        const V3Field *xc = nxf > 0 ? v3_field_named(xf, nxf, "columns") : NULL;
+        const V3Field *xd = nxf > 0 ? v3_field_named(xf, nxf, "descending") : NULL;
+        const V3Field *xu = nxf > 0 ? v3_field_named(xf, nxf, "unique") : NULL;
         if (!xn || !xi || !xc || !xd || !xu) {
             goto bad;
         }
         GsqlIndex *x = &tb->idx[i];
         tb->nidx = (size_t)i + 1;
-        x->name = read_text(xn->v, xn->vlen);
+        x->name = v3_read_text(xn->v, xn->vlen);
         int u = 0;
         GsBytes cols[64], desc[64];
-        long ncx = array_items(xc->v, xc->vlen, cols, 64);
-        long ndx = array_items(xd->v, xd->vlen, desc, 64);
-        if (!x->name || !read_u64(xi->v, xi->vlen, &x->id) || !read_bool(xu->v, xu->vlen, &u) || ncx <= 0 ||
+        long ncx = v3_array_items(xc->v, xc->vlen, cols, 64);
+        long ndx = v3_array_items(xd->v, xd->vlen, desc, 64);
+        if (!x->name || !v3_read_u64(xi->v, xi->vlen, &x->id) || !v3_read_bool(xu->v, xu->vlen, &u) || ncx <= 0 ||
             ncx != ndx) {
             goto bad;
         }
@@ -757,7 +344,7 @@ static int schema_decode(const char *name, const unsigned char *p, size_t n, Gsq
         for (long j = 0; j < ncx; j++) {
             uint64_t v;
             int d;
-            if (!read_u64(cols[j].p, cols[j].n, &v) || v >= tb->ncols || !read_bool(desc[j].p, desc[j].n, &d)) {
+            if (!v3_read_u64(cols[j].p, cols[j].n, &v) || v >= tb->ncols || !v3_read_bool(desc[j].p, desc[j].n, &d)) {
                 goto bad;
             }
             xcols[j] = (unsigned)v;
@@ -952,8 +539,8 @@ static int check_name(const char *what, const char *name, GsqlError *err) {
 }
 
 static int value_fits(const char *table, const GsqlColumn *c, const unsigned char *p, size_t n, GsqlError *err) {
-    Walk w;
-    if (!walk_whole(p, n, &w)) {
+    V3Walk w;
+    if (!v3_walk_whole(p, n, &w)) {
         return fail(err, GSQL_TYPE, "%s.%s: the value is not one well-formed value", table, c->name);
     }
     if (w.tag == SER_NULL || w.tag == SER_UNKNOWN) {
@@ -963,7 +550,7 @@ static int value_fits(const char *table, const GsqlColumn *c, const unsigned cha
         return GSQL_OK;
     }
     if (w.bad_tag) {
-        return fail(err, GSQL_TYPE, "%s.%s: %s cannot be stored%s", table, c->name, tag_name(w.bad_tag),
+        return fail(err, GSQL_TYPE, "%s.%s: %s cannot be stored%s", table, c->name, v3_tag_name(w.bad_tag),
                     w.bad_tag == w.tag ? "" : ", and the record holds one");
     }
     const char *want = gsql_kind_name(c->kind);
@@ -1016,7 +603,7 @@ static int value_fits(const char *table, const GsqlColumn *c, const unsigned cha
             return fail(err, GSQL_TYPE, "%s.%s is %s, and the value is an array (an array is stored inside a record)",
                         table, c->name, want);
         }
-        return fail(err, GSQL_TYPE, "%s.%s is %s, and the value is %s", table, c->name, want, tag_name(w.tag));
+        return fail(err, GSQL_TYPE, "%s.%s is %s, and the value is %s", table, c->name, want, v3_tag_name(w.tag));
     }
     return GSQL_OK;
 }
@@ -1109,13 +696,13 @@ static int index_entry(const GsqlTable *tb, const GsqlIndex *x, const GsBytes *v
 
 static void row_encode(const GsqlTable *tb, const GsBytes *vals, GsqlBuf *b) {
     b->length = 0;
-    buf_u8(b, ROW_FORMAT);
-    buf_uleb(b, tb->ncols);
+    v3_u8(b, ROW_FORMAT);
+    v3_uleb(b, tb->ncols);
     for (size_t i = 0; i < tb->ncols; i++) {
         if (vals[i].n == 1 && vals[i].p[0] == SER_NULL) {
-            buf_u8(b, SER_UNKNOWN);   /* a bound `nothing` is stored as unknown (§3.1) */
+            v3_u8(b, SER_UNKNOWN);   /* a bound `nothing` is stored as unknown (§3.1) */
         } else {
-            buf_put(b, vals[i].p, vals[i].n);
+            v3_put(b, vals[i].p, vals[i].n);
         }
     }
 }
@@ -1123,9 +710,9 @@ static void row_encode(const GsqlTable *tb, const GsBytes *vals, GsqlBuf *b) {
 /* Splits a stored row into one value per column of the CURRENT schema,
  * filling the columns the row predates with their defaults. */
 static int row_decode(const GsqlTable *tb, const unsigned char *p, size_t n, GsBytes *vals, GsqlError *err) {
-    In in = { p, n, 0, 1 };
-    unsigned format = (unsigned)in_le(&in, 1);
-    uint64_t count = in_uleb(&in);
+    V3In in = { p, n, 0, 1 };
+    unsigned format = (unsigned)v3_in_le(&in, 1);
+    uint64_t count = v3_in_uleb(&in);
     if (!in.ok || format != ROW_FORMAT) {
         return fail(err, GSQL_CORRUPT, "a row of %s has format %u", tb->name, format);
     }
@@ -1136,9 +723,9 @@ static int row_decode(const GsqlTable *tb, const unsigned char *p, size_t n, GsB
     for (size_t i = 0; i < tb->ncols; i++) {
         if (i < count) {
             size_t at = in.pos;
-            Walk w;
+            V3Walk w;
             memset(&w, 0, sizeof w);
-            if (!walk(&in, 0, &w)) {
+            if (!v3_walk(&in, 0, &w)) {
                 return fail(err, GSQL_CORRUPT, "a row of %s: column %zu does not parse", tb->name, i);
             }
             vals[i].p = p + at;
@@ -1189,7 +776,7 @@ int gsql_row_key(const GsqlTable *tb, const GsqlIn *vals, GsqlBuf *rowkey, GsqlE
             return fail(err, GSQL_TYPE, "%s.%s: the value has no order, so it cannot be a key", tb->name, c->name);
         }
     }
-    buf_set(rowkey, k.bytes, k.length);
+    v3_set(rowkey, k.bytes, k.length);
     gsql_key_free(&k);
     return ok(err);
 }
@@ -1553,7 +1140,7 @@ int gsql_row_insert(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlIn *va
         goto out;
     }
     if (rowkey) {
-        buf_set(rowkey, k.bytes, k.length);
+        v3_set(rowkey, k.bytes, k.length);
     }
     rc = ok(err);
 out:
@@ -1573,7 +1160,7 @@ int gsql_row_get(const GsEngine *e, GsTxn *t, const GsqlTable *tb, GsBytes rowke
     if (st != GS_OK) {
         return storage(err, st, "reading a row");
     }
-    buf_set(row, got.p, got.n);
+    v3_set(row, got.p, got.n);
     return ok(err);
 }
 
@@ -1651,7 +1238,7 @@ int gsql_row_update(const GsEngine *e, GsTxn *t, GsqlTable *tb, GsBytes rowkey, 
         }
     }
     if (newkey) {
-        buf_set(newkey, k.bytes, k.length);
+        v3_set(newkey, k.bytes, k.length);
     }
     rc = ok(err);
 out:
