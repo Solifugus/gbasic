@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "gsql_client.h"
 #include "gsql_owner.h"
+#include "platform.h"
 #include "v3.h"
 
 #include <errno.h>
@@ -18,9 +19,6 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
-#ifdef __linux__
-#include <sys/prctl.h>
-#endif
 
 #define DEFAULT_WAIT_MS 10000u
 #define ATTEMPTS 5
@@ -137,14 +135,13 @@ static int start_owner(GsqlClient *c, GsqlError *err) {
     pid_t parent = getpid();
     pid_t pid = fork();
     if (pid == 0) {
-#ifdef __linux__
-        /* the owner is this client's child and dies with it (§6.1); SIGTERM,
-         * so it takes the planned handoff on the way out */
-        prctl(PR_SET_PDEATHSIG, SIGTERM);
+        /* the owner is this client's child and dies with it (§6.1), through
+         * the platform layer's one way of saying so (SIGTERM on Linux, so it
+         * takes the planned handoff on the way out) */
+        gb_arm_parent_death();
         if (getppid() != parent) {
             _exit(0);   /* the parent died before the line above */
         }
-#endif
         execv(argv[0], argv);
         _exit(127);
     }
