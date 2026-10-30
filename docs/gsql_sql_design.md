@@ -1,6 +1,6 @@
 # G-SQL's SQL front end (Phase 1, increment 3)
 
-**Status:** designed 2026-10-30, being built. This is the third layer of Phase 1 (`gsql_table_design.md` §1): parser, binder, planner and executor, with `EXPLAIN`, run inside the owner as its service (`gsql_owner_design.md` §5.3). With it, the owner has something to answer, so G-SQL is linked into `gbasic` for the first time: `gbasic --gsql-owner` is the owner process the client starts.
+**Status:** designed and built 2026-10-30 (`include/gsql_sql.h`, `src/gsql/sql_parse.c`, `sql_plan.c`, `sql_exec.c`, `src/modules/gsql.c`, `tests/run_gsql_sql.sh`). This is the third layer of Phase 1 (`gsql_table_design.md` §1): parser, binder, planner and executor, with `EXPLAIN`, run inside the owner as its service (`gsql_owner_design.md` §5.3). With it, the owner has something to answer, so G-SQL is linked into `gbasic` for the first time: `gbasic --gsql-owner` is the owner process the client starts.
 
 ## 1. What this increment is, and what it is not
 
@@ -69,6 +69,8 @@ The path with the most consumed columns wins, the primary key on a tie. `ORDER B
 
 **The seek only narrows; the filter decides.** Every conjunct, consumed or not, is still evaluated on every row the path yields. So a seek may return a superset (an unknown or NaN bound, which key order places among real values) and the answer is still exactly the scan's. This is what makes the acceptance test of `gsql_design.md` §14 ("index seek plus residual filter produces identical results to a full scan") true by construction, and the suite checks it anyway, by running each query both ways.
 
+**Where the scan answers, the path gives the same answer.** The guarantee is one-directional, and the differential tier found why: a path reads fewer rows, so a condition that raises on some row the path never reads (a comparison across two currencies) refuses the statement in the scan and is never evaluated by the path. PostgreSQL behaves the same way. That direction is allowed and counted; a path that refuses where the scan answers is a defect, since the path's rows are a subset of the scan's.
+
 **A seek is used only where key order is gBASIC's `<`.** That holds when the bound's kind is the column's: a number for `number`/`integer`, text for `string`, a date for `date`, and so on. A bound of another kind is left to the filter. **An untyped `money` column gets equality seeks only:** its keys group by currency, so a range seek would silently skip other currencies where the scan raises gBASIC's cross-currency refusal, and the two must not disagree.
 
 **`EXPLAIN`** answers one row per plan line, for example:
@@ -100,3 +102,12 @@ An unknown table, column or index is `NOT_FOUND`, and the table layer's codes (`
 - **differential**: random rows, random predicates, each query run with access paths on and forced to a full scan; the answers must be identical, and a census floor requires that seeks really happened.
 - **explain**: the access path the planner says it chose, for queries whose right answer is known.
 - **owner**: `gbasic --gsql-owner` started by the client, end to end.
+
+## 8. What is not done yet
+
+- **A warning from inside SQL** (an overflowing sum, 2112) goes to the owner's stderr, which is its client's, once per distinct message. Carrying it to the client as data, so a program can see it with `on warning`, needs a field in `ROWS` and `DONE`.
+- **Plans are not cached.** A statement is parsed and planned on each `QUERY`; a prepared statement saves only sending the text. Plan caching with schema-version invalidation (`gsql_design.md` §13 question 8) comes with the gBASIC surface, which is where repeated statements come from.
+- **A sort is in memory.** `ORDER BY` that no index yields collects every row first; spilling to disk is Phase 2 (`gsql_design.md` §5.1).
+- **`IN`, `IS NULL` and `LIKE 'prefix%'` never narrow an access path**; only `=`, the ordering operators and `BETWEEN` do.
+- **Kinds are checked as values meet**, so `1 IN (1, 'a')` answers before it reaches `'a'`, where PostgreSQL refuses the statement before running it. Checking kinds at bind time needs the parameters' kinds, which `PREPARE` does not yet ask for.
+- **Windows:** the owner is fork, poll and a local socket, so `gbasic --gsql-owner` answers that G-SQL's owner is not yet available there.
