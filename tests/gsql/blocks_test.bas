@@ -37,6 +37,10 @@ sql named on shop
     select name from item where id = :id
 end sql
 
+sql by_q on shop
+    select name from item where id = :no_such_variable_q
+end sql
+
 sql twice on shop
     select id, id from item
 end sql
@@ -198,6 +202,9 @@ check("a parameter variable holding nothing is bound, not refused", len(gsql.que
 limit = saved
 e = query_cheap()
 check("a parameter the frame has is read", code_of(e), "(no error)")
+e = query_block(by_q)
+check("a parameter with no variable is refused", code_of(e), "PARAMETER")
+check("naming the variable", contains(message_of(e), "there is no variable `no_such_variable_q` here"), true)
 
 ' --- refusals ----------------------------------------------------------------
 e = exec_block(cheap)
