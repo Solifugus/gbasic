@@ -87,7 +87,7 @@ The owner is single-threaded (§6.1): one `poll` over the listening socket and e
 
 **`CANCEL` is the one request read out of order.** A single-threaded owner has only one kind of pending work, a parked request. So `CANCEL` names a request id; if that request is parked, it is answered `ERROR CANCELLED` at once, and it is the front of the queue, so order holds. `CANCEL`'s own reply, `DONE` with `cancelled` true or false, takes its place in the queue like any request. Cancelling a long batch between `FETCH`es is `CLOSE`. **Cancelling work already running is not possible in this owner, and the protocol does not pretend it is** (§6.5).
 
-**Signals.** On `SIGTERM` the owner stops accepting work and rolls back any open write transaction. It then calls the engine's `flush`, the planned handoff that leaves the next owner nothing to replay, removes its socket, closes the store and exits 0. `SIGPIPE` is ignored; a vanished client is a failed write, handled like a disconnect.
+**Signals.** On `SIGTERM` the owner stops accepting work and rolls back any open write transaction. It then calls the engine's `flush`, the planned handoff that leaves the next owner nothing to replay, removes its socket, closes the store and exits 0. **The request carries a deadline** (`stop_grace_s`, 10 seconds by default): `SIGTERM` also arms `alarm`, and `SIGALRM`'s default action ends the process if the clean stop has not finished. An owner stuck in a loop of its own never returns to the poll that sees the request, and without the deadline it would ignore its client's death and hold the database's lock for ever. One was found doing exactly that while this increment was tested: an orphan spinning at full CPU with no system calls. `SIGPIPE` is ignored; a vanished client is a failed write, handled like a disconnect.
 
 ## 5. Transactions and the service
 
@@ -163,4 +163,6 @@ When an owner disappears, each client's connection ends. Whatever was in flight 
 - **paths:** a symlink to the database finds the same owner. A stale socket is replaced. A runtime directory someone else could reach is refused.
 - **handoff:** the owner is killed with `kill -9`. The in-flight transaction is reported failed, committed work survives, and the next request starts a new owner.
 - **lifetime:** the client is killed with `kill -9`, and the owner it started goes too.
-- **cost:** the round trip, against §6.1's gate of about 20 µs added to a point read.
+- **cost:** the round trip, against §6.1's gate of about 20 µs added to a point read. **Measured 2026-10-29: about 5 µs added at the median** (5.45 µs through the owner, 0.49 µs in process).
+
+Twenty-three perturbations are proven red, each by the tier written for it. Six of them first passed, or failed for the wrong reason, until the suite itself was fixed. That suite history is in `CLAUDE.md`'s entry for `run_gsql_owner.sh`.
