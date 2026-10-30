@@ -128,7 +128,7 @@ static int svc_writes(void *ctx, const GsqlStatement *s, GsqlError *err) {
         return -1;
     }
     if (!strcmp(st.word, "put") || !strcmp(st.word, "dup") || !strcmp(st.word, "poison") ||
-        !strcmp(st.word, "crash_once")) {
+        !strcmp(st.word, "crash_once") || !strcmp(st.word, "spin")) {
         return 1;
     }
     if (!strcmp(st.word, "get") || !strcmp(st.word, "scan") || !strcmp(st.word, "count") ||
@@ -264,6 +264,14 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
         out->affected = 1;
         return GSQL_OK;
     }
+    if (!strcmp(st.word, "spin")) {
+        /* a statement that never ends: the owner busy in user code, where no
+         * signal it handles gently is ever looked at */
+        volatile unsigned long n = 0;
+        for (;;) {
+            n++;
+        }
+    }
     if (!strcmp(st.word, "poison")) {
         snprintf(err->message, sizeof err->message, "a failure the test service made on purpose");
         return err->code = GSQL_STORAGE;
@@ -384,6 +392,7 @@ static int owner_main(const char *db, const char *fd, const char *mode) {
     o.snapshot_idle_ms = env_ms("GSQL_TEST_SNAPSHOT_MS");
     o.writer_idle_ms = env_ms("GSQL_TEST_WRITER_MS");
     o.output_limit = env_ms("GSQL_TEST_OUTPUT_LIMIT");
+    o.stop_grace_s = env_ms("GSQL_TEST_STOP_GRACE_S");
     const char *ns = getenv("GSQL_TEST_NO_SERVICE");
     return gsql_owner_run(db, ns && *ns == '1' ? NULL : &SERVICE, &o);
 }
@@ -1808,6 +1817,68 @@ static int lifetime_main(const char *dir) {
         sleep_ms(10);
     }
     EXPECT(sock_gone, "the owner died with its client but left its socket: it did not take the planned handoff");
+
+    /* an owner STUCK in a statement still dies with its client: its SIGTERM
+     * carries a deadline (1 s here), since a clean stop it cannot get to
+     * would otherwise leave it holding the database for ever */
+    snprintf(db, sizeof db, "%s/stuck", dir);
+    if (pipe(p)) {
+        return 1;
+    }
+    setenv("GSQL_TEST_STOP_GRACE_S", "1", 1);
+    kid = fork();
+    if (kid == 0) {
+        close(p[0]);
+        GsqlClient *c = open_db(db, 1);
+        long o = c ? (long)gsql_client_owner_pid(c) : -1;
+        if (c) {
+            GsqlBuf b = {0};
+            b_query(&b, "spin", 0, NULL, 0);
+            uint32_t id;
+            GsqlError e2;
+            gsql_client_send(c, GSQL_M_QUERY, &b, &id, &e2);
+        }
+        if (write(p[1], &o, sizeof o) != (ssize_t)sizeof o) {
+            _exit(2);
+        }
+        for (;;) {
+            pause();
+        }
+    }
+    unsetenv("GSQL_TEST_STOP_GRACE_S");
+    close(p[1]);
+    owner = -1;
+    if (read(p[0], &owner, sizeof owner) != (ssize_t)sizeof owner || owner <= 0) {
+        mismatch("the stuck tier's client never reported its owner");
+        return finish();
+    }
+    sleep_ms(300);   /* the owner is inside the statement now */
+    char stat_path[64];
+    snprintf(stat_path, sizeof stat_path, "/proc/%ld/stat", owner);
+    double t0 = now_us();
+    kill(kid, SIGKILL);
+    waitpid(kid, NULL, 0);
+    gone = 0;
+    for (int t = 0; t < 1000 && !gone; t++) {
+        char buf[256];
+        FILE *f = fopen(stat_path, "r");
+        if (!f) {
+            gone = 1;
+            break;
+        }
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        fclose(f);
+        buf[n] = 0;
+        const char *rp = strrchr(buf, ')');
+        gone = rp && rp[1] == ' ' && rp[2] == 'Z';
+        if (!gone) {
+            sleep_ms(10);
+        }
+    }
+    double took = (now_us() - t0) / 1e3;
+    EXPECT(gone, "an owner stuck in a statement outlived its client by %.0f ms: its SIGTERM has no deadline", took);
+    EXPECT(took > 700, "the stuck owner was gone after %.0f ms, before its 1 s grace: something other than the deadline "
+           "ended it, so this check measured nothing", took);
     return finish();
 }
 

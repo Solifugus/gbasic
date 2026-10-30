@@ -67,6 +67,9 @@ typedef struct {
     uint32_t writer_idle_ms;     /* an idle BEGIN WRITE; 0: 300 000 */
     size_t output_limit;         /* a connection's unsent replies before its
                                     requests stop being read; 0: 4 MiB */
+    uint32_t stop_grace_s;       /* after SIGTERM, how long a clean stop may
+                                    take before the process is ended outright;
+                                    0: 10 */
     const GsOptions *store;      /* the engine's options; NULL: the defaults */
 } GsqlOwnerOptions;
 

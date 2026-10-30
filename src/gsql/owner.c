@@ -879,6 +879,8 @@ static int process(Owner *o, Conn *c) {
 
 static int g_signal_pipe[2] = { -1, -1 };
 
+static unsigned g_stop_grace_s = 10;
+
 static void on_term(int sig) {
     (void)sig;
     int saved = errno;
@@ -886,6 +888,14 @@ static void on_term(int sig) {
         ssize_t w = write(g_signal_pipe[1], "t", 1);
         (void)w;
     }
+    /* A clean stop is asked for through the loop, which only an owner that
+     * is still turning will see. One stuck in a loop of its own -- a defect,
+     * or a statement that never ends -- would ignore SIGTERM for ever, and
+     * with it the PR_SET_PDEATHSIG that is meant to end it with its client,
+     * holding the database's lock so that no other owner could start. So the
+     * request carries a deadline: SIGALRM's default action ends the process
+     * if the stop has not finished by then (§4). */
+    alarm(g_stop_grace_s);
     errno = saved;
 }
 
@@ -1259,6 +1269,8 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
     sa.sa_handler = on_term;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGTERM, &sa, NULL);
+    signal(SIGALRM, SIG_DFL);   /* the stop's deadline must be able to end us */
+    g_stop_grace_s = o.opt.stop_grace_s ? o.opt.stop_grace_s : 10;
 
     GsOptions so;
     memset(&so, 0, sizeof so);
