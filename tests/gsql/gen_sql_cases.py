@@ -121,7 +121,7 @@ stmt("SELECT t.name, x.name FROM t x", ("NOT_FOUND", "t.name", "the table is cal
 stmt("SELECT x.name FROM t x WHERE x.id = 1", "= 'apple'")
 stmt("SELECT name.first FROM t", ("TYPE", "name", "column name is string, so it has no field `first`"))
 stmt("SELECT nope(1)", ("NOT_FOUND", "nope", "`nope` is not a G-SQL function"))
-stmt("SELECT max(id) FROM t", ("UNSUPPORTED", "max", "aggregates are not in this release"))
+stmt("SELECT max(id) FROM t", "= 6")
 stmt("SELECT abs(1, 2)", ("SYNTAX", "abs", "abs takes 1 argument, and was given 2"))
 
 sec("ORDER BY, LIMIT, OFFSET: NULL last ascending, first descending")
@@ -216,6 +216,53 @@ stmt("SELECT id, p.vendor, p.size FROM assets ORDER BY id", "= 1, 'acme', 3 | 2,
 stmt("SELECT id FROM assets WHERE p.vendor = 'zeta'", "= 2")
 stmt("SELECT id FROM assets WHERE p.size > 1", "= 1")
 stmt("SELECT p.vendor.x FROM assets", ("EXPRESSION", "p.vendor.x", "reads a field of a record"))
+
+sec("aggregates, GROUP BY and HAVING (docs/gsql_aggregate_design.md)")
+# g repeats and is NULL twice; n holds an exact integer past 2^53; x holds 3
+# and 3.0, which are one value; m holds money in two currencies
+stmt("CREATE TABLE s (id INTEGER PRIMARY KEY, g TEXT, n INTEGER, x NUMBER, m MONEY)", "= done 0")
+stmt("INSERT INTO s VALUES (1, 'a', 1, 1.5, CAST('1.00' AS MONEY(USD))), (2, 'a', 2, NULL, CAST('2.50' AS MONEY(USD))), "
+     "(3, 'b', NULL, 3, CAST('1' AS MONEY(EUR))), (4, NULL, 4, 4, NULL), (5, NULL, 9007199254740993, NULL, NULL), "
+     "(6, 'b', 5, 3.0, CAST('2' AS MONEY(EUR)))", "= done 6")
+# NULL is skipped by every aggregate but count(*)
+stmt("SELECT count(*), count(n), count(x), count(g), count(DISTINCT g), count(DISTINCT x) FROM s",
+     "% count:integer, count:integer, count:integer, count:integer, count:integer, count:integer",
+     "= 6, 5, 4, 4, 2, 3")
+# groups in key order, NULL's group last; the sum stays exact past 2^53
+stmt("SELECT g, count(*), sum(n), min(n), max(n) FROM s GROUP BY g",
+     "= 'a', 2, 3, 1, 2 | 'b', 2, 5, 5, 5 | NULL, 2, 9007199254740997, 4, 9007199254740993")
+# avg is the sum divided by the count, with gBASIC's /, so it is never integer division
+stmt("SELECT g, avg(n) FROM s WHERE g IS NOT NULL GROUP BY g", "= 'a', 1.5 | 'b', 5.0")
+stmt("SELECT g, sum(m) FROM s GROUP BY g", "= 'a', money 3.50 | 'b', money 3.00 | NULL, NULL")
+stmt("SELECT sum(m) FROM s", ("EXPRESSION", "sum", "cannot add money in different currencies (USD and EUR)"))
+stmt("SELECT sum(m) FROM s WHERE id < 3", "= money 3.50")
+# 3 and 3.0 are one value, so one group, as a unique index would say
+stmt("SELECT x, count(*) FROM s GROUP BY x", "= 1.5, 1 | 3, 2 | 4, 1 | NULL, 2")
+stmt("SELECT lower(g), count(*) FROM s GROUP BY lower(g)", "= 'a', 2 | 'b', 2 | NULL, 2")
+stmt("SELECT upper(g) FROM s GROUP BY g", "= 'A' | 'B' | NULL")
+stmt("SELECT g FROM s GROUP BY g HAVING count(n) > 1", "= 'a' | NULL")
+stmt("SELECT g FROM s GROUP BY g ORDER BY sum(n) DESC", "= NULL | 'b' | 'a'")
+stmt("SELECT g, count(*) AS c FROM s GROUP BY g ORDER BY c, g DESC LIMIT 2", "= NULL, 2 | 'b', 2")
+# the whole input is one group, even when it is empty; GROUP BY of nothing is no groups
+stmt("SELECT count(*), sum(n), min(n), avg(x) FROM s WHERE id > 99", "= 0, NULL, NULL, NULL")
+stmt("SELECT g, count(*) FROM s WHERE id > 99 GROUP BY g", "= (none)")
+stmt("SELECT count(*) FROM s HAVING count(*) > 99", "= (none)")
+stmt("SELECT count(*)", "= 1")
+stmt("SELECT g, n FROM s GROUP BY g", ("SYNTAX", "n", "the select list reads column `n`, which is neither grouped by nor inside an aggregate"))
+stmt("SELECT g FROM s GROUP BY g ORDER BY n", ("SYNTAX", "n", "ORDER BY reads column `n`"))
+stmt("SELECT g FROM s GROUP BY g HAVING n > 1", ("SYNTAX", "n", "HAVING reads column `n`"))
+stmt("SELECT id FROM s WHERE count(*) > 1", ("SYNTAX", "count", "WHERE cannot use an aggregate"))
+stmt("SELECT count(*) FROM s GROUP BY count(*)", ("SYNTAX", "count", "GROUP BY cannot use an aggregate", 2))
+stmt("SELECT sum(sum(n)) FROM s", ("SYNTAX", "sum", "an aggregate cannot hold another aggregate", 2))
+stmt("SELECT sum(g) FROM s", ("EXPRESSION", "sum", "+ adds numbers and money, and one side is text"))
+stmt("SELECT min(g), max(g) FROM s", "= 'a', 'b'")
+stmt("SELECT g FROM s GROUP BY g HAVING count(*)", ("EXPRESSION", "count", "HAVING needs a boolean, and this condition is a number"))
+stmt("SELECT sum(n, x) FROM s", ("SYNTAX", "sum", "sum takes 1 argument, and was given 2"))
+stmt("SELECT lower(DISTINCT g) FROM s", ("SYNTAX", "lower", "only an aggregate takes DISTINCT"))
+stmt("SELECT stddev(n) FROM s", ("UNSUPPORTED", "stddev", "stddev is not in this release of G-SQL"))
+stmt("EXPLAIN SELECT g, count(*) FROM s WHERE id > 1 GROUP BY g HAVING count(*) > 1 ORDER BY 2",
+     "= 'Seek on s using the primary key (1 <= id)' | '  Aggregate: group by g' | '  Having: (count(*) > 1)' | '  Order: count(*) (sorted)'")
+stmt("EXPLAIN SELECT count(*) FROM s", "= 'Scan on s' | '  Aggregate: one group'")
 
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")

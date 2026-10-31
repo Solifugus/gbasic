@@ -18,6 +18,11 @@ typedef struct {
     SqlArena *arena;
     GsqlError *err;
     const char *qualifier;   /* the alias, or the table's name */
+    /* aggregates: whether the clause being bound may hold one, and whether
+       the binder is inside one already */
+    int agg_ok;
+    int in_agg;
+    size_t capaggs;
 } B;
 
 static int bfail(B *b, uint32_t pos, int code, const char *fmt, ...) {
@@ -86,11 +91,52 @@ static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where) {
     case SX_NAME:
         return bind_name(b, e, cols_allowed, where);
     case SX_CALL: {
-        static const char *const aggregates[] = { "count", "sum", "avg", "min", "max", "stddev", "variance", NULL };
-        for (int k = 0; aggregates[k]; k++) {
-            if (strcmp(aggregates[k], e->name) == 0) {
-                return bfail(b, e->pos, GSQL_UNSUPPORTED, "aggregates are not in this release of G-SQL (Phase 2)");
+        static const struct { const char *name; int agg; } aggregates[] = {
+            { "count", SQL_AGG_COUNT }, { "sum", SQL_AGG_SUM }, { "avg", SQL_AGG_AVG }, { "min", SQL_AGG_MIN },
+            { "max", SQL_AGG_MAX }, { NULL, 0 }
+        };
+        if (strcmp(e->name, "stddev") == 0 || strcmp(e->name, "variance") == 0) {
+            return bfail(b, e->pos, GSQL_UNSUPPORTED, "%s is not in this release of G-SQL; count, sum, avg, min "
+                         "and max are", e->name);
+        }
+        for (int k = 0; aggregates[k].name; k++) {
+            if (strcmp(aggregates[k].name, e->name) != 0) {
+                continue;
             }
+            if (b->in_agg) {
+                return bfail(b, e->pos, GSQL_SYNTAX, "an aggregate cannot hold another aggregate");
+            }
+            if (!b->agg_ok) {
+                return bfail(b, e->pos, GSQL_SYNTAX, "%s cannot use an aggregate%s", where,
+                             strcmp(where, "WHERE") == 0 ? ": it filters rows before they are grouped, and "
+                                                           "HAVING filters the groups" : "");
+            }
+            if (!e->star && e->na != 1) {
+                return bfail(b, e->pos, GSQL_SYNTAX, "%s takes 1 argument, and was given %zu", e->name, e->na);
+            }
+            e->kind = SX_AGG;
+            e->op = e->star ? SQL_AGG_COUNT_STAR : aggregates[k].agg;
+            SqlPlan *p = b->p;
+            if (p->naggs == b->capaggs) {
+                b->capaggs = b->capaggs ? b->capaggs * 2 : 8;
+                SqlExpr **grown = sql_alloc(b->arena, sizeof(SqlExpr *) * b->capaggs);
+                if (p->naggs) {
+                    memcpy(grown, p->aggs, sizeof(SqlExpr *) * p->naggs);
+                }
+                p->aggs = grown;
+            }
+            e->index = (unsigned)p->naggs;
+            p->aggs[p->naggs++] = e;
+            b->in_agg = 1;
+            int ok = 1;
+            for (size_t j = 0; j < e->na && ok; j++) {
+                ok = bind(b, e->a[j], cols_allowed, "an aggregate");
+            }
+            b->in_agg = 0;
+            return ok;
+        }
+        if (e->distinct) {
+            return bfail(b, e->pos, GSQL_SYNTAX, "only an aggregate takes DISTINCT, and %s is not one", e->name);
         }
         int known = 0;
         for (int k = 0; functions[k].name; k++) {
@@ -436,6 +482,41 @@ static int where_clause(B *b) {
     return 1;
 }
 
+/* A grouped query reads a column only inside an aggregate or as part of an
+ * expression that IS one of the GROUP BY expressions, compared by canonical
+ * print (docs/gsql_aggregate_design.md §4). */
+static int is_grouped_expr(B *b, const SqlExpr *e, char **groups) {
+    GsqlBuf t = {0};
+    sql_print_expr_tb(&t, e, b->p->tb);
+    v3_put(&t, "", 1);
+    int found = 0;
+    for (size_t k = 0; k < b->p->s->ngroup && !found; k++) {
+        found = strcmp((char *)t.bytes, groups[k]) == 0;
+    }
+    gsql_buf_free(&t);
+    return found;
+}
+
+static int check_grouped(B *b, const SqlExpr *e, char **groups, const char *where) {
+    if (!e || e->kind == SX_AGG || is_grouped_expr(b, e, groups)) {
+        return 1;
+    }
+    if (e->kind == SX_COL) {
+        const char *name = gsql_table_col(b->p->tb, e->col)->name;
+        return bfail(b, e->pos, GSQL_SYNTAX, "%s reads column `%s`, which is neither grouped by nor inside an "
+                     "aggregate: add it to GROUP BY, or use it in one, such as max(%s)", where, name, name);
+    }
+    if (e->operand && !check_grouped(b, e->operand, groups, where)) {
+        return 0;
+    }
+    for (size_t k = 0; k < e->na; k++) {
+        if (!check_grouped(b, e->a[k], groups, where)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
     SqlPlan *p = b->p;
     SqlStmt *s = p->s;
@@ -473,7 +554,10 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
             }
             continue;
         }
-        if (!bind(b, it->e, 1, "the select list")) {
+        b->agg_ok = 1;
+        int bound = bind(b, it->e, 1, "the select list");
+        b->agg_ok = 0;
+        if (!bound) {
             return 0;
         }
         const char *name = "?column?";
@@ -482,11 +566,13 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
             name = it->alias;
         } else if (it->e->kind == SX_COL) {
             name = it->e->nfields ? it->e->fields[it->e->nfields - 1] : gsql_table_col(p->tb, it->e->col)->name;
-        } else if (it->e->kind == SX_CALL) {
+        } else if (it->e->kind == SX_CALL || it->e->kind == SX_AGG) {
             name = it->e->name;
         }
         if (it->e->kind == SX_COL && it->e->nfields == 0) {
             kind = kind_text(b, gsql_table_col(p->tb, it->e->col));
+        } else if (it->e->kind == SX_AGG && (it->e->op == SQL_AGG_COUNT || it->e->op == SQL_AGG_COUNT_STAR)) {
+            kind = "integer";
         }
         p->out[p->nout] = it->e;
         p->names[p->nout] = name;
@@ -530,10 +616,49 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
                 continue;
             }
         }
-        if (!bind(b, oe, 1, "ORDER BY")) {
+        b->agg_ok = 1;
+        int bound = bind(b, oe, 1, "ORDER BY");
+        b->agg_ok = 0;
+        if (!bound) {
             return 0;
         }
         p->order[k] = oe;
+    }
+    for (size_t k = 0; k < s->ngroup; k++) {
+        if (!bind(b, s->group[k], 1, "GROUP BY")) {
+            return 0;
+        }
+    }
+    if (s->having) {
+        b->agg_ok = 1;
+        int bound = bind(b, s->having, 1, "HAVING");
+        b->agg_ok = 0;
+        if (!bound) {
+            return 0;
+        }
+    }
+    p->grouped = s->ngroup || s->having || p->naggs;
+    if (p->grouped) {
+        char **groups = sql_alloc(b->arena, sizeof(char *) * (s->ngroup ? s->ngroup : 1));
+        for (size_t k = 0; k < s->ngroup; k++) {
+            GsqlBuf g = {0};
+            sql_print_expr_tb(&g, s->group[k], p->tb);
+            groups[k] = sql_strndup(b->arena, (char *)g.bytes, g.length);
+            gsql_buf_free(&g);
+        }
+        for (size_t k = 0; k < p->nout; k++) {
+            if (!check_grouped(b, p->out[k], groups, "the select list")) {
+                return 0;
+            }
+        }
+        if (!check_grouped(b, s->having, groups, "HAVING")) {
+            return 0;
+        }
+        for (size_t k = 0; k < s->norder; k++) {
+            if (p->order_out[k] < 0 && !check_grouped(b, p->order[k], groups, "ORDER BY")) {
+                return 0;
+            }
+        }
     }
     if (!bind(b, s->limit, 0, "LIMIT") || !bind(b, s->offset, 0, "OFFSET")) {
         return 0;
@@ -634,7 +759,7 @@ int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const cha
     memset(out, 0, sizeof *out);
     out->s = s;
     out->text = text;
-    B b = { out, arena, err, "" };
+    B b = { out, arena, err, "", 0, 0, 0 };
     err->code = GSQL_OK;
     err->message[0] = 0;
     err->position = 0;
@@ -772,6 +897,21 @@ void sql_explain(const SqlPlan *p, void (*line)(void *, const char *), void *ctx
     if (any) {
         emit(line, ctx, indent + 1, &b);
     }
+    if (s->kind == SQ_SELECT && p->grouped) {
+        put(&b, s->ngroup ? "Aggregate: group by " : "Aggregate: one group");
+        for (size_t k = 0; k < s->ngroup; k++) {
+            if (k) {
+                put(&b, ", ");
+            }
+            sql_print_expr_tb(&b, s->group[k], p->tb);
+        }
+        emit(line, ctx, indent + 1, &b);
+        if (s->having) {
+            put(&b, "Having: ");
+            sql_print_expr_tb(&b, s->having, p->tb);
+            emit(line, ctx, indent + 1, &b);
+        }
+    }
     if (s->kind == SQ_SELECT && s->norder) {
         put(&b, "Order: ");
         for (size_t k = 0; k < s->norder; k++) {
@@ -783,7 +923,8 @@ void sql_explain(const SqlPlan *p, void (*line)(void *, const char *), void *ctx
                 put(&b, " DESC");
             }
         }
-        put(&b, p->access == ACC_NONE || p->point ? " (one row)"
+        put(&b, p->grouped ? " (sorted)"
+                : p->access == ACC_NONE || p->point ? " (one row)"
                 : !p->ordered ? " (sorted)"
                 : p->access == ACC_INDEX ? " (by the index)" : " (by the primary key)");
         emit(line, ctx, indent + 1, &b);

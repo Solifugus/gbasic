@@ -80,6 +80,8 @@ typedef struct {
     /* nodes whose hv this execution set, released at its end */
     SqlExpr **cached;
     size_t ncached, capcached;
+    /* a grouped query's current group: each aggregate's final value, by slot */
+    GsqlHv **aggv;
 } X;
 
 static GsqlHv *hv_bytes(X *x, const unsigned char *b, size_t n) {
@@ -713,6 +715,12 @@ static GsqlHv *eval(X *x, SqlExpr *e) {
     }
     case SX_CALL:
         return eval_call(x, e);
+    case SX_AGG:
+        if (!x->aggv || !x->aggv[e->index]) {
+            xfail(x->err, GSQL_MISUSE, e->pos, "an aggregate was read outside its group");
+            return NULL;
+        }
+        return x->h->copy(x->h->ctx, x->aggv[e->index]);
     case SX_CAST: {
         GsqlHv *a = eval(x, e->a[0]);
         if (!a) {
@@ -1095,6 +1103,289 @@ static int next_kept(Iter *it) {
     }
 }
 
+/* ---- aggregation (docs/gsql_aggregate_design.md) --------------------------
+ *
+ * A grouped query's rows are folded into GROUPS before anything is output: each
+ * row's GROUP BY values are encoded as one composite INDEX KEY, so two rows are
+ * in one group exactly when a unique index would call them one value (all
+ * NULLs together, 3 with 3.0). A group keeps the FIRST ROW it saw, so the
+ * select list, HAVING and ORDER BY read its group values back through the
+ * ordinary column path; each aggregate folds through the host, so a sum is
+ * gBASIC's `+` and an extreme is gBASIC's order. */
+
+/* a set of key byte strings, open addressing; values are 1-based slots */
+typedef struct {
+    size_t *slot;
+    size_t cap, n;
+} KeyMap;
+
+static uint64_t key_hash(const unsigned char *b, size_t n) {
+    uint64_t h = 1469598103934665603ull;
+    for (size_t k = 0; k < n; k++) {
+        h = (h ^ b[k]) * 1099511628211ull;
+    }
+    return h;
+}
+
+typedef struct {
+    uint64_t count;      /* rows (count(*)) or values (the rest) folded */
+    GsqlHv *v;           /* sum, min or max so far */
+    KeyMap seen;         /* DISTINCT: the keys already folded */
+    GsqlBuf *seen_keys;
+    size_t nseen, capseen;
+} Acc;
+
+typedef struct {
+    GsqlBuf key;
+    GsqlBuf rep;         /* the first row's bytes */
+    int has_rep;
+    Acc *acc;
+    GsqlHv **fin;        /* the aggregates' final values */
+} Group;
+
+typedef struct {
+    Group *v;
+    size_t n, cap;
+    KeyMap map;
+    size_t *order;       /* the groups in key order */
+    size_t pos;
+} Groups;
+
+/* the slot (1-based) of `key` among `keys`, or 0; `insert` adds it as `n+1` */
+static size_t keymap_find(KeyMap *m, const GsqlBuf *keys_of(void *, size_t), void *ctx, const unsigned char *b,
+                          size_t len, size_t insert_as) {
+    if (m->n * 2 >= m->cap) {
+        size_t cap = m->cap ? m->cap * 2 : 64;
+        size_t *grown = calloc(cap, sizeof *grown);
+        if (!grown) {
+            abort();
+        }
+        for (size_t k = 0; k < m->cap; k++) {
+            if (m->slot[k]) {
+                const GsqlBuf *kb = keys_of(ctx, m->slot[k] - 1);
+                size_t at = key_hash(kb->bytes, kb->length) & (cap - 1);
+                while (grown[at]) {
+                    at = (at + 1) & (cap - 1);
+                }
+                grown[at] = m->slot[k];
+            }
+        }
+        free(m->slot);
+        m->slot = grown;
+        m->cap = cap;
+    }
+    size_t at = key_hash(b, len) & (m->cap - 1);
+    while (m->slot[at]) {
+        const GsqlBuf *kb = keys_of(ctx, m->slot[at] - 1);
+        if (kb->length == len && memcmp(kb->bytes, b, len) == 0) {
+            return m->slot[at];
+        }
+        at = (at + 1) & (m->cap - 1);
+    }
+    if (insert_as) {
+        m->slot[at] = insert_as;
+        m->n++;
+    }
+    return 0;
+}
+
+static const GsqlBuf *group_key_of(void *ctx, size_t i) {
+    return &((Groups *)ctx)->v[i].key;
+}
+
+static const GsqlBuf *seen_key_of(void *ctx, size_t i) {
+    return &((Acc *)ctx)->seen_keys[i];
+}
+
+/* a value's key component, appended; GSQL_OK or a refusal at `e` */
+static int key_of_value(X *x, const GsqlHv *v, const SqlExpr *e, GsqlKey *key) {
+    GsqlBuf b = {0};
+    int rc = x->h->store(x->h->ctx, v, &b, x->err);
+    if (rc == GSQL_OK) {
+        GsqlKeyStatus st = gsql_key_append(key, b.bytes, b.length, NULL, 0);
+        if (st != GSQL_KEY_OK) {
+            rc = xfail(x->err, GSQL_EXPRESSION, e->pos,
+                       "%s cannot be grouped or made DISTINCT: it has no single equality G-SQL can key",
+                       tag_word(b.length ? b.bytes[0] : 0));
+        }
+    }
+    gsql_buf_free(&b);
+    return rc;
+}
+
+static void groups_free(X *x, Groups *g) {
+    for (size_t i = 0; i < g->n; i++) {
+        Group *gr = &g->v[i];
+        gsql_buf_free(&gr->key);
+        gsql_buf_free(&gr->rep);
+        for (size_t a = 0; a < x->p->naggs; a++) {
+            Acc *acc = &gr->acc[a];
+            rel(x, acc->v);
+            for (size_t k = 0; k < acc->nseen; k++) {
+                gsql_buf_free(&acc->seen_keys[k]);
+            }
+            free(acc->seen_keys);
+            free(acc->seen.slot);
+            if (gr->fin) {
+                rel(x, gr->fin[a]);
+            }
+        }
+        free(gr->acc);
+        free(gr->fin);
+    }
+    free(g->v);
+    free(g->map.slot);
+    free(g->order);
+    memset(g, 0, sizeof *g);
+}
+
+/* Folds the current row into aggregate `a` of group `gr`. */
+static int fold(X *x, Acc *acc, SqlExpr *e) {
+    if (e->op == SQL_AGG_COUNT_STAR) {
+        acc->count++;
+        return GSQL_OK;
+    }
+    GsqlHv *v = eval(x, e->a[0]);
+    if (!v) {
+        return x->err->code ? x->err->code : GSQL_EXPRESSION;
+    }
+    if (is_null(x, v)) {
+        rel(x, v);
+        return GSQL_OK;
+    }
+    if (e->distinct) {
+        GsqlKey key;
+        gsql_key_init(&key);
+        if (key_of_value(x, v, e, &key) != GSQL_OK) {
+            gsql_key_free(&key);
+            rel(x, v);
+            return x->err->code;
+        }
+        if (keymap_find(&acc->seen, seen_key_of, acc, key.bytes, key.length, 0)) {
+            gsql_key_free(&key);
+            rel(x, v);
+            return GSQL_OK;
+        }
+        if (acc->nseen == acc->capseen) {
+            acc->capseen = acc->capseen ? acc->capseen * 2 : 16;
+            acc->seen_keys = realloc(acc->seen_keys, sizeof(GsqlBuf) * acc->capseen);
+            if (!acc->seen_keys) {
+                abort();
+            }
+        }
+        GsqlBuf *kb = &acc->seen_keys[acc->nseen];
+        memset(kb, 0, sizeof *kb);
+        v3_put(kb, key.bytes, key.length);
+        acc->nseen++;
+        keymap_find(&acc->seen, seen_key_of, acc, key.bytes, key.length, acc->nseen);
+        gsql_key_free(&key);
+    }
+    acc->count++;
+    if (e->op == SQL_AGG_COUNT) {
+        rel(x, v);
+        return GSQL_OK;
+    }
+    if (!acc->v) {
+        if ((e->op == SQL_AGG_SUM || e->op == SQL_AGG_AVG) && !arithmetic_ok(x, v, NULL, SQL_OP_ADD, e)) {
+            rel(x, v);
+            return x->err->code;
+        }
+        acc->v = v;
+        return GSQL_OK;
+    }
+    if (e->op == SQL_AGG_SUM || e->op == SQL_AGG_AVG) {
+        if (!arithmetic_ok(x, acc->v, v, SQL_OP_ADD, e)) {
+            rel(x, v);
+            return x->err->code;
+        }
+        GsqlHv *sum = placed(x, x->h->op(x->h->ctx, SQL_OP_ADD, acc->v, v, x->err), e);
+        rel(x, v);
+        if (!sum) {
+            return x->err->code;
+        }
+        rel(x, acc->v);
+        acc->v = sum;
+        return GSQL_OK;
+    }
+    /* min and max: gBASIC's order, with the kinds checked as `<` checks them */
+    if (!comparable(x, acc->v, v, SQL_OP_LT, e)) {
+        rel(x, v);
+        return x->err->code;
+    }
+    int cmp;
+    if (x->h->order(x->h->ctx, v, acc->v, &cmp, x->err) != GSQL_OK) {
+        if (x->err->position == 0) {
+            x->err->position = e->pos;
+        }
+        rel(x, v);
+        return x->err->code;
+    }
+    if ((e->op == SQL_AGG_MIN && cmp < 0) || (e->op == SQL_AGG_MAX && cmp > 0)) {
+        rel(x, acc->v);
+        acc->v = v;
+    } else {
+        rel(x, v);
+    }
+    return GSQL_OK;
+}
+
+static GsqlHv *hv_count(X *x, uint64_t n) {
+    GsqlBuf b = {0};
+    v3_w_int(&b, (int64_t)n);
+    GsqlHv *v = hv_bytes(x, b.bytes, b.length);
+    gsql_buf_free(&b);
+    return v;
+}
+
+/* an aggregate's answer once its group is complete */
+static GsqlHv *finish(X *x, Acc *acc, SqlExpr *e) {
+    if (e->op == SQL_AGG_COUNT_STAR || e->op == SQL_AGG_COUNT) {
+        return hv_count(x, acc->count);
+    }
+    if (!acc->v) {
+        return hv_unknown(x);
+    }
+    if (e->op == SQL_AGG_AVG) {
+        GsqlHv *n = hv_count(x, acc->count);
+        if (!n) {
+            return NULL;
+        }
+        GsqlHv *v = placed(x, x->h->op(x->h->ctx, SQL_OP_DIV, acc->v, n, x->err), e);
+        rel(x, n);
+        return v;
+    }
+    return x->h->copy(x->h->ctx, acc->v);
+}
+
+static Group *group_new(X *x, Groups *g) {
+    if (g->n == g->cap) {
+        g->cap = g->cap ? g->cap * 2 : 16;
+        g->v = realloc(g->v, sizeof(Group) * g->cap);
+        if (!g->v) {
+            abort();
+        }
+    }
+    Group *gr = &g->v[g->n++];
+    memset(gr, 0, sizeof *gr);
+    gr->acc = calloc(x->p->naggs ? x->p->naggs : 1, sizeof(Acc));
+    if (!gr->acc) {
+        abort();
+    }
+    return gr;
+}
+
+static Groups *sort_ctx;
+
+static int group_order_cmp(const void *a, const void *b) {
+    const GsqlBuf *ka = &sort_ctx->v[*(const size_t *)a].key, *kb = &sort_ctx->v[*(const size_t *)b].key;
+    size_t n = ka->length < kb->length ? ka->length : kb->length;
+    int c = memcmp(ka->bytes, kb->bytes, n);
+    if (c) {
+        return c;
+    }
+    return ka->length < kb->length ? -1 : ka->length > kb->length;
+}
+
 /* ---- SELECT ------------------------------------------------------------- */
 
 typedef struct {
@@ -1121,6 +1412,8 @@ typedef struct {
     GsqlBuf pending;    /* a row read ahead, to know whether more remain */
     int have_pending;
     int ended;
+    int grouped;        /* the rows are the groups (aggregate, below) */
+    Groups groups;
 } SqlCursor;
 
 static int output_row(SqlCursor *c, GsqlBuf *out) {
@@ -1133,6 +1426,125 @@ static int output_row(SqlCursor *c, GsqlBuf *out) {
         }
     }
     return GSQL_OK;
+}
+
+/* Folds every row the access path keeps into groups (docs/gsql_aggregate_design.md §5). */
+static int aggregate(SqlCursor *c) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    Groups *g = &c->groups;
+    int one = p->access == ACC_NONE;   /* no FROM: the one row, if kept */
+    for (int first = 1;; first = 0) {
+        int r;
+        if (one) {
+            r = first ? keep(x) : 0;
+        } else {
+            r = next_kept(&c->it);
+        }
+        if (r < 0) {
+            return x->err->code ? x->err->code : GSQL_EXPRESSION;
+        }
+        if (r == 0) {
+            break;
+        }
+        GsqlKey key;
+        gsql_key_init(&key);
+        for (size_t k = 0; k < p->s->ngroup; k++) {
+            GsqlHv *v = eval(x, p->s->group[k]);
+            int rc = v ? key_of_value(x, v, p->s->group[k], &key) : (x->err->code ? x->err->code : GSQL_EXPRESSION);
+            rel(x, v);
+            if (rc != GSQL_OK) {
+                gsql_key_free(&key);
+                return rc;
+            }
+        }
+        size_t at = keymap_find(&g->map, group_key_of, g, key.bytes, key.length, 0);
+        Group *gr;
+        if (at) {
+            gr = &g->v[at - 1];
+        } else {
+            gr = group_new(x, g);
+            v3_put(&gr->key, key.bytes, key.length);
+            if (x->have_row) {
+                v3_put(&gr->rep, x->row.bytes, x->row.length);
+                gr->has_rep = 1;
+            }
+            keymap_find(&g->map, group_key_of, g, key.bytes, key.length, g->n);
+        }
+        gsql_key_free(&key);
+        for (size_t a = 0; a < p->naggs; a++) {
+            if (fold(x, &gr->acc[a], p->aggs[a]) != GSQL_OK) {
+                return x->err->code;
+            }
+        }
+    }
+    /* no GROUP BY: the input is one group, even when it is empty */
+    if (p->s->ngroup == 0 && g->n == 0) {
+        group_new(x, g);
+    }
+    for (size_t i = 0; i < g->n; i++) {
+        Group *gr = &g->v[i];
+        gr->fin = calloc(p->naggs ? p->naggs : 1, sizeof(GsqlHv *));
+        if (!gr->fin) {
+            abort();
+        }
+        for (size_t a = 0; a < p->naggs; a++) {
+            if (!(gr->fin[a] = finish(x, &gr->acc[a], p->aggs[a]))) {
+                return x->err->code ? x->err->code : GSQL_EXPRESSION;
+            }
+        }
+    }
+    g->order = malloc(sizeof(size_t) * (g->n ? g->n : 1));
+    if (!g->order) {
+        abort();
+    }
+    for (size_t i = 0; i < g->n; i++) {
+        g->order[i] = i;
+    }
+    sort_ctx = g;
+    qsort(g->order, g->n, sizeof(size_t), group_order_cmp);
+    sort_ctx = NULL;
+    row_clear(x);
+    return GSQL_OK;
+}
+
+/* the next group HAVING keeps, made the current row: 1, 0 at the end, -1 failed */
+static int next_group(SqlCursor *c) {
+    X *x = &c->x;
+    Groups *g = &c->groups;
+    while (g->pos < g->n) {
+        Group *gr = &g->v[g->order[g->pos++]];
+        row_clear(x);
+        if (gr->has_rep) {
+            x->row.length = 0;
+            v3_put(&x->row, gr->rep.bytes, gr->rep.length);
+            x->have_row = 1;
+        }
+        x->aggv = gr->fin;
+        if (!c->plan.s->having) {
+            return 1;
+        }
+        GsqlHv *v = eval(x, c->plan.s->having);
+        if (!v) {
+            return -1;
+        }
+        int t = x->h->truth(x->h->ctx, v);
+        int kind = kind_of(x, v);
+        rel(x, v);
+        if (t == -2) {
+            xfail(x->err, GSQL_EXPRESSION, c->plan.s->having->pos, "HAVING needs a boolean, and this condition is %s",
+                  tag_word(kind));
+            return -1;
+        }
+        if (t == 1) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int source_next(SqlCursor *c) {
+    return c->grouped ? next_group(c) : next_kept(&c->it);
 }
 
 static int sort_cmp(SqlCursor *c, const SortRow *a, const SortRow *b, int *failed) {
@@ -1205,6 +1617,8 @@ static void cursor_free(SqlCursor *c) {
         }
     }
     free(c->rows);
+    c->x.aggv = NULL;
+    groups_free(&c->x, &c->groups);
     for (size_t k = 0; k < c->nlines; k++) {
         free(c->lines[k]);
     }
@@ -1256,6 +1670,24 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
         c->produced++;
         return 1;
     }
+    if (c->grouped) {
+        for (;;) {
+            int r = next_group(c);
+            if (r <= 0) {
+                c->ended = 1;
+                return r;
+            }
+            if (c->offset) {
+                c->offset--;
+                continue;
+            }
+            if (output_row(c, out) != GSQL_OK) {
+                return -1;
+            }
+            c->produced++;
+            return 1;
+        }
+    }
     if (c->plan.access == ACC_NONE) {
         /* one row, with no table */
         if (c->pos++) {
@@ -1296,7 +1728,7 @@ static int collect_sorted(SqlCursor *c) {
     size_t cap = 0;
     size_t nord = c->plan.s->norder;
     for (;;) {
-        int r = next_kept(&c->it);
+        int r = source_next(c);
         if (r < 0) {
             return x->err->code;
         }
@@ -1968,9 +2400,18 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
                 goto failed;
             }
             c->iter_open = 1;
+        }
+        if (c->plan.grouped) {
+            c->grouped = 1;
+            if (aggregate(c) != GSQL_OK) {
+                goto failed;
+            }
+        }
+        if (c->plan.access != ACC_NONE || c->grouped) {
             /* the access was to yield the order, and a bound that did not fit
-             * turned it into a scan: then it must be sorted after all */
-            int need_sort = s->norder && (!c->plan.ordered || c->it.fell_back);
+             * turned it into a scan: then it must be sorted after all. Groups
+             * come in key order, so a grouped query is always sorted. */
+            int need_sort = s->norder && (c->grouped || !c->plan.ordered || c->it.fell_back);
             if (need_sort) {
                 c->sorted = 1;
                 if (collect_sorted(c) != GSQL_OK) {

@@ -44,7 +44,12 @@ typedef enum {
     SX_CAST,      /* CAST(a[0] AS type) and DATE '...' */
     /* bound forms, made by the planner from SX_NAME */
     SX_COL,       /* column `col` of the statement's table, then `fields` */
+    SX_AGG,       /* an aggregate, made from SX_CALL: `op` an SQL_AGG_*, `index` its slot */
 } SqlExprKind;
+
+typedef enum {
+    SQL_AGG_COUNT_STAR = 1, SQL_AGG_COUNT, SQL_AGG_SUM, SQL_AGG_AVG, SQL_AGG_MIN, SQL_AGG_MAX
+} SqlAgg;
 
 typedef enum {
     SQL_OP_OR = 1, SQL_OP_AND,
@@ -85,6 +90,8 @@ struct SqlExpr {
     size_t na;
     SqlExpr *operand;        /* SX_CASE's simple form */
     int has_else;            /* SX_CASE */
+    int star;                /* SX_CALL/SX_AGG: count(*) */
+    int distinct;            /* SX_CALL/SX_AGG: count(DISTINCT e) */
     SqlType type;            /* SX_CAST */
     /* the executor's: a constant's or a parameter's host value, loaded once
      * per execution and released with it */
@@ -149,6 +156,9 @@ typedef struct {
     SqlOrder *order;
     size_t norder;
     SqlExpr *limit, *offset;
+    SqlExpr **group;         /* GROUP BY */
+    size_t ngroup;
+    SqlExpr *having;
     /* INSERT: cols may be empty (every column, in order) */
     SqlNameList cols;
     SqlExpr ***rows;         /* rows[r][c] */
@@ -226,6 +236,11 @@ typedef struct {
     /* ORDER BY, bound: an output position (>= 0) or an expression */
     SqlExpr **order;
     long *order_out;
+    /* aggregation (docs/gsql_aggregate_design.md): a grouped query is one with
+     * GROUP BY, HAVING or an aggregate; `aggs` are its SX_AGG nodes by slot */
+    int grouped;
+    SqlExpr **aggs;
+    size_t naggs;
     /* UPDATE: column positions, and INSERT's: the column each value goes to */
     unsigned *targets;
     size_t ntargets;

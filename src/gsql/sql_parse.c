@@ -428,7 +428,7 @@ static char *name(P *p, const char *what) {
 /* Phase 2's words, refused by name rather than as a puzzle. */
 static int phase2(P *p) {
     static const struct { const char *kw; const char *what; } later[] = {
-        { "join", "joins" }, { "group", "GROUP BY" }, { "having", "HAVING" }, { "union", "UNION" },
+        { "join", "joins" }, { "union", "UNION" },
         { "intersect", "INTERSECT" }, { "except", "EXCEPT" }, { "distinct", "DISTINCT" },
         { "with", "WITH" }, { NULL, NULL }
     };
@@ -693,9 +693,22 @@ static SqlExpr *primary(P *p) {
             SqlExpr *e = node(p, SX_CALL, pos);
             e->name = first;
             EList l = {0};
+            /* count(*) and an aggregate's DISTINCT; the binder decides whether
+               the name is an aggregate at all */
             if (at_sym(p, "*")) {
-                fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "aggregates are not in this release of G-SQL (Phase 2)");
-                return NULL;
+                if (strcmp(first, "count") != 0) {
+                    fail_at(p, p->tok.pos, GSQL_SYNTAX, "only count takes *, as count(*)");
+                    return NULL;
+                }
+                next(p);
+                e->star = 1;
+                if (!expect_sym(p, ")")) {
+                    return NULL;
+                }
+                return e;
+            }
+            if (accept_kw(p, "distinct")) {
+                e->distinct = 1;
             }
             if (!at_sym(p, ")")) {
                 do {
@@ -1184,6 +1197,29 @@ static int select_stmt(P *p, SqlStmt *s) {
     if (accept_kw(p, "where")) {
         s->where = expr(p);
         if (!s->where) {
+            return 0;
+        }
+    }
+    if (accept_kw(p, "group")) {
+        if (!expect_kw(p, "by")) {
+            return 0;
+        }
+        SqlExpr *g[256];
+        size_t ng = 0;
+        do {
+            if (ng == 256) {
+                return fail_at(p, p->tok.pos, GSQL_SYNTAX, "GROUP BY may have at most 256 terms");
+            }
+            if (!(g[ng++] = expr(p))) {
+                return 0;
+            }
+        } while (accept_sym(p, ","));
+        s->group = sql_alloc(p->arena, sizeof(SqlExpr *) * ng);
+        memcpy(s->group, g, sizeof(SqlExpr *) * ng);
+        s->ngroup = ng;
+    }
+    if (accept_kw(p, "having")) {
+        if (!(s->having = expr(p))) {
             return 0;
         }
     }
@@ -1834,8 +1870,15 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const GsqlTable *tb) {
         return;
     }
     case SX_CALL:
+    case SX_AGG:
         puts_(o, e->name);
         v3_put(o, "(", 1);
+        if (e->star) {
+            v3_put(o, "*", 1);
+        }
+        if (e->distinct) {
+            puts_(o, "DISTINCT ");
+        }
         for (size_t k = 0; k < e->na; k++) {
             if (k) {
                 puts_(o, ", ");
@@ -1925,6 +1968,14 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
         if (s->where) {
             puts_(o, " WHERE ");
             sql_print_expr(o, s->where);
+        }
+        for (size_t k = 0; k < s->ngroup; k++) {
+            puts_(o, k ? ", " : " GROUP BY ");
+            sql_print_expr(o, s->group[k]);
+        }
+        if (s->having) {
+            puts_(o, " HAVING ");
+            sql_print_expr(o, s->having);
         }
         for (size_t k = 0; k < s->norder; k++) {
             puts_(o, k ? ", " : " ORDER BY ");

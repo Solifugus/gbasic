@@ -146,7 +146,7 @@
 > SELECT nope(1)
 ! NOT_FOUND 8 `nope` is not a G-SQL function
 > SELECT max(id) FROM t
-! UNSUPPORTED 8 aggregates are not in this release
+= 6
 > SELECT abs(1, 2)
 ! SYNTAX 8 abs takes 1 argument, and was given 2
 
@@ -318,6 +318,73 @@ commit
 = 1
 > SELECT p.vendor.x FROM assets
 ! EXPRESSION 8 reads a field of a record
+
+# ---- aggregates, GROUP BY and HAVING (docs/gsql_aggregate_design.md) -
+> CREATE TABLE s (id INTEGER PRIMARY KEY, g TEXT, n INTEGER, x NUMBER, m MONEY)
+= done 0
+> INSERT INTO s VALUES (1, 'a', 1, 1.5, CAST('1.00' AS MONEY(USD))), (2, 'a', 2, NULL, CAST('2.50' AS MONEY(USD))), (3, 'b', NULL, 3, CAST('1' AS MONEY(EUR))), (4, NULL, 4, 4, NULL), (5, NULL, 9007199254740993, NULL, NULL), (6, 'b', 5, 3.0, CAST('2' AS MONEY(EUR)))
+= done 6
+> SELECT count(*), count(n), count(x), count(g), count(DISTINCT g), count(DISTINCT x) FROM s
+% count:integer, count:integer, count:integer, count:integer, count:integer, count:integer
+= 6, 5, 4, 4, 2, 3
+> SELECT g, count(*), sum(n), min(n), max(n) FROM s GROUP BY g
+= 'a', 2, 3, 1, 2 | 'b', 2, 5, 5, 5 | NULL, 2, 9007199254740997, 4, 9007199254740993
+> SELECT g, avg(n) FROM s WHERE g IS NOT NULL GROUP BY g
+= 'a', 1.5 | 'b', 5.0
+> SELECT g, sum(m) FROM s GROUP BY g
+= 'a', money 3.50 | 'b', money 3.00 | NULL, NULL
+> SELECT sum(m) FROM s
+! EXPRESSION 8 cannot add money in different currencies (USD and EUR)
+> SELECT sum(m) FROM s WHERE id < 3
+= money 3.50
+> SELECT x, count(*) FROM s GROUP BY x
+= 1.5, 1 | 3, 2 | 4, 1 | NULL, 2
+> SELECT lower(g), count(*) FROM s GROUP BY lower(g)
+= 'a', 2 | 'b', 2 | NULL, 2
+> SELECT upper(g) FROM s GROUP BY g
+= 'A' | 'B' | NULL
+> SELECT g FROM s GROUP BY g HAVING count(n) > 1
+= 'a' | NULL
+> SELECT g FROM s GROUP BY g ORDER BY sum(n) DESC
+= NULL | 'b' | 'a'
+> SELECT g, count(*) AS c FROM s GROUP BY g ORDER BY c, g DESC LIMIT 2
+= NULL, 2 | 'b', 2
+> SELECT count(*), sum(n), min(n), avg(x) FROM s WHERE id > 99
+= 0, NULL, NULL, NULL
+> SELECT g, count(*) FROM s WHERE id > 99 GROUP BY g
+= (none)
+> SELECT count(*) FROM s HAVING count(*) > 99
+= (none)
+> SELECT count(*)
+= 1
+> SELECT g, n FROM s GROUP BY g
+! SYNTAX 11 the select list reads column `n`, which is neither grouped by nor inside an aggregate
+> SELECT g FROM s GROUP BY g ORDER BY n
+! SYNTAX 37 ORDER BY reads column `n`
+> SELECT g FROM s GROUP BY g HAVING n > 1
+! SYNTAX 35 HAVING reads column `n`
+> SELECT id FROM s WHERE count(*) > 1
+! SYNTAX 24 WHERE cannot use an aggregate
+> SELECT count(*) FROM s GROUP BY count(*)
+! SYNTAX 33 GROUP BY cannot use an aggregate
+> SELECT sum(sum(n)) FROM s
+! SYNTAX 12 an aggregate cannot hold another aggregate
+> SELECT sum(g) FROM s
+! EXPRESSION 8 + adds numbers and money, and one side is text
+> SELECT min(g), max(g) FROM s
+= 'a', 'b'
+> SELECT g FROM s GROUP BY g HAVING count(*)
+! EXPRESSION 35 HAVING needs a boolean, and this condition is a number
+> SELECT sum(n, x) FROM s
+! SYNTAX 8 sum takes 1 argument, and was given 2
+> SELECT lower(DISTINCT g) FROM s
+! SYNTAX 8 only an aggregate takes DISTINCT
+> SELECT stddev(n) FROM s
+! UNSUPPORTED 8 stddev is not in this release of G-SQL
+> EXPLAIN SELECT g, count(*) FROM s WHERE id > 1 GROUP BY g HAVING count(*) > 1 ORDER BY 2
+= 'Seek on s using the primary key (1 <= id)' | '  Aggregate: group by g' | '  Having: (count(*) > 1)' | '  Order: count(*) (sorted)'
+> EXPLAIN SELECT count(*) FROM s
+= 'Scan on s' | '  Aggregate: one group'
 
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)

@@ -177,6 +177,20 @@
 > begin
 ! UNSUPPORTED 1 by the protocol's BEGIN, COMMIT and ROLLBACK
 
+# ---- aggregates, GROUP BY, HAVING (docs/gsql_aggregate_design.md) -----
+> select count(*) from t
+= SELECT count(*) FROM t
+> select a, count(distinct b), sum(c) from t group by a having count(*) > 1 order by 2 desc
+= SELECT a, count(DISTINCT b), sum(c) FROM t GROUP BY a HAVING (count(*) > 1) ORDER BY 2 DESC
+> select lower(b) from t where a > 0 group by lower(b), a
+= SELECT lower(b) FROM t WHERE (a > 0) GROUP BY lower(b), a
+> select max(a) from t having max(a) > 0
+= SELECT max(a) FROM t HAVING (max(a) > 0)
+> select sum(*) from t
+! SYNTAX 12 only count takes *
+> select a from t group a
+! SYNTAX 23 expected BY
+
 # ---- refusals: Phase 2, by name -------------------------------------
 > select a from t join u on t.x = u.x
 ! UNSUPPORTED 17 joins are not in this release
@@ -184,14 +198,10 @@
 ! UNSUPPORTED 17 joins are not in this release
 > select a from t, u
 ! UNSUPPORTED 16 joins are not in this release
-> select a from t group by a
-! UNSUPPORTED 17 GROUP BY are not in this release
 > select distinct a from t
 ! UNSUPPORTED 8 DISTINCT are not in this release
 > select a from t union select b from u
 ! UNSUPPORTED 17 UNION are not in this release
-> select count(*) from t
-! UNSUPPORTED 14 aggregates are not in this release
 > select a from t where a in (select b from u)
 ! UNSUPPORTED 29 subqueries are not in this release
 > select a from (select 1) x
