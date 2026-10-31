@@ -43,7 +43,7 @@ next
 ' fail while it starts, sorting, rather than in its first batch)
 function refused()
     on error goto next
-    gsql.query(db, "select 9223372036854775807 + 7 as big, 'a' + 1 as bad order by 1")
+    gsql.query(db, "select 9223372036854775807 + 7 as big, 1 / (id - id) as bad from t order by 1")
     if error then
         return "refused"
     end if
