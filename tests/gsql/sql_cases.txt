@@ -1025,6 +1025,66 @@ rollback
 > INSERT INTO fkd VALUES (50, 3)
 = done 1
 
+# ---- CHECK constraints (docs/gsql_check_design.md) -------------------
+> CREATE TABLE acct (id INTEGER PRIMARY KEY, bal MONEY(USD) CHECK (bal >= CAST('0' AS MONEY(USD))), opened DATE, closed DATE, CONSTRAINT closes_after CHECK (closed IS NULL OR closed >= opened))
+= done 0
+> INSERT INTO acct VALUES (1, CAST('5' AS MONEY(USD)), DATE '2026-01-01', NULL)
+= done 1
+> INSERT INTO acct VALUES (2, CAST('-1' AS MONEY(USD)), NULL, NULL)
+! CHECK 0 check `acct_bal_check` refuses this row of `acct`: (bal >= CAST('0' AS MONEY(USD))) is false
+> INSERT INTO acct VALUES (3, NULL, NULL, NULL)
+= done 1
+> INSERT INTO acct VALUES (4, CAST('1' AS MONEY(USD)), DATE '2026-02-01', DATE '2026-01-01')
+! CHECK 0 check `closes_after` refuses this row of `acct`
+> INSERT INTO acct VALUES (5, CAST('1' AS MONEY(EUR)), NULL, NULL)
+! TYPE 0 acct.bal is money(USD)
+> UPDATE acct SET bal = CAST('-2' AS MONEY(USD)) WHERE id = 1
+! CHECK 0 check `acct_bal_check`
+> UPDATE acct SET bal = CAST('2' AS MONEY(USD)) WHERE id = 1
+= done 1
+begin write
+> INSERT INTO acct VALUES (6, CAST('-3' AS MONEY(USD)), NULL, NULL)
+! CHECK 0 acct_bal_check
+> INSERT INTO acct VALUES (6, CAST('3' AS MONEY(USD)), NULL, NULL)
+= done 1
+rollback
+> SELECT count(*) FROM acct
+= 2
+> INSERT INTO acct (id, bal) SELECT id + 10, CAST('0' AS MONEY(USD)) - bal FROM acct WHERE bal IS NOT NULL
+! CHECK 0 acct_bal_check
+> ALTER TABLE acct ADD CONSTRAINT small_id CHECK (id < 3)
+! CHECK 22 check `small_id`: 1 row of `acct` fails it
+> DELETE FROM acct WHERE id = 3
+= done 1
+> ALTER TABLE acct ADD CONSTRAINT small_id CHECK (id < 3)
+= done 0
+> INSERT INTO acct VALUES (7, NULL, NULL, NULL)
+! CHECK 0 check `small_id`
+> ALTER TABLE acct DROP CONSTRAINT small_id
+= done 0
+> INSERT INTO acct VALUES (7, NULL, NULL, NULL)
+= done 1
+> ALTER TABLE acct ADD CHECK (5)
+! SCHEMA 22 is a constant that is not a condition
+> ALTER TABLE acct ADD CHECK (nope > 1)
+! SCHEMA 22 check `acct_check` cannot be applied to `acct`: table acct has no column `nope`
+> ALTER TABLE acct ADD CHECK (id IN (SELECT id FROM acct))
+! SCHEMA 22 a check reads only its own row
+> CREATE TABLE ckbad (a INTEGER CHECK (b > 0))
+! SCHEMA 31 table ckbad has no column `b`
+> SELECT * FROM ckbad
+! NOT_FOUND 1 there is no table `ckbad`
+> CREATE TABLE acct_new (id INTEGER PRIMARY KEY, bal MONEY(USD), opened DATE)
+= done 0
+> DROP TABLE acct
+= done 0
+> ALTER TABLE acct_new RENAME TO acct
+= done 0
+> INSERT INTO acct VALUES (1, CAST('-9' AS MONEY(USD)), NULL)
+= done 1
+> ALTER TABLE acct ADD COLUMN closed DATE
+= done 0
+
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
 = done 0

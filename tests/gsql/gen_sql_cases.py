@@ -730,6 +730,50 @@ stmt("SELECT note FROM src_notes ORDER BY note", "= 'a' | 'b' | 'c'")
 stmt("INSERT INTO fkd VALUES (50, 9)", ("FOREIGN_KEY", None, "foreign key `fkd_s_fkey`"))
 stmt("INSERT INTO fkd VALUES (50, 3)", "= done 1")
 
+sec("CHECK constraints (docs/gsql_check_design.md)")
+stmt("CREATE TABLE acct (id INTEGER PRIMARY KEY, bal MONEY(USD) CHECK (bal >= CAST('0' AS MONEY(USD))), "
+     "opened DATE, closed DATE, CONSTRAINT closes_after CHECK (closed IS NULL OR closed >= opened))", "= done 0")
+stmt("INSERT INTO acct VALUES (1, CAST('5' AS MONEY(USD)), DATE '2026-01-01', NULL)", "= done 1")
+stmt("INSERT INTO acct VALUES (2, CAST('-1' AS MONEY(USD)), NULL, NULL)",
+     ("CHECK", None, "check `acct_bal_check` refuses this row of `acct`: (bal >= CAST('0' AS MONEY(USD))) is false"))
+# unknown passes, as the standard says: NOT NULL is how to refuse it
+stmt("INSERT INTO acct VALUES (3, NULL, NULL, NULL)", "= done 1")
+# a table's check reads two columns
+stmt("INSERT INTO acct VALUES (4, CAST('1' AS MONEY(USD)), DATE '2026-02-01', DATE '2026-01-01')",
+     ("CHECK", None, "check `closes_after` refuses this row of `acct`"))
+# a check that raises refuses with gBASIC's own sentence
+stmt("INSERT INTO acct VALUES (5, CAST('1' AS MONEY(EUR)), NULL, NULL)", ("TYPE", None, "acct.bal is money(USD)"))
+stmt("UPDATE acct SET bal = CAST('-2' AS MONEY(USD)) WHERE id = 1", ("CHECK", None, "check `acct_bal_check`"))
+stmt("UPDATE acct SET bal = CAST('2' AS MONEY(USD)) WHERE id = 1", "= done 1")
+# a refusal before the write leaves a transaction usable
+c("begin write")
+stmt("INSERT INTO acct VALUES (6, CAST('-3' AS MONEY(USD)), NULL, NULL)", ("CHECK", None, "acct_bal_check"))
+stmt("INSERT INTO acct VALUES (6, CAST('3' AS MONEY(USD)), NULL, NULL)", "= done 1")
+c("rollback")
+stmt("SELECT count(*) FROM acct", "= 2")
+# INSERT ... SELECT checks each row
+stmt("INSERT INTO acct (id, bal) SELECT id + 10, CAST('0' AS MONEY(USD)) - bal FROM acct WHERE bal IS NOT NULL",
+     ("CHECK", None, "acct_bal_check"))
+# added over existing rows: refused while one fails, accepted once fixed
+stmt("ALTER TABLE acct ADD CONSTRAINT small_id CHECK (id < 3)", ("CHECK", "CONSTRAINT", "check `small_id`: 1 row of `acct` fails it"))
+stmt("DELETE FROM acct WHERE id = 3", "= done 1")
+stmt("ALTER TABLE acct ADD CONSTRAINT small_id CHECK (id < 3)", "= done 0")
+stmt("INSERT INTO acct VALUES (7, NULL, NULL, NULL)", ("CHECK", None, "check `small_id`"))
+stmt("ALTER TABLE acct DROP CONSTRAINT small_id", "= done 0")
+stmt("INSERT INTO acct VALUES (7, NULL, NULL, NULL)", "= done 1")
+stmt("ALTER TABLE acct ADD CHECK (5)", ("SCHEMA", "CHECK", "is a constant that is not a condition"))
+stmt("ALTER TABLE acct ADD CHECK (nope > 1)", ("SCHEMA", "CHECK", "check `acct_check` cannot be applied to `acct`: table acct has no column `nope`"))
+stmt("ALTER TABLE acct ADD CHECK (id IN (SELECT id FROM acct))", ("SCHEMA", "CHECK", "a check reads only its own row"))
+stmt("CREATE TABLE ckbad (a INTEGER CHECK (b > 0))", ("SCHEMA", "CHECK", "table ckbad has no column `b`"))
+stmt("SELECT * FROM ckbad", ("NOT_FOUND", "SELECT", "there is no table `ckbad`"))
+# a check belongs to its table: dropping the table drops it, so the table
+# renamed into its place has only its own checks (here none)
+stmt("CREATE TABLE acct_new (id INTEGER PRIMARY KEY, bal MONEY(USD), opened DATE)", "= done 0")
+stmt("DROP TABLE acct", "= done 0")
+stmt("ALTER TABLE acct_new RENAME TO acct", "= done 0")
+stmt("INSERT INTO acct VALUES (1, CAST('-9' AS MONEY(USD)), NULL)", "= done 1")
+stmt("ALTER TABLE acct ADD COLUMN closed DATE", "= done 0")
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

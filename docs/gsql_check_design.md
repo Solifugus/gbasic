@@ -1,6 +1,6 @@
 # G-SQL `CHECK` constraints
 
-**Status:** designed 2026-11-01. `gsql_design.md` §13 question 7 (Matthew, 2026-10-29): "`FOREIGN KEY` and `CHECK` follow in the next [release], each with its own tests." Foreign keys shipped first (`gsql_fkey_design.md`); this is the other half.
+**Status:** designed and built 2026-11-01 (`ck_*` in `src/gsql/sql_exec.c`; `tests/run_gsql_sql.sh`, `run_gsql_module.sh`). `gsql_design.md` §13 question 7 (Matthew, 2026-10-29): "`FOREIGN KEY` and `CHECK` follow in the next [release], each with its own tests." Foreign keys shipped first (`gsql_fkey_design.md`); this is the other half.
 
 ## 1. What it is
 
@@ -43,7 +43,7 @@ alter table account drop constraint positive_id;
   - `DROP TABLE` drops its checks;
   - `RENAME TO` carries them;
   - `ADD COLUMN` cannot break one.
-- **The only check that can stop binding** is one of a rebuilt table without a column it reads: drop `t`, then rename a `t_new` lacking that column into its place. Following Matthew's rule for views and foreign keys, that is never blocked. It is reported (**2120**), and the check is not applied until it binds again.
+- **So nothing can stop a check applying,** and unlike a view or a foreign key it needs no re-check and no warning. *Corrected while building it:* this section first proposed warning 2120 for "a rebuilt table without a column a check reads". But dropping a table drops its checks, so the rebuilt table never has them. The table renamed into its place brings its own checks with it, and no statement removes a column. The warning could never fire, and was removed rather than shipped as a path nothing reaches.
 
 ## 4. How it is tested
 
@@ -57,5 +57,11 @@ alter table account drop constraint positive_id;
   - `DROP CONSTRAINT`;
   - a generated name;
   - `INSERT ... SELECT` checked per row;
-  - a rebuilt table without a checked column, reported once.
+  - a table dropped and rebuilt, whose checks go with the dropped table, so the rebuilt one has only its own.
 - **the code:** `CHECK` reaches a program as `error.details.code`.
+
+## 5. What building it found
+
+- **The order of refusals matters.** A check ran before the table's own kind check, so a euro amount in a `MONEY(USD)` column was refused as "cannot order money in different currencies" rather than "`acct.bal` is money(USD)". Each value is now checked against its column first, through the table layer's own `gsql_value_fits`.
+- **A refusal from inside a check carried a position inside the check's own planned query,** a place nobody wrote. It carries none now.
+- **The designed warning 2120 could never fire,** for the reason in §3, and was removed.

@@ -3040,6 +3040,7 @@ static int ck_row(X *x, CkPlan *cp, const GsBytes *row) {
     int r;
     if (!v) {
         *x->err = e;
+        x->err->position = 0;   /* not a place in the check's own planned query */
         snprintf(x->err->message, sizeof x->err->message, "check `%.80s` on `%.80s`: %.300s", cp->rec->name,
                  cp->rec->table, e.message);
         r = -1;
@@ -3101,7 +3102,20 @@ static void ck_set_free(CkSet *set) {
     memset(set, 0, sizeof *set);
 }
 
-static int ck_check_row(X *x, CkSet *set, const GsBytes *row) {
+static int ck_check_row(X *x, CkSet *set, GsqlTable *tb, const GsBytes *row) {
+    /* a value that does not fit its column is refused as that, first: a check
+       over it would refuse it in a less direct sentence */
+    for (size_t c = 0; set->n && c < gsql_table_ncols(tb); c++) {
+        int rc = gsql_value_fits(gsql_table_col(tb, c), row[c].p, row[c].n, x->err);
+        if (rc != GSQL_OK) {
+            char m[sizeof x->err->message];
+            /* the layer says `?.col`, knowing only the column */
+            const char *msg = strncmp(x->err->message, "?.", 2) == 0 ? x->err->message + 1 : x->err->message;
+            snprintf(m, sizeof m, "%s%s%.400s", gsql_table_name(tb), msg[0] == '.' ? "" : ": ", msg);
+            snprintf(x->err->message, sizeof x->err->message, "%s", m);
+            return rc;
+        }
+    }
     for (size_t i = 0; i < set->n; i++) {
         int r = ck_row(x, &set->plans[i], row);
         if (r <= 0) {
@@ -3157,7 +3171,7 @@ static int fk_check_changes(X *x, GsqlTable *tb, const SqlStmt *s, const Change 
                 newv[p->targets[j]].n = ch[k].vals[j].length;
             }
         }
-        rc = ck_check_row(x, &cks, newv);
+        rc = ck_check_row(x, &cks, tb, newv);
         if (rc == GSQL_OK) {
             rc = fk_check_child(x, &fks, tb, newv);
         }
@@ -3385,7 +3399,7 @@ static int run_insert(X *x, GsqlResult *out) {
         }
         if (rc == GSQL_OK && (fks.n || cks.n)) {
             row_values(p->tb, vals, whole);
-            rc = ck_check_row(x, &cks, whole);
+            rc = ck_check_row(x, &cks, p->tb, whole);
             if (rc == GSQL_OK) {
                 rc = fk_check_child(x, &fks, p->tb, whole);
             }
@@ -3977,43 +3991,9 @@ static int ck_create(X *x, const char *table, const SqlCheck *d) {
     return rc;
 }
 
-/* After a schema change: each check bound, or not, to its table as it is now,
- * and a warning (2120) for what THIS change did. */
-static int recheck_checks(X *x) {
-    CkList l;
-    int rc = ck_all(x, &l);
-    for (size_t i = 0; i < l.n && rc == GSQL_OK; i++) {
-        CkRec *c = &l.v[i];
-        CkPlan cp;
-        char why[400], msg[800];
-        int now = ck_plan(x, c->table, c->text, &cp, why, sizeof why);
-        cp.rec = c;
-        if (c->bound && !now) {
-            snprintf(msg, sizeof msg, "check `%s` on `%s` is not applied from here on: %s", c->name, c->table, why);
-            sql_warn(x->q, 2120, msg);
-        } else if (!c->bound && now) {
-            uint64_t failing = 0;
-            GsqlError keep = *x->err;
-            if (ck_failing(x, &cp, &failing) != GSQL_OK) {
-                *x->err = keep;   /* a raise while counting is not this change's failure */
-            } else if (failing) {
-                snprintf(msg, sizeof msg, "check `%s` on `%s` is applied again, and %llu row%s of `%s` %s it",
-                         c->name, c->table, (unsigned long long)failing, failing == 1 ? "" : "s", c->table,
-                         failing == 1 ? "fails" : "fail");
-                sql_warn(x->q, 2120, msg);
-            }
-        }
-        ck_plan_free(&cp);
-        if (now != c->bound) {
-            c->bound = now;
-            rc = ck_put(x, c, 1);
-        }
-    }
-    ck_list_free(&l);
-    return rc;
-}
-
-/* a check follows its table: dropped with it, renamed with it */
+/* A check follows its table: dropped with it, renamed with it. Since it reads
+ * only its own table and no statement removes a column, nothing else can stop
+ * it applying, so unlike a view or a foreign key it needs no re-check. */
 static int ck_follow(X *x, const char *table, const char *renamed) {
     CkList l;
     int rc = ck_all(x, &l);
@@ -4045,9 +4025,7 @@ static int run_schema(X *x, GsqlResult *out) {
     if (rc == GSQL_OK && x->p->s->kind != SQ_CREATE_INDEX && x->p->s->kind != SQ_DROP_INDEX) {
         rc = recheck_fkeys(x);
     }
-    if (rc == GSQL_OK && x->p->s->kind != SQ_CREATE_INDEX && x->p->s->kind != SQ_DROP_INDEX) {
-        rc = recheck_checks(x);
-    }
+
     return rc;
 }
 

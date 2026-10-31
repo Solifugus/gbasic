@@ -153,5 +153,17 @@ end function
 check("a drop that unchecks a foreign key is an error under stop", careful_fk(), 2119)
 check("and rolled back, the parent is still there", gsql.query(db, "select count(*) as n from par")[0].n, 1)
 
+' a CHECK's refusal carries its code by name (docs/gsql_check_design.md)
+gsql.exec(db, "create table pos (id integer primary key, n integer check (n > 0))")
+function negative()
+    on error goto next
+    gsql.exec(db, "insert into pos values (1, -1)")
+    if error then
+        return error.details.code
+    end if
+    return "(no error)"
+end function
+check("a row a check refuses is refused as CHECK", negative(), "CHECK")
+
 gsql.close(db)
 print "ok " + string(checks.n) + " checks, " + string(checks.bad) + " mismatches"
