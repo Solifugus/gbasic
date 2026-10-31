@@ -527,7 +527,7 @@ src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/serialize_tags.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c src/modules/gsql.c include/gsql_sql.h include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h .stdlibdir-stamp .buildswitch-stamp
+src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c src/modules/gsql.c include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # THE QT BACKEND: moc, then C++. The generated unit is `#include`d by the .cpp
@@ -564,7 +564,7 @@ src/diagnostics.o: src/diagnostics.c include/diagnostics.h .buildswitch-stamp
 src/window_check.o: src/window_check.c include/window_check.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/frontend.o: src/frontend.c include/gbasic.h include/diagnostics.h include/ast.h include/window_check.h .buildswitch-stamp
+src/frontend.o: src/frontend.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gbasic.h include/diagnostics.h include/ast.h include/window_check.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/actor.o: src/actor.c include/actor.h include/platform.h .buildswitch-stamp
