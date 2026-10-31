@@ -18,6 +18,9 @@ typedef struct {
     SqlArena *arena;
     GsqlError *err;
     const char *qualifier;   /* the alias, or the table's name */
+    /* how many of the plan's scans a name may bind to: an ON condition sees
+       only the tables joined so far; 0 is all of them */
+    size_t visible;
     /* aggregates: whether the clause being bound may hold one, and whether
        the binder is inside one already */
     int agg_ok;
@@ -51,32 +54,76 @@ static const struct {
 static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where);
 
 static int bind_name(B *b, SqlExpr *e, int cols_allowed, const char *where) {
-    const GsqlTable *tb = b->p->tb;
+    SqlPlan *p = b->p;
     if (!cols_allowed) {
         return bfail(b, e->pos, GSQL_SYNTAX, "%s cannot read a column, and `%s` names one", where, e->parts[0]);
     }
-    if (!tb) {
+    if (!p->nscans || !p->scans[0].tb) {
         return bfail(b, e->pos, GSQL_NOT_FOUND, "`%s` names a column, and there is no table here", e->parts[0]);
     }
+    size_t vis = b->visible ? b->visible : p->nscans;
+    long tab = -1;
     size_t first = 0;
-    if (e->nparts >= 2 && strcmp(e->parts[0], b->qualifier) == 0) {
-        first = 1;
-    }
-    long col = gsql_table_find(tb, e->parts[first]);
-    if (col < 0) {
-        if (first == 0 && e->nparts >= 2 && b->p->s->alias && strcmp(e->parts[0], gsql_table_name(tb)) == 0) {
-            return bfail(b, e->pos, GSQL_NOT_FOUND,
-                         "the table is called `%s` in this statement, so `%s.%s` must be `%s.%s`", b->qualifier,
-                         e->parts[0], e->parts[1], b->qualifier, e->parts[1]);
+    if (e->nparts >= 2) {
+        for (size_t t = 0; t < p->nscans; t++) {
+            if (strcmp(e->parts[0], p->scans[t].qualifier) == 0) {
+                if (t >= vis) {
+                    return bfail(b, e->pos, GSQL_SYNTAX, "%s cannot read `%s`: that table is joined after this one",
+                                 where, e->parts[0]);
+                }
+                tab = (long)t;
+                first = 1;
+                break;
+            }
         }
-        return bfail(b, e->pos, GSQL_NOT_FOUND, "table %s has no column `%s`", gsql_table_name(tb), e->parts[first]);
     }
-    const GsqlColumn *c = gsql_table_col(tb, (size_t)col);
+    long col = -1;
+    if (tab >= 0) {
+        col = gsql_table_find(p->scans[tab].tb, e->parts[1]);
+        if (col < 0) {
+            return bfail(b, e->pos, GSQL_NOT_FOUND, "table %s has no column `%s`", gsql_table_name(p->scans[tab].tb),
+                         e->parts[1]);
+        }
+    } else {
+        /* a bare name: the one table that has it, or a refusal naming them */
+        size_t found = 0;
+        for (size_t t = 0; t < vis; t++) {
+            long c = gsql_table_find(p->scans[t].tb, e->parts[0]);
+            if (c < 0) {
+                continue;
+            }
+            if (found++) {
+                return bfail(b, e->pos, GSQL_SYNTAX, "column `%s` is in both %s and %s: write %s.%s or %s.%s",
+                             e->parts[0], p->scans[tab].qualifier, p->scans[t].qualifier, p->scans[tab].qualifier,
+                             e->parts[0], p->scans[t].qualifier, e->parts[0]);
+            }
+            tab = (long)t;
+            col = c;
+        }
+        if (!found) {
+            for (size_t t = 0; t < p->nscans && e->nparts >= 2; t++) {
+                if (strcmp(p->scans[t].qualifier, gsql_table_name(p->scans[t].tb)) != 0 &&
+                    strcmp(e->parts[0], gsql_table_name(p->scans[t].tb)) == 0) {
+                    return bfail(b, e->pos, GSQL_NOT_FOUND,
+                                 "the table is called `%s` in this statement, so `%s.%s` must be `%s.%s`",
+                                 p->scans[t].qualifier, e->parts[0], e->parts[1], p->scans[t].qualifier, e->parts[1]);
+                }
+            }
+            if (p->nscans == 1) {
+                return bfail(b, e->pos, GSQL_NOT_FOUND, "table %s has no column `%s`", gsql_table_name(p->scans[0].tb),
+                             e->parts[0]);
+            }
+            return bfail(b, e->pos, GSQL_NOT_FOUND, "no table %shas a column `%s`",
+                         vis < p->nscans ? "joined so far " : "of this statement ", e->parts[0]);
+        }
+    }
+    const GsqlColumn *c = gsql_table_col(p->scans[tab].tb, (size_t)col);
     if (e->nparts > first + 1 && c->kind != GSQL_COL_RECORD) {
         return bfail(b, e->pos, GSQL_TYPE, "column %s is %s, so it has no field `%s`: only a RECORD column has fields",
                      c->name, gsql_kind_name(c->kind), e->parts[first + 1]);
     }
     e->kind = SX_COL;
+    e->tab = (unsigned)tab;
     e->col = (unsigned)col;
     e->fields = e->parts + first + 1;
     e->nfields = e->nparts - first - 1;
@@ -213,8 +260,33 @@ static void split(B *b, SqlExpr *e, SqlExpr ***v, size_t *n, size_t *cap) {
 
 /* ---- access paths ----------------------------------------------------- */
 
+/* whether `e` reads only tables read before scan `k`: a constant, from that
+ * scan's point of view, since each of those has a row when it is opened */
+static int const_before(const SqlExpr *e, size_t k) {
+    if (!e) {
+        return 1;
+    }
+    if (e->kind == SX_NAME || e->kind == SX_AGG) {
+        return 0;
+    }
+    if (e->kind == SX_COL) {
+        return e->tab < k;
+    }
+    if (e->operand && !const_before(e->operand, k)) {
+        return 0;
+    }
+    for (size_t j = 0; j < e->na; j++) {
+        if (!const_before(e->a[j], k)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static size_t plain_scan;   /* the scan whose access path is being chosen */
+
 static int plain_col(const SqlExpr *e, unsigned col) {
-    return e->kind == SX_COL && e->col == col && e->nfields == 0;
+    return e->kind == SX_COL && e->tab == plain_scan && e->col == col && e->nfields == 0;
 }
 
 /* whether column `c`'s keys are ordered as gBASIC's `<` orders its values
@@ -232,10 +304,10 @@ static SqlExpr *eq_bound(SqlExpr *e, unsigned col) {
     if (e->kind != SX_BIN || e->op != SQL_OP_EQ) {
         return NULL;
     }
-    if (plain_col(e->a[0], col) && sql_is_constant(e->a[1])) {
+    if (plain_col(e->a[0], col) && const_before(e->a[1], plain_scan)) {
         return e->a[1];
     }
-    if (plain_col(e->a[1], col) && sql_is_constant(e->a[0])) {
+    if (plain_col(e->a[1], col) && const_before(e->a[0], plain_scan)) {
         return e->a[0];
     }
     return NULL;
@@ -243,8 +315,8 @@ static SqlExpr *eq_bound(SqlExpr *e, unsigned col) {
 
 /* a range conjunct on `col`: fills *lo and/or *hi, answers whether it did */
 static int range_bound(SqlExpr *e, unsigned col, SqlExpr **lo, SqlExpr **hi) {
-    if (e->kind == SX_BETWEEN && !e->neg && plain_col(e->a[0], col) && sql_is_constant(e->a[1]) &&
-        sql_is_constant(e->a[2])) {
+    if (e->kind == SX_BETWEEN && !e->neg && plain_col(e->a[0], col) && const_before(e->a[1], plain_scan) &&
+        const_before(e->a[2], plain_scan)) {
         if (*lo || *hi) {
             return 0;
         }
@@ -257,10 +329,10 @@ static int range_bound(SqlExpr *e, unsigned col, SqlExpr **lo, SqlExpr **hi) {
     }
     int lower;
     SqlExpr *bound;
-    if (plain_col(e->a[0], col) && sql_is_constant(e->a[1])) {
+    if (plain_col(e->a[0], col) && const_before(e->a[1], plain_scan)) {
         lower = e->op == SQL_OP_GT || e->op == SQL_OP_GE;
         bound = e->a[1];
-    } else if (plain_col(e->a[1], col) && sql_is_constant(e->a[0])) {
+    } else if (plain_col(e->a[1], col) && const_before(e->a[0], plain_scan)) {
         lower = e->op == SQL_OP_LT || e->op == SQL_OP_LE;
         bound = e->a[0];
     } else {
@@ -288,15 +360,17 @@ typedef struct {
     int score;
 } Cand;
 
-static void consider(B *b, Cand *c) {
-    SqlPlan *p = b->p;
+static void consider(B *b, SqlScan *sc, Cand *c) {
+    /* a LEFT join's WHERE conditions must not narrow it: they filter after
+       the null-extended row exists (docs/gsql_join_design.md §3) */
+    size_t nn = sc->join == SQL_JOIN_LEFT ? sc->non : sc->nconj;
     c->eq = sql_alloc(b->arena, sizeof(SqlExpr *) * (c->ncols ? c->ncols : 1));
-    c->consumed = sql_alloc(b->arena, sizeof(int) * (p->nconj ? p->nconj : 1));
+    c->consumed = sql_alloc(b->arena, sizeof(int) * (sc->nconj ? sc->nconj : 1));
     c->neq = 0;
     for (size_t j = 0; j < c->ncols; j++) {
         SqlExpr *found = NULL;
-        for (size_t k = 0; k < p->nconj && !found; k++) {
-            if (!c->consumed[k] && (found = eq_bound(p->conj[k], c->cols[j]))) {
+        for (size_t k = 0; k < nn && !found; k++) {
+            if (!c->consumed[k] && (found = eq_bound(sc->conj[k], c->cols[j]))) {
                 c->consumed[k] = 1;
             }
         }
@@ -305,9 +379,9 @@ static void consider(B *b, Cand *c) {
         }
         c->eq[c->neq++] = found;
     }
-    if (c->neq < c->ncols && rangeable(gsql_table_col(p->tb, c->cols[c->neq]))) {
-        for (size_t k = 0; k < p->nconj; k++) {
-            if (!c->consumed[k] && range_bound(p->conj[k], c->cols[c->neq], &c->lo, &c->hi)) {
+    if (c->neq < c->ncols && rangeable(gsql_table_col(sc->tb, c->cols[c->neq]))) {
+        for (size_t k = 0; k < nn; k++) {
+            if (!c->consumed[k] && range_bound(sc->conj[k], c->cols[c->neq], &c->lo, &c->hi)) {
                 c->consumed[k] = 1;
             }
         }
@@ -322,11 +396,15 @@ static int order_matches(const SqlPlan *p, const Cand *c) {
     if (p->s->norder == 0) {
         return 1;
     }
+    if (p->nscans > 1) {
+        /* a join's rows come from several tables: sorted after */
+        return 0;
+    }
     size_t j = 0;
     int dir = 0;
     for (size_t t = 0; t < p->s->norder; t++) {
         const SqlExpr *e = p->order[t];
-        if (!e || e->kind != SX_COL || e->nfields) {
+        if (!e || e->kind != SX_COL || e->nfields || e->tab != 0) {
             return 0;
         }
         while (j < c->neq && c->cols[j] != e->col) {
@@ -350,13 +428,15 @@ static int order_matches(const SqlPlan *p, const Cand *c) {
     return dir ? dir : 1;
 }
 
-static void choose(B *b, int force_scan) {
+static void choose(B *b, size_t k, int force_scan) {
     SqlPlan *p = b->p;
-    GsqlTable *tb = p->tb;
+    SqlScan *sc = &p->scans[k];
+    GsqlTable *tb = sc->tb;
+    plain_scan = k;
     Cand best;
     memset(&best, 0, sizeof best);
     best.access = ACC_SCAN;
-    best.consumed = sql_alloc(b->arena, sizeof(int) * (p->nconj ? p->nconj : 1));
+    best.consumed = sql_alloc(b->arena, sizeof(int) * (sc->nconj ? sc->nconj : 1));
     best.eq = NULL;
     if (gsql_table_nkey(tb)) {
         best.cols = gsql_table_key_cols(tb);
@@ -388,7 +468,7 @@ static void choose(B *b, int force_scan) {
         }
         int best_score = 0;
         for (size_t i = 0; i < n; i++) {
-            consider(b, &cands[i]);
+            consider(b, sc, &cands[i]);
             int ord = order_matches(p, &cands[i]);
             /* more consumed columns first; a path yielding the order breaks a
              * tie, then the primary key, which needs no second read */
@@ -408,7 +488,7 @@ static void choose(B *b, int force_scan) {
                     Cand c = cands[i];
                     c.neq = 0;
                     c.lo = c.hi = NULL;
-                    memset(c.consumed, 0, sizeof(int) * (p->nconj ? p->nconj : 1));
+                    memset(c.consumed, 0, sizeof(int) * (sc->nconj ? sc->nconj : 1));
                     int ord = order_matches(p, &c);
                     if (ord) {
                         best = c;
@@ -419,35 +499,63 @@ static void choose(B *b, int force_scan) {
             }
         }
     }
-    p->access = best.access;
-    p->index = best.index;
-    p->nkeycols = best.ncols;
-    p->keycols = best.cols;
-    p->keydesc = best.desc;
-    p->neq = best.access == ACC_SCAN ? 0 : best.neq;
-    p->eq = best.eq;
-    p->lo = best.access == ACC_SCAN ? NULL : best.lo;
-    p->hi = best.access == ACC_SCAN ? NULL : best.hi;
-    p->consumed = best.consumed;
-    p->point = best.access != ACC_SCAN && best.unique && best.neq == best.ncols;
-    p->ordered = p->point || best_order != 0;
-    p->backward = best_order < 0;
+    sc->access = best.access;
+    sc->index = best.index;
+    sc->nkeycols = best.ncols;
+    sc->keycols = best.cols;
+    sc->keydesc = best.desc;
+    sc->neq = best.access == ACC_SCAN ? 0 : best.neq;
+    sc->eq = best.eq;
+    sc->lo = best.access == ACC_SCAN ? NULL : best.lo;
+    sc->hi = best.access == ACC_SCAN ? NULL : best.hi;
+    sc->consumed = best.consumed;
+    sc->point = best.access != ACC_SCAN && best.unique && best.neq == best.ncols;
+    sc->ordered = sc->point || best_order != 0;
+    sc->backward = best_order < 0;
 }
 
 /* ---- statements -------------------------------------------------------- */
 
-static int open_table(B *b, const GsEngine *e, GsTxn *t) {
+/* Opens table `k` of the statement as its scan. */
+static int open_scan(B *b, const GsEngine *e, GsTxn *t, size_t k, const char *table, const char *alias,
+                     uint32_t pos, SqlJoin join) {
     SqlPlan *p = b->p;
-    int rc = gsql_table_open(e, t, p->s->table, &p->tb, b->err);
+    SqlScan *sc = &p->scans[k];
+    int rc = gsql_table_open(e, t, table, &sc->tb, b->err);
     if (rc != GSQL_OK) {
-        p->tb = NULL;
+        sc->tb = NULL;
         if (rc == GSQL_NOT_FOUND) {
             b->err->code = GSQL_OK;
-            return bfail(b, p->s->pos, GSQL_NOT_FOUND, "there is no table `%s`", p->s->table);
+            return bfail(b, pos, GSQL_NOT_FOUND, "there is no table `%s`", table);
         }
         return 0;
     }
-    b->qualifier = p->s->alias ? p->s->alias : p->s->table;
+    if (k == 0) {
+        p->tb = sc->tb;
+    }
+    sc->qualifier = alias ? alias : table;
+    sc->join = join;
+    for (size_t j = 0; j < k; j++) {
+        if (strcmp(p->scans[j].qualifier, sc->qualifier) == 0) {
+            return bfail(b, pos, GSQL_SYNTAX, "`%s` names two tables of this statement: give one of them another name "
+                         "with AS", sc->qualifier);
+        }
+    }
+    return 1;
+}
+
+static void scans_alloc(B *b, size_t n) {
+    b->p->scans = sql_alloc(b->arena, sizeof(SqlScan) * n);
+    b->p->nscans = n;
+}
+
+static int open_table(B *b, const GsEngine *e, GsTxn *t) {
+    SqlPlan *p = b->p;
+    scans_alloc(b, 1);
+    if (!open_scan(b, e, t, 0, p->s->table, p->s->alias, p->s->pos, SQL_JOIN_FIRST)) {
+        return 0;
+    }
+    b->qualifier = p->scans[0].qualifier;
     return 1;
 }
 
@@ -461,25 +569,72 @@ static const char *kind_text(B *b, const GsqlColumn *c) {
     return sql_strndup(b->arena, buf, strlen(buf));
 }
 
-static SqlExpr *col_node(B *b, unsigned col, uint32_t pos) {
+static SqlExpr *col_node(B *b, unsigned tab, unsigned col, uint32_t pos) {
     SqlExpr *e = sql_alloc(b->arena, sizeof *e);
     e->kind = SX_COL;
+    e->tab = tab;
     e->col = col;
     e->pos = pos;
     return e;
 }
 
+/* the last scan an expression reads, or -1 for none */
+static long last_scan(const SqlExpr *e) {
+    if (!e) {
+        return -1;
+    }
+    long m = e->kind == SX_COL ? (long)e->tab : -1;
+    if (e->operand) {
+        long o = last_scan(e->operand);
+        m = o > m ? o : m;
+    }
+    for (size_t k = 0; k < e->na; k++) {
+        long o = last_scan(e->a[k]);
+        m = o > m ? o : m;
+    }
+    return m;
+}
+
+static void scan_add(B *b, SqlScan *sc, SqlExpr *e) {
+    SqlExpr **grown = sql_alloc(b->arena, sizeof(SqlExpr *) * (sc->nconj + 1));
+    if (sc->nconj) {
+        memcpy(grown, sc->conj, sizeof(SqlExpr *) * sc->nconj);
+    }
+    grown[sc->nconj++] = e;
+    sc->conj = grown;
+}
+
+/* Each WHERE conjunct is checked at the first scan by which every table it
+ * reads has a row (docs/gsql_join_design.md §3). */
 static int where_clause(B *b) {
     SqlPlan *p = b->p;
     if (!p->s->where) {
         return 1;
     }
+    b->visible = 0;
     if (!bind(b, p->s->where, 1, "WHERE")) {
         return 0;
     }
-    size_t cap = 0;
-    split(b, p->s->where, &p->conj, &p->nconj, &cap);
+    SqlExpr **v = NULL;
+    size_t n = 0, cap = 0;
+    split(b, p->s->where, &v, &n, &cap);
+    for (size_t k = 0; k < n; k++) {
+        long at = last_scan(v[k]);
+        scan_add(b, &p->scans[at < 0 ? 0 : at], v[k]);
+    }
     return 1;
+}
+
+/* How many outputs a `*` item stands for. */
+static size_t star_width(B *b, const SqlItem *it) {
+    SqlPlan *p = b->p;
+    size_t n = 0;
+    for (size_t t = 0; t < p->nscans; t++) {
+        if (!it->star_table || strcmp(it->star_table, p->scans[t].qualifier) == 0) {
+            n += gsql_table_ncols(p->scans[t].tb);
+        }
+    }
+    return n;
 }
 
 /* A grouped query reads a column only inside an aggregate or as part of an
@@ -487,7 +642,7 @@ static int where_clause(B *b) {
  * print (docs/gsql_aggregate_design.md §4). */
 static int is_grouped_expr(B *b, const SqlExpr *e, char **groups) {
     GsqlBuf t = {0};
-    sql_print_expr_tb(&t, e, b->p->tb);
+    sql_print_expr_scans(&t, e, b->p->scans, b->p->nscans);
     v3_put(&t, "", 1);
     int found = 0;
     for (size_t k = 0; k < b->p->s->ngroup && !found; k++) {
@@ -502,7 +657,7 @@ static int check_grouped(B *b, const SqlExpr *e, char **groups, const char *wher
         return 1;
     }
     if (e->kind == SX_COL) {
-        const char *name = gsql_table_col(b->p->tb, e->col)->name;
+        const char *name = gsql_table_col(b->p->scans[e->tab].tb, e->col)->name;
         return bfail(b, e->pos, GSQL_SYNTAX, "%s reads column `%s`, which is neither grouped by nor inside an "
                      "aggregate: add it to GROUP BY, or use it in one, such as max(%s)", where, name, name);
     }
@@ -520,8 +675,41 @@ static int check_grouped(B *b, const SqlExpr *e, char **groups, const char *wher
 static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
     SqlPlan *p = b->p;
     SqlStmt *s = p->s;
-    if (s->table && !open_table(b, e, t)) {
-        return 0;
+    /* the scans: FROM's tables in order, or one with no table */
+    scans_alloc(b, s->table ? 1 + s->njoins : 1);
+    if (s->table) {
+        if (!open_scan(b, e, t, 0, s->table, s->alias, s->pos, SQL_JOIN_FIRST)) {
+            return 0;
+        }
+        for (size_t j = 0; j < s->njoins; j++) {
+            const SqlFrom *f = &s->joins[j];
+            if (!open_scan(b, e, t, j + 1, f->table, f->alias, f->pos, f->join)) {
+                return 0;
+            }
+        }
+        b->qualifier = p->scans[0].qualifier;
+        /* each join's ON, which sees only the tables joined so far */
+        for (size_t j = 0; j < s->njoins; j++) {
+            SqlExpr *on = s->joins[j].on;
+            if (!on) {
+                continue;
+            }
+            b->visible = j + 2;
+            int bound = bind(b, on, 1, "ON");
+            b->visible = 0;
+            if (!bound) {
+                return 0;
+            }
+            SqlExpr **v = NULL;
+            size_t n = 0, cap = 0;
+            split(b, on, &v, &n, &cap);
+            for (size_t k = 0; k < n; k++) {
+                scan_add(b, &p->scans[j + 1], v[k]);
+            }
+            p->scans[j + 1].non = n;
+        }
+    } else {
+        p->scans[0].access = ACC_NONE;
     }
     /* the output: * expanded to every column */
     size_t n = 0;
@@ -533,11 +721,12 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         if (!p->tb) {
             return bfail(b, s->items[k].pos, GSQL_SYNTAX, "`*` needs a table: there is no FROM");
         }
-        if (s->items[k].star_table && strcmp(s->items[k].star_table, b->qualifier) != 0) {
+        size_t w = star_width(b, &s->items[k]);
+        if (s->items[k].star_table && w == 0) {
             return bfail(b, s->items[k].pos, GSQL_NOT_FOUND, "`%s.*` names no table of this statement, which reads `%s`",
                          s->items[k].star_table, b->qualifier);
         }
-        n += gsql_table_ncols(p->tb);
+        n += w;
     }
     p->out = sql_alloc(b->arena, sizeof(SqlExpr *) * (n ? n : 1));
     p->names = sql_alloc(b->arena, sizeof(char *) * (n ? n : 1));
@@ -546,11 +735,17 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
     for (size_t k = 0; k < s->nitems; k++) {
         SqlItem *it = &s->items[k];
         if (!it->e) {
-            for (size_t c = 0; c < gsql_table_ncols(p->tb); c++) {
-                p->out[p->nout] = col_node(b, (unsigned)c, it->pos);
-                p->names[p->nout] = gsql_table_col(p->tb, c)->name;
-                p->kinds[p->nout] = kind_text(b, gsql_table_col(p->tb, c));
-                p->nout++;
+            for (size_t t = 0; t < p->nscans; t++) {
+                if (it->star_table && strcmp(it->star_table, p->scans[t].qualifier) != 0) {
+                    continue;
+                }
+                GsqlTable *tb = p->scans[t].tb;
+                for (size_t c = 0; c < gsql_table_ncols(tb); c++) {
+                    p->out[p->nout] = col_node(b, (unsigned)t, (unsigned)c, it->pos);
+                    p->names[p->nout] = gsql_table_col(tb, c)->name;
+                    p->kinds[p->nout] = kind_text(b, gsql_table_col(tb, c));
+                    p->nout++;
+                }
             }
             continue;
         }
@@ -565,12 +760,13 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         if (it->alias) {
             name = it->alias;
         } else if (it->e->kind == SX_COL) {
-            name = it->e->nfields ? it->e->fields[it->e->nfields - 1] : gsql_table_col(p->tb, it->e->col)->name;
+            name = it->e->nfields ? it->e->fields[it->e->nfields - 1]
+                                  : gsql_table_col(p->scans[it->e->tab].tb, it->e->col)->name;
         } else if (it->e->kind == SX_CALL || it->e->kind == SX_AGG) {
             name = it->e->name;
         }
         if (it->e->kind == SX_COL && it->e->nfields == 0) {
-            kind = kind_text(b, gsql_table_col(p->tb, it->e->col));
+            kind = kind_text(b, gsql_table_col(p->scans[it->e->tab].tb, it->e->col));
         } else if (it->e->kind == SX_AGG && (it->e->op == SQL_AGG_COUNT || it->e->op == SQL_AGG_COUNT_STAR)) {
             kind = "integer";
         }
@@ -606,7 +802,7 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
                     /* the item's position among the outputs */
                     size_t at = 0;
                     for (size_t q = 0; q < o; q++) {
-                        at += s->items[q].e ? 1 : gsql_table_ncols(p->tb);
+                        at += s->items[q].e ? 1 : star_width(b, &s->items[q]);
                     }
                     p->order_out[k] = (long)at;
                     p->order[k] = p->out[at];
@@ -642,7 +838,7 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         char **groups = sql_alloc(b->arena, sizeof(char *) * (s->ngroup ? s->ngroup : 1));
         for (size_t k = 0; k < s->ngroup; k++) {
             GsqlBuf g = {0};
-            sql_print_expr_tb(&g, s->group[k], p->tb);
+            sql_print_expr_scans(&g, s->group[k], p->scans, p->nscans);
             groups[k] = sql_strndup(b->arena, (char *)g.bytes, g.length);
             gsql_buf_free(&g);
         }
@@ -664,16 +860,17 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         return 0;
     }
     if (!p->tb) {
-        p->access = ACC_NONE;
-        p->ordered = 1;
-        if (p->nconj || s->norder) {
-            /* a WHERE with no table filters the one row; ORDER BY of one row
-             * is that row */
-        }
-        p->consumed = sql_alloc(b->arena, sizeof(int) * (p->nconj ? p->nconj : 1));
+        /* a WHERE with no table filters the one row; ORDER BY of one row is
+           that row */
+        SqlScan *sc = &p->scans[0];
+        sc->access = ACC_NONE;
+        sc->ordered = 1;
+        sc->consumed = sql_alloc(b->arena, sizeof(int) * (sc->nconj ? sc->nconj : 1));
         return 1;
     }
-    choose(b, force_scan);
+    for (size_t k = 0; k < p->nscans; k++) {
+        choose(b, k, force_scan);
+    }
     return 1;
 }
 
@@ -707,7 +904,7 @@ static int plan_update_delete(B *b, const GsEngine *e, GsTxn *t, int force_scan)
         return 0;
     }
     p->order = NULL;
-    choose(b, force_scan);
+    choose(b, 0, force_scan);
     return 1;
 }
 
@@ -759,7 +956,7 @@ int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const cha
     memset(out, 0, sizeof *out);
     out->s = s;
     out->text = text;
-    B b = { out, arena, err, "", 0, 0, 0 };
+    B b = { out, arena, err, "", 0, 0, 0, 0 };
     err->code = GSQL_OK;
     err->message[0] = 0;
     err->position = 0;
@@ -796,6 +993,12 @@ int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const cha
 }
 
 void sql_plan_free(SqlPlan *p) {
+    for (size_t k = 1; k < p->nscans; k++) {
+        if (p->scans[k].tb) {
+            gsql_table_close(p->scans[k].tb);
+            p->scans[k].tb = NULL;
+        }
+    }
     if (p->tb) {
         gsql_table_close(p->tb);
         p->tb = NULL;
@@ -816,56 +1019,76 @@ static void put(GsqlBuf *b, const char *s) {
     v3_put(b, s, strlen(s));
 }
 
-static void access_line(const SqlPlan *p, GsqlBuf *b) {
-    const GsqlTable *tb = p->tb;
+static void access_line(const SqlPlan *p, const SqlScan *sc, GsqlBuf *b) {
+    const GsqlTable *tb = sc->tb;
     const char *tname = gsql_table_name(tb);
-    const char *iname = p->access == ACC_INDEX ? gsql_table_index(tb, p->index)->name : NULL;
-    if (p->access == ACC_SCAN) {
+    const char *iname = sc->access == ACC_INDEX ? gsql_table_index(tb, sc->index)->name : NULL;
+    if (sc->access == ACC_SCAN) {
         put(b, "Scan on ");
-        put(b, tname);
+    } else if (sc->point) {
+        put(b, "Point Read on ");
+    } else if (sc->neq || sc->lo || sc->hi) {
+        put(b, sc->access == ACC_INDEX ? "Index Seek on " : "Seek on ");
     } else {
-        if (p->point) {
-            put(b, "Point Read on ");
-        } else if (p->neq || p->lo || p->hi) {
-            put(b, p->access == ACC_INDEX ? "Index Seek on " : "Seek on ");
-        } else {
-            put(b, "Index Scan on ");
-        }
-        put(b, tname);
-        put(b, p->access == ACC_INDEX ? " using " : " using the primary key");
+        put(b, "Index Scan on ");
+    }
+    put(b, tname);
+    if (p->nscans > 1 && strcmp(sc->qualifier, tname) != 0) {
+        put(b, " AS ");
+        put(b, sc->qualifier);
+    }
+    if (sc->access != ACC_SCAN) {
+        put(b, sc->access == ACC_INDEX ? " using " : " using the primary key");
         if (iname) {
             put(b, iname);
         }
-        if (p->neq || p->lo || p->hi) {
+        if (sc->neq || sc->lo || sc->hi) {
             put(b, " (");
-            for (size_t k = 0; k < p->neq; k++) {
+            for (size_t k = 0; k < sc->neq; k++) {
                 if (k) {
                     put(b, ", ");
                 }
-                put(b, gsql_table_col(tb, p->keycols[k])->name);
+                put(b, gsql_table_col(tb, sc->keycols[k])->name);
                 put(b, " = ");
-                sql_print_expr_tb(b, p->eq[k], tb);
+                sql_print_expr_scans(b, sc->eq[k], p->scans, p->nscans);
             }
-            if (p->lo || p->hi) {
-                if (p->neq) {
+            if (sc->lo || sc->hi) {
+                if (sc->neq) {
                     put(b, ", ");
                 }
-                const char *cname = gsql_table_col(tb, p->keycols[p->neq])->name;
-                if (p->lo) {
-                    sql_print_expr_tb(b, p->lo, tb);
+                const char *cname = gsql_table_col(tb, sc->keycols[sc->neq])->name;
+                if (sc->lo) {
+                    sql_print_expr_scans(b, sc->lo, p->scans, p->nscans);
                     put(b, " <= ");
                 }
                 put(b, cname);
-                if (p->hi) {
+                if (sc->hi) {
                     put(b, " <= ");
-                    sql_print_expr_tb(b, p->hi, tb);
+                    sql_print_expr_scans(b, sc->hi, p->scans, p->nscans);
                 }
             }
             put(b, ")");
         }
     }
-    if (p->backward) {
+    if (sc->backward) {
         put(b, " backward");
+    }
+}
+
+/* a scan's conditions the access path did not consume, as one Filter line */
+static void filter_line(const SqlPlan *p, const SqlScan *sc, void (*line)(void *, const char *), void *ctx,
+                        int indent, GsqlBuf *b) {
+    int any = 0;
+    for (size_t k = 0; k < sc->nconj; k++) {
+        if (sc->consumed && sc->consumed[k]) {
+            continue;
+        }
+        put(b, any ? " AND " : "Filter: ");
+        sql_print_expr_scans(b, sc->conj[k], p->scans, p->nscans);
+        any = 1;
+    }
+    if (any) {
+        emit(line, ctx, indent, b);
     }
 }
 
@@ -879,23 +1102,28 @@ void sql_explain(const SqlPlan *p, void (*line)(void *, const char *), void *ctx
         emit(line, ctx, 0, &b);
         indent = 1;
     }
-    if (p->access == ACC_NONE) {
-        put(&b, "Result");
-    } else {
-        access_line(p, &b);
-    }
-    emit(line, ctx, indent, &b);
-    int any = 0;
-    for (size_t k = 0; k < p->nconj; k++) {
-        if (p->consumed && p->consumed[k]) {
-            continue;
+    if (p->nscans > 1) {
+        /* a join: one access line per table, in the order read */
+        put(&b, "Nested Loop");
+        emit(line, ctx, indent, &b);
+        for (size_t k = 0; k < p->nscans; k++) {
+            const SqlScan *sc = &p->scans[k];
+            if (sc->join == SQL_JOIN_LEFT) {
+                put(&b, "Left: ");
+            }
+            access_line(p, sc, &b);
+            emit(line, ctx, indent + 1, &b);
+            filter_line(p, sc, line, ctx, indent + 2, &b);
         }
-        put(&b, any ? " AND " : "Filter: ");
-        sql_print_expr_tb(&b, p->conj[k], p->tb);
-        any = 1;
-    }
-    if (any) {
-        emit(line, ctx, indent + 1, &b);
+    } else {
+        const SqlScan *sc = &p->scans[0];
+        if (sc->access == ACC_NONE) {
+            put(&b, "Result");
+        } else {
+            access_line(p, sc, &b);
+        }
+        emit(line, ctx, indent, &b);
+        filter_line(p, sc, line, ctx, indent + 1, &b);
     }
     if (s->kind == SQ_SELECT && p->grouped) {
         put(&b, s->ngroup ? "Aggregate: group by " : "Aggregate: one group");
@@ -903,40 +1131,41 @@ void sql_explain(const SqlPlan *p, void (*line)(void *, const char *), void *ctx
             if (k) {
                 put(&b, ", ");
             }
-            sql_print_expr_tb(&b, s->group[k], p->tb);
+            sql_print_expr_scans(&b, s->group[k], p->scans, p->nscans);
         }
         emit(line, ctx, indent + 1, &b);
         if (s->having) {
             put(&b, "Having: ");
-            sql_print_expr_tb(&b, s->having, p->tb);
+            sql_print_expr_scans(&b, s->having, p->scans, p->nscans);
             emit(line, ctx, indent + 1, &b);
         }
     }
     if (s->kind == SQ_SELECT && s->norder) {
+        const SqlScan *sc = &p->scans[0];
         put(&b, "Order: ");
         for (size_t k = 0; k < s->norder; k++) {
             if (k) {
                 put(&b, ", ");
             }
-            sql_print_expr_tb(&b, p->order[k], p->tb);
+            sql_print_expr_scans(&b, p->order[k], p->scans, p->nscans);
             if (s->order[k].desc) {
                 put(&b, " DESC");
             }
         }
-        put(&b, p->grouped ? " (sorted)"
-                : p->access == ACC_NONE || p->point ? " (one row)"
-                : !p->ordered ? " (sorted)"
-                : p->access == ACC_INDEX ? " (by the index)" : " (by the primary key)");
+        put(&b, p->grouped || p->nscans > 1 ? " (sorted)"
+                : sc->access == ACC_NONE || sc->point ? " (one row)"
+                : !sc->ordered ? " (sorted)"
+                : sc->access == ACC_INDEX ? " (by the index)" : " (by the primary key)");
         emit(line, ctx, indent + 1, &b);
     }
     if (s->kind == SQ_SELECT && s->limit) {
         put(&b, "Limit: ");
-        sql_print_expr_tb(&b, s->limit, p->tb);
+        sql_print_expr_scans(&b, s->limit, p->scans, p->nscans);
         emit(line, ctx, indent + 1, &b);
     }
     if (s->kind == SQ_SELECT && s->offset) {
         put(&b, "Offset: ");
-        sql_print_expr_tb(&b, s->offset, p->tb);
+        sql_print_expr_scans(&b, s->offset, p->scans, p->nscans);
         emit(line, ctx, indent + 1, &b);
     }
     gsql_buf_free(&b);

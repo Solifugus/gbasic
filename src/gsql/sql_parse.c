@@ -1748,17 +1748,32 @@ static void print_lit(GsqlBuf *o, const unsigned char *v, size_t n) {
     }
 }
 
-static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const GsqlTable *tb);
+/* How a bound column is named: by its table's column name, and where a
+ * statement reads several tables, qualified by the table's alias or name. */
+typedef struct {
+    const GsqlTable *tb;
+    const SqlScan *scans;
+    size_t nscans;
+} PrintCtx;
+
+static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc);
 
 void sql_print_expr(GsqlBuf *o, const SqlExpr *e) {
-    print_expr_tb(o, e, NULL);
+    PrintCtx pc = { NULL, NULL, 0 };
+    print_expr_tb(o, e, &pc);
 }
 
 void sql_print_expr_tb(GsqlBuf *o, const SqlExpr *e, const GsqlTable *tb) {
-    print_expr_tb(o, e, tb);
+    PrintCtx pc = { tb, NULL, 0 };
+    print_expr_tb(o, e, &pc);
 }
 
-static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const GsqlTable *tb) {
+void sql_print_expr_scans(GsqlBuf *o, const SqlExpr *e, const SqlScan *scans, size_t nscans) {
+    PrintCtx pc = { nscans ? scans[0].tb : NULL, scans, nscans };
+    print_expr_tb(o, e, &pc);
+}
+
+static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc) {
     char b[64];
     if (!e) {
         puts_(o, "DEFAULT");
@@ -1785,7 +1800,12 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const GsqlTable *tb) {
             print_name(o, e->parts[k]);
         }
         return;
-    case SX_COL:
+    case SX_COL: {
+        const GsqlTable *tb = pc->scans && e->tab < pc->nscans ? pc->scans[e->tab].tb : pc->tb;
+        if (pc->nscans > 1 && e->tab < pc->nscans) {
+            print_name(o, pc->scans[e->tab].qualifier);
+            v3_put(o, ".", 1);
+        }
         if (tb && e->col < gsql_table_ncols(tb)) {
             print_name(o, gsql_table_col(tb, e->col)->name);
         } else {
@@ -1797,74 +1817,75 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const GsqlTable *tb) {
             print_name(o, e->fields[k]);
         }
         return;
+    }
     case SX_BIN:
         v3_put(o, "(", 1);
-        print_expr_tb(o, e->a[0], tb);
+        print_expr_tb(o, e->a[0], pc);
         v3_put(o, " ", 1);
         puts_(o, sql_op_text(e->op));
         v3_put(o, " ", 1);
-        print_expr_tb(o, e->a[1], tb);
+        print_expr_tb(o, e->a[1], pc);
         v3_put(o, ")", 1);
         return;
     case SX_NOT:
         puts_(o, "(NOT ");
-        print_expr_tb(o, e->a[0], tb);
+        print_expr_tb(o, e->a[0], pc);
         v3_put(o, ")", 1);
         return;
     case SX_NEG:
         puts_(o, "(- ");
-        print_expr_tb(o, e->a[0], tb);
+        print_expr_tb(o, e->a[0], pc);
         v3_put(o, ")", 1);
         return;
     case SX_ISNULL:
         v3_put(o, "(", 1);
-        print_expr_tb(o, e->a[0], tb);
+        print_expr_tb(o, e->a[0], pc);
         puts_(o, e->neg ? " IS NOT NULL)" : " IS NULL)");
         return;
     case SX_IN:
         v3_put(o, "(", 1);
-        print_expr_tb(o, e->a[0], tb);
+        print_expr_tb(o, e->a[0], pc);
         puts_(o, e->neg ? " NOT IN (" : " IN (");
         for (size_t k = 1; k < e->na; k++) {
             if (k > 1) {
                 puts_(o, ", ");
             }
-            print_expr_tb(o, e->a[k], tb);
+            print_expr_tb(o, e->a[k], pc);
         }
         puts_(o, "))");
         return;
     case SX_BETWEEN:
         v3_put(o, "(", 1);
-        print_expr_tb(o, e->a[0], tb);
+        print_expr_tb(o, e->a[0], pc);
         puts_(o, e->neg ? " NOT BETWEEN " : " BETWEEN ");
-        print_expr_tb(o, e->a[1], tb);
+        print_expr_tb(o, e->a[1], pc);
         puts_(o, " AND ");
-        print_expr_tb(o, e->a[2], tb);
+        print_expr_tb(o, e->a[2], pc);
         v3_put(o, ")", 1);
         return;
     case SX_LIKE:
         v3_put(o, "(", 1);
-        print_expr_tb(o, e->a[0], tb);
+        print_expr_tb(o, e->a[0], pc);
         puts_(o, e->neg ? " NOT LIKE " : " LIKE ");
-        print_expr_tb(o, e->a[1], tb);
+        print_expr_tb(o, e->a[1], pc);
         v3_put(o, ")", 1);
         return;
     case SX_CASE: {
         puts_(o, "CASE");
         if (e->operand) {
             v3_put(o, " ", 1);
-            print_expr_tb(o, e->operand, tb);
+            print_expr_tb(o, e->operand, pc);
         }
         size_t pairs = (e->na - (e->has_else ? 1 : 0)) / 2;
         for (size_t k = 0; k < pairs; k++) {
             puts_(o, " WHEN ");
-            print_expr_tb(o, e->a[2 * k], tb);
+            print_expr_tb(o, e->a[2 * k], pc);
             puts_(o, " THEN ");
-            print_expr_tb(o, e->a[2 * k + 1], tb);
+            print_expr_tb(o, e->a[2 * k + 1], pc);
         }
         if (e->has_else) {
             puts_(o, " ELSE ");
-            print_expr_tb(o, e->a[e->na - 1], tb);
+            print_expr_tb(o, e->a[e->na - 1], pc);
         }
         puts_(o, " END");
         return;
@@ -1883,13 +1904,13 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const GsqlTable *tb) {
             if (k) {
                 puts_(o, ", ");
             }
-            print_expr_tb(o, e->a[k], tb);
+            print_expr_tb(o, e->a[k], pc);
         }
         v3_put(o, ")", 1);
         return;
     case SX_CAST:
         puts_(o, "CAST(");
-        print_expr_tb(o, e->a[0], tb);
+        print_expr_tb(o, e->a[0], pc);
         puts_(o, " AS ");
         puts_(o, sql_type_name(&e->type, b, sizeof b));
         v3_put(o, ")", 1);

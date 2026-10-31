@@ -81,7 +81,8 @@ struct SqlExpr {
     /* SX_NAME: the parts as written (folded unless quoted) */
     char **parts;
     size_t nparts;
-    /* SX_COL */
+    /* SX_COL: column `col` of scan `tab` (a table of FROM, in order) */
+    unsigned tab;
     unsigned col;
     char **fields;
     size_t nfields;
@@ -125,6 +126,17 @@ typedef struct {
     uint32_t pos;
 } SqlOrder;
 
+/* A table joined after the first (docs/gsql_join_design.md) */
+typedef enum { SQL_JOIN_FIRST = 0, SQL_JOIN_INNER, SQL_JOIN_LEFT, SQL_JOIN_CROSS } SqlJoin;
+
+typedef struct {
+    SqlJoin join;
+    char *table;
+    char *alias;
+    SqlExpr *on;             /* NULL for CROSS JOIN and the comma */
+    uint32_t pos;
+} SqlFrom;
+
 typedef struct {
     char *name;
     uint32_t pos;
@@ -148,6 +160,8 @@ typedef struct {
     uint32_t pos;
     char *table;             /* every statement but SELECT with no FROM */
     char *alias;             /* SELECT/UPDATE/DELETE: FROM t [AS] a */
+    SqlFrom *joins;          /* SELECT: the tables after the first */
+    size_t njoins;
     int if_exists;           /* DROP ... IF EXISTS, CREATE ... IF NOT EXISTS */
     /* SELECT */
     SqlItem *items;
@@ -210,10 +224,14 @@ typedef enum {
     ACC_INDEX        /* a range of one index, then each row by its key */
 } SqlAccess;
 
+/* One table of a statement and how it is read: its access path, and the
+ * conditions checked once a row of it is in hand. A single-table statement has
+ * one scan; a join has one per table of FROM, read by nested loops in order
+ * (docs/gsql_join_design.md §3). */
 typedef struct {
-    SqlStmt *s;
-    const char *text;        /* the statement's text, for messages */
-    GsqlTable *tb;           /* owned; NULL for ACC_NONE and schema statements */
+    GsqlTable *tb;           /* scan 0's is the plan's tb; the others are owned here */
+    const char *qualifier;   /* the alias, or the table's name */
+    SqlJoin join;
     SqlAccess access;
     size_t index;            /* ACC_INDEX */
     size_t nkeycols;         /* the key's columns: the PK's or the index's */
@@ -225,9 +243,18 @@ typedef struct {
     int point;               /* equality on every column of a unique key */
     int backward;            /* walk the key range from its end */
     int ordered;             /* the access yields ORDER BY's order: no sort */
-    SqlExpr **conj;          /* WHERE's conjuncts */
+    SqlExpr **conj;          /* the conditions checked here: this join's ON, then WHERE's */
     size_t nconj;
+    size_t non;              /* conj[0..non) are ON's, which decide a LEFT join's match */
     int *consumed;           /* conj[i] narrowed the access path */
+} SqlScan;
+
+typedef struct {
+    SqlStmt *s;
+    const char *text;        /* the statement's text, for messages */
+    GsqlTable *tb;           /* the first table, owned; NULL for ACC_NONE and schema statements */
+    SqlScan *scans;
+    size_t nscans;           /* 0 with no table */
     /* SELECT's output */
     size_t nout;
     SqlExpr **out;
@@ -258,5 +285,9 @@ void sql_explain(const SqlPlan *p, void (*line)(void *ctx, const char *text), vo
 
 /* whether an expression reads no column */
 int sql_is_constant(const SqlExpr *e);
+
+/* as sql_print_expr_tb, naming each column by its scan's table, and with its
+ * table's alias or name in front where there are several */
+void sql_print_expr_scans(GsqlBuf *out, const SqlExpr *e, const SqlScan *scans, size_t nscans);
 
 #endif

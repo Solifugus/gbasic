@@ -71,12 +71,10 @@ typedef struct {
     /* parameters: one v3 record (by name) or array (by position), or none */
     const unsigned char *params;
     size_t paramslen;
-    /* the current row */
-    GsqlBuf row;
-    GsqlBuf rowkey;
-    int have_row;
-    GsqlHv **cols;       /* loaded on first use, released per row */
-    size_t ncols;
+    /* each scan's current row (docs/gsql_join_design.md): one for a
+       single-table statement, one per table of a join */
+    struct XScan *sx;
+    size_t nsx;
     /* nodes whose hv this execution set, released at its end */
     SqlExpr **cached;
     size_t ncached, capcached;
@@ -118,12 +116,32 @@ static int is_null(X *x, const GsqlHv *v) {
     return k == SER_UNKNOWN || k == SER_NULL;
 }
 
-static void row_clear(X *x) {
-    for (size_t k = 0; k < x->ncols; k++) {
-        rel(x, x->cols[k]);
-        x->cols[k] = NULL;
+/* A scan's row: the bytes, its key, and its columns as host values, loaded
+ * on first use. `nulled` is a LEFT join's null-extended row, every column of
+ * which reads NULL. */
+typedef struct XScan {
+    GsqlBuf row;
+    GsqlBuf rowkey;
+    int have_row;
+    int nulled;
+    GsqlHv **cols;
+    size_t ncols;
+} XScan;
+
+static void row_clear_scan(X *x, size_t k) {
+    XScan *xs = &x->sx[k];
+    for (size_t c = 0; c < xs->ncols; c++) {
+        rel(x, xs->cols[c]);
+        xs->cols[c] = NULL;
     }
-    x->have_row = 0;
+    xs->have_row = 0;
+    xs->nulled = 0;
+}
+
+static void row_clear(X *x) {
+    for (size_t k = 0; k < x->nsx; k++) {
+        row_clear_scan(x, k);
+    }
 }
 
 static void x_init(X *x, GsqlSql *q, const GsEngine *e, GsTxn *t, SqlPlan *p, GsqlError *err) {
@@ -134,17 +152,31 @@ static void x_init(X *x, GsqlSql *q, const GsEngine *e, GsTxn *t, SqlPlan *p, Gs
     x->t = t;
     x->p = p;
     x->err = err;
-    x->ncols = p->tb ? gsql_table_ncols(p->tb) : 0;
-    x->cols = calloc(x->ncols ? x->ncols : 1, sizeof(GsqlHv *));
-    if (!x->cols) {
+    x->nsx = p->nscans ? p->nscans : 1;
+    x->sx = calloc(x->nsx, sizeof(XScan));
+    if (!x->sx) {
         abort();
+    }
+    for (size_t k = 0; k < x->nsx; k++) {
+        GsqlTable *tb = p->nscans ? p->scans[k].tb : p->tb;
+        x->sx[k].ncols = tb ? gsql_table_ncols(tb) : 0;
+        x->sx[k].cols = calloc(x->sx[k].ncols ? x->sx[k].ncols : 1, sizeof(GsqlHv *));
+        if (!x->sx[k].cols) {
+            abort();
+        }
     }
 }
 
 static void x_free(X *x) {
     row_clear(x);
-    free(x->cols);
-    x->cols = NULL;
+    for (size_t k = 0; k < x->nsx; k++) {
+        free(x->sx[k].cols);
+        gsql_buf_free(&x->sx[k].row);
+        gsql_buf_free(&x->sx[k].rowkey);
+    }
+    free(x->sx);
+    x->sx = NULL;
+    x->nsx = 0;
     for (size_t k = 0; k < x->ncached; k++) {
         rel(x, x->cached[k]->hv);
         x->cached[k]->hv = NULL;
@@ -152,8 +184,6 @@ static void x_free(X *x) {
     free(x->cached);
     x->cached = NULL;
     x->ncached = 0;
-    gsql_buf_free(&x->row);
-    gsql_buf_free(&x->rowkey);
 }
 
 static void remember(X *x, SqlExpr *e) {
@@ -222,21 +252,25 @@ static GsqlHv *placed(X *x, GsqlHv *v, const SqlExpr *e) {
 }
 
 static GsqlHv *column(X *x, SqlExpr *e) {
-    if (!x->have_row || e->col >= x->ncols) {
+    XScan *xs = e->tab < x->nsx ? &x->sx[e->tab] : NULL;
+    if (xs && xs->nulled) {
+        return hv_unknown(x);
+    }
+    if (!xs || !xs->have_row || e->col >= xs->ncols) {
         xfail(x->err, GSQL_MISUSE, e->pos, "a column was read with no row");
         return NULL;
     }
-    if (!x->cols[e->col]) {
+    if (!xs->cols[e->col]) {
         GsBytes v;
-        if (gsql_row_value(x->p->tb, x->row.bytes, x->row.length, e->col, &v, x->err) != GSQL_OK) {
+        if (gsql_row_value(x->p->scans[e->tab].tb, xs->row.bytes, xs->row.length, e->col, &v, x->err) != GSQL_OK) {
             return NULL;
         }
-        x->cols[e->col] = hv_bytes(x, v.p, v.n);
-        if (!x->cols[e->col]) {
+        xs->cols[e->col] = hv_bytes(x, v.p, v.n);
+        if (!xs->cols[e->col]) {
             return NULL;
         }
     }
-    GsqlHv *v = x->h->copy(x->h->ctx, x->cols[e->col]);
+    GsqlHv *v = x->h->copy(x->h->ctx, xs->cols[e->col]);
     for (size_t k = 0; k < e->nfields && v; k++) {
         GsqlHv *f = x->h->field(x->h->ctx, v, e->fields[k], x->err);
         rel(x, v);
@@ -746,10 +780,10 @@ static int eval_into(X *x, SqlExpr *e, GsqlBuf *out) {
     return rc;
 }
 
-/* WHERE: 1 keep the row, 0 drop it, -1 failed */
-static int keep(X *x) {
-    for (size_t k = 0; k < x->p->nconj; k++) {
-        GsqlHv *v = eval(x, x->p->conj[k]);
+/* A scan's conditions conj[from..to): 1 all true, 0 one is not, -1 failed. */
+static int check(X *x, const SqlScan *sc, size_t from, size_t to) {
+    for (size_t k = from; k < to; k++) {
+        GsqlHv *v = eval(x, sc->conj[k]);
         if (!v) {
             return -1;
         }
@@ -757,8 +791,8 @@ static int keep(X *x) {
         int kind = kind_of(x, v);
         rel(x, v);
         if (t == -2) {
-            xfail(x->err, GSQL_EXPRESSION, x->p->conj[k]->pos, "WHERE needs a boolean, and this condition is %s",
-                  tag_word(kind));
+            xfail(x->err, GSQL_EXPRESSION, sc->conj[k]->pos, "%s needs a boolean, and this condition is %s",
+                  k < sc->non ? "ON" : "WHERE", tag_word(kind));
             return -1;
         }
         if (t != 1) {
@@ -766,6 +800,12 @@ static int keep(X *x) {
         }
     }
     return 1;
+}
+
+/* WHERE of a single-table statement: 1 keep the row, 0 drop it, -1 failed */
+static int keep(X *x) {
+    const SqlScan *sc = &x->p->scans[0];
+    return check(x, sc, 0, sc->nconj);
 }
 
 /* LIMIT and OFFSET: a whole number, not negative */
@@ -801,7 +841,8 @@ static int count_value(X *x, SqlExpr *e, const char *what, uint64_t *out) {
 
 typedef struct {
     X *x;
-    SqlPlan *p;
+    const SqlScan *sc;  /* the scan read */
+    size_t k;           /* its position: which row of x it fills */
     GsCursor *cur;
     GsBytes tree;
     int index;          /* walking an index rather than the rows tree */
@@ -816,7 +857,7 @@ typedef struct {
     unsigned range_flags;
 } Iter;
 
-static unsigned flags_for(const SqlPlan *p, size_t j) {
+static unsigned flags_for(const SqlScan *p, size_t j) {
     const GsqlColumn *c = gsql_table_col(p->tb, p->keycols[j]);
     unsigned f = p->keydesc && p->keydesc[j] ? GSQL_KEY_DESC : 0;
     if (c->kind == GSQL_COL_MONEY && c->currency[0]) {
@@ -834,22 +875,23 @@ static int bound_key(Iter *it, SqlExpr *e, size_t j, GsqlKey *key) {
         gsql_buf_free(&b);
         return -1;
     }
-    GsqlColumn c = *gsql_table_col(it->p->tb, it->p->keycols[j]);
+    GsqlColumn c = *gsql_table_col(it->sc->tb, it->sc->keycols[j]);
     c.not_null = 0;
     GsqlError ignored = { GSQL_OK, "", 0 };
     int fits = b.bytes[0] != SER_NULL && gsql_value_fits(&c, b.bytes, b.length, &ignored) == GSQL_OK;
     if (fits) {
-        fits = gsql_key_append(key, b.bytes, b.length, NULL, flags_for(it->p, j)) == GSQL_KEY_OK;
+        fits = gsql_key_append(key, b.bytes, b.length, NULL, flags_for(it->sc, j)) == GSQL_KEY_OK;
     }
     gsql_buf_free(&b);
     return fits;
 }
 
-static int iter_open(Iter *it, X *x) {
+static int iter_open(Iter *it, X *x, size_t k) {
     memset(it, 0, sizeof *it);
     it->x = x;
-    it->p = x->p;
-    SqlPlan *p = x->p;
+    it->k = k;
+    it->sc = &x->p->scans[k];
+    const SqlScan *p = it->sc;
     gsql_key_init(&it->prefix);
     gsql_key_init(&it->klo);
     gsql_key_init(&it->khi);
@@ -1010,7 +1052,7 @@ static int iter_step(Iter *it) {
         const unsigned char *comp = key.p + it->prefix.length;
         size_t room = key.n - it->prefix.length;
         if (gsql_key_skip(comp, room, it->range_flags, &used) != GSQL_KEY_OK) {
-            xfail(x->err, GSQL_CORRUPT, 0, "a key of table %s does not parse", gsql_table_name(it->p->tb));
+            xfail(x->err, GSQL_CORRUPT, 0, "a key of table %s does not parse", gsql_table_name(it->sc->tb));
             return -1;
         }
         if (!it->backward && it->has_hi && bytes_cmp(comp, used, it->khi.bytes, it->khi.length) > 0) {
@@ -1023,22 +1065,23 @@ static int iter_step(Iter *it) {
     return 1;
 }
 
-/* The next row the access yields, into x->row and x->rowkey: 1, 0 at the
+/* The next row the access yields, into its scan's row and key: 1, 0 at the
  * end, -1 failed. */
 static int next_row(Iter *it) {
     X *x = it->x;
-    row_clear(x);
+    XScan *xs = &x->sx[it->k];
+    row_clear_scan(x, it->k);
     if (it->done) {
         return 0;
     }
     const GsEngine *e = x->e;
     if (it->point) {
         it->done = 1;
-        x->rowkey.length = 0;
-        v3_put(&x->rowkey, it->prefix.bytes, it->prefix.length);
-        GsBytes rk = { x->rowkey.bytes, x->rowkey.length };
-        x->row.length = 0;
-        int rc = gsql_row_get(e, x->t, it->p->tb, rk, &x->row, x->err);
+        xs->rowkey.length = 0;
+        v3_put(&xs->rowkey, it->prefix.bytes, it->prefix.length);
+        GsBytes rk = { xs->rowkey.bytes, xs->rowkey.length };
+        xs->row.length = 0;
+        int rc = gsql_row_get(e, x->t, it->sc->tb, rk, &xs->row, x->err);
         if (rc == GSQL_NOT_FOUND) {
             x->err->code = GSQL_OK;
             x->err->message[0] = 0;
@@ -1047,7 +1090,7 @@ static int next_row(Iter *it) {
         if (rc != GSQL_OK) {
             return -1;
         }
-        x->have_row = 1;
+        xs->have_row = 1;
         return 1;
     }
     int r = iter_step(it);
@@ -1066,40 +1109,166 @@ static int next_row(Iter *it) {
     }
     if (it->index) {
         GsBytes rk;
-        if (gsql_index_rowkey(it->p->tb, it->p->index, key, val, &rk, x->err) != GSQL_OK) {
+        if (gsql_index_rowkey(it->sc->tb, it->sc->index, key, val, &rk, x->err) != GSQL_OK) {
             return -1;
         }
-        x->rowkey.length = 0;
-        v3_put(&x->rowkey, rk.p, rk.n);
-        GsBytes rk2 = { x->rowkey.bytes, x->rowkey.length };
-        x->row.length = 0;
-        if (gsql_row_get(e, x->t, it->p->tb, rk2, &x->row, x->err) != GSQL_OK) {
+        xs->rowkey.length = 0;
+        v3_put(&xs->rowkey, rk.p, rk.n);
+        GsBytes rk2 = { xs->rowkey.bytes, xs->rowkey.length };
+        xs->row.length = 0;
+        if (gsql_row_get(e, x->t, it->sc->tb, rk2, &xs->row, x->err) != GSQL_OK) {
             if (x->err->code == GSQL_NOT_FOUND) {
                 x->err->code = GSQL_CORRUPT;
             }
             return -1;
         }
     } else {
-        x->rowkey.length = 0;
-        v3_put(&x->rowkey, key.p, key.n);
-        x->row.length = 0;
-        v3_put(&x->row, val.p, val.n);
+        xs->rowkey.length = 0;
+        v3_put(&xs->rowkey, key.p, key.n);
+        xs->row.length = 0;
+        v3_put(&xs->row, val.p, val.n);
     }
-    x->have_row = 1;
+    xs->have_row = 1;
     return 1;
 }
 
-/* The next row that passes WHERE. */
+/* The next row of a single scan that passes its conditions. */
 static int next_kept(Iter *it) {
     for (;;) {
         int r = next_row(it);
         if (r <= 0) {
             return r;
         }
-        int k = keep(it->x);
+        int k = check(it->x, it->sc, 0, it->sc->nconj);
         if (k != 0) {
             return k;
         }
+    }
+}
+
+/* ---- joins: nested loops in FROM order (docs/gsql_join_design.md §3) ----
+ *
+ * One iterator per scan. Scan k is opened afresh for each row of the scans
+ * before it, so its access path's bounds -- which may read their columns --
+ * are evaluated against that row. A LEFT join that finds no row its ON
+ * accepts produces one null-extended row, checked against the WHERE
+ * conditions placed there, as SQL requires. */
+typedef struct {
+    Iter *its;
+    int *open;
+    int *matched;
+    size_t n;
+    int yielded;
+} Join;
+
+static int join_open(Join *j, X *x, size_t k) {
+    j->matched[k] = 0;
+    x->sx[k].nulled = 0;
+    int rc = iter_open(&j->its[k], x, k);
+    j->open[k] = 1;
+    return rc;
+}
+
+static void join_close(Join *j) {
+    for (size_t k = 0; k < j->n; k++) {
+        if (j->open[k]) {
+            iter_close(&j->its[k]);
+            j->open[k] = 0;
+        }
+    }
+    free(j->its);
+    free(j->open);
+    free(j->matched);
+    memset(j, 0, sizeof *j);
+}
+
+/* scan 0 open, nothing yielded */
+static int join_start(Join *j, X *x) {
+    j->n = x->p->nscans;
+    j->its = calloc(j->n, sizeof(Iter));
+    j->open = calloc(j->n, sizeof(int));
+    j->matched = calloc(j->n, sizeof(int));
+    if (!j->its || !j->open || !j->matched) {
+        abort();
+    }
+    return join_open(j, x, 0);
+}
+
+/* the next accepted row of scan k: 1, 0 exhausted (and closed), -1 failed */
+static int join_level(Join *j, X *x, size_t k) {
+    const SqlScan *sc = &x->p->scans[k];
+    for (;;) {
+        if (x->sx[k].nulled) {
+            x->sx[k].nulled = 0;
+            return 0;
+        }
+        if (!j->open[k]) {
+            return 0;
+        }
+        int r = next_row(&j->its[k]);
+        if (r < 0) {
+            return -1;
+        }
+        if (r == 1) {
+            int t = check(x, sc, 0, sc->non);
+            if (t < 0) {
+                return -1;
+            }
+            if (t == 0) {
+                continue;
+            }
+            j->matched[k] = 1;
+            t = check(x, sc, sc->non, sc->nconj);
+            if (t < 0) {
+                return -1;
+            }
+            if (t == 0) {
+                continue;
+            }
+            return 1;
+        }
+        iter_close(&j->its[k]);
+        j->open[k] = 0;
+        if (sc->join == SQL_JOIN_LEFT && !j->matched[k]) {
+            j->matched[k] = 1;
+            row_clear_scan(x, k);
+            x->sx[k].nulled = 1;
+            int t = check(x, sc, sc->non, sc->nconj);
+            if (t < 0) {
+                return -1;
+            }
+            if (t == 1) {
+                return 1;
+            }
+            x->sx[k].nulled = 0;
+        }
+        return 0;
+    }
+}
+
+/* the next joined row, every scan's row in hand: 1, 0 at the end, -1 failed */
+static int join_next(Join *j, X *x) {
+    size_t k = j->yielded ? j->n - 1 : 0;
+    j->yielded = 1;
+    for (;;) {
+        int r = join_level(j, x, k);
+        if (r < 0) {
+            return -1;
+        }
+        if (r == 1) {
+            if (k == j->n - 1) {
+                return 1;
+            }
+            k++;
+            if (join_open(j, x, k) != GSQL_OK) {
+                return -1;
+            }
+            continue;
+        }
+        if (k == 0) {
+            return 0;
+        }
+        k--;
     }
 }
 
@@ -1137,8 +1306,8 @@ typedef struct {
 
 typedef struct {
     GsqlBuf key;
-    GsqlBuf rep;         /* the first row's bytes */
-    int has_rep;
+    GsqlBuf *reps;       /* the first row's bytes, one per scan */
+    unsigned char *state;/* per scan: 0 no row, 1 a row, 2 null-extended */
     Acc *acc;
     GsqlHv **fin;        /* the aggregates' final values */
 } Group;
@@ -1217,7 +1386,11 @@ static void groups_free(X *x, Groups *g) {
     for (size_t i = 0; i < g->n; i++) {
         Group *gr = &g->v[i];
         gsql_buf_free(&gr->key);
-        gsql_buf_free(&gr->rep);
+        for (size_t k = 0; gr->reps && k < x->nsx; k++) {
+            gsql_buf_free(&gr->reps[k]);
+        }
+        free(gr->reps);
+        free(gr->state);
         for (size_t a = 0; a < x->p->naggs; a++) {
             Acc *acc = &gr->acc[a];
             rel(x, acc->v);
@@ -1368,7 +1541,9 @@ static Group *group_new(X *x, Groups *g) {
     Group *gr = &g->v[g->n++];
     memset(gr, 0, sizeof *gr);
     gr->acc = calloc(x->p->naggs ? x->p->naggs : 1, sizeof(Acc));
-    if (!gr->acc) {
+    gr->reps = calloc(x->nsx, sizeof(GsqlBuf));
+    gr->state = calloc(x->nsx, 1);
+    if (!gr->acc || !gr->reps || !gr->state) {
         abort();
     }
     return gr;
@@ -1400,8 +1575,8 @@ typedef struct {
     SqlPlan plan;
     X x;
     GsqlError err;
-    Iter it;
-    int iter_open;
+    Join j;
+    int join_started;
     int sorted;
     SortRow *rows;
     size_t nrows, pos;
@@ -1433,13 +1608,13 @@ static int aggregate(SqlCursor *c) {
     X *x = &c->x;
     SqlPlan *p = &c->plan;
     Groups *g = &c->groups;
-    int one = p->access == ACC_NONE;   /* no FROM: the one row, if kept */
+    int one = p->scans[0].access == ACC_NONE;   /* no FROM: the one row, if kept */
     for (int first = 1;; first = 0) {
         int r;
         if (one) {
             r = first ? keep(x) : 0;
         } else {
-            r = next_kept(&c->it);
+            r = join_next(&c->j, x);
         }
         if (r < 0) {
             return x->err->code ? x->err->code : GSQL_EXPRESSION;
@@ -1465,9 +1640,14 @@ static int aggregate(SqlCursor *c) {
         } else {
             gr = group_new(x, g);
             v3_put(&gr->key, key.bytes, key.length);
-            if (x->have_row) {
-                v3_put(&gr->rep, x->row.bytes, x->row.length);
-                gr->has_rep = 1;
+            for (size_t k = 0; k < x->nsx; k++) {
+                XScan *xs = &x->sx[k];
+                if (xs->nulled) {
+                    gr->state[k] = 2;
+                } else if (xs->have_row) {
+                    v3_put(&gr->reps[k], xs->row.bytes, xs->row.length);
+                    gr->state[k] = 1;
+                }
             }
             keymap_find(&g->map, group_key_of, g, key.bytes, key.length, g->n);
         }
@@ -1515,10 +1695,15 @@ static int next_group(SqlCursor *c) {
     while (g->pos < g->n) {
         Group *gr = &g->v[g->order[g->pos++]];
         row_clear(x);
-        if (gr->has_rep) {
-            x->row.length = 0;
-            v3_put(&x->row, gr->rep.bytes, gr->rep.length);
-            x->have_row = 1;
+        for (size_t k = 0; k < x->nsx; k++) {
+            XScan *xs = &x->sx[k];
+            if (gr->state[k] == 1) {
+                xs->row.length = 0;
+                v3_put(&xs->row, gr->reps[k].bytes, gr->reps[k].length);
+                xs->have_row = 1;
+            } else if (gr->state[k] == 2) {
+                xs->nulled = 1;
+            }
         }
         x->aggv = gr->fin;
         if (!c->plan.s->having) {
@@ -1544,7 +1729,7 @@ static int next_group(SqlCursor *c) {
 }
 
 static int source_next(SqlCursor *c) {
-    return c->grouped ? next_group(c) : next_kept(&c->it);
+    return c->grouped ? next_group(c) : join_next(&c->j, &c->x);
 }
 
 static int sort_cmp(SqlCursor *c, const SortRow *a, const SortRow *b, int *failed) {
@@ -1623,8 +1808,8 @@ static void cursor_free(SqlCursor *c) {
         free(c->lines[k]);
     }
     free(c->lines);
-    if (c->iter_open) {
-        iter_close(&c->it);
+    if (c->join_started) {
+        join_close(&c->j);
     }
     x_free(&c->x);
     sql_plan_free(&c->plan);
@@ -1688,7 +1873,7 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
             return 1;
         }
     }
-    if (c->plan.access == ACC_NONE) {
+    if (c->plan.scans[0].access == ACC_NONE) {
         /* one row, with no table */
         if (c->pos++) {
             c->ended = 1;
@@ -1706,7 +1891,7 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
         return 1;
     }
     for (;;) {
-        int r = next_kept(&c->it);
+        int r = join_next(&c->j, &c->x);
         if (r <= 0) {
             c->ended = 1;
             return r;
@@ -1875,7 +2060,7 @@ static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
     SqlStmt *s = p->s;
     GsqlError *err = x->err;
     Iter it;
-    int rc = iter_open(&it, x);
+    int rc = iter_open(&it, x, 0);
     if (rc != GSQL_OK) {
         iter_close(&it);
         return rc;
@@ -1895,7 +2080,7 @@ static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
         }
         Change *c = &ch[n++];
         memset(c, 0, sizeof *c);
-        v3_put(&c->key, x->rowkey.bytes, x->rowkey.length);
+        v3_put(&c->key, x->sx[0].rowkey.bytes, x->sx[0].rowkey.length);
         if (s->kind == SQ_UPDATE) {
             c->vals = calloc(p->ntargets, sizeof(GsqlBuf));
             c->deflt = calloc(p->ntargets, sizeof(int));
@@ -2394,12 +2579,11 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
                 c->offset = 0;
             }
         }
-        if (c->plan.access != ACC_NONE) {
-            if (iter_open(&c->it, &c->x) != GSQL_OK) {
-                c->iter_open = 1;
+        if (c->plan.scans[0].access != ACC_NONE) {
+            c->join_started = 1;
+            if (join_start(&c->j, &c->x) != GSQL_OK) {
                 goto failed;
             }
-            c->iter_open = 1;
         }
         if (c->plan.grouped) {
             c->grouped = 1;
@@ -2407,11 +2591,12 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
                 goto failed;
             }
         }
-        if (c->plan.access != ACC_NONE || c->grouped) {
+        if (c->plan.scans[0].access != ACC_NONE || c->grouped) {
             /* the access was to yield the order, and a bound that did not fit
              * turned it into a scan: then it must be sorted after all. Groups
              * come in key order, so a grouped query is always sorted. */
-            int need_sort = s->norder && (c->grouped || !c->plan.ordered || c->it.fell_back);
+            int need_sort = s->norder && (c->grouped || c->plan.nscans > 1 || !c->plan.scans[0].ordered ||
+                                          (c->join_started && c->j.its[0].fell_back));
             if (need_sort) {
                 c->sorted = 1;
                 if (collect_sorted(c) != GSQL_OK) {
