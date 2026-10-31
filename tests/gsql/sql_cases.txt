@@ -382,7 +382,7 @@ commit
 > SELECT stddev(n) FROM s
 ! UNSUPPORTED 8 stddev is not in this release of G-SQL
 > EXPLAIN SELECT g, count(*) FROM s WHERE id > 1 GROUP BY g HAVING count(*) > 1 ORDER BY 2
-= 'Seek on s using the primary key (1 <= id)' | '  Aggregate: group by g' | '  Having: (count(*) > 1)' | '  Order: count(*) (sorted)'
+= 'Seek on s using the primary key (1 <= id)' | '  Filter: (id > 1)' | '  Aggregate: group by g' | '  Having: (count(*) > 1)' | '  Order: count(*) (sorted)'
 > EXPLAIN SELECT count(*) FROM s
 = 'Scan on s' | '  Aggregate: one group'
 
@@ -755,7 +755,9 @@ commit
 > EXPLAIN SELECT * FROM o WHERE id = :id
 = 'Point Read on o using the primary key (id = :id)'
 > EXPLAIN SELECT * FROM o WHERE id > 5 AND total > 1
-= 'Seek on o using the primary key (5 <= id)' | '  Filter: (total > 1)'
+= 'Seek on o using the primary key (5 <= id)' | '  Filter: (id > 5) AND (total > 1)'
+> EXPLAIN SELECT * FROM o WHERE id > 2 AND id <= 4
+= 'Seek on o using the primary key (2 <= id <= 4)' | '  Filter: (id > 2)'
 > EXPLAIN SELECT * FROM o WHERE cust = 'a' AND lower(cust) = 'a'
 = 'Index Seek on o using o_cust (cust = 'a')' | '  Filter: (lower(cust) = 'a')'
 > EXPLAIN SELECT * FROM o WHERE cust = 'a' ORDER BY placed DESC LIMIT 5

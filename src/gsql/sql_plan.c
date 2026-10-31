@@ -525,7 +525,10 @@ static SqlExpr *eq_bound(SqlExpr *e, unsigned col) {
     return NULL;
 }
 
-/* a range conjunct on `col`: fills *lo and/or *hi, answers whether it did */
+/* a range conjunct on `col`: fills *lo and/or *hi, answers 0 if it did not,
+ * 1 for an inclusive bound (<=, >=, BETWEEN), 2 for a strict one. A seek is
+ * always inclusive, so a strict comparison still filters out the bound
+ * itself, and EXPLAIN must list it. */
 static int range_bound(SqlExpr *e, unsigned col, SqlExpr **lo, SqlExpr **hi) {
     if (e->kind == SX_BETWEEN && !e->neg && plain_col(e->a[0], col) && const_before(e->a[1], plain_scan) &&
         const_before(e->a[2], plain_scan)) {
@@ -555,7 +558,7 @@ static int range_bound(SqlExpr *e, unsigned col, SqlExpr **lo, SqlExpr **hi) {
         return 0;
     }
     *slot = bound;
-    return 1;
+    return e->op == SQL_OP_LT || e->op == SQL_OP_GT ? 2 : 1;
 }
 
 typedef struct {
@@ -595,8 +598,9 @@ static void consider(B *b, SqlScan *sc, Cand *c) {
     }
     if (c->neq < c->ncols && rangeable(gsql_table_col(sc->tb, c->cols[c->neq]))) {
         for (size_t k = 0; k < nn; k++) {
-            if (!c->consumed[k] && range_bound(sc->conj[k], c->cols[c->neq], &c->lo, &c->hi)) {
-                c->consumed[k] = 1;
+            int r = c->consumed[k] ? 0 : range_bound(sc->conj[k], c->cols[c->neq], &c->lo, &c->hi);
+            if (r) {
+                c->consumed[k] = r == 1;
             }
         }
     }

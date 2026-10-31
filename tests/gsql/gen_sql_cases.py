@@ -261,7 +261,8 @@ stmt("SELECT sum(n, x) FROM s", ("SYNTAX", "sum", "sum takes 1 argument, and was
 stmt("SELECT lower(DISTINCT g) FROM s", ("SYNTAX", "lower", "only an aggregate takes DISTINCT"))
 stmt("SELECT stddev(n) FROM s", ("UNSUPPORTED", "stddev", "stddev is not in this release of G-SQL"))
 stmt("EXPLAIN SELECT g, count(*) FROM s WHERE id > 1 GROUP BY g HAVING count(*) > 1 ORDER BY 2",
-     "= 'Seek on s using the primary key (1 <= id)' | '  Aggregate: group by g' | '  Having: (count(*) > 1)' | '  Order: count(*) (sorted)'")
+     "= 'Seek on s using the primary key (1 <= id)' | '  Filter: (id > 1)' | '  Aggregate: group by g' | '  Having: (count(*) > 1)' | "
+     "'  Order: count(*) (sorted)'")
 stmt("EXPLAIN SELECT count(*) FROM s", "= 'Scan on s' | '  Aggregate: one group'")
 
 sec("joins (docs/gsql_join_design.md)")
@@ -548,7 +549,9 @@ stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DA
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")
 stmt("EXPLAIN SELECT * FROM o WHERE id = :id", "= 'Point Read on o using the primary key (id = :id)'")
 stmt("EXPLAIN SELECT * FROM o WHERE id > 5 AND total > 1",
-     "= 'Seek on o using the primary key (5 <= id)' | '  Filter: (total > 1)'")
+     "= 'Seek on o using the primary key (5 <= id)' | '  Filter: (id > 5) AND (total > 1)'")
+# a strict bound stays in the Filter, which drops the bound itself; an inclusive one does not
+stmt("EXPLAIN SELECT * FROM o WHERE id > 2 AND id <= 4", "= 'Seek on o using the primary key (2 <= id <= 4)' | '  Filter: (id > 2)'")
 stmt("EXPLAIN SELECT * FROM o WHERE cust = 'a' AND lower(cust) = 'a'",
      "= 'Index Seek on o using o_cust (cust = 'a')' | '  Filter: (lower(cust) = 'a')'")
 stmt("EXPLAIN SELECT * FROM o WHERE cust = 'a' ORDER BY placed DESC LIMIT 5",
