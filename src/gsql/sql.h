@@ -133,7 +133,8 @@ typedef enum {
     SQ_DROP_TABLE,
     SQ_ADD_COLUMN,
     SQ_CREATE_INDEX,
-    SQ_DROP_INDEX
+    SQ_DROP_INDEX,
+    SQ_RENAME_TABLE          /* ALTER TABLE table RENAME TO rename_to */
 } SqlStmtKind;
 
 typedef struct {
@@ -237,6 +238,7 @@ typedef struct SqlStmt {
     size_t nuniques;
     /* CREATE INDEX / DROP INDEX */
     char *index;
+    char *rename_to;         /* ALTER TABLE ... RENAME TO */
     int unique;
     SqlNameList index_cols;
     /* parameters, in order of first appearance */

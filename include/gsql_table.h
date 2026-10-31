@@ -121,6 +121,9 @@ typedef struct {
 
 int gsql_table_create(const GsEngine *e, GsTxn *t, const GsqlTableDecl *d, GsqlError *err);
 int gsql_table_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *err);
+/* Moves a table's catalog entry to a new name; its trees, named by id, stay
+ * (docs/gsql_rename_design.md). NOT_FOUND, EXISTS, or SCHEMA for a bad name. */
+int gsql_table_rename(const GsEngine *e, GsTxn *t, const char *name, const char *to, GsqlError *err);
 int gsql_table_open(const GsEngine *e, GsTxn *t, const char *name, GsqlTable **out, GsqlError *err);
 void gsql_table_close(GsqlTable *tb);
 /* Every table name in order; stops when `each` answers nonzero. */

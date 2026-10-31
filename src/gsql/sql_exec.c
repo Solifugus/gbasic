@@ -2770,6 +2770,8 @@ static int run_schema(X *x, GsqlResult *out) {
             return GSQL_OK;
         }
         return rc;
+    case SQ_RENAME_TABLE:
+        return gsql_table_rename(x->e, x->t, s->table, s->rename_to, err);
     case SQ_ADD_COLUMN: {
         GsqlTable *tb;
         rc = gsql_table_open(x->e, x->t, s->table, &tb, err);

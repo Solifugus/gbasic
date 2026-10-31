@@ -1044,6 +1044,56 @@ static int refuse_run(void) {
     mismatches = before + (rc != GSQL_CORRUPT);
     E->tree_drop(t, (GsBytes){stray, 10});
 
+    /* a rename (docs/gsql_rename_design.md): each refusal beside the
+       accepted one, then the table whole under its new name */
+    d.name = "w";
+    expect(gsql_table_create(E, t, &d, &er), GSQL_OK, &er, NULL, "a second table to collide with");
+    expect(gsql_table_rename(E, t, "nope", "x", &er), GSQL_NOT_FOUND, &er, "no table nope", "renaming a table not there");
+    expect(gsql_table_rename(E, t, "u", "", &er), GSQL_SCHEMA, &er, "needs a name", "renaming to an empty name");
+    expect(gsql_table_rename(E, t, "u", longname, &er), GSQL_SCHEMA, &er, "past the limit", "renaming to a long name");
+    expect(gsql_table_rename(E, t, "u", "u", &er), GSQL_EXISTS, &er, "already a table u", "renaming to its own name");
+    expect(gsql_table_rename(E, t, "u", "w", &er), GSQL_EXISTS, &er, "already a table w", "renaming onto another table");
+    size_t before_cols = gsql_table_ncols(ut), before_idx = gsql_table_nindexes(ut);
+    /* the rows counted BEFORE: an old handle names the same tree by id, so a
+       count through it afterwards would agree with anything */
+    size_t n1 = 0;
+    {
+        GsCursor *cur = NULL;
+        int at = 0;
+        if (!E->cursor_open(t, gsql_table_rows_tree(ut), &cur)) {
+            for (E->first(cur, &at); at; E->next(cur, &at)) {
+                n1++;
+            }
+            E->cursor_close(cur);
+        }
+    }
+    expect(gsql_table_rename(E, t, "u", "u2", &er), GSQL_OK, &er, NULL, "a rename");
+    GsqlTable *tb2 = NULL;
+    expect(gsql_table_open(E, t, "u", &tb2, &er), GSQL_NOT_FOUND, &er, "no table u", "the old name after a rename");
+    expect(gsql_table_open(E, t, "u2", &tb2, &er), GSQL_OK, &er, NULL, "the new name after a rename");
+    checks++;
+    if (!tb2 || gsql_table_ncols(tb2) != before_cols || gsql_table_nindexes(tb2) != before_idx || before_idx == 0) {
+        mismatch("a renamed table lost columns or indexes");
+    }
+    checks++;
+    if (tb2) {
+        /* its rows came along: the trees are named by id */
+        GsCursor *cur = NULL;
+        size_t n2 = 0;
+        int at = 0;
+        if (!E->cursor_open(t, gsql_table_rows_tree(tb2), &cur)) {
+            for (E->first(cur, &at); at; E->next(cur, &at)) {
+                n2++;
+            }
+            E->cursor_close(cur);
+        }
+        if (n1 == 0 || n2 != n1) {
+            mismatch("a renamed table has %zu rows where it had %zu", n2, n1);
+        }
+    }
+    expect(gsql_table_check(E, t, report_line, NULL, &ce), GSQL_OK, &ce, NULL, "the check after a rename");
+    gsql_table_close(tb2);
+
     gsql_table_close(tb);
     gsql_table_close(ut);
     gsql_buf_free(&k5);

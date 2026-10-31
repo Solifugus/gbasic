@@ -747,6 +747,44 @@ commit
 > EXPLAIN SELECT cu.name FROM cu JOIN od ON od.cust = cu.id
 = 'Nested Loop' | '  Scan on cu' | '  Index Seek on od using od_cust (cust = cu.id)'
 
+# ---- ALTER TABLE ... RENAME TO (docs/gsql_rename_design.md) ----------
+> CREATE TABLE rn (id INTEGER PRIMARY KEY, k INTEGER)
+= done 0
+> INSERT INTO rn VALUES (1, 10), (2, 20)
+= done 2
+> CREATE TABLE rn_new (id INTEGER PRIMARY KEY, k INTEGER, note TEXT)
+= done 0
+> CREATE INDEX rn_new_k ON rn_new (k)
+= done 0
+> INSERT INTO rn_new VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c')
+= done 3
+> DROP TABLE rn
+= done 0
+> ALTER TABLE rn_new RENAME TO rn
+= done 0
+> SELECT id, k, note FROM rn ORDER BY id
+= 1, 10, 'a' | 2, 20, 'b' | 3, 30, 'c'
+> SELECT * FROM rn_new
+! NOT_FOUND 1 there is no table `rn_new`
+> EXPLAIN SELECT id FROM rn WHERE k = 20
+= 'Index Seek on rn using rn_new_k (k = 20)'
+> ALTER TABLE nope RENAME TO x
+! NOT_FOUND 0 there is no table nope
+> ALTER TABLE rn RENAME TO cu
+! EXISTS 0 there is already a table cu
+> ALTER TABLE rn RENAME TO rn
+! EXISTS 0 there is already a table rn
+begin write
+> ALTER TABLE rn RENAME TO rn2
+= done 0
+> SELECT count(*) FROM rn2
+= 3
+rollback
+> SELECT count(*) FROM rn
+= 3
+> SELECT * FROM rn2
+! NOT_FOUND 1 there is no table `rn2`
+
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
 = done 0

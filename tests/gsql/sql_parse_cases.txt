@@ -169,7 +169,15 @@
 > drop t
 ! SYNTAX 6 expected TABLE or INDEX after DROP
 > alter table t drop column a
-! UNSUPPORTED 15 ADD COLUMN is the only change
+! UNSUPPORTED 15 ADD COLUMN and RENAME TO are the only changes
+> alter table t_new rename to t
+= ALTER TABLE t_new RENAME TO t
+> alter table t rename column a to b
+! UNSUPPORTED 22 RENAME COLUMN is not in this release
+> alter table t rename a to b
+! UNSUPPORTED 22 RENAME COLUMN is not in this release
+> alter table t rename to
+! SYNTAX 24 expected the table's new name
 > alter table t add column a int primary key
 ! UNSUPPORTED 26 cannot declare PRIMARY KEY
 > explain insert into t values (1)

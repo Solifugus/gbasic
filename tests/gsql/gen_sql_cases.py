@@ -544,6 +544,30 @@ stmt("EXPLAIN SELECT cu.name FROM cu JOIN (SELECT cust FROM od) d ON d.cust = cu
 stmt("EXPLAIN SELECT cu.name FROM cu JOIN od ON od.cust = cu.id",
      "= 'Nested Loop' | '  Scan on cu' | '  Index Seek on od using od_cust (cust = cu.id)'")
 
+sec("ALTER TABLE ... RENAME TO (docs/gsql_rename_design.md)")
+# the drop-and-rebuild swap: build the new one, drop the old, rename the new
+stmt("CREATE TABLE rn (id INTEGER PRIMARY KEY, k INTEGER)", "= done 0")
+stmt("INSERT INTO rn VALUES (1, 10), (2, 20)", "= done 2")
+stmt("CREATE TABLE rn_new (id INTEGER PRIMARY KEY, k INTEGER, note TEXT)", "= done 0")
+stmt("CREATE INDEX rn_new_k ON rn_new (k)", "= done 0")
+stmt("INSERT INTO rn_new VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c')", "= done 3")
+stmt("DROP TABLE rn", "= done 0")
+stmt("ALTER TABLE rn_new RENAME TO rn", "= done 0")
+stmt("SELECT id, k, note FROM rn ORDER BY id", "= 1, 10, 'a' | 2, 20, 'b' | 3, 30, 'c'")
+stmt("SELECT * FROM rn_new", ("NOT_FOUND", "SELECT", "there is no table `rn_new`"))
+# its index came along, under its own name
+stmt("EXPLAIN SELECT id FROM rn WHERE k = 20", "= 'Index Seek on rn using rn_new_k (k = 20)'")
+stmt("ALTER TABLE nope RENAME TO x", ("NOT_FOUND", None, "there is no table nope"))
+stmt("ALTER TABLE rn RENAME TO cu", ("EXISTS", None, "there is already a table cu"))
+stmt("ALTER TABLE rn RENAME TO rn", ("EXISTS", None, "there is already a table rn"))
+# a rename is undone with its transaction
+c("begin write")
+stmt("ALTER TABLE rn RENAME TO rn2", "= done 0")
+stmt("SELECT count(*) FROM rn2", "= 3")
+c("rollback")
+stmt("SELECT count(*) FROM rn", "= 3")
+stmt("SELECT * FROM rn2", ("NOT_FOUND", "SELECT", "there is no table `rn2`"))
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

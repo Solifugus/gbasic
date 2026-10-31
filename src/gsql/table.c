@@ -972,6 +972,44 @@ int gsql_table_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *er
     return st == GS_OK ? ok(err) : storage(err, st, "dropping a table");
 }
 
+int gsql_table_rename(const GsEngine *e, GsTxn *t, const char *name, const char *to, GsqlError *err) {
+    int rc = check_name("table", to, err);
+    if (rc) {
+        return rc;
+    }
+    GsBytes got;
+    int st = e->get(t, CATALOG, name_bytes(name), &got);
+    if (st == GS_NOT_FOUND) {
+        return fail(err, GSQL_NOT_FOUND, "there is no table %s", name);
+    }
+    if (st != GS_OK) {
+        return storage(err, st, "reading the catalog");
+    }
+    /* the schema, copied: the engine's bytes are not ours across a write */
+    unsigned char *schema = malloc(got.n ? got.n : 1);
+    if (!schema) {
+        abort();
+    }
+    memcpy(schema, got.p, got.n);
+    GsBytes copy = { schema, got.n };
+    GsBytes other;
+    st = e->get(t, CATALOG, name_bytes(to), &other);
+    if (st == GS_OK) {
+        free(schema);
+        return fail(err, GSQL_EXISTS, "there is already a table %s", to);
+    }
+    if (st != GS_NOT_FOUND) {
+        free(schema);
+        return storage(err, st, "reading the catalog");
+    }
+    st = e->del(t, CATALOG, name_bytes(name));
+    if (st == GS_OK) {
+        st = e->put(t, CATALOG, name_bytes(to), copy, 0);
+    }
+    free(schema);
+    return st == GS_OK ? ok(err) : storage(err, st, "renaming a table");
+}
+
 /* Resolves the values a write will store: one per column, defaults applied. */
 static int resolve(const GsqlTable *tb, const GsqlIn *vals, const GsBytes *old, GsBytes *out, GsqlError *err) {
     for (size_t i = 0; i < tb->ncols; i++) {

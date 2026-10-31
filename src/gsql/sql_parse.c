@@ -1813,13 +1813,26 @@ static int alter_stmt(P *p, SqlStmt *s) {
     if (!s->table) {
         return 0;
     }
-    if (!accept_kw(p, "add")) {
-        if (at_kw(p, "drop") || (p->tok.kind == T_IDENT && (strcmp(p->tok.text, "rename") == 0 ||
-                                                                 strcmp(p->tok.text, "alter") == 0))) {
-            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "ALTER TABLE ... ADD COLUMN is the only change in this "
-                           "release of G-SQL");
+    if (at_word(p, "rename")) {
+        /* docs/gsql_rename_design.md */
+        next(p);
+        if (at_word(p, "column") || (p->tok.kind == T_IDENT && !at_kw(p, "to"))) {
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "RENAME COLUMN is not in this release of G-SQL: RENAME TO "
+                           "renames the table");
         }
-        return expected(p, "ADD after ALTER TABLE name");
+        if (!expect_kw(p, "to")) {
+            return 0;
+        }
+        s->kind = SQ_RENAME_TABLE;
+        s->rename_to = name(p, "the table's new name");
+        return s->rename_to != NULL;
+    }
+    if (!accept_kw(p, "add")) {
+        if (at_kw(p, "drop") || at_word(p, "alter")) {
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "ALTER TABLE ... ADD COLUMN and RENAME TO are the only "
+                           "changes in this release of G-SQL");
+        }
+        return expected(p, "ADD or RENAME after ALTER TABLE name");
     }
     s->kind = SQ_ADD_COLUMN;
     accept_kw(p, "column");
@@ -2612,6 +2625,12 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
         print_name(o, s->table);
         puts_(o, " ADD COLUMN ");
         print_coldef(o, &s->coldefs[0]);
+        return;
+    case SQ_RENAME_TABLE:
+        puts_(o, "ALTER TABLE ");
+        print_name(o, s->table);
+        puts_(o, " RENAME TO ");
+        print_name(o, s->rename_to);
         return;
     case SQ_CREATE_INDEX:
         puts_(o, s->unique ? "CREATE UNIQUE INDEX " : "CREATE INDEX ");
