@@ -428,7 +428,7 @@ static char *name(P *p, const char *what) {
 /* Phase 2's words, refused by name rather than as a puzzle. */
 static int phase2(P *p) {
     static const struct { const char *kw; const char *what; } later[] = {
-        { "join", "joins" }, { "union", "UNION" },
+        { "union", "UNION" },
         { "intersect", "INTERSECT" }, { "except", "EXCEPT" }, { "distinct", "DISTINCT" },
         { "with", "WITH" }, { NULL, NULL }
     };
@@ -437,11 +437,6 @@ static int phase2(P *p) {
             return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "%s are not in this release of G-SQL (Phase 2)",
                            later[k].what);
         }
-    }
-    if (p->tok.kind == T_IDENT && (strcmp(p->tok.text, "inner") == 0 || strcmp(p->tok.text, "left") == 0 ||
-                                   strcmp(p->tok.text, "right") == 0 || strcmp(p->tok.text, "cross") == 0 ||
-                                   strcmp(p->tok.text, "full") == 0)) {
-        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "joins are not in this release of G-SQL (Phase 2)");
     }
     return 1;
 }
@@ -1108,6 +1103,116 @@ static int coldef(P *p, SqlColDef *c) {
     }
 }
 
+/* a table alias, unmarked by AS: any name but the words a join begins with */
+static int alias_follows(P *p) {
+    static const char *const join_words[] = { "inner", "left", "right", "cross", "full", "outer", "natural", "using",
+                                              NULL };
+    if (p->tok.kind == T_QIDENT) {
+        return 1;
+    }
+    if (p->tok.kind != T_IDENT || is_reserved(p->tok.text)) {
+        return 0;
+    }
+    for (int k = 0; join_words[k]; k++) {
+        if (strcmp(p->tok.text, join_words[k]) == 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int at_word(P *p, const char *w) {
+    return p->tok.kind == T_IDENT && strcmp(p->tok.text, w) == 0;
+}
+
+/* The tables after the first (docs/gsql_join_design.md §1): `, t`, `CROSS
+ * JOIN t`, `[INNER] JOIN t ON c` and `LEFT [OUTER] JOIN t ON c`. */
+static int join_list(P *p, SqlStmt *s) {
+    SqlFrom from[64];
+    size_t n = 0;
+    for (;;) {
+        uint32_t pos = p->tok.pos;
+        SqlJoin kind;
+        if (accept_sym(p, ",")) {
+            kind = SQL_JOIN_CROSS;
+        } else if (at_word(p, "cross")) {
+            next(p);
+            if (!expect_kw(p, "join")) {
+                return 0;
+            }
+            kind = SQL_JOIN_CROSS;
+        } else if (at_word(p, "inner")) {
+            next(p);
+            if (!expect_kw(p, "join")) {
+                return 0;
+            }
+            kind = SQL_JOIN_INNER;
+        } else if (accept_kw(p, "join")) {
+            kind = SQL_JOIN_INNER;
+        } else if (at_word(p, "left")) {
+            next(p);
+            if (at_word(p, "outer")) {
+                next(p);
+            }
+            if (!expect_kw(p, "join")) {
+                return 0;
+            }
+            kind = SQL_JOIN_LEFT;
+        } else if (at_word(p, "right")) {
+            return fail_at(p, pos, GSQL_UNSUPPORTED,
+                           "RIGHT JOIN is not in this release of G-SQL: write it as a LEFT JOIN with the tables swapped");
+        } else if (at_word(p, "full")) {
+            return fail_at(p, pos, GSQL_UNSUPPORTED, "FULL JOIN is not in this release of G-SQL");
+        } else if (at_word(p, "natural")) {
+            return fail_at(p, pos, GSQL_UNSUPPORTED, "NATURAL JOIN is not in this release of G-SQL: name the columns with ON");
+        } else {
+            break;
+        }
+        if (n == 64) {
+            return fail_at(p, pos, GSQL_SYNTAX, "a statement may join at most 65 tables");
+        }
+        SqlFrom *f = &from[n];
+        memset(f, 0, sizeof *f);
+        f->join = kind;
+        f->pos = p->tok.pos;
+        if (at_sym(p, "(")) {
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "subqueries are not in this release of G-SQL (Phase 2)");
+        }
+        if (!(f->table = name(p, "a table name"))) {
+            return 0;
+        }
+        if (accept_kw(p, "as")) {
+            if (!(f->alias = name(p, "a table alias"))) {
+                return 0;
+            }
+        } else if (alias_follows(p)) {
+            f->alias = name(p, "a table alias");
+        }
+        if (kind == SQL_JOIN_CROSS) {
+            if (at_kw(p, "on")) {
+                return fail_at(p, p->tok.pos, GSQL_SYNTAX, "a cross join has no ON: write JOIN ... ON for a condition");
+            }
+        } else {
+            if (at_word(p, "using")) {
+                return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "USING is not in this release of G-SQL: write ON a.x = b.x");
+            }
+            if (!expect_kw(p, "on")) {
+                return 0;
+            }
+            if (!(f->on = expr(p))) {
+                return 0;
+            }
+        }
+        n++;
+    }
+    if (n) {
+        s->joins = sql_alloc(p->arena, sizeof(SqlFrom) * n);
+        memcpy(s->joins, from, sizeof(SqlFrom) * n);
+        s->njoins = n;
+    }
+    return 1;
+}
+
 static int select_stmt(P *p, SqlStmt *s) {
     if (!phase2(p)) {
         return 0;
@@ -1181,14 +1286,11 @@ static int select_stmt(P *p, SqlStmt *s) {
             if (!s->alias) {
                 return 0;
             }
-        } else if (p->tok.kind == T_QIDENT || (p->tok.kind == T_IDENT && !is_reserved(p->tok.text) &&
-                                                strcmp(p->tok.text, "inner") && strcmp(p->tok.text, "left") &&
-                                                strcmp(p->tok.text, "right") && strcmp(p->tok.text, "cross") &&
-                                                strcmp(p->tok.text, "full"))) {
+        } else if (alias_follows(p)) {
             s->alias = name(p, "a table alias");
         }
-        if (at_sym(p, ",")) {
-            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "joins are not in this release of G-SQL (Phase 2)");
+        if (!join_list(p, s)) {
+            return 0;
         }
         if (!phase2(p)) {
             return 0;
@@ -1984,6 +2086,19 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
             if (s->alias) {
                 puts_(o, " AS ");
                 print_name(o, s->alias);
+            }
+            for (size_t k = 0; k < s->njoins; k++) {
+                const SqlFrom *f = &s->joins[k];
+                puts_(o, f->join == SQL_JOIN_CROSS ? " CROSS JOIN " : f->join == SQL_JOIN_LEFT ? " LEFT JOIN " : " JOIN ");
+                print_name(o, f->table);
+                if (f->alias) {
+                    puts_(o, " AS ");
+                    print_name(o, f->alias);
+                }
+                if (f->on) {
+                    puts_(o, " ON ");
+                    sql_print_expr(o, f->on);
+                }
             }
         }
         if (s->where) {

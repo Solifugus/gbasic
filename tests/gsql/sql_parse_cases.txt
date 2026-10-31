@@ -191,13 +191,29 @@
 > select a from t group a
 ! SYNTAX 23 expected BY
 
-# ---- refusals: Phase 2, by name -------------------------------------
+# ---- joins (docs/gsql_join_design.md) -------------------------------
 > select a from t join u on t.x = u.x
-! UNSUPPORTED 17 joins are not in this release
-> select a from t left join u on true
-! UNSUPPORTED 17 joins are not in this release
-> select a from t, u
-! UNSUPPORTED 16 joins are not in this release
+= SELECT a FROM t JOIN u ON (t.x = u.x)
+> select a from t inner join u on t.x = u.x left outer join v w on w.y = u.y
+= SELECT a FROM t JOIN u ON (t.x = u.x) LEFT JOIN v AS w ON (w.y = u.y)
+> select a from t, u cross join v
+= SELECT a FROM t CROSS JOIN u CROSS JOIN v
+> select e.n, m.n from emp e join emp m on e.boss = m.id where m.n like 'a%'
+= SELECT e.n, m.n FROM emp AS e JOIN emp AS m ON (e.boss = m.id) WHERE (m.n LIKE 'a%')
+> select a from t right join u on true
+! UNSUPPORTED 17 RIGHT JOIN is not in this release
+> select a from t full join u on true
+! UNSUPPORTED 17 FULL JOIN is not in this release
+> select a from t natural join u
+! UNSUPPORTED 17 NATURAL JOIN is not in this release
+> select a from t join u using (x)
+! UNSUPPORTED 24 USING is not in this release
+> select a from t join u
+! SYNTAX 23 expected ON
+> select a from t cross join u on true
+! SYNTAX 30 a cross join has no ON
+
+# ---- refusals: Phase 2, by name -------------------------------------
 > select distinct a from t
 ! UNSUPPORTED 8 DISTINCT are not in this release
 > select a from t union select b from u

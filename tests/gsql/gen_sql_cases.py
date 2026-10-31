@@ -264,6 +264,56 @@ stmt("EXPLAIN SELECT g, count(*) FROM s WHERE id > 1 GROUP BY g HAVING count(*) 
      "= 'Seek on s using the primary key (1 <= id)' | '  Aggregate: group by g' | '  Having: (count(*) > 1)' | '  Order: count(*) (sorted)'")
 stmt("EXPLAIN SELECT count(*) FROM s", "= 'Scan on s' | '  Aggregate: one group'")
 
+sec("joins (docs/gsql_join_design.md)")
+# dee has no region; order 13 has no customer and order 14 a customer that
+# does not exist; only order 11 has a refund
+stmt("CREATE TABLE cu (id INTEGER PRIMARY KEY, name TEXT, region TEXT)", "= done 0")
+stmt("CREATE TABLE od (id INTEGER PRIMARY KEY, cust INTEGER, total MONEY(USD), note TEXT)", "= done 0")
+stmt("CREATE INDEX od_cust ON od (cust)", "= done 0")
+stmt("CREATE TABLE rf (od INTEGER PRIMARY KEY, amt MONEY(USD))", "= done 0")
+stmt("INSERT INTO cu VALUES (1, 'ann', 'east'), (2, 'bob', 'west'), (3, 'cy', 'east'), (4, 'dee', NULL)", "= done 4")
+stmt("INSERT INTO od VALUES (10, 1, CAST('5' AS MONEY(USD)), 'a'), (11, 1, CAST('7' AS MONEY(USD)), NULL), "
+     "(12, 2, CAST('3' AS MONEY(USD)), 'b'), (13, NULL, CAST('9' AS MONEY(USD)), 'c'), (14, 9, CAST('1' AS MONEY(USD)), 'd')",
+     "= done 5")
+stmt("INSERT INTO rf VALUES (11, CAST('7' AS MONEY(USD)))", "= done 1")
+stmt("SELECT cu.name, od.id FROM cu JOIN od ON od.cust = cu.id ORDER BY od.id", "= 'ann', 10 | 'ann', 11 | 'bob', 12")
+stmt("SELECT cu.name, od.id FROM cu INNER JOIN od ON od.cust = cu.id WHERE cu.id = 2", "= 'bob', 12")
+# a left row with no match appears once, its right side NULL
+stmt("SELECT cu.name, od.id FROM cu LEFT JOIN od ON od.cust = cu.id ORDER BY cu.id, od.id",
+     "= 'ann', 10 | 'ann', 11 | 'bob', 12 | 'cy', NULL | 'dee', NULL")
+# the same condition in ON and in WHERE: ON decides the match, WHERE filters after
+stmt("SELECT cu.name, od.id FROM cu LEFT JOIN od ON od.cust = cu.id AND od.note IS NOT NULL ORDER BY cu.id, od.id",
+     "= 'ann', 10 | 'bob', 12 | 'cy', NULL | 'dee', NULL")
+stmt("SELECT cu.name, od.id FROM cu LEFT JOIN od ON od.cust = cu.id WHERE od.note IS NOT NULL ORDER BY cu.id, od.id",
+     "= 'ann', 10 | 'bob', 12")
+stmt("SELECT cu.name FROM cu LEFT JOIN od ON od.cust = cu.id WHERE od.id IS NULL ORDER BY cu.id", "= 'cy' | 'dee'")
+# a NULL key matches nothing, NULL = NULL being unknown
+stmt("SELECT count(*) FROM od JOIN cu ON cu.id = od.cust", "= 3")
+stmt("SELECT a.name, b.name FROM cu a JOIN cu b ON a.region = b.region AND a.id < b.id ORDER BY a.id", "= 'ann', 'cy'")
+stmt("SELECT cu.name, od.id, rf.amt FROM cu JOIN od ON od.cust = cu.id LEFT JOIN rf ON rf.od = od.id ORDER BY od.id",
+     "= 'ann', 10, NULL | 'ann', 11, money 7.00 | 'bob', 12, NULL")
+stmt("SELECT count(*) FROM cu, rf", "= 4")
+stmt("SELECT count(*) FROM cu CROSS JOIN od", "= 20")
+stmt("SELECT cu.name, count(od.id), sum(od.total) FROM cu LEFT JOIN od ON od.cust = cu.id GROUP BY cu.name ORDER BY cu.name",
+     "= 'ann', 2, money 12.00 | 'bob', 1, money 3.00 | 'cy', 0, NULL | 'dee', 0, NULL")
+stmt("SELECT * FROM rf JOIN cu ON cu.id = 1", "% od:integer, amt:money(USD), id:integer, name:string, region:string",
+     "= 11, money 7.00, 1, 'ann', 'east'")
+stmt("SELECT cu.* FROM cu JOIN rf ON rf.od = 11 WHERE cu.id = 2", "= 2, 'bob', 'west'")
+stmt("SELECT name, amt FROM cu JOIN rf ON true WHERE id = 3", "= 'cy', money 7.00")
+stmt("SELECT id FROM cu JOIN od ON od.cust = cu.id", ("SYNTAX", "id", "column `id` is in both cu and od"))
+stmt("SELECT nope FROM cu JOIN od ON true", ("NOT_FOUND", "nope", "no table of this statement has a column `nope`"))
+stmt("SELECT 1 FROM cu JOIN od ON rf.od = od.id JOIN rf ON true", ("SYNTAX", "rf.od", "ON cannot read `rf`: that table is joined after this one"))
+stmt("SELECT 1 FROM cu JOIN cu ON true", ("SYNTAX", "cu", "`cu` names two tables of this statement", 2))
+stmt("SELECT 1 FROM cu JOIN od ON od.cust = cu.name", ("EXPRESSION", "=", "= compares a number with text"))
+stmt("SELECT 1 FROM cu JOIN od ON od.cust", ("EXPRESSION", "od.cust", "ON needs a boolean, and this condition is a number"))
+stmt("SELECT 1 FROM cu JOIN od ON count(*) > 1", ("SYNTAX", "count", "ON cannot use an aggregate"))
+stmt("EXPLAIN SELECT cu.name FROM cu JOIN od ON od.cust = cu.id",
+     "= 'Nested Loop' | '  Scan on cu' | '  Index Seek on od using od_cust (cust = cu.id)'")
+stmt("EXPLAIN SELECT cu.name FROM cu LEFT JOIN od ON od.cust = cu.id WHERE od.note = 'a'",
+     "= 'Nested Loop' | '  Scan on cu' | '  Left: Index Seek on od using od_cust (cust = cu.id)' | '    Filter: (od.note = 'a')'")
+stmt("EXPLAIN SELECT a.name FROM cu a JOIN cu b ON b.id = a.id + 1",
+     "= 'Nested Loop' | '  Scan on cu AS a' | '  Point Read on cu AS b using the primary key (id = (a.id + 1))'")
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")
