@@ -725,6 +725,8 @@ Built bottom-up (`gsql_table_design.md` §1): the table layer, then the owner an
 
 ### Phase 2: Useful relational SQL
 
+**Aggregates, `GROUP BY` and `HAVING` are done 2026-10-30** (`gsql_aggregate_design.md`). The rest of the list:
+
 Joins, grouping/HAVING, common aggregates, unions, subqueries, nonrecursive CTEs, views, composite indexes, query-plan caching, statistics, and efficient hash operators. Add named relationship catalog and scoped serials when their semantics/tests are settled. Introduce spill-to-disk where workloads require it.
 
 ### Phase 3: Statistical integration and analytics
