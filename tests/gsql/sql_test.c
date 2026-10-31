@@ -189,6 +189,25 @@ static void answer_free(Answer *a) {
     gsql_buf_free(&a->raw);
 }
 
+/* A result's warnings (docs/gsql_warning_design.md), said on stderr as the
+ * owner used to say them, so a check can find them where a reader would. */
+static void say_warnings(const GsqlBuf *w) {
+    GsBytes items[64];
+    long n = w->length ? v3_array_items(w->bytes, w->length, items, 64) : 0;
+    for (long k = 0; k < n; k++) {
+        V3Field f[2];
+        long nf = v3_record_fields(items[k].p, items[k].n, f, 2);
+        const V3Field *code = v3_field_named(f, nf, "code"), *msg = v3_field_named(f, nf, "message");
+        uint64_t c = 0;
+        char *m = msg ? v3_read_text(msg->v, msg->vlen) : NULL;
+        if (code) {
+            v3_read_u64(code->v, code->vlen, &c);
+        }
+        fprintf(stderr, "warning: %s [%llu]\n", m ? m : "?", (unsigned long long)c);
+        free(m);
+    }
+}
+
 static void run(const char *text, const GsqlBuf *params, uint32_t batch, Answer *a) {
     memset(a, 0, sizeof *a);
     GsqlBuf stmt = {0};
@@ -248,9 +267,11 @@ static void run(const char *text, const GsqlBuf *params, uint32_t batch, Answer 
             if (a->code == GSQL_OK) {
                 render_rows(&a->text, &more.rows, &nrows);
             }
+            say_warnings(&more.warnings);
             cur = more.cursor;
             gsql_buf_free(&more.rows);
             gsql_buf_free(&more.columns);
+            gsql_buf_free(&more.warnings);
         }
         if (cur) {
             svc.close(svc.ctx, cur);
@@ -263,8 +284,10 @@ static void run(const char *text, const GsqlBuf *params, uint32_t batch, Answer 
         snprintf(b, sizeof b, "done %llu", (unsigned long long)res.affected);
         v3_put(&a->text, b, strlen(b));
     }
+    say_warnings(&res.warnings);
     gsql_buf_free(&res.rows);
     gsql_buf_free(&res.columns);
+    gsql_buf_free(&res.warnings);
     if (!held) {
         if (w && a->code == GSQL_OK) {
             uint64_t id;

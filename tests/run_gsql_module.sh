@@ -76,6 +76,47 @@ if [ -s "$work/main.err" ]; then
     fail "semantics: the fixture wrote to stderr"
 fi
 
+printf 'TIER warnings: a G-SQL warning is a gBASIC warning, at the program'"'"'s line\n'
+WFIX=tests/gsql/warning_test.bas
+mkdir -p "$work/warn"
+GSQL_DIR="$work/warn" timeout -k 5 60 ./gbasic "$WFIX" >"$work/warn.out" 2>"$work/warn.err"
+verdict warnings "$work/warn.out" $? 5
+# each `' WARNS` line warns exactly once on stderr, naming its own line; each
+# `' QUIET` line does not warn; and nothing else does
+expect=0
+while IFS=: read -r ln _; do
+    expect=$((expect + 1))
+    got=$(grep -c "in a G-SQL expression at $WFIX:$ln:[0-9]* \[2112\]\$" "$work/warn.err" || true)
+    if [ "$got" = 1 ]; then
+        pass "line $ln warns once, at its own line"
+    else
+        fail "line $ln should warn once at its own line, and warned $got times"
+    fi
+done < <(grep -nE "' WARNS( ONCE)?\$" "$WFIX")
+while IFS=: read -r ln _; do
+    if grep -q "at $WFIX:$ln:" "$work/warn.err"; then
+        fail "line $ln should be quiet, and warned"
+    else
+        pass "line $ln is quiet"
+    fi
+done < <(grep -nE "' QUIET$" "$WFIX")
+while IFS=: read -r ln _; do
+    expect=$((expect + 2))
+    got=$(grep "in a G-SQL expression at $WFIX:$ln:[0-9]* \[2112\]\$" "$work/warn.err" | sort -u | wc -l)
+    if [ "$got" = 2 ]; then
+        pass "line $ln warns twice, once for each different message"
+    else
+        fail "line $ln should warn once for each of two messages, and warned $got distinct times"
+    fi
+done < <(grep -nE "' WARNS TWICE\$" "$WFIX")
+total=$(grep -c '^warning: ' "$work/warn.err" || true)
+if [ "$expect" -ge 2 ] && [ "$total" = "$expect" ]; then
+    pass "stderr holds exactly the $expect expected warnings"
+else
+    sed 's/^/       /' "$work/warn.err" | head -6
+    fail "stderr holds $total warnings where $expect were expected"
+fi
+
 printf 'TIER lost: the owner is killed under a program that is using it\n'
 mkdir -p "$work/lost"
 GSQL_PHASE=lost GSQL_DIR="$work/lost" timeout -k 5 60 ./gbasic "$FIXTURE" >"$work/lost.out" 2>"$work/lost.err" &

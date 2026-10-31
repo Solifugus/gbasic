@@ -56,12 +56,13 @@ static int gsql_host_caught(GsqlError *err) {
     return 1;
 }
 
-/* A warning from inside a SQL expression, said once per distinct message for
- * the life of the owner: there is no source line to put it at, and a loop over
- * a million rows must not print a million lines. It reaches the owner's stderr,
- * which is its client's; carrying it to the client as data is later work
- * (docs/gsql_sql_design.md §8). */
+/* A warning from inside a SQL expression, KEPT until the SQL layer takes it
+ * (docs/gsql_warning_design.md): the SQL layer says it once per statement and
+ * the reply carries it to the program, which raises it as a gBASIC warning.
+ * There is no source line inside SQL to put it at, which is why it is not
+ * printed here. A message already waiting is not kept twice. */
 static char **gsql_warned;
+static int *gsql_warned_code;
 static size_t gsql_nwarned;
 
 static void gsql_host_warned(int code, const char *message) {
@@ -74,12 +75,28 @@ static void gsql_host_warned(int code, const char *message) {
         }
     }
     char **grown = realloc(gsql_warned, sizeof *grown * (gsql_nwarned + 1));
-    if (!grown) {
+    int *codes = realloc(gsql_warned_code, sizeof *codes * (gsql_nwarned + 1));
+    if (!grown || !codes) {
         abort();
     }
     gsql_warned = grown;
+    gsql_warned_code = codes;
+    gsql_warned_code[gsql_nwarned] = code;
     gsql_warned[gsql_nwarned++] = copy_string(message);
-    fprintf(stderr, "warning: %s, in a G-SQL expression [%d]\n", message, code);
+}
+
+static int gsql_h_warning(void *ctx, int *code, char *message, size_t cap) {
+    (void)ctx;
+    if (!gsql_nwarned) {
+        return 0;
+    }
+    *code = gsql_warned_code[0];
+    snprintf(message, cap, "%s", gsql_warned[0]);
+    free(gsql_warned[0]);
+    memmove(gsql_warned, gsql_warned + 1, sizeof *gsql_warned * (gsql_nwarned - 1));
+    memmove(gsql_warned_code, gsql_warned_code + 1, sizeof *gsql_warned_code * (gsql_nwarned - 1));
+    gsql_nwarned--;
+    return 1;
 }
 
 /* ---- templates ---------------------------------------------------------- */
@@ -391,7 +408,7 @@ static void gsql_h_release(void *ctx, GsqlHv *v) {
 
 static const GsqlHost gsql_interpreter_host = {
     NULL, gsql_h_load, gsql_h_store, gsql_h_kind, gsql_h_truth, gsql_h_op, gsql_h_field,
-    gsql_h_call, gsql_h_cast, gsql_h_order, gsql_h_copy, gsql_h_release
+    gsql_h_call, gsql_h_cast, gsql_h_order, gsql_h_copy, gsql_h_release, gsql_h_warning
 };
 
 const GsqlHost *gb_gsql_host(void) {
@@ -410,7 +427,9 @@ void gb_gsql_host_teardown(void) {
         free(gsql_warned[k]);
     }
     free(gsql_warned);
+    free(gsql_warned_code);
     gsql_warned = NULL;
+    gsql_warned_code = NULL;
     gsql_nwarned = 0;
 }
 
@@ -555,6 +574,8 @@ static void gsql_trace(unsigned type) {
 
 /* One request and its reply. 1 with *reply (a record) and *type; 0 with a
  * raise, the owner's own ERROR included. */
+static void gsql_cursor_close(GsqlConnectionValue *c, Value *rows_reply);
+
 static int gsql_request(GsqlConnectionValue *c, unsigned type, Value body, const char *verb, const char *sql,
                         Value *reply, unsigned *reply_type) {
     *reply = value_null();
@@ -595,6 +616,29 @@ static int gsql_request(GsqlConnectionValue *c, unsigned type, Value body, const
         gsql_module_raise(verb, code && code->kind == VALUE_STRING ? code->as.string : "?",
                           message && message->kind == VALUE_STRING ? message->as.string : "(no message)",
                           position && position->kind == VALUE_NUMBER ? (long)position->as.num.value : 0, sql);
+        value_free(v);
+        return 0;
+    }
+    /* the statement's warnings, as gBASIC warnings at this call
+       (docs/gsql_warning_design.md); under `on warning stop` the first one is
+       an error, and an open cursor is closed rather than left behind */
+    Value *w = gsql_field(&v, "warnings");
+    for (size_t k = 0; w && w->kind == VALUE_ARRAY && k < w->as.array.store->count && !error_action_pending(); k++) {
+        Value item = w->as.array.store->items[k];
+        Value *code = item.kind == VALUE_RECORD ? gsql_field(&item, "code") : NULL;
+        Value *message = item.kind == VALUE_RECORD ? gsql_field(&item, "message") : NULL;
+        const char *text = message && message->kind == VALUE_STRING ? message->as.string : "(no message)";
+        int n = code && code->kind == VALUE_NUMBER ? (int)code->as.num.value : 0;
+        if (n == 2112) {
+            runtime_warn_distinct(text, 2112, "exactness", value_null());
+        } else {
+            runtime_warn_distinct(text, n, "gsql", value_null());
+        }
+    }
+    if (error_action_pending()) {
+        if (f.type == GSQL_M_ROWS) {
+            gsql_cursor_close(c, &v);
+        }
         value_free(v);
         return 0;
     }

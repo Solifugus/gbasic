@@ -4052,10 +4052,16 @@ static int warn_mode_effective(void) {
 static char **warn_sites = NULL;
 static size_t warn_site_count = 0;
 
+/* Set only around runtime_warn_distinct: the site's key then includes the
+ * message, for a site that can carry many different warnings (a gsql.exec in
+ * a loop, reporting a different broken view each time). */
+static const char *warn_key_message = NULL;
+
 static int warn_site_first_time(int line, int column) {
     char key[512];
-    snprintf(key, sizeof(key), "%s:%d:%d",
-             runtime_error_path() ? runtime_error_path() : "", line, column);
+    snprintf(key, sizeof(key), "%s:%d:%d%s%s",
+             runtime_error_path() ? runtime_error_path() : "", line, column,
+             warn_key_message ? ":" : "", warn_key_message ? warn_key_message : "");
     for (size_t i = 0; i < warn_site_count; i++) {
         if (strcmp(warn_sites[i], key) == 0) {
             return 0;
@@ -4175,6 +4181,15 @@ static void runtime_warn_at(const char *message, int code, const char *source,
 static void runtime_warn(const char *message, int code, const char *source,
                          Value details) {
     runtime_warn_at(message, code, source, details, current_line, current_column);
+}
+
+/* As runtime_warn, said once per site AND MESSAGE rather than once per site
+ * (docs/gsql_warning_design.md §2): the same warning in a loop is still said
+ * once, and two different ones from one call are both said. */
+static void runtime_warn_distinct(const char *message, int code, const char *source, Value details) {
+    warn_key_message = message;
+    runtime_warn_at(message, code, source, details, current_line, current_column);
+    warn_key_message = NULL;
 }
 
 /* A NOTE is not a warning. It reports a DETERMINISTIC, documented rule that

@@ -378,7 +378,7 @@ static void send_rows(Owner *o, Conn *c, uint32_t id, GsqlResult *res, GsTxn *ow
         o->e->abort(own);
     }
     GsqlBuf b = {0};
-    size_t n = 2 + (res->columns.length ? 1 : 0) + (cid ? 1 : 0);
+    size_t n = 2 + (res->columns.length ? 1 : 0) + (cid ? 1 : 0) + (res->warnings.length ? 1 : 0);
     v3_w_record(&b, n);
     if (cid) {
         v3_w_name(&b, "cursor");
@@ -396,13 +396,18 @@ static void send_rows(Owner *o, Conn *c, uint32_t id, GsqlResult *res, GsTxn *ow
     } else {
         v3_w_array(&b, 0);
     }
+    if (res->warnings.length) {
+        v3_w_name(&b, "warnings");
+        v3_put(&b, res->warnings.bytes, res->warnings.length);
+    }
     out_frame(c, GSQL_M_ROWS, id, &b);
     gsql_buf_free(&b);
 }
 
 static void send_done(Conn *c, uint32_t id, const GsqlResult *res, int has_commit, uint64_t commit) {
     GsqlBuf b = {0};
-    v3_w_record(&b, (res && res->has_affected ? 1u : 0u) + (has_commit ? 1u : 0u));
+    int warned = res && res->warnings.length;
+    v3_w_record(&b, (res && res->has_affected ? 1u : 0u) + (has_commit ? 1u : 0u) + (warned ? 1u : 0u));
     if (res && res->has_affected) {
         v3_w_name(&b, "rows");
         v3_w_int(&b, res->affected);
@@ -411,6 +416,10 @@ static void send_done(Conn *c, uint32_t id, const GsqlResult *res, int has_commi
         v3_w_name(&b, "commit");
         v3_w_int(&b, commit);
     }
+    if (warned) {
+        v3_w_name(&b, "warnings");
+        v3_put(&b, res->warnings.bytes, res->warnings.length);
+    }
     out_frame(c, GSQL_M_DONE, id, &b);
     gsql_buf_free(&b);
 }
@@ -418,6 +427,7 @@ static void send_done(Conn *c, uint32_t id, const GsqlResult *res, int has_commi
 static void result_free(GsqlResult *r) {
     gsql_buf_free(&r->columns);
     gsql_buf_free(&r->rows);
+    gsql_buf_free(&r->warnings);
 }
 
 /* A transaction that cannot take a statement answers why, and true. */

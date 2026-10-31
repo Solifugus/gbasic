@@ -26,7 +26,13 @@ struct GsqlSql {
     char **prepared;
     size_t *prepared_len;
     size_t nprepared;
+    /* warnings the SQL layer raised itself, waiting for the statement's
+       reply (docs/gsql_warning_design.md) */
+    char **wmsg;
+    int *wcode;
+    size_t nw;
 };
+
 
 /* ---- errors ------------------------------------------------------------ */
 
@@ -1860,6 +1866,8 @@ typedef struct {
     int grouped;        /* the rows are the groups (aggregate, below) */
     Groups groups;
     int borrowed;       /* a compound's branch: the plan, text and parse are its parent's */
+    char **wseen;       /* the warnings this statement has said, once each */
+    size_t nwseen;
     KeyMap seen;        /* SELECT DISTINCT: the output rows' keys so far */
     GsqlBuf *seen_keys;
     size_t nseen, capseen;
@@ -2151,6 +2159,10 @@ static void cursor_free(SqlCursor *c) {
         free(c->text);
     }
     gsql_buf_free(&c->pending);
+    for (size_t k = 0; k < c->nwseen; k++) {
+        free(c->wseen[k]);
+    }
+    free(c->wseen);
     free(c);
 }
 
@@ -3453,6 +3465,8 @@ static GsqlHv *eval_subquery(X *x, SqlExpr *e) {
     return result;
 }
 
+static void take_warnings(GsqlSql *q, char ***seen, size_t *nseen, GsqlResult *out, int keep);
+
 static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *st, GsqlResult *out,
                    GsqlError *err) {
     GsqlSql *q = ctx;
@@ -3470,6 +3484,7 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
         rc = sql_plan(e, t, c->parsed.stmt, &c->parsed.arena, c->text, q->force_scan, &c->plan, err);
     }
     if (rc != GSQL_OK) {
+        take_warnings(q, &c->wseen, &c->nwseen, out, 0);
         sql_parsed_free(&c->parsed);
         free(c->text);
         free(c);
@@ -3513,11 +3528,13 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
                 err->code = rc;
             }
         }
+        take_warnings(q, &c->wseen, &c->nwseen, out, rc == GSQL_OK);
         cursor_free(c);
         return rc;
     }
     columns_of(c, &out->columns);
     rc = cursor_batch(c, st->batch ? st->batch : 1, out, err);
+    take_warnings(q, &c->wseen, &c->nwseen, out, rc == GSQL_OK);
     if (rc != GSQL_OK || !out->cursor) {
         out->cursor = NULL;
         cursor_free(c);
@@ -3526,14 +3543,83 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
 failed:
     *err = c->err;
     rc = err->code ? err->code : GSQL_EXPRESSION;
+    take_warnings(q, &c->wseen, &c->nwseen, out, 0);
     cursor_free(c);
     return rc;
 }
 
+/* Everything raised since the last reply -- the host's, from gBASIC's
+ * operators, and the SQL layer's own -- into the result, each message once per
+ * statement; or, for a statement that failed, dropped, since the refusal is
+ * what the program must see. `seen` lives as long as the statement does. */
+static void take_warnings(GsqlSql *q, char ***seen, size_t *nseen, GsqlResult *out, int keep) {
+    char **msg = NULL;
+    int *code = NULL;
+    size_t n = 0;
+    char buf[512];
+    int c;
+    for (;;) {
+        char *m;
+        if (q->nw) {
+            c = q->wcode[0];
+            m = q->wmsg[0];
+            memmove(q->wmsg, q->wmsg + 1, sizeof *q->wmsg * (q->nw - 1));
+            memmove(q->wcode, q->wcode + 1, sizeof *q->wcode * (q->nw - 1));
+            q->nw--;
+        } else if (q->h.warning && q->h.warning(q->h.ctx, &c, buf, sizeof buf)) {
+            /* a gBASIC operator's, inside SQL, which has no source line */
+            static const char where[] = ", in a G-SQL expression";
+            size_t len = strlen(buf);
+            m = malloc(len + sizeof where);
+            if (!m) {
+                abort();
+            }
+            memcpy(m, buf, len);
+            memcpy(m + len, where, sizeof where);
+        } else {
+            break;
+        }
+        int dup = !keep;
+        for (size_t k = 0; k < *nseen && !dup; k++) {
+            dup = strcmp((*seen)[k], m) == 0;
+        }
+        if (dup) {
+            free(m);
+            continue;
+        }
+        char **g = realloc(*seen, sizeof **seen * (*nseen + 1));
+        char **gm = realloc(msg, sizeof *gm * (n + 1));
+        int *gc = realloc(code, sizeof *gc * (n + 1));
+        if (!g || !gm || !gc) {
+            abort();
+        }
+        *seen = g;
+        msg = gm;
+        code = gc;
+        (*seen)[(*nseen)++] = m;
+        msg[n] = m;
+        code[n++] = c;
+    }
+    if (n) {
+        out->warnings.length = 0;
+        v3_w_array(&out->warnings, n);
+        for (size_t k = 0; k < n; k++) {
+            v3_w_record(&out->warnings, 2);
+            v3_w_name(&out->warnings, "code");
+            v3_w_int(&out->warnings, (uint64_t)code[k]);
+            v3_w_name(&out->warnings, "message");
+            v3_w_text(&out->warnings, msg[k]);
+        }
+    }
+    free(msg);
+    free(code);
+}
+
 static int svc_fetch(void *ctx, void *cursor, uint32_t count, GsqlResult *out, GsqlError *err) {
-    (void)ctx;
+    GsqlSql *q = ctx;
     SqlCursor *c = cursor;
     int rc = cursor_batch(c, count, out, err);
+    take_warnings(q, &c->wseen, &c->nwseen, out, rc == GSQL_OK);
     if (rc != GSQL_OK || !out->cursor) {
         out->cursor = NULL;
         cursor_free(c);
@@ -3615,6 +3701,11 @@ void gsql_sql_free(GsqlSql *q) {
     }
     free(q->prepared);
     free(q->prepared_len);
+    for (size_t k = 0; k < q->nw; k++) {
+        free(q->wmsg[k]);
+    }
+    free(q->wmsg);
+    free(q->wcode);
     free(q);
 }
 

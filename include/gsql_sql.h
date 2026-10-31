@@ -50,6 +50,9 @@ typedef struct {
     int (*order)(void *ctx, const GsqlHv *a, const GsqlHv *b, int *cmp, GsqlError *err);
     GsqlHv *(*copy)(void *ctx, const GsqlHv *v);
     void (*release)(void *ctx, GsqlHv *v);
+    /* the oldest warning an operator raised and nobody has taken: 1 with its
+       code and message filled, 0 when there is none (docs/gsql_warning_design.md) */
+    int (*warning)(void *ctx, int *code, char *message, size_t cap);
 } GsqlHost;
 
 /* The service the owner is given (gsql_owner.h). `host` must outlive it. */

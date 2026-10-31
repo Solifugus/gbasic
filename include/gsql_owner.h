@@ -45,6 +45,9 @@ typedef struct {
      * explicit transaction cannot carry on and is failed (gsql_sql_design.md
      * §4); autocommit aborts it anyway */
     int failed_part_way;
+    /* the statement's warnings (docs/gsql_warning_design.md): one v3 array of
+       { code, message } records, empty when there are none */
+    GsqlBuf warnings;
 } GsqlResult;
 
 typedef struct {
