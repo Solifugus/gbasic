@@ -526,6 +526,8 @@ commit
 = 2
 > SELECT 3 UNION SELECT '3'
 = 3 | '3'
+> SELECT 1, 'a' UNION SELECT 1, 'b' UNION SELECT 1, 'a'
+= 1, 'a' | 1, 'b'
 > SELECT id, name FROM cu WHERE id < 3 UNION ALL SELECT id, name FROM cu WHERE id > 2 ORDER BY name DESC LIMIT 2 OFFSET 1
 % id:integer, name:string
 = 3, 'cy' | 2, 'bob'

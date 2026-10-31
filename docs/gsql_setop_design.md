@@ -1,6 +1,6 @@
 # G-SQL `UNION`, `INTERSECT` and `EXCEPT` (Phase 2, increment 4)
 
-**Status:** designed 2026-10-31. The fourth increment of `gsql_design.md` §11 Phase 2, after aggregates, joins and `SELECT DISTINCT`.
+**Status:** designed and built 2026-10-31 (`src/gsql/sql_parse.c`, `sql_plan.c`, `sql_exec.c`; `tests/run_gsql_sql.sh`). The fourth increment of `gsql_design.md` §11 Phase 2, after aggregates, joins and `SELECT DISTINCT`.
 
 ## 1. What it is
 
@@ -61,3 +61,11 @@ Union
 - **parse:** each form printed back canonically, the precedence shown by the printer's parentheses, and the refusals at their positions.
 - **semantics:** hand-written answers for each of the six forms with duplicates on both sides, `NULL`s and `3`/`3.0` matching across branches, three branches mixing the precedence, `ORDER BY` by position and by name, `LIMIT`/`OFFSET`, a column-count mismatch, an `ORDER BY` on an earlier branch, and an expression in the final `ORDER BY`.
 - **differential (oracle):** random pairs of `SELECT`s over the random table, combined by a random operation; the test fetches each branch alone and computes the result itself by counting copies through the host's equality, sharing no key or hash code with the engine.
+
+## 6. What it found
+
+Nine perturbations, all red: `INTERSECT ALL` not counting, `EXCEPT ALL` acting as `EXCEPT`, `UNION` deduplicating only its left side, `INTERSECT` given `UNION`'s precedence, the final sort skipped, `OFFSET` ignored, a column's kind taken from the left side alone, a key over the first column only, and a last branch keeping the `ORDER BY` meant for the whole. The first-column key was caught by the oracle alone, so a hand case now has two rows that differ only in their second column.
+
+**The oracle needed a floor per operation.** About a third of the random pairs answer with rows, since two random predicates often leave an empty intersection, and unions are the easiest to fill. A single floor on the total would pass on a tier that compared unions only, so `INTERSECT` and `EXCEPT` each have a floor of their own (about ten of each per seed were compared).
+
+**One defect of mine before any test ran:** `right.count[tally_slot(...) - 1]++` reads `right.count` before the call that may move it, which C leaves unsequenced; the first `INTERSECT` with a new key segfaulted.

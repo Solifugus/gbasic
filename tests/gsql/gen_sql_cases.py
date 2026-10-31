@@ -368,6 +368,8 @@ stmt("SELECT 1 UNION SELECT 2 INTERSECT SELECT 3", "= 1")
 stmt("SELECT 1 UNION SELECT 2 EXCEPT SELECT 1", "= 2")
 # values keep their kinds: a number and a text are two rows
 stmt("SELECT 3 UNION SELECT '3'", "= 3 | '3'")
+# a row is the same only when every column is
+stmt("SELECT 1, 'a' UNION SELECT 1, 'b' UNION SELECT 1, 'a'", "= 1, 'a' | 1, 'b'")
 stmt("SELECT id, name FROM cu WHERE id < 3 UNION ALL SELECT id, name FROM cu WHERE id > 2 ORDER BY name DESC LIMIT 2 OFFSET 1",
      "% id:integer, name:string", "= 3, 'cy' | 2, 'bob'")
 stmt("SELECT id FROM cu WHERE id = 1 UNION SELECT 'x'", "% id:any", "= 1 | 'x'")
