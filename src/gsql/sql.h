@@ -305,6 +305,12 @@ typedef struct SqlScan {
     size_t ndcols;
     const char **dnames;
     const char **dkinds;
+    /* a hash join's inner side (docs/gsql_hashjoin_design.md): read whole
+       once, grouped by column `hashcol`'s key, and probed with `hashexpr`,
+       which reads only earlier scans */
+    int hash;
+    unsigned hashcol;
+    SqlExpr *hashexpr;
 } SqlScan;
 
 typedef struct SqlPlan {

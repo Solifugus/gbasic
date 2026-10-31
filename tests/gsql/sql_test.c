@@ -13,6 +13,7 @@
  * `begin read`, `commit` and `rollback` lines hold a transaction across cases,
  * as a connection does; outside one, each statement runs in its own. */
 
+#define _POSIX_C_SOURCE 200809L   /* clock_gettime, for the hash-cost tier */
 #include "gsql_sql.h"
 #include "gsql_store.h"
 #include "gsql_wire.h"
@@ -22,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static const GsEngine *E = &gs_engine_lsm;
 static GsStore *db;
@@ -1557,6 +1559,52 @@ static int derived_tier(int n, int *seek_runs, int *by_form) {
     return refused;
 }
 
+/* ---- the hash-join tier (docs/gsql_hashjoin_design.md §3) --------------
+ *
+ * A table h with no index, and joins on it and on a derived table over q:
+ * each inner side is hashed with access paths and read by a nested loop when
+ * forced to scans, and the two must agree. */
+
+static int hash_table(void) {
+    Answer a;
+    run("CREATE TABLE h (hid INTEGER PRIMARY KEY, k INTEGER, t TEXT, v NUMBER)", NULL, 10, &a);
+    int ok = a.code == GSQL_OK;
+    answer_free(&a);
+    static const char *const ks[] = { "0", "1", "2", "3", "5", "8", "-1", "NULL" };
+    static const char *const ts[] = { "''", "'a'", "'ab'", "'b'", "'z'", "NULL" };
+    static const char *const vs[] = { "0", "1.5", "2", "-7", "NULL" };
+    int inserted = 0;
+    for (int id = 1; ok && id <= 120; id++) {
+        char q[512];
+        snprintf(q, sizeof q, "INSERT INTO h VALUES (%d, %s, %s, %s)", id, ks[pick(8)], ts[pick(6)], vs[pick(5)]);
+        run(q, NULL, 10, &a);
+        inserted += a.code == GSQL_OK;
+        answer_free(&a);
+    }
+    return inserted;
+}
+
+static int hash_tier(int n, int *seek_runs) {
+    int refused = 0;
+    for (int k = 0; k < n; k++) {
+        char where[1024], q[2048];
+        predicate(where, sizeof where);
+        int left = pick(2), bytext = pick(2), derived = pick(2);
+        const char *rkey = bytext ? "b" : "a", *ikey = bytext ? "t" : "k";
+        const char *extra = pick(3) == 0 ? " AND i.v > 0" : "";
+        if (derived) {
+            snprintf(q, sizeof q, "SELECT r.id, i.qid, i.v FROM r %sJOIN (SELECT * FROM q WHERE %s) i ON i.%s = r.%s%s "
+                     "WHERE %s ORDER BY r.id, i.qid", left ? "LEFT " : "", qpreds[pick(sizeof qpreds / sizeof qpreds[0])],
+                     ikey, rkey, extra, where);
+        } else {
+            snprintf(q, sizeof q, "SELECT r.id, i.hid, i.v FROM r %sJOIN h i ON i.%s = r.%s%s WHERE %s ORDER BY r.id, "
+                     "i.hid", left ? "LEFT " : "", ikey, rkey, extra, where);
+        }
+        refused += both_ways(q, seek_runs);
+    }
+    return refused;
+}
+
 static int differential(const char *dir, uint64_t seed, int n) {
     if (!open_db(dir)) {
         return 2;
@@ -1677,6 +1725,12 @@ static int differential(const char *dir, uint64_t seed, int n) {
     gsql_sql_counts(sql, &ss1, &sc1);
     int der_seeks = 0, der_form[3] = { 0, 0, 0 };
     int der_refused = derived_tier(n / 2, &der_seeks, der_form);
+    int h_rows = hash_table();
+    int hash_runs = 0;
+    unsigned long hs0, hc0, hs1, hc1;
+    gsql_sql_counts(sql, &hs0, &hc0);
+    int hash_refused = hash_tier(n / 2, &hash_runs);
+    gsql_sql_counts(sql, &hs1, &hc1);
     unsigned long seeks, scans;
     gsql_sql_counts(sql, &seeks, &scans);
     printf("census: %d rows, %d queries, %d used a seek, %d refused, %d refused only by the scan\n", inserted, n,
@@ -1726,6 +1780,14 @@ static int differential(const char *dir, uint64_t seed, int n) {
         mismatches++;
         printf("MISMATCH the derived-table census is below its floor: the tier measured too little\n");
     }
+    printf("census: %d rows of h, %d hash joins both ways, %d of them probed, %lu probes and seeks in all, %d refused\n",
+           h_rows, n / 2, hash_runs, hs1 - hs0, hash_refused);
+    /* the inner side must really have been probed, once per outer row: a
+       planner that never hashed agrees with the nested loop perfectly */
+    if (h_rows < 100 || hash_runs < n / 8 || hs1 - hs0 < (unsigned long)n) {
+        mismatches++;
+        printf("MISMATCH the hash-join census is below its floor: the tier measured too little\n");
+    }
     /* a floor on what the tier exercised: a planner that never seeks, or a
      * generator that is refused every time, agrees with the scan perfectly */
     if (forced_but_sought) {
@@ -1741,6 +1803,70 @@ static int differential(const char *dir, uint64_t seed, int n) {
     gsql_sql_free(sql);
     printf("ok %d checks, %d mismatches\n", checks, mismatches);
     return mismatches ? 1 : 0;
+}
+
+/* ---- the hash join's cost, as a ratio (docs/gsql_hashjoin_design.md §3) --
+ *
+ * One join with no index, hashed and forced to a nested loop, timed in turns
+ * and each way's fastest kept, so both halves see the same load. */
+
+static double seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+static int hashcost(const char *dir, int n) {
+    if (!open_db(dir)) {
+        return 2;
+    }
+    Answer a;
+    run("CREATE TABLE ja (id INTEGER PRIMARY KEY, k INTEGER)", NULL, 10, &a);
+    answer_free(&a);
+    run("CREATE TABLE jb (id INTEGER PRIMARY KEY, k INTEGER)", NULL, 10, &a);
+    answer_free(&a);
+    for (int i = 1; i <= n; i++) {
+        char q[160];
+        snprintf(q, sizeof q, "INSERT INTO ja VALUES (%d, %d), (%d, %d)", 2 * i, (i * 7) % n, 2 * i + 1, (i * 3) % n);
+        run(q, NULL, 10, &a);
+        answer_free(&a);
+        snprintf(q, sizeof q, "INSERT INTO jb VALUES (%d, %d)", i, (i * 13) % n);
+        run(q, NULL, 10, &a);
+        answer_free(&a);
+    }
+    const char *q = "SELECT count(*) FROM ja JOIN jb ON jb.k = ja.k";
+    double best[2] = { 1e9, 1e9 };
+    char *answer[2] = { NULL, NULL };
+    for (int round = 0; round < 2; round++) {
+        for (int forced = 0; forced < 2; forced++) {
+            gsql_sql_force_scan(sql, forced);
+            double t0 = seconds();
+            run(q, NULL, 10, &a);
+            double t = seconds() - t0;
+            best[forced] = t < best[forced] ? t : best[forced];
+            free(answer[forced]);
+            answer[forced] = as_text(&a.text);
+            answer_free(&a);
+        }
+    }
+    gsql_sql_force_scan(sql, 0);
+    int same = strcmp(answer[0], answer[1]) == 0;
+    printf("hash %.4fs, nested loop %.4fs, ratio %.1f, answers %s and %s\n", best[0], best[1], best[1] / best[0],
+           answer[0], answer[1]);
+    free(answer[0]);
+    free(answer[1]);
+    E->close(db);
+    gsql_sql_free(sql);
+    if (!same) {
+        printf("MISMATCH the hashed join and the nested loop disagree\n");
+        return 1;
+    }
+    if (best[1] / best[0] < 20) {
+        printf("MISMATCH the hash join is not 20x faster than the nested loop over %d by %d rows\n", 2 * n, n);
+        return 1;
+    }
+    printf("ok 1 checks, 0 mismatches\n");
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -1759,6 +1885,9 @@ int main(int argc, char **argv) {
         }
         printf("ok %d checks, %d mismatches\n", checks, mismatches);
         return mismatches ? 1 : 0;
+    }
+    if (argc == 4 && strcmp(argv[1], "hashcost") == 0) {
+        return hashcost(argv[2], atoi(argv[3]));
     }
     if (argc == 5 && strcmp(argv[1], "diff") == 0) {
         return differential(argv[2], strtoull(argv[3], NULL, 10), atoi(argv[4]));

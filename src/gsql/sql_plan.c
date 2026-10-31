@@ -728,6 +728,32 @@ static void choose(B *b, size_t k, int force_scan) {
     sc->backward = best_order < 0;
 }
 
+/* A join's inner scan that would be read whole, with a condition `col = e`
+ * where e reads only earlier scans, is hashed on col instead
+ * (docs/gsql_hashjoin_design.md §2). Not under a forced scan, so the
+ * differential compares the hash with the nested loop it replaces. */
+static void choose_hash(SqlScan *sc, size_t k, int force_scan) {
+    if (k == 0 || force_scan || (sc->access != ACC_SCAN && sc->access != ACC_DERIVED)) {
+        return;
+    }
+    for (size_t j = 0; j < sc->nconj; j++) {
+        SqlExpr *e = sc->conj[j];
+        if (e->kind != SX_BIN || e->op != SQL_OP_EQ) {
+            continue;
+        }
+        for (int side = 0; side < 2; side++) {
+            SqlExpr *c = e->a[side], *o = e->a[1 - side];
+            if (c->kind == SX_COL && c->tab == k && c->nfields == 0 && const_before(o, k)) {
+                sc->hash = 1;
+                sc->hashcol = c->col;
+                sc->hashexpr = o;
+                sc->consumed[j] = 1;
+                return;
+            }
+        }
+    }
+}
+
 /* ---- statements -------------------------------------------------------- */
 
 /* A derived scan's columns: its plan's outputs, renamed by `cols` */
@@ -1194,9 +1220,10 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         if (sc->derived) {
             /* a derived table is read whole: its conditions are all filters */
             sc->consumed = sql_alloc(b->arena, sizeof(int) * (sc->nconj ? sc->nconj : 1));
-            continue;
+        } else {
+            choose(b, k, force_scan);
         }
-        choose(b, k, force_scan);
+        choose_hash(sc, k, force_scan);
     }
     return 1;
 }
@@ -1492,6 +1519,9 @@ static void put(GsqlBuf *b, const char *s) {
 }
 
 static void access_line(const SqlPlan *p, const SqlScan *sc, GsqlBuf *b) {
+    if (sc->hash) {
+        put(b, "Hash ");
+    }
     if (sc->derived) {
         if (sc->cte) {
             put(b, "CTE Scan on ");
@@ -1504,7 +1534,7 @@ static void access_line(const SqlPlan *p, const SqlScan *sc, GsqlBuf *b) {
             put(b, "Derived Scan on ");
             put(b, sc->qualifier);
         }
-        return;
+        goto hashed;
     }
     const GsqlTable *tb = sc->tb;
     const char *tname = gsql_table_name(tb);
@@ -1558,6 +1588,14 @@ static void access_line(const SqlPlan *p, const SqlScan *sc, GsqlBuf *b) {
     }
     if (sc->backward) {
         put(b, " backward");
+    }
+hashed:
+    if (sc->hash) {
+        put(b, " using (");
+        put(b, sql_scan_col_name(sc, sc->hashcol));
+        put(b, " = ");
+        sql_print_expr_scans(b, sc->hashexpr, p->scans, p->nscans);
+        put(b, ")");
     }
 }
 

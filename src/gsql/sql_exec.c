@@ -119,6 +119,12 @@ static int is_null(X *x, const GsqlHv *v) {
     return k == SER_UNKNOWN || k == SER_NULL;
 }
 
+/* a set of key byte strings, open addressing; values are 1-based slots */
+typedef struct {
+    size_t *slot;
+    size_t cap, n;
+} KeyMap;
+
 /* A scan's row: the bytes, its key, and its columns as host values, loaded
  * on first use. `nulled` is a LEFT join's null-extended row, every column of
  * which reads NULL. */
@@ -134,6 +140,14 @@ typedef struct XScan {
     GsqlBuf *drows;
     size_t ndrows;
     int dready;
+    /* a hash join's inner side (docs/gsql_hashjoin_design.md §2): drows
+       grouped by their hashed column's key, each group a chain of 1-based
+       row numbers in the order read; `hoff` when a value had no key */
+    int hready, hoff;
+    KeyMap hmap;
+    GsqlBuf *hkeys;
+    size_t nhkeys;
+    size_t *hfirst, *hlast, *hnext;
 } XScan;
 
 static void row_clear_scan(X *x, size_t k) {
@@ -184,6 +198,14 @@ static void x_free(X *x) {
             gsql_buf_free(&x->sx[k].drows[r]);
         }
         free(x->sx[k].drows);
+        for (size_t g = 0; g < x->sx[k].nhkeys; g++) {
+            gsql_buf_free(&x->sx[k].hkeys[g]);
+        }
+        free(x->sx[k].hkeys);
+        free(x->sx[k].hfirst);
+        free(x->sx[k].hlast);
+        free(x->sx[k].hnext);
+        free(x->sx[k].hmap.slot);
     }
     free(x->sx);
     x->sx = NULL;
@@ -904,9 +926,13 @@ typedef struct {
     unsigned range_flags;
     int derived;        /* a derived scan: its materialized rows, from dpos */
     size_t dpos;
+    int hashing;        /* a hash scan's probe: the chain from hcur, or every row */
+    int hall;
+    size_t hcur;
 } Iter;
 
 static int derived_rows(X *x, size_t k);
+static int hash_probe(Iter *it);
 
 static unsigned flags_for(const SqlScan *p, size_t j) {
     const GsqlColumn *c = gsql_table_col(p->tb, p->keycols[j]);
@@ -946,6 +972,9 @@ static int iter_open(Iter *it, X *x, size_t k) {
     gsql_key_init(&it->prefix);
     gsql_key_init(&it->klo);
     gsql_key_init(&it->khi);
+    if (p->hash) {
+        return hash_probe(it);
+    }
     if (p->access == ACC_DERIVED) {
         it->derived = 1;
         return x->sx[k].dready ? GSQL_OK : derived_rows(x, k);
@@ -1129,7 +1158,20 @@ static int next_row(Iter *it) {
     if (it->done) {
         return 0;
     }
-    if (it->derived) {
+    if (it->hashing && !it->hall) {
+        if (!it->hcur) {
+            it->done = 1;
+            return 0;
+        }
+        const GsqlBuf *r = &xs->drows[it->hcur - 1];
+        it->hcur = xs->hnext[it->hcur - 1];
+        xs->row.length = 0;
+        v3_put(&xs->row, r->bytes, r->length);
+        xs->rowkey.length = 0;
+        xs->have_row = 1;
+        return 1;
+    }
+    if (it->derived || it->hashing) {
         if (it->dpos >= xs->ndrows) {
             it->done = 1;
             return 0;
@@ -1349,12 +1391,6 @@ static int join_next(Join *j, X *x) {
  * ordinary column path; each aggregate folds through the host, so a sum is
  * gBASIC's `+` and an extreme is gBASIC's order. */
 
-/* a set of key byte strings, open addressing; values are 1-based slots */
-typedef struct {
-    size_t *slot;
-    size_t cap, n;
-} KeyMap;
-
 static uint64_t key_hash(const unsigned char *b, size_t n) {
     uint64_t h = 1469598103934665603ull;
     for (size_t k = 0; k < n; k++) {
@@ -1423,6 +1459,177 @@ static size_t keymap_find(KeyMap *m, const GsqlBuf *keys_of(void *, size_t), voi
         m->n++;
     }
     return 0;
+}
+
+/* ---- hash joins (docs/gsql_hashjoin_design.md) ---------------------------- */
+
+static const GsqlBuf *hash_key_of(void *ctx, size_t i) {
+    return &((XScan *)ctx)->hkeys[i];
+}
+
+/* the bytes of column `col` of a held row of scan k */
+static int held_value(X *x, size_t k, const GsqlBuf *row, GsBytes *v) {
+    const SqlScan *sc = &x->p->scans[k];
+    if (sc->derived) {
+        size_t n = x->sx[k].ncols;
+        GsBytes *items = malloc(sizeof(GsBytes) * (n ? n : 1));
+        if (!items) {
+            abort();
+        }
+        long got = v3_array_items(row->bytes, row->length, items, (long)n);
+        *v = items[sc->hashcol];
+        free(items);
+        return got == (long)n ? GSQL_OK : xfail(x->err, GSQL_MISUSE, 0, "a derived table's row did not hold its columns");
+    }
+    return gsql_row_value(sc->tb, row->bytes, row->length, sc->hashcol, v, x->err);
+}
+
+/* Every row of scan k, read once, grouped by the hashed column's key. A
+ * table's rows are read through an ordinary whole scan; a derived table's are
+ * already held. A NULL is put in no group, since `=` is never true of one. */
+static int hash_build(X *x, size_t k) {
+    XScan *xs = &x->sx[k];
+    const SqlScan *sc = &x->p->scans[k];
+    int rc = GSQL_OK;
+    if (sc->derived) {
+        if (!xs->dready && (rc = derived_rows(x, k)) != GSQL_OK) {
+            return rc;
+        }
+    } else {
+        Iter it;
+        memset(&it, 0, sizeof it);
+        it.x = x;
+        it.k = k;
+        it.sc = sc;
+        it.scan = 1;
+        gsql_key_init(&it.prefix);
+        gsql_key_init(&it.klo);
+        gsql_key_init(&it.khi);
+        x->q->scans++;
+        it.tree = gsql_table_rows_tree(sc->tb);
+        int erc = x->e->cursor_open(x->t, it.tree, &it.cur);
+        if (erc) {
+            it.cur = NULL;
+            iter_close(&it);
+            return xfail(x->err, GSQL_STORAGE, 0, "a cursor could not be opened: the engine answered %s",
+                         gs_status_name(erc));
+        }
+        size_t cap = 0;
+        int r;
+        while ((r = next_row(&it)) == 1) {
+            if (xs->ndrows == cap) {
+                cap = cap ? cap * 2 : 64;
+                xs->drows = realloc(xs->drows, sizeof(GsqlBuf) * cap);
+                if (!xs->drows) {
+                    abort();
+                }
+            }
+            memset(&xs->drows[xs->ndrows], 0, sizeof(GsqlBuf));
+            v3_put(&xs->drows[xs->ndrows], xs->row.bytes, xs->row.length);
+            xs->ndrows++;
+        }
+        iter_close(&it);
+        row_clear_scan(x, k);
+        if (r < 0) {
+            return x->err->code ? x->err->code : GSQL_STORAGE;
+        }
+        xs->dready = 1;
+    }
+    xs->hnext = calloc(xs->ndrows ? xs->ndrows : 1, sizeof(size_t));
+    if (!xs->hnext) {
+        abort();
+    }
+    size_t capkeys = 0;
+    for (size_t i = 0; i < xs->ndrows && !xs->hoff; i++) {
+        GsBytes v;
+        if ((rc = held_value(x, k, &xs->drows[i], &v)) != GSQL_OK) {
+            return rc;
+        }
+        if (v.n && (v.p[0] == SER_UNKNOWN || v.p[0] == SER_NULL)) {
+            continue;
+        }
+        GsqlKey key;
+        gsql_key_init(&key);
+        if (gsql_key_append(&key, v.p, v.n, NULL, 0) != GSQL_KEY_OK) {
+            /* a value with no key: every probe reads every row */
+            gsql_key_free(&key);
+            xs->hoff = 1;
+            break;
+        }
+        if (xs->nhkeys == capkeys) {
+            capkeys = capkeys ? capkeys * 2 : 64;
+            xs->hkeys = realloc(xs->hkeys, sizeof(GsqlBuf) * capkeys);
+            xs->hfirst = realloc(xs->hfirst, sizeof(size_t) * capkeys);
+            xs->hlast = realloc(xs->hlast, sizeof(size_t) * capkeys);
+            if (!xs->hkeys || !xs->hfirst || !xs->hlast) {
+                abort();
+            }
+        }
+        /* the next group's key is put in place first, so the map may read it */
+        memset(&xs->hkeys[xs->nhkeys], 0, sizeof(GsqlBuf));
+        v3_put(&xs->hkeys[xs->nhkeys], key.bytes, key.length);
+        size_t g = keymap_find(&xs->hmap, hash_key_of, xs, key.bytes, key.length, xs->nhkeys + 1);
+        gsql_key_free(&key);
+        if (!g) {
+            g = ++xs->nhkeys;
+            xs->hfirst[g - 1] = i + 1;
+        } else {
+            gsql_buf_free(&xs->hkeys[xs->nhkeys]);
+            xs->hnext[xs->hlast[g - 1] - 1] = i + 1;
+        }
+        xs->hlast[g - 1] = i + 1;
+    }
+    xs->hready = 1;
+    return GSQL_OK;
+}
+
+/* One opening of a hash scan: the probe's key, evaluated against the outer
+ * row, picks the chain of rows whose hashed column has that key. */
+static int hash_probe(Iter *it) {
+    X *x = it->x;
+    XScan *xs = &x->sx[it->k];
+    it->hashing = 1;
+    if (!xs->hready) {
+        int rc = hash_build(x, it->k);
+        if (rc != GSQL_OK) {
+            return rc;
+        }
+    }
+    x->q->seeks++;
+    if (xs->hoff) {
+        it->hall = 1;
+        return GSQL_OK;
+    }
+    GsqlHv *v = eval(x, it->sc->hashexpr);
+    if (!v) {
+        return x->err->code ? x->err->code : GSQL_EXPRESSION;
+    }
+    if (is_null(x, v)) {
+        rel(x, v);
+        it->done = 1;
+        return GSQL_OK;
+    }
+    GsqlBuf b = {0};
+    int rc = x->h->store(x->h->ctx, v, &b, x->err);
+    rel(x, v);
+    if (rc != GSQL_OK) {
+        gsql_buf_free(&b);
+        return rc;
+    }
+    GsqlKey key;
+    gsql_key_init(&key);
+    if (gsql_key_append(&key, b.bytes, b.length, NULL, 0) != GSQL_KEY_OK) {
+        it->hall = 1;   /* a probe with no key reads every row */
+    } else {
+        size_t g = xs->hmap.cap ? keymap_find(&xs->hmap, hash_key_of, xs, key.bytes, key.length, 0) : 0;
+        it->hcur = g ? xs->hfirst[g - 1] : 0;
+        if (!g) {
+            it->done = 1;
+        }
+    }
+    gsql_key_free(&key);
+    gsql_buf_free(&b);
+    return GSQL_OK;
 }
 
 static const GsqlBuf *group_key_of(void *ctx, size_t i) {

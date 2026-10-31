@@ -510,9 +510,36 @@ stmt("SELECT (WITH w AS (SELECT id FROM od WHERE od.cust = cu.id) SELECT count(*
      ("NOT_FOUND", "cu.id", "a WITH query reads only tables and earlier WITH queries"))
 stmt("WITH a AS (SELECT * FROM b), b AS (SELECT 1) SELECT * FROM a", ("NOT_FOUND", "SELECT", "there is no table `b`"))
 stmt("EXPLAIN WITH c AS (SELECT cust FROM od) SELECT cu.name FROM cu JOIN c ON c.cust = cu.id",
-     "= 'Nested Loop' | '  Scan on cu' | '  CTE Scan on c' | '    Filter: (c.cust = cu.id)' | 'CTE c' | '  Scan on od'")
+     "= 'Nested Loop' | '  Scan on cu' | '  Hash CTE Scan on c using (cust = cu.id)' | 'CTE c' | '  Scan on od'")
 stmt("EXPLAIN SELECT n FROM (SELECT id AS n FROM od WHERE id = 12) d",
      "= 'Derived Scan on d' | 'Derived d' | '  Point Read on od using the primary key (id = 12)'")
+
+sec("hash joins (docs/gsql_hashjoin_design.md)")
+# hj has no index on k, so a join on it is hashed; duplicates on both sides,
+# NULLs, 3 against 3.0, and money in two currencies
+stmt("CREATE TABLE hj (id INTEGER PRIMARY KEY, k NUMBER, m MONEY, t TEXT)", "= done 0")
+stmt("INSERT INTO hj VALUES (1, 1, CAST('1' AS MONEY(USD)), 'a'), (2, 1, CAST('1' AS MONEY(EUR)), 'b'), (3, 3.0, NULL, NULL), "
+     "(4, NULL, CAST('2' AS MONEY(USD)), 'a'), (5, 2, CAST('1' AS MONEY(USD)), NULL)", "= done 5")
+stmt("SELECT a.id, b.id FROM hj a JOIN hj b ON b.k = a.k ORDER BY a.id, b.id", "= 1, 1 | 1, 2 | 2, 1 | 2, 2 | 3, 3 | 5, 5")
+stmt("SELECT s.id, hj.id FROM s JOIN hj ON hj.k = s.x ORDER BY s.id, hj.id", "= 3, 3 | 6, 3")
+stmt("SELECT a.id, b.id FROM hj a JOIN hj b ON b.m = a.m ORDER BY a.id, b.id", "= 1, 1 | 1, 5 | 2, 2 | 4, 4 | 5, 1 | 5, 5")
+stmt("SELECT a.id, b.id FROM hj a LEFT JOIN hj b ON b.t = a.t AND b.id <> a.id ORDER BY a.id, b.id",
+     "= 1, 4 | 2, NULL | 3, NULL | 4, 1 | 5, NULL")
+# a key of another kind is never reached, so the refusal `=` would make is
+# not made: the allowance every access path has (gsql_sql_design.md §5)
+stmt("SELECT count(*) FROM cu JOIN hj ON hj.k = cu.name", "= 0")
+stmt("SELECT cu.name, d.n FROM cu JOIN (SELECT cust, count(*) AS n FROM od GROUP BY cust) d ON d.cust = cu.id ORDER BY cu.id",
+     "= 'ann', 2 | 'bob', 1")
+# a record has no key: the hash falls back to reading every row
+stmt("SELECT a.id, b.id FROM assets a JOIN (SELECT id, p FROM assets) b ON b.p = a.p ORDER BY a.id", "= 1, 1 | 2, 2")
+stmt("EXPLAIN SELECT a.id FROM hj a JOIN hj b ON b.k = a.k",
+     "= 'Nested Loop' | '  Scan on hj AS a' | '  Hash Scan on hj AS b using (k = a.k)'")
+stmt("EXPLAIN SELECT cu.name FROM cu JOIN (SELECT cust FROM od) d ON d.cust = cu.id AND d.cust > 0",
+     "= 'Nested Loop' | '  Scan on cu' | '  Hash Derived Scan on d using (cust = cu.id)' | '    Filter: (d.cust > 0)' | "
+     "'Derived d' | '  Scan on od'")
+# an index is still the better path where there is one
+stmt("EXPLAIN SELECT cu.name FROM cu JOIN od ON od.cust = cu.id",
+     "= 'Nested Loop' | '  Scan on cu' | '  Index Seek on od using od_cust (cust = cu.id)'")
 
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")

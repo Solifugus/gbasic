@@ -155,6 +155,14 @@ for seed in 1 2 3 4 5; do
     verdict "differential seed $seed" "$work/diff$seed.out" $rc
 done
 
+printf 'TIER hash cost: an unindexed join hashed against its nested loop, as a ratio\n'
+rm -rf "$work/hc"
+mkdir -p "$work/hc"
+bounded 300 "$work/sql_test" hashcost "$work/hc/db" 1000 >"$work/hc.out" 2>&1
+rc=$?
+grep '^hash ' "$work/hc.out" | sed 's/^/       /'
+verdict "hash cost" "$work/hc.out" $rc
+
 printf 'TIER owner: gbasic --gsql-owner, started by a client, end to end\n'
 mkdir -p "$work/own"
 XDG_RUNTIME_DIR="$rt" bounded 120 "$work/owner_test" ./gbasic "$work/own" >"$work/own.out" 2>&1
