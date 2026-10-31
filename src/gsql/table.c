@@ -363,6 +363,7 @@ bad:
 static const GsBytes CATALOG = { (const unsigned char *)"\0catalog", 8 };
 static const GsBytes META = { (const unsigned char *)"\0meta", 5 };
 static const GsBytes NEXT = { (const unsigned char *)"next", 4 };
+static const GsBytes VIEWS = { (const unsigned char *)"\0view", 5 };
 
 static GsBytes name_bytes(const char *s) {
     GsBytes b = { (const unsigned char *)s, strlen(s) };
@@ -905,7 +906,11 @@ int gsql_table_create(const GsEngine *e, GsTxn *t, const GsqlTableDecl *d, GsqlE
         return rc;
     }
     GsBytes got;
-    int st = e->get(t, CATALOG, name_bytes(d->name), &got);
+    int st = e->get(t, VIEWS, name_bytes(d->name), &got);
+    if (st == GS_OK) {
+        return fail(err, GSQL_EXISTS, "there is already a view %s: tables and views share one set of names", d->name);
+    }
+    st = e->get(t, CATALOG, name_bytes(d->name), &got);
     if (st == GS_OK) {
         return fail(err, GSQL_EXISTS, "there is already a table %s", d->name);
     }
@@ -993,6 +998,11 @@ int gsql_table_rename(const GsEngine *e, GsTxn *t, const char *name, const char 
     memcpy(schema, got.p, got.n);
     GsBytes copy = { schema, got.n };
     GsBytes other;
+    st = e->get(t, VIEWS, name_bytes(to), &other);
+    if (st == GS_OK) {
+        free(schema);
+        return fail(err, GSQL_EXISTS, "there is already a view %s: tables and views share one set of names", to);
+    }
     st = e->get(t, CATALOG, name_bytes(to), &other);
     if (st == GS_OK) {
         free(schema);
@@ -1008,6 +1018,93 @@ int gsql_table_rename(const GsEngine *e, GsTxn *t, const char *name, const char 
     }
     free(schema);
     return st == GS_OK ? ok(err) : storage(err, st, "renaming a table");
+}
+
+/* ---- views (docs/gsql_view_design.md §3) ----------------------------- */
+
+int gsql_view_put(const GsEngine *e, GsTxn *t, const char *name, const unsigned char *rec, size_t n, int replace,
+                  GsqlError *err) {
+    int rc = check_name("view", name, err);
+    if (rc) {
+        return rc;
+    }
+    int st = e->tree_create(t, VIEWS);
+    if (st != GS_OK && st != GS_EXISTS) {
+        return storage(err, st, "creating the view tree");
+    }
+    GsBytes got;
+    st = e->get(t, CATALOG, name_bytes(name), &got);
+    if (st == GS_OK) {
+        return fail(err, GSQL_EXISTS, "there is already a table %s: tables and views share one set of names", name);
+    }
+    if (!replace) {
+        st = e->get(t, VIEWS, name_bytes(name), &got);
+        if (st == GS_OK) {
+            return fail(err, GSQL_EXISTS, "there is already a view %s", name);
+        }
+    }
+    st = e->put(t, VIEWS, name_bytes(name), (GsBytes){ rec, n }, 0);
+    return st == GS_OK ? ok(err) : storage(err, st, "writing a view");
+}
+
+int gsql_view_get(const GsEngine *e, GsTxn *t, const char *name, GsqlBuf *out, GsqlError *err) {
+    GsBytes got;
+    int st = e->get(t, VIEWS, name_bytes(name), &got);
+    if (st == GS_NOT_FOUND) {
+        return GSQL_NOT_FOUND;
+    }
+    if (st != GS_OK) {
+        return storage(err, st, "reading a view");
+    }
+    out->length = 0;
+    v3_put(out, got.p, got.n);
+    return ok(err);
+}
+
+int gsql_view_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *err) {
+    GsBytes got;
+    int st = e->get(t, VIEWS, name_bytes(name), &got);
+    if (st == GS_NOT_FOUND) {
+        return fail(err, GSQL_NOT_FOUND, "there is no view %s", name);
+    }
+    if (st == GS_OK) {
+        st = e->del(t, VIEWS, name_bytes(name));
+    }
+    return st == GS_OK ? ok(err) : storage(err, st, "dropping a view");
+}
+
+int gsql_view_list(const GsEngine *e, GsTxn *t, int (*each)(void *ctx, const char *name), void *ctx,
+                   GsqlError *err) {
+    GsCursor *c;
+    int st = e->cursor_open(t, VIEWS, &c);
+    if (st == GS_NOT_FOUND) {
+        return ok(err);
+    }
+    if (st != GS_OK) {
+        return storage(err, st, "opening the view tree");
+    }
+    int pos = 0;
+    st = e->first(c, &pos);
+    while (st == GS_OK && pos) {
+        GsBytes k;
+        st = e->key(c, &k);
+        if (st != GS_OK) {
+            break;
+        }
+        char name[MAX_NAME + 1];
+        if (k.n > MAX_NAME) {
+            e->cursor_close(c);
+            return fail(err, GSQL_CORRUPT, "a view key of %zu bytes", k.n);
+        }
+        memcpy(name, k.p, k.n);
+        name[k.n] = 0;
+        if (each(ctx, name)) {
+            break;
+        }
+        st = e->next(c, &pos);
+    }
+    e->cursor_close(c);
+    return st == GS_OK ? ok(err) : storage(err, st, "reading the view tree");
 }
 
 /* Resolves the values a write will store: one per column, defaults applied. */

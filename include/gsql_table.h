@@ -124,6 +124,17 @@ int gsql_table_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *er
 /* Moves a table's catalog entry to a new name; its trees, named by id, stay
  * (docs/gsql_rename_design.md). NOT_FOUND, EXISTS, or SCHEMA for a bad name. */
 int gsql_table_rename(const GsEngine *e, GsTxn *t, const char *name, const char *to, GsqlError *err);
+
+/* ---- views (docs/gsql_view_design.md §3) -----------------------------
+ * A view is a name and one v3 record, kept in the `\0view` tree; tables and
+ * views share one namespace. The record's meaning is the SQL layer's. */
+int gsql_view_put(const GsEngine *e, GsTxn *t, const char *name, const unsigned char *rec, size_t n, int replace,
+                  GsqlError *err);
+/* NOT_FOUND, quietly, when there is no such view */
+int gsql_view_get(const GsEngine *e, GsTxn *t, const char *name, GsqlBuf *out, GsqlError *err);
+int gsql_view_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *err);
+int gsql_view_list(const GsEngine *e, GsTxn *t, int (*each)(void *ctx, const char *name), void *ctx,
+                   GsqlError *err);
 int gsql_table_open(const GsEngine *e, GsTxn *t, const char *name, GsqlTable **out, GsqlError *err);
 void gsql_table_close(GsqlTable *tb);
 /* Every table name in order; stops when `each` answers nonzero. */

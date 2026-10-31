@@ -1094,6 +1094,28 @@ static int refuse_run(void) {
     expect(gsql_table_check(E, t, report_line, NULL, &ce), GSQL_OK, &ce, NULL, "the check after a rename");
     gsql_table_close(tb2);
 
+    /* views (docs/gsql_view_design.md §3): one namespace with tables, each
+       refusal beside the accepted case */
+    Val vrec = v_str("select 1", 8);
+    GsqlBuf vgot = {0};
+    expect(gsql_view_get(E, t, "vv", &vgot, &er), GSQL_NOT_FOUND, &er, NULL, "a view not there, before the tree is");
+    expect(gsql_view_put(E, t, "", vrec.b, vrec.n, 0, &er), GSQL_SCHEMA, &er, "needs a name", "a view with no name");
+    expect(gsql_view_put(E, t, "w", vrec.b, vrec.n, 0, &er), GSQL_EXISTS, &er, "already a table w", "a view named as a table");
+    expect(gsql_view_put(E, t, "vv", vrec.b, vrec.n, 0, &er), GSQL_OK, &er, NULL, "a view");
+    expect(gsql_view_put(E, t, "vv", vrec.b, vrec.n, 0, &er), GSQL_EXISTS, &er, "already a view vv", "the same view again");
+    expect(gsql_view_put(E, t, "vv", vrec.b, vrec.n, 1, &er), GSQL_OK, &er, NULL, "the same view, replacing");
+    expect(gsql_view_get(E, t, "vv", &vgot, &er), GSQL_OK, &er, NULL, "reading the view");
+    checks++;
+    if (vgot.length != vrec.n || memcmp(vgot.bytes, vrec.b, vrec.n)) mismatch("a view's record did not read back as stored");
+    d.name = "vv";
+    expect(gsql_table_create(E, t, &d, &er), GSQL_EXISTS, &er, "already a view vv", "a table named as a view");
+    expect(gsql_table_rename(E, t, "w", "vv", &er), GSQL_EXISTS, &er, "already a view vv", "renaming a table onto a view");
+    expect(gsql_table_check(E, t, report_line, NULL, &ce), GSQL_OK, &ce, NULL, "the check with a view present");
+    expect(gsql_view_drop(E, t, "vv", &er), GSQL_OK, &er, NULL, "dropping the view");
+    expect(gsql_view_drop(E, t, "vv", &er), GSQL_NOT_FOUND, &er, "no view vv", "dropping it twice");
+    expect(gsql_table_create(E, t, &d, &er), GSQL_OK, &er, NULL, "the name free again for a table");
+    gsql_buf_free(&vgot);
+
     gsql_table_close(tb);
     gsql_table_close(ut);
     gsql_buf_free(&k5);
