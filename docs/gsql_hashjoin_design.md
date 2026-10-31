@@ -1,6 +1,6 @@
 # G-SQL hash joins (Phase 2, increment 7)
 
-**Status:** designed 2026-11-01. One of `gsql_design.md` §11 Phase 2's "efficient hash operators": the one with a measured need.
+**Status:** designed and built 2026-11-01 (`src/gsql/sql_plan.c` `choose_hash`, `src/gsql/sql_exec.c` `hash_build`/`hash_probe`; `tests/run_gsql_sql.sh`). One of `gsql_design.md` §11 Phase 2's "efficient hash operators": the one with a measured need.
 
 ## 1. Why
 
@@ -42,3 +42,13 @@ Where `=` would **refuse**, as for a number against text, the hash reads no such
 - **semantics:** a hashed join with duplicates on both sides; `NULL` keys; 3 against 3.0; two currencies; a `LEFT` join with unmatched rows; a hash over a derived table and a `WITH` query; a record column falling back; and `EXPLAIN` showing the hash, and the seek it does not replace where an index exists.
 - **differential:** the join tier's tables gain an unindexed column, so random joins on it run with the hash and forced to a nested loop, which must agree. A census floor requires that probes happened.
 - **the cost, as a ratio:** the 4,000-row join must be at least 20x faster than the nested loop. The shape is asserted, not an absolute time.
+
+## 4. What building it found
+
+- **The ratio tier:** 2,000 rows against 1,000, hashed in 0.0027 s against 1.2 s for the nested loop, a ratio of about 440 against a gate of 20. The random tier probed in 221 to 234 of 300 joins a seed, every one agreeing with the nested loop.
+- **A fallback was designed that nothing needed.** The first version turned the hash off when a value could not be keyed. A perturbation that skipped such a row instead stayed green, and working it through shows why: `=` is true of a value with no key, such as a record, only against another value with no key, and every such probe already reads every row. The fallback was removed.
+- **Seven perturbations:**
+  - five red: a probe reading the wrong group, a chain keeping one row per key, a hash under a forced scan, a probe keyed with other flags, and a probe allowed to read its own table;
+  - the last one was green at first, and a case was added for `ON b.k = b.id`;
+  - one green and harmless, which is the finding just above;
+  - one green and harmless as well: grouping `NULL` rows, which a `NULL` probe never reads.
