@@ -774,6 +774,157 @@ stmt("ALTER TABLE acct_new RENAME TO acct", "= done 0")
 stmt("INSERT INTO acct VALUES (1, CAST('-9' AS MONEY(USD)), NULL)", "= done 1")
 stmt("ALTER TABLE acct ADD COLUMN closed DATE", "= done 0")
 
+sec("SERIAL: counting, per scope, gapless (docs/gsql_generated_design.md)")
+stmt("CREATE TABLE gcu (id INTEGER SERIAL PRIMARY KEY, name TEXT)", "= done 0")
+stmt("INSERT INTO gcu (name) VALUES ('a'), ('b')", "= done 2")
+stmt("INSERT INTO gcu (name) VALUES ('c')", "= done 1")
+stmt("SELECT id, name FROM gcu ORDER BY id", "= 1, 'a' | 2, 'b' | 3, 'c'")
+# a rollback undoes its numbers with its rows: no gap
+c("begin write")
+stmt("INSERT INTO gcu (name) VALUES ('rolled back')", "= done 1")
+c("rollback")
+stmt("INSERT INTO gcu (name) VALUES ('d')", "= done 1")
+stmt("SELECT id FROM gcu WHERE name = 'd'", "= 4")
+# a refused row takes no number
+stmt("INSERT INTO gcu (name) VALUES (1)", ("TYPE", None, "gcu.name is string"))
+stmt("INSERT INTO gcu (name) VALUES ('e')", "= done 1")
+stmt("SELECT id FROM gcu WHERE name = 'e'", "= 5")
+# the newest deleted is never reissued: the counter is the highest issued
+stmt("DELETE FROM gcu WHERE id = 5", "= done 1")
+stmt("INSERT INTO gcu (name) VALUES ('f')", "= done 1")
+stmt("SELECT id FROM gcu WHERE name = 'f'", "= 6")
+# a supplied value moves the counter up, never down; a key refuses a duplicate
+stmt("INSERT INTO gcu VALUES (10, 'g')", "= done 1")
+stmt("INSERT INTO gcu (name) VALUES ('h')", "= done 1")
+stmt("SELECT id FROM gcu WHERE name = 'h'", "= 11")
+stmt("INSERT INTO gcu VALUES (2, 'below')", ("DUPLICATE", None, "the primary key already holds that value"))
+stmt("INSERT INTO gcu VALUES (-4, 'negative')", "= done 1")
+stmt("INSERT INTO gcu (name) VALUES ('i')", "= done 1")
+stmt("SELECT id FROM gcu WHERE name = 'i'", "= 12")
+# a generated column is NOT NULL, so an explicit NULL is refused
+stmt("INSERT INTO gcu VALUES (NULL, 'null')", ("NOT_NULL", None, "gcu.id"))
+# DEFAULT asks for the generated value
+stmt("INSERT INTO gcu VALUES (DEFAULT, 'j')", "= done 1")
+stmt("SELECT id FROM gcu WHERE name = 'j'", "= 13")
+# INSERT ... SELECT numbers each row
+stmt("INSERT INTO gcu (name) SELECT name || '2' FROM gcu WHERE id BETWEEN 1 AND 2", "= done 2")
+stmt("SELECT id, name FROM gcu WHERE id > 13 ORDER BY id", "= 14, 'a2' | 15, 'b2'")
+# a serial with no key: the counter still never repeats itself
+stmt("CREATE TABLE gnk (n INTEGER SERIAL, x INTEGER)", "= done 0")
+stmt("INSERT INTO gnk (x) VALUES (1), (2)", "= done 2")
+stmt("INSERT INTO gnk VALUES (1, 3)", "= done 1")
+stmt("INSERT INTO gnk (x) VALUES (4)", "= done 1")
+stmt("SELECT n, x FROM gnk ORDER BY x", "= 1, 1 | 2, 2 | 1, 3 | 3, 4")
+# overflow: the largest integer supplied, and then nothing comes next
+stmt("INSERT INTO gnk VALUES (9223372036854775807, 5)", "= done 1")
+stmt("INSERT INTO gnk (x) VALUES (6)", ("SERIAL", None, "serial `gnk.n` has reached 9223372036854775807 in this scope: there is no next number"))
+
+sec("SERIAL OF: one counter per scope")
+stmt("CREATE TABLE gtl (task INTEGER, n INTEGER SERIAL OF (task), note TEXT, PRIMARY KEY (task, n))", "= done 0")
+stmt("INSERT INTO gtl (task, note) VALUES (1, 'a'), (1, 'b'), (2, 'c'), (1, 'd')", "= done 4")
+stmt("SELECT task, n, note FROM gtl ORDER BY task, n", "= 1, 1, 'a' | 1, 2, 'b' | 1, 3, 'd' | 2, 1, 'c'")
+# a supplied value moves only its own scope's counter
+stmt("INSERT INTO gtl VALUES (2, 10, 'jump')", "= done 1")
+stmt("INSERT INTO gtl (task, note) VALUES (2, 'e'), (1, 'f')", "= done 2")
+stmt("SELECT task, n FROM gtl WHERE note IN ('e', 'f') ORDER BY task", "= 1, 4 | 2, 11")
+# a glate insert into an old scope takes that scope's next number
+stmt("INSERT INTO gtl (task, note) VALUES (1, 'glate')", "= done 1")
+stmt("SELECT n FROM gtl WHERE note = 'glate'", "= 5")
+# a NULL scope is one scope of its own
+stmt("INSERT INTO gtl (task, note) VALUES (NULL, 'x'), (NULL, 'y')", ("NOT_NULL", None, "gtl.task"))
+stmt("CREATE TABLE gns (k NUMBER, n INTEGER SERIAL OF (k))", "= done 0")
+stmt("INSERT INTO gns (k) VALUES (NULL), (NULL), (3), (3.0), (3.5)", "= done 5")
+stmt("SELECT k, n FROM gns", "= NULL, 1 | NULL, 2 | 3, 1 | 3.0, 2 | 3.5, 1")
+# a composite scope, and one written as an expression of the row
+stmt("CREATE TABLE gtx (day DATE, branch TEXT, no INTEGER SERIAL OF (day, lower(branch)))", "= done 0")
+stmt("INSERT INTO gtx (day, branch) VALUES (DATE '2026-10-01', 'North'), (DATE '2026-10-01', 'north'), "
+     "(DATE '2026-10-01', 'South'), (DATE '2026-10-02', 'North')", "= done 4")
+stmt("SELECT branch, no FROM gtx ORDER BY day, branch, no", "= 'North', 1 | 'South', 1 | 'north', 2 | 'North', 1")
+# an UPDATE that moves a row to another scope is refused, unless it sets the
+# serial too; a move within one scope is no move
+stmt("UPDATE gtl SET task = 3 WHERE note = 'd'",
+     ("SERIAL", None, "this UPDATE moves a row of `gtl` to another scope of serial `n`, whose number belongs to the old one: set `n` in the same UPDATE to number it in the new scope"))
+stmt("UPDATE gtl SET task = 3, n = 7 WHERE note = 'd'", "= done 1")
+stmt("INSERT INTO gtl (task, note) VALUES (3, 'after')", "= done 1")
+stmt("SELECT n FROM gtl WHERE note = 'after'", "= 8")
+stmt("UPDATE gtx SET branch = 'NORTH' WHERE branch = 'North' AND day = DATE '2026-10-01'", "= done 1")
+# setting the serial alone moves its scope's counter up
+stmt("UPDATE gtl SET n = 20 WHERE note = 'glate'", "= done 1")
+stmt("INSERT INTO gtl (task, note) VALUES (1, 'after20')", "= done 1")
+stmt("SELECT n FROM gtl WHERE note = 'after20'", "= 21")
+# the counters belong to the table: renamed with it, gone with it
+stmt("ALTER TABLE gtl RENAME TO gtl2", "= done 0")
+stmt("INSERT INTO gtl2 (task, note) VALUES (1, 'renamed')", "= done 1")
+stmt("SELECT n FROM gtl2 WHERE note = 'renamed'", "= 22")
+stmt("DROP TABLE gtl2", "= done 0")
+stmt("CREATE TABLE gtl2 (task INTEGER, n INTEGER SERIAL OF (task), note TEXT)", "= done 0")
+stmt("INSERT INTO gtl2 (task, note) VALUES (1, 'again')", "= done 1")
+stmt("SELECT n FROM gtl2", "= 1")
+# a scope with no order is refused with its row
+stmt("CREATE TABLE grs (r RECORD, n INTEGER SERIAL OF (r))", "= done 0")
+stmt("INSERT INTO grs (r) VALUES (NULL)", "= done 1")
+stmt("INSERT INTO grs (r) VALUES (:p)", ("EXPRESSION", None, "serial `grs.n`'s scope: a record has no order G-SQL can key, so it cannot be a scope"),
+     params=("p = {vendor: 'acme'}",))
+stmt("SELECT count(*) FROM grs", "= 1")
+
+sec("SERIAL and RANDOM: what a declaration may say")
+stmt("CREATE TABLE gbad (x TEXT SERIAL)", ("SCHEMA", None, "gbad.x: SERIAL counts, so it belongs on an INTEGER column"))
+stmt("CREATE TABLE gbad (x INTEGER SERIAL OF (x))", ("SCHEMA", "SERIAL", "serial `gbad.x`'s scope reads `x` itself"))
+stmt("CREATE TABLE gbad (x INTEGER SERIAL OF (y))", ("SCHEMA", "SERIAL", "serial `gbad.x`'s scope cannot be applied: table gbad has no column `y`"))
+stmt("CREATE TABLE gbad (a INTEGER, x INTEGER SERIAL OF ((SELECT 1)))", ("SCHEMA", "SERIAL", "a scope reads only its own row"))
+stmt("CREATE TABLE gbad (a INTEGER, x INTEGER SERIAL OF (count(a)))", ("SCHEMA", "SERIAL", "a scope reads only its own row"))
+stmt("CREATE TABLE gbad (a INTEGER, x INTEGER SERIAL OF (gcu.id))", ("SCHEMA", "SERIAL", "cannot be applied"))
+stmt("SELECT * FROM gbad", ("NOT_FOUND", "SELECT", "there is no table `gbad`"))
+stmt("CREATE TABLE gbad (x INTEGER SERIAL DEFAULT 3)", ("SCHEMA", None, "a generated column takes no DEFAULT"))
+stmt("CREATE TABLE gbad (x INTEGER SERIAL RANDOM)", ("SYNTAX", "RANDOM", "a column has at most one generator"))
+stmt("CREATE TABLE gbad (x NUMBER RANDOM)", ("SCHEMA", None, "RANDOM draws text or an integer, not number"))
+stmt("CREATE TABLE gbad (x INTEGER RANDOM(3, 'ab'))", ("SCHEMA", None, "an integer is drawn in digits"))
+stmt("CREATE TABLE gbad (x INTEGER RANDOM(19))", ("SCHEMA", None, "at most 18 digits"))
+stmt("CREATE TABLE gbad (x TEXT RANDOM(0))", ("SYNTAX", "0", "RANDOM draws 1 to 1024 characters"))
+stmt("CREATE TABLE gbad (x TEXT RANDOM(1025))", ("SYNTAX", "1025", "RANDOM draws 1 to 1024 characters"))
+stmt("CREATE TABLE gbad (x TEXT RANDOM(2.5))", ("SYNTAX", "2.5", "a whole number of characters or digits"))
+stmt("CREATE TABLE gbad (x TEXT RANDOM(4, 'aba'))", ("SCHEMA", None, "the alphabet holds `a` twice"))
+stmt("CREATE TABLE gbad (x TEXT RANDOM(4, 'a'))", ("SCHEMA", None, "an alphabet of 1 character draws nothing random"))
+stmt("CREATE TABLE gbad (x TEXT RANDOM(4, ''))", ("SCHEMA", None, "an alphabet of 0 characters"))
+stmt("CREATE TABLE gbad (x TEXT RANDOM(4, 7))", ("SYNTAX", "7", "the alphabet, as a string"))
+# a generated column added: refused over rows, accepted on an empty table
+stmt("ALTER TABLE gcu ADD COLUMN seq INTEGER SERIAL", ("SCHEMA", None, "gcu already has rows, so a generated column seq cannot be added"))
+stmt("CREATE TABLE glate (a INTEGER)", "= done 0")
+stmt("ALTER TABLE glate ADD COLUMN s INTEGER SERIAL OF (a)", "= done 0")
+stmt("ALTER TABLE glate ADD COLUMN s2 INTEGER SERIAL OF (s2)", ("SCHEMA", "SERIAL", "serial `glate.s2`'s scope reads `s2` itself"))
+stmt("ALTER TABLE glate ADD COLUMN k TEXT RANDOM(5)", "= done 0")
+stmt("INSERT INTO glate (a) VALUES (7), (7)", "= done 2")
+stmt("SELECT a, s, length(k) FROM glate", "= 7, 1, 5 | 7, 2, 5")
+
+sec("RANDOM: drawn once, stored, and drawn again only for a key")
+stmt("CREATE TABLE gus (id TEXT RANDOM PRIMARY KEY, pin TEXT RANDOM(6, '0123456789'), sh INTEGER RANDOM, "
+     "code INTEGER RANDOM(8), one INTEGER RANDOM(1), name TEXT)", "= done 0")
+stmt("INSERT INTO gus (name) VALUES ('a'), ('b'), ('c')", "= done 3")
+stmt("SELECT count(*) FROM gus WHERE length(id) = 22 AND length(pin) = 6 AND sh >= 0 "
+     "AND code >= 10000000 AND code <= 99999999 AND one >= 1 AND one <= 9", "= 3")
+stmt("SELECT count(DISTINCT id) FROM gus", "= 3")
+# a value supplied is kept, which is how imported keys stay
+stmt("INSERT INTO gus (id, pin, name) VALUES ('mine', '0000', 'd')", "= done 1")
+stmt("SELECT pin FROM gus WHERE id = 'mine'", "= '0000'")
+# an UPDATE never draws
+stmt("UPDATE gus SET name = 'dd' WHERE id = 'mine'", "= done 1")
+stmt("SELECT pin FROM gus WHERE id = 'mine'", "= '0000'")
+# a small space on a key: drawn again, and refused after its draws, naming it
+stmt("CREATE TABLE gtiny (x TEXT RANDOM(1, 'ab') PRIMARY KEY)", "= done 0")
+stmt("INSERT INTO gtiny VALUES (DEFAULT)", "= done 1")
+stmt("INSERT INTO gtiny VALUES (DEFAULT)", "= done 1")
+stmt("SELECT count(*) FROM gtiny WHERE x IN ('a', 'b')", "= 2")
+stmt("INSERT INTO gtiny VALUES (DEFAULT)",
+     ("DUPLICATE", None, "gtiny: the primary key already holds that value: random `x` can hold 2 values, and 32 draws in a row were all taken"))
+# a duplicate in a key with no random column is refused at once, as before
+stmt("CREATE TABLE gem (id TEXT RANDOM PRIMARY KEY, email TEXT UNIQUE)", "= done 0")
+stmt("INSERT INTO gem (email) VALUES ('a@x')", "= done 1")
+stmt("INSERT INTO gem (email) VALUES ('a@x')", ("DUPLICATE", None, "gem: unique index gem_email_key already holds that value"))
+# the alphabet may be any text; a non-ASCII character is one character
+stmt("CREATE TABLE gk (g TEXT RANDOM(3, 'αβ'))", "= done 0")
+stmt("INSERT INTO gk VALUES (DEFAULT)", "= done 1")
+stmt("SELECT length(g) FROM gk", "= 3")
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

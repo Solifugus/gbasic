@@ -1,6 +1,6 @@
 # G-SQL generated values: `SERIAL` and `RANDOM`
 
-**Status:** designed 2026-11-01, from Matthew's rulings the same day. It settles `gsql_design.md` §10E (categorically scoped serials), which left the semantics open, and adds random keys, which he asked for in the same discussion.
+**Status:** designed and built 2026-11-01, from Matthew's rulings the same day (`gen_*` in `src/gsql/sql_exec.c`, `gsql_serial_*` in `src/gsql/table.c`; `tests/run_gsql_sql.sh`, `run_gsql_table.sh`, `run_gsql_module.sh`). It settles `gsql_design.md` §10E (categorically scoped serials), which left the semantics open, and adds random keys, which he asked for in the same discussion.
 
 ## 1. What it is
 
@@ -16,9 +16,9 @@ create table task_log (
     primary key (task_id, n)
 );
 create table txn (
-    request_time datetime,
+    business_date date,
     branch text,
-    no integer serial of (date(request_time), branch)
+    no integer serial of (business_date, lower(branch))
 );
 create table users (
     id text random primary key,                  -- 22 URL-safe characters
@@ -32,6 +32,7 @@ A column may carry one **generator**. The generator chooses the value when a row
 
 - **`SERIAL`** counts. It belongs on an `INTEGER` column only.
 - **`SERIAL OF (e, ...)`** counts separately for each value of its **scope**: one or more expressions over the inserted row's own columns.
+  - *Found while building it:* §10E's own example, `SERIAL OF DATE(request_time)`, cannot be written yet. G-SQL has no function that takes a datetime to its date, and `CAST(t AS DATE)` refuses a datetime. A day's scope needs a `DATE` column until such a function exists.
 - **`RANDOM`** draws a value. It belongs on a `TEXT` or an `INTEGER` column.
   - **`TEXT RANDOM`** draws 22 characters from the URL-safe alphabet (`A-Z a-z 0-9 - _`), about 132 bits.
   - **`TEXT RANDOM(n)`** draws `n` characters from that alphabet.
@@ -71,7 +72,7 @@ A column may carry one **generator**. The generator chooses the value when a row
 **An `UPDATE` that moves a row to another scope is refused.** Matthew's ruling (3).
 
 - Code **`SERIAL`**, naming the serial and both scopes.
-- Moving within one scope is not a change: `date(request_time)` is unchanged by an update to a later time on the same day.
+- Moving within one scope is not a change: under `lower(branch)`, changing `North` to `NORTH` leaves the row where it was.
 - **The way to make the move on purpose is to set the serial in the same `UPDATE`.** That is then a supplied value, and moves the new scope's counter up if it is higher. A number that silently changes, or that silently duplicates another, is worse than being told.
 - **Setting the serial in an `UPDATE`,** with or without a scope change, also moves that scope's counter up if the value is higher.
 

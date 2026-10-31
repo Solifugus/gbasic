@@ -353,3 +353,29 @@
 ! SYNTAX 37 a column has at most one CHECK
 > create table t (a int, foreign key (a) u)
 ! SYNTAX 40 expected REFERENCES after FOREIGN KEY
+
+# ---- SERIAL and RANDOM (docs/gsql_generated_design.md) ------------------
+> create table t (id int serial primary key, name text)
+= CREATE TABLE t (id INTEGER SERIAL PRIMARY KEY, name TEXT)
+> create table t (task int, n int serial of (task), primary key (task, n))
+= CREATE TABLE t (task INTEGER, n INTEGER SERIAL OF (task), PRIMARY KEY (task, n))
+> create table t (d date, b text, n int serial of (d, lower(b)))
+= CREATE TABLE t (d DATE, b TEXT, n INTEGER SERIAL OF (d, lower(b)))
+> create table t (id text random primary key, pin text random(6, '0123456789'), q text random(3, 'it''s'))
+= CREATE TABLE t (id TEXT RANDOM PRIMARY KEY, pin TEXT RANDOM(6, '0123456789'), q TEXT RANDOM(3, 'it''s'))
+> create table t (sh int random, code int random(8))
+= CREATE TABLE t (sh INTEGER RANDOM, code INTEGER RANDOM(8))
+> alter table t add column n int serial of (a)
+= ALTER TABLE t ADD COLUMN n INTEGER SERIAL OF (a)
+> create table t (a int serial random)
+! SYNTAX 30 a column has at most one generator
+> create table t (a text random(0))
+! SYNTAX 31 RANDOM draws 1 to 1024
+> create table t (a text random(2.5))
+! SYNTAX 31 a whole number of characters or digits
+> create table t (a text random(3, 4))
+! SYNTAX 34 the alphabet, as a string
+> create table t (a int serial of ())
+! SYNTAX 34
+> create table t (a int serial of a)
+! SYNTAX 33 `(`

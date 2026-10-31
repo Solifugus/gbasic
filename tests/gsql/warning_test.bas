@@ -165,5 +165,18 @@ function negative()
 end function
 check("a row a check refuses is refused as CHECK", negative(), "CHECK")
 
+' a serial's refusal carries its code by name (docs/gsql_generated_design.md)
+gsql.exec(db, "create table steps (task integer, n integer serial of (task))")
+gsql.exec(db, "insert into steps (task) values (1)")
+function moved()
+    on error goto next
+    gsql.exec(db, "update steps set task = 2")
+    if error then
+        return error.details.code
+    end if
+    return "(no error)"
+end function
+check("a row moved to another scope is refused as SERIAL", moved(), "SERIAL")
+
 gsql.close(db)
 print "ok " + string(checks.n) + " checks, " + string(checks.bad) + " mismatches"

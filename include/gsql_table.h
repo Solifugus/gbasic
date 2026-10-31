@@ -43,6 +43,10 @@ typedef struct {
     /* Where in the SQL text the problem is, as a 1-based character offset; 0
      * where there is no text or no single place (the SQL layer's, §6). */
     uint32_t position;
+    /* A DUPLICATE's key: -1 the primary key, 1 + i index i, 0 unsaid. What
+     * lets a random value be drawn again only for a key it is in
+     * (docs/gsql_generated_design.md §3). */
+    int dup;
 } GsqlError;
 
 typedef enum {
@@ -59,6 +63,13 @@ typedef enum {
 
 const char *gsql_kind_name(int kind);
 
+/* A column's generator (docs/gsql_generated_design.md). */
+enum { GSQL_GEN_NONE = 0, GSQL_GEN_SERIAL, GSQL_GEN_RANDOM };
+
+#define GSQL_RANDOM_MAX_LENGTH 1024
+#define GSQL_RANDOM_MAX_ALPHABET 4096
+#define GSQL_SERIAL_MAX_SCOPE 32
+
 /* A column. In a declaration the pointers are the caller's; in a loaded table
  * they are the table's. `def` is one v3 value (NULL: no default). */
 typedef struct {
@@ -68,6 +79,11 @@ typedef struct {
     int not_null;
     const unsigned char *def;
     size_t def_len;
+    int gen;                   /* GSQL_GEN_*: a generated column is NOT NULL */
+    size_t nscope;             /* SERIAL OF: its scope expressions' canonical text */
+    const char *const *scope;
+    uint32_t length;           /* RANDOM: characters, or an integer's digits; 0 the default */
+    const char *alphabet;      /* RANDOM on text: NULL the URL-safe default */
 } GsqlColumn;
 
 typedef struct {
@@ -168,6 +184,8 @@ const GsqlIndex *gsql_table_index(const GsqlTable *tb, size_t i);
  * bytes: a NUL, a letter, and a big-endian id. */
 GsBytes gsql_table_rows_tree(const GsqlTable *tb);
 GsBytes gsql_index_tree(const GsqlTable *tb, size_t index);
+/* The serial counters' tree: there exactly when a column is a SERIAL. */
+GsBytes gsql_serial_tree(const GsqlTable *tb);
 
 /* ---- schema changes --------------------------------------------------- */
 
@@ -205,6 +223,16 @@ int gsql_index_rowkey(const GsqlTable *tb, size_t index, GsBytes entry_key, GsBy
 /* Whether `value` (one v3 value) fits column `col`, as an insert would ask:
  * GSQL_OK, GSQL_TYPE or GSQL_NOT_NULL. */
 int gsql_value_fits(const GsqlColumn *c, const unsigned char *value, size_t n, GsqlError *err);
+
+/* ---- serial counters (docs/gsql_generated_design.md §4) --------------
+ * A serial column's high-water mark for one scope, `scope` being the scope's
+ * key encoding (empty for an unscoped serial). 0 when none was issued. Kept in
+ * a tree of the table's own, so a counter moves with RENAME and goes with
+ * DROP, and is written in the caller's transaction. */
+int gsql_serial_get(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t col, GsBytes scope, uint64_t *hw,
+                    GsqlError *err);
+int gsql_serial_set(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t col, GsBytes scope, uint64_t hw,
+                    GsqlError *err);
 
 /* ---- the invariant check (gsql_table_design.md §8) --------------------- */
 

@@ -1045,6 +1045,95 @@ static int refuse_run(void) {
     mismatches = before + (rc != GSQL_CORRUPT);
     E->tree_drop(t, (GsBytes){stray, 10});
 
+    /* generated columns (docs/gsql_generated_design.md): each refusal beside
+       the accepted declaration, the counter tree made and dropped with its
+       table, and the check's control for a stray one */
+    {
+        GsqlColumn g[2];
+        memset(g, 0, sizeof g);
+        const char *sc[1] = {"a"};
+        g[0].name = "a";
+        g[0].kind = GSQL_COL_INTEGER;
+        g[1].name = "n";
+        g[1].kind = GSQL_COL_STRING;
+        g[1].gen = GSQL_GEN_SERIAL;
+        GsqlTableDecl gd = {"gen", 2, g, 0, NULL};
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_SCHEMA, &er, "belongs on an INTEGER column", "a text serial");
+        g[1].kind = GSQL_COL_INTEGER;
+        g[1].def = three.b;
+        g[1].def_len = three.n;
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_SCHEMA, &er, "takes no DEFAULT", "a serial with a default");
+        g[1].def = NULL;
+        g[1].def_len = 0;
+        g[1].alphabet = "ab";
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_SCHEMA, &er, "no length or alphabet", "a serial with an alphabet");
+        g[1].alphabet = NULL;
+        g[1].gen = GSQL_GEN_RANDOM;
+        g[1].kind = GSQL_COL_STRING;
+        g[1].alphabet = "a\xc3\xa9" "a";
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_SCHEMA, &er, "twice", "an alphabet with a repeat");
+        g[1].alphabet = "\xc3\xa9";
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_SCHEMA, &er, "1 character", "an alphabet of one character");
+        g[1].alphabet = "a\xc3";
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_SCHEMA, &er, "not UTF-8", "an alphabet cut mid-character");
+        g[1].alphabet = "a\xc3\xa9";
+        g[1].length = GSQL_RANDOM_MAX_LENGTH + 1;
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_SCHEMA, &er, "at most", "a length past the limit");
+        g[1].length = 3;
+        g[1].kind = GSQL_COL_INTEGER;
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_SCHEMA, &er, "no alphabet", "an integer with an alphabet");
+        g[1].alphabet = NULL;
+        g[1].length = 19;
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_SCHEMA, &er, "18 digits", "an integer of 19 digits");
+        g[1].length = 0;
+        g[1].nscope = 1;
+        g[1].scope = sc;
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_SCHEMA, &er, "no scope", "a random value with a scope");
+        g[1].gen = GSQL_GEN_SERIAL;
+        expect(gsql_table_create(E, t, &gd, &er), GSQL_OK, &er, NULL, "a serial of (a)");
+        GsqlTable *gt = NULL;
+        gsql_table_open(E, t, "gen", &gt, &er);
+        checks++;
+        if (!gt || !gsql_table_col(gt, 1)->not_null) mismatch("a generated column was not made NOT NULL");
+        uint64_t hw = 9;
+        expect(gsql_serial_get(E, t, gt, 1, (GsBytes){(const unsigned char *)"x", 1}, &hw, &er), GSQL_OK, &er, NULL,
+               "a counter never set");
+        checks++;
+        if (hw != 0) mismatch("a counter never set reads %llu, not 0", (unsigned long long)hw);
+        expect(gsql_serial_set(E, t, gt, 1, (GsBytes){(const unsigned char *)"x", 1}, 77, &er), GSQL_OK, &er, NULL,
+               "setting a counter");
+        gsql_serial_get(E, t, gt, 1, (GsBytes){(const unsigned char *)"x", 1}, &hw, &er);
+        checks++;
+        if (hw != 77) mismatch("a counter set to 77 reads %llu", (unsigned long long)hw);
+        expect(gsql_serial_get(E, t, gt, 0, (GsBytes){NULL, 0}, &hw, &er), GSQL_MISUSE, &er, "not a serial",
+               "a counter on a column that is not a serial");
+        /* a generated column added: refused over rows, accepted on none */
+        GsqlColumn more;
+        memset(&more, 0, sizeof more);
+        more.name = "r";
+        more.kind = GSQL_COL_STRING;
+        more.gen = GSQL_GEN_RANDOM;
+        expect(gsql_table_add_column(E, t, gt, &more, &er), GSQL_OK, &er, NULL, "a random column on an empty table");
+        Val five2 = v_int(5);
+        GsqlIn grow[3] = {{1, five2.b, five2.n}, {1, five2.b, five2.n}, {1, text.b, text.n}};
+        expect(gsql_row_insert(E, t, gt, grow, NULL, &er), GSQL_OK, &er, NULL, "a row of gen");
+        more.name = "r2";
+        expect(gsql_table_add_column(E, t, gt, &more, &er), GSQL_SCHEMA, &er, "already has rows",
+               "a random column over rows");
+        expect(gsql_table_check(E, t, report_line, NULL, &ce), GSQL_OK, &ce, NULL, "the check with a counter tree");
+        gsql_table_close(gt);
+        expect(gsql_table_drop(E, t, "gen", &er), GSQL_OK, &er, NULL, "dropping a table with a counter");
+        expect(gsql_table_check(E, t, report_line, NULL, &ce), GSQL_OK, &ce, NULL, "the check after it: no counter tree left");
+        unsigned char sq[10] = {0, 'q', 0, 0, 0, 0, 0, 0, 0, 98};
+        E->tree_create(t, (GsBytes){sq, 10});
+        before = mismatches;
+        rc = gsql_table_check(E, t, NULL, NULL, &ce);
+        checks++;
+        if (rc != GSQL_CORRUPT) mismatch("a serial tree no table names was not reported");
+        mismatches = before + (rc != GSQL_CORRUPT);
+        E->tree_drop(t, (GsBytes){sq, 10});
+    }
+
     /* a rename (docs/gsql_rename_design.md): each refusal beside the
        accepted one, then the table whole under its new name */
     d.name = "w";
@@ -1221,6 +1310,31 @@ static int layout_run(const char *dir) {
     v3_w_bool(&vr, 1);
     rc |= gsql_view_put(E, t, "owners", vr.bytes, vr.length, 0, &er);
     gsql_buf_free(&vr);
+    /* generated columns and a serial counter (docs/gsql_generated_design.md
+       §4): table id 3, after accounts (1) and by_owner (2) */
+    GsqlColumn gcols[3];
+    memset(gcols, 0, sizeof gcols);
+    const char *scope[1] = {"task"};
+    gcols[0].name = "task";
+    gcols[0].kind = GSQL_COL_INTEGER;
+    gcols[1].name = "n";
+    gcols[1].kind = GSQL_COL_INTEGER;
+    gcols[1].gen = GSQL_GEN_SERIAL;
+    gcols[1].nscope = 1;
+    gcols[1].scope = scope;
+    gcols[2].name = "tok";
+    gcols[2].kind = GSQL_COL_STRING;
+    gcols[2].gen = GSQL_GEN_RANDOM;
+    gcols[2].length = 8;
+    gcols[2].alphabet = "ab";
+    GsqlTableDecl gd = {"steps", 3, gcols, 0, NULL};
+    rc |= gsql_table_create(E, t, &gd, &er);
+    GsqlTable *gt;
+    rc |= gsql_table_open(E, t, "steps", &gt, &er);
+    if (!rc) {
+        rc |= gsql_serial_set(E, t, gt, 1, (GsBytes){(const unsigned char *)"K", 1}, 42, &er);
+        gsql_table_close(gt);
+    }
     if (rc) {
         printf("MISMATCH building the layout database answered %s: %s\n", gsql_code_name(er.code), er.message);
         return 1;

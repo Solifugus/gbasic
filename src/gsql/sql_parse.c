@@ -1306,6 +1306,76 @@ static int constraint_clause(P *p, SqlFkey *k, SqlCheck *c, int *is_check) {
     return fkey_clause(p, k);
 }
 
+/* SERIAL [OF (e, ...)] or RANDOM [(n [, 'chars'])], the current token the
+ * word (docs/gsql_generated_design.md §1) */
+static int generator(P *p, SqlColDef *c, uint32_t pos) {
+    if (c->gen) {
+        return fail_at(p, pos, GSQL_SYNTAX, "a column has at most one generator, SERIAL or RANDOM");
+    }
+    c->gen_pos = pos;
+    if (at_word(p, "serial")) {
+        c->gen = GSQL_GEN_SERIAL;
+        next(p);
+        if (!at_word(p, "of")) {
+            return 1;
+        }
+        next(p);
+        if (!expect_sym(p, "(")) {
+            return 0;
+        }
+        EList l = { 0 };
+        do {
+            SqlExpr *e = expr(p);
+            if (!e) {
+                return 0;
+            }
+            elist_push(p, &l, e);
+        } while (accept_sym(p, ","));
+        if (!expect_sym(p, ")")) {
+            return 0;
+        }
+        if (l.n > GSQL_SERIAL_MAX_SCOPE) {
+            return fail_at(p, pos, GSQL_SYNTAX, "a scope of at most %d expressions", GSQL_SERIAL_MAX_SCOPE);
+        }
+        c->scope = l.v;
+        c->nscope = l.n;
+        c->scope_text = sql_alloc(p->arena, sizeof(char *) * l.n);
+        for (size_t k = 0; k < l.n; k++) {
+            GsqlBuf text = {0};
+            sql_print_expr(&text, l.v[k]);
+            c->scope_text[k] = sql_strndup(p->arena, (const char *)text.bytes, text.length);
+            gsql_buf_free(&text);
+        }
+        return 1;
+    }
+    c->gen = GSQL_GEN_RANDOM;
+    next(p);
+    if (!accept_sym(p, "(")) {
+        return 1;
+    }
+    uint32_t lpos = p->tok.pos;
+    if (p->tok.kind != T_NUMBER || strspn(p->tok.text, "0123456789") != strlen(p->tok.text)) {
+        return expected(p, "a whole number of characters or digits");
+    }
+    unsigned long v = strlen(p->tok.text) > 6 ? 9999999 : strtoul(p->tok.text, NULL, 10);
+    if (v < 1 || v > GSQL_RANDOM_MAX_LENGTH) {
+        return fail_at(p, lpos, GSQL_SYNTAX, "RANDOM draws 1 to %d characters", GSQL_RANDOM_MAX_LENGTH);
+    }
+    c->length = (uint32_t)v;
+    next(p);
+    if (accept_sym(p, ",")) {
+        if (p->tok.kind != T_STRING) {
+            return expected(p, "the alphabet, as a string");
+        }
+        if (strlen(p->tok.text) != p->tok.len) {
+            return fail_at(p, p->tok.pos, GSQL_SYNTAX, "an alphabet may not hold a NUL");
+        }
+        c->alphabet = p->tok.text;
+        next(p);
+    }
+    return expect_sym(p, ")");
+}
+
 static int coldef(P *p, SqlColDef *c) {
     c->pos = p->tok.pos;
     c->name = name(p, "a column name");
@@ -1343,6 +1413,10 @@ static int coldef(P *p, SqlColDef *c) {
             c->fk->cols.n = 1;
             c->fk->cols.pos = c->pos;
             if (!fkey_tail(p, c->fk)) {
+                return 0;
+            }
+        } else if (at_word(p, "serial") || at_word(p, "random")) {
+            if (!generator(p, c, pos)) {
                 return 0;
             }
         } else if (at_word(p, "check")) {
@@ -2695,6 +2769,33 @@ static void print_coldef(GsqlBuf *o, const SqlColDef *c) {
     if (c->def) {
         puts_(o, " DEFAULT ");
         sql_print_expr(o, c->def);
+    }
+    if (c->gen == GSQL_GEN_SERIAL) {
+        puts_(o, " SERIAL");
+        for (size_t k = 0; k < c->nscope; k++) {
+            puts_(o, k ? ", " : " OF (");
+            sql_print_expr(o, c->scope[k]);
+        }
+        if (c->nscope) {
+            v3_put(o, ")", 1);
+        }
+    } else if (c->gen == GSQL_GEN_RANDOM) {
+        puts_(o, " RANDOM");
+        if (c->length) {
+            snprintf(b, sizeof b, "(%u", c->length);
+            puts_(o, b);
+            if (c->alphabet) {
+                puts_(o, ", '");
+                for (const char *q = c->alphabet; *q; q++) {
+                    v3_put(o, q, 1);
+                    if (*q == '\'') {
+                        v3_put(o, "'", 1);
+                    }
+                }
+                v3_put(o, "'", 1);
+            }
+            v3_put(o, ")", 1);
+        }
     }
     if (c->primary) {
         puts_(o, " PRIMARY KEY");

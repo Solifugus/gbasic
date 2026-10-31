@@ -55,6 +55,7 @@ static int fail(GsqlError *err, int code, const char *fmt, ...) {
         va_list ap;
         va_start(ap, fmt);
         err->code = code;
+        err->dup = 0;
         vsnprintf(err->message, sizeof err->message, fmt, ap);
         va_end(ap);
     }
@@ -85,6 +86,7 @@ struct GsqlTable {
     size_t nidx;
     GsqlIndex *idx;            /* names and arrays owned here */
     unsigned char rows_tree[TREE_LEN];
+    unsigned char serial_tree[TREE_LEN];
     unsigned char (*idx_tree)[TREE_LEN];
 };
 
@@ -102,10 +104,19 @@ static void free_index(GsqlIndex *x) {
     free((int *)x->desc);
 }
 
+static void column_free(GsqlColumn *c) {
+    free((char *)c->name);
+    free((unsigned char *)c->def);
+    for (size_t j = 0; j < c->nscope; j++) {
+        free((char *)c->scope[j]);
+    }
+    free((char **)c->scope);
+    free((char *)c->alphabet);
+}
+
 static void table_clear(GsqlTable *tb) {
     for (size_t i = 0; i < tb->ncols; i++) {
-        free((char *)tb->cols[i].name);
-        free((unsigned char *)tb->cols[i].def);
+        column_free(&tb->cols[i]);
     }
     for (size_t i = 0; i < tb->nidx; i++) {
         free_index(&tb->idx[i]);
@@ -148,7 +159,7 @@ static void schema_encode(const GsqlTable *tb, GsqlBuf *b) {
     v3_w_array(b, tb->ncols);
     for (size_t i = 0; i < tb->ncols; i++) {
         const GsqlColumn *c = &tb->cols[i];
-        v3_w_record(b, 5);
+        v3_w_record(b, c->gen ? 6 : 5);
         v3_w_name(b, "name");
         v3_w_text(b, c->name);
         v3_w_name(b, "kind");
@@ -162,6 +173,32 @@ static void schema_encode(const GsqlTable *tb, GsqlBuf *b) {
             v3_put(b, c->def, c->def_len);
         } else {
             v3_w_unknown(b);
+        }
+        /* written only where there is one, so a table without stores as
+           before (docs/gsql_generated_design.md §4) */
+        if (c->gen == GSQL_GEN_SERIAL) {
+            v3_w_name(b, "generator");
+            v3_w_record(b, 2);
+            v3_w_name(b, "kind");
+            v3_w_text(b, "serial");
+            v3_w_name(b, "scope");
+            v3_w_array(b, c->nscope);
+            for (size_t j = 0; j < c->nscope; j++) {
+                v3_w_text(b, c->scope[j]);
+            }
+        } else if (c->gen == GSQL_GEN_RANDOM) {
+            v3_w_name(b, "generator");
+            v3_w_record(b, 3);
+            v3_w_name(b, "kind");
+            v3_w_text(b, "random");
+            v3_w_name(b, "length");
+            v3_w_int(b, c->length);
+            v3_w_name(b, "alphabet");
+            if (c->alphabet) {
+                v3_w_text(b, c->alphabet);
+            } else {
+                v3_w_unknown(b);
+            }
         }
     }
     v3_w_name(b, "key");
@@ -204,6 +241,7 @@ static int kind_from_name(const char *s) {
 
 static void set_trees(GsqlTable *tb) {
     tree_name(tb->rows_tree, 'r', tb->id);
+    tree_name(tb->serial_tree, 'q', tb->id);
     free(tb->idx_tree);
     tb->idx_tree = tb->nidx ? malloc(tb->nidx * TREE_LEN) : NULL;
     if (tb->nidx && !tb->idx_tree) {
@@ -215,6 +253,49 @@ static void set_trees(GsqlTable *tb) {
 }
 
 #define MAX_ITEMS 4096
+
+/* A column's generator, as schema_encode writes it: 0 when it does not parse. */
+static int generator_decode(const V3Field *g, GsqlColumn *c) {
+    V3Field gf[4];
+    long ng = v3_record_fields(g->v, g->vlen, gf, 4);
+    const V3Field *gk = ng > 0 ? v3_field_named(gf, ng, "kind") : NULL;
+    char *kind = gk ? v3_read_text(gk->v, gk->vlen) : NULL;
+    int good = 0;
+    if (kind && strcmp(kind, "serial") == 0) {
+        const V3Field *gs = v3_field_named(gf, ng, "scope");
+        GsBytes items[GSQL_SERIAL_MAX_SCOPE];
+        long n = gs ? v3_array_items(gs->v, gs->vlen, items, GSQL_SERIAL_MAX_SCOPE) : -1;
+        if (n >= 0) {
+            c->gen = GSQL_GEN_SERIAL;
+            char **scope = n ? calloc((size_t)n, sizeof *scope) : NULL;
+            if (n && !scope) {
+                abort();
+            }
+            c->scope = (const char *const *)scope;
+            good = 1;
+            for (long j = 0; j < n; j++) {
+                c->nscope = (size_t)j + 1;
+                if (!(scope[j] = v3_read_text(items[j].p, items[j].n))) {
+                    good = 0;
+                    break;
+                }
+            }
+        }
+    } else if (kind && strcmp(kind, "random") == 0) {
+        const V3Field *gl = v3_field_named(gf, ng, "length"), *ga = v3_field_named(gf, ng, "alphabet");
+        uint64_t len = 0;
+        if (gl && ga && v3_read_u64(gl->v, gl->vlen, &len) && len <= GSQL_RANDOM_MAX_LENGTH) {
+            c->gen = GSQL_GEN_RANDOM;
+            c->length = (uint32_t)len;
+            good = 1;
+            if (!(ga->vlen == 1 && ga->v[0] == SER_UNKNOWN) && !(c->alphabet = v3_read_text(ga->v, ga->vlen))) {
+                good = 0;
+            }
+        }
+    }
+    free(kind);
+    return good;
+}
 
 /* Builds `tb` from its stored schema. Answers 0 when the bytes do not parse
  * or do not make a consistent schema (a CORRUPT catalog). */
@@ -282,6 +363,10 @@ static int schema_decode(const char *name, const unsigned char *p, size_t n, Gsq
         strcpy(c->currency, cur);
         free(cur);
         c->not_null = nn;
+        const V3Field *cg = v3_field_named(cf, ncf, "generator");
+        if (cg && !generator_decode(cg, c)) {
+            goto bad;
+        }
         if (!(cd->vlen == 1 && cd->v[0] == SER_UNKNOWN)) {
             unsigned char *d = malloc(cd->vlen);
             if (!d) {
@@ -524,6 +609,20 @@ GsBytes gsql_table_rows_tree(const GsqlTable *tb) {
 GsBytes gsql_index_tree(const GsqlTable *tb, size_t index) {
     GsBytes b = { tb->idx_tree[index], TREE_LEN };
     return b;
+}
+
+GsBytes gsql_serial_tree(const GsqlTable *tb) {
+    GsBytes b = { tb->serial_tree, TREE_LEN };
+    return b;
+}
+
+static int has_serial(const GsqlTable *tb) {
+    for (size_t i = 0; i < tb->ncols; i++) {
+        if (tb->cols[i].gen == GSQL_GEN_SERIAL) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* ==== 5. the type rules (§3.1) =========================================== */
@@ -817,6 +916,106 @@ int gsql_index_rowkey(const GsqlTable *tb, size_t index, GsBytes entry_key, GsBy
 
 /* ==== 7. the operations ================================================== */
 
+/* The length of one UTF-8 character at p, or 0 where it is not one. */
+static size_t utf8_char(const unsigned char *p, size_t n) {
+    size_t len = p[0] < 0x80 ? 1 : (p[0] >> 5) == 6 ? 2 : (p[0] >> 4) == 14 ? 3 : (p[0] >> 3) == 30 ? 4 : 0;
+    if (!len || len > n) {
+        return 0;
+    }
+    for (size_t k = 1; k < len; k++) {
+        if ((p[k] & 0xC0) != 0x80) {
+            return 0;
+        }
+    }
+    return len;
+}
+
+/* docs/gsql_generated_design.md §1 */
+static int check_generator(const char *table, const GsqlColumn *c, GsqlError *err) {
+    if (c->gen == GSQL_GEN_NONE) {
+        if (c->nscope || c->length || c->alphabet) {
+            return fail(err, GSQL_SCHEMA, "%s.%s: a scope, length or alphabet needs a generator", table, c->name);
+        }
+        return GSQL_OK;
+    }
+    if (c->def) {
+        return fail(err, GSQL_SCHEMA, "%s.%s: a generated column takes no DEFAULT: both would choose its value",
+                    table, c->name);
+    }
+    if (c->gen == GSQL_GEN_SERIAL) {
+        if (c->kind != GSQL_COL_INTEGER) {
+            return fail(err, GSQL_SCHEMA, "%s.%s: SERIAL counts, so it belongs on an INTEGER column, not %s", table,
+                        c->name, gsql_kind_name(c->kind));
+        }
+        if (c->length || c->alphabet) {
+            return fail(err, GSQL_SCHEMA, "%s.%s: a serial takes no length or alphabet", table, c->name);
+        }
+        if (c->nscope > GSQL_SERIAL_MAX_SCOPE) {
+            return fail(err, GSQL_SCHEMA, "%s.%s: a scope of %zu expressions, past the limit of %d", table, c->name,
+                        c->nscope, GSQL_SERIAL_MAX_SCOPE);
+        }
+        for (size_t j = 0; j < c->nscope; j++) {
+            if (!c->scope[j] || !c->scope[j][0]) {
+                return fail(err, GSQL_SCHEMA, "%s.%s: an empty scope expression", table, c->name);
+            }
+        }
+        return GSQL_OK;
+    }
+    if (c->gen != GSQL_GEN_RANDOM) {
+        return fail(err, GSQL_SCHEMA, "%s.%s: generator %d is not a generator", table, c->name, c->gen);
+    }
+    if (c->nscope) {
+        return fail(err, GSQL_SCHEMA, "%s.%s: a random value has no scope", table, c->name);
+    }
+    if (c->kind == GSQL_COL_INTEGER) {
+        if (c->alphabet) {
+            return fail(err, GSQL_SCHEMA, "%s.%s: an integer is drawn in digits, so it takes a number of digits and "
+                        "no alphabet", table, c->name);
+        }
+        if (c->length > 18) {
+            return fail(err, GSQL_SCHEMA, "%s.%s: RANDOM(%u) on an integer: at most 18 digits fit one", table,
+                        c->name, c->length);
+        }
+        return GSQL_OK;
+    }
+    if (c->kind != GSQL_COL_STRING) {
+        return fail(err, GSQL_SCHEMA, "%s.%s: RANDOM draws text or an integer, not %s", table, c->name,
+                    gsql_kind_name(c->kind));
+    }
+    if (c->length > GSQL_RANDOM_MAX_LENGTH) {
+        return fail(err, GSQL_SCHEMA, "%s.%s: RANDOM(%u): at most %d characters", table, c->name, c->length,
+                    GSQL_RANDOM_MAX_LENGTH);
+    }
+    if (c->alphabet) {
+        const unsigned char *a = (const unsigned char *)c->alphabet;
+        size_t n = strlen(c->alphabet), count = 0;
+        for (size_t i = 0; i < n;) {
+            size_t len = utf8_char(a + i, n - i);
+            if (!len) {
+                return fail(err, GSQL_SCHEMA, "%s.%s: the alphabet is not UTF-8 text", table, c->name);
+            }
+            for (size_t j = 0; j < i;) {
+                size_t l2 = utf8_char(a + j, n - j);
+                if (l2 == len && memcmp(a + j, a + i, len) == 0) {
+                    return fail(err, GSQL_SCHEMA, "%s.%s: the alphabet holds `%.*s` twice, which would make it "
+                                "twice as likely", table, c->name, (int)len, (const char *)a + i);
+                }
+                j += l2;
+            }
+            i += len;
+            if (++count > GSQL_RANDOM_MAX_ALPHABET) {
+                return fail(err, GSQL_SCHEMA, "%s.%s: an alphabet of at most %d characters", table, c->name,
+                            GSQL_RANDOM_MAX_ALPHABET);
+            }
+        }
+        if (count < 2) {
+            return fail(err, GSQL_SCHEMA, "%s.%s: an alphabet of %zu character%s draws nothing random: it needs two "
+                        "or more", table, c->name, count, count == 1 ? "" : "s");
+        }
+    }
+    return GSQL_OK;
+}
+
 static int check_column_decl(const char *table, const GsqlColumn *c, GsqlError *err) {
     int rc = check_name("column", c->name, err);
     if (rc) {
@@ -841,12 +1040,28 @@ static int check_column_decl(const char *table, const GsqlColumn *c, GsqlError *
             return fail(err, GSQL_SCHEMA, "%s.%s: a default of unknown is no default; leave it out", table, c->name);
         }
     }
-    return GSQL_OK;
+    return check_generator(table, c, err);
 }
 
 static void copy_column(GsqlColumn *dst, const GsqlColumn *src) {
     *dst = *src;
     dst->name = dup_text(src->name);
+    if (src->nscope) {
+        char **scope = malloc(src->nscope * sizeof *scope);
+        if (!scope) {
+            abort();
+        }
+        for (size_t j = 0; j < src->nscope; j++) {
+            scope[j] = dup_text(src->scope[j]);
+        }
+        dst->scope = (const char *const *)scope;
+    } else {
+        dst->scope = NULL;
+    }
+    dst->alphabet = src->alphabet ? dup_text(src->alphabet) : NULL;
+    if (src->gen) {
+        dst->not_null = 1;   /* a generated value is never absent */
+    }
     if (src->def) {
         unsigned char *d = malloc(src->def_len);
         if (!d) {
@@ -940,9 +1155,12 @@ int gsql_table_create(const GsEngine *e, GsTxn *t, const GsqlTableDecl *d, GsqlE
     }
     set_trees(&tb);
     st = e->tree_create(t, gsql_table_rows_tree(&tb));
+    if (st == GS_OK && has_serial(&tb)) {
+        st = e->tree_create(t, gsql_serial_tree(&tb));
+    }
     if (st != GS_OK) {
-        rc = st == GS_EXISTS ? fail(err, GSQL_CORRUPT, "the rows tree of a new table %s is already there", d->name)
-                             : storage(err, st, "creating the rows tree");
+        rc = st == GS_EXISTS ? fail(err, GSQL_CORRUPT, "a tree of a new table %s is already there", d->name)
+                             : storage(err, st, "creating a table's trees");
     } else {
         rc = schema_write(e, t, &tb, err);
     }
@@ -959,6 +1177,9 @@ int gsql_table_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *er
     int st = e->tree_drop(t, gsql_table_rows_tree(tb));
     for (size_t i = 0; st == GS_OK && i < tb->nidx; i++) {
         st = e->tree_drop(t, gsql_index_tree(tb, i));
+    }
+    if (st == GS_OK && has_serial(tb)) {
+        st = e->tree_drop(t, gsql_serial_tree(tb));
     }
     if (st == GS_OK) {
         st = e->del(t, CATALOG, name_bytes(name));
@@ -1240,7 +1461,11 @@ static int unique_taken(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t
     if (self && same_bytes(got, *self)) {
         return GSQL_OK;
     }
-    return fail(err, GSQL_DUPLICATE, "%s: unique index %s already holds that value", tb->name, tb->idx[i].name);
+    fail(err, GSQL_DUPLICATE, "%s: unique index %s already holds that value", tb->name, tb->idx[i].name);
+    if (err) {
+        err->dup = (int)i + 1;
+    }
+    return GSQL_DUPLICATE;
 }
 
 static int put_entry(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t i, const Entries *en, GsBytes rowkey,
@@ -1281,6 +1506,9 @@ int gsql_row_insert(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlIn *va
         int st = e->get(t, gsql_table_rows_tree(tb), key_bytes(&k), &got);
         if (st == GS_OK) {
             rc = fail(err, GSQL_DUPLICATE, "%s: the primary key already holds that value", tb->name);
+            if (err) {
+                err->dup = -1;
+            }
             goto out;
         }
         if (st != GS_NOT_FOUND) {
@@ -1376,6 +1604,9 @@ int gsql_row_update(const GsEngine *e, GsTxn *t, GsqlTable *tb, GsBytes rowkey, 
         int st = e->get(t, gsql_table_rows_tree(tb), key_bytes(&k), &got);
         if (st == GS_OK) {
             rc = fail(err, GSQL_DUPLICATE, "%s: the primary key already holds that value", tb->name);
+            if (err) {
+                err->dup = -1;
+            }
             goto out;
         }
         if (st != GS_NOT_FOUND) {
@@ -1623,12 +1854,39 @@ int gsql_table_add_column(const GsEngine *e, GsTxn *t, GsqlTable *tb, const Gsql
     if (gsql_table_find(tb, c->name) >= 0) {
         return fail(err, GSQL_SCHEMA, "%s already has a column %s", tb->name, c->name);
     }
-    if (c->not_null && !c->def) {
+    if (c->not_null && !c->def && !c->gen) {
         return fail(err, GSQL_SCHEMA, "%s.%s is NOT NULL with no default, so the rows already there would break it",
                     tb->name, c->name);
     }
     if (tb->ncols >= MAX_ITEMS) {
         return fail(err, GSQL_SCHEMA, "%s has %zu columns, the limit", tb->name, tb->ncols);
+    }
+    int had_serial = has_serial(tb);
+    if (c->gen) {
+        /* rows already written would read it as absent, which a generated
+           column never is; and no order of them is the obvious one to number */
+        GsCursor *cur;
+        int st = e->cursor_open(t, gsql_table_rows_tree(tb), &cur);
+        if (st != GS_OK) {
+            return storage(err, st, "reading a table's rows");
+        }
+        int pos = 0;
+        st = e->first(cur, &pos);
+        e->cursor_close(cur);
+        if (st != GS_OK) {
+            return storage(err, st, "reading a table's rows");
+        }
+        if (pos) {
+            return fail(err, GSQL_SCHEMA, "%s already has rows, so a generated column %s cannot be added: it would "
+                        "have no value for them", tb->name, c->name);
+        }
+    }
+    if (c->gen == GSQL_GEN_SERIAL && !had_serial) {
+        int st = e->tree_create(t, gsql_serial_tree(tb));
+        if (st != GS_OK) {
+            return st == GS_EXISTS ? fail(err, GSQL_CORRUPT, "%s's serial tree is already there", tb->name)
+                                   : storage(err, st, "creating the serial tree");
+        }
     }
     GsqlColumn *grown = realloc(tb->cols, (tb->ncols + 1) * sizeof *grown);
     if (!grown) {
@@ -1644,6 +1902,65 @@ int gsql_table_add_column(const GsEngine *e, GsTxn *t, GsqlTable *tb, const Gsql
         return rc;
     }
     return ok(err);
+}
+
+/* ---- serial counters (docs/gsql_generated_design.md §4) ------------------ */
+
+static int serial_key(const GsqlTable *tb, size_t col, GsBytes scope, GsqlBuf *k, GsqlError *err) {
+    if (col >= tb->ncols || tb->cols[col].gen != GSQL_GEN_SERIAL) {
+        return fail(err, GSQL_MISUSE, "%s: column %zu is not a serial", tb->name, col);
+    }
+    k->length = 0;
+    unsigned char c2[2] = { (unsigned char)(col >> 8), (unsigned char)col };
+    v3_put(k, c2, 2);
+    if (scope.n) {
+        v3_put(k, scope.p, scope.n);
+    }
+    return GSQL_OK;
+}
+
+int gsql_serial_get(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t col, GsBytes scope, uint64_t *hw,
+                    GsqlError *err) {
+    GsqlBuf k = { 0 };
+    int rc = serial_key(tb, col, scope, &k, err);
+    *hw = 0;
+    if (rc) {
+        return rc;
+    }
+    GsBytes got;
+    int st = e->get(t, gsql_serial_tree(tb), (GsBytes){ k.bytes, k.length }, &got);
+    gsql_buf_free(&k);
+    if (st == GS_NOT_FOUND) {
+        return ok(err);
+    }
+    if (st != GS_OK) {
+        return storage(err, st, "reading a serial counter");
+    }
+    if (got.n != 8) {
+        return fail(err, GSQL_CORRUPT, "%s: a serial counter of %zu bytes, not 8", tb->name, got.n);
+    }
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) {
+        v |= (uint64_t)got.p[i] << (8 * i);
+    }
+    *hw = v;
+    return ok(err);
+}
+
+int gsql_serial_set(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t col, GsBytes scope, uint64_t hw,
+                    GsqlError *err) {
+    GsqlBuf k = { 0 };
+    int rc = serial_key(tb, col, scope, &k, err);
+    if (rc) {
+        return rc;
+    }
+    unsigned char b[8];
+    for (int i = 0; i < 8; i++) {
+        b[i] = (unsigned char)(hw >> (8 * i));
+    }
+    int st = e->put(t, gsql_serial_tree(tb), (GsBytes){ k.bytes, k.length }, (GsBytes){ b, 8 }, 0);
+    gsql_buf_free(&k);
+    return st == GS_OK ? ok(err) : storage(err, st, "writing a serial counter");
 }
 
 /* ==== 8. the invariant check (§8) ======================================== */
@@ -1691,7 +2008,7 @@ typedef struct {
 
 static int collect_tree(void *ctx, GsBytes name) {
     Trees *ts = ctx;
-    if (name.n == TREE_LEN && name.p[0] == 0 && (name.p[1] == 'r' || name.p[1] == 'i')) {
+    if (name.n == TREE_LEN && name.p[0] == 0 && (name.p[1] == 'r' || name.p[1] == 'i' || name.p[1] == 'q')) {
         if (ts->n == ts->cap) {
             ts->cap = ts->cap ? ts->cap * 2 : 16;
             ts->trees = realloc(ts->trees, ts->cap * TREE_LEN);
@@ -1824,6 +2141,15 @@ int gsql_table_check(const GsEngine *e, GsTxn *t, void (*report)(void *ctx, cons
             for (size_t j = 0; j < tb->nidx; j++) {
                 collect_tree(&owned, gsql_index_tree(tb, j));
             }
+            if (has_serial(tb)) {
+                GsCursor *sc;
+                if (e->cursor_open(t, gsql_serial_tree(tb), &sc) != GS_OK) {
+                    problem(&ck, "%s: its serial tree is missing", tb->name);
+                } else {
+                    e->cursor_close(sc);
+                    collect_tree(&owned, gsql_serial_tree(tb));
+                }
+            }
             gsql_table_close(tb);
         }
         free(ns.names[i]);
@@ -1838,7 +2164,8 @@ int gsql_table_check(const GsEngine *e, GsTxn *t, void (*report)(void *ctx, cons
             found = memcmp(all.trees[i], owned.trees[j], TREE_LEN) == 0;
         }
         if (!found) {
-            problem(&ck, "a %s tree that no table names", all.trees[i][1] == 'r' ? "rows" : "index");
+            problem(&ck, "a %s tree that no table names",
+                    all.trees[i][1] == 'r' ? "rows" : all.trees[i][1] == 'q' ? "serial" : "index");
         }
     }
     free(all.trees);

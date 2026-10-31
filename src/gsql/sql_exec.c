@@ -12,6 +12,7 @@
 #include "gsql_key.h"
 #include "gsql_wire.h"
 #include "serialize_tags.h"
+#include "platform.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -983,7 +984,7 @@ static int bound_key(Iter *it, SqlExpr *e, size_t j, GsqlKey *key) {
     }
     GsqlColumn c = *gsql_table_col(it->sc->tb, it->sc->keycols[j]);
     c.not_null = 0;
-    GsqlError ignored = { GSQL_OK, "", 0 };
+    GsqlError ignored = { GSQL_OK, "", 0, 0 };
     int fits = b.bytes[0] != SER_NULL && gsql_value_fits(&c, b.bytes, b.length, &ignored) == GSQL_OK;
     if (fits) {
         fits = gsql_key_append(key, b.bytes, b.length, NULL, flags_for(it->sc, j)) == GSQL_KEY_OK;
@@ -2563,7 +2564,7 @@ typedef struct {
 static int collect_fk(void *ctx, const char *name) {
     FkList *l = ctx;
     GsqlBuf b = {0};
-    GsqlError e = { GSQL_OK, "", 0 };
+    GsqlError e = { GSQL_OK, "", 0, 0 };
     if (gsql_fkey_get(l->x->e, l->x->t, name, &b, &e) == GSQL_OK) {
         FkRec *g = realloc(l->v, sizeof *g * (l->n + 1));
         if (!g) {
@@ -2589,7 +2590,7 @@ static void fk_list_free(FkList *l) {
 static int fk_all(X *x, FkList *l) {
     memset(l, 0, sizeof *l);
     l->x = x;
-    GsqlError e = { GSQL_OK, "", 0 };
+    GsqlError e = { GSQL_OK, "", 0, 0 };
     int rc = gsql_fkey_list(x->e, x->t, collect_fk, l, &e);
     if (rc != GSQL_OK) {
         *x->err = e;
@@ -2603,7 +2604,7 @@ static int fk_all(X *x, FkList *l) {
 static int fk_bind(X *x, const FkRec *k, GsqlTable *child, GsqlTable **parent, unsigned *cpos, unsigned *ppos,
                    char *why, size_t cap) {
     *parent = NULL;
-    GsqlError e = { GSQL_OK, "", 0 };
+    GsqlError e = { GSQL_OK, "", 0, 0 };
     for (size_t i = 0; i < k->ncols; i++) {
         long c = gsql_table_find(child, k->cols[i]);
         if (c < 0) {
@@ -2672,7 +2673,7 @@ static int fk_parent_has(X *x, GsqlTable *parent, const unsigned *ppos, const Gs
         in[ppos[i]].n = vals[i].n;
     }
     GsqlBuf key = {0}, row = {0};
-    GsqlError e = { GSQL_OK, "", 0 };
+    GsqlError e = { GSQL_OK, "", 0, 0 };
     int r = -1;
     if (gsql_row_key(parent, in, &key, &e) == GSQL_OK) {
         int rc = gsql_row_get(x->e, x->t, parent, (GsBytes){ key.bytes, key.length }, &row, &e);
@@ -2787,7 +2788,7 @@ static int fk_check_parent(X *x, const FkList *fks, GsqlTable *parent, const GsB
             continue;
         }
         GsqlTable *child = NULL, *bound = NULL;
-        GsqlError e = { GSQL_OK, "", 0 };
+        GsqlError e = { GSQL_OK, "", 0, 0 };
         if (gsql_table_open(x->e, x->t, k->table, &child, &e) != GSQL_OK) {
             continue;
         }
@@ -2922,7 +2923,7 @@ typedef struct {
 static int collect_ck(void *ctx, const char *name) {
     CkList *l = ctx;
     GsqlBuf b = {0};
-    GsqlError e = { GSQL_OK, "", 0 };
+    GsqlError e = { GSQL_OK, "", 0, 0 };
     if (gsql_fkey_get(l->x->e, l->x->t, name, &b, &e) == GSQL_OK) {
         CkRec *g = realloc(l->v, sizeof *g * (l->n + 1));
         if (!g) {
@@ -2948,7 +2949,7 @@ static void ck_list_free(CkList *l) {
 static int ck_all(X *x, CkList *l) {
     memset(l, 0, sizeof *l);
     l->x = x;
-    GsqlError e = { GSQL_OK, "", 0 };
+    GsqlError e = { GSQL_OK, "", 0, 0 };
     int rc = gsql_fkey_list(x->e, x->t, collect_ck, l, &e);
     if (rc != GSQL_OK) {
         *x->err = e;
@@ -2992,8 +2993,10 @@ static int has_subquery(const SqlExpr *e) {
     return 0;
 }
 
-/* 1 planned; 0 with `why` naming what stops it */
-static int ck_plan(X *x, const char *table, const char *text, CkPlan *cp, char *why, size_t cap) {
+/* `SELECT text FROM table`, its `nout` outputs reading only the row: 1
+ * planned; 0 with `why` naming what stops it */
+static int row_plan(X *x, const char *what, const char *table, const char *text, size_t nout, CkPlan *cp,
+                    char *why, size_t cap) {
     memset(cp, 0, sizeof *cp);
     size_t qn = strlen(table) * 2 + strlen(text) + 32;
     cp->query = malloc(qn);
@@ -3009,7 +3012,7 @@ static int ck_plan(X *x, const char *table, const char *text, CkPlan *cp, char *
         }
     }
     snprintf(cp->query + used, qn - used, "\"");
-    GsqlError e = { GSQL_OK, "", 0 };
+    GsqlError e = { GSQL_OK, "", 0, 0 };
     if (sql_parse(cp->query, strlen(cp->query), &cp->parsed, &e) != GSQL_OK) {
         snprintf(why, cap, "%s", e.message);
         return 0;
@@ -3020,17 +3023,25 @@ static int ck_plan(X *x, const char *table, const char *text, CkPlan *cp, char *
         return 0;
     }
     cp->planned = 1;
-    if (cp->plan.nout != 1 || has_subquery(cp->plan.out[0]) || cp->plan.grouped) {
-        snprintf(why, cap, "a check reads only its own row: no subquery and no aggregate");
+    int bad = cp->plan.nout != nout || cp->plan.grouped;
+    for (size_t k = 0; !bad && k < cp->plan.nout; k++) {
+        bad = has_subquery(cp->plan.out[k]);
+    }
+    if (bad) {
+        snprintf(why, cap, "%s reads only its own row: no subquery and no aggregate", what);
         return 0;
     }
     return 1;
 }
 
+static int ck_plan(X *x, const char *table, const char *text, CkPlan *cp, char *why, size_t cap) {
+    return row_plan(x, "a check", table, text, 1, cp, why, cap);
+}
+
 /* The check against one row: 1 passes, 0 refused (err filled), -1 failed. */
 static int ck_row(X *x, CkPlan *cp, const GsBytes *row) {
     X cx;
-    GsqlError e = { GSQL_OK, "", 0 };
+    GsqlError e = { GSQL_OK, "", 0, 0 };
     x_init(&cx, x->q, x->e, x->t, &cp->plan, &e);
     cx.params = x->params;
     cx.paramslen = x->paramslen;
@@ -3125,6 +3136,408 @@ static int ck_check_row(X *x, CkSet *set, GsqlTable *tb, const GsBytes *row) {
     return GSQL_OK;
 }
 
+/* ---- generated values: SERIAL and RANDOM (docs/gsql_generated_design.md) --
+ *
+ * A generator belongs to its column's schema. A serial's counters are the
+ * table layer's (gsql_serial_get/set), one per scope, the scope being the key
+ * encoding of `SELECT scope... FROM table` evaluated against the row about to
+ * be written, as a CHECK is. A counter is written only once its row is, in
+ * the same transaction, so numbers are gapless. */
+
+typedef struct {
+    size_t col;
+    CkPlan plan;             /* SERIAL OF's scope; unplanned when unscoped */
+    GsqlBuf scope;           /* this row's scope key */
+    uint64_t next;           /* the counter to write once the row is: 0 none */
+} GenSer;
+
+typedef struct {
+    GenSer *ser;
+    size_t nser;
+    size_t *rnd;             /* random columns */
+    size_t nrnd;
+    GsqlBuf *bufs;           /* one per column: a generated value */
+} GenSet;
+
+static void gen_set_free(GenSet *g, size_t ncols) {
+    for (size_t i = 0; i < g->nser; i++) {
+        ck_plan_free(&g->ser[i].plan);
+        gsql_buf_free(&g->ser[i].scope);
+    }
+    for (size_t c = 0; g->bufs && c < ncols; c++) {
+        gsql_buf_free(&g->bufs[c]);
+    }
+    free(g->ser);
+    free(g->rnd);
+    free(g->bufs);
+    memset(g, 0, sizeof *g);
+}
+
+/* the scope's expressions as one select list */
+static char *scope_list(const GsqlColumn *col) {
+    size_t n = 1;
+    for (size_t k = 0; k < col->nscope; k++) {
+        n += strlen(col->scope[k]) + 2;
+    }
+    char *q = malloc(n);
+    if (!q) {
+        abort();
+    }
+    q[0] = 0;
+    for (size_t k = 0; k < col->nscope; k++) {
+        if (k) {
+            strcat(q, ", ");
+        }
+        strcat(q, col->scope[k]);
+    }
+    return q;
+}
+
+static int reads_column(const SqlExpr *e, unsigned col) {
+    if (!e) {
+        return 0;
+    }
+    if (e->kind == SX_COL && e->tab == 0 && e->col == col) {
+        return 1;
+    }
+    if (reads_column(e->operand, col)) {
+        return 1;
+    }
+    for (size_t k = 0; k < e->na; k++) {
+        if (reads_column(e->a[k], col)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A serial's scope planned against `table`: GSQL_OK, or a refusal at `pos`. */
+static int scope_plan(X *x, const char *table, const GsqlColumn *col, long self, CkPlan *cp, uint32_t pos) {
+    char *list = scope_list(col);
+    char why[400];
+    int planned = row_plan(x, "a scope", table, list, col->nscope, cp, why, sizeof why);
+    free(list);
+    if (!planned) {
+        return xfail(x->err, GSQL_SCHEMA, pos, "serial `%s.%s`'s scope cannot be applied: %s", table, col->name, why);
+    }
+    for (size_t k = 0; self >= 0 && k < cp->plan.nout; k++) {
+        if (reads_column(cp->plan.out[k], (unsigned)self)) {
+            return xfail(x->err, GSQL_SCHEMA, pos, "serial `%s.%s`'s scope reads `%s` itself: the number would be "
+                         "needed to find the counter it comes from", table, col->name, col->name);
+        }
+    }
+    return GSQL_OK;
+}
+
+static int gen_load(X *x, GsqlTable *tb, GenSet *g) {
+    memset(g, 0, sizeof *g);
+    size_t ncols = gsql_table_ncols(tb);
+    for (size_t c = 0; c < ncols; c++) {
+        int gen = gsql_table_col(tb, c)->gen;
+        g->nser += gen == GSQL_GEN_SERIAL;
+        g->nrnd += gen == GSQL_GEN_RANDOM;
+    }
+    if (!g->nser && !g->nrnd) {
+        return GSQL_OK;
+    }
+    g->ser = calloc(g->nser ? g->nser : 1, sizeof(GenSer));
+    g->rnd = calloc(g->nrnd ? g->nrnd : 1, sizeof(size_t));
+    g->bufs = calloc(ncols, sizeof(GsqlBuf));
+    if (!g->ser || !g->rnd || !g->bufs) {
+        abort();
+    }
+    size_t ns = 0, nr = 0;
+    for (size_t c = 0; c < ncols; c++) {
+        const GsqlColumn *col = gsql_table_col(tb, c);
+        if (col->gen == GSQL_GEN_RANDOM) {
+            g->rnd[nr++] = c;
+        } else if (col->gen == GSQL_GEN_SERIAL) {
+            GenSer *s = &g->ser[ns++];
+            s->col = c;
+            if (col->nscope) {
+                int rc = scope_plan(x, gsql_table_name(tb), col, -1, &s->plan, 0);
+                if (rc != GSQL_OK) {
+                    return rc;
+                }
+            }
+        }
+    }
+    return GSQL_OK;
+}
+
+/* n bytes of the system's cryptographic randomness */
+static int draw(X *x, void *b, size_t n) {
+    if (gb_secure_random(b, n) != 0) {
+        return xfail(x->err, GSQL_STORAGE, 0, "the system's random source answered nothing");
+    }
+    return GSQL_OK;
+}
+
+/* uniform in [0, n): a draw of `width` bytes, those past the largest
+ * multiple of n drawn again, so no value is likelier than another */
+static int draw_below(X *x, uint64_t n, int width, uint64_t *out) {
+    uint64_t span_max = width >= 8 ? UINT64_MAX : ((uint64_t)1 << (8 * width)) - 1;
+    uint64_t limit = span_max - (span_max % n + 1) % n;   /* the last value kept */
+    for (;;) {
+        unsigned char b[8];
+        int rc = draw(x, b, (size_t)width);
+        if (rc != GSQL_OK) {
+            return rc;
+        }
+        uint64_t r = 0;
+        for (int i = 0; i < width; i++) {
+            r = r << 8 | b[i];
+        }
+        if (r <= limit) {
+            *out = r % n;
+            return GSQL_OK;
+        }
+    }
+}
+
+static const char URL_SAFE[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/* the characters of an alphabet: each one's offset, and a sentinel */
+static size_t alphabet_chars(const char *a, size_t *at, size_t max) {
+    size_t n = 0, len = strlen(a);
+    for (size_t i = 0; i < len && n < max;) {
+        unsigned char c = (unsigned char)a[i];
+        size_t l = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : 4;
+        at[n++] = i;
+        i += l;
+    }
+    at[n] = len;
+    return n;
+}
+
+static void put_exact(GsqlBuf *b, uint64_t v) {
+    b->length = 0;
+    v3_w_int(b, v);
+}
+
+static int random_value(X *x, const GsqlColumn *col, GsqlBuf *out) {
+    out->length = 0;
+    if (col->kind == GSQL_COL_INTEGER) {
+        uint64_t v;
+        int rc;
+        if (!col->length) {
+            unsigned char b[8];
+            rc = draw(x, b, 8);
+            v = 0;
+            for (int i = 0; i < 8; i++) {
+                v = v << 8 | b[i];
+            }
+            v &= INT64_MAX;
+        } else {
+            uint64_t base = 1;
+            for (uint32_t i = 1; i < col->length; i++) {
+                base *= 10;
+            }
+            rc = draw_below(x, base * 9, 8, &v);   /* n digits: base .. 10*base - 1 */
+            v += base;
+        }
+        if (rc == GSQL_OK) {
+            put_exact(out, v);
+        }
+        return rc;
+    }
+    const char *a = col->alphabet ? col->alphabet : URL_SAFE;
+    size_t *at = malloc((GSQL_RANDOM_MAX_ALPHABET + 1) * sizeof *at);
+    if (!at) {
+        abort();
+    }
+    size_t na = alphabet_chars(a, at, GSQL_RANDOM_MAX_ALPHABET);
+    uint32_t len = col->length ? col->length : 22;
+    GsqlBuf text = {0};
+    int rc = GSQL_OK;
+    for (uint32_t i = 0; i < len && rc == GSQL_OK; i++) {
+        uint64_t k;
+        rc = draw_below(x, na, na <= 256 ? 1 : 2, &k);
+        if (rc == GSQL_OK) {
+            v3_put(&text, a + at[k], at[k + 1] - at[k]);
+        }
+    }
+    v3_put(&text, "", 1);
+    if (rc == GSQL_OK) {
+        v3_w_text(out, (const char *)text.bytes);
+    }
+    gsql_buf_free(&text);
+    free(at);
+    return rc;
+}
+
+/* how many values a random column can hold, for a refusal: 0 when more
+ * than 10^18 */
+static uint64_t random_space(const GsqlColumn *col) {
+    if (col->kind == GSQL_COL_INTEGER) {
+        if (!col->length) {
+            return 0;
+        }
+        uint64_t base = 1;
+        for (uint32_t i = 1; i < col->length; i++) {
+            base *= 10;
+        }
+        return base * 9;
+    }
+    size_t at[GSQL_RANDOM_MAX_ALPHABET + 1];
+    uint64_t na = alphabet_chars(col->alphabet ? col->alphabet : URL_SAFE, at, GSQL_RANDOM_MAX_ALPHABET);
+    uint64_t v = 1;
+    for (uint32_t i = 0; i < (col->length ? col->length : 22); i++) {
+        if (v > 1000000000000000000ull / na) {
+            return 0;
+        }
+        v *= na;
+    }
+    return v;
+}
+
+/* this row's scope key for one serial */
+static int gen_scope(X *x, GsqlTable *tb, GenSer *s, const GsBytes *row) {
+    s->scope.length = 0;
+    if (!s->plan.planned) {
+        return GSQL_OK;
+    }
+    X cx;
+    GsqlError e = { GSQL_OK, "", 0, 0 };
+    x_init(&cx, x->q, x->e, x->t, &s->plan.plan, &e);
+    cx.params = x->params;
+    cx.paramslen = x->paramslen;
+    cx.sx[0].direct = row;
+    cx.sx[0].have_row = 1;
+    GsqlKey key;
+    gsql_key_init(&key);
+    int rc = GSQL_OK;
+    for (size_t k = 0; rc == GSQL_OK && k < s->plan.plan.nout; k++) {
+        GsqlHv *v = eval(&cx, s->plan.plan.out[k]);
+        if (!v) {
+            rc = e.code ? e.code : GSQL_EXPRESSION;
+        } else {
+            GsqlBuf b = {0};
+            rc = cx.h->store(cx.h->ctx, v, &b, &e);
+            if (rc == GSQL_OK && gsql_key_append(&key, b.bytes, b.length, NULL, 0) != GSQL_KEY_OK) {
+                rc = xfail(&e, GSQL_EXPRESSION, 0, "%s has no order G-SQL can key, so it cannot be a scope",
+                           tag_word(b.length ? b.bytes[0] : 0));
+            }
+            gsql_buf_free(&b);
+            rel(&cx, v);
+        }
+    }
+    if (rc == GSQL_OK) {
+        v3_put(&s->scope, key.bytes, key.length);
+    } else {
+        *x->err = e;
+        x->err->position = 0;   /* not a place in the scope's own planned query */
+        snprintf(x->err->message, sizeof x->err->message, "serial `%.80s.%.80s`'s scope: %.300s",
+                 gsql_table_name(tb), gsql_table_col(tb, s->col)->name, e.message);
+    }
+    gsql_key_free(&key);
+    cx.sx[0].direct = NULL;
+    x_free(&cx);
+    return rc;
+}
+
+/* The generated values of one row about to be inserted: each random column
+ * the statement omitted drawn, and each serial numbered or, given a value,
+ * noted. `vals` gains the values; `whole` is the row as it will be written. */
+static int gen_fill(X *x, GsqlTable *tb, GenSet *g, GsqlIn *vals, GsBytes *whole, const int *omitted) {
+    for (size_t i = 0; i < g->nrnd; i++) {
+        size_t c = g->rnd[i];
+        if (!omitted[c]) {
+            continue;
+        }
+        int rc = random_value(x, gsql_table_col(tb, c), &g->bufs[c]);
+        if (rc != GSQL_OK) {
+            return rc;
+        }
+        vals[c].present = 1;
+        vals[c].p = g->bufs[c].bytes;
+        vals[c].n = g->bufs[c].length;
+    }
+    row_values(tb, vals, whole);
+    for (size_t i = 0; i < g->nser; i++) {
+        GenSer *s = &g->ser[i];
+        s->next = 0;
+        if (!omitted[s->col]) {
+            /* a value supplied: the counter moves up to it, never down */
+            uint64_t v, hw;
+            int rc = gen_scope(x, tb, s, whole);
+            if (rc == GSQL_OK && v3_read_u64(vals[s->col].p, vals[s->col].n, &v)) {
+                rc = gsql_serial_get(x->e, x->t, tb, s->col, (GsBytes){ s->scope.bytes, s->scope.length }, &hw,
+                                     x->err);
+                if (rc == GSQL_OK && v > hw) {
+                    s->next = v;
+                }
+            }
+            if (rc != GSQL_OK) {
+                return rc;
+            }
+            continue;
+        }
+        int rc = gen_scope(x, tb, s, whole);
+        uint64_t hw = 0;
+        if (rc == GSQL_OK) {
+            rc = gsql_serial_get(x->e, x->t, tb, s->col, (GsBytes){ s->scope.bytes, s->scope.length }, &hw, x->err);
+        }
+        if (rc != GSQL_OK) {
+            return rc;
+        }
+        if (hw >= (uint64_t)INT64_MAX) {
+            return xfail(x->err, GSQL_SERIAL, 0, "serial `%s.%s` has reached %lld in this scope: there is no next "
+                         "number", gsql_table_name(tb), gsql_table_col(tb, s->col)->name, (long long)INT64_MAX);
+        }
+        s->next = hw + 1;
+        put_exact(&g->bufs[s->col], s->next);
+        vals[s->col].present = 1;
+        vals[s->col].p = g->bufs[s->col].bytes;
+        vals[s->col].n = g->bufs[s->col].length;
+        whole[s->col].p = vals[s->col].p;
+        whole[s->col].n = vals[s->col].n;
+    }
+    return GSQL_OK;
+}
+
+/* once the row is written: its counters */
+static int gen_commit(X *x, GsqlTable *tb, GenSet *g) {
+    for (size_t i = 0; i < g->nser; i++) {
+        GenSer *s = &g->ser[i];
+        if (s->next) {
+            int rc = gsql_serial_set(x->e, x->t, tb, s->col, (GsBytes){ s->scope.bytes, s->scope.length }, s->next,
+                                     x->err);
+            if (rc != GSQL_OK) {
+                return rc;
+            }
+        }
+    }
+    return GSQL_OK;
+}
+
+/* whether a DUPLICATE was in a key holding a random column the row drew, so
+ * that drawing again can help */
+static int gen_redraws(GsqlTable *tb, const GenSet *g, const int *omitted, int dup) {
+    size_t n;
+    const unsigned *cols;
+    if (dup == -1) {
+        n = gsql_table_nkey(tb);
+        cols = gsql_table_key_cols(tb);
+    } else if (dup > 0 && (size_t)dup <= gsql_table_nindexes(tb)) {
+        const GsqlIndex *ix = gsql_table_index(tb, (size_t)dup - 1);
+        n = ix->ncols;
+        cols = ix->cols;
+    } else {
+        return 0;
+    }
+    for (size_t i = 0; i < g->nrnd; i++) {
+        for (size_t k = 0; k < n; k++) {
+            if (cols[k] == g->rnd[i] && omitted[g->rnd[i]]) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+#define GEN_DRAWS 32
+
 /* Every change an UPDATE or DELETE collected, checked against the foreign
  * keys before any is applied: a deleted row, or one whose key changes, must
  * not still be referenced; an updated child row must find its parent. */
@@ -3194,6 +3607,122 @@ static int fk_check_changes(X *x, GsqlTable *tb, const SqlStmt *s, const Change 
     return rc;
 }
 
+/* a serial counter an UPDATE moves up once its rows are written */
+typedef struct {
+    size_t col;
+    GsqlBuf scope;
+    uint64_t v;
+} Bump;
+
+static void bumps_free(Bump *b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        gsql_buf_free(&b[i].scope);
+    }
+    free(b);
+}
+
+/* An UPDATE's serials (docs/gsql_generated_design.md §2): a row moved to
+ * another scope is refused unless the same UPDATE sets the serial, and a
+ * serial it sets moves its scope's counter up. */
+static int gen_check_updates(X *x, GsqlTable *tb, const SqlPlan *p, const Change *ch, size_t n, Bump **bumps,
+                             size_t *nbumps) {
+    *bumps = NULL;
+    *nbumps = 0;
+    GenSet gs;
+    int rc = gen_load(x, tb, &gs);
+    size_t ncols = gsql_table_ncols(tb);
+    if (rc != GSQL_OK || !gs.nser) {
+        gen_set_free(&gs, ncols);
+        return rc;
+    }
+    int *targeted = calloc(ncols, sizeof(int));
+    GsBytes *oldv = calloc(ncols, sizeof(GsBytes)), *newv = calloc(ncols, sizeof(GsBytes));
+    if (!targeted || !oldv || !newv) {
+        abort();
+    }
+    for (size_t j = 0; j < p->ntargets; j++) {
+        targeted[p->targets[j]] = 1;
+    }
+    static const unsigned char unknown = SER_UNKNOWN;
+    GsqlBuf row = {0}, before = {0};
+    size_t cap = 0;
+    for (size_t k = 0; rc == GSQL_OK && k < n; k++) {
+        rc = gsql_row_get(x->e, x->t, tb, (GsBytes){ ch[k].key.bytes, ch[k].key.length }, &row, x->err);
+        for (size_t c = 0; rc == GSQL_OK && c < ncols; c++) {
+            rc = gsql_row_value(tb, row.bytes, row.length, c, &oldv[c], x->err);
+            newv[c] = oldv[c];
+        }
+        for (size_t j = 0; rc == GSQL_OK && j < p->ntargets; j++) {
+            const GsqlColumn *col = gsql_table_col(tb, p->targets[j]);
+            if (ch[k].deflt[j]) {
+                newv[p->targets[j]].p = col->def ? col->def : &unknown;
+                newv[p->targets[j]].n = col->def ? col->def_len : 1;
+            } else {
+                newv[p->targets[j]].p = ch[k].vals[j].bytes;
+                newv[p->targets[j]].n = ch[k].vals[j].length;
+            }
+        }
+        for (size_t i = 0; rc == GSQL_OK && i < gs.nser; i++) {
+            GenSer *sr = &gs.ser[i];
+            rc = gen_scope(x, tb, sr, oldv);
+            if (rc != GSQL_OK) {
+                break;
+            }
+            v3_set(&before, sr->scope.bytes, sr->scope.length);
+            rc = gen_scope(x, tb, sr, newv);
+            if (rc != GSQL_OK) {
+                break;
+            }
+            int moved = before.length != sr->scope.length ||
+                        (before.length && memcmp(before.bytes, sr->scope.bytes, before.length) != 0);
+            const char *cname = gsql_table_col(tb, sr->col)->name;
+            if (moved && !targeted[sr->col]) {
+                rc = xfail(x->err, GSQL_SERIAL, 0, "this UPDATE moves a row of `%s` to another scope of serial `%s`, "
+                           "whose number belongs to the old one: set `%s` in the same UPDATE to number it in the new "
+                           "scope", gsql_table_name(tb), cname, cname);
+                break;
+            }
+            uint64_t v;
+            if (targeted[sr->col] && v3_read_u64(newv[sr->col].p, newv[sr->col].n, &v)) {
+                if (*nbumps == cap) {
+                    cap = cap ? cap * 2 : 16;
+                    *bumps = realloc(*bumps, cap * sizeof(Bump));
+                    if (!*bumps) {
+                        abort();
+                    }
+                }
+                Bump *b = &(*bumps)[(*nbumps)++];
+                memset(b, 0, sizeof *b);
+                b->col = sr->col;
+                b->v = v;
+                v3_set(&b->scope, sr->scope.bytes, sr->scope.length);
+            }
+        }
+    }
+    gsql_buf_free(&row);
+    gsql_buf_free(&before);
+    free(targeted);
+    free(oldv);
+    free(newv);
+    gen_set_free(&gs, ncols);
+    return rc;
+}
+
+static int bumps_apply(X *x, GsqlTable *tb, const Bump *b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        uint64_t hw;
+        GsBytes scope = { b[i].scope.bytes, b[i].scope.length };
+        int rc = gsql_serial_get(x->e, x->t, tb, b[i].col, scope, &hw, x->err);
+        if (rc == GSQL_OK && b[i].v > hw) {
+            rc = gsql_serial_set(x->e, x->t, tb, b[i].col, scope, b[i].v, x->err);
+        }
+        if (rc != GSQL_OK) {
+            return rc;
+        }
+    }
+    return GSQL_OK;
+}
+
 static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
     SqlPlan *p = x->p;
     SqlStmt *s = p->s;
@@ -3247,7 +3776,13 @@ static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
     }
     size_t ncols = gsql_table_ncols(p->tb);
     rc = fk_check_changes(x, p->tb, s, ch, n, p);
+    Bump *bumps = NULL;
+    size_t nbumps = 0;
+    if (rc == GSQL_OK && s->kind == SQ_UPDATE) {
+        rc = gen_check_updates(x, p->tb, p, ch, n, &bumps, &nbumps);
+    }
     if (rc != GSQL_OK) {
+        bumps_free(bumps, nbumps);
         changes_free(ch, n, p->ntargets);
         return rc;
     }
@@ -3284,6 +3819,10 @@ static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
     }
     free(vals);
     changes_free(ch, n, p->ntargets);
+    if (rc == GSQL_OK) {
+        rc = bumps_apply(x, p->tb, bumps, nbumps);
+    }
+    bumps_free(bumps, nbumps);
     if (rc != GSQL_OK) {
         out->failed_part_way = done > 0;
         return rc;
@@ -3372,8 +3911,14 @@ static int run_insert(X *x, GsqlResult *out) {
         memset(&cks, 0, sizeof cks);
     }
     GsBytes *whole = calloc(ncols ? ncols : 1, sizeof(GsBytes));
-    if (!whole) {
+    int *omitted = calloc(ncols ? ncols : 1, sizeof(int));
+    if (!whole || !omitted) {
         abort();
+    }
+    GenSet gs;
+    memset(&gs, 0, sizeof gs);
+    if (rc == GSQL_OK) {
+        rc = gen_load(x, p->tb, &gs);
     }
     for (size_t r = 0; r < nrows && rc == GSQL_OK; r++) {
         memset(vals, 0, sizeof(GsqlIn) * ncols);
@@ -3397,16 +3942,59 @@ static int run_insert(X *x, GsqlResult *out) {
             vals[p->targets[k]].p = bufs[k].bytes;
             vals[p->targets[k]].n = bufs[k].length;
         }
-        if (rc == GSQL_OK && (fks.n || cks.n)) {
-            row_values(p->tb, vals, whole);
-            rc = ck_check_row(x, &cks, p->tb, whole);
-            if (rc == GSQL_OK) {
-                rc = fk_check_child(x, &fks, p->tb, whole);
+        for (size_t c = 0; c < ncols; c++) {
+            omitted[c] = !vals[c].present;
+        }
+        /* a random value a key already holds is drawn again (§3) */
+        int at_insert = 0;
+        for (int attempt = 1; rc == GSQL_OK; attempt++) {
+            for (size_t c = 0; c < ncols; c++) {
+                if (omitted[c]) {
+                    vals[c].present = 0;
+                }
             }
+            rc = gen_fill(x, p->tb, &gs, vals, whole, omitted);
+            if (rc == GSQL_OK && (fks.n || cks.n)) {
+                rc = ck_check_row(x, &cks, p->tb, whole);
+                if (rc == GSQL_OK) {
+                    rc = fk_check_child(x, &fks, p->tb, whole);
+                }
+            }
+            if (rc == GSQL_OK) {
+                rc = gsql_row_insert(x->e, x->t, p->tb, vals, NULL, x->err);
+                at_insert = rc != GSQL_OK;
+            }
+            if (rc != GSQL_DUPLICATE || !gen_redraws(p->tb, &gs, omitted, x->err->dup)) {
+                break;
+            }
+            if (attempt == GEN_DRAWS) {
+                /* the space is nearly full: say how large it is */
+                const GsqlColumn *col = NULL;
+                for (size_t i = 0; i < gs.nrnd && !col; i++) {
+                    if (omitted[gs.rnd[i]]) {
+                        col = gsql_table_col(p->tb, gs.rnd[i]);
+                    }
+                }
+                char m[sizeof x->err->message];
+                uint64_t space = random_space(col);
+                char room[64];
+                if (space) {
+                    snprintf(room, sizeof room, "%llu", (unsigned long long)space);
+                } else {
+                    snprintf(room, sizeof room, "more than 10^18");
+                }
+                snprintf(m, sizeof m, "%.300s: random `%s` can hold %s values, and %d draws in a row were all taken",
+                         x->err->message, col ? col->name : "?", room, GEN_DRAWS);
+                snprintf(x->err->message, sizeof x->err->message, "%s", m);
+                break;
+            }
+            rc = GSQL_OK;
         }
         if (rc == GSQL_OK) {
-            rc = gsql_row_insert(x->e, x->t, p->tb, vals, NULL, x->err);
-            if (rc != GSQL_OK && nrows > 1) {
+            rc = gen_commit(x, p->tb, &gs);
+        }
+        if (rc != GSQL_OK && at_insert) {
+            if (nrows > 1) {
                 char m[sizeof x->err->message];
                 snprintf(m, sizeof m, "row %zu of %s: %.400s", r + 1, s->ins_q ? "the query" : "VALUES",
                          x->err->message);
@@ -3423,6 +4011,8 @@ static int run_insert(X *x, GsqlResult *out) {
     free(bufs);
     free(vals);
     free(whole);
+    free(omitted);
+    gen_set_free(&gs, ncols);
     fk_list_free(&fks);
     ck_set_free(&cks);
     free(items);
@@ -3669,7 +4259,7 @@ static int collect_view(void *ctx, const char *name) {
 /* Every view, planned again after a schema change in the same transaction. */
 static int recheck_views(X *x) {
     struct { char **v; size_t n; } names = { NULL, 0 };
-    GsqlError lerr = { GSQL_OK, "", 0 };
+    GsqlError lerr = { GSQL_OK, "", 0, 0 };
     int rc = gsql_view_list(x->e, x->t, collect_view, &names, &lerr);
     for (size_t k = 0; k < names.n && rc == GSQL_OK; k++) {
         GsqlBuf rec = {0};
@@ -3681,7 +4271,7 @@ static int recheck_views(X *x) {
         SqlParsed vp;
         SqlPlan plan;
         memset(&plan, 0, sizeof plan);
-        GsqlError verr = { GSQL_OK, "", 0 };
+        GsqlError verr = { GSQL_OK, "", 0, 0 };
         int nowok = sql_parse(old.text, strlen(old.text), &vp, &verr) == GSQL_OK;
         int planned = nowok && sql_plan(x->e, x->t, vp.stmt, &vp.arena, old.text, 0, &plan, &verr) == GSQL_OK;
         nowok = planned;
@@ -3759,7 +4349,7 @@ static int fk_create(X *x, const char *table, const SqlFkey *d) {
         }
     }
     GsqlBuf b = {0};
-    GsqlError e = { GSQL_OK, "", 0 };
+    GsqlError e = { GSQL_OK, "", 0, 0 };
     int got = gsql_fkey_get(x->e, x->t, gen, &b, &e);
     gsql_buf_free(&b);
     if (got == GSQL_OK) {
@@ -3854,7 +4444,7 @@ static int recheck_fkeys(X *x) {
     for (size_t i = 0; i < fks.n && rc == GSQL_OK; i++) {
         FkRec *k = &fks.v[i];
         GsqlTable *child = NULL, *parent = NULL;
-        GsqlError e = { GSQL_OK, "", 0 };
+        GsqlError e = { GSQL_OK, "", 0, 0 };
         if (gsql_table_open(x->e, x->t, k->table, &child, &e) != GSQL_OK) {
             continue;   /* its own table went: dropping it dropped the key */
         }
@@ -3958,7 +4548,7 @@ static int ck_create(X *x, const char *table, const SqlCheck *d) {
         snprintf(gen, sizeof gen, "%s_check", table);
     }
     GsqlBuf b = {0};
-    GsqlError e = { GSQL_OK, "", 0 };
+    GsqlError e = { GSQL_OK, "", 0, 0 };
     int got = gsql_fkey_get(x->e, x->t, gen, &b, &e);
     gsql_buf_free(&b);
     if (got == GSQL_OK) {
@@ -4015,6 +4605,34 @@ static int ck_follow(X *x, const char *table, const char *renamed) {
 }
 
 static int run_schema_change(X *x, GsqlResult *out);
+
+/* a column definition's generator, as the table layer takes it */
+static void gen_column(GsqlColumn *c, const SqlColDef *d) {
+    c->gen = d->gen;
+    c->nscope = d->nscope;
+    c->scope = (const char *const *)d->scope_text;
+    c->length = d->length;
+    c->alphabet = d->alphabet;
+}
+
+/* whether an unbound expression names a column by its bare name */
+static int names_column(const SqlExpr *e, const char *name) {
+    if (!e) {
+        return 0;
+    }
+    if (e->kind == SX_NAME && e->nparts >= 1 && strcmp(e->parts[0], name) == 0) {
+        return 1;
+    }
+    if (names_column(e->operand, name)) {
+        return 1;
+    }
+    for (size_t k = 0; k < e->na; k++) {
+        if (names_column(e->a[k], name)) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 /* A schema statement, then every view checked against what it left. */
 static int run_schema(X *x, GsqlResult *out) {
@@ -4077,6 +4695,7 @@ static int run_schema_change(X *x, GsqlResult *out) {
             cols[k].kind = d->type.kind;
             memcpy(cols[k].currency, d->type.currency, sizeof cols[k].currency);
             cols[k].not_null = d->not_null;
+            gen_column(&cols[k], d);
             rc = default_bytes(x, d, &defs[k]);
             if (d->def && rc == GSQL_OK) {
                 cols[k].def = defs[k].bytes;
@@ -4109,6 +4728,22 @@ static int run_schema_change(X *x, GsqlResult *out) {
             GsqlTableDecl d = { s->table, n, cols, nkey, key };
             rc = gsql_table_create(x->e, x->t, &d, err);
         }
+        /* a serial's scope binds to the table now made, or the table goes */
+        for (size_t k = 0; rc == GSQL_OK && k < n; k++) {
+            if (cols[k].nscope) {
+                CkPlan cp;
+                rc = scope_plan(x, s->table, &cols[k], (long)k, &cp, s->coldefs[k].gen_pos);
+                ck_plan_free(&cp);
+                if (rc != GSQL_OK) {
+                    GsqlError undo = { GSQL_OK, "", 0, 0 };
+                    GsqlError keep = *err;
+                    if (gsql_table_drop(x->e, x->t, s->table, &undo) != GSQL_OK) {
+                        out->failed_part_way = 1;
+                    }
+                    *err = keep;
+                }
+            }
+        }
         for (size_t k = 0; k < n; k++) {
             gsql_buf_free(&defs[k]);
         }
@@ -4125,7 +4760,7 @@ static int run_schema_change(X *x, GsqlResult *out) {
                     /* a declaration refused: the table, its indexes and the
                        keys already made go again, so nothing stays written
                        and an explicit transaction carries on */
-                    GsqlError undo = { GSQL_OK, "", 0 };
+                    GsqlError undo = { GSQL_OK, "", 0, 0 };
                     GsqlError keep = *err;
                     if (fk_follow(x, s->table, NULL) != GSQL_OK || ck_follow(x, s->table, NULL) != GSQL_OK ||
                         gsql_table_drop(x->e, x->t, s->table, &undo) != GSQL_OK) {
@@ -4198,8 +4833,24 @@ static int run_schema_change(X *x, GsqlResult *out) {
         c.kind = d->type.kind;
         memcpy(c.currency, d->type.currency, sizeof c.currency);
         c.not_null = d->not_null;
+        gen_column(&c, d);
         GsqlBuf def = {0};
         rc = default_bytes(x, d, &def);
+        if (rc == GSQL_OK && c.nscope) {
+            /* the scope binds to the table as it is: the new column itself,
+               which it may not read, is not there yet */
+            for (size_t k = 0; rc == GSQL_OK && k < d->nscope; k++) {
+                if (names_column(d->scope[k], d->name)) {
+                    rc = xfail(err, GSQL_SCHEMA, d->gen_pos, "serial `%s.%s`'s scope reads `%s` itself: the number "
+                               "would be needed to find the counter it comes from", s->table, d->name, d->name);
+                }
+            }
+            CkPlan cp;
+            if (rc == GSQL_OK) {
+                rc = scope_plan(x, s->table, &c, -1, &cp, d->gen_pos);
+                ck_plan_free(&cp);
+            }
+        }
         if (rc == GSQL_OK) {
             if (d->def) {
                 c.def = def.bytes;

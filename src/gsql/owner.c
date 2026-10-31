@@ -496,7 +496,7 @@ static int do_query(Owner *o, Conn *c, Req *r) {
     uint64_t batch = 0;
     s.batch = field_u64(f, nf, "batch", &batch) && batch > 0 ? (batch > UINT32_MAX ? UINT32_MAX : (uint32_t)batch) : 100;
 
-    GsqlError err = { GSQL_OK, "", 0 };
+    GsqlError err = { GSQL_OK, "", 0, 0 };
     int w = o->svc->writes(o->svc->ctx, &s, &err);
     if (w < 0) {
         send_error_at(c, r->id, err.code ? err.code : GSQL_PROTOCOL, err.message, err.position);
@@ -618,7 +618,7 @@ static int do_fetch(Owner *o, Conn *c, Req *r) {
     GsqlResult res;
     memset(&res, 0, sizeof res);
     res.cursor = k->svc;
-    GsqlError err = { GSQL_OK, "", 0 };
+    GsqlError err = { GSQL_OK, "", 0, 0 };
     int rc = o->svc->fetch(o->svc->ctx, k->svc, count == 0 ? 1 : (count > UINT32_MAX ? UINT32_MAX : (uint32_t)count),
                            &res, &err);
     if (rc != GSQL_OK) {
@@ -854,7 +854,7 @@ static int handle(Owner *o, Conn *c, Req *r) {
         s.statement_length = x->vlen;
         s.batch = 1;
         GsqlBuf d = {0};
-        GsqlError err = { GSQL_OK, "", 0 };
+        GsqlError err = { GSQL_OK, "", 0, 0 };
         int rc = o->svc->prepare(o->svc->ctx, &s, &d, &err);
         if (rc) {
             send_error_at(c, r->id, rc, err.message, err.position);

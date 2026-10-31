@@ -71,15 +71,16 @@ CATALOG, META = b"\0catalog", b"\0meta"
 check(CATALOG in trees and META in trees, "the catalog and meta trees are there")
 
 # §2: ids are shared by tables and indexes, from one counter. The table is 1,
-# its index 2, so the next is 3; and a table with a primary key has no row-id
-# entry of its own.
+# its index 2, the generated-column table `steps` 3, so the next is 4; a table
+# with a primary key has no row-id entry of its own, and `steps`, which has
+# none, has written no row yet.
 meta = dict(trees.get(META, []))
-check(meta.get(b"next") == struct.pack("<Q", 3), "meta `next` is le64(3): %r" % meta.get(b"next"))
-check(set(meta) == {b"next"}, "meta holds only `next` for a keyed table: %r" % sorted(meta))
+check(meta.get(b"next") == struct.pack("<Q", 4), "meta `next` is le64(4): %r" % meta.get(b"next"))
+check(set(meta) == {b"next"}, "meta holds only `next`: %r" % sorted(meta))
 
 # §3: the schema is one v3 record.
 cat = dict(trees.get(CATALOG, []))
-check(list(cat) == [b"accounts"], "the catalog holds one table, accounts: %r" % list(cat))
+check(list(cat) == [b"accounts", b"steps"], "the catalog holds accounts and steps: %r" % list(cat))
 try:
     schema = value(cat[b"accounts"])
 except Exception as e:  # noqa: BLE001
@@ -174,9 +175,42 @@ if vrec:
                               "columns": ("array", [s("owner")]), "ok": ("bool", True)}),
           "the view's record is the design's: %r" % (vrec,))
 
+# Generated columns (docs/gsql_generated_design.md §4): a column record gains
+# a sixth field, `generator`, only where the column has one; a generated column
+# is NOT NULL. A serial's counters are the table's own tree, letter `q`: a key
+# of the column's position as two big-endian bytes then the scope's key, a
+# value of eight bytes little-endian.
+try:
+    steps = value(cat[b"steps"]) if b"steps" in cat else None
+except Exception as e:  # noqa: BLE001
+    steps = None
+    check(False, "steps' schema does not decode: %s" % e)
+if steps:
+    want = ("record", {
+        "format": ex(1),
+        "id": ex(3),
+        "version": ex(1),
+        "columns": ("array", [
+            ("record", {"name": s("task"), "kind": s("integer"), "currency": s(""),
+                        "not_null": ("bool", False), "default": UNKNOWN}),
+            ("record", {"name": s("n"), "kind": s("integer"), "currency": s(""),
+                        "not_null": ("bool", True), "default": UNKNOWN,
+                        "generator": ("record", {"kind": s("serial"), "scope": ("array", [s("task")])})}),
+            ("record", {"name": s("tok"), "kind": s("string"), "currency": s(""),
+                        "not_null": ("bool", True), "default": UNKNOWN,
+                        "generator": ("record", {"kind": s("random"), "length": ex(8), "alphabet": s("ab")})}),
+        ]),
+        "key": ("array", []),
+        "indexes": ("array", []),
+    })
+    check(same(steps, want), "steps' schema is not the declaration:\n  got  %r\n  want %r" % (steps, want))
+counters = trees.get(tree(b"q", 3), [])
+check(counters == [(b"\x00\x01K", struct.pack("<Q", 42))],
+      "steps' serial tree holds column 1, scope K, at 42: %r" % counters)
+
 # Nothing else: no stray tree.
-check(set(trees) <= {CATALOG, META, VIEWS, tree(b"r", 1), tree(b"i", 2)},
-      "no tree beyond the five: %r" % sorted(trees))
+check(set(trees) <= {CATALOG, META, VIEWS, tree(b"r", 1), tree(b"i", 2), tree(b"r", 3), tree(b"q", 3)},
+      "no tree beyond the seven: %r" % sorted(trees))
 
 print("ok %d checks" % checks if not problems else "FAILED %d of %d checks" % (len(problems), checks))
 sys.exit(1 if problems else 0)

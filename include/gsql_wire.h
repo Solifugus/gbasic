@@ -62,7 +62,8 @@ typedef enum {
     GSQL_EXPRESSION,    /* an expression that could not be evaluated */
     GSQL_FOREIGN_KEY,   /* a write a foreign key refuses (docs/gsql_fkey_design.md) */
     GSQL_CHECK,         /* a row a CHECK constraint refuses (docs/gsql_check_design.md) */
-    GSQL_CODE_LAST = GSQL_CHECK
+    GSQL_SERIAL,        /* a serial that cannot number a row (docs/gsql_generated_design.md) */
+    GSQL_CODE_LAST = GSQL_SERIAL
 } GsqlWireCode;
 
 /* Any code's name, the table layer's included; "?" for none. And back:

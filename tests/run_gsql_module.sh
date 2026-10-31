@@ -12,6 +12,8 @@
 # TIERS:
 #   semantics   the fixture's main phase: values in both directions, exec's
 #               answer shape, batches, transactions, refusals with their codes
+#   random      RANDOM's draws are fair: with a 200-character alphabet a plain
+#               "byte mod 200" would draw the first 56 at 0.44, not 0.28
 #   lost        the owner is killed under a program using it: the request in
 #               flight fails with LOST and nothing is retried, and the next one
 #               reaches a new owner that recovered what was committed
@@ -74,6 +76,15 @@ verdict semantics "$work/main.out" $? 50
 if [ -s "$work/main.err" ]; then
     sed 's/^/       /' "$work/main.err" | head -5
     fail "semantics: the fixture wrote to stderr"
+fi
+
+printf 'TIER random: RANDOM draws every value equally often (docs/gsql_generated_design.md §3)\n'
+mkdir -p "$work/random"
+GSQL_DIR="$work/random" timeout -k 5 120 ./gbasic tests/gsql/random_test.bas >"$work/random.out" 2>"$work/random.err"
+verdict random "$work/random.out" $? 6
+if [ -s "$work/random.err" ]; then
+    sed 's/^/       /' "$work/random.err" | head -5
+    fail "random: the fixture wrote to stderr"
 fi
 
 printf 'TIER warnings: a G-SQL warning is a gBASIC warning, at the program'"'"'s line\n'

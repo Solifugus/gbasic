@@ -221,6 +221,14 @@ typedef struct {
     SqlExpr *def;            /* DEFAULT, or NULL */
     SqlFkey *fk;             /* REFERENCES, or NULL */
     SqlCheck *check;         /* CHECK, or NULL */
+    /* SERIAL [OF (...)] or RANDOM [(n [, 'chars'])] (docs/gsql_generated_design.md) */
+    int gen;                 /* GSQL_GEN_* */
+    uint32_t gen_pos;
+    SqlExpr **scope;
+    char **scope_text;       /* each printed before planning binds it */
+    size_t nscope;
+    uint32_t length;         /* 0: the default */
+    char *alphabet;          /* NULL: the default */
 } SqlColDef;
 
 
