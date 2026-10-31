@@ -26,6 +26,7 @@ Every tree the layer creates begins with a NUL byte, so no table name can collid
 | `\0meta` | `"next"` | `le64(next id)`, shared by tables and indexes |
 | `\0view` | a view's name | its record, the SQL layer's (`gsql_view_design.md` §3) |
 | `\0fkey` | a constraint's name | its record, the SQL layer's (`gsql_fkey_design.md` §4) |
+| `\0q` + `be64(table id)` | a serial column's position as `be16`, then its scope's key | `le64(highest number issued)`, there exactly when a column is a `SERIAL` (`gsql_generated_design.md` §4) |
 
 **Trees are named by id, not by table name,** so dropping a table and creating another of the same name cannot meet the first one's leftovers, and a rename later will touch one catalog entry.
 
@@ -37,7 +38,7 @@ A schema is stored as one `serialize` version 3 **record**, so `tests/serialize/
 |---|---|
 | `format` | 1. A newer one is `FORMAT`, never guessed at |
 | `id` | the table's id |
-| `columns` | an array of records: `name`, `kind` (§3.1), `currency` (text, `MONEY(CUR)` only), `not_null` (boolean), `default` (a value, absent if none) |
+| `columns` | an array of records: `name`, `kind` (§3.1), `currency` (text, `MONEY(CUR)` only), `not_null` (boolean), `default` (a value, absent if none), and `generator` only for a generated column: `{ kind: "serial", scope }` or `{ kind: "random", length, alphabet }` (`gsql_generated_design.md` §4) |
 | `key` | an array of column positions (0-based), empty when there is no primary key |
 | `indexes` | an array of records: `name`, `id`, `columns` (positions), `descending` (booleans, one per column), `unique` (boolean) |
 

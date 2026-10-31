@@ -789,10 +789,18 @@ stmt("SELECT id FROM gcu WHERE name = 'd'", "= 4")
 stmt("INSERT INTO gcu (name) VALUES (1)", ("TYPE", None, "gcu.name is string"))
 stmt("INSERT INTO gcu (name) VALUES ('e')", "= done 1")
 stmt("SELECT id FROM gcu WHERE name = 'e'", "= 5")
+# and inside a transaction, where a refusal before any write leaves it usable,
+# the refused row's number is not spent either
+c("begin write")
+stmt("INSERT INTO gcu (name) VALUES (2)", ("TYPE", None, "gcu.name is string"))
+stmt("INSERT INTO gcu (name) VALUES ('e2')", "= done 1")
+c("commit")
+stmt("SELECT id FROM gcu WHERE name = 'e2'", "= 6")
+stmt("DELETE FROM gcu WHERE name = 'e2'", "= done 1")
 # the newest deleted is never reissued: the counter is the highest issued
 stmt("DELETE FROM gcu WHERE id = 5", "= done 1")
 stmt("INSERT INTO gcu (name) VALUES ('f')", "= done 1")
-stmt("SELECT id FROM gcu WHERE name = 'f'", "= 6")
+stmt("SELECT id FROM gcu WHERE name = 'f'", "= 7")
 # a supplied value moves the counter up, never down; a key refuses a duplicate
 stmt("INSERT INTO gcu VALUES (10, 'g')", "= done 1")
 stmt("INSERT INTO gcu (name) VALUES ('h')", "= done 1")
@@ -815,6 +823,8 @@ stmt("INSERT INTO gnk (x) VALUES (1), (2)", "= done 2")
 stmt("INSERT INTO gnk VALUES (1, 3)", "= done 1")
 stmt("INSERT INTO gnk (x) VALUES (4)", "= done 1")
 stmt("SELECT n, x FROM gnk ORDER BY x", "= 1, 1 | 2, 2 | 1, 3 | 3, 4")
+# a generated column is NOT NULL even when it is not a key
+stmt("INSERT INTO gnk VALUES (NULL, 9)", ("NOT_NULL", None, "gnk.n"))
 # overflow: the largest integer supplied, and then nothing comes next
 stmt("INSERT INTO gnk VALUES (9223372036854775807, 5)", "= done 1")
 stmt("INSERT INTO gnk (x) VALUES (6)", ("SERIAL", None, "serial `gnk.n` has reached 9223372036854775807 in this scope: there is no next number"))

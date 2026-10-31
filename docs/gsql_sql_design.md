@@ -7,6 +7,7 @@
 **It is** single-table SQL over the table layer, in the dialect `gsql_design.md` §4.0 decided (standard SQL, PostgreSQL's choice where the standard is silent):
 
 - `INSERT ... SELECT` (`gsql_insert_select_design.md`);
+- a column's `SERIAL [OF (...)]` or `RANDOM [(n [, 'chars'])]` (`gsql_generated_design.md`);
 - `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE … ADD COLUMN`, `ALTER TABLE … RENAME TO` (`gsql_rename_design.md`), `CREATE [UNIQUE] INDEX`, `DROP INDEX`;
 - `INSERT`, `UPDATE`, `DELETE`;
 - `SELECT` with `WHERE`, `ORDER BY`, `LIMIT` and `OFFSET`, from one table or from none;

@@ -593,7 +593,7 @@ next
 The following came from exploratory examples and must be reviewed for semantics, implementation complexity, SQL familiarity, and interactions with G-SQL's existing architecture **before adoption**:
 
 1. **Column-level `TEMPORAL` and `AS OF`:** Selective temporal columns, current-first/backward-linked history, current non-temporal values, and optional table-wide declaration are now agreed directions; exact physical layout, effective versus recorded time, retention, and correction semantics remain open (§10D).
-2. **`SERIAL OF DATE(request_time)`:** General categorically scoped numbering, not date-only. Define scope expression, composite identity, late inserts, concurrency, rollback/gaps, and update semantics (§10E).
+2. **`SERIAL OF DATE(request_time)`:** *Adopted and built 2026-11-01 as `SERIAL OF (...)` (`gsql_generated_design.md`).* General categorically scoped numbering, not date-only. Define scope expression, composite identity, late inserts, concurrency, rollback/gaps, and update semantics (§10E).
 3. **`RELATE ... TO MANY`:** Named, cardinality-aware relationship metadata with multiple relations between the same tables; exact query/navigation syntax and richer predicates remain open (§10F).
 4. **`GET name AS SELECT ...`:** Define whether this returns a lazy stream, one record, a collection or a scalar, and how zero/multiple rows and transaction lifetime behave. Compare with the existing SQL-block result proposal.
 5. **Native `MONEY('USD')` spelling:** Reconcile with the existing proposed `MONEY(USD)` and gBASIC currency syntax. Enforce exact native currency semantics.
@@ -627,6 +627,8 @@ SELECT * FROM members AS OF :requested_time;
 - **Open:** How `AS OF` composes with joins and `RELATE`, including a temporal column evaluated at a time taken from another row.
 
 ## 10E. Categorically scoped serials
+
+> **Settled and built 2026-11-01** in `gsql_generated_design.md`, by Matthew's rulings that day. The text below is the earlier direction it settles. One correction: `SERIAL OF DATE(request_time)` cannot be written yet, since G-SQL has no datetime-to-date function; a day's scope needs a `DATE` column.
 
 **Agreed direction:** A serial can increment independently for each value of a deterministic scope expression, not merely by date. `DATE(request_time)` is one scope expression that groups all times in a calendar day; `(business_date, branch_id)` is another. The generated number is unique **within the scope**, not necessarily globally.
 
@@ -735,7 +737,7 @@ Built bottom-up (`gsql_table_design.md` §1): the table layer, then the owner an
 
 ### Phase 2: Useful relational SQL
 
-**Aggregates, `GROUP BY` and `HAVING` are done 2026-10-30** (`gsql_aggregate_design.md`), **joins 2026-10-31** (`gsql_join_design.md`: inner, left and cross, by nested loops in the order written, each inner table sought per outer row), **`SELECT DISTINCT`**, **`UNION`/`INTERSECT`/`EXCEPT`** and **subqueries in expressions** (scalar, `IN` and `EXISTS`, correlated or not) the same day (`gsql_distinct_design.md`, `gsql_setop_design.md`, `gsql_subquery_design.md`). **Derived tables and non-recursive `WITH`** followed on 2026-11-01 (`gsql_derived_design.md`), then **hash joins** for an inner side with no usable index (`gsql_hashjoin_design.md`). Then **views** (`gsql_view_design.md`) and **named foreign keys** (`gsql_fkey_design.md`, replacing `RELATE`), both by Matthew's rulings: a change under either is never blocked and is reported as a warning. Before them came warnings carried to the program (`gsql_warning_design.md`) and `RENAME TO` (`gsql_rename_design.md`). The rest of the list:
+**Aggregates, `GROUP BY` and `HAVING` are done 2026-10-30** (`gsql_aggregate_design.md`), **joins 2026-10-31** (`gsql_join_design.md`: inner, left and cross, by nested loops in the order written, each inner table sought per outer row), **`SELECT DISTINCT`**, **`UNION`/`INTERSECT`/`EXCEPT`** and **subqueries in expressions** (scalar, `IN` and `EXISTS`, correlated or not) the same day (`gsql_distinct_design.md`, `gsql_setop_design.md`, `gsql_subquery_design.md`). **Derived tables and non-recursive `WITH`** followed on 2026-11-01 (`gsql_derived_design.md`), then **hash joins** for an inner side with no usable index (`gsql_hashjoin_design.md`). Then **views** (`gsql_view_design.md`) and **named foreign keys** (`gsql_fkey_design.md`, replacing `RELATE`), both by Matthew's rulings: a change under either is never blocked and is reported as a warning. Before them came warnings carried to the program (`gsql_warning_design.md`) and `RENAME TO` (`gsql_rename_design.md`). After them came `INSERT ... SELECT` (`gsql_insert_select_design.md`), `CHECK` constraints (`gsql_check_design.md`), and **`SERIAL` and `RANDOM`** (`gsql_generated_design.md`). The last settles §10E by Matthew's rulings: numbering is gapless, a supplied value moves the counter up, and an `UPDATE` that changes a row's scope is refused. The rest of the list:
 
 Joins, grouping/HAVING, common aggregates, unions, subqueries, nonrecursive CTEs, views, composite indexes, query-plan caching, statistics, and efficient hash operators. Add named relationship catalog and scoped serials when their semantics/tests are settled. Introduce spill-to-disk where workloads require it.
 

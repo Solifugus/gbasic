@@ -180,3 +180,25 @@ The field is written only for a generated column, so a table without one is stor
 - the invariant check reporting an orphaned counter tree.
 
 **the code:** `SERIAL` reaches a program as `error.details.code`.
+
+## 6. What building it found
+
+- **§10E's example cannot be written yet.** `SERIAL OF DATE(request_time)` needs a datetime-to-date function, which G-SQL does not have, and `CAST(t AS DATE)` refuses a datetime. A day's scope needs a `DATE` column (§1).
+- **A scope keyed as `GROUP BY` keys it needed its own sentence.** A record scope was refused as one that "cannot be grouped or made DISTINCT", true of `GROUP BY` and not of a serial. It now says the record has no order, so it cannot be a scope.
+- **Seventeen perturbations, all red in the end, two only after a case was added:**
+  - **A refused row spending its number was invisible in autocommit.** The failed statement's own rollback undoes the counter with it. The gap can only appear inside `begin`, where a refusal before any write leaves the transaction usable, so the case is there now.
+  - **`NOT NULL` not forced on a generated column was invisible** because the case used a primary-key column, which is `NOT NULL` anyway. A serial with no key is now given an explicit `NULL`.
+  - The rest, each caught by the corpus, the bias fixture or the table layer's own tiers:
+    - the counter never written;
+    - a supplied value moving nothing, or moving the counter down;
+    - the scope ignored;
+    - a scope change not refused, and an `UPDATE`'s serial moving nothing;
+    - no rejection step (the bias fixture alone);
+    - no redraw, and a redraw on any duplicate;
+    - no overflow check;
+    - the counter tree left behind by `DROP`;
+    - a scope allowed to read its own serial;
+    - a generated column added over rows;
+    - an alphabet's repeat allowed;
+    - `n` digits counted from zero.
+
