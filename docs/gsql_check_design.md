@@ -65,3 +65,10 @@ alter table account drop constraint positive_id;
 - **The order of refusals matters.** A check ran before the table's own kind check, so a euro amount in a `MONEY(USD)` column was refused as "cannot order money in different currencies" rather than "`acct.bal` is money(USD)". Each value is now checked against its column first, through the table layer's own `gsql_value_fits`.
 - **A refusal from inside a check carried a position inside the check's own planned query,** a place nobody wrote. It carries none now.
 - **The designed warning 2120 could never fire,** for the reason in §3, and was removed.
+- **Six perturbations, all red:**
+  - unknown refused;
+  - an insert unchecked;
+  - an update unchecked;
+  - existing rows not counted when a check is added;
+  - kinds not checked first;
+  - checks surviving their dropped table.
