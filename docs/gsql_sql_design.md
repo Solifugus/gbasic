@@ -107,6 +107,17 @@ An unknown table, column or index is `NOT_FOUND`, and the table layer's codes (`
 
 - **A warning from inside SQL** (an overflowing sum, 2112) goes to the owner's stderr, which is its client's, once per distinct message. Carrying it to the client as data, so a program can see it with `on warning`, needs a field in `ROWS` and `DONE`.
 - **Plans are not cached.** A statement is parsed and planned on each `QUERY`; a prepared statement saves only sending the text. Plan caching with schema-version invalidation (`gsql_design.md` §13 question 8) comes with the gBASIC surface, which is where repeated statements come from.
+
+  **Measured 2026-11-01, through the `gsql` module:** 20,000 statements over a 2,000-row table, each time including the 2,000 inserts.
+
+  | statement | about |
+  |---|---|
+  | `select $1` (the round trip alone) | 12 µs |
+  | a primary-key point read | 22 µs |
+  | `EXPLAIN` of the same, which parses and plans without running | 19 µs |
+  | a point read with four filters and an `ORDER BY` | 32 µs |
+
+  Parsing and planning are therefore at most about a quarter of a point read. Caching them needs invalidation on every schema change, and today's plans hold tables opened inside one transaction. By the simplicity rule that gain is not yet enough. It waits for an application whose statements are measured to spend their time there.
 - **A sort is in memory.** `ORDER BY` that no index yields collects every row first; spilling to disk is Phase 2 (`gsql_design.md` §5.1).
 - ~~**`EXPLAIN` writes a seek's range with inclusive bounds**~~ **Fixed 2026-11-01.** `WHERE id > 5` used to show `(5 <= id)` and no `Filter` line, though `id > 5` was still checked on every row and the answer was right. The seek is inclusive, a superset the filter narrows (§5). A strict comparison is now left in the `Filter` line, `Seek ... (5 <= id)` then `Filter: (id > 5)`, which is what the plan really does. Found 2026-10-30 while adding aggregates' `EXPLAIN` lines.
 - **`IN`, `IS NULL` and `LIKE 'prefix%'` never narrow an access path**; only `=`, the ordering operators and `BETWEEN` do.
