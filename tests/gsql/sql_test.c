@@ -154,12 +154,14 @@ typedef struct {
     GsqlBuf text;       /* the rendered answer */
     GsqlBuf columns;
     GsqlBuf first_value; /* the first row's first value, for parameters */
+    GsqlBuf raw;         /* the first batch's rows as v3, for the grouping oracle */
 } Answer;
 
 static void answer_free(Answer *a) {
     gsql_buf_free(&a->text);
     gsql_buf_free(&a->columns);
     gsql_buf_free(&a->first_value);
+    gsql_buf_free(&a->raw);
 }
 
 static void run(const char *text, const GsqlBuf *params, uint32_t batch, Answer *a) {
@@ -205,6 +207,7 @@ static void run(const char *text, const GsqlBuf *params, uint32_t batch, Answer 
         render_columns(&a->columns, &res.columns);
         size_t nrows = 0;
         render_rows(&a->text, &res.rows, &nrows);
+        v3_put(&a->raw, res.rows.bytes, res.rows.length);
         GsBytes items[1];
         if (v3_array_items(res.rows.bytes, res.rows.length, items, 1) == 1) {
             GsBytes cols[1];
@@ -654,6 +657,213 @@ static int both_ways(const char *q, int *seek_runs) {
     return refused;
 }
 
+/* ---- the grouping oracle (docs/gsql_aggregate_design.md §6) ------------
+ *
+ * The same rows, fetched UNGROUPED and sorted by the group column, folded here:
+ * consecutive rows whose group values the host's order calls equal (or that
+ * are both NULL) are one group, a sum is the host's `+`, an extreme the host's
+ * order. It shares none of the engine's grouping -- no key encoding, no hash
+ * table, no accumulator -- so a grouping that merged two groups, split one, or
+ * folded a value wrongly disagrees with it. */
+
+static const GsqlHost *H;
+
+static GsqlHv *hload(const unsigned char *v, size_t n) {
+    GsqlError err = { GSQL_OK, "", 0 };
+    return H->load(H->ctx, v, n, &err);
+}
+
+static int hnull(const GsqlHv *v) {
+    int k = H->kind(H->ctx, v);
+    return k == SER_NULL || k == SER_UNKNOWN;
+}
+
+static void hrender(GsqlBuf *o, const GsqlHv *v) {
+    GsqlBuf b = {0};
+    GsqlError err = { GSQL_OK, "", 0 };
+    H->store(H->ctx, v, &b, &err);
+    render(o, b.bytes, b.length);
+    gsql_buf_free(&b);
+}
+
+static int hcmp(const GsqlHv *a, const GsqlHv *b) {
+    int c = 0;
+    GsqlError err = { GSQL_OK, "", 0 };
+    H->order(H->ctx, a, b, &c, &err);
+    return c;
+}
+
+typedef struct {
+    GsqlHv *g;
+    long count, nv;
+    GsqlHv *sum, *lo, *hi;
+} OGroup;
+
+static void og_flush(OGroup *og, GsqlBuf *o, long having, size_t *nrows) {
+    if (!og->g) {
+        return;
+    }
+    if (og->count > having) {
+        if ((*nrows)++) {
+            v3_put(o, " | ", 3);
+        }
+        char b[64];
+        hrender(o, og->g);
+        snprintf(b, sizeof b, ", %ld, %ld, ", og->count, og->nv);
+        v3_put(o, b, strlen(b));
+        GsqlBuf nul = {0};
+        v3_w_unknown(&nul);
+        GsqlHv *none = hload(nul.bytes, nul.length);
+        gsql_buf_free(&nul);
+        hrender(o, og->sum ? og->sum : none);
+        v3_put(o, ", ", 2);
+        hrender(o, og->lo ? og->lo : none);
+        v3_put(o, ", ", 2);
+        hrender(o, og->hi ? og->hi : none);
+        v3_put(o, ", ", 2);
+        if (og->sum) {
+            GsqlBuf nb = {0};
+            v3_w_int(&nb, (uint64_t)og->nv);
+            GsqlHv *n = hload(nb.bytes, nb.length);
+            gsql_buf_free(&nb);
+            GsqlError err = { GSQL_OK, "", 0 };
+            GsqlHv *avg = H->op(H->ctx, GSQL_HOP_DIV, og->sum, n, &err);
+            hrender(o, avg ? avg : none);
+            if (avg) {
+                H->release(H->ctx, avg);
+            }
+            H->release(H->ctx, n);
+        } else {
+            hrender(o, none);
+        }
+        H->release(H->ctx, none);
+    }
+    GsqlHv *vs[4] = { og->g, og->sum, og->lo, og->hi };
+    for (int k = 0; k < 4; k++) {
+        if (vs[k]) {
+            H->release(H->ctx, vs[k]);
+        }
+    }
+    memset(og, 0, sizeof *og);
+}
+
+/* rows of [g, v], sorted by g: the grouped answer, rendered as the engine's is */
+static void oracle_fold(const GsqlBuf *raw, long having, GsqlBuf *o) {
+    static GsBytes items[4096];
+    long n = v3_array_items(raw->bytes, raw->length, items, 4096);
+    OGroup og;
+    memset(&og, 0, sizeof og);
+    size_t nrows = 0;
+    for (long r = 0; r < n; r++) {
+        GsBytes cols[2];
+        v3_array_items(items[r].p, items[r].n, cols, 2);
+        GsqlHv *g = hload(cols[0].p, cols[0].n);
+        GsqlHv *v = hload(cols[1].p, cols[1].n);
+        int same = og.g && (hnull(og.g) ? hnull(g) : !hnull(g) && hcmp(og.g, g) == 0);
+        if (!same) {
+            og_flush(&og, o, having, &nrows);
+            og.g = g;
+        } else {
+            H->release(H->ctx, g);
+        }
+        og.count++;
+        if (hnull(v)) {
+            H->release(H->ctx, v);
+            continue;
+        }
+        og.nv++;
+        if (!og.sum) {
+            og.sum = H->copy(H->ctx, v);
+            og.lo = H->copy(H->ctx, v);
+            og.hi = v;
+            continue;
+        }
+        GsqlError err = { GSQL_OK, "", 0 };
+        GsqlHv *s2 = H->op(H->ctx, GSQL_HOP_ADD, og.sum, v, &err);
+        H->release(H->ctx, og.sum);
+        og.sum = s2;
+        if (hcmp(v, og.lo) < 0) {
+            H->release(H->ctx, og.lo);
+            og.lo = H->copy(H->ctx, v);
+        }
+        if (hcmp(v, og.hi) > 0) {
+            H->release(H->ctx, og.hi);
+            og.hi = H->copy(H->ctx, v);
+        }
+        H->release(H->ctx, v);
+    }
+    og_flush(&og, o, having, &nrows);
+    if (nrows == 0) {
+        v3_put(o, "(none)", 6);
+    }
+}
+
+/* 0 and -0.0 are one value, and which of them a group's value, min or max
+ * shows is whichever was seen first -- an order SQL leaves to the access path */
+static void zero_spelling(GsqlBuf *b) {
+    v3_put(b, "", 1);
+    char *t = (char *)b->bytes;
+    for (char *z; (z = strstr(t, "-0.0")) != NULL;) {
+        memmove(z, z + 3, strlen(z + 3) + 1);
+        z[0] = '0';
+    }
+    b->length = strlen(t);
+}
+
+static int grouping_oracle(int n, int *grouped_seen) {
+    static const char *const gcols[] = { "a", "b", "c", "d", "m", "id" };
+    static const char *const vcols[] = { "a", "c", "m" };
+    H = gb_gsql_host();
+    int refused = 0;
+    for (int k = 0; k < n; k++) {
+        char where[1024], q[2048], o[2048];
+        predicate(where, sizeof where);
+        const char *g = gcols[pick(6)], *v = vcols[pick(3)];
+        long having = pick(3) ? -1 : (long)pick(3);
+        const char *dir = pick(2) ? " DESC" : "";
+        char hv[64] = "";
+        if (having >= 0) {
+            snprintf(hv, sizeof hv, " HAVING count(*) > %ld", having);
+        }
+        snprintf(q, sizeof q, "SELECT %s, count(*), count(%s), sum(%s), min(%s), max(%s), avg(%s) FROM r WHERE %s "
+                 "GROUP BY %s%s ORDER BY %s%s", g, v, v, v, v, v, where, g, hv, g, dir);
+        snprintf(o, sizeof o, "SELECT %s, %s FROM r WHERE %s ORDER BY %s%s, id", g, v, where, g, dir);
+        /* both in ONE mode: a narrowed path may skip a row the scan refuses
+           on (gsql_sql_design.md §5), and that is not a grouping question */
+        Answer x, y;
+        gsql_sql_force_scan(sql, pick(2));
+        run(q, NULL, 100000, &x);
+        run(o, NULL, 100000, &y);
+        gsql_sql_force_scan(sql, 0);
+        checks++;
+        if (x.code != y.code) {
+            mismatches++;
+            printf("MISMATCH %s\n  grouped: %s %s\n  oracle's rows: %s %s\n", q, gsql_error_name(x.code),
+                   x.err.message, gsql_error_name(y.code), y.err.message);
+        } else if (x.code != GSQL_OK) {
+            refused++;
+        } else {
+            GsqlBuf want = {0};
+            oracle_fold(&y.raw, having, &want);
+            GsqlBuf got = {0};
+            v3_put(&got, x.text.bytes, x.text.length);
+            zero_spelling(&got);
+            zero_spelling(&want);
+            if (strcmp((char *)got.bytes, (char *)want.bytes) != 0) {
+                mismatches++;
+                printf("MISMATCH %s\n  engine: %s\n  oracle: %s\n", q, (char *)got.bytes, (char *)want.bytes);
+            } else if (strcmp((char *)got.bytes, "(none)") != 0) {
+                (*grouped_seen)++;
+            }
+            gsql_buf_free(&want);
+            gsql_buf_free(&got);
+        }
+        answer_free(&x);
+        answer_free(&y);
+    }
+    return refused;
+}
+
 static int differential(const char *dir, uint64_t seed, int n) {
     if (!open_db(dir)) {
         return 2;
@@ -755,10 +965,18 @@ static int differential(const char *dir, uint64_t seed, int n) {
         }
         refused += both_ways(q, &seek_runs);
     }
+    int grouped_seen = 0;
+    int grouped_refused = grouping_oracle(n / 2, &grouped_seen);
     unsigned long seeks, scans;
     gsql_sql_counts(sql, &seeks, &scans);
     printf("census: %d rows, %d queries, %d used a seek, %d refused, %d refused only by the scan\n", inserted, n,
            seek_runs, refused, narrowed_past);
+    printf("census: %d grouped queries against the oracle, %d answered with groups, %d refused\n", n / 2,
+           grouped_seen, grouped_refused);
+    if (grouped_seen < n / 6) {
+        mismatches++;
+        printf("MISMATCH the grouping oracle compared too few answers with groups in them\n");
+    }
     /* a floor on what the tier exercised: a planner that never seeks, or a
      * generator that is refused every time, agrees with the scan perfectly */
     if (forced_but_sought) {
