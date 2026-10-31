@@ -1,6 +1,6 @@
 # G-SQL subqueries (Phase 2, increment 5)
 
-**Status:** designed 2026-10-31. The fifth increment of `gsql_design.md` §11 Phase 2, after aggregates, joins, `DISTINCT` and set operations. It covers subqueries **in expressions**. Subqueries in `FROM` and non-recursive `WITH` are the next increment (§8), because they need a scan over rows that are not a table's.
+**Status:** designed and built 2026-10-31 (`src/gsql/sql_parse.c`, `sql_plan.c`, `sql_exec.c`; `tests/run_gsql_sql.sh`). The fifth increment of `gsql_design.md` §11 Phase 2, after aggregates, joins, `DISTINCT` and set operations. It covers subqueries **in expressions**. Subqueries in `FROM` and non-recursive `WITH` are the next increment (§8), because they need a scan over rows that are not a table's.
 
 ## 1. What it is
 
@@ -87,6 +87,17 @@ The one-directional allowance carries over. A path may stop before a row that re
 
 The executor's state for one execution gains a pointer to its parent, and a subquery runs as a child execution. That child is the cursor set operations already run each side as. Nothing about a single-table, join or compound statement changes, and the existing tiers must stay green with their censuses unmoved.
 
-## 8. Next: `FROM` subqueries and `WITH`
+## 8. What building it found
+
+- **A dotted name names a table before it names a field.** The first binder looked a name up level by level, and at each level read `od.id` as column `od`'s field `id` when no table there was called `od`. Inside `(select ... from rf where rf.od = od.id)`, `rf` has a column called `od`, so the outer table `od` was never reached and the statement was refused as a field of an integer. A dotted name is now looked for as a table at every level first, and only then as a column and a field.
+- **The random tier passed on its first run:** five seeds, about 300 subqueries each, in both modes and against the oracle, with 11,000 to 15,000 seeks a seed inside correlated subqueries.
+- **Thirteen perturbations, all red in the end.** Four were green at first, and each was a gap in the cases or in the perturbation, not in the engine:
+  - `NOT IN` turning unknown into true is invisible in `WHERE`, which drops false and unknown alike. Select-list cases now show the `NULL`, both correlated and not.
+  - Placing a `WHERE` conjunct without counting its subquery's outer columns needs a join whose `WHERE` subquery reads the second table, so it gets a case.
+  - Treating a correlated subquery as a constant for its own table's access path needs `id = (select ... where o2.cust = od.cust)`, so it gets a case.
+  - Caching a correlated answer was first perturbed on the write side only. That made no visible difference, and only valgrind saw the leak. Perturbed on both sides, it reddens six cases.
+- **Who caught what:** the hand-written cases caught every perturbation. The random tier also caught two of them: `IN` ignoring an unknown comparison, and a correlated answer cached (72 to 89 mismatches a seed). The rest are rules the random tier's three forms do not reach, which is why each has a case.
+
+## 9. Next: `FROM` subqueries and `WITH`
 
 A subquery in `FROM`, and a `WITH` name, is a **derived table**: a scan whose rows come from a plan rather than from storage. Its columns are the plan's output names and kinds. It is materialized once per execution, or per outer row for `LATERAL`, which will not be in that increment. Its rows are read by position rather than through a table's row layout. Only the scan's row source differs from a table's. That increment gets its own design.
