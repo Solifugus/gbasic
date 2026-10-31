@@ -2425,6 +2425,13 @@ Parameters are a **record** for `:name` placeholders and an **array** for `$1`,
 exact past 2^53, money keeps its currency, a date stays a date, and SQL `NULL`
 reads back as `unknown`. A whole result is fetched before `query` answers.
 
+**A warning inside SQL is a gBASIC warning** at the call that ran the statement
+(`gsql.exec`, `gsql.query`, a `sql` block or its `for each`), with its own code:
+an exact sum overflowing is `2112`, as it is in a program. So `on warning ignore`,
+`goto next` and `stop` all apply. Under `stop`, inside `gsql.begin` ... a warning
+becomes an error before anything is committed, so the program can roll back.
+A site says each different warning once, so a loop is not flooded.
+
 Every refusal raises with `error.source = "gsql"` and **`error.details.code`
 naming G-SQL's code** — `SYNTAX`, `EXPRESSION`, `NOT_FOUND`, `DUPLICATE`,
 `NOT_NULL`, `TYPE`, `READ_ONLY`, `STATE`, `LOST` and the rest — plus

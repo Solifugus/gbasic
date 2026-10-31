@@ -105,7 +105,7 @@ An unknown table, column or index is `NOT_FOUND`, and the table layer's codes (`
 
 ## 8. What is not done yet
 
-- **A warning from inside SQL** (an overflowing sum, 2112) goes to the owner's stderr, which is its client's, once per distinct message. Carrying it to the client as data, so a program can see it with `on warning`, needs a field in `ROWS` and `DONE`.
+- ~~**A warning from inside SQL** goes to the owner's stderr~~ **Fixed 2026-11-01** (`gsql_warning_design.md`): it reaches the program as a gBASIC warning, carried in `ROWS` and `DONE`.
 - **Plans are not cached.** A statement is parsed and planned on each `QUERY`; a prepared statement saves only sending the text. Plan caching with schema-version invalidation (`gsql_design.md` §13 question 8) comes with the gBASIC surface, which is where repeated statements come from.
 
   **Measured 2026-11-01, through the `gsql` module:** 20,000 statements over a 2,000-row table, each time including the 2,000 inserts.

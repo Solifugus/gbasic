@@ -43,7 +43,7 @@ Every body is a v3 **record**, not the arrays the first sketch had. A newer mino
 | `WELCOME` | `major`, `minor`, `pid`, `device`, `inode`, `format` |
 | `REFUSED` | `code`, `message` |
 | `QUERY` | `statement` (text, or a prepared id), `parameters` (array), `batch` (rows per batch), `principal` |
-| `ROWS` | `cursor` (absent when nothing remains), `more`, `columns` (first batch only), `rows` |
+| `ROWS` | `cursor` (absent when nothing remains), `more`, `columns` (first batch only), `rows`, `warnings` (`gsql_warning_design.md`, absent when there are none) |
 | `FETCH` | `cursor`, `count` |
 | `CLOSE` | `cursor` |
 | `PREPARE` | `statement` |
@@ -51,7 +51,7 @@ Every body is a v3 **record**, not the arrays the first sketch had. A newer mino
 | `BEGIN` | `mode`: `"read"` or `"write"` |
 | `COMMIT`, `ROLLBACK`, `PING`, `BYE` | empty record |
 | `CANCEL` | `request` |
-| `DONE` | `rows` (affected, if any), `commit` (the commit id, if it wrote), `cancelled` (for a `CANCEL`) |
+| `DONE` | `rows` (affected, if any), `commit` (the commit id, if it wrote), `cancelled` (for a `CANCEL`), `warnings` (as in `ROWS`) |
 | `PONG` | empty record |
 | `ERROR` | `code` (text), `message`, `position` (where the SQL has one) |
 

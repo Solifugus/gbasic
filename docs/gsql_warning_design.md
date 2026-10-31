@@ -1,6 +1,6 @@
 # G-SQL warnings reach the program
 
-**Status:** designed 2026-11-01. The first of three increments that views depend on (`gsql_view_design.md` §3), and the open item `gsql_sql_design.md` §8 records: "carrying [a warning] to the client as data, so a program can see it with `on warning`, needs a field in `ROWS` and `DONE`."
+**Status:** designed and built 2026-11-01 (`src/gsql/sql_exec.c` `take_warnings`, `src/gsql/owner.c`, `src/modules/gsql.c`, `runtime_warn_distinct` in `src/eval.c`; `tests/run_gsql_module.sh`). The first of three increments that views depend on (`gsql_view_design.md` §3), and the open item `gsql_sql_design.md` §8 records: "carrying [a warning] to the client as data, so a program can see it with `on warning`, needs a field in `ROWS` and `DONE`."
 
 ## 1. The defect it closes
 
@@ -38,3 +38,18 @@ A warning raised inside SQL, such as 2112 for an overflowing sum, is printed on 
   - `on warning ignore` prints nothing;
   - the same overflow in a loop prints once;
   - a reply with no warning is unchanged.
+
+## 4. What building it found
+
+- **A batch whose warning is made an error left its cursor open in the owner.** The module's ordinary close declines to send while a raise is pending, which is exactly when this happens. It uses the quiet close the loop already had for a raise escaping it. Found by the case added for it: the request trace showed `QUERY` with no `CLOSE`.
+- **A refusal of two literals happens before anything runs.** The first case for "a refused statement's warnings do not leak" used `'a' + 1`, so no warning was ever raised, and the perturbation dropping that path's warnings stayed green. The case now refuses at run time, `1 / (id - id)`, after a column that overflows.
+- **gBASIC's anti-silence rule caught my own fixture.** A function that armed `on error goto next` and never looked at `error` re-raised at its return, which is the rule working as designed.
+- **Six perturbations, all red:**
+  - the client ignoring the field;
+  - deduplication by site alone;
+  - a refused statement's warnings leaking;
+  - the owner dropping `warnings` from `DONE`, or from `ROWS`;
+  - a stop leaving the cursor open.
+
+  Two of them were green at first, each a gap in a case, above.
+- **Not observable from a program, and said so:** the SQL layer's own once-per-statement deduplication. The client deduplicates by site and message as well, so it only limits what crosses the socket.
