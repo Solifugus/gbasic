@@ -1,6 +1,6 @@
-# G-SQL views (Phase 2): a proposal
+# G-SQL views (Phase 2)
 
-**Status:** Proposal, written 2026-11-01. **Not built, awaiting Matthew's ruling.** Views are the first Phase 2 item that writes something new into the database file, and `gsql_design.md` §10I asks for a review before a storage format or a grammar is committed. §8 asks for "explicit dependency and version invalidation semantics", which are decisions a reader of the database will live with. Two questions need a ruling (§3). Everything else follows from the increment just built (`gsql_derived_design.md`).
+**Status:** Decided 2026-11-01 (Matthew), not yet built. Views are the first Phase 2 item that writes something new into the database file. `gsql_design.md` §10I asks for a review before a storage format is committed, and §8 asks for "explicit dependency and version invalidation semantics". Both are settled in §3. They depend on two increments that come first: warnings carried to the program (`gsql_warning_design.md`) and `ALTER TABLE ... RENAME TO`.
 
 ## 1. What it would be
 
@@ -22,28 +22,39 @@ A view is a named `SELECT`, used in `FROM` and `JOIN` like a table. It is read-o
 - **A view may read other views. A cycle is refused** at `CREATE` time, when the view is first planned.
 - **`CREATE VIEW` plans the query before storing it,** so a view that does not bind is refused when it is created, not on first use.
 
-## 3. The two questions
+## 3. The two decisions
 
-### Q1. Where is a view stored?
+### Storage: a new tree `\0view` (decided)
 
-- **(a) Recommended: a new tree `\0view`**, mapping a view's name to a `serialize` v3 record `{ format: 1, text, columns, reads }`. Every tree already begins with NUL (`gsql_table_design.md` §2), so this cannot collide with a table. An older binary that opens such a database simply does not see the views, and its tables are untouched. The storage engine's format (`gsql_storage_design.md` §3.1.5) does not change at all, since a tree is only keys inside it. What changes is the table layer's layout (`gsql_table_design.md` §2), which gains one row, and the independent layout reader gains a decoder for the view record.
-- **(b) An entry in `\0catalog` with a kind field.** This was rejected. An older binary would read a view's record as a table schema and refuse it as `FORMAT` or worse, which turns a feature it does not know about into a database it cannot open.
+The tree maps a view's name to a `serialize` v3 record `{ format: 1, text, columns, reads }`.
 
-### Q2. What happens to a view when what it reads changes?
+- **No collision with tables:** every tree already begins with NUL (`gsql_table_design.md` §2).
+- **Older binaries are unaffected:** one that opens such a database does not see the views, and its tables are untouched.
+- **The storage engine's format does not change** (`gsql_storage_design.md` §3.1.5), since a tree is only keys inside it. What changes is the table layer's layout, which gains one row, and the independent layout reader, which gains a decoder.
 
-- **(a) Recommended, PostgreSQL's rule:**
-  - `DROP TABLE` and `DROP VIEW` are refused while a view reads the thing being dropped, and the refusal names the view. The `reads` list is stored for this.
-  - A view's column list is fixed when it is created. Its stored `columns` are what `*` expanded to then.
-  - A use whose query now yields a different column list is refused, naming the view and saying to recreate it. That can happen after `ADD COLUMN` under a `SELECT *`.
-  - There is no `CASCADE` in this release.
-- **(b) Late binding.** A view is only its text: dropping a table is allowed, and the view fails when next used. This is simpler, with no `reads` and no `columns`. But a view's answer can change shape without anyone being told, and a dropped table surfaces as an error far from the cause.
+The rejected alternative was an entry in `\0catalog` with a kind field. An older binary would read a view as a table schema and refuse the database.
 
-The recommendation in both cases is the one that refuses rather than guesses. It costs one tree and two stored lists.
+### A change under a view: never blocked, always reported (decided)
+
+Matthew, 2026-11-01. Views that fail long after something changed under them are a common real-world pain. So is being blocked from dropping and rebuilding a table, or renaming another into its place. A refusal fixes the first by causing the second. A **warning** fixes it at the moment of the change.
+
+- **Nothing is blocked.** `DROP TABLE`, `ALTER TABLE` (`ADD COLUMN`, `RENAME TO`), `CREATE TABLE`, `DROP VIEW` and `CREATE OR REPLACE VIEW` all go through, whatever reads what they change.
+- **Every such change re-checks the views it can affect.** A view stores the tables and views it reads (`reads`). After a statement changes one of them, each view reading it is planned again on the spot, which is cheap.
+  - A view that no longer binds is reported in a **warning** naming the view and the reason, such as ``view `big_spenders` cannot run: table `orders` has no column `total` ``.
+  - A view whose columns changed is reported in a warning naming the old and new lists.
+- **Views bind by name.** The drop-and-rebuild pattern works: drop `t`, create a new `t` or rename another table to `t`, and the views run again. The re-check after that `CREATE` or `RENAME` says whether they fit the new shape.
+- **A broken view fails clearly when used:** ``view `v` cannot run: table `t` does not exist``, never a puzzling error from inside the view's own query.
+- **`SELECT *` in a view reflects the table as it is now.** Its stored `columns` exist only so a change can be reported as a difference.
+- **The program decides how strict to be,** through gBASIC's own warning modes, since the warning reaches the program as a gBASIC warning:
+  - by default it prints and the work goes on;
+  - under `on warning stop` it becomes an error. Inside `begin ... commit` that error arrives before the change is committed, so the program can roll back.
+  - Under autocommit the change has already committed by the time the warning arrives. There it informs and cannot prevent.
 
 ## 4. How it would be tested
 
 - **parse:** each form, and each refusal.
-- **semantics:** a view used, joined and grouped; a view of a view; a cycle refused; `DROP TABLE` refused while a view reads the table; the refusal after `ADD COLUMN` under `*`; `OR REPLACE`; the shared namespace.
+- **semantics:** a view used, joined and grouped; a view of a view; a cycle refused; `DROP TABLE` allowed with a warning naming each broken view; the view failing clearly afterwards; the drop-and-rebuild pattern working again with no warning; a column change under `*` reported as a difference; `OR REPLACE`; the shared namespace.
+- **warnings as data:** each warning above reaches the program, and `on warning stop` inside a transaction lets the program roll the change back.
 - **a reopen tier:** views survive closing and reopening the database, through the owner.
 - **the independent layout reader** (`tests/gsql/table_layout.py`) gains a view, so the stored record is checked from the design's text, not only by our own reader.
 - **the derived tier:** it carries over unchanged, since a view is a derived table at use.

@@ -644,6 +644,16 @@ transaction_id INT64 SERIAL OF (business_date, branch_id)
 
 ## 10F. Named `RELATE` schema metadata
 
+> **Superseded 2026-11-01 (Matthew): named foreign keys instead of `RELATE`.** Stripped to what it stores, a relationship is a name, two tables, a join on columns and a direction. That is a named foreign key:
+>
+> - `CONSTRAINT originating_member FOREIGN KEY (orig_member_id) REFERENCES members (member_id)`;
+> - several foreign keys may join the same two tables;
+> - many-to-one is what a foreign key is;
+> - the standard's `NOT ENFORCED` gives metadata without enforcement;
+> - every driver, the `discovery` library and an AI already read foreign keys.
+>
+> Reusable query shapes are what views are for (`gsql_view_design.md`). They are not a substitute for relationships, because a view is one fixed query, not an edge a query combines with others. What a foreign key does not give is query syntax that joins by name (`JOIN members VIA originating_member`). That is convenience, and may be added on top of named foreign keys if real queries want it. The text below is kept as the record of the earlier direction.
+
 **Agreed direction:** Relationships are reusable, named, cardinality-aware schema knowledge. Multiple relationships can exist between the same tables (e.g., originating and destination member). They improve query clarity, discoverability, validation, schema tools, G-Dash, and potentially AI-assisted query construction. They do **not** require eager materialization of related rows and are distinct from foreign-key enforcement.
 
 ```sql
