@@ -530,8 +530,10 @@ stmt("SELECT a.id, b.id FROM hj a LEFT JOIN hj b ON b.t = a.t AND b.id <> a.id O
 stmt("SELECT count(*) FROM cu JOIN hj ON hj.k = cu.name", "= 0")
 stmt("SELECT cu.name, d.n FROM cu JOIN (SELECT cust, count(*) AS n FROM od GROUP BY cust) d ON d.cust = cu.id ORDER BY cu.id",
      "= 'ann', 2 | 'bob', 1")
-# a record has no key: the hash falls back to reading every row
+# a record has no key: it is in no group, and a probe with none reads every row
 stmt("SELECT a.id, b.id FROM assets a JOIN (SELECT id, p FROM assets) b ON b.p = a.p ORDER BY a.id", "= 1, 1 | 2, 2")
+# a condition reading the inner table on both sides is a filter, never a probe
+stmt("SELECT count(*) FROM hj a JOIN hj b ON b.k = b.id", "= 10")
 stmt("EXPLAIN SELECT a.id FROM hj a JOIN hj b ON b.k = a.k",
      "= 'Nested Loop' | '  Scan on hj AS a' | '  Hash Scan on hj AS b using (k = a.k)'")
 stmt("EXPLAIN SELECT cu.name FROM cu JOIN (SELECT cust FROM od) d ON d.cust = cu.id AND d.cust > 0",

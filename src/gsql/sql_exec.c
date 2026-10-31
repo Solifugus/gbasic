@@ -142,8 +142,8 @@ typedef struct XScan {
     int dready;
     /* a hash join's inner side (docs/gsql_hashjoin_design.md §2): drows
        grouped by their hashed column's key, each group a chain of 1-based
-       row numbers in the order read; `hoff` when a value had no key */
-    int hready, hoff;
+       row numbers in the order read */
+    int hready;
     KeyMap hmap;
     GsqlBuf *hkeys;
     size_t nhkeys;
@@ -1540,7 +1540,7 @@ static int hash_build(X *x, size_t k) {
         abort();
     }
     size_t capkeys = 0;
-    for (size_t i = 0; i < xs->ndrows && !xs->hoff; i++) {
+    for (size_t i = 0; i < xs->ndrows; i++) {
         GsBytes v;
         if ((rc = held_value(x, k, &xs->drows[i], &v)) != GSQL_OK) {
             return rc;
@@ -1551,10 +1551,10 @@ static int hash_build(X *x, size_t k) {
         GsqlKey key;
         gsql_key_init(&key);
         if (gsql_key_append(&key, v.p, v.n, NULL, 0) != GSQL_KEY_OK) {
-            /* a value with no key: every probe reads every row */
+            /* a value with no key, a record: `=` is true of it only against
+               another such value, whose probe reads every row anyway */
             gsql_key_free(&key);
-            xs->hoff = 1;
-            break;
+            continue;
         }
         if (xs->nhkeys == capkeys) {
             capkeys = capkeys ? capkeys * 2 : 64;
@@ -1596,10 +1596,6 @@ static int hash_probe(Iter *it) {
         }
     }
     x->q->seeks++;
-    if (xs->hoff) {
-        it->hall = 1;
-        return GSQL_OK;
-    }
     GsqlHv *v = eval(x, it->sc->hashexpr);
     if (!v) {
         return x->err->code ? x->err->code : GSQL_EXPRESSION;

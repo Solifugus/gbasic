@@ -738,6 +738,8 @@ commit
 = 'ann', 2 | 'bob', 1
 > SELECT a.id, b.id FROM assets a JOIN (SELECT id, p FROM assets) b ON b.p = a.p ORDER BY a.id
 = 1, 1 | 2, 2
+> SELECT count(*) FROM hj a JOIN hj b ON b.k = b.id
+= 10
 > EXPLAIN SELECT a.id FROM hj a JOIN hj b ON b.k = a.k
 = 'Nested Loop' | '  Scan on hj AS a' | '  Hash Scan on hj AS b using (k = a.k)'
 > EXPLAIN SELECT cu.name FROM cu JOIN (SELECT cust FROM od) d ON d.cust = cu.id AND d.cust > 0

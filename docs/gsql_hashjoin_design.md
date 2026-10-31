@@ -29,12 +29,7 @@ When an inner table (scan *k* > 0) would be read whole, and one of its condition
 
 Where `=` would **refuse**, as for a number against text, the hash reads no such row. So that refusal is not reached, which is the one-directional allowance every access path already has (`gsql_sql_design.md` §5).
 
-**When it cannot key a value,** for example a record, it falls back:
-
-- a value that cannot be keyed during the build turns the hash off for the execution, and every probe reads every row;
-- a probe value that cannot be keyed reads every row for that probe.
-
-Either way the answer is the nested loop's.
+**A value with no key,** such as a record, is left out of the groups. A probe with no key reads every row. That is enough, because `=` is true of a value with no key only against another value with no key, and every such probe reads every row anyway. Either way the answer is the nested loop's.
 
 **Forced to a scan** (`gsql_sql_force_scan`), no hash is used. That is what lets the differential tier compare the hash join with the nested loop it replaces.
 
