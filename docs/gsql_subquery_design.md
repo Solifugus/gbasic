@@ -62,8 +62,8 @@ A subquery runs as a child execution of its own plan, sharing the statement's pa
 **`EXPLAIN`** prints each subquery's plan after the statement's, numbered in the order they appear:
 
 ```
-Seek on customer AS c ...
-  Filter: (EXISTS SubPlan 1)
+Scan on customer AS c
+  Filter: EXISTS (SubPlan 1)
 SubPlan 1, per row of the outer query
   Index Seek on orders AS o using orders_by_customer (customer = c.id)
 ```

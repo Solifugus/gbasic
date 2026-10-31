@@ -61,7 +61,7 @@ static const char *tag_word(int tag) {
 
 /* ---- one execution ------------------------------------------------------ */
 
-typedef struct {
+typedef struct X {
     GsqlSql *q;
     const GsqlHost *h;
     const GsEngine *e;
@@ -80,6 +80,9 @@ typedef struct {
     size_t ncached, capcached;
     /* a grouped query's current group: each aggregate's final value, by slot */
     GsqlHv **aggv;
+    /* a subquery's execution: the enclosing query's, whose rows an outer
+       reference reads (docs/gsql_subquery_design.md §4) */
+    struct X *outer;
 } X;
 
 static GsqlHv *hv_bytes(X *x, const unsigned char *b, size_t n) {
@@ -178,8 +181,16 @@ static void x_free(X *x) {
     x->sx = NULL;
     x->nsx = 0;
     for (size_t k = 0; k < x->ncached; k++) {
-        rel(x, x->cached[k]->hv);
-        x->cached[k]->hv = NULL;
+        SqlExpr *e = x->cached[k];
+        rel(x, e->hv);
+        e->hv = NULL;
+        for (size_t j = 0; j < e->nset; j++) {
+            rel(x, e->set[j]);
+        }
+        free(e->set);
+        e->set = NULL;
+        e->nset = 0;
+        e->gathered = 0;
     }
     free(x->cached);
     x->cached = NULL;
@@ -252,7 +263,15 @@ static GsqlHv *placed(X *x, GsqlHv *v, const SqlExpr *e) {
 }
 
 static GsqlHv *column(X *x, SqlExpr *e) {
-    XScan *xs = e->tab < x->nsx ? &x->sx[e->tab] : NULL;
+    X *at = x;
+    for (unsigned d = 0; e->kind == SX_OUTER && d < e->index && at; d++) {
+        at = at->outer;
+    }
+    if (!at) {
+        xfail(x->err, GSQL_MISUSE, e->pos, "an outer reference was read with no enclosing query");
+        return NULL;
+    }
+    XScan *xs = e->tab < at->nsx ? &at->sx[e->tab] : NULL;
     if (xs && xs->nulled) {
         return hv_unknown(x);
     }
@@ -262,7 +281,7 @@ static GsqlHv *column(X *x, SqlExpr *e) {
     }
     if (!xs->cols[e->col]) {
         GsBytes v;
-        if (gsql_row_value(x->p->scans[e->tab].tb, xs->row.bytes, xs->row.length, e->col, &v, x->err) != GSQL_OK) {
+        if (gsql_row_value(at->p->scans[e->tab].tb, xs->row.bytes, xs->row.length, e->col, &v, x->err) != GSQL_OK) {
             return NULL;
         }
         xs->cols[e->col] = hv_bytes(x, v.p, v.n);
@@ -576,8 +595,14 @@ static GsqlHv *eval_call(X *x, SqlExpr *e) {
     return v;
 }
 
+static GsqlHv *eval_subquery(X *x, SqlExpr *e);
+
 static GsqlHv *eval(X *x, SqlExpr *e) {
     switch (e->kind) {
+    case SX_OUTER:
+        return column(x, e);
+    case SX_SUBQ:
+        return eval_subquery(x, e);
     case SX_LIT:
         if (!e->hv) {
             e->hv = placed(x, hv_bytes(x, e->lit, e->litlen), e);
@@ -2862,6 +2887,7 @@ static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, Rows
     x_init(&k->x, c->q, e, t, &k->plan, &k->err);
     k->x.params = c->x.params;
     k->x.paramslen = c->x.paramslen;
+    k->x.outer = c->x.outer;   /* a side is at its compound's level */
     k->limit = UINT64_MAX;
     int rc = select_start(k);
     GsqlBuf row = {0};
@@ -2942,6 +2968,204 @@ static int compound_start(SqlCursor *c, const GsEngine *e, GsTxn *t) {
     c->pos = c->offset < c->nrows ? (size_t)c->offset : c->nrows;
     c->offset = 0;
     return GSQL_OK;
+}
+
+/* ---- subqueries (docs/gsql_subquery_design.md §4) ------------------------
+ *
+ * A subquery runs as a cursor of its own over the plan its node owns, its
+ * execution's `outer` the one evaluating the node, so an outer reference reads
+ * the row that execution has in hand. One that reads no enclosing row runs
+ * once per execution, its answer kept on the node until the execution ends. */
+
+static SqlCursor *sub_open(X *x, SqlPlan *p) {
+    SqlCursor *k = calloc(1, sizeof *k);
+    if (!k) {
+        abort();
+    }
+    k->q = x->q;
+    k->borrowed = 1;
+    k->plan = *p;
+    k->err.code = GSQL_OK;
+    x_init(&k->x, x->q, x->e, x->t, &k->plan, &k->err);
+    k->x.params = x->params;
+    k->x.paramslen = x->paramslen;
+    k->x.outer = x;
+    k->limit = UINT64_MAX;
+    SqlStmt *s = p->s;
+    int rc = GSQL_OK;
+    if (s->limit) {
+        rc = count_value(&k->x, s->limit, "LIMIT", &k->limit);
+    }
+    if (rc == GSQL_OK && s->offset) {
+        rc = count_value(&k->x, s->offset, "OFFSET", &k->offset);
+        if (k->offset == UINT64_MAX) {
+            k->offset = 0;
+        }
+    }
+    if (rc == GSQL_OK) {
+        rc = s->setop ? compound_start(k, x->e, x->t) : select_start(k);
+    }
+    if (rc != GSQL_OK) {
+        *x->err = k->err;
+        if (x->err->code == GSQL_OK) {
+            x->err->code = rc;
+        }
+        cursor_free(k);
+        return NULL;
+    }
+    return k;
+}
+
+/* an output row's one column, as a host value */
+static GsqlHv *first_value(X *x, const GsqlBuf *row) {
+    GsBytes item;
+    if (v3_array_items(row->bytes, row->length, &item, 1) != 1) {
+        xfail(x->err, GSQL_MISUSE, 0, "a subquery's row did not hold its column");
+        return NULL;
+    }
+    return hv_bytes(x, item.p, item.n);
+}
+
+/* IN's Kleene fold of one more comparison: 1 decided, 0 go on, -1 failed */
+static int in_step(X *x, SqlExpr *e, GsqlHv *a, GsqlHv *b, int *acc) {
+    int t = compare(x, SQL_OP_EQ, a, b, e);
+    if (t == -2) {
+        return -1;
+    }
+    if (t == 1 || (t == -1 && *acc == 0)) {
+        *acc = t;
+    }
+    return *acc == 1;
+}
+
+static GsqlHv *eval_subquery(X *x, SqlExpr *e) {
+    if (e->op != SQL_SUB_IN && !e->correlated && e->hv) {
+        return x->h->copy(x->h->ctx, e->hv);
+    }
+    GsqlHv *a = NULL;
+    if (e->op == SQL_SUB_IN) {
+        a = eval(x, e->a[0]);
+        if (!a) {
+            return NULL;
+        }
+    }
+    SqlCursor *k = NULL;
+    GsqlBuf row = {0};
+    GsqlHv *result = NULL;
+    int failed = 0;
+    if (e->op == SQL_SUB_IN && !e->correlated) {
+        /* the values, once per execution; then this row's comparisons */
+        if (!e->gathered) {
+            k = sub_open(x, e->subplan);
+            failed = !k;
+            size_t cap = 0;
+            while (!failed) {
+                int r = cursor_next(k, &row);
+                if (r <= 0) {
+                    failed = r < 0;
+                    break;
+                }
+                GsqlHv *v = first_value(x, &row);
+                if (!v) {
+                    failed = 1;
+                    break;
+                }
+                if (e->nset == cap) {
+                    cap = cap ? cap * 2 : 16;
+                    e->set = realloc(e->set, sizeof(void *) * cap);
+                    if (!e->set) {
+                        abort();
+                    }
+                }
+                e->set[e->nset++] = v;
+            }
+            remember(x, e);
+            e->gathered = !failed;
+        }
+        int acc = 0;
+        for (size_t j = 0; !failed && j < e->nset; j++) {
+            int d = in_step(x, e, a, e->set[j], &acc);
+            failed = d < 0;
+            if (d) {
+                break;
+            }
+        }
+        if (!failed) {
+            if (e->neg && acc >= 0) {
+                acc = !acc;
+            }
+            result = hv_tri(x, acc);
+        }
+    } else {
+        k = sub_open(x, e->subplan);
+        failed = !k;
+        if (!failed && e->op == SQL_SUB_EXISTS) {
+            int r = cursor_next(k, &row);
+            failed = r < 0;
+            result = failed ? NULL : hv_bool(x, r == 1);
+        } else if (!failed && e->op == SQL_SUB_SCALAR) {
+            int r = cursor_next(k, &row);
+            if (r < 0) {
+                failed = 1;
+            } else if (r == 0) {
+                result = hv_unknown(x);
+            } else {
+                GsqlHv *v = first_value(x, &row);
+                int r2 = v ? cursor_next(k, &row) : -1;
+                if (r2 == 1) {
+                    xfail(x->err, GSQL_EXPRESSION, e->pos, "a subquery used as a value returned more than one row");
+                }
+                if (r2 != 0) {
+                    rel(x, v);
+                    failed = 1;
+                } else {
+                    result = v;
+                }
+            }
+        } else if (!failed) {
+            int acc = 0;
+            for (;;) {
+                int r = cursor_next(k, &row);
+                if (r <= 0) {
+                    failed = r < 0;
+                    break;
+                }
+                GsqlHv *v = first_value(x, &row);
+                int d = v ? in_step(x, e, a, v, &acc) : -1;
+                rel(x, v);
+                if (d) {
+                    failed = d < 0;
+                    break;
+                }
+            }
+            if (!failed) {
+                if (e->neg && acc >= 0) {
+                    acc = !acc;
+                }
+                result = hv_tri(x, acc);
+            }
+        }
+    }
+    if (failed && k && x->err->code == GSQL_OK) {
+        *x->err = k->err;
+    }
+    if (failed && x->err->code == GSQL_OK) {
+        x->err->code = GSQL_EXPRESSION;
+    }
+    gsql_buf_free(&row);
+    if (k) {
+        cursor_free(k);
+    }
+    rel(x, a);
+    if (!result) {
+        return NULL;
+    }
+    if (e->op != SQL_SUB_IN && !e->correlated) {
+        e->hv = result;
+        remember(x, e);
+        return x->h->copy(x->h->ctx, result);
+    }
+    return result;
 }
 
 static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *st, GsqlResult *out,

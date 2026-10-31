@@ -97,6 +97,7 @@ typedef struct {
     GsqlError *err;
     int failed;
     SqlStmt *stmt;       /* for parameter bookkeeping */
+    int subdepth;        /* subqueries open around the current token */
 } P;
 
 static void advance_byte(P *p) {
@@ -558,6 +559,43 @@ static void take(SqlExpr *e, EList *l) {
 
 static const char *const typed_literal_words[] = { "date", "time", "timestamp", "datetime", NULL };
 
+static int select_stmt(P *p, SqlStmt *s);
+static int compound(P *p, SqlStmt *root);
+
+/* Subqueries nest at most this deep: each level parses a SELECT on the C
+ * stack, and nothing a person writes comes near it. */
+#define SQL_SUBQUERY_DEPTH 32
+
+/* A subquery's SELECT, the `(` behind it and the current token `select`;
+ * consumes the closing `)` (docs/gsql_subquery_design.md §5). */
+static SqlStmt *subquery(P *p) {
+    uint32_t pos = p->tok.pos;
+    if (p->subdepth >= SQL_SUBQUERY_DEPTH) {
+        fail_at(p, pos, GSQL_UNSUPPORTED, "subqueries may nest at most %d deep", SQL_SUBQUERY_DEPTH);
+        return NULL;
+    }
+    if (!expect_kw(p, "select")) {
+        return NULL;
+    }
+    SqlStmt *t = sql_alloc(p->arena, sizeof *t);
+    t->kind = SQ_SELECT;
+    t->pos = pos;
+    p->subdepth++;
+    int ok = select_stmt(p, t) && compound(p, t);
+    p->subdepth--;
+    if (!ok || !expect_sym(p, ")")) {
+        return NULL;
+    }
+    return t;
+}
+
+static SqlExpr *subquery_node(P *p, int form, uint32_t pos) {
+    SqlExpr *e = node(p, SX_SUBQ, pos);
+    e->op = form;
+    e->sub = subquery(p);
+    return e->sub ? e : NULL;
+}
+
 static SqlExpr *primary(P *p) {
     if (p->failed) {
         return NULL;
@@ -590,8 +628,7 @@ static SqlExpr *primary(P *p) {
     case T_SYM:
         if (accept_sym(p, "(")) {
             if (at_kw(p, "select")) {
-                fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "subqueries are not in this release of G-SQL (Phase 2)");
-                return NULL;
+                return subquery_node(p, SQL_SUB_SCALAR, pos);
             }
             SqlExpr *e = expr(p);
             if (!expect_sym(p, ")")) {
@@ -648,8 +685,30 @@ static SqlExpr *primary(P *p) {
             return e;
         }
         if (at_kw(p, "exists")) {
-            fail_at(p, pos, GSQL_UNSUPPORTED, "subqueries are not in this release of G-SQL (Phase 2)");
-            return NULL;
+            next(p);
+            if (!expect_sym(p, "(")) {
+                return NULL;
+            }
+            if (!at_kw(p, "select")) {
+                expected(p, "a SELECT inside EXISTS ( )");
+                return NULL;
+            }
+            return subquery_node(p, SQL_SUB_EXISTS, pos);
+        }
+        if (at_kw(p, "any") || at_kw(p, "some") || at_kw(p, "all")) {
+            /* `x = ANY (select ...)`: refused, with the spelling that works */
+            size_t si = p->i;
+            uint32_t sc = p->chars;
+            Tok save = p->tok;
+            next(p);
+            if (at_sym(p, "(")) {
+                fail_at(p, pos, GSQL_UNSUPPORTED, "ANY, SOME and ALL are not in this release of G-SQL: "
+                        "x = ANY (SELECT ...) is x IN (SELECT ...)");
+                return NULL;
+            }
+            p->i = si;
+            p->chars = sc;
+            p->tok = save;
         }
         for (int k = 0; typed_literal_words[k]; k++) {
             if (at_kw(p, typed_literal_words[k])) {
@@ -874,8 +933,15 @@ static SqlExpr *comparison(P *p) {
                 return NULL;
             }
             if (at_kw(p, "select")) {
-                fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "subqueries are not in this release of G-SQL (Phase 2)");
-                return NULL;
+                SqlExpr *q = subquery_node(p, SQL_SUB_IN, pos);
+                if (!q) {
+                    return NULL;
+                }
+                q->neg = neg;
+                kids(p, q, 1);
+                q->a[0] = l;
+                e = q;
+                goto in_done;
             }
             EList list = {0};
             elist_push(p, &list, l);
@@ -906,6 +972,7 @@ static SqlExpr *comparison(P *p) {
             return l;
         }
     }
+in_done:
     if (p->failed) {
         return NULL;
     }
@@ -1174,7 +1241,7 @@ static int join_list(P *p, SqlStmt *s) {
         f->join = kind;
         f->pos = p->tok.pos;
         if (at_sym(p, "(")) {
-            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "subqueries are not in this release of G-SQL (Phase 2)");
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "a subquery in FROM is not in this release of G-SQL (Phase 2)");
         }
         if (!(f->table = name(p, "a table name"))) {
             return 0;
@@ -1360,7 +1427,7 @@ static int select_stmt(P *p, SqlStmt *s) {
     }
     if (accept_kw(p, "from")) {
         if (at_sym(p, "(")) {
-            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "subqueries are not in this release of G-SQL (Phase 2)");
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "a subquery in FROM is not in this release of G-SQL (Phase 2)");
         }
         s->table = name(p, "a table name");
         if (!s->table) {
@@ -2172,6 +2239,43 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc) {
             print_expr_tb(o, e->a[k], pc);
         }
         v3_put(o, ")", 1);
+        return;
+    case SX_SUBQ:
+        if (e->op == SQL_SUB_IN) {
+            v3_put(o, "(", 1);
+            print_expr_tb(o, e->a[0], pc);
+            puts_(o, e->neg ? " NOT IN " : " IN ");
+        } else if (e->op == SQL_SUB_EXISTS) {
+            puts_(o, "EXISTS ");
+        }
+        if (pc->scans && e->subno) {
+            /* EXPLAIN's filter lines: the subquery's plan is printed apart */
+            snprintf(b, sizeof b, "(SubPlan %u)", e->subno);
+            puts_(o, b);
+        } else {
+            v3_put(o, "(", 1);
+            sql_print_stmt(o, e->sub);
+            v3_put(o, ")", 1);
+        }
+        if (e->op == SQL_SUB_IN) {
+            v3_put(o, ")", 1);
+        }
+        return;
+    case SX_OUTER:
+        if (e->oqual) {
+            print_name(o, e->oqual);
+            v3_put(o, ".", 1);
+        }
+        if (e->otb && e->col < gsql_table_ncols(e->otb)) {
+            print_name(o, gsql_table_col(e->otb, e->col)->name);
+        } else {
+            snprintf(b, sizeof b, "#%u", e->col);
+            puts_(o, b);
+        }
+        for (size_t k = 0; k < e->nfields; k++) {
+            v3_put(o, ".", 1);
+            print_name(o, e->fields[k]);
+        }
         return;
     case SX_CAST:
         puts_(o, "CAST(");

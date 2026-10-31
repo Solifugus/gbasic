@@ -561,6 +561,99 @@ commit
 > EXPLAIN SELECT g FROM s UNION ALL SELECT region FROM cu WHERE id = 2 ORDER BY 1 LIMIT 3
 = 'Union All' | '  Scan on s' | '  Point Read on cu using the primary key (id = 2)' | '  Order: g (sorted)' | '  Limit: 3'
 
+# ---- subqueries (docs/gsql_subquery_design.md) -----------------------
+> SELECT (SELECT max(id) FROM od), (SELECT name FROM cu WHERE id = 2)
+% max:any, name:string
+= 14, 'bob'
+> SELECT (SELECT 1 + 1)
+= 2
+> SELECT name, (SELECT count(*) FROM od WHERE od.cust = cu.id) FROM cu ORDER BY id
+= 'ann', 2 | 'bob', 1 | 'cy', 0 | 'dee', 0
+> SELECT (SELECT id FROM od WHERE cust = 7)
+= NULL
+> SELECT coalesce((SELECT id FROM od WHERE cust = 7), -1)
+= -1
+> SELECT (SELECT id FROM od WHERE cust = 1)
+! EXPRESSION 8 a subquery used as a value returned more than one row
+> SELECT (SELECT id FROM od WHERE cust = cu.id) FROM cu ORDER BY id
+! EXPRESSION 8 a subquery used as a value returned more than one row
+> SELECT (SELECT id FROM od WHERE cust = cu.id ORDER BY id DESC LIMIT 1) FROM cu ORDER BY id
+= 11 | 12 | NULL | NULL
+> SELECT (SELECT id, cust FROM od)
+! SYNTAX 8 a subquery used as a value must have one column, and this one has 2
+> SELECT name FROM cu WHERE id IN (SELECT cust FROM od) ORDER BY id
+= 'ann' | 'bob'
+> SELECT name FROM cu WHERE id NOT IN (SELECT cust FROM od)
+= (none)
+> SELECT name FROM cu WHERE id NOT IN (SELECT cust FROM od WHERE cust IS NOT NULL) ORDER BY id
+= 'cy' | 'dee'
+> SELECT NULL IN (SELECT id FROM od WHERE id > 99), 13 NOT IN (SELECT id FROM od WHERE id > 99), NULL IN (SELECT id FROM od)
+= FALSE, TRUE, NULL
+> SELECT 1 FROM cu WHERE name IN (SELECT cust FROM od)
+! EXPRESSION 29 = compares text with a number
+> SELECT id FROM od WHERE total IN (SELECT amt FROM rf WHERE rf.od = od.id)
+= 11
+> SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id) ORDER BY id
+= 'ann' | 'bob'
+> SELECT name FROM cu WHERE NOT EXISTS (SELECT * FROM od WHERE od.cust = cu.id) ORDER BY id
+= 'cy' | 'dee'
+> SELECT EXISTS (SELECT 1 FROM rf), EXISTS (SELECT 1 FROM rf WHERE od = 1)
+% exists:boolean, exists:boolean
+= TRUE, FALSE
+> SELECT name FROM cu WHERE id IN (SELECT id FROM od)
+= (none)
+> SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id AND EXISTS (SELECT 1 FROM rf WHERE rf.od = od.id AND cu.region = 'east'))
+= 'ann'
+> SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id UNION SELECT 1 FROM rf WHERE cu.id = 3) ORDER BY id
+= 'ann' | 'bob' | 'cy'
+> SELECT name FROM cu WHERE id IN (SELECT cust FROM od WHERE id = 10 UNION SELECT 3) ORDER BY id
+= 'ann' | 'cy'
+> SELECT name FROM cu WHERE id = (SELECT cust FROM od WHERE id = :o)
+@ o = 12
+= 'bob'
+> SELECT cu.name, od.id FROM cu JOIN od ON od.cust = cu.id AND od.id = (SELECT max(o2.id) FROM od o2 WHERE o2.cust = cu.id) ORDER BY cu.id
+= 'ann', 11 | 'bob', 12
+> SELECT cu.name, (SELECT count(*) FROM rf WHERE rf.od = od.id) FROM cu LEFT JOIN od ON od.cust = cu.id ORDER BY cu.id, od.id
+= 'ann', 0 | 'ann', 1 | 'bob', 0 | 'cy', 0 | 'dee', 0
+> SELECT name FROM cu ORDER BY (SELECT count(*) FROM od WHERE od.cust = cu.id) DESC, id
+= 'ann' | 'bob' | 'cy' | 'dee'
+> SELECT cust, count(*) FROM od GROUP BY cust HAVING count(*) > (SELECT count(*) FROM rf) ORDER BY cust
+= 1, 2
+> SELECT region, (SELECT count(*) FROM od WHERE od.cust IN (SELECT c2.id FROM cu c2 WHERE c2.region = cu.region)) FROM cu GROUP BY region ORDER BY region
+= 'east', 2 | 'west', 1 | NULL, 0
+> SELECT region, (SELECT count(*) FROM od WHERE od.cust = cu.id) FROM cu GROUP BY region
+! SYNTAX 57 the select list reads column `id`, which is neither grouped by nor inside an aggregate
+> SELECT (SELECT sum(cu.id) FROM od) FROM cu
+! UNSUPPORTED 20 an aggregate in a subquery may read only the subquery's own tables
+> SELECT count(*) FROM cu GROUP BY (SELECT 1)
+! UNSUPPORTED 34 GROUP BY cannot hold a subquery
+> SELECT id FROM od LIMIT (SELECT 1)
+! UNSUPPORTED 25 LIMIT cannot hold a subquery
+> INSERT INTO rf VALUES ((SELECT max(id) FROM od), NULL)
+! UNSUPPORTED 24 INSERT ... VALUES cannot hold a subquery
+> SELECT name FROM cu WHERE id IN (SELECT nope FROM od)
+! NOT_FOUND 41 table od has no column `nope`
+> SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT 1))))))))))))))))))))))))))))))))
+= 1
+> SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT (SELECT 1)))))))))))))))))))))))))))))))))
+! UNSUPPORTED 265 subqueries may nest at most 32 deep
+> CREATE TABLE sq (id INTEGER PRIMARY KEY, v INTEGER)
+= done 0
+> INSERT INTO sq VALUES (1, 1), (2, 5), (3, 9)
+= done 3
+> UPDATE sq SET v = (SELECT max(v) FROM sq) WHERE v < (SELECT avg(v) FROM sq)
+= done 1
+> DELETE FROM sq WHERE v = (SELECT min(v) FROM sq)
+= done 1
+> UPDATE sq SET v = (SELECT count(*) FROM sq s2 WHERE s2.v >= sq.v)
+= done 2
+> SELECT id, v FROM sq
+= 1, 2 | 3, 2
+> EXPLAIN SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id)
+= 'Scan on cu' | '  Filter: EXISTS (SubPlan 1)' | 'SubPlan 1, per row of the outer query' | '  Index Seek on od using od_cust (cust = cu.id)'
+> EXPLAIN SELECT id FROM od WHERE id = (SELECT max(od) FROM rf)
+= 'Point Read on od using the primary key (id = (SubPlan 1))' | 'SubPlan 1, once' | '  Scan on rf' | '    Aggregate: one group'
+
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
 = done 0

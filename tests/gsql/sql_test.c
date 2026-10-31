@@ -1369,6 +1369,143 @@ static int join_tiers(int n, int *seek_runs, int *joined_seen) {
     return refused;
 }
 
+/* ---- the subquery tier (docs/gsql_subquery_design.md §6) ---------------
+ *
+ * IN over q's keys, uncorrelated; EXISTS and a count, correlated on q's
+ * indexed key. Each runs with access paths and forced to scans, inside the
+ * subquery as well; and each is computed here from r and q fetched alone,
+ * matching values through the host's `=`. */
+
+static const char *const qpreds[] = { "TRUE", "q.v > 0", "q.v IS NULL", "q.t = 'a'", "q.k < 3", "q.v = 1.5",
+                                      "q.t IS NOT NULL" };
+
+/* the truth of `=` between two stored values, through the host */
+static int host_eq(const unsigned char *a, size_t an, const unsigned char *b, size_t bn) {
+    GsqlHv *x = hload(a, an), *y = hload(b, bn);
+    GsqlError err = { GSQL_OK, "", 0 };
+    GsqlHv *eq = H->op(H->ctx, GSQL_HOP_EQ, x, y, &err);
+    int t = eq ? H->truth(H->ctx, eq) : -2;
+    if (eq) {
+        H->release(H->ctx, eq);
+    }
+    H->release(H->ctx, x);
+    H->release(H->ctx, y);
+    return t;
+}
+
+/* rows [id, key] of r and [qid, key] of q, the latter already filtered */
+static void oracle_subquery(int form, int neg, const GsqlBuf *rr, const GsqlBuf *qq, GsqlBuf *o) {
+    GsBytes *ri, *qi;
+    long nr = rows_of(rr, &ri);
+    long nq = rows_of(qq, &qi);
+    size_t nrows = 0;
+    for (long a = 0; a < nr; a++) {
+        GsBytes rc[2];
+        v3_array_items(ri[a].p, ri[a].n, rc, 2);
+        int acc = 0;      /* IN: false until equal or unknown */
+        long count = 0;   /* EXISTS and the count: the q rows whose key is equal */
+        for (long b = 0; b < nq; b++) {
+            GsBytes qc[2];
+            v3_array_items(qi[b].p, qi[b].n, qc, 2);
+            int t = host_eq(rc[1].p, rc[1].n, qc[1].p, qc[1].n);
+            if (t == 1) {
+                acc = 1;
+                count++;
+            } else if (t == -1 && acc == 0) {
+                acc = -1;
+            }
+        }
+        int keep;
+        if (form == 0) {
+            if (neg && acc >= 0) {
+                acc = !acc;
+            }
+            keep = acc == 1;
+        } else if (form == 1) {
+            keep = neg ? count == 0 : count > 0;
+        } else {
+            keep = 1;
+        }
+        if (!keep) {
+            continue;
+        }
+        if (nrows++) {
+            v3_put(o, " | ", 3);
+        }
+        render(o, rc[0].p, rc[0].n);
+        if (form == 2) {
+            char b[32];
+            snprintf(b, sizeof b, ", %ld", count);
+            v3_put(o, b, strlen(b));
+        }
+    }
+    free(ri);
+    free(qi);
+    if (nrows == 0) {
+        v3_put(o, "(none)", 6);
+    }
+}
+
+static int subquery_tier(int n, int *seek_runs, int *by_form) {
+    int refused = 0;
+    for (int k = 0; k < n; k++) {
+        char where[1024], q[2048];
+        predicate(where, sizeof where);
+        int form = (int)pick(3), neg = (int)pick(3) == 0;
+        int bytext = pick(2);
+        const char *rkey = bytext ? "b" : "a", *qkey = bytext ? "t" : "k";
+        const char *qp = qpreds[pick(sizeof qpreds / sizeof qpreds[0])];
+        if (form == 0) {
+            snprintf(q, sizeof q, "SELECT id FROM r WHERE (%s) AND %s %sIN (SELECT %s FROM q WHERE %s) ORDER BY id",
+                     where, rkey, neg ? "NOT " : "", qkey, qp);
+        } else if (form == 1) {
+            snprintf(q, sizeof q, "SELECT id FROM r WHERE (%s) AND %sEXISTS (SELECT 1 FROM q WHERE q.%s = r.%s AND %s) "
+                     "ORDER BY id", where, neg ? "NOT " : "", qkey, rkey, qp);
+        } else {
+            snprintf(q, sizeof q, "SELECT id, (SELECT count(*) FROM q WHERE q.%s = r.%s AND %s) FROM r WHERE %s "
+                     "ORDER BY id", qkey, rkey, qp, where);
+        }
+        refused += both_ways(q, seek_runs);
+        char rq[2048], qq[512];
+        snprintf(rq, sizeof rq, "SELECT id, %s FROM r WHERE %s ORDER BY id", rkey, where);
+        snprintf(qq, sizeof qq, "SELECT qid, %s FROM q WHERE %s ORDER BY qid", qkey, qp);
+        Answer x, ra, qa;
+        gsql_sql_force_scan(sql, pick(2));
+        run(q, NULL, 100000, &x);
+        run(rq, NULL, 100000, &ra);
+        gsql_sql_force_scan(sql, 0);
+        run(qq, NULL, 100000, &qa);
+        checks++;
+        if (x.code != ra.code) {
+            mismatches++;
+            printf("MISMATCH %s\n  with the subquery: %s %s\n  r alone: %s %s\n", q, gsql_error_name(x.code),
+                   x.err.message, gsql_error_name(ra.code), ra.err.message);
+        } else if (x.code == GSQL_OK && qa.code != GSQL_OK) {
+            mismatches++;
+            printf("MISMATCH %s\n  q alone was refused: %s\n", qq, qa.err.message);
+        } else if (x.code == GSQL_OK) {
+            GsqlBuf want = {0};
+            oracle_subquery(form, neg, &ra.raw, &qa.raw, &want);
+            v3_put(&want, "", 1);
+            GsqlBuf got = {0};
+            v3_put(&got, x.text.bytes, x.text.length);
+            v3_put(&got, "", 1);
+            if (strcmp((char *)got.bytes, (char *)want.bytes) != 0) {
+                mismatches++;
+                printf("MISMATCH %s\n  engine: %s\n  oracle: %s\n", q, (char *)got.bytes, (char *)want.bytes);
+            } else if (strcmp((char *)got.bytes, "(none)") != 0) {
+                by_form[form]++;
+            }
+            gsql_buf_free(&want);
+            gsql_buf_free(&got);
+        }
+        answer_free(&x);
+        answer_free(&ra);
+        answer_free(&qa);
+    }
+    return refused;
+}
+
 static int differential(const char *dir, uint64_t seed, int n) {
     if (!open_db(dir)) {
         return 2;
@@ -1482,6 +1619,11 @@ static int differential(const char *dir, uint64_t seed, int n) {
     gsql_sql_counts(sql, &js0, &jc0);
     int join_refused = join_tiers(n / 2, &join_seeks, &joined_seen);
     gsql_sql_counts(sql, &js1, &jc1);
+    int sub_seeks = 0, by_form[3] = { 0, 0, 0 };
+    unsigned long ss0, sc0, ss1, sc1;
+    gsql_sql_counts(sql, &ss0, &sc0);
+    int sub_refused = subquery_tier(n / 2, &sub_seeks, by_form);
+    gsql_sql_counts(sql, &ss1, &sc1);
     unsigned long seeks, scans;
     gsql_sql_counts(sql, &seeks, &scans);
     printf("census: %d rows, %d queries, %d used a seek, %d refused, %d refused only by the scan\n", inserted, n,
@@ -1514,6 +1656,16 @@ static int differential(const char *dir, uint64_t seed, int n) {
     if (q_rows < 100 || join_seeks < n / 8 || js1 - js0 < (unsigned long)n || joined_seen < n / 6) {
         mismatches++;
         printf("MISMATCH the join census is below its floor: the tiers measured too little\n");
+    }
+    printf("census: %d subqueries both ways, %d of them sought, %lu seeks in all, answered by the oracle with rows: "
+           "%d IN, %d EXISTS, %d counts; %d refused\n", n / 2, sub_seeks, ss1 - ss0, by_form[0], by_form[1],
+           by_form[2], sub_refused);
+    /* each form must have answered with rows, and a correlated subquery must
+       really have sought q for each row of r: a binding that lost the outer
+       reference's constancy answers correctly and only slowly */
+    if (by_form[0] < n / 40 || by_form[1] < n / 40 || by_form[2] < n / 40 || ss1 - ss0 < (unsigned long)n) {
+        mismatches++;
+        printf("MISMATCH the subquery census is below its floor: the tier measured too little\n");
     }
     /* a floor on what the tier exercised: a planner that never seeks, or a
      * generator that is refused every time, agrees with the scan perfectly */

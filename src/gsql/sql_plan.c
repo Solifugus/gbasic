@@ -13,7 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct {
+typedef struct B B;
+struct B {
     SqlPlan *p;
     SqlArena *arena;
     GsqlError *err;
@@ -26,7 +27,21 @@ typedef struct {
     int agg_ok;
     int in_agg;
     size_t capaggs;
-} B;
+    /* subqueries (docs/gsql_subquery_design.md §3): the binder of the query
+       enclosing this one, and the SX_SUBQ node this query is the body of;
+       NULL at the top. What a subquery needs to be planned is kept here, and
+       subqueries are numbered across the whole statement for EXPLAIN. */
+    B *outer;
+    SqlExpr *subq;
+    const GsEngine *e;
+    GsTxn *t;
+    int force_scan;
+    unsigned *nsubq;
+    size_t capsubs;
+};
+
+static int plan_at(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const char *text, int force_scan,
+                   SqlPlan *out, GsqlError *err, B *outer, SqlExpr *subq, unsigned *nsubq);
 
 static int bfail(B *b, uint32_t pos, int code, const char *fmt, ...) {
     if (b->err->code != GSQL_OK) {
@@ -53,23 +68,26 @@ static const struct {
 
 static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where);
 
-static int bind_name(B *b, SqlExpr *e, int cols_allowed, const char *where) {
+/* Looks a name up among one query's tables: 1 found (tab, col and how many
+ * parts named the table), 0 not there, -1 refused with err set. `qualified`
+ * asks only whether the first part names a table, and otherwise the first
+ * part is asked for as a column: a dotted name names a table in reach before
+ * it names a column's field. */
+static int lookup(B *b, SqlExpr *e, const char *where, int qualified, long *tabp, long *colp, size_t *firstp) {
     SqlPlan *p = b->p;
-    if (!cols_allowed) {
-        return bfail(b, e->pos, GSQL_SYNTAX, "%s cannot read a column, and `%s` names one", where, e->parts[0]);
-    }
     if (!p->nscans || !p->scans[0].tb) {
-        return bfail(b, e->pos, GSQL_NOT_FOUND, "`%s` names a column, and there is no table here", e->parts[0]);
+        return 0;
     }
     size_t vis = b->visible ? b->visible : p->nscans;
     long tab = -1;
     size_t first = 0;
-    if (e->nparts >= 2) {
+    if (qualified) {
         for (size_t t = 0; t < p->nscans; t++) {
             if (strcmp(e->parts[0], p->scans[t].qualifier) == 0) {
                 if (t >= vis) {
-                    return bfail(b, e->pos, GSQL_SYNTAX, "%s cannot read `%s`: that table is joined after this one",
-                                 where, e->parts[0]);
+                    bfail(b, e->pos, GSQL_SYNTAX, "%s cannot read `%s`: that table is joined after this one",
+                          where, e->parts[0]);
+                    return -1;
                 }
                 tab = (long)t;
                 first = 1;
@@ -81,9 +99,12 @@ static int bind_name(B *b, SqlExpr *e, int cols_allowed, const char *where) {
     if (tab >= 0) {
         col = gsql_table_find(p->scans[tab].tb, e->parts[1]);
         if (col < 0) {
-            return bfail(b, e->pos, GSQL_NOT_FOUND, "table %s has no column `%s`", gsql_table_name(p->scans[tab].tb),
-                         e->parts[1]);
+            bfail(b, e->pos, GSQL_NOT_FOUND, "table %s has no column `%s`", gsql_table_name(p->scans[tab].tb),
+                  e->parts[1]);
+            return -1;
         }
+    } else if (qualified) {
+        return 0;
     } else {
         /* a bare name: the one table that has it, or a refusal naming them */
         size_t found = 0;
@@ -93,40 +114,157 @@ static int bind_name(B *b, SqlExpr *e, int cols_allowed, const char *where) {
                 continue;
             }
             if (found++) {
-                return bfail(b, e->pos, GSQL_SYNTAX, "column `%s` is in both %s and %s: write %s.%s or %s.%s",
-                             e->parts[0], p->scans[tab].qualifier, p->scans[t].qualifier, p->scans[tab].qualifier,
-                             e->parts[0], p->scans[t].qualifier, e->parts[0]);
+                bfail(b, e->pos, GSQL_SYNTAX, "column `%s` is in both %s and %s: write %s.%s or %s.%s",
+                      e->parts[0], p->scans[tab].qualifier, p->scans[t].qualifier, p->scans[tab].qualifier,
+                      e->parts[0], p->scans[t].qualifier, e->parts[0]);
+                return -1;
             }
             tab = (long)t;
             col = c;
         }
         if (!found) {
-            for (size_t t = 0; t < p->nscans && e->nparts >= 2; t++) {
-                if (strcmp(p->scans[t].qualifier, gsql_table_name(p->scans[t].tb)) != 0 &&
-                    strcmp(e->parts[0], gsql_table_name(p->scans[t].tb)) == 0) {
-                    return bfail(b, e->pos, GSQL_NOT_FOUND,
-                                 "the table is called `%s` in this statement, so `%s.%s` must be `%s.%s`",
-                                 p->scans[t].qualifier, e->parts[0], e->parts[1], p->scans[t].qualifier, e->parts[1]);
-                }
-            }
-            if (p->nscans == 1) {
-                return bfail(b, e->pos, GSQL_NOT_FOUND, "table %s has no column `%s`", gsql_table_name(p->scans[0].tb),
-                             e->parts[0]);
-            }
-            return bfail(b, e->pos, GSQL_NOT_FOUND, "no table %shas a column `%s`",
-                         vis < p->nscans ? "joined so far " : "of this statement ", e->parts[0]);
+            return 0;
         }
     }
-    const GsqlColumn *c = gsql_table_col(p->scans[tab].tb, (size_t)col);
+    *tabp = tab;
+    *colp = col;
+    *firstp = first;
+    return 1;
+}
+
+/* the refusal for a name no query in reach has, said about the innermost */
+static int not_found(B *b, SqlExpr *e) {
+    SqlPlan *p = b->p;
+    if (!p->nscans || !p->scans[0].tb) {
+        return bfail(b, e->pos, GSQL_NOT_FOUND, "`%s` names a column, and there is no table here", e->parts[0]);
+    }
+    size_t vis = b->visible ? b->visible : p->nscans;
+    for (size_t t = 0; t < p->nscans && e->nparts >= 2; t++) {
+        if (strcmp(p->scans[t].qualifier, gsql_table_name(p->scans[t].tb)) != 0 &&
+            strcmp(e->parts[0], gsql_table_name(p->scans[t].tb)) == 0) {
+            return bfail(b, e->pos, GSQL_NOT_FOUND,
+                         "the table is called `%s` in this statement, so `%s.%s` must be `%s.%s`",
+                         p->scans[t].qualifier, e->parts[0], e->parts[1], p->scans[t].qualifier, e->parts[1]);
+        }
+    }
+    if (p->nscans == 1) {
+        return bfail(b, e->pos, GSQL_NOT_FOUND, "table %s has no column `%s`", gsql_table_name(p->scans[0].tb),
+                     e->parts[0]);
+    }
+    return bfail(b, e->pos, GSQL_NOT_FOUND, "no table %shas a column `%s`",
+                 vis < p->nscans ? "joined so far " : "of this statement ", e->parts[0]);
+}
+
+static SqlExpr *col_node(B *b, unsigned tab, unsigned col, uint32_t pos);
+
+static int bind_name(B *b, SqlExpr *e, int cols_allowed, const char *where) {
+    if (!cols_allowed) {
+        return bfail(b, e->pos, GSQL_SYNTAX, "%s cannot read a column, and `%s` names one", where, e->parts[0]);
+    }
+    long tab = -1, col = -1;
+    size_t first = 0;
+    B *at = NULL;       /* the query whose table has it */
+    B *inner = b;       /* the query just inside that one */
+    unsigned depth = 0;
+    int r = 0;
+    for (int qualified = e->nparts >= 2; qualified >= 0 && r == 0; qualified--) {
+        at = b;
+        inner = b;
+        depth = 0;
+        r = lookup(at, e, where, qualified, &tab, &col, &first);
+        while (r == 0 && at->outer) {
+            inner = at;
+            at = at->outer;
+            depth++;
+            r = lookup(at, e, where, qualified, &tab, &col, &first);
+        }
+        if (r < 0) {
+            return 0;
+        }
+    }
+    if (r == 0) {
+        return not_found(b, e);
+    }
+    const GsqlColumn *c = gsql_table_col(at->p->scans[tab].tb, (size_t)col);
     if (e->nparts > first + 1 && c->kind != GSQL_COL_RECORD) {
         return bfail(b, e->pos, GSQL_TYPE, "column %s is %s, so it has no field `%s`: only a RECORD column has fields",
                      c->name, gsql_kind_name(c->kind), e->parts[first + 1]);
     }
-    e->kind = SX_COL;
     e->tab = (unsigned)tab;
     e->col = (unsigned)col;
     e->fields = e->parts + first + 1;
     e->nfields = e->nparts - first - 1;
+    if (!depth) {
+        e->kind = SX_COL;
+        return 1;
+    }
+    if (b->in_agg) {
+        return bfail(b, e->pos, GSQL_UNSUPPORTED, "an aggregate in a subquery may read only the subquery's own "
+                     "tables, and `%s` belongs to an enclosing query: SQL would make it that query's aggregate, "
+                     "which is not in this release of G-SQL", e->parts[0]);
+    }
+    e->kind = SX_OUTER;
+    e->index = depth;
+    e->oqual = at->p->scans[tab].qualifier;
+    e->otb = at->p->scans[tab].tb;
+    for (B *x = b; x != at; x = x->outer) {
+        x->subq->correlated = 1;
+    }
+    /* the column, as the enclosing query sees it: what an access path, a
+       WHERE placement and the grouping rule ask about the subquery */
+    SqlExpr *ref = col_node(at, (unsigned)tab, (unsigned)col, e->pos);
+    ref->fields = e->fields;
+    ref->nfields = e->nfields;
+    SqlExpr *sq = inner->subq;
+    SqlExpr **grown = sql_alloc(b->arena, sizeof(SqlExpr *) * (sq->nrefs + 1));
+    if (sq->nrefs) {
+        memcpy(grown, sq->refs, sizeof(SqlExpr *) * sq->nrefs);
+    }
+    grown[sq->nrefs++] = ref;
+    sq->refs = grown;
+    return 1;
+}
+
+/* A subquery, planned as a query of its own inside this one. */
+static int bind_subquery(B *b, SqlExpr *e, int cols_allowed, const char *where) {
+    static const char *const forms[] = { "", "a subquery used as a value", "IN (SELECT ...)", "EXISTS" };
+    if (!cols_allowed && strcmp(where, "VALUES") == 0) {
+        return bfail(b, e->pos, GSQL_UNSUPPORTED, "INSERT ... VALUES cannot hold a subquery in this release of "
+                     "G-SQL: its rows are written one at a time, so a subquery reading the table would see the rows "
+                     "written before it");
+    }
+    if (!cols_allowed) {
+        return bfail(b, e->pos, GSQL_UNSUPPORTED, "%s cannot hold a subquery", where);
+    }
+    if (strcmp(where, "GROUP BY") == 0) {
+        return bfail(b, e->pos, GSQL_UNSUPPORTED, "GROUP BY cannot hold a subquery in this release of G-SQL");
+    }
+    if (e->op == SQL_SUB_IN && !bind(b, e->a[0], cols_allowed, where)) {
+        return 0;
+    }
+    SqlPlan *sub = sql_alloc(b->arena, sizeof *sub);
+    int agg_ok = b->agg_ok, in_agg = b->in_agg;
+    int rc = plan_at(b->e, b->t, e->sub, b->arena, b->p->text, b->force_scan, sub, b->err, b, e, b->nsubq);
+    b->agg_ok = agg_ok;
+    b->in_agg = in_agg;
+    if (rc != GSQL_OK) {
+        return 0;
+    }
+    SqlPlan *p = b->p;
+    if (p->nsubs == b->capsubs) {
+        b->capsubs = b->capsubs ? b->capsubs * 2 : 4;
+        SqlExpr **grown = sql_alloc(b->arena, sizeof(SqlExpr *) * b->capsubs);
+        if (p->nsubs) {
+            memcpy(grown, p->subs, sizeof(SqlExpr *) * p->nsubs);
+        }
+        p->subs = grown;
+    }
+    p->subs[p->nsubs++] = e;
+    e->subplan = sub;
+    e->subno = ++*b->nsubq;
+    if (e->op != SQL_SUB_EXISTS && sub->nout != 1) {
+        return bfail(b, e->pos, GSQL_SYNTAX, "%s must have one column, and this one has %zu", forms[e->op], sub->nout);
+    }
     return 1;
 }
 
@@ -137,6 +275,8 @@ static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where) {
     switch (e->kind) {
     case SX_NAME:
         return bind_name(b, e, cols_allowed, where);
+    case SX_SUBQ:
+        return bind_subquery(b, e, cols_allowed, where);
     case SX_CALL: {
         static const struct { const char *name; int agg; } aggregates[] = {
             { "count", SQL_AGG_COUNT }, { "sum", SQL_AGG_SUM }, { "avg", SQL_AGG_AVG }, { "min", SQL_AGG_MIN },
@@ -227,6 +367,9 @@ int sql_is_constant(const SqlExpr *e) {
     if (e->kind == SX_COL || e->kind == SX_NAME) {
         return 0;
     }
+    if (e->kind == SX_SUBQ && e->nrefs) {
+        return 0;
+    }
     if (e->operand && !sql_is_constant(e->operand)) {
         return 0;
     }
@@ -271,6 +414,11 @@ static int const_before(const SqlExpr *e, size_t k) {
     }
     if (e->kind == SX_COL) {
         return e->tab < k;
+    }
+    for (size_t j = 0; e->kind == SX_SUBQ && j < e->nrefs; j++) {
+        if (e->refs[j]->tab >= k) {
+            return 0;
+        }
     }
     if (e->operand && !const_before(e->operand, k)) {
         return 0;
@@ -586,6 +734,9 @@ static long last_scan(const SqlExpr *e) {
         return -1;
     }
     long m = e->kind == SX_COL ? (long)e->tab : -1;
+    for (size_t k = 0; e->kind == SX_SUBQ && k < e->nrefs; k++) {
+        m = (long)e->refs[k]->tab > m ? (long)e->refs[k]->tab : m;
+    }
     if (e->operand) {
         long o = last_scan(e->operand);
         m = o > m ? o : m;
@@ -662,6 +813,11 @@ static int check_grouped(B *b, const SqlExpr *e, char **groups, const char *wher
         const char *name = gsql_table_col(b->p->scans[e->tab].tb, e->col)->name;
         return bfail(b, e->pos, GSQL_SYNTAX, "%s reads column `%s`, which is neither grouped by nor inside an "
                      "aggregate: add it to GROUP BY, or use it in one, such as max(%s)", where, name, name);
+    }
+    for (size_t k = 0; e->kind == SX_SUBQ && k < e->nrefs; k++) {
+        if (!check_grouped(b, e->refs[k], groups, where)) {
+            return 0;
+        }
     }
     if (e->operand && !check_grouped(b, e->operand, groups, where)) {
         return 0;
@@ -766,6 +922,13 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
                                   : gsql_table_col(p->scans[it->e->tab].tb, it->e->col)->name;
         } else if (it->e->kind == SX_CALL || it->e->kind == SX_AGG) {
             name = it->e->name;
+        } else if (it->e->kind == SX_SUBQ && it->e->op == SQL_SUB_SCALAR) {
+            /* a scalar subquery is named, and typed, as its one column */
+            name = it->e->subplan->names[0];
+            kind = it->e->subplan->kinds[0];
+        } else if (it->e->kind == SX_SUBQ && it->e->op == SQL_SUB_EXISTS) {
+            name = "exists";
+            kind = "boolean";
         }
         if (it->e->kind == SX_COL && it->e->nfields == 0) {
             kind = kind_text(b, gsql_table_col(p->scans[it->e->tab].tb, it->e->col));
@@ -989,12 +1152,14 @@ static int plan_compound(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
     SqlPlan *p = b->p;
     SqlStmt *s = p->s;
     p->left = sql_alloc(b->arena, sizeof(SqlPlan));
-    if (sql_plan(e, t, s->left, b->arena, p->text, force_scan, p->left, b->err) != GSQL_OK) {
+    if (plan_at(e, t, s->left, b->arena, p->text, force_scan, p->left, b->err, b->outer, b->subq, b->nsubq) !=
+        GSQL_OK) {
         p->left = NULL;
         return 0;
     }
     p->right = sql_alloc(b->arena, sizeof(SqlPlan));
-    if (sql_plan(e, t, s->right, b->arena, p->text, force_scan, p->right, b->err) != GSQL_OK) {
+    if (plan_at(e, t, s->right, b->arena, p->text, force_scan, p->right, b->err, b->outer, b->subq, b->nsubq) !=
+        GSQL_OK) {
         p->right = NULL;
         return 0;
     }
@@ -1050,10 +1215,27 @@ static int plan_compound(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
 
 int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const char *text, int force_scan,
              SqlPlan *out, GsqlError *err) {
+    unsigned nsubq = 0;
+    return plan_at(e, t, s, arena, text, force_scan, out, err, NULL, NULL, &nsubq);
+}
+
+static int plan_at(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const char *text, int force_scan,
+                   SqlPlan *out, GsqlError *err, B *outer, SqlExpr *subq, unsigned *nsubq) {
     memset(out, 0, sizeof *out);
     out->s = s;
     out->text = text;
-    B b = { out, arena, err, "", 0, 0, 0, 0 };
+    B b;
+    memset(&b, 0, sizeof b);
+    b.p = out;
+    b.arena = arena;
+    b.err = err;
+    b.qualifier = "";
+    b.outer = outer;
+    b.subq = subq;
+    b.e = e;
+    b.t = t;
+    b.force_scan = force_scan;
+    b.nsubq = nsubq;
     err->code = GSQL_OK;
     err->message[0] = 0;
     err->position = 0;
@@ -1090,6 +1272,13 @@ int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const cha
 }
 
 void sql_plan_free(SqlPlan *p) {
+    for (size_t k = 0; k < p->nsubs; k++) {
+        if (p->subs[k]->subplan) {
+            sql_plan_free(p->subs[k]->subplan);
+            p->subs[k]->subplan = NULL;
+        }
+    }
+    p->nsubs = 0;
     if (p->left) {
         sql_plan_free(p->left);
         p->left = NULL;
@@ -1308,6 +1497,15 @@ tail:
         put(&b, "Offset: ");
         sql_print_expr_scans(&b, s->offset, p->scans, p->nscans);
         emit(line, ctx, indent + 1, &b);
+    }
+    /* each subquery's plan, after the query it is in */
+    for (size_t k = 0; k < p->nsubs; k++) {
+        const SqlExpr *q = p->subs[k];
+        char head[96];
+        snprintf(head, sizeof head, "SubPlan %u, %s", q->subno, q->correlated ? "per row of the outer query" : "once");
+        put(&b, head);
+        emit(line, ctx, base, &b);
+        explain_at(q->subplan, line, ctx, base + 1);
     }
     gsql_buf_free(&b);
 }

@@ -389,6 +389,76 @@ stmt("SELECT p FROM assets UNION ALL SELECT p FROM assets", "= {\"vendor\":\"acm
 stmt("EXPLAIN SELECT g FROM s UNION ALL SELECT region FROM cu WHERE id = 2 ORDER BY 1 LIMIT 3",
      "= 'Union All' | '  Scan on s' | '  Point Read on cu using the primary key (id = 2)' | '  Order: g (sorted)' | '  Limit: 3'")
 
+sec("subqueries (docs/gsql_subquery_design.md)")
+# cu: 1 ann east, 2 bob west, 3 cy east, 4 dee NULL; od (id, cust): 10 1,
+# 11 1, 12 2, 13 NULL, 14 9; rf holds od 11 only
+stmt("SELECT (SELECT max(id) FROM od), (SELECT name FROM cu WHERE id = 2)", "% max:any, name:string", "= 14, 'bob'")
+stmt("SELECT (SELECT 1 + 1)", "= 2")
+stmt("SELECT name, (SELECT count(*) FROM od WHERE od.cust = cu.id) FROM cu ORDER BY id",
+     "= 'ann', 2 | 'bob', 1 | 'cy', 0 | 'dee', 0")
+# no rows is NULL; two rows are refused when they happen
+stmt("SELECT (SELECT id FROM od WHERE cust = 7)", "= NULL")
+stmt("SELECT coalesce((SELECT id FROM od WHERE cust = 7), -1)", "= -1")
+stmt("SELECT (SELECT id FROM od WHERE cust = 1)", ("EXPRESSION", "(SELECT", "a subquery used as a value returned more than one row"))
+stmt("SELECT (SELECT id FROM od WHERE cust = cu.id) FROM cu ORDER BY id",
+     ("EXPRESSION", "(SELECT", "a subquery used as a value returned more than one row"))
+stmt("SELECT (SELECT id FROM od WHERE cust = cu.id ORDER BY id DESC LIMIT 1) FROM cu ORDER BY id", "= 11 | 12 | NULL | NULL")
+stmt("SELECT (SELECT id, cust FROM od)", ("SYNTAX", "(SELECT", "a subquery used as a value must have one column, and this one has 2"))
+stmt("SELECT name FROM cu WHERE id IN (SELECT cust FROM od) ORDER BY id", "= 'ann' | 'bob'")
+# NOT IN meets the subquery's NULL: no row is equal, so every answer is unknown or false
+stmt("SELECT name FROM cu WHERE id NOT IN (SELECT cust FROM od)", "= (none)")
+stmt("SELECT name FROM cu WHERE id NOT IN (SELECT cust FROM od WHERE cust IS NOT NULL) ORDER BY id", "= 'cy' | 'dee'")
+# no rows is false, even for NULL on the left; NULL against rows is unknown
+stmt("SELECT NULL IN (SELECT id FROM od WHERE id > 99), 13 NOT IN (SELECT id FROM od WHERE id > 99), NULL IN (SELECT id FROM od)",
+     "= FALSE, TRUE, NULL")
+stmt("SELECT 1 FROM cu WHERE name IN (SELECT cust FROM od)", ("EXPRESSION", "IN", "= compares text with a number"))
+stmt("SELECT id FROM od WHERE total IN (SELECT amt FROM rf WHERE rf.od = od.id)", "= 11")
+stmt("SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id) ORDER BY id", "= 'ann' | 'bob'")
+stmt("SELECT name FROM cu WHERE NOT EXISTS (SELECT * FROM od WHERE od.cust = cu.id) ORDER BY id", "= 'cy' | 'dee'")
+stmt("SELECT EXISTS (SELECT 1 FROM rf), EXISTS (SELECT 1 FROM rf WHERE od = 1)", "% exists:boolean, exists:boolean", "= TRUE, FALSE")
+# a bare name is the subquery's own first: od.id, which no cu.id equals
+stmt("SELECT name FROM cu WHERE id IN (SELECT id FROM od)", "= (none)")
+# two levels out: cu.region read from inside the innermost
+stmt("SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id AND "
+     "EXISTS (SELECT 1 FROM rf WHERE rf.od = od.id AND cu.region = 'east'))", "= 'ann'")
+stmt("SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id UNION SELECT 1 FROM rf WHERE cu.id = 3) ORDER BY id",
+     "= 'ann' | 'bob' | 'cy'")
+stmt("SELECT name FROM cu WHERE id IN (SELECT cust FROM od WHERE id = 10 UNION SELECT 3) ORDER BY id", "= 'ann' | 'cy'")
+stmt("SELECT name FROM cu WHERE id = (SELECT cust FROM od WHERE id = :o)", "= 'bob'", params=("o = 12",))
+stmt("SELECT cu.name, od.id FROM cu JOIN od ON od.cust = cu.id AND od.id = (SELECT max(o2.id) FROM od o2 WHERE o2.cust = cu.id) ORDER BY cu.id",
+     "= 'ann', 11 | 'bob', 12")
+# an outer row null-extended by a LEFT join reads NULL
+stmt("SELECT cu.name, (SELECT count(*) FROM rf WHERE rf.od = od.id) FROM cu LEFT JOIN od ON od.cust = cu.id ORDER BY cu.id, od.id",
+     "= 'ann', 0 | 'ann', 1 | 'bob', 0 | 'cy', 0 | 'dee', 0")
+stmt("SELECT name FROM cu ORDER BY (SELECT count(*) FROM od WHERE od.cust = cu.id) DESC, id", "= 'ann' | 'bob' | 'cy' | 'dee'")
+stmt("SELECT cust, count(*) FROM od GROUP BY cust HAVING count(*) > (SELECT count(*) FROM rf) ORDER BY cust", "= 1, 2")
+# a grouped query reaches a grouped column through its subqueries, even two deep
+stmt("SELECT region, (SELECT count(*) FROM od WHERE od.cust IN (SELECT c2.id FROM cu c2 WHERE c2.region = cu.region)) "
+     "FROM cu GROUP BY region ORDER BY region", "= 'east', 2 | 'west', 1 | NULL, 0")
+stmt("SELECT region, (SELECT count(*) FROM od WHERE od.cust = cu.id) FROM cu GROUP BY region",
+     ("SYNTAX", "cu.id", "the select list reads column `id`, which is neither grouped by nor inside an aggregate"))
+stmt("SELECT (SELECT sum(cu.id) FROM od) FROM cu", ("UNSUPPORTED", "cu.id", "an aggregate in a subquery may read only the subquery's own tables"))
+stmt("SELECT count(*) FROM cu GROUP BY (SELECT 1)", ("UNSUPPORTED", "(SELECT", "GROUP BY cannot hold a subquery"))
+stmt("SELECT id FROM od LIMIT (SELECT 1)", ("UNSUPPORTED", "(SELECT", "LIMIT cannot hold a subquery"))
+stmt("INSERT INTO rf VALUES ((SELECT max(id) FROM od), NULL)", ("UNSUPPORTED", "(SELECT", "INSERT ... VALUES cannot hold a subquery"))
+stmt("SELECT name FROM cu WHERE id IN (SELECT nope FROM od)", ("NOT_FOUND", "nope", "table od has no column `nope`"))
+stmt("SELECT " + "(SELECT " * 32 + "1" + ")" * 32, "= 1")
+stmt("SELECT " + "(SELECT " * 33 + "1" + ")" * 33, ("UNSUPPORTED", "SELECT", "subqueries may nest at most 32 deep", 34))
+# UPDATE and DELETE read every row before changing one: a subquery sees the
+# table as the statement found it
+stmt("CREATE TABLE sq (id INTEGER PRIMARY KEY, v INTEGER)", "= done 0")
+stmt("INSERT INTO sq VALUES (1, 1), (2, 5), (3, 9)", "= done 3")
+stmt("UPDATE sq SET v = (SELECT max(v) FROM sq) WHERE v < (SELECT avg(v) FROM sq)", "= done 1")
+stmt("DELETE FROM sq WHERE v = (SELECT min(v) FROM sq)", "= done 1")
+stmt("UPDATE sq SET v = (SELECT count(*) FROM sq s2 WHERE s2.v >= sq.v)", "= done 2")
+stmt("SELECT id, v FROM sq", "= 1, 2 | 3, 2")
+stmt("EXPLAIN SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id)",
+     "= 'Scan on cu' | '  Filter: EXISTS (SubPlan 1)' | 'SubPlan 1, per row of the outer query' | "
+     "'  Index Seek on od using od_cust (cust = cu.id)'")
+stmt("EXPLAIN SELECT id FROM od WHERE id = (SELECT max(od) FROM rf)",
+     "= 'Point Read on od using the primary key (id = (SubPlan 1))' | 'SubPlan 1, once' | '  Scan on rf' | "
+     "'    Aggregate: one group'")
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

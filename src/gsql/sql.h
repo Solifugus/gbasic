@@ -45,7 +45,12 @@ typedef enum {
     /* bound forms, made by the planner from SX_NAME */
     SX_COL,       /* column `col` of the statement's table, then `fields` */
     SX_AGG,       /* an aggregate, made from SX_CALL: `op` an SQL_AGG_*, `index` its slot */
+    /* subqueries (docs/gsql_subquery_design.md) */
+    SX_SUBQ,      /* `sub`, as `op`: SQL_SUB_*; IN's left side is a[0], NOT IN is neg */
+    SX_OUTER,     /* bound: column `col` of scan `tab` of the query `index` levels out */
 } SqlExprKind;
+
+typedef enum { SQL_SUB_SCALAR = 1, SQL_SUB_IN, SQL_SUB_EXISTS } SqlSub;
 
 typedef enum {
     SQL_AGG_COUNT_STAR = 1, SQL_AGG_COUNT, SQL_AGG_SUM, SQL_AGG_AVG, SQL_AGG_MIN, SQL_AGG_MAX
@@ -94,6 +99,24 @@ struct SqlExpr {
     int star;                /* SX_CALL/SX_AGG: count(*) */
     int distinct;            /* SX_CALL/SX_AGG: count(DISTINCT e) */
     SqlType type;            /* SX_CAST */
+    /* SX_SUBQ: the SELECT; the planner's plan of it, whether it reads any
+     * enclosing query's row, and the columns of the query immediately
+     * enclosing it that it reads (each an SX_COL bound there); its number
+     * for EXPLAIN */
+    struct SqlStmt *sub;
+    struct SqlPlan *subplan;
+    int correlated;
+    SqlExpr **refs;
+    size_t nrefs;
+    unsigned subno;
+    /* SX_OUTER: the scan's qualifier and table, for printing */
+    const char *oqual;
+    const GsqlTable *otb;
+    /* SX_SUBQ IN, uncorrelated: the subquery's values, gathered once per
+     * execution (the executor's, as hv) */
+    void **set;
+    size_t nset;
+    int gathered;
     /* the executor's: a constant's or a parameter's host value, loaded once
      * per execution and released with it */
     void *hv;
@@ -264,6 +287,10 @@ typedef struct SqlPlan {
     /* a compound SELECT (docs/gsql_setop_design.md): its two sides, each a
      * plan of its own, owned; the outputs below are the result's */
     struct SqlPlan *left, *right;
+    /* the subqueries in this query's expressions, in the order bound; each
+     * node's subplan is owned here */
+    SqlExpr **subs;
+    size_t nsubs;
     GsqlTable *tb;           /* the first table, owned; NULL for ACC_NONE and schema statements */
     SqlScan *scans;
     size_t nscans;           /* 0 with no table */

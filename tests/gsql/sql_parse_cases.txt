@@ -243,11 +243,39 @@
 > select a from t union
 ! SYNTAX 22 expected SELECT
 
-# ---- refusals: Phase 2, by name -------------------------------------
+# ---- subqueries (docs/gsql_subquery_design.md) ------------------------
 > select a from t where a in (select b from u)
-! UNSUPPORTED 29 subqueries are not in this release
+= SELECT a FROM t WHERE (a IN (SELECT b FROM u))
+> select a from t where a not in (select b from u where u.c = t.c)
+= SELECT a FROM t WHERE (a NOT IN (SELECT b FROM u WHERE (u.c = t.c)))
+> select (select max(b) from u) from t
+= SELECT (SELECT max(b) FROM u) FROM t
+> select (select b from u order by b desc limit 1) + 1 as top from t
+= SELECT ((SELECT b FROM u ORDER BY b DESC LIMIT 1) + 1) AS top FROM t
+> select a from t where exists (select 1 from u where u.b = t.a) and not exists (select * from v)
+= SELECT a FROM t WHERE (EXISTS (SELECT 1 FROM u WHERE (u.b = t.a)) AND (NOT EXISTS (SELECT * FROM v)))
+> select a from t where a in (select b from u union select c from v)
+= SELECT a FROM t WHERE (a IN (SELECT b FROM u UNION SELECT c FROM v))
+> select a from t where a in ((select b from u), 2)
+= SELECT a FROM t WHERE (a IN ((SELECT b FROM u), 2))
+> select a from t where a = (select b from u where b = (select c from v))
+= SELECT a FROM t WHERE (a = (SELECT b FROM u WHERE (b = (SELECT c FROM v))))
+> select a from t where exists select 1
+! SYNTAX 30 expected `(`
+> select a from t where exists (1)
+! SYNTAX 31 expected a SELECT inside EXISTS
+> select a from t where a = any (select b from u)
+! UNSUPPORTED 27 ANY, SOME and ALL are not in this release
+> select a from t where a > all (select b from u)
+! UNSUPPORTED 27 x = ANY (SELECT ...) is x IN (SELECT ...)
+> select a from t where a in (select b from u
+! SYNTAX 44 expected `)`
+
+# ---- refusals: Phase 2, by name -------------------------------------
 > select a from (select 1) x
-! UNSUPPORTED 15 subqueries are not in this release
+! UNSUPPORTED 15 a subquery in FROM is not in this release
+> select a from t join (select 1) x on true
+! UNSUPPORTED 22 a subquery in FROM is not in this release
 > with x as (select 1) select * from x
 ! UNSUPPORTED 1 WITH are not in this release
 > select a from t order by a nulls first
