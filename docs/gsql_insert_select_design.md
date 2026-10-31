@@ -1,6 +1,6 @@
 # G-SQL `INSERT ... SELECT`
 
-**Status:** designed 2026-11-01. Matthew's drop-and-rebuild workflow needs it: build `t_new`, copy `t`'s rows into it, drop `t`, then rename `t_new` to `t` (`gsql_rename_design.md`). Until now the copy step had to be done row by row from a program.
+**Status:** designed and built 2026-11-01 (`insert_rows` in `src/gsql/sql_exec.c`; `tests/run_gsql_sql.sh`). Matthew's drop-and-rebuild workflow needs it: build `t_new`, copy `t`'s rows into it, drop `t`, then rename `t_new` to `t` (`gsql_rename_design.md`). Until now the copy step had to be done row by row from a program.
 
 ## 1. What it is
 
@@ -33,3 +33,13 @@ insert into archive with old as (select * from orders where placed < date '2026-
 - the drop-and-rebuild workflow end to end, with its view and foreign key coming back.
 
 The parse tier prints each form back canonically.
+
+## 4. What building it found
+
+- **The rebuild workflow's own warnings were the right ones:**
+  - dropping `src` reported its view (2118) and the foreign key onto it (2119);
+  - renaming `src_new` into its place mended both silently, finding no orphans.
+
+  The suite's warning counts went from three to four and from two to three, with each new warning named exactly.
+- **Three perturbations, all red:** only the first row read, the column count unchecked, the query's columns placed ignoring the column list.
+- **Not separately perturbed, and said so:** reading the query while inserting, rather than before. The self-copy case, which must double the table exactly once, is what would show it.
