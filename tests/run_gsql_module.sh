@@ -180,6 +180,20 @@ end sql
 sql all_rows on t
     select k from n order by k
 end sql
+sql overflowing on t
+    select k + 9223372036854775807 as big from n order by k
+end sql
+function stopped()
+    on error goto next
+    on warning stop
+    for each row in overflowing
+        c = c + 1
+    next
+    if error then
+        return error.code
+    end if
+    return nothing
+end function
 function boom()
     for each row in all_rows
         x = row.k + not_a_variable
@@ -210,6 +224,8 @@ for each row in all_rows
 next
 print to error "MARK raise"
 e = caught()
+print to error "MARK stop"
+s = stopped()
 print to error "MARK return"
 print string(c)
 GB
@@ -224,7 +240,8 @@ if [ "$crc" != 0 ] || [ "$(cat "$work/cursor.out")" != 1200 ]; then
 else
     full=$(between full break)
     brk=$(between break raise)
-    rse=$(between raise return)
+    rse=$(between raise stop)
+    stp=$(between stop return)
     if [ "$full" = "QUERY FETCH FETCH" ]; then
         pass "cursor: 1,200 rows are one QUERY and two FETCHes, and nothing to close: $full"
     else
@@ -239,6 +256,13 @@ else
         pass "cursor: a raise out of the loop body closes: $rse"
     else
         fail "cursor: a raise out of the loop body sent \"$rse\", want \"QUERY CLOSE\""
+    fi
+    # a warning made an error by `on warning stop` on the first batch must not
+    # leave the cursor it arrived with open in the owner
+    if [ "$stp" = "QUERY CLOSE" ]; then
+        pass "cursor: a first batch whose warning is an error closes its cursor: $stp"
+    else
+        fail "cursor: a first batch whose warning is an error sent \"$stp\", want \"QUERY CLOSE\""
     fi
 fi
 

@@ -39,10 +39,11 @@ for each q in ["select 9223372036854775807 + 1 as big", "select 9223372036854775
 next
 
 ' a statement that warns and is then refused: the refusal is what arrives, and
-' its warning does not leak into the next statement's reply
+' its warning does not leak into the next statement's reply (ORDER BY makes it
+' fail while it starts, sorting, rather than in its first batch)
 function refused()
     on error goto next
-    gsql.query(db, "select 9223372036854775807 + 7 as big, 'a' + 1 as bad")
+    gsql.query(db, "select 9223372036854775807 + 7 as big, 'a' + 1 as bad order by 1")
     if error then
         return "refused"
     end if

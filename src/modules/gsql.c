@@ -574,7 +574,7 @@ static void gsql_trace(unsigned type) {
 
 /* One request and its reply. 1 with *reply (a record) and *type; 0 with a
  * raise, the owner's own ERROR included. */
-static void gsql_cursor_close(GsqlConnectionValue *c, Value *rows_reply);
+static void gsql_cursor_close_quiet(GsqlConnectionValue *c, Value cursor);
 
 static int gsql_request(GsqlConnectionValue *c, unsigned type, Value body, const char *verb, const char *sql,
                         Value *reply, unsigned *reply_type) {
@@ -636,8 +636,11 @@ static int gsql_request(GsqlConnectionValue *c, unsigned type, Value body, const
         }
     }
     if (error_action_pending()) {
-        if (f.type == GSQL_M_ROWS) {
-            gsql_cursor_close(c, &v);
+        /* the quiet close, since the ordinary one declines while a raise is
+           pending -- which is exactly now */
+        Value *cur = f.type == GSQL_M_ROWS ? gsql_field(&v, "cursor") : NULL;
+        if (cur) {
+            gsql_cursor_close_quiet(c, value_copy(*cur));
         }
         value_free(v);
         return 0;
