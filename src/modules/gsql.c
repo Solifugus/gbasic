@@ -633,6 +633,8 @@ static int gsql_request(GsqlConnectionValue *c, unsigned type, Value body, const
             runtime_warn_distinct(text, 2112, "exactness", value_null());
         } else if (n == 2118) {
             runtime_warn_distinct(text, 2118, "view", value_null());
+        } else if (n == 2119) {
+            runtime_warn_distinct(text, 2119, "foreign key", value_null());
         } else {
             runtime_warn_distinct(text, n, "gsql", value_null());
         }

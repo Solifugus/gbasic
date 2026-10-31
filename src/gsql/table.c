@@ -1020,68 +1020,66 @@ int gsql_table_rename(const GsEngine *e, GsTxn *t, const char *name, const char 
     return st == GS_OK ? ok(err) : storage(err, st, "renaming a table");
 }
 
-/* ---- views (docs/gsql_view_design.md §3) ----------------------------- */
+/* ---- named records: views and foreign keys --------------------------------
+ *
+ * Each is a name and one v3 record whose meaning is the SQL layer's, in a tree
+ * of its own (docs/gsql_view_design.md §3, docs/gsql_fkey_design.md §4). */
 
-int gsql_view_put(const GsEngine *e, GsTxn *t, const char *name, const unsigned char *rec, size_t n, int replace,
-                  GsqlError *err) {
-    int rc = check_name("view", name, err);
-    if (rc) {
-        return rc;
-    }
-    int st = e->tree_create(t, VIEWS);
+static const GsBytes FKEYS = { (const unsigned char *)"\0fkey", 5 };
+
+static int named_put(const GsEngine *e, GsTxn *t, GsBytes tree, const char *what, const char *name,
+                     const unsigned char *rec, size_t n, int replace, GsqlError *err) {
+    int st = e->tree_create(t, tree);
     if (st != GS_OK && st != GS_EXISTS) {
-        return storage(err, st, "creating the view tree");
+        return storage(err, st, "creating a tree");
     }
     GsBytes got;
-    st = e->get(t, CATALOG, name_bytes(name), &got);
-    if (st == GS_OK) {
-        return fail(err, GSQL_EXISTS, "there is already a table %s: tables and views share one set of names", name);
-    }
     if (!replace) {
-        st = e->get(t, VIEWS, name_bytes(name), &got);
+        st = e->get(t, tree, name_bytes(name), &got);
         if (st == GS_OK) {
-            return fail(err, GSQL_EXISTS, "there is already a view %s", name);
+            return fail(err, GSQL_EXISTS, "there is already a %s %s", what, name);
         }
     }
-    st = e->put(t, VIEWS, name_bytes(name), (GsBytes){ rec, n }, 0);
-    return st == GS_OK ? ok(err) : storage(err, st, "writing a view");
+    st = e->put(t, tree, name_bytes(name), (GsBytes){ rec, n }, 0);
+    return st == GS_OK ? ok(err) : storage(err, st, "writing a record");
 }
 
-int gsql_view_get(const GsEngine *e, GsTxn *t, const char *name, GsqlBuf *out, GsqlError *err) {
+static int named_get(const GsEngine *e, GsTxn *t, GsBytes tree, const char *name, GsqlBuf *out, GsqlError *err) {
     GsBytes got;
-    int st = e->get(t, VIEWS, name_bytes(name), &got);
+    int st = e->get(t, tree, name_bytes(name), &got);
     if (st == GS_NOT_FOUND) {
         return GSQL_NOT_FOUND;
     }
     if (st != GS_OK) {
-        return storage(err, st, "reading a view");
+        return storage(err, st, "reading a record");
     }
     out->length = 0;
     v3_put(out, got.p, got.n);
     return ok(err);
 }
 
-int gsql_view_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *err) {
+static int named_drop(const GsEngine *e, GsTxn *t, GsBytes tree, const char *what, const char *name,
+                      GsqlError *err) {
     GsBytes got;
-    int st = e->get(t, VIEWS, name_bytes(name), &got);
+    int st = e->get(t, tree, name_bytes(name), &got);
     if (st == GS_NOT_FOUND) {
-        return fail(err, GSQL_NOT_FOUND, "there is no view %s", name);
+        return fail(err, GSQL_NOT_FOUND, "there is no %s %s", what, name);
     }
     if (st == GS_OK) {
-        st = e->del(t, VIEWS, name_bytes(name));
+        st = e->del(t, tree, name_bytes(name));
     }
-    return st == GS_OK ? ok(err) : storage(err, st, "dropping a view");
+    return st == GS_OK ? ok(err) : storage(err, st, "dropping a record");
 }
 
-int gsql_view_list(const GsEngine *e, GsTxn *t, int (*each)(void *ctx, const char *name), void *ctx,
-                   GsqlError *err) {
+static int named_list(const GsEngine *e, GsTxn *t, GsBytes tree, int (*each)(void *ctx, const char *name),
+                      void *ctx, GsqlError *err) {
     GsCursor *c;
-    int st = e->cursor_open(t, VIEWS, &c);
+    int st = e->cursor_open(t, tree, &c);
     if (st == GS_NOT_FOUND) {
         return ok(err);
     }
     if (st != GS_OK) {
-        return storage(err, st, "opening the view tree");
+        return storage(err, st, "opening a tree");
     }
     int pos = 0;
     st = e->first(c, &pos);
@@ -1094,7 +1092,7 @@ int gsql_view_list(const GsEngine *e, GsTxn *t, int (*each)(void *ctx, const cha
         char name[MAX_NAME + 1];
         if (k.n > MAX_NAME) {
             e->cursor_close(c);
-            return fail(err, GSQL_CORRUPT, "a view key of %zu bytes", k.n);
+            return fail(err, GSQL_CORRUPT, "a key of %zu bytes", k.n);
         }
         memcpy(name, k.p, k.n);
         name[k.n] = 0;
@@ -1104,7 +1102,52 @@ int gsql_view_list(const GsEngine *e, GsTxn *t, int (*each)(void *ctx, const cha
         st = e->next(c, &pos);
     }
     e->cursor_close(c);
-    return st == GS_OK ? ok(err) : storage(err, st, "reading the view tree");
+    return st == GS_OK ? ok(err) : storage(err, st, "reading a tree");
+}
+
+int gsql_view_put(const GsEngine *e, GsTxn *t, const char *name, const unsigned char *rec, size_t n, int replace,
+                  GsqlError *err) {
+    int rc = check_name("view", name, err);
+    if (rc) {
+        return rc;
+    }
+    GsBytes got;
+    if (e->get(t, CATALOG, name_bytes(name), &got) == GS_OK) {
+        return fail(err, GSQL_EXISTS, "there is already a table %s: tables and views share one set of names", name);
+    }
+    return named_put(e, t, VIEWS, "view", name, rec, n, replace, err);
+}
+
+int gsql_view_get(const GsEngine *e, GsTxn *t, const char *name, GsqlBuf *out, GsqlError *err) {
+    return named_get(e, t, VIEWS, name, out, err);
+}
+
+int gsql_view_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *err) {
+    return named_drop(e, t, VIEWS, "view", name, err);
+}
+
+int gsql_view_list(const GsEngine *e, GsTxn *t, int (*each)(void *ctx, const char *name), void *ctx,
+                   GsqlError *err) {
+    return named_list(e, t, VIEWS, each, ctx, err);
+}
+
+int gsql_fkey_put(const GsEngine *e, GsTxn *t, const char *name, const unsigned char *rec, size_t n, int replace,
+                  GsqlError *err) {
+    int rc = check_name("constraint", name, err);
+    return rc ? rc : named_put(e, t, FKEYS, "constraint", name, rec, n, replace, err);
+}
+
+int gsql_fkey_get(const GsEngine *e, GsTxn *t, const char *name, GsqlBuf *out, GsqlError *err) {
+    return named_get(e, t, FKEYS, name, out, err);
+}
+
+int gsql_fkey_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *err) {
+    return named_drop(e, t, FKEYS, "constraint", name, err);
+}
+
+int gsql_fkey_list(const GsEngine *e, GsTxn *t, int (*each)(void *ctx, const char *name), void *ctx,
+                   GsqlError *err) {
+    return named_list(e, t, FKEYS, each, ctx, err);
 }
 
 /* Resolves the values a write will store: one per column, defaults applied. */

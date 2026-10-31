@@ -1189,6 +1189,75 @@ static int name_list(P *p, SqlNameList *l, int allow_order) {
     return 1;
 }
 
+/* REFERENCES t [(cols)] [NOT ENFORCED], the current token past REFERENCES;
+ * the actions this release does not have are refused by name */
+static int fkey_tail(P *p, SqlFkey *k) {
+    if (!(k->ref = name(p, "the referenced table's name"))) {
+        return 0;
+    }
+    if (at_sym(p, "(") && !name_list(p, &k->ref_cols, 0)) {
+        return 0;
+    }
+    for (;;) {
+        uint32_t pos = p->tok.pos;
+        if (at_kw(p, "on")) {
+            return fail_at(p, pos, GSQL_UNSUPPORTED, "ON DELETE and ON UPDATE actions are not in this release of "
+                           "G-SQL: a row still referenced cannot be deleted or have its key changed (NO ACTION)");
+        }
+        if (at_word(p, "match")) {
+            return fail_at(p, pos, GSQL_UNSUPPORTED, "MATCH is not in this release of G-SQL: a foreign key with any "
+                           "NULL in its columns references nothing (MATCH SIMPLE)");
+        }
+        if (at_word(p, "deferrable") || at_word(p, "initially")) {
+            return fail_at(p, pos, GSQL_UNSUPPORTED, "deferred checking is not in this release of G-SQL");
+        }
+        if (at_word(p, "enforced")) {
+            next(p);
+            continue;
+        }
+        if (at_kw(p, "not")) {
+            size_t si = p->i;
+            uint32_t sc = p->chars;
+            Tok save = p->tok;
+            next(p);
+            if (at_word(p, "enforced")) {
+                next(p);
+                k->not_enforced = 1;
+                continue;
+            }
+            p->i = si;
+            p->chars = sc;
+            p->tok = save;
+        }
+        return 1;
+    }
+}
+
+/* [CONSTRAINT name] FOREIGN KEY (cols) REFERENCES ..., the current token at
+ * CONSTRAINT or FOREIGN */
+static int fkey_clause(P *p, SqlFkey *k) {
+    k->pos = p->tok.pos;
+    if (at_word(p, "constraint")) {
+        next(p);
+        if (!(k->name = name(p, "a constraint name"))) {
+            return 0;
+        }
+        if (!at_word(p, "foreign")) {
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "a named CONSTRAINT is a FOREIGN KEY in this release of "
+                           "G-SQL; PRIMARY KEY and UNIQUE are written without a name");
+        }
+    }
+    next(p);   /* FOREIGN */
+    if (!expect_kw(p, "key") || !name_list(p, &k->cols, 0)) {
+        return 0;
+    }
+    if (!at_word(p, "references")) {
+        return expected(p, "REFERENCES after FOREIGN KEY (...)");
+    }
+    next(p);
+    return fkey_tail(p, k);
+}
+
 static int coldef(P *p, SqlColDef *c) {
     c->pos = p->tok.pos;
     c->name = name(p, "a column name");
@@ -1216,9 +1285,20 @@ static int coldef(P *p, SqlColDef *c) {
             c->primary = 1;
         } else if (accept_kw(p, "unique")) {
             c->unique = 1;
-        } else if (at_kw(p, "references") || at_kw(p, "check")) {
-            return fail_at(p, pos, GSQL_UNSUPPORTED, "%s constraints are in the next release of G-SQL",
-                           at_kw(p, "check") ? "CHECK" : "FOREIGN KEY");
+        } else if (at_word(p, "references")) {
+            next(p);
+            c->fk = sql_alloc(p->arena, sizeof(SqlFkey));
+            c->fk->pos = pos;
+            c->fk->cols.cols = sql_alloc(p->arena, sizeof(char *));
+            c->fk->cols.desc = sql_alloc(p->arena, sizeof(int));
+            c->fk->cols.cols[0] = c->name;
+            c->fk->cols.n = 1;
+            c->fk->cols.pos = c->pos;
+            if (!fkey_tail(p, c->fk)) {
+                return 0;
+            }
+        } else if (at_kw(p, "check") || at_word(p, "check")) {
+            return fail_at(p, pos, GSQL_UNSUPPORTED, "CHECK constraints are in the next release of G-SQL");
         } else {
             return 1;
         }
@@ -1769,6 +1849,8 @@ static int create_stmt(P *p, SqlStmt *s) {
         size_t n = 0;
         SqlNameList uniq[64];
         size_t nu = 0;
+        SqlFkey fks[64];
+        size_t nf = 0;
         do {
             uint32_t pos = p->tok.pos;
             if (accept_kw(p, "primary")) {
@@ -1790,12 +1872,17 @@ static int create_stmt(P *p, SqlStmt *s) {
                     return 0;
                 }
                 uniq[nu++].pos = pos;
-            } else if (p->tok.kind == T_IDENT && (strcmp(p->tok.text, "foreign") == 0 ||
-                                                  strcmp(p->tok.text, "check") == 0 ||
-                                                  strcmp(p->tok.text, "constraint") == 0)) {
-                return fail_at(p, pos, GSQL_UNSUPPORTED, "%s is in the next release of G-SQL",
-                               strcmp(p->tok.text, "foreign") == 0 ? "FOREIGN KEY" :
-                               strcmp(p->tok.text, "check") == 0 ? "CHECK" : "a named CONSTRAINT");
+            } else if (at_word(p, "foreign") || at_word(p, "constraint")) {
+                if (nf == 64) {
+                    return fail_at(p, pos, GSQL_SYNTAX, "a table may declare at most 64 foreign keys");
+                }
+                memset(&fks[nf], 0, sizeof fks[nf]);
+                if (!fkey_clause(p, &fks[nf])) {
+                    return 0;
+                }
+                nf++;
+            } else if (at_word(p, "check")) {
+                return fail_at(p, pos, GSQL_UNSUPPORTED, "CHECK is in the next release of G-SQL");
             } else {
                 if (n == 1024) {
                     return fail_at(p, pos, GSQL_SYNTAX, "a table may have at most 1024 columns");
@@ -1813,6 +1900,20 @@ static int create_stmt(P *p, SqlStmt *s) {
         s->coldefs = sql_alloc(p->arena, sizeof(SqlColDef) * (n ? n : 1));
         memcpy(s->coldefs, defs, sizeof(SqlColDef) * n);
         s->ncoldefs = n;
+        /* the columns' REFERENCES, then the table's FOREIGN KEYs, in order */
+        size_t total = nf;
+        for (size_t k = 0; k < n; k++) {
+            total += defs[k].fk != NULL;
+        }
+        s->fkeys = sql_alloc(p->arena, sizeof(SqlFkey) * (total ? total : 1));
+        for (size_t k = 0; k < n; k++) {
+            if (defs[k].fk) {
+                s->fkeys[s->nfkeys++] = *defs[k].fk;
+            }
+        }
+        for (size_t k = 0; k < nf; k++) {
+            s->fkeys[s->nfkeys++] = fks[k];
+        }
         s->uniques = sql_alloc(p->arena, sizeof(SqlNameList) * (nu ? nu : 1));
         memcpy(s->uniques, uniq, sizeof(SqlNameList) * nu);
         s->nuniques = nu;
@@ -1890,12 +1991,30 @@ static int alter_stmt(P *p, SqlStmt *s) {
         s->rename_to = name(p, "the table's new name");
         return s->rename_to != NULL;
     }
-    if (!accept_kw(p, "add")) {
-        if (at_kw(p, "drop") || at_word(p, "alter")) {
-            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "ALTER TABLE ... ADD COLUMN and RENAME TO are the only "
-                           "changes in this release of G-SQL");
+    if (at_kw(p, "drop")) {
+        uint32_t dpos = p->tok.pos;
+        next(p);
+        if (at_word(p, "constraint")) {
+            next(p);
+            s->kind = SQ_DROP_CONSTRAINT;
+            s->constraint = name(p, "a constraint name");
+            return s->constraint != NULL;
         }
-        return expected(p, "ADD or RENAME after ALTER TABLE name");
+        return fail_at(p, dpos, GSQL_UNSUPPORTED, "ALTER TABLE ... ADD COLUMN, ADD and DROP CONSTRAINT and RENAME TO "
+                       "are the only changes in this release of G-SQL");
+    }
+    if (!accept_kw(p, "add")) {
+        if (at_word(p, "alter")) {
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "ALTER TABLE ... ADD COLUMN, ADD and DROP CONSTRAINT and "
+                           "RENAME TO are the only changes in this release of G-SQL");
+        }
+        return expected(p, "ADD, DROP or RENAME after ALTER TABLE name");
+    }
+    if (at_word(p, "constraint") || at_word(p, "foreign")) {
+        s->kind = SQ_ADD_FKEY;
+        s->fkeys = sql_alloc(p->arena, sizeof(SqlFkey));
+        s->nfkeys = 1;
+        return fkey_clause(p, &s->fkeys[0]);
     }
     s->kind = SQ_ADD_COLUMN;
     accept_kw(p, "column");
@@ -2492,6 +2611,26 @@ static void print_coldef(GsqlBuf *o, const SqlColDef *c) {
     }
 }
 
+/* a foreign key, canonically a table constraint */
+static void print_fkey(GsqlBuf *o, const SqlFkey *k) {
+    if (k->name) {
+        puts_(o, "CONSTRAINT ");
+        print_name(o, k->name);
+        v3_put(o, " ", 1);
+    }
+    puts_(o, "FOREIGN KEY ");
+    print_names(o, &k->cols, 0);
+    puts_(o, " REFERENCES ");
+    print_name(o, k->ref);
+    if (k->ref_cols.n) {
+        v3_put(o, " ", 1);
+        print_names(o, &k->ref_cols, 0);
+    }
+    if (k->not_enforced) {
+        puts_(o, " NOT ENFORCED");
+    }
+}
+
 static void print_from(GsqlBuf *o, const char *table, const char *alias, const SqlStmt *sub, const SqlNameList *cols) {
     if (sub) {
         v3_put(o, "(", 1);
@@ -2677,6 +2816,10 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
             puts_(o, ", UNIQUE ");
             print_names(o, &s->uniques[k], 0);
         }
+        for (size_t k = 0; k < s->nfkeys; k++) {
+            puts_(o, ", ");
+            print_fkey(o, &s->fkeys[k]);
+        }
         v3_put(o, ")", 1);
         return;
     case SQ_DROP_TABLE:
@@ -2702,6 +2845,18 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
     case SQ_DROP_VIEW:
         puts_(o, s->if_exists ? "DROP VIEW IF EXISTS " : "DROP VIEW ");
         print_name(o, s->table);
+        return;
+    case SQ_ADD_FKEY:
+        puts_(o, "ALTER TABLE ");
+        print_name(o, s->table);
+        puts_(o, " ADD ");
+        print_fkey(o, &s->fkeys[0]);
+        return;
+    case SQ_DROP_CONSTRAINT:
+        puts_(o, "ALTER TABLE ");
+        print_name(o, s->table);
+        puts_(o, " DROP CONSTRAINT ");
+        print_name(o, s->constraint);
         return;
     case SQ_RENAME_TABLE:
         puts_(o, "ALTER TABLE ");

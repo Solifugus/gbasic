@@ -2448,6 +2448,453 @@ static void changes_free(Change *v, size_t n, size_t ntargets) {
     free(v);
 }
 
+/* ---- foreign keys (docs/gsql_fkey_design.md) -------------------------------
+ *
+ * A foreign key is stored by its name as { format, table, columns, references,
+ * ref_columns, enforced, bound }: names, never positions, so it survives ADD
+ * COLUMN and a rebuilt parent. It BINDS by name to its referenced table's
+ * primary key; while it does not, nothing is checked, and a schema change says
+ * so (2119). The checks run before a row is written, as UNIQUE's do. */
+
+typedef struct {
+    char *name, *table, *ref;
+    char **cols, **ref_cols;
+    size_t ncols, nref;
+    int enforced, bound;
+} FkRec;
+
+static void fk_free(FkRec *k) {
+    free(k->name);
+    free(k->table);
+    free(k->ref);
+    for (size_t i = 0; i < k->ncols; i++) {
+        free(k->cols[i]);
+    }
+    for (size_t i = 0; i < k->nref; i++) {
+        free(k->ref_cols[i]);
+    }
+    free(k->cols);
+    free(k->ref_cols);
+    memset(k, 0, sizeof *k);
+}
+
+static char *dup_cstr(const char *s) {
+    size_t n = strlen(s);
+    char *d = malloc(n + 1);
+    if (!d) {
+        abort();
+    }
+    memcpy(d, s, n + 1);
+    return d;
+}
+
+static char **text_list(const V3Field *f, size_t *n);
+
+static int fk_read(const char *name, const GsqlBuf *b, FkRec *k) {
+    memset(k, 0, sizeof *k);
+    V3Field f[10];
+    long n = v3_record_fields(b->bytes, b->length, f, 10);
+    const V3Field *t = n > 0 ? v3_field_named(f, n, "table") : NULL;
+    const V3Field *r = n > 0 ? v3_field_named(f, n, "references") : NULL;
+    if (!t || !r) {
+        return 0;
+    }
+    k->name = dup_cstr(name);
+    k->table = v3_read_text(t->v, t->vlen);
+    k->ref = v3_read_text(r->v, r->vlen);
+    k->cols = text_list(v3_field_named(f, n, "columns"), &k->ncols);
+    k->ref_cols = text_list(v3_field_named(f, n, "ref_columns"), &k->nref);
+    const V3Field *e = v3_field_named(f, n, "enforced"), *bd = v3_field_named(f, n, "bound");
+    if (e) {
+        v3_read_bool(e->v, e->vlen, &k->enforced);
+    }
+    if (bd) {
+        v3_read_bool(bd->v, bd->vlen, &k->bound);
+    }
+    return k->table && k->ref;
+}
+
+static void fk_write(GsqlBuf *out, const FkRec *k) {
+    out->length = 0;
+    v3_w_record(out, 7);
+    v3_w_name(out, "format");
+    v3_w_int(out, 1);
+    v3_w_name(out, "table");
+    v3_w_text(out, k->table);
+    v3_w_name(out, "columns");
+    v3_w_array(out, k->ncols);
+    for (size_t i = 0; i < k->ncols; i++) {
+        v3_w_text(out, k->cols[i]);
+    }
+    v3_w_name(out, "references");
+    v3_w_text(out, k->ref);
+    v3_w_name(out, "ref_columns");
+    v3_w_array(out, k->nref);
+    for (size_t i = 0; i < k->nref; i++) {
+        v3_w_text(out, k->ref_cols[i]);
+    }
+    v3_w_name(out, "enforced");
+    v3_w_bool(out, k->enforced);
+    v3_w_name(out, "bound");
+    v3_w_bool(out, k->bound);
+}
+
+static int fk_put(X *x, const FkRec *k, int replace) {
+    GsqlBuf b = {0};
+    fk_write(&b, k);
+    int rc = gsql_fkey_put(x->e, x->t, k->name, b.bytes, b.length, replace, x->err);
+    gsql_buf_free(&b);
+    return rc;
+}
+
+typedef struct {
+    FkRec *v;
+    size_t n;
+    X *x;
+} FkList;
+
+static int collect_fk(void *ctx, const char *name) {
+    FkList *l = ctx;
+    GsqlBuf b = {0};
+    GsqlError e = { GSQL_OK, "", 0 };
+    if (gsql_fkey_get(l->x->e, l->x->t, name, &b, &e) == GSQL_OK) {
+        FkRec *g = realloc(l->v, sizeof *g * (l->n + 1));
+        if (!g) {
+            abort();
+        }
+        l->v = g;
+        if (fk_read(name, &b, &l->v[l->n])) {
+            l->n++;
+        }
+    }
+    gsql_buf_free(&b);
+    return 0;
+}
+
+static void fk_list_free(FkList *l) {
+    for (size_t i = 0; i < l->n; i++) {
+        fk_free(&l->v[i]);
+    }
+    free(l->v);
+    memset(l, 0, sizeof *l);
+}
+
+static int fk_all(X *x, FkList *l) {
+    memset(l, 0, sizeof *l);
+    l->x = x;
+    GsqlError e = { GSQL_OK, "", 0 };
+    int rc = gsql_fkey_list(x->e, x->t, collect_fk, l, &e);
+    if (rc != GSQL_OK) {
+        *x->err = e;
+    }
+    return rc;
+}
+
+/* A foreign key bound to what is there now: its child's columns and its
+ * parent's primary key, by position, with the same kinds. 1, or 0 with
+ * `why` saying what stops it. The parent is opened into *parent. */
+static int fk_bind(X *x, const FkRec *k, GsqlTable *child, GsqlTable **parent, unsigned *cpos, unsigned *ppos,
+                   char *why, size_t cap) {
+    *parent = NULL;
+    GsqlError e = { GSQL_OK, "", 0 };
+    for (size_t i = 0; i < k->ncols; i++) {
+        long c = gsql_table_find(child, k->cols[i]);
+        if (c < 0) {
+            snprintf(why, cap, "table `%s` has no column `%s`", k->table, k->cols[i]);
+            return 0;
+        }
+        cpos[i] = (unsigned)c;
+    }
+    if (gsql_table_open(x->e, x->t, k->ref, parent, &e) != GSQL_OK) {
+        *parent = NULL;
+        snprintf(why, cap, "there is no table `%s`", k->ref);
+        return 0;
+    }
+    size_t nkey = gsql_table_nkey(*parent);
+    const unsigned *key = gsql_table_key_cols(*parent);
+    int same = nkey == k->nref && nkey == k->ncols;
+    for (size_t i = 0; same && i < nkey; i++) {
+        same = strcmp(gsql_table_col(*parent, key[i])->name, k->ref_cols[i]) == 0;
+    }
+    if (!same) {
+        size_t used = (size_t)snprintf(why, cap, "the primary key of `%s` is not (", k->ref);
+        for (size_t i = 0; i < k->nref && used < cap; i++) {
+            used += (size_t)snprintf(why + used, cap - used, "%s%s", i ? ", " : "", k->ref_cols[i]);
+        }
+        if (used < cap) {
+            snprintf(why + used, cap - used, ")");
+        }
+        gsql_table_close(*parent);
+        *parent = NULL;
+        return 0;
+    }
+    for (size_t i = 0; i < nkey; i++) {
+        const GsqlColumn *a = gsql_table_col(child, cpos[i]), *b = gsql_table_col(*parent, key[i]);
+        ppos[i] = key[i];
+        if (a->kind != b->kind || strcmp(a->currency, b->currency) != 0) {
+            snprintf(why, cap, "`%s.%s` is %s and `%s.%s` is %s", k->table, a->name, gsql_kind_name(a->kind), k->ref,
+                     b->name, gsql_kind_name(b->kind));
+            gsql_table_close(*parent);
+            *parent = NULL;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int is_absent_bytes(const GsBytes *v) {
+    return v->n == 0 || v->p[0] == SER_UNKNOWN || v->p[0] == SER_NULL;
+}
+
+/* Whether the parent has a row whose key is the child's values: 1, 0, or -1
+ * failed. A value with an absence references nothing, and answers 1. */
+static int fk_parent_has(X *x, GsqlTable *parent, const unsigned *ppos, const GsBytes *vals, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (is_absent_bytes(&vals[i])) {
+            return 1;
+        }
+    }
+    size_t pc = gsql_table_ncols(parent);
+    GsqlIn *in = calloc(pc ? pc : 1, sizeof(GsqlIn));
+    if (!in) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i++) {
+        in[ppos[i]].present = 1;
+        in[ppos[i]].p = vals[i].p;
+        in[ppos[i]].n = vals[i].n;
+    }
+    GsqlBuf key = {0}, row = {0};
+    GsqlError e = { GSQL_OK, "", 0 };
+    int r = -1;
+    if (gsql_row_key(parent, in, &key, &e) == GSQL_OK) {
+        int rc = gsql_row_get(x->e, x->t, parent, (GsBytes){ key.bytes, key.length }, &row, &e);
+        r = rc == GSQL_OK ? 1 : rc == GSQL_NOT_FOUND ? 0 : -1;
+    }
+    if (r < 0) {
+        *x->err = e;
+    }
+    gsql_buf_free(&key);
+    gsql_buf_free(&row);
+    free(in);
+    return r;
+}
+
+/* the key encoding of n values, for comparing a child's with a parent's */
+static int fk_key(const GsBytes *vals, size_t n, GsqlKey *k) {
+    for (size_t i = 0; i < n; i++) {
+        if (gsql_key_append(k, vals[i].p, vals[i].n, NULL, 0) != GSQL_KEY_OK) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The child rows whose columns hold `want`'s key (or, with want NULL, that
+ * reference no parent row): counted, by one walk of the child's rows. */
+static int fk_walk(X *x, GsqlTable *child, const unsigned *cpos, GsqlTable *parent, const unsigned *ppos, size_t n,
+                   const GsqlKey *want, uint64_t *count) {
+    *count = 0;
+    GsCursor *c = NULL;
+    int st = x->e->cursor_open(x->t, gsql_table_rows_tree(child), &c);
+    if (st) {
+        return xfail(x->err, GSQL_STORAGE, 0, "a cursor could not be opened: the engine answered %s",
+                     gs_status_name(st));
+    }
+    GsBytes *vals = calloc(n ? n : 1, sizeof(GsBytes));
+    if (!vals) {
+        abort();
+    }
+    int at = 0, rc = GSQL_OK;
+    for (st = x->e->first(c, &at); !st && at && rc == GSQL_OK; st = x->e->next(c, &at)) {
+        GsBytes row;
+        if (x->e->value(c, &row)) {
+            break;
+        }
+        int absent = 0;
+        for (size_t i = 0; i < n && rc == GSQL_OK; i++) {
+            rc = gsql_row_value(child, row.p, row.n, cpos[i], &vals[i], x->err);
+            absent |= rc == GSQL_OK && is_absent_bytes(&vals[i]);
+        }
+        if (rc != GSQL_OK || absent) {
+            continue;
+        }
+        if (want) {
+            GsqlKey k;
+            gsql_key_init(&k);
+            if (fk_key(vals, n, &k) && k.length == want->length && memcmp(k.bytes, want->bytes, k.length) == 0) {
+                (*count)++;
+            }
+            gsql_key_free(&k);
+        } else {
+            int has = fk_parent_has(x, parent, ppos, vals, n);
+            if (has < 0) {
+                rc = x->err->code ? x->err->code : GSQL_STORAGE;
+            } else if (!has) {
+                (*count)++;
+            }
+        }
+    }
+    free(vals);
+    x->e->cursor_close(c);
+    return rc;
+}
+
+/* A row about to be written to `child`: each enforced, bound foreign key on
+ * it must find its parent. `vals` is the whole row, defaults resolved. */
+static int fk_check_child(X *x, const FkList *fks, GsqlTable *child, const GsBytes *row) {
+    for (size_t i = 0; i < fks->n; i++) {
+        const FkRec *k = &fks->v[i];
+        if (!k->enforced || !k->bound || strcmp(k->table, gsql_table_name(child)) != 0) {
+            continue;
+        }
+        unsigned cpos[64], ppos[64];
+        GsqlTable *parent;
+        char why[300];
+        if (k->ncols > 64 || !fk_bind(x, k, child, &parent, cpos, ppos, why, sizeof why)) {
+            continue;   /* not bound now: the re-check will have said so */
+        }
+        GsBytes v[64];
+        for (size_t c = 0; c < k->ncols; c++) {
+            v[c] = row[cpos[c]];
+        }
+        int has = fk_parent_has(x, parent, ppos, v, k->ncols);
+        gsql_table_close(parent);
+        if (has < 0) {
+            return x->err->code ? x->err->code : GSQL_STORAGE;
+        }
+        if (!has) {
+            return xfail(x->err, GSQL_FOREIGN_KEY, 0, "foreign key `%s`: this row of `%s` references a row of `%s` "
+                         "that is not there", k->name, k->table, k->ref);
+        }
+    }
+    return GSQL_OK;
+}
+
+/* A parent row about to be deleted, or have its key changed: no child row of
+ * an enforced, bound foreign key may still reference its old key. */
+static int fk_check_parent(X *x, const FkList *fks, GsqlTable *parent, const GsBytes *row) {
+    for (size_t i = 0; i < fks->n; i++) {
+        const FkRec *k = &fks->v[i];
+        if (!k->enforced || !k->bound || strcmp(k->ref, gsql_table_name(parent)) != 0) {
+            continue;
+        }
+        GsqlTable *child = NULL, *bound = NULL;
+        GsqlError e = { GSQL_OK, "", 0 };
+        if (gsql_table_open(x->e, x->t, k->table, &child, &e) != GSQL_OK) {
+            continue;
+        }
+        unsigned cpos[64], ppos[64];
+        char why[300];
+        int ok = k->ncols <= 64 && fk_bind(x, k, child, &bound, cpos, ppos, why, sizeof why);
+        int rc = GSQL_OK;
+        if (ok) {
+            GsBytes v[64];
+            for (size_t c = 0; c < k->ncols; c++) {
+                v[c] = row[ppos[c]];
+            }
+            GsqlKey want;
+            gsql_key_init(&want);
+            uint64_t count = 0;
+            if (fk_key(v, k->ncols, &want)) {
+                rc = fk_walk(x, child, cpos, NULL, NULL, k->ncols, &want, &count);
+            }
+            gsql_key_free(&want);
+            if (rc == GSQL_OK && count) {
+                rc = xfail(x->err, GSQL_FOREIGN_KEY, 0, "foreign key `%s`: %llu row%s of `%s` still reference%s this "
+                           "row of `%s`", k->name, (unsigned long long)count, count == 1 ? "" : "s", k->table,
+                           count == 1 ? "s" : "", k->ref);
+            }
+        }
+        if (bound) {
+            gsql_table_close(bound);
+        }
+        gsql_table_close(child);
+        if (rc != GSQL_OK) {
+            return rc;
+        }
+    }
+    return GSQL_OK;
+}
+
+/* every value of a table's row, defaults and absences resolved */
+static void row_values(GsqlTable *tb, const GsqlIn *in, GsBytes *out) {
+    static const unsigned char unknown = SER_UNKNOWN;
+    for (size_t c = 0; c < gsql_table_ncols(tb); c++) {
+        const GsqlColumn *col = gsql_table_col(tb, c);
+        if (in[c].present) {
+            out[c].p = in[c].p;
+            out[c].n = in[c].n;
+        } else if (col->def) {
+            out[c].p = col->def;
+            out[c].n = col->def_len;
+        } else {
+            out[c].p = &unknown;
+            out[c].n = 1;
+        }
+    }
+}
+
+/* Every change an UPDATE or DELETE collected, checked against the foreign
+ * keys before any is applied: a deleted row, or one whose key changes, must
+ * not still be referenced; an updated child row must find its parent. */
+static int fk_check_changes(X *x, GsqlTable *tb, const SqlStmt *s, const Change *ch, size_t n, const SqlPlan *p) {
+    FkList fks;
+    int rc = fk_all(x, &fks);
+    int any = 0;
+    for (size_t i = 0; i < fks.n; i++) {
+        any |= fks.v[i].enforced && (strcmp(fks.v[i].table, gsql_table_name(tb)) == 0 ||
+                                     strcmp(fks.v[i].ref, gsql_table_name(tb)) == 0);
+    }
+    size_t ncols = gsql_table_ncols(tb);
+    GsBytes *oldv = calloc(ncols ? ncols : 1, sizeof(GsBytes)), *newv = calloc(ncols ? ncols : 1, sizeof(GsBytes));
+    if (!oldv || !newv) {
+        abort();
+    }
+    static const unsigned char unknown = SER_UNKNOWN;
+    GsqlBuf row = {0};
+    for (size_t k = 0; any && rc == GSQL_OK && k < n; k++) {
+        rc = gsql_row_get(x->e, x->t, tb, (GsBytes){ ch[k].key.bytes, ch[k].key.length }, &row, x->err);
+        for (size_t c = 0; rc == GSQL_OK && c < ncols; c++) {
+            rc = gsql_row_value(tb, row.bytes, row.length, c, &oldv[c], x->err);
+            newv[c] = oldv[c];
+        }
+        if (rc != GSQL_OK) {
+            break;
+        }
+        if (s->kind == SQ_DELETE) {
+            rc = fk_check_parent(x, &fks, tb, oldv);
+            continue;
+        }
+        for (size_t j = 0; j < p->ntargets; j++) {
+            const GsqlColumn *col = gsql_table_col(tb, p->targets[j]);
+            if (ch[k].deflt[j]) {
+                newv[p->targets[j]].p = col->def ? col->def : &unknown;
+                newv[p->targets[j]].n = col->def ? col->def_len : 1;
+            } else {
+                newv[p->targets[j]].p = ch[k].vals[j].bytes;
+                newv[p->targets[j]].n = ch[k].vals[j].length;
+            }
+        }
+        rc = fk_check_child(x, &fks, tb, newv);
+        /* the key changed: what referenced the old one must not be left */
+        size_t nkey = gsql_table_nkey(tb);
+        const unsigned *key = gsql_table_key_cols(tb);
+        int moved = 0;
+        for (size_t i = 0; i < nkey; i++) {
+            moved |= oldv[key[i]].n != newv[key[i]].n || memcmp(oldv[key[i]].p, newv[key[i]].p, oldv[key[i]].n) != 0;
+        }
+        if (rc == GSQL_OK && moved) {
+            rc = fk_check_parent(x, &fks, tb, oldv);
+        }
+    }
+    gsql_buf_free(&row);
+    free(oldv);
+    free(newv);
+    fk_list_free(&fks);
+    return rc;
+}
+
 static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
     SqlPlan *p = x->p;
     SqlStmt *s = p->s;
@@ -2500,6 +2947,11 @@ static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
         return err->code ? err->code : GSQL_EXPRESSION;
     }
     size_t ncols = gsql_table_ncols(p->tb);
+    rc = fk_check_changes(x, p->tb, s, ch, n, p);
+    if (rc != GSQL_OK) {
+        changes_free(ch, n, p->ntargets);
+        return rc;
+    }
     GsqlIn *vals = calloc(ncols ? ncols : 1, sizeof(GsqlIn));
     if (!vals) {
         abort();
@@ -2554,6 +3006,12 @@ static int run_insert(X *x, GsqlResult *out) {
     }
     uint64_t done = 0;
     int rc = GSQL_OK;
+    FkList fks;
+    rc = fk_all(x, &fks);
+    GsBytes *whole = calloc(ncols ? ncols : 1, sizeof(GsBytes));
+    if (!whole) {
+        abort();
+    }
     for (size_t r = 0; r < s->nrows && rc == GSQL_OK; r++) {
         memset(vals, 0, sizeof(GsqlIn) * ncols);
         for (size_t k = 0; k < p->ntargets && rc == GSQL_OK; k++) {
@@ -2565,6 +3023,10 @@ static int run_insert(X *x, GsqlResult *out) {
             vals[p->targets[k]].present = 1;
             vals[p->targets[k]].p = bufs[k].bytes;
             vals[p->targets[k]].n = bufs[k].length;
+        }
+        if (rc == GSQL_OK && fks.n) {
+            row_values(p->tb, vals, whole);
+            rc = fk_check_child(x, &fks, p->tb, whole);
         }
         if (rc == GSQL_OK) {
             rc = gsql_row_insert(x->e, x->t, p->tb, vals, NULL, x->err);
@@ -2583,6 +3045,8 @@ static int run_insert(X *x, GsqlResult *out) {
     }
     free(bufs);
     free(vals);
+    free(whole);
+    fk_list_free(&fks);
     if (rc != GSQL_OK) {
         out->failed_part_way = done > 0;
         return rc;
@@ -2891,6 +3355,178 @@ static int recheck_views(X *x) {
     return rc;
 }
 
+/* ---- foreign keys, the schema side (docs/gsql_fkey_design.md) ---------- */
+
+/* A foreign key declared on `table`: named, its referenced columns resolved
+ * to the parent's primary key where none were written, bound now, and, when
+ * the table already has rows and the key is enforced, every row checked. */
+static int fk_create(X *x, const char *table, const SqlFkey *d) {
+    FkRec k;
+    memset(&k, 0, sizeof k);
+    char gen[600];
+    if (d->name) {
+        snprintf(gen, sizeof gen, "%s", d->name);
+    } else {
+        size_t used = (size_t)snprintf(gen, sizeof gen, "%s", table);
+        for (size_t i = 0; i < d->cols.n && used < sizeof gen; i++) {
+            used += (size_t)snprintf(gen + used, sizeof gen - used, "_%s", d->cols.cols[i]);
+        }
+        if (used < sizeof gen) {
+            snprintf(gen + used, sizeof gen - used, "_fkey");
+        }
+    }
+    GsqlBuf b = {0};
+    GsqlError e = { GSQL_OK, "", 0 };
+    int got = gsql_fkey_get(x->e, x->t, gen, &b, &e);
+    gsql_buf_free(&b);
+    if (got == GSQL_OK) {
+        return xfail(x->err, GSQL_EXISTS, d->pos, "there is already a constraint %s%s", gen,
+                     d->name ? "" : ": name this one with CONSTRAINT name");
+    }
+    k.name = dup_cstr(gen);
+    k.table = dup_cstr(table);
+    k.ref = dup_cstr(d->ref);
+    k.enforced = !d->not_enforced;
+    k.ncols = d->cols.n;
+    k.cols = calloc(k.ncols ? k.ncols : 1, sizeof(char *));
+    if (!k.cols) {
+        abort();
+    }
+    for (size_t i = 0; i < k.ncols; i++) {
+        k.cols[i] = dup_cstr(d->cols.cols[i]);
+    }
+    int rc = GSQL_OK;
+    GsqlTable *parent = NULL, *child = NULL;
+    if (gsql_table_open(x->e, x->t, d->ref, &parent, &e) != GSQL_OK) {
+        rc = xfail(x->err, GSQL_NOT_FOUND, d->pos, "foreign key `%s` references `%s`, and there is no table `%s`",
+                   gen, d->ref, d->ref);
+        parent = NULL;
+    } else if (d->ref_cols.n) {
+        k.nref = d->ref_cols.n;
+        k.ref_cols = calloc(k.nref, sizeof(char *));
+        if (!k.ref_cols) {
+            abort();
+        }
+        for (size_t i = 0; i < k.nref; i++) {
+            k.ref_cols[i] = dup_cstr(d->ref_cols.cols[i]);
+        }
+    } else {
+        /* REFERENCES t alone: t's primary key */
+        k.nref = gsql_table_nkey(parent);
+        k.ref_cols = calloc(k.nref ? k.nref : 1, sizeof(char *));
+        if (!k.ref_cols) {
+            abort();
+        }
+        for (size_t i = 0; i < k.nref; i++) {
+            k.ref_cols[i] = dup_cstr(gsql_table_col(parent, gsql_table_key_cols(parent)[i])->name);
+        }
+    }
+    if (parent) {
+        gsql_table_close(parent);
+        parent = NULL;
+    }
+    if (rc == GSQL_OK && k.nref != k.ncols) {
+        rc = xfail(x->err, GSQL_SCHEMA, d->pos, "foreign key `%s` names %zu column%s, and references %zu", gen, k.ncols,
+                   k.ncols == 1 ? "" : "s", k.nref);
+    }
+    if (rc == GSQL_OK && gsql_table_open(x->e, x->t, table, &child, &e) != GSQL_OK) {
+        child = NULL;
+        rc = xfail(x->err, GSQL_NOT_FOUND, d->pos, "there is no table %s", table);
+    }
+    unsigned cpos[64], ppos[64];
+    char why[300];
+    if (rc == GSQL_OK && (k.ncols > 64 || !fk_bind(x, &k, child, &parent, cpos, ppos, why, sizeof why))) {
+        rc = xfail(x->err, GSQL_SCHEMA, d->pos, "foreign key `%s` cannot reference `%s`: %s, and a foreign key "
+                   "references a primary key with columns of the same kinds", gen, k.ref,
+                   k.ncols > 64 ? "it has more than 64 columns" : why);
+    }
+    if (rc == GSQL_OK && k.enforced) {
+        uint64_t orphans = 0;
+        rc = fk_walk(x, child, cpos, parent, ppos, k.ncols, NULL, &orphans);
+        if (rc == GSQL_OK && orphans) {
+            rc = xfail(x->err, GSQL_FOREIGN_KEY, d->pos, "foreign key `%s`: %llu row%s of `%s` reference%s no row of "
+                       "`%s`; fix them, or declare it NOT ENFORCED", gen, (unsigned long long)orphans,
+                       orphans == 1 ? "" : "s", table, orphans == 1 ? "s" : "", k.ref);
+        }
+    }
+    if (parent) {
+        gsql_table_close(parent);
+    }
+    if (child) {
+        gsql_table_close(child);
+    }
+    if (rc == GSQL_OK) {
+        k.bound = 1;
+        rc = fk_put(x, &k, 0);
+    }
+    fk_free(&k);
+    return rc;
+}
+
+/* After a schema change: each foreign key bound, or not, to what is there
+ * now, and a warning (2119) for what THIS change did to an enforced one. */
+static int recheck_fkeys(X *x) {
+    FkList fks;
+    int rc = fk_all(x, &fks);
+    for (size_t i = 0; i < fks.n && rc == GSQL_OK; i++) {
+        FkRec *k = &fks.v[i];
+        GsqlTable *child = NULL, *parent = NULL;
+        GsqlError e = { GSQL_OK, "", 0 };
+        if (gsql_table_open(x->e, x->t, k->table, &child, &e) != GSQL_OK) {
+            continue;   /* its own table went: dropping it dropped the key */
+        }
+        unsigned cpos[64], ppos[64];
+        char why[300], msg[700];
+        int now = k->ncols <= 64 && fk_bind(x, k, child, &parent, cpos, ppos, why, sizeof why);
+        if (k->bound && !now && k->enforced) {
+            snprintf(msg, sizeof msg, "foreign key `%s` on `%s` is not checked from here on: %s; it is checked again "
+                     "when `%s` has that primary key", k->name, k->table, why, k->ref);
+            sql_warn(x->q, 2119, msg);
+        } else if (!k->bound && now && k->enforced) {
+            uint64_t orphans = 0;
+            rc = fk_walk(x, child, cpos, parent, ppos, k->ncols, NULL, &orphans);
+            if (rc == GSQL_OK && orphans) {
+                snprintf(msg, sizeof msg, "foreign key `%s` on `%s` is checked again, and %llu row%s of `%s` "
+                         "reference%s no row of `%s`", k->name, k->table, (unsigned long long)orphans,
+                         orphans == 1 ? "" : "s", k->table, orphans == 1 ? "s" : "", k->ref);
+                sql_warn(x->q, 2119, msg);
+            }
+        }
+        if (parent) {
+            gsql_table_close(parent);
+        }
+        gsql_table_close(child);
+        if (rc == GSQL_OK && now != k->bound) {
+            k->bound = now;
+            rc = fk_put(x, k, 1);
+        }
+    }
+    fk_list_free(&fks);
+    return rc;
+}
+
+/* A child table dropped takes its foreign keys with it; one renamed carries
+ * them, a foreign key belonging to its table. */
+static int fk_follow(X *x, const char *table, const char *renamed) {
+    FkList fks;
+    int rc = fk_all(x, &fks);
+    for (size_t i = 0; i < fks.n && rc == GSQL_OK; i++) {
+        FkRec *k = &fks.v[i];
+        if (strcmp(k->table, table) != 0) {
+            continue;
+        }
+        if (renamed) {
+            free(k->table);
+            k->table = dup_cstr(renamed);
+            rc = fk_put(x, k, 1);
+        } else {
+            rc = gsql_fkey_drop(x->e, x->t, k->name, x->err);
+        }
+    }
+    fk_list_free(&fks);
+    return rc;
+}
+
 static int run_schema_change(X *x, GsqlResult *out);
 
 /* A schema statement, then every view checked against what it left. */
@@ -2898,6 +3534,9 @@ static int run_schema(X *x, GsqlResult *out) {
     int rc = run_schema_change(x, out);
     if (rc == GSQL_OK && x->p->s->kind != SQ_CREATE_INDEX && x->p->s->kind != SQ_DROP_INDEX) {
         rc = recheck_views(x);
+    }
+    if (rc == GSQL_OK && x->p->s->kind != SQ_CREATE_INDEX && x->p->s->kind != SQ_DROP_INDEX) {
+        rc = recheck_fkeys(x);
     }
     return rc;
 }
@@ -2990,11 +3629,35 @@ static int run_schema_change(X *x, GsqlResult *out) {
         if (rc == GSQL_OK) {
             int made = 0;
             rc = create_indexes(x, s, &made);
+            for (size_t k = 0; rc == GSQL_OK && k < s->nfkeys; k++) {
+                rc = fk_create(x, s->table, &s->fkeys[k]);
+            }
             out->failed_part_way = rc != GSQL_OK;
         }
         return rc;
     }
+    case SQ_ADD_FKEY:
+        return fk_create(x, s->table, &s->fkeys[0]);
+    case SQ_DROP_CONSTRAINT: {
+        GsqlBuf b = {0};
+        FkRec k;
+        int found = gsql_fkey_get(x->e, x->t, s->constraint, &b, err) == GSQL_OK && fk_read(s->constraint, &b, &k);
+        gsql_buf_free(&b);
+        if (!found) {
+            return xfail(err, GSQL_NOT_FOUND, s->pos, "there is no constraint %s", s->constraint);
+        }
+        int theirs = strcmp(k.table, s->table) == 0;
+        fk_free(&k);
+        if (!theirs) {
+            return xfail(err, GSQL_NOT_FOUND, s->pos, "table %s has no constraint %s", s->table, s->constraint);
+        }
+        return gsql_fkey_drop(x->e, x->t, s->constraint, err);
+    }
     case SQ_DROP_TABLE:
+        rc = fk_follow(x, s->table, NULL);
+        if (rc != GSQL_OK) {
+            return rc;
+        }
         rc = gsql_table_drop(x->e, x->t, s->table, err);
         if (rc == GSQL_NOT_FOUND && s->if_exists) {
             err->code = GSQL_OK;
@@ -3002,7 +3665,8 @@ static int run_schema_change(X *x, GsqlResult *out) {
         }
         return rc;
     case SQ_RENAME_TABLE:
-        return gsql_table_rename(x->e, x->t, s->table, s->rename_to, err);
+        rc = gsql_table_rename(x->e, x->t, s->table, s->rename_to, err);
+        return rc == GSQL_OK ? fk_follow(x, s->table, s->rename_to) : rc;
     case SQ_ADD_COLUMN: {
         GsqlTable *tb;
         rc = gsql_table_open(x->e, x->t, s->table, &tb, err);

@@ -135,6 +135,16 @@ int gsql_view_get(const GsEngine *e, GsTxn *t, const char *name, GsqlBuf *out, G
 int gsql_view_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *err);
 int gsql_view_list(const GsEngine *e, GsTxn *t, int (*each)(void *ctx, const char *name), void *ctx,
                    GsqlError *err);
+
+/* Foreign keys (docs/gsql_fkey_design.md §4): a constraint's name and one v3
+ * record, in the `\0fkey` tree; the record and every check are the SQL
+ * layer's. Constraint names are their own namespace. */
+int gsql_fkey_put(const GsEngine *e, GsTxn *t, const char *name, const unsigned char *rec, size_t n, int replace,
+                  GsqlError *err);
+int gsql_fkey_get(const GsEngine *e, GsTxn *t, const char *name, GsqlBuf *out, GsqlError *err);
+int gsql_fkey_drop(const GsEngine *e, GsTxn *t, const char *name, GsqlError *err);
+int gsql_fkey_list(const GsEngine *e, GsTxn *t, int (*each)(void *ctx, const char *name), void *ctx,
+                   GsqlError *err);
 int gsql_table_open(const GsEngine *e, GsTxn *t, const char *name, GsqlTable **out, GsqlError *err);
 void gsql_table_close(GsqlTable *tb);
 /* Every table name in order; stops when `each` answers nonzero. */

@@ -177,7 +177,7 @@
 > drop t
 ! SYNTAX 6 expected TABLE, INDEX or VIEW after DROP
 > alter table t drop column a
-! UNSUPPORTED 15 ADD COLUMN and RENAME TO are the only changes
+! UNSUPPORTED 15 ADD COLUMN, ADD and DROP CONSTRAINT and RENAME TO are the only changes
 > alter table t_new rename to t
 = ALTER TABLE t_new RENAME TO t
 > alter table t rename column a to b
@@ -314,5 +314,28 @@
 # ---- refusals: Phase 2, by name -------------------------------------
 > select a from t order by a nulls first
 ! UNSUPPORTED 28 NULLS FIRST and NULLS LAST
+# ---- foreign keys (docs/gsql_fkey_design.md) ---------------------------
 > create table t (a int references u(b))
-! UNSUPPORTED 23 FOREIGN KEY constraints are in the next release
+= CREATE TABLE t (a INTEGER, FOREIGN KEY (a) REFERENCES u (b))
+> create table t (a int, b int, constraint t_ab foreign key (a, b) references u (x, y) not enforced)
+= CREATE TABLE t (a INTEGER, b INTEGER, CONSTRAINT t_ab FOREIGN KEY (a, b) REFERENCES u (x, y) NOT ENFORCED)
+> create table t (a int references u enforced not null)
+= CREATE TABLE t (a INTEGER NOT NULL, FOREIGN KEY (a) REFERENCES u)
+> alter table t add constraint fk foreign key (a) references u
+= ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (a) REFERENCES u
+> alter table t add foreign key (a) references u (b) not enforced
+= ALTER TABLE t ADD FOREIGN KEY (a) REFERENCES u (b) NOT ENFORCED
+> alter table t drop constraint fk
+= ALTER TABLE t DROP CONSTRAINT fk
+> create table t (a int references u on delete cascade)
+! UNSUPPORTED 36 ON DELETE and ON UPDATE actions are not in this release
+> create table t (a int references u match full)
+! UNSUPPORTED 36 MATCH is not in this release
+> create table t (a int references u deferrable)
+! UNSUPPORTED 36 deferred checking is not in this release
+> create table t (a int, constraint c unique (a))
+! UNSUPPORTED 37 a named CONSTRAINT is a FOREIGN KEY in this release
+> create table t (a int check (a > 0))
+! UNSUPPORTED 23 CHECK constraints are in the next release
+> create table t (a int, foreign key (a) u)
+! SYNTAX 40 expected REFERENCES after FOREIGN KEY

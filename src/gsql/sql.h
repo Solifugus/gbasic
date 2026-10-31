@@ -136,7 +136,9 @@ typedef enum {
     SQ_DROP_INDEX,
     SQ_RENAME_TABLE,         /* ALTER TABLE table RENAME TO rename_to */
     SQ_CREATE_VIEW,          /* CREATE [OR REPLACE] VIEW table [(view_cols)] AS view_q */
-    SQ_DROP_VIEW             /* DROP VIEW [IF EXISTS] table */
+    SQ_DROP_VIEW,            /* DROP VIEW [IF EXISTS] table */
+    SQ_ADD_FKEY,             /* ALTER TABLE table ADD fkeys[0] */
+    SQ_DROP_CONSTRAINT       /* ALTER TABLE table DROP CONSTRAINT constraint */
 } SqlStmtKind;
 
 typedef struct {
@@ -178,6 +180,17 @@ typedef struct {
     SqlNameList cols;
 } SqlFrom;
 
+/* A foreign key (docs/gsql_fkey_design.md): name may be NULL, ref_cols empty
+ * for the referenced table's primary key */
+typedef struct {
+    char *name;
+    SqlNameList cols;
+    char *ref;
+    SqlNameList ref_cols;
+    int not_enforced;
+    uint32_t pos;
+} SqlFkey;
+
 /* WITH name [(cols)] AS (q) */
 typedef struct {
     char *name;
@@ -194,6 +207,7 @@ typedef struct {
     int primary;             /* PRIMARY KEY on the column */
     int unique;
     SqlExpr *def;            /* DEFAULT, or NULL */
+    SqlFkey *fk;             /* REFERENCES, or NULL */
 } SqlColDef;
 
 
@@ -246,6 +260,11 @@ typedef struct SqlStmt {
     char *view_text;         /* its canonical text, printed before planning binds it */
     SqlNameList view_cols;
     int or_replace;
+    /* CREATE TABLE's foreign keys, column and table ones alike; ALTER TABLE
+       ADD's one; DROP CONSTRAINT's name */
+    SqlFkey *fkeys;
+    size_t nfkeys;
+    char *constraint;
     int unique;
     SqlNameList index_cols;
     /* parameters, in order of first appearance */
