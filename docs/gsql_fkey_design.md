@@ -1,6 +1,6 @@
 # G-SQL foreign keys
 
-**Status:** designed 2026-11-01, from Matthew's ruling that named foreign keys replace `RELATE` (`gsql_design.md` §10F). They are the item `gsql_design.md` §13 question 7 deferred: "`FOREIGN KEY` and `CHECK` follow in the next [release], each with its own tests". `CHECK` is not in this increment.
+**Status:** designed and built 2026-11-01 (`fk_*` in `src/gsql/sql_exec.c`, `gsql_fkey_*` in `src/gsql/table.c`; `tests/run_gsql_sql.sh`, `run_gsql_module.sh`), from Matthew's ruling that named foreign keys replace `RELATE` (`gsql_design.md` §10F). They are the item `gsql_design.md` §13 question 7 deferred: "`FOREIGN KEY` and `CHECK` follow in the next [release], each with its own tests". `CHECK` is not in this increment.
 
 ## 1. What it is
 
@@ -19,7 +19,7 @@ alter table share_transactions drop constraint destination_member;
 - **`ALTER TABLE ... ADD [CONSTRAINT name] FOREIGN KEY ...`** and **`ALTER TABLE ... DROP CONSTRAINT name`.**
 - **Every foreign key has a name,** unique in the database. One not given a name is called `<table>_<columns>_fkey`, PostgreSQL's spelling, so a refusal and a tool can always name it. Several foreign keys may join the same two tables.
 - **`NOT ENFORCED`** declares the relationship without checking it, the standard's form for schema knowledge over data that may not obey it. It is stored, reported and never checked.
-- **The referenced columns must be the referenced table's primary key, or exactly the columns of one of its unique indexes,** in that order. That is what makes the relationship many-to-one.
+- **The referenced columns must be the referenced table's primary key,** in its order: written out, or left off (`REFERENCES t`) to mean exactly that. That is what makes the relationship many-to-one. *As built:* referencing a unique index other than the primary key is left for later. Then a parent lookup would be an index seek rather than a row read, and nothing has asked for it yet.
 - **Each pair of columns must hold the same kind,** money's currency included, since gBASIC's `=` refuses to compare across kinds.
 - **It is not:**
   - `ON DELETE` or `ON UPDATE` actions (`CASCADE`, `SET NULL`, `SET DEFAULT`). They are refused by name. The only behaviour is the standard's `NO ACTION`: a parent row still referenced is not deleted, nor its key changed.
@@ -30,7 +30,7 @@ alter table share_transactions drop constraint destination_member;
 
 Following the standard's `MATCH SIMPLE`: **a child row with any `NULL` in a foreign key's columns references nothing,** and is not checked.
 
-- **An `INSERT` into a child table,** and an `UPDATE` changing a foreign key's columns: each new row must find its parent by one seek on the referenced key. Otherwise the statement is refused with **`FOREIGN_KEY`**, naming the constraint, the row's values and the parent table. It is checked before anything is written, as `UNIQUE` is, so an explicit transaction stays usable.
+- **An `INSERT` into a child table,** and an `UPDATE` changing a foreign key's columns: each new row must find its parent by one read of the parent's primary key. Otherwise the statement is refused with **`FOREIGN_KEY`**, naming the constraint and both tables. It is checked before the row is written, as `UNIQUE` is, so a refusal of a statement's first row leaves an explicit transaction usable. One on a later row of a multi-row `INSERT` is part way, as a duplicate there is.
 - **A `DELETE` from a parent table,** and an `UPDATE` changing a referenced key: no child row may still reference the old key. Otherwise the statement is refused, naming the constraint and the child table. The child is read through an index that leads with the foreign key's columns if there is one, and is scanned otherwise. **The cost is stated:** deleting many parent rows from a large child table with no such index is a scan per row, as it is in PostgreSQL, which advises the same index.
 - **A row may not reference a row the same statement writes.** Checks run before the statement writes, so a self-referencing row inserted together with its parent is refused. Write the parent first.
 - **`ALTER TABLE ... ADD ... FOREIGN KEY` checks the rows already there,** and is refused, saying how many reference nothing, unless it is `NOT ENFORCED`.
