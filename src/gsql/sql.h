@@ -257,6 +257,7 @@ typedef struct SqlStmt {
     char *rename_to;         /* ALTER TABLE ... RENAME TO */
     /* CREATE VIEW (docs/gsql_view_design.md) */
     struct SqlStmt *view_q;
+    struct SqlStmt *ins_q;   /* INSERT ... SELECT (docs/gsql_insert_select_design.md) */
     char *view_text;         /* its canonical text, printed before planning binds it */
     SqlNameList view_cols;
     int or_replace;

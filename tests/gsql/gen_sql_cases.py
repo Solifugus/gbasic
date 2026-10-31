@@ -697,6 +697,39 @@ stmt("DROP TABLE tx2", "= done 0")
 stmt("CREATE TABLE tx (id INTEGER PRIMARY KEY)", "= done 0")
 stmt("ALTER TABLE tx DROP CONSTRAINT tx_orig_fkey", ("NOT_FOUND", "ALTER", "there is no constraint tx_orig_fkey"))
 
+sec("INSERT ... SELECT (docs/gsql_insert_select_design.md)")
+stmt("CREATE TABLE src (id INTEGER PRIMARY KEY, k INTEGER, note TEXT DEFAULT 'none')", "= done 0")
+stmt("INSERT INTO src VALUES (1, 10, 'a'), (2, 20, 'b'), (3, NULL, 'c')", "= done 3")
+stmt("CREATE TABLE dst (id INTEGER PRIMARY KEY, k INTEGER, note TEXT DEFAULT 'none')", "= done 0")
+# a column list, and a column it leaves out takes its default
+stmt("INSERT INTO dst (id, k) SELECT id, k FROM src WHERE k IS NOT NULL", "= done 2")
+stmt("SELECT id, k, note FROM dst ORDER BY id", "= 1, 10, 'none' | 2, 20, 'none'")
+# into itself: the query is read whole before a row is written, so once
+stmt("INSERT INTO dst SELECT id + 10, k, note FROM dst", "= done 2")
+stmt("SELECT count(*) FROM dst", "= 4")
+stmt("INSERT INTO dst WITH big AS (SELECT * FROM src WHERE id = 3) SELECT id + 100, k, note FROM big", "= done 1")
+stmt("INSERT INTO dst (id, note) SELECT s.id + 200, d.note FROM src s JOIN dst d ON d.id = s.id ORDER BY s.id", "= done 2")
+stmt("SELECT id, note FROM dst WHERE id > 100 ORDER BY id", "= 103, 'c' | 201, 'none' | 202, 'none'")
+stmt("INSERT INTO dst (id, k) SELECT id FROM src", ("SYNTAX", "SELECT", "the query gives 1 column for 2 columns of dst"))
+# a later row refused is part way, and names its row of the query
+stmt("INSERT INTO dst (id, k) SELECT id + 300, CASE WHEN id = 2 THEN 'x' ELSE k END FROM src ORDER BY id",
+     ("TYPE", None, "row 2 of the query: dst.k is integer, and the value is a string [part way]"))
+# foreign keys check each row
+stmt("CREATE TABLE fkd (id INTEGER PRIMARY KEY, s INTEGER REFERENCES src)", "= done 0")
+stmt("INSERT INTO fkd SELECT id, id FROM src", "= done 3")
+stmt("INSERT INTO fkd SELECT id + 10, id + 5 FROM src", ("FOREIGN_KEY", None, "foreign key `fkd_s_fkey`"))
+# the drop-and-rebuild workflow, end to end: build the new table, copy the
+# rows across, drop the old one and rename the new one into its place; the
+# view over it runs again and the foreign key onto it is checked again
+stmt("CREATE VIEW src_notes AS SELECT note FROM src", "= done 0")
+stmt("CREATE TABLE src_new (id INTEGER PRIMARY KEY, k INTEGER, note TEXT, added DATE)", "= done 0")
+stmt("INSERT INTO src_new (id, k, note) SELECT id, k, note FROM src", "= done 3")
+stmt("DROP TABLE src", "= done 0")
+stmt("ALTER TABLE src_new RENAME TO src", "= done 0")
+stmt("SELECT note FROM src_notes ORDER BY note", "= 'a' | 'b' | 'c'")
+stmt("INSERT INTO fkd VALUES (50, 9)", ("FOREIGN_KEY", None, "foreign key `fkd_s_fkey`"))
+stmt("INSERT INTO fkd VALUES (50, 3)", "= done 1")
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

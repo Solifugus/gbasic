@@ -977,6 +977,54 @@ rollback
 > ALTER TABLE tx DROP CONSTRAINT tx_orig_fkey
 ! NOT_FOUND 1 there is no constraint tx_orig_fkey
 
+# ---- INSERT ... SELECT (docs/gsql_insert_select_design.md) -----------
+> CREATE TABLE src (id INTEGER PRIMARY KEY, k INTEGER, note TEXT DEFAULT 'none')
+= done 0
+> INSERT INTO src VALUES (1, 10, 'a'), (2, 20, 'b'), (3, NULL, 'c')
+= done 3
+> CREATE TABLE dst (id INTEGER PRIMARY KEY, k INTEGER, note TEXT DEFAULT 'none')
+= done 0
+> INSERT INTO dst (id, k) SELECT id, k FROM src WHERE k IS NOT NULL
+= done 2
+> SELECT id, k, note FROM dst ORDER BY id
+= 1, 10, 'none' | 2, 20, 'none'
+> INSERT INTO dst SELECT id + 10, k, note FROM dst
+= done 2
+> SELECT count(*) FROM dst
+= 4
+> INSERT INTO dst WITH big AS (SELECT * FROM src WHERE id = 3) SELECT id + 100, k, note FROM big
+= done 1
+> INSERT INTO dst (id, note) SELECT s.id + 200, d.note FROM src s JOIN dst d ON d.id = s.id ORDER BY s.id
+= done 2
+> SELECT id, note FROM dst WHERE id > 100 ORDER BY id
+= 103, 'c' | 201, 'none' | 202, 'none'
+> INSERT INTO dst (id, k) SELECT id FROM src
+! SYNTAX 25 the query gives 1 column for 2 columns of dst
+> INSERT INTO dst (id, k) SELECT id + 300, CASE WHEN id = 2 THEN 'x' ELSE k END FROM src ORDER BY id
+! TYPE 0 row 2 of the query: dst.k is integer, and the value is a string [part way]
+> CREATE TABLE fkd (id INTEGER PRIMARY KEY, s INTEGER REFERENCES src)
+= done 0
+> INSERT INTO fkd SELECT id, id FROM src
+= done 3
+> INSERT INTO fkd SELECT id + 10, id + 5 FROM src
+! FOREIGN_KEY 0 foreign key `fkd_s_fkey`
+> CREATE VIEW src_notes AS SELECT note FROM src
+= done 0
+> CREATE TABLE src_new (id INTEGER PRIMARY KEY, k INTEGER, note TEXT, added DATE)
+= done 0
+> INSERT INTO src_new (id, k, note) SELECT id, k, note FROM src
+= done 3
+> DROP TABLE src
+= done 0
+> ALTER TABLE src_new RENAME TO src
+= done 0
+> SELECT note FROM src_notes ORDER BY note
+= 'a' | 'b' | 'c'
+> INSERT INTO fkd VALUES (50, 9)
+! FOREIGN_KEY 0 foreign key `fkd_s_fkey`
+> INSERT INTO fkd VALUES (50, 3)
+= done 1
+
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
 = done 0

@@ -171,7 +171,7 @@
 > insert into t values (1, 2), (3)
 ! SYNTAX 30 row 2 of VALUES has 1 values and row 1 has 2
 > insert into t select * from u
-! UNSUPPORTED 15 INSERT ... SELECT
+= INSERT INTO t SELECT * FROM u
 > insert into t values (1) returning a
 ! UNSUPPORTED 26 RETURNING
 > drop t
@@ -314,6 +314,12 @@
 # ---- refusals: Phase 2, by name -------------------------------------
 > select a from t order by a nulls first
 ! UNSUPPORTED 28 NULLS FIRST and NULLS LAST
+# ---- INSERT ... SELECT (docs/gsql_insert_select_design.md) -------------
+> insert into t (a, b) select x, y from u where x > 1
+= INSERT INTO t (a, b) SELECT x, y FROM u WHERE (x > 1)
+> insert into t with w as (select 1) select * from w
+= INSERT INTO t WITH w AS (SELECT 1) SELECT * FROM w
+
 # ---- foreign keys (docs/gsql_fkey_design.md) ---------------------------
 > create table t (a int references u(b))
 = CREATE TABLE t (a INTEGER, FOREIGN KEY (a) REFERENCES u (b))

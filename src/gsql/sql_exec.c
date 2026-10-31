@@ -2995,9 +2995,67 @@ static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
     return GSQL_OK;
 }
 
+static SqlCursor *sub_open(X *x, SqlPlan *p, X *outer);
+
+/* INSERT ... SELECT (docs/gsql_insert_select_design.md): the query's rows,
+ * every one read before any is written, so a table copied into itself never
+ * meets its own new rows. */
+static int insert_rows(X *x, GsqlBuf **out, size_t *n) {
+    *out = NULL;
+    *n = 0;
+    SqlCursor *c = sub_open(x, x->p->left, NULL);
+    if (!c) {
+        return x->err->code ? x->err->code : GSQL_EXPRESSION;
+    }
+    size_t cap = 0;
+    GsqlBuf row = {0};
+    int rc = GSQL_OK;
+    for (;;) {
+        int r = cursor_next(c, &row);
+        if (r < 0) {
+            *x->err = c->err;
+            rc = x->err->code ? x->err->code : GSQL_EXPRESSION;
+            break;
+        }
+        if (r == 0) {
+            break;
+        }
+        if (*n == cap) {
+            cap = cap ? cap * 2 : 64;
+            *out = realloc(*out, sizeof(GsqlBuf) * cap);
+            if (!*out) {
+                abort();
+            }
+        }
+        memset(&(*out)[*n], 0, sizeof(GsqlBuf));
+        v3_put(&(*out)[*n], row.bytes, row.length);
+        (*n)++;
+    }
+    gsql_buf_free(&row);
+    cursor_free(c);
+    return rc;
+}
+
 static int run_insert(X *x, GsqlResult *out) {
     SqlPlan *p = x->p;
     SqlStmt *s = p->s;
+    GsqlBuf *qrows = NULL;
+    size_t nq = 0;
+    if (s->ins_q) {
+        int qrc = insert_rows(x, &qrows, &nq);
+        if (qrc != GSQL_OK) {
+            for (size_t k = 0; k < nq; k++) {
+                gsql_buf_free(&qrows[k]);
+            }
+            free(qrows);
+            return qrc;
+        }
+    }
+    size_t nrows = s->ins_q ? nq : s->nrows;
+    GsBytes *items = calloc(p->ntargets ? p->ntargets : 1, sizeof(GsBytes));
+    if (!items) {
+        abort();
+    }
     size_t ncols = gsql_table_ncols(p->tb);
     GsqlIn *vals = calloc(ncols ? ncols : 1, sizeof(GsqlIn));
     GsqlBuf *bufs = calloc(p->ntargets ? p->ntargets : 1, sizeof(GsqlBuf));
@@ -3012,9 +3070,19 @@ static int run_insert(X *x, GsqlResult *out) {
     if (!whole) {
         abort();
     }
-    for (size_t r = 0; r < s->nrows && rc == GSQL_OK; r++) {
+    for (size_t r = 0; r < nrows && rc == GSQL_OK; r++) {
         memset(vals, 0, sizeof(GsqlIn) * ncols);
-        for (size_t k = 0; k < p->ntargets && rc == GSQL_OK; k++) {
+        if (s->ins_q) {
+            if (v3_array_items(qrows[r].bytes, qrows[r].length, items, (long)p->ntargets) != (long)p->ntargets) {
+                rc = xfail(x->err, GSQL_MISUSE, 0, "a row of the query did not hold its columns");
+            }
+            for (size_t k = 0; k < p->ntargets && rc == GSQL_OK; k++) {
+                vals[p->targets[k]].present = 1;
+                vals[p->targets[k]].p = items[k].p;
+                vals[p->targets[k]].n = items[k].n;
+            }
+        }
+        for (size_t k = 0; !s->ins_q && k < p->ntargets && rc == GSQL_OK; k++) {
             bufs[k].length = 0;
             if (!s->rows[r][k]) {
                 continue;   /* DEFAULT: omitted, so the column's default */
@@ -3030,9 +3098,10 @@ static int run_insert(X *x, GsqlResult *out) {
         }
         if (rc == GSQL_OK) {
             rc = gsql_row_insert(x->e, x->t, p->tb, vals, NULL, x->err);
-            if (rc != GSQL_OK && s->nrows > 1) {
+            if (rc != GSQL_OK && nrows > 1) {
                 char m[sizeof x->err->message];
-                snprintf(m, sizeof m, "row %zu of VALUES: %.400s", r + 1, x->err->message);
+                snprintf(m, sizeof m, "row %zu of %s: %.400s", r + 1, s->ins_q ? "the query" : "VALUES",
+                         x->err->message);
                 snprintf(x->err->message, sizeof x->err->message, "%s", m);
             }
         }
@@ -3047,6 +3116,11 @@ static int run_insert(X *x, GsqlResult *out) {
     free(vals);
     free(whole);
     fk_list_free(&fks);
+    free(items);
+    for (size_t k = 0; k < nq; k++) {
+        gsql_buf_free(&qrows[k]);
+    }
+    free(qrows);
     if (rc != GSQL_OK) {
         out->failed_part_way = done > 0;
         return rc;

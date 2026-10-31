@@ -129,7 +129,8 @@ fi
 # or reshaped, and never for a view it mended (docs/gsql_view_design.md §3)
 for want in 'warning: view `spend` cannot run: there is no table `vo` [2118]' \
             'warning: view `big` cannot run: view `spend` cannot run: there is no table `vo` [2118]' \
-            "warning: view \`allv\`'s columns are now (id, cust, total, note), where they were (id, cust, total) [2118]"; do
+            "warning: view \`allv\`'s columns are now (id, cust, total, note), where they were (id, cust, total) [2118]" \
+            'warning: view `src_notes` cannot run: there is no table `src` [2118]'; do
     if grep -qxF "$want" "$work/sem.err"; then
         pass "the change warns: ${want#warning: }"
     else
@@ -137,18 +138,19 @@ for want in 'warning: view `spend` cannot run: there is no table `vo` [2118]' \
     fi
 done
 nview=$(grep -c '\[2118\]$' "$work/sem.err" || true)
-if [ "$nview" = 3 ]; then
-    pass "exactly those three view warnings, and none for the views the rebuild mended"
+if [ "$nview" = 4 ]; then
+    pass "exactly those four view warnings, and none for the views a rebuild mended"
 else
     grep '\[2118\]$' "$work/sem.err" | sed 's/^/       /'
-    fail "$nview view warnings where 3 were expected"
+    fail "$nview view warnings where 4 were expected"
 fi
 
 # a parent dropped and rebuilt under its foreign key: one warning when it
 # stops being checked, one when it is checked again and finds a row with no
 # parent, none for the key that is NOT ENFORCED (docs/gsql_fkey_design.md §3)
 for want in 'warning: foreign key `tx_orig_fkey` on `tx` is not checked from here on: there is no table `mem`; it is checked again when `mem` has that primary key [2119]' \
-            'warning: foreign key `tx_orig_fkey` on `tx` is checked again, and 1 row of `tx` references no row of `mem` [2119]'; do
+            'warning: foreign key `tx_orig_fkey` on `tx` is checked again, and 1 row of `tx` references no row of `mem` [2119]' \
+            'warning: foreign key `fkd_s_fkey` on `fkd` is not checked from here on: there is no table `src`; it is checked again when `src` has that primary key [2119]'; do
     if grep -qxF "$want" "$work/sem.err"; then
         pass "the change warns: ${want#warning: }"
     else
@@ -156,11 +158,11 @@ for want in 'warning: foreign key `tx_orig_fkey` on `tx` is not checked from her
     fi
 done
 nfk=$(grep -c '\[2119\]$' "$work/sem.err" || true)
-if [ "$nfk" = 2 ]; then
-    pass "exactly those two foreign-key warnings"
+if [ "$nfk" = 3 ]; then
+    pass "exactly those three foreign-key warnings, and none for the rebuild that found no orphans"
 else
     grep '\[2119\]$' "$work/sem.err" | sed 's/^/       /'
-    fail "$nfk foreign-key warnings where 2 were expected"
+    fail "$nfk foreign-key warnings where 3 were expected"
 fi
 
 printf 'TIER valgrind: the semantics corpus, no invalid access, no definite leak\n'

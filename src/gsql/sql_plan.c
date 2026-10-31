@@ -1464,6 +1464,21 @@ static int plan_insert(B *b, const GsEngine *e, GsTxn *t) {
             p->targets[k] = (unsigned)k;
         }
     }
+    if (s->ins_q) {
+        /* planned as a query of its own, reading no enclosing one */
+        p->left = sql_alloc(b->arena, sizeof(SqlPlan));
+        if (plan_at(e, t, s->ins_q, b->arena, p->text, b->force_scan, p->left, b->err, NULL, NULL, b->nsubq, NULL, 0) !=
+            GSQL_OK) {
+            p->left = NULL;
+            return 0;
+        }
+        if (p->left->nout != p->ntargets) {
+            return bfail(b, s->ins_q->pos, GSQL_SYNTAX, "the query gives %zu column%s for %zu column%s of %s",
+                         p->left->nout, p->left->nout == 1 ? "" : "s", p->ntargets, p->ntargets == 1 ? "" : "s",
+                         s->table);
+        }
+        return 1;
+    }
     if (s->rowlen != p->ntargets) {
         return bfail(b, s->pos, GSQL_SYNTAX, "INSERT has %zu value%s for %zu column%s", s->rowlen,
                      s->rowlen == 1 ? "" : "s", p->ntargets, p->ntargets == 1 ? "" : "s");

@@ -564,6 +564,7 @@ static int compound(P *p, SqlStmt *root);
 static int name_list(P *p, SqlNameList *l, int allow_order);
 static SqlStmt *subquery(P *p);
 static int at_word(P *p, const char *w);
+static SqlStmt *query_stmt(P *p);
 static int alias_follows(P *p);
 
 /* WITH name [(cols)] AS (SELECT ...), ...: the current token `with`
@@ -1652,8 +1653,9 @@ static int insert_stmt(P *p, SqlStmt *s) {
     if (at_sym(p, "(") && !name_list(p, &s->cols, 0)) {
         return 0;
     }
-    if (at_kw(p, "select")) {
-        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "INSERT ... SELECT is not in this release of G-SQL (Phase 2)");
+    if (at_kw(p, "select") || at_kw(p, "with")) {
+        s->ins_q = query_stmt(p);
+        return s->ins_q != NULL;
     }
     if (!expect_kw(p, "values")) {
         return 0;
@@ -1770,6 +1772,29 @@ static int delete_stmt(P *p, SqlStmt *s) {
     return 1;
 }
 
+/* A whole query not in parentheses: [WITH ...] SELECT ..., and any set
+ * operation after it. The current token is WITH or SELECT. */
+static SqlStmt *query_stmt(P *p) {
+    uint32_t pos = p->tok.pos;
+    SqlCte *ctes = NULL;
+    size_t nctes = 0;
+    if (at_kw(p, "with") && !with_list(p, &ctes, &nctes)) {
+        return NULL;
+    }
+    if (!expect_kw(p, "select")) {
+        return NULL;
+    }
+    SqlStmt *q = sql_alloc(p->arena, sizeof *q);
+    q->kind = SQ_SELECT;
+    q->pos = pos;
+    if (!select_stmt(p, q) || !compound(p, q)) {
+        return NULL;
+    }
+    q->ctes = ctes;
+    q->nctes = nctes;
+    return q;
+}
+
 /* CREATE [OR REPLACE] VIEW name [(cols)] AS select (docs/gsql_view_design.md) */
 static int view_stmt(P *p, SqlStmt *s) {
     s->kind = SQ_CREATE_VIEW;
@@ -1784,22 +1809,10 @@ static int view_stmt(P *p, SqlStmt *s) {
         return 0;
     }
     uint32_t pos = p->tok.pos;
-    SqlCte *ctes = NULL;
-    size_t nctes = 0;
-    if (at_kw(p, "with") && !with_list(p, &ctes, &nctes)) {
+    SqlStmt *q = query_stmt(p);
+    if (!q) {
         return 0;
     }
-    if (!expect_kw(p, "select")) {
-        return 0;
-    }
-    SqlStmt *q = sql_alloc(p->arena, sizeof *q);
-    q->kind = SQ_SELECT;
-    q->pos = pos;
-    if (!select_stmt(p, q) || !compound(p, q)) {
-        return 0;
-    }
-    q->ctes = ctes;
-    q->nctes = nctes;
     s->view_q = q;
     /* the text stored is the canonical print of the query as written: once
        planned, its names are bound to positions */
@@ -2755,6 +2768,11 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
         if (s->cols.n) {
             v3_put(o, " ", 1);
             print_names(o, &s->cols, 0);
+        }
+        if (s->ins_q) {
+            v3_put(o, " ", 1);
+            sql_print_stmt(o, s->ins_q);
+            return;
         }
         puts_(o, " VALUES ");
         for (size_t r = 0; r < s->nrows; r++) {
