@@ -618,6 +618,85 @@ stmt("DROP VIEW IF EXISTS allv", "= done 0")
 stmt("CREATE TABLE allv (id INTEGER PRIMARY KEY)", "= done 0")
 stmt("DROP TABLE allv", "= done 0")
 
+sec("foreign keys (docs/gsql_fkey_design.md)")
+stmt("CREATE TABLE mem (member_id INTEGER PRIMARY KEY, name TEXT)", "= done 0")
+stmt("INSERT INTO mem VALUES (1, 'ann'), (2, 'bob')", "= done 2")
+# two foreign keys between the same two tables, one of them only declared
+stmt("CREATE TABLE tx (id INTEGER PRIMARY KEY, orig INTEGER REFERENCES mem (member_id), dest INTEGER, "
+     "CONSTRAINT destination FOREIGN KEY (dest) REFERENCES mem NOT ENFORCED)", "= done 0")
+stmt("INSERT INTO tx VALUES (10, 1, 2)", "= done 1")
+stmt("INSERT INTO tx VALUES (11, 3, 1)",
+     ("FOREIGN_KEY", None, "foreign key `tx_orig_fkey`: this row of `tx` references a row of `mem` that is not there"))
+# NULL references nothing, and NOT ENFORCED is never checked
+stmt("INSERT INTO tx VALUES (12, NULL, 99)", "= done 1")
+# a refusal before the write leaves an explicit transaction usable
+c("begin write")
+stmt("INSERT INTO tx VALUES (13, 9, 1)", ("FOREIGN_KEY", None, "foreign key `tx_orig_fkey`"))
+stmt("INSERT INTO tx VALUES (13, 2, 1)", "= done 1")
+c("rollback")
+stmt("SELECT count(*) FROM tx", "= 2")
+stmt("UPDATE tx SET orig = 5 WHERE id = 10", ("FOREIGN_KEY", None, "references a row of `mem` that is not there"))
+stmt("UPDATE tx SET orig = 2 WHERE id = 10", "= done 1")
+# a parent still referenced is neither deleted nor re-keyed; another change is fine
+stmt("DELETE FROM mem WHERE member_id = 2",
+     ("FOREIGN_KEY", None, "foreign key `tx_orig_fkey`: 1 row of `tx` still references this row of `mem`"))
+stmt("UPDATE mem SET member_id = 7 WHERE member_id = 2", ("FOREIGN_KEY", None, "still references this row of `mem`"))
+stmt("UPDATE mem SET name = 'b2' WHERE member_id = 2", "= done 1")
+stmt("DELETE FROM mem WHERE member_id = 1", "= done 1")
+# a composite key, and MATCH SIMPLE
+stmt("CREATE TABLE pc (a INTEGER, b TEXT, PRIMARY KEY (a, b))", "= done 0")
+stmt("INSERT INTO pc VALUES (1, 'x')", "= done 1")
+stmt("CREATE TABLE cc (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, FOREIGN KEY (a, b) REFERENCES pc)", "= done 0")
+stmt("INSERT INTO cc VALUES (1, 1, 'x')", "= done 1")
+stmt("INSERT INTO cc VALUES (2, 1, 'y')", ("FOREIGN_KEY", None, "foreign key `cc_a_b_fkey`"))
+stmt("INSERT INTO cc VALUES (3, 1, NULL)", "= done 1")
+# what a foreign key may reference
+stmt("CREATE TABLE bad1 (x TEXT REFERENCES mem)",
+     ("SCHEMA", "REFERENCES", "cannot reference `mem`: `bad1.x` is string and `mem.member_id` is integer"))
+stmt("CREATE TABLE bad2 (x INTEGER REFERENCES mem (name))", ("SCHEMA", "REFERENCES", "the primary key of `mem` is not (name)"))
+stmt("CREATE TABLE bad3 (x INTEGER REFERENCES nope)", ("NOT_FOUND", "REFERENCES", "there is no table `nope`"))
+stmt("CREATE TABLE bad4 (x INTEGER, y INTEGER, FOREIGN KEY (x, y) REFERENCES mem)",
+     ("SCHEMA", "FOREIGN", "names 2 columns, and references 1"))
+stmt("CREATE TABLE bad5 (x INTEGER, CONSTRAINT destination FOREIGN KEY (x) REFERENCES mem)",
+     ("EXISTS", "CONSTRAINT", "there is already a constraint destination"))
+stmt("SELECT * FROM bad1", ("NOT_FOUND", "SELECT", "there is no table `bad1`"))
+# refused inside a transaction, the declaration leaves it usable
+c("begin write")
+stmt("CREATE TABLE bad6 (x INTEGER REFERENCES nope)", ("NOT_FOUND", "REFERENCES", "there is no table `nope`"))
+stmt("SELECT * FROM bad6", ("NOT_FOUND", "SELECT", "there is no table `bad6`"))
+stmt("CREATE TABLE ok6 (x INTEGER REFERENCES mem)", "= done 0")
+c("rollback")
+# added over existing rows: refused while one references nothing
+stmt("CREATE TABLE lone (id INTEGER PRIMARY KEY, m INTEGER)", "= done 0")
+stmt("INSERT INTO lone VALUES (1, 2), (2, 42)", "= done 2")
+stmt("ALTER TABLE lone ADD CONSTRAINT lone_m FOREIGN KEY (m) REFERENCES mem",
+     ("FOREIGN_KEY", "CONSTRAINT", "1 row of `lone` references no row of `mem`; fix them, or declare it NOT ENFORCED"))
+stmt("DELETE FROM lone WHERE id = 2", "= done 1")
+stmt("ALTER TABLE lone ADD CONSTRAINT lone_m FOREIGN KEY (m) REFERENCES mem", "= done 0")
+stmt("ALTER TABLE lone DROP CONSTRAINT lone_m", "= done 0")
+stmt("ALTER TABLE lone DROP CONSTRAINT lone_m", ("NOT_FOUND", "ALTER", "there is no constraint lone_m"))
+stmt("ALTER TABLE lone DROP CONSTRAINT tx_orig_fkey", ("NOT_FOUND", "ALTER", "table lone has no constraint tx_orig_fkey"))
+# a table referencing itself; a row may not reference one its own statement writes
+stmt("CREATE TABLE emp (id INTEGER PRIMARY KEY, boss INTEGER REFERENCES emp)", "= done 0")
+stmt("INSERT INTO emp VALUES (1, NULL)", "= done 1")
+stmt("INSERT INTO emp VALUES (2, 1)", "= done 1")
+stmt("INSERT INTO emp VALUES (3, 3)", ("FOREIGN_KEY", None, "foreign key `emp_boss_fkey`"))
+stmt("DELETE FROM emp WHERE id = 1", ("FOREIGN_KEY", None, "1 row of `emp` still references this row of `emp`"))
+# drop and rebuild the parent under its foreign keys: never blocked, and
+# checked again once a table of that name returns
+stmt("DROP TABLE mem", "= done 0")
+stmt("INSERT INTO tx VALUES (20, 99, NULL)", "= done 1")
+stmt("CREATE TABLE mem_new (member_id INTEGER PRIMARY KEY, name TEXT)", "= done 0")
+stmt("INSERT INTO mem_new VALUES (2, 'bob')", "= done 1")
+stmt("ALTER TABLE mem_new RENAME TO mem", "= done 0")
+stmt("INSERT INTO tx VALUES (21, 98, NULL)", ("FOREIGN_KEY", None, "foreign key `tx_orig_fkey`"))
+# a child renamed carries its keys; a child dropped takes them with it
+stmt("ALTER TABLE tx RENAME TO tx2", "= done 0")
+stmt("INSERT INTO tx2 VALUES (22, 97, NULL)", ("FOREIGN_KEY", None, "this row of `tx2` references a row of `mem`"))
+stmt("DROP TABLE tx2", "= done 0")
+stmt("CREATE TABLE tx (id INTEGER PRIMARY KEY)", "= done 0")
+stmt("ALTER TABLE tx DROP CONSTRAINT tx_orig_fkey", ("NOT_FOUND", "ALTER", "there is no constraint tx_orig_fkey"))
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

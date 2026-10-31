@@ -124,5 +124,34 @@ end function
 check("a drop that breaks a view is an error under stop", careful(), 2118)
 check("and rolled back, the view still runs", gsql.query(db, "select v from seen")[0].v, 10)
 
+' a foreign key's refusal carries its code by name (docs/gsql_fkey_design.md)
+gsql.exec(db, "create table par (id integer primary key)")
+gsql.exec(db, "insert into par values (1)")
+gsql.exec(db, "create table kid (id integer primary key, par integer references par)")
+function orphan()
+    on error goto next
+    gsql.exec(db, "insert into kid values (1, 9)")
+    if error then
+        return error.details.code
+    end if
+    return "(no error)"
+end function
+check("a row with no parent is refused as FOREIGN_KEY", orphan(), "FOREIGN_KEY")
+' dropping a referenced parent warns (2119); under stop, rolled back
+function careful_fk()
+    on error goto next
+    on warning stop
+    gsql.begin(db)
+    gsql.exec(db, "drop table par")
+    if error then
+        gsql.rollback(db)
+        return error.code
+    end if
+    gsql.commit(db)
+    return 0
+end function
+check("a drop that unchecks a foreign key is an error under stop", careful_fk(), 2119)
+check("and rolled back, the parent is still there", gsql.query(db, "select count(*) as n from par")[0].n, 1)
+
 gsql.close(db)
 print "ok " + string(checks.n) + " checks, " + string(checks.bad) + " mismatches"

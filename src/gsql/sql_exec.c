@@ -3629,10 +3629,20 @@ static int run_schema_change(X *x, GsqlResult *out) {
         if (rc == GSQL_OK) {
             int made = 0;
             rc = create_indexes(x, s, &made);
+            out->failed_part_way = rc != GSQL_OK;
             for (size_t k = 0; rc == GSQL_OK && k < s->nfkeys; k++) {
                 rc = fk_create(x, s->table, &s->fkeys[k]);
+                if (rc != GSQL_OK) {
+                    /* a declaration refused: the table, its indexes and the
+                       keys already made go again, so nothing stays written
+                       and an explicit transaction carries on */
+                    GsqlError undo = { GSQL_OK, "", 0 };
+                    if (fk_follow(x, s->table, NULL) != GSQL_OK ||
+                        gsql_table_drop(x->e, x->t, s->table, &undo) != GSQL_OK) {
+                        out->failed_part_way = 1;
+                    }
+                }
             }
-            out->failed_part_way = rc != GSQL_OK;
         }
         return rc;
     }

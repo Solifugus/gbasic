@@ -863,6 +863,120 @@ rollback
 > DROP TABLE allv
 = done 0
 
+# ---- foreign keys (docs/gsql_fkey_design.md) -------------------------
+> CREATE TABLE mem (member_id INTEGER PRIMARY KEY, name TEXT)
+= done 0
+> INSERT INTO mem VALUES (1, 'ann'), (2, 'bob')
+= done 2
+> CREATE TABLE tx (id INTEGER PRIMARY KEY, orig INTEGER REFERENCES mem (member_id), dest INTEGER, CONSTRAINT destination FOREIGN KEY (dest) REFERENCES mem NOT ENFORCED)
+= done 0
+> INSERT INTO tx VALUES (10, 1, 2)
+= done 1
+> INSERT INTO tx VALUES (11, 3, 1)
+! FOREIGN_KEY 0 foreign key `tx_orig_fkey`: this row of `tx` references a row of `mem` that is not there
+> INSERT INTO tx VALUES (12, NULL, 99)
+= done 1
+begin write
+> INSERT INTO tx VALUES (13, 9, 1)
+! FOREIGN_KEY 0 foreign key `tx_orig_fkey`
+> INSERT INTO tx VALUES (13, 2, 1)
+= done 1
+rollback
+> SELECT count(*) FROM tx
+= 2
+> UPDATE tx SET orig = 5 WHERE id = 10
+! FOREIGN_KEY 0 references a row of `mem` that is not there
+> UPDATE tx SET orig = 2 WHERE id = 10
+= done 1
+> DELETE FROM mem WHERE member_id = 2
+! FOREIGN_KEY 0 foreign key `tx_orig_fkey`: 1 row of `tx` still references this row of `mem`
+> UPDATE mem SET member_id = 7 WHERE member_id = 2
+! FOREIGN_KEY 0 still references this row of `mem`
+> UPDATE mem SET name = 'b2' WHERE member_id = 2
+= done 1
+> DELETE FROM mem WHERE member_id = 1
+= done 1
+> CREATE TABLE pc (a INTEGER, b TEXT, PRIMARY KEY (a, b))
+= done 0
+> INSERT INTO pc VALUES (1, 'x')
+= done 1
+> CREATE TABLE cc (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, FOREIGN KEY (a, b) REFERENCES pc)
+= done 0
+> INSERT INTO cc VALUES (1, 1, 'x')
+= done 1
+> INSERT INTO cc VALUES (2, 1, 'y')
+! FOREIGN_KEY 0 foreign key `cc_a_b_fkey`
+> INSERT INTO cc VALUES (3, 1, NULL)
+= done 1
+> CREATE TABLE bad1 (x TEXT REFERENCES mem)
+! SCHEMA 27 cannot reference `mem`: `bad1.x` is string and `mem.member_id` is integer
+> CREATE TABLE bad2 (x INTEGER REFERENCES mem (name))
+! SCHEMA 30 the primary key of `mem` is not (name)
+> CREATE TABLE bad3 (x INTEGER REFERENCES nope)
+! NOT_FOUND 30 there is no table `nope`
+> CREATE TABLE bad4 (x INTEGER, y INTEGER, FOREIGN KEY (x, y) REFERENCES mem)
+! SCHEMA 42 names 2 columns, and references 1
+> CREATE TABLE bad5 (x INTEGER, CONSTRAINT destination FOREIGN KEY (x) REFERENCES mem)
+! EXISTS 31 there is already a constraint destination
+> SELECT * FROM bad1
+! NOT_FOUND 1 there is no table `bad1`
+begin write
+> CREATE TABLE bad6 (x INTEGER REFERENCES nope)
+! NOT_FOUND 30 there is no table `nope`
+> SELECT * FROM bad6
+! NOT_FOUND 1 there is no table `bad6`
+> CREATE TABLE ok6 (x INTEGER REFERENCES mem)
+= done 0
+rollback
+> CREATE TABLE lone (id INTEGER PRIMARY KEY, m INTEGER)
+= done 0
+> INSERT INTO lone VALUES (1, 2), (2, 42)
+= done 2
+> ALTER TABLE lone ADD CONSTRAINT lone_m FOREIGN KEY (m) REFERENCES mem
+! FOREIGN_KEY 22 1 row of `lone` references no row of `mem`; fix them, or declare it NOT ENFORCED
+> DELETE FROM lone WHERE id = 2
+= done 1
+> ALTER TABLE lone ADD CONSTRAINT lone_m FOREIGN KEY (m) REFERENCES mem
+= done 0
+> ALTER TABLE lone DROP CONSTRAINT lone_m
+= done 0
+> ALTER TABLE lone DROP CONSTRAINT lone_m
+! NOT_FOUND 1 there is no constraint lone_m
+> ALTER TABLE lone DROP CONSTRAINT tx_orig_fkey
+! NOT_FOUND 1 table lone has no constraint tx_orig_fkey
+> CREATE TABLE emp (id INTEGER PRIMARY KEY, boss INTEGER REFERENCES emp)
+= done 0
+> INSERT INTO emp VALUES (1, NULL)
+= done 1
+> INSERT INTO emp VALUES (2, 1)
+= done 1
+> INSERT INTO emp VALUES (3, 3)
+! FOREIGN_KEY 0 foreign key `emp_boss_fkey`
+> DELETE FROM emp WHERE id = 1
+! FOREIGN_KEY 0 1 row of `emp` still references this row of `emp`
+> DROP TABLE mem
+= done 0
+> INSERT INTO tx VALUES (20, 99, NULL)
+= done 1
+> CREATE TABLE mem_new (member_id INTEGER PRIMARY KEY, name TEXT)
+= done 0
+> INSERT INTO mem_new VALUES (2, 'bob')
+= done 1
+> ALTER TABLE mem_new RENAME TO mem
+= done 0
+> INSERT INTO tx VALUES (21, 98, NULL)
+! FOREIGN_KEY 0 foreign key `tx_orig_fkey`
+> ALTER TABLE tx RENAME TO tx2
+= done 0
+> INSERT INTO tx2 VALUES (22, 97, NULL)
+! FOREIGN_KEY 0 this row of `tx2` references a row of `mem`
+> DROP TABLE tx2
+= done 0
+> CREATE TABLE tx (id INTEGER PRIMARY KEY)
+= done 0
+> ALTER TABLE tx DROP CONSTRAINT tx_orig_fkey
+! NOT_FOUND 1 there is no constraint tx_orig_fkey
+
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
 = done 0
