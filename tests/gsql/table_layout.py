@@ -159,9 +159,24 @@ for k, v in entries:
     check(rowkey in keys, "an entry's tail is a row key that is there")
 check(owners == ["Bob", "Ada", "Ada"], "the index orders owners descending: %r" % owners)
 
+# A view (docs/gsql_view_design.md §3): `\0view` maps its name to one v3
+# record, { format, text, declared, columns, ok }.
+VIEWS = b"\0view"
+views = dict(trees.get(VIEWS, []))
+check(list(views) == [b"owners"], "the view tree holds one view, owners: %r" % list(views))
+try:
+    vrec = value(views[b"owners"]) if b"owners" in views else None
+except Exception as e:  # noqa: BLE001
+    vrec = None
+    check(False, "the view's record does not decode: %s" % e)
+if vrec:
+    check(vrec == ("record", {"format": ex(1), "text": s("SELECT owner FROM accounts"), "declared": ("array", []),
+                              "columns": ("array", [s("owner")]), "ok": ("bool", True)}),
+          "the view's record is the design's: %r" % (vrec,))
+
 # Nothing else: no stray tree.
-check(set(trees) <= {CATALOG, META, tree(b"r", 1), tree(b"i", 2)},
-      "no tree beyond the four: %r" % sorted(trees))
+check(set(trees) <= {CATALOG, META, VIEWS, tree(b"r", 1), tree(b"i", 2)},
+      "no tree beyond the five: %r" % sorted(trees))
 
 print("ok %d checks" % checks if not problems else "FAILED %d of %d checks" % (len(problems), checks))
 sys.exit(1 if problems else 0)

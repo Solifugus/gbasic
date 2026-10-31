@@ -117,6 +117,20 @@ else
     fail "stderr holds $total warnings where $expect were expected"
 fi
 
+# the view the fixture made survives its program: a second one, a new owner
+# over the same file, reads it (docs/gsql_view_design.md §4)
+cat > "$work/warn/reopen.bas" <<'GB'
+load gsql
+db = gsql.connect(env("GSQL_DIR") + "/w.gsql")
+print string(gsql.query(db, "select v from seen")[0].v)
+GB
+reopen=$(GSQL_DIR="$work/warn" timeout -k 5 60 ./gbasic "$work/warn/reopen.bas" 2>&1)
+if [ "$reopen" = 10 ]; then
+    pass "a view survives its program, read by the next one through a new owner"
+else
+    fail "a reopened database did not read its view: $reopen"
+fi
+
 printf 'TIER lost: the owner is killed under a program that is using it\n'
 mkdir -p "$work/lost"
 GSQL_PHASE=lost GSQL_DIR="$work/lost" timeout -k 5 60 ./gbasic "$FIXTURE" >"$work/lost.out" 2>"$work/lost.err" &

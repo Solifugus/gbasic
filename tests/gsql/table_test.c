@@ -19,6 +19,7 @@
 #include "gsql_store.h"
 #include "gsql_table.h"
 #include "serialize_tags.h"
+#include "../../src/gsql/v3.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -1204,6 +1205,22 @@ static int layout_run(const char *dir) {
     Val id11 = v_int(11);
     GsqlIn r3[4] = {{1, id11.b, id11.n}, {1, ada.b, ada.n}, {1, nothing.b, nothing.n}, {0, NULL, 0}};
     rc |= gsql_row_insert(E, t, tb, r3, NULL, &er);
+    /* a view, as docs/gsql_view_design.md §3 says the SQL layer stores one */
+    GsqlBuf vr = {0};
+    v3_w_record(&vr, 5);
+    v3_w_name(&vr, "format");
+    v3_w_int(&vr, 1);
+    v3_w_name(&vr, "text");
+    v3_w_text(&vr, "SELECT owner FROM accounts");
+    v3_w_name(&vr, "declared");
+    v3_w_array(&vr, 0);
+    v3_w_name(&vr, "columns");
+    v3_w_array(&vr, 1);
+    v3_w_text(&vr, "owner");
+    v3_w_name(&vr, "ok");
+    v3_w_bool(&vr, 1);
+    rc |= gsql_view_put(E, t, "owners", vr.bytes, vr.length, 0, &er);
+    gsql_buf_free(&vr);
     if (rc) {
         printf("MISMATCH building the layout database answered %s: %s\n", gsql_code_name(er.code), er.message);
         return 1;

@@ -103,5 +103,26 @@ function batches()
 end function
 check("a warning from the rows reaches the loop", batches(), 2112)
 
+' a change under a view (docs/gsql_view_design.md §3): warned at the statement
+' that made it; under `on warning stop` inside a transaction, an error before
+' the commit, so the drop is rolled back and the view still runs
+gsql.exec(db, "create table base (id integer primary key, v integer)")
+gsql.exec(db, "insert into base values (1, 10)")
+gsql.exec(db, "create view seen as select v from base")
+function careful()
+    on error goto next
+    on warning stop
+    gsql.begin(db)
+    gsql.exec(db, "drop table base")
+    if error then
+        gsql.rollback(db)
+        return error.code
+    end if
+    gsql.commit(db)
+    return 0
+end function
+check("a drop that breaks a view is an error under stop", careful(), 2118)
+check("and rolled back, the view still runs", gsql.query(db, "select v from seen")[0].v, 10)
+
 gsql.close(db)
 print "ok " + string(checks.n) + " checks, " + string(checks.bad) + " mismatches"
