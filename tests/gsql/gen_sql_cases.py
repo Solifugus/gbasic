@@ -411,6 +411,10 @@ stmt("SELECT name FROM cu WHERE id NOT IN (SELECT cust FROM od WHERE cust IS NOT
 # no rows is false, even for NULL on the left; NULL against rows is unknown
 stmt("SELECT NULL IN (SELECT id FROM od WHERE id > 99), 13 NOT IN (SELECT id FROM od WHERE id > 99), NULL IN (SELECT id FROM od)",
      "= FALSE, TRUE, NULL")
+# seen where unknown is not dropped: the select list
+stmt("SELECT 3 NOT IN (SELECT cust FROM od), 1 NOT IN (SELECT cust FROM od), 3 IN (SELECT cust FROM od)", "= NULL, FALSE, NULL")
+stmt("SELECT id, id NOT IN (SELECT cust FROM od WHERE od.id >= cu.id + 9) FROM cu ORDER BY id",
+     "= 1, FALSE | 2, FALSE | 3, NULL | 4, NULL")
 stmt("SELECT 1 FROM cu WHERE name IN (SELECT cust FROM od)", ("EXPRESSION", "IN", "= compares text with a number"))
 stmt("SELECT id FROM od WHERE total IN (SELECT amt FROM rf WHERE rf.od = od.id)", "= 11")
 stmt("SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id) ORDER BY id", "= 'ann' | 'bob'")
@@ -430,6 +434,10 @@ stmt("SELECT cu.name, od.id FROM cu JOIN od ON od.cust = cu.id AND od.id = (SELE
 # an outer row null-extended by a LEFT join reads NULL
 stmt("SELECT cu.name, (SELECT count(*) FROM rf WHERE rf.od = od.id) FROM cu LEFT JOIN od ON od.cust = cu.id ORDER BY cu.id, od.id",
      "= 'ann', 0 | 'ann', 1 | 'bob', 0 | 'cy', 0 | 'dee', 0")
+# a WHERE conjunct whose subquery reads the second table is checked at that table
+stmt("SELECT cu.name, od.id FROM cu JOIN od ON od.cust = cu.id WHERE EXISTS (SELECT 1 FROM rf WHERE rf.od = od.id)", "= 'ann', 11")
+# a subquery reading the table's own row is no bound for that table's path
+stmt("SELECT id FROM od WHERE id = (SELECT max(o2.id) FROM od o2 WHERE o2.cust = od.cust)", "= 11 | 12 | 14")
 stmt("SELECT name FROM cu ORDER BY (SELECT count(*) FROM od WHERE od.cust = cu.id) DESC, id", "= 'ann' | 'bob' | 'cy' | 'dee'")
 stmt("SELECT cust, count(*) FROM od GROUP BY cust HAVING count(*) > (SELECT count(*) FROM rf) ORDER BY cust", "= 1, 2")
 # a grouped query reaches a grouped column through its subqueries, even two deep

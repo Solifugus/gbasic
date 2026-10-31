@@ -589,6 +589,10 @@ commit
 = 'cy' | 'dee'
 > SELECT NULL IN (SELECT id FROM od WHERE id > 99), 13 NOT IN (SELECT id FROM od WHERE id > 99), NULL IN (SELECT id FROM od)
 = FALSE, TRUE, NULL
+> SELECT 3 NOT IN (SELECT cust FROM od), 1 NOT IN (SELECT cust FROM od), 3 IN (SELECT cust FROM od)
+= NULL, FALSE, NULL
+> SELECT id, id NOT IN (SELECT cust FROM od WHERE od.id >= cu.id + 9) FROM cu ORDER BY id
+= 1, FALSE | 2, FALSE | 3, NULL | 4, NULL
 > SELECT 1 FROM cu WHERE name IN (SELECT cust FROM od)
 ! EXPRESSION 29 = compares text with a number
 > SELECT id FROM od WHERE total IN (SELECT amt FROM rf WHERE rf.od = od.id)
@@ -615,6 +619,10 @@ commit
 = 'ann', 11 | 'bob', 12
 > SELECT cu.name, (SELECT count(*) FROM rf WHERE rf.od = od.id) FROM cu LEFT JOIN od ON od.cust = cu.id ORDER BY cu.id, od.id
 = 'ann', 0 | 'ann', 1 | 'bob', 0 | 'cy', 0 | 'dee', 0
+> SELECT cu.name, od.id FROM cu JOIN od ON od.cust = cu.id WHERE EXISTS (SELECT 1 FROM rf WHERE rf.od = od.id)
+= 'ann', 11
+> SELECT id FROM od WHERE id = (SELECT max(o2.id) FROM od o2 WHERE o2.cust = od.cust)
+= 11 | 12 | 14
 > SELECT name FROM cu ORDER BY (SELECT count(*) FROM od WHERE od.cust = cu.id) DESC, id
 = 'ann' | 'bob' | 'cy' | 'dee'
 > SELECT cust, count(*) FROM od GROUP BY cust HAVING count(*) > (SELECT count(*) FROM rf) ORDER BY cust
