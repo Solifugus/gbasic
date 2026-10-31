@@ -98,6 +98,6 @@ The executor's state for one execution gains a pointer to its parent, and a subq
   - Caching a correlated answer was first perturbed on the write side only. That made no visible difference, and only valgrind saw the leak. Perturbed on both sides, it reddens six cases.
 - **Who caught what:** the hand-written cases caught every perturbation. The random tier also caught two of them: `IN` ignoring an unknown comparison, and a correlated answer cached (72 to 89 mismatches a seed). The rest are rules the random tier's three forms do not reach, which is why each has a case.
 
-## 9. Next: `FROM` subqueries and `WITH`
+## 9. Next: `FROM` subqueries and `WITH` (built: `gsql_derived_design.md`)
 
 A subquery in `FROM`, and a `WITH` name, is a **derived table**: a scan whose rows come from a plan rather than from storage. Its columns are the plan's output names and kinds. It is materialized once per execution, or per outer row for `LATERAL`, which will not be in that increment. Its rows are read by position rather than through a table's row layout. Only the scan's row source differs from a table's. That increment gets its own design.
