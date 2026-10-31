@@ -1,6 +1,6 @@
 # G-SQL views (Phase 2): a proposal
 
-**Status:** proposed 2026-11-01, **not built, awaiting Matthew's ruling.** Views are the first Phase 2 item that writes something new into the database file, and `gsql_design.md` §10I asks for a review before a storage format or a grammar is committed. §8 asks for "explicit dependency and version invalidation semantics", which are decisions a reader of the database will live with. Two questions need a ruling (§3). Everything else follows from the increment just built (`gsql_derived_design.md`).
+**Status:** Proposal, written 2026-11-01. **Not built, awaiting Matthew's ruling.** Views are the first Phase 2 item that writes something new into the database file, and `gsql_design.md` §10I asks for a review before a storage format or a grammar is committed. §8 asks for "explicit dependency and version invalidation semantics", which are decisions a reader of the database will live with. Two questions need a ruling (§3). Everything else follows from the increment just built (`gsql_derived_design.md`).
 
 ## 1. What it would be
 
