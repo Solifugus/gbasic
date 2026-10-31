@@ -864,6 +864,150 @@ static int grouping_oracle(int n, int *grouped_seen) {
     return refused;
 }
 
+/* ---- the join tiers (docs/gsql_join_design.md §5) -----------------------
+ *
+ * A second table q, whose column names differ from r's so a bare name in
+ * the generated predicates belongs to r. Each join runs with access paths
+ * (so q is sought for each row of r) and forced to scans, which must agree;
+ * and the same join is computed here from r and q fetched alone, matched
+ * pairwise with the host's `=` and null-extended by hand. */
+
+static int join_tables(void) {
+    static const char *const schema[] = {
+        "CREATE TABLE q (qid INTEGER PRIMARY KEY, k INTEGER, t TEXT, v NUMBER)",
+        "CREATE INDEX q_k ON q (k)",
+        "CREATE INDEX q_t ON q (t)",
+        NULL
+    };
+    for (int k = 0; schema[k]; k++) {
+        Answer a;
+        run(schema[k], NULL, 10, &a);
+        if (a.code != GSQL_OK) {
+            fprintf(stderr, "%s: %s\n", schema[k], a.err.message);
+            return 0;
+        }
+        answer_free(&a);
+    }
+    static const char *const ks[] = { "0", "1", "2", "3", "5", "8", "-1", "NULL" };
+    static const char *const ts[] = { "''", "'a'", "'ab'", "'b'", "'z'", "NULL" };
+    static const char *const vs[] = { "0", "1.5", "2", "-7", "NULL" };
+    int inserted = 0;
+    for (int id = 1; id <= 120; id++) {
+        char q[512];
+        snprintf(q, sizeof q, "INSERT INTO q VALUES (%d, %s, %s, %s)", id, ks[pick(8)], ts[pick(6)], vs[pick(5)]);
+        Answer a;
+        run(q, NULL, 10, &a);
+        inserted += a.code == GSQL_OK;
+        answer_free(&a);
+    }
+    return inserted;
+}
+
+/* rows [id, key] of r and [qid, key, v] of q, both sorted by id: the join */
+static void oracle_join(const GsqlBuf *rr, const GsqlBuf *qq, int left, GsqlBuf *o) {
+    static GsBytes ri[4096], qi[4096];
+    long nr = v3_array_items(rr->bytes, rr->length, ri, 4096);
+    long nq = v3_array_items(qq->bytes, qq->length, qi, 4096);
+    size_t nrows = 0;
+    for (long a = 0; a < nr; a++) {
+        GsBytes rc[2];
+        v3_array_items(ri[a].p, ri[a].n, rc, 2);
+        GsqlHv *rk = hload(rc[1].p, rc[1].n);
+        int matched = 0;
+        for (long b = 0; b < nq; b++) {
+            GsBytes qc[3];
+            v3_array_items(qi[b].p, qi[b].n, qc, 3);
+            GsqlHv *qk = hload(qc[1].p, qc[1].n);
+            GsqlError err = { GSQL_OK, "", 0 };
+            GsqlHv *eq = H->op(H->ctx, GSQL_HOP_EQ, qk, rk, &err);
+            int t = eq ? H->truth(H->ctx, eq) : 0;
+            if (eq) {
+                H->release(H->ctx, eq);
+            }
+            H->release(H->ctx, qk);
+            if (t != 1) {
+                continue;
+            }
+            matched = 1;
+            if (nrows++) {
+                v3_put(o, " | ", 3);
+            }
+            render(o, rc[0].p, rc[0].n);
+            v3_put(o, ", ", 2);
+            render(o, qc[0].p, qc[0].n);
+            v3_put(o, ", ", 2);
+            render(o, qc[2].p, qc[2].n);
+        }
+        if (left && !matched) {
+            if (nrows++) {
+                v3_put(o, " | ", 3);
+            }
+            render(o, rc[0].p, rc[0].n);
+            v3_put(o, ", NULL, NULL", 12);
+        }
+        H->release(H->ctx, rk);
+    }
+    if (nrows == 0) {
+        v3_put(o, "(none)", 6);
+    }
+}
+
+static int join_tiers(int n, int *seek_runs, int *joined_seen) {
+    H = gb_gsql_host();
+    int refused = 0;
+    for (int k = 0; k < n; k++) {
+        char where[1024], q[2048];
+        predicate(where, sizeof where);
+        int left = pick(2);
+        int bytext = pick(2);
+        const char *rkey = bytext ? "b" : "a", *qkey = bytext ? "t" : "k";
+        /* the differential: a richer ON, and sometimes a WHERE on q, which a
+           LEFT join must not use to narrow q */
+        const char *extra_on = pick(3) == 0 ? " AND q.v > 0" : "";
+        const char *extra_where = pick(3) == 0 ? " AND q.v IS NOT NULL" : "";
+        snprintf(q, sizeof q, "SELECT r.id, q.qid, q.v FROM r %sJOIN q ON q.%s = r.%s%s WHERE %s%s ORDER BY r.id, q.qid",
+                 left ? "LEFT " : "", qkey, rkey, extra_on, where, extra_where);
+        refused += both_ways(q, seek_runs);
+        /* the oracle: the plain equality join, with the predicate on r alone */
+        char jq[2048], rq[2048], qq[256];
+        snprintf(jq, sizeof jq, "SELECT r.id, q.qid, q.v FROM r %sJOIN q ON q.%s = r.%s WHERE %s ORDER BY r.id, q.qid",
+                 left ? "LEFT " : "", qkey, rkey, where);
+        snprintf(rq, sizeof rq, "SELECT id, %s FROM r WHERE %s ORDER BY id", rkey, where);
+        snprintf(qq, sizeof qq, "SELECT qid, %s, v FROM q ORDER BY qid", qkey);
+        Answer x, ra, qa;
+        gsql_sql_force_scan(sql, pick(2));
+        run(jq, NULL, 100000, &x);
+        run(rq, NULL, 100000, &ra);
+        gsql_sql_force_scan(sql, 0);
+        run(qq, NULL, 100000, &qa);
+        checks++;
+        if (x.code != ra.code) {
+            mismatches++;
+            printf("MISMATCH %s\n  joined: %s %s\n  r alone: %s %s\n", jq, gsql_error_name(x.code), x.err.message,
+                   gsql_error_name(ra.code), ra.err.message);
+        } else if (x.code == GSQL_OK) {
+            GsqlBuf want = {0};
+            oracle_join(&ra.raw, &qa.raw, left, &want);
+            v3_put(&want, "", 1);
+            GsqlBuf got = {0};
+            v3_put(&got, x.text.bytes, x.text.length);
+            v3_put(&got, "", 1);
+            if (strcmp((char *)got.bytes, (char *)want.bytes) != 0) {
+                mismatches++;
+                printf("MISMATCH %s\n  engine: %s\n  oracle: %s\n", jq, (char *)got.bytes, (char *)want.bytes);
+            } else if (strcmp((char *)got.bytes, "(none)") != 0) {
+                (*joined_seen)++;
+            }
+            gsql_buf_free(&want);
+            gsql_buf_free(&got);
+        }
+        answer_free(&x);
+        answer_free(&ra);
+        answer_free(&qa);
+    }
+    return refused;
+}
+
 static int differential(const char *dir, uint64_t seed, int n) {
     if (!open_db(dir)) {
         return 2;
@@ -967,6 +1111,12 @@ static int differential(const char *dir, uint64_t seed, int n) {
     }
     int grouped_seen = 0;
     int grouped_refused = grouping_oracle(n / 2, &grouped_seen);
+    int q_rows = join_tables();
+    int join_seeks = 0, joined_seen = 0;
+    unsigned long js0, jc0, js1, jc1;
+    gsql_sql_counts(sql, &js0, &jc0);
+    int join_refused = join_tiers(n / 2, &join_seeks, &joined_seen);
+    gsql_sql_counts(sql, &js1, &jc1);
     unsigned long seeks, scans;
     gsql_sql_counts(sql, &seeks, &scans);
     printf("census: %d rows, %d queries, %d used a seek, %d refused, %d refused only by the scan\n", inserted, n,
@@ -976,6 +1126,14 @@ static int differential(const char *dir, uint64_t seed, int n) {
     if (grouped_seen < n / 6) {
         mismatches++;
         printf("MISMATCH the grouping oracle compared too few answers with groups in them\n");
+    }
+    printf("census: %d rows of q, %d joins both ways, %d of them sought, %lu seeks in all, %d answered by the "
+           "oracle with rows, %d refused\n", q_rows, n / 2, join_seeks, js1 - js0, joined_seen, join_refused);
+    /* the inner side must really have been sought, row by row: one seek per
+       outer row, so far more seeks than queries */
+    if (q_rows < 100 || join_seeks < n / 8 || js1 - js0 < (unsigned long)n || joined_seen < n / 6) {
+        mismatches++;
+        printf("MISMATCH the join census is below its floor: the tiers measured too little\n");
     }
     /* a floor on what the tier exercised: a planner that never seeks, or a
      * generator that is refused every time, agrees with the scan perfectly */
