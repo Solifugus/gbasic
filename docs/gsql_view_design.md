@@ -1,6 +1,6 @@
 # G-SQL views (Phase 2)
 
-**Status:** Decided 2026-11-01 (Matthew), not yet built. Views are the first Phase 2 item that writes something new into the database file. `gsql_design.md` §10I asks for a review before a storage format is committed, and §8 asks for "explicit dependency and version invalidation semantics". Both are settled in §3. They depend on two increments that come first: warnings carried to the program (`gsql_warning_design.md`) and `ALTER TABLE ... RENAME TO`.
+**Status:** Decided 2026-11-01 (Matthew), and built the same day (`gsql_view_*` in `src/gsql/table.c`, `open_view` in `src/gsql/sql_plan.c`, `recheck_views` in `src/gsql/sql_exec.c`; `tests/run_gsql_sql.sh`, `run_gsql_module.sh`, `run_gsql_table.sh`). Views are the first Phase 2 item that writes something new into the database file. `gsql_design.md` §10I asks for a review before a storage format is committed, and §8 asks for "explicit dependency and version invalidation semantics". Both are settled in §3. They depend on two increments that come first: warnings carried to the program (`gsql_warning_design.md`) and `ALTER TABLE ... RENAME TO`.
 
 ## 1. What it would be
 
@@ -69,3 +69,18 @@ Matthew, 2026-11-01. Views that fail long after something changed under them are
 - **a reopen tier:** views survive closing and reopening the database, through the owner.
 - **the independent layout reader** (`tests/gsql/table_layout.py`) gains a view, so the stored record is checked from the design's text, not only by our own reader.
 - **the derived tier:** it carries over unchanged, since a view is a derived table at use.
+
+## 5. What building it found
+
+- **The stored text must be printed before planning binds the query.** The first version printed the query when writing the record, after `CREATE VIEW` had planned it, so its names had become positions (`#0`). Every view failed with "unexpected character `#`". The parser prints the canonical text as it reads the statement.
+- **Two broken views, one through the other, said one sentence.** When `DROP TABLE vo` broke `spend` and so `big`, the second's refusal was the first's, word for word, and the once-per-statement rule kept one line. So `big` was never mentioned. A re-check names the view it checked first: ``view `big` cannot run: view `spend` cannot run: there is no table `vo` ``.
+- **The independent layout reader** decodes a stored view from this document's §3. It is written by the table-layer test, which runs without the SQL layer, so it checks the tree and the record's shape, not the SQL layer's own writer. The SQL layer's record is checked by every view in the semantics corpus reading back correctly.
+- **Eight perturbations, all red:**
+  - no re-check after a change;
+  - a broken view warned again;
+  - the checked view not named;
+  - the cycle guard removed, where the depth limit is the backstop that catches it;
+  - a column change unseen;
+  - a view written to;
+  - a table allowed a view's name;
+  - the check's result not stored.
