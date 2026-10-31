@@ -31,7 +31,7 @@ alter table share_transactions drop constraint destination_member;
 Following the standard's `MATCH SIMPLE`: **a child row with any `NULL` in a foreign key's columns references nothing,** and is not checked.
 
 - **An `INSERT` into a child table,** and an `UPDATE` changing a foreign key's columns: each new row must find its parent by one read of the parent's primary key. Otherwise the statement is refused with **`FOREIGN_KEY`**, naming the constraint and both tables. It is checked before the row is written, as `UNIQUE` is, so a refusal of a statement's first row leaves an explicit transaction usable. One on a later row of a multi-row `INSERT` is part way, as a duplicate there is.
-- **A `DELETE` from a parent table,** and an `UPDATE` changing a referenced key: no child row may still reference the old key. Otherwise the statement is refused, naming the constraint and the child table. The child is read through an index that leads with the foreign key's columns if there is one, and is scanned otherwise. **The cost is stated:** deleting many parent rows from a large child table with no such index is a scan per row, as it is in PostgreSQL, which advises the same index.
+- **A `DELETE` from a parent table,** and an `UPDATE` changing a referenced key: no child row may still reference the old key. Otherwise the statement is refused, naming the constraint and the child table. The child is **scanned** for a referencing row. **The cost is stated:** deleting many parent rows from a large child table is a scan per row. Using an index that leads with the foreign key's columns, the remedy PostgreSQL advises, is left for a workload that measures the need.
 - **A row may not reference a row the same statement writes.** Checks run before the statement writes, so a self-referencing row inserted together with its parent is refused. Write the parent first.
 - **`ALTER TABLE ... ADD ... FOREIGN KEY` checks the rows already there,** and is refused, saying how many reference nothing, unless it is `NOT ENFORCED`.
 
@@ -78,3 +78,18 @@ Matthew's rule for views (`gsql_view_design.md` §3) is that a change is never b
   - the stored state makes a second drop silent;
   - through the real owner, `on warning stop` rolls a drop back.
 - **the code:** `FOREIGN_KEY` reaches a program as `error.details.code`.
+
+## 6. What building it found
+
+- **A `CREATE TABLE` refused for its foreign key was "part way".** The table and its indexes were made before its keys were checked. That is harmless in autocommit, which aborts, but inside `begin` it failed the whole transaction over a declaration. A refused key now undoes its table, its indexes and the keys made before it. The statement is refused cleanly, and a case asserts the transaction carries on.
+- **The undo needed a case of its own.** A perturbation skipping it would have been invisible until a case read the refused table back inside the transaction.
+- **Nine perturbations, all red:**
+  - an insert unchecked;
+  - a parent delete unchecked;
+  - `NULL` treated as a value;
+  - `NOT ENFORCED` checked;
+  - orphans not counted when a key is added;
+  - the bound state not stored;
+  - a rename not carrying the keys;
+  - a refused declaration not undone;
+  - the kinds unchecked.

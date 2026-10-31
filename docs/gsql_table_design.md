@@ -24,6 +24,8 @@ Every tree the layer creates begins with a NUL byte, so no table name can collid
 | `\0r` + `be64(table id)` | the row key (§4) | the row (§5) |
 | `\0i` + `be64(index id)` | an index entry (§6) | the row key, or nothing |
 | `\0meta` | `"next"` | `le64(next id)`, shared by tables and indexes |
+| `\0view` | a view's name | its record, the SQL layer's (`gsql_view_design.md` §3) |
+| `\0fkey` | a constraint's name | its record, the SQL layer's (`gsql_fkey_design.md` §4) |
 
 **Trees are named by id, not by table name,** so dropping a table and creating another of the same name cannot meet the first one's leftovers, and a rename later will touch one catalog entry.
 
