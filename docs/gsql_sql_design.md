@@ -12,7 +12,7 @@
 - `EXPLAIN`, which reports the access path and the residual filter;
 - `:name` and `$n` parameters.
 
-**It is not** joins, unions, subqueries, CTEs or views. Those are Phase 2; aggregates, `GROUP BY` and `HAVING` are Phase 2's first increment and are built (`gsql_aggregate_design.md`) (`gsql_design.md` §11). Nor is it the gBASIC surface, the `gsql` module and the `database`/`sql` blocks, which are increment 4.
+**It is not** unions, subqueries, CTEs or views. Those are Phase 2; aggregates, `GROUP BY` and `HAVING` are Phase 2's first increment and joins its second, and both are built (`gsql_aggregate_design.md`, `gsql_join_design.md`) (`gsql_design.md` §11). Nor is it the gBASIC surface, the `gsql` module and the `database`/`sql` blocks, which are increment 4.
 
 ## 2. Where an expression is evaluated: by gBASIC
 

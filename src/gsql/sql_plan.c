@@ -361,9 +361,11 @@ typedef struct {
 } Cand;
 
 static void consider(B *b, SqlScan *sc, Cand *c) {
-    /* a LEFT join's WHERE conditions must not narrow it: they filter after
-       the null-extended row exists (docs/gsql_join_design.md §3) */
-    size_t nn = sc->join == SQL_JOIN_LEFT ? sc->non : sc->nconj;
+    /* every condition here may narrow, a LEFT join's WHERE ones included:
+       a condition a path can use is a plain column compared with a value,
+       which is unknown on a null-extended row, so that row is dropped
+       whether or not the path narrowed (docs/gsql_join_design.md §3) */
+    size_t nn = sc->nconj;
     c->eq = sql_alloc(b->arena, sizeof(SqlExpr *) * (c->ncols ? c->ncols : 1));
     c->consumed = sql_alloc(b->arena, sizeof(int) * (sc->nconj ? sc->nconj : 1));
     c->neq = 0;

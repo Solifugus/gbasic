@@ -1,6 +1,6 @@
 # G-SQL joins (Phase 2, increment 2)
 
-**Status:** designed 2026-10-31. The second increment of `gsql_design.md` §11 Phase 2, after aggregates (`gsql_aggregate_design.md`).
+**Status:** designed and built 2026-10-31 (`src/gsql/sql_parse.c`, `sql_plan.c`, `sql_exec.c`; `tests/run_gsql_sql.sh`). The second increment of `gsql_design.md` §11 Phase 2, after aggregates (`gsql_aggregate_design.md`).
 
 ## 1. What it is
 
@@ -33,7 +33,7 @@ The tables are joined **left to right, in `FROM` order**, by nested loops. For e
 
 **The inner table is read through an access path, and that is what makes the loop affordable.** When table *k* is read, every column of tables before it already has a value, so a condition like `o.customer = c.id` is, from table *k*'s point of view, `column = constant`. The planner therefore chooses table *k*'s path exactly as it chooses one for a single table (`gsql_sql_design.md` §5). It treats columns of earlier tables as constants, and evaluates the bound afresh for each outer row. An index on `orders(customer)` turns the loop into one seek per customer instead of a scan of every order per customer. The single-table rule carries over too: **the seek only narrows, and every condition is still checked on every row.**
 
-**Which conditions may narrow table *k*:** its own `ON` conditions, and, when its join is inner, the `WHERE` conjuncts whose last table is *k*. For a left join, `WHERE` conditions on the right table must not narrow it, because narrowing would remove the row that null-extension then puts back.
+**Which conditions may narrow table *k*:** its own `ON` conditions and the `WHERE` conjuncts whose last table is *k*, for a left join as well as an inner one. The design first said a left join's `WHERE` conditions must not narrow it, on the grounds that narrowing would remove the matching rows and so produce a null-extended row that should not exist. A perturbation that allowed it **stayed green**, and working it through shows why nothing can fail. A condition an access path can use is always a plain column compared with a value (`=`, `<`, `BETWEEN`), and every such comparison is unknown on a null-extended row. So the extra null row is dropped by the very condition that caused it, and the answer is the same either way. The rule protected nothing, so it was removed, which also lets those conditions use an index.
 
 **Where each `WHERE` conjunct is checked:** at the first table by which every table it reads has a row. That is as early as possible for an inner join. For a left join it means after the null-extended row exists, which is what §2 requires.
 
@@ -62,3 +62,14 @@ The planner and executor were written for one table, about 120 places. They are 
 - **semantics:** hand-written answers. They cover an inner join, a left join with unmatched rows, the `ON`-against-`WHERE` pair, a self-join, a three-table join, a cross join, `NULL` join keys matching nothing, ambiguous and unknown names, `*` and `t.*` over a join, and aggregates over a join.
 - **differential:** random two-table joins, both inner and left, on random keys, with random predicates on each side. Each query runs two ways: with access paths (so the inner side seeks per outer row) and forced to scans. The answers must agree. A census floor requires that the inner side really sought.
 - **oracle:** the same joins computed by the test from each table fetched alone, matched pairwise with the host's `=` and null-extended by hand. It shares no join code with the engine.
+
+**What it found.** Built, the census showed about 24,000 inner-side seeks a seed, so the inner side really is sought per outer row; 1,500 joins agreed both ways and about 700 against the oracle with rows. The behaviour-neutral refactor (§4) left the existing differential census identical, seek for seek. **Eleven perturbations, ten red:**
+
+- no null-extended row, and a null row reading the last real row's values: caught by every tier;
+- every join made a left join, and the match flag not reset per outer row: caught by every tier;
+- the match counted only after `WHERE`, and the null row skipping `WHERE`: caught only by the semantics cases;
+- an ambiguous bare name taking the first table, and `ON` allowed to read a later table: caught only by the semantics cases;
+- earlier tables' columns not treated as constants: the answers stay right, and the census floor and the `EXPLAIN` cases catch the lost seeks;
+- every `WHERE` conjunct placed at the last table: the differential tier, through which rows a condition that can refuse is evaluated on.
+
+**The one that stayed green was the design's own rule**, that a left join's `WHERE` must not narrow it. It is removed, and §3 says why it never mattered.

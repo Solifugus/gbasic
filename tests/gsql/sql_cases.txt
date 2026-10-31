@@ -450,6 +450,10 @@ commit
 = 'Nested Loop' | '  Scan on cu' | '  Index Seek on od using od_cust (cust = cu.id)'
 > EXPLAIN SELECT cu.name FROM cu LEFT JOIN od ON od.cust = cu.id WHERE od.note = 'a'
 = 'Nested Loop' | '  Scan on cu' | '  Left: Index Seek on od using od_cust (cust = cu.id)' | '    Filter: (od.note = 'a')'
+> SELECT cu.name, od.id FROM cu LEFT JOIN od ON true WHERE od.cust = 2 ORDER BY cu.id
+= 'ann', 12 | 'bob', 12 | 'cy', 12 | 'dee', 12
+> EXPLAIN SELECT cu.name FROM cu LEFT JOIN od ON true WHERE od.cust = 2
+= 'Nested Loop' | '  Scan on cu' | '  Left: Index Seek on od using od_cust (cust = 2)' | '    Filter: TRUE'
 > EXPLAIN SELECT a.name FROM cu a JOIN cu b ON b.id = a.id + 1
 = 'Nested Loop' | '  Scan on cu AS a' | '  Point Read on cu AS b using the primary key (id = (a.id + 1))'
 

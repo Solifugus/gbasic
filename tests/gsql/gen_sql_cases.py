@@ -311,6 +311,12 @@ stmt("EXPLAIN SELECT cu.name FROM cu JOIN od ON od.cust = cu.id",
      "= 'Nested Loop' | '  Scan on cu' | '  Index Seek on od using od_cust (cust = cu.id)'")
 stmt("EXPLAIN SELECT cu.name FROM cu LEFT JOIN od ON od.cust = cu.id WHERE od.note = 'a'",
      "= 'Nested Loop' | '  Scan on cu' | '  Left: Index Seek on od using od_cust (cust = cu.id)' | '    Filter: (od.note = 'a')'")
+# a LEFT join's WHERE may narrow it: a plain comparison is unknown on the
+# null-extended row, so that row is dropped whether or not the index was used
+stmt("SELECT cu.name, od.id FROM cu LEFT JOIN od ON true WHERE od.cust = 2 ORDER BY cu.id",
+     "= 'ann', 12 | 'bob', 12 | 'cy', 12 | 'dee', 12")
+stmt("EXPLAIN SELECT cu.name FROM cu LEFT JOIN od ON true WHERE od.cust = 2",
+     "= 'Nested Loop' | '  Scan on cu' | '  Left: Index Seek on od using od_cust (cust = 2)' | '    Filter: TRUE'")
 stmt("EXPLAIN SELECT a.name FROM cu a JOIN cu b ON b.id = a.id + 1",
      "= 'Nested Loop' | '  Scan on cu AS a' | '  Point Read on cu AS b using the primary key (id = (a.id + 1))'")
 
