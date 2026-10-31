@@ -662,6 +662,63 @@ commit
 > EXPLAIN SELECT id FROM od WHERE id = (SELECT max(od) FROM rf)
 = 'Point Read on od using the primary key (id = (SubPlan 1))' | 'SubPlan 1, once' | '  Scan on rf' | '    Aggregate: one group'
 
+# ---- derived tables and WITH (docs/gsql_derived_design.md) -----------
+> SELECT cu.name, t.n FROM cu JOIN (SELECT cust, count(*) AS n FROM od GROUP BY cust) t ON t.cust = cu.id ORDER BY cu.id
+= 'ann', 2 | 'bob', 1
+> SELECT d.c, d.k FROM (SELECT cust, count(*) FROM od WHERE cust IS NOT NULL GROUP BY cust) AS d (c, k) ORDER BY d.c
+= 1, 2 | 2, 1 | 9, 1
+> SELECT d.n FROM (SELECT id AS n FROM od) d WHERE d.n > 12 ORDER BY d.n DESC
+= 14 | 13
+> SELECT * FROM (SELECT name FROM cu) d ORDER BY name DESC
+= 'dee' | 'cy' | 'bob' | 'ann'
+> SELECT d.*, cu.name FROM (SELECT id, total FROM od WHERE id = 12) d JOIN cu ON cu.id = 2
+% id:integer, total:money(USD), name:string
+= 12, money 3.00, 'bob'
+> SELECT * FROM (SELECT 1 AS x, 2 AS x) d
+= 1, 2
+> SELECT x FROM (SELECT 1 AS x, 2 AS x) d
+! SYNTAX 8 `d` has two columns called `x`
+> SELECT a, b FROM (SELECT 1 AS x, 2 AS x) d (a, b)
+= 1, 2
+> SELECT * FROM (SELECT 1, 2) d (a)
+! SYNTAX 31 the subquery `d` is given 1 column name, and its query has 2 columns
+> SELECT * FROM cu c (a, b, c)
+! UNSUPPORTED 20 a column list renames a derived table's or WITH query's columns
+> SELECT d.nope FROM (SELECT 1 AS x) d
+! NOT_FOUND 8 derived table d has no column `nope`
+> SELECT d.p.vendor FROM (SELECT p FROM assets) d
+= 'acme' | 'zeta'
+> SELECT g, count(*) FROM (SELECT CASE WHEN total > CAST('4' AS MONEY(USD)) THEN 'big' ELSE 'small' END AS g FROM od) d GROUP BY g ORDER BY g
+= 'big', 3 | 'small', 2
+> SELECT count(*) FROM (SELECT cust FROM od UNION SELECT id FROM cu) u
+= 6
+> SELECT name, (SELECT count(*) FROM (SELECT id FROM od WHERE od.cust = cu.id) d) FROM cu ORDER BY id
+= 'ann', 2 | 'bob', 1 | 'cy', 0 | 'dee', 0
+> WITH c AS (SELECT cust FROM od WHERE cust IS NOT NULL) SELECT count(*) FROM c a JOIN c b ON a.cust = b.cust
+= 6
+> WITH a AS (SELECT id, cust FROM od), b AS (SELECT cust FROM a WHERE id > 11) SELECT cust FROM b ORDER BY cust
+= 2 | 9 | NULL
+> WITH cu AS (SELECT 7 AS id) SELECT id FROM cu
+= 7
+> WITH w (a, b) AS (SELECT 1) SELECT * FROM w
+! SYNTAX 8 WITH query `w` is given 2 column names, and its query has 1 column
+> WITH w (a) AS (SELECT id FROM od WHERE id < 11) SELECT a FROM w
+= 10
+> WITH big AS (SELECT cust FROM od WHERE id < 12) SELECT name FROM cu WHERE id IN (SELECT cust FROM big) ORDER BY id
+= 'ann'
+> SELECT name FROM cu WHERE id IN (WITH m AS (SELECT cust FROM od WHERE total > CAST('4' AS MONEY(USD))) SELECT cust FROM m) ORDER BY id
+= 'ann'
+> WITH w AS (SELECT 1 AS one) SELECT one FROM w UNION SELECT one + 1 FROM w ORDER BY 1
+= 1 | 2
+> SELECT (WITH w AS (SELECT id FROM od WHERE od.cust = cu.id) SELECT count(*) FROM w) FROM cu
+! NOT_FOUND 54 a WITH query reads only tables and earlier WITH queries
+> WITH a AS (SELECT * FROM b), b AS (SELECT 1) SELECT * FROM a
+! NOT_FOUND 12 there is no table `b`
+> EXPLAIN WITH c AS (SELECT cust FROM od) SELECT cu.name FROM cu JOIN c ON c.cust = cu.id
+= 'Nested Loop' | '  Scan on cu' | '  CTE Scan on c' | '    Filter: (c.cust = cu.id)' | 'CTE c' | '  Scan on od'
+> EXPLAIN SELECT n FROM (SELECT id AS n FROM od WHERE id = 12) d
+= 'Derived Scan on d' | 'Derived d' | '  Point Read on od using the primary key (id = 12)'
+
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
 = done 0

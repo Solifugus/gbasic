@@ -467,6 +467,53 @@ stmt("EXPLAIN SELECT id FROM od WHERE id = (SELECT max(od) FROM rf)",
      "= 'Point Read on od using the primary key (id = (SubPlan 1))' | 'SubPlan 1, once' | '  Scan on rf' | "
      "'    Aggregate: one group'")
 
+sec("derived tables and WITH (docs/gsql_derived_design.md)")
+# cu: 1 ann east, 2 bob west, 3 cy east, 4 dee NULL; od (id, cust, total):
+# 10 1 5, 11 1 7, 12 2 3, 13 NULL 9, 14 9 1
+stmt("SELECT cu.name, t.n FROM cu JOIN (SELECT cust, count(*) AS n FROM od GROUP BY cust) t ON t.cust = cu.id ORDER BY cu.id",
+     "= 'ann', 2 | 'bob', 1")
+stmt("SELECT d.c, d.k FROM (SELECT cust, count(*) FROM od WHERE cust IS NOT NULL GROUP BY cust) AS d (c, k) ORDER BY d.c",
+     "= 1, 2 | 2, 1 | 9, 1")
+stmt("SELECT d.n FROM (SELECT id AS n FROM od) d WHERE d.n > 12 ORDER BY d.n DESC", "= 14 | 13")
+stmt("SELECT * FROM (SELECT name FROM cu) d ORDER BY name DESC", "= 'dee' | 'cy' | 'bob' | 'ann'")
+stmt("SELECT d.*, cu.name FROM (SELECT id, total FROM od WHERE id = 12) d JOIN cu ON cu.id = 2",
+     "% id:integer, total:money(USD), name:string", "= 12, money 3.00, 'bob'")
+# two outputs of one name: readable through *, and by name once renamed
+stmt("SELECT * FROM (SELECT 1 AS x, 2 AS x) d", "= 1, 2")
+stmt("SELECT x FROM (SELECT 1 AS x, 2 AS x) d", ("SYNTAX", "x", "`d` has two columns called `x`"))
+stmt("SELECT a, b FROM (SELECT 1 AS x, 2 AS x) d (a, b)", "= 1, 2")
+stmt("SELECT * FROM (SELECT 1, 2) d (a)", ("SYNTAX", "(a)", "the subquery `d` is given 1 column name, and its query has 2 columns"))
+stmt("SELECT * FROM cu c (a, b, c)", ("UNSUPPORTED", "(a, b", "a column list renames a derived table's or WITH query's columns"))
+stmt("SELECT d.nope FROM (SELECT 1 AS x) d", ("NOT_FOUND", "d.nope", "derived table d has no column `nope`"))
+# a record column keeps its fields through a derived table
+stmt("SELECT d.p.vendor FROM (SELECT p FROM assets) d", "= 'acme' | 'zeta'")
+stmt("SELECT g, count(*) FROM (SELECT CASE WHEN total > CAST('4' AS MONEY(USD)) THEN 'big' ELSE 'small' END AS g FROM od) d "
+     "GROUP BY g ORDER BY g", "= 'big', 3 | 'small', 2")
+stmt("SELECT count(*) FROM (SELECT cust FROM od UNION SELECT id FROM cu) u", "= 6")
+# a derived table inside a correlated subquery reads its outer row
+stmt("SELECT name, (SELECT count(*) FROM (SELECT id FROM od WHERE od.cust = cu.id) d) FROM cu ORDER BY id",
+     "= 'ann', 2 | 'bob', 1 | 'cy', 0 | 'dee', 0")
+# a WITH name used twice, one used by a later one, one shadowing a table
+stmt("WITH c AS (SELECT cust FROM od WHERE cust IS NOT NULL) SELECT count(*) FROM c a JOIN c b ON a.cust = b.cust", "= 6")
+stmt("WITH a AS (SELECT id, cust FROM od), b AS (SELECT cust FROM a WHERE id > 11) SELECT cust FROM b ORDER BY cust",
+     "= 2 | 9 | NULL")
+stmt("WITH cu AS (SELECT 7 AS id) SELECT id FROM cu", "= 7")
+stmt("WITH w (a, b) AS (SELECT 1) SELECT * FROM w", ("SYNTAX", "(a, b)", "WITH query `w` is given 2 column names, and its query has 1 column"))
+stmt("WITH w (a) AS (SELECT id FROM od WHERE id < 11) SELECT a FROM w", "= 10")
+stmt("WITH big AS (SELECT cust FROM od WHERE id < 12) SELECT name FROM cu WHERE id IN (SELECT cust FROM big) ORDER BY id",
+     "= 'ann'")
+stmt("SELECT name FROM cu WHERE id IN (WITH m AS (SELECT cust FROM od WHERE total > CAST('4' AS MONEY(USD))) SELECT cust FROM m) "
+     "ORDER BY id", "= 'ann'")
+stmt("WITH w AS (SELECT 1 AS one) SELECT one FROM w UNION SELECT one + 1 FROM w ORDER BY 1", "= 1 | 2")
+# a WITH query reads only tables and earlier WITH queries, never its statement's rows
+stmt("SELECT (WITH w AS (SELECT id FROM od WHERE od.cust = cu.id) SELECT count(*) FROM w) FROM cu",
+     ("NOT_FOUND", "cu.id", "a WITH query reads only tables and earlier WITH queries"))
+stmt("WITH a AS (SELECT * FROM b), b AS (SELECT 1) SELECT * FROM a", ("NOT_FOUND", "SELECT", "there is no table `b`"))
+stmt("EXPLAIN WITH c AS (SELECT cust FROM od) SELECT cu.name FROM cu JOIN c ON c.cust = cu.id",
+     "= 'Nested Loop' | '  Scan on cu' | '  CTE Scan on c' | '    Filter: (c.cust = cu.id)' | 'CTE c' | '  Scan on od'")
+stmt("EXPLAIN SELECT n FROM (SELECT id AS n FROM od WHERE id = 12) d",
+     "= 'Derived Scan on d' | 'Derived d' | '  Point Read on od using the primary key (id = 12)'")
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

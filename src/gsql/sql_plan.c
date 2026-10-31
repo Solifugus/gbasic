@@ -13,6 +13,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The WITH queries in reach, innermost first (docs/gsql_derived_design.md §3) */
+typedef struct CteScope {
+    const SqlCte *defs;
+    SqlPlan **plans;
+    size_t n;                /* how many are planned, and so visible */
+    const struct CteScope *up;
+} CteScope;
+
 typedef struct B B;
 struct B {
     SqlPlan *p;
@@ -38,10 +46,54 @@ struct B {
     int force_scan;
     unsigned *nsubq;
     size_t capsubs;
+    const CteScope *scope;
+    int in_cte;              /* binding a WITH query, which reads no enclosing query */
 };
 
 static int plan_at(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const char *text, int force_scan,
-                   SqlPlan *out, GsqlError *err, B *outer, SqlExpr *subq, unsigned *nsubq);
+                   SqlPlan *out, GsqlError *err, B *outer, SqlExpr *subq, unsigned *nsubq, const CteScope *scope,
+                   int in_cte);
+
+/* ---- a scan's columns: a table's, or a derived table's outputs ---------- */
+
+/* what a refusal calls the scan's source */
+static const char *scan_name(const SqlScan *sc) {
+    return sc->derived ? sc->qualifier : gsql_table_name(sc->tb);
+}
+
+static int has_source(const SqlScan *sc) {
+    return sc->tb || sc->derived;
+}
+
+/* a column by name: its position, -1 none, -2 two outputs of a derived table share it */
+static long scan_find(const SqlScan *sc, const char *name) {
+    if (!sc->derived) {
+        return gsql_table_find(sc->tb, name);
+    }
+    long at = -1;
+    for (size_t c = 0; c < sc->ndcols; c++) {
+        if (strcmp(sc->dnames[c], name) == 0) {
+            if (at >= 0) {
+                return -2;
+            }
+            at = (long)c;
+        }
+    }
+    return at;
+}
+
+/* whether a column may have fields read: a RECORD column, or a derived
+   table's column whose kind is record or not known */
+static int scan_fields_ok(const SqlScan *sc, size_t col) {
+    if (sc->derived) {
+        return strcmp(sc->dkinds[col], "record") == 0 || strcmp(sc->dkinds[col], "any") == 0;
+    }
+    return gsql_table_col(sc->tb, col)->kind == GSQL_COL_RECORD;
+}
+
+static const char *scan_kind_word(const SqlScan *sc, size_t col) {
+    return sc->derived ? sc->dkinds[col] : gsql_kind_name(gsql_table_col(sc->tb, col)->kind);
+}
 
 static int bfail(B *b, uint32_t pos, int code, const char *fmt, ...) {
     if (b->err->code != GSQL_OK) {
@@ -75,7 +127,7 @@ static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where);
  * it names a column's field. */
 static int lookup(B *b, SqlExpr *e, const char *where, int qualified, long *tabp, long *colp, size_t *firstp) {
     SqlPlan *p = b->p;
-    if (!p->nscans || !p->scans[0].tb) {
+    if (!p->nscans || !has_source(&p->scans[0])) {
         return 0;
     }
     size_t vis = b->visible ? b->visible : p->nscans;
@@ -97,10 +149,15 @@ static int lookup(B *b, SqlExpr *e, const char *where, int qualified, long *tabp
     }
     long col = -1;
     if (tab >= 0) {
-        col = gsql_table_find(p->scans[tab].tb, e->parts[1]);
+        col = scan_find(&p->scans[tab], e->parts[1]);
+        if (col == -2) {
+            bfail(b, e->pos, GSQL_SYNTAX, "`%s` has two columns called `%s`: give them different names with AS, or "
+                  "with a column list after `%s`", p->scans[tab].qualifier, e->parts[1], p->scans[tab].qualifier);
+            return -1;
+        }
         if (col < 0) {
-            bfail(b, e->pos, GSQL_NOT_FOUND, "table %s has no column `%s`", gsql_table_name(p->scans[tab].tb),
-                  e->parts[1]);
+            bfail(b, e->pos, GSQL_NOT_FOUND, "%s %s has no column `%s`", p->scans[tab].derived ? "derived table"
+                  : "table", scan_name(&p->scans[tab]), e->parts[1]);
             return -1;
         }
     } else if (qualified) {
@@ -109,7 +166,12 @@ static int lookup(B *b, SqlExpr *e, const char *where, int qualified, long *tabp
         /* a bare name: the one table that has it, or a refusal naming them */
         size_t found = 0;
         for (size_t t = 0; t < vis; t++) {
-            long c = gsql_table_find(p->scans[t].tb, e->parts[0]);
+            long c = scan_find(&p->scans[t], e->parts[0]);
+            if (c == -2) {
+                bfail(b, e->pos, GSQL_SYNTAX, "`%s` has two columns called `%s`: give them different names with AS, "
+                      "or with a column list after `%s`", p->scans[t].qualifier, e->parts[0], p->scans[t].qualifier);
+                return -1;
+            }
             if (c < 0) {
                 continue;
             }
@@ -135,24 +197,26 @@ static int lookup(B *b, SqlExpr *e, const char *where, int qualified, long *tabp
 /* the refusal for a name no query in reach has, said about the innermost */
 static int not_found(B *b, SqlExpr *e) {
     SqlPlan *p = b->p;
-    if (!p->nscans || !p->scans[0].tb) {
-        return bfail(b, e->pos, GSQL_NOT_FOUND, "`%s` names a column, and there is no table here", e->parts[0]);
+    if (!p->nscans || !has_source(&p->scans[0])) {
+        return bfail(b, e->pos, GSQL_NOT_FOUND, "`%s` names a column, and there is no table here%s", e->parts[0],
+                     b->in_cte ? ": a WITH query reads only tables and earlier WITH queries" : "");
     }
     size_t vis = b->visible ? b->visible : p->nscans;
     for (size_t t = 0; t < p->nscans && e->nparts >= 2; t++) {
-        if (strcmp(p->scans[t].qualifier, gsql_table_name(p->scans[t].tb)) != 0 &&
+        if (!p->scans[t].derived && strcmp(p->scans[t].qualifier, gsql_table_name(p->scans[t].tb)) != 0 &&
             strcmp(e->parts[0], gsql_table_name(p->scans[t].tb)) == 0) {
             return bfail(b, e->pos, GSQL_NOT_FOUND,
                          "the table is called `%s` in this statement, so `%s.%s` must be `%s.%s`",
                          p->scans[t].qualifier, e->parts[0], e->parts[1], p->scans[t].qualifier, e->parts[1]);
         }
     }
+    const char *cte = b->in_cte ? ": a WITH query reads only tables and earlier WITH queries" : "";
     if (p->nscans == 1) {
-        return bfail(b, e->pos, GSQL_NOT_FOUND, "table %s has no column `%s`", gsql_table_name(p->scans[0].tb),
-                     e->parts[0]);
+        return bfail(b, e->pos, GSQL_NOT_FOUND, "%s %s has no column `%s`%s", p->scans[0].derived ? "derived table" :
+                     "table", scan_name(&p->scans[0]), e->parts[0], cte);
     }
-    return bfail(b, e->pos, GSQL_NOT_FOUND, "no table %shas a column `%s`",
-                 vis < p->nscans ? "joined so far " : "of this statement ", e->parts[0]);
+    return bfail(b, e->pos, GSQL_NOT_FOUND, "no table %shas a column `%s`%s",
+                 vis < p->nscans ? "joined so far " : "of this statement ", e->parts[0], cte);
 }
 
 static SqlExpr *col_node(B *b, unsigned tab, unsigned col, uint32_t pos);
@@ -185,10 +249,10 @@ static int bind_name(B *b, SqlExpr *e, int cols_allowed, const char *where) {
     if (r == 0) {
         return not_found(b, e);
     }
-    const GsqlColumn *c = gsql_table_col(at->p->scans[tab].tb, (size_t)col);
-    if (e->nparts > first + 1 && c->kind != GSQL_COL_RECORD) {
+    const SqlScan *src = &at->p->scans[tab];
+    if (e->nparts > first + 1 && !scan_fields_ok(src, (size_t)col)) {
         return bfail(b, e->pos, GSQL_TYPE, "column %s is %s, so it has no field `%s`: only a RECORD column has fields",
-                     c->name, gsql_kind_name(c->kind), e->parts[first + 1]);
+                     sql_scan_col_name(src, (size_t)col), scan_kind_word(src, (size_t)col), e->parts[first + 1]);
     }
     e->tab = (unsigned)tab;
     e->col = (unsigned)col;
@@ -206,7 +270,7 @@ static int bind_name(B *b, SqlExpr *e, int cols_allowed, const char *where) {
     e->kind = SX_OUTER;
     e->index = depth;
     e->oqual = at->p->scans[tab].qualifier;
-    e->otb = at->p->scans[tab].tb;
+    e->oscan = &at->p->scans[tab];
     for (B *x = b; x != at; x = x->outer) {
         x->subq->correlated = 1;
     }
@@ -244,7 +308,7 @@ static int bind_subquery(B *b, SqlExpr *e, int cols_allowed, const char *where) 
     }
     SqlPlan *sub = sql_alloc(b->arena, sizeof *sub);
     int agg_ok = b->agg_ok, in_agg = b->in_agg;
-    int rc = plan_at(b->e, b->t, e->sub, b->arena, b->p->text, b->force_scan, sub, b->err, b, e, b->nsubq);
+    int rc = plan_at(b->e, b->t, e->sub, b->arena, b->p->text, b->force_scan, sub, b->err, b, e, b->nsubq, b->scope, 0);
     b->agg_ok = agg_ok;
     b->in_agg = in_agg;
     if (rc != GSQL_OK) {
@@ -666,11 +730,73 @@ static void choose(B *b, size_t k, int force_scan) {
 
 /* ---- statements -------------------------------------------------------- */
 
-/* Opens table `k` of the statement as its scan. */
+/* A derived scan's columns: its plan's outputs, renamed by `cols` */
+static int derived_columns(B *b, SqlScan *sc, const SqlNameList *cols, const char *what, const char *name) {
+    SqlPlan *d = sc->derived;
+    sc->ndcols = d->nout;
+    sc->dkinds = d->kinds;
+    sc->dnames = d->names;
+    if (!cols || !cols->n) {
+        return 1;
+    }
+    if (cols->n != d->nout) {
+        return bfail(b, cols->pos, GSQL_SYNTAX, "%s `%s` is given %zu column name%s, and its query has %zu column%s",
+                     what, name, cols->n, cols->n == 1 ? "" : "s", d->nout, d->nout == 1 ? "" : "s");
+    }
+    sc->dnames = (const char **)cols->cols;
+    return 1;
+}
+
+/* Opens table `k` of the statement as its scan: a derived table, a WITH
+ * query in reach, or a table of the catalog, in that order. */
 static int open_scan(B *b, const GsEngine *e, GsTxn *t, size_t k, const char *table, const char *alias,
-                     uint32_t pos, SqlJoin join) {
+                     uint32_t pos, SqlJoin join, SqlStmt *sub, const SqlNameList *cols) {
     SqlPlan *p = b->p;
     SqlScan *sc = &p->scans[k];
+    sc->join = join;
+    if (sub) {
+        /* bound beside this query, as a compound's sides are: it may read an
+           enclosing query, never the tables before it (no LATERAL) */
+        sc->derived = sql_alloc(b->arena, sizeof(SqlPlan));
+        if (plan_at(e, t, sub, b->arena, p->text, b->force_scan, sc->derived, b->err, b->outer, b->subq, b->nsubq,
+                    b->scope, b->in_cte) != GSQL_OK) {
+            sc->derived = NULL;
+            return 0;
+        }
+        sc->access = ACC_DERIVED;
+        sc->qualifier = alias;
+        if (!derived_columns(b, sc, cols, "the subquery", alias)) {
+            return 0;
+        }
+        goto named;
+    }
+    for (const CteScope *cs = b->scope; cs; cs = cs->up) {
+        for (size_t i = cs->n; i-- > 0;) {
+            if (strcmp(cs->defs[i].name, table) != 0) {
+                continue;
+            }
+            sc->derived = cs->plans[i];
+            sc->cte = cs->defs[i].name;
+            sc->access = ACC_DERIVED;
+            sc->qualifier = alias ? alias : table;
+            if (!derived_columns(b, sc, &cs->defs[i].cols, "WITH query", table)) {
+                return 0;
+            }
+            if (cols && cols->n) {
+                if (cols->n != sc->ndcols) {
+                    return bfail(b, cols->pos, GSQL_SYNTAX, "`%s` is given %zu column name%s, and WITH query `%s` has "
+                                 "%zu column%s", sc->qualifier, cols->n, cols->n == 1 ? "" : "s", table, sc->ndcols,
+                                 sc->ndcols == 1 ? "" : "s");
+                }
+                sc->dnames = (const char **)cols->cols;
+            }
+            goto named;
+        }
+    }
+    if (cols && cols->n) {
+        return bfail(b, cols->pos, GSQL_UNSUPPORTED, "a column list renames a derived table's or WITH query's "
+                     "columns, and `%s` is a table, whose columns keep their names", table);
+    }
     int rc = gsql_table_open(e, t, table, &sc->tb, b->err);
     if (rc != GSQL_OK) {
         sc->tb = NULL;
@@ -684,7 +810,7 @@ static int open_scan(B *b, const GsEngine *e, GsTxn *t, size_t k, const char *ta
         p->tb = sc->tb;
     }
     sc->qualifier = alias ? alias : table;
-    sc->join = join;
+named:
     for (size_t j = 0; j < k; j++) {
         if (strcmp(p->scans[j].qualifier, sc->qualifier) == 0) {
             return bfail(b, pos, GSQL_SYNTAX, "`%s` names two tables of this statement: give one of them another name "
@@ -702,7 +828,7 @@ static void scans_alloc(B *b, size_t n) {
 static int open_table(B *b, const GsEngine *e, GsTxn *t) {
     SqlPlan *p = b->p;
     scans_alloc(b, 1);
-    if (!open_scan(b, e, t, 0, p->s->table, p->s->alias, p->s->pos, SQL_JOIN_FIRST)) {
+    if (!open_scan(b, e, t, 0, p->s->table, p->s->alias, p->s->pos, SQL_JOIN_FIRST, NULL, NULL)) {
         return 0;
     }
     b->qualifier = p->scans[0].qualifier;
@@ -784,7 +910,7 @@ static size_t star_width(B *b, const SqlItem *it) {
     size_t n = 0;
     for (size_t t = 0; t < p->nscans; t++) {
         if (!it->star_table || strcmp(it->star_table, p->scans[t].qualifier) == 0) {
-            n += gsql_table_ncols(p->scans[t].tb);
+            n += sql_scan_ncols(&p->scans[t]);
         }
     }
     return n;
@@ -810,7 +936,7 @@ static int check_grouped(B *b, const SqlExpr *e, char **groups, const char *wher
         return 1;
     }
     if (e->kind == SX_COL) {
-        const char *name = gsql_table_col(b->p->scans[e->tab].tb, e->col)->name;
+        const char *name = sql_scan_col_name(&b->p->scans[e->tab], e->col);
         return bfail(b, e->pos, GSQL_SYNTAX, "%s reads column `%s`, which is neither grouped by nor inside an "
                      "aggregate: add it to GROUP BY, or use it in one, such as max(%s)", where, name, name);
     }
@@ -834,14 +960,15 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
     SqlPlan *p = b->p;
     SqlStmt *s = p->s;
     /* the scans: FROM's tables in order, or one with no table */
-    scans_alloc(b, s->table ? 1 + s->njoins : 1);
-    if (s->table) {
-        if (!open_scan(b, e, t, 0, s->table, s->alias, s->pos, SQL_JOIN_FIRST)) {
+    int from = s->table || s->table_sub;
+    scans_alloc(b, from ? 1 + s->njoins : 1);
+    if (from) {
+        if (!open_scan(b, e, t, 0, s->table, s->alias, s->pos, SQL_JOIN_FIRST, s->table_sub, &s->table_cols)) {
             return 0;
         }
         for (size_t j = 0; j < s->njoins; j++) {
             const SqlFrom *f = &s->joins[j];
-            if (!open_scan(b, e, t, j + 1, f->table, f->alias, f->pos, f->join)) {
+            if (!open_scan(b, e, t, j + 1, f->table, f->alias, f->pos, f->join, f->sub, &f->cols)) {
                 return 0;
             }
         }
@@ -876,7 +1003,7 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
             n++;
             continue;
         }
-        if (!p->tb) {
+        if (!has_source(&p->scans[0])) {
             return bfail(b, s->items[k].pos, GSQL_SYNTAX, "`*` needs a table: there is no FROM");
         }
         size_t w = star_width(b, &s->items[k]);
@@ -897,11 +1024,11 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
                 if (it->star_table && strcmp(it->star_table, p->scans[t].qualifier) != 0) {
                     continue;
                 }
-                GsqlTable *tb = p->scans[t].tb;
-                for (size_t c = 0; c < gsql_table_ncols(tb); c++) {
+                const SqlScan *sc = &p->scans[t];
+                for (size_t c = 0; c < sql_scan_ncols(sc); c++) {
                     p->out[p->nout] = col_node(b, (unsigned)t, (unsigned)c, it->pos);
-                    p->names[p->nout] = gsql_table_col(tb, c)->name;
-                    p->kinds[p->nout] = kind_text(b, gsql_table_col(tb, c));
+                    p->names[p->nout] = sql_scan_col_name(sc, c);
+                    p->kinds[p->nout] = sc->derived ? sc->dkinds[c] : kind_text(b, gsql_table_col(sc->tb, c));
                     p->nout++;
                 }
             }
@@ -919,7 +1046,7 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
             name = it->alias;
         } else if (it->e->kind == SX_COL) {
             name = it->e->nfields ? it->e->fields[it->e->nfields - 1]
-                                  : gsql_table_col(p->scans[it->e->tab].tb, it->e->col)->name;
+                                  : sql_scan_col_name(&p->scans[it->e->tab], it->e->col);
         } else if (it->e->kind == SX_CALL || it->e->kind == SX_AGG) {
             name = it->e->name;
         } else if (it->e->kind == SX_SUBQ && it->e->op == SQL_SUB_SCALAR) {
@@ -931,7 +1058,8 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
             kind = "boolean";
         }
         if (it->e->kind == SX_COL && it->e->nfields == 0) {
-            kind = kind_text(b, gsql_table_col(p->scans[it->e->tab].tb, it->e->col));
+            const SqlScan *sc = &p->scans[it->e->tab];
+            kind = sc->derived ? sc->dkinds[it->e->col] : kind_text(b, gsql_table_col(sc->tb, it->e->col));
         } else if (it->e->kind == SX_AGG && (it->e->op == SQL_AGG_COUNT || it->e->op == SQL_AGG_COUNT_STAR)) {
             kind = "integer";
         }
@@ -1052,7 +1180,7 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
     if (!bind(b, s->limit, 0, "LIMIT") || !bind(b, s->offset, 0, "OFFSET")) {
         return 0;
     }
-    if (!p->tb) {
+    if (!from) {
         /* a WHERE with no table filters the one row; ORDER BY of one row is
            that row */
         SqlScan *sc = &p->scans[0];
@@ -1062,6 +1190,12 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         return 1;
     }
     for (size_t k = 0; k < p->nscans; k++) {
+        SqlScan *sc = &p->scans[k];
+        if (sc->derived) {
+            /* a derived table is read whole: its conditions are all filters */
+            sc->consumed = sql_alloc(b->arena, sizeof(int) * (sc->nconj ? sc->nconj : 1));
+            continue;
+        }
         choose(b, k, force_scan);
     }
     return 1;
@@ -1152,14 +1286,14 @@ static int plan_compound(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
     SqlPlan *p = b->p;
     SqlStmt *s = p->s;
     p->left = sql_alloc(b->arena, sizeof(SqlPlan));
-    if (plan_at(e, t, s->left, b->arena, p->text, force_scan, p->left, b->err, b->outer, b->subq, b->nsubq) !=
-        GSQL_OK) {
+    if (plan_at(e, t, s->left, b->arena, p->text, force_scan, p->left, b->err, b->outer, b->subq, b->nsubq, b->scope,
+                b->in_cte) != GSQL_OK) {
         p->left = NULL;
         return 0;
     }
     p->right = sql_alloc(b->arena, sizeof(SqlPlan));
-    if (plan_at(e, t, s->right, b->arena, p->text, force_scan, p->right, b->err, b->outer, b->subq, b->nsubq) !=
-        GSQL_OK) {
+    if (plan_at(e, t, s->right, b->arena, p->text, force_scan, p->right, b->err, b->outer, b->subq, b->nsubq,
+                b->scope, b->in_cte) != GSQL_OK) {
         p->right = NULL;
         return 0;
     }
@@ -1216,11 +1350,43 @@ static int plan_compound(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
 int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const char *text, int force_scan,
              SqlPlan *out, GsqlError *err) {
     unsigned nsubq = 0;
-    return plan_at(e, t, s, arena, text, force_scan, out, err, NULL, NULL, &nsubq);
+    return plan_at(e, t, s, arena, text, force_scan, out, err, NULL, NULL, &nsubq, NULL, 0);
+}
+
+/* The WITH queries a statement defines, each planned once with no enclosing
+ * query, seeing those before it; then the scope the statement binds in. */
+static int plan_ctes(B *b) {
+    SqlStmt *s = b->p->s;
+    if (!s->nctes) {
+        return 1;
+    }
+    CteScope *cs = sql_alloc(b->arena, sizeof *cs);
+    cs->defs = s->ctes;
+    cs->plans = sql_alloc(b->arena, sizeof(SqlPlan *) * s->nctes);
+    cs->up = b->scope;
+    b->p->ctes = cs->plans;
+    for (size_t k = 0; k < s->nctes; k++) {
+        SqlPlan *q = sql_alloc(b->arena, sizeof *q);
+        if (plan_at(b->e, b->t, s->ctes[k].q, b->arena, b->p->text, b->force_scan, q, b->err, NULL, NULL, b->nsubq,
+                    cs, 1) != GSQL_OK) {
+            return 0;
+        }
+        cs->plans[k] = q;
+        cs->n = k + 1;
+        b->p->nctes = k + 1;
+        if (s->ctes[k].cols.n && s->ctes[k].cols.n != q->nout) {
+            return bfail(b, s->ctes[k].cols.pos, GSQL_SYNTAX, "WITH query `%s` is given %zu column name%s, and its "
+                         "query has %zu column%s", s->ctes[k].name, s->ctes[k].cols.n,
+                         s->ctes[k].cols.n == 1 ? "" : "s", q->nout, q->nout == 1 ? "" : "s");
+        }
+    }
+    b->scope = cs;
+    return 1;
 }
 
 static int plan_at(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const char *text, int force_scan,
-                   SqlPlan *out, GsqlError *err, B *outer, SqlExpr *subq, unsigned *nsubq) {
+                   SqlPlan *out, GsqlError *err, B *outer, SqlExpr *subq, unsigned *nsubq, const CteScope *scope,
+                   int in_cte) {
     memset(out, 0, sizeof *out);
     out->s = s;
     out->text = text;
@@ -1236,13 +1402,15 @@ static int plan_at(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, con
     b.t = t;
     b.force_scan = force_scan;
     b.nsubq = nsubq;
+    b.scope = scope;
+    b.in_cte = in_cte;
     err->code = GSQL_OK;
     err->message[0] = 0;
     err->position = 0;
     int ok = 1;
     switch (s->kind) {
     case SQ_SELECT:
-        ok = s->setop ? plan_compound(&b, e, t, force_scan) : plan_select(&b, e, t, force_scan);
+        ok = plan_ctes(&b) && (s->setop ? plan_compound(&b, e, t, force_scan) : plan_select(&b, e, t, force_scan));
         break;
     case SQ_UPDATE:
     case SQ_DELETE:
@@ -1279,6 +1447,16 @@ void sql_plan_free(SqlPlan *p) {
         }
     }
     p->nsubs = 0;
+    for (size_t k = 0; k < p->nscans; k++) {
+        if (p->scans[k].derived && !p->scans[k].cte) {
+            sql_plan_free(p->scans[k].derived);
+        }
+        p->scans[k].derived = NULL;
+    }
+    for (size_t k = 0; k < p->nctes; k++) {
+        sql_plan_free(p->ctes[k]);
+    }
+    p->nctes = 0;
     if (p->left) {
         sql_plan_free(p->left);
         p->left = NULL;
@@ -1314,6 +1492,20 @@ static void put(GsqlBuf *b, const char *s) {
 }
 
 static void access_line(const SqlPlan *p, const SqlScan *sc, GsqlBuf *b) {
+    if (sc->derived) {
+        if (sc->cte) {
+            put(b, "CTE Scan on ");
+            put(b, sc->cte);
+            if (strcmp(sc->cte, sc->qualifier) != 0) {
+                put(b, " AS ");
+                put(b, sc->qualifier);
+            }
+        } else {
+            put(b, "Derived Scan on ");
+            put(b, sc->qualifier);
+        }
+        return;
+    }
     const GsqlTable *tb = sc->tb;
     const char *tname = gsql_table_name(tb);
     const char *iname = sc->access == ACC_INDEX ? gsql_table_index(tb, sc->index)->name : NULL;
@@ -1497,6 +1689,21 @@ tail:
         put(&b, "Offset: ");
         sql_print_expr_scans(&b, s->offset, p->scans, p->nscans);
         emit(line, ctx, indent + 1, &b);
+    }
+    /* each derived table's plan, and each WITH query's, after the query */
+    for (size_t k = 0; k < p->nscans; k++) {
+        if (p->scans[k].derived && !p->scans[k].cte) {
+            put(&b, "Derived ");
+            put(&b, p->scans[k].qualifier);
+            emit(line, ctx, base, &b);
+            explain_at(p->scans[k].derived, line, ctx, base + 1);
+        }
+    }
+    for (size_t k = 0; k < p->nctes; k++) {
+        put(&b, "CTE ");
+        put(&b, s->ctes[k].name);
+        emit(line, ctx, base, &b);
+        explain_at(p->ctes[k], line, ctx, base + 1);
     }
     /* each subquery's plan, after the query it is in */
     for (size_t k = 0; k < p->nsubs; k++) {

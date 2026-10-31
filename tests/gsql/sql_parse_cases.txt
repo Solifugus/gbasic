@@ -271,13 +271,31 @@
 > select a from t where a in (select b from u
 ! SYNTAX 44 expected `)`
 
-# ---- refusals: Phase 2, by name -------------------------------------
+# ---- derived tables and WITH (docs/gsql_derived_design.md) ---------------
 > select a from (select 1) x
-! UNSUPPORTED 15 a subquery in FROM is not in this release
-> select a from t join (select 1) x on true
-! UNSUPPORTED 22 a subquery in FROM is not in this release
+= SELECT a FROM (SELECT 1) AS x
+> select d.a from t join (select b as a from u where b > 1) as d (a) on d.a = t.a
+= SELECT d.a FROM t JOIN (SELECT b AS a FROM u WHERE (b > 1)) AS d (a) ON (d.a = t.a)
 > with x as (select 1) select * from x
-! UNSUPPORTED 1 WITH are not in this release
+= WITH x AS (SELECT 1) SELECT * FROM x
+> with x (n) as (select a from t), y as (select n from x where n > 1) select * from y union select n from x
+= WITH x (n) AS (SELECT a FROM t), y AS (SELECT n FROM x WHERE (n > 1)) SELECT * FROM y UNION SELECT n FROM x
+> select a from t where a in (with z as (select b from u) select b from z)
+= SELECT a FROM t WHERE (a IN (WITH z AS (SELECT b FROM u) SELECT b FROM z))
+> select a from (select 1)
+! SYNTAX 25 a subquery in FROM needs a name
+> select a from (1) x
+! SYNTAX 16 expected a SELECT inside ( ) in FROM
+> with recursive x as (select 1) select * from x
+! UNSUPPORTED 6 WITH RECURSIVE is not in this release
+> with x as (select 1), x as (select 2) select * from x
+! SYNTAX 23 WITH defines `x` twice
+> with x as (select 1) delete from t
+! UNSUPPORTED 22 WITH before INSERT, UPDATE or DELETE is not in this release
+> with x as select 1
+! SYNTAX 11 expected `(`
+
+# ---- refusals: Phase 2, by name -------------------------------------
 > select a from t order by a nulls first
 ! UNSUPPORTED 28 NULLS FIRST and NULLS LAST
 > create table t (a int references u(b))

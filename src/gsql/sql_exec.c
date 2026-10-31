@@ -129,6 +129,11 @@ typedef struct XScan {
     int nulled;
     GsqlHv **cols;
     size_t ncols;
+    /* a derived scan's rows, materialized on its first opening in this
+       execution (docs/gsql_derived_design.md §4) */
+    GsqlBuf *drows;
+    size_t ndrows;
+    int dready;
 } XScan;
 
 static void row_clear_scan(X *x, size_t k) {
@@ -161,8 +166,7 @@ static void x_init(X *x, GsqlSql *q, const GsEngine *e, GsTxn *t, SqlPlan *p, Gs
         abort();
     }
     for (size_t k = 0; k < x->nsx; k++) {
-        GsqlTable *tb = p->nscans ? p->scans[k].tb : p->tb;
-        x->sx[k].ncols = tb ? gsql_table_ncols(tb) : 0;
+        x->sx[k].ncols = p->nscans ? sql_scan_ncols(&p->scans[k]) : p->tb ? gsql_table_ncols(p->tb) : 0;
         x->sx[k].cols = calloc(x->sx[k].ncols ? x->sx[k].ncols : 1, sizeof(GsqlHv *));
         if (!x->sx[k].cols) {
             abort();
@@ -176,6 +180,10 @@ static void x_free(X *x) {
         free(x->sx[k].cols);
         gsql_buf_free(&x->sx[k].row);
         gsql_buf_free(&x->sx[k].rowkey);
+        for (size_t r = 0; r < x->sx[k].ndrows; r++) {
+            gsql_buf_free(&x->sx[k].drows[r]);
+        }
+        free(x->sx[k].drows);
     }
     free(x->sx);
     x->sx = NULL;
@@ -281,7 +289,21 @@ static GsqlHv *column(X *x, SqlExpr *e) {
     }
     if (!xs->cols[e->col]) {
         GsBytes v;
-        if (gsql_row_value(at->p->scans[e->tab].tb, xs->row.bytes, xs->row.length, e->col, &v, x->err) != GSQL_OK) {
+        const SqlScan *sc = &at->p->scans[e->tab];
+        if (sc->derived) {
+            /* a derived table's row is its plan's output row: by position */
+            GsBytes *items = malloc(sizeof(GsBytes) * (xs->ncols ? xs->ncols : 1));
+            if (!items) {
+                abort();
+            }
+            long n = v3_array_items(xs->row.bytes, xs->row.length, items, (long)xs->ncols);
+            v = items[e->col];
+            free(items);
+            if (n != (long)xs->ncols) {
+                xfail(x->err, GSQL_MISUSE, e->pos, "a derived table's row did not hold its columns");
+                return NULL;
+            }
+        } else if (gsql_row_value(sc->tb, xs->row.bytes, xs->row.length, e->col, &v, x->err) != GSQL_OK) {
             return NULL;
         }
         xs->cols[e->col] = hv_bytes(x, v.p, v.n);
@@ -880,7 +902,11 @@ typedef struct {
     GsqlKey klo, khi;   /* the range, in key order (so swapped for DESC) */
     int has_lo, has_hi;
     unsigned range_flags;
+    int derived;        /* a derived scan: its materialized rows, from dpos */
+    size_t dpos;
 } Iter;
+
+static int derived_rows(X *x, size_t k);
 
 static unsigned flags_for(const SqlScan *p, size_t j) {
     const GsqlColumn *c = gsql_table_col(p->tb, p->keycols[j]);
@@ -920,6 +946,10 @@ static int iter_open(Iter *it, X *x, size_t k) {
     gsql_key_init(&it->prefix);
     gsql_key_init(&it->klo);
     gsql_key_init(&it->khi);
+    if (p->access == ACC_DERIVED) {
+        it->derived = 1;
+        return x->sx[k].dready ? GSQL_OK : derived_rows(x, k);
+    }
     it->backward = p->backward;
     it->index = p->access == ACC_INDEX;
     it->scan = p->access == ACC_SCAN;
@@ -1098,6 +1128,18 @@ static int next_row(Iter *it) {
     row_clear_scan(x, it->k);
     if (it->done) {
         return 0;
+    }
+    if (it->derived) {
+        if (it->dpos >= xs->ndrows) {
+            it->done = 1;
+            return 0;
+        }
+        const GsqlBuf *r = &xs->drows[it->dpos++];
+        xs->row.length = 0;
+        v3_put(&xs->row, r->bytes, r->length);
+        xs->rowkey.length = 0;
+        xs->have_row = 1;
+        return 1;
     }
     const GsEngine *e = x->e;
     if (it->point) {
@@ -2977,7 +3019,7 @@ static int compound_start(SqlCursor *c, const GsEngine *e, GsTxn *t) {
  * the row that execution has in hand. One that reads no enclosing row runs
  * once per execution, its answer kept on the node until the execution ends. */
 
-static SqlCursor *sub_open(X *x, SqlPlan *p) {
+static SqlCursor *sub_open(X *x, SqlPlan *p, X *outer) {
     SqlCursor *k = calloc(1, sizeof *k);
     if (!k) {
         abort();
@@ -2989,7 +3031,7 @@ static SqlCursor *sub_open(X *x, SqlPlan *p) {
     x_init(&k->x, x->q, x->e, x->t, &k->plan, &k->err);
     k->x.params = x->params;
     k->x.paramslen = x->paramslen;
-    k->x.outer = x;
+    k->x.outer = outer;
     k->limit = UINT64_MAX;
     SqlStmt *s = p->s;
     int rc = GSQL_OK;
@@ -3038,6 +3080,46 @@ static int in_step(X *x, SqlExpr *e, GsqlHv *a, GsqlHv *b, int *acc) {
     return *acc == 1;
 }
 
+/* A derived scan's rows, through a cursor over its plan. A derived table
+ * reads its query's enclosing query, as the scan's own query does; a WITH
+ * query reads no enclosing query at all. */
+static int derived_rows(X *x, size_t k) {
+    const SqlScan *sc = &x->p->scans[k];
+    XScan *xs = &x->sx[k];
+    SqlCursor *c = sub_open(x, sc->derived, sc->cte ? NULL : x->outer);
+    if (!c) {
+        return x->err->code ? x->err->code : GSQL_EXPRESSION;
+    }
+    size_t cap = 0;
+    GsqlBuf row = {0};
+    int rc = GSQL_OK;
+    for (;;) {
+        int r = cursor_next(c, &row);
+        if (r < 0) {
+            *x->err = c->err;
+            rc = x->err->code ? x->err->code : GSQL_EXPRESSION;
+            break;
+        }
+        if (r == 0) {
+            break;
+        }
+        if (xs->ndrows == cap) {
+            cap = cap ? cap * 2 : 64;
+            xs->drows = realloc(xs->drows, sizeof(GsqlBuf) * cap);
+            if (!xs->drows) {
+                abort();
+            }
+        }
+        memset(&xs->drows[xs->ndrows], 0, sizeof(GsqlBuf));
+        v3_put(&xs->drows[xs->ndrows], row.bytes, row.length);
+        xs->ndrows++;
+    }
+    gsql_buf_free(&row);
+    cursor_free(c);
+    xs->dready = rc == GSQL_OK;
+    return rc;
+}
+
 static GsqlHv *eval_subquery(X *x, SqlExpr *e) {
     if (e->op != SQL_SUB_IN && !e->correlated && e->hv) {
         return x->h->copy(x->h->ctx, e->hv);
@@ -3056,7 +3138,7 @@ static GsqlHv *eval_subquery(X *x, SqlExpr *e) {
     if (e->op == SQL_SUB_IN && !e->correlated) {
         /* the values, once per execution; then this row's comparisons */
         if (!e->gathered) {
-            k = sub_open(x, e->subplan);
+            k = sub_open(x, e->subplan, x);
             failed = !k;
             size_t cap = 0;
             while (!failed) {
@@ -3097,7 +3179,7 @@ static GsqlHv *eval_subquery(X *x, SqlExpr *e) {
             result = hv_tri(x, acc);
         }
     } else {
-        k = sub_open(x, e->subplan);
+        k = sub_open(x, e->subplan, x);
         failed = !k;
         if (!failed && e->op == SQL_SUB_EXISTS) {
             int r = cursor_next(k, &row);

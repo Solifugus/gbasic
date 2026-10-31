@@ -111,7 +111,7 @@ struct SqlExpr {
     unsigned subno;
     /* SX_OUTER: the scan's qualifier and table, for printing */
     const char *oqual;
-    const GsqlTable *otb;
+    const struct SqlScan *oscan;
     /* SX_SUBQ IN, uncorrelated: the subquery's values, gathered once per
      * execution (the executor's, as hv) */
     void **set;
@@ -156,12 +156,32 @@ typedef enum { SQL_JOIN_FIRST = 0, SQL_JOIN_INNER, SQL_JOIN_LEFT, SQL_JOIN_CROSS
 typedef enum { SQL_SET_NONE = 0, SQL_SET_UNION, SQL_SET_INTERSECT, SQL_SET_EXCEPT } SqlSetOp;
 
 typedef struct {
+    char **cols;
+    int *desc;
+    size_t n;
+    uint32_t pos;
+} SqlNameList;
+
+/* A table joined after the first; `sub` a derived table (docs/gsql_derived_design.md),
+ * which then has `alias`, and `cols` renames a derived table's or WITH
+ * query's columns */
+typedef struct {
     SqlJoin join;
     char *table;
     char *alias;
     SqlExpr *on;             /* NULL for CROSS JOIN and the comma */
     uint32_t pos;
+    struct SqlStmt *sub;
+    SqlNameList cols;
 } SqlFrom;
+
+/* WITH name [(cols)] AS (q) */
+typedef struct {
+    char *name;
+    SqlNameList cols;
+    struct SqlStmt *q;
+    uint32_t pos;
+} SqlCte;
 
 typedef struct {
     char *name;
@@ -173,12 +193,6 @@ typedef struct {
     SqlExpr *def;            /* DEFAULT, or NULL */
 } SqlColDef;
 
-typedef struct {
-    char **cols;
-    int *desc;
-    size_t n;
-    uint32_t pos;
-} SqlNameList;
 
 typedef struct SqlStmt {
     SqlStmtKind kind;
@@ -186,6 +200,10 @@ typedef struct SqlStmt {
     uint32_t pos;
     char *table;             /* every statement but SELECT with no FROM */
     char *alias;             /* SELECT/UPDATE/DELETE: FROM t [AS] a */
+    struct SqlStmt *table_sub; /* SELECT: the first table, when it is a derived table */
+    SqlNameList table_cols;  /* and its columns renamed */
+    SqlCte *ctes;            /* SELECT: its WITH queries, in order */
+    size_t nctes;
     SqlFrom *joins;          /* SELECT: the tables after the first */
     size_t njoins;
     int if_exists;           /* DROP ... IF EXISTS, CREATE ... IF NOT EXISTS */
@@ -253,14 +271,15 @@ typedef enum {
     ACC_NONE = 0,    /* SELECT with no FROM: one row, no table */
     ACC_SCAN,        /* the rows tree, whole */
     ACC_PK,          /* a range of the rows tree: the primary key's columns */
-    ACC_INDEX        /* a range of one index, then each row by its key */
+    ACC_INDEX,       /* a range of one index, then each row by its key */
+    ACC_DERIVED      /* a derived table or WITH query: its plan's rows, materialized */
 } SqlAccess;
 
 /* One table of a statement and how it is read: its access path, and the
  * conditions checked once a row of it is in hand. A single-table statement has
  * one scan; a join has one per table of FROM, read by nested loops in order
  * (docs/gsql_join_design.md §3). */
-typedef struct {
+typedef struct SqlScan {
     GsqlTable *tb;           /* scan 0's is the plan's tb; the others are owned here */
     const char *qualifier;   /* the alias, or the table's name */
     SqlJoin join;
@@ -279,6 +298,13 @@ typedef struct {
     size_t nconj;
     size_t non;              /* conj[0..non) are ON's, which decide a LEFT join's match */
     int *consumed;           /* conj[i] narrowed the access path */
+    /* ACC_DERIVED: the plan whose output rows are this scan's rows, owned
+       here unless the scan reads a WITH query; its columns' names and kinds */
+    struct SqlPlan *derived;
+    const char *cte;         /* the WITH query read, or NULL */
+    size_t ndcols;
+    const char **dnames;
+    const char **dkinds;
 } SqlScan;
 
 typedef struct SqlPlan {
@@ -291,6 +317,9 @@ typedef struct SqlPlan {
      * node's subplan is owned here */
     SqlExpr **subs;
     size_t nsubs;
+    /* the WITH queries this query defines, each planned once, owned here */
+    struct SqlPlan **ctes;
+    size_t nctes;
     GsqlTable *tb;           /* the first table, owned; NULL for ACC_NONE and schema statements */
     SqlScan *scans;
     size_t nscans;           /* 0 with no table */
@@ -328,5 +357,9 @@ int sql_is_constant(const SqlExpr *e);
 /* as sql_print_expr_tb, naming each column by its scan's table, and with its
  * table's alias or name in front where there are several */
 void sql_print_expr_scans(GsqlBuf *out, const SqlExpr *e, const SqlScan *scans, size_t nscans);
+
+/* a scan's columns, whether it reads a table or a derived table */
+size_t sql_scan_ncols(const SqlScan *sc);
+const char *sql_scan_col_name(const SqlScan *sc, size_t col);
 
 #endif

@@ -1506,6 +1506,57 @@ static int subquery_tier(int n, int *seek_runs, int *by_form) {
     return refused;
 }
 
+/* ---- the derived-table tier (docs/gsql_derived_design.md §5) ------------
+ *
+ * A random predicate written once through a derived table or a WITH query and
+ * once directly against r: the rewrite must not change the answer. The
+ * direct form is what the tiers above establish. The equivalence is compared
+ * with both forced to scans, where both read every row of r and so refuse
+ * alike; each rewritten query also runs both ways on its own. */
+
+static int derived_tier(int n, int *seek_runs, int *by_form) {
+    int refused = 0;
+    for (int k = 0; k < n; k++) {
+        char where[1024], dq[2048], rq[2048];
+        predicate(where, sizeof where);
+        int form = (int)pick(3);
+        if (form == 0) {
+            snprintf(dq, sizeof dq, "SELECT id, a, b FROM (SELECT * FROM r WHERE %s) d ORDER BY id", where);
+            snprintf(rq, sizeof rq, "SELECT id, a, b FROM r WHERE %s ORDER BY id", where);
+        } else if (form == 1) {
+            snprintf(dq, sizeof dq, "WITH w AS (SELECT * FROM r WHERE %s) SELECT w.a, count(q.qid) FROM w LEFT JOIN q "
+                     "ON q.k = w.a GROUP BY w.a ORDER BY w.a", where);
+            snprintf(rq, sizeof rq, "SELECT r.a, count(q.qid) FROM r LEFT JOIN q ON q.k = r.a WHERE %s GROUP BY r.a "
+                     "ORDER BY r.a", where);
+        } else {
+            snprintf(dq, sizeof dq, "SELECT d.id, d.n FROM (SELECT id, (SELECT count(*) FROM q WHERE q.t = r.b) AS n FROM "
+                     "r WHERE %s) AS d (id, n) WHERE d.n > 0 ORDER BY d.id", where);
+            snprintf(rq, sizeof rq, "SELECT id, (SELECT count(*) FROM q WHERE q.t = r.b) FROM r WHERE (%s) AND "
+                     "(SELECT count(*) FROM q WHERE q.t = r.b) > 0 ORDER BY id", where);
+        }
+        refused += both_ways(dq, seek_runs);
+        Answer x, y;
+        gsql_sql_force_scan(sql, 1);
+        run(dq, NULL, 100000, &x);
+        run(rq, NULL, 100000, &y);
+        gsql_sql_force_scan(sql, 0);
+        checks++;
+        char *tx = as_text(&x.text), *ty = as_text(&y.text);
+        if (x.code != y.code || (x.code == GSQL_OK && strcmp(tx, ty) != 0)) {
+            mismatches++;
+            printf("MISMATCH %s\n  derived: %s %s\n  direct:  %s %s\n", dq, gsql_error_name(x.code),
+                   x.code ? x.err.message : tx, gsql_error_name(y.code), y.code ? y.err.message : ty);
+        } else if (x.code == GSQL_OK && strcmp(tx, "(none)") != 0) {
+            by_form[form]++;
+        }
+        free(tx);
+        free(ty);
+        answer_free(&x);
+        answer_free(&y);
+    }
+    return refused;
+}
+
 static int differential(const char *dir, uint64_t seed, int n) {
     if (!open_db(dir)) {
         return 2;
@@ -1624,6 +1675,8 @@ static int differential(const char *dir, uint64_t seed, int n) {
     gsql_sql_counts(sql, &ss0, &sc0);
     int sub_refused = subquery_tier(n / 2, &sub_seeks, by_form);
     gsql_sql_counts(sql, &ss1, &sc1);
+    int der_seeks = 0, der_form[3] = { 0, 0, 0 };
+    int der_refused = derived_tier(n / 2, &der_seeks, der_form);
     unsigned long seeks, scans;
     gsql_sql_counts(sql, &seeks, &scans);
     printf("census: %d rows, %d queries, %d used a seek, %d refused, %d refused only by the scan\n", inserted, n,
@@ -1666,6 +1719,12 @@ static int differential(const char *dir, uint64_t seed, int n) {
     if (by_form[0] < n / 40 || by_form[1] < n / 40 || by_form[2] < n / 40 || ss1 - ss0 < (unsigned long)n) {
         mismatches++;
         printf("MISMATCH the subquery census is below its floor: the tier measured too little\n");
+    }
+    printf("census: %d derived-table rewrites against the direct query, answered with rows: %d derived, %d WITH and "
+           "joined, %d over a subquery; %d refused\n", n / 2, der_form[0], der_form[1], der_form[2], der_refused);
+    if (der_form[0] < n / 40 || der_form[1] < n / 40 || der_form[2] < n / 40) {
+        mismatches++;
+        printf("MISMATCH the derived-table census is below its floor: the tier measured too little\n");
     }
     /* a floor on what the tier exercised: a planner that never seeks, or a
      * generator that is refused every time, agrees with the scan perfectly */

@@ -561,6 +561,54 @@ static const char *const typed_literal_words[] = { "date", "time", "timestamp", 
 
 static int select_stmt(P *p, SqlStmt *s);
 static int compound(P *p, SqlStmt *root);
+static int name_list(P *p, SqlNameList *l, int allow_order);
+static SqlStmt *subquery(P *p);
+static int at_word(P *p, const char *w);
+static int alias_follows(P *p);
+
+/* WITH name [(cols)] AS (SELECT ...), ...: the current token `with`
+ * (docs/gsql_derived_design.md §1) */
+static int with_list(P *p, SqlCte **out, size_t *nout) {
+    next(p);
+    if (at_word(p, "recursive")) {
+        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "WITH RECURSIVE is not in this release of G-SQL");
+    }
+    SqlCte v[64];
+    size_t n = 0;
+    do {
+        if (n == 64) {
+            return fail_at(p, p->tok.pos, GSQL_SYNTAX, "a WITH may define at most 64 queries");
+        }
+        SqlCte *c = &v[n];
+        memset(c, 0, sizeof *c);
+        c->pos = p->tok.pos;
+        if (!(c->name = name(p, "a name for the WITH query"))) {
+            return 0;
+        }
+        if (at_sym(p, "(") && !name_list(p, &c->cols, 0)) {
+            return 0;
+        }
+        if (!expect_kw(p, "as") || !expect_sym(p, "(")) {
+            return 0;
+        }
+        if (!at_kw(p, "select") && !at_kw(p, "with")) {
+            return expected(p, "a SELECT inside the WITH query's ( )");
+        }
+        if (!(c->q = subquery(p))) {
+            return 0;
+        }
+        for (size_t k = 0; k < n; k++) {
+            if (strcmp(v[k].name, c->name) == 0) {
+                return fail_at(p, c->pos, GSQL_SYNTAX, "WITH defines `%s` twice", c->name);
+            }
+        }
+        n++;
+    } while (accept_sym(p, ","));
+    *out = sql_alloc(p->arena, sizeof(SqlCte) * n);
+    memcpy(*out, v, sizeof(SqlCte) * n);
+    *nout = n;
+    return 1;
+}
 
 /* Subqueries nest at most this deep: each level parses a SELECT on the C
  * stack, and nothing a person writes comes near it. */
@@ -574,14 +622,23 @@ static SqlStmt *subquery(P *p) {
         fail_at(p, pos, GSQL_UNSUPPORTED, "subqueries may nest at most %d deep", SQL_SUBQUERY_DEPTH);
         return NULL;
     }
+    SqlCte *ctes = NULL;
+    size_t nctes = 0;
+    p->subdepth++;
+    if (at_kw(p, "with") && !with_list(p, &ctes, &nctes)) {
+        p->subdepth--;
+        return NULL;
+    }
     if (!expect_kw(p, "select")) {
+        p->subdepth--;
         return NULL;
     }
     SqlStmt *t = sql_alloc(p->arena, sizeof *t);
     t->kind = SQ_SELECT;
     t->pos = pos;
-    p->subdepth++;
     int ok = select_stmt(p, t) && compound(p, t);
+    t->ctes = ctes;
+    t->nctes = nctes;
     p->subdepth--;
     if (!ok || !expect_sym(p, ")")) {
         return NULL;
@@ -627,7 +684,7 @@ static SqlExpr *primary(P *p) {
     }
     case T_SYM:
         if (accept_sym(p, "(")) {
-            if (at_kw(p, "select")) {
+            if (at_kw(p, "select") || at_kw(p, "with")) {
                 return subquery_node(p, SQL_SUB_SCALAR, pos);
             }
             SqlExpr *e = expr(p);
@@ -689,7 +746,7 @@ static SqlExpr *primary(P *p) {
             if (!expect_sym(p, "(")) {
                 return NULL;
             }
-            if (!at_kw(p, "select")) {
+            if (!at_kw(p, "select") && !at_kw(p, "with")) {
                 expected(p, "a SELECT inside EXISTS ( )");
                 return NULL;
             }
@@ -932,7 +989,7 @@ static SqlExpr *comparison(P *p) {
             if (!expect_sym(p, "(")) {
                 return NULL;
             }
-            if (at_kw(p, "select")) {
+            if (at_kw(p, "select") || at_kw(p, "with")) {
                 SqlExpr *q = subquery_node(p, SQL_SUB_IN, pos);
                 if (!q) {
                     return NULL;
@@ -1192,6 +1249,41 @@ static int at_word(P *p, const char *w) {
 
 /* The tables after the first (docs/gsql_join_design.md §1): `, t`, `CROSS
  * JOIN t`, `[INNER] JOIN t ON c` and `LEFT [OUTER] JOIN t ON c`. */
+/* One table of FROM: a name, or a derived table `(SELECT ...) [AS] d`, then
+ * an alias and, after an alias, a list renaming the columns. */
+static int from_item(P *p, char **table, char **alias, SqlStmt **sub, SqlNameList *cols) {
+    if (at_sym(p, "(")) {
+        next(p);
+        if (!at_kw(p, "select") && !at_kw(p, "with")) {
+            return expected(p, "a SELECT inside ( ) in FROM");
+        }
+        if (!(*sub = subquery(p))) {
+            return 0;
+        }
+        if (!accept_kw(p, "as") && !alias_follows(p)) {
+            return fail_at(p, p->tok.pos, GSQL_SYNTAX, "a subquery in FROM needs a name: write (SELECT ...) AS d");
+        }
+        if (!(*alias = name(p, "a name for the subquery"))) {
+            return 0;
+        }
+    } else {
+        if (!(*table = name(p, "a table name"))) {
+            return 0;
+        }
+        if (accept_kw(p, "as")) {
+            if (!(*alias = name(p, "a table alias"))) {
+                return 0;
+            }
+        } else if (alias_follows(p)) {
+            *alias = name(p, "a table alias");
+        }
+    }
+    if (*alias && at_sym(p, "(") && !name_list(p, cols, 0)) {
+        return 0;
+    }
+    return 1;
+}
+
 static int join_list(P *p, SqlStmt *s) {
     SqlFrom from[64];
     size_t n = 0;
@@ -1240,18 +1332,8 @@ static int join_list(P *p, SqlStmt *s) {
         memset(f, 0, sizeof *f);
         f->join = kind;
         f->pos = p->tok.pos;
-        if (at_sym(p, "(")) {
-            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "a subquery in FROM is not in this release of G-SQL (Phase 2)");
-        }
-        if (!(f->table = name(p, "a table name"))) {
+        if (!from_item(p, &f->table, &f->alias, &f->sub, &f->cols)) {
             return 0;
-        }
-        if (accept_kw(p, "as")) {
-            if (!(f->alias = name(p, "a table alias"))) {
-                return 0;
-            }
-        } else if (alias_follows(p)) {
-            f->alias = name(p, "a table alias");
         }
         if (kind == SQL_JOIN_CROSS) {
             if (at_kw(p, "on")) {
@@ -1426,20 +1508,8 @@ static int select_stmt(P *p, SqlStmt *s) {
         return 0;
     }
     if (accept_kw(p, "from")) {
-        if (at_sym(p, "(")) {
-            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "a subquery in FROM is not in this release of G-SQL (Phase 2)");
-        }
-        s->table = name(p, "a table name");
-        if (!s->table) {
+        if (!from_item(p, &s->table, &s->alias, &s->table_sub, &s->table_cols)) {
             return 0;
-        }
-        if (accept_kw(p, "as")) {
-            s->alias = name(p, "a table alias");
-            if (!s->alias) {
-                return 0;
-            }
-        } else if (alias_follows(p)) {
-            s->alias = name(p, "a table alias");
         }
         if (!join_list(p, s)) {
             return 0;
@@ -1941,6 +2011,18 @@ int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
     } else if (accept_kw(&p, "select")) {
         s->kind = SQ_SELECT;
         ok = select_stmt(&p, s) && compound(&p, s);
+    } else if (at_kw(&p, "with")) {
+        SqlCte *ctes = NULL;
+        size_t nctes = 0;
+        s->kind = SQ_SELECT;
+        ok = with_list(&p, &ctes, &nctes);
+        if (ok && (at_kw(&p, "insert") || at_kw(&p, "update") || at_kw(&p, "delete"))) {
+            ok = fail_at(&p, p.tok.pos, GSQL_UNSUPPORTED, "WITH before INSERT, UPDATE or DELETE is not in this release of "
+                         "G-SQL");
+        }
+        ok = ok && expect_kw(&p, "select") && select_stmt(&p, s) && compound(&p, s);
+        s->ctes = ctes;
+        s->nctes = nctes;
     } else if (s->explain && !at_kw(&p, "update") && !at_kw(&p, "delete")) {
         ok = expected(&p, "SELECT, UPDATE or DELETE after EXPLAIN");
     } else if (accept_kw(&p, "insert")) {
@@ -1960,8 +2042,6 @@ int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
         ok = alter_stmt(&p, s);
     } else if (p.tok.kind == T_EOF) {
         ok = fail_at(&p, p.tok.pos, GSQL_SYNTAX, "the statement is empty");
-    } else if (at_kw(&p, "with")) {
-        ok = phase2(&p);
     } else if (p.tok.kind == T_IDENT && (strcmp(p.tok.text, "begin") == 0 || strcmp(p.tok.text, "commit") == 0 ||
                                          strcmp(p.tok.text, "rollback") == 0 || strcmp(p.tok.text, "start") == 0)) {
         ok = fail_at(&p, p.tok.pos, GSQL_UNSUPPORTED,
@@ -2090,6 +2170,18 @@ typedef struct {
 
 static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc);
 
+/* a scan's columns, a table's or a derived table's (declared in sql.h; here
+ * because the printer names bound columns, and the parse tier links this
+ * file without the planner) */
+size_t sql_scan_ncols(const SqlScan *sc) {
+    return sc->derived ? sc->ndcols : sc->tb ? gsql_table_ncols(sc->tb) : 0;
+}
+
+const char *sql_scan_col_name(const SqlScan *sc, size_t col) {
+    return sc->derived ? sc->dnames[col] : gsql_table_col(sc->tb, col)->name;
+}
+
+
 void sql_print_expr(GsqlBuf *o, const SqlExpr *e) {
     PrintCtx pc = { NULL, NULL, 0 };
     print_expr_tb(o, e, &pc);
@@ -2133,12 +2225,15 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc) {
         }
         return;
     case SX_COL: {
-        const GsqlTable *tb = pc->scans && e->tab < pc->nscans ? pc->scans[e->tab].tb : pc->tb;
+        const SqlScan *sc = pc->scans && e->tab < pc->nscans ? &pc->scans[e->tab] : NULL;
+        const GsqlTable *tb = sc ? NULL : pc->tb;
         if (pc->nscans > 1 && e->tab < pc->nscans) {
             print_name(o, pc->scans[e->tab].qualifier);
             v3_put(o, ".", 1);
         }
-        if (tb && e->col < gsql_table_ncols(tb)) {
+        if (sc && e->col < sql_scan_ncols(sc)) {
+            print_name(o, sql_scan_col_name(sc, e->col));
+        } else if (tb && e->col < gsql_table_ncols(tb)) {
             print_name(o, gsql_table_col(tb, e->col)->name);
         } else {
             snprintf(b, sizeof b, "#%u", e->col);
@@ -2266,8 +2361,8 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc) {
             print_name(o, e->oqual);
             v3_put(o, ".", 1);
         }
-        if (e->otb && e->col < gsql_table_ncols(e->otb)) {
-            print_name(o, gsql_table_col(e->otb, e->col)->name);
+        if (e->oscan && e->col < sql_scan_ncols(e->oscan)) {
+            print_name(o, sql_scan_col_name(e->oscan, e->col));
         } else {
             snprintf(b, sizeof b, "#%u", e->col);
             puts_(o, b);
@@ -2321,12 +2416,45 @@ static void print_coldef(GsqlBuf *o, const SqlColDef *c) {
     }
 }
 
+static void print_from(GsqlBuf *o, const char *table, const char *alias, const SqlStmt *sub, const SqlNameList *cols) {
+    if (sub) {
+        v3_put(o, "(", 1);
+        sql_print_stmt(o, sub);
+        v3_put(o, ")", 1);
+    } else {
+        print_name(o, table);
+    }
+    if (alias) {
+        puts_(o, " AS ");
+        print_name(o, alias);
+    }
+    if (cols->n) {
+        v3_put(o, " ", 1);
+        print_names(o, cols, 0);
+    }
+}
+
 void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
     if (s->explain) {
         puts_(o, "EXPLAIN ");
     }
     switch (s->kind) {
     case SQ_SELECT:
+        for (size_t k = 0; k < s->nctes; k++) {
+            const SqlCte *c = &s->ctes[k];
+            puts_(o, k ? ", " : "WITH ");
+            print_name(o, c->name);
+            if (c->cols.n) {
+                v3_put(o, " ", 1);
+                print_names(o, &c->cols, 0);
+            }
+            puts_(o, " AS (");
+            sql_print_stmt(o, c->q);
+            v3_put(o, ")", 1);
+        }
+        if (s->nctes) {
+            v3_put(o, " ", 1);
+        }
         if (s->setop) {
             static const char *const words[] = { "", " UNION ", " INTERSECT ", " EXCEPT " };
             sql_print_stmt(o, s->left);
@@ -2364,21 +2492,13 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
                 print_name(o, it->alias);
             }
         }
-        if (s->table) {
+        if (s->table || s->table_sub) {
             puts_(o, " FROM ");
-            print_name(o, s->table);
-            if (s->alias) {
-                puts_(o, " AS ");
-                print_name(o, s->alias);
-            }
+            print_from(o, s->table, s->alias, s->table_sub, &s->table_cols);
             for (size_t k = 0; k < s->njoins; k++) {
                 const SqlFrom *f = &s->joins[k];
                 puts_(o, f->join == SQL_JOIN_CROSS ? " CROSS JOIN " : f->join == SQL_JOIN_LEFT ? " LEFT JOIN " : " JOIN ");
-                print_name(o, f->table);
-                if (f->alias) {
-                    puts_(o, " AS ");
-                    print_name(o, f->alias);
-                }
+                print_from(o, f->table, f->alias, f->sub, &f->cols);
                 if (f->on) {
                     puts_(o, " ON ");
                     sql_print_expr(o, f->on);
