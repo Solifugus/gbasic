@@ -628,7 +628,7 @@ SELECT * FROM members AS OF :requested_time;
 
 ## 10E. Categorically scoped serials
 
-> **Settled and built 2026-11-01** in `gsql_generated_design.md`, by Matthew's rulings that day. The text below is the earlier direction it settles. One correction: `SERIAL OF DATE(request_time)` cannot be written yet, since G-SQL has no datetime-to-date function; a day's scope needs a `DATE` column.
+> **Settled and built 2026-11-01** in `gsql_generated_design.md`, by Matthew's rulings that day. The text below is the earlier direction it settles. §10E's example is spelled `SERIAL OF (CAST(request_time AS DATE))`, which works since `datetime_conversion_design.md`.
 
 **Agreed direction:** A serial can increment independently for each value of a deterministic scope expression, not merely by date. `DATE(request_time)` is one scope expression that groups all times in a calendar day; `(business_date, branch_id)` is another. The generated number is unique **within the scope**, not necessarily globally.
 

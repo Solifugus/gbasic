@@ -105,6 +105,10 @@ check("{time} keeps the hour", t.hour, sec.hour)
 check("{time} keeps the minute", t.minute, sec.minute)
 check("{time} keeps the second", t.second, sec.second)
 check("{time}'s result equals the same time written as text", t = tsec, true)
+' `=` on two times ignores their date fields, so a time that kept its old date
+' would pass the line above; serialize writes every field, and is what G-SQL
+' stores and keys, so a leftover date would make two equal times two keys
+check("{time}'s result is the same bytes as the text time", serialize(t) = serialize(tsec), true)
 x = convert(dy, "datetime").value
 check("{datetime} of a date keeps its day", x.day, dy.day)
 check("{datetime} of a date is midnight", x.hour * 3600 + x.minute * 60 + x.second, 0)

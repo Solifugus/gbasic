@@ -892,6 +892,10 @@ stmt("CREATE TABLE when3 (d DATE, t TIME, dt DATETIME)", "= done 0")
 stmt("INSERT INTO when3 VALUES (CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS DATE), "
      "CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS TIME), CAST(DATE '2026-01-05' AS DATETIME))", "= done 1")
 stmt("INSERT INTO when3 (d) VALUES (CAST('2026-01-05 10:30' AS DATE))", "= done 1")
+# a cast time is the same key as the time written: no date left behind in it
+stmt("CREATE TABLE tkey (t TIME UNIQUE)", "= done 0")
+stmt("INSERT INTO tkey VALUES (CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS TIME))", "= done 1")
+stmt("INSERT INTO tkey VALUES (CAST('10:30:45' AS TIME))", ("DUPLICATE", None, "unique index tkey_t_key already holds that value"))
 # gsql_design.md §10E's own example, written: a serial per day of a datetime
 stmt("CREATE TABLE req (at DATETIME, n INTEGER SERIAL OF (CAST(at AS DATE)))", "= done 0")
 stmt("INSERT INTO req (at) VALUES (CAST('2026-01-05 09:00' AS DATETIME)), (CAST('2026-01-05 17:30' AS DATETIME)), "

@@ -1,6 +1,6 @@
 # Converting between dates, times and datetimes
 
-**Status:** designed 2026-11-01, from Matthew's direction the same day: turning a datetime into a date "is obviously important", and the other directions belong in the same pass. It completes `datetime_design.md` §2, whose modifiers read only text, and with it G-SQL's `CAST` (`gsql_sql_design.md`).
+**Status:** designed and built 2026-11-01 (`datetime_convert_value` in `src/eval.c`, `gsql_h_cast` in `src/modules/gsql.c`; `tests/run_datetime_convert.sh`, `tests/run_gsql_sql.sh`), from Matthew's direction the same day: turning a datetime into a date "is obviously important", and the other directions belong in the same pass. It completes `datetime_design.md` §2, whose modifiers read only text, and with it G-SQL's `CAST` (`gsql_sql_design.md`).
 
 ## 1. The gap, measured
 
@@ -62,3 +62,17 @@ Each refusal names what the value lacks (``a time of day has no date to take``),
 - text cast to `DATE`, taking its date;
 - `SERIAL OF (CAST(request_time AS DATE))`: two times on one day share a scope, and the next day starts at 1;
 - a cast value fitting its column, which is what a `DATE`, `TIME` or `DATETIME` column accepts (`gsql_table_design.md` §3.1).
+
+## 5. What building it found
+
+- **A time given as an hour prints as `10`,** not `10:00`, because that is how gBASIC renders a time at hour precision read from text. The fixture's expectation was wrong, not the conversion.
+- **Eight perturbations, all red in the end, one only after a check was added.** A `{time}` that kept the value's date fields beside its time compared **equal** to a clean time, since `=` on two times reads only their time. It therefore passed every check written. `serialize` writes every field, and is what G-SQL stores a row in, so the fixture now compares the two times' bytes. G-SQL's index key for a time encodes only the time, so no key could see this one. The `UNIQUE` case added for it stays as a statement of true behaviour, not as its guard.
+- The other seven, each red in the language suite, the SQL corpus, or both:
+  - `{date}` of a value refused again;
+  - `{date}` keeping the time;
+  - `{time}` of a date allowed;
+  - `{datetime}` keeping its precision;
+  - `{datetime}` of a time allowed;
+  - `CAST` of text to `DATE` keeping its minutes (the SQL corpus alone);
+  - the text form of `{date}` made to truncate too (the language suite's control alone).
+

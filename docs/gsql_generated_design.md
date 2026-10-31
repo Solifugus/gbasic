@@ -32,7 +32,7 @@ A column may carry one **generator**. The generator chooses the value when a row
 
 - **`SERIAL`** counts. It belongs on an `INTEGER` column only.
 - **`SERIAL OF (e, ...)`** counts separately for each value of its **scope**: one or more expressions over the inserted row's own columns.
-  - *Found while building it:* §10E's own example, `SERIAL OF DATE(request_time)`, cannot be written yet. G-SQL has no function that takes a datetime to its date, and `CAST(t AS DATE)` refuses a datetime. A day's scope needs a `DATE` column until such a function exists.
+  - A day of a datetime is `SERIAL OF (CAST(request_time AS DATE))`: §10E's own example, which could not be written when this was built. `CAST` refused a datetime until `datetime_conversion_design.md`, the same day.
 - **`RANDOM`** draws a value. It belongs on a `TEXT` or an `INTEGER` column.
   - **`TEXT RANDOM`** draws 22 characters from the URL-safe alphabet (`A-Z a-z 0-9 - _`), about 132 bits.
   - **`TEXT RANDOM(n)`** draws `n` characters from that alphabet.
@@ -183,7 +183,7 @@ The field is written only for a generated column, so a table without one is stor
 
 ## 6. What building it found
 
-- **§10E's example cannot be written yet.** `SERIAL OF DATE(request_time)` needs a datetime-to-date function, which G-SQL does not have, and `CAST(t AS DATE)` refuses a datetime. A day's scope needs a `DATE` column (§1).
+- **§10E's example could not be written.** `CAST(t AS DATE)` refused a datetime. Matthew called the conversion obviously important, and it was built the same day with the other directions (`datetime_conversion_design.md`), so it is now `SERIAL OF (CAST(request_time AS DATE))`.
 - **A scope keyed as `GROUP BY` keys it needed its own sentence.** A record scope was refused as one that "cannot be grouped or made DISTINCT", true of `GROUP BY` and not of a serial. It now says the record has no order, so it cannot be a scope.
 - **Seventeen perturbations, all red in the end, two only after a case was added:**
   - **A refused row spending its number was invisible in autocommit.** The failed statement's own rollback undoes the counter with it. The gap can only appear inside `begin`, where a refusal before any write leaves the transaction usable, so the case is there now.

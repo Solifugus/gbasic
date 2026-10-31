@@ -1493,6 +1493,23 @@ January 1st. Each of these **raises** when the string cannot be read as the type
 asked for, rather than yielding `nothing`: validate first if a bad value is
 expected rather than exceptional.
 
+**Given a datetime value instead of text, `{date}`, `{time}` and `{datetime}`
+convert it** (docs/datetime_conversion_design.md):
+
+```basic
+at {datetime}= "2026-05-15 12:05:03"
+d {date}= at        ' 2026-05-15        its date
+h {time}= at        ' 12:05:03          its time of day, at its own precision
+m {datetime}= d     ' 2026-05-15 00:00:00   a date at midnight
+```
+
+A value missing what the kind needs is refused, saying what it lacks: a time
+of day has no date to take, and a date has no time of day. Text is read as
+before, so `{date}= "2026-05-15 12:05"` still keeps its minutes; it is a
+*value* given to `{date}` that is cut to its day. G-SQL's `CAST(x AS DATE)`,
+`AS TIME` and `AS DATETIME` convert the same way, and `CAST` of text to
+`DATE` also takes its day.
+
 Define an assignment modifier:
 
 ```basic
