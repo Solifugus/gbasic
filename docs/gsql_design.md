@@ -725,7 +725,7 @@ Built bottom-up (`gsql_table_design.md` §1): the table layer, then the owner an
 
 ### Phase 2: Useful relational SQL
 
-**Aggregates, `GROUP BY` and `HAVING` are done 2026-10-30** (`gsql_aggregate_design.md`), **joins 2026-10-31** (`gsql_join_design.md`: inner, left and cross, by nested loops in the order written, each inner table sought per outer row), **`SELECT DISTINCT`**, **`UNION`/`INTERSECT`/`EXCEPT`** and **subqueries in expressions** (scalar, `IN` and `EXISTS`, correlated or not) the same day (`gsql_distinct_design.md`, `gsql_setop_design.md`, `gsql_subquery_design.md`). `FROM` subqueries and non-recursive `WITH` are next. The rest of the list:
+**Aggregates, `GROUP BY` and `HAVING` are done 2026-10-30** (`gsql_aggregate_design.md`), **joins 2026-10-31** (`gsql_join_design.md`: inner, left and cross, by nested loops in the order written, each inner table sought per outer row), **`SELECT DISTINCT`**, **`UNION`/`INTERSECT`/`EXCEPT`** and **subqueries in expressions** (scalar, `IN` and `EXISTS`, correlated or not) the same day (`gsql_distinct_design.md`, `gsql_setop_design.md`, `gsql_subquery_design.md`). **Derived tables and non-recursive `WITH`** followed on 2026-11-01 (`gsql_derived_design.md`). The rest of the list:
 
 Joins, grouping/HAVING, common aggregates, unions, subqueries, nonrecursive CTEs, views, composite indexes, query-plan caching, statistics, and efficient hash operators. Add named relationship catalog and scoped serials when their semantics/tests are settled. Introduce spill-to-disk where workloads require it.
 

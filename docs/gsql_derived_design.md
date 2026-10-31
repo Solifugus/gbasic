@@ -1,6 +1,6 @@
 # G-SQL derived tables and `WITH` (Phase 2, increment 6)
 
-**Status:** designed 2026-11-01. The sixth increment of `gsql_design.md` §11 Phase 2. It follows subqueries in expressions (`gsql_subquery_design.md`), which left these two as its §9.
+**Status:** designed and built 2026-11-01 (`src/gsql/sql_parse.c`, `sql_plan.c`, `sql_exec.c`; `tests/run_gsql_sql.sh`). The sixth increment of `gsql_design.md` §11 Phase 2. It follows subqueries in expressions (`gsql_subquery_design.md`), which left these two as its §9.
 
 ## 1. What it is
 
@@ -79,3 +79,19 @@ CTE big
   - a column-list count mismatch, refused;
   - `EXPLAIN`.
 - **differential and oracle:** a random predicate over `r`, written as a derived table `(select * from r where P) d`, joined to `q` and grouped. It is checked against the same query written directly against `r`. Both are run with access paths and forced to scans. Rewriting a query through a derived table must not change its answer. The direct query's correctness is established by the tiers before it.
+
+## 6. What building it found
+
+- **A subquery's cursor must know its enclosing row before it starts.** The first version opened a derived table's cursor and then set its outer pointer. But starting a cursor already reads rows: a grouped query folds every row when it starts. So a grouped derived table inside a correlated subquery would have read the wrong enclosing row. The outer pointer is now an argument to the cursor's opening.
+- **The printer needs the scan helpers, and the parse tier links the parser alone.** The helpers live in `sql_parse.c` for that reason, beside the printer that names bound columns.
+- **The random tier passed first time:** five seeds of 300 rewrites each, every one equal to the direct query, with 32 to 52 answered with rows in each form.
+- **Nine perturbations, all red**, each caught by the hand-written case for it:
+  - materializing again on every opening, so rows accumulate;
+  - a derived table reading its own query as its enclosing one;
+  - a column list ignored;
+  - a `WITH` query bound inside its statement;
+  - a duplicate name read as its first;
+  - fields refused on a derived column;
+  - every column read from position 0;
+  - the first row skipped, which the random tier also caught;
+  - `WITH` names never consulted.
