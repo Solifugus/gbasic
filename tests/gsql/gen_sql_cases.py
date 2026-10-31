@@ -484,7 +484,7 @@ stmt("SELECT * FROM (SELECT 1 AS x, 2 AS x) d", "= 1, 2")
 stmt("SELECT x FROM (SELECT 1 AS x, 2 AS x) d", ("SYNTAX", "x", "`d` has two columns called `x`"))
 stmt("SELECT a, b FROM (SELECT 1 AS x, 2 AS x) d (a, b)", "= 1, 2")
 stmt("SELECT * FROM (SELECT 1, 2) d (a)", ("SYNTAX", "(a)", "the subquery `d` is given 1 column name, and its query has 2 columns"))
-stmt("SELECT * FROM cu c (a, b, c)", ("UNSUPPORTED", "(a, b", "a column list renames a derived table's or WITH query's columns"))
+stmt("SELECT * FROM cu c (a, b, c)", ("UNSUPPORTED", "(a, b", "a column list renames a derived table's, WITH query's or view's columns"))
 stmt("SELECT d.nope FROM (SELECT 1 AS x) d", ("NOT_FOUND", "d.nope", "derived table d has no column `nope`"))
 # a record column keeps its fields through a derived table
 stmt("SELECT d.p.vendor FROM (SELECT p FROM assets) d", "= 'acme' | 'zeta'")
@@ -567,6 +567,56 @@ stmt("SELECT count(*) FROM rn2", "= 3")
 c("rollback")
 stmt("SELECT count(*) FROM rn", "= 3")
 stmt("SELECT * FROM rn2", ("NOT_FOUND", "SELECT", "there is no table `rn2`"))
+
+sec("views (docs/gsql_view_design.md)")
+stmt("CREATE TABLE vo (id INTEGER PRIMARY KEY, cust INTEGER, total MONEY(USD))", "= done 0")
+stmt("INSERT INTO vo VALUES (1, 1, CAST('5' AS MONEY(USD))), (2, 1, CAST('7' AS MONEY(USD))), (3, 2, CAST('3' AS MONEY(USD)))",
+     "= done 3")
+stmt("CREATE VIEW spend (cust, spent) AS SELECT cust, sum(total) FROM vo GROUP BY cust", "= done 0")
+stmt("SELECT * FROM spend ORDER BY cust", "% cust:integer, spent:any", "= 1, money 12.00 | 2, money 3.00")
+stmt("SELECT cu.name, s.spent FROM cu JOIN spend s ON s.cust = cu.id ORDER BY cu.id", "= 'ann', money 12.00 | 'bob', money 3.00")
+stmt("SELECT a FROM spend s (a, b) WHERE b > CAST('5' AS MONEY(USD))", "= 1")
+# a view of a view
+stmt("CREATE VIEW big AS SELECT cust FROM spend WHERE spent > CAST('5' AS MONEY(USD))", "= done 0")
+stmt("SELECT * FROM big", "= 1")
+stmt("EXPLAIN SELECT * FROM big",
+     "= 'View Scan on big' | 'View big' | '  View Scan on spend' | '    Filter: (spent > CAST('5' AS MONEY(USD)))' | "
+     "'  View spend' | '    Scan on vo' | '      Aggregate: group by cust'")
+# one namespace with tables
+stmt("CREATE VIEW spend AS SELECT 1", ("EXISTS", None, "there is already a view spend"))
+stmt("CREATE VIEW cu AS SELECT 1", ("EXISTS", None, "there is already a table cu"))
+stmt("CREATE TABLE spend (x INTEGER)", ("EXISTS", None, "there is already a view spend"))
+# planned when it is created, so a view that cannot run is refused then
+stmt("CREATE VIEW bad AS SELECT nope FROM vo", ("NOT_FOUND", "nope", "table vo has no column `nope`"))
+stmt("CREATE VIEW pv AS SELECT :x", ("SYNTAX", "SELECT", "a view cannot hold parameters"))
+stmt("CREATE VIEW w2 (a, b) AS SELECT 1", ("SYNTAX", "(a, b)", "view `w2` is given 2 column names, and its query has 1 column"))
+# read-only
+stmt("INSERT INTO spend VALUES (1, 2)", ("UNSUPPORTED", "INSERT", "`spend` is a view, and a view is read-only"))
+stmt("UPDATE spend SET cust = 1", ("UNSUPPORTED", "UPDATE", "`spend` is a view, and a view is read-only"))
+# a view may not come to read itself, however many views it goes through
+stmt("CREATE VIEW c1 AS SELECT 1 AS x", "= done 0")
+stmt("CREATE VIEW c2 AS SELECT x FROM c1", "= done 0")
+stmt("CREATE OR REPLACE VIEW c1 AS SELECT x FROM c2", ("SYNTAX", "SELECT", "view `c1` reads itself: `c1` reads `c2` reads `c1`"))
+stmt("CREATE OR REPLACE VIEW c1 AS SELECT 2 AS x", "= done 0")
+stmt("SELECT x FROM c2", "= 2")
+# a change under a view is never blocked: the view fails clearly when used,
+# and runs again once the drop-and-rebuild puts back what it reads
+stmt("DROP TABLE vo", "= done 0")
+stmt("SELECT * FROM spend", ("NOT_FOUND", "SELECT", "view `spend` cannot run: there is no table `vo`"))
+stmt("SELECT * FROM big", ("NOT_FOUND", "SELECT", "view `spend` cannot run: there is no table `vo`"))
+stmt("CREATE TABLE vo_new (id INTEGER PRIMARY KEY, cust INTEGER, total MONEY(USD))", "= done 0")
+stmt("INSERT INTO vo_new VALUES (1, 3, CAST('9' AS MONEY(USD)))", "= done 1")
+stmt("ALTER TABLE vo_new RENAME TO vo", "= done 0")
+stmt("SELECT * FROM big", "= 3")
+# SELECT * reflects the table as it is now
+stmt("CREATE VIEW allv AS SELECT * FROM vo", "= done 0")
+stmt("ALTER TABLE vo ADD COLUMN note TEXT", "= done 0")
+stmt("SELECT * FROM allv", "% id:integer, cust:integer, total:money(USD), note:string", "= 1, 3, money 9.00, NULL")
+stmt("DROP VIEW allv", "= done 0")
+stmt("DROP VIEW allv", ("NOT_FOUND", None, "there is no view allv"))
+stmt("DROP VIEW IF EXISTS allv", "= done 0")
+stmt("CREATE TABLE allv (id INTEGER PRIMARY KEY)", "= done 0")
+stmt("DROP TABLE allv", "= done 0")
 
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")

@@ -777,6 +777,142 @@ static int derived_columns(B *b, SqlScan *sc, const SqlNameList *cols, const cha
     return 1;
 }
 
+/* ---- views (docs/gsql_view_design.md) ----------------------------------
+ *
+ * A view is expanded where it is read: its stored text is parsed and planned
+ * as a derived table that reads no enclosing query and no WITH name. The
+ * views being expanded are kept on a stack, so one that reads itself, through
+ * however many others, is refused rather than expanded for ever. Planning is
+ * single-threaded in a process, as the owner is. */
+
+#define SQL_VIEW_DEPTH 16
+static const char *vstack[SQL_VIEW_DEPTH];
+static size_t nvstack;
+
+/* the view-name stack, said as a chain: `a`, `b`, `a` */
+static void view_chain(char *out, size_t cap, const char *last) {
+    size_t used = 0;
+    out[0] = 0;
+    for (size_t k = 0; k <= nvstack; k++) {
+        const char *n = k < nvstack ? vstack[k] : last;
+        int w = snprintf(out + used, cap - used, "%s`%s`", k ? " reads " : "", n);
+        if (w < 0 || (size_t)w >= cap - used) {
+            break;
+        }
+        used += (size_t)w;
+    }
+}
+
+/* whether `name` may be expanded now, with the refusal if not */
+static int view_enter(B *b, const char *name, uint32_t pos) {
+    for (size_t k = 0; k < nvstack; k++) {
+        if (strcmp(vstack[k], name) == 0) {
+            char chain[400];
+            view_chain(chain, sizeof chain, name);
+            return bfail(b, pos, GSQL_SYNTAX, "view `%s` reads itself: %s", name, chain);
+        }
+    }
+    if (nvstack == SQL_VIEW_DEPTH) {
+        return bfail(b, pos, GSQL_UNSUPPORTED, "views may read other views at most %d deep", SQL_VIEW_DEPTH);
+    }
+    vstack[nvstack++] = name;
+    return 1;
+}
+
+static void view_leave(void) {
+    nvstack--;
+}
+
+/* A stored view's text and declared columns (docs/gsql_view_design.md §3). */
+static int view_record(const GsqlBuf *rec, char **text, char ***declared, size_t *ndeclared) {
+    V3Field f[8];
+    long n = v3_record_fields(rec->bytes, rec->length, f, 8);
+    const V3Field *t = n > 0 ? v3_field_named(f, n, "text") : NULL;
+    const V3Field *d = n > 0 ? v3_field_named(f, n, "declared") : NULL;
+    if (!t || !d) {
+        return 0;
+    }
+    *text = v3_read_text(t->v, t->vlen);
+    GsBytes items[256];
+    long nd = v3_array_items(d->v, d->vlen, items, 256);
+    if (!*text || nd < 0) {
+        free(*text);
+        return 0;
+    }
+    *declared = calloc((size_t)(nd ? nd : 1), sizeof(char *));
+    if (!*declared) {
+        abort();
+    }
+    for (long k = 0; k < nd; k++) {
+        (*declared)[k] = v3_read_text(items[k].p, items[k].n);
+    }
+    *ndeclared = (size_t)nd;
+    return 1;
+}
+
+/* Plans a view's query into `sc`: its stored text parsed and planned. A
+ * failure is said as the view's, at the place the view is read. */
+static int open_view(B *b, SqlScan *sc, const char *name, const GsqlBuf *rec, uint32_t pos) {
+    char *text = NULL, **declared = NULL;
+    size_t ndeclared = 0;
+    if (!view_record(rec, &text, &declared, &ndeclared)) {
+        return bfail(b, pos, GSQL_CORRUPT, "view `%s` is stored in a form this build cannot read", name);
+    }
+    sc->vtext = text;
+    sc->view = name;
+    sc->vparse = calloc(1, sizeof(SqlParsed));
+    if (!sc->vparse) {
+        abort();
+    }
+    GsqlError inner = { GSQL_OK, "", 0 };
+    int ok = view_enter(b, name, pos);
+    if (ok) {
+        int rc = sql_parse(text, strlen(text), sc->vparse, &inner);
+        if (rc == GSQL_OK) {
+            sc->derived = sql_alloc(b->arena, sizeof(SqlPlan));
+            rc = plan_at(b->e, b->t, sc->vparse->stmt, &sc->vparse->arena, text, b->force_scan, sc->derived, &inner,
+                         NULL, NULL, b->nsubq, NULL, 0);
+            if (rc != GSQL_OK) {
+                sc->derived = NULL;
+            }
+        }
+        view_leave();
+        if (rc != GSQL_OK) {
+            /* said as the view's, at the place it is read; a refusal that is
+               already about a view (one reading itself, or a broken view it
+               reads) is passed on as it is */
+            if (strncmp(inner.message, "view `", 6) == 0) {
+                ok = bfail(b, pos, inner.code, "%s", inner.message);
+            } else {
+                ok = bfail(b, pos, inner.code, "view `%s` cannot run: %s", name, inner.message);
+            }
+        }
+    }
+    if (ok) {
+        sc->access = ACC_DERIVED;
+        sc->ndcols = sc->derived->nout;
+        sc->dkinds = sc->derived->kinds;
+        sc->dnames = sc->derived->names;
+        if (ndeclared) {
+            if (ndeclared != sc->derived->nout) {
+                ok = bfail(b, pos, GSQL_SYNTAX, "view `%s` cannot run: it names %zu column%s, and its query now has %zu",
+                           name, ndeclared, ndeclared == 1 ? "" : "s", sc->derived->nout);
+            } else {
+                const char **names = sql_alloc(b->arena, sizeof(char *) * ndeclared);
+                for (size_t k = 0; k < ndeclared; k++) {
+                    names[k] = sql_strndup(b->arena, declared[k], strlen(declared[k]));
+                }
+                sc->dnames = names;
+            }
+        }
+    }
+    for (size_t k = 0; k < ndeclared; k++) {
+        free(declared[k]);
+    }
+    free(declared);
+    return ok;
+}
+
 /* Opens table `k` of the statement as its scan: a derived table, a WITH
  * query in reach, or a table of the catalog, in that order. */
 static int open_scan(B *b, const GsEngine *e, GsTxn *t, size_t k, const char *table, const char *alias,
@@ -823,9 +959,32 @@ static int open_scan(B *b, const GsEngine *e, GsTxn *t, size_t k, const char *ta
             goto named;
         }
     }
+    GsqlBuf vrec = {0};
+    int vr = gsql_view_get(e, t, table, &vrec, b->err);
+    if (vr == GSQL_OK) {
+        int ok = open_view(b, sc, table, &vrec, pos);
+        gsql_buf_free(&vrec);
+        if (!ok) {
+            return 0;
+        }
+        sc->qualifier = alias ? alias : table;
+        if (cols && cols->n) {
+            if (cols->n != sc->ndcols) {
+                return bfail(b, cols->pos, GSQL_SYNTAX, "`%s` is given %zu column name%s, and view `%s` has %zu "
+                             "column%s", sc->qualifier, cols->n, cols->n == 1 ? "" : "s", table, sc->ndcols,
+                             sc->ndcols == 1 ? "" : "s");
+            }
+            sc->dnames = (const char **)cols->cols;
+        }
+        goto named;
+    }
+    gsql_buf_free(&vrec);
+    if (vr != GSQL_NOT_FOUND) {
+        return 0;
+    }
     if (cols && cols->n) {
-        return bfail(b, cols->pos, GSQL_UNSUPPORTED, "a column list renames a derived table's or WITH query's "
-                     "columns, and `%s` is a table, whose columns keep their names", table);
+        return bfail(b, cols->pos, GSQL_UNSUPPORTED, "a column list renames a derived table's, WITH query's or "
+                     "view's columns, and `%s` is a table, whose columns keep their names", table);
     }
     int rc = gsql_table_open(e, t, table, &sc->tb, b->err);
     if (rc != GSQL_OK) {
@@ -857,6 +1016,16 @@ static void scans_alloc(B *b, size_t n) {
 
 static int open_table(B *b, const GsEngine *e, GsTxn *t) {
     SqlPlan *p = b->p;
+    GsqlBuf vrec = {0};
+    int vr = gsql_view_get(e, t, p->s->table, &vrec, b->err);
+    gsql_buf_free(&vrec);
+    if (vr == GSQL_OK) {
+        return bfail(b, p->s->pos, GSQL_UNSUPPORTED, "`%s` is a view, and a view is read-only: write to the tables it "
+                     "reads", p->s->table);
+    }
+    if (vr != GSQL_NOT_FOUND) {
+        return 0;
+    }
     scans_alloc(b, 1);
     if (!open_scan(b, e, t, 0, p->s->table, p->s->alias, p->s->pos, SQL_JOIN_FIRST, NULL, NULL)) {
         return 0;
@@ -1450,6 +1619,25 @@ static int plan_at(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, con
     case SQ_INSERT:
         ok = plan_insert(&b, e, t);
         break;
+    case SQ_CREATE_VIEW:
+        /* planned now, so a view that does not bind is refused when it is
+           created; on the stack under its own name, so OR REPLACE cannot make
+           it read itself */
+        if (!view_enter(&b, s->table, s->pos)) {
+            ok = 0;
+            break;
+        }
+        out->left = sql_alloc(arena, sizeof(SqlPlan));
+        if (plan_at(e, t, s->view_q, arena, text, force_scan, out->left, err, NULL, NULL, nsubq, NULL, 0) != GSQL_OK) {
+            out->left = NULL;
+            ok = 0;
+        } else if (s->view_cols.n && s->view_cols.n != out->left->nout) {
+            ok = bfail(&b, s->view_cols.pos, GSQL_SYNTAX, "view `%s` is given %zu column name%s, and its query has %zu "
+                       "column%s", s->table, s->view_cols.n, s->view_cols.n == 1 ? "" : "s", out->left->nout,
+                       out->left->nout == 1 ? "" : "s");
+        }
+        view_leave();
+        break;
     case SQ_CREATE_TABLE:
     case SQ_ADD_COLUMN:
         /* a DEFAULT is a constant */
@@ -1479,10 +1667,18 @@ void sql_plan_free(SqlPlan *p) {
     }
     p->nsubs = 0;
     for (size_t k = 0; k < p->nscans; k++) {
-        if (p->scans[k].derived && !p->scans[k].cte) {
-            sql_plan_free(p->scans[k].derived);
+        SqlScan *sc = &p->scans[k];
+        if (sc->derived && !sc->cte) {
+            sql_plan_free(sc->derived);
         }
-        p->scans[k].derived = NULL;
+        sc->derived = NULL;
+        if (sc->vparse) {
+            sql_parsed_free(sc->vparse);
+            free(sc->vparse);
+            sc->vparse = NULL;
+        }
+        free(sc->vtext);
+        sc->vtext = NULL;
     }
     for (size_t k = 0; k < p->nctes; k++) {
         sql_plan_free(p->ctes[k]);
@@ -1527,7 +1723,14 @@ static void access_line(const SqlPlan *p, const SqlScan *sc, GsqlBuf *b) {
         put(b, "Hash ");
     }
     if (sc->derived) {
-        if (sc->cte) {
+        if (sc->view) {
+            put(b, "View Scan on ");
+            put(b, sc->view);
+            if (strcmp(sc->view, sc->qualifier) != 0) {
+                put(b, " AS ");
+                put(b, sc->qualifier);
+            }
+        } else if (sc->cte) {
             put(b, "CTE Scan on ");
             put(b, sc->cte);
             if (strcmp(sc->cte, sc->qualifier) != 0) {
@@ -1735,8 +1938,8 @@ tail:
     /* each derived table's plan, and each WITH query's, after the query */
     for (size_t k = 0; k < p->nscans; k++) {
         if (p->scans[k].derived && !p->scans[k].cte) {
-            put(&b, "Derived ");
-            put(&b, p->scans[k].qualifier);
+            put(&b, p->scans[k].view ? "View " : "Derived ");
+            put(&b, p->scans[k].view ? p->scans[k].view : p->scans[k].qualifier);
             emit(line, ctx, base, &b);
             explain_at(p->scans[k].derived, line, ctx, base + 1);
         }

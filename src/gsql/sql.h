@@ -134,7 +134,9 @@ typedef enum {
     SQ_ADD_COLUMN,
     SQ_CREATE_INDEX,
     SQ_DROP_INDEX,
-    SQ_RENAME_TABLE          /* ALTER TABLE table RENAME TO rename_to */
+    SQ_RENAME_TABLE,         /* ALTER TABLE table RENAME TO rename_to */
+    SQ_CREATE_VIEW,          /* CREATE [OR REPLACE] VIEW table [(view_cols)] AS view_q */
+    SQ_DROP_VIEW             /* DROP VIEW [IF EXISTS] table */
 } SqlStmtKind;
 
 typedef struct {
@@ -239,6 +241,11 @@ typedef struct SqlStmt {
     /* CREATE INDEX / DROP INDEX */
     char *index;
     char *rename_to;         /* ALTER TABLE ... RENAME TO */
+    /* CREATE VIEW (docs/gsql_view_design.md) */
+    struct SqlStmt *view_q;
+    char *view_text;         /* its canonical text, printed before planning binds it */
+    SqlNameList view_cols;
+    int or_replace;
     int unique;
     SqlNameList index_cols;
     /* parameters, in order of first appearance */
@@ -247,7 +254,7 @@ typedef struct SqlStmt {
     unsigned max_param_index;/* $n parameters: the largest n */
 } SqlStmt;
 
-typedef struct {
+typedef struct SqlParsed {
     SqlArena arena;
     SqlStmt *stmt;
 } SqlParsed;
@@ -304,6 +311,9 @@ typedef struct SqlScan {
        here unless the scan reads a WITH query; its columns' names and kinds */
     struct SqlPlan *derived;
     const char *cte;         /* the WITH query read, or NULL */
+    const char *view;        /* the view read, or NULL: its parse is owned here */
+    struct SqlParsed *vparse;
+    char *vtext;
     size_t ndcols;
     const char **dnames;
     const char **dkinds;

@@ -683,7 +683,7 @@ commit
 > SELECT * FROM (SELECT 1, 2) d (a)
 ! SYNTAX 31 the subquery `d` is given 1 column name, and its query has 2 columns
 > SELECT * FROM cu c (a, b, c)
-! UNSUPPORTED 20 a column list renames a derived table's or WITH query's columns
+! UNSUPPORTED 20 a column list renames a derived table's, WITH query's or view's columns
 > SELECT d.nope FROM (SELECT 1 AS x) d
 ! NOT_FOUND 8 derived table d has no column `nope`
 > SELECT d.p.vendor FROM (SELECT p FROM assets) d
@@ -784,6 +784,84 @@ rollback
 = 3
 > SELECT * FROM rn2
 ! NOT_FOUND 1 there is no table `rn2`
+
+# ---- views (docs/gsql_view_design.md) --------------------------------
+> CREATE TABLE vo (id INTEGER PRIMARY KEY, cust INTEGER, total MONEY(USD))
+= done 0
+> INSERT INTO vo VALUES (1, 1, CAST('5' AS MONEY(USD))), (2, 1, CAST('7' AS MONEY(USD))), (3, 2, CAST('3' AS MONEY(USD)))
+= done 3
+> CREATE VIEW spend (cust, spent) AS SELECT cust, sum(total) FROM vo GROUP BY cust
+= done 0
+> SELECT * FROM spend ORDER BY cust
+% cust:integer, spent:any
+= 1, money 12.00 | 2, money 3.00
+> SELECT cu.name, s.spent FROM cu JOIN spend s ON s.cust = cu.id ORDER BY cu.id
+= 'ann', money 12.00 | 'bob', money 3.00
+> SELECT a FROM spend s (a, b) WHERE b > CAST('5' AS MONEY(USD))
+= 1
+> CREATE VIEW big AS SELECT cust FROM spend WHERE spent > CAST('5' AS MONEY(USD))
+= done 0
+> SELECT * FROM big
+= 1
+> EXPLAIN SELECT * FROM big
+= 'View Scan on big' | 'View big' | '  View Scan on spend' | '    Filter: (spent > CAST('5' AS MONEY(USD)))' | '  View spend' | '    Scan on vo' | '      Aggregate: group by cust'
+> CREATE VIEW spend AS SELECT 1
+! EXISTS 0 there is already a view spend
+> CREATE VIEW cu AS SELECT 1
+! EXISTS 0 there is already a table cu
+> CREATE TABLE spend (x INTEGER)
+! EXISTS 0 there is already a view spend
+> CREATE VIEW bad AS SELECT nope FROM vo
+! NOT_FOUND 27 table vo has no column `nope`
+> CREATE VIEW pv AS SELECT :x
+! SYNTAX 19 a view cannot hold parameters
+> CREATE VIEW w2 (a, b) AS SELECT 1
+! SYNTAX 16 view `w2` is given 2 column names, and its query has 1 column
+> INSERT INTO spend VALUES (1, 2)
+! UNSUPPORTED 1 `spend` is a view, and a view is read-only
+> UPDATE spend SET cust = 1
+! UNSUPPORTED 1 `spend` is a view, and a view is read-only
+> CREATE VIEW c1 AS SELECT 1 AS x
+= done 0
+> CREATE VIEW c2 AS SELECT x FROM c1
+= done 0
+> CREATE OR REPLACE VIEW c1 AS SELECT x FROM c2
+! SYNTAX 30 view `c1` reads itself: `c1` reads `c2` reads `c1`
+> CREATE OR REPLACE VIEW c1 AS SELECT 2 AS x
+= done 0
+> SELECT x FROM c2
+= 2
+> DROP TABLE vo
+= done 0
+> SELECT * FROM spend
+! NOT_FOUND 1 view `spend` cannot run: there is no table `vo`
+> SELECT * FROM big
+! NOT_FOUND 1 view `spend` cannot run: there is no table `vo`
+> CREATE TABLE vo_new (id INTEGER PRIMARY KEY, cust INTEGER, total MONEY(USD))
+= done 0
+> INSERT INTO vo_new VALUES (1, 3, CAST('9' AS MONEY(USD)))
+= done 1
+> ALTER TABLE vo_new RENAME TO vo
+= done 0
+> SELECT * FROM big
+= 3
+> CREATE VIEW allv AS SELECT * FROM vo
+= done 0
+> ALTER TABLE vo ADD COLUMN note TEXT
+= done 0
+> SELECT * FROM allv
+% id:integer, cust:integer, total:money(USD), note:string
+= 1, 3, money 9.00, NULL
+> DROP VIEW allv
+= done 0
+> DROP VIEW allv
+! NOT_FOUND 0 there is no view allv
+> DROP VIEW IF EXISTS allv
+= done 0
+> CREATE TABLE allv (id INTEGER PRIMARY KEY)
+= done 0
+> DROP TABLE allv
+= done 0
 
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)

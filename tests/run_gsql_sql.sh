@@ -125,6 +125,25 @@ else
     fail "the overflow warning is missing, or names a position in the host's template"
 fi
 
+# a change under a view is reported, naming the view, once per view it broke
+# or reshaped, and never for a view it mended (docs/gsql_view_design.md §3)
+for want in 'warning: view `spend` cannot run: there is no table `vo` [2118]' \
+            'warning: view `big` cannot run: view `spend` cannot run: there is no table `vo` [2118]' \
+            "warning: view \`allv\`'s columns are now (id, cust, total, note), where they were (id, cust, total) [2118]"; do
+    if grep -qxF "$want" "$work/sem.err"; then
+        pass "the change warns: ${want#warning: }"
+    else
+        fail "missing the warning: $want"
+    fi
+done
+nview=$(grep -c '\[2118\]$' "$work/sem.err" || true)
+if [ "$nview" = 3 ]; then
+    pass "exactly those three view warnings, and none for the views the rebuild mended"
+else
+    grep '\[2118\]$' "$work/sem.err" | sed 's/^/       /'
+    fail "$nview view warnings where 3 were expected"
+fi
+
 printf 'TIER valgrind: the semantics corpus, no invalid access, no definite leak\n'
 if vg_available; then
     mkdir -p "$work/vg"

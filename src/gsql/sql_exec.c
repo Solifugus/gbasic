@@ -33,6 +33,24 @@ struct GsqlSql {
     size_t nw;
 };
 
+/* A warning of the SQL layer's own, for the statement now running. */
+static void sql_warn(GsqlSql *q, int code, const char *message) {
+    char **m = realloc(q->wmsg, sizeof *m * (q->nw + 1));
+    int *c = realloc(q->wcode, sizeof *c * (q->nw + 1));
+    if (!m || !c) {
+        abort();
+    }
+    q->wmsg = m;
+    q->wcode = c;
+    size_t n = strlen(message);
+    q->wmsg[q->nw] = malloc(n + 1);
+    if (!q->wmsg[q->nw]) {
+        abort();
+    }
+    memcpy(q->wmsg[q->nw], message, n + 1);
+    q->wcode[q->nw++] = code;
+}
+
 
 /* ---- errors ------------------------------------------------------------ */
 
@@ -2689,13 +2707,226 @@ static int create_indexes(X *x, const SqlStmt *s, int *made_any) {
     return rc;
 }
 
+/* ---- views (docs/gsql_view_design.md) -------------------------------------
+ *
+ * A view is stored as { format, text, declared, columns, ok }: its SELECT's
+ * canonical text, the column list written in CREATE VIEW, and the columns and
+ * whether it ran at its last check. After every schema change every view is
+ * planned again, and a warning (2118) says what THIS change did: a view that
+ * ran and now does not, or whose columns changed. */
+
+typedef struct {
+    char *text;
+    char **declared;
+    size_t ndeclared;
+    char **columns;
+    size_t ncolumns;
+    int ok;
+} ViewRec;
+
+static void view_rec_free(ViewRec *v) {
+    free(v->text);
+    for (size_t k = 0; k < v->ndeclared; k++) {
+        free(v->declared[k]);
+    }
+    free(v->declared);
+    for (size_t k = 0; k < v->ncolumns; k++) {
+        free(v->columns[k]);
+    }
+    free(v->columns);
+    memset(v, 0, sizeof *v);
+}
+
+static char **text_list(const V3Field *f, size_t *n) {
+    GsBytes items[256];
+    long m = f ? v3_array_items(f->v, f->vlen, items, 256) : 0;
+    *n = m > 0 ? (size_t)m : 0;
+    char **out = calloc(*n ? *n : 1, sizeof(char *));
+    if (!out) {
+        abort();
+    }
+    for (size_t k = 0; k < *n; k++) {
+        out[k] = v3_read_text(items[k].p, items[k].n);
+    }
+    return out;
+}
+
+static int view_rec_read(const GsqlBuf *b, ViewRec *v) {
+    memset(v, 0, sizeof *v);
+    V3Field f[8];
+    long n = v3_record_fields(b->bytes, b->length, f, 8);
+    const V3Field *t = n > 0 ? v3_field_named(f, n, "text") : NULL;
+    const V3Field *ok = n > 0 ? v3_field_named(f, n, "ok") : NULL;
+    if (!t) {
+        return 0;
+    }
+    v->text = v3_read_text(t->v, t->vlen);
+    v->declared = text_list(v3_field_named(f, n, "declared"), &v->ndeclared);
+    v->columns = text_list(v3_field_named(f, n, "columns"), &v->ncolumns);
+    if (ok) {
+        v3_read_bool(ok->v, ok->vlen, &v->ok);
+    }
+    return v->text != NULL;
+}
+
+static void view_rec_write(GsqlBuf *out, const char *text, char *const *declared, size_t ndeclared,
+                           const char *const *columns, size_t ncolumns, int ok) {
+    out->length = 0;
+    v3_w_record(out, 5);
+    v3_w_name(out, "format");
+    v3_w_int(out, 1);
+    v3_w_name(out, "text");
+    v3_w_text(out, text);
+    v3_w_name(out, "declared");
+    v3_w_array(out, ndeclared);
+    for (size_t k = 0; k < ndeclared; k++) {
+        v3_w_text(out, declared[k]);
+    }
+    v3_w_name(out, "columns");
+    v3_w_array(out, ncolumns);
+    for (size_t k = 0; k < ncolumns; k++) {
+        v3_w_text(out, columns[k]);
+    }
+    v3_w_name(out, "ok");
+    v3_w_bool(out, ok);
+}
+
+/* a list of columns said as (a, b, c) */
+static void say_columns(char *out, size_t cap, const char *const *c, size_t n) {
+    size_t used = 0;
+    used += (size_t)snprintf(out, cap, "(");
+    for (size_t k = 0; k < n && used < cap; k++) {
+        used += (size_t)snprintf(out + used, cap - used, "%s%s", k ? ", " : "", c[k]);
+    }
+    if (used < cap) {
+        snprintf(out + used, cap - used, ")");
+    }
+}
+
+static int collect_view(void *ctx, const char *name) {
+    struct { char **v; size_t n; } *l = ctx;
+    char **g = realloc(l->v, sizeof *g * (l->n + 1));
+    if (!g) {
+        abort();
+    }
+    l->v = g;
+    size_t len = strlen(name);
+    l->v[l->n] = malloc(len + 1);
+    if (!l->v[l->n]) {
+        abort();
+    }
+    memcpy(l->v[l->n++], name, len + 1);
+    return 0;
+}
+
+/* Every view, planned again after a schema change in the same transaction. */
+static int recheck_views(X *x) {
+    struct { char **v; size_t n; } names = { NULL, 0 };
+    GsqlError lerr = { GSQL_OK, "", 0 };
+    int rc = gsql_view_list(x->e, x->t, collect_view, &names, &lerr);
+    for (size_t k = 0; k < names.n && rc == GSQL_OK; k++) {
+        GsqlBuf rec = {0};
+        ViewRec old;
+        if (gsql_view_get(x->e, x->t, names.v[k], &rec, &lerr) != GSQL_OK || !view_rec_read(&rec, &old)) {
+            gsql_buf_free(&rec);
+            continue;
+        }
+        SqlParsed vp;
+        SqlPlan plan;
+        memset(&plan, 0, sizeof plan);
+        GsqlError verr = { GSQL_OK, "", 0 };
+        int nowok = sql_parse(old.text, strlen(old.text), &vp, &verr) == GSQL_OK;
+        int planned = nowok && sql_plan(x->e, x->t, vp.stmt, &vp.arena, old.text, 0, &plan, &verr) == GSQL_OK;
+        nowok = planned;
+        const char *const *cols = NULL;
+        size_t ncols = 0;
+        if (nowok) {
+            if (old.ndeclared && old.ndeclared != plan.nout) {
+                nowok = 0;
+                snprintf(verr.message, sizeof verr.message, "it names %zu column%s, and its query now has %zu",
+                         old.ndeclared, old.ndeclared == 1 ? "" : "s", plan.nout);
+            } else if (old.ndeclared) {
+                cols = (const char *const *)old.declared;
+                ncols = old.ndeclared;
+            } else {
+                cols = plan.names;
+                ncols = plan.nout;
+            }
+        }
+        int same = nowok && ncols == old.ncolumns;
+        for (size_t c = 0; same && c < ncols; c++) {
+            same = strcmp(cols[c], old.columns[c]) == 0;
+        }
+        char msg[700];
+        if (old.ok && !nowok) {
+            /* always naming the view checked: two views broken by one change,
+               one through the other, must not say one sentence */
+            snprintf(msg, sizeof msg, "view `%s` cannot run: %s", names.v[k], verr.message);
+            sql_warn(x->q, 2118, msg);
+        } else if (old.ok && nowok && !same) {
+            char was[300], now[300];
+            say_columns(was, sizeof was, (const char *const *)old.columns, old.ncolumns);
+            say_columns(now, sizeof now, cols, ncols);
+            snprintf(msg, sizeof msg, "view `%s`'s columns are now %s, where they were %s", names.v[k], now, was);
+            sql_warn(x->q, 2118, msg);
+        }
+        if (nowok != old.ok || (nowok && !same)) {
+            GsqlBuf upd = {0};
+            view_rec_write(&upd, old.text, old.declared, old.ndeclared,
+                           nowok ? cols : (const char *const *)old.columns, nowok ? ncols : old.ncolumns, nowok);
+            rc = gsql_view_put(x->e, x->t, names.v[k], upd.bytes, upd.length, 1, x->err);
+            gsql_buf_free(&upd);
+        }
+        if (planned) {
+            sql_plan_free(&plan);
+        }
+        sql_parsed_free(&vp);
+        view_rec_free(&old);
+        gsql_buf_free(&rec);
+    }
+    for (size_t k = 0; k < names.n; k++) {
+        free(names.v[k]);
+    }
+    free(names.v);
+    return rc;
+}
+
+static int run_schema_change(X *x, GsqlResult *out);
+
+/* A schema statement, then every view checked against what it left. */
 static int run_schema(X *x, GsqlResult *out) {
+    int rc = run_schema_change(x, out);
+    if (rc == GSQL_OK && x->p->s->kind != SQ_CREATE_INDEX && x->p->s->kind != SQ_DROP_INDEX) {
+        rc = recheck_views(x);
+    }
+    return rc;
+}
+
+static int run_schema_change(X *x, GsqlResult *out) {
     const SqlStmt *s = x->p->s;
     GsqlError *err = x->err;
     int rc = GSQL_OK;
     out->has_affected = 1;
     out->affected = 0;
     switch (s->kind) {
+    case SQ_CREATE_VIEW: {
+        GsqlBuf rec = {0};
+        const SqlPlan *q = x->p->left;
+        int named = s->view_cols.n > 0;
+        view_rec_write(&rec, s->view_text, named ? s->view_cols.cols : NULL, s->view_cols.n,
+                       named ? (const char *const *)s->view_cols.cols : q->names, named ? s->view_cols.n : q->nout, 1);
+        rc = gsql_view_put(x->e, x->t, s->table, rec.bytes, rec.length, s->or_replace, err);
+        gsql_buf_free(&rec);
+        return rc;
+    }
+    case SQ_DROP_VIEW:
+        rc = gsql_view_drop(x->e, x->t, s->table, err);
+        if (rc == GSQL_NOT_FOUND && s->if_exists) {
+            err->code = GSQL_OK;
+            err->message[0] = 0;
+            return GSQL_OK;
+        }
+        return rc;
     case SQ_CREATE_TABLE: {
         if (s->if_exists) {
             GsqlTable *t;

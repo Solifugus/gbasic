@@ -159,7 +159,15 @@
 > create table t (a int, primary key (a), primary key (a))
 ! SYNTAX 41 a table has one PRIMARY KEY
 > create view v as select 1
-! UNSUPPORTED 8 views are not in this release
+= CREATE VIEW v AS SELECT 1
+> create or replace view v (a, b) as with w as (select 1, 2) select * from w
+= CREATE OR REPLACE VIEW v (a, b) AS WITH w AS (SELECT 1, 2) SELECT * FROM w
+> drop view if exists v
+= DROP VIEW IF EXISTS v
+> create or view v as select 1
+! SYNTAX 11 expected REPLACE after CREATE OR
+> create view v select 1
+! SYNTAX 15 expected AS
 > insert into t values (1, 2), (3)
 ! SYNTAX 30 row 2 of VALUES has 1 values and row 1 has 2
 > insert into t select * from u
@@ -167,7 +175,7 @@
 > insert into t values (1) returning a
 ! UNSUPPORTED 26 RETURNING
 > drop t
-! SYNTAX 6 expected TABLE or INDEX after DROP
+! SYNTAX 6 expected TABLE, INDEX or VIEW after DROP
 > alter table t drop column a
 ! UNSUPPORTED 15 ADD COLUMN and RENAME TO are the only changes
 > alter table t_new rename to t

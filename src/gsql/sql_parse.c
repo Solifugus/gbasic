@@ -1690,7 +1690,69 @@ static int delete_stmt(P *p, SqlStmt *s) {
     return 1;
 }
 
+/* CREATE [OR REPLACE] VIEW name [(cols)] AS select (docs/gsql_view_design.md) */
+static int view_stmt(P *p, SqlStmt *s) {
+    s->kind = SQ_CREATE_VIEW;
+    s->table = name(p, "a view name");
+    if (!s->table) {
+        return 0;
+    }
+    if (at_sym(p, "(") && !name_list(p, &s->view_cols, 0)) {
+        return 0;
+    }
+    if (!expect_kw(p, "as")) {
+        return 0;
+    }
+    uint32_t pos = p->tok.pos;
+    SqlCte *ctes = NULL;
+    size_t nctes = 0;
+    if (at_kw(p, "with") && !with_list(p, &ctes, &nctes)) {
+        return 0;
+    }
+    if (!expect_kw(p, "select")) {
+        return 0;
+    }
+    SqlStmt *q = sql_alloc(p->arena, sizeof *q);
+    q->kind = SQ_SELECT;
+    q->pos = pos;
+    if (!select_stmt(p, q) || !compound(p, q)) {
+        return 0;
+    }
+    q->ctes = ctes;
+    q->nctes = nctes;
+    s->view_q = q;
+    /* the text stored is the canonical print of the query as written: once
+       planned, its names are bound to positions */
+    GsqlBuf text = {0};
+    sql_print_stmt(&text, q);
+    s->view_text = sql_strndup(p->arena, (const char *)text.bytes, text.length);
+    gsql_buf_free(&text);
+    /* a view is stored and read by every later statement: there is nothing
+       for a parameter to be bound from */
+    if (p->stmt->nparam_names || p->stmt->max_param_index) {
+        return fail_at(p, pos, GSQL_SYNTAX, "a view cannot hold parameters: it is stored, and read by later statements "
+                       "that do not bind them");
+    }
+    return 1;
+}
+
 static int create_stmt(P *p, SqlStmt *s) {
+    if (accept_kw(p, "or")) {
+        if (!at_word(p, "replace")) {
+            return expected(p, "REPLACE after CREATE OR");
+        }
+        next(p);
+        if (!at_word(p, "view")) {
+            return expected(p, "VIEW after CREATE OR REPLACE");
+        }
+        next(p);
+        s->or_replace = 1;
+        return view_stmt(p, s);
+    }
+    if (at_word(p, "view")) {
+        next(p);
+        return view_stmt(p, s);
+    }
     if (accept_kw(p, "table")) {
         s->kind = SQ_CREATE_TABLE;
         if (accept_kw(p, "if")) {
@@ -1779,26 +1841,27 @@ static int create_stmt(P *p, SqlStmt *s) {
     if (unique) {
         return expected(p, "INDEX after CREATE UNIQUE");
     }
-    if (p->tok.kind == T_IDENT && strcmp(p->tok.text, "view") == 0) {
-        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "views are not in this release of G-SQL (Phase 2)");
-    }
-    return expected(p, "TABLE or INDEX after CREATE");
+    return expected(p, "TABLE, INDEX or VIEW after CREATE");
 }
 
 static int drop_stmt(P *p, SqlStmt *s) {
-    int table = accept_kw(p, "table");
-    if (!table && !accept_kw(p, "index")) {
-        return expected(p, "TABLE or INDEX after DROP");
+    int view = at_word(p, "view");
+    if (view) {
+        next(p);
     }
-    s->kind = table ? SQ_DROP_TABLE : SQ_DROP_INDEX;
+    int table = !view && accept_kw(p, "table");
+    if (!view && !table && !accept_kw(p, "index")) {
+        return expected(p, "TABLE, INDEX or VIEW after DROP");
+    }
+    s->kind = view ? SQ_DROP_VIEW : table ? SQ_DROP_TABLE : SQ_DROP_INDEX;
     if (accept_kw(p, "if")) {
         if (!expect_kw(p, "exists")) {
             return 0;
         }
         s->if_exists = 1;
     }
-    if (table) {
-        s->table = name(p, "a table name");
+    if (table || view) {
+        s->table = name(p, view ? "a view name" : "a table name");
         return s->table != NULL;
     }
     s->index = name(p, "an index name");
@@ -2625,6 +2688,20 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
         print_name(o, s->table);
         puts_(o, " ADD COLUMN ");
         print_coldef(o, &s->coldefs[0]);
+        return;
+    case SQ_CREATE_VIEW:
+        puts_(o, s->or_replace ? "CREATE OR REPLACE VIEW " : "CREATE VIEW ");
+        print_name(o, s->table);
+        if (s->view_cols.n) {
+            v3_put(o, " ", 1);
+            print_names(o, &s->view_cols, 0);
+        }
+        puts_(o, " AS ");
+        sql_print_stmt(o, s->view_q);
+        return;
+    case SQ_DROP_VIEW:
+        puts_(o, s->if_exists ? "DROP VIEW IF EXISTS " : "DROP VIEW ");
+        print_name(o, s->table);
         return;
     case SQ_RENAME_TABLE:
         puts_(o, "ALTER TABLE ");

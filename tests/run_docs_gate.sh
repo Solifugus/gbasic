@@ -827,7 +827,7 @@ if [ -f "$ERRDOC" ] && [ -f src/eval.c ]; then
     # eval.c's own include lines rather than written out, because a second list
     # of modules is a list a new module silently stays off.
     runtime_src="src/eval.c $(sed -n 's|^#include "\(modules/[A-Za-z0-9_]*\.c\)"|src/\1|p' src/eval.c | tr '\n' ' ')"
-    emitted=$(grep -hoE '(warn_fmt|warn_fmt_at|note_fmt_at|runtime_warn|runtime_warn_at)\([^,]*, *2[0-9]{3},|(warn_fmt|warn_fmt_at|note_fmt_at)\(2[0-9]{3},' $runtime_src \
+    emitted=$(grep -hoE '(warn_fmt|warn_fmt_at|note_fmt_at|runtime_warn|runtime_warn_at|runtime_warn_distinct)\([^,]*, *2[0-9]{3},|(warn_fmt|warn_fmt_at|note_fmt_at)\(2[0-9]{3},' $runtime_src \
               | grep -oE '2[0-9]{3}' | sort -u)
     for c in $emitted; do
         grep -qE "^\| $c \|" "$warn_table" \
