@@ -43,3 +43,9 @@ Scan on orders
 - **parse:** `DISTINCT` and `ALL` printed back canonically, and `DISTINCT ON` refused at its position.
 - **semantics:** hand-written answers covering duplicates removed, `NULL`s as one value, `3` and `3.0` as one value, several columns, `*`, a join, a grouped query, `LIMIT`/`OFFSET` counting distinct rows, `ORDER BY` by position, alias and expression, the refusal of an `ORDER BY` that is not an output, and a key-less kind refused.
 - **differential (oracle):** random `SELECT DISTINCT` queries answered by the engine, and by the test fetching the same query without `DISTINCT` and removing duplicates itself, comparing values through the host's equality. It shares no key or hash code with the engine. Both run in one access mode, the lesson from aggregates.
+
+## 7. What it found
+
+Seven perturbations, all red: no deduplication, a key over the first column only, `OFFSET` counted before deduplication, the sorted path or the grouped path skipping it, the `ORDER BY` rule removed, and the parser ignoring the word. The oracle caught five. The grouped path and the `ORDER BY` rule were caught by the hand-written cases alone.
+
+**Adding the oracle found a defect in the test harness, not the engine.** The new tier draws random numbers before the join tier does, so the join tier saw different data, and some of its joins now answered more than 4096 rows. The harness's row renderer read at most 4096 and rendered a larger batch as `(none)`, so those joins failed against their oracle. HEAD's library failed the same way with the same stream. The renderer reads any number of rows now. The worse half is what it could have hidden: two large answers compared with access paths and forced to a scan both rendered as `(none)`, and agreed whatever they held.

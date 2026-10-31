@@ -18,7 +18,7 @@ order by revenue desc
 - **`HAVING e`**: keeps a group whose condition is **true**, as `WHERE` keeps a row.
 - An aggregate with no `GROUP BY` makes the whole input **one group**, so `select count(*) from t` answers one row even when `t` is empty.
 
-**It is not** `stddev`/`variance` (still refused by name), `FILTER (WHERE …)`, `GROUPING SETS`/`ROLLUP`/`CUBE`, window functions, `SELECT DISTINCT` (a separate item, though it falls out of the same grouping), or spilling to disk.
+**It is not** `stddev`/`variance` (still refused by name), `FILTER (WHERE …)`, `GROUPING SETS`/`ROLLUP`/`CUBE`, window functions, `SELECT DISTINCT` (a separate item, `gsql_distinct_design.md`), or spilling to disk.
 
 ## 2. Every aggregate is gBASIC's arithmetic, applied by the host
 
@@ -90,6 +90,6 @@ Index Seek on orders using orders_by_placed (placed >= :since)
 ## 7. Not done yet
 
 - `stddev`, `variance` and the other statistical aggregates: `gsql_design.md` §7 puts them with the incremental-aggregate contract, which is Phase 3.
-- `SELECT DISTINCT`: the same grouping with every output column as the key; a short next step.
+- ~~`SELECT DISTINCT`~~: built 2026-10-31 (`gsql_distinct_design.md`). It is applied to the output rows, not rewritten into `GROUP BY` as this line first said, because over a grouped query the outputs are what must be distinct.
 - A column functionally dependent on a grouped primary key.
 - Spilling a large grouping to disk.
