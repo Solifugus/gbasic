@@ -350,6 +350,43 @@ stmt("SELECT DISTINCT p FROM assets", ("EXPRESSION", "p", "a record cannot be gr
 stmt("EXPLAIN SELECT DISTINCT g FROM s ORDER BY g", "= 'Scan on s' | '  Distinct: g' | '  Order: g (sorted)'")
 stmt("EXPLAIN SELECT DISTINCT id FROM s ORDER BY id", "= 'Scan on s' | '  Distinct: id' | '  Order: id (by the primary key)'")
 
+sec("UNION, INTERSECT and EXCEPT (docs/gsql_setop_design.md)")
+# s's g is a, a, b, NULL, NULL, b; cu's region is east, west, east, NULL
+stmt("SELECT g FROM s WHERE id < 3 UNION ALL SELECT g FROM s WHERE id > 4", "= 'a' | 'a' | NULL | 'b'")
+stmt("SELECT g FROM s UNION SELECT region FROM cu", "= 'a' | 'b' | NULL | 'east' | 'west'")
+stmt("SELECT g FROM s UNION SELECT region FROM cu ORDER BY 1", "= 'a' | 'b' | 'east' | 'west' | NULL")
+stmt("SELECT 1 UNION DISTINCT SELECT 1", "= 1")
+# 3 and 3.0 are one value and NULLs one value, across the two sides as within one
+stmt("SELECT x FROM s INTERSECT SELECT 3", "= 3")
+stmt("SELECT x FROM s INTERSECT SELECT NULL", "= NULL")
+# the right side has one a, one b and one NULL
+stmt("SELECT g FROM s INTERSECT ALL SELECT g FROM s WHERE id IN (1, 3, 4)", "= 'a' | 'b' | NULL")
+stmt("SELECT g FROM s EXCEPT SELECT 'a'", "= 'b' | NULL")
+stmt("SELECT g FROM s EXCEPT ALL SELECT g FROM s WHERE id IN (1, 3, 4)", "= 'a' | NULL | 'b'")
+# INTERSECT binds tighter; UNION and EXCEPT group left to right
+stmt("SELECT 1 UNION SELECT 2 INTERSECT SELECT 3", "= 1")
+stmt("SELECT 1 UNION SELECT 2 EXCEPT SELECT 1", "= 2")
+# values keep their kinds: a number and a text are two rows
+stmt("SELECT 3 UNION SELECT '3'", "= 3 | '3'")
+stmt("SELECT id, name FROM cu WHERE id < 3 UNION ALL SELECT id, name FROM cu WHERE id > 2 ORDER BY name DESC LIMIT 2 OFFSET 1",
+     "% id:integer, name:string", "= 3, 'cy' | 2, 'bob'")
+stmt("SELECT id FROM cu WHERE id = 1 UNION SELECT 'x'", "% id:any", "= 1 | 'x'")
+stmt("SELECT :a UNION SELECT :b UNION SELECT :a", "= 1 | 2", params=("a = 1", "b = 2"))
+stmt("SELECT DISTINCT g FROM s UNION ALL SELECT 'a'", "= 'a' | 'b' | NULL | 'a'")
+stmt("SELECT 1, 2 UNION SELECT 1", ("SYNTAX", "UNION", "each side of a UNION must have as many columns as the other: the left has 2 and the right 1"))
+stmt("SELECT 1 ORDER BY 1 UNION SELECT 2", ("SYNTAX", "UNION", "ORDER BY, LIMIT and OFFSET go after the last SELECT"))
+stmt("SELECT g FROM s UNION SELECT region FROM cu ORDER BY lower(g)",
+     ("SYNTAX", "lower", "ORDER BY over a UNION may name only a column of the result, by name or by position, and `lower(g)` is not one"))
+stmt("SELECT g FROM s EXCEPT SELECT region FROM cu ORDER BY 2", ("SYNTAX", "2", "ORDER BY 2 names no column: the result has 1"))
+# parentheses group as they say: (1 UNION 2) INTERSECT 2 against 1 UNION (2 INTERSECT 2)
+stmt("SELECT 1 UNION (SELECT 2 INTERSECT SELECT 2)", "= 1 | 2")
+stmt("SELECT 1 INTERSECT (SELECT 1 UNION SELECT 2)", "= 1")
+stmt("SELECT 2 UNION (SELECT 1 UNION SELECT 3) ORDER BY 1 DESC LIMIT 2", "= 3 | 2")
+stmt("SELECT p FROM assets UNION SELECT p FROM assets", ("EXPRESSION", "UNION", "a record cannot be compared by a UNION, INTERSECT or EXCEPT"))
+stmt("SELECT p FROM assets UNION ALL SELECT p FROM assets", "= {\"vendor\":\"acme\",\"size\":3} | {\"vendor\":\"zeta\"} | {\"vendor\":\"acme\",\"size\":3} | {\"vendor\":\"zeta\"}")
+stmt("EXPLAIN SELECT g FROM s UNION ALL SELECT region FROM cu WHERE id = 2 ORDER BY 1 LIMIT 3",
+     "= 'Union All' | '  Scan on s' | '  Point Read on cu using the primary key (id = 2)' | '  Order: g (sorted)' | '  Limit: 3'")
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

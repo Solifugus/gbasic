@@ -428,8 +428,6 @@ static char *name(P *p, const char *what) {
 /* Phase 2's words, refused by name rather than as a puzzle. */
 static int phase2(P *p) {
     static const struct { const char *kw; const char *what; } later[] = {
-        { "union", "UNION" },
-        { "intersect", "INTERSECT" }, { "except", "EXCEPT" },
         { "with", "WITH" }, { NULL, NULL }
     };
     for (int k = 0; later[k].kw; k++) {
@@ -1213,6 +1211,85 @@ static int join_list(P *p, SqlStmt *s) {
     return 1;
 }
 
+/* ORDER BY, LIMIT and OFFSET: a SELECT's, or a compound's after its last branch */
+static int select_tail(P *p, SqlStmt *s) {
+    if (accept_kw(p, "order")) {
+        if (!expect_kw(p, "by")) {
+            return 0;
+        }
+        SqlOrder ord[256];
+        size_t no = 0;
+        do {
+            if (no == 256) {
+                return fail_at(p, p->tok.pos, GSQL_SYNTAX, "ORDER BY may have at most 256 terms");
+            }
+            ord[no].pos = p->tok.pos;
+            ord[no].e = expr(p);
+            if (!ord[no].e) {
+                return 0;
+            }
+            ord[no].desc = 0;
+            if (accept_kw(p, "desc")) {
+                ord[no].desc = 1;
+            } else {
+                accept_kw(p, "asc");
+            }
+            if (p->tok.kind == T_IDENT && strcmp(p->tok.text, "nulls") == 0) {
+                return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED,
+                               "NULLS FIRST and NULLS LAST are not in this release: NULL sorts last ascending "
+                               "and first descending, as an index stores it");
+            }
+            no++;
+        } while (accept_sym(p, ","));
+        s->order = sql_alloc(p->arena, sizeof(SqlOrder) * no);
+        memcpy(s->order, ord, sizeof(SqlOrder) * no);
+        s->norder = no;
+    }
+    if (accept_kw(p, "limit")) {
+        if (!(s->limit = concat(p))) {
+            return 0;
+        }
+        if (accept_kw(p, "offset")) {
+            if (!(s->offset = concat(p))) {
+                return 0;
+            }
+        }
+    } else {
+        if (accept_kw(p, "offset")) {
+            if (!(s->offset = concat(p))) {
+                return 0;
+            }
+            if (p->tok.kind == T_IDENT && (strcmp(p->tok.text, "row") == 0 || strcmp(p->tok.text, "rows") == 0)) {
+                next(p);
+            }
+        }
+        if (accept_kw(p, "fetch")) {
+            if (!(p->tok.kind == T_IDENT && (strcmp(p->tok.text, "first") == 0 || strcmp(p->tok.text, "next") == 0))) {
+                return expected(p, "FIRST or NEXT after FETCH");
+            }
+            next(p);
+            uint32_t at = p->tok.pos;
+            if (p->tok.kind == T_IDENT && (strcmp(p->tok.text, "row") == 0 || strcmp(p->tok.text, "rows") == 0)) {
+                GsqlBuf b = {0};
+                v3_w_int(&b, 1);
+                s->limit = lit_bytes(p, at, &b);
+                gsql_buf_free(&b);
+            } else if (!(s->limit = concat(p))) {
+                return 0;
+            }
+            if (!(p->tok.kind == T_IDENT && (strcmp(p->tok.text, "row") == 0 || strcmp(p->tok.text, "rows") == 0))) {
+                return expected(p, "ROW or ROWS");
+            }
+            next(p);
+            if (!(p->tok.kind == T_IDENT && strcmp(p->tok.text, "only") == 0)) {
+                return expected(p, "ONLY");
+            }
+            next(p);
+        }
+    }
+    return 1;
+}
+
 static int select_stmt(P *p, SqlStmt *s) {
     if (accept_kw(p, "distinct")) {
         if (at_kw(p, "on")) {
@@ -1336,81 +1413,7 @@ static int select_stmt(P *p, SqlStmt *s) {
     if (!phase2(p)) {
         return 0;
     }
-    if (accept_kw(p, "order")) {
-        if (!expect_kw(p, "by")) {
-            return 0;
-        }
-        SqlOrder ord[256];
-        size_t no = 0;
-        do {
-            if (no == 256) {
-                return fail_at(p, p->tok.pos, GSQL_SYNTAX, "ORDER BY may have at most 256 terms");
-            }
-            ord[no].pos = p->tok.pos;
-            ord[no].e = expr(p);
-            if (!ord[no].e) {
-                return 0;
-            }
-            ord[no].desc = 0;
-            if (accept_kw(p, "desc")) {
-                ord[no].desc = 1;
-            } else {
-                accept_kw(p, "asc");
-            }
-            if (p->tok.kind == T_IDENT && strcmp(p->tok.text, "nulls") == 0) {
-                return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED,
-                               "NULLS FIRST and NULLS LAST are not in this release: NULL sorts last ascending "
-                               "and first descending, as an index stores it");
-            }
-            no++;
-        } while (accept_sym(p, ","));
-        s->order = sql_alloc(p->arena, sizeof(SqlOrder) * no);
-        memcpy(s->order, ord, sizeof(SqlOrder) * no);
-        s->norder = no;
-    }
-    if (accept_kw(p, "limit")) {
-        if (!(s->limit = concat(p))) {
-            return 0;
-        }
-        if (accept_kw(p, "offset")) {
-            if (!(s->offset = concat(p))) {
-                return 0;
-            }
-        }
-    } else {
-        if (accept_kw(p, "offset")) {
-            if (!(s->offset = concat(p))) {
-                return 0;
-            }
-            if (p->tok.kind == T_IDENT && (strcmp(p->tok.text, "row") == 0 || strcmp(p->tok.text, "rows") == 0)) {
-                next(p);
-            }
-        }
-        if (accept_kw(p, "fetch")) {
-            if (!(p->tok.kind == T_IDENT && (strcmp(p->tok.text, "first") == 0 || strcmp(p->tok.text, "next") == 0))) {
-                return expected(p, "FIRST or NEXT after FETCH");
-            }
-            next(p);
-            uint32_t at = p->tok.pos;
-            if (p->tok.kind == T_IDENT && (strcmp(p->tok.text, "row") == 0 || strcmp(p->tok.text, "rows") == 0)) {
-                GsqlBuf b = {0};
-                v3_w_int(&b, 1);
-                s->limit = lit_bytes(p, at, &b);
-                gsql_buf_free(&b);
-            } else if (!(s->limit = concat(p))) {
-                return 0;
-            }
-            if (!(p->tok.kind == T_IDENT && (strcmp(p->tok.text, "row") == 0 || strcmp(p->tok.text, "rows") == 0))) {
-                return expected(p, "ROW or ROWS");
-            }
-            next(p);
-            if (!(p->tok.kind == T_IDENT && strcmp(p->tok.text, "only") == 0)) {
-                return expected(p, "ONLY");
-            }
-            next(p);
-        }
-    }
-    return 1;
+    return select_tail(p, s);
 }
 
 /* VALUES (...) or SET x = ...: DEFAULT stands for the column's default */
@@ -1695,6 +1698,158 @@ static int alter_stmt(P *p, SqlStmt *s) {
     return 1;
 }
 
+/* ---- UNION, INTERSECT, EXCEPT (docs/gsql_setop_design.md) -------------
+ *
+ * INTERSECT binds tighter than UNION and EXCEPT, which group left to right.
+ * ORDER BY, LIMIT and OFFSET belong to the whole result, so only the last
+ * branch may carry them, and they are moved from it to the statement. */
+
+static SqlSetOp set_word(P *p) {
+    return at_kw(p, "union") ? SQL_SET_UNION : at_kw(p, "intersect") ? SQL_SET_INTERSECT
+         : at_kw(p, "except") ? SQL_SET_EXCEPT : SQL_SET_NONE;
+}
+
+static int branch_closes(P *p, const SqlStmt *s) {
+    if ((s->norder || s->limit || s->offset) && set_word(p)) {
+        return fail_at(p, p->tok.pos, GSQL_SYNTAX,
+                       "ORDER BY, LIMIT and OFFSET go after the last SELECT of a UNION, INTERSECT or EXCEPT, "
+                       "where they apply to the whole result");
+    }
+    return 1;
+}
+
+static SqlStmt *set_intersect(P *p, SqlStmt *l);
+static SqlStmt *set_union(P *p, SqlStmt *l);
+
+/* the rightmost SELECT of a tree, which carries what the whole would */
+static SqlStmt *last_branch(SqlStmt *s) {
+    while (s->setop) {
+        s = s->right;
+    }
+    return s;
+}
+
+static SqlStmt *set_branch(P *p) {
+    if (at_sym(p, "(")) {
+        /* a parenthesized compound, which is how the printer shows one that
+           binds tighter than the order of the words would */
+        next(p);
+        SqlStmt *inner = set_union(p, set_intersect(p, set_branch(p)));
+        if (!inner) {
+            return NULL;
+        }
+        SqlStmt *last = last_branch(inner);
+        if (last->norder || last->limit || last->offset) {
+            fail_at(p, last->norder ? last->order[0].pos : last->limit ? last->limit->pos : last->offset->pos,
+                    GSQL_UNSUPPORTED, "ORDER BY, LIMIT and OFFSET inside parentheses are not in this release of G-SQL");
+            return NULL;
+        }
+        if (!expect_sym(p, ")") || !branch_closes(p, inner)) {
+            return NULL;
+        }
+        return inner;
+    }
+    uint32_t pos = p->tok.pos;
+    if (!expect_kw(p, "select")) {
+        return NULL;
+    }
+    SqlStmt *t = sql_alloc(p->arena, sizeof *t);
+    t->kind = SQ_SELECT;
+    t->pos = pos;
+    if (!select_stmt(p, t) || !branch_closes(p, t)) {
+        return NULL;
+    }
+    return t;
+}
+
+static SqlStmt *set_node(P *p, SqlSetOp op, SqlStmt *l, SqlStmt *r, uint32_t pos, int all) {
+    SqlStmt *n = sql_alloc(p->arena, sizeof *n);
+    n->kind = SQ_SELECT;
+    n->pos = pos;
+    n->setop = op;
+    n->set_all = all;
+    n->left = l;
+    n->right = r;
+    return n;
+}
+
+/* the set word's ALL or DISTINCT */
+static int set_all(P *p) {
+    if (accept_kw(p, "all")) {
+        return 1;
+    }
+    accept_kw(p, "distinct");
+    return 0;
+}
+
+static SqlStmt *set_intersect(P *p, SqlStmt *l) {
+    while (l && at_kw(p, "intersect")) {
+        uint32_t pos = p->tok.pos;
+        next(p);
+        int all = set_all(p);
+        SqlStmt *r = set_branch(p);
+        l = r ? set_node(p, SQL_SET_INTERSECT, l, r, pos, all) : NULL;
+    }
+    return l;
+}
+
+static SqlStmt *set_union(P *p, SqlStmt *l) {
+    while (l && (at_kw(p, "union") || at_kw(p, "except"))) {
+        SqlSetOp op = set_word(p);
+        uint32_t pos = p->tok.pos;
+        next(p);
+        int all = set_all(p);
+        SqlStmt *r = set_intersect(p, set_branch(p));
+        l = r ? set_node(p, op, l, r, pos, all) : NULL;
+    }
+    return l;
+}
+
+/* `root` holds the first SELECT, parsed; a set word may follow it */
+static int compound(P *p, SqlStmt *root) {
+    if (!set_word(p)) {
+        return 1;
+    }
+    if (!branch_closes(p, root)) {
+        return 0;
+    }
+    SqlStmt *first = sql_alloc(p->arena, sizeof *first);
+    *first = *root;
+    first->explain = 0;
+    first->param_names = NULL;
+    first->nparam_names = 0;
+    first->max_param_index = 0;
+    SqlStmt *l = set_union(p, set_intersect(p, first));
+    if (!l || p->failed) {
+        return 0;
+    }
+    SqlStmt *last = last_branch(l);
+    SqlStmt keep = *root;
+    memset(root, 0, sizeof *root);
+    root->kind = SQ_SELECT;
+    root->explain = keep.explain;
+    root->pos = l->pos;      /* the set word, where a mismatch is reported */
+    root->param_names = keep.param_names;
+    root->nparam_names = keep.nparam_names;
+    root->max_param_index = keep.max_param_index;
+    root->setop = l->setop;
+    root->set_all = l->set_all;
+    root->left = l->left;
+    root->right = l->right;
+    root->order = last->order;
+    root->norder = last->norder;
+    root->limit = last->limit;
+    root->offset = last->offset;
+    last->order = NULL;
+    last->norder = 0;
+    last->limit = last->offset = NULL;
+    /* after a parenthesized last branch they follow the parenthesis */
+    if (!root->norder && !root->limit && !root->offset) {
+        return select_tail(p, root);
+    }
+    return 1;
+}
+
 int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
     memset(out, 0, sizeof *out);
     P p;
@@ -1718,7 +1873,7 @@ int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
         ok = 0;
     } else if (accept_kw(&p, "select")) {
         s->kind = SQ_SELECT;
-        ok = select_stmt(&p, s);
+        ok = select_stmt(&p, s) && compound(&p, s);
     } else if (s->explain && !at_kw(&p, "update") && !at_kw(&p, "delete")) {
         ok = expected(&p, "SELECT, UPDATE or DELETE after EXPLAIN");
     } else if (accept_kw(&p, "insert")) {
@@ -2068,6 +2223,23 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
     }
     switch (s->kind) {
     case SQ_SELECT:
+        if (s->setop) {
+            static const char *const words[] = { "", " UNION ", " INTERSECT ", " EXCEPT " };
+            sql_print_stmt(o, s->left);
+            puts_(o, words[s->setop]);
+            if (s->set_all) {
+                puts_(o, "ALL ");
+            }
+            /* a compound on the right is one INTERSECT bound tighter */
+            if (s->right->setop) {
+                v3_put(o, "(", 1);
+            }
+            sql_print_stmt(o, s->right);
+            if (s->right->setop) {
+                v3_put(o, ")", 1);
+            }
+            goto select_tail;
+        }
         puts_(o, s->distinct ? "SELECT DISTINCT " : "SELECT ");
         for (size_t k = 0; k < s->nitems; k++) {
             const SqlItem *it = &s->items[k];
@@ -2121,6 +2293,7 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
             puts_(o, " HAVING ");
             sql_print_expr(o, s->having);
         }
+    select_tail:
         for (size_t k = 0; k < s->norder; k++) {
             puts_(o, k ? ", " : " ORDER BY ");
             sql_print_expr(o, s->order[k].e);

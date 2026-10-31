@@ -1041,6 +1041,188 @@ static int distinct_oracle(int n, int *distinct_seen, int *deduplicated) {
     return refused;
 }
 
+/* ---- the set-operation oracle (docs/gsql_setop_design.md §5) ----------
+ *
+ * Each side fetched alone, and the operation computed here by the design's
+ * definition: a row matches another when the host calls every column the
+ * same, ALL consumes one matching right row per left row, and the result is
+ * then sorted here by the host's order. The engine keys rows and counts keys
+ * in a hash table; this pairs rows one by one and shares none of that. */
+
+typedef struct {
+    GsqlHv *v[2];
+    int used;
+} ORow;
+
+static long orows_load(const GsqlBuf *raw, int ncol, ORow **out) {
+    GsBytes *items;
+    long n = rows_of(raw, &items);
+    ORow *v = calloc((size_t)(n ? n : 1), sizeof(ORow));
+    if (!v) {
+        abort();
+    }
+    for (long r = 0; r < n; r++) {
+        GsBytes cols[2];
+        v3_array_items(items[r].p, items[r].n, cols, ncol);
+        for (int k = 0; k < ncol; k++) {
+            v[r].v[k] = hload(cols[k].p, cols[k].n);
+        }
+    }
+    free(items);
+    *out = v;
+    return n;
+}
+
+static void orows_free(ORow *v, long n, int ncol) {
+    for (long r = 0; r < n; r++) {
+        for (int k = 0; k < ncol; k++) {
+            H->release(H->ctx, v[r].v[k]);
+        }
+    }
+    free(v);
+}
+
+static int ocmp(const ORow *a, const ORow *b, int ncol, int desc) {
+    for (int k = 0; k < ncol; k++) {
+        int na = hnull(a->v[k]), nb = hnull(b->v[k]);
+        int c = na || nb ? (na == nb ? 0 : na ? 1 : -1) : hcmp(a->v[k], b->v[k]);
+        if (c) {
+            return k == 0 && desc ? -c : c;
+        }
+    }
+    return 0;
+}
+
+static int set_oracle(int n, int *set_seen, int *by_op) {
+    static const char *const cols[] = { "a", "b", "c", "d", "m", "f" };
+    static const char *const ops[] = { "UNION", "UNION ALL", "INTERSECT", "INTERSECT ALL", "EXCEPT", "EXCEPT ALL" };
+    H = gb_gsql_host();
+    int refused = 0;
+    for (int k = 0; k < n; k++) {
+        char w1[1024], w2[1024], sel[64], q[4096], lq[2048], rq[2048], lim[64] = "";
+        predicate(w1, sizeof w1);
+        predicate(w2, sizeof w2);
+        int ncol = 1 + (int)pick(2);
+        const char *c1 = cols[pick(6)], *c2 = cols[pick(6)];
+        while (ncol == 2 && c2 == c1) {
+            c2 = cols[pick(6)];
+        }
+        if (ncol == 1) {
+            snprintf(sel, sizeof sel, "%s", c1);
+        } else {
+            snprintf(sel, sizeof sel, "%s, %s", c1, c2);
+        }
+        int op = (int)pick(6), desc = (int)pick(2);
+        long limit = -1, offset = 0;
+        if (pick(3) == 0) {
+            limit = 1 + (long)pick(5);
+            offset = (long)pick(3);
+            snprintf(lim, sizeof lim, " LIMIT %ld OFFSET %ld", limit, offset);
+        }
+        snprintf(q, sizeof q, "SELECT %s FROM r WHERE %s %s SELECT %s FROM r WHERE %s ORDER BY 1%s%s%s", sel, w1,
+                 ops[op], sel, w2, desc ? " DESC" : "", ncol == 2 ? ", 2" : "", lim);
+        snprintf(lq, sizeof lq, "SELECT %s FROM r WHERE %s", sel, w1);
+        snprintf(rq, sizeof rq, "SELECT %s FROM r WHERE %s", sel, w2);
+        Answer x, l, r;
+        gsql_sql_force_scan(sql, pick(2));
+        run(q, NULL, 100000, &x);
+        run(lq, NULL, 100000, &l);
+        run(rq, NULL, 100000, &r);
+        gsql_sql_force_scan(sql, 0);
+        checks++;
+        int side = l.code != GSQL_OK ? l.code : r.code;
+        if (x.code != side) {
+            mismatches++;
+            printf("MISMATCH %s\n  compound: %s %s\n  sides: %s %s\n", q, gsql_error_name(x.code), x.err.message,
+                   gsql_error_name(side), l.code ? l.err.message : r.err.message);
+        } else if (x.code != GSQL_OK) {
+            refused++;
+        } else {
+            ORow *L, *R;
+            long nl = orows_load(&l.raw, ncol, &L), nr = orows_load(&r.raw, ncol, &R);
+            ORow **res = malloc(sizeof(ORow *) * (size_t)(nl + nr + 1));
+            if (!res) {
+                abort();
+            }
+            long nres = 0;
+            int base = op / 2, all = op % 2;   /* 0 union, 1 intersect, 2 except */
+            for (int sd = 0; sd < (base == 0 ? 2 : 1); sd++) {
+                ORow *in = sd ? R : L;
+                long nin = sd ? nr : nl;
+                for (long i = 0; i < nin; i++) {
+                    int keep = 1;
+                    if (base != 0) {
+                        long hit = -1;
+                        for (long j = 0; j < nr && hit < 0; j++) {
+                            if ((!all || !R[j].used) && same_row(in[i].v, R[j].v, ncol)) {
+                                hit = j;
+                            }
+                        }
+                        if (all && hit >= 0) {
+                            R[hit].used = 1;
+                        }
+                        keep = base == 1 ? hit >= 0 : hit < 0;
+                    }
+                    for (long j = 0; keep && !all && j < nres; j++) {
+                        if (same_row(res[j]->v, in[i].v, ncol)) {
+                            keep = 0;
+                        }
+                    }
+                    if (keep) {
+                        res[nres++] = &in[i];
+                    }
+                }
+            }
+            /* a stable insertion sort by the host's order */
+            for (long i = 1; i < nres; i++) {
+                ORow *t = res[i];
+                long j = i;
+                while (j > 0 && ocmp(res[j - 1], t, ncol, desc) > 0) {
+                    res[j] = res[j - 1];
+                    j--;
+                }
+                res[j] = t;
+            }
+            GsqlBuf want = {0};
+            size_t nrows = 0;
+            for (long i = offset; i < nres && (limit < 0 || (long)nrows < limit); i++) {
+                if (nrows++) {
+                    v3_put(&want, " | ", 3);
+                }
+                for (int c = 0; c < ncol; c++) {
+                    if (c) {
+                        v3_put(&want, ", ", 2);
+                    }
+                    hrender(&want, res[i]->v[c]);
+                }
+            }
+            if (nrows == 0) {
+                v3_put(&want, "(none)", 6);
+            }
+            GsqlBuf got = {0};
+            v3_put(&got, x.text.bytes, x.text.length);
+            zero_spelling(&got);
+            zero_spelling(&want);
+            if (strcmp((char *)got.bytes, (char *)want.bytes) != 0) {
+                mismatches++;
+                printf("MISMATCH %s\n  engine: %s\n  oracle: %s\n", q, (char *)got.bytes, (char *)want.bytes);
+            } else if (nrows) {
+                (*set_seen)++;
+                by_op[base]++;
+            }
+            gsql_buf_free(&want);
+            gsql_buf_free(&got);
+            free(res);
+            orows_free(L, nl, ncol);
+            orows_free(R, nr, ncol);
+        }
+        answer_free(&x);
+        answer_free(&l);
+        answer_free(&r);
+    }
+    return refused;
+}
+
 /* ---- the join tiers (docs/gsql_join_design.md §5) -----------------------
  *
  * A second table q, whose column names differ from r's so a bare name in
@@ -1292,6 +1474,8 @@ static int differential(const char *dir, uint64_t seed, int n) {
     int grouped_refused = grouping_oracle(n / 2, &grouped_seen);
     int distinct_seen = 0, deduplicated = 0;
     int distinct_refused = distinct_oracle(n / 2, &distinct_seen, &deduplicated);
+    int set_seen = 0, by_op[3] = { 0, 0, 0 };
+    int set_refused = set_oracle(n / 4, &set_seen, by_op);
     int q_rows = join_tables();
     int join_seeks = 0, joined_seen = 0;
     unsigned long js0, jc0, js1, jc1;
@@ -1314,6 +1498,14 @@ static int differential(const char *dir, uint64_t seed, int n) {
     if (distinct_seen < n / 6 || deduplicated < n / 10) {
         mismatches++;
         printf("MISMATCH the DISTINCT oracle compared too few answers that dropped a copy\n");
+    }
+    printf("census: %d set operations against the oracle, %d answered with rows (%d union, %d intersect, %d except), "
+           "%d refused\n", n / 4, set_seen, by_op[0], by_op[1], by_op[2], set_refused);
+    /* each operation must have answered with rows, or a tier of unions alone
+       would pass while INTERSECT and EXCEPT were never compared */
+    if (set_seen < n / 20 || by_op[0] < 5 || by_op[1] < 3 || by_op[2] < 5) {
+        mismatches++;
+        printf("MISMATCH the set-operation oracle compared too few answers with rows in them\n");
     }
     printf("census: %d rows of q, %d joins both ways, %d of them sought, %lu seeks in all, %d answered by the "
            "oracle with rows, %d refused\n", q_rows, n / 2, join_seeks, js1 - js0, joined_seen, join_refused);

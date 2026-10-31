@@ -129,6 +129,9 @@ typedef struct {
 /* A table joined after the first (docs/gsql_join_design.md) */
 typedef enum { SQL_JOIN_FIRST = 0, SQL_JOIN_INNER, SQL_JOIN_LEFT, SQL_JOIN_CROSS } SqlJoin;
 
+/* UNION, INTERSECT, EXCEPT (docs/gsql_setop_design.md) */
+typedef enum { SQL_SET_NONE = 0, SQL_SET_UNION, SQL_SET_INTERSECT, SQL_SET_EXCEPT } SqlSetOp;
+
 typedef struct {
     SqlJoin join;
     char *table;
@@ -154,7 +157,7 @@ typedef struct {
     uint32_t pos;
 } SqlNameList;
 
-typedef struct {
+typedef struct SqlStmt {
     SqlStmtKind kind;
     int explain;
     uint32_t pos;
@@ -174,6 +177,11 @@ typedef struct {
     size_t ngroup;
     SqlExpr *having;
     int distinct;            /* SELECT DISTINCT */
+    /* a compound SELECT: `left op right`, each a SELECT; this statement then
+     * holds only the ORDER BY, LIMIT and OFFSET, which apply to the result */
+    SqlSetOp setop;
+    int set_all;
+    struct SqlStmt *left, *right;
     /* INSERT: cols may be empty (every column, in order) */
     SqlNameList cols;
     SqlExpr ***rows;         /* rows[r][c] */
@@ -250,9 +258,12 @@ typedef struct {
     int *consumed;           /* conj[i] narrowed the access path */
 } SqlScan;
 
-typedef struct {
+typedef struct SqlPlan {
     SqlStmt *s;
     const char *text;        /* the statement's text, for messages */
+    /* a compound SELECT (docs/gsql_setop_design.md): its two sides, each a
+     * plan of its own, owned; the outputs below are the result's */
+    struct SqlPlan *left, *right;
     GsqlTable *tb;           /* the first table, owned; NULL for ACC_NONE and schema statements */
     SqlScan *scans;
     size_t nscans;           /* 0 with no table */

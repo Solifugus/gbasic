@@ -225,9 +225,25 @@
 > select a, count(distinct b) from t group by a
 = SELECT a, count(DISTINCT b) FROM t GROUP BY a
 
-# ---- refusals: Phase 2, by name -------------------------------------
+# ---- UNION, INTERSECT, EXCEPT (docs/gsql_setop_design.md) -------------
 > select a from t union select b from u
-! UNSUPPORTED 17 UNION are not in this release
+= SELECT a FROM t UNION SELECT b FROM u
+> select a from t union all select b from u intersect select c from v order by 1 limit 2
+= SELECT a FROM t UNION ALL (SELECT b FROM u INTERSECT SELECT c FROM v) ORDER BY 1 LIMIT 2
+> select a from t except distinct select b from u except all select c from v
+= SELECT a FROM t EXCEPT SELECT b FROM u EXCEPT ALL SELECT c FROM v
+> select a from t order by a union select b from u
+! SYNTAX 28 ORDER BY, LIMIT and OFFSET go after the last SELECT
+> select a from t union (select b from u)
+= SELECT a FROM t UNION SELECT b FROM u
+> select a from t intersect (select b from u union select c from v)
+= SELECT a FROM t INTERSECT (SELECT b FROM u UNION SELECT c FROM v)
+> select a from t union (select b from u limit 1)
+! UNSUPPORTED 46 ORDER BY, LIMIT and OFFSET inside parentheses are not in this release
+> select a from t union
+! SYNTAX 22 expected SELECT
+
+# ---- refusals: Phase 2, by name -------------------------------------
 > select a from t where a in (select b from u)
 ! UNSUPPORTED 29 subqueries are not in this release
 > select a from (select 1) x

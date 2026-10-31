@@ -1589,6 +1589,7 @@ typedef struct {
     int ended;
     int grouped;        /* the rows are the groups (aggregate, below) */
     Groups groups;
+    int borrowed;       /* a compound's branch: the plan, text and parse are its parent's */
     KeyMap seen;        /* SELECT DISTINCT: the output rows' keys so far */
     GsqlBuf *seen_keys;
     size_t nseen, capseen;
@@ -1874,10 +1875,12 @@ static void cursor_free(SqlCursor *c) {
         join_close(&c->j);
     }
     x_free(&c->x);
-    sql_plan_free(&c->plan);
-    sql_parsed_free(&c->parsed);
+    if (!c->borrowed) {
+        sql_plan_free(&c->plan);
+        sql_parsed_free(&c->parsed);
+        free(c->text);
+    }
     gsql_buf_free(&c->pending);
-    free(c->text);
     free(c);
 }
 
@@ -2626,6 +2629,321 @@ static int svc_writes(void *ctx, const GsqlStatement *st, GsqlError *err) {
     return w;
 }
 
+/* A SELECT's rows begun: the joins started, the groups folded, and the rows
+ * sorted where the access path does not give the order. */
+static int select_start(SqlCursor *c) {
+    SqlStmt *s = c->plan.s;
+    if (c->plan.scans[0].access != ACC_NONE) {
+        c->join_started = 1;
+        if (join_start(&c->j, &c->x) != GSQL_OK) {
+            return c->err.code ? c->err.code : GSQL_EXPRESSION;
+        }
+    }
+    if (c->plan.grouped) {
+        c->grouped = 1;
+        if (aggregate(c) != GSQL_OK) {
+            return c->err.code ? c->err.code : GSQL_EXPRESSION;
+        }
+    }
+    if (c->plan.scans[0].access != ACC_NONE || c->grouped) {
+        /* the access was to yield the order, and a bound that did not fit
+         * turned it into a scan: then it must be sorted after all. Groups
+         * come in key order, so a grouped query is always sorted. */
+        int need_sort = s->norder && (c->grouped || c->plan.nscans > 1 || !c->plan.scans[0].ordered ||
+                                      (c->join_started && c->j.its[0].fell_back));
+        if (need_sort) {
+            c->sorted = 1;
+            if (collect_sorted(c) != GSQL_OK) {
+                return c->err.code ? c->err.code : GSQL_EXPRESSION;
+            }
+            c->offset = 0;   /* applied by collect_sorted's start */
+        }
+    }
+    return GSQL_OK;
+}
+
+/* ---- UNION, INTERSECT, EXCEPT (docs/gsql_setop_design.md) -------------
+ *
+ * Each side's rows are gathered, a SELECT through a cursor of its own over
+ * the plan its parent owns, and combined by counting copies of each row's
+ * key -- the key DISTINCT uses, so 3 and 3.0 are one value and NULLs one. */
+
+typedef struct {
+    GsqlBuf *v;
+    size_t n, cap;
+} Rows;
+
+static void rows_add(Rows *r, const GsqlBuf *row) {
+    if (r->n == r->cap) {
+        r->cap = r->cap ? r->cap * 2 : 64;
+        r->v = realloc(r->v, sizeof(GsqlBuf) * r->cap);
+        if (!r->v) {
+            abort();
+        }
+    }
+    memset(&r->v[r->n], 0, sizeof(GsqlBuf));
+    v3_put(&r->v[r->n], row->bytes, row->length);
+    r->n++;
+}
+
+static void rows_free(Rows *r) {
+    for (size_t k = 0; k < r->n; k++) {
+        gsql_buf_free(&r->v[k]);
+    }
+    free(r->v);
+    memset(r, 0, sizeof *r);
+}
+
+/* keys with a count each */
+typedef struct {
+    KeyMap map;
+    GsqlBuf *keys;
+    long *count;
+    size_t n, cap;
+} Tally;
+
+static const GsqlBuf *tally_key_of(void *ctx, size_t i) {
+    return &((Tally *)ctx)->keys[i];
+}
+
+/* the slot (1-based) of `key`, added with a count of 0 when `add` and absent */
+static size_t tally_slot(Tally *t, const GsqlKey *key, int add) {
+    size_t at = keymap_find(&t->map, tally_key_of, t, key->bytes, key->length, 0);
+    if (at || !add) {
+        return at;
+    }
+    if (t->n == t->cap) {
+        t->cap = t->cap ? t->cap * 2 : 64;
+        t->keys = realloc(t->keys, sizeof(GsqlBuf) * t->cap);
+        t->count = realloc(t->count, sizeof(long) * t->cap);
+        if (!t->keys || !t->count) {
+            abort();
+        }
+    }
+    memset(&t->keys[t->n], 0, sizeof(GsqlBuf));
+    v3_put(&t->keys[t->n], key->bytes, key->length);
+    t->count[t->n] = 0;
+    t->n++;
+    keymap_find(&t->map, tally_key_of, t, key->bytes, key->length, t->n);
+    return t->n;
+}
+
+static void tally_free(Tally *t) {
+    for (size_t k = 0; k < t->n; k++) {
+        gsql_buf_free(&t->keys[k]);
+    }
+    free(t->keys);
+    free(t->count);
+    free(t->map.slot);
+    memset(t, 0, sizeof *t);
+}
+
+/* the key of output row `row` of plan `p` */
+static int row_key(SqlCursor *c, const SqlPlan *p, const GsqlBuf *row, GsqlKey *key) {
+    size_t n = p->nout;
+    GsBytes *items = malloc(sizeof(GsBytes) * (n ? n : 1));
+    if (!items) {
+        abort();
+    }
+    if (v3_array_items(row->bytes, row->length, items, n) != (long)n) {
+        free(items);
+        return xfail(&c->err, GSQL_MISUSE, 0, "an output row did not hold its columns");
+    }
+    for (size_t k = 0; k < n; k++) {
+        if (gsql_key_append(key, items[k].p, items[k].n, NULL, 0) != GSQL_KEY_OK) {
+            int rc = xfail(&c->err, GSQL_EXPRESSION, p->s->pos,
+                           "%s cannot be compared by a UNION, INTERSECT or EXCEPT: it has no single equality "
+                           "G-SQL can key", tag_word(items[k].n ? items[k].p[0] : 0));
+            free(items);
+            return rc;
+        }
+    }
+    free(items);
+    return GSQL_OK;
+}
+
+static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, Rows *out);
+
+/* the rows of `l op r`, by the table in the design's §2 */
+static int combine(SqlCursor *c, const SqlPlan *p, Rows *l, Rows *r, Rows *out) {
+    SqlSetOp op = p->s->setop;
+    int all = p->s->set_all;
+    if (op == SQL_SET_UNION && all) {
+        for (size_t k = 0; k < l->n; k++) {
+            rows_add(out, &l->v[k]);
+        }
+        for (size_t k = 0; k < r->n; k++) {
+            rows_add(out, &r->v[k]);
+        }
+        return GSQL_OK;
+    }
+    Tally right, emitted;
+    memset(&right, 0, sizeof right);
+    memset(&emitted, 0, sizeof emitted);
+    int rc = GSQL_OK;
+    if (op != SQL_SET_UNION) {
+        for (size_t k = 0; k < r->n && rc == GSQL_OK; k++) {
+            GsqlKey key;
+            gsql_key_init(&key);
+            rc = row_key(c, p, &r->v[k], &key);
+            if (rc == GSQL_OK) {
+                size_t at = tally_slot(&right, &key, 1);   /* may move right.count */
+                right.count[at - 1]++;
+            }
+            gsql_key_free(&key);
+        }
+    }
+    for (int side = 0; side < (op == SQL_SET_UNION ? 2 : 1) && rc == GSQL_OK; side++) {
+        Rows *in = side ? r : l;
+        for (size_t k = 0; k < in->n && rc == GSQL_OK; k++) {
+            GsqlKey key;
+            gsql_key_init(&key);
+            rc = row_key(c, p, &in->v[k], &key);
+            if (rc != GSQL_OK) {
+                gsql_key_free(&key);
+                break;
+            }
+            size_t at = op == SQL_SET_UNION ? 0 : tally_slot(&right, &key, 0);
+            long *have = at ? &right.count[at - 1] : NULL;
+            int keep;
+            if (op == SQL_SET_UNION) {
+                keep = 1;
+            } else if (op == SQL_SET_INTERSECT) {
+                keep = have && *have > 0;
+                if (keep && all) {
+                    (*have)--;
+                }
+            } else if (all) {
+                keep = !(have && *have > 0);
+                if (!keep) {
+                    (*have)--;
+                }
+            } else {
+                keep = !have;
+            }
+            if (keep && !all) {
+                /* the plain forms keep one copy of each row */
+                size_t e_at = tally_slot(&emitted, &key, 1);
+                keep = emitted.count[e_at - 1]++ == 0;
+            }
+            if (keep) {
+                rows_add(out, &in->v[k]);
+            }
+            gsql_key_free(&key);
+        }
+    }
+    tally_free(&right);
+    tally_free(&emitted);
+    return rc;
+}
+
+static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, Rows *out) {
+    if (p->s->setop) {
+        Rows l = {0}, r = {0};
+        int rc = side_rows(c, p->left, e, t, &l);
+        if (rc == GSQL_OK) {
+            rc = side_rows(c, p->right, e, t, &r);
+        }
+        if (rc == GSQL_OK) {
+            rc = combine(c, p, &l, &r, out);
+        }
+        rows_free(&l);
+        rows_free(&r);
+        return rc;
+    }
+    SqlCursor *k = calloc(1, sizeof *k);
+    if (!k) {
+        abort();
+    }
+    k->q = c->q;
+    k->borrowed = 1;
+    k->plan = *p;
+    k->err.code = GSQL_OK;
+    x_init(&k->x, c->q, e, t, &k->plan, &k->err);
+    k->x.params = c->x.params;
+    k->x.paramslen = c->x.paramslen;
+    k->limit = UINT64_MAX;
+    int rc = select_start(k);
+    GsqlBuf row = {0};
+    while (rc == GSQL_OK) {
+        int r = cursor_next(k, &row);
+        if (r < 0) {
+            rc = k->err.code ? k->err.code : GSQL_EXPRESSION;
+        } else if (r == 0) {
+            break;
+        } else {
+            rows_add(out, &row);
+        }
+    }
+    if (rc != GSQL_OK) {
+        c->err = k->err;
+        if (c->err.code == GSQL_OK) {
+            c->err.code = rc;
+        }
+    }
+    gsql_buf_free(&row);
+    cursor_free(k);
+    return rc;
+}
+
+/* A compound SELECT's rows, gathered, combined and sorted; the cursor then
+ * hands them out as it hands out any sorted rows. */
+static int compound_start(SqlCursor *c, const GsEngine *e, GsTxn *t) {
+    Rows all = {0};
+    int rc = side_rows(c, &c->plan, e, t, &all);
+    if (rc != GSQL_OK) {
+        rows_free(&all);
+        return rc;
+    }
+    size_t nord = c->plan.s->norder;
+    c->rows = calloc(all.n ? all.n : 1, sizeof(SortRow));
+    if (!c->rows) {
+        abort();
+    }
+    for (size_t k = 0; k < all.n; k++) {
+        SortRow *row = &c->rows[c->nrows++];
+        row->out = all.v[k];
+        row->keys = calloc(nord ? nord : 1, sizeof(GsqlHv *));
+        if (!row->keys) {
+            abort();
+        }
+        if (!nord) {
+            continue;
+        }
+        GsBytes *items = malloc(sizeof(GsBytes) * (c->plan.nout ? c->plan.nout : 1));
+        if (!items) {
+            abort();
+        }
+        long n = v3_array_items(row->out.bytes, row->out.length, items, (long)c->plan.nout);
+        for (size_t j = 0; j < nord; j++) {
+            long at = c->plan.order_out[j];
+            row->keys[j] = n > at ? hv_bytes(&c->x, items[at].p, items[at].n) : NULL;
+            if (!row->keys[j]) {
+                free(items);
+                free(all.v);
+                return xfail(&c->err, GSQL_MISUSE, 0, "an output column was not there to sort by");
+            }
+        }
+        free(items);
+    }
+    free(all.v);   /* the rows' bytes moved into c->rows */
+    if (nord) {
+        SortRow *tmp = malloc(sizeof(SortRow) * (c->nrows ? c->nrows : 1));
+        if (!tmp) {
+            abort();
+        }
+        int failed = merge_sort(c, c->rows, c->nrows, tmp);
+        free(tmp);
+        if (failed) {
+            return c->err.code ? c->err.code : GSQL_EXPRESSION;
+        }
+    }
+    c->sorted = 1;
+    c->pos = c->offset < c->nrows ? (size_t)c->offset : c->nrows;
+    c->offset = 0;
+    return GSQL_OK;
+}
+
 static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *st, GsqlResult *out,
                    GsqlError *err) {
     GsqlSql *q = ctx;
@@ -2669,31 +2987,8 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
                 c->offset = 0;
             }
         }
-        if (c->plan.scans[0].access != ACC_NONE) {
-            c->join_started = 1;
-            if (join_start(&c->j, &c->x) != GSQL_OK) {
-                goto failed;
-            }
-        }
-        if (c->plan.grouped) {
-            c->grouped = 1;
-            if (aggregate(c) != GSQL_OK) {
-                goto failed;
-            }
-        }
-        if (c->plan.scans[0].access != ACC_NONE || c->grouped) {
-            /* the access was to yield the order, and a bound that did not fit
-             * turned it into a scan: then it must be sorted after all. Groups
-             * come in key order, so a grouped query is always sorted. */
-            int need_sort = s->norder && (c->grouped || c->plan.nscans > 1 || !c->plan.scans[0].ordered ||
-                                          (c->join_started && c->j.its[0].fell_back));
-            if (need_sort) {
-                c->sorted = 1;
-                if (collect_sorted(c) != GSQL_OK) {
-                    goto failed;
-                }
-                c->offset = 0;   /* applied by collect_sorted's start */
-            }
+        if ((s->setop ? compound_start(c, e, t) : select_start(c)) != GSQL_OK) {
+            goto failed;
         }
     } else {
         if (s->kind == SQ_INSERT) {

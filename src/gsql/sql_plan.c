@@ -981,6 +981,73 @@ static int plan_insert(B *b, const GsEngine *e, GsTxn *t) {
     return 1;
 }
 
+/* A compound SELECT (docs/gsql_setop_design.md): each side planned as the
+ * SELECT it is; the result has the first side's names, and an ORDER BY names
+ * a column of the result, by name or by position. */
+static int plan_compound(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
+    static const char *const words[] = { "", "UNION", "INTERSECT", "EXCEPT" };
+    SqlPlan *p = b->p;
+    SqlStmt *s = p->s;
+    p->left = sql_alloc(b->arena, sizeof(SqlPlan));
+    if (sql_plan(e, t, s->left, b->arena, p->text, force_scan, p->left, b->err) != GSQL_OK) {
+        p->left = NULL;
+        return 0;
+    }
+    p->right = sql_alloc(b->arena, sizeof(SqlPlan));
+    if (sql_plan(e, t, s->right, b->arena, p->text, force_scan, p->right, b->err) != GSQL_OK) {
+        p->right = NULL;
+        return 0;
+    }
+    if (p->left->nout != p->right->nout) {
+        return bfail(b, s->pos, GSQL_SYNTAX, "each side of a %s must have as many columns as the other: "
+                     "the left has %zu and the right %zu", words[s->setop], p->left->nout, p->right->nout);
+    }
+    scans_alloc(b, 1);
+    p->scans[0].access = ACC_NONE;
+    p->nout = p->left->nout;
+    p->out = p->left->out;
+    p->names = p->left->names;
+    p->kinds = sql_alloc(b->arena, sizeof(char *) * (p->nout ? p->nout : 1));
+    for (size_t k = 0; k < p->nout; k++) {
+        p->kinds[k] = strcmp(p->left->kinds[k], p->right->kinds[k]) == 0 ? p->left->kinds[k] : "any";
+    }
+    p->order = sql_alloc(b->arena, sizeof(SqlExpr *) * (s->norder ? s->norder : 1));
+    p->order_out = sql_alloc(b->arena, sizeof(long) * (s->norder ? s->norder : 1));
+    for (size_t k = 0; k < s->norder; k++) {
+        SqlExpr *oe = s->order[k].e;
+        long at = -1;
+        if (oe->kind == SX_LIT && oe->lit[0] == SER_NUMBER && oe->lit[1] == 1) {
+            uint64_t v = 0;
+            for (int i = 0; i < 8; i++) {
+                v |= (uint64_t)oe->lit[2 + i] << (8 * i);
+            }
+            if (v < 1 || v > p->nout) {
+                return bfail(b, oe->pos, GSQL_SYNTAX, "ORDER BY %llu names no column: the result has %zu",
+                             (unsigned long long)v, p->nout);
+            }
+            at = (long)(v - 1);
+        } else if (oe->kind == SX_NAME && oe->nparts == 1) {
+            for (size_t o = 0; o < p->nout && at < 0; o++) {
+                if (strcmp(p->names[o], oe->parts[0]) == 0) {
+                    at = (long)o;
+                }
+            }
+        }
+        if (at < 0) {
+            GsqlBuf want = {0};
+            sql_print_expr(&want, oe);
+            int rc = bfail(b, oe->pos, GSQL_SYNTAX, "ORDER BY over a %s may name only a column of the result, by "
+                           "name or by position, and `%.*s` is not one", words[s->setop], (int)want.length,
+                           (char *)want.bytes);
+            gsql_buf_free(&want);
+            return rc;
+        }
+        p->order_out[k] = at;
+        p->order[k] = p->out[at];
+    }
+    return bind(b, s->limit, 0, "LIMIT") && bind(b, s->offset, 0, "OFFSET");
+}
+
 int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const char *text, int force_scan,
              SqlPlan *out, GsqlError *err) {
     memset(out, 0, sizeof *out);
@@ -993,7 +1060,7 @@ int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const cha
     int ok = 1;
     switch (s->kind) {
     case SQ_SELECT:
-        ok = plan_select(&b, e, t, force_scan);
+        ok = s->setop ? plan_compound(&b, e, t, force_scan) : plan_select(&b, e, t, force_scan);
         break;
     case SQ_UPDATE:
     case SQ_DELETE:
@@ -1023,6 +1090,14 @@ int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const cha
 }
 
 void sql_plan_free(SqlPlan *p) {
+    if (p->left) {
+        sql_plan_free(p->left);
+        p->left = NULL;
+    }
+    if (p->right) {
+        sql_plan_free(p->right);
+        p->right = NULL;
+    }
     for (size_t k = 1; k < p->nscans; k++) {
         if (p->scans[k].tb) {
             gsql_table_close(p->scans[k].tb);
@@ -1122,10 +1197,35 @@ static void filter_line(const SqlPlan *p, const SqlScan *sc, void (*line)(void *
     }
 }
 
-void sql_explain(const SqlPlan *p, void (*line)(void *, const char *), void *ctx) {
+static void explain_at(const SqlPlan *p, void (*line)(void *, const char *), void *ctx, int base) {
     GsqlBuf b = {0};
     const SqlStmt *s = p->s;
-    int indent = 0;
+    int indent = base;
+    if (s->setop) {
+        static const char *const words[] = { "", "Union", "Intersect", "Except" };
+        put(&b, words[s->setop]);
+        if (s->set_all) {
+            put(&b, " All");
+        }
+        emit(line, ctx, indent, &b);
+        explain_at(p->left, line, ctx, indent + 1);
+        explain_at(p->right, line, ctx, indent + 1);
+        if (s->norder) {
+            put(&b, "Order: ");
+            for (size_t k = 0; k < s->norder; k++) {
+                if (k) {
+                    put(&b, ", ");
+                }
+                put(&b, p->names[p->order_out[k]]);
+                if (s->order[k].desc) {
+                    put(&b, " DESC");
+                }
+            }
+            put(&b, " (sorted)");
+            emit(line, ctx, indent + 1, &b);
+        }
+        goto tail;
+    }
     if (s->kind == SQ_UPDATE || s->kind == SQ_DELETE) {
         put(&b, s->kind == SQ_UPDATE ? "Update on " : "Delete on ");
         put(&b, gsql_table_name(p->tb));
@@ -1198,6 +1298,7 @@ void sql_explain(const SqlPlan *p, void (*line)(void *, const char *), void *ctx
                 : sc->access == ACC_INDEX ? " (by the index)" : " (by the primary key)");
         emit(line, ctx, indent + 1, &b);
     }
+tail:
     if (s->kind == SQ_SELECT && s->limit) {
         put(&b, "Limit: ");
         sql_print_expr_scans(&b, s->limit, p->scans, p->nscans);
@@ -1209,4 +1310,8 @@ void sql_explain(const SqlPlan *p, void (*line)(void *, const char *), void *ctx
         emit(line, ctx, indent + 1, &b);
     }
     gsql_buf_free(&b);
+}
+
+void sql_explain(const SqlPlan *p, void (*line)(void *, const char *), void *ctx) {
+    explain_at(p, line, ctx, 0);
 }
