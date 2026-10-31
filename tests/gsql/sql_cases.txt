@@ -1236,6 +1236,38 @@ commit
 > SELECT count(*) FROM grs
 = 1
 
+# ---- CAST between dates, times and datetimes (docs/datetime_conversion_design.md) -
+> SELECT CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS DATE), CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS TIME)
+= datetime 2026-01-05, datetime 10:30:45
+> SELECT CAST(DATE '2026-01-05' AS DATETIME)
+= datetime 2026-01-05 00:00:00
+> SELECT CAST('2026-01-05 10:30' AS DATE) = DATE '2026-01-05'
+= TRUE
+> SELECT CAST(CAST('2026-01-05 23:59:59' AS DATETIME) AS DATE) = DATE '2026-01-05'
+= TRUE
+> SELECT CAST(CAST('10:30' AS TIME) AS DATE)
+! EXPRESSION 8 a time of day has no date to take
+> SELECT CAST(DATE '2026-01-05' AS TIME)
+! EXPRESSION 8 a date has no time of day to take
+> SELECT CAST(CAST('10:30' AS TIME) AS DATETIME)
+! EXPRESSION 8 a time of day has no date to take
+> CREATE TABLE when3 (d DATE, t TIME, dt DATETIME)
+= done 0
+> INSERT INTO when3 VALUES (CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS DATE), CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS TIME), CAST(DATE '2026-01-05' AS DATETIME))
+= done 1
+> INSERT INTO when3 (d) VALUES (CAST('2026-01-05 10:30' AS DATE))
+= done 1
+> CREATE TABLE req (at DATETIME, n INTEGER SERIAL OF (CAST(at AS DATE)))
+= done 0
+> INSERT INTO req (at) VALUES (CAST('2026-01-05 09:00' AS DATETIME)), (CAST('2026-01-05 17:30' AS DATETIME)), (CAST('2026-01-06 08:00' AS DATETIME))
+= done 3
+> SELECT n FROM req ORDER BY at
+= 1 | 2 | 1
+> UPDATE req SET at = CAST('2026-01-05 23:00' AS DATETIME) WHERE at = CAST('2026-01-05 09:00' AS DATETIME)
+= done 1
+> UPDATE req SET at = CAST('2026-01-07 09:00' AS DATETIME) WHERE at = CAST('2026-01-06 08:00' AS DATETIME)
+! SERIAL 0 moves a row of `req` to another scope of serial `n`
+
 # ---- SERIAL and RANDOM: what a declaration may say -------------------
 > CREATE TABLE gbad (x TEXT SERIAL)
 ! SCHEMA 0 gbad.x: SERIAL counts, so it belongs on an INTEGER column

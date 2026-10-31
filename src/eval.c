@@ -39683,6 +39683,42 @@ static void datetime_raise_parse_failure(const char *who, const char *noun,
     runtime_error_raise(message, 1003, "datetime");
 }
 
+/* `{date}`, `{time}` or `{datetime}` given a datetime VALUE: it becomes that
+ * kind (docs/datetime_conversion_design.md §2). Text takes the parse paths
+ * below, unchanged. A value that lacks what the kind needs is refused, naming
+ * what it lacks rather than the text the modifier would have liked. */
+static Value datetime_convert_value(const char *who, Value value) {
+    DateTime dt = value.as.datetime;
+    value_free(value);
+    const char *lacks = NULL;
+    if (strcmp(who, "time") == 0) {
+        if (!dt.time_only && dt.precision < PREC_HOUR) {
+            lacks = dt.precision == PREC_DAY ? "a date has no time of day to take"
+                                             : "a year or a month has no time of day to take";
+        } else {
+            dt.time_only = 1;
+            dt.year = 0;
+            dt.month = 0;
+            dt.day = 0;
+        }
+    } else if (dt.time_only) {
+        lacks = "a time of day has no date to take";
+    } else if (dt.precision < PREC_DAY) {
+        lacks = "a year or a month has no day to take";
+    } else if (strcmp(who, "date") == 0) {
+        dt = datetime_apply_lens(dt, PREC_DAY);
+    } else {
+        dt.precision = PREC_SECOND;   /* a date is midnight, as the text form reads one */
+    }
+    if (lacks) {
+        char message[160];
+        snprintf(message, sizeof(message), "`{%s}` of this value: %s", who, lacks);
+        runtime_error_raise(message, 1003, "datetime");
+        return value_null();
+    }
+    return value_datetime(dt);
+}
+
 static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
                                            int *recognised) {
     if (recognised) {
@@ -39835,6 +39871,9 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
         value_free(value);
         return value_datetime(parsed);
     }
+    if (!modifier.library && strcmp(modifier.name, "date") == 0 && value.kind == VALUE_DATETIME) {
+        return datetime_convert_value("date", value);
+    }
     if (!modifier.library && strcmp(modifier.name, "date") == 0) {
         DateTime datetime;
         char why[128] = {0};
@@ -39879,6 +39918,9 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
         value_free(value);
         return value_datetime(parsed);
     }
+    if (!modifier.library && strcmp(modifier.name, "time") == 0 && value.kind == VALUE_DATETIME) {
+        return datetime_convert_value("time", value);
+    }
     if (!modifier.library && strcmp(modifier.name, "time") == 0) {
         DateTime datetime;
         char why[128] = {0};
@@ -39922,6 +39964,9 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
         parsed.precision = PREC_SECOND;
         value_free(value);
         return value_datetime(parsed);
+    }
+    if (!modifier.library && strcmp(modifier.name, "datetime") == 0 && value.kind == VALUE_DATETIME) {
+        return datetime_convert_value("datetime", value);
     }
     if (!modifier.library && strcmp(modifier.name, "datetime") == 0) {
         /* A datetime is always a full timestamp: parse the date/time parts the

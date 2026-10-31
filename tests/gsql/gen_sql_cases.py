@@ -877,6 +877,31 @@ stmt("INSERT INTO grs (r) VALUES (:p)", ("EXPRESSION", None, "serial `grs.n`'s s
      params=("p = {vendor: 'acme'}",))
 stmt("SELECT count(*) FROM grs", "= 1")
 
+sec("CAST between dates, times and datetimes (docs/datetime_conversion_design.md)")
+stmt("SELECT CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS DATE), CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS TIME)",
+     "= datetime 2026-01-05, datetime 10:30:45")
+stmt("SELECT CAST(DATE '2026-01-05' AS DATETIME)", "= datetime 2026-01-05 00:00:00")
+# text cast to DATE takes its date, as PostgreSQL's does and a DATE column holds
+stmt("SELECT CAST('2026-01-05 10:30' AS DATE) = DATE '2026-01-05'", "= TRUE")
+stmt("SELECT CAST(CAST('2026-01-05 23:59:59' AS DATETIME) AS DATE) = DATE '2026-01-05'", "= TRUE")
+stmt("SELECT CAST(CAST('10:30' AS TIME) AS DATE)", ("EXPRESSION", "CAST", "a time of day has no date to take", 1))
+stmt("SELECT CAST(DATE '2026-01-05' AS TIME)", ("EXPRESSION", "CAST", "a date has no time of day to take"))
+stmt("SELECT CAST(CAST('10:30' AS TIME) AS DATETIME)", ("EXPRESSION", "CAST", "a time of day has no date to take", 1))
+# each cast fits its column
+stmt("CREATE TABLE when3 (d DATE, t TIME, dt DATETIME)", "= done 0")
+stmt("INSERT INTO when3 VALUES (CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS DATE), "
+     "CAST(CAST('2026-01-05 10:30:45' AS DATETIME) AS TIME), CAST(DATE '2026-01-05' AS DATETIME))", "= done 1")
+stmt("INSERT INTO when3 (d) VALUES (CAST('2026-01-05 10:30' AS DATE))", "= done 1")
+# gsql_design.md §10E's own example, written: a serial per day of a datetime
+stmt("CREATE TABLE req (at DATETIME, n INTEGER SERIAL OF (CAST(at AS DATE)))", "= done 0")
+stmt("INSERT INTO req (at) VALUES (CAST('2026-01-05 09:00' AS DATETIME)), (CAST('2026-01-05 17:30' AS DATETIME)), "
+     "(CAST('2026-01-06 08:00' AS DATETIME))", "= done 3")
+stmt("SELECT n FROM req ORDER BY at", "= 1 | 2 | 1")
+# a later time on the same day is no move; the next day is
+stmt("UPDATE req SET at = CAST('2026-01-05 23:00' AS DATETIME) WHERE at = CAST('2026-01-05 09:00' AS DATETIME)", "= done 1")
+stmt("UPDATE req SET at = CAST('2026-01-07 09:00' AS DATETIME) WHERE at = CAST('2026-01-06 08:00' AS DATETIME)",
+     ("SERIAL", None, "moves a row of `req` to another scope of serial `n`"))
+
 sec("SERIAL and RANDOM: what a declaration may say")
 stmt("CREATE TABLE gbad (x TEXT SERIAL)", ("SCHEMA", None, "gbad.x: SERIAL counts, so it belongs on an INTEGER column"))
 stmt("CREATE TABLE gbad (x INTEGER SERIAL OF (x))", ("SCHEMA", "SERIAL", "serial `gbad.x`'s scope reads `x` itself"))

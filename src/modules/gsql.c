@@ -363,7 +363,9 @@ static GsqlHv *gsql_h_cast(void *ctx, const GsqlHv *v, int kind, const char *cur
         return gsql_apply(source, args, 1, err);
     }
     case GSQL_COL_DATE:
-        return gsql_apply("{date}sql_a", args, 1, err);
+        /* the inner {date} reads text at its written precision, the outer one
+           takes the value's date (docs/datetime_conversion_design.md §3) */
+        return gsql_apply("{date}({date}sql_a)", args, 1, err);
     case GSQL_COL_TIME:
         return gsql_apply("{time}sql_a", args, 1, err);
     case GSQL_COL_DATETIME:
