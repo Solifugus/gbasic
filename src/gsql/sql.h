@@ -138,7 +138,8 @@ typedef enum {
     SQ_CREATE_VIEW,          /* CREATE [OR REPLACE] VIEW table [(view_cols)] AS view_q */
     SQ_DROP_VIEW,            /* DROP VIEW [IF EXISTS] table */
     SQ_ADD_FKEY,             /* ALTER TABLE table ADD fkeys[0] */
-    SQ_DROP_CONSTRAINT       /* ALTER TABLE table DROP CONSTRAINT constraint */
+    SQ_DROP_CONSTRAINT,      /* ALTER TABLE table DROP CONSTRAINT constraint */
+    SQ_ADD_CHECK             /* ALTER TABLE table ADD checks[0] */
 } SqlStmtKind;
 
 typedef struct {
@@ -191,6 +192,17 @@ typedef struct {
     uint32_t pos;
 } SqlFkey;
 
+/* A CHECK constraint (docs/gsql_check_design.md): `text` is the expression's
+ * canonical print, made before anything binds it; `column` the column it was
+ * written on, or NULL for a table's */
+typedef struct {
+    char *name;
+    char *column;
+    SqlExpr *e;
+    char *text;
+    uint32_t pos;
+} SqlCheck;
+
 /* WITH name [(cols)] AS (q) */
 typedef struct {
     char *name;
@@ -208,6 +220,7 @@ typedef struct {
     int unique;
     SqlExpr *def;            /* DEFAULT, or NULL */
     SqlFkey *fk;             /* REFERENCES, or NULL */
+    SqlCheck *check;         /* CHECK, or NULL */
 } SqlColDef;
 
 
@@ -265,6 +278,8 @@ typedef struct SqlStmt {
        ADD's one; DROP CONSTRAINT's name */
     SqlFkey *fkeys;
     size_t nfkeys;
+    SqlCheck *checks;        /* CREATE TABLE's, column and table ones alike; ALTER TABLE ADD's one */
+    size_t nchecks;
     char *constraint;
     int unique;
     SqlNameList index_cols;

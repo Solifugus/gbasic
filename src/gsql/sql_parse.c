@@ -1234,6 +1234,24 @@ static int fkey_tail(P *p, SqlFkey *k) {
     }
 }
 
+/* CHECK (expr), the current token CHECK; its text printed now, before
+ * planning can bind the expression */
+static int check_tail(P *p, SqlCheck *c) {
+    next(p);
+    if (!expect_sym(p, "(")) {
+        return 0;
+    }
+    c->e = expr(p);
+    if (!c->e || !expect_sym(p, ")")) {
+        return 0;
+    }
+    GsqlBuf text = {0};
+    sql_print_expr(&text, c->e);
+    c->text = sql_strndup(p->arena, (const char *)text.bytes, text.length);
+    gsql_buf_free(&text);
+    return 1;
+}
+
 /* [CONSTRAINT name] FOREIGN KEY (cols) REFERENCES ..., the current token at
  * CONSTRAINT or FOREIGN */
 static int fkey_clause(P *p, SqlFkey *k) {
@@ -1244,8 +1262,8 @@ static int fkey_clause(P *p, SqlFkey *k) {
             return 0;
         }
         if (!at_word(p, "foreign")) {
-            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "a named CONSTRAINT is a FOREIGN KEY in this release of "
-                           "G-SQL; PRIMARY KEY and UNIQUE are written without a name");
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "a named CONSTRAINT is a FOREIGN KEY or a CHECK in this "
+                           "release of G-SQL; PRIMARY KEY and UNIQUE are written without a name");
         }
     }
     next(p);   /* FOREIGN */
@@ -1257,6 +1275,35 @@ static int fkey_clause(P *p, SqlFkey *k) {
     }
     next(p);
     return fkey_tail(p, k);
+}
+
+/* [CONSTRAINT name] FOREIGN KEY ... or [CONSTRAINT name] CHECK (...) */
+static int constraint_clause(P *p, SqlFkey *k, SqlCheck *c, int *is_check) {
+    uint32_t pos = p->tok.pos;
+    char *cname = NULL;
+    if (at_word(p, "constraint")) {
+        size_t si = p->i;
+        uint32_t sc = p->chars;
+        Tok save = p->tok;
+        next(p);
+        if (!(cname = name(p, "a constraint name"))) {
+            return 0;
+        }
+        if (at_word(p, "check")) {
+            *is_check = 1;
+            c->name = cname;
+            c->pos = pos;
+            return check_tail(p, c);
+        }
+        p->i = si;
+        p->chars = sc;
+        p->tok = save;
+    } else if (at_word(p, "check")) {
+        *is_check = 1;
+        c->pos = pos;
+        return check_tail(p, c);
+    }
+    return fkey_clause(p, k);
 }
 
 static int coldef(P *p, SqlColDef *c) {
@@ -1298,8 +1345,16 @@ static int coldef(P *p, SqlColDef *c) {
             if (!fkey_tail(p, c->fk)) {
                 return 0;
             }
-        } else if (at_kw(p, "check") || at_word(p, "check")) {
-            return fail_at(p, pos, GSQL_UNSUPPORTED, "CHECK constraints are in the next release of G-SQL");
+        } else if (at_word(p, "check")) {
+            if (c->check) {
+                return fail_at(p, pos, GSQL_SYNTAX, "a column has at most one CHECK: join them with AND");
+            }
+            c->check = sql_alloc(p->arena, sizeof(SqlCheck));
+            c->check->pos = pos;
+            c->check->column = c->name;
+            if (!check_tail(p, c->check)) {
+                return 0;
+            }
         } else {
             return 1;
         }
@@ -1864,6 +1919,8 @@ static int create_stmt(P *p, SqlStmt *s) {
         size_t nu = 0;
         SqlFkey fks[64];
         size_t nf = 0;
+        SqlCheck cks[64];
+        size_t nc = 0;
         do {
             uint32_t pos = p->tok.pos;
             if (accept_kw(p, "primary")) {
@@ -1885,17 +1942,21 @@ static int create_stmt(P *p, SqlStmt *s) {
                     return 0;
                 }
                 uniq[nu++].pos = pos;
-            } else if (at_word(p, "foreign") || at_word(p, "constraint")) {
-                if (nf == 64) {
-                    return fail_at(p, pos, GSQL_SYNTAX, "a table may declare at most 64 foreign keys");
+            } else if (at_word(p, "foreign") || at_word(p, "constraint") || at_word(p, "check")) {
+                if (nf == 64 || nc == 64) {
+                    return fail_at(p, pos, GSQL_SYNTAX, "a table may declare at most 64 foreign keys and 64 checks");
                 }
                 memset(&fks[nf], 0, sizeof fks[nf]);
-                if (!fkey_clause(p, &fks[nf])) {
+                memset(&cks[nc], 0, sizeof cks[nc]);
+                int is_check = 0;
+                if (!constraint_clause(p, &fks[nf], &cks[nc], &is_check)) {
                     return 0;
                 }
-                nf++;
-            } else if (at_word(p, "check")) {
-                return fail_at(p, pos, GSQL_UNSUPPORTED, "CHECK is in the next release of G-SQL");
+                if (is_check) {
+                    nc++;
+                } else {
+                    nf++;
+                }
             } else {
                 if (n == 1024) {
                     return fail_at(p, pos, GSQL_SYNTAX, "a table may have at most 1024 columns");
@@ -1926,6 +1987,19 @@ static int create_stmt(P *p, SqlStmt *s) {
         }
         for (size_t k = 0; k < nf; k++) {
             s->fkeys[s->nfkeys++] = fks[k];
+        }
+        size_t totalc = nc;
+        for (size_t k = 0; k < n; k++) {
+            totalc += defs[k].check != NULL;
+        }
+        s->checks = sql_alloc(p->arena, sizeof(SqlCheck) * (totalc ? totalc : 1));
+        for (size_t k = 0; k < n; k++) {
+            if (defs[k].check) {
+                s->checks[s->nchecks++] = *defs[k].check;
+            }
+        }
+        for (size_t k = 0; k < nc; k++) {
+            s->checks[s->nchecks++] = cks[k];
         }
         s->uniques = sql_alloc(p->arena, sizeof(SqlNameList) * (nu ? nu : 1));
         memcpy(s->uniques, uniq, sizeof(SqlNameList) * nu);
@@ -2023,11 +2097,17 @@ static int alter_stmt(P *p, SqlStmt *s) {
         }
         return expected(p, "ADD, DROP or RENAME after ALTER TABLE name");
     }
-    if (at_word(p, "constraint") || at_word(p, "foreign")) {
-        s->kind = SQ_ADD_FKEY;
+    if (at_word(p, "constraint") || at_word(p, "foreign") || at_word(p, "check")) {
         s->fkeys = sql_alloc(p->arena, sizeof(SqlFkey));
-        s->nfkeys = 1;
-        return fkey_clause(p, &s->fkeys[0]);
+        s->checks = sql_alloc(p->arena, sizeof(SqlCheck));
+        int is_check = 0;
+        if (!constraint_clause(p, &s->fkeys[0], &s->checks[0], &is_check)) {
+            return 0;
+        }
+        s->kind = is_check ? SQ_ADD_CHECK : SQ_ADD_FKEY;
+        s->nfkeys = !is_check;
+        s->nchecks = is_check;
+        return 1;
     }
     s->kind = SQ_ADD_COLUMN;
     accept_kw(p, "column");
@@ -2644,6 +2724,21 @@ static void print_fkey(GsqlBuf *o, const SqlFkey *k) {
     }
 }
 
+static void print_check(GsqlBuf *o, const SqlCheck *c) {
+    if (c->name) {
+        puts_(o, "CONSTRAINT ");
+        print_name(o, c->name);
+        v3_put(o, " ", 1);
+    }
+    /* a comparison already prints in its parentheses */
+    int wrapped = c->text[0] == '(';
+    puts_(o, wrapped ? "CHECK " : "CHECK (");
+    puts_(o, c->text);
+    if (!wrapped) {
+        v3_put(o, ")", 1);
+    }
+}
+
 static void print_from(GsqlBuf *o, const char *table, const char *alias, const SqlStmt *sub, const SqlNameList *cols) {
     if (sub) {
         v3_put(o, "(", 1);
@@ -2838,6 +2933,10 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
             puts_(o, ", ");
             print_fkey(o, &s->fkeys[k]);
         }
+        for (size_t k = 0; k < s->nchecks; k++) {
+            puts_(o, ", ");
+            print_check(o, &s->checks[k]);
+        }
         v3_put(o, ")", 1);
         return;
     case SQ_DROP_TABLE:
@@ -2869,6 +2968,12 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
         print_name(o, s->table);
         puts_(o, " ADD ");
         print_fkey(o, &s->fkeys[0]);
+        return;
+    case SQ_ADD_CHECK:
+        puts_(o, "ALTER TABLE ");
+        print_name(o, s->table);
+        puts_(o, " ADD ");
+        print_check(o, &s->checks[0]);
         return;
     case SQ_DROP_CONSTRAINT:
         puts_(o, "ALTER TABLE ");

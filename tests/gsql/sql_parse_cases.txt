@@ -340,8 +340,16 @@
 > create table t (a int references u deferrable)
 ! UNSUPPORTED 36 deferred checking is not in this release
 > create table t (a int, constraint c unique (a))
-! UNSUPPORTED 37 a named CONSTRAINT is a FOREIGN KEY in this release
+! UNSUPPORTED 37 a named CONSTRAINT is a FOREIGN KEY or a CHECK in this release
 > create table t (a int check (a > 0))
-! UNSUPPORTED 23 CHECK constraints are in the next release
+= CREATE TABLE t (a INTEGER, CHECK (a > 0))
+> create table t (a int, b int, constraint a_below_b check (a < b or b is null))
+= CREATE TABLE t (a INTEGER, b INTEGER, CONSTRAINT a_below_b CHECK ((a < b) OR (b IS NULL)))
+> alter table t add check (coalesce(a, 0) >= 0)
+= ALTER TABLE t ADD CHECK (coalesce(a, 0) >= 0)
+> alter table t add constraint pos check (a > 0)
+= ALTER TABLE t ADD CONSTRAINT pos CHECK (a > 0)
+> create table t (a int check (a > 0) check (a < 9))
+! SYNTAX 37 a column has at most one CHECK
 > create table t (a int, foreign key (a) u)
 ! SYNTAX 40 expected REFERENCES after FOREIGN KEY
