@@ -173,6 +173,7 @@ typedef struct {
     SqlExpr **group;         /* GROUP BY */
     size_t ngroup;
     SqlExpr *having;
+    int distinct;            /* SELECT DISTINCT */
     /* INSERT: cols may be empty (every column, in order) */
     SqlNameList cols;
     SqlExpr ***rows;         /* rows[r][c] */

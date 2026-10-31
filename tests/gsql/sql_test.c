@@ -107,9 +107,31 @@ static void render(GsqlBuf *o, const unsigned char *v, size_t n) {
     }
 }
 
+/* A batch's rows, however many. A fixed cap here used to render a larger
+ * batch as nothing at all, so a 6,000-row join read as "(none)" -- and two
+ * large answers then agreed with each other whatever they held. */
+static long rows_of(const GsqlBuf *rows, GsBytes **out) {
+    for (long cap = 4096;; cap *= 4) {
+        GsBytes *v = malloc(sizeof(GsBytes) * (size_t)cap);
+        if (!v) {
+            abort();
+        }
+        long n = v3_array_items(rows->bytes, rows->length, v, cap);
+        if (n >= 0 || cap > (1L << 24)) {
+            if (n < 0) {
+                fprintf(stderr, "a batch of rows could not be read\n");
+                exit(2);
+            }
+            *out = v;
+            return n;
+        }
+        free(v);
+    }
+}
+
 static void render_rows(GsqlBuf *o, const GsqlBuf *rows, size_t *nrows) {
-    GsBytes items[4096];
-    long n = v3_array_items(rows->bytes, rows->length, items, 4096);
+    GsBytes *items;
+    long n = rows_of(rows, &items);
     for (long r = 0; r < n; r++) {
         if (*nrows) {
             v3_put(o, " | ", 3);
@@ -124,6 +146,7 @@ static void render_rows(GsqlBuf *o, const GsqlBuf *rows, size_t *nrows) {
             render(o, cols[c].p, cols[c].n);
         }
     }
+    free(items);
 }
 
 static void render_columns(GsqlBuf *o, const GsqlBuf *columns) {
@@ -749,8 +772,8 @@ static void og_flush(OGroup *og, GsqlBuf *o, long having, size_t *nrows) {
 
 /* rows of [g, v], sorted by g: the grouped answer, rendered as the engine's is */
 static void oracle_fold(const GsqlBuf *raw, long having, GsqlBuf *o) {
-    static GsBytes items[4096];
-    long n = v3_array_items(raw->bytes, raw->length, items, 4096);
+    GsBytes *items;
+    long n = rows_of(raw, &items);
     OGroup og;
     memset(&og, 0, sizeof og);
     size_t nrows = 0;
@@ -793,6 +816,7 @@ static void oracle_fold(const GsqlBuf *raw, long having, GsqlBuf *o) {
         H->release(H->ctx, v);
     }
     og_flush(&og, o, having, &nrows);
+    free(items);
     if (nrows == 0) {
         v3_put(o, "(none)", 6);
     }
@@ -864,6 +888,159 @@ static int grouping_oracle(int n, int *grouped_seen) {
     return refused;
 }
 
+/* ---- the DISTINCT oracle (docs/gsql_distinct_design.md §6) -------------
+ *
+ * The same query without DISTINCT, its rows sorted by the same terms, with a
+ * row dropped here when the host calls every column the same as the row kept
+ * before it (both NULL, or ordered equal). Sorted, the copies of a row are
+ * adjacent, so that is the whole of deduplication; it shares no key encoding
+ * or hash table with the engine. LIMIT and OFFSET are then counted over what
+ * is left. */
+
+static int same_row(GsqlHv **a, GsqlHv **b, int ncol) {
+    for (int k = 0; k < ncol; k++) {
+        int na = hnull(a[k]), nb = hnull(b[k]);
+        if (na != nb || (!na && hcmp(a[k], b[k]) != 0)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void oracle_distinct(const GsqlBuf *raw, int ncol, long offset, long limit, GsqlBuf *o) {
+    GsBytes *items;
+    long n = rows_of(raw, &items);
+    GsqlHv *kept[2] = { NULL, NULL };
+    size_t nrows = 0;
+    long seen = 0;
+    for (long r = 0; r < n; r++) {
+        GsBytes cols[2];
+        v3_array_items(items[r].p, items[r].n, cols, ncol);
+        GsqlHv *v[2] = { NULL, NULL };
+        for (int k = 0; k < ncol; k++) {
+            v[k] = hload(cols[k].p, cols[k].n);
+        }
+        if (kept[0] && same_row(kept, v, ncol)) {
+            for (int k = 0; k < ncol; k++) {
+                H->release(H->ctx, v[k]);
+            }
+            continue;
+        }
+        for (int k = 0; k < ncol; k++) {
+            if (kept[k]) {
+                H->release(H->ctx, kept[k]);
+            }
+            kept[k] = v[k];
+        }
+        if (seen++ < offset || (limit >= 0 && (long)nrows >= limit)) {
+            continue;
+        }
+        if (nrows++) {
+            v3_put(o, " | ", 3);
+        }
+        for (int k = 0; k < ncol; k++) {
+            if (k) {
+                v3_put(o, ", ", 2);
+            }
+            hrender(o, v[k]);
+        }
+    }
+    for (int k = 0; k < ncol; k++) {
+        if (kept[k]) {
+            H->release(H->ctx, kept[k]);
+        }
+    }
+    free(items);
+    if (nrows == 0) {
+        v3_put(o, "(none)", 6);
+    }
+}
+
+static int stopped_short;
+
+static int distinct_oracle(int n, int *distinct_seen, int *deduplicated) {
+    /* not x: two currencies have no order, and the host would call them equal */
+    static const char *const cols[] = { "a", "b", "c", "d", "m", "f" };
+    H = gb_gsql_host();
+    int refused = 0;
+    for (int k = 0; k < n; k++) {
+        char where[1024], sel[64], ord[128], lim[64] = "", q[2048], o[2048];
+        predicate(where, sizeof where);
+        int ncol = 1 + (int)pick(2);
+        const char *c1 = cols[pick(6)], *c2 = cols[pick(6)];
+        while (ncol == 2 && c2 == c1) {
+            c2 = cols[pick(6)];
+        }
+        const char *dir = pick(2) ? " DESC" : "";
+        if (ncol == 1) {
+            snprintf(sel, sizeof sel, "%s", c1);
+            snprintf(ord, sizeof ord, "%s%s", c1, dir);
+        } else {
+            snprintf(sel, sizeof sel, "%s, %s", c1, c2);
+            snprintf(ord, sizeof ord, "%s%s, %s", c1, dir, c2);
+        }
+        long limit = -1, offset = 0;
+        if (pick(3) == 0) {
+            limit = 1 + (long)pick(4);
+            offset = (long)pick(3);
+            snprintf(lim, sizeof lim, " LIMIT %ld OFFSET %ld", limit, offset);
+        }
+        snprintf(q, sizeof q, "SELECT DISTINCT %s FROM r WHERE %s ORDER BY %s%s", sel, where, ord, lim);
+        snprintf(o, sizeof o, "SELECT %s FROM r WHERE %s ORDER BY %s", sel, where, ord);
+        /* both in one mode, for the reason the grouping oracle gives */
+        Answer x, y;
+        gsql_sql_force_scan(sql, pick(2));
+        run(q, NULL, 100000, &x);
+        run(o, NULL, 100000, &y);
+        gsql_sql_force_scan(sql, 0);
+        checks++;
+        if (limit >= 0 && x.code == GSQL_OK && y.code == GSQL_EXPRESSION) {
+            /* a LIMIT may stop before the row that refuses, as a narrowed
+               path may (gsql_sql_design.md §5); the other way is a defect */
+            stopped_short++;
+        } else if (x.code != y.code) {
+            mismatches++;
+            printf("MISMATCH %s\n  distinct: %s %s\n  oracle's rows: %s %s\n", q, gsql_error_name(x.code),
+                   x.err.message, gsql_error_name(y.code), y.err.message);
+        } else if (x.code != GSQL_OK) {
+            refused++;
+        } else {
+            GsqlBuf want = {0};
+            oracle_distinct(&y.raw, ncol, offset, limit, &want);
+            GsqlBuf got = {0};
+            v3_put(&got, x.text.bytes, x.text.length);
+            zero_spelling(&got);
+            zero_spelling(&want);
+            if (strcmp((char *)got.bytes, (char *)want.bytes) != 0) {
+                mismatches++;
+                printf("MISMATCH %s\n  engine: %s\n  oracle: %s\n", q, (char *)got.bytes, (char *)want.bytes);
+            } else if (strcmp((char *)got.bytes, "(none)") != 0) {
+                (*distinct_seen)++;
+                /* the census: the oracle really dropped a copy here */
+                GsqlBuf all = {0};
+                oracle_distinct(&y.raw, ncol, 0, -1, &all);
+                v3_put(&all, "", 1);
+                size_t bars_all = 0, bars_raw = 0;
+                for (const char *t = (char *)all.bytes; (t = strstr(t, " | ")); t += 3) {
+                    bars_all++;
+                }
+                GsBytes *rows;
+                bars_raw = (size_t)rows_of(&y.raw, &rows);
+                free(rows);
+                if (bars_all + 1 < bars_raw) {
+                    (*deduplicated)++;
+                }
+                gsql_buf_free(&all);
+            }
+            gsql_buf_free(&want);
+            gsql_buf_free(&got);
+        }
+        answer_free(&x);
+        answer_free(&y);
+    }
+    return refused;
+}
+
 /* ---- the join tiers (docs/gsql_join_design.md §5) -----------------------
  *
  * A second table q, whose column names differ from r's so a bare name in
@@ -905,9 +1082,9 @@ static int join_tables(void) {
 
 /* rows [id, key] of r and [qid, key, v] of q, both sorted by id: the join */
 static void oracle_join(const GsqlBuf *rr, const GsqlBuf *qq, int left, GsqlBuf *o) {
-    static GsBytes ri[4096], qi[4096];
-    long nr = v3_array_items(rr->bytes, rr->length, ri, 4096);
-    long nq = v3_array_items(qq->bytes, qq->length, qi, 4096);
+    GsBytes *ri, *qi;
+    long nr = rows_of(rr, &ri);
+    long nq = rows_of(qq, &qi);
     size_t nrows = 0;
     for (long a = 0; a < nr; a++) {
         GsBytes rc[2];
@@ -947,6 +1124,8 @@ static void oracle_join(const GsqlBuf *rr, const GsqlBuf *qq, int left, GsqlBuf 
         }
         H->release(H->ctx, rk);
     }
+    free(ri);
+    free(qi);
     if (nrows == 0) {
         v3_put(o, "(none)", 6);
     }
@@ -1111,6 +1290,8 @@ static int differential(const char *dir, uint64_t seed, int n) {
     }
     int grouped_seen = 0;
     int grouped_refused = grouping_oracle(n / 2, &grouped_seen);
+    int distinct_seen = 0, deduplicated = 0;
+    int distinct_refused = distinct_oracle(n / 2, &distinct_seen, &deduplicated);
     int q_rows = join_tables();
     int join_seeks = 0, joined_seen = 0;
     unsigned long js0, jc0, js1, jc1;
@@ -1126,6 +1307,13 @@ static int differential(const char *dir, uint64_t seed, int n) {
     if (grouped_seen < n / 6) {
         mismatches++;
         printf("MISMATCH the grouping oracle compared too few answers with groups in them\n");
+    }
+    printf("census: %d DISTINCT queries against the oracle, %d answered with rows, %d of them dropping copies, "
+           "%d refused, %d stopped by LIMIT before a refusal\n", n / 2, distinct_seen, deduplicated, distinct_refused,
+           stopped_short);
+    if (distinct_seen < n / 6 || deduplicated < n / 10) {
+        mismatches++;
+        printf("MISMATCH the DISTINCT oracle compared too few answers that dropped a copy\n");
     }
     printf("census: %d rows of q, %d joins both ways, %d of them sought, %lu seeks in all, %d answered by the "
            "oracle with rows, %d refused\n", q_rows, n / 2, join_seeks, js1 - js0, joined_seen, join_refused);

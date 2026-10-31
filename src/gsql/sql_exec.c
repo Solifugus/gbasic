@@ -1589,7 +1589,64 @@ typedef struct {
     int ended;
     int grouped;        /* the rows are the groups (aggregate, below) */
     Groups groups;
+    KeyMap seen;        /* SELECT DISTINCT: the output rows' keys so far */
+    GsqlBuf *seen_keys;
+    size_t nseen, capseen;
 } SqlCursor;
+
+static const GsqlBuf *row_key_of(void *ctx, size_t i) {
+    return &((SqlCursor *)ctx)->seen_keys[i];
+}
+
+/* SELECT DISTINCT (docs/gsql_distinct_design.md): whether output row `row`
+ * is the first of its kind, keyed as GROUP BY keys a group. 1 it is, 0 a row
+ * the same as it came before, -1 failed. */
+static int distinct_first(SqlCursor *c, const GsqlBuf *row) {
+    if (!c->plan.s->distinct) {
+        return 1;
+    }
+    X *x = &c->x;
+    size_t n = c->plan.nout;
+    GsBytes *items = malloc(sizeof(GsBytes) * (n ? n : 1));
+    if (!items) {
+        abort();
+    }
+    if (v3_array_items(row->bytes, row->length, items, n) != (long)n) {
+        free(items);
+        xfail(x->err, GSQL_MISUSE, 0, "an output row did not hold its columns");
+        return -1;
+    }
+    GsqlKey key;
+    gsql_key_init(&key);
+    for (size_t k = 0; k < n; k++) {
+        if (gsql_key_append(&key, items[k].p, items[k].n, NULL, 0) != GSQL_KEY_OK) {
+            xfail(x->err, GSQL_EXPRESSION, c->plan.out[k]->pos,
+                  "%s cannot be grouped or made DISTINCT: it has no single equality G-SQL can key",
+                  tag_word(items[k].n ? items[k].p[0] : 0));
+            gsql_key_free(&key);
+            free(items);
+            return -1;
+        }
+    }
+    free(items);
+    int first = !keymap_find(&c->seen, row_key_of, c, key.bytes, key.length, 0);
+    if (first) {
+        if (c->nseen == c->capseen) {
+            c->capseen = c->capseen ? c->capseen * 2 : 64;
+            c->seen_keys = realloc(c->seen_keys, sizeof(GsqlBuf) * c->capseen);
+            if (!c->seen_keys) {
+                abort();
+            }
+        }
+        GsqlBuf *kb = &c->seen_keys[c->nseen];
+        memset(kb, 0, sizeof *kb);
+        v3_put(kb, key.bytes, key.length);
+        c->nseen++;
+        keymap_find(&c->seen, row_key_of, c, key.bytes, key.length, c->nseen);
+    }
+    gsql_key_free(&key);
+    return first;
+}
 
 static int output_row(SqlCursor *c, GsqlBuf *out) {
     X *x = &c->x;
@@ -1802,6 +1859,11 @@ static void cursor_free(SqlCursor *c) {
         }
     }
     free(c->rows);
+    for (size_t k = 0; k < c->nseen; k++) {
+        gsql_buf_free(&c->seen_keys[k]);
+    }
+    free(c->seen_keys);
+    free(c->seen.slot);
     c->x.aggv = NULL;
     groups_free(&c->x, &c->groups);
     for (size_t k = 0; k < c->nlines; k++) {
@@ -1862,12 +1924,19 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
                 c->ended = 1;
                 return r;
             }
+            if (output_row(c, out) != GSQL_OK) {
+                return -1;
+            }
+            int f = distinct_first(c, out);
+            if (f < 0) {
+                return -1;
+            }
+            if (!f) {
+                continue;
+            }
             if (c->offset) {
                 c->offset--;
                 continue;
-            }
-            if (output_row(c, out) != GSQL_OK) {
-                return -1;
             }
             c->produced++;
             return 1;
@@ -1896,11 +1965,23 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
             c->ended = 1;
             return r;
         }
+        if (c->plan.s->distinct) {
+            if (output_row(c, out) != GSQL_OK) {
+                return -1;
+            }
+            int f = distinct_first(c, out);
+            if (f < 0) {
+                return -1;
+            }
+            if (!f) {
+                continue;
+            }
+        }
         if (c->offset) {
             c->offset--;
             continue;
         }
-        if (output_row(c, out) != GSQL_OK) {
+        if (!c->plan.s->distinct && output_row(c, out) != GSQL_OK) {
             return -1;
         }
         c->produced++;
@@ -1929,14 +2010,23 @@ static int collect_sorted(SqlCursor *c) {
         }
         SortRow *row = &c->rows[c->nrows];
         memset(row, 0, sizeof *row);
+        if (output_row(c, &row->out) != GSQL_OK) {
+            gsql_buf_free(&row->out);
+            return x->err->code;
+        }
+        int f = distinct_first(c, &row->out);
+        if (f <= 0) {
+            gsql_buf_free(&row->out);
+            if (f < 0) {
+                return x->err->code;
+            }
+            continue;
+        }
         row->keys = calloc(nord, sizeof(GsqlHv *));
         if (!row->keys) {
             abort();
         }
         c->nrows++;
-        if (output_row(c, &row->out) != GSQL_OK) {
-            return x->err->code;
-        }
         for (size_t k = 0; k < nord; k++) {
             if (c->plan.order_out[k] >= 0) {
                 /* the output's own value: read it back from the row */

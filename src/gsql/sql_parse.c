@@ -429,7 +429,7 @@ static char *name(P *p, const char *what) {
 static int phase2(P *p) {
     static const struct { const char *kw; const char *what; } later[] = {
         { "union", "UNION" },
-        { "intersect", "INTERSECT" }, { "except", "EXCEPT" }, { "distinct", "DISTINCT" },
+        { "intersect", "INTERSECT" }, { "except", "EXCEPT" },
         { "with", "WITH" }, { NULL, NULL }
     };
     for (int k = 0; later[k].kw; k++) {
@@ -1214,6 +1214,14 @@ static int join_list(P *p, SqlStmt *s) {
 }
 
 static int select_stmt(P *p, SqlStmt *s) {
+    if (accept_kw(p, "distinct")) {
+        if (at_kw(p, "on")) {
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "DISTINCT ON is not in this release of G-SQL");
+        }
+        s->distinct = 1;
+    } else {
+        accept_kw(p, "all");
+    }
     if (!phase2(p)) {
         return 0;
     }
@@ -2060,7 +2068,7 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
     }
     switch (s->kind) {
     case SQ_SELECT:
-        puts_(o, "SELECT ");
+        puts_(o, s->distinct ? "SELECT DISTINCT " : "SELECT ");
         for (size_t k = 0; k < s->nitems; k++) {
             const SqlItem *it = &s->items[k];
             if (k) {

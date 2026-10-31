@@ -213,9 +213,19 @@
 > select a from t cross join u on true
 ! SYNTAX 30 a cross join has no ON
 
+# ---- SELECT DISTINCT (docs/gsql_distinct_design.md) ------------------
+> select distinct a, b from t order by 1
+= SELECT DISTINCT a, b FROM t ORDER BY 1
+> select all a from t
+= SELECT a FROM t
+> select distinct * from t
+= SELECT DISTINCT * FROM t
+> select distinct on (a) a from t
+! UNSUPPORTED 17 DISTINCT ON is not in this release
+> select a, count(distinct b) from t group by a
+= SELECT a, count(DISTINCT b) FROM t GROUP BY a
+
 # ---- refusals: Phase 2, by name -------------------------------------
-> select distinct a from t
-! UNSUPPORTED 8 DISTINCT are not in this release
 > select a from t union select b from u
 ! UNSUPPORTED 17 UNION are not in this release
 > select a from t where a in (select b from u)

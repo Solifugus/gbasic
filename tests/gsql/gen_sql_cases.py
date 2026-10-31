@@ -320,6 +320,36 @@ stmt("EXPLAIN SELECT cu.name FROM cu LEFT JOIN od ON true WHERE od.cust = 2",
 stmt("EXPLAIN SELECT a.name FROM cu a JOIN cu b ON b.id = a.id + 1",
      "= 'Nested Loop' | '  Scan on cu AS a' | '  Point Read on cu AS b using the primary key (id = (a.id + 1))'")
 
+sec("SELECT DISTINCT (docs/gsql_distinct_design.md)")
+# s's g is a, a, b, NULL, NULL, b and its x 1.5, NULL, 3, 4, NULL, 3.0; with
+# no ORDER BY a row comes out where its first copy did, here primary-key order
+stmt("SELECT DISTINCT g FROM s", "= 'a' | 'b' | NULL")
+stmt("SELECT ALL g FROM s WHERE id < 3", "= 'a' | 'a'")
+# NULLs are one value and 3 and 3.0 are one value, as GROUP BY says
+stmt("SELECT DISTINCT x FROM s", "= 1.5 | NULL | 3 | 4")
+stmt("SELECT DISTINCT g, x FROM s", "= 'a', 1.5 | 'a', NULL | 'b', 3 | NULL, 4 | NULL, NULL")
+stmt("SELECT DISTINCT g FROM s ORDER BY g", "= 'a' | 'b' | NULL")
+stmt("SELECT DISTINCT g FROM s ORDER BY 1 DESC", "= NULL | 'b' | 'a'")
+stmt("SELECT DISTINCT lower(g) AS l FROM s ORDER BY l", "= 'a' | 'b' | NULL")
+stmt("SELECT DISTINCT upper(g) FROM s ORDER BY upper(g) DESC", "= NULL | 'B' | 'A'")
+# LIMIT and OFFSET count distinct rows, not the rows before them
+stmt("SELECT DISTINCT g FROM s LIMIT 2", "= 'a' | 'b'")
+stmt("SELECT DISTINCT g FROM s LIMIT 5 OFFSET 1", "= 'b' | NULL")
+stmt("SELECT DISTINCT g FROM s ORDER BY g DESC LIMIT 1 OFFSET 1", "= 'b'")
+stmt("SELECT DISTINCT region FROM cu", "= 'east' | 'west' | NULL")
+stmt("SELECT DISTINCT * FROM cu WHERE id < 3", "= 1, 'ann', 'east' | 2, 'bob', 'west'")
+stmt("SELECT DISTINCT cu.name FROM cu JOIN od ON od.cust = cu.id", "= 'ann' | 'bob'")
+# over a grouped query it is the outputs that are made distinct: the group
+# sizes here, which no GROUP BY of the rows could say
+stmt("SELECT DISTINCT count(*) FROM s GROUP BY g", "= 2")
+stmt("SELECT DISTINCT count(n) FROM s GROUP BY g", "= 2 | 1")
+stmt("SELECT DISTINCT 1", "= 1")
+stmt("SELECT DISTINCT g FROM s ORDER BY n",
+     ("SYNTAX", "n", "with SELECT DISTINCT, ORDER BY may name only an output column, and `n` is not one"))
+stmt("SELECT DISTINCT p FROM assets", ("EXPRESSION", "p", "a record cannot be grouped or made DISTINCT"))
+stmt("EXPLAIN SELECT DISTINCT g FROM s ORDER BY g", "= 'Scan on s' | '  Distinct: g' | '  Order: g (sorted)'")
+stmt("EXPLAIN SELECT DISTINCT id FROM s ORDER BY id", "= 'Scan on s' | '  Distinct: id' | '  Order: id (by the primary key)'")
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

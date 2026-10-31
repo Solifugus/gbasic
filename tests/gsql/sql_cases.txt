@@ -457,6 +457,50 @@ commit
 > EXPLAIN SELECT a.name FROM cu a JOIN cu b ON b.id = a.id + 1
 = 'Nested Loop' | '  Scan on cu AS a' | '  Point Read on cu AS b using the primary key (id = (a.id + 1))'
 
+# ---- SELECT DISTINCT (docs/gsql_distinct_design.md) ------------------
+> SELECT DISTINCT g FROM s
+= 'a' | 'b' | NULL
+> SELECT ALL g FROM s WHERE id < 3
+= 'a' | 'a'
+> SELECT DISTINCT x FROM s
+= 1.5 | NULL | 3 | 4
+> SELECT DISTINCT g, x FROM s
+= 'a', 1.5 | 'a', NULL | 'b', 3 | NULL, 4 | NULL, NULL
+> SELECT DISTINCT g FROM s ORDER BY g
+= 'a' | 'b' | NULL
+> SELECT DISTINCT g FROM s ORDER BY 1 DESC
+= NULL | 'b' | 'a'
+> SELECT DISTINCT lower(g) AS l FROM s ORDER BY l
+= 'a' | 'b' | NULL
+> SELECT DISTINCT upper(g) FROM s ORDER BY upper(g) DESC
+= NULL | 'B' | 'A'
+> SELECT DISTINCT g FROM s LIMIT 2
+= 'a' | 'b'
+> SELECT DISTINCT g FROM s LIMIT 5 OFFSET 1
+= 'b' | NULL
+> SELECT DISTINCT g FROM s ORDER BY g DESC LIMIT 1 OFFSET 1
+= 'b'
+> SELECT DISTINCT region FROM cu
+= 'east' | 'west' | NULL
+> SELECT DISTINCT * FROM cu WHERE id < 3
+= 1, 'ann', 'east' | 2, 'bob', 'west'
+> SELECT DISTINCT cu.name FROM cu JOIN od ON od.cust = cu.id
+= 'ann' | 'bob'
+> SELECT DISTINCT count(*) FROM s GROUP BY g
+= 2
+> SELECT DISTINCT count(n) FROM s GROUP BY g
+= 2 | 1
+> SELECT DISTINCT 1
+= 1
+> SELECT DISTINCT g FROM s ORDER BY n
+! SYNTAX 35 with SELECT DISTINCT, ORDER BY may name only an output column, and `n` is not one
+> SELECT DISTINCT p FROM assets
+! EXPRESSION 17 a record cannot be grouped or made DISTINCT
+> EXPLAIN SELECT DISTINCT g FROM s ORDER BY g
+= 'Scan on s' | '  Distinct: g' | '  Order: g (sorted)'
+> EXPLAIN SELECT DISTINCT id FROM s ORDER BY id
+= 'Scan on s' | '  Distinct: id' | '  Order: id (by the primary key)'
+
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
 = done 0

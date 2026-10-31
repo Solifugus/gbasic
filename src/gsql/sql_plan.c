@@ -858,6 +858,34 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
             }
         }
     }
+    if (s->distinct) {
+        /* an ORDER BY term must be an output (docs/gsql_distinct_design.md §4) */
+        for (size_t k = 0; k < s->norder; k++) {
+            if (p->order_out[k] >= 0) {
+                continue;
+            }
+            GsqlBuf want = {0};
+            sql_print_expr_scans(&want, p->order[k], p->scans, p->nscans);
+            for (size_t o = 0; o < p->nout && p->order_out[k] < 0; o++) {
+                GsqlBuf have = {0};
+                sql_print_expr_scans(&have, p->out[o], p->scans, p->nscans);
+                if (have.length == want.length && memcmp(have.bytes, want.bytes, want.length) == 0) {
+                    p->order_out[k] = (long)o;
+                    p->order[k] = p->out[o];
+                }
+                gsql_buf_free(&have);
+            }
+            if (p->order_out[k] < 0) {
+                int rc = bfail(b, s->order[k].e->pos, GSQL_SYNTAX,
+                               "with SELECT DISTINCT, ORDER BY may name only an output column, and `%.*s` is not one: "
+                               "each output row stands for rows that may differ in it",
+                               (int)want.length, (char *)want.bytes);
+                gsql_buf_free(&want);
+                return rc;
+            }
+            gsql_buf_free(&want);
+        }
+    }
     if (!bind(b, s->limit, 0, "LIMIT") || !bind(b, s->offset, 0, "OFFSET")) {
         return 0;
     }
@@ -1141,6 +1169,16 @@ void sql_explain(const SqlPlan *p, void (*line)(void *, const char *), void *ctx
             sql_print_expr_scans(&b, s->having, p->scans, p->nscans);
             emit(line, ctx, indent + 1, &b);
         }
+    }
+    if (s->kind == SQ_SELECT && s->distinct) {
+        put(&b, "Distinct: ");
+        for (size_t k = 0; k < p->nout; k++) {
+            if (k) {
+                put(&b, ", ");
+            }
+            sql_print_expr_scans(&b, p->out[k], p->scans, p->nscans);
+        }
+        emit(line, ctx, indent + 1, &b);
     }
     if (s->kind == SQ_SELECT && s->norder) {
         const SqlScan *sc = &p->scans[0];
