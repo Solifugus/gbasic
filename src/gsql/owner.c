@@ -156,6 +156,11 @@ typedef struct {
     uint64_t timed_out[TIMED_OUT_KEPT];
     unsigned ntimed;
     int queued;         /* in the writer FIFO */
+    /* the head request, a read still folding or collecting: advanced a slice
+       a turn by the loop (docs/gsql_slicing_design.md) */
+    void *work;
+    GsTxn *work_txn;    /* its autocommit snapshot; NULL inside a transaction */
+    uint32_t work_id;
 } Conn;
 
 typedef struct {
@@ -334,7 +339,21 @@ static void txn_end(Owner *o, Conn *c) {
     c->why[0] = 0;
 }
 
+static void work_end(Owner *o, Conn *c) {
+    if (c->work) {
+        if (o->svc && o->svc->close) {
+            o->svc->close(o->svc->ctx, c->work);
+        }
+        if (c->work_txn) {
+            o->e->abort(c->work_txn);
+        }
+        c->work = NULL;
+        c->work_txn = NULL;
+    }
+}
+
 static void conn_cleanup(Owner *o, Conn *c) {
+    work_end(o, c);   /* before the transaction it may be reading */
     txn_end(o, c);
     while (c->cursors) {
         cursor_drop(o, c, c->cursors);
@@ -358,7 +377,7 @@ static void conn_cleanup(Owner *o, Conn *c) {
 
 /* ==== 5. answering one request =========================================== */
 
-enum { DONE_REQ, PARKED };
+enum { DONE_REQ, PARKED, WORKING };
 
 /* ROWS from a result: cursor (when more remain), more, columns, rows. */
 static void send_rows(Owner *o, Conn *c, uint32_t id, GsqlResult *res, GsTxn *own) {
@@ -498,6 +517,9 @@ static int do_query(Owner *o, Conn *c, Req *r) {
 
     GsqlError err = { GSQL_OK, "", 0, 0 };
     int w = o->svc->writes(o->svc->ctx, &s, &err);
+    /* a read may be answered `working`, and is then advanced a slice a turn,
+       so a long one does not hold up every other connection */
+    s.sliced = w == 0 && o->svc->resume != NULL;
     if (w < 0) {
         send_error_at(c, r->id, err.code ? err.code : GSQL_PROTOCOL, err.message, err.position);
         return DONE_REQ;
@@ -553,6 +575,13 @@ static int do_query(Owner *o, Conn *c, Req *r) {
         send_error_at(c, r->id, rc, err.message, err.position);
         result_free(&res);
         return DONE_REQ;
+    }
+    if (res.working) {
+        c->work = res.cursor;
+        c->work_txn = c->tx == TX_NONE ? t : NULL;
+        c->work_id = r->id;
+        result_free(&res);
+        return WORKING;
     }
     if (auto_write) {
         if (res.cursor && o->svc->close) {
@@ -892,10 +921,10 @@ static int handle(Owner *o, Conn *c, Req *r) {
  * any was answered. */
 static int process(Owner *o, Conn *c) {
     int progress = 0;
-    while (c->head && !c->closing && !c->dead) {
+    while (c->head && !c->closing && !c->dead && !c->work) {
         Req *r = c->head;
-        if (handle(o, c, r) == PARKED) {
-            break;
+        if (handle(o, c, r) != DONE_REQ) {
+            break;   /* parked, or working: its turn comes again */
         }
         c->head = r->next;
         if (!c->head) {
@@ -905,6 +934,44 @@ static int process(Owner *o, Conn *c) {
         progress = 1;
     }
     return progress;
+}
+
+/* A working request's next slice. Answers 1 when it finished, answered or
+ * refused, and its request is done. */
+static int work_step(Owner *o, Conn *c) {
+    GsqlResult res;
+    memset(&res, 0, sizeof res);
+    GsqlError err = { GSQL_OK, "", 0, 0 };
+    int rc = o->svc->resume(o->svc->ctx, c->work, 0, &res, &err);
+    if (rc == GSQL_OK && res.working) {
+        c->work = res.cursor;
+        result_free(&res);
+        return 0;
+    }
+    GsTxn *own = c->work_txn;
+    uint32_t id = c->work_id;
+    c->work = NULL;
+    c->work_txn = NULL;
+    if (rc != GSQL_OK) {
+        if (own) {
+            o->e->abort(own);
+        } else if (rc == GSQL_STORAGE) {
+            storage_failed(o, c, err.message);
+        }
+        send_error_at(c, id, rc, err.message, err.position);
+    } else {
+        send_rows(o, c, id, &res, own);
+    }
+    result_free(&res);
+    Req *r = c->head;
+    if (r) {
+        c->head = r->next;
+        if (!c->head) {
+            c->tail = NULL;
+        }
+        free(r);
+    }
+    return 1;
 }
 
 /* ==== 6. the loop ======================================================== */
@@ -944,7 +1011,18 @@ static void enqueue(Owner *o, Conn *c, const GsqlFrame *f) {
         long nf = body_fields(f->body, f->length, fl);
         uint64_t target;
         int hit = 0;
-        if (nf >= 0 && field_u64(fl, nf, "request", &target) && c->head && c->queued && c->head->id == target) {
+        if (nf >= 0 && field_u64(fl, nf, "request", &target) && c->head && c->work && c->head->id == target) {
+            /* a read still working: its cursor closed, its snapshot ended */
+            Req *t = c->head;
+            work_end(o, c);
+            send_error(c, t->id, GSQL_CANCELLED, "cancelled while it was still reading");
+            c->head = t->next;
+            if (!c->head) {
+                c->tail = NULL;
+            }
+            free(t);
+            hit = 1;
+        } else if (nf >= 0 && field_u64(fl, nf, "request", &target) && c->head && c->queued && c->head->id == target) {
             Req *t = c->head;
             send_error(c, t->id, GSQL_CANCELLED, "cancelled while waiting for the writer");
             c->head = t->next;
@@ -1125,6 +1203,15 @@ static void serve(Owner *o) {
                 }
             }
         } while (progress);
+        /* then one slice of each read still working, round-robin: whatever
+           else was ready has been answered first */
+        int working = 0;
+        for (size_t i = 0; i < o->nconns; i++) {
+            Conn *c = o->conns[i];
+            if (!c->dead && c->work && !work_step(o, c)) {
+                working = 1;
+            }
+        }
         for (size_t i = 0; i < o->nconns; i++) {
             Conn *c = o->conns[i];
             if (!c->dead && out_backlog(c)) {
@@ -1155,6 +1242,9 @@ static void serve(Owner *o) {
         int wait = timeouts(o, &ended);
         if (ended) {
             continue;   /* a writer timed out: the next may go on now */
+        }
+        if (working) {
+            wait = 0;   /* look for requests, then the next slice */
         }
         if (o->nconns + 2 > fcap) {
             fcap = o->nconns + 16;

@@ -165,6 +165,21 @@ else
     fail "$nfk foreign-key warnings where 3 were expected"
 fi
 
+printf 'TIER sliced: the same corpus, every statement resumed one row at a time\n'
+# docs/gsql_slicing_design.md §4: a read the owner advances in slices must
+# answer exactly what it answers whole, and with a budget of one row every
+# fold, collection and sort stops and resumes at every row, where 1 024
+# would cross a boundary only in the larger cases
+mkdir -p "$work/slice"
+GSQL_TEST_SLICE=1 bounded 300 "$work/sql_test" script tests/gsql/sql_cases.txt "$work/slice/db" >"$work/slice.out" 2>"$work/slice.err"
+verdict sliced "$work/slice.out" $?
+resumes=$(sed -n 's/^sliced: \([0-9]*\) resumes$/\1/p' "$work/slice.out")
+if [ "${resumes:-0}" -ge 200 ]; then   # measured 356 at a one-row slice
+    pass "the sliced run resumed $resumes times"
+else
+    fail "the sliced run resumed ${resumes:-0} times: slicing was not exercised"
+fi
+
 printf 'TIER valgrind: the semantics corpus, no invalid access, no definite leak\n'
 if vg_available; then
     mkdir -p "$work/vg"

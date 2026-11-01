@@ -32,6 +32,8 @@ static GsqlService svc;
 static GsTxn *held;     /* a transaction a script holds open */
 static int held_write;
 static int checks, mismatches;
+static uint64_t slice_rows;   /* 0: unsliced */
+static unsigned long resumes;
 
 /* ---- rendering a value ---------------------------------------------- */
 
@@ -243,7 +245,19 @@ static void run(const char *text, const GsqlBuf *params, uint32_t batch, Answer 
     }
     GsqlResult res;
     memset(&res, 0, sizeof res);
+    /* GSQL_TEST_SLICE=1: every statement run sliced and resumed one row at a
+       time (docs/gsql_slicing_design.md §4), so a fold or a sort that lost or
+       repeated a row across a resume changes an answer */
+    st.sliced = slice_rows != 0;
+    st.slice = (uint32_t)slice_rows;
     int rc = svc.run(svc.ctx, E, t, &st, &res, &a->err);
+    while (rc == GSQL_OK && res.working) {
+        void *cur = res.cursor;
+        gsql_buf_free(&res.warnings);
+        memset(&res, 0, sizeof res);
+        rc = svc.resume(svc.ctx, cur, slice_rows, &res, &a->err);
+        resumes++;
+    }
     a->code = rc;
     a->part_way = res.failed_part_way;
     if (rc == GSQL_OK && res.has_rows) {
@@ -1897,7 +1911,12 @@ int main(int argc, char **argv) {
         if (!open_db(argv[3])) {
             return 2;
         }
+        const char *sl = getenv("GSQL_TEST_SLICE");
+        slice_rows = sl ? strtoull(sl, NULL, 10) : 0;
         int rc = script(argv[2]);
+        if (slice_rows) {
+            printf("sliced: %lu resumes\n", resumes);
+        }
         if (held) {
             E->abort(held);
         }

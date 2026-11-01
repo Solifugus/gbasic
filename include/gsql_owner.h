@@ -28,6 +28,10 @@ typedef struct {
     const unsigned char *principal;   /* the client's principal(), any value */
     size_t principal_length;
     uint32_t batch;                   /* rows per batch, at least 1 */
+    /* the caller can resume a statement in slices: run may answer it
+       `working` (docs/gsql_slicing_design.md). 0: run answers whole. */
+    int sliced;
+    uint32_t slice;                   /* input rows a slice; 0: the service's own */
 } GsqlStatement;
 
 /* What a statement or a fetch produced. The owner clears it before each call.
@@ -48,6 +52,9 @@ typedef struct {
     /* the statement's warnings (docs/gsql_warning_design.md): one v3 array of
        { code, message } records, empty when there are none */
     GsqlBuf warnings;
+    /* set by a sliced run or resume: the statement is not ready yet, and
+       `cursor` holds it for the service's resume */
+    int working;
 } GsqlResult;
 
 typedef struct {
@@ -65,6 +72,10 @@ typedef struct {
     void (*close)(void *ctx, void *cursor);
     /* May be NULL: PREPARE then answers UNSUPPORTED. */
     int (*prepare)(void *ctx, const GsqlStatement *s, GsqlBuf *description, GsqlError *err);
+    /* May be NULL: a service that never answers `working`. The next slice of
+     * a working statement, `budget` rows (0: the service's own); answers as
+     * `run` does, `working` again while it is not ready. */
+    int (*resume)(void *ctx, void *cursor, uint64_t budget, GsqlResult *out, GsqlError *err);
 } GsqlService;
 
 typedef struct {

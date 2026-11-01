@@ -1868,6 +1868,9 @@ typedef struct {
     GsqlHv **keys;      /* ORDER BY's values */
 } SortRow;
 
+/* where a SELECT that folds or collects has got to (docs/gsql_slicing_design.md) */
+enum { PH_READY = 0, PH_FOLD, PH_DECIDE, PH_COLLECT, PH_SORT, PH_WORKING };
+
 typedef struct {
     GsqlSql *q;
     SqlParsed parsed;   /* the cursor owns its statement */
@@ -1883,6 +1886,14 @@ typedef struct {
        what is copied */
     GsBackup *backup;
     int backup_done;
+    /* a read that folds or collects before it answers, run in slices
+       (docs/gsql_slicing_design.md): where it is, and what it had reached */
+    int phase;
+    int agg_first;
+    size_t rows_cap;
+    uint32_t batch;
+    SortRow *sort_tmp;
+    size_t sort_width, sort_lo, sort_mid, sort_hi, sort_i, sort_j, sort_k;
     SortRow *rows;
     size_t nrows, pos;
     uint64_t offset, limit, produced;
@@ -1969,12 +1980,19 @@ static int output_row(SqlCursor *c, GsqlBuf *out) {
 }
 
 /* Folds every row the access path keeps into groups (docs/gsql_aggregate_design.md §5). */
-static int aggregate(SqlCursor *c) {
+/* The fold, up to `budget` input rows: 1 more remain, 0 every row folded, -1
+ * refused. All its state is the cursor's, so it resumes where it stopped. */
+static int agg_step(SqlCursor *c, uint64_t budget) {
     X *x = &c->x;
     SqlPlan *p = &c->plan;
     Groups *g = &c->groups;
     int one = p->scans[0].access == ACC_NONE;   /* no FROM: the one row, if kept */
-    for (int first = 1;; first = 0) {
+    for (uint64_t done = 0;; done++) {
+        if (done == budget) {
+            return 1;
+        }
+        int first = c->agg_first;
+        c->agg_first = 0;
         int r;
         if (one) {
             r = first ? keep(x) : 0;
@@ -1982,7 +2000,7 @@ static int aggregate(SqlCursor *c) {
             r = join_next(&c->j, x);
         }
         if (r < 0) {
-            return x->err->code ? x->err->code : GSQL_EXPRESSION;
+            return -1;
         }
         if (r == 0) {
             break;
@@ -1995,7 +2013,7 @@ static int aggregate(SqlCursor *c) {
             rel(x, v);
             if (rc != GSQL_OK) {
                 gsql_key_free(&key);
-                return rc;
+                return -1;
             }
         }
         size_t at = keymap_find(&g->map, group_key_of, g, key.bytes, key.length, 0);
@@ -2019,10 +2037,18 @@ static int aggregate(SqlCursor *c) {
         gsql_key_free(&key);
         for (size_t a = 0; a < p->naggs; a++) {
             if (fold(x, &gr->acc[a], p->aggs[a]) != GSQL_OK) {
-                return x->err->code;
+                return -1;
             }
         }
     }
+    return 0;
+}
+
+/* every row folded: finish the groups and put them in key order */
+static int agg_finish(SqlCursor *c) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    Groups *g = &c->groups;
     /* no GROUP BY: the input is one group, even when it is empty */
     if (p->s->ngroup == 0 && g->n == 0) {
         group_new(x, g);
@@ -2126,37 +2152,65 @@ static int sort_cmp(SqlCursor *c, const SortRow *a, const SortRow *b, int *faile
 }
 
 /* a stable merge sort that can stop on a failed comparison */
-static int merge_sort(SqlCursor *c, SortRow *v, size_t n, SortRow *tmp) {
-    if (n < 2) {
-        return 0;
-    }
-    size_t m = n / 2;
+/* A stable merge sort, bottom-up, so it can stop after any element and go on
+ * (docs/gsql_slicing_design.md): runs of `width` merged pairwise into `tmp`,
+ * then copied back. Its place is the cursor's. Equal keys keep their order,
+ * the left run's first, as the top-down sort it replaced kept them.
+ * Answers 1 more remain, 0 sorted, -1 refused. */
+static int sort_step(SqlCursor *c, uint64_t budget) {
+    size_t n = c->nrows;
+    SortRow *v = c->rows, *tmp = c->sort_tmp;
     int failed = 0;
-    if (merge_sort(c, v, m, tmp) || merge_sort(c, v + m, n - m, tmp)) {
-        return 1;
-    }
-    size_t i = 0, j = m, k = 0;
-    while (i < m && j < n) {
-        int cmp = sort_cmp(c, &v[j], &v[i], &failed);
-        if (failed) {
+    for (uint64_t done = 0;;) {
+        if (c->sort_width >= n) {
+            return 0;
+        }
+        if (c->sort_k == c->sort_hi) {
+            /* the pair is merged: copy it back, and take the next */
+            if (c->sort_hi > c->sort_lo) {
+                memcpy(v + c->sort_lo, tmp + c->sort_lo, sizeof(SortRow) * (c->sort_hi - c->sort_lo));
+            }
+            size_t lo = c->sort_hi;
+            if (lo >= n) {
+                c->sort_width *= 2;
+                lo = 0;
+                if (c->sort_width >= n) {
+                    return 0;
+                }
+            }
+            size_t w = c->sort_width;
+            c->sort_lo = lo;
+            c->sort_mid = lo + w < n ? lo + w : n;
+            c->sort_hi = lo + 2 * w < n ? lo + 2 * w : n;
+            c->sort_i = c->sort_lo;
+            c->sort_j = c->sort_mid;
+            c->sort_k = c->sort_lo;
+            continue;
+        }
+        if (done == budget) {
             return 1;
         }
-        tmp[k++] = cmp < 0 ? v[j++] : v[i++];
+        size_t i = c->sort_i, j = c->sort_j;
+        if (i < c->sort_mid && j < c->sort_hi) {
+            int cmp = sort_cmp(c, &v[j], &v[i], &failed);
+            if (failed) {
+                return -1;
+            }
+            tmp[c->sort_k++] = cmp < 0 ? v[c->sort_j++] : v[c->sort_i++];
+        } else if (i < c->sort_mid) {
+            tmp[c->sort_k++] = v[c->sort_i++];
+        } else {
+            tmp[c->sort_k++] = v[c->sort_j++];
+        }
+        done++;
     }
-    while (i < m) {
-        tmp[k++] = v[i++];
-    }
-    while (j < n) {
-        tmp[k++] = v[j++];
-    }
-    memcpy(v, tmp, sizeof(SortRow) * n);
-    return 0;
 }
 
 static void cursor_free(SqlCursor *c) {
     if (!c) {
         return;
     }
+    free(c->sort_tmp);   /* a sort stopped part way */
     if (c->backup) {
         c->x.e->backup_end(c->backup);   /* a copy not finished has no manifest */
     }
@@ -2229,7 +2283,19 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
             return 0;
         }
         out->length = 0;
-        v3_put(out, c->rows[c->pos].out.bytes, c->rows[c->pos].out.length);
+        SortRow *row = &c->rows[c->pos];
+        v3_put(out, row->out.bytes, row->out.length);
+        /* freed as it goes: freeing a million rows at the end, measured at
+           0.2 s, is one piece of work every other client waits behind
+           (docs/gsql_slicing_design.md) */
+        gsql_buf_free(&row->out);
+        if (row->keys) {
+            for (size_t j = 0; j < c->plan.s->norder; j++) {
+                rel(&c->x, row->keys[j]);
+            }
+            free(row->keys);
+            row->keys = NULL;
+        }
         c->pos++;
         c->produced++;
         return 1;
@@ -2306,21 +2372,25 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
     }
 }
 
-static int collect_sorted(SqlCursor *c) {
+/* The rows a sort needs, up to `budget` of them: 1 more remain, 0 all
+ * collected, -1 refused. Resumes where it stopped, as the fold does. */
+static int collect_step(SqlCursor *c, uint64_t budget) {
     X *x = &c->x;
-    size_t cap = 0;
     size_t nord = c->plan.s->norder;
-    for (;;) {
+    for (uint64_t done = 0;; done++) {
+        if (done == budget) {
+            return 1;
+        }
         int r = source_next(c);
         if (r < 0) {
-            return x->err->code;
+            return -1;
         }
         if (r == 0) {
             break;
         }
-        if (c->nrows == cap) {
-            cap = cap ? cap * 2 : 64;
-            c->rows = realloc(c->rows, sizeof(SortRow) * cap);
+        if (c->nrows == c->rows_cap) {
+            c->rows_cap = c->rows_cap ? c->rows_cap * 2 : 64;
+            c->rows = realloc(c->rows, sizeof(SortRow) * c->rows_cap);
             if (!c->rows) {
                 abort();
             }
@@ -2329,13 +2399,13 @@ static int collect_sorted(SqlCursor *c) {
         memset(row, 0, sizeof *row);
         if (output_row(c, &row->out) != GSQL_OK) {
             gsql_buf_free(&row->out);
-            return x->err->code;
+            return -1;
         }
         int f = distinct_first(c, &row->out);
         if (f <= 0) {
             gsql_buf_free(&row->out);
             if (f < 0) {
-                return x->err->code;
+                return -1;
             }
             continue;
         }
@@ -2351,28 +2421,37 @@ static int collect_sorted(SqlCursor *c) {
                 long n = v3_array_items(row->out.bytes, row->out.length, items, 1024);
                 long at = c->plan.order_out[k];
                 if (n <= at) {
-                    return xfail(x->err, GSQL_MISUSE, 0, "an output column was not there to sort by");
+                    xfail(x->err, GSQL_MISUSE, 0, "an output column was not there to sort by");
+                    return -1;
                 }
                 row->keys[k] = hv_bytes(x, items[at].p, items[at].n);
             } else {
                 row->keys[k] = eval(x, c->plan.order[k]);
             }
             if (!row->keys[k]) {
-                return x->err->code;
+                return -1;
             }
         }
     }
-    SortRow *tmp = malloc(sizeof(SortRow) * (c->nrows ? c->nrows : 1));
-    if (!tmp) {
+    return 0;
+}
+
+/* every row collected: sort them, and start at the offset */
+/* every row collected: the sort's scratch, and its first pair */
+static void sort_begin(SqlCursor *c) {
+    c->sort_tmp = malloc(sizeof(SortRow) * (c->nrows ? c->nrows : 1));
+    if (!c->sort_tmp) {
         abort();
     }
-    int failed = merge_sort(c, c->rows, c->nrows, tmp);
-    free(tmp);
-    if (failed) {
-        return x->err->code ? x->err->code : GSQL_EXPRESSION;
-    }
+    c->sort_width = 1;
+    c->sort_lo = c->sort_mid = c->sort_hi = c->sort_i = c->sort_j = c->sort_k = 0;
+}
+
+/* sorted: start at the offset */
+static void sort_finish(SqlCursor *c) {
+    free(c->sort_tmp);
+    c->sort_tmp = NULL;
     c->pos = c->offset < c->nrows ? (size_t)c->offset : c->nrows;
-    return GSQL_OK;
 }
 
 static void explain_line(void *ctx, const char *text) {
@@ -2391,6 +2470,9 @@ static void explain_line(void *ctx, const char *text) {
 /* the first batch, or the next: up to `count` rows into out->rows, and a
  * cursor left in out->cursor when more remain */
 #define BACKUP_SLICE (8u << 20)
+/* a SELECT's slice: about 4 ms at the measured million rows a second
+   (docs/gsql_slicing_design.md) */
+#define SLICE_ROWS 1024
 
 /* A backup's next slice, as one progress row: bytes copied, files the
  * snapshot names, files the copy already held, done. One row a fetch,
@@ -5030,7 +5112,10 @@ static int svc_writes(void *ctx, const GsqlStatement *st, GsqlError *err) {
 
 /* A SELECT's rows begun: the joins started, the groups folded, and the rows
  * sorted where the access path does not give the order. */
-static int select_start(SqlCursor *c) {
+static int advance(SqlCursor *c, uint64_t budget);
+
+/* A SELECT set up to fold or collect, nothing run yet. */
+static int select_begin(SqlCursor *c) {
     SqlStmt *s = c->plan.s;
     if (c->plan.scans[0].access != ACC_NONE) {
         c->join_started = 1;
@@ -5038,27 +5123,92 @@ static int select_start(SqlCursor *c) {
             return c->err.code ? c->err.code : GSQL_EXPRESSION;
         }
     }
+    (void)s;
+    c->agg_first = 1;
+    c->phase = c->plan.grouped ? PH_FOLD : PH_DECIDE;
     if (c->plan.grouped) {
         c->grouped = 1;
-        if (aggregate(c) != GSQL_OK) {
-            return c->err.code ? c->err.code : GSQL_EXPRESSION;
-        }
-    }
-    if (c->plan.scans[0].access != ACC_NONE || c->grouped) {
-        /* the access was to yield the order, and a bound that did not fit
-         * turned it into a scan: then it must be sorted after all. Groups
-         * come in key order, so a grouped query is always sorted. */
-        int need_sort = s->norder && (c->grouped || c->plan.nscans > 1 || !c->plan.scans[0].ordered ||
-                                      (c->join_started && c->j.its[0].fell_back));
-        if (need_sort) {
-            c->sorted = 1;
-            if (collect_sorted(c) != GSQL_OK) {
-                return c->err.code ? c->err.code : GSQL_EXPRESSION;
-            }
-            c->offset = 0;   /* applied by collect_sorted's start */
-        }
     }
     return GSQL_OK;
+}
+
+/* A SELECT started and run to its first batch in one go: what a subquery, a
+ * derived table and a compound's side need, and an unsliced caller. */
+static int select_start(SqlCursor *c) {
+    int rc = select_begin(c);
+    if (rc == GSQL_OK && advance(c, UINT64_MAX) < 0) {
+        rc = c->err.code ? c->err.code : GSQL_EXPRESSION;
+    }
+    return rc;
+}
+
+/* A started SELECT's fold and collection, `budget` input rows at a time:
+ * PH_READY when its first batch can be taken, PH_WORKING while more remain,
+ * or -1 refused (docs/gsql_slicing_design.md). */
+static int advance(SqlCursor *c, uint64_t budget) {
+    SqlStmt *s = c->plan.s;
+    for (;;) {
+        switch (c->phase) {
+        case PH_FOLD: {
+            int r = agg_step(c, budget);
+            if (r < 0) {
+                return -1;
+            }
+            if (r > 0) {
+                return PH_WORKING;
+            }
+            if (agg_finish(c) != GSQL_OK) {
+                return -1;
+            }
+            c->phase = PH_DECIDE;
+            break;
+        }
+        case PH_DECIDE:
+            c->phase = PH_READY;
+            if (c->plan.scans[0].access != ACC_NONE || c->grouped) {
+                /* the access was to yield the order, and a bound that did not
+                 * fit turned it into a scan: then it must be sorted after all.
+                 * Groups come in key order, so a grouped query is always
+                 * sorted. */
+                int need_sort = s->norder && (c->grouped || c->plan.nscans > 1 || !c->plan.scans[0].ordered ||
+                                              (c->join_started && c->j.its[0].fell_back));
+                if (need_sort) {
+                    c->sorted = 1;
+                    c->phase = PH_COLLECT;
+                }
+            }
+            break;
+        case PH_COLLECT: {
+            int r = collect_step(c, budget);
+            if (r < 0) {
+                return -1;
+            }
+            if (r > 0) {
+                return PH_WORKING;
+            }
+            sort_begin(c);
+            c->phase = PH_SORT;
+            break;
+        }
+        case PH_SORT: {
+            /* a move and a comparison are cheaper than reading a row, so a
+               slice of the sort is larger than one of the collection */
+            int r = sort_step(c, budget == UINT64_MAX ? budget : budget * 16);
+            if (r < 0) {
+                return -1;
+            }
+            if (r > 0) {
+                return PH_WORKING;
+            }
+            sort_finish(c);
+            c->offset = 0;   /* applied by sort_finish's start */
+            c->phase = PH_READY;
+            break;
+        }
+        default:
+            return PH_READY;
+        }
+    }
 }
 
 /* ---- UNION, INTERSECT, EXCEPT (docs/gsql_setop_design.md) -------------
@@ -5328,13 +5478,12 @@ static int compound_start(SqlCursor *c, const GsEngine *e, GsTxn *t) {
     }
     free(all.v);   /* the rows' bytes moved into c->rows */
     if (nord) {
-        SortRow *tmp = malloc(sizeof(SortRow) * (c->nrows ? c->nrows : 1));
-        if (!tmp) {
-            abort();
-        }
-        int failed = merge_sort(c, c->rows, c->nrows, tmp);
-        free(tmp);
-        if (failed) {
+        /* whole: a compound is not sliced (docs/gsql_slicing_design.md §2) */
+        sort_begin(c);
+        int r = sort_step(c, UINT64_MAX);
+        free(c->sort_tmp);
+        c->sort_tmp = NULL;
+        if (r < 0) {
             return c->err.code ? c->err.code : GSQL_EXPRESSION;
         }
     }
@@ -5672,8 +5821,25 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
                 c->offset = 0;
             }
         }
-        if ((s->setop ? compound_start(c, e, t) : select_start(c)) != GSQL_OK) {
-            goto failed;
+        if (s->setop) {
+            if (compound_start(c, e, t) != GSQL_OK) {
+                goto failed;
+            }
+        } else {
+            if (select_begin(c) != GSQL_OK) {
+                goto failed;
+            }
+            int a = advance(c, !st->sliced ? UINT64_MAX : st->slice ? st->slice : SLICE_ROWS);
+            if (a < 0) {
+                goto failed;
+            }
+            if (a == PH_WORKING) {
+                /* the owner gives it a slice a turn (svc_resume) */
+                c->batch = st->batch ? st->batch : 1;
+                out->working = 1;
+                out->cursor = c;
+                return GSQL_OK;
+            }
         }
     } else {
         if (s->kind == SQ_INSERT) {
@@ -5788,6 +5954,35 @@ static int svc_fetch(void *ctx, void *cursor, uint32_t count, GsqlResult *out, G
     return rc;
 }
 
+/* A working statement's next slice: working still, or its first batch, or a
+ * refusal (docs/gsql_slicing_design.md). */
+static int svc_resume(void *ctx, void *cursor, uint64_t budget, GsqlResult *out, GsqlError *err) {
+    GsqlSql *q = ctx;
+    SqlCursor *c = cursor;
+    int a = advance(c, budget ? budget : SLICE_ROWS);
+    if (a < 0) {
+        *err = c->err;
+        int rc = err->code ? err->code : GSQL_EXPRESSION;
+        take_warnings(q, &c->wseen, &c->nwseen, out, 0);
+        out->cursor = NULL;
+        cursor_free(c);
+        return rc;
+    }
+    if (a == PH_WORKING) {
+        out->working = 1;
+        out->cursor = c;
+        return GSQL_OK;
+    }
+    columns_of(c, &out->columns);
+    int rc = cursor_batch(c, c->batch, out, err);
+    take_warnings(q, &c->wseen, &c->nwseen, out, rc == GSQL_OK);
+    if (rc != GSQL_OK || !out->cursor) {
+        out->cursor = NULL;
+        cursor_free(c);
+    }
+    return rc;
+}
+
 static void svc_close(void *ctx, void *cursor) {
     (void)ctx;
     cursor_free(cursor);
@@ -5871,7 +6066,7 @@ void gsql_sql_free(GsqlSql *q) {
 }
 
 GsqlService gsql_sql_service(GsqlSql *q) {
-    GsqlService s = { q, svc_writes, svc_run, svc_fetch, svc_close, svc_prepare };
+    GsqlService s = { q, svc_writes, svc_run, svc_fetch, svc_close, svc_prepare, svc_resume };
     return s;
 }
 
