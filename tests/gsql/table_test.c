@@ -501,6 +501,8 @@ static void open_all(GsTxn *t, GsqlTable **tbs, const Model *m) {
     }
 }
 
+static int g_spill;   /* this seed's index builds spill (main) */
+
 static int model_run(const char *dir) {
     pool_build();
     GsqlIo *io = dir ? gsql_io_real() : gsql_io_sim();
@@ -773,6 +775,9 @@ static int model_run(const char *dir) {
     gsql_io_free(io);
     model_free(&m);
     model_free(&saved);
+    printf("sort runs %llu\n", (unsigned long long)gsql_index_sort_runs());
+    CHECK(!g_spill || gsql_index_sort_runs() >= 20, "only %llu sort runs were written with a 256-byte budget: the "
+          "index builds did not spill", (unsigned long long)gsql_index_sort_runs());
     printf("accepted %ld (%ld bound nothings), refused TYPE %ld NOT_NULL %ld DUPLICATE %ld, moved %ld, aborts %ld, "
            "reopens %ld\n", accepted, nothings, refused[GSQL_TYPE], refused[GSQL_NOT_NULL], refused[GSQL_DUPLICATE],
            moved, aborts, reopens);
@@ -1353,6 +1358,12 @@ int main(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "refuse")) return refuse_run();
     if (argc >= 3 && !strcmp(argv[1], "model")) {
         rng = strtoull(argv[2], NULL, 10) * 2654435761u + 1;
+        /* odd seeds: a sort budget of a few entries, so every index build
+           over rows spills runs and merges them (gsql_spill_design.md) */
+        g_spill = strtoull(argv[2], NULL, 10) % 2 == 1;
+        if (g_spill) {
+            gsql_index_sort_budget(256);
+        }
         return model_run(argc >= 4 ? argv[3] : NULL);
     }
     if (argc >= 3 && !strcmp(argv[1], "layout")) return layout_run(argv[2]);

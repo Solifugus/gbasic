@@ -380,7 +380,7 @@ ifeq ($(OS),Windows_NT)
 GSQL_OBJS :=
 CFLAGS += -DGBASIC_GSQL=0
 else
-GSQL_OBJS := src/gsql/lsm.o src/gsql/lease.o src/gsql/store_common.o src/gsql/store_util.o src/gsql/io.o src/gsql/key.o \
+GSQL_OBJS := src/gsql/lsm.o src/gsql/lease.o src/gsql/xsort.o src/gsql/store_common.o src/gsql/store_util.o src/gsql/io.o src/gsql/key.o \
              src/gsql/v3.o src/gsql/table.o src/gsql/wire.o src/gsql/owner.o src/gsql/client.o \
              src/gsql/sql_parse.o src/gsql/sql_plan.o src/gsql/sql_exec.o
 CFLAGS += -DGBASIC_GSQL=1

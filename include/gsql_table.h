@@ -189,6 +189,11 @@ GsBytes gsql_serial_tree(const GsqlTable *tb);
 
 /* ---- schema changes --------------------------------------------------- */
 
+/* What CREATE INDEX's external sort holds in memory before it writes a run
+ * (docs/gsql_spill_design.md); 0, the default, is 64 MB. For tests. */
+void gsql_index_sort_budget(size_t bytes);
+/* Runs the builds have written since the process began: whether they spilled. */
+uint64_t gsql_index_sort_runs(void);
 int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlIndexDecl *d, GsqlError *err);
 int gsql_index_drop(const GsEngine *e, GsTxn *t, GsqlTable *tb, const char *name, GsqlError *err);
 /* ADD COLUMN: rows already written are not touched, and read the column as

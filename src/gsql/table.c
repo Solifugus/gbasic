@@ -11,6 +11,7 @@
  *   7. the operations
  *   8. the invariant check (§8) */
 
+#include "xsort.h"
 #include "gsql_table.h"
 #include "gsql_key.h"
 #include "serialize_tags.h"
@@ -1701,6 +1702,13 @@ static void reload(const GsEngine *e, GsTxn *t, GsqlTable *tb) {
     free(name);
 }
 
+/* What the index build's sort holds in memory before it writes a run; 0 is
+ * the sorter's own default. Lowered by tests so every build spills. */
+static size_t g_sort_budget;
+static uint64_t g_sort_runs;
+void gsql_index_sort_budget(size_t bytes) { g_sort_budget = bytes; }
+uint64_t gsql_index_sort_runs(void) { return g_sort_runs; }
+
 int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlIndexDecl *d, GsqlError *err) {
     int rc = check_name("index", d->name, err);
     if (rc) {
@@ -1762,10 +1770,22 @@ int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlInde
         reload(e, t, tb);
         return rc;
     }
-    /* Build over the rows already there. */
+    /* Build over the rows already there: every entry to the external sorter
+     * first, the rows read whole before anything is written, then the
+     * entries written in key order (docs/gsql_spill_design.md). Written in
+     * row order inside one transaction, the build spilled runs that all
+     * overlapped, its own cursor merged over every one of them, and the
+     * commit left them to compaction: 30x the time for 10x the rows. */
+    GsXsort *xs = NULL;
+    int xr = gs_xsort_open(NULL, g_sort_budget, &xs);
+    if (xr) {
+        rc = fail(err, GSQL_STORAGE, "building index %s: the sort could not start: %s", d->name, strerror(xr));
+        goto undo;
+    }
     GsCursor *c;
     st = e->cursor_open(t, gsql_table_rows_tree(tb), &c);
     if (st != GS_OK) {
+        gs_xsort_close(xs);
         rc = storage(err, st, "opening the rows");
         goto undo;
     }
@@ -1788,13 +1808,12 @@ int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlInde
             rc = fail(err, GSQL_CORRUPT, "a row of %s has a value with no order", tb->name);
         }
         if (!rc) {
-            GsBytes empty = { NULL, 0 };
-            int ps = e->put(t, tree, key_bytes(&k), uf ? rk : empty, uf ? GS_NO_OVERWRITE : 0);
-            if (ps == GS_EXISTS) {
-                rc = fail(err, GSQL_DUPLICATE, "%s: two rows already hold the same value, so index %s cannot be unique",
-                          tb->name, d->name);
-            } else if (ps != GS_OK) {
-                rc = storage(err, ps, "writing an index entry");
+            GsBytes kb = key_bytes(&k);
+            /* a unique entry carries its row key as its value; any other
+               ends in it, and has none */
+            xr = gs_xsort_add(xs, kb.p, kb.n, uf ? rk.p : NULL, uf ? rk.n : 0);
+            if (xr) {
+                rc = fail(err, GSQL_STORAGE, "building index %s: the sort failed: %s", d->name, strerror(xr));
             }
         }
         gsql_key_free(&k);
@@ -1807,6 +1826,50 @@ int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlInde
     if (!rc && st != GS_OK) {
         rc = storage(err, st, "reading the rows");
     }
+    if (!rc && (xr = gs_xsort_finish(xs))) {
+        rc = fail(err, GSQL_STORAGE, "building index %s: the sort failed: %s", d->name, strerror(xr));
+    }
+    /* in key order: a unique index's duplicates are neighbours, and no
+       entry needs a lookup -- the tree is new, and empty */
+    unsigned char *prev = NULL;
+    size_t prevn = 0;
+    int have_prev = 0;
+    while (!rc) {
+        GsBytes kb, vb;
+        int have = 0;
+        if ((xr = gs_xsort_next(xs, &kb, &vb, &have))) {
+            rc = fail(err, GSQL_STORAGE, "building index %s: the sort failed: %s", d->name, strerror(xr));
+            break;
+        }
+        if (!have) {
+            break;
+        }
+        if (have_prev && prevn == kb.n && (!kb.n || memcmp(prev, kb.p, kb.n) == 0)) {
+            rc = fail(err, GSQL_DUPLICATE, "%s: two rows already hold the same value, so index %s cannot be unique",
+                      tb->name, d->name);
+            break;
+        }
+        int ps = e->put(t, tree, kb, vb, 0);
+        if (ps != GS_OK) {
+            rc = storage(err, ps, "writing an index entry");
+            break;
+        }
+        if (kb.n > prevn || !prev) {
+            unsigned char *g = realloc(prev, kb.n ? kb.n : 1);
+            if (!g) {
+                abort();
+            }
+            prev = g;
+        }
+        if (kb.n) {
+            memcpy(prev, kb.p, kb.n);
+        }
+        prevn = kb.n;
+        have_prev = 1;
+    }
+    free(prev);
+    g_sort_runs += gs_xsort_runs(xs);
+    gs_xsort_close(xs);
     if (!rc) {
         rc = schema_write(e, t, tb, err);
     }

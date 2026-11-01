@@ -68,7 +68,7 @@ if ! command -v "$CC" >/dev/null 2>&1; then
 fi
 FLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc/gsql"
 ENGINE="src/gsql/lsm.c src/gsql/lease.c src/gsql/store_common.c src/gsql/store_util.c src/gsql/io.c src/gsql/io_sim.c"
-LAYER="src/gsql/table.c src/gsql/v3.c src/gsql/key.c"
+LAYER="src/gsql/table.c src/gsql/xsort.c src/gsql/v3.c src/gsql/key.c"
 SAN=""
 printf 'int main(void){return 0;}\n' > "$work/probe.c"
 if "$CC" -fsanitize=address,undefined -o "$work/probe" "$work/probe.c" 2>/dev/null; then
@@ -92,6 +92,21 @@ fi
 mkdir -p "$work/real"
 for seed in 1 2 3 4 5; do bounded 300 "$work/table_test" model "$seed" > "$work/model.$seed" 2>&1 & done
 bounded 300 "$work/table_test" model 6 "$work/real" > "$work/model.real" 2>&1 &
+
+printf 'TIER sort: the external sorter against an in-memory stable sort, every file removed\n'
+# shellcheck disable=SC2086
+if ! "$CC" $FLAGS -g -O1 $SAN -Isrc/gsql -o "$work/xsort_test" tests/gsql/xsort_test.c src/gsql/xsort.c 2> "$work/xsort.err"; then
+    head -5 "$work/xsort.err"
+    fail "xsort_test did not compile cleanly"
+else
+    mkdir -p "$work/sort"
+    out=$(bounded 120 "$work/xsort_test" "$work/sort" 2>&1)
+    last=$(printf '%s\n' "$out" | tail -1)
+    case "$last" in
+        "ok "*" 0 mismatches") pass "empty, one, all in memory, and hundreds of runs with ties kept in order: $last" ;;
+        *) printf '%s\n' "$out" | grep -E 'MISMATCH|runtime error|ERROR' | head -10; fail "the sorter: $last" ;;
+    esac
+fi
 
 printf 'TIER kinds: the column kinds over values gBASIC serialized, verdicts by hand\n'
 if ! make >/dev/null 2>&1; then
@@ -122,7 +137,7 @@ wait
 for seed in 1 2 3 4 5 real; do
     where="seed $seed (simulated disk)"; [ "$seed" = real ] && where="real filesystem"
     last=$(tail -1 "$work/model.$seed")
-    census=$(grep '^accepted' "$work/model.$seed")
+    census="$(grep '^accepted' "$work/model.$seed"); $(grep '^sort runs' "$work/model.$seed")"
     if grep -q 'runtime error\|ERROR: AddressSanitizer' "$work/model.$seed"; then
         grep -m3 'runtime error\|ERROR: AddressSanitizer' "$work/model.$seed"
         fail "$where: the sanitizers objected"
