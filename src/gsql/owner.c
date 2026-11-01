@@ -165,7 +165,17 @@ typedef struct {
     void *work;
     GsTxn *work_txn;    /* its autocommit snapshot; NULL inside a transaction */
     uint32_t work_id;
+    /* a commit's reply waiting for the sync that covers it: nothing more is
+       answered on this connection until then, so replies stay in order
+       (docs/gsql_group_commit_design.md) */
+    int awaiting;
 } Conn;
+
+typedef struct {
+    Conn *c;            /* NULL once the connection went: the commit stands */
+    uint32_t id;
+    GsqlBuf frame;      /* the DONE, sent once the sync covers it */
+} Pend;
 
 typedef struct {
     const GsEngine *e;
@@ -186,6 +196,9 @@ typedef struct {
     int served;             /* a connection has ever been accepted */
     int fenced;             /* another machine took the database (gsql_lease_design.md §5) */
     char fenced_by[200];
+    Pend *group;            /* commits made this round, not yet synced */
+    size_t ngroup, groupcap;
+    int resume;             /* a sync released connections with requests waiting */
 } Owner;
 
 static void out_frame(Conn *c, unsigned type, uint32_t id, const GsqlBuf *body) {
@@ -363,6 +376,11 @@ static void work_end(Owner *o, Conn *c) {
 }
 
 static void conn_cleanup(Owner *o, Conn *c) {
+    for (size_t i = 0; i < o->ngroup; i++) {
+        if (o->group[i].c == c) {
+            o->group[i].c = NULL;   /* its commit stands; only the reply is lost */
+        }
+    }
     work_end(o, c);   /* before the transaction it may be reading */
     txn_end(o, c);
     while (c->cursors) {
@@ -386,6 +404,8 @@ static void conn_cleanup(Owner *o, Conn *c) {
 }
 
 /* ==== 5. answering one request =========================================== */
+
+static void group_add(Owner *o, Conn *c, uint32_t id, size_t mark);
 
 enum { DONE_REQ, PARKED, WORKING };
 
@@ -599,14 +619,18 @@ static int do_query(Owner *o, Conn *c, Req *r) {
             res.cursor = NULL;
         }
         uint64_t id = 0;
-        int crc = o->e->commit(t, 1, &id);
+        /* a reply carrying rows is synced at once; a DONE joins the round's
+           group (docs/gsql_group_commit_design.md) */
+        int crc = o->e->commit(t, res.has_rows, &id);
         if (crc) {
             send_errorf(c, r->id, GSQL_STORAGE, "the commit failed: the engine answered %s, and nothing was written",
                         gs_status_name(crc));
         } else if (res.has_rows) {
             send_rows(o, c, r->id, &res, NULL);
         } else {
+            size_t mark = c->out.length;
             send_done(c, r->id, &res, 1, id);
+            group_add(o, c, r->id, mark);
         }
     } else if (res.has_rows) {
         send_rows(o, c, r->id, &res, c->tx == TX_NONE ? t : NULL);
@@ -741,6 +765,53 @@ static int do_begin(Owner *o, Conn *c, Req *r) {
     return DONE_REQ;
 }
 
+/* A commit made without a sync: its DONE, already written into the
+ * connection's output, is taken back out and kept until group_sync. */
+static void group_add(Owner *o, Conn *c, uint32_t id, size_t mark) {
+    if (o->ngroup == o->groupcap) {
+        o->groupcap = o->groupcap ? o->groupcap * 2 : 16;
+        Pend *g = realloc(o->group, o->groupcap * sizeof *g);
+        if (!g) {
+            abort();
+        }
+        o->group = g;
+    }
+    Pend *p = &o->group[o->ngroup++];
+    memset(p, 0, sizeof *p);
+    p->c = c;
+    p->id = id;
+    v3_put(&p->frame, c->out.bytes + mark, c->out.length - mark);
+    c->out.length = mark;
+    c->awaiting = 1;
+}
+
+/* One sync for every commit made this round, then their replies; a sync
+ * that fails fails all of them (§3). */
+static void group_sync(Owner *o) {
+    if (!o->ngroup) {
+        return;
+    }
+    int rc = o->e->sync(o->db, NULL);
+    for (size_t i = 0; i < o->ngroup; i++) {
+        Pend *p = &o->group[i];
+        if (p->c && !p->c->dead) {
+            if (rc == GS_OK) {
+                v3_put(&p->c->out, p->frame.bytes, p->frame.length);
+            } else {
+                send_errorf(p->c, p->id, GSQL_STORAGE,
+                            "the commit could not be made durable: the engine answered %s, so whether it "
+                            "survives a crash is unknown", gs_status_name(rc));
+            }
+            p->c->awaiting = 0;
+            if (p->c->head) {
+                o->resume = 1;
+            }
+        }
+        gsql_buf_free(&p->frame);
+    }
+    o->ngroup = 0;
+}
+
 static int do_commit(Owner *o, Conn *c, Req *r) {
     if (c->tx == TX_NONE) {
         send_error(c, r->id, GSQL_STATE, "COMMIT with no transaction open");
@@ -759,14 +830,16 @@ static int do_commit(Owner *o, Conn *c, Req *r) {
         return DONE_REQ;
     }
     uint64_t id = 0;
-    int rc = o->e->commit(c->txn, 1, &id);
+    int rc = o->e->commit(c->txn, 0, &id);
     c->txn = NULL;   /* commit ends the transaction whatever it answers */
     txn_end(o, c);
     if (rc) {
         send_errorf(c, r->id, GSQL_STORAGE, "the commit failed: the engine answered %s, and nothing was written",
                     gs_status_name(rc));
     } else {
+        size_t mark = c->out.length;
         send_done(c, r->id, NULL, 1, id);
+        group_add(o, c, r->id, mark);
     }
     return DONE_REQ;
 }
@@ -936,7 +1009,7 @@ static int handle(Owner *o, Conn *c, Req *r) {
  * any was answered. */
 static int process(Owner *o, Conn *c) {
     int progress = 0;
-    while (c->head && !c->closing && !c->dead && !c->work) {
+    while (c->head && !c->closing && !c->dead && !c->work && !c->awaiting) {
         Req *r = c->head;
         if (handle(o, c, r) != DONE_REQ) {
             break;   /* parked, or working: its turn comes again */
@@ -1257,6 +1330,14 @@ static void serve(Owner *o) {
                 working = 1;
             }
         }
+        /* every commit this round under one sync: the requests that arrived
+           while the last sync ran are the group, so nothing waits on purpose
+           (docs/gsql_group_commit_design.md §2) */
+        o->resume = 0;
+        group_sync(o);
+        if (o->resume) {
+            working = 1;   /* released connections have requests waiting */
+        }
         for (size_t i = 0; i < o->nconns; i++) {
             Conn *c = o->conns[i];
             if (!c->dead && out_backlog(c)) {
@@ -1548,6 +1629,14 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
         o.opt.ready_fd = -1;
     }
     serve(&o);
+    /* replies a sync has not yet covered: covered now, and sent if they can be */
+    group_sync(&o);
+    for (size_t i = 0; i < o.nconns; i++) {
+        if (!o.conns[i]->dead && out_backlog(o.conns[i])) {
+            flush_out(o.conns[i]);
+        }
+    }
+    free(o.group);
     /* the planned handoff: every transaction rolled back, the log emptied, so
      * the next owner replays nothing (§4) */
     for (size_t i = 0; i < o.nconns; i++) {

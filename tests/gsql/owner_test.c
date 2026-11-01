@@ -14,6 +14,7 @@
  *   owner_test paths DIR          symlinks, stale sockets, runtime dirs
  *   owner_test handoff DIR        the owner killed, and SIGTERM's handoff
  *   owner_test lifetime DIR       an owner outlives its starter, then its linger
+ *   owner_test group DIR          commits share syncs (gsql_group_commit_design.md)
  *   owner_test lease DIR          one owner per database where the flock is
  *                                 local to each machine (gsql_lease_design.md)
  *   owner_test cost DIR ITERS     the round trip against in process
@@ -31,6 +32,7 @@
 #include "gsql_owner.h"
 #include "gsql_store.h"
 #include "gsql_wire.h"
+#include "io_internal.h"
 #include "serialize_tags.h"
 #include "v3.h"
 
@@ -386,6 +388,23 @@ static uint32_t env_ms(const char *name) {
     return v ? (uint32_t)strtoul(v, NULL, 10) : 0;
 }
 
+/* The group tier's storage: a delay on every sync, as a NAS would add, and
+ * syncs that fail while a marker file exists. syncbench's seam, in the owner. */
+static long g_sync_delay_us;
+static const char *g_sync_fail_file;
+static GsqlIoOps g_slow_ops;
+static const GsqlIoOps *g_real_ops;
+static int slow_sync(GsqlFile *f) {
+    if (g_sync_delay_us) {
+        struct timespec ts = { g_sync_delay_us / 1000000, (g_sync_delay_us % 1000000) * 1000 };
+        nanosleep(&ts, NULL);
+    }
+    if (g_sync_fail_file && access(g_sync_fail_file, F_OK) == 0) {
+        return EIO;
+    }
+    return g_real_ops->sync(f);
+}
+
 static int owner_main(const char *db, const char *fd, const char *mode) {
     GsqlOwnerOptions o;
     memset(&o, 0, sizeof o);
@@ -415,6 +434,20 @@ static int owner_main(const char *db, const char *fd, const char *mode) {
         lo.race_ms = env_ms("GSQL_TEST_LEASE_RACE_MS");
         so.lease = &lo;
         o.store = &so;
+    }
+    const char *sd = getenv("GSQL_TEST_SYNC_DELAY_US"), *sf = getenv("GSQL_TEST_SYNC_FAIL_FILE");
+    if ((sd && *sd) || (sf && *sf)) {
+        g_sync_delay_us = sd ? atol(sd) : 0;
+        g_sync_fail_file = sf && *sf ? sf : NULL;
+        GsqlIo *io = gsql_io_real();
+        g_real_ops = io->ops;
+        g_slow_ops = *io->ops;
+        g_slow_ops.sync = slow_sync;
+        io->ops = &g_slow_ops;
+        if (!o.store) {
+            o.store = &so;
+        }
+        so.io = io;
     }
     const char *ns = getenv("GSQL_TEST_NO_SERVICE");
     return gsql_owner_run(db, ns && *ns == '1' ? NULL : &SERVICE, &o);
@@ -2095,6 +2128,103 @@ static int lifetime_main(const char *dir) {
 
 /* ==== cost =============================================================== */
 
+/* ==== group commit (gsql_group_commit_design.md) ========================== */
+
+/* `n` clients at once, each making `per` one-row commits; answers commits a
+ * second across all of them, and how many replies were not DONE. */
+static double commit_rate(const char *db, int n, int per, long *refused) {
+    int res[2];
+    if (pipe(res)) {
+        return -1;
+    }
+    double t0 = now_us();
+    for (int k = 0; k < n; k++) {
+        if (fork() == 0) {
+            close(res[0]);
+            GsqlClient *c = open_db(db, 1);
+            long bad = c ? 0 : per;
+            for (int i = 0; c && i < per; i++) {
+                char key[48];
+                snprintf(key, sizeof key, "c%d-%d-%d", n, k, i);
+                if (strcmp(put(c, key, "v"), "DONE")) {
+                    bad++;
+                }
+            }
+            if (c) {
+                gsql_client_close(c);
+            }
+            if (write(res[1], &bad, sizeof bad) != (ssize_t)sizeof bad) {
+                _exit(2);
+            }
+            _exit(0);
+        }
+    }
+    close(res[1]);
+    *refused = 0;
+    for (int k = 0; k < n; k++) {
+        long bad = per;
+        if (read(res[0], &bad, sizeof bad) != (ssize_t)sizeof bad) {
+            bad = per;
+        }
+        *refused += bad;
+    }
+    close(res[0]);
+    while (wait(NULL) > 0) {}
+    return n * per / ((now_us() - t0) / 1e6);
+}
+
+static int group_main(const char *dir) {
+    char db[600];
+    long refused;
+    /* a NAS's sync: one client is paced by it, and eight share it */
+    setenv("GSQL_TEST_SYNC_DELAY_US", "5000", 1);
+    snprintf(db, sizeof db, "%s/g", dir);
+    GsqlClient *warm = open_db(db, 1);   /* the owner stays up across both runs */
+    if (!warm) {
+        return finish();
+    }
+    double one = commit_rate(db, 1, 40, &refused);
+    EXPECT(refused == 0, "%ld of 40 single-client commits were not DONE", refused);
+    double eight = commit_rate(db, 8, 40, &refused);
+    EXPECT(refused == 0, "%ld of 320 commits from eight clients were not DONE", refused);
+    printf("group one_client_per_s %.0f eight_clients_per_s %.0f ratio %.2f\n", one, eight, eight / one);
+    EXPECT(eight > 3 * one, "eight clients made %.0f commits/s against one client's %.0f: no sync was shared", eight, one);
+    /* the control: alone, a commit is paced by one sync, no more -- grouping
+       must not make a single client wait (5 ms a sync, so ~200/s at best) */
+    EXPECT(one > 100, "a single client made %.0f commits/s at 5 ms a sync: something waits besides the sync", one);
+    EXPECT(count_rows(warm) == 360, "the database holds %ld rows, not the 360 committed", count_rows(warm));
+    long wo = (long)gsql_client_owner_pid(warm);
+    gsql_client_close(warm);
+    gone_within((pid_t)wo, 10000);
+
+    /* a sync that fails fails every commit it was to cover: none is DONE */
+    char marker[700];
+    snprintf(marker, sizeof marker, "%s/fail-syncs", dir);
+    setenv("GSQL_TEST_SYNC_DELAY_US", "0", 1);
+    setenv("GSQL_TEST_SYNC_FAIL_FILE", marker, 1);
+    snprintf(db, sizeof db, "%s/f", dir);
+    GsqlClient *f = open_db(db, 1);
+    if (f) {
+        EXPECT(!strcmp(put(f, "k0", "v"), "DONE"), "a commit before the failure answered %s", last_word);
+        FILE *mf = fopen(marker, "w");
+        if (mf) {
+            fclose(mf);
+        }
+        const char *w = put(f, "k", "v");
+        EXPECT(strcmp(w, "DONE"), "a commit whose sync failed was answered DONE");
+        EXPECT(strstr(last_message, "durable") != NULL, "the refusal does not say durability is unknown: %s",
+               last_message);
+        long fo = (long)gsql_client_owner_pid(f);
+        gsql_client_close(f);
+        kill((pid_t)fo, SIGKILL);
+        gone_within((pid_t)fo, 5000);
+    }
+    unlink(marker);
+    unsetenv("GSQL_TEST_SYNC_FAIL_FILE");
+    unsetenv("GSQL_TEST_SYNC_DELAY_US");
+    return finish();
+}
+
 /* ==== the lease (gsql_lease_design.md) ==================================== */
 
 /* Scaled timings: renew, trust, dead, settle. */
@@ -2529,6 +2659,9 @@ int main(int argc, char **argv) {
     }
     if (argc >= 3 && !strcmp(argv[1], "lifetime")) {
         return lifetime_main(argv[2]);
+    }
+    if (argc >= 3 && !strcmp(argv[1], "group")) {
+        return group_main(argv[2]);
     }
     if (argc >= 3 && !strcmp(argv[1], "lease")) {
         return lease_main(argv[2]);
