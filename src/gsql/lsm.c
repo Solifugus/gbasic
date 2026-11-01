@@ -2282,12 +2282,53 @@ static int comp_make(GsStore *db, int level, int next, FileMeta **inputs, size_t
 
 /* Begin compacting `level` into the next. A trivial move finishes here and
  * leaves no compaction in progress. */
+static int files_overlap(const FileMeta *a, const FileMeta *b) {
+    return bytes_cmp(gsb(a->largest.p, a->largest.n), gsb(b->smallest.p, b->smallest.n)) >= 0 &&
+           bytes_cmp(gsb(b->largest.p, b->largest.n), gsb(a->smallest.p, a->smallest.n)) >= 0;
+}
+
+/* Level-0 files that overlap no other level-0 file and nothing in level 1
+ * go down as they are, before anything is merged. Level 0 was compacted as
+ * one block, so a single wide file -- a transaction's few catalog entries,
+ * say -- made every other file in it a merge input with everything below
+ * it: a sorted index build's 400 MB of runs rewritten with the table's
+ * 300 MB of level 1 (gsql_spill_design.md §7). Answers 1 if it moved any. */
+static int l0_move_alone(GsStore *db, int *rc) {
+    Version *v = db->cur;
+    size_t n0 = v->nfiles[0];
+    FileMeta **mv = NULL;
+    size_t nmv = 0;
+    for (size_t i = 0; i < n0; i++) {
+        FileMeta *f = v->files[0][i];
+        int alone = 1;
+        for (size_t j = 0; j < n0 && alone; j++) if (j != i && files_overlap(f, v->files[0][j])) alone = 0;
+        for (size_t j = 0; j < v->nfiles[1] && alone; j++) if (files_overlap(f, v->files[1][j])) alone = 0;
+        if (alone) {
+            mv = realloc(mv, (nmv + 1) * sizeof *mv);
+            mv[nmv++] = f;
+        }
+    }
+    /* all of them alone too: the ordinary trivial move below measures one
+     * span over the whole level, which reaches across the trees between */
+    if (!nmv) { free(mv); return 0; }
+    Version *nv = version_copy(v);
+    for (size_t i = 0; i < nmv; i++) {
+        version_add(nv, 1, mv[i]);
+        version_remove(db, nv, 0, mv[i]);
+    }
+    free(mv);
+    *rc = install(db, nv, NULL, 0);
+    return 1;
+}
+
 static int comp_start(GsStore *db, int level) {
     Version *v = db->cur;
     FileMeta **inputs = NULL;
     size_t nin = 0;
     GsBuf lo = {0}, hi = {0};
     if (level == 0) {
+        int mrc;
+        if (l0_move_alone(db, &mrc)) return mrc;
         inputs = malloc((v->nfiles[0] + v->nfiles[1] + 1) * sizeof *inputs);
         for (size_t i = 0; i < v->nfiles[0]; i++) {
             FileMeta *m = v->files[0][i];
@@ -2945,26 +2986,55 @@ static int buf_put(struct GsTxn *t, uint64_t id, GsBytes key, int type, GsBytes 
 /* G5: a write transaction's memory is bounded. Past half the cache, the
  * buffer becomes a sorted run file -- written and flushed, but named in no
  * manifest until the commit does it -- and the buffer starts empty. */
-static int spill_buffer(struct GsTxn *t) {
-    GsStore *db = t->db;
-    if (!t->buf.count) return GS_OK;
-    Builder b;
-    int rc = bld_open(db, &b);
-    for (SkNode *n = t->buf.head->next[0]; n && rc == GS_OK; n = n->next[0]) {
-        Ent e = sk_ent(n);
-        e.seq = 0; /* the commit gives the whole run one sequence */
-        bld_add(&b, &e);
-        rc = b.rc;
-    }
+static int run_add(struct GsTxn *t, Builder *b) {
     FileMeta *fm = NULL;
-    int r2 = b.f ? bld_close(&b, &fm) : rc;
-    if (rc == GS_OK) rc = r2;
+    int rc = bld_close(b, &fm);
     if (rc) { if (fm) file_free(fm); return rc; }
     fm->seq_over = TXN_SEQ_BASE + t->nruns;
     FileMeta **v = realloc(t->runs, (t->nruns + 1) * sizeof *v);
     if (!v) { file_free(fm); return GS_IO; }
     t->runs = v;
     t->runs[t->nruns++] = fm;
+    return GS_OK;
+}
+
+/* A run per tree: a run holding two trees' entries spans every key between
+ * them, so it overlaps every file of the trees in between and can never be
+ * moved down a level as it is. A CREATE INDEX's last run held the catalog's
+ * entry and the index's last entries, overlapped all 15 level-1 files of a
+ * 10^7-row table, and its commit merged 700 MB (gsql_spill_design.md §7).
+ * Different trees' keys never meet, so how a transaction's entries are cut
+ * into runs changes nothing a reader sees. */
+static int spill_buffer(struct GsTxn *t) {
+    GsStore *db = t->db;
+    if (!t->buf.count) return GS_OK;
+    Builder b;
+    int open = 0, rc = GS_OK;
+    unsigned char tree[ID_LEN];
+    for (SkNode *n = t->buf.head->next[0]; n && rc == GS_OK; n = n->next[0]) {
+        Ent e = sk_ent(n);
+        e.seq = 0; /* the commit gives each run one sequence */
+        if (open && memcmp(e.k, tree, ID_LEN)) {
+            open = 0;
+            rc = run_add(t, &b);
+            if (rc) break;
+        }
+        if (!open) {
+            if ((rc = bld_open(db, &b))) break;
+            memcpy(tree, e.k, ID_LEN);
+            open = 1;
+        }
+        bld_add(&b, &e);
+        rc = b.rc;
+    }
+    if (open && rc == GS_OK) {
+        rc = run_add(t, &b);
+    } else if (open) {
+        FileMeta *fm = NULL;
+        if (b.f) bld_close(&b, &fm);
+        if (fm) file_free(fm);
+    }
+    if (rc) return rc;
     sk_free(&t->buf);
     sk_init(&t->buf);
     t->spills++;
