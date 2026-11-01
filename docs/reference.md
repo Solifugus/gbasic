@@ -2548,7 +2548,12 @@ next
   pass**, fetching a batch at a time, so a result is never held whole. The loop
   owns the result: leaving it early by `break`, `return` or a raise ends it.
 - `gsql.query(NAME)` answers every row as an array, and `gsql.exec(NAME)`
-  answers `{ command, rows_affected }`. Either takes the block alone.
+  answers `{ command, rows_affected }`, with `rows` when it returns rows.
+- **A record supplies the values:** `gsql.exec(NAME, record)` and
+  `gsql.query(NAME, record)` read each `:name` from the record's field of that
+  name, and a name the record lacks from the variable in scope, so a row read
+  from a file or another query goes straight in:
+  `for each r in rows` / `gsql.exec(add, r)` / `next`.
 - **A block may hold several statements**, separated by `;`, each checked at
   load: **the last one answers**, and a `select` may only be last, since rows
   anywhere else would go nowhere. `gsql.exec` answers the last statement's
