@@ -13,6 +13,32 @@ database unused( file: "unused.gsql", create: true )
 ' (docs/gsql_block_connection_design.md)
 database tenant()
 
+' several statements in one block (docs/gsql_multi_statement_design.md)
+sql m_schema on shop
+    create table visit (id integer serial primary key, page text not null);
+    create index visit_page on visit (page)
+end sql
+
+sql m_record_and_show on shop
+    insert into visit (page) values (:page);
+    select page, count(*) as n from visit group by page order by page
+end sql
+
+' a `;` inside a string ends nothing
+sql m_two on shop
+    insert into visit (page) values (:page);
+    insert into visit (page) values ('semi; colon')
+end sql
+
+sql m_half_bad on shop
+    insert into visit (page) values ('half');
+    insert into no_such_table (x) values (1)
+end sql
+
+sql m_count_page on shop
+    select count(*) as n from visit where page = :page
+end sql
+
 sql t_make on tenant
     create table item (id integer primary key, name string not null)
 end sql
@@ -344,6 +370,45 @@ spare = 5
 e = query_block(spare_rows)
 check("a block whose database name was reassigned", code_of(e), "STATE")
 check("says what happened", contains(message_of(e), "no longer holds a database"), true)
+
+' --- several statements in a block -----------------------------------------------
+r = gsql.exec(m_schema)
+check("a schema block answers its last statement", r.command, "CREATE")
+check("and every statement, in order", len(r.statements), 2)
+page = "home"
+shown = []
+for each row in m_record_and_show
+    append(shown, row.page + "=" + string(row.n))
+next
+check("a block ending in a select runs its insert, then streams", join(shown, ","), "home=1")
+check("gsql.query takes it too", len(gsql.query(m_record_and_show)), 1)
+page = "about"
+r = gsql.exec(m_two)
+check("exec answers the last count", r.rows_affected, 1)
+check("with each statement's count", r.statements[0].rows_affected, 1)
+page = "semi; colon"
+check("a ; in a string ended nothing", gsql.query(m_count_page)[0].n, 1)
+e = exec_block(m_half_bad)
+check("a block whose second statement fails is refused", code_of(e), "NOT_FOUND")
+page = "half"
+check("and its first is undone: all or none", gsql.query(m_count_page)[0].n, 0)
+gsql.begin(shop)
+page = "joined"
+gsql.exec(m_two)
+gsql.rollback(shop)
+check("inside the program's transaction, its rollback undoes the block", gsql.query(m_count_page)[0].n, 0)
+gsql.begin(shop)
+gsql.exec(m_two)
+gsql.commit(shop)
+check("and its commit keeps it", gsql.query(m_count_page)[0].n, 1)
+e = exec_block(m_record_and_show)
+check("exec of a block ending in a select is refused before anything runs", contains(message_of(e), "nothing ran"), true)
+page = "home"
+check("so it inserted nothing", gsql.query(m_count_page)[0].n, 2)
+e = query_block(m_two)
+check("query of a block ending in no rows is refused before anything runs", contains(message_of(e), "nothing ran"), true)
+page = "about"
+check("so it inserted nothing either", gsql.query(m_count_page)[0].n, 1)
 
 ' --- a block on a database chosen at run time -----------------------------------
 ta = gsql.connect("tenant_a.gsql", { create: true })

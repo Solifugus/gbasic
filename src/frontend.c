@@ -851,36 +851,92 @@ static void gsq_check_sql(SrvCheck *chk, const AstStmt *stmt, const GsqDecls *d)
                   stmt->as.sql.name, stmt->as.sql.database, stmt->as.sql.database);
     }
 #if GBASIC_GSQL
-    SqlParsed parsed;
-    GsqlError err;
-    memset(&err, 0, sizeof err);
-    const char *text = stmt->as.sql.text;
-    if (sql_parse(text, strlen(text), &parsed, &err) != 0) {
-        int line, column;
-        gsq_locate(stmt, err.position > 0 ? (long)err.position : 1, &line, &column);
-        gsq_error(chk, line, column, "sql '%s': %s", stmt->as.sql.name, err.message);
-        return;
-    }
-    if (parsed.stmt->max_param_index > 0) {
-        /* at the first `$n` outside a quoted string */
-        long at = 1;
-        int quoted = 0;
-        for (long k = 0; text[k]; k++) {
-            if (text[k] == '\'') {
-                quoted = !quoted;
-            } else if (!quoted && text[k] == '$' && isdigit((unsigned char)text[k + 1])) {
-                at = k + 1;
-                break;
+    /* several statements, split at `;` by G-SQL's own lexer, each parsed
+       and located on its own; rows only from the last, since rows anywhere
+       else would go nowhere (docs/gsql_multi_statement_design.md) */
+    const char *all = stmt->as.sql.text;
+    size_t n = strlen(all), at = 0;
+    int count = 0;
+    while (at < n) {
+        size_t end = 0;
+        int empty = 1;
+        int r = sql_statement_end(all + at, n - at, &end, &empty);
+        size_t len = r == 1 ? end - 1 : end;
+        int last = r != 1;
+        if (r == 1) {
+            /* the last is the one with nothing but space after it */
+            size_t k = at + end;
+            while (k < n && isspace((unsigned char)all[k])) {
+                k++;
             }
+            last = k >= n;
         }
-        int line, column;
-        gsq_locate(stmt, at, &line, &column);
-        gsq_error(chk, line, column,
-                  "sql '%s': a block's parameters are named, :name, each read from the "
-                  "variable of that name where the block runs -- $%u has nothing to supply it",
-                  stmt->as.sql.name, parsed.stmt->max_param_index);
+        if (empty && r == 1) {
+            int line, column;
+            gsq_locate(stmt, (long)(at + end), &line, &column);
+            gsq_error(chk, line, column, "sql '%s': an empty statement -- two `;` with nothing between them",
+                      stmt->as.sql.name);
+            return;
+        }
+        if (empty) {
+            break;
+        }
+        count++;
+        char *piece = malloc(len + 1);
+        if (!piece) {
+            abort();
+        }
+        memcpy(piece, all + at, len);
+        piece[len] = 0;
+        SqlParsed parsed;
+        GsqlError err;
+        memset(&err, 0, sizeof err);
+        if (sql_parse(piece, len, &parsed, &err) != 0) {
+            int line, column;
+            gsq_locate(stmt, (long)at + (err.position > 0 ? (long)err.position : 1), &line, &column);
+            gsq_error(chk, line, column, "sql '%s': %s", stmt->as.sql.name, err.message);
+            free(piece);
+            return;
+        }
+        SqlStmt *x = parsed.stmt;
+        int rows = x->kind == SQ_SELECT || x->explain || x->kind == SQ_BACKUP || x->kind == SQ_DUMP;
+        if (rows && !last) {
+            long first = (long)at + 1;
+            while (first <= (long)(at + len) && isspace((unsigned char)all[first - 1])) {
+                first++;
+            }
+            int line, column;
+            gsq_locate(stmt, first, &line, &column);
+            gsq_error(chk, line, column,
+                      "sql '%s': statement %d returns rows, and only a block's last statement may -- rows "
+                      "anywhere else would go nowhere", stmt->as.sql.name, count);
+        }
+        if (x->max_param_index > 0) {
+            /* at the first `$n` outside a quoted string */
+            long pos = 1;
+            int quoted = 0;
+            for (long k = 0; piece[k]; k++) {
+                if (piece[k] == '\'') {
+                    quoted = !quoted;
+                } else if (!quoted && piece[k] == '$' && isdigit((unsigned char)piece[k + 1])) {
+                    pos = k + 1;
+                    break;
+                }
+            }
+            int line, column;
+            gsq_locate(stmt, (long)at + pos, &line, &column);
+            gsq_error(chk, line, column,
+                      "sql '%s': a block's parameters are named, :name, each read from the "
+                      "variable of that name where the block runs -- $%u has nothing to supply it",
+                      stmt->as.sql.name, x->max_param_index);
+        }
+        sql_parsed_free(&parsed);
+        free(piece);
+        if (r != 1) {
+            break;
+        }
+        at += end;
     }
-    sql_parsed_free(&parsed);
 #endif
 }
 

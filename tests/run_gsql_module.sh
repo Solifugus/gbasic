@@ -466,9 +466,21 @@ function f()
     end sql
     return nothing
 end function"
-load_case two_statements 5:15 "sql 'q':" "$HEAD
+# several statements are allowed (gsql_multi_statement_design.md); rows only
+# from the last, and an empty statement is refused, each at its own place
+load_case rows_not_last 5:5 "statement 1 returns rows, and only a block's last statement may" "$HEAD
 sql q on db
     select 1; select 2
+end sql"
+load_case empty_statement 5:32 "an empty statement" "$HEAD
+sql q on db
+    create table a (x integer);;
+    create table b (x integer)
+end sql"
+load_case second_syntax 6:33 "sql 'q':" "$HEAD
+sql q on db
+    create table a (x integer);
+    select id from a where id = = 1
 end sql"
 # captured first: the program is REFUSED, so gbasic exits 1, and under
 # pipefail a `gbasic | grep -q` pipeline answers 1 even when grep matches

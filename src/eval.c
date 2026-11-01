@@ -473,6 +473,11 @@ struct GsqlStatementValue {
     /* gsql.on(connection, block): the connection this copy runs on, in
      * place of its `database` block's; a null value when unbound */
     Value bound;
+    /* its statements, split at `;` (docs/gsql_multi_statement_design.md);
+     * one for a block of one. `last_rows`: the last one returns rows */
+    char **stmts;
+    size_t nstmts;
+    int last_rows;
 };
 
 struct LdapConnectionValue {
@@ -3585,6 +3590,7 @@ static struct GsqlRows *gsql_block_rows(const GsqlStatementValue *st);
 static int gsql_rows_next(struct GsqlRows *r, Value *row);
 static void gsql_rows_end(struct GsqlRows *r);
 static char **gsql_statement_params(const char *sql, size_t *count);
+static void gsql_block_split(GsqlStatementValue *st);
 #endif
 
 /* --- PLAT-HTTP: handle registry and release ------------------------------
@@ -4558,6 +4564,10 @@ static void value_free(Value value) {
                 free(statement->params[i]);
             }
             free(statement->params);
+            for (size_t i = 0; i < statement->nstmts; i++) {
+                free(statement->stmts[i]);
+            }
+            free(statement->stmts);
             value_free(statement->bound);
             free(statement);
         }
@@ -41056,7 +41066,7 @@ static void sql_register(AstStmt *stmt) {
     st->database = copy_string(stmt->as.sql.database);
     st->sql = copy_string(stmt->as.sql.text);
 #if GBASIC_GSQL
-    st->params = gsql_statement_params(st->sql, &st->nparams);
+    gsql_block_split(st);
 #endif
     st->bound = value_null();
     env_set(stmt->as.sql.name, value_gsql_statement(st));

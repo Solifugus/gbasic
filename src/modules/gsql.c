@@ -1081,6 +1081,74 @@ static char **gsql_statement_params(const char *sql, size_t *count) {
     return names;
 }
 
+/* Whether a statement answers rows: a select, an explain, a backup or dump's
+ * progress. Unparsable text answers no; its refusal comes from the owner. */
+static int gsql_statement_returns_rows(const char *sql) {
+    SqlParsed parsed;
+    GsqlError err;
+    memset(&err, 0, sizeof err);
+    if (sql_parse(sql, strlen(sql), &parsed, &err) != 0) {
+        return 0;
+    }
+    SqlStmt *x = parsed.stmt;
+    int rows = x->kind == SQ_SELECT || x->explain || x->kind == SQ_BACKUP || x->kind == SQ_DUMP;
+    sql_parsed_free(&parsed);
+    return rows;
+}
+
+/* A block's statements, split at `;` by G-SQL's own lexer, so a `;` in a
+ * string or a comment ends nothing; its :name parameters, every statement's,
+ * in order of first appearance (docs/gsql_multi_statement_design.md). */
+static void gsql_block_split(GsqlStatementValue *st) {
+    const char *t = st->sql;
+    size_t n = strlen(t), at = 0;
+    st->stmts = NULL;
+    st->nstmts = 0;
+    st->params = NULL;
+    st->nparams = 0;
+    while (at < n) {
+        size_t end = 0;
+        int empty = 1;
+        int r = sql_statement_end(t + at, n - at, &end, &empty);
+        size_t len = r == 1 ? end - 1 : end;   /* without its `;` */
+        if (!empty || r < 0) {
+            char *piece = malloc(len + 1);
+            if (!piece) {
+                abort();
+            }
+            memcpy(piece, t + at, len);
+            piece[len] = 0;
+            st->stmts = realloc(st->stmts, (st->nstmts + 1) * sizeof *st->stmts);
+            st->stmts[st->nstmts++] = piece;
+            size_t np = 0;
+            char **ps = gsql_statement_params(piece, &np);
+            for (size_t k = 0; k < np; k++) {
+                int seen = 0;
+                for (size_t m = 0; m < st->nparams && !seen; m++) {
+                    seen = strcmp(st->params[m], ps[k]) == 0;
+                }
+                if (seen) {
+                    free(ps[k]);
+                } else {
+                    st->params = realloc(st->params, (st->nparams + 1) * sizeof *st->params);
+                    st->params[st->nparams++] = ps[k];
+                }
+            }
+            free(ps);
+        }
+        if (r != 1 || end == 0) {
+            break;
+        }
+        at += end;
+    }
+    if (!st->nstmts) {
+        st->stmts = malloc(sizeof *st->stmts);
+        st->stmts[0] = copy_string(st->sql);
+        st->nstmts = 1;
+    }
+    st->last_rows = gsql_statement_returns_rows(st->stmts[st->nstmts - 1]);
+}
+
 /* The connection a block is on: its database, by name, in the global frame,
  * where the `database` block bound it. Borrowed, or NULL with a raise. */
 static GsqlConnectionValue *gsql_block_connection(const GsqlStatementValue *st, const char *who) {
@@ -1106,29 +1174,224 @@ static GsqlConnectionValue *gsql_block_connection(const GsqlStatementValue *st, 
     return gsql_connection_of(value_copy(sym->value), who);
 }
 
-/* The request for a block: its statement, and each :name parameter read from
- * the variable of that name where the block runs. 1, or 0 with a raise. */
-static int gsql_block_body(const GsqlStatementValue *st, const char *who, Value *body) {
+/* The request for one of a block's statements: its text, and each :name
+ * parameter it reads, from the variable of that name where the block runs.
+ * 1, or 0 with a raise. */
+static int gsql_piece_body(const GsqlStatementValue *st, size_t piece, const char *who, Value *body) {
+    const char *text = st->stmts[piece];
+    size_t np = 0;
+    char **names = st->nstmts == 1 ? st->params : gsql_statement_params(text, &np);
+    if (st->nstmts == 1) {
+        np = st->nparams;
+    }
     *body = value_record(NULL, 0);
-    record_set(body, "statement", value_string(st->sql));
-    if (st->nparams) {
+    record_set(body, "statement", value_string(text));
+    int ok = 1;
+    if (np) {
         Value params = value_record(NULL, 0);
-        for (size_t i = 0; i < st->nparams; i++) {
-            Symbol *sym = env_find(st->params[i]);
+        for (size_t i = 0; i < np && ok; i++) {
+            Symbol *sym = env_find(names[i]);
             if (!sym) {
                 char msg[300];
-                snprintf(msg, sizeof msg, "the statement reads :%s, and there is no variable `%s` here",
-                         st->params[i], st->params[i]);
+                snprintf(msg, sizeof msg, "the statement reads :%s, and there is no variable `%s` here", names[i],
+                         names[i]);
                 value_free(params);
                 value_free(*body);
-                gsql_module_raise(who, "PARAMETER", msg, 0, st->sql);
-                return 0;
+                gsql_module_raise(who, "PARAMETER", msg, 0, text);
+                ok = 0;
+            } else {
+                record_set(&params, names[i], value_copy(sym->value));
             }
-            record_set(&params, st->params[i], value_copy(sym->value));
         }
-        record_set(body, "parameters", params);
+        if (ok) {
+            record_set(body, "parameters", params);
+        }
     }
-    record_set(body, "batch", value_number_exact(GSQL_MODULE_BATCH));
+    if (st->nstmts != 1) {
+        for (size_t i = 0; i < np; i++) {
+            free(names[i]);
+        }
+        free(names);
+    }
+    if (ok) {
+        record_set(body, "batch", value_number_exact(GSQL_MODULE_BATCH));
+    }
+    return ok;
+}
+
+/* The request for a block's last statement, the one that answers. */
+static int gsql_block_body(const GsqlStatementValue *st, const char *who, Value *body) {
+    return gsql_piece_body(st, st->nstmts - 1, who, body);
+}
+
+/* ---- a block of several statements (docs/gsql_multi_statement_design.md) -- */
+
+typedef struct {
+    int multi;          /* more than one statement */
+    int own;            /* the block began its transaction, and ends it */
+    Value statements;   /* one { command, rows_affected } each, so far */
+} GsqlBlockRun;
+
+/* One request whose refusal is an answer rather than a raise: the reply's
+ * type, and on an ERROR its code. 0 when the call itself failed (raised). */
+static int gsql_raw(GsqlConnectionValue *c, unsigned type, Value body, const char *who, unsigned *reply_type,
+                    char *code, size_t code_n) {
+    code[0] = 0;
+    SerBuf sb;
+    serbuf_init(&sb);
+    int ok = serialize_value(&sb, body, 0);
+    value_free(body);
+    if (!ok) {
+        free(sb.bytes);
+        return 0;
+    }
+    GsqlBuf b = { (unsigned char *)sb.bytes, sb.length, sb.capacity };
+    GsqlFrame f;
+    GsqlError err;
+    memset(&err, 0, sizeof err);
+    gsql_trace(type);
+    int rc = gsql_client_call(c->client, type, &b, &f, &err);
+    free(sb.bytes);
+    if (rc) {
+        if (!error_action_pending()) {
+            gsql_module_raise(who, gsql_error_name(err.code), err.message, 0, NULL);
+        }
+        return 0;
+    }
+    *reply_type = f.type;
+    if (f.type == GSQL_M_ERROR) {
+        SerReader r = { (const char *)f.body, f.length, 0, 1, SER_VERSION };
+        Value v = deserialize_value(&r, 0);
+        Value *cv = v.kind == VALUE_RECORD ? gsql_field(&v, "code") : NULL;
+        snprintf(code, code_n, "%s", cv && cv->kind == VALUE_STRING ? cv->as.string : "?");
+        value_free(v);
+    }
+    return 1;
+}
+
+/* A block's own transaction ends: committed, or rolled back -- the second
+ * also while a raise is pending, which is when it is needed. */
+static void gsql_block_rollback(GsqlConnectionValue *c, GsqlBlockRun *run, const char *who) {
+    if (run->own) {
+        unsigned t;
+        char code[64];
+        gsql_raw(c, GSQL_M_ROLLBACK, value_record(NULL, 0), who, &t, code, sizeof code);
+        run->own = 0;
+    }
+}
+static int gsql_block_commit(GsqlConnectionValue *c, GsqlBlockRun *run, const char *who) {
+    if (!run->own) {
+        return 1;
+    }
+    run->own = 0;
+    Value reply;
+    unsigned type;
+    if (!gsql_request(c, GSQL_M_COMMIT, value_record(NULL, 0), who, NULL, &reply, &type)) {
+        return 0;
+    }
+    value_free(reply);
+    return 1;
+}
+
+static Value gsql_count_of(const char *sql, Value *reply) {
+    Value *n = gsql_field(reply, "rows");
+    char *command = sql_command_name(sql);
+    Value result = value_record(NULL, 0);
+    record_set(&result, "command", value_string(command));
+    /* a count only where one means something, the rule sqlite, pg and odbc
+       share: a CREATE has no rows to have affected */
+    record_set(&result, "rows_affected", sql_command_counts_rows(command) && n ? value_copy(*n) : value_null());
+    free(command);
+    return result;
+}
+
+/* Every statement but the last, in a transaction the block owns or joins.
+ * `answers_rows`: the call wants the last statement's rows (query, a loop),
+ * else its count (exec); refused before anything runs if the block's last
+ * statement is the other kind. 1, or 0 with a raise and nothing kept. */
+static int gsql_block_prelude(GsqlConnectionValue *c, const GsqlStatementValue *st, const char *who,
+                              int answers_rows, GsqlBlockRun *run) {
+    run->multi = st->nstmts > 1;
+    run->own = 0;
+    run->statements = value_array(NULL, 0);
+    if (!run->multi) {
+        return 1;
+    }
+    if (answers_rows && !st->last_rows) {
+        char msg[300];
+        snprintf(msg, sizeof msg, "its last statement returns no rows, so there is nothing to iterate; nothing ran -- "
+                 "gsql.exec(%s)", st->name);
+        gsql_module_raise(who, "STATE", msg, 0, st->stmts[st->nstmts - 1]);
+        return 0;
+    }
+    if (!answers_rows && st->last_rows) {
+        char msg[300];
+        snprintf(msg, sizeof msg, "its last statement returns rows; nothing ran -- for each row in %s, or "
+                 "gsql.query(%s)", st->name, st->name);
+        gsql_module_raise(who, "STATE", msg, 0, st->stmts[st->nstmts - 1]);
+        return 0;
+    }
+    /* a transaction already open is the program's: the block joins it */
+    Value begin = value_record(NULL, 0);
+    record_set(&begin, "mode", value_string("write"));
+    unsigned type;
+    char code[64];
+    if (!gsql_raw(c, GSQL_M_BEGIN, begin, who, &type, code, sizeof code)) {
+        return 0;
+    }
+    if (type == GSQL_M_ERROR && strcmp(code, "STATE") != 0) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "the block's transaction could not begin (%s)", code);
+        gsql_module_raise(who, code, msg, 0, NULL);
+        return 0;
+    }
+    run->own = type != GSQL_M_ERROR;
+    for (size_t i = 0; i + 1 < st->nstmts; i++) {
+        Value body, reply;
+        if (!gsql_piece_body(st, i, who, &body) ||
+            !gsql_request(c, GSQL_M_QUERY, body, who, st->stmts[i], &reply, &type)) {
+            gsql_block_rollback(c, run, who);
+            return 0;
+        }
+        Value one = gsql_count_of(st->stmts[i], &reply);
+        value_free(reply);
+        Value grown = append_to_array_ref(&run->statements, one, 0);
+        value_free(grown);
+    }
+    return 1;
+}
+
+/* A block the call was given: the connection it runs on, and what runs before
+ * its last statement. The last statement's request is in `body`. */
+static int gsql_block_start(const GsqlStatementValue *st, GsqlConnectionValue *on, const char *who, int answers_rows,
+                            GsqlConnectionValue **c, char **sql, Value *body, GsqlBlockRun *run) {
+    run->statements = value_null();
+    run->own = run->multi = 0;
+    *c = on ? on : gsql_block_connection(st, who);
+    if (!*c) {
+        return 0;
+    }
+    if (!gsql_block_prelude(*c, st, who, answers_rows, run)) {
+        value_free(run->statements);
+        run->statements = value_null();
+        return 0;
+    }
+    if (!gsql_block_body(st, who, body)) {
+        gsql_block_rollback(*c, run, who);
+        value_free(run->statements);
+        run->statements = value_null();
+        return 0;
+    }
+    *sql = copy_string(st->stmts[st->nstmts - 1]);
+    /* a query's changes are kept before its rows are read: the select
+       changes nothing, and its rows stream after (§2) */
+    if (answers_rows && !gsql_block_commit(*c, run, who)) {
+        value_free(*body);
+        free(*sql);
+        value_free(run->statements);
+        run->statements = value_null();
+        return 0;
+    }
     return 1;
 }
 
@@ -1136,25 +1399,28 @@ static int gsql_block_body(const GsqlStatementValue *st, const char *who, Value 
 static struct GsqlRows *gsql_block_rows(const GsqlStatementValue *st) {
     char who[160];
     snprintf(who, sizeof who, "sql %s", st->name);
-    GsqlConnectionValue *c = gsql_block_connection(st, who);
-    if (!c) {
-        return NULL;
-    }
+    GsqlConnectionValue *c;
+    char *sql;
     Value body;
-    if (!gsql_block_body(st, who, &body)) {
+    GsqlBlockRun run;
+    if (!gsql_block_start(st, NULL, who, 1, &c, &sql, &body, &run)) {
         return NULL;
     }
+    value_free(run.statements);
     char remedy[200];
     snprintf(remedy, sizeof remedy, "gsql.exec(%s)", st->name);
-    return gsql_rows_begin(c, who, copy_string(st->sql), body, remedy);
+    return gsql_rows_begin(c, who, sql, body, remedy);
 }
 
 /* The first argument of query and exec: a connection, then the statement and
  * its parameters; or an sql block alone. 1 with the connection, the statement,
  * the request and the name to refuse under; 0 with a raise. */
 static int gsql_call_target(AstExpr *expr, const char *verb, GsqlConnectionValue **c, char **sql, Value *body,
-                            char *who, size_t who_cap) {
+                            char *who, size_t who_cap, GsqlBlockRun *run) {
     size_t argc = expr->as.call.args.count;
+    int answers_rows = strcmp(verb, "query") == 0;
+    run->statements = value_null();
+    run->own = run->multi = 0;
     if (argc < 1) {
         char msg[200];
         snprintf(msg, sizeof msg, "gsql.%s expects a connection, a statement, and optionally its parameters", verb);
@@ -1177,14 +1443,9 @@ static int gsql_call_target(AstExpr *expr, const char *verb, GsqlConnectionValue
             return 0;
         }
         snprintf(who, who_cap, "sql %s", st->name);
-        *c = gsql_block_connection(st, who);
-        if (!*c || !gsql_block_body(st, who, body)) {
-            value_free(v);
-            return 0;
-        }
-        *sql = copy_string(st->sql);
+        int ok = gsql_block_start(st, NULL, who, answers_rows, c, sql, body, run);
         value_free(v);
-        return 1;
+        return ok;
     }
     snprintf(who, who_cap, "%s", verb);
     *c = gsql_connection_of(v, verb);
@@ -1215,10 +1476,7 @@ static int gsql_call_target(AstExpr *expr, const char *verb, GsqlConnectionValue
             gsql_module_refuse(msg);
             return 0;
         }
-        int ok = gsql_block_body(st, who, body);
-        if (ok) {
-            *sql = copy_string(st->sql);
-        }
+        int ok = gsql_block_start(st, *c, who, answers_rows, c, sql, body, run);
         value_free(second);
         return ok;
     }
@@ -1268,7 +1526,7 @@ static Value gsql_eval_on(AstExpr *expr) {
     st->name = copy_string(from->name);
     st->database = copy_string(from->database);
     st->sql = copy_string(from->sql);
-    st->params = gsql_statement_params(st->sql, &st->nparams);
+    gsql_block_split(st);
     st->bound = cv;   /* the copy holds the connection */
     value_free(bv);
     return value_gsql_statement(st);
@@ -1279,9 +1537,11 @@ static Value gsql_eval_query(AstExpr *expr) {
     char *sql;
     Value body;
     char who[160];
-    if (!gsql_call_target(expr, "query", &c, &sql, &body, who, sizeof who)) {
+    GsqlBlockRun run;
+    if (!gsql_call_target(expr, "query", &c, &sql, &body, who, sizeof who, &run)) {
         return value_null();
     }
+    value_free(run.statements);   /* a query's changes are already kept */
     char remedy[200];
     if (strncmp(who, "sql ", 4) == 0) {
         snprintf(remedy, sizeof remedy, "gsql.exec(%s)", who + 4);
@@ -1311,12 +1571,15 @@ static Value gsql_eval_exec(AstExpr *expr) {
     char *sql;
     Value body;
     char who[160];
-    if (!gsql_call_target(expr, "exec", &c, &sql, &body, who, sizeof who)) {
+    GsqlBlockRun run;
+    if (!gsql_call_target(expr, "exec", &c, &sql, &body, who, sizeof who, &run)) {
         return value_null();
     }
     Value reply;
     unsigned type;
     if (!gsql_request(c, GSQL_M_QUERY, body, who, sql, &reply, &type)) {
+        gsql_block_rollback(c, &run, who);
+        value_free(run.statements);
         free(sql);
         return value_null();
     }
@@ -1326,20 +1589,26 @@ static Value gsql_eval_exec(AstExpr *expr) {
         gsql_module_raise(who, "STATE", strcmp(who, "exec") == 0
                           ? "the statement returns rows; use gsql.query for it"
                           : "the statement returns rows; use gsql.query, or for each row in the block", 0, sql);
+        gsql_block_rollback(c, &run, who);
+        value_free(run.statements);
         free(sql);
         return value_null();
     }
-    Value *n = gsql_field(&reply, "rows");
-    char *command = sql_command_name(sql);
-    Value result = value_record(NULL, 0);
-    record_set(&result, "command", value_string(command));
-    /* a count only where one means something, the rule sqlite, pg and odbc
-       share: a CREATE has no rows to have affected */
-    record_set(&result, "rows_affected",
-               sql_command_counts_rows(command) && n ? value_copy(*n) : value_null());
-    free(command);
+    Value result = gsql_count_of(sql, &reply);
     value_free(reply);
     free(sql);
+    if (run.multi) {
+        /* every statement's count, the last's too, beside the last's own */
+        Value grown = append_to_array_ref(&run.statements, value_copy(result), 0);
+        value_free(grown);
+        record_set(&result, "statements", run.statements);
+        if (!gsql_block_commit(c, &run, who)) {
+            value_free(result);
+            return value_null();
+        }
+    } else {
+        value_free(run.statements);
+    }
     return result;
 }
 
