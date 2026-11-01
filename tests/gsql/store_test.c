@@ -616,6 +616,72 @@ static void empty_footprint(const char *base, GsqlIo *io) {
     CHECK(count_keys(db) == 10, "the small store holds %d of 10 rows", count_keys(db));
     E->close(db);
 }
+/* A sorted load into a new tree beside a large one: the transaction spills
+ * runs, and its commit must not rewrite them, or the tree beside them, to
+ * put them in place (gsql_spill_design.md §7). Level 0 was compacted as one
+ * block, whose span ran from the catalog's tree to the new one and so
+ * across every file of the tree between: a CREATE INDEX at 10^7 rows
+ * merged 715 MB in its commit. Asserted on the bytes the commit writes,
+ * against what the load itself wrote. */
+static void sorted_load(const char *base, GsqlIo *io) {
+    if (strcmp(E->name, "lsm")) return;
+    char path[600], k[32], v[48];
+    snprintf(path, sizeof path, "%s.sorted", base);
+    /* a 64 KB memtable, a write buffer that spills past 128 KB, and level 0
+       compacted at two files, so the first tree reaches level 1 */
+    GsOptions o = {1, 512, 256 * 1024, io, 64 * 1024, 2, 0, 0, NULL};
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the sorted-load store answered %s", gs_status_name(rc));
+    if (rc) return;
+    GsTxn *w;
+    for (int b = 0; b < 40 && rc == GS_OK; b++) {
+        rc = E->begin_write(db, &w);
+        if (rc) break;
+        if (b == 0) E->tree_create(w, gss("rows"));
+        for (int i = 0; i < 500; i++) {
+            int n = b * 500 + i;
+            /* in key order, so it leaves no compaction owed: what the
+               commit below writes is then its own work, not a backlog */
+            int kn = snprintf(k, sizeof k, "r%08d", n);
+            int vn = snprintf(v, sizeof v, "row-%06d-padding-padding-padding", n);
+            E->put(w, gss("rows"), gsb(k, (size_t)kn), gsb(v, (size_t)vn), 0);
+        }
+        rc = E->commit(w, 1, NULL);
+    }
+    if (E->flush) E->flush(db);
+    GsStats before, mid, after;
+    E->stats(db, &before);
+    rc = E->begin_write(db, &w);
+    CHECK(rc == GS_OK, "the load's transaction did not begin: %s", gs_status_name(rc));
+    if (rc) { E->close(db); return; }
+    E->tree_create(w, gss("sorted"));
+    for (int i = 0; i < 20000; i++) {
+        int kn = snprintf(k, sizeof k, "s%08d", i);
+        int vn = snprintf(v, sizeof v, "entry-%06d-padding", i);
+        E->put(w, gss("sorted"), gsb(k, (size_t)kn), gsb(v, (size_t)vn), 0);
+    }
+    E->stats(db, &mid);
+    rc = E->commit(w, 1, NULL);
+    CHECK(rc == GS_OK, "the sorted load's commit answered %s", gs_status_name(rc));
+    E->stats(db, &after);
+    uint64_t load = mid.bytes_written - before.bytes_written, commit = after.bytes_written - mid.bytes_written;
+    CHECK(load > 400 * 1024, "the load wrote only %llu bytes before its commit: it never spilled", (unsigned long long)load);
+    CHECK(commit < load / 4, "the sorted load's commit wrote %llu bytes against the %llu the load spilled: it rewrote "
+          "the runs, or the tree beside them, to put them in place", (unsigned long long)commit, (unsigned long long)load);
+    GsTxn *r;
+    GsCursor *c;
+    int pos, n = 0;
+    E->begin_read(db, &r);
+    if (E->cursor_open(r, gss("sorted"), &c) == GS_OK) {
+        for (int st = E->first(c, &pos); st == GS_OK && pos; st = E->next(c, &pos)) n++;
+        E->cursor_close(c);
+    }
+    E->abort(r);
+    CHECK(n == 20000, "the sorted tree holds %d of 20000 entries", n);
+    E->close(db);
+}
+
 static int real_fs;
 static void flushed_handoff(const char *base, GsqlIo *io) {
     if (!E->flush) return;
@@ -1636,6 +1702,7 @@ int main(int argc, char **argv) {
     flushed_handoff(path, io);
     crc_agreement();
     empty_footprint(path, io);
+    sorted_load(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);
