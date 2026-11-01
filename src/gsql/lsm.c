@@ -2912,8 +2912,24 @@ static int lookup(struct GsTxn *t, const unsigned char *k, size_t kn, Ent *out, 
     }
     Version *v = t->v;
     for (int l = 0; l < LEVELS; l++) {
-        size_t cnt = v->nfiles[l];
-        for (size_t j = 0; j < cnt; j++) {
+        size_t cnt = v->nfiles[l], first = 0;
+        if (l > 0 && cnt) {
+            /* a level >= 1 is sorted and its files do not overlap: the one
+             * file that can hold the key is the first whose largest key is
+             * not below it. This walked every file from the left, which cost
+             * a count through an index 10% at 3 x 10^7 rows once a sorted
+             * build left more, smaller files (gsql_spill_design.md §8) --
+             * and at 10^9 rows a level holds hundreds of files */
+            size_t lo = 0, hi = cnt;
+            while (lo < hi) {
+                size_t mid = (lo + hi) / 2;
+                FileMeta *m = v->files[l][mid];
+                if (bytes_cmp(gsb(m->largest.p, m->largest.n), gsb(k, kn)) < 0) lo = mid + 1;
+                else hi = mid;
+            }
+            first = lo;
+        }
+        for (size_t j = first; j < cnt; j++) {
             FileMeta *m = v->files[l][l == 0 ? cnt - 1 - j : j];
             if (bytes_cmp(gsb(k, kn), gsb(m->smallest.p, m->smallest.n)) < 0 ||
                 bytes_cmp(gsb(k, kn), gsb(m->largest.p, m->largest.n)) > 0)
