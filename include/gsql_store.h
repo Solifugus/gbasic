@@ -144,6 +144,10 @@ typedef struct GsEngine {
      * choice is the owner's. Refused while a write transaction is open.
      * NULL in an engine with no log to empty. */
     int (*flush)(GsStore *db);
+    /* A backup's progress: bytes copied so far, files the snapshot names,
+     * and how many of those an existing copy already held and kept
+     * (docs/gsql_backup_design.md). */
+    void (*backup_progress)(GsBackup *b, uint64_t *copied, uint64_t *files, uint64_t *reused);
 } GsEngine;
 
 extern const GsEngine gs_engine_lsm;  /* §2.C, the chosen engine */

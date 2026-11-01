@@ -889,6 +889,184 @@ static void sliced_backup(const char *base, GsqlIo *io) {
     E->close(db);
 }
 
+/* Refreshing a copy (docs/gsql_backup_design.md): a backup into an existing
+ * copy of the same database keeps the files it already holds and copies the
+ * rest. Three claims, each of which a plausible implementation gets wrong:
+ * the refresh copies LESS than a fresh backup and still holds exactly the
+ * snapshot; every numbered file in a copy is either one the source has or
+ * from the range the source never allocates (the unflushed changes' file,
+ * which under the source's next number a later refresh would keep in place
+ * of the source's own, different file of that number); and a copy that an
+ * owner holds -- the live database itself included -- is refused BUSY. */
+typedef struct { GsqlIo *io; const char *srcdir; unsigned bad; unsigned seen; } NumScan;
+static int num_one(void *ctx, const char *name) {
+    NumScan *ns = ctx;
+    const char *dot = strchr(name, '.');
+    unsigned long long num;
+    char ext[8];
+    if (!dot || sscanf(dot, ".%llu.%7s", &num, ext) != 2) return 0;
+    ns->seen++;
+    if (num >= (1ull << 62)) return 0;
+    char p[700];
+    snprintf(p, sizeof p, "%s/%s", ns->srcdir, name);
+    GsqlFile *f = NULL;
+    if (gsql_io_open(ns->io, p, GSQL_IO_READ_ONLY, &f)) {
+        ns->bad++;
+        printf("    the copy holds %s, which the source does not\n", name);
+        return 0;
+    }
+    gsql_io_close(f);
+    return 0;
+}
+static unsigned foreign_numbers(GsqlIo *io, const char *copy, const char *src, unsigned *seen) {
+    NumScan ns = { io, src, 0, 0 };
+    gsql_io_list(io, copy, num_one, &ns);
+    *seen = ns.seen;
+    return ns.bad;
+}
+static void refreshed_backup(const char *base, GsqlIo *io) {
+    char path[600], dest[600], busy[600];
+    snprintf(path, sizeof path, "%s.rf", base);
+    snprintf(dest, sizeof dest, "%s.rf-copy", base);
+    snprintf(busy, sizeof busy, "%s.rf-busy", base);
+    GsOptions o = {1, 512, 0, io, 2000, 1000, 32, 0};
+    GsStore *db;
+    if (E->open(path, &o, &db) != GS_OK) {
+        CHECK(0, "opening the refresh store");
+        return;
+    }
+    unsigned gen[400];
+    for (unsigned i = 0; i < 400; i++) { put_gen(db, "a", i, 1, i % 16 == 15); gen[i] = 1; }
+    /* unflushed changes, so the backup writes a memtable file */
+    for (unsigned i = 0; i < 5; i++) { put_gen(db, "a", i, 2, 0); gen[i] = 2; }
+    GsTxn *snap;
+    GsBackup *bk = NULL;
+    uint64_t copied1, files1, reused1, copied2, files2, reused2;
+    E->begin_read(db, &snap);
+    int rc = E->backup_begin(snap, dest, &bk);
+    int done = 0;
+    while (rc == GS_OK && !done) rc = E->backup_step(bk, 8192, &done);
+    E->backup_progress(bk, &copied1, &files1, &reused1);
+    E->backup_end(bk);
+    E->abort(snap);
+    CHECK(rc == GS_OK && done, "the first backup answered %s", gs_status_name(rc));
+    CHECK(reused1 == 0 && copied1 > 0, "a first backup reuses nothing: copied %llu, reused %llu of %llu files",
+          (unsigned long long)copied1, (unsigned long long)reused1, (unsigned long long)files1);
+    unsigned seen;
+    CHECK(foreign_numbers(io, dest, path, &seen) == 0, "every numbered file of the copy is the source's, or reserved");
+    CHECK(seen > 0, "the copy's files were looked at (%u)", seen);
+    /* the source moves on: its next files take the numbers after the snapshot */
+    for (unsigned i = 0; i < 400; i += 7) { put_gen(db, "a", i, 3, i % 4 == 0); gen[i] = 3; }
+    E->sync(db, NULL);
+    E->begin_read(db, &snap);
+    bk = NULL;
+    rc = E->backup_begin(snap, dest, &bk);
+    done = 0;
+    while (rc == GS_OK && !done) rc = E->backup_step(bk, 8192, &done);
+    E->backup_progress(bk, &copied2, &files2, &reused2);
+    E->backup_end(bk);
+    E->abort(snap);
+    CHECK(rc == GS_OK && done, "the refresh answered %s", gs_status_name(rc));
+    CHECK(reused2 > 0, "the refresh kept files the copy already held: %llu of %llu",
+          (unsigned long long)reused2, (unsigned long long)files2);
+    CHECK(copied2 < copied1 + copied1 / 2, "the refresh copied %llu bytes against the first's %llu",
+          (unsigned long long)copied2, (unsigned long long)copied1);
+    CHECK(foreign_numbers(io, dest, path, &seen) == 0, "after the refresh, too, every numbered file is the source's, or reserved");
+    GsOptions bo = o;
+    bo.create = 0;
+    GsStore *b;
+    rc = E->open(dest, &bo, &b);
+    CHECK(rc == GS_OK, "opening the refreshed copy answered %s", gs_status_name(rc));
+    if (rc == GS_OK) {
+        CHECK(E->check(b, print_report, NULL) == GS_OK, "the refreshed copy passes check");
+        GsTxn *r;
+        E->begin_read(b, &r);
+        unsigned ok = match_model(r, "a", gen, 400);
+        CHECK(ok == 400, "the refreshed copy: %u of 400 keys hold the snapshot's version", ok);
+        E->abort(r);
+        /* held open: a backup into it is refused, and nothing in it changes */
+        E->begin_read(db, &snap);
+        bk = NULL;
+        rc = E->backup_begin(snap, dest, &bk);
+        CHECK(rc == GS_BUSY, "a backup into a copy that is open answered %s, not BUSY", gs_status_name(rc));
+        E->backup_end(bk);
+        E->begin_read(b, &r);
+        ok = match_model(r, "a", gen, 400);
+        CHECK(ok == 400, "the open copy still holds the snapshot after the refused backup: %u of 400", ok);
+        E->abort(r);
+        E->abort(snap);
+        E->close(b);
+    }
+    /* the live database itself as the destination */
+    E->begin_read(db, &snap);
+    bk = NULL;
+    rc = E->backup_begin(snap, path, &bk);
+    CHECK(rc == GS_BUSY, "a backup into the live database answered %s, not BUSY", gs_status_name(rc));
+    E->backup_end(bk);
+    E->abort(snap);
+    E->close(db);
+    /* untouched, asked of a REOPEN: the process that is open reads through
+       handles it already holds, so damage to its files shows only here */
+    rc = E->open(path, &bo, &db);
+    CHECK(rc == GS_OK, "reopening the live database after the refused backup answered %s", gs_status_name(rc));
+    if (rc == GS_OK) {
+        GsTxn *r;
+        E->begin_read(db, &r);
+        CHECK(match_model(r, "a", gen, 400) == 400, "the live database is untouched by the refused backup");
+        E->abort(r);
+        E->close(db);
+    }
+
+    /* Another database's file of the same number and the same size is not
+     * this one's: two stores given identical writes have files that match
+     * in both, and differ only in the identity their headers name. A backup
+     * of one into a copy of the other must copy, not keep, or the copy holds
+     * the wrong database's data under this one's manifest. */
+    char px[600], py[600];
+    snprintf(px, sizeof px, "%s.twin-x", base);
+    snprintf(py, sizeof py, "%s.twin-y", base);
+    GsStore *dx, *dy;
+    int okx = E->open(px, &o, &dx) == GS_OK, oky = E->open(py, &o, &dy) == GS_OK;
+    CHECK(okx && oky, "opening the twin stores");
+    if (okx && oky) {
+        for (unsigned i = 0; i < 400; i++) {
+            put_gen(dx, "a", i, 5, i % 16 == 15);
+            put_gen(dy, "a", i, 6, i % 16 == 15);
+        }
+        E->sync(dx, NULL);
+        E->sync(dy, NULL);
+        GsTxn *sx, *sy;
+        E->begin_read(dx, &sx);
+        rc = E->backup(sx, busy);
+        E->abort(sx);
+        CHECK(rc == GS_OK, "backing up twin x answered %s", gs_status_name(rc));
+        E->begin_read(dy, &sy);
+        bk = NULL;
+        rc = E->backup_begin(sy, busy, &bk);
+        done = 0;
+        while (rc == GS_OK && !done) rc = E->backup_step(bk, 8192, &done);
+        uint64_t c3, f3, r3;
+        E->backup_progress(bk, &c3, &f3, &r3);
+        E->backup_end(bk);
+        E->abort(sy);
+        CHECK(rc == GS_OK && done, "backing up twin y over x's copy answered %s", gs_status_name(rc));
+        CHECK(r3 == 0, "twin y's backup kept %llu of x's files", (unsigned long long)r3);
+        rc = E->open(busy, &bo, &b);
+        CHECK(rc == GS_OK, "opening y's backup made over x's copy answered %s", gs_status_name(rc));
+        if (rc == GS_OK) {
+            unsigned want[400];
+            for (unsigned i = 0; i < 400; i++) want[i] = 6;
+            GsTxn *r;
+            E->begin_read(b, &r);
+            CHECK(match_model(r, "a", want, 400) == 400, "y's backup over x's copy holds y's data");
+            E->abort(r);
+            E->close(b);
+        }
+    }
+    if (okx) E->close(dx);
+    if (oky) E->close(dy);
+}
+
 /* A database is a directory (§7 question 6). Refused: a directory holding a
  * file no engine writes -- the database would delete it, since it owns
  * everything in its directory -- and a path that is a plain file. 2.C deletes
@@ -1448,6 +1626,7 @@ int main(int argc, char **argv) {
     dropped_not_durable(path, io);
     hot_keys(path, io);
     sliced_backup(path, io);
+    refreshed_backup(path, io);
     directory_rules(path, io);
     many_files(path, io, real);
     blob_space(path, io);

@@ -3919,7 +3919,7 @@ static int lsm_check(GsStore *db, void (*report)(void *, const char *), void *ct
  * store's own tmp-and-rename, so an interrupted backup leaves no manifest.
  * (Before the store had a directory, a durable `dest.pending` record of the
  * highest number the copy might use stood in for the listing.) */
-typedef struct { char *src, *dst; uint64_t size, off; } CopyJob;
+typedef struct { char *src, *dst; uint64_t size, off; uint64_t num; int kind; } CopyJob;
 struct GsBackup {
     struct GsTxn *snap;
     GsStore *db;
@@ -3936,32 +3936,80 @@ struct GsBackup {
     int havekey;
     int done;
     unsigned char *chunk;
+    GsqlFile *lockf;   /* the destination's lock, held for the whole backup */
+    uint64_t copied, reused;
 };
 
 #define BACKUP_CHUNK (1u << 20)
+/* The unflushed changes go into the copy under a number from a range the
+ * source never allocates (docs/gsql_backup_design.md §3): under the source's
+ * NEXT number, a later refresh would find the source's own, different file of
+ * that number, matching in name, size, kind and database, and keep it. */
+#define BACKUP_MEM_BASE (1ull << 62)
 
-/* Everything in a backup's directory goes: it is a database's (gs_db_dir
- * said so), and an earlier backup, finished or not, is all it can hold. The
- * manifest first, so the place never holds a mix of two that looks like one. */
-typedef struct { const char *dir; char **names; size_t n; } Clear;
-static int clear_one(void *ctx, const char *name) {
-    Clear *c = ctx;
-    char *full = malloc(strlen(c->dir) + strlen(name) + 2);
-    sprintf(full, "%s/%s", c->dir, name);
-    c->names = realloc(c->names, (c->n + 1) * sizeof *c->names);
-    c->names[c->n++] = full;
+
+/* A copy already there is refreshed, not rebuilt (docs/gsql_backup_design.md
+ * §3). Its manifest goes first, so it never looks complete while it is not;
+ * then each file the snapshot names is KEPT when the copy holds one of that
+ * number and size whose header names this database, that kind and that
+ * number -- a sorted or blob file never changes once written -- and every
+ * other file goes. */
+static int keep_file(GsBackup *b, CopyJob *j) {
+    GsStore *db = b->db;
+    if (j->size == UINT64_MAX) {
+        GsqlFile *sf = NULL;
+        int rc = ioerr(gsql_io_open(db->io, j->src, GSQL_IO_READ_ONLY, &sf));
+        if (rc) return rc == GS_OK ? 0 : -rc;
+        rc = ioerr(gsql_io_size(sf, &j->size));
+        gsql_io_close(sf);
+        if (rc) return -rc;
+    }
+    GsqlFile *df = NULL;
+    if (gsql_io_open(db->io, j->dst, GSQL_IO_READ_ONLY, &df)) return 0;
+    uint64_t size = 0;
+    unsigned char h[FHDR];
+    size_t got = 0;
+    int keep = !gsql_io_size(df, &size) && size == j->size && size >= FHDR &&
+               !gsql_io_read_at(df, 0, h, FHDR, &got) && got == FHDR &&
+               fhdr_check(db, j->kind, j->num, h) == GS_OK;
+    gsql_io_close(df);
+    return keep;
+}
+
+typedef struct { GsBackup *b; const char *dir; int rc; } Prep;
+static int prep_one(void *ctx, const char *name) {
+    Prep *pp = ctx;
+    GsBackup *b = pp->b;
+    if (!strcmp(name, GS_DB_BASE ".lock")) return 0;
+    char *full = malloc(strlen(pp->dir) + strlen(name) + 2);
+    sprintf(full, "%s/%s", pp->dir, name);
+    for (size_t i = 0; i < b->njobs; i++) {
+        if (b->jobs[i].off == b->jobs[i].size && b->jobs[i].size != UINT64_MAX && !strcmp(b->jobs[i].dst, full)) {
+            free(full);
+            return 0; /* kept */
+        }
+    }
+    gsql_io_remove(b->db->io, full);
+    free(full);
     return 0;
 }
-static int backup_clear(GsqlIo *io, const char *dir, const char *manifest) {
-    Clear c = {dir, NULL, 0};
-    int rc = ioerr(gsql_io_list(io, dir, clear_one, &c));
-    gsql_io_remove(io, manifest);
-    if (rc == GS_OK) rc = ioerr(gsql_io_sync_dir(io, dir));
-    for (size_t i = 0; i < c.n; i++) {
-        gsql_io_remove(io, c.names[i]);
-        free(c.names[i]);
+
+static int backup_prepare(GsBackup *b) {
+    GsStore *db = b->db, *t = &b->tmp;
+    gsql_io_remove(db->io, b->dest); /* the manifest, first */
+    int rc = ioerr(gsql_io_sync_dir(db->io, t->dir));
+    for (size_t i = 0; rc == GS_OK && i < b->njobs; i++) {
+        CopyJob *j = &b->jobs[i];
+        int k = keep_file(b, j);
+        if (k < 0) return -k;
+        if (k) {
+            j->off = j->size;
+            b->reused++;
+        }
     }
-    free(c.names);
+    Prep pp = { b, t->dir, GS_OK };
+    if (rc == GS_OK) rc = ioerr(gsql_io_list(db->io, t->dir, prep_one, &pp));
+    if (rc == GS_OK) rc = ioerr(gsql_io_sync_dir(db->io, t->dir));
     return rc;
 }
 
@@ -3983,13 +4031,19 @@ static int lsm_backup_begin(struct GsTxn *snap, const char *dest, GsBackup **out
     t->io = db->io;
     t->path = gs_path_with(base, "");
     t->dir = gs_dirname(base);
-    rc = backup_clear(db->io, t->dir, base);
+    /* BUSY when an owner has the copy open -- the live database itself
+       included, since its owner holds this same lock */
+    char *lockname = gs_path_with(base, ".lock");
+    int lrc = gsql_io_open(db->io, lockname, GSQL_IO_CREATE, &b->lockf);
+    free(lockname);
+    if (lrc) { b->lockf = NULL; return ioerr(lrc); }
+    if ((lrc = gsql_io_lock(b->lockf, 1))) return ioerr(lrc);
     t->block = db->block;
     t->memtable_limit = db->memtable_limit;
     t->max_open = db->max_open;
     t->vsep = db->vsep;
     memcpy(t->identity, db->identity, 16);
-    t->next_file = db->next_file; /* the memtable's file: above every copied number */
+    t->next_file = BACKUP_MEM_BASE + snap->snap; /* the memtable's file: never a source number */
     t->log_num = t->log_first = 1;
     t->last_seq = t->durable_seq = snap->snap;
     t->cur = version_copy(NULL);
@@ -4021,14 +4075,17 @@ static int lsm_backup_begin(struct GsTxn *snap, const char *dest, GsBackup **out
             b->jobs = realloc(b->jobs, (b->njobs + 1 + m->blobs.n) * sizeof *b->jobs);
             CopyJob *j = &b->jobs[b->njobs++];
             j->src = file_name(db, m->num); j->dst = file_name(t, m->num); j->size = m->size; j->off = 0;
+            j->num = m->num; j->kind = FK_SORTED;
             for (size_t k = 0; k < m->blobs.n; k++) {
                 if (u64_has(&seen, m->blobs.v[k])) continue;
                 u64_push(&seen, m->blobs.v[k]);
                 j = &b->jobs[b->njobs++];
                 j->src = blob_name(db, m->blobs.v[k]); j->dst = blob_name(t, m->blobs.v[k]); j->size = UINT64_MAX; j->off = 0;
+                j->num = m->blobs.v[k]; j->kind = FK_BLOB;
             }
         }
     u64_free(&seen);
+    if (rc == GS_OK) rc = backup_prepare(b);
     /* the frozen memtable first, as the older level-0 file */
     if (v->imm) { b->mem = v->imm->sk.head->next[0]; b->then = v->mem->sk.head->next[0]; }
     else b->mem = v->mem->sk.head->next[0];
@@ -4045,6 +4102,10 @@ static int lsm_backup_step(GsBackup *bk, uint64_t budget, int *done) {
     /* the files, a chunk at a time */
     while (bk->at < bk->njobs && spent < budget) {
         CopyJob *j = &bk->jobs[bk->at];
+        if (!bk->src && j->size != UINT64_MAX && j->off == j->size) {
+            bk->at++; /* kept from the copy already there */
+            continue;
+        }
         if (!bk->src) {
             if ((rc = ioerr(gsql_io_open(db->io, j->src, GSQL_IO_READ_ONLY, &bk->src)))) return rc;
             if (j->size == UINT64_MAX && (rc = ioerr(gsql_io_size(bk->src, &j->size)))) return rc;
@@ -4059,6 +4120,7 @@ static int lsm_backup_step(GsBackup *bk, uint64_t budget, int *done) {
             if ((rc = ioerr(gsql_io_write_at(bk->dst, j->off, bk->chunk, want)))) return rc;
             j->off += want;
             spent += want;
+            bk->copied += want;
         }
         /* each slice flushes what it wrote: a file synced only when finished
          * left its whole flush to one step (64 MB of dirty pages, ~6 ms) */
@@ -4121,7 +4183,10 @@ static void lsm_backup_end(GsBackup *bk) {
     if (bk->dst) gsql_io_close(bk->dst);
     if (bk->building && bk->b.f) gsql_io_close(bk->b.f);
     GsStore *t = &bk->tmp;
-    if (!bk->done && t->dir) backup_clear(bk->db->io, t->dir, t->path); /* a partial copy goes whole */
+    /* a partial copy has no manifest, which is what makes it not a database;
+       its files are kept for the next backup to reuse (a fresh copy's are
+       gone with the directory it was made in, if the caller removes it) */
+    if (bk->lockf) gsql_io_close(bk->lockf);
     for (size_t i = 0; i < bk->njobs; i++) { free(bk->jobs[i].src); free(bk->jobs[i].dst); }
     free(bk->jobs);
     if (t->cur) version_unref(t, t->cur);
@@ -4135,6 +4200,12 @@ static void lsm_backup_end(GsBackup *bk) {
     free(bk->chunk);
     free(bk->dest);
     free(bk);
+}
+
+static void lsm_backup_progress(GsBackup *bk, uint64_t *copied, uint64_t *files, uint64_t *reused) {
+    *copied = bk->copied;
+    *files = bk->njobs;
+    *reused = bk->reused;
 }
 
 static int lsm_backup(struct GsTxn *snap, const char *dest) {
@@ -4192,5 +4263,5 @@ const GsEngine gs_engine_lsm = {
     lsm_cursor_open, lsm_seek, lsm_first, lsm_last, lsm_next, lsm_prev, lsm_key, lsm_value,
     lsm_cursor_put, lsm_cursor_delete, lsm_cursor_close,
     lsm_backup, lsm_backup_begin, lsm_backup_step, lsm_backup_end, lsm_check, lsm_stats,
-    lsm_txn_id, lsm_flush,
+    lsm_txn_id, lsm_flush, lsm_backup_progress,
 };
