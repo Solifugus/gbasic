@@ -1,6 +1,6 @@
 # G-SQL: one owner per database on any storage
 
-**Status:** Designed 2026-11-01. It is item 4 of the work order in `gsql_scale_measurements.md` §4, from Matthew's direction the same day that large databases live on NAS storage whose kind cannot be known in advance (*"we need to be flexible and adaptive"*). It closes the limit `gsql_practices.md` §5 records: *one owner per database is enforced on one machine only*.
+**Status:** Shipped 2026-11-01 (`src/gsql/lease.c`; the lease tier of `tests/run_gsql_owner.sh`, and the crash gate of `run_gsql_store.sh`, which now crashes the lease's own writes). What building it changed is §9. It is item 4 of the work order in `gsql_scale_measurements.md` §4, from Matthew's direction the same day that large databases live on NAS storage whose kind cannot be known in advance (*"we need to be flexible and adaptive"*). It closes the limit `gsql_practices.md` §5 records: *one owner per database is enforced on one machine only*.
 
 ## 1. The gap
 
@@ -63,7 +63,7 @@ After the engine has the `flock` and before it reads the manifest or the log:
 
 ## 5. Keeping it, and the fence
 
-**Renewal.** The owner renews from its poll loop every `renew_ms` (1 second). Each renewal reads the lease first. **If the token is not ours, the database has been taken: the owner stops at once.** It writes nothing more, rolls back, refuses every connection's next request with `LOST`, naming the machine that took it, and exits. It does not flush, since the flush is a write.
+**Renewal.** The owner renews from its poll loop every `renew_ms` (1 second). Each renewal reads the lease first. **If the token is not ours, the database has been taken: the owner stops at once.** It writes nothing more, not even the planned handoff's flush, and exits. Its clients' requests fail with `LOST`, and their next connect starts an owner that is refused with `elsewhere`, naming the machine that took it. It does not flush, since the flush is a write.
 
 **The fence.** A renewal can be late: the owner may be busy in a long statement, or the whole machine may have been paused. So the engine itself checks, before every write another owner could see (a log append, a manifest replace): **if the last confirmed renewal is older than `trust_ms` (4 seconds), renew first, synchronously.** A renewal that finds a foreign token fails the write, and the store stops accepting any (`GS_FENCED`).
 
@@ -78,14 +78,14 @@ After the engine has the `flock` and before it reads the manifest or the log:
 
 ## 6. What it costs
 
-- **A renewal a second:** an open, a 512-byte write, an `fdatasync` and a close, in the owner's thread. On a local disk that is well under a millisecond. **On NFS it is not measured here** (there is no network storage on this machine); it is a round trip to the server for the open, the write and the sync, and while it runs the owner serves nobody. It is reported as a statistic so it can be measured where it matters.
+- **A renewal a second:** an open, a 512-byte write, an `fdatasync` and a close, in the owner's thread. **Measured on NVMe ext4: a median of 264 µs, p99 462 µs**, about 0.03% of the owner's time. **On NFS it is not measured here** (there is no network storage on this machine); it is a round trip to the server for the open, the write and the sync, and while it runs the owner serves nobody. It is reported as a statistic (`GsStats.lease_renewals`, `lease_renew_us_max`) so it can be measured where it matters.
 - **A takeover from another machine:** 14 seconds after a crash. After a clean close there is no lease, and nothing to wait for.
 - **On storage where `flock` already works across machines,** the lease adds the renewal and nothing else. The program cannot tell which storage it is on, which is the whole point.
 
 ## 7. Decisions
 
 - **The lease is always on.** It is cheap where storage is local, and an option would be one somebody turns off on exactly the storage that needs it.
-- **It is the engine's**, through the I/O layer, so the simulated layer and the crash harness reach it, and every program that opens a store (the owner, a backup's destination, a test) gets the same rule.
+- **It is the engine's**, through the I/O layer, so the simulated layer and the crash harness reach it, and every program that opens a store gets the same rule. **A backup's destination is not covered:** a backup takes the destination's lock and no lease, so two machines backing up into one directory on such storage are not kept apart.
 - **A new status, `GS_ELSEWHERE`,** for "the database is open on another machine", distinct from `GS_BUSY`. The owner's `busy` answer means "another owner on this machine is starting, wait for its socket", and a socket on another machine never answers, so a client that took this for `busy` would wait its whole deadline. The ready line is `elsewhere HOST PID`, and the client's error names the machine.
 - **`GS_FENCED`** for a store that has lost its lease. Every later call that writes answers it.
 - **A test-only identity.** Two machines cannot be had in a test. `GsOptions` gains a machine identity to use instead of the real one, and a flag that makes the `flock` local to that identity (the lock file is named after it), which is exactly the storage this design is for. The four timings can be scaled down the same way, so a takeover test waits about a second rather than fourteen. Only the C interface sets any of these; `gbasic --gsql-owner` never does.
@@ -101,5 +101,18 @@ After the engine has the `flock` and before it reads the manifest or the log:
 - **The fence without renewal:** an owner whose poll loop is blocked (a long statement) past `trust_ms` renews before its next commit, and if the lease was taken meanwhile, the commit is refused.
 - **Two contenders** from different identities over a dead lease: exactly one wins, every time, over many rounds.
 - **A torn lease** (a corrupted sector) counts as movement: an observer does not take over while it sees one.
-- **The crash harness:** the lease write is crashed like every other write, and an open after any crash either takes the lease or refuses, never both opens succeeding.
+- **The crash harness:** the lease's writes are crashed like every other write, and every recovery's checks still hold. Two machines are not modelled there; that is the lease tier's.
 - **Cost:** the renewal's time is reported, and the point-read cost tier of `run_gsql_owner.sh` must not move.
+
+## 9. What building it changed and found
+
+- **Time belongs to the I/O layer.** The first crash-gate run did not finish in ten minutes: a crash can leave the lease created and not yet written, an unreadable lease is watched for `dead_ms`, and every such recovery waited twelve real seconds. Time is input from the environment, as random bytes already were (`gsql_io_random`), so `gsql_io_now_ms` and `gsql_io_sleep_ms` are the layer's: CLOCK_MONOTONIC for the real one, and for the simulated one a virtual clock that only sleeping moves. The crash gate then ran in 3 minutes, against 2.5 before the lease.
+- **The fence is a layer, not a list of call sites.** The store writes log records, manifests, sorted files, blob files and spare logs from a dozen places, and a stale owner writing any of them corrupts the new owner's files, since both number files from the same counter. So the store writes through a wrapper of the I/O layer that checks the lease before every write, truncation, rename, removal and create. A write path added later cannot forget to ask.
+- **A lease file must be named.** The store owns its directory and deletes at open whatever it does not name. The lease and a test's per-machine lock file are named beside `DB.lock`.
+- **The contended checks were wrong twice before they could fail.** First, a winner let go of its owner at once, so a second machine taking the database afterwards, legitimately, counted as a second winner. Second, the race they meant to provoke is microseconds wide, and with the exclusive create or the settle's check removed they stayed green over six rounds each. Each contender now holds its owner until both have answered, and a test-only pause between deciding and writing (`GsLeaseOptions.race_ms`) makes both decide before either writes. Both perturbations then fail every round.
+- **Treating damage as movement is a second layer, not the only one.** With a damaged sector's changes ignored during the watch, an opener is still refused while something keeps writing the sector: the re-read before its write, or the settle's final read, sees the change. The watch's check is kept, since it refuses sooner, but no test can show it is needed.
+- **A pre-existing flaky check, found by this work's runs:** the owner-lifetime tier's churn floor of 20 owners in 40 opens measured 13 and 18 on the build that introduced it. It is 3 now; the deterministic "leaving" tier is what holds that window open.
+
+**Perturbations proven red:** never watching, no fence, a renewal that ignores a foreign token, a close that leaves the lease, no fast path on the same machine, a non-exclusive create, and no check after the settle. Each is caught by the check written for it.
+
+**Not measured:** NFS, SMB and FUSE themselves, since this machine has none. The lease is tested with pretend machines (their own runtime directory, identity and local lock) on one ext4 filesystem, which reproduces local-only locking exactly and close-to-open caching not at all.

@@ -2418,7 +2418,11 @@ program using it; `gsql.connect` starts the owner when none is running. The
 owner is not the program's child: it serves every program connected to it,
 and once nobody has been connected for its **linger** (3 seconds unless the
 starting connection said otherwise) it stops cleanly by itself
-(`docs/gsql_owner_lifetime_design.md`). Its SQL is described in
+(`docs/gsql_owner_lifetime_design.md`). A database has **one owner on any
+storage**: on a disk shared between machines whose file locks do not reach
+across them, a second machine is refused with `ELSEWHERE`, naming the machine
+that has it, and after a crash there another machine waits about 14 seconds
+before taking it (`docs/gsql_lease_design.md`). Its SQL is described in
 `docs/gsql_sql_design.md` and this module in `docs/gsql_module_design.md`.
 **To start, read `docs/gsql_cookbook.md`**: worked recipes from a first table
 to the practices a production program needs, every one run by the gate.
@@ -2483,7 +2487,9 @@ naming G-SQL's code** — `SYNTAX`, `EXPRESSION`, `NOT_FOUND`, `DUPLICATE`,
 a place to point at. `exec` refuses a statement that returns rows; `query`
 refuses one that returns none, saying that it ran. If the owner exits, the
 request in flight fails with `LOST` and nothing is retried; the next call
-starts a new owner.
+starts a new owner. An owner whose database another machine has taken writes
+nothing more and exits, so its clients see `LOST`, and their next call is
+refused with `ELSEWHERE`.
 
 ### The `database` and `sql` blocks
 

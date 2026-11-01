@@ -115,7 +115,7 @@ The work list after this, in order, with Matthew's additions the same day:
    - schema-only and full;
    - serial counters and `RECORD` values kept;
    - held by a dump, restore and dump again that must be byte-identical.
-4. **One owner per database, enforced on any storage:** a lease kept in the database itself.
+4. **One owner per database, enforced on any storage:** a lease kept in the database itself. *Shipped 2026-11-01* (`gsql_lease_design.md`).
 5. **Group commit sized from the measured sync,** and a storage probe.
 6. **Spill-to-disk,** with the external-sort index build as its first user.
 7. **Row counts in the planner,** for join order and the side a hash join builds.
