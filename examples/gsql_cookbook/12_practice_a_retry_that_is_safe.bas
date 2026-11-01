@@ -4,13 +4,30 @@
 ' is refused as a duplicate instead of being applied twice.
 load gsql
 
-work = temp_dir()
-db = gsql.connect(join_path(work, "pay.gsql"), { create: true })
-gsql.exec(db, "create table payment (id integer serial primary key, request text unique not null, amount money(USD))")
+if exists({dir}"cookbook_pay.gsql") then
+    remove_tree({dir}"cookbook_pay.gsql")
+end if
 
+database pay_db( file: "cookbook_pay.gsql", create: true )
+
+sql make on pay_db
+    create table payment (id integer serial primary key, request text unique not null, amount money(USD))
+end sql
+
+sql record_payment on pay_db
+    insert into payment (request, amount) values (:request, :amount)
+end sql
+
+sql paid_in_all on pay_db
+    select count(*) as n, sum(amount) as s from payment
+end sql
+
+gsql.exec(make)
+
+' :request and :amount are this function's own parameters
 function pay(request, amount)
     on error goto next
-    gsql.exec(db, "insert into payment (request, amount) values ($1, $2)", [request, amount])
+    gsql.exec(record_payment)
     if error then
         if error.details.code = "DUPLICATE" then
             return "already done"
@@ -23,8 +40,8 @@ end function
 print pay("req-1001", {USD}"25.00")
 print pay("req-1001", {USD}"25.00")       ' the retry
 print pay("req-1002", {USD}"40.00")
-r = gsql.query(db, "select count(*) as n, sum(amount) as s from payment")[0]
+r = gsql.query(paid_in_all)[0]
 print string(r.n) + " payments, " + string(r.s) + " in all"
 
-gsql.close(db)
-remove_tree(work)
+gsql.close(pay_db)
+remove_tree({dir}"cookbook_pay.gsql")

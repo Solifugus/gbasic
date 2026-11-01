@@ -1,5 +1,10 @@
 ' Recipe 10: a refusal is an ordinary gBASIC error, with G-SQL's code by name
 ' and, where the statement has a place to point at, its position.
+'
+' This recipe sends deliberately broken SQL, so it uses strings: in an `sql`
+' block a syntax error is refused when the program LOADS, at its line and
+' column, before anything runs -- which is why blocks are the normal form, and
+' why they cannot show a syntax error being caught at run time.
 load gsql
 
 work = temp_dir()

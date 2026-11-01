@@ -2,39 +2,79 @@
 ' subqueries and WITH.
 load gsql
 
-work = temp_dir()
-db = gsql.connect(join_path(work, "sales.gsql"), { create: true })
-gsql.exec(db, "create table region (id integer primary key, name text)")
-gsql.exec(db, "create table sale (id integer primary key, region integer, rep text, amount money(USD))")
-gsql.exec(db, "insert into region values (1, 'North'), (2, 'South'), (3, 'West')")
-gsql.exec(db, "insert into sale values " +
-              "(1, 1, 'kim', cast('120' as money(USD))), (2, 1, 'lee', cast('80' as money(USD))), " +
-              "(3, 2, 'kim', cast('200' as money(USD))), (4, 2, 'max', cast('50' as money(USD))), " +
-              "(5, 1, 'kim', cast('30' as money(USD)))")
+if exists({dir}"cookbook_sales.gsql") then
+    remove_tree({dir}"cookbook_sales.gsql")
+end if
+
+database sales( file: "cookbook_sales.gsql", create: true )
+
+sql make_region on sales
+    create table region (id integer primary key, name text)
+end sql
+
+sql make_sale on sales
+    create table sale (id integer primary key, region integer, rep text, amount money(USD))
+end sql
+
+sql regions_in on sales
+    insert into region values (1, 'North'), (2, 'South'), (3, 'West')
+end sql
+
+sql sales_in on sales
+    insert into sale values
+        (1, 1, 'kim', cast('120' as money(USD))), (2, 1, 'lee', cast('80' as money(USD))),
+        (3, 2, 'kim', cast('200' as money(USD))), (4, 2, 'max', cast('50' as money(USD))),
+        (5, 1, 'kim', cast('30' as money(USD)))
+end sql
+
+sql by_region on sales
+    select r.name, count(s.id) as sales, coalesce(sum(s.amount), cast('0' as money(USD))) as total
+    from region r left join sale s on s.region = r.id
+    group by r.name
+    order by r.name
+end sql
+
+sql roaming_reps on sales
+    select rep from sale group by rep having count(distinct region) > 1
+end sql
+
+sql above_average on sales
+    select id, rep, amount from sale s
+    where amount > (select avg(amount) from sale t where t.region = s.region)
+    order by id
+end sql
+
+sql above_average_in_steps on sales
+    with avgs as (select region, avg(amount) as mean from sale group by region)
+    select s.id from sale s join avgs a on a.region = s.region
+    where s.amount > a.mean
+    order by s.id
+end sql
+
+gsql.exec(make_region)
+gsql.exec(make_sale)
+gsql.exec(regions_in)
+gsql.exec(sales_in)
 
 print "-- totals by region, joined to its name, regions with nothing sold included"
-for each row in gsql.query(db, "select r.name, count(s.id) as sales, coalesce(sum(s.amount), cast('0' as money(USD))) as total " +
-                               "from region r left join sale s on s.region = r.id group by r.name order by r.name")
+for each row in by_region
     print row.name + "  " + string(row.sales) + "  " + string(row.total)
 next
 
 print "-- reps who sold in more than one region"
-for each row in gsql.query(db, "select rep from sale group by rep having count(distinct region) > 1")
+for each row in roaming_reps
     print row.rep
 next
 
 print "-- each sale above its region's average, by a correlated subquery"
-for each row in gsql.query(db, "select id, rep, amount from sale s " +
-                               "where amount > (select avg(amount) from sale t where t.region = s.region) order by id")
+for each row in above_average
     print string(row.id) + " " + row.rep + " " + string(row.amount)
 next
 
 print "-- the same question asked in steps, with WITH"
-q = ("with avgs as (select region, avg(amount) as mean from sale group by region) " +
-     "select s.id from sale s join avgs a on a.region = s.region where s.amount > a.mean order by s.id")
-for each row in gsql.query(db, q)
+for each row in above_average_in_steps
     print row.id
 next
 
-gsql.close(db)
-remove_tree(work)
+gsql.close(sales)
+remove_tree({dir}"cookbook_sales.gsql")

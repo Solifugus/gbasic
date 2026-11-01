@@ -2,32 +2,68 @@
 ' table. EXPLAIN says which path a query takes.
 load gsql
 
-work = temp_dir()
-db = gsql.connect(join_path(work, "log.gsql"), { create: true })
-gsql.exec(db, "create table event (id integer primary key, user_id integer, kind text, at date)")
-gsql.begin(db)
-for i = 1 to 2000
-    gsql.exec(db, "insert into event values ($1, $2, $3, $4)", [i, mod(i, 50), "click", {date}"2026-11-01"])
-next
-gsql.commit(db)
+if exists({dir}"cookbook_log.gsql") then
+    remove_tree({dir}"cookbook_log.gsql")
+end if
 
-function plan(sql)
-    for each row in gsql.query(db, "explain " + sql)
+database log( file: "cookbook_log.gsql", create: true )
+
+sql make_event on log
+    create table event (id integer primary key, user_id integer, kind text, at date)
+end sql
+
+sql add_event on log
+    insert into event values (:id, :user_id, :kind, :at)
+end sql
+
+sql index_user on log
+    create index event_user on event (user_id)
+end sql
+
+sql by_id on log
+    explain select * from event where id = 42
+end sql
+
+sql by_user on log
+    explain select * from event where user_id = 7
+end sql
+
+sql by_user_and_kind on log
+    explain select * from event where user_id = 7 and kind = 'click'
+end sql
+
+sql user_count on log
+    select count(*) as n from event where user_id = 7
+end sql
+
+gsql.exec(make_event)
+gsql.begin(log)
+kind = "click"
+at = {date}"2026-11-01"
+for i = 1 to 2000
+    id = i
+    user_id = mod(i, 50)
+    gsql.exec(add_event)
+next
+gsql.commit(log)
+
+function plan(explained)
+    for each row in explained
         print "    " + row.plan
     next
     return nothing
 end function
 
 print "by the primary key:"
-plan("select * from event where id = 42")
+plan(by_id)
 print "by a column with no index -- every row is read:"
-plan("select * from event where user_id = 7")
-gsql.exec(db, "create index event_user on event (user_id)")
+plan(by_user)
+gsql.exec(index_user)
 print "the same, with an index on it:"
-plan("select * from event where user_id = 7")
+plan(by_user)
 print "an index narrows; every condition is still checked:"
-plan("select * from event where user_id = 7 and kind = 'click'")
-print string(gsql.query(db, "select count(*) as n from event where user_id = 7")[0].n) + " events for user 7"
+plan(by_user_and_kind)
+print string(gsql.query(user_count)[0].n) + " events for user 7"
 
-gsql.close(db)
-remove_tree(work)
+gsql.close(log)
+remove_tree({dir}"cookbook_log.gsql")

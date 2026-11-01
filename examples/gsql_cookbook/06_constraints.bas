@@ -2,17 +2,65 @@
 ' foreign keys -- and tell which rule said no by its code.
 load gsql
 
-work = temp_dir()
-db = gsql.connect(join_path(work, "orders.gsql"), { create: true })
-gsql.exec(db, "create table customer (id integer primary key, email text not null unique)")
-gsql.exec(db, "create table orders (id integer serial primary key, " +
-              "customer integer references customer (id), " +
-              "total money(USD) check (total > cast('0' as money(USD))))")
-gsql.exec(db, "insert into customer values (1, 'ada@example.com')")
+if exists({dir}"cookbook_orders.gsql") then
+    remove_tree({dir}"cookbook_orders.gsql")
+end if
 
-function try(sql)
+database shop( file: "cookbook_orders.gsql", create: true )
+
+sql make_customer on shop
+    create table customer (id integer primary key, email text not null unique)
+end sql
+
+sql make_orders on shop
+    create table orders (id integer serial primary key,
+                         customer integer references customer (id),
+                         total money(USD) check (total > cast('0' as money(USD))))
+end sql
+
+sql ada on shop
+    insert into customer values (1, 'ada@example.com')
+end sql
+
+sql good_order on shop
+    insert into orders (customer, total) values (1, cast('25.00' as money(USD)))
+end sql
+
+sql no_email on shop
+    insert into customer values (2, null)
+end sql
+
+sql same_email on shop
+    insert into customer values (3, 'ada@example.com')
+end sql
+
+sql zero_total on shop
+    insert into orders (customer, total) values (1, cast('0' as money(USD)))
+end sql
+
+sql no_such_customer on shop
+    insert into orders (customer, total) values (9, cast('5' as money(USD)))
+end sql
+
+sql drop_ada on shop
+    delete from customer where id = 1
+end sql
+
+sql plain_number on shop
+    insert into orders (customer, total) values (1, 5)
+end sql
+
+sql order_count on shop
+    select count(*) as n from orders
+end sql
+
+gsql.exec(make_customer)
+gsql.exec(make_orders)
+gsql.exec(ada)
+
+function try(statement)
     on error goto next
-    gsql.exec(db, sql)
+    gsql.exec(statement)
     if error then
         print "refused  " + error.details.code
         return nothing
@@ -21,14 +69,14 @@ function try(sql)
     return nothing
 end function
 
-try("insert into orders (customer, total) values (1, cast('25.00' as money(USD)))")
-try("insert into customer values (2, null)")                         ' NOT_NULL
-try("insert into customer values (3, 'ada@example.com')")            ' DUPLICATE
-try("insert into orders (customer, total) values (1, cast('0' as money(USD)))")   ' CHECK
-try("insert into orders (customer, total) values (9, cast('5' as money(USD)))")   ' FOREIGN_KEY: no customer 9
-try("delete from customer where id = 1")                             ' FOREIGN_KEY: an order points at it
-try("insert into orders (customer, total) values (1, 5)")            ' TYPE: a number is not money(USD)
-print string(gsql.query(db, "select count(*) as n from orders")[0].n) + " order kept"
+try(good_order)
+try(no_email)               ' NOT_NULL
+try(same_email)             ' DUPLICATE
+try(zero_total)             ' CHECK
+try(no_such_customer)       ' FOREIGN_KEY: no customer 9
+try(drop_ada)               ' FOREIGN_KEY: an order points at it
+try(plain_number)           ' TYPE: a number is not money(USD)
+print string(gsql.query(order_count)[0].n) + " order kept"
 
-gsql.close(db)
-remove_tree(work)
+gsql.close(shop)
+remove_tree({dir}"cookbook_orders.gsql")

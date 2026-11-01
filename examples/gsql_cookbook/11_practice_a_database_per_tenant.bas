@@ -4,16 +4,36 @@
 ' as a whole, and one tenant's long report never stalls another's work.
 load gsql
 
+' The SQL is the same for every tenant, so it is written once, on a database
+' chosen at run time: `database tenant()` has no file, and each use of one of
+' its statements says which tenant's connection it runs on.
+database tenant()
+
+sql make on tenant
+    create table invoice (id integer serial primary key, amount money(USD))
+end sql
+
+sql bill on tenant
+    insert into invoice (amount) values (:amount)
+end sql
+
+sql totals on tenant
+    select count(*) as n, sum(amount) as s, avg(amount) as a from invoice
+end sql
+
 work = temp_dir()
 tenants = ["acme", "globex"]
 dbs = {}
 for each t in tenants
     dbs[t] = gsql.connect(join_path(work, t + ".gsql"), { create: true })
-    gsql.exec(dbs[t], "create table invoice (id integer serial primary key, amount money(USD))")
+    gsql.exec(dbs[t], make)
 next
 ' acme: three small invoices; globex: one large one
-gsql.exec(dbs["acme"], "insert into invoice (amount) values (cast('10' as money(USD))), (cast('20' as money(USD))), (cast('30' as money(USD)))")
-gsql.exec(dbs["globex"], "insert into invoice (amount) values (cast('300' as money(USD)))")
+for each amount in [{USD}"10", {USD}"20", {USD}"30"]
+    gsql.exec(dbs["acme"], bill)
+next
+amount = {USD}"300"
+gsql.exec(dbs["globex"], bill)
 
 ' Combine PARTS, not answers. count, sum, min and max merge directly; an
 ' average is the sums over the counts, never the averages averaged.
@@ -21,7 +41,7 @@ total = {USD}"0"
 count = 0
 averages = []
 for each t in tenants
-    r = gsql.query(dbs[t], "select count(*) as n, sum(amount) as s, avg(amount) as a from invoice")[0]
+    r = gsql.query(dbs[t], totals)[0]
     count = count + r.n
     total = total + r.s
     append(averages, r.a)

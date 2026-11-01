@@ -5,30 +5,55 @@
 ' thousand -- big enough to share the sync, small enough to stay light.
 load gsql
 
-work = temp_dir()
-db = gsql.connect(join_path(work, "load.gsql"), { create: true })
-' create indexes BEFORE loading: building one over rows already there is the
-' slow path today (docs/gsql_practices.md)
-gsql.exec(db, "create table reading (id integer primary key, sensor integer, value number)")
-gsql.exec(db, "create index reading_sensor on reading (sensor)")
+if exists({dir}"cookbook_load.gsql") then
+    remove_tree({dir}"cookbook_load.gsql")
+end if
+
+database readings( file: "cookbook_load.gsql", create: true )
+
+sql make on readings
+    create table reading (id integer primary key, sensor integer, value number)
+end sql
+
+sql index_sensor on readings
+    create index reading_sensor on reading (sensor)
+end sql
+
+sql add on readings
+    insert into reading values (:id, :sensor, :value)
+end sql
+
+sql how_many on readings
+    select count(*) as n from reading
+end sql
+
+sql from_sensor_3 on readings
+    select count(*) as n from reading where sensor = 3
+end sql
+
+gsql.exec(make)
+gsql.exec(index_sensor)
 
 batch = 1000
 commits = 0
-gsql.begin(db)
+gsql.begin(readings)
 for i = 1 to 2500
-    gsql.exec(db, "insert into reading values ($1, $2, $3)", [i, mod(i, 7), i / 4])
+    id = i
+    sensor = mod(i, 7)
+    value = i / 4
+    gsql.exec(add)
     if mod(i, batch) = 0 then
-        gsql.commit(db)
+        gsql.commit(readings)
         commits = commits + 1
-        gsql.begin(db)
+        gsql.begin(readings)
     end if
 next
-gsql.commit(db)                 ' the last, partial batch
+gsql.commit(readings)           ' the last, partial batch
 commits = commits + 1
 
-r = gsql.query(db, "select count(*) as n from reading")[0]
+r = gsql.query(how_many)[0]
 print string(r.n) + " rows in " + string(commits) + " commits"
-print string(gsql.query(db, "select count(*) as n from reading where sensor = 3")[0].n) + " readings from sensor 3"
+print string(gsql.query(from_sensor_3)[0].n) + " readings from sensor 3"
 
-gsql.close(db)
-remove_tree(work)
+gsql.close(readings)
+remove_tree({dir}"cookbook_load.gsql")
