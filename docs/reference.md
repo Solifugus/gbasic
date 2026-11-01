@@ -2438,6 +2438,14 @@ The module provides:
 - `gsql.begin(connection[, "read" | "write"])` — `"write"` by default
 - `gsql.commit(connection)`, `gsql.rollback(connection)`
 - `gsql.close(connection)`
+- `gsql.backup(connection, dir)` — a consistent copy as of now, made while the
+  database stays in use (`docs/gsql_backup_design.md`). It answers
+  `{ bytes, files, reused }`. Backing up into a copy of the same database
+  **refreshes** it, keeping the files it already holds. A relative `dir` is the
+  program's. It is refused as `STATE` when the copy is open (the live database
+  itself included) and as `EXISTS` for a directory holding other files. The copy
+  is an ordinary database; restore by using it, or by copying its directory back
+  with no owner running.
 
 Parameters are a **record** for `:name` placeholders and an **array** for `$1`,
 `$2`, … . Values cross unchanged in both directions: an exact integer stays

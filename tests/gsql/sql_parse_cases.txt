@@ -379,3 +379,13 @@
 ! SYNTAX 34
 > create table t (a int serial of a)
 ! SYNTAX 33 `(`
+
+# ---- BACKUP TO (docs/gsql_backup_design.md) ------------------------------
+> backup to '/var/backups/shop'
+= BACKUP TO '/var/backups/shop'
+> backup to $1
+= BACKUP TO $1
+> backup '/x'
+! SYNTAX 8 TO
+> backup to
+! SYNTAX 10

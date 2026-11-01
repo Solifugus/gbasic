@@ -3937,7 +3937,7 @@ struct GsBackup {
     int done;
     unsigned char *chunk;
     GsqlFile *lockf;   /* the destination's lock, held for the whole backup */
-    uint64_t copied, reused;
+    uint64_t copied, reused, memfiles;
 };
 
 #define BACKUP_CHUNK (1u << 20)
@@ -4158,7 +4158,12 @@ static int lsm_backup_step(GsBackup *bk, uint64_t budget, int *done) {
             rc = bld_close(&bk->b, &fm);
             bk->building = 0;
             if (rc) return rc;
-            if (fm) { version_add(t->cur, 0, fm); hnd_close(t, fm->h); }
+            if (fm) {
+                bk->copied += fm->size; /* the unflushed changes, written as a file of the copy's */
+                bk->memfiles++;
+                version_add(t->cur, 0, fm);
+                hnd_close(t, fm->h);
+            }
         }
         if (!bk->then) break;
         bk->mem = bk->then;
@@ -4204,7 +4209,7 @@ static void lsm_backup_end(GsBackup *bk) {
 
 static void lsm_backup_progress(GsBackup *bk, uint64_t *copied, uint64_t *files, uint64_t *reused) {
     *copied = bk->copied;
-    *files = bk->njobs;
+    *files = bk->njobs + bk->memfiles;
     *reused = bk->reused;
 }
 

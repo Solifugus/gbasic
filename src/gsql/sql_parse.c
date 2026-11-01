@@ -2402,6 +2402,9 @@ int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
         ok = drop_stmt(&p, s);
     } else if (accept_kw(&p, "alter")) {
         ok = alter_stmt(&p, s);
+    } else if (accept_kw(&p, "backup")) {
+        s->kind = SQ_BACKUP;
+        ok = expect_kw(&p, "to") && (s->backup_to = concat(&p)) != NULL;
     } else if (p.tok.kind == T_EOF) {
         ok = fail_at(&p, p.tok.pos, GSQL_SYNTAX, "the statement is empty");
     } else if (p.tok.kind == T_IDENT && (strcmp(p.tok.text, "begin") == 0 || strcmp(p.tok.text, "commit") == 0 ||
@@ -2409,7 +2412,7 @@ int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
         ok = fail_at(&p, p.tok.pos, GSQL_UNSUPPORTED,
                      "transactions are begun and ended by the protocol's BEGIN, COMMIT and ROLLBACK, not by SQL text");
     } else {
-        ok = expected(&p, "a statement (SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER or EXPLAIN)");
+        ok = expected(&p, "a statement (SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, BACKUP or EXPLAIN)");
     }
     if (ok && !p.failed) {
         accept_sym(&p, ";");
@@ -2417,7 +2420,7 @@ int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
             if (!p.failed) {
                 char b[96];
                 static const char *const starts[] = { "select", "insert", "update", "delete", "create",
-                                                      "drop", "alter", "explain", NULL };
+                                                      "drop", "alter", "backup", "explain", NULL };
                 int another = at_sym(&p, ";");
                 for (int k = 0; starts[k]; k++) {
                     another |= at_kw(&p, starts[k]);
@@ -3063,6 +3066,10 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
     case SQ_DROP_VIEW:
         puts_(o, s->if_exists ? "DROP VIEW IF EXISTS " : "DROP VIEW ");
         print_name(o, s->table);
+        return;
+    case SQ_BACKUP:
+        puts_(o, "BACKUP TO ");
+        sql_print_expr(o, s->backup_to);
         return;
     case SQ_ADD_FKEY:
         puts_(o, "ALTER TABLE ");

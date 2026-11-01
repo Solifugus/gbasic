@@ -139,7 +139,8 @@ typedef enum {
     SQ_DROP_VIEW,            /* DROP VIEW [IF EXISTS] table */
     SQ_ADD_FKEY,             /* ALTER TABLE table ADD fkeys[0] */
     SQ_DROP_CONSTRAINT,      /* ALTER TABLE table DROP CONSTRAINT constraint */
-    SQ_ADD_CHECK             /* ALTER TABLE table ADD checks[0] */
+    SQ_ADD_CHECK,            /* ALTER TABLE table ADD checks[0] */
+    SQ_BACKUP                /* BACKUP TO backup_to (docs/gsql_backup_design.md) */
 } SqlStmtKind;
 
 typedef struct {
@@ -276,6 +277,7 @@ typedef struct SqlStmt {
     /* CREATE INDEX / DROP INDEX */
     char *index;
     char *rename_to;         /* ALTER TABLE ... RENAME TO */
+    SqlExpr *backup_to;      /* BACKUP TO: the copy's directory, a constant */
     /* CREATE VIEW (docs/gsql_view_design.md) */
     struct SqlStmt *view_q;
     struct SqlStmt *ins_q;   /* INSERT ... SELECT (docs/gsql_insert_select_design.md) */

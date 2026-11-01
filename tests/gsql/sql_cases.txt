@@ -1368,6 +1368,14 @@ commit
 > SELECT length(g) FROM gk
 = 3
 
+# ---- BACKUP TO: what it refuses before it copies anything (docs/gsql_backup_design.md) -
+> BACKUP TO 'relative/copy'
+! EXPRESSION 11 the directory must be absolute
+> BACKUP TO 5
+! EXPRESSION 11 BACKUP TO takes the copy's directory as text
+> BACKUP TO name
+! SYNTAX 11 BACKUP TO cannot read a column
+
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
 = done 0

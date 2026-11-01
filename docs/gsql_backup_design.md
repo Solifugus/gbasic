@@ -1,6 +1,6 @@
 # G-SQL online backup, and refreshing a copy
 
-**Status:** designed 2026-11-01. Matthew asked whether copying a database's files backs it up. It does only with no owner running, so a backup that does not stop the database is needed. He then asked whether the backup could also act as replication, so long reports can run on a copy (`gsql_scale_measurements.md` §3: the owner is single-threaded, and a report's sort or grouping stalls every other client).
+**Status:** designed and built 2026-11-01 (`backup_*` in `src/gsql/lsm.c`, `BACKUP TO` in `src/gsql/sql_exec.c`, `gsql.backup` in `src/modules/gsql.c`; `tests/run_gsql_store.sh`, `run_gsql_module.sh`, `run_gsql_sql.sh`). Matthew asked whether copying a database's files backs it up. It does only with no owner running, so a backup that does not stop the database is needed. He then asked whether the backup could also act as replication, so long reports can run on a copy (`gsql_scale_measurements.md` §3: the owner is single-threaded, and a report's sort or grouping stalls every other client).
 
 ## 1. What already exists, and what does not
 
@@ -86,3 +86,22 @@ A copy refreshed on a schedule is a **replica for reports**: as fresh as its las
   - a relative path, resolved against the program's directory.
 - **A crash during a refresh** leaves a copy with no manifest, never a wrong one. Driven through the engine's simulated I/O, as `run_gsql_store.sh` drives the existing backup.
 - **The copy opens and answers** through `gsql.connect`.
+
+## 6. What building it found
+
+- **A copy a program has opened stays held until that program ends.** An owner lives as long as the program that started it (`gsql_owner_design.md` §6.1), not as long as the connection, so it can go on serving other programs. So `gsql.close` on the copy does not release it, and a refresh in the same program is refused as `STATE`. For the reporting pattern this is no obstacle: a report runs as its own program, and its owner ends with it. Within one program it is a real limit. The remedy, an owner that ends once its last connection closes (perhaps after a short grace), is a change to the owner's lifetime and is left as a decision, not made here.
+- **A refresh always rewrites the unflushed changes,** up to the 32 MB memtable, however little changed. Measured at 32 MB of a 60 MB database: negligible at many gigabytes, half of a small one. The test asserts that a refresh keeps files and copies less, not that it copies "far less".
+- **Without the destination's lock, a backup aimed at the live database damaged it in a way the open process could not see.** It removed the database's manifest and files while the process went on reading through handles it already held. The test now checks that the database reopens.
+- **The header check had no test** until two databases with identical writes were built. Their files match in number and size and differ only in the identity their headers name, and without the check one's backup over the other's copy kept the wrong database's files.
+- **Seven perturbations, all red:**
+  - in the engine:
+    - the unflushed changes under the source's next number;
+    - nothing kept;
+    - no lock (red only once the test reopened the database);
+    - no header check (red only once the twin databases existed);
+  - in the SQL layer and the module:
+    - a relative path sent as written;
+    - the backup counted as a write;
+    - the backup never ended, so its lock stays held.
+- **Not observable by any test here:** that a fetch copies one slice. A backup that copied everything in its first fetch would answer the same, and would only hold up other clients for longer. It is held by `backup_batch`'s structure, with this sentence as its record.
+

@@ -1260,6 +1260,73 @@ static Value gsql_eval_close(AstExpr *expr) {
     return value_bool(1);
 }
 
+/* gsql.backup(connection, dir): a consistent copy as of now, made while the
+ * database stays in use, refreshing a copy already there
+ * (docs/gsql_backup_design.md). It is BACKUP TO, whose rows are its slices:
+ * read to the end, and the last answered. A relative directory is the
+ * PROGRAM's, resolved here, since the owner's working directory is its own. */
+static Value gsql_eval_backup(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        gsql_module_refuse("gsql.backup expects a connection and the copy's directory");
+        return value_null();
+    }
+    GsqlConnectionValue *c = gsql_connection_arg(expr, "backup");
+    if (!c) {
+        return value_null();
+    }
+    char *dir = gsql_text_arg(expr, 1, "backup", "the copy's directory");
+    if (!dir) {
+        return value_null();
+    }
+    if (!dir[0]) {
+        free(dir);
+        gsql_module_refuse("gsql.backup: the copy's directory is empty");
+        return value_null();
+    }
+    char *path = dir;
+    if (dir[0] != '/') {
+        char cwd[4096];
+        if (!getcwd(cwd, sizeof cwd)) {
+            free(dir);
+            gsql_module_refuse("gsql.backup: the working directory could not be read, to resolve a relative path");
+            return value_null();
+        }
+        path = malloc(strlen(cwd) + strlen(dir) + 2);
+        sprintf(path, "%s/%s", cwd, dir);
+        free(dir);
+    }
+    Value params = value_array(NULL, 0);
+    Value grown = append_to_array_ref(&params, value_string(path), 0);
+    value_free(grown);
+    free(path);
+    Value body = value_record(NULL, 0);
+    record_set(&body, "statement", value_string("BACKUP TO $1"));
+    record_set(&body, "parameters", params);
+    record_set(&body, "batch", value_number_exact(1));
+    struct GsqlRows *r = gsql_rows_begin(c, "backup", copy_string("BACKUP TO $1"), body, "gsql.backup");
+    if (!r) {
+        return value_null();
+    }
+    Value last = value_null(), row;
+    while (gsql_rows_next(r, &row)) {
+        value_free(last);
+        last = row;
+    }
+    gsql_rows_end(r);
+    if (error_action_pending() || last.kind != VALUE_RECORD) {
+        value_free(last);
+        return value_null();
+    }
+    Value out = value_record(NULL, 0);
+    const char *keep[3] = { "bytes", "files", "reused" };
+    for (int k = 0; k < 3; k++) {
+        Value *f = gsql_field(&last, keep[k]);
+        record_set(&out, keep[k], f ? value_copy(*f) : value_null());
+    }
+    value_free(last);
+    return out;
+}
+
 static Value gsql_eval_call(AstExpr *expr) {
     const char *fn = expr->as.call.name;
     if (strcmp(fn, "connect") == 0) return gsql_eval_connect(expr);
@@ -1269,6 +1336,7 @@ static Value gsql_eval_call(AstExpr *expr) {
     if (strcmp(fn, "commit") == 0) return gsql_eval_simple(expr, "commit", GSQL_M_COMMIT);
     if (strcmp(fn, "rollback") == 0) return gsql_eval_simple(expr, "rollback", GSQL_M_ROLLBACK);
     if (strcmp(fn, "close") == 0) return gsql_eval_close(expr);
+    if (strcmp(fn, "backup") == 0) return gsql_eval_backup(expr);
     char message[256];
     module_unknown_verb(message, sizeof(message), "gsql", fn);
     gsql_module_refuse(message);

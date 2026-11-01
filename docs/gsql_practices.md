@@ -46,7 +46,7 @@ A program that writes to two databases makes two independent commits, and a cras
 **The owner is single-threaded** (`gsql_owner_design.md` §6.1). A cursor yields between batches, but the step that sorts, groups or builds a hash join runs as one piece. Every other client of that database waits while it does (`gsql_scale_measurements.md` §3).
 
 - **Short queries** belong on the live database.
-- **A report over a large table** belongs on a copy. Until replicas exist, that is a copy taken with no owner running (§2).
+- **A report over a large table** belongs on a copy made by `gsql.backup` and refreshed between reports (`gsql_cookbook.md` recipe 14). Each database has its own owner, so a report there stalls nobody.
 
 ### Let indexes narrow, and read `EXPLAIN`
 
@@ -88,7 +88,7 @@ Each line names what removes it. The order of that work is `gsql_scale_measureme
 | **One very large transaction is slow**: `CREATE INDEX` over existing rows took 1 180 s at 10⁸ rows and grows about 30× per 10×. Likewise a huge `INSERT ... SELECT` or `UPDATE`. | the external-sort build | Create indexes **before** loading; load and change data in batches of thousands of rows per transaction |
 | Load rate halves between 10⁷ and 10⁸ rows (172 000 to 90 000 rows/s). | profiling compaction | Plan a billion-row load in hours, not minutes |
 | **Joins run in the order written.** A large table placed where it is hashed is held whole. | row counts in the planner | Put the large table first in `FROM`, and check `EXPLAIN` |
-| **No backup while the database is in use.** A file copy is only safe with no owner running. | `gsql.backup` | Close every program using the database, then copy its whole directory, and restore by copying it back the same way |
+| *Closed 2026-11-01:* `gsql.backup(db, dir)` copies while the database is in use and refreshes an existing copy (`gsql_backup_design.md`). What remains: **a copy that is open cannot be refreshed**, because an owner lives as long as the program that started it. A refresh also always rewrites the unflushed changes, up to 32 MB. | the copy's owner pulling its own refreshes | Run reports as programs of their own, and refresh between them. A plain file copy is still safe with no owner running |
 | **No SQL dump.** | the dump increment | — |
 | One owner per database is enforced **on one machine only**. Two machines opening one database on shared storage could each start an owner. | the lease | Open a database from one machine |
 | The owner sizes nothing to the storage: commit pacing is the same on NVMe as on a NAS. | group commit sized from a measured sync | Batch writes (§1) |

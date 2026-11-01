@@ -12,6 +12,9 @@
 # TIERS:
 #   semantics   the fixture's main phase: values in both directions, exec's
 #               answer shape, batches, transactions, refusals with their codes
+#   backup      gsql.backup: a first copy and a refresh that keeps files, the
+#               copy read by a program of its own, and each refusal (a copy in
+#               use, the live database, a directory of other files)
 #   random      RANDOM's draws are fair: with a 200-character alphabet a plain
 #               "byte mod 200" would draw the first 56 at 0.44, not 0.28
 #   lost        the owner is killed under a program using it: the request in
@@ -85,6 +88,16 @@ verdict random "$work/random.out" $? 6
 if [ -s "$work/random.err" ]; then
     sed 's/^/       /' "$work/random.err" | head -5
     fail "random: the fixture wrote to stderr"
+fi
+
+printf 'TIER backup: gsql.backup, a copy made while the database is in use, and refreshed\n'
+mkdir -p "$work/backup"
+(cd "$work/backup" && GBASIC_BIN="$OLDPWD/gbasic" GBASIC_PATH="$OLDPWD/stdlib" timeout -k 5 300 \
+    "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/backup_test.bas") >"$work/backup.out" 2>"$work/backup.err"
+verdict backup "$work/backup.out" $? 15
+if [ -s "$work/backup.err" ]; then
+    sed 's/^/       /' "$work/backup.err" | head -5
+    fail "backup: the fixture wrote to stderr"
 fi
 
 printf 'TIER warnings: a G-SQL warning is a gBASIC warning, at the program'"'"'s line\n'

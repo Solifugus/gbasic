@@ -964,6 +964,11 @@ stmt("CREATE TABLE gk (g TEXT RANDOM(3, 'αβ'))", "= done 0")
 stmt("INSERT INTO gk VALUES (DEFAULT)", "= done 1")
 stmt("SELECT length(g) FROM gk", "= 3")
 
+sec("BACKUP TO: what it refuses before it copies anything (docs/gsql_backup_design.md)")
+stmt("BACKUP TO 'relative/copy'", ("EXPRESSION", "'relative/copy'", "the directory must be absolute"))
+stmt("BACKUP TO 5", ("EXPRESSION", "5", "BACKUP TO takes the copy's directory as text"))
+stmt("BACKUP TO name", ("SYNTAX", "name", "BACKUP TO cannot read a column"))
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

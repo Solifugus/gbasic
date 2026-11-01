@@ -1653,6 +1653,9 @@ static int plan_at(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, con
         }
         view_leave();
         break;
+    case SQ_BACKUP:
+        ok = bind(&b, s->backup_to, 0, "BACKUP TO");
+        break;
     case SQ_CREATE_TABLE:
     case SQ_ADD_COLUMN:
         /* a DEFAULT is a constant */

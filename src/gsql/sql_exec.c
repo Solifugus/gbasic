@@ -1878,6 +1878,11 @@ typedef struct {
     Join j;
     int join_started;
     int sorted;
+    /* BACKUP TO (docs/gsql_backup_design.md): one slice copied per fetch, the
+       owner serving other clients between them, the cursor's own snapshot
+       what is copied */
+    GsBackup *backup;
+    int backup_done;
     SortRow *rows;
     size_t nrows, pos;
     uint64_t offset, limit, produced;
@@ -2152,6 +2157,9 @@ static void cursor_free(SqlCursor *c) {
     if (!c) {
         return;
     }
+    if (c->backup) {
+        c->x.e->backup_end(c->backup);   /* a copy not finished has no manifest */
+    }
     for (size_t k = 0; k < c->nrows; k++) {
         gsql_buf_free(&c->rows[k].out);
         if (c->rows[k].keys) {
@@ -2382,7 +2390,36 @@ static void explain_line(void *ctx, const char *text) {
 
 /* the first batch, or the next: up to `count` rows into out->rows, and a
  * cursor left in out->cursor when more remain */
+#define BACKUP_SLICE (8u << 20)
+
+/* A backup's next slice, as one progress row: bytes copied, files the
+ * snapshot names, files the copy already held, done. One row a fetch,
+ * whatever the batch asked for, so a fetch is one bounded slice. */
+static int backup_batch(SqlCursor *c, GsqlResult *out, GsqlError *err) {
+    int done = 0;
+    int st = c->x.e->backup_step(c->backup, BACKUP_SLICE, &done);
+    if (st != GS_OK) {
+        return xfail(err, GSQL_STORAGE, 0, "the backup stopped: the engine answered %s; the copy has no manifest, "
+                     "so it does not open, and the next backup into it completes it", gs_status_name(st));
+    }
+    uint64_t copied, files, reused;
+    c->x.e->backup_progress(c->backup, &copied, &files, &reused);
+    out->has_rows = 1;
+    out->rows.length = 0;
+    v3_w_array(&out->rows, 1);
+    v3_w_array(&out->rows, 4);
+    v3_w_int(&out->rows, copied);
+    v3_w_int(&out->rows, files);
+    v3_w_int(&out->rows, reused);
+    v3_w_bool(&out->rows, done);
+    out->cursor = done ? NULL : c;
+    return GSQL_OK;
+}
+
 static int cursor_batch(SqlCursor *c, uint32_t count, GsqlResult *out, GsqlError *err) {
+    if (c->backup) {
+        return backup_batch(c, out, err);
+    }
     GsqlBuf rows = {0};
     GsqlBuf one = {0};
     size_t n = 0;
@@ -2415,6 +2452,19 @@ static int cursor_batch(SqlCursor *c, uint32_t count, GsqlResult *out, GsqlError
 
 static void columns_of(SqlCursor *c, GsqlBuf *out) {
     out->length = 0;
+    if (c->backup) {
+        static const char *const names[4] = { "bytes", "files", "reused", "done" };
+        static const char *const kinds[4] = { "integer", "integer", "integer", "boolean" };
+        v3_w_array(out, 4);
+        for (int k = 0; k < 4; k++) {
+            v3_w_record(out, 2);
+            v3_w_name(out, "name");
+            v3_w_text(out, names[k]);
+            v3_w_name(out, "kind");
+            v3_w_text(out, kinds[k]);
+        }
+        return;
+    }
     if (c->explain) {
         v3_w_array(out, 1);
         v3_w_record(out, 2);
@@ -4972,7 +5022,8 @@ static int svc_writes(void *ctx, const GsqlStatement *st, GsqlError *err) {
     if (rc != GSQL_OK) {
         return -1;
     }
-    int w = p.stmt->kind != SQ_SELECT && !p.stmt->explain;
+    /* a backup reads: it copies a snapshot, and other writers go on */
+    int w = p.stmt->kind != SQ_SELECT && p.stmt->kind != SQ_BACKUP && !p.stmt->explain;
     sql_parsed_free(&p);
     return w;
 }
@@ -5533,6 +5584,46 @@ static GsqlHv *eval_subquery(X *x, SqlExpr *e) {
 
 static void take_warnings(GsqlSql *q, char ***seen, size_t *nseen, GsqlResult *out, int keep);
 
+/* BACKUP TO dir: its path, then the engine's backup of this statement's own
+ * snapshot, which the cursor keeps between fetches. */
+static int backup_start(SqlCursor *c, const GsEngine *e, GsTxn *t) {
+    GsqlBuf v = {0};
+    int rc = eval_into(&c->x, c->parsed.stmt->backup_to, &v);
+    if (rc != GSQL_OK) {
+        gsql_buf_free(&v);
+        return rc;
+    }
+    char *path = v.length && v.bytes[0] == SER_STRING ? v3_read_text(v.bytes, v.length) : NULL;
+    gsql_buf_free(&v);
+    uint32_t pos = c->parsed.stmt->backup_to->pos;
+    if (!path) {
+        return xfail(&c->err, GSQL_EXPRESSION, pos, "BACKUP TO takes the copy's directory as text");
+    }
+    if (path[0] != '/') {
+        rc = xfail(&c->err, GSQL_EXPRESSION, pos, "BACKUP TO `%.200s`: the directory must be absolute, since the "
+                   "owner's working directory is not the program's (gsql.backup resolves one for you)", path);
+        free(path);
+        return rc;
+    }
+    int st = e->backup_begin(t, path, &c->backup);
+    if (st != GS_OK) {
+        if (st == GS_BUSY) {
+            rc = xfail(&c->err, GSQL_STATE, pos, "BACKUP TO `%.200s`: that database is open -- an owner holds it, which "
+                       "a program using the copy does, and so does the live database itself", path);
+        } else if (st == GS_FORMAT) {
+            rc = xfail(&c->err, GSQL_EXISTS, pos, "BACKUP TO `%.200s`: the directory holds files that are not a "
+                       "database's, so a copy there would delete them", path);
+        } else {
+            rc = xfail(&c->err, GSQL_STORAGE, pos, "BACKUP TO `%.200s`: the engine answered %s", path,
+                       gs_status_name(st));
+        }
+        free(path);
+        return rc;
+    }
+    free(path);
+    return GSQL_OK;
+}
+
 static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *st, GsqlResult *out,
                    GsqlError *err) {
     GsqlSql *q = ctx;
@@ -5561,7 +5652,11 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
     c->x.params = st->parameters;
     c->x.paramslen = st->parameters_length;
     SqlStmt *s = c->parsed.stmt;
-    if (s->explain) {
+    if (s->kind == SQ_BACKUP) {
+        if (backup_start(c, e, t) != GSQL_OK) {
+            goto failed;
+        }
+    } else if (s->explain) {
         c->explain = 1;
         sql_explain(&c->plan, explain_line, c);
     } else if (s->kind == SQ_SELECT) {
