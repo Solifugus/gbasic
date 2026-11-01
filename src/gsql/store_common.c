@@ -267,12 +267,14 @@ int gs_io_status(int rc) {
     if (rc == 0) return GS_OK;
     if (rc == ENOSPC) return GS_FULL;
     if (rc == EWOULDBLOCK) return GS_BUSY;
+    if (rc == GSQL_IO_FENCED) return GS_FENCED;
     return GS_IO;
 }
 
 const char *gs_status_name(int s) {
     static const char *names[] = {"OK", "NOT_FOUND", "EXISTS", "ORDER", "BUSY", "TOO_LARGE", "INVALIDATED",
-                                  "CORRUPT", "IO", "FULL", "FAILED", "FORMAT", "READ_ONLY", "MISUSE"};
-    if (s >= 0 && s <= GS_MISUSE) return names[s];
+                                  "CORRUPT", "IO", "FULL", "FAILED", "FORMAT", "READ_ONLY", "MISUSE",
+                                  "ELSEWHERE", "FENCED"};
+    if (s >= 0 && s <= GS_FENCED) return names[s];
     return "?";
 }

@@ -15,7 +15,7 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cc -std=c11 -O1 -Iinclude -Isrc/gsql -o "$work/format_test" tests/gsql/format_test.c \
-    src/gsql/lsm.c src/gsql/store_common.c src/gsql/store_util.c src/gsql/io.c src/gsql/io_sim.c
+    src/gsql/lsm.c src/gsql/lease.c src/gsql/store_common.c src/gsql/store_util.c src/gsql/io.c src/gsql/io_sim.c
 "$work/format_test" write "$work/db"
 rm -f "$work/db/db.lock" # the open makes it; it holds nothing
 rm -rf "$out"

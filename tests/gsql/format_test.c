@@ -38,7 +38,7 @@ static int put(GsTxn *w, const char *tree, const char *k, const void *v, size_t 
  * that the zero-filled log stays small, and values of 64 bytes or more in
  * blob files, so every file kind is in it. */
 static GsOptions fixture_options(int create) {
-    GsOptions o = {create, 512, 0, NULL, 4096, 0, 64, 0};
+    GsOptions o = {create, 512, 0, NULL, 4096, 0, 64, 0, NULL};
     return o;
 }
 
@@ -170,7 +170,7 @@ static void first_file(const char *dir, const char *suffix, char *out, size_t ca
 
 /* One tree "t" holding k -> `value`, flushed, so it is in a sorted file. */
 static int one_row_db(const char *dir, const char *value) {
-    GsOptions o = {1, 512, 0, NULL, 0, 0, 0, 0};
+    GsOptions o = {1, 512, 0, NULL, 0, 0, 0, 0, NULL};
     GsStore *db;
     int rc = E->open(dir, &o, &db);
     if (rc) return rc;
@@ -186,7 +186,7 @@ static int one_row_db(const char *dir, const char *value) {
 
 /* What reading k answers: the status, and the value into `out`. */
 static int read_k(const char *dir, char *out, size_t cap) {
-    GsOptions o = {0, 0, 0, NULL, 0, 0, 0, 0};
+    GsOptions o = {0, 0, 0, NULL, 0, 0, 0, 0, NULL};
     GsStore *db;
     int rc = E->open(dir, &o, &db);
     if (rc) return rc;
@@ -320,7 +320,7 @@ static void refusals(const char *base) {
     {
         char d[600], lp[700];
         snprintf(d, sizeof d, "%s/d", base);
-        GsOptions o = {1, 512, 0, NULL, 0, 0, 0, 0};
+        GsOptions o = {1, 512, 0, NULL, 0, 0, 0, 0, NULL};
         GsStore *db;
         rc = E->open(d, &o, &db);
         if (rc == GS_OK) {
@@ -354,7 +354,7 @@ static void refusals(const char *base) {
  * compactions to several levels, blob relocation, logs recycled, reopens. For
  * format_check.py to decode; it checks nothing itself but that it ran. */
 static int busy(const char *dir) {
-    GsOptions o = {1, 512, 0, NULL, 4096, 2, 64, 0};
+    GsOptions o = {1, 512, 0, NULL, 4096, 2, 64, 0, NULL};
     GsStore *db;
     int rc = E->open(dir, &o, &db);
     uint64_t r = 0x9E3779B97F4A7C15ULL;

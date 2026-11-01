@@ -49,7 +49,7 @@ static void *a_open(GsqlIo *io, const char *dir, int *err) {
     GsOptions o = {1, page_size, 16 * page_size, io, ta ? strtoull(ta, NULL, 10) : da, tb ? strtoull(tb, NULL, 10) : 3,
                    tc ? strtoull(tc, NULL, 10) : 24,
                    /* a small cap, so closing and reopening read handles is crashed too */
-                   getenv("GS_TUNE_D") ? strtoull(getenv("GS_TUNE_D"), NULL, 10) : 4};
+                   getenv("GS_TUNE_D") ? strtoull(getenv("GS_TUNE_D"), NULL, 10) : 4, NULL};
     GsStore *db;
     syncs = 0;
     int rc = E->open(path, &o, &db);

@@ -67,7 +67,7 @@ if ! command -v "$CC" >/dev/null 2>&1; then
     exit 0
 fi
 FLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc/gsql"
-ENGINE="src/gsql/lsm.c src/gsql/store_common.c src/gsql/store_util.c src/gsql/io.c src/gsql/io_sim.c"
+ENGINE="src/gsql/lsm.c src/gsql/lease.c src/gsql/store_common.c src/gsql/store_util.c src/gsql/io.c src/gsql/io_sim.c"
 LAYER="src/gsql/table.c src/gsql/v3.c src/gsql/key.c"
 SAN=""
 printf 'int main(void){return 0;}\n' > "$work/probe.c"

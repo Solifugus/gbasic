@@ -506,7 +506,7 @@ static int model_run(const char *dir) {
     GsqlIo *io = dir ? gsql_io_real() : gsql_io_sim();
     char path[512];
     snprintf(path, sizeof path, "%s/db", dir ? dir : "d");
-    GsOptions opt = {1, 1024, 256 * 1024, io, 2000, 3, 64, 0};
+    GsOptions opt = {1, 1024, 256 * 1024, io, 2000, 3, 64, 0, NULL};
     GsStore *db;
     int rc = E->open(path, &opt, &db);
     if (rc) {
@@ -859,7 +859,7 @@ static int kinds_run(const char *file) {
 /* ---- refusals, each beside the case that passes ------------------------- */
 
 static GsStore *fresh(GsqlIo *io, const char *path) {
-    GsOptions opt = {1, 1024, 256 * 1024, io, 0, 0, 0, 0};
+    GsOptions opt = {1, 1024, 256 * 1024, io, 0, 0, 0, 0, NULL};
     GsStore *db = NULL;
     E->open(path, &opt, &db);
     return db;

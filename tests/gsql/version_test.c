@@ -155,7 +155,7 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "%s/db", real ? argv[3] : "d");
     /* a small memtable and few files per level, so history is read back from
      * sorted files that compaction has merged, not only from memory */
-    GsOptions opt = {1, 1024, 256 * 1024, io, 2048, 3, 64, 0};
+    GsOptions opt = {1, 1024, 256 * 1024, io, 2048, 3, 64, 0, NULL};
     GsStore *db;
     int rc = E->open(path, &opt, &db);
     CHECK(rc == GS_OK, "open answered %s", gs_status_name(rc));

@@ -21,7 +21,7 @@ MIN_FREE=${BENCH_MIN_FREE_GB:-50}
 mkdir -p "$BENCH_DIR"
 bin="$BENCH_DIR/hardreq.bin"
 cc -std=c11 -O2 -g -Wall -Wextra -Werror -DHAVE_WAL -DHAVE_LSM -I../../include -I../../src/gsql -I. -o "$bin" hardreq.c \
-    btengine.c btree.c ../../src/gsql/store_common.c ../../src/gsql/store_util.c wal.c ../../src/gsql/lsm.c ../../src/gsql/io.c ../../src/gsql/io_sim.c || exit 1
+    btengine.c btree.c ../../src/gsql/store_common.c ../../src/gsql/store_util.c wal.c ../../src/gsql/lsm.c ../../src/gsql/lease.c ../../src/gsql/io.c ../../src/gsql/io_sim.c || exit 1
 
 run() { # test engine args...
     local free

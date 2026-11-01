@@ -155,7 +155,7 @@ static int serve(GsStore *db, unsigned type, const GsBuf *in, GsBuf *out, unsign
 }
 
 static int owner(const char *dir, const char *sock) {
-    GsOptions o = {1, 0, 0, NULL, 0, 0, 0, 0};
+    GsOptions o = {1, 0, 0, NULL, 0, 0, 0, 0, NULL};
     const char *ta = getenv("GS_TUNE_A");
     if (ta) o.tune_a = strtoull(ta, NULL, 10);
     GsStore *db;
@@ -267,7 +267,7 @@ static int check_rows(const GsBuf *b, uint64_t first, uint32_t want) {
 }
 
 static int load_rows(const char *dir, uint64_t rows) {
-    GsOptions o = {1, 0, 0, NULL, 0, 0, 0, 0};
+    GsOptions o = {1, 0, 0, NULL, 0, 0, 0, 0, NULL};
     const char *ta = getenv("GS_TUNE_A");
     if (ta) o.tune_a = strtoull(ta, NULL, 10);
     GsStore *db;
@@ -302,7 +302,7 @@ static int trip(const char *self, const char *dir, uint64_t rows, size_t iters) 
     unsigned long long bad;
     /* in process first, then the owner, so the two do not share a cache */
     {
-        GsOptions o = {0, 0, 0, NULL, 0, 0, 0, 0};
+        GsOptions o = {0, 0, 0, NULL, 0, 0, 0, 0, NULL};
         GsStore *db;
         if (E->open(dir, &o, &db)) return 1;
         GsBuf in = {0}, out = {0};

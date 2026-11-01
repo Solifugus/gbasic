@@ -38,6 +38,7 @@
 
 #include "store_common.h"
 #include "store_util.h"
+#include "lease.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -302,6 +303,8 @@ struct GsStore {
     uint64_t cache_bytes, bcache_bytes;
     Cache bcache;             /* decoded blocks, keyed (file number, block + 1) */
     GsqlFile *log, *lockf;
+    GsLease *lease;           /* docs/gsql_lease_design.md; db->io writes through it */
+    GsqlIo *inner_io;         /* the layer under the lease's fence */
     /* Read handles on sorted and blob files, at most max_open of them open,
      * the least recently used closed to make room (hnd_get). */
     struct Hnd *lru_head, *lru_tail;
@@ -1746,7 +1749,6 @@ static void store_free(GsStore *db) {
     if (db->spare) gsql_io_close(db->spare);
     gsbuf_free(&db->rbuf);
     if (db->log) gsql_io_close(db->log);
-    if (db->lockf) gsql_io_close(db->lockf);
     version_unref(db, db->cur);
     for (size_t i = 0; i < db->nblob; i++) hnd_free(db, db->blob[i].h);
     free(db->blob);
@@ -1754,7 +1756,12 @@ static void store_free(GsStore *db) {
     free(db->dead);
     u64_free(&db->garbage);
     free(db->snaps);
-    if (db->own_io) gsql_io_free(db->io);
+    /* last: every file above was opened through the lease's layer, which
+     * closing the lease frees; and the lease goes before the lock, since a
+     * clean close removes it and the lock is what makes that ours to do */
+    if (db->lease) gs_lease_close(db->lease, 1);
+    if (db->lockf) gsql_io_close(db->lockf);
+    if (db->own_io) gsql_io_free(db->inner_io ? db->inner_io : db->io);
     free(db->path);
     free(db->dir);
     free(db);
@@ -1794,6 +1801,9 @@ static NameKind name_kind(const char *name, uint64_t *num) {
     *num = 0;
     if (!strcmp(name, GS_DB_BASE)) return N_MANIFEST;
     if (!strcmp(name, GS_DB_BASE ".lock")) return N_LOCK;
+    /* a test's lock local to one machine (gs_lease_lock_name), and the lease */
+    if (!strncmp(name, GS_DB_BASE ".lock.", strlen(GS_DB_BASE ".lock."))) return N_LOCK;
+    if (!strcmp(name, GS_DB_BASE ".lease")) return N_LOCK;
     if (sscanf(name, GS_DB_BASE ".log.%llu%n", &v, &end) == 1 && name[end] == 0) { *num = v; return N_LOG; }
     if (sscanf(name, GS_DB_BASE ".%llu.sst%n", &v, &end) == 1 && name[end] == 0) { *num = v; return N_SST; }
     if (sscanf(name, GS_DB_BASE ".%llu.blob%n", &v, &end) == 1 && name[end] == 0) { *num = v; return N_BLOB; }
@@ -1873,11 +1883,18 @@ static int lsm_open_base(const char *path, const GsOptions *opt, GsStore **out) 
     cache_init(&db->bcache);
     /* BUSY: the log and the manifest are both replaced over a store's life, so
      * the exclusive lock is on a file of its own */
-    char *lockname = gs_path_with(path, ".lock");
+    const GsLeaseOptions *lo = opt ? opt->lease : NULL;
+    char *lockname = gs_lease_lock_name(path, lo);
     int lrc = gsql_io_open(db->io, lockname, GSQL_IO_CREATE, &db->lockf);
     free(lockname);
     if (lrc) { db->lockf = NULL; store_free(db); return lrc == ENOENT ? GS_NOT_FOUND : ioerr(lrc); }
     if ((lrc = gsql_io_lock(db->lockf, 1))) { store_free(db); return ioerr(lrc); }
+    /* the lease, after the lock and before anything is read: a store on
+     * another machine may hold the database where the lock is local to each
+     * (docs/gsql_lease_design.md §4); from here every write passes its fence */
+    if ((lrc = gs_lease_take(db->io, db->path, lo, &db->lease, NULL, 0))) { store_free(db); return lrc; }
+    db->inner_io = db->io;
+    db->io = gs_lease_io(db->lease);
     GsqlFile *mf = NULL;
     int rc = gsql_io_open(db->io, path, 0, &mf);
     if (rc == ENOENT && opt && opt->create) {
@@ -3508,6 +3525,7 @@ static int lsm_begin_read(GsStore *db, struct GsTxn **out) {
 }
 
 static int lsm_begin_write(GsStore *db, struct GsTxn **out) {
+    if (db->lease && gs_lease_fenced(db->lease)) return GS_FENCED;
     if (db->failed) return GS_FAILED;
     if (db->writer) return GS_BUSY;
     struct GsTxn *t = calloc(1, sizeof *t);
@@ -3659,7 +3677,7 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
          * failed (§1.3). */
         gsbuf_free(&rec);
         lsm_abort(t);
-        return rc == GS_FULL ? GS_FULL : GS_IO;
+        return rc == GS_FULL || rc == GS_FENCED ? rc : GS_IO;
     }
     db->log_end += rec.n;
     db->log_prev = get32(rec.p + 4);
@@ -4232,6 +4250,15 @@ static void lsm_stats(GsStore *db, GsStats *out) {
     if (db->log) { gsql_io_size(db->log, &sz); total += sz; }
     if (db->spare) { sz = 0; gsql_io_size(db->spare, &sz); total += sz; }
     out->file_bytes = total;
+    if (db->lease) gs_lease_stats(db->lease, &out->lease_renewals, &out->lease_renew_us_max);
+}
+
+static int lsm_lease_keep(GsStore *db, int force, uint64_t *due_ms, char *holder, size_t holder_n) {
+    if (holder && holder_n) holder[0] = 0;
+    if (!db->lease) { if (due_ms) *due_ms = UINT64_MAX; return GS_OK; }
+    int rc = gs_lease_keep(db->lease, force, due_ms);
+    if (rc == GS_FENCED && holder && holder_n) snprintf(holder, holder_n, "%s", gs_lease_holder(db->lease));
+    return rc;
 }
 
 
@@ -4268,5 +4295,5 @@ const GsEngine gs_engine_lsm = {
     lsm_cursor_open, lsm_seek, lsm_first, lsm_last, lsm_next, lsm_prev, lsm_key, lsm_value,
     lsm_cursor_put, lsm_cursor_delete, lsm_cursor_close,
     lsm_backup, lsm_backup_begin, lsm_backup_step, lsm_backup_end, lsm_check, lsm_stats,
-    lsm_txn_id, lsm_flush, lsm_backup_progress,
+    lsm_txn_id, lsm_flush, lsm_backup_progress, lsm_lease_keep,
 };

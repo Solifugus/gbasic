@@ -24,7 +24,7 @@ fi
 DEFS=""
 [ -f wal.c ] && DEFS="-DHAVE_WAL"
 ST=../../src/gsql
-ENGINE_SRC="btengine.c btree.c $ST/store_common.c $ST/store_util.c $ST/lsm.c"
+ENGINE_SRC="btengine.c btree.c $ST/store_common.c $ST/store_util.c $ST/lsm.c $ST/lease.c"
 [ -f wal.c ] && ENGINE_SRC="$ENGINE_SRC wal.c"
 status=0
 pass() { printf '  ok   %s\n' "$1"; }

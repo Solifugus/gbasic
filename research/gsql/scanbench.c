@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: scanbench DIR ROWS [REPEATS]\n"); return 2; }
     uint64_t rows = strtoull(argv[2], NULL, 10);
     int reps = argc > 3 ? atoi(argv[3]) : 5;
-    GsOptions o = {1, 0, 0, NULL, 0, 0, 0, 0};
+    GsOptions o = {1, 0, 0, NULL, 0, 0, 0, 0, NULL};
     GsStore *db;
     if (E->open(argv[1], &o, &db)) return 1;
     GsTxn *w;

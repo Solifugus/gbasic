@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 int gsql_io_open(GsqlIo *io, const char *path, int flags, GsqlFile **out) {
     *out = NULL;
@@ -39,6 +42,28 @@ void gsql_io_free(GsqlIo *io) {
     if (io) io->ops->free(io);
 }
 void gsql_io_random(GsqlIo *io, void *out, size_t n) { io->ops->random(io, out, n); }
+uint64_t gsql_io_now_ms(GsqlIo *io) { return io->ops->now_ms(io); }
+void gsql_io_sleep_ms(GsqlIo *io, uint64_t ms) { io->ops->sleep_ms(io, ms); }
+
+uint64_t gsql_io_mono_ms(GsqlIo *io) {
+    (void)io;
+#if defined(_WIN32)
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+#endif
+}
+void gsql_io_mono_sleep(GsqlIo *io, uint64_t ms) {
+    (void)io;
+#if defined(_WIN32)
+    Sleep((DWORD)ms);
+#else
+    struct timespec ts = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000L};
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
+#endif
+}
 int gsql_io_mkdir(GsqlIo *io, const char *path) { return io->ops->mkdir(io, path); }
 int gsql_io_list(GsqlIo *io, const char *dir, int (*each)(void *, const char *), void *ctx) {
     return io->ops->list(io, dir, each, ctx);
@@ -86,7 +111,8 @@ static int win_list(GsqlIo *io, const char *d, int (*e)(void *, const char *), v
 }
 static const GsqlIoOps real_ops = {
     win_open, NULL, NULL, NULL, NULL, NULL, NULL,
-    win_unused_rename, win_unused_io, win_unused_io, NULL, win_free, urandom, win_unused_io, win_list
+    win_unused_rename, win_unused_io, win_unused_io, NULL, win_free, urandom, win_unused_io, win_list,
+    gsql_io_mono_ms, gsql_io_mono_sleep
 };
 
 #else
@@ -252,7 +278,7 @@ static int real_list(GsqlIo *io, const char *dir, int (*each)(void *, const char
 static const GsqlIoOps real_ops = {
     real_open, real_read_at, real_write_at, real_sync, real_size, real_truncate,
     real_close, real_rename, real_remove, real_sync_dir, real_lock, real_free, urandom,
-    real_mkdir, real_list
+    real_mkdir, real_list, gsql_io_mono_ms, gsql_io_mono_sleep
 };
 
 #endif

@@ -67,7 +67,7 @@ static void put_one(GsStore *db, const char *tree, unsigned i, int sync) {
 static void dropped_not_durable(const char *base, GsqlIo *io) {
     char path[600];
     snprintf(path, sizeof path, "%s.drop", base);
-    GsOptions o = {1, 512, 0, io, 2000, 2, 0, 0};
+    GsOptions o = {1, 512, 0, io, 2000, 2, 0, 0, NULL};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the drop store answered %s", gs_status_name(rc));
@@ -151,7 +151,7 @@ static void blob_space(const char *base, GsqlIo *io) {
     /* a memtable that holds the end of the load and all of the overwrite, so
      * the values die inside one level-0 merge, whose relocation set was fixed
      * before they did: from then on only gc_start can reach them */
-    GsOptions o = {1, 512, 0, io, 350000, 2, 64, 0};
+    GsOptions o = {1, 512, 0, io, 350000, 2, 64, 0, NULL};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the blob-space store answered %s", gs_status_name(rc));
@@ -235,7 +235,7 @@ static void blob_space(const char *base, GsqlIo *io) {
 static void many_files(const char *base, GsqlIo *io, int real) {
     char path[600];
     snprintf(path, sizeof path, "%s.many", base);
-    GsOptions o = {1, 512, 0, io, 4096, 1000, 0, 8};
+    GsOptions o = {1, 512, 0, io, 4096, 1000, 0, 8, NULL};
     struct rlimit was;
     int lowered = 0;
     if (real && getrlimit(RLIMIT_NOFILE, &was) == 0) {
@@ -355,7 +355,7 @@ out:
 static void hot_keys(const char *base, GsqlIo *io) {
     char path[600];
     snprintf(path, sizeof path, "%s.hot", base);
-    GsOptions o = {1, 512, 0, io, 2000, 2, 0, 0};
+    GsOptions o = {1, 512, 0, io, 2000, 2, 0, 0, NULL};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the hot-key store answered %s", gs_status_name(rc));
@@ -551,7 +551,7 @@ static int count_keys(GsStore *db) {
 static void power_check(GsqlIo *io, const char *path, int want, const char *when) {
     for (uint64_t seed = 1; seed <= 6; seed++) {
         GsqlIo *img = gsql_io_sim_crash_image(io, GSQL_CRASH_POWER, seed);
-        GsOptions o = {0, 512, 0, img, 1 << 20, 0, 0, 0};
+        GsOptions o = {0, 512, 0, img, 1 << 20, 0, 0, 0, NULL};
         GsStore *db;
         int rc = E->open(path, &o, &db);
         CHECK(rc == GS_OK, "%s, power loss %llu: open answered %s", when, (unsigned long long)seed, gs_status_name(rc));
@@ -595,7 +595,7 @@ static void empty_footprint(const char *base, GsqlIo *io) {
     if (strcmp(E->name, "lsm")) return;
     char path[600], k[16];
     snprintf(path, sizeof path, "%s.small", base);
-    GsOptions o = {1, 0, 0, io, 0, 0, 0, 0}; /* every size at its default */
+    GsOptions o = {1, 0, 0, io, 0, 0, 0, 0, NULL}; /* every size at its default */
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the small store answered %s", gs_status_name(rc));
@@ -624,7 +624,7 @@ static void flushed_handoff(const char *base, GsqlIo *io) {
         char path[600], k[16];
         snprintf(path, sizeof path, "%s.handoff%d", base, flushed);
         /* a memtable large enough that nothing flushes on its own */
-        GsOptions o = {1, 512, 0, io, 1 << 20, 0, 0, 0};
+        GsOptions o = {1, 512, 0, io, 1 << 20, 0, 0, 0, NULL};
         GsStore *db;
         int rc = E->open(path, &o, &db);
         CHECK(rc == GS_OK, "opening the handoff store answered %s", gs_status_name(rc));
@@ -687,7 +687,7 @@ static void lost_twin(const char *base, GsqlIo *io) {
     char path[600], logp[700];
     snprintf(path, sizeof path, "%s.twin", base);
     snprintf(logp, sizeof logp, "%s/db.log.1", path);
-    GsOptions o = {1, 512, 0, io, 0, 0, 0, 0};
+    GsOptions o = {1, 512, 0, io, 0, 0, 0, 0, NULL};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the twin store answered %s", gs_status_name(rc));
@@ -733,7 +733,7 @@ static void lost_twin(const char *base, GsqlIo *io) {
 static void frozen_reads(const char *base, GsqlIo *io) {
     char path[600];
     snprintf(path, sizeof path, "%s.frozen", base);
-    GsOptions o = {1, 512, 0, io, 3000, 1000, 0, 0};
+    GsOptions o = {1, 512, 0, io, 3000, 1000, 0, 0, NULL};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the frozen-read store answered %s", gs_status_name(rc));
@@ -795,7 +795,7 @@ static void sliced_backup(const char *base, GsqlIo *io) {
     snprintf(path, sizeof path, "%s.bk", base);
     snprintf(dest, sizeof dest, "%s.bk-copy", base);
     snprintf(dest2, sizeof dest2, "%s.bk-copy2", base);
-    GsOptions o = {1, 512, 0, io, 2000, 2, 32, 0};
+    GsOptions o = {1, 512, 0, io, 2000, 2, 32, 0, NULL};
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the backup store answered %s", gs_status_name(rc));
@@ -929,7 +929,7 @@ static void refreshed_backup(const char *base, GsqlIo *io) {
     snprintf(path, sizeof path, "%s.rf", base);
     snprintf(dest, sizeof dest, "%s.rf-copy", base);
     snprintf(busy, sizeof busy, "%s.rf-busy", base);
-    GsOptions o = {1, 512, 0, io, 2000, 1000, 32, 0};
+    GsOptions o = {1, 512, 0, io, 2000, 1000, 32, 0, NULL};
     GsStore *db;
     if (E->open(path, &o, &db) != GS_OK) {
         CHECK(0, "opening the refresh store");
@@ -1089,7 +1089,7 @@ static void directory_rules(const char *base, GsqlIo *io) {
     snprintf(stranger, sizeof stranger, "%s/notes.txt", dir);
     gsql_io_mkdir(io, dir);
     touch(io, stranger);
-    GsOptions o = {1, 512, 0, io, 2000, 2, 0, 0};
+    GsOptions o = {1, 512, 0, io, 2000, 2, 0, 0, NULL};
     GsStore *db = NULL;
     int rc = E->open(dir, &o, &db);
     if (rc == GS_OK) E->close(db);
@@ -1323,7 +1323,7 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "%s/db", real ? argv[4] : "d");
     snprintf(bpath, sizeof bpath, "%s/backup", real ? argv[4] : "d");
     /* §2.C: values of 64 bytes or more go to blob files, about a third here */
-    GsOptions opt = {1, 1024, 256 * 1024, io, 40, 3, 64, 0};
+    GsOptions opt = {1, 1024, 256 * 1024, io, 40, 3, 64, 0, NULL};
     GsStore *db;
     int rc = E->open(path, &opt, &db);
     CHECK(rc == GS_OK, "open answered %s", gs_status_name(rc));

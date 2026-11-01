@@ -36,7 +36,11 @@ typedef enum {
      * snapshot. G4 requires the ENGINE to refuse it, and none of the eleven
      * says that. */
     GS_READ_ONLY,
-    GS_MISUSE       /* the caller broke the interface: close with a txn open, etc. */
+    GS_MISUSE,      /* the caller broke the interface: close with a txn open, etc. */
+    /* The lease (docs/gsql_lease_design.md): the database is open on another
+     * machine, and this store has lost its lease and writes nothing more. */
+    GS_ELSEWHERE,
+    GS_FENCED
 } GsStatus;
 
 const char *gs_status_name(int status);
@@ -52,7 +56,20 @@ typedef struct {
     uint64_t tune_b;        /* C: L0 files before compaction */
     uint64_t tune_c;        /* C: values at least this long go to a blob file */
     uint64_t tune_d;        /* C: read handles kept open (sorted and blob files) */
+    /* NULL = this machine's identity, the lease's own timings and the
+     * monotonic clock. Tests only: gbasic --gsql-owner never sets it. */
+    const struct GsLeaseOptions *lease;
 } GsOptions;
+
+/* The lease's test seams (docs/gsql_lease_design.md §7). Two machines cannot
+ * be had in a test, so a test names the machine it pretends to be, and may
+ * make the flock local to that name, which is exactly the storage the lease
+ * is for. Timings of 0 take the defaults. The clock is the I/O layer's. */
+typedef struct GsLeaseOptions {
+    const char *machine;    /* stands for both the machine and the boot */
+    int lock_local;         /* the lock file is named after `machine` */
+    uint32_t renew_ms, trust_ms, dead_ms, settle_ms;
+} GsLeaseOptions;
 
 typedef struct GsStore GsStore;
 typedef struct GsTxn GsTxn;
@@ -63,6 +80,7 @@ typedef struct {
     uint64_t pages_read, pages_written, bytes_written, flushes, cache_hits;
     uint64_t file_bytes;    /* every file the store owns */
     uint64_t replayed;      /* log records replayed by the open (0 where there is no log) */
+    uint64_t lease_renewals, lease_renew_us_max; /* what the lease costs where it runs */
 } GsStats;
 
 /* A borrowed byte string: valid until the next call on the same txn/cursor. */
@@ -148,6 +166,10 @@ typedef struct GsEngine {
      * and how many of those an existing copy already held and kept
      * (docs/gsql_backup_design.md). */
     void (*backup_progress)(GsBackup *b, uint64_t *copied, uint64_t *files, uint64_t *reused);
+    /* The lease: renews it when due (or at once, with `force`), and answers
+     * the milliseconds until it is next due. GS_FENCED once another machine
+     * has taken the database, naming it in `holder`. */
+    int (*lease_keep)(GsStore *db, int force, uint64_t *due_ms, char *holder, size_t holder_n);
 } GsEngine;
 
 extern const GsEngine gs_engine_lsm;  /* §2.C, the chosen engine */

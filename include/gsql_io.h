@@ -31,6 +31,9 @@
  * point: the world has stopped, and nothing done after it reaches any disk. Not
  * an errno, so it cannot be confused with one. */
 #define GSQL_IO_CRASHED 100000
+/* Answered by a store's own fenced layer for a write after it lost its lease
+ * (docs/gsql_lease_design.md §5): another machine owns the database now. */
+#define GSQL_IO_FENCED 100001
 
 enum {
     GSQL_IO_CREATE = 1,    /* create if absent */
@@ -73,6 +76,11 @@ void gsql_io_free(GsqlIo *io);
  * a crash run replays exactly. Each crash image draws from its own seed, so a
  * recovered disk does not repeat the draws its parent already made. */
 void gsql_io_random(GsqlIo *io, void *out, size_t n);
+/* Time, which is input from the environment too (docs/gsql_lease_design.md):
+ * the real layer's is CLOCK_MONOTONIC, the simulated one's a virtual clock
+ * that only sleeping moves, so a crash run never waits and replays exactly. */
+uint64_t gsql_io_now_ms(GsqlIo *io);
+void gsql_io_sleep_ms(GsqlIo *io, uint64_t ms);
 
 /* ---- the real layer ---------------------------------------------------- */
 

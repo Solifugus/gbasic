@@ -82,6 +82,7 @@ typedef struct {
     unsigned fail_in[4];   /* indexed by GsqlIoFault: countdown, 0 = disarmed */
     uint64_t seed;
     uint64_t rng;          /* what gsql_io_random draws from */
+    uint64_t clock_ms;     /* virtual: only sleeping moves it */
 } Sim;
 
 typedef struct SimFile {
@@ -597,10 +598,13 @@ static void sim_random(GsqlIo *io, void *out, size_t n) {
     }
 }
 
+static uint64_t sim_now_ms(GsqlIo *io) { return ((Sim *)io)->clock_ms; }
+static void sim_sleep_ms(GsqlIo *io, uint64_t ms) { ((Sim *)io)->clock_ms += ms; }
+
 static const GsqlIoOps sim_ops = {
     sim_open, sim_read_at, sim_write_at, sim_sync, sim_size, sim_truncate,
     sim_close, sim_rename, sim_remove, sim_sync_dir, sim_lock, sim_free, sim_random,
-    sim_mkdir, sim_list
+    sim_mkdir, sim_list, sim_now_ms, sim_sleep_ms
 };
 
 GsqlIo *gsql_io_sim(void) {

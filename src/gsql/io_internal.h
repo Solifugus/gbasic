@@ -23,7 +23,13 @@ typedef struct GsqlIoOps {
     void (*random)(GsqlIo *, void *, size_t);
     int (*mkdir)(GsqlIo *, const char *);
     int (*list)(GsqlIo *, const char *, int (*)(void *, const char *), void *);
+    uint64_t (*now_ms)(GsqlIo *);
+    void (*sleep_ms)(GsqlIo *, uint64_t);
 } GsqlIoOps;
+
+/* io.c: the monotonic clock, for the real layer and anything wrapping it */
+uint64_t gsql_io_mono_ms(GsqlIo *io);
+void gsql_io_mono_sleep(GsqlIo *io, uint64_t ms);
 
 /* io.c: sort the names (malloc'd, freed here), then hand each to `each`. */
 int gsql_io_walk_names(char **names, size_t n, int (*each)(void *, const char *), void *ctx);
