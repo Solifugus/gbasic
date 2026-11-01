@@ -2146,7 +2146,14 @@ static double commit_rate(const char *db, int n, int per, long *refused) {
             for (int i = 0; c && i < per; i++) {
                 char key[48];
                 snprintf(key, sizeof key, "c%d-%d-%d", n, k, i);
-                if (strcmp(put(c, key, "v"), "DONE")) {
+                /* odd clients commit explicitly, even ones in autocommit: the
+                   two paths each make a commit without a sync */
+                if (k % 2) {
+                    if (strcmp(begin(c, "write"), "DONE") || strcmp(put(c, key, "v"), "DONE") ||
+                        strcmp(call(c, GSQL_M_COMMIT, NULL), "DONE")) {
+                        bad++;
+                    }
+                } else if (strcmp(put(c, key, "v"), "DONE")) {
                     bad++;
                 }
             }
@@ -2188,9 +2195,14 @@ static int group_main(const char *dir) {
     double eight = commit_rate(db, 8, 40, &refused);
     EXPECT(refused == 0, "%ld of 320 commits from eight clients were not DONE", refused);
     printf("group one_client_per_s %.0f eight_clients_per_s %.0f ratio %.2f\n", one, eight, eight / one);
-    EXPECT(eight > 3 * one, "eight clients made %.0f commits/s against one client's %.0f: no sync was shared", eight, one);
-    /* the control: alone, a commit is paced by one sync, no more -- grouping
-       must not make a single client wait (5 ms a sync, so ~200/s at best) */
+    /* measured 7.2 to 8.2 (and 7.3 under sixteen busy loops); 3.9 when a
+       group does not wait for the connections that commit, 1.0 without
+       group commit at all */
+    EXPECT(eight > 5.5 * one, "eight clients made %.0f commits/s against one client's %.0f: syncs were barely shared",
+           eight, one);
+    /* the control, and a loose one: alone, a commit is paced by its sync.
+       A lone client that waited for nobody would make about 155/s here
+       against 171 to 192 measured, too thin a margin to assert under load */
     EXPECT(one > 100, "a single client made %.0f commits/s at 5 ms a sync: something waits besides the sync", one);
     EXPECT(count_rows(warm) == 360, "the database holds %ld rows, not the 360 committed", count_rows(warm));
     long wo = (long)gsql_client_owner_pid(warm);
