@@ -2664,10 +2664,14 @@ static void print_double(GsqlBuf *o, double d) {
         puts_(o, isnan(d) ? "CAST('nan' AS NUMBER)" : d > 0 ? "CAST('inf' AS NUMBER)" : "CAST('-inf' AS NUMBER)");
         return;
     }
-    for (int prec = 1; prec <= 17; prec++) {
-        snprintf(b, sizeof b, "%.*g", prec, d);
-        if (strtod(b, NULL) == d) {
-            break;
+    if (d == floor(d) && fabs(d) < 1e16) {
+        snprintf(b, sizeof b, "%.0f", d);   /* 2000.0, not 2e+03 */
+    } else {
+        for (int prec = 1; prec <= 17; prec++) {
+            snprintf(b, sizeof b, "%.*g", prec, d);
+            if (strtod(b, NULL) == d) {
+                break;
+            }
         }
     }
     if (!strpbrk(b, ".eE")) {
