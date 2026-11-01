@@ -1208,7 +1208,11 @@ static void serve(Owner *o) {
         int working = 0;
         for (size_t i = 0; i < o->nconns; i++) {
             Conn *c = o->conns[i];
-            if (!c->dead && c->work && !work_step(o, c)) {
+            /* a slice that finished its request counts too: the next
+               request pipelined behind it is waiting in c->head, and
+               sleeping in poll would leave it there until more input came */
+            if (!c->dead && c->work) {
+                work_step(o, c);
                 working = 1;
             }
         }

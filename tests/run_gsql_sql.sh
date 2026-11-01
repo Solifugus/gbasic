@@ -87,7 +87,9 @@ if "$CC" $FLAGS -g -O1 $SAN -o "$work/parse_test" tests/gsql/sql_parse_test.c sr
         2>"$work/build.err" &&
    "$CC" $FLAGS -g -o "$work/sql_test" tests/gsql/sql_test.c libgbasic.a $LIBS 2>>"$work/build.err" &&
    "$CC" $FLAGS -g -O1 $SAN -D_POSIX_C_SOURCE=200809L -o "$work/owner_test" tests/gsql/sql_owner_test.c \
-        src/gsql/client.c src/gsql/owner.c src/platform_posix.c $LAYER $ENGINE 2>>"$work/build.err"; then
+        src/gsql/client.c src/gsql/owner.c src/platform_posix.c $LAYER $ENGINE 2>>"$work/build.err" &&
+   "$CC" $FLAGS -g -O2 -D_POSIX_C_SOURCE=200809L -o "$work/stall_test" tests/gsql/sql_stall_test.c \
+        libgbasic.a $LIBS 2>>"$work/build.err"; then
     pass "parse_test${SAN:+ (under ASan and UBSan)}, sql_test (linked to libgbasic.a) and owner_test"
 else
     head -12 "$work/build.err"
@@ -222,6 +224,17 @@ printf 'TIER owner: gbasic --gsql-owner, started by a client, end to end\n'
 mkdir -p "$work/own"
 XDG_RUNTIME_DIR="$rt" bounded 120 "$work/owner_test" ./gbasic "$work/own" >"$work/own.out" 2>&1
 verdict owner "$work/own.out" $?
+
+printf 'TIER stall: a long read does not stall a point read, as a ratio, and CANCEL of a working read\n'
+# docs/gsql_slicing_design.md §4. Through the real owner, 200 000 rows: B's
+# worst point read during A's GROUP BY and A's sort must be under a quarter of
+# that query's own time -- measured 0.02 and 0.01, where an unsliced owner
+# makes B wait the whole blocking step, a ratio near 1. A ratio is unchanged
+# by a uniformly slower machine; B must also have read during each query.
+mkdir -p "$work/stall"
+XDG_RUNTIME_DIR="$rt" bounded 240 "$work/stall_test" ./gbasic "$work/stall" 200000 >"$work/stall.out" 2>&1
+verdict stall "$work/stall.out" $?
+grep -E '^(GROUP BY|sort):' "$work/stall.out" | sed 's/^/       /'
 
 printf 'TIER leftovers: no owner outlives the suite\n'
 sleep 0.3
