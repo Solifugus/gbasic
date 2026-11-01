@@ -5192,8 +5192,11 @@ static int advance(SqlCursor *c, uint64_t budget) {
         }
         case PH_SORT: {
             /* a move and a comparison are cheaper than reading a row, so a
-               slice of the sort is larger than one of the collection */
-            int r = sort_step(c, budget == UINT64_MAX ? budget : budget * 16);
+               slice of the sort is larger than one of the collection -- but
+               not under a test's tiny budget, or a one-row slice would never
+               stop a small sort mid-merge and the sliced tier could not see a
+               merge that lost its place (measured: it stayed green) */
+            int r = sort_step(c, budget == UINT64_MAX || budget < 64 ? budget : budget * 16);
             if (r < 0) {
                 return -1;
             }
