@@ -1,6 +1,6 @@
 # G-SQL: spilling to disk, and the external-sort index build
 
-**Status:** Designed 2026-11-01. It is item 6 of the work order in `gsql_scale_measurements.md` §4: *"spill-to-disk, with the external-sort index build as its first user"*. This document designs the sorter and its first user. The query operators that hold rows in memory (§3 of the measurements) come after, each its own increment, on the same sorter.
+**Status:** The sorter and its first user shipped 2026-11-01 (`src/gsql/xsort.c`; `gsql_index_create` in `src/gsql/table.c`; `run_gsql_table.sh`'s sort tier and its model's spilling seeds). The query operators are still to come. What was measured is §6, and it is a smaller gain than §2 predicted. It is item 6 of the work order in `gsql_scale_measurements.md` §4: *"spill-to-disk, with the external-sort index build as its first user"*. This document designs the sorter and its first user. The query operators that hold rows in memory (§3 of the measurements) come after, each its own increment, on the same sorter.
 
 ## 1. The gap
 
@@ -43,3 +43,18 @@ A billion rows would take half a day or more.
 - **The sorter alone**, against an in-memory sort of the same entries: random keys with duplicates, empty keys and values, keys longer than a run, a budget small enough to force hundreds of runs, and none at all. It must also remove every file it made, and leave the directory as it found it on failure.
 - **The index build**, through `run_gsql_table.sh`'s model workload, which already builds indexes over existing rows and checks them, with the sorter's budget lowered so every build spills.
 - **The scale point:** `CREATE INDEX` at 10⁶ and 10⁷ rows, timed before and after, on ext4 under `/var/tmp`. The claim is that the growth per 10× falls well below 30×.
+
+## 6. Measured, and what it did not fix
+
+`research/gsql/scale.sh` on NVMe ext4, the same table before and after (`CREATE INDEX t_k ON t (k)` over existing rows, one transaction, timed with its commit apart):
+
+| rows | before: build (commit) | after: build (commit) | memory added, before → after |
+|---|---|---|---|
+| 10⁶ | 1.91 s (0.12) | 1.44 s (0.06) | 51 → 93 MB |
+| 10⁷ | 37.5 s (12.9) | 26.2 s (10.4) | 81 → 88 MB |
+
+- **The statement itself is a third faster** at 10⁷ (24.7 s to 15.8 s): reading every row before writing anything means the cursor merges over nothing.
+- **The commit is not much faster** (12.9 s to 10.4 s), so the growth per 10× moved only from 19.6× to 18.2×. §2 predicted the sorted runs would move down the levels unrewritten. That is not shown, and the commit's cost is **not yet explained**: an instrumented build meant to time its parts (the flush, the last spill, the manifest, compaction) failed its own commit and was abandoned for the night. It is the next thing to measure, and the 10⁸ point waits for it.
+- **The sort's own budget shows in memory at 10⁶:** 64 MB of arena, which the earlier build did not hold.
+
+**Perturbations proven red:** a unique index's duplicate check removed (the table model's DUPLICATE verdicts), the merge's key order reversed, and the merge's ties unstable (both by the sort tier).
