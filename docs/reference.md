@@ -2540,6 +2540,23 @@ next
   owns the result: leaving it early by `break`, `return` or a raise ends it.
 - `gsql.query(NAME)` answers every row as an array, and `gsql.exec(NAME)`
   answers `{ command, rows_affected }`. Either takes the block alone.
+- **A database chosen at run time** (one per tenant, a directory the program is
+  given) is declared as a role, `database NAME()` with no `file:`, and its
+  blocks are given a connection when used: `gsql.exec(connection, block)` and
+  `gsql.query(connection, block)`, connection first as with a string, or
+  `gsql.on(connection, block)`, the block bound to that connection, which is
+  what `for each` takes. Any block can be run elsewhere the same way; one on a
+  database with a file still runs there by default. A role takes no `create:`
+  or `linger:`, which are the options of the `gsql.connect` that makes its
+  connection (`docs/gsql_block_connection_design.md`).
+
+**Write SQL in blocks; use a string only for SQL assembled at run time.** A
+block is fixed text in the program, so nothing a user types can become part of
+a statement and injection is impossible by construction; its SQL is checked
+when the program loads, sits beside the code that uses it, and needs no
+quoting. A string is for the statement that really is built as the program
+runs, a table name it chose, say, and then every value it carries is bound as
+a parameter, never pasted in.
 
 When the program loads, the statement is parsed, so **a mistake in the SQL is
 reported at its line and column in the program**, before anything runs; so is

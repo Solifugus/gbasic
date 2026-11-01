@@ -9,6 +9,17 @@ Every figure cites where it was measured. When a limit closes, its entry in §2 
 
 ## 1. Practices that follow from the design
 
+### Write SQL in blocks
+
+**The block form is G-SQL's normal form** (Matthew, 2026-11-01): `database` and `sql` blocks for every statement whose text is known when the program is written, which is nearly all of them.
+
+- **Injection is impossible by construction.** A block is fixed text in the program, and values reach it only as `:name` parameters, so nothing a user types can become part of a statement. A string is safe only while everybody binds every value; one `"... where name = '" + name + "'"` is the classic hole.
+- **Mistakes are found before anything runs.** The SQL is parsed when the program loads and a syntax error is located at its line and column.
+- **It sits beside the code that uses it,** with no quoting, no escapes and no connection to manage: the database opens itself on first use.
+- **A database chosen at run time still uses blocks:** declare it as a role, `database tenant()`, and give its blocks the connection, `gsql.exec(db, add)` or `for each row in gsql.on(db, items)`.
+
+**Use a string for SQL that is assembled as the program runs**, such as a table or column name the program chooses, and bind every value it carries as a parameter.
+
 ### Batch your writes
 
 **A commit costs one sync, and the sync is what slow storage charges for.** Measured (`gsql_scale_measurements.md` §2):

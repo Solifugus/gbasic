@@ -117,7 +117,8 @@ The design's sketch (`gsql_design.md` §2) is kept, with three decisions the bui
 ### 7.2 Running a block
 
 - **`for each row in block`** runs a `select` and hands over one row per pass. Rows arrive a batch at a time (500, as `gsql.query` fetches them), so a result is never held whole. **The loop owns the cursor**, as `for each line in f` owns its file: `break`, `return`, a named `break` to an outer loop, and a raise all end it, and the owner's cursor is closed. A failure partway, such as the owner lost, raises after the rows already handed over; what the loop did with them stays done.
-- **`gsql.query(block)`** answers every row as an array, and **`gsql.exec(block)`** answers `{ command, rows_affected }`. Each takes the block alone: its parameters are its frame's, so a second argument is refused.
+- **`gsql.query(block)`** answers every row as an array, and **`gsql.exec(block)`** answers `{ command, rows_affected }`. Each takes the block alone: its parameters are its frame's, so a parameters argument is refused.
+- **On a database chosen at run time** (*since 2026-11-01*, `gsql_block_connection_design.md`): `gsql.exec(connection, block)` and `gsql.query(connection, block)` run a block on that connection, and `gsql.on(connection, block)` answers a copy bound to it, for `for each`. `database NAME()` with no `file:` declares a role, whose blocks must be given a connection.
 - The module's refusals carry over and name the block (`sql cheap: …`). `exec` over a `select` block is refused and says to iterate it. `query` or `for each` over a block that returns no rows is refused and **says it ran**, with its count. That matters more here than for `gsql.query`, because a loop is the natural way to "run" a block.
 
 ### 7.3 Checked when the program loads
