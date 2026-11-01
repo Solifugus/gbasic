@@ -1,6 +1,6 @@
 # G-SQL: a block of several statements
 
-**Status:** Designed 2026-11-01, with Matthew the same day. It settles what `gsql_design.md` §2 left open ("multiple statements need defined result behavior") and `gsql_module_design.md` §7 deferred ("a block holds one statement").
+**Status:** Shipped 2026-11-01 (`gsql_block_split`, `gsql_block_prelude` and `gsql_block_start` in `src/modules/gsql.c`; the load-time check in `src/frontend.c`; `tests/gsql/blocks_test.bas` and `run_gsql_module.sh`'s load tier). Designed with Matthew the same day. It settles what `gsql_design.md` §2 left open ("multiple statements need defined result behavior") and `gsql_module_design.md` §7 deferred ("a block holds one statement").
 
 ## 1. The gap
 
@@ -65,5 +65,8 @@ In `tests/gsql/blocks_test.bas` and `run_gsql_module.sh`'s load tier:
 - **`exec` answers the last statement and `statements` in order,** with each count.
 - **A block ending in a select** streams after its insert ran, and `gsql.query` answers the same rows.
 - **All or none:** a block whose second statement fails leaves the first undone, in its own transaction; inside the program's transaction, the program's rollback undoes it and its commit keeps it.
+- **Refused before anything runs:** `exec` of a block ending in a select, and `query` of one ending in none, each checked to have changed nothing.
+
+**What building it decided:** a block whose last statement is a `select` keeps its changes (commits its own transaction) **before** its rows are read, so the rows stream as any query's do rather than holding a write transaction open for the life of a loop. **Perturbations proven red:** the block's own transaction taken away, never joining the program's, and the up-front refusal removed.
 - **Load-time refusals:** a `select` that is not last, naming its place; an empty statement (`;;`).
 - **Parameters across statements,** read from a function's own variables.

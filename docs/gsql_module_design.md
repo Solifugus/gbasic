@@ -66,7 +66,7 @@ Three refusals are the module's own:
 
 ## 6. Not done yet
 
-- **A block holds one statement.** `gsql_design.md` §2 proposes per-statement results for a block of several, with a `RETURN` to choose one; nothing has needed it yet, and a second statement is refused at load time by G-SQL's parser.
+- **A block may hold several statements** since 2026-11-01 (`gsql_multi_statement_design.md`): the last one answers, a `select` may only be last, and the block is one transaction. `gsql_design.md` §2's `RETURN` to choose a result is not needed for that; several results by name are recorded there as later work.
 - **A block's plan is not cached.** The owner parses and plans each request; a prepared statement (`PREPARE` is in the protocol) is the obvious next step and is not measured as needed.
 - **Two connections in one program can wait on each other.** The owner has one writer, and a second connection's write waits for the first's transaction to end. In one single-threaded program the first cannot end while the program waits on the second, and the client waits without a bound. By reading the owner, the owner's idle-writer timeout (5 minutes) should end the first transaction and release the second; that is **not measured**.
 - **The principal is not sent.** `gsql_design.md` §6.5 says each request carries `principal()` for the audit history, and nothing in the SQL layer records one yet.
