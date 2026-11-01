@@ -1,6 +1,6 @@
 # G-SQL: a value stored into a typed column takes its kind; exec answers rows
 
-**Status:** Designed 2026-11-01, Matthew's rulings the same day, from his first hand-written block program. His principle: *"much of what gBASIC should be is to reduce the work necessary for programmers. The less they have to think or remember, the better."*
+**Status:** Shipped 2026-11-01 (`store_convert` in `src/gsql/sql_exec.c`, the rows path of `gsql_eval_exec` in `src/modules/gsql.c`; `tests/gsql/module_test.bas`, `tests/gsql/blocks_test.bas`). Designed the same day, from Matthew's rulings, from his first hand-written block program. His principle: *"much of what gBASIC should be is to reduce the work necessary for programmers. The less they have to think or remember, the better."*
 
 ## 1. Storing converts
 

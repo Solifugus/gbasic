@@ -18,7 +18,7 @@ A block holds one statement. A program's schema, a migration, or "record this, t
 
 - **Every statement before the last changes something and returns no rows.** A `select` or `explain` anywhere but last is refused when the program loads, since its rows would go nowhere.
 - **A block ending in a `select` is a query:** `for each row in block` streams it and `gsql.query(block)` answers its rows, after the statements before it have run.
-- **`gsql.exec(block)` answers the last statement's `{ command, rows_affected }`, plus `statements`,** one `{ command, rows_affected }` per statement in order, so the earlier ones' counts are not lost.
+- **`gsql.exec(block)` answers the last statement's `{ command, rows_affected }`, plus `statements`,** one `{ command, rows_affected }` per statement in order, so the earlier ones' counts are not lost. *Since the same day* it also answers the last statement's `rows` when it returns them, rather than refusing (`gsql_store_conversion_design.md` §2).
 - **The block is one transaction.** It runs all of its statements or none. If the connection already has a transaction open, the block runs inside it and leaves committing to the program; otherwise it begins its own and commits it.
 - **`:name` parameters work across all of them,** each read where the block runs.
 
@@ -65,7 +65,7 @@ In `tests/gsql/blocks_test.bas` and `run_gsql_module.sh`'s load tier:
 - **`exec` answers the last statement and `statements` in order,** with each count.
 - **A block ending in a select** streams after its insert ran, and `gsql.query` answers the same rows.
 - **All or none:** a block whose second statement fails leaves the first undone, in its own transaction; inside the program's transaction, the program's rollback undoes it and its commit keeps it.
-- **Refused before anything runs:** `exec` of a block ending in a select, and `query` of one ending in none, each checked to have changed nothing.
+- **Refused before anything runs:** `query` of a block ending in no rows, checked to have changed nothing. (`exec` of one ending in a select was refused too, until `exec` learned to answer rows.)
 
 **What building it decided:** a block whose last statement is a `select` keeps its changes (commits its own transaction) **before** its rows are read, so the rows stream as any query's do rather than holding a write transaction open for the life of a loop. **Perturbations proven red:** the block's own transaction taken away, never joining the program's, and the up-front refusal removed.
 - **Load-time refusals:** a `select` that is not last, naming its place; an empty statement (`;;`).

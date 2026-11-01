@@ -2441,7 +2441,7 @@ The module provides:
 
 - `gsql.connect(path[, { create: true, linger: seconds }])` — without `create`, a database that is not there is refused. `linger` is how long an owner this connection **starts** waits after its last connection closes before it stops, from 0 to 86400; 0 stops it at the last close. It is the starter's choice: when an owner is already running, a `linger` given here is ignored. A `database` block takes `linger:` too
 - `gsql.query(connection, sql[, parameters])` — an array of records, fields in select-list order
-- `gsql.exec(connection, sql[, parameters])` — `{ command, rows_affected }`, as `sqlite`, `pg` and `odbc` answer; `rows_affected` is `nothing` for a statement with no count
+- `gsql.exec(connection, sql[, parameters])` — runs anything and answers `{ command, rows_affected }`, as `sqlite`, `pg` and `odbc` answer, plus **`rows`, every row, when the statement returns rows**; `rows_affected` is `nothing` for a statement with no count. `gsql.query` is the shortcut for the rows alone, and `for each` streams a large result
 - `gsql.begin(connection[, "read" | "write"])` — `"write"` by default
 - `gsql.commit(connection)`, `gsql.rollback(connection)`
 - `gsql.close(connection)`
@@ -2484,8 +2484,17 @@ Every refusal raises with `error.source = "gsql"` and **`error.details.code`
 naming G-SQL's code** — `SYNTAX`, `EXPRESSION`, `NOT_FOUND`, `DUPLICATE`,
 `NOT_NULL`, `TYPE`, `READ_ONLY`, `STATE`, `LOST` and the rest — plus
 `error.details.position`, a 1-based character offset, where the statement has
-a place to point at. `exec` refuses a statement that returns rows; `query`
-refuses one that returns none, saying that it ran. If the owner exits, the
+a place to point at. `query` refuses a statement that returns no rows,
+saying that it ran.
+
+**A value stored into a typed column takes the column's kind.** In `INSERT`,
+`UPDATE ... SET` and a `DEFAULT`, text into a `date`, `time`, `datetime` or
+`money` column is read as that kind, and a number into a `money` column is
+money in the column's currency: `values ('2026-11-01 04:31', 199.50)` stores
+a date-time and money. Text that does not read as one is refused, naming the
+column. Comparisons and arithmetic make **no** implicit conversion
+(`where name = 1` is refused), and an integer column still refuses text and a
+decimal (`docs/gsql_store_conversion_design.md`). If the owner exits, the
 request in flight fails with `LOST` and nothing is retried; the next call
 starts a new owner. An owner whose database another machine has taken writes
 nothing more and exits, so its clients see `LOST`, and their next call is

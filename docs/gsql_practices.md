@@ -83,7 +83,7 @@ Every operator in a query is gBASIC's own (`gsql_sql_design.md` §2):
 - an integer past 2^53 stays exact;
 - `unknown` is SQL's `NULL`, and three-valued logic is gBASIC's.
 
-There are **no implicit casts**: `'1' = 1` is refused, and `CAST` says what you mean. What a program computes and what a query computes therefore cannot quietly disagree.
+There are **no implicit casts in an expression**: `'1' = 1` is refused, and `CAST` says what you mean. *Storing* is different: a value going into a typed column takes the column's kind, so `'2026-11-01'` into a `date` column needs no cast (`gsql_store_conversion_design.md`). What a program computes and what a query computes therefore cannot quietly disagree.
 
 ### A schema change is never blocked, and is always reported
 

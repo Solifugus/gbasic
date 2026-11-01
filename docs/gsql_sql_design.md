@@ -38,7 +38,7 @@
 **Deviations from PostgreSQL, from gBASIC's semantics, each deliberate (§4.0's rule):**
 
 - `5 / 2` is `2.5`: there is no integer division, because a gBASIC number is one kind.
-- `'a' + 1` and `'1' = 1` are refused (§9: no implicit casts). gBASIC itself answers them, so the SQL layer checks the operand kinds before handing an arithmetic or ordering operator to the host.
+- `'a' + 1` and `'1' = 1` are refused (§9: no implicit casts in an expression; storing into a typed column converts since 2026-11-01, `gsql_store_conversion_design.md`). gBASIC itself answers them, so the SQL layer checks the operand kinds before handing an arithmetic or ordering operator to the host.
 - `<>` and `!=` are both accepted and mean gBASIC's `!=`.
 - `ORDER BY … DESC` puts `NULL` first and `ASC` puts it last, which is PostgreSQL's default and is also what the index key order gives (`gsql_storage_design.md` §3.2), so a sort and an index scan cannot disagree.
 
