@@ -20,8 +20,9 @@ The program cannot tell which one it is on. In the failing cases, two machines e
 **An owner holds a lease, kept in the database's own directory, and renews it once a second. Another machine takes the database only after watching the lease stand still for long enough that its owner must be gone.**
 
 - **Liveness is judged by movement, never by a clock reading.** The lease carries a counter the owner increments at every renewal. An opener reads it repeatedly and times it with **its own monotonic clock**. No timestamp written by one machine is ever compared with another machine's clock, so clock skew between machines, and a clock stepped by NTP, change nothing.
-- **The same machine needs no wait.** If the lease names this machine and this boot, the `flock` we already hold is authoritative here, so the previous owner is gone. The lease is taken at once. A crash and restart on one machine, which is the common case and what owner lifetime churns through (`gsql_owner_lifetime_design.md`), costs nothing new.
-- **Another machine's lease costs a wait.** An opener watches for `dead_ms` (12 seconds). If the counter moves at any point, the database is in use elsewhere and the open is refused at once, naming the machine. An owner that is alive therefore produces a refusal within about a second. **An owner that crashed on another machine makes the next open from a different machine wait 12 seconds.** That is the price of not trusting clocks, and it is paid only after a crash, and only by another machine.
+- **The same machine needs no wait.** If the lease names this machine and this boot, the `flock` we already hold is authoritative here, so the previous owner is gone. The lease is taken at once.
+- **A clean close leaves no lease.** The next open, from any machine, takes it at once. A crash and restart on one machine, which is the common case and what owner lifetime churns through (`gsql_owner_lifetime_design.md`), costs nothing new.
+- **Another machine's lease costs a wait.** An opener watches for `dead_ms` (12 seconds). If the counter moves at any point, the database is in use elsewhere and the open is refused at once, naming the machine. An owner that is alive therefore produces a refusal within about a second. **An owner that crashed on another machine makes the next open from a different machine wait 12 seconds, and then 2 more to settle.** That is the price of not trusting clocks, and it is paid only after a crash, and only by another machine.
 
 ## 3. The lease file
 
@@ -48,13 +49,17 @@ The program cannot tell which one it is on. In the failing cases, two machines e
 
 After the engine has the `flock` and before it reads the manifest or the log:
 
-1. **Read the lease.** If there is none, or it fails its checksum on first sight, go to step 3.
-2. **If it names this machine and this boot,** take it (step 3, with no wait). **Otherwise watch it** for `dead_ms`, reading every `renew_ms / 4`. If the counter, the token or the checksum changes, refuse: **the database is open on another machine**.
-3. **Write our record:** a new token and counter 1. Re-read the lease immediately before writing; if it changed since the last read, refuse as in step 2.
-4. **Settle.** Wait `settle_ms` (2 seconds), then read the lease once more. If it is not our token, another machine wrote after us and won; refuse.
+1. **If there is no lease file, create it** with our record, **exclusively**: the create fails if the file exists, and that is atomic on a local filesystem, NFSv3 and later, and SMB. A create that succeeds holds the lease, with no wait. One that fails means another opener has just created it; go on as if it had been there. Go to step 5.
+2. **If the record names this machine and this boot, overwrite it at once.** The `flock` we hold rules out a running owner on this machine, so this is a restart after a crash here.
+3. **Otherwise watch it** for `dead_ms`, reading every `renew_ms / 4`. That covers a record naming another machine, and one that cannot be read (an empty file, a bad checksum, a damaged sector). If the counter, the token or the checksum changes at any point, refuse: **the database is open on another machine**. One that stays unreadable for `dead_ms` is damage, not an owner.
+4. **Write our record**, re-reading the lease immediately before; if it changed since the last read, refuse as in step 3. Then **settle**: wait `settle_ms` (2 seconds) and read it once more. If it is not our token, another machine wrote after us and won; refuse.
 5. Open the manifest and replay the log.
 
-**Two openers from different machines** that both watched a dead lease both write in step 3. The sector holds the last write, so after the settle exactly one finds its own token, and the other refuses. Step 3's re-read makes the window between them a few milliseconds, against a settle of 2 seconds. The store is opened only after the settle, so the loser has written nothing but the lease.
+**A clean close removes the lease file**, after reading it to confirm it still holds our token. So a planned handoff takes no wait on any machine, and step 1 is the path every open takes after a clean close: owner lifetime's churn costs one create and one removal per owner, nothing more.
+
+**Two openers from different machines** that both watched a dead lease both write in step 4. The sector holds the last write, so after the settle exactly one finds its own token, and the other refuses. The re-read before writing makes the window between them a few milliseconds, against a settle of 2 seconds. The store is opened only after the settle, so the loser has written nothing but the lease.
+
+**Step 2 does not settle,** and it does not need to. Its only possible rival is another machine that has watched our machine's dead record for `dead_ms` and is about to write. If our write lands first, the rival's re-read sees it move and refuses. If the rival writes inside the few milliseconds between its re-read and its write, it holds the sector, our owner finds a foreign token at its next renewal, within `renew_ms`, and stops, while the rival is still settling and has not yet opened the store. Whatever our owner committed in between is in the log the rival then replays. That is the same margin argument as the fence (§5).
 
 ## 5. Keeping it, and the fence
 
@@ -74,7 +79,7 @@ After the engine has the `flock` and before it reads the manifest or the log:
 ## 6. What it costs
 
 - **A renewal a second:** an open, a 512-byte write, an `fdatasync` and a close, in the owner's thread. On a local disk that is well under a millisecond. **On NFS it is not measured here** (there is no network storage on this machine); it is a round trip to the server for the open, the write and the sync, and while it runs the owner serves nobody. It is reported as a statistic so it can be measured where it matters.
-- **A takeover from another machine:** 12 to 14 seconds, after a crash only.
+- **A takeover from another machine:** 14 seconds after a crash. After a clean close there is no lease, and nothing to wait for.
 - **On storage where `flock` already works across machines,** the lease adds the renewal and nothing else. The program cannot tell which storage it is on, which is the whole point.
 
 ## 7. Decisions
@@ -90,6 +95,8 @@ After the engine has the `flock` and before it reads the manifest or the log:
 - **The gap itself, as a difference:** two owners with different test identities and local locks on one database. Without the lease, both open (shown by the control, the lease turned off by a perturbation). With it, the second is refused with `elsewhere`, naming the first, **within about one renewal**, not after `dead_ms`.
 - **Takeover after a crash:** SIGKILL the first owner. The second, from another identity, waits at least `dead_ms` and then opens, and sees every committed row.
 - **The same machine:** a SIGKILLed owner's restart, same identity, opens at once (well under `dead_ms`).
+- **A clean close:** the lease file is gone, and another identity then opens at once.
+- **Two creators:** two identities opening an absent lease at once, many rounds: exactly one creates it, and the other is refused.
 - **Theft:** an owner whose lease is overwritten by another identity's record stops; its next write is refused with `GS_FENCED`, and its clients get `LOST` naming the other machine.
 - **The fence without renewal:** an owner whose poll loop is blocked (a long statement) past `trust_ms` renews before its next commit, and if the lease was taken meanwhile, the commit is refused.
 - **Two contenders** from different identities over a dead lease: exactly one wins, every time, over many rounds.
