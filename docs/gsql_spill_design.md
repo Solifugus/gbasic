@@ -52,7 +52,7 @@ A billion rows would take half a day or more.
 |---|---|---|---|
 | 10⁶ | 1.91 s (0.12) | 1.44 s (0.06) | 1.45 s (0.07) |
 | 10⁷ | 37.5 s (12.9) | 26.2 s (10.4) | **15.8 s (0.34)** |
-| 10⁸ | 1 180 s | — | (§7) |
+| 10⁸ | 1 180 s (478) | — | **173 s (0.3)**, with §8's lookup fix |
 
 **Growth per 10× fell from 19.6× to 10.9×**, which is linear plus the index's own depth. Memory added by the build is 88–94 MB, the sort's 64 MB arena among it.
 
@@ -68,3 +68,13 @@ The first instrumented build meant to find this failed its own commit, because t
 **Held by `run_gsql_store.sh`** (`sorted_load` in `tests/gsql/store_test.c`): a sorted load into a new tree beside a large one, with one entry in a lower tree written last, must commit writing under a quarter of what the load spilled. Measured 3.05 MB against 1.08 MB on the engine before, and **each half of the fix alone fails it**. The first version of the check passed without the per-tree cut, because nothing in its load reached across the rows; the lower tree written last is what CREATE INDEX's schema write does. A first version also failed on the fixed engine, because its first tree was loaded in random order and left a compaction backlog the commit legitimately paid down. Every crash mode of the gate passes with both rules.
 
 **Perturbations proven red:** a unique index's duplicate check removed, the merge's key order reversed, the merge's ties unstable, the per-tree cut removed, the lone-file move removed.
+
+## 8. What the new layout exposed: a point read walked its levels
+
+At 10⁸ the build was fast and **counts through the index were about 56% slower**, the same both run alone and side by side with the engine before (1 953 against 1 249 µs). At 3 × 10⁷ it reproduced at 7–10%, and crossing the two engines over the two databases showed it was the **layout**, not the code. Both read **the same blocks** (30.8 a query, 5.5 from the cache); callgrind showed 312 000 more instructions a query, all in key comparisons, from `lookup`, the point read each counted row costs: 113 comparisons a read against 74. **`lookup` walked every file of a level from the left** until one could hold the key. Moved runs leave a level with more, smaller files (150 to 170 in level 2 against 50), so the walk grew. A level at or below 1 is sorted and disjoint, so it is a binary search now.
+
+- **At 3 × 10⁷:** a count on the new layout went 332 → 307 µs, level with the old layout's 300.
+- **At 10⁸,** measured alone on the final build: the load 1 112 s → **651 s** (90 000 → 153 500 rows a second), since every insert's uniqueness check is a point read; `CREATE INDEX` 1 180 s → **173 s**, its commit 478 s → 0.3 s; point reads 25.9 / 504 µs → 28.5 / 551 (median / p99); a count by `k` 918 → 1 133 µs. **The two baselines are an older commit measured on an earlier day,** so those last two are not a comparison the side-by-side runs support; under identical conditions at 3 × 10⁷ the layouts are level.
+- **This matters beyond the index build:** at 10⁹ rows a level holds hundreds of files, and the walk was linear in them.
+
+**Perturbation proven red:** the search's bound off by one (the store suite).

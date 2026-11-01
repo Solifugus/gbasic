@@ -51,7 +51,7 @@ Counts by `k` grow because each value of `k` matches about 1, 10 and 100 rows at
 
 **What does not hold, in order of importance:**
 
-1. **`CREATE INDEX` over existing rows is superlinear:** 1.75 s, 33.7 s, 1 180 s, about 30× for each 10×. A billion rows would take on the order of half a day or more.
+1. **`CREATE INDEX` over existing rows is superlinear:** 1.75 s, 33.7 s, 1 180 s, about 30× for each 10×. A billion rows would take on the order of half a day or more. *Fixed 2026-11-01* (`gsql_spill_design.md` §6–§8): 1.45 s, 15.8 s, 173 s, linear, and the load at 10⁸ went from 1 112 s to 651 s with the point-read fix the work exposed.
    - **The cause** is one transaction that spills many sorted runs. Timed in parts at 10⁷:
 
      | part | time |
