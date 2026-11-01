@@ -456,6 +456,9 @@ struct GsqlConnectionValue {
      * statement again keeps the connection rather than replacing it. */
     int create;
     const void *decl;
+    /* a `database` block with no `file:`, a role: its blocks are given a
+     * connection when used (docs/gsql_block_connection_design.md) */
+    char *role;
 };
 
 /* An `sql` block: its statement, the database it is on (by NAME, looked up in
@@ -467,6 +470,9 @@ struct GsqlStatementValue {
     char *sql;
     char **params;
     size_t nparams;
+    /* gsql.on(connection, block): the connection this copy runs on, in
+     * place of its `database` block's; a null value when unbound */
+    Value bound;
 };
 
 struct LdapConnectionValue {
@@ -4537,6 +4543,7 @@ static void value_free(Value value) {
 #if GBASIC_GSQL
             gsql_connection_shut(connection);
 #endif
+            free(connection->role);
             free(connection->path);
             free(connection->exe);
             free(connection);
@@ -4551,6 +4558,7 @@ static void value_free(Value value) {
                 free(statement->params[i]);
             }
             free(statement->params);
+            value_free(statement->bound);
             free(statement);
         }
     } else if (value.kind == VALUE_LDAP_CONNECTION) {
@@ -41017,6 +41025,9 @@ static void database_register(AstStmt *stmt) {
     c->ref_count = 1;
     const char *file = gsql_decl_option_text(&stmt->as.database.options, "file");
     c->path = copy_string(file ? file : "");
+    if (!file) {
+        c->role = copy_string(stmt->as.database.name);
+    }
     for (size_t i = 0; i < stmt->as.database.options.count; i++) {
         AstRecordField *f = &stmt->as.database.options.items[i];
         if (strcmp(f->name, "create") == 0 && f->value && f->value->kind == AST_EXPR_BOOL) {
@@ -41047,6 +41058,7 @@ static void sql_register(AstStmt *stmt) {
 #if GBASIC_GSQL
     st->params = gsql_statement_params(st->sql, &st->nparams);
 #endif
+    st->bound = value_null();
     env_set(stmt->as.sql.name, value_gsql_statement(st));
 }
 

@@ -290,7 +290,7 @@ printf 'TIER blocks: the `database` and `sql` blocks, every answer written by ha
 BLOCKS="$PWD/tests/gsql/blocks_test.bas"
 mkdir -p "$work/blocks"
 (cd "$work/blocks" && timeout -k 5 120 "$OLDPWD/gbasic" "$BLOCKS") >"$work/blocks.out" 2>"$work/blocks.err"
-verdict blocks "$work/blocks.out" $? 45
+verdict blocks "$work/blocks.out" $? 60
 if [ -s "$work/blocks.err" ]; then
     sed 's/^/       /' "$work/blocks.err" | head -5
     fail "blocks: the fixture wrote to stderr"
@@ -451,8 +451,12 @@ load gsql
 print "ran"'
 load_case computed_option 2:1 "option 'file' must be a string literal" 'load gsql
 database db( file: "x" + ".gsql" )'
-load_case no_file 2:1 'says which file it is with `file:`' 'load gsql
+# no `file:` is a database chosen at run time (gsql_block_connection_design.md),
+# so creating and lingering are refused: they are the connection's
+load_case role_create 2:1 'belongs to the connection that is made for it' 'load gsql
 database db( create: true )'
+load_case role_linger 2:1 '`linger:` belongs to the connection' 'load gsql
+database db( linger: 0 )'
 load_case twice 4:1 "declared twice" "$HEAD
 database db( file: \"y.gsql\" )"
 load_case in_function 5:5 "cannot be declared inside a function" "$HEAD

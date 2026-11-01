@@ -9,6 +9,21 @@ checks = { n: 0, bad: 0 }
 database shop( file: "shop.gsql", create: true )
 database spare( file: "spare.gsql", create: true )
 database unused( file: "unused.gsql", create: true )
+' a role: chosen at run time, its blocks given a connection when used
+' (docs/gsql_block_connection_design.md)
+database tenant()
+
+sql t_make on tenant
+    create table item (id integer primary key, name string not null)
+end sql
+
+sql t_add on tenant
+    insert into item (id, name) values (:id, :name)
+end sql
+
+sql t_items on tenant
+    select id, name from item order by id
+end sql
 
 sql make on shop
     create table item (id integer primary key, name string not null, price money, seen date)
@@ -109,6 +124,46 @@ function exec_block(b)
     r = gsql.exec(b)
     e = error
     return e
+end function
+
+function exec_on(c, b)
+    on error goto next
+    r = gsql.exec(c, b)
+    e = error
+    return e
+end function
+
+function exec_on_with(c, b, p)
+    on error goto next
+    r = gsql.exec(c, b, p)
+    e = error
+    return e
+end function
+
+function on_of(c, b)
+    on error goto next
+    r = gsql.on(c, b)
+    e = error
+    return e
+end function
+
+' a tenant's rows, filled from this function's own variables
+function fill(db, who, count)
+    gsql.exec(db, t_make)
+    for i = 1 to count
+        id = i
+        name = who + string(i)
+        gsql.exec(db, t_add)
+    next
+    return nothing
+end function
+
+function names_of(bound)
+    out = []
+    for each row in bound
+        append(out, row.name)
+    next
+    return join(out, ",")
 end function
 
 function query_block(b)
@@ -289,6 +344,42 @@ spare = 5
 e = query_block(spare_rows)
 check("a block whose database name was reassigned", code_of(e), "STATE")
 check("says what happened", contains(message_of(e), "no longer holds a database"), true)
+
+' --- a block on a database chosen at run time -----------------------------------
+ta = gsql.connect("tenant_a.gsql", { create: true })
+tb = gsql.connect("tenant_b.gsql", { create: true })
+fill(ta, "a", 3)
+fill(tb, "b", 2)
+check("the same blocks on two tenants: a's rows", names_of(gsql.on(ta, t_items)), "a1,a2,a3")
+check("and b's, each holding only its own", names_of(gsql.on(tb, t_items)), "b1,b2")
+check("gsql.query(connection, block)", len(gsql.query(tb, t_items)), 2)
+check("a bound block runs through exec too", gsql.exec(gsql.on(ta, t_add)).rows_affected, 1)
+check("with :id and :name read where it ran", len(gsql.query(ta, t_items)), 4)
+e = exec_block(t_add)
+check("a role's block used alone", code_of(e), "STATE")
+check("says how to give it a connection", contains(message_of(e), "gsql.exec(connection, t_add)"), true)
+e = query_block(t_items)
+check("a role's block in query alone", contains(message_of(e), "gsql.on(connection, t_items)"), true)
+e = query_block(tenant)
+check("a role used as a connection", contains(message_of(e), "chosen at run time"), true)
+' the control: a block on a database with a file still runs there alone, and
+' elsewhere when given a connection
+check("a block with a file still runs alone", len(gsql.query(everything)), 7)
+e = exec_on(ta, make_n)
+check("and runs on another connection when given one", code_of(e), "(no error)")
+check("which is where the table was made", len(gsql.query(ta, all_n)), 0)
+e = exec_on_with(ta, t_add, { id: 9, name: "x" })
+check("a block takes no parameters argument", contains(message_of(e), "takes the block and nothing more"), true)
+e = on_of(5, t_items)
+check("gsql.on wants a connection first", contains(message_of(e), "expects a gsql connection first"), true)
+e = on_of(ta, "select 1")
+check("gsql.on wants a block second", contains(message_of(e), "expects an sql block second"), true)
+bound = gsql.on(tb, t_items)
+gsql.close(tb)
+e = query_block(bound)
+check("a bound block whose connection was closed", contains(message_of(e), "closed"), true)
+check("leaves the declared block alone", contains(message_of(query_block(t_items)), "chosen at run time"), true)
+gsql.close(ta)
 
 ' --- close ---------------------------------------------------------------------
 gsql.close(unused)

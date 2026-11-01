@@ -793,10 +793,17 @@ static void gsq_check_database(SrvCheck *chk, const AstStmt *stmt) {
         for (size_t i = 0; i < stmt->as.database.options.count; i++) {
             given |= strcmp(stmt->as.database.options.items[i].name, "file") == 0;
         }
-        if (!given) {
-            gsq_error(chk, stmt->line, stmt->column,
-                      "%s: says which file it is with `file:` -- database %s( file: \"%s.gsql\" )",
-                      where, stmt->as.database.name, stmt->as.database.name);
+        /* no `file:` at all is a database chosen at run time, a role whose
+           blocks are given a connection (gsql_block_connection_design.md);
+           creating and lingering are that connection's options */
+        for (size_t i = 0; !given && i < stmt->as.database.options.count; i++) {
+            const char *o = stmt->as.database.options.items[i].name;
+            if (strcmp(o, "create") == 0 || strcmp(o, "linger") == 0) {
+                gsq_error(chk, stmt->line, stmt->column,
+                          "%s: has no `file:`, so it is a database chosen at run time, and `%s:` belongs to the "
+                          "connection that is made for it -- gsql.connect(path, { %s: ... })",
+                          where, o, o);
+            }
         }
     } else if (!*srv_option_string(&stmt->as.database.options, "file")) {
         gsq_error(chk, stmt->line, stmt->column, "%s: `file:` is empty", where);

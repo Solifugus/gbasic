@@ -782,6 +782,14 @@ static Value gsql_eval_connect(AstExpr *expr) {
  * connection still unconnected. gsql.connect calls it at once; a `database`
  * block's connection is opened by its first use. */
 static int gsql_connection_open(GsqlConnectionValue *c, const char *verb) {
+    if (c->role) {
+        char msg[400];
+        snprintf(msg, sizeof msg, "gsql.%s: `%s` is a database chosen at run time (`database %s()`, with no file), so "
+                 "there is nothing to connect to; give its blocks a connection -- gsql.exec(connection, block), or "
+                 "gsql.on(connection, block) for a loop", verb, c->role, c->role);
+        gsql_module_refuse(msg);
+        return 0;
+    }
     if (!c->exe) {
         char exe[4096];
         if (!gb_exe_path(exe, sizeof exe)) {
@@ -826,18 +834,26 @@ static int gsql_connection_open(GsqlConnectionValue *c, const char *verb) {
 
 /* The request for one statement; parameters, when given, are the third
  * argument: a record names them (:name), an array numbers them ($1). */
-static int gsql_statement_body(AstExpr *expr, const char *verb, char **sql, Value *body) {
+/* `text`, the second argument already evaluated, is consumed. */
+static int gsql_statement_body_of(AstExpr *expr, const char *verb, Value text, char **sql, Value *body) {
     size_t argc = expr->as.call.args.count;
-    if (argc < 2 || argc > 3) {
+    if (text.kind != VALUE_STRING) {
         char msg[200];
-        snprintf(msg, sizeof msg, "gsql.%s expects a connection, a statement, and optionally its parameters", verb);
+        snprintf(msg, sizeof msg, "gsql.%s expects the statement as text or an sql block, not %s", verb,
+                 value_kind_name(text.kind));
+        value_free(text);
         gsql_module_refuse(msg);
         return 0;
     }
-    *sql = gsql_text_arg(expr, 1, verb, "the statement");
-    if (!*sql) {
+    if (memchr(text.as.string, 0, string_length(text.as.string))) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "gsql.%s: the statement holds a NUL byte", verb);
+        value_free(text);
+        gsql_module_refuse(msg);
         return 0;
     }
+    *sql = copy_string(text.as.string);
+    value_free(text);
     *body = value_record(NULL, 0);
     record_set(body, "statement", value_string(*sql));
     if (argc == 3) {
@@ -1068,12 +1084,22 @@ static char **gsql_statement_params(const char *sql, size_t *count) {
 /* The connection a block is on: its database, by name, in the global frame,
  * where the `database` block bound it. Borrowed, or NULL with a raise. */
 static GsqlConnectionValue *gsql_block_connection(const GsqlStatementValue *st, const char *who) {
+    if (st->bound.kind == VALUE_GSQL_CONNECTION) {
+        return gsql_connection_of(value_copy(st->bound), who);
+    }
     Symbol *sym = env_find_in_frame(&global_env, st->database);
     if (!sym || sym->value.kind != VALUE_GSQL_CONNECTION) {
         char msg[300];
         snprintf(msg, sizeof msg, "it is on `%s`, which %s", st->database,
                  sym ? "no longer holds a database -- something assigned over the `database` block's name"
                      : "is not declared");
+        gsql_module_raise(who, "STATE", msg, 0, st->sql);
+        return NULL;
+    }
+    if (sym->value.as.gsql_connection->role) {
+        char msg[400];
+        snprintf(msg, sizeof msg, "it is on `%s`, a database chosen at run time, so it needs a connection: "
+                 "gsql.exec(connection, %s), or gsql.on(connection, %s) for a loop", st->database, st->name, st->name);
         gsql_module_raise(who, "STATE", msg, 0, st->sql);
         return NULL;
     }
@@ -1162,7 +1188,90 @@ static int gsql_call_target(AstExpr *expr, const char *verb, GsqlConnectionValue
     }
     snprintf(who, who_cap, "%s", verb);
     *c = gsql_connection_of(v, verb);
-    return *c && gsql_statement_body(expr, verb, sql, body);
+    if (!*c) {
+        return 0;
+    }
+    if (argc < 2 || argc > 3) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "gsql.%s expects a connection, a statement, and optionally its parameters", verb);
+        gsql_module_refuse(msg);
+        return 0;
+    }
+    Value second = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(second);
+        return 0;
+    }
+    /* a block in second place runs on this connection
+       (docs/gsql_block_connection_design.md) */
+    if (second.kind == VALUE_GSQL_STATEMENT) {
+        GsqlStatementValue *st = second.as.gsql_statement;
+        snprintf(who, who_cap, "sql %s", st->name);
+        if (argc != 2) {
+            char msg[300];
+            snprintf(msg, sizeof msg, "gsql.%s(connection, %s) takes the block and nothing more; its parameters "
+                     "are the variables its :names name", verb, st->name);
+            value_free(second);
+            gsql_module_refuse(msg);
+            return 0;
+        }
+        int ok = gsql_block_body(st, who, body);
+        if (ok) {
+            *sql = copy_string(st->sql);
+        }
+        value_free(second);
+        return ok;
+    }
+    return gsql_statement_body_of(expr, verb, second, sql, body);
+}
+
+/* gsql.on(connection, block): the block, bound to run on that connection --
+ * what `for each` takes, having no argument list to put a connection in */
+static Value gsql_eval_on(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        gsql_module_refuse("gsql.on expects a connection and an sql block");
+        return value_null();
+    }
+    Value cv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(cv);
+        return value_null();
+    }
+    if (cv.kind != VALUE_GSQL_CONNECTION) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "gsql.on expects a gsql connection first, not %s", value_kind_name(cv.kind));
+        value_free(cv);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    Value bv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(cv);
+        value_free(bv);
+        return value_null();
+    }
+    if (bv.kind != VALUE_GSQL_STATEMENT) {
+        char msg[240];
+        snprintf(msg, sizeof msg, "gsql.on expects an sql block second, not %s; a SQL string runs on a connection "
+                 "directly, gsql.query(connection, text)", value_kind_name(bv.kind));
+        value_free(cv);
+        value_free(bv);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    GsqlStatementValue *from = bv.as.gsql_statement;
+    GsqlStatementValue *st = calloc(1, sizeof *st);
+    if (!st) {
+        abort();
+    }
+    st->ref_count = 1;
+    st->name = copy_string(from->name);
+    st->database = copy_string(from->database);
+    st->sql = copy_string(from->sql);
+    st->params = gsql_statement_params(st->sql, &st->nparams);
+    st->bound = cv;   /* the copy holds the connection */
+    value_free(bv);
+    return value_gsql_statement(st);
 }
 
 static Value gsql_eval_query(AstExpr *expr) {
@@ -1801,6 +1910,7 @@ static Value gsql_eval_call(AstExpr *expr) {
     if (strcmp(fn, "connect") == 0) return gsql_eval_connect(expr);
     if (strcmp(fn, "query") == 0) return gsql_eval_query(expr);
     if (strcmp(fn, "exec") == 0) return gsql_eval_exec(expr);
+    if (strcmp(fn, "on") == 0) return gsql_eval_on(expr);
     if (strcmp(fn, "begin") == 0) return gsql_eval_simple(expr, "begin", GSQL_M_BEGIN);
     if (strcmp(fn, "commit") == 0) return gsql_eval_simple(expr, "commit", GSQL_M_COMMIT);
     if (strcmp(fn, "rollback") == 0) return gsql_eval_simple(expr, "rollback", GSQL_M_ROLLBACK);
