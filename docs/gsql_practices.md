@@ -1,0 +1,96 @@
+# Using G-SQL well: practices, and the current limits
+
+**Status:** Shipped, a living guide (2026-11-01). It is written for gBASIC's books, at Matthew's request, so that what they teach follows G-SQL's real strengths and weaknesses. It has two parts that age differently:
+
+- **§1 lasts:** practices that follow from how G-SQL is designed.
+- **§2 is dated:** limits of today's build, each naming the work that removes it.
+
+Every figure cites where it was measured. When a limit closes, its entry in §2 changes in the same commit, so a book drawing on this page can check what it says.
+
+## 1. Practices that follow from the design
+
+### Batch your writes
+
+**A commit costs one sync, and the sync is what slow storage charges for.** Measured (`gsql_scale_measurements.md` §2):
+
+| per sync | 1 row/commit | 1 000 rows/commit |
+|---|---|---|
+| a local NVMe disk | 3 616 rows/s | 294 501 |
+| 10 ms, the shape of a slow NAS | 93 | 67 739 |
+
+So group the rows of one piece of work into one transaction: `gsql.begin`, many `exec`s, `gsql.commit`. A loop that commits every row is the commonest way to make a database look slow.
+
+**The owner runs one writer at a time.** Several programs each committing single rows to one database share that one sync budget between them.
+
+### One database per tenant, when tenants are independent
+
+**A database is cheap.** About 1 MB empty (`gsql_storage_design.md`), with an owner started on demand by the first program that connects. Each tenant in its own database:
+
+- keeps each one small, and so fast;
+- means a tenant is backed up, moved or deleted as a whole;
+- keeps one tenant's long report from stalling another's work, since each owner is its own process.
+
+gdash and WorkSplicer are designed this way. How to split data is the application's decision. G-SQL works either way, and splitting one large table by key or date across databases is equally possible.
+
+### Nothing spans two databases in one transaction
+
+A program that writes to two databases makes two independent commits, and a crash between them leaves one done. Stay correct with:
+
+- **idempotent writes:** a primary key or `UNIQUE` column holding a request id, so a retry is refused as a duplicate rather than applied twice;
+- **an outbox:** the change and the message announcing it committed together in one database, the message delivered and marked done later.
+
+**Aggregates across databases combine if you return their parts.** `count`, `sum`, `min` and `max` merge directly. An average is each database's `sum(x)` and `count(x)` added and divided once, never the averages averaged. What G-SQL may add later is in `gsql_multidb_design.md`.
+
+### Run long reports somewhere else
+
+**The owner is single-threaded** (`gsql_owner_design.md` §6.1). A cursor yields between batches, but the step that sorts, groups or builds a hash join runs as one piece. Every other client of that database waits while it does (`gsql_scale_measurements.md` §3).
+
+- **Short queries** belong on the live database.
+- **A report over a large table** belongs on a copy. Until replicas exist, that is a copy taken with no owner running (§2).
+
+### Let indexes narrow, and read `EXPLAIN`
+
+**An index makes a lookup cost about the size of the answer, not of the table.** Point reads stayed between 14 and 26 µs from 10⁶ to 10⁸ rows. A full scan instead costs per row: about 3.7 to 6.8 million rows a second to count, and about a million a second to test a condition.
+
+- **Index what you look things up by.**
+- **Ask `EXPLAIN`** which path a query takes. It names the index or says `Scan`.
+- **An index only narrows.** Every condition is still checked on every row it yields, so a wrong index is slow, never wrong.
+
+### Keys: `serial` for order, `random` for secrecy
+
+- **`id integer serial primary key`** numbers rows 1, 2, 3 with no gaps (a rollback or a refused row spends no number), and never reissues a number.
+- **`n integer serial of (task)`** numbers within each task. Declare the key as `(task, n)`.
+- **`id text random primary key`** gives 22 URL-safe characters nobody can guess, which is what a link or a user's identifier wants.
+
+(`gsql_generated_design.md`)
+
+### SQL means what gBASIC means
+
+Every operator in a query is gBASIC's own (`gsql_sql_design.md` §2):
+
+- money keeps its currency;
+- an integer past 2^53 stays exact;
+- `unknown` is SQL's `NULL`, and three-valued logic is gBASIC's.
+
+There are **no implicit casts**: `'1' = 1` is refused, and `CAST` says what you mean. What a program computes and what a query computes therefore cannot quietly disagree.
+
+### A schema change is never blocked, and is always reported
+
+Dropping or rebuilding a table under a view or a foreign key is allowed. Warning 2118 or 2119 says what it affected. Under `on warning stop` inside `gsql.begin`, that warning becomes an error before the commit, so a careful migration can roll back (`gsql_view_design.md`, `gsql_fkey_design.md`).
+
+## 2. Current limits, dated 2026-11-01
+
+Each line names what removes it. The order of that work is `gsql_scale_measurements.md` §4.
+
+| limit | until | meanwhile |
+|---|---|---|
+| A sort no index gives, `GROUP BY`, `DISTINCT`, a set operation, a derived table, a hash join's inner side and `INSERT ... SELECT` hold their rows **in memory**. A billion-row one ends the owner partway. Nothing committed is lost. | spill-to-disk | Keep such queries to what fits in memory; index the sort or join column |
+| **One very large transaction is slow**: `CREATE INDEX` over existing rows took 1 180 s at 10⁸ rows and grows about 30× per 10×. Likewise a huge `INSERT ... SELECT` or `UPDATE`. | the external-sort build | Create indexes **before** loading; load and change data in batches of thousands of rows per transaction |
+| Load rate halves between 10⁷ and 10⁸ rows (172 000 to 90 000 rows/s). | profiling compaction | Plan a billion-row load in hours, not minutes |
+| **Joins run in the order written.** A large table placed where it is hashed is held whole. | row counts in the planner | Put the large table first in `FROM`, and check `EXPLAIN` |
+| **No backup while the database is in use.** A file copy is only safe with no owner running. | `gsql.backup` | Close every program using the database, then copy its whole directory, and restore by copying it back the same way |
+| **No SQL dump.** | the dump increment | — |
+| One owner per database is enforced **on one machine only**. Two machines opening one database on shared storage could each start an owner. | the lease | Open a database from one machine |
+| The owner sizes nothing to the storage: commit pacing is the same on NVMe as on a NAS. | group commit sized from a measured sync | Batch writes (§1) |
+| A foreign key must reference its parent's **primary key**. | — | Reference the primary key |
+| `stddev`, `variance`, median and window functions are not in SQL. | Phase 3 | Fetch the rows and use gBASIC's `stats` library |

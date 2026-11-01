@@ -19,6 +19,9 @@ if [ "$fs" = tmpfs ]; then echo "refusing: $base is on tmpfs, where a flush cost
 mkdir -p "$base"
 bin=$(mktemp)
 trap 'rm -f "$bin"; rm -rf "$base"/scale-*' EXIT
+# the commit the binary is BUILT from, taken now: stamped at the end of a run,
+# a size that finished after a later commit recorded the wrong one
+built_from=$(git rev-parse --short HEAD)
 make -s gbasic libgbasic.a || exit 1
 # shellcheck disable=SC2046
 cc -std=c11 -O2 -g -Iinclude -Isrc/gsql -o "$bin" research/gsql/scale.c libgbasic.a $(make -s print-ldlibs) || exit 1
@@ -41,7 +44,7 @@ for n in "${sizes[@]}"; do
         echo "{\"rows\": $n, \"failed\": $rc}" >> "$out"
         echo "FAILED $n ($rc)" >&2
     else
-        echo "${line%\}}, \"disk_kb_at_end\": $used, \"commit\": \"$(git rev-parse --short HEAD)\"}" >> "$out"
+        echo "${line%\}}, \"disk_kb_at_end\": $used, \"commit\": \"$built_from\"}" >> "$out"
         echo "$n done" >&2
     fi
 done
