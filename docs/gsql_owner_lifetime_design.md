@@ -1,6 +1,6 @@
 # G-SQL: how long an owner lives
 
-**Status:** Designed 2026-11-01, Matthew's ruling the same day. It replaces the owner lifetime in `gsql_owner_design.md` §6 and `gsql_module_design.md` §3.
+**Status:** Shipped 2026-11-01, Matthew's ruling the same day (`src/gsql/owner.c`, `src/gsql/client.c`; the lifetime tiers of `run_gsql_owner.sh` and `run_gsql_module.sh`). What building it changed is §6. It replaces the owner lifetime in `gsql_owner_design.md` §6 and `gsql_module_design.md` §3.
 
 ## 1. The defect
 
@@ -43,4 +43,15 @@ An owner is started by the first program to connect, as that program's child, ar
 - **The starter killed with SIGKILL** while another program is connected: the other program is unaffected. Once it closes, the owner stops after its linger.
 - **No pipes held:** `$(gbasic prog)` returns as soon as the program does, not after the linger.
 - **Leftovers:** no owner outlives the suite, waiting for linger plus a margin.
-- **The backup tier** refreshes a copy after closing it, waiting out a linger of 0, instead of needing a child program.
+- **The backup tier** keeps reading its copy from a child program. A refresh in the same program after closing with `linger: 0` was measured by hand (§6).
+
+## 6. What building it changed and found
+
+- **An owner waits for its own starter.** With no linger, an owner said `ready` and found itself alone before the client that started it had connected, so it stopped, and the client started another, which stopped the same way: an endless loop of owners, found by the churn test hanging. Before its first connection an owner waits at least 2 s, whatever its linger.
+- **The leaving window had to be held open on purpose.** A loop of opens against owners with no linger never met an owner that was still leaving, because starting a process takes longer than the old owner takes to let go of the lock. So removing the wait for the lock left everything green. The test now holds the lock in process with no socket, which is exactly an owner leaving, and requires an open to succeed within 2 s. Without the wait it takes 10 026 ms, the client's whole wait.
+- **That test's first draft hung on the correct build.** The process that opens was forked while the test held the lock, so it inherited the lock's descriptor and kept the lock after the test let go. It is forked first now.
+- **A parent-death signal armed in the intermediate process is not a perturbation.** It is not inherited across `fork`, so the owner stayed detached and everything stayed green. Restoring the old arrangement itself, with the owner exec'd as the client's own child and armed, reddens both suites' lifetime tiers and names the defect: "the starter's death cost another program its connection".
+- **A copy can be refreshed in the program that opened it.** Opened with `{ linger: 0 }` and closed, its owner stops at once, and a refresh straight after succeeds (measured). This closes the limit `gsql_backup_design.md` §6 recorded.
+- **What is still unbounded:** an owner stuck in a statement cannot notice its last connection going. It used to die with its starter; now it waits until a `SIGTERM`, which still ends it within its deadline. G-SQL's long statements are sliced (`gsql_slicing_design.md`), so an owner goes back to its loop between slices. Only a statement with no end could hold an owner, and none is known in G-SQL's SQL; that is reasoned, not measured.
+
+**Perturbations proven red:** the owner as the client's child again, the linger ignored, no wait for a leaving owner's lock, the program's streams kept, and no startup grace.

@@ -30,7 +30,7 @@ gsql.close(db)
 
 ## 2. How a call works
 
-`gsql.connect` reaches the database's owner, or starts one: the owner is this interpreter run as `gbasic --gsql-owner`, a child of the program, so it ends with the program (`gsql_owner_design.md` §6). Every other call is one request over the protocol, or for a long result a request and its `FETCH`es.
+`gsql.connect` reaches the database's owner, or starts one: the owner is this interpreter run as `gbasic --gsql-owner`, detached from the program, and it stops by itself once nobody has been connected for its linger (`gsql_owner_lifetime_design.md`). Every other call is one request over the protocol, or for a long result a request and its `FETCH`es.
 
 **Requests and replies are gBASIC values on both sides.** A request body is a record the interpreter builds and `serialize`s; a reply is `deserialize`d back into one. So a parameter and a column value cross by the same codec rows are stored in (`serialize` version 3), and an exact integer, a money amount with its currency, a date, a boolean and `unknown` arrive as what they were. There is no conversion table, because there is nothing to convert.
 
@@ -61,7 +61,8 @@ Three refusals are the module's own:
 - **semantics:** values in both directions, `exec`'s answer shape, a 1,234-row result across three batches, transactions and a second connection's isolation, and each refusal with its code;
 - **lost:** the runner kills the owner with SIGKILL while the program waits, and the program must see `LOST`, then reach a new owner that recovered the committed rows;
 - **valgrind** over the semantics phase;
-- **leftovers:** no owner outlives the program that started it.
+- **lifetime:** a second program keeps its connection when the program that started the owner exits; `linger: 0` stops the owner at the last close; a program's output is not held open by its owner.
+- **leftovers:** no owner outlives the suite.
 
 ## 6. Not done yet
 
@@ -69,7 +70,7 @@ Three refusals are the module's own:
 - **A block's plan is not cached.** The owner parses and plans each request; a prepared statement (`PREPARE` is in the protocol) is the obvious next step and is not measured as needed.
 - **Two connections in one program can wait on each other.** The owner has one writer, and a second connection's write waits for the first's transaction to end. In one single-threaded program the first cannot end while the program waits on the second, and the client waits without a bound. By reading the owner, the owner's idle-writer timeout (5 minutes) should end the first transaction and release the second; that is **not measured**.
 - **The principal is not sent.** `gsql_design.md` §6.5 says each request carries `principal()` for the audit history, and nothing in the SQL layer records one yet.
-- **An owner outlives `gsql.close`** while its program runs, serving any other client; it ends with the program. An owner that exits when idle is an open item of the owner (`gsql_owner_design.md`).
+- **An owner outlives `gsql.close`** for its linger, serving any other client, and outlives the program that started it while another program uses it (`gsql_owner_lifetime_design.md`).
 - **Windows:** `load gsql` answers that G-SQL is not yet available there.
 
 ## 7. The `database` and `sql` blocks

@@ -24,7 +24,7 @@ Where to read more:
 
 ## 1. A first database
 
-A database is a directory, created on first `connect` with `create: true`. Its **owner**, the one process that serves every program using it, is started by the first program that connects, and ends with it.
+A database is a directory, created on first `connect` with `create: true`. Its **owner**, the one process that serves every program using it, is started by the first program that connects. It serves every program connected to it, and stops by itself once nobody has been connected for 3 seconds (`linger:` changes that).
 
 <!--CODE:01_first_database-->
 
@@ -794,7 +794,7 @@ remove_tree(work)
 
 **The copy is an ordinary database,** which makes it the place for long reports: each database has its own owner, so a report there stalls nobody on the live one.
 
-**A copy that is open is not refreshed.** An owner lives as long as the program that started it, so run reports as programs of their own and refresh between them.
+**A copy that is open is not refreshed.** Open a copy you mean to refresh with `{ linger: 0 }`, so its owner stops when you close it, and the refresh can follow at once.
 
 <!--CODE:14_practice_backup_and_a_reporting_copy-->
 

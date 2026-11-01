@@ -2414,8 +2414,11 @@ that connection as a number.
 G-SQL is gBASIC's own database (`docs/gsql_design.md`), and it is part of
 every build on Linux and other POSIX systems, with nothing to install. A
 database is reached through its **owner**, one process that serves every
-program using it; `gsql.connect` starts the owner when none is running, as a
-child of the program, and it ends with the program. Its SQL is described in
+program using it; `gsql.connect` starts the owner when none is running. The
+owner is not the program's child: it serves every program connected to it,
+and once nobody has been connected for its **linger** (3 seconds unless the
+starting connection said otherwise) it stops cleanly by itself
+(`docs/gsql_owner_lifetime_design.md`). Its SQL is described in
 `docs/gsql_sql_design.md` and this module in `docs/gsql_module_design.md`.
 **To start, read `docs/gsql_cookbook.md`**: worked recipes from a first table
 to the practices a production program needs, every one run by the gate.
@@ -2432,7 +2435,7 @@ gsql.close(db)
 
 The module provides:
 
-- `gsql.connect(path[, { create: true }])` — without `create`, a database that is not there is refused
+- `gsql.connect(path[, { create: true, linger: seconds }])` — without `create`, a database that is not there is refused. `linger` is how long an owner this connection **starts** waits after its last connection closes before it stops, from 0 to 86400; 0 stops it at the last close. It is the starter's choice: when an owner is already running, a `linger` given here is ignored. A `database` block takes `linger:` too
 - `gsql.query(connection, sql[, parameters])` — an array of records, fields in select-list order
 - `gsql.exec(connection, sql[, parameters])` — `{ command, rows_affected }`, as `sqlite`, `pg` and `odbc` answer; `rows_affected` is `nothing` for a statement with no count
 - `gsql.begin(connection[, "read" | "write"])` — `"write"` by default
@@ -5505,6 +5508,12 @@ is launched with a **parent-death signal** armed in the kernel, and receives
 `SIGTERM` the moment the interpreter dies, however it dies. This is the same
 mechanism spawned actors have always used, and it cascades — a child that is
 itself a gBASIC program passes it to its own children.
+
+**One exception, by design:** a G-SQL database's owner, which `gsql.connect`
+starts, outlives the program that started it while another program is using
+the database, and for its linger after that (`docs/gsql_owner_lifetime_design.md`),
+so one program ending never cuts another off. It stops by itself; nothing
+else does.
 
 There is no opt-out, and `process.start` is therefore **not** a way to launch a
 daemon that outlives the program: a child that should survive belongs to a

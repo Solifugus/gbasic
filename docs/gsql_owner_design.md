@@ -134,9 +134,9 @@ Both are owner options, 300 seconds by default, as §6.5 proposed for cursors:
 `gsql_client_open(path, options)`:
 
 1. Resolve the database's identity, then try to connect. If a connection succeeds, handshake and return.
-2. Otherwise start an owner: `fork`, then (on Linux) `PR_SET_PDEATHSIG` with `SIGTERM`, checked against `getppid` for a parent that died first, then `exec` of the owner program the options name. The owner is the client's child and dies with it (§6.1), and `SIGTERM` gives it the planned handoff of §4.
+2. Otherwise start an owner: `fork`, `setsid`, and `fork` again, then `exec` of the owner program the options name, its standard streams on `/dev/null`. **Superseded 2026-11-01** (`gsql_owner_lifetime_design.md`): the owner was the client's child, armed with `PR_SET_PDEATHSIG`, and died with it, which cut off every other client the moment the starter exited. It is detached now and stops with the planned handoff of §4 once it has had no connection for its linger. The process between the two forks relays the owner's line below, or its exit status if it dies first.
 3. **Readiness is reported, not polled for.** The client passes a pipe, and the owner writes one line on it:
-   - `ready`, once the socket is bound;
+   - `ready PID`, once the socket is bound;
    - `busy`, if it lost the lock;
    - `error <message>`, if the open failed: a newer format, corruption, a refused runtime directory.
 
