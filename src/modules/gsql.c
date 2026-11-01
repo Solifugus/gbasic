@@ -1110,6 +1110,10 @@ static void gsql_block_split(GsqlStatementValue *st) {
         size_t end = 0;
         int empty = 1;
         int r = sql_statement_end(t + at, n - at, &end, &empty);
+        if (r < 0) {
+            end = n - at;   /* a lexing failure: the rest, whole */
+            empty = 0;
+        }
         size_t len = r == 1 ? end - 1 : end;   /* without its `;` */
         if (!empty || r < 0) {
             char *piece = malloc(len + 1);

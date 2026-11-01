@@ -477,6 +477,15 @@ sql q on db
     create table a (x integer);;
     create table b (x integer)
 end sql"
+# a character SQL has not stops G-SQL's lexer partway through: the splitter
+# once read a length it had never set and said "the statement is empty" at a
+# `);` with nothing wrong with it (found from a hand-written program, a
+# gBASIC {USD} modifier inside the SQL)
+load_case lexing_failure 6:30 "unexpected character \`{\`" "$HEAD
+sql q on db
+    create table a (x integer, m money(USD));
+    insert into a values (1, {USD}'1.00')
+end sql"
 load_case second_syntax 6:33 "sql 'q':" "$HEAD
 sql q on db
     create table a (x integer);

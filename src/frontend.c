@@ -861,6 +861,13 @@ static void gsq_check_sql(SrvCheck *chk, const AstStmt *stmt, const GsqDecls *d)
         size_t end = 0;
         int empty = 1;
         int r = sql_statement_end(all + at, n - at, &end, &empty);
+        /* a lexing failure (a character SQL has not, an unclosed string)
+           leaves `end` unset: the rest is parsed whole, so the parser
+           reports the real fault at its own place */
+        if (r < 0) {
+            end = n - at;
+            empty = 0;
+        }
         size_t len = r == 1 ? end - 1 : end;
         int last = r != 1;
         if (r == 1) {
