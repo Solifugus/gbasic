@@ -296,7 +296,17 @@ XDG_DATA_HOME="$work/empty-home" GBASIC_SYNTAX_PATH="$work/no-such-dir" \
     "$work/whence.bas" > "$work/warn.out" 2> "$work/warn.err"
 wr_rc=$?
 set -e
-if grep -q nodisplay "$work/warn.out"; then
+# THE PREMISE IS "NO DEFINITION ANYWHERE", and the binary also searches the
+# directory compiled into it (SYNTAXDIR, $PREFIX/share/gbasic/...) after the
+# ones above. Once `make install` has put a definition there -- found
+# 2026-11-01, the gate going red on this machine the afternoon it was
+# installed -- nothing this tier can set removes it, so it is asked of the
+# binary's own string and the tier says it cannot build its premise rather
+# than reporting a missing warning about a definition that was found.
+baked=$(make -s -p -n 2>/dev/null | sed -n 's/^SYNTAXDIR := //p' | head -1)
+if [ -n "$baked" ] && [ -f "$baked/syntax/gbasic.xml" ]; then
+    printf '  SKIP (a definition is installed at %s, which the binary always searches -- the warning was NOT measured)\n' "$baked"
+elif grep -q nodisplay "$work/warn.out"; then
     printf '  SKIP (no display -- the warning was NOT measured)\n'
 else
     if [ "$wr_rc" = "0" ]; then

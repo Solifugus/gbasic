@@ -1,6 +1,6 @@
 # G-SQL: a block run on a database chosen at run time
 
-**Status:** Designed 2026-11-01, from Matthew's ruling the same day that the block form is G-SQL's normal form and strings are for dynamic SQL (option 3 of three, his choice): the connection is chosen at the call.
+**Status:** Shipped 2026-11-01 (`gsql_eval_on` and `gsql_call_target` in `src/modules/gsql.c`; `tests/gsql/blocks_test.bas`). Designed the same day, from Matthew's ruling the same day that the block form is G-SQL's normal form and strings are for dynamic SQL (option 3 of three, his choice): the connection is chosen at the call.
 
 ## 1. The gap
 
