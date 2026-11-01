@@ -152,6 +152,13 @@ function exec_block(b)
     return e
 end function
 
+function exec_with(b, w)
+    on error goto next
+    r = gsql.exec(b, w)
+    e = error
+    return e
+end function
+
 function exec_on(c, b)
     on error goto next
     r = gsql.exec(c, b)
@@ -211,7 +218,7 @@ end function
 
 function query_with_params(b)
     on error goto next
-    r = gsql.query(b, { limit: 1 })
+    r = gsql.query(b, { limit: {USD}"1.00" })
     e = error
     return e
 end function
@@ -307,8 +314,9 @@ e = iterate_block(add)
 check("iterating an insert block is refused", code_of(e), "STATE")
 check("the refused iteration ran the insert", len(gsql.query(everything)), 7)
 
+' a record supplies :limit (it reads :limit), so this is an ordinary query now
 e = query_with_params(cheap)
-check("a block takes no parameters but its frame's", contains(message_of(e), "takes the block alone"), true)
+check("a block takes a record of its :name values", code_of(e), "(no error)")
 
 e = query_block(twice)
 check("two result columns with one name", code_of(e), "DUPLICATE")
@@ -415,6 +423,20 @@ check("query of a block ending in no rows is refused before anything runs", cont
 page = "about"
 check("so it inserted nothing either", gsql.query(m_count_page)[0].n, 1)
 
+' --- a record of :name values (Matthew's ruling: a field the record lacks is
+' read from the variable in scope) ----------------------------------------------
+page = "from scope"
+gsql.exec(m_two, { page: "from the record" })
+check("a field supplies its :name", gsql.query(m_count_page, { page: "from the record" })[0].n, 1)
+check("and query takes a record too", len(gsql.query(m_count_page, {})), 1)
+check("a name the record lacks is read from scope", gsql.query(m_count_page, {})[0].n, 0)
+gsql.exec(m_two, {})
+check("so an empty record reads every :name from scope", gsql.query(m_count_page)[0].n, 1)
+e = exec_with(m_two, [1])
+check("an array is refused: values come as a record", contains(message_of(e), "come as a record"), true)
+e = exec_with(by_q, { other: 1 })
+check("a name in neither is refused, naming both", contains(message_of(e), "nor a field of that name"), true)
+
 ' --- a block on a database chosen at run time -----------------------------------
 ta = gsql.connect("tenant_a.gsql", { create: true })
 tb = gsql.connect("tenant_b.gsql", { create: true })
@@ -439,7 +461,8 @@ e = exec_on(ta, make_n)
 check("and runs on another connection when given one", code_of(e), "(no error)")
 check("which is where the table was made", len(gsql.query(ta, all_n)), 0)
 e = exec_on_with(ta, t_add, { id: 9, name: "x" })
-check("a block takes no parameters argument", contains(message_of(e), "takes the block and nothing more"), true)
+check("a connection, a block and a record of its values", code_of(e), "(no error)")
+check("which inserted that row", len(gsql.query(ta, t_items)), 5)
 e = on_of(5, t_items)
 check("gsql.on wants a connection first", contains(message_of(e), "expects a gsql connection first"), true)
 e = on_of(ta, "select 1")

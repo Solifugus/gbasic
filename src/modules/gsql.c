@@ -1181,6 +1181,12 @@ static GsqlConnectionValue *gsql_block_connection(const GsqlStatementValue *st, 
 /* The request for one of a block's statements: its text, and each :name
  * parameter it reads, from the variable of that name where the block runs.
  * 1, or 0 with a raise. */
+/* The record a call gave a block, for the length of that call: its fields
+ * supply :name parameters first, and a name it lacks is read from the
+ * variable in scope (Matthew's ruling, docs/gsql_module_design.md §7.2).
+ * NULL when the call gave none. */
+static Value *g_block_with;
+
 static int gsql_piece_body(const GsqlStatementValue *st, size_t piece, const char *who, Value *body) {
     const char *text = st->stmts[piece];
     size_t np = 0;
@@ -1194,11 +1200,16 @@ static int gsql_piece_body(const GsqlStatementValue *st, size_t piece, const cha
     if (np) {
         Value params = value_record(NULL, 0);
         for (size_t i = 0; i < np && ok; i++) {
+            RecordField *given = g_block_with ? record_find(g_block_with, names[i]) : NULL;
+            if (given) {
+                record_set(&params, names[i], value_copy(*given->value));
+                continue;
+            }
             Symbol *sym = env_find(names[i]);
             if (!sym) {
                 char msg[300];
-                snprintf(msg, sizeof msg, "the statement reads :%s, and there is no variable `%s` here", names[i],
-                         names[i]);
+                snprintf(msg, sizeof msg, "the statement reads :%s, and there is no variable `%s` here%s", names[i],
+                         names[i], g_block_with ? ", nor a field of that name in the record it was given" : "");
                 value_free(params);
                 value_free(*body);
                 gsql_module_raise(who, "PARAMETER", msg, 0, text);
@@ -1415,6 +1426,27 @@ static struct GsqlRows *gsql_block_rows(const GsqlStatementValue *st) {
     return gsql_rows_begin(c, who, sql, body, remedy);
 }
 
+/* A block's record of :name values, the argument at `index`: 1 with it, or 0
+ * with a refusal naming what it was. */
+static int gsql_with_arg(AstExpr *expr, size_t index, const char *verb, const char *block, Value *with) {
+    *with = eval_expr(expr->as.call.args.items[index]);
+    if (error_action_pending()) {
+        value_free(*with);
+        *with = value_null();
+        return 0;
+    }
+    if (with->kind != VALUE_RECORD) {
+        char msg[300];
+        snprintf(msg, sizeof msg, "gsql.%s(%s, ...): a block's values come as a record, a field for each :name it "
+                 "reads, not %s", verb, block, value_kind_name(with->kind));
+        value_free(*with);
+        *with = value_null();
+        gsql_module_refuse(msg);
+        return 0;
+    }
+    return 1;
+}
+
 /* The first argument of query and exec: a connection, then the statement and
  * its parameters; or an sql block alone. 1 with the connection, the statement,
  * the request and the name to refuse under; 0 with a raise. */
@@ -1437,16 +1469,22 @@ static int gsql_call_target(AstExpr *expr, const char *verb, GsqlConnectionValue
     }
     if (v.kind == VALUE_GSQL_STATEMENT) {
         GsqlStatementValue *st = v.as.gsql_statement;
-        if (argc != 1) {
-            char msg[300];
-            snprintf(msg, sizeof msg, "gsql.%s(%s) takes the block alone; its parameters are the variables its "
-                     ":names name", verb, st->name);
+        Value with = value_null();
+        if (argc > 2 || (argc == 2 && !gsql_with_arg(expr, 1, verb, st->name, &with))) {
+            if (argc > 2) {
+                char msg[300];
+                snprintf(msg, sizeof msg, "gsql.%s(%s, record) takes the block and, optionally, a record of its "
+                         ":name values", verb, st->name);
+                gsql_module_refuse(msg);
+            }
             value_free(v);
-            gsql_module_refuse(msg);
             return 0;
         }
         snprintf(who, who_cap, "sql %s", st->name);
+        g_block_with = argc == 2 ? &with : NULL;
         int ok = gsql_block_start(st, NULL, who, answers_rows, c, sql, body, run);
+        g_block_with = NULL;
+        value_free(with);
         value_free(v);
         return ok;
     }
@@ -1471,15 +1509,15 @@ static int gsql_call_target(AstExpr *expr, const char *verb, GsqlConnectionValue
     if (second.kind == VALUE_GSQL_STATEMENT) {
         GsqlStatementValue *st = second.as.gsql_statement;
         snprintf(who, who_cap, "sql %s", st->name);
-        if (argc != 2) {
-            char msg[300];
-            snprintf(msg, sizeof msg, "gsql.%s(connection, %s) takes the block and nothing more; its parameters "
-                     "are the variables its :names name", verb, st->name);
+        Value with = value_null();
+        if (argc == 3 && !gsql_with_arg(expr, 2, verb, st->name, &with)) {
             value_free(second);
-            gsql_module_refuse(msg);
             return 0;
         }
+        g_block_with = argc == 3 ? &with : NULL;
         int ok = gsql_block_start(st, *c, who, answers_rows, c, sql, body, run);
+        g_block_with = NULL;
+        value_free(with);
         value_free(second);
         return ok;
     }

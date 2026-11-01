@@ -171,6 +171,12 @@ function main_checks(dir)
     check("text into a number column stays refused", code_of(e), "TYPE")
     e = attempt_query(db, "select id from conv where at = '2026-11-01 04:31:00'", nothing)
     check("a comparison stays strict", code_of(e), "EXPRESSION")
+    ' storing converts text and numbers, never money of another currency:
+    ' that would be an exchange, which a program states with money.convert
+    e = attempt_exec(db, "insert into conv (id, m) values (9, :m)", { m: {USD}"5.00" })
+    check("USD into a money(EUR) column is still refused", contains(message_of(e), "conv.m is money(EUR), and the money is in USD"), true)
+    e = attempt_exec(db, "update conv set m = cast('1' as money(USD)) where id = 1", nothing)
+    check("and through UPDATE", contains(message_of(e), "the money is in USD"), true)
     gsql.begin(db, "read")
     e = attempt_exec(db, "insert into n (k) values (6000)", nothing)
     check("a write in a read transaction", code_of(e), "READ_ONLY")
