@@ -2200,6 +2200,9 @@ static int group_main(const char *dir) {
        group commit at all */
     EXPECT(eight > 5.5 * one, "eight clients made %.0f commits/s against one client's %.0f: syncs were barely shared",
            eight, one);
+    /* a reply is sent only once a sync covers its commit: a client waiting
+       for each reply cannot outrun the sync, 200 a second at 5 ms */
+    EXPECT(one < 210, "a single client made %.0f commits/s with a 5 ms sync: replies went out before their sync", one);
     /* the control, and a loose one: alone, a commit is paced by its sync.
        A lone client that waited for nobody would make about 155/s here
        against 171 to 192 measured, too thin a margin to assert under load */
