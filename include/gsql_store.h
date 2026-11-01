@@ -69,6 +69,11 @@ typedef struct GsLeaseOptions {
     const char *machine;    /* stands for both the machine and the boot */
     int lock_local;         /* the lock file is named after `machine` */
     uint32_t renew_ms, trust_ms, dead_ms, settle_ms;
+    /* A pause between deciding to write the lease and writing it, which
+     * widens the few microseconds two machines race in until a test lands in
+     * them every time: without it neither the exclusive create nor the
+     * settle's check could be shown to matter (both perturbations green). */
+    uint32_t race_ms;
 } GsLeaseOptions;
 
 typedef struct GsStore GsStore;

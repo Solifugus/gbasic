@@ -412,6 +412,7 @@ static int owner_main(const char *db, const char *fd, const char *mode) {
             lo.dead_ms = d;
             lo.settle_ms = st;
         }
+        lo.race_ms = env_ms("GSQL_TEST_LEASE_RACE_MS");
         so.lease = &lo;
         o.store = &so;
     }
@@ -2138,10 +2139,13 @@ static int file_there(const char *p) {
 }
 
 /* Two pretend machines race for one database from forked children; answers
- * how many opened it. The winners keep their owner until told to go. */
+ * how many opened it. Each keeps its connection, and so its owner, until
+ * both have answered: a winner that let go at once would let the other take
+ * the database legitimately afterwards, which counts as two winners and is
+ * not a violation -- the first version of this check did exactly that. */
 static int contend(const char *dir, const char *db, int create, const char *m1, const char *m2, long *owners) {
-    int go[2], res[2];
-    if (pipe(go) || pipe(res)) {
+    int go[2], res[2], rel[2];
+    if (pipe(go) || pipe(res) || pipe(rel)) {
         return -1;
     }
     pid_t kids[2];
@@ -2151,6 +2155,7 @@ static int contend(const char *dir, const char *db, int create, const char *m1, 
         if (kids[k] == 0) {
             close(go[1]);
             close(res[0]);
+            close(rel[1]);
             be_machine(dir, names[k]);
             char x;
             if (read(go[0], &x, 1) != 1) {
@@ -2164,6 +2169,10 @@ static int contend(const char *dir, const char *db, int create, const char *m1, 
             if (write(res[1], &o, sizeof o) != (ssize_t)sizeof o) {
                 _exit(2);
             }
+            char y;
+            if (read(rel[0], &y, 1) < 0) {
+                _exit(4);
+            }
             if (c) {
                 gsql_client_close(c);
             }
@@ -2172,6 +2181,7 @@ static int contend(const char *dir, const char *db, int create, const char *m1, 
     }
     close(go[0]);
     close(res[1]);
+    close(rel[0]);
     if (write(go[1], "gg", 2) != 2) {
         return -1;
     }
@@ -2188,6 +2198,7 @@ static int contend(const char *dir, const char *db, int create, const char *m1, 
         }
     }
     close(res[0]);
+    close(rel[1]);   /* both answered: let go */
     for (int k = 0; k < 2; k++) {
         waitpid(kids[k], NULL, 0);
     }
@@ -2288,7 +2299,7 @@ static int lease_main(const char *dir) {
 
     /* two machines at once over a crashed third's lease: exactly one wins,
        every round; and two creating one database at once */
-    int bad = 0, rounds = 4;
+    int bad = 0, rounds = 6;
     for (int r = 0; r < rounds; r++) {
         char rdb[700];
         snprintf(rdb, sizeof rdb, "%s/race%d", dir, r);
@@ -2303,6 +2314,9 @@ static int lease_main(const char *dir) {
         gone_within((pid_t)go, 5000);
         gsql_client_close(g);
         long owners[2];
+        /* the race widened past the two children's start-up jitter, so both
+           decide before either writes, every round */
+        setenv("GSQL_TEST_LEASE_RACE_MS", "150", 1);
         int opened = contend(dir, rdb, 0, "delta", "epsilon", owners);
         if (opened != 1) {
             bad++;
@@ -2315,6 +2329,7 @@ static int lease_main(const char *dir) {
             bad++;
             mismatch("round %d creating: %d machines opened it (owners %ld, %ld)", r, opened, owners[0], owners[1]);
         }
+        unsetenv("GSQL_TEST_LEASE_RACE_MS");
         for (int k = 0; k < 2; k++) {
             if (owners[k] > 0) {
                 gone_within((pid_t)owners[k], 5000);

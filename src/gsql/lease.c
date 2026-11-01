@@ -38,7 +38,7 @@ typedef struct FencedIo FencedIo;
 struct GsLease {
     GsqlIo *io;                   /* the inner layer: the lease's own writes go here */
     char *path;
-    uint32_t renew_ms, trust_ms, dead_ms, settle_ms;
+    uint32_t renew_ms, trust_ms, dead_ms, settle_ms, race_ms;
     Rec mine;
     uint64_t confirmed;           /* when our record was last read back as ours */
     int fenced;
@@ -197,6 +197,7 @@ int gs_lease_take(GsqlIo *io, const char *dbpath, const GsLeaseOptions *opt, GsL
     l->trust_ms = opt && opt->trust_ms ? opt->trust_ms : 4000;
     l->dead_ms = opt && opt->dead_ms ? opt->dead_ms : 12000;
     l->settle_ms = opt && opt->settle_ms ? opt->settle_ms : 2000;
+    l->race_ms = opt ? opt->race_ms : 0;
     identify(&l->mine, opt);
     gsql_io_random(io, l->mine.token, sizeof l->mine.token);
     l->mine.counter = 1;
@@ -207,6 +208,7 @@ int gs_lease_take(GsqlIo *io, const char *dbpath, const GsLeaseOptions *opt, GsL
     if (rc) goto fail;
     if (state == L_ABSENT) {
         /* step 1: no lease, so no owner of this build: create it, exclusively */
+        if (l->race_ms) nap(l, l->race_ms);
         rc = lease_write(l, 1);
         if (rc == 0) goto taken;
         if (rc != EEXIST) goto fail;
@@ -245,6 +247,7 @@ int gs_lease_take(GsqlIo *io, const char *dbpath, const GsLeaseOptions *opt, GsL
             return rc;
         }
         if (state == L_READ) l->mine.counter = r.counter + 1;
+        if (l->race_ms) nap(l, l->race_ms);
         if ((rc = lease_write(l, 0))) goto fail;
         nap(l, l->settle_ms);
         if ((rc = lease_read(l, &r2, again, &st2))) goto fail;
