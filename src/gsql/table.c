@@ -1789,7 +1789,7 @@ int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlInde
         }
         if (!rc) {
             GsBytes empty = { NULL, 0 };
-            int ps = e->put(t, tree, key_bytes(&k), uf ? rk : empty, GS_NO_OVERWRITE);
+            int ps = e->put(t, tree, key_bytes(&k), uf ? rk : empty, uf ? GS_NO_OVERWRITE : 0);
             if (ps == GS_EXISTS) {
                 rc = fail(err, GSQL_DUPLICATE, "%s: two rows already hold the same value, so index %s cannot be unique",
                           tb->name, d->name);
