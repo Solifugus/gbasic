@@ -638,7 +638,11 @@ static void sorted_load(const char *base, GsqlIo *io) {
     for (int b = 0; b < 40 && rc == GS_OK; b++) {
         rc = E->begin_write(db, &w);
         if (rc) break;
-        if (b == 0) E->tree_create(w, gss("rows"));
+        if (b == 0) {
+            /* made first, so its keys sort below the rows' */
+            E->tree_create(w, gss("meta"));
+            E->tree_create(w, gss("rows"));
+        }
         for (int i = 0; i < 500; i++) {
             int n = b * 500 + i;
             /* in key order, so it leaves no compaction owed: what the
@@ -661,6 +665,9 @@ static void sorted_load(const char *base, GsqlIo *io) {
         int vn = snprintf(v, sizeof v, "entry-%06d-padding", i);
         E->put(w, gss("sorted"), gsb(k, (size_t)kn), gsb(v, (size_t)vn), 0);
     }
+    /* and one entry in a tree below the rows, as CREATE INDEX writes its
+       schema last: a run holding it and the load's tail spans the rows */
+    E->put(w, gss("meta"), gss("schema"), gss("v2"), 0);
     E->stats(db, &mid);
     rc = E->commit(w, 1, NULL);
     CHECK(rc == GS_OK, "the sorted load's commit answered %s", gs_status_name(rc));
