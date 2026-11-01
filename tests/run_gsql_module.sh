@@ -257,11 +257,13 @@ for role in quick block; do
         [ -z "$left" ] && break
         sleep 0.1
     done
-    if grep -qx "$role done" "$L/$role.out" && [ -z "$left" ]; then
-        pass "lifetime: linger: 0 through $role stops the owner at the last close"
-    else
+    if ! grep -qx "$role done" "$L/$role.out"; then
         sed 's/^/       /' "$L/$role.out" | head -3
-        fail "lifetime: with linger: 0 through $role the owner (${left:-?}) was still there a second later"
+        fail "lifetime: with linger: 0 through $role the program did not finish its work"
+    elif [ -n "$left" ]; then
+        fail "lifetime: with linger: 0 through $role the owner ($left) was still there a second later"
+    else
+        pass "lifetime: linger: 0 through $role stops the owner at the last close"
     fi
 done
 
