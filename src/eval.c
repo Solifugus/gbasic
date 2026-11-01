@@ -444,7 +444,11 @@ struct GsqlConnectionValue {
     char *path;
     /* the owner's argv, kept for as long as the client can reconnect */
     char *exe;
-    const char *owner_argv[3];
+    const char *owner_argv[4];
+    /* the owner's linger in milliseconds, -1 for its own default; only the
+     * connection that STARTS an owner sets it (gsql_owner_lifetime_design.md) */
+    long linger_ms;
+    char linger_arg[40];
     /* A `database` block's connection (docs/gsql_module_design.md §7) is made
      * when the block is declared and CONNECTS ON FIRST USE, so a program that
      * declares a database and never touches it starts no owner. `create` is
@@ -41017,6 +41021,14 @@ static void database_register(AstStmt *stmt) {
         AstRecordField *f = &stmt->as.database.options.items[i];
         if (strcmp(f->name, "create") == 0 && f->value && f->value->kind == AST_EXPR_BOOL) {
             c->create = f->value->as.boolean;
+        }
+    }
+    c->linger_ms = -1;
+    for (size_t i = 0; i < stmt->as.database.options.count; i++) {
+        AstRecordField *f = &stmt->as.database.options.items[i];
+        if (strcmp(f->name, "linger") == 0 && f->value && f->value->kind == AST_EXPR_NUMBER) {
+            double sec = f->value->as.num.is_exact ? (double)f->value->as.num.exact : f->value->as.num.value;
+            c->linger_ms = sec >= 0 && sec <= 86400 ? (long)(sec * 1000 + 0.5) : -1;
         }
     }
     c->decl = stmt;

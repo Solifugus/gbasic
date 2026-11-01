@@ -13,7 +13,7 @@
  *   owner_test race DIR N [R]     N clients find no owner at once, R times
  *   owner_test paths DIR          symlinks, stale sockets, runtime dirs
  *   owner_test handoff DIR        the owner killed, and SIGTERM's handoff
- *   owner_test lifetime DIR       the client killed: its owner goes too
+ *   owner_test lifetime DIR       an owner outlives its starter, then its linger
  *   owner_test cost DIR ITERS     the round trip against in process
  *
  * THE TEST SERVICE IS NOT SQL. A statement is a word -- put, dup, get, scan,
@@ -393,8 +393,32 @@ static int owner_main(const char *db, const char *fd, const char *mode) {
     o.writer_idle_ms = env_ms("GSQL_TEST_WRITER_MS");
     o.output_limit = env_ms("GSQL_TEST_OUTPUT_LIMIT");
     o.stop_grace_s = env_ms("GSQL_TEST_STOP_GRACE_S");
+    o.linger_ms = env_ms("GSQL_TEST_LINGER_MS");
     const char *ns = getenv("GSQL_TEST_NO_SERVICE");
     return gsql_owner_run(db, ns && *ns == '1' ? NULL : &SERVICE, &o);
+}
+
+/* An owner is nobody's child (gsql_owner_lifetime_design.md §2), so it
+ * cannot be waited for: whether pid is gone within ms, read from /proc (a
+ * zombie counts as gone). */
+static int gone_within(pid_t pid, int ms) {
+    char stat_path[64], buf[256];
+    snprintf(stat_path, sizeof stat_path, "/proc/%ld/stat", (long)pid);
+    for (int t = 0; t <= ms / 10; t++) {
+        FILE *f = fopen(stat_path, "r");
+        if (!f) {
+            return 1;
+        }
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        fclose(f);
+        buf[n] = 0;
+        const char *rp = strrchr(buf, ')');
+        if (rp && rp[1] == ' ' && rp[2] == 'Z') {
+            return 1;
+        }
+        sleep_ms(10);
+    }
+    return 0;
 }
 
 /* ==== the client side's helpers ========================================== */
@@ -1526,7 +1550,7 @@ static int paths_main(const char *dir) {
     gsql_socket_path(real, sock, sizeof sock, &d, &i, &err);
     pid_t first = gsql_client_owner_pid(a);
     kill(first, SIGKILL);
-    waitpid(first, NULL, 0);
+    gone_within(first, 10000);
     EXPECT(exists(sock), "a killed owner left no socket file, so this tier measures nothing");
     EXPECT(!strcmp(call(a, GSQL_M_PING, NULL), "client:LOST"), "after its owner was killed the client answered %s",
            last_word);
@@ -1552,7 +1576,7 @@ static int paths_main(const char *dir) {
         gsql_client_close(y);
         if (yowner > 0) {
             kill(yowner, SIGTERM);
-            waitpid(yowner, NULL, 0);
+            gone_within(yowner, 10000);
         }
         /* `other` has no owner now; its socket's name is made to lead to
          * `real`'s owner */
@@ -1667,7 +1691,7 @@ static int handoff_main(const char *dir) {
            last_word);
     pid_t first = gsql_client_owner_pid(a);
     kill(first, SIGKILL);
-    waitpid(first, NULL, 0);
+    gone_within(first, 10000);
     double t0 = now_us();
     EXPECT(!strcmp(put(a, "next", "3"), "client:LOST") && strstr(last_message, "rolled back") &&
            strstr(last_message, "nothing was retried"),
@@ -1711,9 +1735,7 @@ static int handoff_main(const char *dir) {
     gsql_client_close(b);
     gsql_client_close(a);
     kill(second, SIGTERM);
-    int status = 0;
-    waitpid(second, &status, 0);
-    EXPECT(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the owner did not exit 0 on SIGTERM (status %d)", status);
+    EXPECT(gone_within(second, 10000), "the owner did not stop on SIGTERM");
     char sock[200];
     uint64_t d, i;
     GsqlError err;
@@ -1746,7 +1768,7 @@ static int handoff_main(const char *dir) {
         put(a, "x2", "v");
         pid_t third = gsql_client_owner_pid(a);
         kill(third, SIGKILL);
-        waitpid(third, NULL, 0);
+        gone_within(third, 10000);
         gsql_client_close(a);
         if (E->open(db, &o, &st) == GS_OK) {
             E->stats(st, &stats);
@@ -1758,13 +1780,19 @@ static int handoff_main(const char *dir) {
 }
 
 /* ==== lifetime =========================================================== */
+/* An owner lives while it has connections and for its linger after the last
+ * one closes, and it is nobody's child, so the program that started it may
+ * go without taking anybody else's connection with it
+ * (gsql_owner_lifetime_design.md). The linger here is 600 ms. */
 
-static int lifetime_main(const char *dir) {
-    char db[600];
-    snprintf(db, sizeof db, "%s/life", dir);
+#define LINGER_MS 600
+
+/* A child process that opens db (creating it), reports its owner's pid on
+ * the pipe, and waits to be killed. */
+static pid_t starter(const char *db, long *owner_out) {
     int p[2];
     if (pipe(p)) {
-        return 1;
+        return -1;
     }
     pid_t kid = fork();
     if (kid == 0) {
@@ -1779,49 +1807,158 @@ static int lifetime_main(const char *dir) {
         }
     }
     close(p[1]);
-    long owner = -1;
-    if (read(p[0], &owner, sizeof owner) != (ssize_t)sizeof owner || owner <= 0) {
+    *owner_out = -1;
+    if (read(p[0], owner_out, sizeof *owner_out) != (ssize_t)sizeof *owner_out) {
+        *owner_out = -1;
+    }
+    close(p[0]);
+    return kid;
+}
+
+static int lifetime_main(const char *dir) {
+    char db[600], sock[200];
+    uint64_t d, i;
+    GsqlError err;
+    char lms[16];
+    snprintf(lms, sizeof lms, "%d", LINGER_MS);
+    setenv("GSQL_TEST_LINGER_MS", lms, 1);
+
+    /* the starter killed outright: the owner is untouched, and stops on its
+       own once its linger has passed, the planned way */
+    snprintf(db, sizeof db, "%s/life", dir);
+    long owner;
+    pid_t kid = starter(db, &owner);
+    if (owner <= 0) {
         mismatch("the client never reported its owner");
         return finish();
     }
-    char sock[200];
-    uint64_t d, i;
-    GsqlError err;
     gsql_socket_path(db, sock, sizeof sock, &d, &i, &err);
     EXPECT(kill((pid_t)owner, 0) == 0 && exists(sock), "the owner is not running while its client is");
+    double t0 = now_us();
     kill(kid, SIGKILL);
     waitpid(kid, NULL, 0);
-    int gone = 0;
-    for (int t = 0; t < 500 && !gone; t++) {
-        char stat_path[64], buf[256];
-        snprintf(stat_path, sizeof stat_path, "/proc/%ld/stat", owner);
-        FILE *f = fopen(stat_path, "r");
-        if (!f) {
-            gone = 1;
-            break;
+    sleep_ms(LINGER_MS / 3);
+    EXPECT(kill((pid_t)owner, 0) == 0 && exists(sock),
+           "the owner went with the program that started it: it is still that program's child");
+    EXPECT(gone_within((pid_t)owner, 5000), "the owner (pid %ld) was still there 5 s after its last connection went",
+           owner);
+    double took = (now_us() - t0) / 1e3;
+    EXPECT(took >= LINGER_MS * 0.9, "the owner was gone %.0f ms after its last connection, before its %d ms linger",
+           took, LINGER_MS);
+    EXPECT(!exists(sock), "the owner stopped after its linger but left its socket: not the planned handoff");
+    {
+        GsOptions o;
+        memset(&o, 0, sizeof o);
+        GsStore *st;
+        GsStats stats;
+        if (E->open(db, &o, &st) == GS_OK) {
+            E->stats(st, &stats);
+            EXPECT(stats.replayed == 0, "after the linger the next open replayed %llu records",
+                   (unsigned long long)stats.replayed);
+            E->close(st);
+        } else {
+            mismatch("the database could not be opened after its owner's linger");
         }
-        size_t n = fread(buf, 1, sizeof buf - 1, f);
-        fclose(f);
-        buf[n] = 0;
-        const char *rp = strrchr(buf, ')');
-        if (rp && rp[1] == ' ' && rp[2] == 'Z') {
-            gone = 1;
-            break;
-        }
-        sleep_ms(10);
     }
-    EXPECT(gone, "the owner (pid %ld) outlived the client that started it by 5 s", owner);
-    /* and it went the planned way: SIGTERM, so its socket is gone too */
-    int sock_gone = 0;
-    for (int t = 0; t < 200 && !(sock_gone = !exists(sock)); t++) {
-        sleep_ms(10);
-    }
-    EXPECT(sock_gone, "the owner died with its client but left its socket: it did not take the planned handoff");
 
-    /* an owner STUCK in a statement still dies with its client: its SIGTERM
-     * carries a deadline (1 s here), since a clean stop it cannot get to
-     * would otherwise leave it holding the database for ever */
+    /* THE DEFECT: another program connected when the starter goes keeps
+       its owner and its connection, past any linger */
+    snprintf(db, sizeof db, "%s/shared", dir);
+    kid = starter(db, &owner);
+    GsqlClient *b = owner > 0 ? open_db(db, 0) : NULL;
+    if (!b) {
+        mismatch("the second client could not open the shared database");
+        return finish();
+    }
+    EXPECT(gsql_client_owner_pid(b) == owner && gsql_client_started(b) == 0, "the second client reached another owner");
+    kill(kid, SIGKILL);
+    waitpid(kid, NULL, 0);
+    sleep_ms(LINGER_MS * 2);
+    EXPECT(!strcmp(call(b, GSQL_M_PING, NULL), "PONG") && gsql_client_owner_pid(b) == owner,
+           "the starter's death cost another program its connection: %s %s", last_word, last_message);
+    EXPECT(!strcmp(put(b, "after", "1"), "DONE"), "a write after the starter went answered %s", last_word);
+    gsql_client_close(b);
+    EXPECT(gone_within((pid_t)owner, 5000), "the shared owner did not stop after its last connection closed");
+
+    /* reconnecting within the linger reaches the SAME owner */
+    snprintf(db, sizeof db, "%s/again", dir);
+    GsqlClient *c = open_db(db, 1);
+    long first = c ? (long)gsql_client_owner_pid(c) : -1;
+    gsql_client_close(c);
+    sleep_ms(LINGER_MS / 3);
+    c = open_db(db, 0);
+    EXPECT(c && gsql_client_owner_pid(c) == first && gsql_client_started(c) == 0,
+           "reconnecting within the linger started another owner");
+    gsql_client_close(c);
+    gone_within((pid_t)first, 5000);
+
+    /* an owner started and never connected to stops on its own */
+    snprintf(db, sizeof db, "%s/never", dir);
+    {
+        int p[2];
+        if (pipe(p)) {
+            return 1;
+        }
+        pid_t op = fork();
+        if (op == 0) {
+            close(p[0]);
+            char fd[16];
+            snprintf(fd, sizeof fd, "%d", p[1]);
+            execl("/proc/self/exe", "owner_test", "owner", db, fd, "create", (char *)NULL);
+            _exit(127);
+        }
+        close(p[1]);
+        char line[64] = {0};
+        ssize_t got = read(p[0], line, sizeof line - 1);
+        close(p[0]);
+        EXPECT(got > 0 && !strncmp(line, "ready ", 6), "a lone owner said %s", got > 0 ? line : "nothing");
+        int status = 0;
+        int done = 0;
+        for (int t = 0; t < 500 && !done; t++) {
+            done = waitpid(op, &status, WNOHANG) == op;
+            if (!done) {
+                sleep_ms(10);
+            }
+        }
+        EXPECT(done && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+               "an owner nobody connected to did not stop cleanly on its own (status %d)", status);
+    }
+
+    /* leaving and arriving at once: with no linger every close stops the
+       owner, so each open meets one that is leaving or gone. Every open must
+       succeed, and none may sit out the client's wait (10 s) for a socket a
+       leaving owner will never bind (§3) */
+    setenv("GSQL_TEST_LINGER_MS", "4294967295", 1);
+    snprintf(db, sizeof db, "%s/churn", dir);
+    double worst = 0;
+    int opened = 0, owners = 0;
+    long last_owner = -1;
+    for (int k = 0; k < 40; k++) {
+        double s0 = now_us();
+        GsqlClient *x = open_db(db, 1);
+        double ms = (now_us() - s0) / 1e3;
+        worst = ms > worst ? ms : worst;
+        if (x && !strcmp(call(x, GSQL_M_PING, NULL), "PONG")) {
+            opened++;
+            owners += gsql_client_owner_pid(x) != last_owner;
+            last_owner = gsql_client_owner_pid(x);
+        }
+        gsql_client_close(x);
+    }
+    EXPECT(opened == 40, "%d of 40 opens against owners leaving at once succeeded", opened);
+    EXPECT(worst < 2000, "an open against a leaving owner took %.0f ms: it waited for a socket that would never come",
+           worst);
+    EXPECT(owners >= 20, "only %d owners served 40 opens with no linger, so leaving was barely exercised", owners);
+    gone_within((pid_t)last_owner, 5000);
+    snprintf(lms, sizeof lms, "%d", LINGER_MS);
+    setenv("GSQL_TEST_LINGER_MS", lms, 1);
+
+    /* an owner STUCK in a statement cannot notice its connection going, so
+       it lingers in the statement; SIGTERM still ends it, with a deadline
+       (1 s here), since a clean stop it cannot reach would hold the database
+       for ever */
     snprintf(db, sizeof db, "%s/stuck", dir);
+    int p[2];
     if (pipe(p)) {
         return 1;
     }
@@ -1829,14 +1966,14 @@ static int lifetime_main(const char *dir) {
     kid = fork();
     if (kid == 0) {
         close(p[0]);
-        GsqlClient *c = open_db(db, 1);
-        long o = c ? (long)gsql_client_owner_pid(c) : -1;
-        if (c) {
-            GsqlBuf b = {0};
-            b_query(&b, "spin", 0, NULL, 0);
+        GsqlClient *x = open_db(db, 1);
+        long o = x ? (long)gsql_client_owner_pid(x) : -1;
+        if (x) {
+            GsqlBuf qb = {0};
+            b_query(&qb, "spin", 0, NULL, 0);
             uint32_t id;
             GsqlError e2;
-            gsql_client_send(c, GSQL_M_QUERY, &b, &id, &e2);
+            gsql_client_send(x, GSQL_M_QUERY, &qb, &id, &e2);
         }
         if (write(p[1], &o, sizeof o) != (ssize_t)sizeof o) {
             _exit(2);
@@ -1853,32 +1990,18 @@ static int lifetime_main(const char *dir) {
         return finish();
     }
     sleep_ms(300);   /* the owner is inside the statement now */
-    char stat_path[64];
-    snprintf(stat_path, sizeof stat_path, "/proc/%ld/stat", owner);
-    double t0 = now_us();
     kill(kid, SIGKILL);
     waitpid(kid, NULL, 0);
-    gone = 0;
-    for (int t = 0; t < 1000 && !gone; t++) {
-        char buf[256];
-        FILE *f = fopen(stat_path, "r");
-        if (!f) {
-            gone = 1;
-            break;
-        }
-        size_t n = fread(buf, 1, sizeof buf - 1, f);
-        fclose(f);
-        buf[n] = 0;
-        const char *rp = strrchr(buf, ')');
-        gone = rp && rp[1] == ' ' && rp[2] == 'Z';
-        if (!gone) {
-            sleep_ms(10);
-        }
-    }
-    double took = (now_us() - t0) / 1e3;
-    EXPECT(gone, "an owner stuck in a statement outlived its client by %.0f ms: its SIGTERM has no deadline", took);
-    EXPECT(took > 700, "the stuck owner was gone after %.0f ms, before its 1 s grace: something other than the deadline "
-           "ended it, so this check measured nothing", took);
+    sleep_ms(LINGER_MS * 2);
+    EXPECT(kill((pid_t)owner, 0) == 0, "the stuck owner was gone before anything stopped it, so this check measures "
+           "nothing");
+    t0 = now_us();
+    kill((pid_t)owner, SIGTERM);
+    int gone = gone_within((pid_t)owner, 10000);
+    took = (now_us() - t0) / 1e3;
+    EXPECT(gone, "an owner stuck in a statement outlived its SIGTERM by %.0f ms: the stop has no deadline", took);
+    EXPECT(took > 700, "the stuck owner was gone %.0f ms after SIGTERM, before its 1 s grace: something other than the "
+           "deadline ended it, so this check measured nothing", took);
     return finish();
 }
 
@@ -1936,7 +2059,7 @@ static int cost_main(const char *dir, long iters) {
     pid_t op = gsql_client_owner_pid(a);
     gsql_client_close(a);
     kill(op, SIGTERM);
-    waitpid(op, NULL, 0);
+    gone_within(op, 10000);
     GsOptions o;
     memset(&o, 0, sizeof o);
     GsStore *st = NULL;

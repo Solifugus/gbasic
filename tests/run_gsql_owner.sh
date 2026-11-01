@@ -13,10 +13,11 @@
 # cursors and batches, CANCEL, timeouts, a dropped connection, a half-sent
 # frame, a client that never reads, a race to become the owner, symlinks,
 # stale sockets, a runtime directory someone else could reach, the owner
-# killed, and the client killed.
+# killed, and how long an owner lives (gsql_owner_lifetime_design.md).
 #
-# Each tier runs real processes: an owner is the test binary re-executed, the
-# client's child, armed with PR_SET_PDEATHSIG. The runtime directory is a
+# Each tier runs real processes: an owner is the test binary re-executed,
+# detached from the client that started it, and stopping by itself once it
+# has had no connection for its linger. The runtime directory is a
 # short one under /tmp, because a local socket's path is limited to 108 bytes
 # and a suite's work directory need not be (the owner refuses a longer one by
 # name, which the paths tier asserts). The suite ends by asserting that NO
@@ -33,9 +34,9 @@ cd "$(dirname "$0")/.."
 work="$(mktemp -d)"
 rt="$(mktemp -d /tmp/gsql-rt.XXXXXX)"
 chmod 700 "$rt"
-# Nothing here kills by pattern: an owner is a test process's child, armed
-# with PR_SET_PDEATHSIG, and dies with it. That is the property under test,
-# so the last tier asserts it rather than a cleanup papering over it.
+# Nothing here kills by pattern: an owner stops by itself after its linger.
+# That is the property under test, so the last tier asserts it rather than a
+# cleanup papering over it.
 cleanup() {
     rm -rf "$work" "$rt"
 }
@@ -120,7 +121,7 @@ tier stall "half a frame and an unread backlog stall nobody, and nothing is lost
 tier race "24 clients find no owner at once, 20 times over, and each time exactly one owner results" 300 24 20
 tier paths "a symlink finds the same owner, a stale socket is replaced, the runtime directory is checked" 60
 tier handoff "the owner killed: the transaction fails, commits survive, nothing is retried; SIGTERM replays nothing" 60
-tier lifetime "the client killed: the owner it started goes too, taking the planned handoff" 60
+tier lifetime "an owner outlives the program that started it while anybody uses it, then stops after its linger" 90
 
 printf 'TIER cost: the round trip against the same point read in process (-O2, no sanitizers)\n'
 mkdir -p "$work/costdir"
@@ -133,8 +134,14 @@ case "$last" in
 esac
 
 printf 'TIER leftovers: no owner outlives the suite\n'
-sleep 0.3
-left=$(pgrep -f "$work/" | tr '\n' ' ')
+# an owner stops by itself once its linger (3 s by default) has passed with
+# nobody connected, so this waits for that rather than a moment
+left=""
+for _ in $(seq 1 100); do
+    left=$(pgrep -f "$work/" | tr '\n' ' ')
+    [ -z "$left" ] && break
+    sleep 0.1
+done
 if [ -z "$left" ]; then
     pass "no owner process is left"
 else

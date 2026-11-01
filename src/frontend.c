@@ -777,7 +777,7 @@ static const char *gsq_decl_word(const AstStmt *stmt) {
 
 static void gsq_check_database(SrvCheck *chk, const AstStmt *stmt) {
     static const SrvOption options[] = {
-        {"file", AST_EXPR_STRING}, {"create", AST_EXPR_BOOL},
+        {"file", AST_EXPR_STRING}, {"create", AST_EXPR_BOOL}, {"linger", AST_EXPR_NUMBER},
     };
     char where[192];
     snprintf(where, sizeof(where), "database '%s'", stmt->as.database.name);

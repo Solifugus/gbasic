@@ -88,10 +88,17 @@ typedef struct {
     uint32_t stop_grace_s;       /* after SIGTERM, how long a clean stop may
                                     take before the process is ended outright;
                                     0: 10 */
+    uint32_t linger_ms;          /* with no connection for this long, stop with
+                                    the planned handoff (gsql_owner_lifetime_
+                                    design.md); 0: 3 000, GSQL_LINGER_NONE: at
+                                    once */
     const GsOptions *store;      /* the engine's options; NULL: the defaults */
 } GsqlOwnerOptions;
 
-/* Serves `db` until SIGTERM. Answers the process's exit status: 0 for a clean
+#define GSQL_LINGER_NONE 0xffffffffu
+
+/* Serves `db` until SIGTERM, or until it has had no connection for its
+ * linger. Answers the process's exit status: 0 for a clean
  * stop, and for a lost race (another owner holds the lock), 1 for a failure
  * already reported on ready_fd and stderr. `service` may be NULL. */
 int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOptions *opt);

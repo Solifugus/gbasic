@@ -708,6 +708,7 @@ static Value gsql_eval_connect(AstExpr *expr) {
     char *path = copy_string(text);
     value_free(p);
     int create = 0;
+    long linger_ms = -1;
     if (argc == 2) {
         Value o = eval_expr(expr->as.call.args.items[1]);
         if (error_action_pending()) {
@@ -726,25 +727,39 @@ static Value gsql_eval_connect(AstExpr *expr) {
         /* the option set is closed: a misspelt `create` would otherwise be a
            connect that silently refuses to make the database it was asked to */
         RecordField *fields = o.as.record.fields;
-        for (size_t i = 0; i < o.as.record.count; i++) {
-            if (strcmp(fields[i].name, "create") != 0) {
+        const char *bad = NULL;
+        for (size_t i = 0; i < o.as.record.count && !bad; i++) {
+            Value *v = fields[i].value;
+            if (strcmp(fields[i].name, "create") == 0) {
+                if (v->kind != VALUE_BOOL) {
+                    bad = "gsql.connect: `create` must be true or false";
+                } else {
+                    create = v->as.boolean;
+                }
+            } else if (strcmp(fields[i].name, "linger") == 0) {
+                double sec = v->kind == VALUE_NUMBER ? v->as.num.value : -1;
+                if (v->kind != VALUE_NUMBER || !(sec >= 0 && sec <= 86400)) {
+                    bad = "gsql.connect: `linger` is the seconds an owner it starts waits after its last "
+                          "connection closes, from 0 to 86400";
+                } else {
+                    linger_ms = (long)(sec * 1000 + 0.5);
+                }
+            } else {
                 char msg[300];
-                snprintf(msg, sizeof msg, "gsql.connect has no option `%s`; the one option is `create`",
+                snprintf(msg, sizeof msg, "gsql.connect has no option `%s`; its options are `create` and `linger`",
                          fields[i].name);
                 value_free(o);
                 free(path);
                 gsql_module_refuse(msg);
                 return value_null();
             }
-            if (fields[i].value->kind != VALUE_BOOL) {
-                value_free(o);
-                free(path);
-                gsql_module_refuse("gsql.connect: `create` must be true or false");
-                return value_null();
-            }
-            create = fields[i].value->as.boolean;
         }
         value_free(o);
+        if (bad) {
+            free(path);
+            gsql_module_refuse(bad);
+            return value_null();
+        }
     }
     GsqlConnectionValue *c = calloc(1, sizeof *c);
     if (!c) {
@@ -753,6 +768,7 @@ static Value gsql_eval_connect(AstExpr *expr) {
     c->ref_count = 1;
     c->path = path;
     c->create = create;
+    c->linger_ms = linger_ms;
     if (!gsql_connection_open(c, "connect")) {
         c->closed = 1;
         Value dead = value_gsql_connection(c);
@@ -777,6 +793,11 @@ static int gsql_connection_open(GsqlConnectionValue *c, const char *verb) {
         c->owner_argv[0] = c->exe;
         c->owner_argv[1] = "--gsql-owner";
         c->owner_argv[2] = NULL;
+        if (c->linger_ms >= 0) {
+            snprintf(c->linger_arg, sizeof c->linger_arg, "--linger=%ld", c->linger_ms);
+            c->owner_argv[2] = c->linger_arg;
+            c->owner_argv[3] = NULL;
+        }
     }
     GsqlClientOptions opt;
     memset(&opt, 0, sizeof opt);
@@ -1797,12 +1818,18 @@ static Value gsql_eval_call(AstExpr *expr) {
 /* `gbasic --gsql-owner DB FD MODE`: the owner process a client starts
  * (docs/gsql_owner_design.md §6), serving the SQL layer over this host. */
 int gb_gsql_owner_main(int argc, char **argv) {
-    if (argc != 3) {
-        fprintf(stderr, "gbasic --gsql-owner: wants DB FD create|open\n");
-        return 2;
-    }
     GsqlOwnerOptions opt;
     memset(&opt, 0, sizeof opt);
+    if (argc == 4 && strncmp(argv[0], "--linger=", 9) == 0) {
+        long ms = atol(argv[0] + 9);
+        opt.linger_ms = ms <= 0 ? GSQL_LINGER_NONE : (uint32_t)ms;
+        argc--;
+        argv++;
+    }
+    if (argc != 3) {
+        fprintf(stderr, "gbasic --gsql-owner: wants [--linger=MS] DB FD create|open\n");
+        return 2;
+    }
     opt.ready_fd = atoi(argv[1]);
     opt.create = strcmp(argv[2], "create") == 0;
     GsqlSql *q = gsql_sql_new(&gsql_interpreter_host);

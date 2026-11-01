@@ -28,6 +28,9 @@
 #include <unistd.h>
 
 #define DEFAULT_IDLE_MS 300000u
+#define DEFAULT_LINGER_MS 3000u
+#define BUSY_WAIT_MS 10000u
+#define STARTUP_GRACE_MS 2000u
 #define DEFAULT_OUTPUT_LIMIT (4u << 20)
 #define MAX_FIELDS 16
 #define TIMED_OUT_KEPT 16
@@ -176,6 +179,10 @@ typedef struct {
     size_t nfifo, fifocap;
     uint64_t next_cursor;
     uint64_t device, inode;
+    char sock[200];
+    uint64_t alone_since;   /* when the last connection went; 0 while any is
+                               open (gsql_owner_lifetime_design.md §2) */
+    int served;             /* a connection has ever been accepted */
 } Owner;
 
 static void out_frame(Conn *c, unsigned type, uint32_t id, const GsqlBuf *body) {
@@ -1143,7 +1150,33 @@ static void accept_all(Owner *o) {
             o->conns = g;
         }
         o->conns[o->nconns++] = c;
+        o->served = 1;
     }
+}
+
+/* Whether an owner answers on db's socket: a connect, nothing sent. */
+static int socket_answers(const char *db) {
+    char path[200];
+    uint64_t d, i;
+    GsqlError err;
+    if (gsql_socket_path(db, path, sizeof path, &d, &i, &err) != GSQL_OK) {
+        return 0;
+    }
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    size_t n = strlen(path);
+    if (n >= sizeof a.sun_path) {
+        return 0;
+    }
+    memcpy(a.sun_path, path, n + 1);
+    int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (s < 0) {
+        return 0;
+    }
+    int ok = connect(s, (struct sockaddr *)&a, sizeof a) == 0;
+    close(s);
+    return ok;
 }
 
 static uint32_t idle(uint32_t v) { return v ? v : DEFAULT_IDLE_MS; }
@@ -1254,6 +1287,41 @@ static void serve(Owner *o) {
         }
         if (working) {
             wait = 0;   /* look for requests, then the next slice */
+        }
+        /* alone: stop once the linger has passed, unless somebody is already
+           queued -- and then the socket goes before the listener, so a
+           connect after the last accept is reset before any request is sent,
+           and its client starts again (§3) */
+        if (o->nconns == 0) {
+            uint64_t now = now_ms();
+            if (!o->alone_since) {
+                o->alone_since = now;
+            }
+            uint32_t linger = o->opt.linger_ms == GSQL_LINGER_NONE ? 0
+                              : o->opt.linger_ms ? o->opt.linger_ms : DEFAULT_LINGER_MS;
+            /* before its first connection an owner waits at least long enough
+               for the client that started it to connect, or no linger would
+               stop it before its own starter got there */
+            if (!o->served && linger < STARTUP_GRACE_MS) {
+                linger = STARTUP_GRACE_MS;
+            }
+            if (now - o->alone_since >= linger) {
+                accept_all(o);
+                if (o->nconns == 0) {
+                    unlink(o->sock);
+                    close(o->ls);
+                    o->ls = -1;
+                    break;
+                }
+                o->alone_since = 0;
+                continue;
+            }
+            int left = (int)(linger - (now - o->alone_since));
+            if (wait < 0 || left < wait) {
+                wait = left;
+            }
+        } else {
+            o->alone_since = 0;
         }
         if (o->nconns + 2 > fcap) {
             fcap = o->nconns + 16;
@@ -1411,6 +1479,18 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
     so.create = o.opt.create;
     int status = 1;
     int rc = o.e->open(db, &so, &o.db);
+    /* the lock is held. If the holder's socket answers, it is starting or
+       serving, and the client connects to it; if not, it may be leaving after
+       its linger, so wait for the lock rather than say busy for an owner that
+       will never bind (gsql_owner_lifetime_design.md §3) */
+    for (uint64_t until = now_ms() + BUSY_WAIT_MS; rc == GS_BUSY && now_ms() < until;) {
+        if (socket_answers(db)) {
+            break;
+        }
+        struct timespec ts = { 0, 5 * 1000000L };
+        nanosleep(&ts, NULL);
+        rc = o.e->open(db, &so, &o.db);
+    }
     if (rc == GS_BUSY) {
         /* another owner won the race: the client connects to it */
         ready_line(o.opt.ready_fd, "busy");
@@ -1423,9 +1503,9 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
         fprintf(stderr, "gsql owner: the database %s could not be opened: %s\n", db, gs_status_name(rc));
         goto out_pipe;
     }
-    char sock[200];
+    char *sock = o.sock;
     GsqlError err;
-    if (gsql_socket_path(db, sock, sizeof sock, &o.device, &o.inode, &err) != GSQL_OK) {
+    if (gsql_socket_path(db, sock, sizeof o.sock, &o.device, &o.inode, &err) != GSQL_OK) {
         ready_line(o.opt.ready_fd, "error %s", err.message);
         fprintf(stderr, "gsql owner: %s\n", err.message);
         goto out_store;
@@ -1437,7 +1517,7 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
         fprintf(stderr, "gsql owner: %s\n", why);
         goto out_store;
     }
-    ready_line(o.opt.ready_fd, "ready");
+    ready_line(o.opt.ready_fd, "ready %ld", (long)getpid());
     if (o.opt.ready_fd >= 0) {
         close(o.opt.ready_fd);
         o.opt.ready_fd = -1;
@@ -1450,11 +1530,16 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
         free(o.conns[i]);
     }
     o.nconns = 0;
+    /* the socket goes first, before the lock goes with the store: an owner
+       started meanwhile finds no socket and waits for the lock (§3) */
+    if (o.ls >= 0) {
+        unlink(sock);
+        close(o.ls);
+        o.ls = -1;
+    }
     if (o.e->flush) {
         o.e->flush(o.db);
     }
-    unlink(sock);   /* before the lock goes with the store */
-    close(o.ls);
     status = 0;
 out_store:
     o.e->close(o.db);

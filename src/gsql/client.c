@@ -32,6 +32,7 @@ struct GsqlClient {
     GsqlBuf out;
     pid_t owner_pid;     /* WELCOME's */
     pid_t started;       /* the owner this client started last */
+    pid_t stray;         /* an intermediate not yet reaped */
     uint64_t device, inode;
 };
 
@@ -95,11 +96,11 @@ static int connect_to(const char *path) {
     return s;
 }
 
-/* Reaps an owner this client started that has since exited, so a handoff
- * leaves no zombie behind. */
+/* Reaps an intermediate left waiting on a slow owner. The owner itself is
+ * nobody's child (gsql_owner_lifetime_design.md §2). */
 static void reap(GsqlClient *c) {
-    if (c->started > 0 && waitpid(c->started, NULL, WNOHANG) == c->started) {
-        c->started = 0;
+    if (c->stray > 0 && waitpid(c->stray, NULL, WNOHANG) == c->stray) {
+        c->stray = 0;
     }
 }
 
@@ -132,18 +133,76 @@ static int start_owner(GsqlClient *c, GsqlError *err) {
     argv[argc] = c->db;
     argv[argc + 1] = fdtext;
     argv[argc + 2] = (char *)(c->opt.create ? "create" : "open");
-    pid_t parent = getpid();
     pid_t pid = fork();
     if (pid == 0) {
-        /* the owner is this client's child and dies with it (§6.1), through
-         * the platform layer's one way of saying so (SIGTERM on Linux, so it
-         * takes the planned handoff on the way out) */
-        gb_arm_parent_death();
-        if (getppid() != parent) {
-            _exit(0);   /* the parent died before the line above */
+        /* the intermediate. The owner is detached from this client: its own
+         * session and nobody's child, so it outlives the program that started
+         * it while anybody uses it, and stops on its own after its linger
+         * (gsql_owner_lifetime_design.md §2). This process waits for the
+         * owner's one line and relays it, so an owner that exits before it
+         * is ready still has its status reported (§4). */
+        int q[2];
+        if (setsid() < 0 || pipe(q) != 0) {
+            dprintf(p[1], "error the owner could not be detached: %s\n", strerror(errno));
+            _exit(0);
         }
-        execv(argv[0], argv);
-        _exit(127);
+        snprintf(fdtext, sizeof fdtext, "%d", q[1]);
+        pid_t owner = fork();
+        if (owner == 0) {
+            close(q[0]);
+            close(p[1]);
+            /* holding the program's streams would hold a $(...) capture open
+             * for the owner's whole life; everything it says goes on the
+             * ready line or over the protocol */
+            int dn = open("/dev/null", O_RDWR);
+            if (dn >= 0) {
+                dup2(dn, 0);
+                dup2(dn, 1);
+                dup2(dn, 2);
+                if (dn > 2) {
+                    close(dn);
+                }
+            }
+            execv(argv[0], argv);
+            _exit(127);
+        }
+        close(q[1]);
+        char rl[800];
+        size_t m = 0;
+        if (owner > 0) {
+            while (m < sizeof rl - 1) {
+                ssize_t got = read(q[0], rl + m, sizeof rl - 1 - m);
+                if (got < 0 && errno == EINTR) {
+                    continue;
+                }
+                if (got <= 0) {
+                    break;
+                }
+                m += (size_t)got;
+                if (memchr(rl, '\n', m)) {
+                    break;
+                }
+            }
+        }
+        rl[m] = 0;
+        if (owner < 0) {
+            dprintf(p[1], "error the owner could not be started: fork: %s\n", strerror(errno));
+        } else if (memchr(rl, '\n', m)) {
+            if (write(p[1], rl, m) < 0) {
+                _exit(1);
+            }
+        } else {
+            int status = 0;
+            waitpid(owner, &status, 0);
+            if (WIFEXITED(status)) {
+                dprintf(p[1], "error it exited with status %d before saying it was ready%s\n", WEXITSTATUS(status),
+                        WEXITSTATUS(status) == 127 ? " (127: its program could not be run)" : "");
+            } else {
+                dprintf(p[1], "error it died of signal %d before saying it was ready\n",
+                        WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+            }
+        }
+        _exit(0);
     }
     free(argv);
     close(p[1]);
@@ -152,8 +211,6 @@ static int start_owner(GsqlClient *c, GsqlError *err) {
         err_set(err, GSQL_NO_OWNER, "an owner could not be started: fork: %s", strerror(errno));
         return 0;
     }
-    reap(c);
-    c->started = pid;
     char line[800];
     size_t n = 0;
     uint64_t deadline = now_ms() + (c->opt.wait_ms ? c->opt.wait_ms : DEFAULT_WAIT_MS);
@@ -188,7 +245,11 @@ static int start_owner(GsqlClient *c, GsqlError *err) {
     if (nl) {
         *nl = 0;
     }
-    if (strcmp(line, "ready") == 0) {
+    /* the intermediate has relayed the line, or is still waiting for it;
+       either way it is ours to reap, and it exits once it has relayed */
+    if (strncmp(line, "ready ", 6) == 0) {
+        waitpid(pid, NULL, 0);
+        c->started = (pid_t)atol(line + 6);
         return 'r';
     }
     if (strcmp(line, "busy") == 0) {
@@ -198,25 +259,15 @@ static int start_owner(GsqlClient *c, GsqlError *err) {
     }
     if (strncmp(line, "error ", 6) == 0) {
         waitpid(pid, NULL, 0);
-        c->started = 0;
         err_set(err, GSQL_NO_OWNER, "the owner for %s did not start: %s", c->db, line + 6);
         return 0;
     }
-    /* no line: it died, or it is too slow to wait for */
-    int status = 0;
-    if (waitpid(pid, &status, WNOHANG) == pid) {
-        c->started = 0;
-        if (WIFEXITED(status)) {
-            err_set(err, GSQL_NO_OWNER, "the owner for %s exited with status %d before saying it was ready%s", c->db,
-                    WEXITSTATUS(status), WEXITSTATUS(status) == 127 ? " (127: its program could not be run)" : "");
-        } else {
-            err_set(err, GSQL_NO_OWNER, "the owner for %s died of signal %d before saying it was ready", c->db,
-                    WIFSIGNALED(status) ? WTERMSIG(status) : 0);
-        }
-    } else {
-        err_set(err, GSQL_NO_OWNER, "the owner for %s (pid %ld) did not say it was ready within %u ms", c->db,
-                (long)pid, c->opt.wait_ms ? c->opt.wait_ms : DEFAULT_WAIT_MS);
-    }
+    /* no line within the wait: the intermediate is still waiting on a slow
+       owner; it relays into a pipe nobody reads and exits, and is reaped
+       next time */
+    c->stray = pid;
+    err_set(err, GSQL_NO_OWNER, "the owner for %s did not say it was ready within %u ms", c->db,
+            c->opt.wait_ms ? c->opt.wait_ms : DEFAULT_WAIT_MS);
     return 0;
 }
 
