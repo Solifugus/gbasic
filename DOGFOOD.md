@@ -13143,3 +13143,37 @@ release script is the one place to change, and it wants watching.
   Once a year for one hour, silent, and an hour is a plausible wrong answer.
 - **Workaround:** none. Whether a datetime should carry its offset (or its DST
   flag) is a docs/datetime_design.md decision, left for Matthew.
+
+## 2026-11-01 — CC — while: Matthew's first hand-written G-SQL block program
+
+Matthew is fumbling on purpose ("it will help us find where others will
+fumble"), so each mistake below is a finding about where a newcomer trips.
+
+- **Type:** bug, then language-surprise
+- **Severity:** medium
+- **What:** four mistakes in one twenty-line program, and one bug of ours:
+  1. **A declared block that nothing runs did nothing, and said nothing:**
+     exit 0, no output. **RESOLVED:** warning 2121 names the block at its
+     declaration.
+  2. **gBASIC's `{USD}'199.50'` written inside the SQL** was reported as "the
+     statement is empty" at the `);` of the statement before it. That was our
+     bug: the new multi-statement splitter read a length the lexer had not set
+     when it failed. **RESOLVED:** it now reports `unexpected character {` at
+     its column, with a regression case.
+  3. **`INSERT INTO shares (1, 10, ...)` with no `VALUES`** got "expected a
+     column name, found the number 1". That is correct, and the place is
+     right.
+  4. **A datetime and money written as text and as a plain number** were each
+     refused as TYPE, naming the column and the kind. That is correct: G-SQL
+     makes no implicit casts.
+  5. **The same primary key on every row** got DUPLICATE, naming "row 2 of
+     VALUES". That is correct.
+- **What it suggests, open:** typed values in SQL need `cast(...)`, and a
+  newcomer reaches for a gBASIC modifier first. The `:name` form (gBASIC
+  values arriving typed) is the better answer, and the cookbook shows it. Two
+  things could teach it sooner:
+  - the TYPE refusal could suggest a parameter;
+  - a `{` inside a block's SQL could say that gBASIC modifiers do not reach
+    SQL, and to use a `:name` parameter or `cast`.
+  Neither is built yet.
+- **Workaround:** none needed.
