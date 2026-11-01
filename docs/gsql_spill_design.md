@@ -1,6 +1,6 @@
 # G-SQL: spilling to disk, and the external-sort index build
 
-**Status:** The sorter and its first user shipped 2026-11-01 (`src/gsql/xsort.c`; `gsql_index_create` in `src/gsql/table.c`; `run_gsql_table.sh`'s sort tier and its model's spilling seeds). The query operators are still to come. What was measured is §6, and it is a smaller gain than §2 predicted. It is item 6 of the work order in `gsql_scale_measurements.md` §4: *"spill-to-disk, with the external-sort index build as its first user"*. This document designs the sorter and its first user. The query operators that hold rows in memory (§3 of the measurements) come after, each its own increment, on the same sorter.
+**Status:** The sorter and its first user shipped 2026-11-01 (`src/gsql/xsort.c`; `gsql_index_create` in `src/gsql/table.c`; `run_gsql_table.sh`'s sort tier and its model's spilling seeds). The query operators are still to come. What was measured is §6; what the measuring found in the engine is §7. It is item 6 of the work order in `gsql_scale_measurements.md` §4: *"spill-to-disk, with the external-sort index build as its first user"*. This document designs the sorter and its first user. The query operators that hold rows in memory (§3 of the measurements) come after, each its own increment, on the same sorter.
 
 ## 1. The gap
 
@@ -44,17 +44,27 @@ A billion rows would take half a day or more.
 - **The index build**, through `run_gsql_table.sh`'s model workload, which already builds indexes over existing rows and checks them, with the sorter's budget lowered so every build spills.
 - **The scale point:** `CREATE INDEX` at 10⁶ and 10⁷ rows, timed before and after, on ext4 under `/var/tmp`. The claim is that the growth per 10× falls well below 30×.
 
-## 6. Measured, and what it did not fix
+## 6. Measured
 
-`research/gsql/scale.sh` on NVMe ext4, the same table before and after (`CREATE INDEX t_k ON t (k)` over existing rows, one transaction, timed with its commit apart):
+`research/gsql/scale.sh` on NVMe ext4 (`CREATE INDEX t_k ON t (k)` over existing rows, one transaction, its commit timed apart):
 
-| rows | before: build (commit) | after: build (commit) | memory added, before → after |
+| rows | before: build (commit) | sorted (§3) | sorted, and the engine fix (§7) |
 |---|---|---|---|
-| 10⁶ | 1.91 s (0.12) | 1.44 s (0.06) | 51 → 93 MB |
-| 10⁷ | 37.5 s (12.9) | 26.2 s (10.4) | 81 → 88 MB |
+| 10⁶ | 1.91 s (0.12) | 1.44 s (0.06) | 1.45 s (0.07) |
+| 10⁷ | 37.5 s (12.9) | 26.2 s (10.4) | **15.8 s (0.34)** |
+| 10⁸ | 1 180 s | — | (§7) |
 
-- **The statement itself is a third faster** at 10⁷ (24.7 s to 15.8 s): reading every row before writing anything means the cursor merges over nothing.
-- **The commit is not much faster** (12.9 s to 10.4 s), so the growth per 10× moved only from 19.6× to 18.2×. §2 predicted the sorted runs would move down the levels unrewritten. That is not shown, and the commit's cost is **not yet explained**: an instrumented build meant to time its parts (the flush, the last spill, the manifest, compaction) failed its own commit and was abandoned for the night. It is the next thing to measure, and the 10⁸ point waits for it.
-- **The sort's own budget shows in memory at 10⁶:** 64 MB of arena, which the earlier build did not hold.
+**Growth per 10× fell from 19.6× to 10.9×**, which is linear plus the index's own depth. Memory added by the build is 88–94 MB, the sort's 64 MB arena among it.
 
-**Perturbations proven red:** a unique index's duplicate check removed (the table model's DUPLICATE verdicts), the merge's key order reversed, and the merge's ties unstable (both by the sort tier).
+## 7. What measuring it found: the commit was compaction
+
+Sorting alone took the statement from 24.7 s to 15.8 s at 10⁷ and left the commit at 10.4 s. Timing the commit's parts showed the time was not the flush, the last spill or the manifest: **10.38 s of it was compaction, run inside the commit**, merging 411 MB of the index's sorted runs with all 304 MB of the table's level-1 files. Two engine rules made sorted runs impossible to move:
+
+- **Level 0 was compacted as one block.** Its span ran from the lowest key of any level-0 file to the highest. The build's runs held tree 5 (the index), and its smallest runs held tree 0 (the catalog) and tree 3 (the schema), so the span covered tree 4, the table, and every level-1 file was an input. **A level-0 file that overlaps no other level-0 file and nothing in level 1 now moves down on its own**, before anything is merged.
+- **A spilled run could hold two trees.** The schema entry the build writes last shared a run with the index's tail, so that run spanned the table by itself. **A run is now cut wherever the tree changes.** Different trees' keys never meet, so how a transaction's entries are cut into runs changes nothing a reader sees.
+
+The first instrumented build meant to find this failed its own commit, because the trace read the transaction after the commit had freed it. That is why the night's write-up called the commit unexplained.
+
+**Held by `run_gsql_store.sh`** (`sorted_load` in `tests/gsql/store_test.c`): a sorted load into a new tree beside a large one, with one entry in a lower tree written last, must commit writing under a quarter of what the load spilled. Measured 3.05 MB against 1.08 MB on the engine before, and **each half of the fix alone fails it**. The first version of the check passed without the per-tree cut, because nothing in its load reached across the rows; the lower tree written last is what CREATE INDEX's schema write does. A first version also failed on the fixed engine, because its first tree was loaded in random order and left a compaction backlog the commit legitimately paid down. Every crash mode of the gate passes with both rules.
+
+**Perturbations proven red:** a unique index's duplicate check removed, the merge's key order reversed, the merge's ties unstable, the per-tree cut removed, the lone-file move removed.
