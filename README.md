@@ -147,6 +147,7 @@ records, and no module system beyond `load`.
 
 | Area | State | Needs | Details |
 |---|---|---|---|
+| **G-SQL** — gBASIC's own database, where a stored value is a gBASIC value | Shipped (Linux and other POSIX) | nothing | [cookbook](docs/gsql_cookbook.md) · [practices](docs/gsql_practices.md) · [reference](docs/reference.md#g-sql-module) |
 | **SQLite** | Shipped | sqlite3 | [reference](docs/reference.md#sqlite-module) |
 | **PostgreSQL** | Shipped | libpq | [reference](docs/reference.md#postgresql-module) |
 | **ODBC** — SQL Server, MySQL, Oracle, DB2, … | Shipped | unixODBC | [cookbook](docs/odbc_cookbook.md) · [reference](docs/reference.md#odbc-module) |
@@ -559,7 +560,7 @@ index, or if the index links to something that is not there.
 **Cookbooks** — task-oriented, with runnable examples. Every code block and
 every output block on these pages is owned by a file that is executed by the
 test suite and compared byte for byte, so a page cannot drift from the product
-without a test going red. Sixteen of them:
+without a test going red. Seventeen of them:
 
 *Money and business*
 
@@ -585,6 +586,8 @@ without a test going red. Sixteen of them:
 
 - [Spreadsheets](docs/xlsx_cookbook.md) — read, edit, recalculate and save real
   workbooks
+- [G-SQL](docs/gsql_cookbook.md) — gBASIC's own database, from a first table
+  to the practices a production program needs
 - [Databases over ODBC](docs/odbc_cookbook.md) — SQL Server, MySQL, Oracle and
   the rest through one module
 - [Charts](docs/chart_cookbook.md) — line, bar, pie, heatmap and sparkline as
