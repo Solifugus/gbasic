@@ -1953,6 +1953,54 @@ static int lifetime_main(const char *dir) {
     snprintf(lms, sizeof lms, "%d", LINGER_MS);
     setenv("GSQL_TEST_LINGER_MS", lms, 1);
 
+    /* the window the churn above rarely lands in, held open on purpose: the
+       lock is held and no socket answers, which is an owner leaving after its
+       linger. The owner a client starts must wait for the lock and take over,
+       not say `busy` for a socket nobody will bind (the client would then
+       wait its whole 10 s for it) */
+    snprintf(db, sizeof db, "%s/leaving", dir);
+    {
+        GsqlClient *x = open_db(db, 1);
+        long xo = x ? (long)gsql_client_owner_pid(x) : -1;
+        gsql_client_close(x);
+        gone_within((pid_t)xo, 5000);
+        GsOptions o;
+        memset(&o, 0, sizeof o);
+        GsStore *st = NULL;
+        if (E->open(db, &o, &st) != GS_OK) {
+            mismatch("the leaving tier could not hold the database's lock");
+        } else {
+            int p2[2];
+            if (pipe(p2)) {
+                return 1;
+            }
+            double s0 = now_us();
+            pid_t opener = fork();
+            if (opener == 0) {
+                close(p2[0]);
+                GsqlClient *y = open_db(db, 0);
+                char ok = y && !strcmp(call(y, GSQL_M_PING, NULL), "PONG");
+                if (write(p2[1], &ok, 1) != 1) {
+                    _exit(2);
+                }
+                gsql_client_close(y);
+                _exit(0);
+            }
+            close(p2[1]);
+            sleep_ms(300);
+            E->close(st);   /* the leaving owner lets go */
+            char ok = 0;
+            ssize_t got = read(p2[0], &ok, 1);
+            double ms = (now_us() - s0) / 1e3;
+            close(p2[0]);
+            waitpid(opener, NULL, 0);
+            EXPECT(got == 1 && ok, "an open while the lock was held by an owner leaving did not succeed");
+            EXPECT(ms < 2000, "an open while an owner was leaving took %.0f ms: its owner said busy for a socket "
+                   "nobody would bind", ms);
+            EXPECT(ms > 250, "the open finished in %.0f ms, before the lock was let go, so it never met it", ms);
+        }
+    }
+
     /* an owner STUCK in a statement cannot notice its connection going, so
        it lingers in the statement; SIGTERM still ends it, with a deadline
        (1 s here), since a clean stop it cannot reach would hold the database
