@@ -37,7 +37,13 @@ append(results, check("epoch(utc, UTC) is the SAME instant", true, abs(epoch(u, 
 ' UTC machine the offset is zero and these are equal; anywhere else the gap is
 ' the bug, and it is the same gap either way you measure it.
 append(results, check("number(dt) and epoch(dt) read a value the same way", number(u), epoch(u)))
-append(results, check("...and both are off by the local offset", epoch(u) - epoch(u, "UTC"), 0 - (epoch(l, "UTC") - epoch(l))))
+' The offset is the local zone's AT u's civil time, read as local. Taken at l
+' instead (the local "now"), it differs by an hour for the few hours around a
+' daylight-saving change, when u and l fall on opposite sides of it -- which is
+' how this check failed on 2026-10-31 at 23:30 EDT, three and a half hours
+' before the change, with nothing wrong in the interpreter.
+off = zone_offset(u)
+append(results, check("...and both are off by the local offset", epoch(u) - epoch(u, "UTC"), 0 - (off.hours * 3600 + off.minutes * 60)))
 
 ' `to_zone` is not a conversion FROM local. Feeding it a local value returns
 ' that value unchanged -- the no-op that reads like a conversion.

@@ -98,6 +98,11 @@ IGNORE = {'bas', 'gb', 'md', 'sh'}
 # `stats.mean` was in prose too, and it WAS a bug, so "only check code fences"
 # is not a safe rule.
 DELIBERATE = {
+    # gsql_design.md is Partial since 2026-11-01 (Phases 0-2 built), so its
+    # pages are checked here; §7 proposes a SQL-to-frame bridge for Phase 3
+    # and marks its one call `' Proposed API`.
+    'frame.from_query':
+        "gsql_design.md §7's proposed SQL-to-frame bridge, Phase 3, not built",
     # chart_design.md explains, in that same paragraph, that a library cannot
     # DEFINE a function named `new` -- so the constructor is `chart.spec`. The
     # name is named in order to say it does not exist.
