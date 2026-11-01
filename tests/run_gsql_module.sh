@@ -2,7 +2,8 @@
 # G-SQL FROM A PROGRAM: the `gsql` module (src/modules/gsql.c;
 # docs/gsql_module_design.md), PHASE 1's FOURTH INCREMENT. `load gsql`, then
 # gsql.connect / query / exec / begin / commit / rollback / close, each call one
-# request to the database's owner, which the program starts as its child.
+# request to the database's owner, which the program starts and which stops
+# by itself once nobody has used it for its linger.
 #
 # SELF-CHECKING NOT GOLDEN: every answer in tests/gsql/module_test.bas is
 # written there by hand, and the defects this module can have are plausible
@@ -20,6 +21,9 @@
 #   lost        the owner is killed under a program using it: the request in
 #               flight fails with LOST and nothing is retried, and the next one
 #               reaches a new owner that recovered what was committed
+#   lifetime    an owner outlives the program that started it while another
+#               program uses it, then stops after its linger; linger: 0; the
+#               option's refusals; no program's output held open
 #   valgrind    the main phase again, no invalid access, no definite leak
 #   leftovers   no owner outlives the suite, read-only
 . "$(dirname "$0")/portable.sh"
@@ -186,9 +190,8 @@ else
     # SIGKILL, not SIGTERM: the owner gets no planned handoff, so the next
     # owner's recovery is the crash path
     kill -9 "$owner"
-    # dead or a zombie: the owner is the program's child and stays a zombie
-    # until the program reaps it, which it does only once it is told to go on,
-    # so `kill -0` alone would wait for ever
+    # gone, or a zombie for the moment before init reaps it: the owner is
+    # nobody's child (docs/gsql_owner_lifetime_design.md)
     for _ in $(seq 1 250); do
         st=$(ps -o stat= -p "$owner" 2>/dev/null | tr -d ' ')
         case "$st" in ''|Z*) break ;; esac
@@ -197,6 +200,88 @@ else
     touch "$work/lost/killed"
     wait "$prog"
     verdict lost "$work/lost.out" $? 4
+fi
+
+printf 'TIER lifetime: an owner outlives the program that started it while another uses it\n'
+# docs/gsql_owner_lifetime_design.md. THE DEFECT, measured on the build
+# before it: a second program connected to an owner the first one started
+# lost its next request (LOST) the moment the first exited, because the owner
+# was its starter's child and went with it.
+LIFE="$PWD/tests/gsql/lifetime_test.bas"
+L="$work/life"
+mkdir -p "$L"
+life_owner() {   # the owner serving database $1, or nothing
+    pgrep -f -- "--gsql-owner (--linger=[0-9]+ )?$1 " | head -1
+}
+GSQL_ROLE=starter GSQL_DB="$L/shared" GSQL_GATE="$L/g1" timeout -k 5 60 ./gbasic "$LIFE" >"$L/a.out" 2>&1 &
+a=$!
+for _ in $(seq 1 200); do grep -q ready "$L/a.out" 2>/dev/null && break; sleep 0.05; done
+GSQL_ROLE=other GSQL_DB="$L/shared" GSQL_GATE="$L/g2" timeout -k 5 60 ./gbasic "$LIFE" >"$L/b.out" 2>&1 &
+b=$!
+for _ in $(seq 1 200); do grep -q first "$L/b.out" 2>/dev/null && break; sleep 0.05; done
+owner=$(life_owner "$L/shared")
+touch "$L/g1"
+wait "$a"
+touch "$L/g2"
+wait "$b"
+bst=$?
+if [ "$bst" = 0 ] && grep -qx "after the starter exited 2" "$L/b.out"; then
+    pass "lifetime: the second program's connection survived its starter exiting"
+else
+    sed 's/^/       /' "$L/b.out" | head -5
+    fail "lifetime: the second program lost its owner when the program that started it exited (exit $bst)"
+fi
+# the owner went once both had: after its linger (3 s by default), not with
+# either program
+if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+    pass "lifetime: the owner is still there just after its last program went"
+else
+    fail "lifetime: the owner (${owner:-not found}) went with its last program, before its linger"
+fi
+gone=0
+for _ in $(seq 1 80); do
+    kill -0 "$owner" 2>/dev/null || { gone=1; break; }
+    sleep 0.1
+done
+[ "$gone" = 1 ] && pass "lifetime: and gone once its linger had passed" \
+    || fail "lifetime: the owner $owner was still there 8 s after its last program went"
+
+# linger: 0, on connect and on a `database` block, stops at the last close
+for role in quick block; do
+    ( cd "$L" && GSQL_ROLE=$role GSQL_DB="$L/quick" timeout -k 5 60 "$OLDPWD/gbasic" "$LIFE" ) >"$L/$role.out" 2>&1
+    db="$L/quick"
+    [ "$role" = block ] && db="$L/lifetime-block.gsql"
+    left=""
+    for _ in $(seq 1 10); do
+        left=$(life_owner "$db")
+        [ -z "$left" ] && break
+        sleep 0.1
+    done
+    if grep -qx "$role done" "$L/$role.out" && [ -z "$left" ]; then
+        pass "lifetime: linger: 0 through $role stops the owner at the last close"
+    else
+        sed 's/^/       /' "$L/$role.out" | head -3
+        fail "lifetime: with linger: 0 through $role the owner (${left:-?}) was still there a second later"
+    fi
+done
+
+# an owner holds none of the program's streams, so capturing a program's
+# output returns when the PROGRAM does, not after its owner's linger
+t0=$(date +%s%N)
+out=$(GSQL_ROLE=starter GSQL_DB="$L/capture" GSQL_GATE=/ timeout -k 5 60 ./gbasic "$LIFE" 2>&1)
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+if [ "$ms" -lt 2500 ] && printf '%s\n' "$out" | grep -q "starter exits"; then
+    pass "lifetime: \$(...) returned in $ms ms, without waiting out the owner's 3 s linger"
+else
+    fail "lifetime: \$(...) took $ms ms: the owner holds the program's output open"
+fi
+
+GSQL_ROLE=refusals GSQL_DB="$L/refuse" timeout -k 5 60 ./gbasic "$LIFE" >"$L/refuse.out" 2>&1
+if grep -q MISMATCH "$L/refuse.out" || [ "$(grep -c '^ok' "$L/refuse.out")" != 5 ]; then
+    sed 's/^/       /' "$L/refuse.out" | head -8
+    fail "lifetime: the linger option's refusals"
+else
+    pass "lifetime: linger out of range, of the wrong kind or misspelt is refused by name; 2 and 0.25 connect"
 fi
 
 printf 'TIER blocks: the `database` and `sql` blocks, every answer written by hand\n'
@@ -495,12 +580,12 @@ else
     printf '  SKIP valgrind (unavailable)\n'
 fi
 
-printf 'TIER leftovers: no owner outlives the program that started it\n'
-# the owner is the program's child and is ended with it (SIGTERM, then a
-# planned handoff), which takes a moment
+printf 'TIER leftovers: no owner outlives the suite\n'
+# an owner stops by itself once it has had no connection for its linger
+# (3 s by default), so this waits that long and more
 left=""
 for _ in $(seq 1 100); do
-    left=$(pgrep -f -- "--gsql-owner $work/" | tr '\n' ' ')
+    left=$(pgrep -f -- "--gsql-owner (--linger=[0-9]+ )?$work/" | tr '\n' ' ')
     [ -z "$left" ] && break
     sleep 0.1
 done
