@@ -1964,41 +1964,54 @@ static int lifetime_main(const char *dir) {
         long xo = x ? (long)gsql_client_owner_pid(x) : -1;
         gsql_client_close(x);
         gone_within((pid_t)xo, 5000);
+        /* the opener is forked BEFORE the lock is taken: a child inheriting
+           the lock's descriptor would hold it after this process let go */
+        int p2[2], go[2];
+        if (pipe(p2) || pipe(go)) {
+            return 1;
+        }
+        pid_t opener = fork();
+        if (opener == 0) {
+            close(p2[0]);
+            close(go[1]);
+            char g;
+            if (read(go[0], &g, 1) != 1) {
+                _exit(2);
+            }
+            GsqlClient *y = open_db(db, 0);
+            char ok = y && !strcmp(call(y, GSQL_M_PING, NULL), "PONG");
+            if (write(p2[1], &ok, 1) != 1) {
+                _exit(2);
+            }
+            gsql_client_close(y);
+            _exit(0);
+        }
+        close(p2[1]);
+        close(go[0]);
         GsOptions o;
         memset(&o, 0, sizeof o);
         GsStore *st = NULL;
         if (E->open(db, &o, &st) != GS_OK) {
             mismatch("the leaving tier could not hold the database's lock");
+            close(go[1]);
         } else {
-            int p2[2];
-            if (pipe(p2)) {
+            double s0 = now_us();
+            if (write(go[1], "g", 1) != 1) {
                 return 1;
             }
-            double s0 = now_us();
-            pid_t opener = fork();
-            if (opener == 0) {
-                close(p2[0]);
-                GsqlClient *y = open_db(db, 0);
-                char ok = y && !strcmp(call(y, GSQL_M_PING, NULL), "PONG");
-                if (write(p2[1], &ok, 1) != 1) {
-                    _exit(2);
-                }
-                gsql_client_close(y);
-                _exit(0);
-            }
-            close(p2[1]);
+            close(go[1]);
             sleep_ms(300);
             E->close(st);   /* the leaving owner lets go */
             char ok = 0;
             ssize_t got = read(p2[0], &ok, 1);
             double ms = (now_us() - s0) / 1e3;
-            close(p2[0]);
-            waitpid(opener, NULL, 0);
             EXPECT(got == 1 && ok, "an open while the lock was held by an owner leaving did not succeed");
             EXPECT(ms < 2000, "an open while an owner was leaving took %.0f ms: its owner said busy for a socket "
                    "nobody would bind", ms);
             EXPECT(ms > 250, "the open finished in %.0f ms, before the lock was let go, so it never met it", ms);
         }
+        close(p2[0]);
+        waitpid(opener, NULL, 0);
     }
 
     /* an owner STUCK in a statement cannot notice its connection going, so
