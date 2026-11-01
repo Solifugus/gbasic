@@ -257,6 +257,14 @@ static int start_owner(GsqlClient *c, GsqlError *err) {
         c->started = 0;
         return 'b';
     }
+    if (strncmp(line, "elsewhere ", 10) == 0) {
+        /* a socket on another machine never answers here, so this is an
+           answer, not something to wait out (gsql_lease_design.md §7) */
+        waitpid(pid, NULL, 0);
+        err_set(err, GSQL_ELSEWHERE, "the database %s is open on another machine, %s; "
+                "a database has one owner, so open it from that machine or close it there first", c->db, line + 10);
+        return 0;
+    }
     if (strncmp(line, "error ", 6) == 0) {
         waitpid(pid, NULL, 0);
         err_set(err, GSQL_NO_OWNER, "the owner for %s did not start: %s", c->db, line + 6);

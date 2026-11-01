@@ -445,3 +445,20 @@ void gs_lease_close(GsLease *l, int clean) {
     free(l->path);
     free(l);
 }
+
+void gs_lease_describe(GsqlIo *io, const char *dir, char *out, size_t n) {
+    GsLease l;
+    memset(&l, 0, sizeof l);
+    GsqlIo *own = io ? NULL : gsql_io_real();
+    l.io = io ? io : own;
+    l.path = malloc(strlen(dir) + sizeof "/" GS_DB_BASE ".lease");
+    if (!l.path) { snprintf(out, n, "another machine"); gsql_io_free(own); return; }
+    sprintf(l.path, "%s/%s.lease", dir, GS_DB_BASE);
+    Rec r = {0};
+    unsigned char raw[LEASE_SIZE];
+    int state = L_ABSENT;
+    if (lease_read(&l, &r, raw, &state) == 0 && state == L_READ) describe(&r, out, n);
+    else snprintf(out, n, "another machine (its lease could not be read)");
+    free(l.path);
+    gsql_io_free(own);
+}

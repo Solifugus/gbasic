@@ -10,6 +10,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 #include "gsql_owner.h"
+#include "lease.h"
 #include "serialize_tags.h"
 #include "v3.h"
 
@@ -183,6 +184,8 @@ typedef struct {
     uint64_t alone_since;   /* when the last connection went; 0 while any is
                                open (gsql_owner_lifetime_design.md §2) */
     int served;             /* a connection has ever been accepted */
+    int fenced;             /* another machine took the database (gsql_lease_design.md §5) */
+    char fenced_by[200];
 } Owner;
 
 static void out_frame(Conn *c, unsigned type, uint32_t id, const GsqlBuf *body) {
@@ -1348,6 +1351,19 @@ static void serve(Owner *o) {
             }
             fds[i + 2].revents = 0;
         }
+        /* the lease: renewed once a second here, and if another machine has
+           taken the database, nothing more is written -- not even the
+           planned handoff's flush (gsql_lease_design.md §5) */
+        if (o->e->lease_keep) {
+            uint64_t due = UINT64_MAX;
+            if (o->e->lease_keep(o->db, 0, &due, o->fenced_by, sizeof o->fenced_by) == GS_FENCED) {
+                o->fenced = 1;
+                break;
+            }
+            if (due != UINT64_MAX && (wait < 0 || (uint64_t)wait > due)) {
+                wait = (int)due;
+            }
+        }
         int n = poll(fds, (nfds_t)(o->nconns + 2), wait);
         if (n < 0) {
             if (errno == EINTR) {
@@ -1491,6 +1507,15 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
         nanosleep(&ts, NULL);
         rc = o.e->open(db, &so, &o.db);
     }
+    if (rc == GS_ELSEWHERE) {
+        /* an owner on another machine holds the lease: no socket here will
+           ever answer, so say so rather than busy (gsql_lease_design.md §7) */
+        char who[200];
+        gs_lease_describe(so.io, db, who, sizeof who);
+        ready_line(o.opt.ready_fd, "elsewhere %s", who);
+        status = 0;
+        goto out_pipe;
+    }
     if (rc == GS_BUSY) {
         /* another owner won the race: the client connects to it */
         ready_line(o.opt.ready_fd, "busy");
@@ -1536,6 +1561,11 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
         unlink(sock);
         close(o.ls);
         o.ls = -1;
+    }
+    if (o.fenced) {
+        fprintf(stderr, "gsql owner: the database %s was taken by %s; stopping without writing\n", db, o.fenced_by);
+        status = 1;
+        goto out_store;
     }
     if (o.e->flush) {
         o.e->flush(o.db);

@@ -122,6 +122,7 @@ tier race "24 clients find no owner at once, 20 times over, and each time exactl
 tier paths "a symlink finds the same owner, a stale socket is replaced, the runtime directory is checked" 60
 tier handoff "the owner killed: the transaction fails, commits survive, nothing is retried; SIGTERM replays nothing" 60
 tier lifetime "an owner outlives the program that started it while anybody uses it, then stops after its linger" 90
+tier lease "where the flock is local to each machine: a second machine is refused, takes a dead lease only after watching it, and an owner whose lease was taken writes nothing" 120
 
 printf 'TIER cost: the round trip against the same point read in process (-O2, no sanitizers)\n'
 mkdir -p "$work/costdir"

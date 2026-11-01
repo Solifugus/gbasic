@@ -29,12 +29,17 @@ int gs_lease_fenced(const GsLease *l);
 /* Who took it: "host H (pid P)". Empty until fenced. */
 const char *gs_lease_holder(const GsLease *l);
 /* The layer the store writes through: every write, truncation, rename,
- * removal and create first asks the lease (gs_lease_keep without force), and
+ * removal and create first asks the lease (renewing when its last confirmation is older than
+ * trust_ms), and
  * answers GSQL_IO_FENCED once it is lost. Freed by gs_lease_close. */
 GsqlIo *gs_lease_io(GsLease *l);
 void gs_lease_stats(const GsLease *l, uint64_t *renewals, uint64_t *renew_us_max);
 /* A clean close removes the lease file, after checking it still holds ours;
  * otherwise (a failed open, a fenced store) it only frees. */
 void gs_lease_close(GsLease *l, int clean);
+/* What the lease of the database in directory `dir` (what an engine's open
+ * is given) says about who holds it, for a refusal: "host H (pid P)", or a
+ * sentence saying it cannot be read. NULL io = the real layer. */
+void gs_lease_describe(GsqlIo *io, const char *dir, char *out, size_t n);
 
 #endif
