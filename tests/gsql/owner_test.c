@@ -2297,6 +2297,58 @@ static int lease_main(const char *dir) {
         gone_within((pid_t)b_owner, 5000);
     }
 
+    /* a damaged lease: one that keeps changing is movement, whatever it
+       holds, so nobody takes it; one that stays damaged is taken after the
+       watch, since damage that never moves is not an owner */
+    {
+        char tdb[700], tl[760];
+        snprintf(tdb, sizeof tdb, "%s/torn", dir);
+        snprintf(tl, sizeof tl, "%s/db.lease", tdb);
+        be_machine(dir, "zeta");
+        GsqlClient *z = try_open(tdb, 1, &code, msg, sizeof msg, &ms);
+        EXPECT(z != NULL, "zeta could not create the torn-lease database: %s", msg);
+        if (z) {
+            long zo = (long)gsql_client_owner_pid(z);
+            kill((pid_t)zo, SIGKILL);
+            gone_within((pid_t)zo, 5000);
+            gsql_client_close(z);
+        }
+        pid_t scribbler = fork();
+        if (scribbler == 0) {
+            for (unsigned n = 0;; n++) {
+                unsigned char junk[512];
+                for (int k = 0; k < 512; k++) {
+                    junk[k] = (unsigned char)(n * 131 + (unsigned)k * 7);
+                }
+                int fd = open(tl, O_WRONLY | O_CREAT, 0644);
+                if (fd >= 0) {
+                    if (pwrite(fd, junk, sizeof junk, 0) < 0) {
+                        _exit(1);
+                    }
+                    close(fd);
+                }
+                sleep_ms(50);
+            }
+        }
+        be_machine(dir, "eta");
+        GsqlClient *e = try_open(tdb, 0, &code, msg, sizeof msg, &ms);
+        EXPECT(e == NULL && code == GSQL_ELSEWHERE, "eta took a lease whose damaged sector kept changing (%s)",
+               gsql_error_name(code));
+        if (e) {
+            gsql_client_close(e);
+        }
+        kill(scribbler, SIGKILL);
+        waitpid(scribbler, NULL, 0);
+        e = try_open(tdb, 0, &code, msg, sizeof msg, &ms);
+        EXPECT(e != NULL, "eta could not take a lease that stayed damaged: %s: %s", gsql_error_name(code), msg);
+        EXPECT(ms >= L_DEAD, "eta took a damaged lease after %.0f ms, under its %d ms watch", ms, L_DEAD);
+        if (e) {
+            long eo = (long)gsql_client_owner_pid(e);
+            gsql_client_close(e);
+            gone_within((pid_t)eo, 5000);
+        }
+    }
+
     /* two machines at once over a crashed third's lease: exactly one wins,
        every round; and two creating one database at once */
     int bad = 0, rounds = 6;
