@@ -13128,3 +13128,18 @@ release script is the one place to change, and it wants watching.
   whenever its start and step are (the default step is an exact 1), and stops
   at the int64 edge instead of overflowing. A fractional start or step keeps the
   double path, as before.
+
+## 2026-11-01 — CC — while: running the gate across the end of daylight saving time
+- **Type:** bug
+- **Severity:** medium
+- **What:** in the hour the clocks repeat (01:00-02:00 local, 2026-11-01 in
+  America/New_York), `epoch(now())` answers an instant **one hour early**:
+  measured 1793509624 against `date +%s` 1793513224, at 01:07 EST.
+  `examples/epoch_test.bas` failed `now_matches` and `rt_now` in the gate
+  (run_examples). A local datetime carries no zone and no DST flag, so
+  01:07 names two instants and the conversion back to an epoch picks the
+  first (EDT). The fixture's header claims `mktime(localtime(t)) == t on any
+  machine`, which is false for exactly this hour unless the DST flag is kept.
+  Once a year for one hour, silent, and an hour is a plausible wrong answer.
+- **Workaround:** none. Whether a datetime should carry its offset (or its DST
+  flag) is a docs/datetime_design.md decision, left for Matthew.
