@@ -1348,6 +1348,433 @@ static Value gsql_eval_backup(AstExpr *expr) {
     return out;
 }
 
+/* --- dump and restore (docs/gsql_dump_design.md) ----------------------------- */
+
+/* a path made absolute against the PROGRAM's working directory, which the
+   owner's is not; takes `p` */
+static char *gsql_absolute(char *p, const char *verb) {
+    if (p[0] == '/') {
+        return p;
+    }
+    char cwd[4096];
+    if (!getcwd(cwd, sizeof cwd)) {
+        free(p);
+        char msg[200];
+        snprintf(msg, sizeof msg, "gsql.%s: the working directory could not be read, to resolve a relative path",
+                 verb);
+        gsql_module_refuse(msg);
+        return NULL;
+    }
+    char *path = malloc(strlen(cwd) + strlen(p) + 2);
+    if (!path) {
+        abort();
+    }
+    sprintf(path, "%s/%s", cwd, p);
+    free(p);
+    return path;
+}
+
+/* gsql.dump(connection, file [, { schema_only: true }]): DUMP TO, read to
+   its last progress row */
+static Value gsql_eval_dump(AstExpr *expr) {
+    size_t argc = expr->as.call.args.count;
+    if (argc < 2 || argc > 3) {
+        gsql_module_refuse("gsql.dump expects a connection, the file, and optionally { schema_only: true }");
+        return value_null();
+    }
+    GsqlConnectionValue *c = gsql_connection_arg(expr, "dump");
+    if (!c) {
+        return value_null();
+    }
+    int schema_only = 0;
+    if (argc == 3) {
+        Value o = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(o);
+            return value_null();
+        }
+        if (o.kind != VALUE_RECORD) {
+            char msg[200];
+            snprintf(msg, sizeof msg, "gsql.dump expects its options as a record, not %s", value_kind_name(o.kind));
+            value_free(o);
+            gsql_module_refuse(msg);
+            return value_null();
+        }
+        RecordField *fields = o.as.record.fields;
+        for (size_t i = 0; i < o.as.record.count; i++) {
+            if (strcmp(fields[i].name, "schema_only") != 0) {
+                char msg[300];
+                snprintf(msg, sizeof msg, "gsql.dump has no option `%.100s`; the one option is `schema_only`",
+                         fields[i].name);
+                value_free(o);
+                gsql_module_refuse(msg);
+                return value_null();
+            }
+            if (fields[i].value->kind != VALUE_BOOL) {
+                value_free(o);
+                gsql_module_refuse("gsql.dump: `schema_only` must be true or false");
+                return value_null();
+            }
+            schema_only = fields[i].value->as.boolean;
+        }
+        value_free(o);
+    }
+    char *file = gsql_text_arg(expr, 1, "dump", "the file");
+    if (!file) {
+        return value_null();
+    }
+    if (!file[0]) {
+        free(file);
+        gsql_module_refuse("gsql.dump: the file's name is empty");
+        return value_null();
+    }
+    char *path = gsql_absolute(file, "dump");
+    if (!path) {
+        return value_null();
+    }
+    const char *sql = schema_only ? "DUMP TO $1 SCHEMA ONLY" : "DUMP TO $1";
+    Value params = value_array(NULL, 0);
+    Value grown = append_to_array_ref(&params, value_string(path), 0);
+    value_free(grown);
+    free(path);
+    Value body = value_record(NULL, 0);
+    record_set(&body, "statement", value_string(sql));
+    record_set(&body, "parameters", params);
+    record_set(&body, "batch", value_number_exact(1));
+    struct GsqlRows *r = gsql_rows_begin(c, "dump", copy_string(sql), body, "gsql.dump");
+    if (!r) {
+        return value_null();
+    }
+    Value last = value_null(), row;
+    while (gsql_rows_next(r, &row)) {
+        value_free(last);
+        last = row;
+    }
+    gsql_rows_end(r);
+    if (error_action_pending() || last.kind != VALUE_RECORD) {
+        value_free(last);
+        return value_null();
+    }
+    Value out = value_record(NULL, 0);
+    const char *keep[4] = { "tables", "rows", "skipped", "bytes" };
+    for (int k = 0; k < 4; k++) {
+        Value *f = gsql_field(&last, keep[k]);
+        record_set(&out, keep[k], f ? value_copy(*f) : value_null());
+    }
+    value_free(last);
+    return out;
+}
+
+/* one request sent whatever is pending: the rollback after a failure */
+static void gsql_simple_quiet(GsqlConnectionValue *c, unsigned type) {
+    Value body = value_record(NULL, 0);
+    SerBuf sb;
+    serbuf_init(&sb);
+    int ok = serialize_value(&sb, body, 0);
+    value_free(body);
+    if (ok && c->client) {
+        GsqlBuf b = { (unsigned char *)sb.bytes, sb.length, sb.capacity };
+        GsqlFrame f;
+        GsqlError err;
+        memset(&err, 0, sizeof err);
+        gsql_trace(type);
+        (void)gsql_client_call(c->client, type, &b, &f, &err);
+    }
+    free(sb.bytes);
+}
+
+typedef struct {
+    char **v;
+    size_t n;
+} GsqlNames;
+
+static int gsql_names_has(const GsqlNames *l, const char *name) {
+    for (size_t k = 0; k < l->n; k++) {
+        if (strcmp(l->v[k], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void gsql_names_free(GsqlNames *l) {
+    for (size_t k = 0; k < l->n; k++) {
+        free(l->v[k]);
+    }
+    free(l->v);
+}
+
+/* What a restore may run: the statements a dump writes, onto tables this
+   restore made, so a file -- edited or hostile -- cannot change data that was
+   there before it. NULL, or why not. */
+static const char *gsql_restore_allowed(const SqlStmt *s, GsqlNames *made, char *why, size_t cap) {
+    if (s->explain) {
+        return "EXPLAIN is not a statement a dump writes";
+    }
+    switch (s->kind) {
+    case SQ_CREATE_TABLE:
+        if (s->if_exists) {
+            return "CREATE TABLE IF NOT EXISTS could leave a table that was already there to be written to";
+        }
+        return NULL;
+    case SQ_CREATE_VIEW:
+        return s->or_replace ? "CREATE OR REPLACE VIEW could replace a view that was already there" : NULL;
+    case SQ_INSERT:
+        if (s->ins_q) {
+            return "INSERT ... SELECT is not a statement a dump writes";
+        }
+        /* FALLTHROUGH */
+    case SQ_CREATE_INDEX:
+    case SQ_RESTART:
+    case SQ_ADD_CHECK:
+    case SQ_ADD_FKEY:
+        if (!gsql_names_has(made, s->table)) {
+            snprintf(why, cap, "it changes `%.100s`, a table this restore did not create", s->table);
+            return why;
+        }
+        return NULL;
+    default:
+        return "only CREATE TABLE, CREATE INDEX, INSERT, ALTER TABLE ... ADD CONSTRAINT, ALTER COLUMN ... RESTART "
+               "and CREATE VIEW, which a dump writes, may be in a file a restore runs";
+    }
+}
+
+/* one statement of the file sent; 1, or 0 with a raise naming its line */
+static int gsql_restore_send(GsqlConnectionValue *c, const char *sql, size_t len, long line, const char *file,
+                             double *affected) {
+    Value body = value_record(NULL, 0);
+    record_set(&body, "statement", value_string_n(sql, len));
+    SerBuf sb;
+    serbuf_init(&sb);
+    int ok = serialize_value(&sb, body, 0);
+    value_free(body);
+    if (!ok) {
+        free(sb.bytes);
+        return 0;
+    }
+    GsqlBuf b = { (unsigned char *)sb.bytes, sb.length, sb.capacity };
+    GsqlFrame f;
+    GsqlError err;
+    memset(&err, 0, sizeof err);
+    gsql_trace(GSQL_M_QUERY);
+    int rc = gsql_client_call(c->client, GSQL_M_QUERY, &b, &f, &err);
+    free(sb.bytes);
+    char where[1300];
+    if (rc) {
+        snprintf(where, sizeof where, "line %ld of %.200s: %s", line, file, err.message);
+        gsql_module_raise("restore", gsql_error_name(err.code), where, 0, NULL);
+        return 0;
+    }
+    SerReader r = { (const char *)f.body, f.length, 0, 1, SER_VERSION };
+    Value v = deserialize_value(&r, 0);
+    if (!r.ok || v.kind != VALUE_RECORD) {
+        value_free(v);
+        gsql_module_raise("restore", "PROTOCOL", "the owner answered with a body this client cannot read", 0, NULL);
+        return 0;
+    }
+    if (f.type == GSQL_M_ERROR) {
+        Value *code = gsql_field(&v, "code");
+        Value *message = gsql_field(&v, "message");
+        snprintf(where, sizeof where, "line %ld of %.200s: %.900s", line, file,
+                 message && message->kind == VALUE_STRING ? message->as.string : "(no message)");
+        gsql_module_raise("restore", code && code->kind == VALUE_STRING ? code->as.string : "?", where, 0, NULL);
+        value_free(v);
+        return 0;
+    }
+    Value *n = gsql_field(&v, "rows");
+    if (n && n->kind == VALUE_NUMBER) {
+        *affected += n->as.num.value;
+    }
+    value_free(v);
+    return 1;
+}
+
+#define GSQL_RESTORE_CHUNK (1u << 20)
+#define GSQL_RESTORE_BATCH 10
+
+/* gsql.restore(connection, file): runs a dump's statements, the rows ten
+   statements a transaction; streamed, so the file is never held whole */
+static Value gsql_eval_restore(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        gsql_module_refuse("gsql.restore expects a connection and the dump's file");
+        return value_null();
+    }
+    GsqlConnectionValue *c = gsql_connection_arg(expr, "restore");
+    if (!c) {
+        return value_null();
+    }
+    char *file = gsql_text_arg(expr, 1, "restore", "the dump's file");
+    if (!file) {
+        return value_null();
+    }
+    FILE *in = fopen(file, "rb");
+    if (!in) {
+        char msg[400];
+        snprintf(msg, sizeof msg, "gsql.restore: `%.200s` could not be read: %s", file, strerror(errno));
+        free(file);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    char *buf = NULL;
+    size_t cap = 0, have = 0, at = 0;
+    int eof = 0, in_txn = 0, failed = 0;
+    long line = 1, batch = 0;
+    double rows = 0, statements = 0;
+    GsqlNames made = { NULL, 0 };
+    while (!failed) {
+        size_t end = 0;
+        int empty = 1;
+        int r = sql_statement_end(buf ? buf + at : "", have - at, &end, &empty);
+        if (r != 1 && !eof) {
+            /* more text: keep what is left, read a chunk more */
+            memmove(buf, buf + at, have - at);
+            have -= at;
+            at = 0;
+            if (have + GSQL_RESTORE_CHUNK + 1 > cap) {
+                cap = have + GSQL_RESTORE_CHUNK + 1;
+                char *g = realloc(buf, cap);
+                if (!g) {
+                    abort();
+                }
+                buf = g;
+            }
+            size_t got = fread(buf + have, 1, GSQL_RESTORE_CHUNK, in);
+            have += got;
+            eof = got == 0;
+            continue;
+        }
+        if (r == 0 && empty) {
+            break;                       /* the end, comments and space after the last statement */
+        }
+        const char *stmt = buf + at;
+        size_t slen = r == 1 ? end : have - at;
+        long first = line;
+        for (size_t k = 0; k < slen; k++) {
+            line += stmt[k] == '\n';
+        }
+        /* the statement's own first line, past the space and comments before it */
+        size_t lead = 0;
+        while (lead < slen && (stmt[lead] == ' ' || stmt[lead] == '\n' || stmt[lead] == '\t' || stmt[lead] == '\r' ||
+                               (stmt[lead] == '-' && lead + 1 < slen && stmt[lead + 1] == '-'))) {
+            if (stmt[lead] == '-') {
+                while (lead < slen && stmt[lead] != '\n') {
+                    lead++;
+                }
+            } else {
+                first += stmt[lead] == '\n';
+                lead++;
+            }
+        }
+        at += slen;
+        char where[600];
+        if (r < 0) {
+            snprintf(where, sizeof where, "line %ld of %.200s: the file ends inside a string or a comment", first,
+                     file);
+            gsql_module_raise("restore", "SYNTAX", where, 0, NULL);
+            failed = 1;
+            break;
+        }
+        SqlParsed parsed;
+        GsqlError perr;
+        memset(&perr, 0, sizeof perr);
+        if (sql_parse(stmt, slen, &parsed, &perr) != GSQL_OK) {
+            snprintf(where, sizeof where, "line %ld of %.200s: %.300s", first, file, perr.message);
+            gsql_module_raise("restore", gsql_error_name(perr.code), where, 0, NULL);
+            failed = 1;
+            break;
+        }
+        char why[300];
+        const char *no = gsql_restore_allowed(parsed.stmt, &made, why, sizeof why);
+        int insert = parsed.stmt->kind == SQ_INSERT;
+        char *created = parsed.stmt->kind == SQ_CREATE_TABLE ? copy_string(parsed.stmt->table) : NULL;
+        sql_parsed_free(&parsed);
+        if (no) {
+            free(created);
+            snprintf(where, sizeof where, "line %ld of %.200s: refused, and nothing after it run: %s", first, file,
+                     no);
+            gsql_module_raise("restore", "STATE", where, 0, NULL);
+            failed = 1;
+            break;
+        }
+        if (insert && !in_txn) {
+            Value body = value_record(NULL, 0);
+            record_set(&body, "mode", value_string("write"));
+            Value reply;
+            unsigned type;
+            if (!gsql_request(c, GSQL_M_BEGIN, body, "restore", NULL, &reply, &type)) {
+                failed = 1;
+                free(created);
+                break;
+            }
+            value_free(reply);
+            in_txn = 1;
+            batch = 0;
+        } else if (!insert && in_txn) {
+            Value reply;
+            unsigned type;
+            in_txn = 0;
+            if (!gsql_request(c, GSQL_M_COMMIT, value_record(NULL, 0), "restore", NULL, &reply, &type)) {
+                failed = 1;
+                free(created);
+                break;
+            }
+            value_free(reply);
+        }
+        double affected = 0;
+        if (!gsql_restore_send(c, stmt, slen, first, file, &affected)) {
+            failed = 1;
+            free(created);
+            break;
+        }
+        statements++;
+        if (insert) {
+            rows += affected;
+        }
+        if (created) {
+            char **g = realloc(made.v, sizeof *g * (made.n + 1));
+            if (!g) {
+                abort();
+            }
+            made.v = g;
+            made.v[made.n++] = created;
+        }
+        if (insert && ++batch == GSQL_RESTORE_BATCH) {
+            Value reply;
+            unsigned type;
+            in_txn = 0;
+            if (!gsql_request(c, GSQL_M_COMMIT, value_record(NULL, 0), "restore", NULL, &reply, &type)) {
+                failed = 1;
+                break;
+            }
+            value_free(reply);
+        }
+    }
+    if (in_txn) {
+        if (failed) {
+            gsql_simple_quiet(c, GSQL_M_ROLLBACK);
+        } else {
+            Value reply;
+            unsigned type;
+            if (gsql_request(c, GSQL_M_COMMIT, value_record(NULL, 0), "restore", NULL, &reply, &type)) {
+                value_free(reply);
+            } else {
+                failed = 1;
+            }
+        }
+    }
+    fclose(in);
+    free(buf);
+    free(file);
+    gsql_names_free(&made);
+    if (failed) {
+        return value_null();
+    }
+    Value out = value_record(NULL, 0);
+    record_set(&out, "statements", value_number_exact((long long)statements));
+    record_set(&out, "rows", value_number_exact((long long)rows));
+    return out;
+}
+
 static Value gsql_eval_call(AstExpr *expr) {
     const char *fn = expr->as.call.name;
     if (strcmp(fn, "connect") == 0) return gsql_eval_connect(expr);
@@ -1358,6 +1785,8 @@ static Value gsql_eval_call(AstExpr *expr) {
     if (strcmp(fn, "rollback") == 0) return gsql_eval_simple(expr, "rollback", GSQL_M_ROLLBACK);
     if (strcmp(fn, "close") == 0) return gsql_eval_close(expr);
     if (strcmp(fn, "backup") == 0) return gsql_eval_backup(expr);
+    if (strcmp(fn, "dump") == 0) return gsql_eval_dump(expr);
+    if (strcmp(fn, "restore") == 0) return gsql_eval_restore(expr);
     char message[256];
     module_unknown_verb(message, sizeof(message), "gsql", fn);
     gsql_module_refuse(message);

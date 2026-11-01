@@ -204,6 +204,94 @@ static void next(P *p) {
     }
     size_t start = p->i;
     unsigned char c = (unsigned char)p->src[p->i];
+    if ((c == 'u' || c == 'U') && p->i + 2 < p->n && p->src[p->i + 1] == '&' && p->src[p->i + 2] == '\'') {
+        /* U&'...': standard SQL's Unicode escapes, \XXXX or \+XXXXXX a code
+           point and \\ a backslash, which is how a dump writes text holding a
+           NUL (docs/gsql_dump_design.md §3) */
+        advance_byte(p);
+        advance_byte(p);
+        advance_byte(p);
+        GsqlBuf b = {0};
+        for (;;) {
+            if (p->i >= p->n) {
+                gsql_buf_free(&b);
+                t->kind = T_EOF;
+                t->text = "";
+                fail_at(p, t->pos, GSQL_SYNTAX, "a string is never closed");
+                return;
+            }
+            char ch = p->src[p->i];
+            if (ch == '\'') {
+                if (p->i + 1 < p->n && p->src[p->i + 1] == '\'') {
+                    v3_put(&b, &ch, 1);
+                    advance_byte(p);
+                    advance_byte(p);
+                    continue;
+                }
+                advance_byte(p);
+                break;
+            }
+            if (ch != '\\') {
+                v3_put(&b, &ch, 1);
+                advance_byte(p);
+                continue;
+            }
+            uint32_t epos = p->chars + 1;
+            advance_byte(p);
+            if (p->i < p->n && p->src[p->i] == '\\') {
+                v3_put(&b, "\\", 1);
+                advance_byte(p);
+                continue;
+            }
+            int width = 4;
+            if (p->i < p->n && p->src[p->i] == '+') {
+                width = 6;
+                advance_byte(p);
+            }
+            unsigned long cp = 0;
+            int k = 0;
+            for (; k < width && p->i < p->n && isxdigit((unsigned char)p->src[p->i]); k++) {
+                char hx = p->src[p->i];
+                cp = cp * 16 + (unsigned long)(isdigit((unsigned char)hx) ? hx - '0' : (tolower((unsigned char)hx) - 'a' + 10));
+                advance_byte(p);
+            }
+            if (k < width || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+                gsql_buf_free(&b);
+                t->kind = T_EOF;
+                t->text = "";
+                fail_at(p, epos, GSQL_SYNTAX, "in U&'...', a backslash is followed by four hex digits, + and six, or "
+                        "another backslash");
+                return;
+            }
+            unsigned char u[4];
+            size_t un;
+            if (cp < 0x80) {
+                u[0] = (unsigned char)cp;
+                un = 1;
+            } else if (cp < 0x800) {
+                u[0] = (unsigned char)(0xC0 | (cp >> 6));
+                u[1] = (unsigned char)(0x80 | (cp & 0x3F));
+                un = 2;
+            } else if (cp < 0x10000) {
+                u[0] = (unsigned char)(0xE0 | (cp >> 12));
+                u[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+                u[2] = (unsigned char)(0x80 | (cp & 0x3F));
+                un = 3;
+            } else {
+                u[0] = (unsigned char)(0xF0 | (cp >> 18));
+                u[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3F));
+                u[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+                u[3] = (unsigned char)(0x80 | (cp & 0x3F));
+                un = 4;
+            }
+            v3_put(&b, u, un);
+        }
+        t->kind = T_STRING;
+        t->len = b.length;
+        t->text = sql_strndup(p->arena, b.bytes ? (const char *)b.bytes : "", b.length);
+        gsql_buf_free(&b);
+        return;
+    }
     if (ident_start(c)) {
         while (p->i < p->n && ident_char((unsigned char)p->src[p->i])) {
             advance_byte(p);
@@ -2390,6 +2478,46 @@ static int compound(P *p, SqlStmt *root) {
     return 1;
 }
 
+/* Where the statement starting at text[0] ends: 1 with *end just past its
+ * `;`, 0 when the text ends first (*end the length; *empty set when it held
+ * no token at all), -1 when it ends inside a string or a comment, which more
+ * text may close. By G-SQL's own lexer, so a `;` in a string or a comment
+ * ends nothing (docs/gsql_dump_design.md). */
+int sql_statement_end(const char *text, size_t length, size_t *end, int *empty) {
+    SqlArena arena;
+    memset(&arena, 0, sizeof arena);
+    GsqlError err;
+    memset(&err, 0, sizeof err);
+    P p;
+    memset(&p, 0, sizeof p);
+    p.src = text;
+    p.n = length;
+    p.arena = &arena;
+    p.err = &err;
+    *empty = 1;
+    int r;
+    for (;;) {
+        next(&p);
+        if (p.failed) {
+            r = -1;
+            break;
+        }
+        if (p.tok.kind == T_EOF) {
+            *end = length;
+            r = 0;
+            break;
+        }
+        if (at_sym(&p, ";")) {
+            *end = p.i;
+            r = 1;
+            break;
+        }
+        *empty = 0;
+    }
+    sql_arena_free(&arena);
+    return r;
+}
+
 int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
     memset(out, 0, sizeof *out);
     P p;
@@ -2446,6 +2574,14 @@ int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
     } else if (accept_kw(&p, "backup")) {
         s->kind = SQ_BACKUP;
         ok = expect_kw(&p, "to") && (s->backup_to = concat(&p)) != NULL;
+    } else if (accept_kw(&p, "dump")) {
+        s->kind = SQ_DUMP;
+        ok = expect_kw(&p, "to") && (s->dump_to = concat(&p)) != NULL;
+        if (ok && at_word(&p, "schema")) {
+            next(&p);
+            ok = at_word(&p, "only") ? (next(&p), 1) : expected(&p, "ONLY after SCHEMA");
+            s->dump_schema_only = 1;
+        }
     } else if (p.tok.kind == T_EOF) {
         ok = fail_at(&p, p.tok.pos, GSQL_SYNTAX, "the statement is empty");
     } else if (p.tok.kind == T_IDENT && (strcmp(p.tok.text, "begin") == 0 || strcmp(p.tok.text, "commit") == 0 ||
@@ -2453,7 +2589,7 @@ int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
         ok = fail_at(&p, p.tok.pos, GSQL_UNSUPPORTED,
                      "transactions are begun and ended by the protocol's BEGIN, COMMIT and ROLLBACK, not by SQL text");
     } else {
-        ok = expected(&p, "a statement (SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, BACKUP or EXPLAIN)");
+        ok = expected(&p, "a statement (SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, BACKUP, DUMP or EXPLAIN)");
     }
     if (ok && !p.failed) {
         accept_sym(&p, ";");
@@ -2565,8 +2701,10 @@ int sql_print_value(GsqlBuf *o, const unsigned char *v, size_t n) {
             bits |= (uint64_t)v[2 + k] << (8 * k);
         }
         if (v[1]) {
+            /* the smallest int64 has no literal: its digits after the minus
+               are one past the largest, so they would read as inexact */
             snprintf(b, sizeof b, "%lld", (long long)bits);
-            puts_(o, b);
+            puts_(o, (int64_t)bits == INT64_MIN ? "(-9223372036854775807 - 1)" : b);
         } else {
             double d;
             memcpy(&d, &bits, sizeof d);
@@ -2579,21 +2717,30 @@ int sql_print_value(GsqlBuf *o, const unsigned char *v, size_t n) {
         if (!in.ok || len > n - in.pos) {
             return 0;
         }
-        v3_put(o, "'", 1);
+        /* SQL text holds no NUL, so text that does is written U&'...', with
+           the NUL and the backslash escaped and every other byte as it is */
+        int nul = memchr(v + in.pos, 0, (size_t)len) != NULL;
+        puts_(o, nul ? "U&'" : "'");
         for (uint64_t k = 0; k < len; k++) {
             char c = (char)v[in.pos + k];
+            if (nul && c == 0) {
+                puts_(o, "\\0000");
+                continue;
+            }
             v3_put(o, &c, 1);
-            if (c == '\'') {
-                v3_put(o, "'", 1);
+            if (c == '\'' || (nul && c == '\\')) {
+                v3_put(o, &c, 1);
             }
         }
         v3_put(o, "'", 1);
         return 1;
     }
     case SER_MONEY: {
-        /* units / 10^exponent exactly, at the storage scale, then the code */
+        /* units / 10^(exponent + 4) exactly, then the code: the exponent is
+           the currency's minor unit and a value is stored four guard digits
+           below it (MONEY_GUARD_DIGITS, src/eval.c; docs/money_design.md) */
         int64_t units = (int64_t)v3_in_le(&in, 8);
-        unsigned exp = (unsigned)v3_in_le(&in, 1);
+        unsigned exp = (unsigned)v3_in_le(&in, 1) + 4;
         v3_in_le(&in, 2);
         unsigned alen = (unsigned)v3_in_le(&in, 1);
         if (!in.ok || alen == 0 || alen > 7 || alen > n - in.pos || exp > 18) {
@@ -2661,6 +2808,10 @@ int sql_print_value(GsqlBuf *o, const unsigned char *v, size_t n) {
     default:
         return 0;
     }
+}
+
+void sql_print_name(GsqlBuf *o, const char *n) {
+    print_name(o, n);
 }
 
 static void print_lit(GsqlBuf *o, const unsigned char *v, size_t n) {
@@ -3214,6 +3365,13 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
     case SQ_BACKUP:
         puts_(o, "BACKUP TO ");
         sql_print_expr(o, s->backup_to);
+        return;
+    case SQ_DUMP:
+        puts_(o, "DUMP TO ");
+        sql_print_expr(o, s->dump_to);
+        if (s->dump_schema_only) {
+            puts_(o, " SCHEMA ONLY");
+        }
         return;
     case SQ_ADD_FKEY:
         puts_(o, "ALTER TABLE ");

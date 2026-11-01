@@ -651,7 +651,12 @@ static int do_fetch(Owner *o, Conn *c, Req *r) {
     int rc = o->svc->fetch(o->svc->ctx, k->svc, count == 0 ? 1 : (count > UINT32_MAX ? UINT32_MAX : (uint32_t)count),
                            &res, &err);
     if (rc != GSQL_OK) {
-        /* a failed fetch ends the cursor, never the transaction */
+        /* a failed fetch ends the cursor, never the transaction; a service
+           that ended it already says so by clearing res.cursor, and closing it
+           again would free it twice (found by a DUMP TO refused part way) */
+        if (!res.cursor) {
+            k->svc = NULL;
+        }
         cursor_drop(o, c, k);
         send_error(c, r->id, rc, err.message);
         result_free(&res);

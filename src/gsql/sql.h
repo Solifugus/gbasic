@@ -141,6 +141,7 @@ typedef enum {
     SQ_DROP_CONSTRAINT,      /* ALTER TABLE table DROP CONSTRAINT constraint */
     SQ_ADD_CHECK,            /* ALTER TABLE table ADD checks[0] */
     SQ_BACKUP,               /* BACKUP TO backup_to (docs/gsql_backup_design.md) */
+    SQ_DUMP,                 /* DUMP TO dump_to [SCHEMA ONLY] (docs/gsql_dump_design.md) */
     SQ_RESTART               /* ALTER TABLE table ALTER COLUMN restart_col RESTART WITH restart_with
                                 [FOR (restart_for...)] (docs/gsql_dump_design.md §4) */
 } SqlStmtKind;
@@ -280,6 +281,8 @@ typedef struct SqlStmt {
     char *index;
     char *rename_to;         /* ALTER TABLE ... RENAME TO */
     SqlExpr *backup_to;      /* BACKUP TO: the copy's directory, a constant */
+    SqlExpr *dump_to;        /* DUMP TO: the file, a constant */
+    int dump_schema_only;
     char *restart_col;       /* RESTART: the serial column, its new high-water mark and scope */
     SqlExpr *restart_with;
     SqlExpr **restart_for;
@@ -314,12 +317,17 @@ typedef struct SqlParsed {
  * GSQL_SYNTAX with err->position set; *out is then empty and needs no free. */
 int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err);
 void sql_parsed_free(SqlParsed *p);
+/* Where one statement ends in a stream of them: 1 past its `;`, 0 the text
+ * ended first (*empty: it held no token), -1 inside a string or comment. */
+int sql_statement_end(const char *text, size_t length, size_t *end, int *empty);
 
 /* The canonical form of a statement, for the parse tier and for EXPLAIN's
  * filter lines: every name folded, every operator spelled one way, every
  * subexpression parenthesised where a reader could misgroup it. */
 void sql_print_stmt(GsqlBuf *out, const SqlStmt *s);
 void sql_print_expr(GsqlBuf *out, const SqlExpr *e);
+/* a name as SQL reads it back: quoted where the bare word would read otherwise */
+void sql_print_name(GsqlBuf *out, const char *name);
 /* One v3 value as a SQL literal reading back as the same value; 0 for a
  * value with none (docs/gsql_dump_design.md §3). */
 int sql_print_value(GsqlBuf *out, const unsigned char *v, size_t n);

@@ -14,6 +14,8 @@
 #include "serialize_tags.h"
 #include "platform.h"
 
+#include <ctype.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1886,6 +1888,8 @@ typedef struct {
        what is copied */
     GsBackup *backup;
     int backup_done;
+    /* DUMP TO (docs/gsql_dump_design.md): a bounded slice of the file per fetch */
+    struct Dump *dump;
     /* a read that folds or collects before it answers, run in slices
        (docs/gsql_slicing_design.md): where it is, and what it had reached */
     int phase;
@@ -2206,10 +2210,14 @@ static int sort_step(SqlCursor *c, uint64_t budget) {
     }
 }
 
+static void dump_free(struct Dump *d);
+static int dump_batch(SqlCursor *c, GsqlResult *out, GsqlError *err);
+
 static void cursor_free(SqlCursor *c) {
     if (!c) {
         return;
     }
+    dump_free(c->dump);
     free(c->sort_tmp);   /* a sort stopped part way */
     if (c->backup) {
         c->x.e->backup_end(c->backup);   /* a copy not finished has no manifest */
@@ -2502,6 +2510,9 @@ static int cursor_batch(SqlCursor *c, uint32_t count, GsqlResult *out, GsqlError
     if (c->backup) {
         return backup_batch(c, out, err);
     }
+    if (c->dump) {
+        return dump_batch(c, out, err);
+    }
     GsqlBuf rows = {0};
     GsqlBuf one = {0};
     size_t n = 0;
@@ -2534,6 +2545,19 @@ static int cursor_batch(SqlCursor *c, uint32_t count, GsqlResult *out, GsqlError
 
 static void columns_of(SqlCursor *c, GsqlBuf *out) {
     out->length = 0;
+    if (c->dump) {
+        static const char *const names[5] = { "tables", "rows", "skipped", "bytes", "done" };
+        static const char *const kinds[5] = { "integer", "integer", "integer", "integer", "boolean" };
+        v3_w_array(out, 5);
+        for (int k = 0; k < 5; k++) {
+            v3_w_record(out, 2);
+            v3_w_name(out, "name");
+            v3_w_text(out, names[k]);
+            v3_w_name(out, "kind");
+            v3_w_text(out, kinds[k]);
+        }
+        return;
+    }
     if (c->backup) {
         static const char *const names[4] = { "bytes", "files", "reused", "done" };
         static const char *const kinds[4] = { "integer", "integer", "integer", "boolean" };
@@ -5164,7 +5188,7 @@ static int svc_writes(void *ctx, const GsqlStatement *st, GsqlError *err) {
         return -1;
     }
     /* a backup reads: it copies a snapshot, and other writers go on */
-    int w = p.stmt->kind != SQ_SELECT && p.stmt->kind != SQ_BACKUP && !p.stmt->explain;
+    int w = p.stmt->kind != SQ_SELECT && p.stmt->kind != SQ_BACKUP && p.stmt->kind != SQ_DUMP && !p.stmt->explain;
     sql_parsed_free(&p);
     return w;
 }
@@ -5795,6 +5819,653 @@ static GsqlHv *eval_subquery(X *x, SqlExpr *e) {
 
 static void take_warnings(GsqlSql *q, char ***seen, size_t *nseen, GsqlResult *out, int keep);
 
+
+/* ---- DUMP TO (docs/gsql_dump_design.md) -----------------------------------
+ *
+ * The file is written beside its name as NAME.partial and renamed over it once
+ * whole, so a dump that failed or was cancelled leaves no file that looks like
+ * one. The schema is written in the first fetch; the rows a slice a fetch;
+ * the counters, the constraints and the views in the last. Every value goes
+ * through sql_print_value, and a record through the host's `encode`. */
+
+#define DUMP_SLICE_ROWS 4096
+#define DUMP_ROWS_PER_INSERT 1000
+
+enum { DUMP_SCHEMA = 0, DUMP_ROWS, DUMP_REST, DUMP_DONE };
+
+typedef struct Dump {
+    FILE *f;
+    char *path, *partial;
+    int schema_only, phase;
+    char **tables;
+    size_t ntables, ti;
+    const GsEngine *e;
+    GsqlTable *tb;
+    GsCursor *cur;
+    int cur_positioned;
+    size_t in_stmt;        /* rows in the INSERT being written */
+    uint64_t rows, skipped, bytes;
+    GsqlBuf line;
+} Dump;
+
+static void dump_free(Dump *d) {
+    if (!d) {
+        return;
+    }
+    if (d->cur) {
+        d->e->cursor_close(d->cur);
+    }
+    if (d->f) {
+        fclose(d->f);
+        remove(d->partial);   /* not finished: no file that looks like a dump */
+    }
+    if (d->tb) {
+        gsql_table_close(d->tb);
+    }
+    for (size_t k = 0; k < d->ntables; k++) {
+        free(d->tables[k]);
+    }
+    free(d->tables);
+    free(d->path);
+    free(d->partial);
+    gsql_buf_free(&d->line);
+    free(d);
+}
+
+static void dput(Dump *d, const char *s) {
+    v3_put(&d->line, s, strlen(s));
+}
+
+/* the line so far to the file */
+static int dflush(Dump *d, GsqlError *err) {
+    if (d->line.length && fwrite(d->line.bytes, 1, d->line.length, d->f) != d->line.length) {
+        return xfail(err, GSQL_STORAGE, 0, "DUMP TO `%.200s`: writing the file failed", d->path);
+    }
+    d->bytes += d->line.length;
+    d->line.length = 0;
+    return GSQL_OK;
+}
+
+static const char *const dump_kind_names[] = {
+    "?", "NUMBER", "INTEGER", "TEXT", "BOOLEAN", "MONEY", "DATE", "TIME", "DATETIME", "RECORD"
+};
+
+/* one stored value as its literal; a record through the host's `encode` */
+static int dump_value(X *x, Dump *d, const unsigned char *v, size_t n, const char *table, const char *col,
+                      GsqlError *err) {
+    if (n && v[0] == SER_RECORD) {
+        GsqlHv *hv = x->h->load(x->h->ctx, v, n, err);
+        GsqlHv *t = hv ? x->h->call(x->h->ctx, "encode", &hv, 1, err) : NULL;
+        if (hv) {
+            rel(x, hv);
+        }
+        GsqlBuf text = {0};
+        int rc = t ? x->h->store(x->h->ctx, t, &text, err) : (err->code ? err->code : GSQL_EXPRESSION);
+        if (t) {
+            rel(x, t);
+        }
+        if (rc != GSQL_OK) {
+            char why[300];
+            snprintf(why, sizeof why, "%.290s", err->message);
+            gsql_buf_free(&text);
+            err->code = GSQL_OK;   /* the host's sentence is the reason, said inside this one */
+            return xfail(err, GSQL_TYPE, 0, "DUMP TO: `%.80s.%.80s` holds a record a dump cannot write as text "
+                         "(%.200s); docs/gsql_dump_design.md §5", table, col, why);
+        }
+        dput(d, "CAST(");
+        sql_print_value(&d->line, text.bytes, text.length);
+        dput(d, " AS RECORD)");
+        gsql_buf_free(&text);
+        return GSQL_OK;
+    }
+    if (!sql_print_value(&d->line, v, n)) {
+        return xfail(err, GSQL_TYPE, 0, "DUMP TO: `%.80s.%.80s` holds %s, which has no SQL literal that reads back "
+                     "as the same value", table, col, tag_word(n ? v[0] : 0));
+    }
+    return GSQL_OK;
+}
+
+static int dump_table_schema(X *x, Dump *d, GsqlTable *tb, GsqlError *err) {
+    const char *tn = gsql_table_name(tb);
+    dput(d, "CREATE TABLE ");
+    sql_print_name(&d->line, tn);
+    dput(d, " (\n");
+    size_t nc = gsql_table_ncols(tb);
+    char b[64];
+    for (size_t k = 0; k < nc; k++) {
+        const GsqlColumn *c = gsql_table_col(tb, k);
+        dput(d, "    ");
+        sql_print_name(&d->line, c->name);
+        dput(d, " ");
+        if (c->kind == GSQL_COL_MONEY && c->currency[0]) {
+            snprintf(b, sizeof b, "MONEY(%s)", c->currency);
+            dput(d, b);
+        } else {
+            dput(d, dump_kind_names[c->kind >= 1 && c->kind <= GSQL_COL_RECORD ? c->kind : 0]);
+        }
+        if (c->not_null && !c->gen) {
+            dput(d, " NOT NULL");
+        }
+        if (c->def) {
+            dput(d, " DEFAULT ");
+            int rc = dump_value(x, d, c->def, c->def_len, tn, c->name, err);
+            if (rc != GSQL_OK) {
+                return rc;
+            }
+        }
+        if (c->gen == GSQL_GEN_SERIAL) {
+            dput(d, " SERIAL");
+            for (size_t j = 0; j < c->nscope; j++) {
+                dput(d, j ? ", " : " OF (");
+                dput(d, c->scope[j]);
+            }
+            if (c->nscope) {
+                dput(d, ")");
+            }
+        } else if (c->gen == GSQL_GEN_RANDOM) {
+            dput(d, " RANDOM");
+            if (c->length || c->alphabet) {
+                snprintf(b, sizeof b, "(%u", (unsigned)c->length);
+                dput(d, b);
+                if (c->alphabet) {
+                    GsqlBuf a = {0};
+                    v3_w_text(&a, c->alphabet);
+                    dput(d, ", ");
+                    sql_print_value(&d->line, a.bytes, a.length);
+                    gsql_buf_free(&a);
+                }
+                dput(d, ")");
+            }
+        }
+        if (k + 1 < nc || gsql_table_nkey(tb)) {
+            dput(d, ",");
+        }
+        dput(d, "\n");
+    }
+    size_t nk = gsql_table_nkey(tb);
+    if (nk) {
+        const unsigned *kc = gsql_table_key_cols(tb);
+        dput(d, "    PRIMARY KEY (");
+        for (size_t k = 0; k < nk; k++) {
+            if (k) {
+                dput(d, ", ");
+            }
+            sql_print_name(&d->line, gsql_table_col(tb, kc[k])->name);
+        }
+        dput(d, ")\n");
+    }
+    dput(d, ");\n");
+    for (size_t i = 0; i < gsql_table_nindexes(tb); i++) {
+        const GsqlIndex *ix = gsql_table_index(tb, i);
+        dput(d, ix->unique ? "CREATE UNIQUE INDEX " : "CREATE INDEX ");
+        sql_print_name(&d->line, ix->name);
+        dput(d, " ON ");
+        sql_print_name(&d->line, tn);
+        dput(d, " (");
+        for (size_t k = 0; k < ix->ncols; k++) {
+            if (k) {
+                dput(d, ", ");
+            }
+            sql_print_name(&d->line, gsql_table_col(tb, ix->cols[k])->name);
+            if (ix->desc && ix->desc[k]) {
+                dput(d, " DESC");
+            }
+        }
+        dput(d, ");\n");
+    }
+    dput(d, "\n");
+    return dflush(d, err);
+}
+
+/* the next table whose rows are to be written opened, its cursor first; 0
+   when there are none left */
+static int dump_next_table(X *x, Dump *d, GsqlError *err) {
+    while (d->ti < d->ntables) {
+        int rc = gsql_table_open(x->e, x->t, d->tables[d->ti], &d->tb, err);
+        if (rc != GSQL_OK) {
+            return -1;
+        }
+        int st = x->e->cursor_open(x->t, gsql_table_rows_tree(d->tb), &d->cur);
+        if (st == GS_OK) {
+            st = x->e->first(d->cur, &d->cur_positioned);
+        }
+        if (st != GS_OK) {
+            xfail(err, GSQL_STORAGE, 0, "DUMP TO: reading `%s` failed: %s", d->tables[d->ti], gs_status_name(st));
+            return -1;
+        }
+        if (d->cur_positioned) {
+            return 1;
+        }
+        x->e->cursor_close(d->cur);
+        d->cur = NULL;
+        gsql_table_close(d->tb);
+        d->tb = NULL;
+        d->ti++;
+    }
+    return 0;
+}
+
+static int dump_insert_head(Dump *d) {
+    dput(d, "INSERT INTO ");
+    sql_print_name(&d->line, gsql_table_name(d->tb));
+    dput(d, " (");
+    for (size_t k = 0; k < gsql_table_ncols(d->tb); k++) {
+        if (k) {
+            dput(d, ", ");
+        }
+        sql_print_name(&d->line, gsql_table_col(d->tb, k)->name);
+    }
+    dput(d, ") VALUES\n");
+    return GSQL_OK;
+}
+
+/* up to DUMP_SLICE_ROWS rows; answers 1 when there are rows left */
+static int dump_rows(X *x, Dump *d, GsqlError *err) {
+    size_t done = 0;
+    while (done < DUMP_SLICE_ROWS) {
+        if (!d->cur) {
+            int r = dump_next_table(x, d, err);
+            if (r < 0) {
+                return -1;
+            }
+            if (r == 0) {
+                return 0;
+            }
+            d->in_stmt = 0;
+        }
+        GsBytes row;
+        int st = x->e->value(d->cur, &row);
+        if (st != GS_OK) {
+            xfail(err, GSQL_STORAGE, 0, "DUMP TO: reading a row failed: %s", gs_status_name(st));
+            return -1;
+        }
+        dput(d, d->in_stmt ? ",\n(" : (dump_insert_head(d), "("));
+        const char *tn = gsql_table_name(d->tb);
+        for (size_t k = 0; k < gsql_table_ncols(d->tb); k++) {
+            GsBytes v;
+            if (gsql_row_value(d->tb, row.p, row.n, k, &v, err) != GSQL_OK) {
+                return -1;
+            }
+            if (k) {
+                dput(d, ", ");
+            }
+            if (dump_value(x, d, v.p, v.n, tn, gsql_table_col(d->tb, k)->name, err) != GSQL_OK) {
+                return -1;
+            }
+        }
+        dput(d, ")");
+        d->in_stmt++;
+        d->rows++;
+        done++;
+        st = x->e->next(d->cur, &d->cur_positioned);
+        if (st != GS_OK) {
+            xfail(err, GSQL_STORAGE, 0, "DUMP TO: reading `%s` failed: %s", tn, gs_status_name(st));
+            return -1;
+        }
+        if (!d->cur_positioned || d->in_stmt == DUMP_ROWS_PER_INSERT) {
+            dput(d, ";\n");
+            d->in_stmt = 0;
+        }
+        if (!d->cur_positioned) {
+            dput(d, "\n");
+            x->e->cursor_close(d->cur);
+            d->cur = NULL;
+            gsql_table_close(d->tb);
+            d->tb = NULL;
+            d->ti++;
+        }
+        if (dflush(d, err) != GSQL_OK) {
+            return -1;
+        }
+    }
+    return 1;
+}
+
+/* every serial counter, as RESTART WITH; a scope read back from its key */
+static int dump_counters(X *x, Dump *d, GsqlError *err) {
+    for (size_t i = 0; i < d->ntables; i++) {
+        GsqlTable *tb;
+        if (gsql_table_open(x->e, x->t, d->tables[i], &tb, err) != GSQL_OK) {
+            return err->code;
+        }
+        int has = 0;
+        for (size_t k = 0; k < gsql_table_ncols(tb); k++) {
+            has |= gsql_table_col(tb, k)->gen == GSQL_GEN_SERIAL;
+        }
+        GsCursor *sc = NULL;
+        int pos = 0, st = GS_OK, rc = GSQL_OK;
+        if (has) {
+            st = x->e->cursor_open(x->t, gsql_serial_tree(tb), &sc);
+            if (st == GS_OK) {
+                st = x->e->first(sc, &pos);
+            }
+        }
+        while (has && st == GS_OK && pos && rc == GSQL_OK) {
+            GsBytes key, val;
+            st = x->e->key(sc, &key);
+            if (st == GS_OK) {
+                st = x->e->value(sc, &val);
+            }
+            if (st != GS_OK || key.n < 2 || val.n != 8) {
+                rc = xfail(err, GSQL_CORRUPT, 0, "DUMP TO: a serial counter of `%s` does not parse", d->tables[i]);
+                break;
+            }
+            size_t col = ((size_t)key.p[0] << 8) | key.p[1];
+            const GsqlColumn *c = col < gsql_table_ncols(tb) ? gsql_table_col(tb, col) : NULL;
+            uint64_t hw = 0;
+            for (int b = 0; b < 8; b++) {
+                hw |= (uint64_t)val.p[b] << (8 * b);
+            }
+            if (!c || c->gen != GSQL_GEN_SERIAL) {
+                rc = xfail(err, GSQL_CORRUPT, 0, "DUMP TO: a counter of `%s` names column %zu, which is not a serial",
+                           d->tables[i], col);
+                break;
+            }
+            char num[32];
+            snprintf(num, sizeof num, "%llu", (unsigned long long)hw);
+            dput(d, "ALTER TABLE ");
+            sql_print_name(&d->line, d->tables[i]);
+            dput(d, " ALTER COLUMN ");
+            sql_print_name(&d->line, c->name);
+            dput(d, " RESTART WITH ");
+            dput(d, num);
+            size_t at = 2;
+            for (size_t j = 0; j < c->nscope && rc == GSQL_OK; j++) {
+                GsqlKey one;
+                gsql_key_init(&one);
+                size_t used = 0;
+                GsqlKeyStatus ks = gsql_key_value(key.p + at, key.n - at, 0, &one, &used);
+                if (ks == GSQL_KEY_OK) {
+                    dput(d, j ? ", " : " FOR (");
+                    sql_print_value(&d->line, one.bytes, one.length);
+                    at += used;
+                } else {
+                    rc = xfail(err, GSQL_TYPE, 0, "DUMP TO: serial `%.80s.%.80s` is numbered within a scope a dump "
+                               "cannot write back%s", d->tables[i], c->name,
+                               ks == GSQL_KEY_NOT_INDEXABLE ? " (money: its key does not hold the exponent)" : "");
+                }
+                gsql_key_free(&one);
+            }
+            if (rc == GSQL_OK) {
+                dput(d, c->nscope ? ");\n" : ";\n");
+                rc = dflush(d, err);
+            }
+            if (rc == GSQL_OK) {
+                st = x->e->next(sc, &pos);
+            }
+        }
+        if (sc) {
+            x->e->cursor_close(sc);
+        }
+        gsql_table_close(tb);
+        if (rc == GSQL_OK && st != GS_OK) {
+            rc = xfail(err, GSQL_STORAGE, 0, "DUMP TO: reading the counters of `%s`: %s", d->tables[i],
+                       gs_status_name(st));
+        }
+        if (rc != GSQL_OK) {
+            return rc;
+        }
+    }
+    return GSQL_OK;
+}
+
+static void dump_names(Dump *d, char *const *v, size_t n) {
+    dput(d, "(");
+    for (size_t k = 0; k < n; k++) {
+        if (k) {
+            dput(d, ", ");
+        }
+        sql_print_name(&d->line, v[k]);
+    }
+    dput(d, ")");
+}
+
+/* a view's dependence on another, by its name appearing in the text: an
+   over-approximation, which only ever orders more than it must */
+static int names_word(const char *text, const char *word) {
+    size_t n = strlen(word);
+    for (const char *p = text; (p = strstr(p, word)) != NULL; p++) {
+        int before = p == text || !(isalnum((unsigned char)p[-1]) || p[-1] == '_');
+        int after = !(isalnum((unsigned char)p[n]) || p[n] == '_');
+        if (before && after) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int dump_rest(X *x, Dump *d, GsqlError *err) {
+    int rc = GSQL_OK;
+    if (!d->schema_only) {
+        rc = dump_counters(x, d, err);
+        if (rc != GSQL_OK) {
+            return rc;
+        }
+        dput(d, "\n");
+    }
+    CkList cl;
+    if (ck_all(x, &cl) != GSQL_OK) {
+        return err->code;
+    }
+    for (size_t i = 0; i < cl.n; i++) {
+        const CkRec *c = &cl.v[i];
+        if (!c->bound) {
+            dput(d, "-- not written: CHECK ");
+            sql_print_name(&d->line, c->name);
+            dput(d, " on a table that is gone\n");
+            d->skipped++;
+            continue;
+        }
+        dput(d, "ALTER TABLE ");
+        sql_print_name(&d->line, c->table);
+        dput(d, " ADD CONSTRAINT ");
+        sql_print_name(&d->line, c->name);
+        dput(d, c->text[0] == '(' ? " CHECK " : " CHECK (");
+        dput(d, c->text);
+        dput(d, c->text[0] == '(' ? ";\n" : ");\n");
+    }
+    ck_list_free(&cl);
+    FkList fl;
+    if (fk_all(x, &fl) != GSQL_OK) {
+        return err->code;
+    }
+    for (size_t i = 0; i < fl.n; i++) {
+        const FkRec *k = &fl.v[i];
+        if (!k->bound) {
+            dput(d, "-- not written: FOREIGN KEY ");
+            sql_print_name(&d->line, k->name);
+            dput(d, ", whose parent `");
+            dput(d, k->ref);
+            dput(d, "` is not there\n");
+            d->skipped++;
+            continue;
+        }
+        dput(d, "ALTER TABLE ");
+        sql_print_name(&d->line, k->table);
+        dput(d, " ADD CONSTRAINT ");
+        sql_print_name(&d->line, k->name);
+        dput(d, " FOREIGN KEY ");
+        dump_names(d, k->cols, k->ncols);
+        dput(d, " REFERENCES ");
+        sql_print_name(&d->line, k->ref);
+        if (k->nref) {
+            dput(d, " ");
+            dump_names(d, k->ref_cols, k->nref);
+        }
+        dput(d, k->enforced ? ";\n" : " NOT ENFORCED;\n");
+    }
+    fk_list_free(&fl);
+    rc = dflush(d, err);
+    /* views, each after any view its text names */
+    struct { char **v; size_t n; } names = { NULL, 0 };
+    if (rc == GSQL_OK) {
+        rc = gsql_view_list(x->e, x->t, collect_view, &names, err);
+    }
+    ViewRec *vr = calloc(names.n ? names.n : 1, sizeof *vr);
+    int *written = calloc(names.n ? names.n : 1, sizeof *written);
+    if (!vr || !written) {
+        abort();
+    }
+    for (size_t k = 0; rc == GSQL_OK && k < names.n; k++) {
+        GsqlBuf rec = {0};
+        if (gsql_view_get(x->e, x->t, names.v[k], &rec, err) != GSQL_OK || !view_rec_read(&rec, &vr[k])) {
+            rc = xfail(err, GSQL_CORRUPT, 0, "DUMP TO: view `%s` does not parse", names.v[k]);
+        }
+        gsql_buf_free(&rec);
+    }
+    if (rc == GSQL_OK && names.n) {
+        dput(d, "\n");
+    }
+    for (size_t left = names.n; rc == GSQL_OK && left;) {
+        size_t pick = names.n;
+        for (size_t k = 0; k < names.n && pick == names.n; k++) {
+            if (written[k]) {
+                continue;
+            }
+            int ready = 1;
+            for (size_t j = 0; j < names.n && ready; j++) {
+                ready = written[j] || j == k || !names_word(vr[k].text, names.v[j]);
+            }
+            if (ready) {
+                pick = k;
+            }
+        }
+        for (size_t k = 0; pick == names.n && k < names.n; k++) {
+            if (!written[k]) {
+                pick = k;     /* a cycle of mentions: name order */
+            }
+        }
+        written[pick] = 1;
+        left--;
+        if (!vr[pick].ok) {
+            dput(d, "-- not written: view ");
+            sql_print_name(&d->line, names.v[pick]);
+            dput(d, ", which does not run: CREATE VIEW would refuse it\n");
+            d->skipped++;
+            continue;
+        }
+        dput(d, "CREATE VIEW ");
+        sql_print_name(&d->line, names.v[pick]);
+        if (vr[pick].ndeclared) {
+            dput(d, " ");
+            dump_names(d, vr[pick].declared, vr[pick].ndeclared);
+        }
+        dput(d, " AS ");
+        dput(d, vr[pick].text);
+        dput(d, ";\n");
+    }
+    for (size_t k = 0; k < names.n; k++) {
+        view_rec_free(&vr[k]);
+        free(names.v[k]);
+    }
+    free(vr);
+    free(written);
+    free(names.v);
+    return rc == GSQL_OK ? dflush(d, err) : rc;
+}
+
+static int dump_batch(SqlCursor *c, GsqlResult *out, GsqlError *err) {
+    Dump *d = c->dump;
+    X *x = &c->x;
+    int rc = GSQL_OK;
+    if (d->phase == DUMP_SCHEMA) {
+        dput(d, d->schema_only ? "-- G-SQL dump, format 1, schema only (docs/gsql_dump_design.md)\n\n"
+                               : "-- G-SQL dump, format 1 (docs/gsql_dump_design.md)\n\n");
+        for (size_t i = 0; rc == GSQL_OK && i < d->ntables; i++) {
+            GsqlTable *tb;
+            rc = gsql_table_open(x->e, x->t, d->tables[i], &tb, err);
+            if (rc == GSQL_OK) {
+                rc = dump_table_schema(x, d, tb, err);
+                gsql_table_close(tb);
+            }
+        }
+        d->phase = d->schema_only ? DUMP_REST : DUMP_ROWS;
+    } else if (d->phase == DUMP_ROWS) {
+        int r = dump_rows(x, d, err);
+        if (r < 0) {
+            rc = err->code ? err->code : GSQL_STORAGE;
+        } else if (r == 0) {
+            d->phase = DUMP_REST;
+        }
+    } else if (d->phase == DUMP_REST) {
+        rc = dump_rest(x, d, err);
+        if (rc == GSQL_OK) {
+            if (fclose(d->f) != 0) {
+                d->f = NULL;
+                remove(d->partial);
+                rc = xfail(err, GSQL_STORAGE, 0, "DUMP TO `%.200s`: closing the file failed", d->path);
+            } else if ((d->f = NULL, rename(d->partial, d->path)) != 0) {
+                remove(d->partial);
+                rc = xfail(err, GSQL_STORAGE, 0, "DUMP TO `%.200s`: the finished file could not be put in place",
+                           d->path);
+            }
+            d->phase = DUMP_DONE;
+        }
+    }
+    if (rc != GSQL_OK) {
+        return rc;
+    }
+    out->has_rows = 1;
+    out->rows.length = 0;
+    v3_w_array(&out->rows, 1);
+    v3_w_array(&out->rows, 5);
+    v3_w_int(&out->rows, d->ntables);
+    v3_w_int(&out->rows, d->rows);
+    v3_w_int(&out->rows, d->skipped);
+    v3_w_int(&out->rows, d->bytes);
+    v3_w_bool(&out->rows, d->phase == DUMP_DONE);
+    out->cursor = d->phase == DUMP_DONE ? NULL : c;
+    return GSQL_OK;
+}
+
+static int dump_start(SqlCursor *c) {
+    GsqlBuf v = {0};
+    const SqlStmt *s = c->parsed.stmt;
+    int rc = eval_into(&c->x, s->dump_to, &v);
+    if (rc != GSQL_OK) {
+        gsql_buf_free(&v);
+        return rc;
+    }
+    char *path = v.length && v.bytes[0] == SER_STRING ? v3_read_text(v.bytes, v.length) : NULL;
+    gsql_buf_free(&v);
+    uint32_t pos = s->dump_to->pos;
+    if (!path) {
+        return xfail(&c->err, GSQL_EXPRESSION, pos, "DUMP TO takes the file's name as text");
+    }
+    if (path[0] != '/') {
+        rc = xfail(&c->err, GSQL_EXPRESSION, pos, "DUMP TO `%.200s`: the file must be named absolutely, since the "
+                   "owner's working directory is not the program's (gsql.dump resolves one for you)", path);
+        free(path);
+        return rc;
+    }
+    Dump *d = calloc(1, sizeof *d);
+    if (!d) {
+        abort();
+    }
+    d->path = path;
+    d->e = c->x.e;
+    d->schema_only = s->dump_schema_only;
+    d->partial = malloc(strlen(path) + 9);
+    if (!d->partial) {
+        abort();
+    }
+    sprintf(d->partial, "%s.partial", path);
+    struct { char **v; size_t n; } names = { NULL, 0 };
+    rc = gsql_table_list(c->x.e, c->x.t, collect_view, &names, &c->err);
+    d->tables = names.v;
+    d->ntables = names.n;
+    c->dump = d;
+    if (rc != GSQL_OK) {
+        return rc;
+    }
+    d->f = fopen(d->partial, "wb");
+    if (!d->f) {
+        return xfail(&c->err, GSQL_STORAGE, pos, "DUMP TO `%.200s`: the file could not be written: %s", path,
+                     strerror(errno));
+    }
+    return GSQL_OK;
+}
+
 /* BACKUP TO dir: its path, then the engine's backup of this statement's own
  * snapshot, which the cursor keeps between fetches. */
 static int backup_start(SqlCursor *c, const GsEngine *e, GsTxn *t) {
@@ -5865,6 +6536,10 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
     SqlStmt *s = c->parsed.stmt;
     if (s->kind == SQ_BACKUP) {
         if (backup_start(c, e, t) != GSQL_OK) {
+            goto failed;
+        }
+    } else if (s->kind == SQ_DUMP) {
+        if (dump_start(c) != GSQL_OK) {
             goto failed;
         }
     } else if (s->explain) {

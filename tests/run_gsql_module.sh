@@ -100,6 +100,17 @@ if [ -s "$work/backup.err" ]; then
     fail "backup: the fixture wrote to stderr"
 fi
 
+printf 'TIER dump: gsql.dump and gsql.restore, the restored values compared as serialize bytes\n'
+# docs/gsql_dump_design.md §6: the oracle is the stored values, since a dump of
+# a restore matching the dump it came from passes on a printer that loses digits
+mkdir -p "$work/dump"
+GSQL_DIR="$work/dump" timeout -k 5 300 ./gbasic tests/gsql/dump_test.bas >"$work/dump.out" 2>"$work/dump.err"
+verdict dump "$work/dump.out" $? 70
+if [ -s "$work/dump.err" ]; then
+    sed 's/^/       /' "$work/dump.err" | head -5
+    fail "dump: the fixture wrote to stderr"
+fi
+
 printf 'TIER warnings: a G-SQL warning is a gBASIC warning, at the program'"'"'s line\n'
 WFIX=tests/gsql/warning_test.bas
 mkdir -p "$work/warn"
