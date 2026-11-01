@@ -2446,6 +2446,20 @@ The module provides:
   itself included) and as `EXISTS` for a directory holding other files. The copy
   is an ordinary database; restore by using it, or by copying its directory back
   with no owner running.
+- `gsql.dump(connection, file[, { schema_only: true }])` — the database as SQL
+  text: tables, indexes, rows, serial counters, constraints and views, from one
+  snapshot, written a slice at a time while the database stays in use
+  (`docs/gsql_dump_design.md`). It answers `{ tables, rows, skipped, bytes }`;
+  `skipped` counts what could not be written (a view that no longer runs, a
+  foreign key whose parent is gone), each named by a `-- not written:` line. A
+  record holding a date or money is refused as `TYPE`, naming its table and
+  column. A relative `file` is the program's, and a dump that fails leaves no file.
+- `gsql.restore(connection, file)` — runs a dump into a database, the rows ten
+  statements a transaction, the file streamed. It answers `{ statements, rows }`.
+  It runs only what a dump writes, and only onto tables it created itself, so a
+  file cannot change data that was already there; anything else is refused as
+  `STATE` before it runs, naming its line. A restore that fails part way keeps
+  the batches before the failure.
 
 Parameters are a **record** for `:name` placeholders and an **array** for `$1`,
 `$2`, … . Values cross unchanged in both directions: an exact integer stays

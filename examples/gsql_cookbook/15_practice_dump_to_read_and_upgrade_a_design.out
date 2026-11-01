@@ -1,0 +1,16 @@
+-- G-SQL dump, format 1, schema only (docs/gsql_dump_design.md)
+
+CREATE TABLE customer (
+    id INTEGER SERIAL,
+    name TEXT NOT NULL,
+    phone TEXT,
+    PRIMARY KEY (id)
+);
+
+
+dumped 1 table, 2 rows
+restored 3 statements, 2 rows
+1 Ada 555-0100
+2 Grace unlisted
+next id: 3
+a DELETE in the file is refused: STATE
