@@ -2195,10 +2195,13 @@ static int group_main(const char *dir) {
     double eight = commit_rate(db, 8, 40, &refused);
     EXPECT(refused == 0, "%ld of 320 commits from eight clients were not DONE", refused);
     printf("group one_client_per_s %.0f eight_clients_per_s %.0f ratio %.2f\n", one, eight, eight / one);
-    /* measured 7.2 to 8.2 (and 7.3 under sixteen busy loops); 3.9 when a
-       group does not wait for the connections that commit, 1.0 without
-       group commit at all */
-    EXPECT(eight > 5.5 * one, "eight clients made %.0f commits/s against one client's %.0f: syncs were barely shared",
+    /* measured 6.6 to 8.2 alone and 7.3 under sixteen busy loops, but 4.56
+       INSIDE A PARALLEL GATE, where the eight clients compete for the CPU and
+       fewer reach each sync in time -- so the bound sits between that and the
+       builds it exists to catch: 1.96 when a group does not wait for the
+       connections that commit (half the clients commit explicitly, holding
+       the writer across round trips), 1.43 to 1.55 with no grouping */
+    EXPECT(eight > 3.0 * one, "eight clients made %.0f commits/s against one client's %.0f: syncs were barely shared",
            eight, one);
     /* a reply is sent only once a sync covers its commit: a client waiting
        for each reply cannot outrun the sync, 200 a second at 5 ms */

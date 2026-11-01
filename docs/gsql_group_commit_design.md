@@ -51,7 +51,7 @@ The engine already supports the fix (`gsql_storage_design.md` §1.3): `commit(tx
 
 `tests/run_gsql_owner.sh`'s **group** tier injects a 5 ms sync into the test owner (the seam `research/gsql/syncbench.c` used for §1's table) and runs one client, then eight at once, half committing explicitly and half in autocommit:
 
-- **The gain, as a ratio:** eight clients must make more than 5.5 times one client's commits a second.
+- **The gain, as a ratio:** eight clients must make more than 3 times one client's commits a second. It was 5.5 for a day, and the parallel gate measured 4.56 on a working build, its eight clients competing for the CPU; the builds it must catch read 1.96 (no gather) and 1.55 at most (no grouping).
 - **No early reply:** a single client must stay under 210 commits a second, since a client that waits for each reply cannot outrun a 5 ms sync.
 - **Every commit lands:** the database holds every row committed.
 - **A failed sync** answers no commit `DONE`, and says the commit's durability is unknown.
