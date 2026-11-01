@@ -361,19 +361,11 @@ end if
 database keys( file: "cookbook_keys.gsql", create: true )
 
 ' a plain counter: 1, 2, 3, no gaps, and a number is never reused
-sql make_customer on keys
-    create table customer (id integer serial primary key, name text)
-end sql
-
-sql first_customers on keys
-    insert into customer (name) values ('Ada'), ('Grace'), ('Edsger')
-end sql
-
-sql drop_edsger on keys
-    delete from customer where name = 'Edsger'
-end sql
-
-sql add_barbara on keys
+' a block may hold several statements: it runs all of them or none
+sql customers_in on keys
+    create table customer (id integer serial primary key, name text);
+    insert into customer (name) values ('Ada'), ('Grace'), ('Edsger');
+    delete from customer where name = 'Edsger';
     insert into customer (name) values ('Barbara')
 end sql
 
@@ -381,20 +373,14 @@ sql customers on keys
     select id, name from customer order by id
 end sql
 
-gsql.exec(make_customer)
-gsql.exec(first_customers)
-gsql.exec(drop_edsger)
-gsql.exec(add_barbara)
+gsql.exec(customers_in)
 for each row in customers
     print string(row.id) + " " + row.name             ' 3 is gone for good: Barbara is 4
 next
 
 ' a counter per scope: each task's log lines are 1, 2, 3 ...
-sql make_log on keys
-    create table task_log (task integer, n integer serial of (task), note text, primary key (task, n))
-end sql
-
 sql log_lines on keys
+    create table task_log (task integer, n integer serial of (task), note text, primary key (task, n));
     insert into task_log (task, note) values (7, 'opened'), (8, 'opened'), (7, 'assigned'), (7, 'closed')
 end sql
 
@@ -402,18 +388,14 @@ sql logged on keys
     select task, n, note from task_log order by task, n
 end sql
 
-gsql.exec(make_log)
 gsql.exec(log_lines)
 for each row in logged
     print "task " + string(row.task) + " #" + string(row.n) + " " + row.note
 next
 
 ' per day of a datetime: the scope is any expression over the row
-sql make_request on keys
-    create table request (at datetime, no integer serial of (cast(at as date)))
-end sql
-
 sql requests_in on keys
+    create table request (at datetime, no integer serial of (cast(at as date)));
     insert into request (at) values (cast('2026-11-01 09:00' as datetime)),
                                     (cast('2026-11-01 17:30' as datetime)),
                                     (cast('2026-11-02 08:15' as datetime))
@@ -423,18 +405,14 @@ sql requests on keys
     select at, no from request order by at
 end sql
 
-gsql.exec(make_request)
 gsql.exec(requests_in)
 for each row in requests
     print string(row.at) + "  #" + string(row.no)
 next
 
 ' random: a key nobody can guess, of a declared length and alphabet
-sql make_member on keys
-    create table member (id text random primary key, pin text random(6, '0123456789'), name text)
-end sql
-
 sql members_in on keys
+    create table member (id text random primary key, pin text random(6, '0123456789'), name text);
     insert into member (name) values ('Ada'), ('Grace')
 end sql
 
@@ -442,7 +420,6 @@ sql members on keys
     select id, pin, name from member order by name
 end sql
 
-gsql.exec(make_member)
 gsql.exec(members_in)
 for each row in members
     ' the values differ every run, so this prints their shape, not them
@@ -487,17 +464,11 @@ end if
 
 database shop( file: "cookbook_orders.gsql", create: true )
 
-sql make_customer on shop
-    create table customer (id integer primary key, email text not null unique)
-end sql
-
-sql make_orders on shop
+sql schema on shop
+    create table customer (id integer primary key, email text not null unique);
     create table orders (id integer serial primary key,
                          customer integer references customer (id),
-                         total money(USD) check (total > cast('0' as money(USD))))
-end sql
-
-sql ada on shop
+                         total money(USD) check (total > cast('0' as money(USD))));
     insert into customer values (1, 'ada@example.com')
 end sql
 
@@ -533,9 +504,7 @@ sql order_count on shop
     select count(*) as n from orders
 end sql
 
-gsql.exec(make_customer)
-gsql.exec(make_orders)
-gsql.exec(ada)
+gsql.exec(schema)
 
 function try(statement)
     on error goto next
@@ -593,19 +562,10 @@ end if
 
 database sales( file: "cookbook_sales.gsql", create: true )
 
-sql make_region on sales
-    create table region (id integer primary key, name text)
-end sql
-
-sql make_sale on sales
-    create table sale (id integer primary key, region integer, rep text, amount money(USD))
-end sql
-
-sql regions_in on sales
-    insert into region values (1, 'North'), (2, 'South'), (3, 'West')
-end sql
-
-sql sales_in on sales
+sql setup on sales
+    create table region (id integer primary key, name text);
+    create table sale (id integer primary key, region integer, rep text, amount money(USD));
+    insert into region values (1, 'North'), (2, 'South'), (3, 'West');
     insert into sale values
         (1, 1, 'kim', cast('120' as money(USD))), (2, 1, 'lee', cast('80' as money(USD))),
         (3, 2, 'kim', cast('200' as money(USD))), (4, 2, 'max', cast('50' as money(USD))),
@@ -636,10 +596,7 @@ sql above_average_in_steps on sales
     order by s.id
 end sql
 
-gsql.exec(make_region)
-gsql.exec(make_sale)
-gsql.exec(regions_in)
-gsql.exec(sales_in)
+gsql.exec(setup)
 
 print "-- totals by region, joined to its name, regions with nothing sold included"
 for each row in by_region
@@ -702,15 +659,9 @@ end if
 
 database shop( file: "cookbook_views.gsql", create: true )
 
-sql make_item on shop
-    create table item (id integer primary key, name text, price money(USD))
-end sql
-
-sql items_in on shop
-    insert into item values (1, 'apple', cast('0.50' as money(USD))), (2, 'melon', cast('3.00' as money(USD)))
-end sql
-
-sql make_cheap on shop
+sql setup on shop
+    create table item (id integer primary key, name text, price money(USD));
+    insert into item values (1, 'apple', cast('0.50' as money(USD))), (2, 'melon', cast('3.00' as money(USD)));
     create view cheap as select name from item where price < cast('1' as money(USD))
 end sql
 
@@ -719,11 +670,8 @@ sql read_cheap on shop
 end sql
 
 ' rebuild the table differently: build the new one, copy, drop, rename
-sql make_item_new on shop
-    create table item_new (id integer primary key, name text, price money(USD), stocked boolean default true)
-end sql
-
-sql copy_items on shop
+sql build_new on shop
+    create table item_new (id integer primary key, name text, price money(USD), stocked boolean default true);
     insert into item_new (id, name, price) select id, name, price from item
 end sql
 
@@ -735,13 +683,10 @@ sql rename_new on shop
     alter table item_new rename to item
 end sql
 
-gsql.exec(make_item)
-gsql.exec(items_in)
-gsql.exec(make_cheap)
+gsql.exec(setup)
 print gsql.query(read_cheap)
 
-gsql.exec(make_item_new)
-gsql.exec(copy_items)
+gsql.exec(build_new)
 
 function drop_old()
     on warning goto next
@@ -1121,10 +1066,7 @@ end if
 database readings( file: "cookbook_load.gsql", create: true )
 
 sql make on readings
-    create table reading (id integer primary key, sensor integer, value number)
-end sql
-
-sql index_sensor on readings
+    create table reading (id integer primary key, sensor integer, value number);
     create index reading_sensor on reading (sensor)
 end sql
 
@@ -1141,7 +1083,6 @@ sql from_sensor_3 on readings
 end sql
 
 gsql.exec(make)
-gsql.exec(index_sensor)
 
 batch = 1000
 commits = 0
@@ -1288,10 +1229,7 @@ database shop( file: "cookbook_dump.gsql", create: true )
 database v2( file: "cookbook_dump_v2.gsql", create: true )
 
 sql make on shop
-    create table customer (id integer serial primary key, name text not null, phone text)
-end sql
-
-sql first_customers on shop
+    create table customer (id integer serial primary key, name text not null, phone text);
     insert into customer (name, phone) values ('Ada', '555-0100'), ('Grace', null)
 end sql
 
@@ -1308,7 +1246,6 @@ sql highest on v2
 end sql
 
 gsql.exec(make)
-gsql.exec(first_customers)
 
 ' the design, on one page
 work = temp_dir()

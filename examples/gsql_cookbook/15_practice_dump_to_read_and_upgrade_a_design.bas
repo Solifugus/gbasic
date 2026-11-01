@@ -15,10 +15,7 @@ database shop( file: "cookbook_dump.gsql", create: true )
 database v2( file: "cookbook_dump_v2.gsql", create: true )
 
 sql make on shop
-    create table customer (id integer serial primary key, name text not null, phone text)
-end sql
-
-sql first_customers on shop
+    create table customer (id integer serial primary key, name text not null, phone text);
     insert into customer (name, phone) values ('Ada', '555-0100'), ('Grace', null)
 end sql
 
@@ -35,7 +32,6 @@ sql highest on v2
 end sql
 
 gsql.exec(make)
-gsql.exec(first_customers)
 
 ' the design, on one page
 work = temp_dir()

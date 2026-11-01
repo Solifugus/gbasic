@@ -8,17 +8,11 @@ end if
 
 database shop( file: "cookbook_orders.gsql", create: true )
 
-sql make_customer on shop
-    create table customer (id integer primary key, email text not null unique)
-end sql
-
-sql make_orders on shop
+sql schema on shop
+    create table customer (id integer primary key, email text not null unique);
     create table orders (id integer serial primary key,
                          customer integer references customer (id),
-                         total money(USD) check (total > cast('0' as money(USD))))
-end sql
-
-sql ada on shop
+                         total money(USD) check (total > cast('0' as money(USD))));
     insert into customer values (1, 'ada@example.com')
 end sql
 
@@ -54,9 +48,7 @@ sql order_count on shop
     select count(*) as n from orders
 end sql
 
-gsql.exec(make_customer)
-gsql.exec(make_orders)
-gsql.exec(ada)
+gsql.exec(schema)
 
 function try(statement)
     on error goto next

@@ -8,19 +8,10 @@ end if
 
 database sales( file: "cookbook_sales.gsql", create: true )
 
-sql make_region on sales
-    create table region (id integer primary key, name text)
-end sql
-
-sql make_sale on sales
-    create table sale (id integer primary key, region integer, rep text, amount money(USD))
-end sql
-
-sql regions_in on sales
-    insert into region values (1, 'North'), (2, 'South'), (3, 'West')
-end sql
-
-sql sales_in on sales
+sql setup on sales
+    create table region (id integer primary key, name text);
+    create table sale (id integer primary key, region integer, rep text, amount money(USD));
+    insert into region values (1, 'North'), (2, 'South'), (3, 'West');
     insert into sale values
         (1, 1, 'kim', cast('120' as money(USD))), (2, 1, 'lee', cast('80' as money(USD))),
         (3, 2, 'kim', cast('200' as money(USD))), (4, 2, 'max', cast('50' as money(USD))),
@@ -51,10 +42,7 @@ sql above_average_in_steps on sales
     order by s.id
 end sql
 
-gsql.exec(make_region)
-gsql.exec(make_sale)
-gsql.exec(regions_in)
-gsql.exec(sales_in)
+gsql.exec(setup)
 
 print "-- totals by region, joined to its name, regions with nothing sold included"
 for each row in by_region

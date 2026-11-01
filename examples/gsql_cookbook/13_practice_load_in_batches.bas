@@ -12,10 +12,7 @@ end if
 database readings( file: "cookbook_load.gsql", create: true )
 
 sql make on readings
-    create table reading (id integer primary key, sensor integer, value number)
-end sql
-
-sql index_sensor on readings
+    create table reading (id integer primary key, sensor integer, value number);
     create index reading_sensor on reading (sensor)
 end sql
 
@@ -32,7 +29,6 @@ sql from_sensor_3 on readings
 end sql
 
 gsql.exec(make)
-gsql.exec(index_sensor)
 
 batch = 1000
 commits = 0

@@ -9,15 +9,9 @@ end if
 
 database shop( file: "cookbook_views.gsql", create: true )
 
-sql make_item on shop
-    create table item (id integer primary key, name text, price money(USD))
-end sql
-
-sql items_in on shop
-    insert into item values (1, 'apple', cast('0.50' as money(USD))), (2, 'melon', cast('3.00' as money(USD)))
-end sql
-
-sql make_cheap on shop
+sql setup on shop
+    create table item (id integer primary key, name text, price money(USD));
+    insert into item values (1, 'apple', cast('0.50' as money(USD))), (2, 'melon', cast('3.00' as money(USD)));
     create view cheap as select name from item where price < cast('1' as money(USD))
 end sql
 
@@ -26,11 +20,8 @@ sql read_cheap on shop
 end sql
 
 ' rebuild the table differently: build the new one, copy, drop, rename
-sql make_item_new on shop
-    create table item_new (id integer primary key, name text, price money(USD), stocked boolean default true)
-end sql
-
-sql copy_items on shop
+sql build_new on shop
+    create table item_new (id integer primary key, name text, price money(USD), stocked boolean default true);
     insert into item_new (id, name, price) select id, name, price from item
 end sql
 
@@ -42,13 +33,10 @@ sql rename_new on shop
     alter table item_new rename to item
 end sql
 
-gsql.exec(make_item)
-gsql.exec(items_in)
-gsql.exec(make_cheap)
+gsql.exec(setup)
 print gsql.query(read_cheap)
 
-gsql.exec(make_item_new)
-gsql.exec(copy_items)
+gsql.exec(build_new)
 
 function drop_old()
     on warning goto next
