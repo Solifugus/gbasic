@@ -127,10 +127,27 @@ ratio_of() { # small large [floor]
     echo "$1 $2 ${3:-0.10}" | awk '{ f = ($1 < $3) ? $3 : $1; printf "%.2f", $2 / f }'
 }
 
+# The two sizes are timed ALTERNATELY, three of each, keeping each size's
+# smallest: a ratio is self-normalising only while both halves see the same
+# load, and measured once each in sequence they need not -- the end of a
+# parallel gate, as its workers drain, is a load TRANSITION between the two.
+# Found 2026-11-01: "overwrite every key" read 8.51x in the gate against an 8x
+# bound, and 3.34x and 3.59x alone on the same binary. run_set_ops.sh met the
+# same thing first and is fixed the same way.
+min_of() { # a b -> the smaller, -1 if either is
+    echo "$1 $2" | awk '{ if ($1 < 0 || $2 < 0) print "-1"; else if ($1 < $2) print $1; else print $2 }'
+}
+
 shape() { # label small large op gate note
-    local label=$1 small=$2 large=$3 op=$4 gate=$5 note=$6 ts tl r
+    local label=$1 small=$2 large=$3 op=$4 gate=$5 note=$6 ts tl r i a b
     ts=$(timed "$small" "$op")
     tl=$(timed "$large" "$op")
+    for i in 2 3; do
+        a=$(timed "$small" "$op")
+        b=$(timed "$large" "$op")
+        ts=$(min_of "$ts" "$a")
+        tl=$(min_of "$tl" "$b")
+    done
     if [ "$ts" = "-1" ] || [ "$tl" = "-1" ]; then
         status=1
         return
