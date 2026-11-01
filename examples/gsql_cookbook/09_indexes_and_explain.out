@@ -1,0 +1,11 @@
+by the primary key:
+    Point Read on event using the primary key (id = 42)
+by a column with no index -- every row is read:
+    Scan on event
+      Filter: (user_id = 7)
+the same, with an index on it:
+    Index Seek on event using event_user (user_id = 7)
+an index narrows; every condition is still checked:
+    Index Seek on event using event_user (user_id = 7)
+      Filter: (kind = 'click')
+40 events for user 7

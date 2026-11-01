@@ -1,0 +1,14 @@
+-- totals by region, joined to its name, regions with nothing sold included
+North  3  230.00
+South  2  250.00
+West  0  0.00
+-- reps who sold in more than one region
+kim
+-- each sale above its region's average, by a correlated subquery
+1 kim 120.00
+2 lee 80.00
+3 kim 200.00
+-- the same question asked in steps, with WITH
+1
+2
+3

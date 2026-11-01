@@ -1,0 +1,5 @@
+[{"name":"apple"}]
+warned 2118: view `cheap` cannot run: there is no table `item`
+[{"name":"apple"}]
+rolled back: 2118
+[{"name":"apple"}]

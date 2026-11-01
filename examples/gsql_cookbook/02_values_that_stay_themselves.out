@@ -1,0 +1,6 @@
+{"id":1,"big":9007199254740993,"cost":19.99,"day":2026-11-01,"note":""}
+{"id":2,"big":unknown,"cost":unknown,"day":unknown,"note":unknown}
+big + 1 = 9007199254740994
+cost is EUR
+day is a datetime, note is string of length 0
+a missing note is unknown: true

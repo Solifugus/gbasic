@@ -2417,6 +2417,8 @@ database is reached through its **owner**, one process that serves every
 program using it; `gsql.connect` starts the owner when none is running, as a
 child of the program, and it ends with the program. Its SQL is described in
 `docs/gsql_sql_design.md` and this module in `docs/gsql_module_design.md`.
+**To start, read `docs/gsql_cookbook.md`**: worked recipes from a first table
+to the practices a production program needs, every one run by the gate.
 
 ```basic
 load gsql

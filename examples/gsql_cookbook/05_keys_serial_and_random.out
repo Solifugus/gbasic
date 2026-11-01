@@ -1,0 +1,12 @@
+1 Ada
+2 Grace
+4 Barbara
+task 7 #1 opened
+task 7 #2 assigned
+task 7 #3 closed
+task 8 #1 opened
+2026-11-01 09:00:00  #1
+2026-11-01 17:30:00  #2
+2026-11-02 08:15:00  #1
+Ada: id of 22 characters, pin of 6 digits
+Grace: id of 22 characters, pin of 6 digits

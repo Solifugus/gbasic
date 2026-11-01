@@ -1,0 +1,8 @@
+accepted
+refused  NOT_NULL
+refused  DUPLICATE
+refused  CHECK
+refused  FOREIGN_KEY
+refused  FOREIGN_KEY
+refused  TYPE
+1 order kept

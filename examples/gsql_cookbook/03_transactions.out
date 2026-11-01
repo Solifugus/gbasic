@@ -1,0 +1,4 @@
+after the batch: 100 accounts
+after a rollback: 100.00 and 100.00
+refused: DUPLICATE, and the transaction carries on
+now 101 accounts

@@ -1,0 +1,5 @@
+NOT_FOUND at character 8: select nme from t
+SYNTAX at character 1: selct * from t
+  (said nothing: the table is empty)
+EXPRESSION at character 28: select * from t where name = 1
+STATE: exec is for statements that return no rows
