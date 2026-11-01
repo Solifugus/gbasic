@@ -1233,6 +1233,7 @@ static int gsql_block_body(const GsqlStatementValue *st, const char *who, Value 
 typedef struct {
     int multi;          /* more than one statement */
     int own;            /* the block began its transaction, and ends it */
+    int rows;           /* the last statement answers rows */
     Value statements;   /* one { command, rows_affected } each, so far */
 } GsqlBlockRun;
 
@@ -1328,13 +1329,6 @@ static int gsql_block_prelude(GsqlConnectionValue *c, const GsqlStatementValue *
         gsql_module_raise(who, "STATE", msg, 0, st->stmts[st->nstmts - 1]);
         return 0;
     }
-    if (!answers_rows && st->last_rows) {
-        char msg[300];
-        snprintf(msg, sizeof msg, "its last statement returns rows; nothing ran -- for each row in %s, or "
-                 "gsql.query(%s)", st->name, st->name);
-        gsql_module_raise(who, "STATE", msg, 0, st->stmts[st->nstmts - 1]);
-        return 0;
-    }
     /* a transaction already open is the program's: the block joins it */
     Value begin = value_record(NULL, 0);
     record_set(&begin, "mode", value_string("write"));
@@ -1371,6 +1365,11 @@ static int gsql_block_start(const GsqlStatementValue *st, GsqlConnectionValue *o
                             GsqlConnectionValue **c, char **sql, Value *body, GsqlBlockRun *run) {
     run->statements = value_null();
     run->own = run->multi = 0;
+    /* exec takes whatever the block ends in (docs/gsql_store_conversion_design.md §2) */
+    if (answers_rows < 0) {
+        answers_rows = st->last_rows;
+    }
+    run->rows = answers_rows;
     *c = on ? on : gsql_block_connection(st, who);
     if (!*c) {
         return 0;
@@ -1422,9 +1421,9 @@ static struct GsqlRows *gsql_block_rows(const GsqlStatementValue *st) {
 static int gsql_call_target(AstExpr *expr, const char *verb, GsqlConnectionValue **c, char **sql, Value *body,
                             char *who, size_t who_cap, GsqlBlockRun *run) {
     size_t argc = expr->as.call.args.count;
-    int answers_rows = strcmp(verb, "query") == 0;
+    int answers_rows = strcmp(verb, "query") == 0 ? 1 : -1;
     run->statements = value_null();
-    run->own = run->multi = 0;
+    run->own = run->multi = run->rows = 0;
     if (argc < 1) {
         char msg[200];
         snprintf(msg, sizeof msg, "gsql.%s expects a connection, a statement, and optionally its parameters", verb);
@@ -1484,7 +1483,9 @@ static int gsql_call_target(AstExpr *expr, const char *verb, GsqlConnectionValue
         value_free(second);
         return ok;
     }
-    return gsql_statement_body_of(expr, verb, second, sql, body);
+    int ok = gsql_statement_body_of(expr, verb, second, sql, body);
+    run->rows = ok && gsql_statement_returns_rows(*sql);
+    return ok;
 }
 
 /* gsql.on(connection, block): the block, bound to run on that connection --
@@ -1578,6 +1579,48 @@ static Value gsql_eval_exec(AstExpr *expr) {
     GsqlBlockRun run;
     if (!gsql_call_target(expr, "exec", &c, &sql, &body, who, sizeof who, &run)) {
         return value_null();
+    }
+    if (run.rows) {
+        /* the last statement returns rows: they are its answer, beside its
+           command, as the last statement's value is the block's */
+        char *command = sql_command_name(sql);
+        char remedy[200];
+        snprintf(remedy, sizeof remedy, "gsql.exec");
+        struct GsqlRows *r = gsql_rows_begin(c, who, sql, body, remedy);
+        if (!r) {
+            free(command);
+            value_free(run.statements);
+            return value_null();
+        }
+        Value rows = value_array(NULL, 0);
+        Value row;
+        while (gsql_rows_next(r, &row)) {
+            Value grown = append_to_array_ref(&rows, row, 0);
+            value_free(grown);
+        }
+        gsql_rows_end(r);
+        if (error_action_pending()) {
+            value_free(rows);
+            free(command);
+            value_free(run.statements);
+            return value_null();
+        }
+        Value result = value_record(NULL, 0);
+        record_set(&result, "command", value_string(command));
+        record_set(&result, "rows_affected", value_null());
+        record_set(&result, "rows", rows);
+        if (run.multi) {
+            Value one = value_record(NULL, 0);
+            record_set(&one, "command", value_string(command));
+            record_set(&one, "rows_affected", value_null());
+            Value grown = append_to_array_ref(&run.statements, one, 0);
+            value_free(grown);
+            record_set(&result, "statements", run.statements);
+        } else {
+            value_free(run.statements);
+        }
+        free(command);
+        return result;
     }
     Value reply;
     unsigned type;

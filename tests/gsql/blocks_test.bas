@@ -288,10 +288,10 @@ check("a parameter with no variable is refused", code_of(e), "PARAMETER")
 check("naming the variable", contains(message_of(e), "there is no variable `no_such_variable_q` here"), true)
 
 ' --- refusals ----------------------------------------------------------------
-e = exec_block(cheap)
-check("exec over a select block is refused", code_of(e), "STATE")
-check("and says what to use", contains(message_of(e), "for each row in the block"), true)
-check("and names the block", starts_with(message_of(e), "sql cheap:"), true)
+' exec over a select block answers its rows, the same ones query answers
+' (docs/gsql_store_conversion_design.md §2)
+check("exec over a select block answers its rows", len(gsql.exec(cheap).rows), len(gsql.query(cheap)))
+check("as a SELECT, with no count", type(gsql.exec(cheap).rows_affected), "nothing")
 
 id = 6
 name = "item 6"
@@ -401,10 +401,15 @@ gsql.begin(shop)
 gsql.exec(m_two)
 gsql.commit(shop)
 check("and its commit keeps it", gsql.query(m_count_page)[0].n, 1)
-e = exec_block(m_record_and_show)
-check("exec of a block ending in a select is refused before anything runs", contains(message_of(e), "nothing ran"), true)
+' exec runs any block and answers its last statement: here, rows
+' (docs/gsql_store_conversion_design.md §2)
 page = "home"
-check("so it inserted nothing", gsql.query(m_count_page)[0].n, 2)
+r = gsql.exec(m_record_and_show)
+' one row a page: home, about, "semi; colon" and joined
+check("exec of a block ending in a select answers its rows", len(r.rows), 4)
+check("as a SELECT", r.command, "SELECT")
+check("with every statement's answer", len(r.statements), 2)
+check("and its insert ran", gsql.query(m_count_page)[0].n, 3)
 e = query_block(m_two)
 check("query of a block ending in no rows is refused before anything runs", contains(message_of(e), "nothing ran"), true)
 page = "about"

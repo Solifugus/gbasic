@@ -35,12 +35,14 @@ gsql.exec(db, "insert into t values (1, 'one')")
 explain_error("select * from t where name = 1")   ' EXPRESSION: no implicit casts
 explain_error("select * from t where name = '1'") ' fine: says nothing
 
-' and an exec of a query, or a query of a statement that returns nothing
+' and a query of a statement that returns nothing: gsql.query is for rows,
+' so it is refused -- saying that the statement ran, since it did.
+' (gsql.exec runs anything, and answers rows too when there are any.)
 function wrong_verb()
     on error goto next
-    gsql.exec(db, "select * from t")
+    gsql.query(db, "update t set name = 'uno' where id = 1")
     if error then
-        print error.details.code + ": exec is for statements that return no rows"
+        print error.details.code + ": " + error.message
     end if
     return nothing
 end function

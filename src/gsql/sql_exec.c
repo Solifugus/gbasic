@@ -881,6 +881,46 @@ static int eval_into(X *x, SqlExpr *e, GsqlBuf *out) {
     return rc;
 }
 
+/* A value stored into a column of kind `kind` takes it, when the value is
+ * text and the column a date, time, date-time or money, or a number and the
+ * column money (docs/gsql_store_conversion_design.md, Matthew's ruling): the
+ * column says what it holds, so there is nothing to guess, and spelling the
+ * cast was ceremony. Through the host's CAST, so what text a kind accepts is
+ * decided in one place. Everywhere else stays strict -- this is called only
+ * where a value is STORED -- and an integer column is untouched, since a
+ * decimal there is usually a mistake. `out` is replaced; GSQL_OK when there
+ * was nothing to do. */
+static int store_convert(X *x, int kind, const char *currency, const char *table, const char *col, GsqlBuf *out) {
+    if (!out->length) {
+        return GSQL_OK;
+    }
+    int tag = out->bytes[0];
+    int temporal = kind == GSQL_COL_DATE || kind == GSQL_COL_TIME || kind == GSQL_COL_DATETIME;
+    if (!((temporal && tag == SER_STRING) || (kind == GSQL_COL_MONEY && (tag == SER_STRING || tag == SER_NUMBER)))) {
+        return GSQL_OK;
+    }
+    GsqlHv *v = x->h->load(x->h->ctx, out->bytes, out->length, x->err);
+    if (!v) {
+        return x->err->code ? x->err->code : GSQL_EXPRESSION;
+    }
+    GsqlError why;
+    memset(&why, 0, sizeof why);
+    GsqlHv *c = x->h->cast(x->h->ctx, v, kind, currency, &why);
+    rel(x, v);
+    if (!c) {
+        const char *kw = kind == GSQL_COL_DATE ? "date" : kind == GSQL_COL_TIME ? "time"
+                         : kind == GSQL_COL_DATETIME ? "datetime" : "money";
+        return xfail(x->err, GSQL_TYPE, 0, "%s.%s is %s%s%s%s, and the %s given does not read as one: %.300s",
+                     table, col, kind == GSQL_COL_MONEY ? "money" : kw, kind == GSQL_COL_MONEY && currency[0] ? "(" : "",
+                     kind == GSQL_COL_MONEY ? currency : "", kind == GSQL_COL_MONEY && currency[0] ? ")" : "",
+                     tag == SER_STRING ? "text" : "number", why.message);
+    }
+    out->length = 0;
+    int rc = x->h->store(x->h->ctx, c, out, x->err);
+    rel(x, c);
+    return rc;
+}
+
 /* A scan's conditions conj[from..to): 1 all true, 0 one is not, -1 failed. */
 static int check(X *x, const SqlScan *sc, size_t from, size_t to) {
     for (size_t k = from; k < to; k++) {
@@ -3914,9 +3954,13 @@ static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
             for (size_t k = 0; k < p->ntargets; k++) {
                 if (!s->sets[k]) {
                     c->deflt[k] = 1;
-                } else if (eval_into(x, s->sets[k], &c->vals[k]) != GSQL_OK) {
-                    r = -1;
-                    break;
+                } else {
+                    const GsqlColumn *tc = gsql_table_col(p->tb, p->targets[k]);
+                    if (eval_into(x, s->sets[k], &c->vals[k]) != GSQL_OK ||
+                        store_convert(x, tc->kind, tc->currency, s->table, tc->name, &c->vals[k]) != GSQL_OK) {
+                        r = -1;
+                        break;
+                    }
                 }
             }
             if (r < 0) {
@@ -4083,9 +4127,13 @@ static int run_insert(X *x, GsqlResult *out) {
                 rc = xfail(x->err, GSQL_MISUSE, 0, "a row of the query did not hold its columns");
             }
             for (size_t k = 0; k < p->ntargets && rc == GSQL_OK; k++) {
+                const GsqlColumn *tc = gsql_table_col(p->tb, p->targets[k]);
+                bufs[k].length = 0;
+                v3_put(&bufs[k], items[k].p, items[k].n);
+                rc = store_convert(x, tc->kind, tc->currency, s->table, tc->name, &bufs[k]);
                 vals[p->targets[k]].present = 1;
-                vals[p->targets[k]].p = items[k].p;
-                vals[p->targets[k]].n = items[k].n;
+                vals[p->targets[k]].p = bufs[k].bytes;
+                vals[p->targets[k]].n = bufs[k].length;
             }
         }
         for (size_t k = 0; !s->ins_q && k < p->ntargets && rc == GSQL_OK; k++) {
@@ -4094,6 +4142,10 @@ static int run_insert(X *x, GsqlResult *out) {
                 continue;   /* DEFAULT: omitted, so the column's default */
             }
             rc = eval_into(x, s->rows[r][k], &bufs[k]);
+            if (rc == GSQL_OK) {
+                const GsqlColumn *tc = gsql_table_col(p->tb, p->targets[k]);
+                rc = store_convert(x, tc->kind, tc->currency, s->table, tc->name, &bufs[k]);
+            }
             vals[p->targets[k]].present = 1;
             vals[p->targets[k]].p = bufs[k].bytes;
             vals[p->targets[k]].n = bufs[k].length;
@@ -4245,11 +4297,12 @@ static int find_index(X *x, const char *name, GsqlTable **tb, size_t *at) {
     return found;
 }
 
-static int default_bytes(X *x, const SqlColDef *d, GsqlBuf *out) {
+static int default_bytes(X *x, const char *table, const SqlColDef *d, GsqlBuf *out) {
     if (!d->def) {
         return GSQL_OK;
     }
-    return eval_into(x, d->def, out);
+    int rc = eval_into(x, d->def, out);
+    return rc == GSQL_OK ? store_convert(x, d->type.kind, d->type.currency, table, d->name, out) : rc;
 }
 
 static int create_indexes(X *x, const SqlStmt *s, int *made_any) {
@@ -4854,7 +4907,7 @@ static int run_schema_change(X *x, GsqlResult *out) {
             memcpy(cols[k].currency, d->type.currency, sizeof cols[k].currency);
             cols[k].not_null = d->not_null;
             gen_column(&cols[k], d);
-            rc = default_bytes(x, d, &defs[k]);
+            rc = default_bytes(x, s->table, d, &defs[k]);
             if (d->def && rc == GSQL_OK) {
                 cols[k].def = defs[k].bytes;
                 cols[k].def_len = defs[k].length;
@@ -5050,7 +5103,7 @@ static int run_schema_change(X *x, GsqlResult *out) {
         c.not_null = d->not_null;
         gen_column(&c, d);
         GsqlBuf def = {0};
-        rc = default_bytes(x, d, &def);
+        rc = default_bytes(x, s->table, d, &def);
         if (rc == GSQL_OK && c.nscope) {
             /* the scope binds to the table as it is: the new column itself,
                which it may not read, is not there yet */
