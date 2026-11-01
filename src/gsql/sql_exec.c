@@ -4769,10 +4769,12 @@ static int names_column(const SqlExpr *e, const char *name) {
 /* A schema statement, then every view checked against what it left. */
 static int run_schema(X *x, GsqlResult *out) {
     int rc = run_schema_change(x, out);
-    if (rc == GSQL_OK && x->p->s->kind != SQ_CREATE_INDEX && x->p->s->kind != SQ_DROP_INDEX) {
+    SqlStmtKind k = x->p->s->kind;
+    int structural = k != SQ_CREATE_INDEX && k != SQ_DROP_INDEX && k != SQ_RESTART;
+    if (rc == GSQL_OK && structural) {
         rc = recheck_views(x);
     }
-    if (rc == GSQL_OK && x->p->s->kind != SQ_CREATE_INDEX && x->p->s->kind != SQ_DROP_INDEX) {
+    if (rc == GSQL_OK && structural) {
         rc = recheck_fkeys(x);
     }
 
@@ -4946,6 +4948,63 @@ static int run_schema_change(X *x, GsqlResult *out) {
             return GSQL_OK;
         }
         return rc;
+    case SQ_RESTART: {
+        /* a serial's counter set (docs/gsql_dump_design.md §4): what a dump
+           writes so the restored database never issues a number twice */
+        GsqlTable *tb;
+        rc = gsql_table_open(x->e, x->t, s->table, &tb, err);
+        if (rc != GSQL_OK) {
+            return rc;
+        }
+        long col = gsql_table_find(tb, s->restart_col);
+        const GsqlColumn *c = col >= 0 ? gsql_table_col(tb, (size_t)col) : NULL;
+        GsqlBuf v = {0};
+        GsqlKey key;
+        gsql_key_init(&key);
+        uint64_t hw = 0, now = 0;
+        if (!c) {
+            rc = xfail(err, GSQL_NOT_FOUND, s->pos, "table `%s` has no column `%s`", s->table, s->restart_col);
+        } else if (c->gen != GSQL_GEN_SERIAL) {
+            rc = xfail(err, GSQL_SCHEMA, s->pos, "`%s.%s` is not a serial, so it has no counter to restart",
+                       s->table, s->restart_col);
+        } else if (c->nscope != s->nrestart_for) {
+            rc = c->nscope ? xfail(err, GSQL_SCHEMA, s->pos, "serial `%s.%s` numbers within %zu scope "
+                                   "expression%s: RESTART ... FOR (...) gives one value for each", s->table,
+                                   s->restart_col, c->nscope, c->nscope == 1 ? "" : "s")
+                           : xfail(err, GSQL_SCHEMA, s->pos, "serial `%s.%s` has no scope, so RESTART takes no FOR",
+                                   s->table, s->restart_col);
+        } else {
+            rc = eval_into(x, s->restart_with, &v);
+            if (rc == GSQL_OK && !v3_read_u64(v.bytes, v.length, &hw)) {
+                rc = xfail(err, GSQL_EXPRESSION, s->restart_with->pos, "RESTART WITH takes an exact whole number, "
+                           "0 or more");
+            }
+            for (size_t k = 0; rc == GSQL_OK && k < s->nrestart_for; k++) {
+                v.length = 0;
+                rc = eval_into(x, s->restart_for[k], &v);
+                if (rc == GSQL_OK && gsql_key_append(&key, v.bytes, v.length, NULL, 0) != GSQL_KEY_OK) {
+                    rc = xfail(err, GSQL_EXPRESSION, s->restart_for[k]->pos, "%s has no order G-SQL can key, so it "
+                               "cannot be a scope", tag_word(v.length ? v.bytes[0] : 0));
+                }
+            }
+        }
+        GsBytes scope = { key.bytes, key.length };
+        if (rc == GSQL_OK) {
+            rc = gsql_serial_get(x->e, x->t, tb, (size_t)col, scope, &now, err);
+        }
+        if (rc == GSQL_OK && hw < now) {
+            rc = xfail(err, GSQL_SERIAL, s->restart_with->pos, "serial `%s.%s` has issued %llu, and a number once "
+                       "issued is never issued again: RESTART WITH may not lower it", s->table, s->restart_col,
+                       (unsigned long long)now);
+        }
+        if (rc == GSQL_OK && hw != now) {
+            rc = gsql_serial_set(x->e, x->t, tb, (size_t)col, scope, hw, err);
+        }
+        gsql_key_free(&key);
+        gsql_buf_free(&v);
+        gsql_table_close(tb);
+        return rc;
+    }
     case SQ_RENAME_TABLE:
         rc = gsql_table_rename(x->e, x->t, s->table, s->rename_to, err);
         if (rc == GSQL_OK) {

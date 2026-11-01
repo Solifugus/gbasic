@@ -140,7 +140,9 @@ typedef enum {
     SQ_ADD_FKEY,             /* ALTER TABLE table ADD fkeys[0] */
     SQ_DROP_CONSTRAINT,      /* ALTER TABLE table DROP CONSTRAINT constraint */
     SQ_ADD_CHECK,            /* ALTER TABLE table ADD checks[0] */
-    SQ_BACKUP                /* BACKUP TO backup_to (docs/gsql_backup_design.md) */
+    SQ_BACKUP,               /* BACKUP TO backup_to (docs/gsql_backup_design.md) */
+    SQ_RESTART               /* ALTER TABLE table ALTER COLUMN restart_col RESTART WITH restart_with
+                                [FOR (restart_for...)] (docs/gsql_dump_design.md §4) */
 } SqlStmtKind;
 
 typedef struct {
@@ -278,6 +280,10 @@ typedef struct SqlStmt {
     char *index;
     char *rename_to;         /* ALTER TABLE ... RENAME TO */
     SqlExpr *backup_to;      /* BACKUP TO: the copy's directory, a constant */
+    char *restart_col;       /* RESTART: the serial column, its new high-water mark and scope */
+    SqlExpr *restart_with;
+    SqlExpr **restart_for;
+    size_t nrestart_for;
     /* CREATE VIEW (docs/gsql_view_design.md) */
     struct SqlStmt *view_q;
     struct SqlStmt *ins_q;   /* INSERT ... SELECT (docs/gsql_insert_select_design.md) */
@@ -314,6 +320,9 @@ void sql_parsed_free(SqlParsed *p);
  * subexpression parenthesised where a reader could misgroup it. */
 void sql_print_stmt(GsqlBuf *out, const SqlStmt *s);
 void sql_print_expr(GsqlBuf *out, const SqlExpr *e);
+/* One v3 value as a SQL literal reading back as the same value; 0 for a
+ * value with none (docs/gsql_dump_design.md §3). */
+int sql_print_value(GsqlBuf *out, const unsigned char *v, size_t n);
 /* as sql_print_expr, naming a bound column by its table's name for it */
 void sql_print_expr_tb(GsqlBuf *out, const SqlExpr *e, const GsqlTable *tb);
 

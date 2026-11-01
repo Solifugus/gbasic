@@ -10,6 +10,7 @@
 #include "serialize_tags.h"
 
 #include <stdint.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -408,6 +409,147 @@ GsqlKeyStatus gsql_key_skip(const unsigned char *bytes, size_t length, unsigned 
     }
     if (n > length) {
         return GSQL_KEY_CORRUPT;
+    }
+    if (used) {
+        *used = n;
+    }
+    return GSQL_KEY_OK;
+}
+
+/* ---- reading a component back (docs/gsql_dump_design.md §4) ----------
+ *
+ * The inverse of gsql_key_append, up to the key's own equality: a number comes
+ * back exact when it is a whole number an int64 holds and as a double
+ * otherwise (the key does not say which it was written as, and 5 and 5.0 are
+ * one key); -0 comes back as 0. Money is refused: its key holds the units
+ * without the exponent, which belongs to the currency. */
+
+static void out_le(GsqlKey *o, uint64_t v, int width) {
+    for (int i = 0; i < width; i++) {
+        put_u8(o, (unsigned)(v >> (8 * i)) & 0xff);
+    }
+}
+
+static void out_double(GsqlKey *o, double d) {
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof bits);
+    put_u8(o, SER_NUMBER);
+    put_u8(o, 0);
+    out_le(o, bits, 8);
+}
+
+static uint64_t rd_be(const unsigned char *b, int width, unsigned x) {
+    uint64_t v = 0;
+    for (int i = 0; i < width; i++) {
+        v = (v << 8) | ((b[i] ^ x) & 0xff);
+    }
+    return v;
+}
+
+GsqlKeyStatus gsql_key_value(const unsigned char *bytes, size_t length, unsigned flags, GsqlKey *out, size_t *used) {
+    size_t n;
+    GsqlKeyStatus st = gsql_key_skip(bytes, length, flags, &n);
+    if (st != GSQL_KEY_OK) {
+        return st;
+    }
+    unsigned x = (flags & GSQL_KEY_DESC) ? 0xFF : 0x00;
+    size_t start = out->length;
+    unsigned tag = bytes[0] ^ x;
+    switch (tag) {
+    case KEY_ABSENT:
+        put_u8(out, SER_UNKNOWN);
+        break;
+    case KEY_BOOL:
+        put_u8(out, SER_BOOL);
+        put_u8(out, (bytes[1] ^ x) ? 1 : 0);
+        break;
+    case KEY_ZERO:
+        put_u8(out, SER_NUMBER);
+        put_u8(out, 1);
+        out_le(out, 0, 8);
+        break;
+    case KEY_POS_INF:
+    case KEY_NEG_INF:
+    case KEY_NAN: {
+        uint64_t bits = tag == KEY_NAN ? 0x7ff8000000000000ULL
+                      : tag == KEY_POS_INF ? 0x7ff0000000000000ULL : 0xfff0000000000000ULL;
+        put_u8(out, SER_NUMBER);
+        put_u8(out, 0);
+        out_le(out, bits, 8);
+        break;
+    }
+    case KEY_NEGATIVE:
+    case KEY_POSITIVE: {
+        int negative = tag == KEY_NEGATIVE;
+        uint64_t biased = rd_be(bytes + 1, 2, x);
+        uint64_t fraction = rd_be(bytes + 3, 8, x);
+        if (negative) {
+            biased = ~biased & 0xffff;
+            fraction = ~fraction;
+        }
+        int exponent = (int)biased - EXPONENT_BIAS;
+        /* |v| = 1.fraction * 2^exponent, the fraction 64 bits after the point */
+        if (exponent >= 0 && exponent <= 63 &&
+            (exponent == 0 ? fraction == 0 : (fraction << exponent) == 0)) {
+            uint64_t m = exponent == 0 ? 1 : ((uint64_t)1 << exponent) | (fraction >> (64 - exponent));
+            if (!negative ? m <= (uint64_t)INT64_MAX : m <= (uint64_t)INT64_MAX + 1) {
+                int64_t v = negative ? (int64_t)(0 - m) : (int64_t)m;
+                put_u8(out, SER_NUMBER);
+                put_u8(out, 1);
+                out_le(out, (uint64_t)v, 8);
+                break;
+            }
+        }
+        /* a double's 53 significant bits are the fraction's top 52 */
+        double d = ldexp(1.0 + (double)(fraction >> 11) / 9007199254740992.0, exponent);
+        out_double(out, negative ? -d : d);
+        break;
+    }
+    case KEY_STRING: {
+        GsqlKey text;
+        gsql_key_init(&text);
+        for (size_t i = 1; i + 2 <= n; i++) {
+            unsigned b = bytes[i] ^ x;
+            if (b == 0x00) {
+                if ((bytes[i + 1] ^ x) == 0x00) {
+                    break;
+                }
+                put_u8(&text, 0);
+                i++;
+            } else {
+                put_u8(&text, b);
+            }
+        }
+        put_u8(out, SER_STRING);
+        uint64_t len = text.length;
+        do {
+            unsigned b = len & 0x7f;
+            len >>= 7;
+            put_u8(out, b | (len ? 0x80 : 0));
+        } while (len);
+        put(out, text.bytes ? text.bytes : (const unsigned char *)"", text.length);
+        gsql_key_free(&text);
+        break;
+    }
+    case KEY_DATETIME: {
+        unsigned time_only = bytes[1] ^ x;
+        int32_t f[6] = { 0, 0, 0, 0, 0, 0 };
+        size_t at = 2;
+        for (int i = time_only ? 3 : 0; i < 6; i++, at += 4) {
+            f[i] = (int32_t)(rd_be(bytes + at, 4, x) - ((uint64_t)1 << 31));
+        }
+        put_u8(out, SER_DATETIME);
+        for (int i = 0; i < 6; i++) {
+            out_le(out, (uint32_t)f[i], 4);
+        }
+        put_u8(out, time_only);
+        put_u8(out, bytes[at] ^ x);
+        break;
+    }
+    default:
+        /* money, typed or not: its exponent is the currency's, not the key's */
+        out->length = start;
+        return GSQL_KEY_NOT_INDEXABLE;
     }
     if (used) {
         *used = n;

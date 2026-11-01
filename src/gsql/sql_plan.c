@@ -1656,6 +1656,12 @@ static int plan_at(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, con
     case SQ_BACKUP:
         ok = bind(&b, s->backup_to, 0, "BACKUP TO");
         break;
+    case SQ_RESTART:
+        ok = bind(&b, s->restart_with, 0, "RESTART WITH");
+        for (size_t k = 0; k < s->nrestart_for && ok; k++) {
+            ok = bind(&b, s->restart_for[k], 0, "RESTART ... FOR");
+        }
+        break;
     case SQ_CREATE_TABLE:
     case SQ_ADD_COLUMN:
         /* a DEFAULT is a constant */

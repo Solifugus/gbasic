@@ -247,6 +247,79 @@ int main(void) {
         }
     }
 
+    /* VALUE: gsql_key_value reads a component back. Re-encoding what it gives
+     * must give the same key (the key's equality is the contract), and where
+     * the key loses nothing -- text, an exact integer, a fractional double, a
+     * date or time -- the bytes must be the ones gBASIC wrote, which is the
+     * half that is not the decoder agreeing with the encoder. Money is refused:
+     * its key does not hold the exponent. */
+    long values_read = 0, same_bytes = 0, money_refused = 0;
+    for (int i = 0; i < nvalues; i++) {
+        if (!val[i]) continue;
+        const unsigned char *v = val[i] + 4;
+        size_t vn = vlen[i] - 4;
+        for (int d = 0; d < 2; d++) {
+            unsigned flags = d ? GSQL_KEY_DESC : 0;
+            GsqlKey k, back, again;
+            gsql_key_init(&k);
+            gsql_key_init(&back);
+            gsql_key_init(&again);
+            if (gsql_key_append(&k, v, vn, NULL, flags) != GSQL_KEY_OK) {
+                gsql_key_free(&k);
+                continue;
+            }
+            size_t own = k.length, used = 0;
+            gsql_key_append(&k, (const unsigned char *)"\x02", 1, NULL, flags); /* a component after it */
+            checks++;
+            GsqlKeyStatus st = gsql_key_value(k.bytes, k.length, flags, &back, &used);
+            if (v[0] == 10) {
+                if (st != GSQL_KEY_NOT_INDEXABLE || back.length) {
+                    mismatches++;
+                    printf("MISMATCH value %d: money was read back (status %d)\n", i, (int)st);
+                } else {
+                    money_refused++;
+                }
+            } else if (st != GSQL_KEY_OK || used != own) {
+                mismatches++;
+                printf("MISMATCH value %d (%s): read back with status %d, %zu of %zu bytes\n", i,
+                       d ? "desc" : "asc", (int)st, used, own);
+            } else {
+                values_read++;
+                checks++;
+                if (gsql_key_append(&again, back.bytes, back.length, NULL, flags) != GSQL_KEY_OK ||
+                    again.length != own || memcmp(again.bytes, k.bytes, own) != 0) {
+                    mismatches++;
+                    printf("MISMATCH value %d (%s): the value read back keys differently\n", i, d ? "desc" : "asc");
+                }
+                int lossless = v[0] == 5 || v[0] == 8 || v[0] == 3 || v[0] == 2 ||
+                               (v[0] == 4 && v[1] == 1);
+                if (v[0] == 4 && v[1] == 0) {
+                    double x;
+                    memcpy(&x, v + 2, 8);
+                    lossless = x == x && x != 0 && x != (double)(long long)x && x - x == 0;
+                }
+                if (lossless) {
+                    checks++;
+                    same_bytes++;
+                    if (back.length != vn || memcmp(back.bytes, v, vn) != 0) {
+                        mismatches++;
+                        printf("MISMATCH value %d (%s): read back as other bytes than gBASIC wrote\n", i,
+                               d ? "desc" : "asc");
+                    }
+                }
+            }
+            gsql_key_free(&k);
+            gsql_key_free(&back);
+            gsql_key_free(&again);
+        }
+    }
+    printf("value: %ld read back, %ld byte for byte, %ld money refused\n", values_read, same_bytes, money_refused);
+    checks++;
+    if (values_read < 150 || same_bytes < 100 || money_refused < 4) {
+        mismatches++;
+        printf("MISMATCH the value tier read too little: %ld, %ld, %ld\n", values_read, same_bytes, money_refused);
+    }
+
     /* NaN: the stated exception. After +inf, equal to itself, below absence. */
     int nan_index = -1, inf_index = -1, absent_index = -1;
     for (int i = 0; i < nvalues; i++) {

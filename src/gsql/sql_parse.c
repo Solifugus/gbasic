@@ -13,6 +13,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2164,12 +2165,52 @@ static int alter_stmt(P *p, SqlStmt *s) {
         return fail_at(p, dpos, GSQL_UNSUPPORTED, "ALTER TABLE ... ADD COLUMN, ADD and DROP CONSTRAINT and RENAME TO "
                        "are the only changes in this release of G-SQL");
     }
-    if (!accept_kw(p, "add")) {
-        if (at_word(p, "alter")) {
-            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "ALTER TABLE ... ADD COLUMN, ADD and DROP CONSTRAINT and "
-                           "RENAME TO are the only changes in this release of G-SQL");
+    if (at_kw(p, "alter")) {
+        /* ALTER COLUMN c RESTART WITH n [FOR (e, ...)]: a serial's counter
+           (docs/gsql_dump_design.md §4), the only ALTER COLUMN there is */
+        uint32_t apos = p->tok.pos;
+        next(p);
+        accept_kw(p, "column");
+        s->restart_col = name(p, "a column name");
+        if (!s->restart_col) {
+            return 0;
         }
-        return expected(p, "ADD, DROP or RENAME after ALTER TABLE name");
+        if (!at_word(p, "restart")) {
+            return fail_at(p, p->tok.pos ? p->tok.pos : apos, GSQL_UNSUPPORTED, "ALTER COLUMN ... RESTART WITH, which "
+                           "sets a serial's counter, is the only ALTER COLUMN in this release of G-SQL");
+        }
+        next(p);
+        if (!expect_kw(p, "with")) {
+            return 0;
+        }
+        s->kind = SQ_RESTART;
+        s->restart_with = expr(p);
+        if (!s->restart_with) {
+            return 0;
+        }
+        if (at_word(p, "for")) {
+            next(p);
+            if (!expect_sym(p, "(")) {
+                return 0;
+            }
+            EList l = { 0 };
+            do {
+                SqlExpr *e = expr(p);
+                if (!e) {
+                    return 0;
+                }
+                elist_push(p, &l, e);
+            } while (accept_sym(p, ","));
+            if (!expect_sym(p, ")")) {
+                return 0;
+            }
+            s->restart_for = l.v;
+            s->nrestart_for = l.n;
+        }
+        return 1;
+    }
+    if (!accept_kw(p, "add")) {
+        return expected(p, "ADD, DROP, RENAME or ALTER COLUMN after ALTER TABLE name");
     }
     if (at_word(p, "constraint") || at_word(p, "foreign") || at_word(p, "check")) {
         s->fkeys = sql_alloc(p->arena, sizeof(SqlFkey));
@@ -2479,36 +2520,65 @@ static void print_name(GsqlBuf *o, const char *n) {
     v3_put(o, "\"", 1);
 }
 
-static void print_lit(GsqlBuf *o, const unsigned char *v, size_t n) {
+/* The shortest decimal that reads back as the same double, with `.0` where
+ * the digits alone would read as an exact integer. */
+static void print_double(GsqlBuf *o, double d) {
     char b[64];
+    if (isnan(d) || isinf(d)) {
+        puts_(o, isnan(d) ? "CAST('nan' AS NUMBER)" : d > 0 ? "CAST('inf' AS NUMBER)" : "CAST('-inf' AS NUMBER)");
+        return;
+    }
+    for (int prec = 1; prec <= 17; prec++) {
+        snprintf(b, sizeof b, "%.*g", prec, d);
+        if (strtod(b, NULL) == d) {
+            break;
+        }
+    }
+    if (!strpbrk(b, ".eE")) {
+        strcat(b, ".0");
+    }
+    puts_(o, b);
+}
+
+/* One v3 value as a SQL literal that reads back as the same value
+ * (docs/gsql_dump_design.md §3). Answers 0, writing nothing, for a value
+ * with no literal. */
+int sql_print_value(GsqlBuf *o, const unsigned char *v, size_t n) {
+    char b[96];
+    if (n < 1) {
+        return 0;
+    }
+    V3In in = { v, n, 1, 1 };
     switch (v[0]) {
     case SER_UNKNOWN:
         puts_(o, "NULL");
-        return;
+        return 1;
     case SER_BOOL:
-        puts_(o, v[1] ? "TRUE" : "FALSE");
-        return;
+        puts_(o, n > 1 && v[1] ? "TRUE" : "FALSE");
+        return 1;
     case SER_NUMBER: {
+        if (n < 10) {
+            return 0;
+        }
         uint64_t bits = 0;
         for (int k = 0; k < 8; k++) {
             bits |= (uint64_t)v[2 + k] << (8 * k);
         }
         if (v[1]) {
             snprintf(b, sizeof b, "%lld", (long long)bits);
+            puts_(o, b);
         } else {
             double d;
             memcpy(&d, &bits, sizeof d);
-            snprintf(b, sizeof b, "%.17g", d);
-            if (!strpbrk(b, ".eEni")) {
-                strcat(b, ".0");
-            }
+            print_double(o, d);
         }
-        puts_(o, b);
-        return;
+        return 1;
     }
     case SER_STRING: {
-        V3In in = { v, n, 1, 1 };
         uint64_t len = v3_in_uleb(&in);
+        if (!in.ok || len > n - in.pos) {
+            return 0;
+        }
         v3_put(o, "'", 1);
         for (uint64_t k = 0; k < len; k++) {
             char c = (char)v[in.pos + k];
@@ -2518,9 +2588,83 @@ static void print_lit(GsqlBuf *o, const unsigned char *v, size_t n) {
             }
         }
         v3_put(o, "'", 1);
-        return;
+        return 1;
+    }
+    case SER_MONEY: {
+        /* units / 10^exponent exactly, at the storage scale, then the code */
+        int64_t units = (int64_t)v3_in_le(&in, 8);
+        unsigned exp = (unsigned)v3_in_le(&in, 1);
+        v3_in_le(&in, 2);
+        unsigned alen = (unsigned)v3_in_le(&in, 1);
+        if (!in.ok || alen == 0 || alen > 7 || alen > n - in.pos || exp > 18) {
+            return 0;
+        }
+        char alpha[8];
+        memcpy(alpha, v + in.pos, alen);
+        alpha[alen] = '\0';
+        uint64_t mag = units < 0 ? (uint64_t)0 - (uint64_t)units : (uint64_t)units;
+        char digits[32];
+        snprintf(digits, sizeof digits, "%0*llu", (int)exp + 1, (unsigned long long)mag);
+        size_t dl = strlen(digits), ip = dl - exp;
+        size_t end = dl;
+        while (end > ip && digits[end - 1] == '0') {
+            end--;
+        }
+        puts_(o, "CAST('");
+        if (units < 0) {
+            puts_(o, "-");
+        }
+        v3_put(o, digits, ip);
+        if (end > ip) {
+            v3_put(o, ".", 1);
+            v3_put(o, digits + ip, end - ip);
+        }
+        puts_(o, "' AS MONEY(");
+        puts_(o, alpha);
+        puts_(o, "))");
+        return 1;
+    }
+    case SER_DATETIME: {
+        int32_t f[6];
+        for (int k = 0; k < 6; k++) {
+            f[k] = (int32_t)(uint32_t)v3_in_le(&in, 4);
+        }
+        unsigned time_only = (unsigned)v3_in_le(&in, 1);
+        unsigned prec = (unsigned)v3_in_le(&in, 1);
+        if (!in.ok) {
+            return 0;
+        }
+        if (time_only) {
+            /* a time keeps its precision: TIME '10:30' is not TIME '10:30:00' */
+            if (prec == 4) {
+                snprintf(b, sizeof b, "TIME '%02d'", (int)f[3]);
+            } else if (prec == 5) {
+                snprintf(b, sizeof b, "TIME '%02d:%02d'", (int)f[3], (int)f[4]);
+            } else if (prec == 6) {
+                snprintf(b, sizeof b, "TIME '%02d:%02d:%02d'", (int)f[3], (int)f[4], (int)f[5]);
+            } else {
+                return 0;
+            }
+        } else if (prec == 3) {
+            snprintf(b, sizeof b, "DATE '%04d-%02d-%02d'", (int)f[0], (int)f[1], (int)f[2]);
+        } else if (prec == 6) {
+            snprintf(b, sizeof b, "TIMESTAMP '%04d-%02d-%02d %02d:%02d:%02d'", (int)f[0], (int)f[1], (int)f[2],
+                     (int)f[3], (int)f[4], (int)f[5]);
+        } else {
+            /* a year, a month, or a date-time held to the hour or minute:
+               nothing in gBASIC reads such text back as the same value */
+            return 0;
+        }
+        puts_(o, b);
+        return 1;
     }
     default:
+        return 0;
+    }
+}
+
+static void print_lit(GsqlBuf *o, const unsigned char *v, size_t n) {
+    if (!sql_print_value(o, v, n)) {
         puts_(o, "<value>");
     }
 }
@@ -3088,6 +3232,24 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
         print_name(o, s->table);
         puts_(o, " DROP CONSTRAINT ");
         print_name(o, s->constraint);
+        return;
+    case SQ_RESTART:
+        puts_(o, "ALTER TABLE ");
+        print_name(o, s->table);
+        puts_(o, " ALTER COLUMN ");
+        print_name(o, s->restart_col);
+        puts_(o, " RESTART WITH ");
+        sql_print_expr(o, s->restart_with);
+        if (s->nrestart_for) {
+            puts_(o, " FOR (");
+            for (size_t k = 0; k < s->nrestart_for; k++) {
+                if (k) {
+                    puts_(o, ", ");
+                }
+                sql_print_expr(o, s->restart_for[k]);
+            }
+            puts_(o, ")");
+        }
         return;
     case SQ_RENAME_TABLE:
         puts_(o, "ALTER TABLE ");

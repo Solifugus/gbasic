@@ -370,8 +370,29 @@ static GsqlHv *gsql_h_cast(void *ctx, const GsqlHv *v, int kind, const char *cur
         return gsql_apply("{time}sql_a", args, 1, err);
     case GSQL_COL_DATETIME:
         return gsql_apply("{datetime}sql_a", args, 1, err);
+    case GSQL_COL_RECORD: {
+        /* a record's text is gBASIC's `encode` form, read by its own `decode`
+           (docs/gsql_dump_design.md §4) */
+        if (v->v.kind == VALUE_RECORD) {
+            return gsql_hv(value_copy(v->v));
+        }
+        if (!is_text) {
+            gsql_host_fail(err, GSQL_EXPRESSION, "CAST to RECORD takes a record's text, and this value is %s",
+                           builtin_type_name(v->v));
+            return NULL;
+        }
+        GsqlHv *r = gsql_apply("decode(sql_a)", args, 1, err);
+        if (r && r->v.kind != VALUE_RECORD) {
+            gsql_host_fail(err, GSQL_EXPRESSION, "CAST to RECORD: the text is %s, not a record",
+                           builtin_type_name(r->v));
+            value_free(r->v);
+            free(r);
+            return NULL;
+        }
+        return r;
+    }
     default:
-        gsql_host_fail(err, GSQL_EXPRESSION, "CAST to RECORD is not supported");
+        gsql_host_fail(err, GSQL_MISUSE, "CAST to an unknown kind");
         return NULL;
     }
 }

@@ -58,4 +58,10 @@ GsqlKeyStatus gsql_key_append(GsqlKey *key, const unsigned char *value,
  * GSQL_KEY_CORRUPT if the bytes are not one well-formed component. */
 GsqlKeyStatus gsql_key_skip(const unsigned char *bytes, size_t length, unsigned flags, size_t *used);
 
+/* The value ONE component at the start of `bytes` was written from, appended
+ * to `out` as one v3 value, up to the key's equality: a number comes back
+ * exact when it is a whole number an int64 holds, a double otherwise, and -0
+ * as 0. GSQL_KEY_NOT_INDEXABLE for money, whose key does not hold the
+ * exponent (docs/gsql_dump_design.md §4). */
+GsqlKeyStatus gsql_key_value(const unsigned char *bytes, size_t length, unsigned flags, GsqlKey *out, size_t *used);
 #endif
