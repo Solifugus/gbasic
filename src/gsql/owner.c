@@ -169,6 +169,7 @@ typedef struct {
        answered on this connection until then, so replies stay in order
        (docs/gsql_group_commit_design.md) */
     int awaiting;
+    uint64_t last_commit_ms;   /* when it last committed: it may again (§2) */
 } Conn;
 
 typedef struct {
@@ -199,6 +200,9 @@ typedef struct {
     Pend *group;            /* commits made this round, not yet synced */
     size_t ngroup, groupcap;
     int resume;             /* a sync released connections with requests waiting */
+    uint64_t group_start_us;   /* when the group's first commit was made */
+    uint64_t sync_us[16];      /* the last syncs, timed: the storage, measured */
+    unsigned nsync, sync_at;
 } Owner;
 
 static void out_frame(Conn *c, unsigned type, uint32_t id, const GsqlBuf *body) {
@@ -765,6 +769,58 @@ static int do_begin(Owner *o, Conn *c, Req *r) {
     return DONE_REQ;
 }
 
+static uint64_t mono_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+static void sync_sample(Owner *o, uint64_t us) {
+    o->sync_us[o->sync_at] = us;
+    o->sync_at = (o->sync_at + 1) % 16;
+    if (o->nsync < 16) {
+        o->nsync++;
+    }
+}
+
+/* How long a group may wait for more commits: a quarter of a sync, measured
+ * on this storage, so waiting costs a fraction of what it saves. 0 before
+ * anything has been measured. */
+static uint64_t gather_bound_us(const Owner *o) {
+    if (!o->nsync) {
+        return 0;
+    }
+    uint64_t v[16];
+    memcpy(v, o->sync_us, o->nsync * sizeof *v);
+    for (unsigned i = 1; i < o->nsync; i++) {
+        for (unsigned j = i; j > 0 && v[j - 1] > v[j]; j--) {
+            uint64_t t = v[j];
+            v[j] = v[j - 1];
+            v[j - 1] = t;
+        }
+    }
+    uint64_t b = v[o->nsync / 2] / 4;
+    return b > 2000 ? 2000 : b;
+}
+
+/* Whether the group should wait for more: only while a connection that has
+ * committed in the last second could commit again, and only within the
+ * bound. Alone, nothing waits. Answers the microseconds left, or 0. */
+static uint64_t group_gather(Owner *o) {
+    uint64_t bound = gather_bound_us(o), now = now_ms();
+    uint64_t age = mono_us() - o->group_start_us;
+    if (age >= bound) {
+        return 0;
+    }
+    for (size_t i = 0; i < o->nconns; i++) {
+        Conn *c = o->conns[i];
+        if (!c->dead && !c->awaiting && c->last_commit_ms && now - c->last_commit_ms < 1000) {
+            return bound - age;
+        }
+    }
+    return 0;
+}
+
 /* A commit made without a sync: its DONE, already written into the
  * connection's output, is taken back out and kept until group_sync. */
 static void group_add(Owner *o, Conn *c, uint32_t id, size_t mark) {
@@ -776,6 +832,10 @@ static void group_add(Owner *o, Conn *c, uint32_t id, size_t mark) {
         }
         o->group = g;
     }
+    if (!o->ngroup) {
+        o->group_start_us = mono_us();
+    }
+    c->last_commit_ms = now_ms();
     Pend *p = &o->group[o->ngroup++];
     memset(p, 0, sizeof *p);
     p->c = c;
@@ -791,7 +851,9 @@ static void group_sync(Owner *o) {
     if (!o->ngroup) {
         return;
     }
+    uint64_t t0 = mono_us();
     int rc = o->e->sync(o->db, NULL);
+    sync_sample(o, mono_us() - t0);
     for (size_t i = 0; i < o->ngroup; i++) {
         Pend *p = &o->group[i];
         if (p->c && !p->c->dead) {
@@ -1334,7 +1396,10 @@ static void serve(Owner *o) {
            while the last sync ran are the group, so nothing waits on purpose
            (docs/gsql_group_commit_design.md §2) */
         o->resume = 0;
-        group_sync(o);
+        uint64_t gather = o->ngroup ? group_gather(o) : 0;
+        if (!gather) {
+            group_sync(o);
+        }
         if (o->resume) {
             working = 1;   /* released connections have requests waiting */
         }
@@ -1371,6 +1436,13 @@ static void serve(Owner *o) {
         }
         if (working) {
             wait = 0;   /* look for requests, then the next slice */
+        }
+        if (gather) {
+            /* poll counts milliseconds: under one, look again at once */
+            int g = gather >= 1000 ? (int)(gather / 1000) : 0;
+            if (wait < 0 || g < wait) {
+                wait = g;
+            }
         }
         /* alone: stop once the linger has passed, unless somebody is already
            queued -- and then the socket goes before the listener, so a
@@ -1608,6 +1680,14 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
                    gs_status_name(rc), rc == GS_NOT_FOUND ? " (it does not exist, and creating it was not asked for)" : "");
         fprintf(stderr, "gsql owner: the database %s could not be opened: %s\n", db, gs_status_name(rc));
         goto out_pipe;
+    }
+    /* the storage probe: one renewal of the lease, an open, a sector
+       written and synced, is what a sync costs here before any commit has
+       said so (docs/gsql_group_commit_design.md) */
+    if (o.e->lease_keep) {
+        uint64_t t0 = mono_us();
+        o.e->lease_keep(o.db, 1, NULL, NULL, 0);
+        sync_sample(&o, mono_us() - t0);
     }
     char *sock = o.sock;
     GsqlError err;
