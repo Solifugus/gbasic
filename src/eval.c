@@ -42922,11 +42922,34 @@ static void gsql_blocks_need_load(AstStmtList program) {
     }
 }
 
+/* Warning 2121: an `sql` block nothing names can never run, and a program
+ * holding only that does nothing and says nothing. Marked by the load-time
+ * pass, which reads the program's tokens (src/frontend.c); said once per
+ * block, at its declaration, before anything runs. */
+static void gsql_blocks_unused(AstStmtList program) {
+    for (size_t i = 0; i < program.count; i++) {
+        AstStmt *st = program.items[i];
+        AstStmtList inner = st->kind == AST_STMT_PROGRAM ? st->as.program.body : ast_stmt_list_empty();
+        for (size_t j = 0; j < 1 + inner.count; j++) {
+            AstStmt *x = j == 0 ? st : inner.items[j - 1];
+            if (x->kind == AST_STMT_SQL && x->as.sql.unused) {
+                warn_fmt_at(2121, "unused block", x->line, x->column,
+                            "sql '%s' is declared and never used, so it never runs -- a block runs "
+                            "only when gsql.exec(%s), gsql.query(%s) or `for each row in %s` reaches it",
+                            x->as.sql.name, x->as.sql.name, x->as.sql.name, x->as.sql.name);
+            }
+        }
+    }
+}
+
 int eval_program(AstStmtList program) {
     active_root = program;
     AstStmt *program_block = program_block_prepare(program);
     if (!raise_in_flight) {
         gsql_blocks_need_load(program);
+    }
+    if (!raise_in_flight) {
+        gsql_blocks_unused(program);
     }
 
     /* `raise_in_flight` as well as `runtime_stopped`: a refusal from the

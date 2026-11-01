@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "window_check.h"
+#include "lexer.h"
 
 /* Reentrant parse core (src/parser.y). Threads the sink and path straight into a
  * stack-allocated per-parse context, touching no file-scope parser state — so
@@ -947,9 +948,58 @@ static void gsq_check_sql(SrvCheck *chk, const AstStmt *stmt, const GsqDecls *d)
 #endif
 }
 
-static void gsq_validate(SrvCheck *chk, const AstStmtList *program) {
+/* An `sql` block runs only when something names it, so one whose name is
+ * never used can never run, and a program holding only that does nothing
+ * and says nothing (found by Matthew, 2026-11-01, trying blocks out). Asked
+ * of the program's TOKENS rather than its tree: the lexer already turns a
+ * block's body into one token and skips strings and comments, so an IDENT
+ * spelling the name, other than the one right after `sql`, is a use. Erring
+ * towards silence, as 2107 does: a field or a parameter of the same name
+ * counts as a use too, so a used block is never called unused. */
+static void gsq_mark_unused(const GsqDecls *d, const char *source, int first_line) {
+    int any = 0;
+    for (size_t i = 0; i < d->count && !any; i++) {
+        any = d->decls[i]->kind == AST_STMT_SQL;
+    }
+    if (!any || !source) {
+        return;
+    }
+    size_t n = d->count;
+    int *used = calloc(n ? n : 1, sizeof *used);
+    if (!used) {
+        abort();
+    }
+    Lexer lx;
+    lexer_init_at(&lx, source, first_line);
+    TokenType before = TOKEN_NEWLINE;
+    for (;;) {
+        Token t = lexer_next(&lx);
+        if (t.type == TOKEN_EOF || t.type == TOKEN_ERROR) {
+            break;
+        }
+        if (t.type == TOKEN_IDENT && before != TOKEN_SQL_OPEN) {
+            for (size_t i = 0; i < n; i++) {
+                const char *name = gsq_decl_name(d->decls[i]);
+                if (d->decls[i]->kind == AST_STMT_SQL && (int)strlen(name) == t.length &&
+                    strncmp(name, t.start, (size_t)t.length) == 0) {
+                    used[i] = 1;
+                }
+            }
+        }
+        before = t.type;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (d->decls[i]->kind == AST_STMT_SQL && !used[i]) {
+            ((AstStmt *)d->decls[i])->as.sql.unused = 1;
+        }
+    }
+    free(used);
+}
+
+static void gsq_validate(SrvCheck *chk, const AstStmtList *program, const char *source, int first_line) {
     GsqDecls d = {NULL, 0};
     gsq_collect(&d, program, 0);
+    gsq_mark_unused(&d, source, first_line);
     for (size_t i = 0; i < d.count; i++) {
         const AstStmt *stmt = d.decls[i];
         for (size_t j = 0; j < i; j++) {
@@ -1073,13 +1123,13 @@ static void srv_walk(SrvCheck *chk, const AstStmtList *list, int top_level,
 
 /* Returns the number of errors reported (0 = clean). */
 static int server_blocks_validate(const AstStmtList *program, const char *path,
-                                  gb_diagnostics *diags) {
+                                  gb_diagnostics *diags, const char *source, int first_line) {
     SrvCheck chk = {diags, path, 0, 0};
     const char **names = NULL;
     size_t name_count = 0;
     srv_walk(&chk, program, 1, &names, &name_count);
     free((void *)names);
-    gsq_validate(&chk, program);
+    gsq_validate(&chk, program, source, first_line);
     return chk.errors;
 }
 
@@ -1093,7 +1143,7 @@ int gb_parse_at(const char *source, const char *path, int first_line,
     int status = parse_source_reentrant_at(source, path, first_line,
                                            diags, out_program);
     if (status == 0) {
-        if (server_blocks_validate(out_program, path, diags) != 0) {
+        if (server_blocks_validate(out_program, path, diags, source, first_line) != 0) {
             status = 1;
         }
     }

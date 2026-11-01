@@ -500,6 +500,39 @@ else
     fail "load: --json-diagnostics did not carry GB_DIAG_GSQL_BLOCK at 6:26"
 fi
 
+# Warning 2121: a block nothing names never runs, and the program said nothing
+# (found by Matthew trying blocks out). Asserted beside its control: the same
+# program running its block is silent, and so is a table of the block's name
+# inside the SQL, which the lexer keeps as one token.
+printf 'TIER unused: a block that is declared and never used is said out loud, once, at its line\n'
+cat > "$work/load/unused.bas" <<'GB'
+load gsql
+database db( file: "unused.gsql", create: true )
+
+sql shares on db
+    create table shares (id integer primary key)
+end sql
+
+sql used on db
+    select 1 as one
+end sql
+
+print gsql.query(used)[0].one
+GB
+uout=$(cd "$work/load" && "$OLDPWD/gbasic" unused.bas 2>"$work/load/unused.err"); urc=$?
+if [ "$urc" != 0 ] || [ "$uout" != 1 ]; then
+    fail "unused: the program did not run as before the warning existed (exit $urc, out $uout)"
+elif [ "$(grep -c '\[2121\]' "$work/load/unused.err")" != 1 ]; then
+    sed 's/^/       /' "$work/load/unused.err"
+    fail "unused: wanted exactly one warning 2121"
+elif ! grep -q "sql 'shares' is declared and never used.*unused.bas:4:1" "$work/load/unused.err"; then
+    sed 's/^/       /' "$work/load/unused.err"
+    fail "unused: the warning does not name the block at its line"
+else
+    pass "unused: one warning 2121, naming 'shares' at 4:1; the block that is used, and the table of the same name, are silent"
+fi
+rm -rf "$work/load/unused.gsql"
+
 printf 'TIER need: a block needs `load gsql`, refused before anything runs\n'
 printf 'print "ran"\ndatabase db( file: "x.gsql", create: true )\n' > "$work/load/noload.bas"
 out=$(cd "$work/load" && "$OLDPWD/gbasic" noload.bas 2>"$work/load/noload.err"); rc=$?

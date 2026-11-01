@@ -486,6 +486,9 @@ struct AstStmt {
             char *text;
             int text_line;
             int text_column;
+            /* set by the load-time pass when the name is never used, so
+             * the block can never run (warning 2121, eval.c) */
+            int unused;
         } sql;
         struct {
             char *word;          /* the block kind word; "server" is the only one today */
