@@ -496,8 +496,11 @@ sql drop_ada on shop
     delete from customer where id = 1
 end sql
 
-sql plain_number on shop
-    insert into orders (customer, total) values (1, 5)
+' a number into money is converted (the column says which currency), but
+' text into an integer is refused: a stored value takes its column's kind
+' only where nothing is guessed
+sql text_customer on shop
+    insert into orders (customer, total) values ('1', 5)
 end sql
 
 sql order_count on shop
@@ -523,7 +526,7 @@ try(same_email)             ' DUPLICATE
 try(zero_total)             ' CHECK
 try(no_such_customer)       ' FOREIGN_KEY: no customer 9
 try(drop_ada)               ' FOREIGN_KEY: an order points at it
-try(plain_number)           ' TYPE: a number is not money(USD)
+try(text_customer)          ' TYPE: text is not an integer
 print string(gsql.query(order_count)[0].n) + " order kept"
 
 gsql.close(shop)
@@ -871,12 +874,14 @@ gsql.exec(db, "insert into t values (1, 'one')")
 explain_error("select * from t where name = 1")   ' EXPRESSION: no implicit casts
 explain_error("select * from t where name = '1'") ' fine: says nothing
 
-' and an exec of a query, or a query of a statement that returns nothing
+' and a query of a statement that returns nothing: gsql.query is for rows,
+' so it is refused -- saying that the statement ran, since it did.
+' (gsql.exec runs anything, and answers rows too when there are any.)
 function wrong_verb()
     on error goto next
-    gsql.exec(db, "select * from t")
+    gsql.query(db, "update t set name = 'uno' where id = 1")
     if error then
-        print error.details.code + ": exec is for statements that return no rows"
+        print error.details.code + ": " + error.message
     end if
     return nothing
 end function
@@ -893,7 +898,7 @@ NOT_FOUND at character 8: select nme from t
 SYNTAX at character 1: selct * from t
   (said nothing: the table is empty)
 EXPRESSION at character 28: select * from t where name = 1
-STATE: exec is for statements that return no rows
+STATE: gsql.query: the statement returns no rows (it ran, and affected 1); use gsql.exec for it [STATE] -- in "update t set name = 'uno' where id = 1"
 ```
 
 ---

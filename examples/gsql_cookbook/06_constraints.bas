@@ -40,8 +40,11 @@ sql drop_ada on shop
     delete from customer where id = 1
 end sql
 
-sql plain_number on shop
-    insert into orders (customer, total) values (1, 5)
+' a number into money is converted (the column says which currency), but
+' text into an integer is refused: a stored value takes its column's kind
+' only where nothing is guessed
+sql text_customer on shop
+    insert into orders (customer, total) values ('1', 5)
 end sql
 
 sql order_count on shop
@@ -67,7 +70,7 @@ try(same_email)             ' DUPLICATE
 try(zero_total)             ' CHECK
 try(no_such_customer)       ' FOREIGN_KEY: no customer 9
 try(drop_ada)               ' FOREIGN_KEY: an order points at it
-try(plain_number)           ' TYPE: a number is not money(USD)
+try(text_customer)          ' TYPE: text is not an integer
 print string(gsql.query(order_count)[0].n) + " order kept"
 
 gsql.close(shop)
