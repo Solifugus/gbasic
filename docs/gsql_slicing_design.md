@@ -1,6 +1,6 @@
 # G-SQL: a long read no longer stalls everyone else
 
-**Status:** designed 2026-11-01. Matthew, the same day: concurrency for reads "will be very important, actually. Many simultaneous production users might otherwise quickly slow it down to a near halt for them."
+**Status:** Shipped 2026-11-01 (designed and built the same day; what building it found is §5). Matthew, the same day: concurrency for reads "will be very important, actually. Many simultaneous production users might otherwise quickly slow it down to a near halt for them."
 
 ## 1. The stall, measured
 
@@ -32,16 +32,16 @@ A read that has to fold or collect its input before answering **runs in slices.*
   - gives each working request one slice per turn of its loop, after answering whatever else is ready, round-robin;
   - never sleeps in `poll` while one is working;
   - can `CANCEL` a working request, which closes its cursor and ends its snapshot.
-- **The budget is a row count:** 4 096 input rows a slice, about 4 ms at the measured million rows a second. A short query then waits at most one slice of each long read running beside it, rather than the whole read.
+- **The budget is a row count:** `SLICE_ROWS`, 1 024 input rows a slice, about 1 ms at the measured million rows a second (4 096 was the first figure; §5 says why it moved). A short query then waits at most one slice of each long read running beside it, rather than the whole read.
 
 **What is sliced in this increment:**
 
 - the fold of `GROUP BY` and the aggregates;
-- collecting the rows of a sort no index gives, `DISTINCT` among them.
+- collecting the rows of a sort no index gives, `DISTINCT` among them;
+- **the sort itself**, a merge that stops between merge steps (it was listed below as not sliced; the stall it left was the largest, §5).
 
 **What is not, and why:**
 
-- **The sort itself,** over every collected row. It is one piece for now, and its share of the stall is measured once collection is sliced (§4). Slicing it means a merge sort that stops between passes.
 - **Building a hash join's inner side and materializing a derived table or a `WITH` query.** These happen inside the join's start, a level below. They are a later step, measured first.
 - **Writes.** A statement that writes holds the database's single writer whatever is done. Slicing it would let readers in, but not other writers, and needs the change list to be resumable. Not in this increment.
 - **Set operations' sides** (`UNION` and the rest). Each side is collected whole. A later step.
@@ -58,3 +58,25 @@ A read that has to fold or collect its input before answering **runs in slices.*
 - **The same corpus with a budget of one row**: every statement resumes at every row. This is the tier that would catch a fold or a collection that loses or repeats a row across a resume, where a budget of 4 096 would cross a boundary only in the larger cases.
 - **The stall, through the owner, as a ratio** (`run_gsql_sql.sh`): B's worst point read during A's `GROUP BY` and during A's sort must be a small fraction of the long query's own time. A ratio is unchanged when the machine is uniformly slower. The tier also requires B to have read during A's query at all, since a B that never read would pass.
 - **`CANCEL` of a working request:** the next request on that connection is answered, and the snapshot is released.
+
+## 5. What building it found
+
+**The stall, through the owner, 10⁶ rows** (`research/gsql/stall.c`):
+
+| long query | worst point read, unsliced | sliced, `SLICE_ROWS` 1 024 |
+|---|---|---|
+| `count(*)` with a condition | 643 ms | 5.7 ms |
+| `GROUP BY` | 903 ms | 2.7 ms |
+| sort no index gives, fetched to the end | 2 044 ms | 5.1 ms |
+
+- **The sort had to be sliced too.** With collection sliced and the sort whole, the sort's one step was the whole remaining stall. It is a bottom-up merge that stops between merge steps; its budget is the slice's ×16, since a merge step moves rows rather than evaluating them.
+- **A test budget must reach the sort.** The ×16 applies only at a budget of 64 or more. At the sliced tier's budget of one row, a small sort finished in a single slice and a perturbation that lost its place across a resume stayed green; with the rule it fails with 7 mismatches.
+- **Rows are freed as they are emitted**, so a sorted result does not hold its collected rows twice while it is fetched.
+- **A long query runs about 10% slower sliced.** That is the cost of yielding, paid only by the long query.
+- **A defect in the owner, found by the CANCEL tier:** a slice that finished its request left the next request pipelined behind it in the connection's queue while the owner slept in `poll`, so the client waited until more input arrived, possibly for ever. The owner now steps a connection that has work whether or not a read is still working.
+- **A CANCEL is a race and is tested as one.** Sent in the same pass as its query, it arrives before the query starts and finds nothing to cancel, which is legitimate. The tier waits 50 ms, retries up to five times, requires exactly one hit, and requires the two replies to agree: a hit is a `CANCELLED` query, a miss a whole one.
+- **Unexplained:** a worst point read of about 28 ms in the quiet stretches, outside any long query. Not slicing's; recorded so it is not mistaken for it.
+
+**Tiers** (`run_gsql_sql.sh`): `sliced` runs the corpus with a one-row budget (624 resumes measured, floor 200); `stall` is §4's ratio at 200 000 rows plus the CANCEL. Four perturbations proven red: the fold losing a row at a resume (34 mismatches), the sort swapping at a resume (7), the owner never slicing (4: worst 174.8 ms in a 0.175 s `GROUP BY`), and a CANCEL of a working read never hitting (1).
+
+**Still one piece**, each with the reason in §2: a hash join's inner side, a derived table or `WITH` query, set operations' sides, writes, and the rows a `LIMIT` leaves unread.

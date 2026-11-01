@@ -43,10 +43,10 @@ A program that writes to two databases makes two independent commits, and a cras
 
 ### Run long reports somewhere else
 
-**The owner is single-threaded** (`gsql_owner_design.md` §6.1). A cursor yields between batches, but the step that sorts, groups or builds a hash join runs as one piece. Every other client of that database waits while it does (`gsql_scale_measurements.md` §3).
+**The owner is single-threaded** (`gsql_owner_design.md` §6.1), but a long read **runs in slices**: a `GROUP BY`, an aggregate or a sort no index gives yields every thousand or so rows, and every other client is served between slices. Measured at 10⁶ rows, a point read waits at most about 6 ms during such a query, where it waited the query's whole 0.6 to 2 s before (`gsql_slicing_design.md` §5).
 
-- **Short queries** belong on the live database.
-- **A report over a large table** belongs on a copy made by `gsql.backup` and refreshed between reports (`gsql_cookbook.md` recipe 14). Each database has its own owner, so a report there stalls nobody.
+- **Short queries** belong on the live database, and stay fast beside long ones.
+- **A report over a large table** still runs about 10% slower there, and a hash join's inner side, a derived table, a `WITH` query and a set operation still run as one piece. Such a report belongs on a copy made by `gsql.backup` and refreshed between reports (`gsql_cookbook.md` recipe 14). Each database has its own owner, so a report there stalls nobody.
 
 ### Let indexes narrow, and read `EXPLAIN`
 
@@ -89,6 +89,7 @@ Each line names what removes it. The order of that work is `gsql_scale_measureme
 | Load rate halves between 10⁷ and 10⁸ rows (172 000 to 90 000 rows/s). | profiling compaction | Plan a billion-row load in hours, not minutes |
 | **Joins run in the order written.** A large table placed where it is hashed is held whole. | row counts in the planner | Put the large table first in `FROM`, and check `EXPLAIN` |
 | *Closed 2026-11-01:* `gsql.backup(db, dir)` copies while the database is in use and refreshes an existing copy (`gsql_backup_design.md`). What remains: **a copy that is open cannot be refreshed**, because an owner lives as long as the program that started it. A refresh also always rewrites the unflushed changes, up to 32 MB. | the copy's owner pulling its own refreshes | Run reports as programs of their own, and refresh between them. A plain file copy is still safe with no owner running |
+| A hash join's inner side, a derived table or `WITH` query and a set operation's sides **run as one piece**, stalling other clients of the database while they do. A sort, a `GROUP BY` and the aggregates are sliced (`gsql_slicing_design.md`). | slicing those steps | Run such reports on a copy (§1) |
 | **No SQL dump.** | the dump increment | — |
 | One owner per database is enforced **on one machine only**. Two machines opening one database on shared storage could each start an owner. | the lease | Open a database from one machine |
 | The owner sizes nothing to the storage: commit pacing is the same on NVMe as on a NAS. | group commit sized from a measured sync | Batch writes (§1) |

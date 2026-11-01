@@ -103,7 +103,7 @@ Measured by reading the executor, not by running it. Six operations hold their w
 
 **At a billion rows each is a process killed partway** (the program sees `LOST`, and nothing committed is lost), unless spill-to-disk bounds it.
 
-**The owner is single-threaded** (`gsql_owner_design.md` §6.1). So the step that sorts, groups or builds a hash runs as one piece, during which **every other client of that database waits**. A long report belongs on a copy: the replica in the next increments.
+**The owner is single-threaded** (`gsql_owner_design.md` §6.1). Since 2026-11-01 a sort, a `GROUP BY` and the aggregates run in slices, so a point read waits at most a few milliseconds beside them (`gsql_slicing_design.md` §5). Building a hash join's inner side, a derived table, a `WITH` query and a set operation's sides still run as one piece, during which **every other client of that database waits**.
 
 ## 4. What follows from it
 
