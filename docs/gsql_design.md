@@ -1,6 +1,6 @@
 # G-SQL: Native Relational Database for gBASIC
 
-**Status:** Proposal — architecture v0.4. Agreed direction, proposals and open decisions are distinguished throughout; **nothing of G-SQL exists.**
+**Status:** Partial — architecture v0.4. Agreed direction, proposals and open decisions are distinguished throughout. *Corrected 2026-11-01:* this line said **nothing of G-SQL exists**, which was true when written and stopped being true with Phase 0. Phases 0 and 1 are built, and Phase 2 largely is (§11 says which items); the rest of this document is still proposal.
 **Original date:** 2026-10-17 · **v0.2:** 2026-10-20 · **v0.3 / v0.4:** 2026-10-21
 **Project:** [gBASIC](https://github.com/Solifugus/gbasic)
 **Scope:** Native embedded relational engine, pre-G-SQL core contracts, temporal history, scoped serials, relationships, dynamic SQL, shared expression semantics, statistical integration, and windowed iteration

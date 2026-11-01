@@ -1,6 +1,6 @@
 # G-SQL storage engine: Phase 0a design and evaluation plan
 
-**Status:** Proposal, design phase (2026-10-21). **No code exists and none is to be written until this plan is agreed.** It is Phase 0a of `docs/gsql_design.md` (§6.2, §11): the storage engine is chosen by building candidates small enough to measure, and this document specifies the candidates, what they share, how they are measured and how the choice is made.
+**Status:** Partial. *Corrected 2026-11-01:* this line said no code exists, which was true of the design phase (2026-10-21). Candidate 2.C, the log-structured merge tree, was chosen by the measurements below and is built (`src/gsql/lsm.c`, `tests/run_gsql_store.sh`), as are the key encoding, the I/O layer and the crash harness. What follows is the plan as it was written, with what building it changed marked in place. It is Phase 0a of `docs/gsql_design.md` (§6.2, §11): the storage engine is chosen by building candidates small enough to measure, and this document specifies the candidates, what they share, how they are measured and how the choice is made.
 
 **Inputs this plan must honour** (all decided in `gsql_design.md`):
 
