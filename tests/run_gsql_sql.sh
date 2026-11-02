@@ -19,7 +19,16 @@
 #   valgrind     the semantics tier again, no invalid access, no definite leak
 #   differential random rows and predicates, each query run with access paths
 #                and forced to a scan: identical answers, with a census floor
-#                so a planner that never seeks cannot pass by agreeing
+#                so a planner that never seeks cannot pass by agreeing; a
+#                forced scan also keeps FROM's order, so a join whose order row
+#                counts chose is compared with the order written, and a floor
+#                requires that some were (docs/gsql_rowcount_design.md)
+#   order cost   a join written large-first, chosen order against FROM's, as a
+#                ratio, the answers equal and the plan really reordered
+#   order        which table a join reads first, asked of EXPLAIN: smallest
+#                first with an index, the smaller hashed without one, a LEFT
+#                join and a derived table in FROM's order, a well-written join
+#                left alone, and the estimates against the true counts
 #   owner        `gbasic --gsql-owner` started by the client, end to end
 #   leftovers    no owner outlives the suite, read-only
 . "$(dirname "$0")/portable.sh"
@@ -219,6 +228,19 @@ bounded 300 "$work/sql_test" hashcost "$work/hc/db" 1000 >"$work/hc.out" 2>&1
 rc=$?
 grep '^hash ' "$work/hc.out" | sed 's/^/       /'
 verdict "hash cost" "$work/hc.out" $rc
+
+printf 'TIER order cost: a join read in the order row counts choose, against FROM order, as a ratio\n'
+rm -rf "$work/oc"
+mkdir -p "$work/oc"
+bounded 300 "$work/sql_test" ordercost "$work/oc/db" 10000 >"$work/oc.out" 2>&1
+rc=$?
+grep '^chosen ' "$work/oc.out" | sed 's/^/       /'
+verdict "order cost" "$work/oc.out" $rc
+
+printf 'TIER order: which table a join reads first, asked of EXPLAIN\n'
+rm -rf "$work/ord"
+bounded 120 ./gbasic tests/gsql/order_test.bas "$work/ord.gsql" >"$work/ord.out" 2>&1
+verdict "order" "$work/ord.out" $?
 
 printf 'TIER owner: gbasic --gsql-owner, started by a client, end to end\n'
 mkdir -p "$work/own"

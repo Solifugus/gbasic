@@ -469,6 +469,15 @@ static void split(B *b, SqlExpr *e, SqlExpr ***v, size_t *n, size_t *cap) {
 
 /* whether `e` reads only tables read before scan `k`: a constant, from that
  * scan's point of view, since each of those has a row when it is opened */
+/* The order the scans are read in while their access paths are chosen
+ * (docs/gsql_rowcount_design.md §3): rank[scan] is its level, NULL is FROM's
+ * order. "Before" means read before. */
+static const size_t *cb_rank;
+
+static size_t rk(size_t k) {
+    return cb_rank ? cb_rank[k] : k;
+}
+
 static int const_before(const SqlExpr *e, size_t k) {
     if (!e) {
         return 1;
@@ -477,10 +486,10 @@ static int const_before(const SqlExpr *e, size_t k) {
         return 0;
     }
     if (e->kind == SX_COL) {
-        return e->tab < k;
+        return rk(e->tab) < rk(k);
     }
     for (size_t j = 0; e->kind == SX_SUBQ && j < e->nrefs; j++) {
-        if (e->refs[j]->tab >= k) {
+        if (rk(e->refs[j]->tab) >= rk(k)) {
             return 0;
         }
     }
@@ -737,7 +746,7 @@ static void choose(B *b, size_t k, int force_scan) {
  * (docs/gsql_hashjoin_design.md §2). Not under a forced scan, so the
  * differential compares the hash with the nested loop it replaces. */
 static void choose_hash(SqlScan *sc, size_t k, int force_scan) {
-    if (k == 0 || force_scan || (sc->access != ACC_SCAN && sc->access != ACC_DERIVED)) {
+    if (rk(k) == 0 || force_scan || (sc->access != ACC_SCAN && sc->access != ACC_DERIVED)) {
         return;
     }
     for (size_t j = 0; j < sc->nconj; j++) {
@@ -1155,6 +1164,270 @@ static int check_grouped(B *b, const SqlExpr *e, char **groups, const char *wher
     return 1;
 }
 
+/* ---- join order (docs/gsql_rowcount_design.md §3) --------------------- */
+
+/* whether `e` reads no scan outside `placed` (and nothing else a seek cannot
+ * have in hand) */
+static int reads_only(const SqlExpr *e, const int *placed) {
+    if (!e) {
+        return 1;
+    }
+    if (e->kind == SX_NAME || e->kind == SX_AGG) {
+        return 0;
+    }
+    if (e->kind == SX_COL) {
+        return placed[e->tab];
+    }
+    for (size_t j = 0; e->kind == SX_SUBQ && j < e->nrefs; j++) {
+        if (!placed[e->refs[j]->tab]) {
+            return 0;
+        }
+    }
+    if (e->operand && !reads_only(e->operand, placed)) {
+        return 0;
+    }
+    for (size_t j = 0; j < e->na; j++) {
+        if (!reads_only(e->a[j], placed)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* whether column `col` of scan `r` leads its primary key or an index; with
+ * `unique`, a key of that one column alone */
+static int leads_key(const SqlScan *sc, unsigned col, int unique) {
+    GsqlTable *tb = sc->tb;
+    size_t nk = gsql_table_nkey(tb);
+    if (nk && gsql_table_key_cols(tb)[0] == col && (!unique || nk == 1)) {
+        return 1;
+    }
+    for (size_t i = 0; i < gsql_table_nindexes(tb); i++) {
+        const GsqlIndex *x = gsql_table_index(tb, i);
+        if (x->ncols && x->cols[0] == col && (!unique || (x->unique && x->ncols == 1))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* How scan r can be reached from the scans placed: 0 by an index seek, 1 by
+ * a hash (an equality on any of its columns), 2 only by reading it whole. With
+ * nothing placed, 0 means pinned to one row by a constant on a unique key. */
+static int reach(const SqlPlan *p, SqlExpr **v, size_t n, size_t r, const int *placed, int any_placed) {
+    int best = 2;
+    for (size_t j = 0; j < n; j++) {
+        SqlExpr *e = v[j];
+        if (e->kind != SX_BIN || e->op != SQL_OP_EQ) {
+            continue;
+        }
+        for (int side = 0; side < 2; side++) {
+            SqlExpr *c = e->a[side], *o = e->a[1 - side];
+            if (c->kind != SX_COL || c->tab != r || c->nfields != 0 || !reads_only(o, placed)) {
+                continue;
+            }
+            if (!any_placed && !sql_is_constant(o)) {
+                continue;
+            }
+            if (leads_key(&p->scans[r], c->col, !any_placed)) {
+                return 0;
+            }
+            if (any_placed) {
+                best = 1;
+            }
+        }
+    }
+    return best;
+}
+
+static double log2_of(double x) {
+    double l = 0;
+    while (x > 1) {
+        x /= 2;
+        l += 1;
+    }
+    return l;
+}
+
+/* A rough cost of reading the scans in `order`: rows read, a seek counted as
+ * the log of its table, a hash as one probe per outer row and its build at
+ * four times its rows, since a hash holds its side whole in memory: so of two
+ * unindexed tables the smaller is the one hashed. */
+static double order_cost(const SqlPlan *p, SqlExpr **v, size_t n, const size_t *order, int *placed) {
+    size_t ns = p->nscans;
+    memset(placed, 0, sizeof(int) * ns);
+    double out = 0, cost = 0;
+    for (size_t l = 0; l < ns; l++) {
+        size_t r = order[l];
+        double est = (double)p->scans[r].est + 1;
+        int how = reach(p, v, n, r, placed, l > 0);
+        if (l == 0) {
+            out = how == 0 ? 1 : est;
+            cost = out;
+        } else if (how == 0) {
+            cost += out * (1 + log2_of(est));
+            out = out > est ? out : est;
+        } else if (how == 1) {
+            cost += 4 * est + out;
+            out = out > est ? out : est;
+        } else {
+            cost += out * est;
+            out *= est;
+        }
+        placed[r] = 1;
+    }
+    return cost;
+}
+
+/* Greedy, for a join of many tables: the smallest first (unless one is
+ * pinned to a row), then each next one reachable by a seek, else by a hash,
+ * else the smallest, ties in FROM's order. */
+static void greedy_order(const SqlPlan *p, SqlExpr **v, size_t n, size_t *order, int *placed) {
+    size_t ns = p->nscans;
+    memset(placed, 0, sizeof(int) * ns);
+    for (size_t l = 0; l < ns; l++) {
+        long best = -1;
+        int best_how = 3;
+        for (size_t r = 0; r < ns; r++) {
+            if (placed[r]) {
+                continue;
+            }
+            int how = reach(p, v, n, r, placed, l > 0);
+            if (l == 0 && how != 0) {
+                how = 2;
+            }
+            if (best < 0 || how < best_how || (how == best_how && p->scans[r].est < p->scans[best].est)) {
+                best = (long)r;
+                best_how = how;
+            }
+        }
+        order[l] = (size_t)best;
+        placed[best] = 1;
+    }
+}
+
+/* Every order of perm[at..], the cheapest kept in best (strictly cheaper wins,
+ * so a tie keeps the earlier, FROM's order first). */
+static void permute(const SqlPlan *p, SqlExpr **v, size_t n, size_t *perm, size_t at, int *placed, size_t *best,
+                    double *best_cost) {
+    size_t ns = p->nscans;
+    if (at == ns) {
+        double c = order_cost(p, v, n, perm, placed);
+        if (c < *best_cost) {
+            *best_cost = c;
+            memcpy(best, perm, sizeof(size_t) * ns);
+        }
+        return;
+    }
+    for (size_t i = at; i < ns; i++) {
+        size_t t = perm[at];
+        perm[at] = perm[i];
+        perm[i] = t;
+        permute(p, v, n, perm, at + 1, placed, best, best_cost);
+        perm[i] = perm[at];
+        perm[at] = t;
+    }
+}
+
+/* up to this many tables every order is costed; beyond, the greedy one */
+#define ORDER_EXHAUSTIVE 6
+
+static unsigned long plans_reordered;
+static int keep_from_order;
+
+unsigned long gsql_sql_reordered(void) {
+    return plans_reordered;
+}
+
+void gsql_sql_from_order(int on) {
+    keep_from_order = on;
+}
+
+/* Chooses the order a join's tables are read in, when every join is inner and
+ * every source a table; else, or under a forced scan, FROM's order stands. The
+ * cheapest order by order_cost is kept only when it costs under two thirds of
+ * FROM's, so a join already written well runs as written. The conditions are
+ * then placed at the first level that has every row they read: an inner
+ * join's ON means what a WHERE would. */
+static void order_joins(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
+    SqlPlan *p = b->p;
+    size_t ns = p->nscans;
+    if (ns < 2 || force_scan || keep_from_order || !e->estimate) {
+        return;
+    }
+    for (size_t k = 0; k < ns; k++) {
+        SqlScan *sc = &p->scans[k];
+        if (sc->derived || !sc->tb || (k > 0 && sc->join != SQL_JOIN_INNER && sc->join != SQL_JOIN_CROSS)) {
+            return;
+        }
+        uint64_t est = 0;
+        if (e->estimate(t, gsql_table_rows_tree(sc->tb), &est) != GS_OK) {
+            return;
+        }
+        sc->est = est;
+        sc->has_est = 1;
+    }
+    size_t n = 0;
+    for (size_t k = 0; k < ns; k++) {
+        n += p->scans[k].nconj;
+    }
+    SqlExpr **v = sql_alloc(b->arena, sizeof(SqlExpr *) * (n ? n : 1));
+    n = 0;
+    for (size_t k = 0; k < ns; k++) {
+        for (size_t j = 0; j < p->scans[k].nconj; j++) {
+            v[n++] = p->scans[k].conj[j];
+        }
+    }
+    int *placed = sql_alloc(b->arena, sizeof(int) * ns);
+    size_t *order = sql_alloc(b->arena, sizeof(size_t) * ns);
+    size_t *from = sql_alloc(b->arena, sizeof(size_t) * ns);
+    for (size_t l = 0; l < ns; l++) {
+        from[l] = l;
+    }
+    double from_cost = order_cost(p, v, n, from, placed), best_cost;
+    if (ns <= ORDER_EXHAUSTIVE) {
+        size_t *perm = sql_alloc(b->arena, sizeof(size_t) * ns);
+        memcpy(perm, from, sizeof(size_t) * ns);
+        memcpy(order, from, sizeof(size_t) * ns);
+        best_cost = from_cost;
+        permute(p, v, n, perm, 0, placed, order, &best_cost);
+    } else {
+        greedy_order(p, v, n, order, placed);
+        best_cost = order_cost(p, v, n, order, placed);
+    }
+    int moved = 0;
+    for (size_t l = 0; l < ns; l++) {
+        moved |= order[l] != l;
+    }
+    if (!moved || !(best_cost * 3 < from_cost * 2)) {
+        return;
+    }
+    plans_reordered++;
+    p->exec = order;
+    p->rank = sql_alloc(b->arena, sizeof(size_t) * ns);
+    for (size_t l = 0; l < ns; l++) {
+        p->rank[order[l]] = l;
+    }
+    for (size_t k = 0; k < ns; k++) {
+        p->scans[k].conj = NULL;
+        p->scans[k].nconj = 0;
+        p->scans[k].non = 0;
+    }
+    for (size_t j = 0; j < n; j++) {
+        /* the scan read last among those it reads */
+        long at = -1;
+        memset(placed, 0, sizeof(int) * ns);
+        for (size_t l = 0; l < ns; l++) {
+            placed[order[l]] = 1;
+            if (reads_only(v[j], placed)) {
+                at = (long)order[l];
+                break;
+            }
+        }
+        scan_add(b, &p->scans[at < 0 ? order[0] : (size_t)at], v[j]);
+    }
+}
+
 static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
     SqlPlan *p = b->p;
     SqlStmt *s = p->s;
@@ -1388,6 +1661,9 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         sc->consumed = sql_alloc(b->arena, sizeof(int) * (sc->nconj ? sc->nconj : 1));
         return 1;
     }
+    order_joins(b, e, t, force_scan);
+    const size_t *saved_rank = cb_rank;
+    cb_rank = p->rank;
     for (size_t k = 0; k < p->nscans; k++) {
         SqlScan *sc = &p->scans[k];
         if (sc->derived) {
@@ -1398,6 +1674,7 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         }
         choose_hash(sc, k, force_scan);
     }
+    cb_rank = saved_rank;
     return 1;
 }
 
@@ -1887,14 +2164,21 @@ static void explain_at(const SqlPlan *p, void (*line)(void *, const char *), voi
     }
     if (p->nscans > 1) {
         /* a join: one access line per table, in the order read */
-        put(&b, "Nested Loop");
+        /* an order chosen by row counts says so, with each table's estimate
+           (docs/gsql_rowcount_design.md §4) */
+        put(&b, p->exec ? "Nested Loop (order by estimated rows)" : "Nested Loop");
         emit(line, ctx, indent, &b);
-        for (size_t k = 0; k < p->nscans; k++) {
-            const SqlScan *sc = &p->scans[k];
+        for (size_t l = 0; l < p->nscans; l++) {
+            const SqlScan *sc = &p->scans[sql_exec_scan(p, l)];
             if (sc->join == SQL_JOIN_LEFT) {
                 put(&b, "Left: ");
             }
             access_line(p, sc, &b);
+            if (p->exec && sc->has_est) {
+                char est[48];
+                snprintf(est, sizeof est, " (a table of about %llu rows)", (unsigned long long)sc->est);
+                put(&b, est);
+            }
             emit(line, ctx, indent + 1, &b);
             filter_line(p, sc, line, ctx, indent + 2, &b);
         }

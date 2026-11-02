@@ -175,6 +175,11 @@ typedef struct GsEngine {
      * the milliseconds until it is next due. GS_FENCED once another machine
      * has taken the database, naming it in `holder`. */
     int (*lease_keep)(GsStore *db, int force, uint64_t *due_ms, char *holder, size_t holder_n);
+    /* An ESTIMATE of a tree's entries, for the planner
+     * (docs/gsql_rowcount_design.md §2): overcounts an overwritten or deleted
+     * key until compaction folds it, and leaves out the transaction's own
+     * unwritten changes. NULL in an engine that cannot say. */
+    int (*estimate)(GsTxn *t, GsBytes tree, uint64_t *entries);
 } GsEngine;
 
 extern const GsEngine gs_engine_lsm;  /* §2.C, the chosen engine */

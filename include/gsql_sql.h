@@ -69,5 +69,11 @@ const GsqlHost *gb_gsql_host(void);
 void gsql_sql_force_scan(GsqlSql *q, int on);
 /* For tests: how many statements used a seek or a point read, and a scan. */
 void gsql_sql_counts(const GsqlSql *q, unsigned long *seeks, unsigned long *scans);
+/* For tests: how many plans so far read a join's tables in an order chosen by
+ * row counts rather than FROM's (docs/gsql_rowcount_design.md). */
+unsigned long gsql_sql_reordered(void);
+/* For tests: plan every join in FROM's order, access paths still chosen, so a
+ * chosen order can be timed against the written one. */
+void gsql_sql_from_order(int on);
 
 #endif

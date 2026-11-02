@@ -623,6 +623,75 @@ static void empty_footprint(const char *base, GsqlIo *io) {
  * across every file of the tree between: a CREATE INDEX at 10^7 rows
  * merged 715 MB in its commit. Asserted on the bytes the commit writes,
  * against what the load itself wrote. */
+/* The planner's estimate of a tree's entries (docs/gsql_rowcount_design.md §2)
+ * against the true count: in the memtable alone, and once a small memtable
+ * has flushed the three interleaved trees into sorted files that each hold
+ * all three, and after a reopen. Within a factor of two each time, and the
+ * smallest tree estimated below the largest, which is what the planner asks. */
+static void check_estimates(GsStore *db, const char *when, const unsigned *want) {
+    static const char *const names[3] = { "ea", "eb", "ec" };
+    GsTxn *r;
+    if (E->begin_read(db, &r) != GS_OK) return;
+    uint64_t got[3] = { 0, 0, 0 };
+    for (int k = 0; k < 3; k++) {
+        int rc = E->estimate(r, gss(names[k]), &got[k]);
+        CHECK(rc == GS_OK, "estimate of %s %s answered %s", names[k], when, gs_status_name(rc));
+        CHECK(got[k] * 2 >= want[k] && got[k] <= 2 * (uint64_t)want[k],
+              "estimate of %s %s: %llu for %u entries", names[k], when, (unsigned long long)got[k], want[k]);
+    }
+    CHECK(got[1] < got[0] && got[0] < got[2], "estimates %s keep the trees' order: %llu, %llu, %llu", when,
+          (unsigned long long)got[0], (unsigned long long)got[1], (unsigned long long)got[2]);
+    GsBytes v;
+    (void)v;
+    uint64_t none = 7;
+    CHECK(E->estimate(r, gss("no-such-tree"), &none) == GS_NOT_FOUND, "an estimate of a missing tree is NOT_FOUND");
+    E->abort(r);
+}
+
+static void estimates(const char *base, GsqlIo *io) {
+    static const unsigned want[3] = { 400, 40, 2000 };
+    for (int flushing = 0; flushing < 2; flushing++) {
+        char path[600];
+        snprintf(path, sizeof path, "%s.est%d", base, flushing);
+        /* a 4 KB memtable flushes a file every few commits; a 1 MB one never */
+        GsOptions o = {1, 512, 0, io, flushing ? 4096 : (1 << 20), 4, 0, 0, NULL};
+        GsStore *db;
+        int rc = E->open(path, &o, &db);
+        CHECK(rc == GS_OK, "opening the estimate store answered %s", gs_status_name(rc));
+        if (rc) return;
+        unsigned done[3] = { 0, 0, 0 };
+        static const char *const names[3] = { "ea", "eb", "ec" };
+        while (done[0] < want[0] || done[1] < want[1] || done[2] < want[2]) {
+            GsTxn *w;
+            if (E->begin_write(db, &w) != GS_OK) break;
+            for (int k = 0; k < 3; k++) {
+                if (!done[k]) E->tree_create(w, gss(names[k]));
+                /* the trees interleaved, so a flushed file holds all three */
+                for (unsigned i = 0; i < 10 && done[k] < want[k]; i++, done[k]++) {
+                    char key[16], val[32];
+                    int kn = snprintf(key, sizeof key, "%06u", done[k]);
+                    int vn = snprintf(val, sizeof val, "v%u", done[k]);
+                    E->put(w, gss(names[k]), gsb(key, (size_t)kn), gsb(val, (size_t)vn), 0);
+                }
+            }
+            E->commit(w, 0, NULL);
+        }
+        /* a reader sees what is durable */
+        CHECK(E->sync(db, NULL) == GS_OK, "sync before the estimate");
+        check_estimates(db, flushing ? "across sorted files" : "in the memtable alone", want);
+        if (flushing) {
+            CHECK(E->flush(db) == GS_OK, "flush before the estimate");
+            check_estimates(db, "after a flush", want);
+        }
+        E->close(db);
+        rc = E->open(path, &o, &db);
+        CHECK(rc == GS_OK, "reopening the estimate store answered %s", gs_status_name(rc));
+        if (rc) return;
+        check_estimates(db, flushing ? "after a reopen, from files" : "after a reopen, replayed", want);
+        E->close(db);
+    }
+}
+
 static void sorted_load(const char *base, GsqlIo *io) {
     if (strcmp(E->name, "lsm")) return;
     char path[600], k[32], v[48];
@@ -1710,6 +1779,7 @@ int main(int argc, char **argv) {
     crc_agreement();
     empty_footprint(path, io);
     sorted_load(path, io);
+    estimates(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);

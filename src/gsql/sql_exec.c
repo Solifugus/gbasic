@@ -1342,10 +1342,13 @@ typedef struct {
     int yielded;
 } Join;
 
+/* A join's arrays are by LEVEL, the order its scans are read in
+ * (docs/gsql_rowcount_design.md §3); a scan's row is kept by scan. */
 static int join_open(Join *j, X *x, size_t k) {
+    size_t s = sql_exec_scan(x->p, k);
     j->matched[k] = 0;
-    x->sx[k].nulled = 0;
-    int rc = iter_open(&j->its[k], x, k);
+    x->sx[s].nulled = 0;
+    int rc = iter_open(&j->its[k], x, s);
     j->open[k] = 1;
     return rc;
 }
@@ -1375,12 +1378,13 @@ static int join_start(Join *j, X *x) {
     return join_open(j, x, 0);
 }
 
-/* the next accepted row of scan k: 1, 0 exhausted (and closed), -1 failed */
+/* the next accepted row of level k: 1, 0 exhausted (and closed), -1 failed */
 static int join_level(Join *j, X *x, size_t k) {
-    const SqlScan *sc = &x->p->scans[k];
+    size_t s = sql_exec_scan(x->p, k);
+    const SqlScan *sc = &x->p->scans[s];
     for (;;) {
-        if (x->sx[k].nulled) {
-            x->sx[k].nulled = 0;
+        if (x->sx[s].nulled) {
+            x->sx[s].nulled = 0;
             return 0;
         }
         if (!j->open[k]) {
@@ -1412,8 +1416,8 @@ static int join_level(Join *j, X *x, size_t k) {
         j->open[k] = 0;
         if (sc->join == SQL_JOIN_LEFT && !j->matched[k]) {
             j->matched[k] = 1;
-            row_clear_scan(x, k);
-            x->sx[k].nulled = 1;
+            row_clear_scan(x, s);
+            x->sx[s].nulled = 1;
             int t = check(x, sc, sc->non, sc->nconj);
             if (t < 0) {
                 return -1;
@@ -1421,7 +1425,7 @@ static int join_level(Join *j, X *x, size_t k) {
             if (t == 1) {
                 return 1;
             }
-            x->sx[k].nulled = 0;
+            x->sx[s].nulled = 0;
         }
         return 0;
     }

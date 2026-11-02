@@ -385,6 +385,10 @@ typedef struct SqlScan {
     int hash;
     unsigned hashcol;
     SqlExpr *hashexpr;
+    /* the engine's estimate of the table's rows (docs/gsql_rowcount_design.md),
+       when it gave one */
+    uint64_t est;
+    int has_est;
 } SqlScan;
 
 typedef struct SqlPlan {
@@ -403,6 +407,9 @@ typedef struct SqlPlan {
     GsqlTable *tb;           /* the first table, owned; NULL for ACC_NONE and schema statements */
     SqlScan *scans;
     size_t nscans;           /* 0 with no table */
+    /* the order the scans are read in (docs/gsql_rowcount_design.md §3):
+       exec[level] is a scan, rank[scan] its level; NULL is FROM's order */
+    size_t *exec, *rank;
     /* SELECT's output */
     size_t nout;
     SqlExpr **out;
@@ -427,6 +434,14 @@ typedef struct SqlPlan {
 int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const char *text, int force_scan,
              SqlPlan *out, GsqlError *err);
 void sql_plan_free(SqlPlan *p);
+
+/* the scan read at `level`, and the level a scan is read at */
+static inline size_t sql_exec_scan(const SqlPlan *p, size_t level) {
+    return p->exec ? p->exec[level] : level;
+}
+static inline size_t sql_scan_rank(const SqlPlan *p, size_t k) {
+    return p->rank ? p->rank[k] : k;
+}
 
 /* EXPLAIN's lines, one per call to `line`. */
 void sql_explain(const SqlPlan *p, void (*line)(void *ctx, const char *text), void *ctx);

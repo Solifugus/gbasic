@@ -1352,6 +1352,8 @@ static void oracle_join(const GsqlBuf *rr, const GsqlBuf *qq, int left, GsqlBuf 
     }
 }
 
+static int join_order_refusals;   /* see join_tiers */
+
 static int join_tiers(int n, int *seek_runs, int *joined_seen) {
     H = gb_gsql_host();
     int refused = 0;
@@ -1381,11 +1383,29 @@ static int join_tiers(int n, int *seek_runs, int *joined_seen) {
         gsql_sql_force_scan(sql, 0);
         run(qq, NULL, 100000, &qa);
         checks++;
-        if (x.code != ra.code) {
+        int refusal_in_data = 0;
+        if (x.code != ra.code && (x.code == GSQL_EXPRESSION || ra.code == GSQL_EXPRESSION) &&
+            (x.code == GSQL_OK || ra.code == GSQL_OK)) {
+            /* A join whose tables are read in another order reaches r by
+             * another path (docs/gsql_rowcount_design.md §5), so it may meet a
+             * row that raises which r's own path skipped, or skip one it met.
+             * Allowed when r read whole really refuses: the refusal is in the
+             * data, and which plan meets it is not an answer. */
+            Answer whole;
+            gsql_sql_force_scan(sql, 1);
+            run(rq, NULL, 100000, &whole);
+            gsql_sql_force_scan(sql, 0);
+            refusal_in_data = whole.code == GSQL_EXPRESSION;
+            answer_free(&whole);
+            if (refusal_in_data) {
+                join_order_refusals++;
+            }
+        }
+        if (x.code != ra.code && !refusal_in_data) {
             mismatches++;
             printf("MISMATCH %s\n  joined: %s %s\n  r alone: %s %s\n", jq, gsql_error_name(x.code), x.err.message,
                    gsql_error_name(ra.code), ra.err.message);
-        } else if (x.code == GSQL_OK) {
+        } else if (x.code == GSQL_OK && ra.code == GSQL_OK) {
             GsqlBuf want = {0};
             oracle_join(&ra.raw, &qa.raw, left, &want);
             v3_put(&want, "", 1);
@@ -1753,8 +1773,10 @@ static int differential(const char *dir, uint64_t seed, int n) {
     int join_seeks = 0, joined_seen = 0;
     unsigned long js0, jc0, js1, jc1;
     gsql_sql_counts(sql, &js0, &jc0);
+    unsigned long ro0 = gsql_sql_reordered();
     int join_refused = join_tiers(n / 2, &join_seeks, &joined_seen);
     gsql_sql_counts(sql, &js1, &jc1);
+    unsigned long reordered = gsql_sql_reordered() - ro0;
     int sub_seeks = 0, by_form[3] = { 0, 0, 0 };
     unsigned long ss0, sc0, ss1, sc1;
     gsql_sql_counts(sql, &ss0, &sc0);
@@ -1794,7 +1816,17 @@ static int differential(const char *dir, uint64_t seed, int n) {
         printf("MISMATCH the set-operation oracle compared too few answers with rows in them\n");
     }
     printf("census: %d rows of q, %d joins both ways, %d of them sought, %lu seeks in all, %d answered by the "
-           "oracle with rows, %d refused\n", q_rows, n / 2, join_seeks, js1 - js0, joined_seen, join_refused);
+           "oracle with rows, %d refused, %d refused by one order and not another, r whole refusing too, "
+           "%lu plans reordered\n",
+           q_rows, n / 2, join_seeks, js1 - js0, joined_seen, join_refused, join_order_refusals, reordered);
+    /* the paths-against-a-forced-scan comparison is what holds a reordered
+       join to FROM's order (docs/gsql_rowcount_design.md §5), so some joins
+       must really have been reordered */
+    if (reordered < (unsigned long)n / 20) {
+        mismatches++;
+        printf("MISMATCH only %lu join plans were reordered: the differential did not compare a chosen order\n",
+               reordered);
+    }
     /* the inner side must really have been sought, row by row: one seek per
        outer row, so far more seeks than queries */
     if (q_rows < 100 || join_seeks < n / 8 || js1 - js0 < (unsigned long)n || joined_seen < n / 6) {
@@ -1906,6 +1938,78 @@ static int hashcost(const char *dir, int n) {
     return 0;
 }
 
+/* ---- the order cost tier (docs/gsql_rowcount_design.md §5) -------------
+ *
+ * A join written large-first, with an index on the large table's join column:
+ * read in FROM's order it seeks the small table once per large row, and in
+ * the chosen order it reads the small table and seeks the large one. Timed in
+ * turns, each way's fastest kept, as a ratio; and the answers must agree. */
+static int ordercost(const char *dir, int n) {
+    if (!open_db(dir)) {
+        return 2;
+    }
+    Answer a;
+    run("CREATE TABLE oc (id INTEGER PRIMARY KEY, name TEXT)", NULL, 10, &a);
+    answer_free(&a);
+    run("CREATE TABLE oo (id INTEGER PRIMARY KEY, cust INTEGER)", NULL, 10, &a);
+    answer_free(&a);
+    run("CREATE INDEX oo_cust ON oo (cust)", NULL, 10, &a);
+    answer_free(&a);
+    int small = n / 100;
+    for (int i = 1; i <= small; i++) {
+        char q[160];
+        snprintf(q, sizeof q, "INSERT INTO oc VALUES (%d, 'c%d')", i, i);
+        run(q, NULL, 10, &a);
+        answer_free(&a);
+    }
+    for (int i = 1; i <= n; i++) {
+        char q[160];
+        snprintf(q, sizeof q, "INSERT INTO oo VALUES (%d, %d)", i, i % small + 1);
+        run(q, NULL, 10, &a);
+        answer_free(&a);
+    }
+    /* two customers' orders: the chosen order seeks n/small rows twice */
+    const char *q = "SELECT count(*) FROM oo JOIN oc ON oo.cust = oc.id WHERE oc.id <= 2";
+    double best[2] = { 1e9, 1e9 };
+    char *answer[2] = { NULL, NULL };
+    unsigned long r0 = gsql_sql_reordered();
+    for (int round = 0; round < 3; round++) {
+        for (int written = 0; written < 2; written++) {
+            gsql_sql_from_order(written);
+            double t0 = seconds();
+            run(q, NULL, 10, &a);
+            double t = seconds() - t0;
+            best[written] = t < best[written] ? t : best[written];
+            free(answer[written]);
+            answer[written] = as_text(&a.text);
+            answer_free(&a);
+        }
+    }
+    gsql_sql_from_order(0);
+    unsigned long reordered = gsql_sql_reordered() - r0;
+    int same = strcmp(answer[0], answer[1]) == 0;
+    printf("chosen order %.4fs, FROM's order %.4fs, ratio %.1f, answers %s and %s, %lu plans reordered\n", best[0],
+           best[1], best[1] / best[0], answer[0], answer[1], reordered);
+    free(answer[0]);
+    free(answer[1]);
+    E->close(db);
+    gsql_sql_free(sql);
+    if (!same) {
+        printf("MISMATCH the chosen order and FROM's order disagree\n");
+        return 1;
+    }
+    if (reordered == 0) {
+        printf("MISMATCH the join was never reordered: the ratio measured FROM's order against itself\n");
+        return 1;
+    }
+    if (best[1] / best[0] < 10) {
+        printf("MISMATCH the chosen order is not 10x faster than FROM's over %d by %d rows\n", n, small);
+        return 1;
+    }
+    printf("ok 1 checks, 0 mismatches\n");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc == 4 && strcmp(argv[1], "script") == 0) {
         if (!open_db(argv[3])) {
@@ -1930,6 +2034,9 @@ int main(int argc, char **argv) {
     }
     if (argc == 4 && strcmp(argv[1], "hashcost") == 0) {
         return hashcost(argv[2], atoi(argv[3]));
+    }
+    if (argc == 4 && strcmp(argv[1], "ordercost") == 0) {
+        return ordercost(argv[2], atoi(argv[3]));
     }
     if (argc == 5 && strcmp(argv[1], "diff") == 0) {
         return differential(argv[2], strtoull(argv[3], NULL, 10), atoi(argv[4]));

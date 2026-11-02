@@ -117,11 +117,20 @@ typedef struct SkNode {
     struct SkNode *next[];
 } SkNode;
 
+/* Entries inserted per tree, for the planner's estimate of a table's rows
+ * (docs/gsql_rowcount_design.md §2). Every version inserted counts, so an
+ * overwritten or deleted key is counted until a flush drops it. */
+typedef struct {
+    uint64_t id, n;
+} SkTree;
+
 typedef struct {
     SkNode *head;
     int height;
     uint64_t rng;
     size_t bytes, count;
+    SkTree *trees;
+    size_t ntrees, treescap, lasttree;
 } Skip;
 
 static void sk_init(Skip *s) {
@@ -130,6 +139,39 @@ static void sk_init(Skip *s) {
     s->height = 1;
     s->rng = 0x2545F4914F6CDD1DULL;
     s->bytes = s->count = 0;
+    s->trees = NULL;
+    s->ntrees = s->treescap = s->lasttree = 0;
+}
+
+static void sk_count_tree(Skip *s, uint64_t id) {
+    if (s->lasttree < s->ntrees && s->trees[s->lasttree].id == id) {
+        s->trees[s->lasttree].n++;
+        return;
+    }
+    for (size_t i = 0; i < s->ntrees; i++) {
+        if (s->trees[i].id == id) {
+            s->trees[i].n++;
+            s->lasttree = i;
+            return;
+        }
+    }
+    if (s->ntrees == s->treescap) {
+        size_t cap = s->treescap ? s->treescap * 2 : 8;
+        SkTree *g = realloc(s->trees, cap * sizeof *g);
+        if (!g) return;   /* an estimate: a lost count is only an underestimate */
+        s->trees = g;
+        s->treescap = cap;
+    }
+    s->trees[s->ntrees].id = id;
+    s->trees[s->ntrees].n = 1;
+    s->lasttree = s->ntrees++;
+}
+
+static uint64_t sk_tree_count(const Skip *s, uint64_t id) {
+    for (size_t i = 0; i < s->ntrees; i++) {
+        if (s->trees[i].id == id) return s->trees[i].n;
+    }
+    return 0;
 }
 
 static void sk_free(Skip *s) {
@@ -143,6 +185,9 @@ static void sk_free(Skip *s) {
     }
     free(s->head);
     s->head = NULL;
+    free(s->trees);
+    s->trees = NULL;
+    s->ntrees = s->treescap = s->lasttree = 0;
 }
 
 
@@ -208,6 +253,9 @@ static int sk_insert(Skip *s, const unsigned char *k, size_t kn, uint64_t seq, i
     }
     s->bytes += kn + vn + 48 + (size_t)h * 8;
     s->count++;
+    if (kn >= 8) sk_count_tree(s, ((uint64_t)k[0] << 56) | ((uint64_t)k[1] << 48) | ((uint64_t)k[2] << 40) |
+                                  ((uint64_t)k[3] << 32) | ((uint64_t)k[4] << 24) | ((uint64_t)k[5] << 16) |
+                                  ((uint64_t)k[6] << 8) | (uint64_t)k[7]);
     return GS_OK;
 }
 
@@ -4361,6 +4409,52 @@ static int lsm_txn_id(struct GsTxn *t, uint64_t *id) {
     return GS_OK;
 }
 
+/* The planner's estimate of a tree's entries (docs/gsql_rowcount_design.md
+ * §2): the memtables' counts, then each sorted file's entries, a file holding
+ * other trees too counting the share of its index blocks that end in this
+ * one. Every version counts, so an overwritten or deleted key is counted until
+ * compaction folds it; a transaction's own unwritten changes are not. */
+static int lsm_estimate(struct GsTxn *t, GsBytes tree, uint64_t *entries) {
+    *entries = 0;
+    if (t->db->failed) return GS_FAILED;
+    size_t i;
+    int rc = tree_find(t, tree, &i);
+    if (rc) return rc;
+    uint64_t id = t->trees[i].id;
+    if (!id) return GS_NOT_FOUND;
+    Version *v = t->v;
+    uint64_t n = 0;
+    if (v->mem) n += sk_tree_count(&v->mem->sk, id);
+    if (v->imm) n += sk_tree_count(&v->imm->sk, id);
+    for (int l = 0; l < LEVELS; l++) {
+        for (size_t f = 0; f < v->nfiles[l]; f++) {
+            FileMeta *m = v->files[l][f];
+            if (m->smallest.n < ID_LEN || m->largest.n < ID_LEN) continue;
+            uint64_t lo = ukey_id(m->smallest.p), hi = ukey_id(m->largest.p);
+            if (id < lo || id > hi) continue;
+            if (lo == id && hi == id) {
+                n += m->entries;
+                continue;
+            }
+            if (file_open(t->db, m) != GS_OK || m->nindex == 0) continue;
+            /* a block wholly inside the tree counts whole, one at either end
+             * of it half: a tree much smaller than a block is still
+             * overcounted by up to a block for each file it shares */
+            uint64_t halves = 0;
+            uint64_t prev = lo;
+            for (size_t b = 0; b < m->nindex; b++) {
+                uint64_t last = m->index[b].lastn >= ID_LEN ? ukey_id(m->index[b].last) : prev;
+                if (prev == id && last == id) halves += 2;
+                else if (prev <= id && last >= id) halves += 1;
+                prev = last;
+            }
+            n += m->entries * halves / (2 * m->nindex);
+        }
+    }
+    *entries = n;
+    return GS_OK;
+}
+
 static int lsm_open(const char *path, const GsOptions *opt, GsStore **out) {
     GsqlIo *io = opt && opt->io ? opt->io : gsql_io_real();
     char *base = NULL;
@@ -4381,5 +4475,5 @@ const GsEngine gs_engine_lsm = {
     lsm_cursor_open, lsm_seek, lsm_first, lsm_last, lsm_next, lsm_prev, lsm_key, lsm_value,
     lsm_cursor_put, lsm_cursor_delete, lsm_cursor_close,
     lsm_backup, lsm_backup_begin, lsm_backup_step, lsm_backup_end, lsm_check, lsm_stats,
-    lsm_txn_id, lsm_flush, lsm_backup_progress, lsm_lease_keep,
+    lsm_txn_id, lsm_flush, lsm_backup_progress, lsm_lease_keep, lsm_estimate,
 };
