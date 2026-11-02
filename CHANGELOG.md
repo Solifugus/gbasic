@@ -39,6 +39,16 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### G-SQL blocks inside a library
+
+A `database` or `sql` block written in a library is the library's own: its
+functions reach it by bare name, before any program global of that name, and
+`store.cheap` reaches one from outside. Two libraries may each have a
+`database shop`. These used to be accepted in a loaded library file and bound
+nowhere. **A loaded library file is now checked as a program's file is**, so a
+mistake in a `sql`, `database`, `server` or `window` block there is refused at
+its line before anything runs, where it used to pass unnoticed.
+
 ### `\r` in a string is a carriage return
 
 `"\r\n"` is CRLF. It used to keep both characters and warn, so the line ending

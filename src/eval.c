@@ -186,6 +186,8 @@ static uint64_t gbasic_rng_below(uint64_t bound) {
 }
 
 int parse_source(const char *source, AstStmtList *out_program);
+int gb_validate_declarations(const AstStmtList *program, const char *path,
+                             const char *source, gb_diagnostics *diags);
 int parse_source_reentrant(const char *source, const char *path,
                            gb_diagnostics *diags, AstStmtList *out_program);
 void parse_set_source_path(const char *path);
@@ -474,6 +476,9 @@ struct GsqlConnectionValue {
 struct GsqlStatementValue {
     size_t ref_count;
     char *name;
+    /* the frame its `database` block is bound in: the global frame, or the
+       frame of the library that declared both */
+    struct Env *home;
     char *database;
     char *sql;
     char **params;
@@ -864,6 +869,30 @@ typedef struct {
 
 static Env global_env = {0};
 static Env *current_env = &global_env;
+
+/* A LIBRARY'S OWN FRAME (docs/gsql_library_blocks_design.md): its `database`
+ * and `sql` blocks, bound when it is imported and kept for the process. A call
+ * to one of its functions makes the function's frame a child of this one, whose
+ * parent is the global frame, so a bare name in a library function finds the
+ * library's block before a program global of the same name -- the precedence a
+ * library's unqualified CALL already has -- with no new lookup rule. Keyed by
+ * the effective name, so an aliased library has its frame under its alias, as
+ * its functions are registered. */
+typedef struct {
+    char *name;
+    Env *env;
+} LibraryFrame;
+static LibraryFrame *library_frames = NULL;
+static size_t library_frame_count = 0;
+
+static Env *library_frame_find(const char *name) {
+    for (size_t i = 0; name && i < library_frame_count; i++) {
+        if (strcmp(library_frames[i].name, name) == 0) {
+            return library_frames[i].env;
+        }
+    }
+    return NULL;
+}
 
 /* Non-zero only while a PROMPT SESSION is open. Every effect note below is
  * guarded by it, so a script -- which is every other way gBASIC runs -- pays
@@ -5675,6 +5704,35 @@ static void env_clear(Env *env) {
     env->count = 0;
 }
 
+static Env *library_frame_ensure(const char *name) {
+    Env *found = library_frame_find(name);
+    if (found) {
+        return found;
+    }
+    LibraryFrame *grown = realloc(library_frames, sizeof(LibraryFrame) * (library_frame_count + 1));
+    Env *env = calloc(1, sizeof(Env));
+    if (!grown || !env) {
+        abort();
+    }
+    library_frames = grown;
+    env->parent = &global_env;
+    library_frames[library_frame_count].name = copy_string(name);
+    library_frames[library_frame_count].env = env;
+    library_frame_count++;
+    return env;
+}
+
+static void library_frames_clear(void) {
+    for (size_t i = 0; i < library_frame_count; i++) {
+        env_clear(library_frames[i].env);
+        free(library_frames[i].env);
+        free(library_frames[i].name);
+    }
+    free(library_frames);
+    library_frames = NULL;
+    library_frame_count = 0;
+}
+
 static LockEntry *lock_find(const char *path) {
     for (size_t i = 0; i < lock_count; i++) {
         if (strcmp(locks[i].path, path) == 0) {
@@ -8435,7 +8493,8 @@ static LoadedFile *loaded_file_get_opt(const char *path, int quiet) {
          * line up. */
         gb_diagnostics scratch;
         gb_diagnostics_init(&scratch);
-        int failed = parse_source_reentrant(source, path, &scratch, &program) != 0;
+        int failed = parse_source_reentrant(source, path, &scratch, &program) != 0 ||
+                     gb_validate_declarations(&program, path, source, &scratch) != 0;
         gb_diagnostics_free(&scratch);
         if (failed) {
             free(source);
@@ -8444,7 +8503,14 @@ static LoadedFile *loaded_file_get_opt(const char *path, int quiet) {
         }
     } else {
         parse_set_source_path(path);
-        if (parse_source(source, &program) != 0) {
+        int parsed = parse_source(source, &program) == 0;
+        if (parsed && gb_get_active_sink() &&
+            gb_validate_declarations(&program, path, source, gb_get_active_sink()) != 0) {
+            ast_free_program(program);
+            program = ast_stmt_list_empty();
+            parsed = 0;
+        }
+        if (!parsed) {
             free(source);
             char message[512];
             snprintf(message, sizeof(message), "could not parse library file: %s", path);
@@ -8880,6 +8946,9 @@ static void search_gbasic_path_for_library(const char *name,
 }
 
 static void library_import_from_block(AstStmt *library, const char *effective);
+static int gsql_decl_require_loaded(const AstStmt *stmt);
+static void database_register(AstStmt *stmt);
+static void sql_register(AstStmt *stmt);
 
 /* THE NAMES A LIBRARY IS QUALIFIED BY.
  *
@@ -9606,6 +9675,30 @@ static void library_import_from_block(AstStmt *library, const char *effective) {
             function_register_def(stmt, 1, effective);
         } else if (stmt->kind == AST_STMT_MODIFIER && stmt->as.modifier.exported) {
             modifier_register_def(stmt, 1, effective, importer);
+        }
+    }
+    /* Its `database` and `sql` blocks, into its own frame, once its loads are
+     * in (a block needs the library's `load gsql`). Registration runs no user
+     * code: a database connects on first use. */
+    for (size_t i = 0; i < library->as.library.body.count; i++) {
+        AstStmt *stmt = library->as.library.body.items[i];
+        if (stmt->kind != AST_STMT_DATABASE && stmt->kind != AST_STMT_SQL) {
+            continue;
+        }
+        if (!gsql_decl_require_loaded(stmt)) {
+            break;
+        }
+        Env *frame = library_frame_ensure(effective);
+        Env *previous_env = current_env;
+        current_env = frame;
+        if (stmt->kind == AST_STMT_DATABASE) {
+            database_register(stmt);
+        } else {
+            sql_register(stmt);
+        }
+        current_env = previous_env;
+        if (error_action_pending()) {
+            break;
         }
     }
     current_importer_library = previous_importer;
@@ -12727,7 +12820,8 @@ static Value eval_dir_call(AstExpr *expr) {
  * (eval_user_function) and the spawned-actor entry path (eval_run_actor). */
 static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
     Env local_env = {0};
-    local_env.parent = &global_env;
+    Env *library_frame = library_frame_find(stmt->as.function.library);
+    local_env.parent = library_frame ? library_frame : &global_env;
     Env *previous_env = current_env;
     current_env = &local_env;
 
@@ -17463,6 +17557,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
     function_clear();
     modifier_clear();
     env_clear(&global_env);
+    library_frames_clear();
 #ifdef _WIN32
     /* A Windows inbox is a FILE that outlives its process (src/actor.c);
      * closing it deletes the name. POSIX has nothing to remove. */
@@ -38953,6 +39048,12 @@ static Value eval_expr(AstExpr *expr) {
         if (expr->as.field.object->kind == AST_EXPR_IDENT &&
             !env_lookup_exists(expr->as.field.object->as.ident)) {
             const char *lib = expr->as.field.object->as.ident;
+            /* `store.make`: a block the library declared, reached from outside */
+            Env *frame = library_frame_find(lib);
+            Symbol *block = frame ? env_find_in_frame(frame, expr->as.field.field) : NULL;
+            if (block) {
+                return value_copy(block->value);
+            }
             FunctionDef *qualified = function_resolve(lib, expr->as.field.field);
             if (qualified) {
                 return value_function(qualified->name, qualified->library);
@@ -41212,6 +41313,7 @@ static void sql_register(AstStmt *stmt) {
     }
     st->ref_count = 1;
     st->name = copy_string(stmt->as.sql.name);
+    st->home = current_env;
     st->database = copy_string(stmt->as.sql.database);
     st->sql = copy_string(stmt->as.sql.text);
 #if GBASIC_GSQL
@@ -43011,6 +43113,7 @@ static void runtime_teardown(void) {
     free(reexec_source_path);
     reexec_source_path = NULL;
     env_clear(&global_env);
+    library_frames_clear();
     active_root = ast_stmt_list_empty();
 }
 

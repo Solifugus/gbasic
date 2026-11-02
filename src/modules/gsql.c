@@ -1214,7 +1214,7 @@ static GsqlConnectionValue *gsql_block_connection(const GsqlStatementValue *st, 
     if (st->bound.kind == VALUE_GSQL_CONNECTION) {
         return gsql_connection_of(value_copy(st->bound), who);
     }
-    Symbol *sym = env_find_in_frame(&global_env, st->database);
+    Symbol *sym = env_find_in_frame(st->home ? st->home : &global_env, st->database);
     if (!sym || sym->value.kind != VALUE_GSQL_CONNECTION) {
         char msg[300];
         snprintf(msg, sizeof msg, "it is on `%s`, which %s", st->database,
@@ -1622,6 +1622,7 @@ static Value gsql_eval_on(AstExpr *expr) {
     }
     st->ref_count = 1;
     st->name = copy_string(from->name);
+    st->home = from->home;
     st->database = copy_string(from->database);
     st->sql = copy_string(from->sql);
     gsql_block_split(st);

@@ -838,7 +838,7 @@ static void gsq_locate(const AstStmt *stmt, long position, int *line, int *colum
     }
 }
 
-static void gsq_check_sql(SrvCheck *chk, const AstStmt *stmt, const GsqDecls *d) {
+static void gsq_check_sql(SrvCheck *chk, const AstStmt *stmt, const GsqDecls *d, int in_library) {
     const AstStmt *db = NULL;
     for (size_t i = 0; i < d->count; i++) {
         if (d->decls[i]->kind == AST_STMT_DATABASE &&
@@ -848,8 +848,9 @@ static void gsq_check_sql(SrvCheck *chk, const AstStmt *stmt, const GsqDecls *d)
     }
     if (!db) {
         gsq_error(chk, stmt->line, stmt->column,
-                  "sql '%s' is on `%s`, and there is no `database %s( file: ... )` in this file",
-                  stmt->as.sql.name, stmt->as.sql.database, stmt->as.sql.database);
+                  "sql '%s' is on `%s`, and there is no `database %s( file: ... )` in this %s",
+                  stmt->as.sql.name, stmt->as.sql.database, stmt->as.sql.database,
+                  in_library ? "library -- a library's blocks are on its own databases" : "file");
     }
 #if GBASIC_GSQL
     /* several statements, split at `;` by G-SQL's own lexer, each parsed
@@ -1004,6 +1005,8 @@ static void gsq_mark_unused(const GsqDecls *d, const char *source, int first_lin
     free(used);
 }
 
+/* `source` is NULL for a library's body, whose blocks are a scope of their own
+ * and are not reported unused (a caller may not need every statement). */
 static void gsq_validate(SrvCheck *chk, const AstStmtList *program, const char *source, int first_line) {
     GsqDecls d = {NULL, 0};
     gsq_collect(&d, program, 0);
@@ -1022,7 +1025,7 @@ static void gsq_validate(SrvCheck *chk, const AstStmtList *program, const char *
         if (stmt->kind == AST_STMT_DATABASE) {
             gsq_check_database(chk, stmt);
         } else {
-            gsq_check_sql(chk, stmt, &d);
+            gsq_check_sql(chk, stmt, &d, source == NULL);
         }
     }
     /* WHETHER THE FILE LOADS gsql IS NOT CHECKED HERE: `--add-loads`, the tool
@@ -1031,6 +1034,8 @@ static void gsq_validate(SrvCheck *chk, const AstStmtList *program, const char *
      * program's loads are imported, before anything runs (eval.c). */
     free((void *)d.decls);
 }
+
+static void gsq_validate(SrvCheck *chk, const AstStmtList *program, const char *source, int first_line);
 
 static void srv_walk(SrvCheck *chk, const AstStmtList *list, int top_level,
                      const char ***names, size_t *name_count) {
@@ -1089,7 +1094,19 @@ static void srv_walk(SrvCheck *chk, const AstStmtList *list, int top_level,
             srv_refuse_nested(chk, &stmt->as.modifier.body, "a modifier");
             break;
         case AST_STMT_LIBRARY:
-            srv_refuse_nested(chk, &stmt->as.library.body, "a library");
+            /* A library's OWN `database` and `sql` blocks, written directly in
+             * its body, belong to it (docs/gsql_library_blocks_design.md):
+             * checked here as a scope of their own, so `on shop` names the
+             * library's `shop`. Anything else, and a block nested deeper, is
+             * refused as before. */
+            for (size_t j = 0; j < stmt->as.library.body.count; j++) {
+                AstStmt *inner = stmt->as.library.body.items[j];
+                if (inner->kind != AST_STMT_DATABASE && inner->kind != AST_STMT_SQL) {
+                    AstStmtList one = { &stmt->as.library.body.items[j], 1 };
+                    srv_refuse_nested(chk, &one, "a library");
+                }
+            }
+            gsq_validate(chk, &stmt->as.library.body, NULL, 0);
             break;
         case AST_STMT_IF:
             srv_refuse_nested(chk, &stmt->as.if_stmt.body, "a branch");
@@ -1139,6 +1156,16 @@ static int server_blocks_validate(const AstStmtList *program, const char *path,
     free((void *)names);
     gsq_validate(&chk, program, source, first_line);
     return chk.errors;
+}
+
+/* The declaration checks gb_parse runs, for a LIBRARY FILE the interpreter
+ * parsed itself. They were never run on one, so a `database` block in a loaded
+ * library was accepted and then bound nowhere (gbasic-books volume 3, G3),
+ * while the same block in the program's own file was refused by name. Answers
+ * the number of errors reported into `diags`. */
+int gb_validate_declarations(const AstStmtList *program, const char *path,
+                             const char *source, gb_diagnostics *diags) {
+    return server_blocks_validate(program, path, diags, source, 1);
 }
 
 int gb_parse(const char *source, const char *path,

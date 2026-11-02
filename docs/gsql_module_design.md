@@ -132,7 +132,7 @@ Everything decidable without a database is checked in the load-time pass (`src/f
 - the head's options;
 - one declaration per name;
 - `$n` parameters;
-- that the block is a declaration, at the top level or directly in `program`.
+- that the block is a declaration, at the top level, directly in `program`, or directly in a `library` (whose blocks are its own: `docs/gsql_library_blocks_design.md`).
 
 **Whether the program loads `gsql` is checked at run time, before anything runs**, not at load time. `--add-loads`, the tool that adds a missing load, runs the same load-time pass first, and a file that pass refused could never be fixed by it. The check reads the program's text (a `load gsql` at the top level or in `program`) because without a `program` block declarations bind as they are reached, and a reach-time check alone would let every statement above the block run first. That ordering was found by the tier, which asserts nothing ran.
 

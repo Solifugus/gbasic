@@ -106,6 +106,59 @@ if [ -s "$work/maxrec.err" ]; then
     fail "max_recursion: the fixture wrote to stderr"
 fi
 
+printf 'TIER library: `database` and `sql` blocks inside a library are the library'"'"'s own\n'
+# gbasic-books volume 3, G3: declared in a loaded library they used to be
+# accepted and bound nowhere, so every use failed three different ways, none
+# naming the cause (docs/gsql_library_blocks_design.md)
+mkdir -p "$work/libblocks"
+(cd "$work/libblocks" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/libblocks/libblocks_test.bas") \
+    >"$work/libblocks.out" 2>"$work/libblocks.err"
+verdict library "$work/libblocks.out" $? 13
+if [ -s "$work/libblocks.err" ]; then
+    sed 's/^/       /' "$work/libblocks.err" | head -5
+    fail "library: the fixture wrote to stderr"
+fi
+# a loaded library FILE is checked as the program's own file is, so its
+# mistakes are refused at their line in it, before anything runs
+lib_case() {
+    local name=$1 where=$2 phrase=$3 body=$4
+    local d="$work/libcase_$name"
+    mkdir -p "$d"
+    printf 'library %s\n    load gsql\n%s\nend library\n' "$name" "$body" > "$d/$name.bas"
+    printf 'load %s\nprint "ran"\n' "$name" > "$d/main.bas"
+    local out err rc
+    out=$(cd "$d" && "$OLDPWD/gbasic" main.bas 2>"$d/err")
+    rc=$?
+    err=$(cat "$d/err")
+    if [ "$rc" = 0 ]; then
+        fail "library refusal $name: the program was not refused"
+    elif [ -n "$out" ]; then
+        fail "library refusal $name: something ran before the refusal: $out"
+    elif ! printf '%s' "$err" | grep -q "$name.bas:$where: "; then
+        fail "library refusal $name: not located at $name.bas:$where: $err"
+    elif ! printf '%s' "$err" | grep -qF -- "$phrase"; then
+        fail "library refusal $name: does not say \"$phrase\": $err"
+    else
+        pass "library refusal $name: at $name.bas:$where, \"$phrase\""
+    fi
+}
+lib_case badsql 5:9 "sql 'oops': expected a statement" '    database shop( file: "x.gsql" )
+    sql oops on shop
+        selec 1
+    end sql'
+lib_case nodb 3:5 "there is no \`database elsewhere( file: ... )\` in this library" '    sql q on elsewhere
+        select 1
+    end sql'
+lib_case nested 5:9 "a \`sql\` block cannot be declared inside a function" '    database shop( file: "x.gsql" )
+    function f()
+        sql q on shop
+            select 1
+        end sql
+    end function'
+lib_case notliteral 3:5 "database 'shop'" '    database shop( file: "x" + ".gsql" )'
+lib_case twice 4:5 "\`shop\` is declared twice" '    database shop( file: "x.gsql" )
+    database shop( file: "y.gsql" )'
+
 printf 'TIER sweep: an owner starting removes a crashed process sorts and spools, and only those\n'
 # a process gone (a child that exited) and one alive (this shell) each with a
 # directory named for it, in a TMPDIR of their own; an owner the program
@@ -661,6 +714,18 @@ if vg_available; then
     else
         tail -3 "$work/vg.out"
         fail "valgrind: the fixture did not pass under valgrind (exit $vgst; its mismatches are above)"
+    fi
+    mkdir -p "$work/vglib"
+    (cd "$work/vglib" && vg_run "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/libblocks/libblocks_test.bas") >"$work/vglib.out" 2>"$work/vglib.err"
+    vgst=$?
+    if [ "$vgst" = 0 ] && tail -1 "$work/vglib.out" | grep -q ' 0 mismatches$'; then
+        pass "valgrind: blocks inside libraries, clean over $(tail -1 "$work/vglib.out" | sed 's/^ok //')"
+    elif [ "$vgst" = "$VG_EXIT" ]; then
+        grep -m8 'Invalid\|definitely lost\|uninitialised' "$work/vglib.err"
+        fail "valgrind objected to blocks inside libraries"
+    else
+        tail -3 "$work/vglib.out"
+        fail "valgrind: the library blocks fixture did not pass under valgrind (exit $vgst)"
     fi
     mkdir -p "$work/vgb"
     (cd "$work/vgb" && vg_run "$OLDPWD/gbasic" "$BLOCKS") >"$work/vgb.out" 2>"$work/vgb.err"

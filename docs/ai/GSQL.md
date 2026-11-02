@@ -61,6 +61,10 @@ That is the README's example, run by the gate. The fuller forms are
   `file:` (a role) whose blocks are given a connection when used: `db.exec(add)`,
   `db.query(items)`, `db.on(items)` for a `for each`
   (`11_practice_a_database_per_tenant.bas`).
+- **A library may hold its own blocks**, written directly in `library ... end
+  library` beside its functions, which reach them by bare name. Its `on shop` is
+  its own `shop`, and a program's block of the same name is a different one.
+  From outside: `store.cheap`. A library holding blocks does its own `load gsql`.
 - **Handles have methods:** `db.query(...)`, `db.exec(...)`, `db.begin()`,
   `db.commit()`, `db.close()`, `add.exec()`, `cheap.query()`. Each is the same call as
   `gsql.verb(handle, ...)`.

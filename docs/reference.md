@@ -2666,7 +2666,18 @@ When the program loads, the statement is parsed, so **a mistake in the SQL is
 reported at its line and column in the program**, before anything runs; so is
 an `on` naming no `database` block, an unknown or non-literal option, or a
 block inside a function. The blocks are declarations: at the top level, or
-directly in `program`. A program holding one must `load gsql`.
+directly in `program`, or directly in a `library`. A program holding one must
+`load gsql`, and a library holding one loads it itself.
+
+**A library's blocks are its own** *(after 0.10.0)*. Its functions reach them by
+bare name, exactly as a program's functions reach the program's (`make.exec()`,
+`for each row in cheap`), and a library's own name comes first, so a program
+with a `make` of its own cannot capture the library's. A block's `on shop` is
+the library's `shop`; two libraries may each declare `database shop` and have
+two databases. From outside, a block is qualified: `for each row in
+store.cheap`, `gsql.exec(store.make)`. A loaded library file is checked as the
+program's file is, so a mistake in one of its blocks is reported at its line in
+that file before anything runs (`docs/gsql_library_blocks_design.md`).
 
 On Windows, `load gsql` answers that G-SQL is not yet available there.
 
