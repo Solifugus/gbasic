@@ -113,7 +113,7 @@ printf 'TIER library: `database` and `sql` blocks inside a library are the libra
 mkdir -p "$work/libblocks"
 (cd "$work/libblocks" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/libblocks/libblocks_test.bas") \
     >"$work/libblocks.out" 2>"$work/libblocks.err"
-verdict library "$work/libblocks.out" $? 13
+verdict library "$work/libblocks.out" $? 16
 if [ -s "$work/libblocks.err" ]; then
     sed 's/^/       /' "$work/libblocks.err" | head -5
     fail "library: the fixture wrote to stderr"

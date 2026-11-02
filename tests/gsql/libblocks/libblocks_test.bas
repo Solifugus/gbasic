@@ -80,4 +80,28 @@ check("and the program's bare `shop` its own database", shop = store.shop, false
 
 store.close()
 shop.close()
+
+' WHERE THE ROWS WENT, read from each file directly. Without this a library
+' whose statements ran on the PROGRAM's `shop` passed every check above, since
+' its tables have names of their own -- measured, by pointing every block's
+' database lookup at the global frame and watching this fixture stay green.
+function tables_in(path)
+    db = gsql.connect(path)
+    out = []
+    for each t in ["item", "bin", "note"]
+        on error goto next
+        r = db.query("select count(*) as n from " + t)
+        if error then
+            r = []
+        else
+            append(out, t)
+        end if
+        on error stop
+    end for
+    db.close()
+    return out
+end function
+check("store.gsql holds the store library's table and no other", tables_in("store.gsql"), ["item"])
+check("depot.gsql holds the depot library's", tables_in("depot.gsql"), ["bin"])
+check("program.gsql holds only the program's", tables_in("program.gsql"), ["note"])
 print "ok " + string(checks.n) + " checks, " + string(checks.bad) + " mismatches"
