@@ -250,6 +250,13 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null
     GSQL_TEST_SORT_BUDGET=1 GSQL_TEST_SORT_RUN=64 bounded 300 "$work/sql_test" script "$work/gspill.txt" \
         "$work/gspill/db" >"$work/gspill.out" 2>&1
     verdict "spilled grouping sets differential (seed 2)" "$work/gspill.out" $?
+    # and windows, spilled, every answer against SQLite (§11)
+    rm -rf "$work/wspill"
+    mkdir -p "$work/wspill"
+    python3 tests/gsql/gen_window_diff.py 3 300 "$work/wspill.txt" >/dev/null 2>&1
+    GSQL_TEST_SORT_BUDGET=1 GSQL_TEST_SORT_RUN=64 bounded 300 "$work/sql_test" script "$work/wspill.txt" \
+        "$work/wspill/db" >"$work/wspill.out" 2>&1
+    verdict "spilled window differential (seed 3)" "$work/wspill.out" $?
 fi
 
 printf 'TIER differential: access paths against a forced scan, five seeds\n'

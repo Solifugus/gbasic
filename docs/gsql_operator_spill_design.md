@@ -1,6 +1,6 @@
 # G-SQL: query operators that spill to disk
 
-**Status:** Partial 2026-11-02: §4's steps 1 to 4 are built: `ORDER BY` (§6), `GROUP BY` (§7), the row spool (§8), and `DISTINCT` and the set operations (§9). The join (step 5) and window functions remain. The rest of work-order item 6 (`gsql_scale_measurements.md` §4), *"the query operators are still to come"* (`gsql_spill_design.md`). Matthew said "go ahead" on 2026-11-02 without ruling on §5, so §5 records the defaults taken, each his to reverse.
+**Status:** Shipped 2026-11-02: §4's steps 1 to 4 and window functions are built: `ORDER BY` (§6), `GROUP BY` (§7), the row spool (§8), `DISTINCT` and the set operations (§9), the sorter's merge in passes (§10) and windows (§11). Step 5, a sort-merge join, is not needed as planned: a nested loop holds no rows and a hash join's inner side spools (§8), leaving one entry per distinct join key in memory. The rest of work-order item 6 (`gsql_scale_measurements.md` §4), *"the query operators are still to come"* (`gsql_spill_design.md`). Matthew said "go ahead" on 2026-11-02 without ruling on §5, so §5 records the defaults taken, each his to reverse.
 
 ## 1. The gap
 
@@ -135,13 +135,24 @@ The sorter opened every run at once for its one merge, a file and a 64 KB buffer
 
 **Tested** in `run_gsql_table.sh`'s sort tier: 300 000 entries with a 4 KB budget make over 2 000 runs, sorted with the process allowed only 256 open files, against an in-memory stable sort, every file removed after. The sorter before this change fails it (28 432 mismatches, measured); the merged runs written out of order fail it too (299 219). The index build uses the same sorter, so it gains the same.
 
-## 11. Proposal: window functions (Matthew's ruling, 2026-11-02: option C)
+## 11. Built: window functions (Matthew's ruling, 2026-11-02: option C)
 
 A windowed query holds every row, its state and its windows' inputs (`gsql_window_design.md` §5). Three ways were weighed: refusing past a budget (cheap, but a large window query then cannot run); one partition at a time in memory (bounded by the largest partition, so a window with no `PARTITION BY` over a large table is still the whole table); and **the partition-at-a-time form with each partition in a spooling row store**, which bounds even that. The last was ruled.
 
-**The plan.** The rows are collected as now, but into a row store (§8) as encoded entries: each row's state, its windows' arguments, and its arrival number. Past the budget, each ordering's pass goes through the sorter keyed by partition key and the window's `ORDER BY` values in the key encoding, with the same comparability check `ORDER BY` makes (§6), and the partitions are read off one at a time, each into a row store of its own, which spools past the budget; the computing reads it by position, as it reads the in-memory array now. Each answer is written beside its row's arrival number, and a last sort by arrival number puts the rows and their answers back in the order the in-memory form answers in. A row store keeps eight bytes a row in memory, so the largest partition costs that much at most.
+**The plan, as built.** Past the budget, every row collected goes once into one row store (§8), encoded: its state (its scans' rows, or its group), each ordering's partition key, each `ORDER BY` value, and each window's arguments, numbered by arrival. Each ordering is then one pass through the sorter, keyed by the partition key, the `ORDER BY` values in the key encoding (`DESC` terms inverted) and the arrival number, so ties keep the order they arrived in, as the in-memory stable sort keeps them. A partition comes off the sorter as the list of its rows' arrival numbers, with its peer groups found where the `ORDER BY` part of the key changes; that list, and each row's peer bounds, are all the partition holds in memory, about 24 bytes a row. The computing is the in-memory form's own: it reads each argument from the row store by arrival number where it read it from memory, so the two cannot compute differently. Each answer goes to a second sorter keyed by arrival number and window, and the rows are replayed in arrival order, each read back from the row store with its answers, so the statement answers in the order the in-memory form does.
+
+Each `ORDER BY` value must be comparable with its term's first, checked whether or not the windows spill, so the refusal is the same at any size.
 
 **Kept as now:** a query whose rows fit in the budget runs exactly as today. A value with no sort key (a duration) in a window's `ORDER BY` keeps that ordering in memory, as `ORDER BY` does, and the 1 GiB refusal stays the backstop for it.
 
-**Tests:** the spilled tier and the window differential run spilled, as for every other operator, with a floor on the windows that spilled.
+**Measured**, `SELECT count(*), max(rn), max(run) FROM (SELECT id, row_number() OVER (ORDER BY v, id) AS rn, sum(v) OVER (PARTITION BY v % 1000 ORDER BY id) AS run FROM b) AS t`, two orderings, one of them the whole table as one partition, peak memory of the whole process:
+
+| rows | spilled | in memory |
+|---|---|---|
+| 2 000 000 | 375 MB, 22.5 s | 1 756 MB, 24.3 s |
+| 6 000 000 | 515 MB, 67.2 s | 5 128 MB, 83.7 s |
+
+Not flat, by design: the unpartitioned `row_number` is one partition of every row, at its 24 bytes a row, which is the growth left. Faster than in memory, as the spilled sorts are, since the sorter compares bytes.
+
+**Tested** by the spilled tier, the corpus with every window spilled (194 operators spill in all), and the window differential spilled, every answer against SQLite (300 queries a seed, five seeds by hand, one in the suite); clean under valgrind spilled. Two perturbations (peers never breaking, `DESC` not inverted on disk) went red; a third, inverting the arrival numbers in the key, crashed instead, since the number is read back from the key, so it says nothing about tie order, which the hand-written cases with ties, run spilled, hold.
 

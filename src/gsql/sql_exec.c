@@ -2131,6 +2131,19 @@ typedef struct {
     size_t nwrows, capwrows, wpos;
     size_t *ooff;       /* where each ordering's ORDER BY values start in a row's okeys */
     size_t nokeys;
+    /* windows past the budget (docs/gsql_operator_spill_design.md §11): the
+       memory the rows take; each ORDER BY term's first value; whether a value
+       with no sort key keeps them in memory; the rows encoded, by arrival
+       number; the answers, keyed by arrival number and window; the argument
+       last read back, and a row's answers being replayed */
+    int wspilled, wunkeyed;
+    size_t wheld;
+    GsqlHv **wfirst;
+    RowStore wstore;
+    struct GsXsort *wres;
+    GsqlHv *wpeek;
+    GsqlBuf wbuf;
+    GsqlHv **wrow_res;
 } SqlCursor;
 
 static const GsqlBuf *row_key_of(void *ctx, size_t i) {
@@ -2858,6 +2871,24 @@ static void windows_free(SqlCursor *c) {
     free(c->ooff);
     c->ooff = NULL;
     c->x.winv = NULL;
+    for (size_t k = 0; c->wfirst && k < c->nokeys; k++) {
+        rel(&c->x, c->wfirst[k]);
+    }
+    free(c->wfirst);
+    c->wfirst = NULL;
+    rs_free(&c->wstore);
+    if (c->wres) {
+        gs_xsort_close(c->wres);
+        c->wres = NULL;
+    }
+    rel(&c->x, c->wpeek);
+    c->wpeek = NULL;
+    gsql_buf_free(&c->wbuf);
+    for (size_t k = 0; c->wrow_res && k < c->plan.nwins; k++) {
+        rel(&c->x, c->wrow_res[k]);
+    }
+    free(c->wrow_res);
+    c->wrow_res = NULL;
 }
 
 /* any window of ordering `o`, whose PARTITION BY and ORDER BY it is */
@@ -2882,6 +2913,250 @@ static int win_source(SqlCursor *c) {
         return first ? keep(&c->x) : 0;
     }
     return join_next(&c->j, &c->x);
+}
+
+/* ---- windows past the budget (docs/gsql_operator_spill_design.md §11) ----
+ *
+ * A row encoded: its scans' rows (a state byte, a length, the bytes), its
+ * group, each ordering's partition key, each ORDER BY value and each window's
+ * three arguments (a length, 0xFFFFFFFF for none, and the v3 bytes). */
+
+static void put_u32(GsqlBuf *b, uint32_t v) {
+    unsigned char t[4] = { (unsigned char)v, (unsigned char)(v >> 8), (unsigned char)(v >> 16), (unsigned char)(v >> 24) };
+    v3_put(b, t, 4);
+}
+
+static uint32_t get_u32(const unsigned char *p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static int win_put_hv(X *x, GsqlBuf *out, const GsqlHv *v) {
+    if (!v) {
+        put_u32(out, 0xFFFFFFFFu);
+        return GSQL_OK;
+    }
+    GsqlBuf b = {0};
+    int rc = x->h->store(x->h->ctx, v, &b, x->err);
+    if (rc == GSQL_OK) {
+        put_u32(out, (uint32_t)b.length);
+        v3_put(out, b.bytes, b.length);
+    }
+    gsql_buf_free(&b);
+    return rc;
+}
+
+static int win_encode(SqlCursor *c, const WinRow *w, GsqlBuf *out) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    out->length = 0;
+    for (size_t k = 0; k < x->nsx; k++) {
+        unsigned char st = w->state ? w->state[k] : 0;
+        v3_put(out, &st, 1);
+        size_t n = st == 1 ? w->rows[k].length : 0;
+        put_u32(out, (uint32_t)n);
+        if (n) {
+            v3_put(out, w->rows[k].bytes, n);
+        }
+    }
+    put_u64(out, w->group);
+    for (size_t o = 0; o < p->norderings; o++) {
+        put_u32(out, (uint32_t)w->pkey[o].length);
+        v3_put(out, w->pkey[o].bytes, w->pkey[o].length);
+    }
+    int rc = GSQL_OK;
+    for (size_t k = 0; k < c->nokeys && rc == GSQL_OK; k++) {
+        rc = win_put_hv(x, out, w->okeys[k]);
+    }
+    for (size_t k = 0; k < 3 * p->nwins && rc == GSQL_OK; k++) {
+        rc = win_put_hv(x, out, w->args[k]);
+    }
+    return rc;
+}
+
+/* A walk over an encoded row: past the scans and the group, then field by
+ * field. Each length-prefixed field: its bytes, or NULL for an absent value. */
+typedef struct {
+    const unsigned char *p;
+    size_t n, at;
+    size_t nsx;
+} WinRd;
+
+static void wrd_start(WinRd *r, const GsqlBuf *b, size_t nsx) {
+    r->p = b->bytes;
+    r->n = b->length;
+    r->at = 0;
+    r->nsx = nsx;
+}
+
+static int wrd_field(WinRd *r, const unsigned char **v, size_t *vn) {
+    if (r->at + 4 > r->n) {
+        return 0;
+    }
+    uint32_t len = get_u32(r->p + r->at);
+    r->at += 4;
+    if (len == 0xFFFFFFFFu) {
+        *v = NULL;
+        *vn = 0;
+        return 1;
+    }
+    if (len > r->n - r->at) {
+        return 0;
+    }
+    *v = r->p + r->at;
+    *vn = len;
+    r->at += len;
+    return 1;
+}
+
+/* past the scans and the group: at the first partition key */
+static int wrd_skip_state(WinRd *r) {
+    for (size_t k = 0; k < r->nsx; k++) {
+        if (r->at + 5 > r->n) {
+            return 0;
+        }
+        uint32_t len = get_u32(r->p + r->at + 1);
+        r->at += 5;
+        if (len > r->n - r->at) {
+            return 0;
+        }
+        r->at += len;
+    }
+    if (r->at + 8 > r->n) {
+        return 0;
+    }
+    r->at += 8;
+    return 1;
+}
+
+/* field `skip` after the state, then the one wanted */
+static int wrd_nth(WinRd *r, size_t skip, const unsigned char **v, size_t *vn) {
+    if (!wrd_skip_state(r)) {
+        return 0;
+    }
+    for (size_t k = 0; k < skip; k++) {
+        if (!wrd_field(r, v, vn)) {
+            return 0;
+        }
+    }
+    return wrd_field(r, v, vn);
+}
+
+static int wrd_fail(SqlCursor *c) {
+    return xfail(c->x.err, GSQL_MISUSE, 0, "a window's spilled row did not read back");
+}
+
+/* window `slot`'s argument `j` of the row that arrived `seq`th: borrowed, valid
+ * until the next read, as an in-memory row's argument is (§11) */
+static GsqlHv *win_arg_peek(SqlCursor *c, size_t seq, size_t slot, size_t j) {
+    X *x = &c->x;
+    rel(x, c->wpeek);
+    c->wpeek = NULL;
+    if (rs_get(x, &c->wstore, seq, &c->wbuf) != GSQL_OK) {
+        return NULL;
+    }
+    WinRd r;
+    wrd_start(&r, &c->wbuf, x->nsx);
+    const unsigned char *v;
+    size_t vn;
+    if (!wrd_nth(&r, c->plan.norderings + c->nokeys + 3 * slot + j, &v, &vn)) {
+        wrd_fail(c);
+        return NULL;
+    }
+    c->wpeek = v ? hv_bytes(x, v, vn) : NULL;
+    return c->wpeek;
+}
+
+/* an answer for the row that arrived `seq`th, taken */
+static int win_res_put(SqlCursor *c, size_t seq, size_t slot, GsqlHv *r) {
+    X *x = &c->x;
+    GsqlBuf k = {0}, v = {0};
+    for (int i = 7; i >= 0; i--) {
+        unsigned char b = (unsigned char)((uint64_t)seq >> (8 * i));
+        v3_put(&k, &b, 1);
+    }
+    for (int i = 3; i >= 0; i--) {
+        unsigned char b = (unsigned char)((uint32_t)slot >> (8 * i));
+        v3_put(&k, &b, 1);
+    }
+    int rc = x->h->store(x->h->ctx, r, &v, x->err);
+    rel(x, r);
+    if (rc == GSQL_OK) {
+        int xr = gs_xsort_add(c->wres, k.bytes, k.length, v.bytes, v.length);
+        if (xr) {
+            rc = xsort_fail(c, xr);
+        }
+    }
+    gsql_buf_free(&k);
+    gsql_buf_free(&v);
+    return rc;
+}
+
+/* the rows in hand past the budget: every one to the row store, as every
+   later one goes */
+static int win_spill_start(SqlCursor *c) {
+    X *x = &c->x;
+    c->wspilled = 1;
+    c->q->spills++;
+    GsqlBuf b = {0};
+    int rc = GSQL_OK;
+    for (size_t k = 0; k < c->nwrows; k++) {
+        if (rc == GSQL_OK) {
+            rc = win_encode(c, &c->wrows[k], &b);
+        }
+        if (rc == GSQL_OK) {
+            rc = rs_add(x, &c->wstore, b.bytes, b.length);
+        }
+        winrow_free(c, &c->wrows[k]);
+    }
+    gsql_buf_free(&b);
+    free(c->wrows);
+    c->wrows = NULL;
+    c->nwrows = c->capwrows = 0;
+    return rc;
+}
+
+/* each ORDER BY value comparable with its term's first, as the sort compares
+   them, spilled or not; noting a value with no sort key */
+static int win_kinds(SqlCursor *c, const WinRow *w) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    if (!c->wfirst) {
+        c->wfirst = calloc(c->nokeys ? c->nokeys : 1, sizeof(GsqlHv *));
+        if (!c->wfirst) {
+            abort();
+        }
+    }
+    for (size_t o = 0; o < p->norderings; o++) {
+        const SqlWindow *win = ordering_window(p, o);
+        for (size_t j = 0; j < win->norder; j++) {
+            size_t at = c->ooff[o] + j;
+            GsqlHv *v = w->okeys[at];
+            if (is_null(x, v)) {
+                continue;
+            }
+            int kind = kind_of(x, v);
+            if (kind == SER_DURATION || kind == SER_ARRAY || kind == SER_RECORD) {
+                c->wunkeyed = 1;
+            }
+            if (!c->wfirst[at]) {
+                c->wfirst[at] = x->h->copy(x->h->ctx, v);
+            } else if (!comparable(x, v, c->wfirst[at], SQL_OP_LT, win->order[j].e)) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static size_t win_cost(const SqlCursor *c, const WinRow *w) {
+    size_t n = sizeof(WinRow) + 64 * (c->nokeys + 4 * c->plan.nwins);
+    for (size_t k = 0; w->rows && k < c->x.nsx; k++) {
+        n += sizeof(GsqlBuf) + w->rows[k].capacity;
+    }
+    for (size_t o = 0; o < c->plan.norderings; o++) {
+        n += sizeof(GsqlBuf) + w->pkey[o].capacity;
+    }
+    return n;
 }
 
 /* The collection, up to `budget` rows: 1 more remain, 0 all collected, -1
@@ -2911,14 +3186,18 @@ static int win_collect_step(SqlCursor *c, uint64_t budget) {
         if (r == 0) {
             return 0;
         }
-        if (c->nwrows == c->capwrows) {
-            c->capwrows = c->capwrows ? c->capwrows * 2 : 64;
-            c->wrows = realloc(c->wrows, sizeof(WinRow) * c->capwrows);
-            if (!c->wrows) {
-                abort();
+        WinRow spilled_row;
+        WinRow *w = &spilled_row;
+        if (!c->wspilled) {
+            if (c->nwrows == c->capwrows) {
+                c->capwrows = c->capwrows ? c->capwrows * 2 : 64;
+                c->wrows = realloc(c->wrows, sizeof(WinRow) * c->capwrows);
+                if (!c->wrows) {
+                    abort();
+                }
             }
+            w = &c->wrows[c->nwrows++];
         }
-        WinRow *w = &c->wrows[c->nwrows++];
         memset(w, 0, sizeof *w);
         if (c->grouped) {
             w->group = c->groups.order[c->groups.pos - 1];
@@ -2970,9 +3249,33 @@ static int win_collect_step(SqlCursor *c, uint64_t budget) {
             SqlExpr *e = p->wins[k];
             for (size_t j = 0; j < e->na; j++) {
                 if (!(w->args[3 * k + j] = eval(x, e->a[j]))) {
+                    if (w == &spilled_row) {
+                        winrow_free(c, w);
+                    }
                     return -1;
                 }
             }
+        }
+        if (win_kinds(c, w) < 0) {
+            if (w == &spilled_row) {
+                winrow_free(c, w);
+            }
+            return -1;
+        }
+        if (c->wspilled) {
+            int rc = win_encode(c, w, &c->wbuf);
+            if (rc == GSQL_OK) {
+                rc = rs_add(x, &c->wstore, c->wbuf.bytes, c->wbuf.length);
+            }
+            winrow_free(c, w);
+            if (rc != GSQL_OK) {
+                return -1;
+            }
+            continue;
+        }
+        c->wheld += win_cost(c, w);
+        if (c->wheld > c->q->sort_budget && !c->wunkeyed && win_spill_start(c) != GSQL_OK) {
+            return -1;
         }
     }
 }
@@ -3109,8 +3412,10 @@ static int win_partition(SqlCursor *c, SqlExpr *e, const size_t *v, size_t ps, s
     const SqlWindow *w = e->over;
     size_t slot = e->index;
     size_t n = pe - ps;
-#define ARG(i, j) (c->wrows[v[i]].args[3 * slot + (j)])
-#define RES(i) (c->wrows[v[i]].res[slot])
+/* an argument, borrowed; an answer, taken: from and to the rows in memory,
+   or past the budget the row store and the answers' sorter (§11) */
+#define ARG(i, j) (c->wspilled ? win_arg_peek(c, v[i], slot, (j)) : c->wrows[v[i]].args[3 * slot + (j)])
+#define RES_PUT(i, r) (c->wspilled ? win_res_put(c, v[i], slot, (r)) : (c->wrows[v[i]].res[slot] = (r), GSQL_OK))
     if (e->op >= SQL_WIN_ROW_NUMBER && e->op <= SQL_WIN_LEAD) {
         uint64_t dense = 0;
         for (size_t i = ps; i < pe; i++) {
@@ -3160,7 +3465,9 @@ static int win_partition(SqlCursor *c, SqlExpr *e, const size_t *v, size_t ps, s
             if (!r) {
                 return x->err->code ? x->err->code : GSQL_EXPRESSION;
             }
-            RES(i) = r;
+            if (RES_PUT(i, r) != GSQL_OK) {
+                return x->err->code ? x->err->code : GSQL_EXPRESSION;
+            }
         }
         return GSQL_OK;
     }
@@ -3243,18 +3550,289 @@ static int win_partition(SqlCursor *c, SqlExpr *e, const size_t *v, size_t ps, s
             rc = x->err->code ? x->err->code : GSQL_EXPRESSION;
             break;
         }
-        RES(i) = r;
+        if (RES_PUT(i, r) != GSQL_OK) {
+            rc = x->err->code ? x->err->code : GSQL_EXPRESSION;
+            break;
+        }
     }
     acc_reset(x, &acc);
     return rc;
 #undef ARG
-#undef RES
+#undef RES_PUT
+}
+
+/* the partition in hand computed: its rows' arrival numbers `seqs[0..m)`,
+   brk[i] set where a peer group begins */
+static int win_flush(SqlCursor *c, size_t o, const size_t *seqs, const unsigned char *brk, size_t m, size_t *plo,
+                     size_t *phi) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    for (size_t i = 0; i < m;) {
+        size_t j = i + 1;
+        while (j < m && !brk[j]) {
+            j++;
+        }
+        for (size_t q = i; q < j; q++) {
+            plo[q] = i;
+            phi[q] = j;
+        }
+        i = j;
+    }
+    int rc = GSQL_OK;
+    for (size_t k = 0; k < p->nwins && rc == GSQL_OK; k++) {
+        SqlExpr *e = p->wins[k];
+        if (e->over->ordering != o) {
+            continue;
+        }
+        uint64_t ns = 0, ne = 0;
+        rc = frame_count(x, e->over->start_n, &ns);
+        if (rc == GSQL_OK) {
+            rc = frame_count(x, e->over->end_n, &ne);
+        }
+        if (rc == GSQL_OK) {
+            rc = win_partition(c, e, seqs, 0, m, plo, phi, ns, ne);
+        }
+    }
+    return rc;
+}
+
+/* every row stored: each ordering through the sorter, each partition computed
+   as it comes off, every answer to the answers' sorter (§11) */
+static int win_compute_spilled(SqlCursor *c) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    size_t n = c->wstore.n;
+    int xr = gs_xsort_open(NULL, c->q->sort_run, &c->wres);
+    if (xr) {
+        c->wres = NULL;
+        return xsort_fail(c, xr);
+    }
+    size_t cap = 64, m = 0;
+    size_t *seqs = malloc(sizeof(size_t) * cap), *plo = NULL, *phi = NULL;
+    unsigned char *brk = malloc(cap);
+    if (!seqs || !brk) {
+        abort();
+    }
+    GsqlBuf key = {0}, pk = {0}, ok = {0};
+    int rc = GSQL_OK;
+    for (size_t o = 0; o < p->norderings && rc == GSQL_OK; o++) {
+        const SqlWindow *win = ordering_window(p, o);
+        GsXsort *s = NULL;
+        if ((xr = gs_xsort_open(NULL, c->q->sort_run, &s))) {
+            rc = xsort_fail(c, xr);
+            break;
+        }
+        for (size_t seq = 0; seq < n && rc == GSQL_OK; seq++) {
+            if ((rc = rs_get(x, &c->wstore, seq, &c->wbuf)) != GSQL_OK) {
+                break;
+            }
+            WinRd r;
+            wrd_start(&r, &c->wbuf, x->nsx);
+            const unsigned char *v;
+            size_t vn;
+            if (!wrd_nth(&r, o, &v, &vn)) {
+                rc = wrd_fail(c);
+                break;
+            }
+            key.length = 0;
+            v3_put(&key, v, vn);
+            uint32_t pl = (uint32_t)vn;
+            /* this ordering's ORDER BY values, in the key encoding */
+            wrd_start(&r, &c->wbuf, x->nsx);
+            if (!wrd_nth(&r, p->norderings + c->ooff[o], &v, &vn)) {
+                rc = wrd_fail(c);
+                break;
+            }
+            GsqlKey k;
+            gsql_key_init(&k);
+            for (size_t j = 0; j < win->norder && rc == GSQL_OK; j++) {
+                if (j && !wrd_field(&r, &v, &vn)) {
+                    rc = wrd_fail(c);
+                    break;
+                }
+                if (!v || gsql_key_append(&k, v, vn, NULL, win->order[j].desc ? GSQL_KEY_DESC : 0) != GSQL_KEY_OK) {
+                    rc = xfail(x->err, GSQL_EXPRESSION, win->order[j].e->pos,
+                               "a window's ORDER BY sorts more rows than fit in memory, and %s has no sort key "
+                               "G-SQL can put on disk", tag_word(v && vn ? v[0] : 0));
+                }
+            }
+            if (rc == GSQL_OK) {
+                v3_put(&key, k.bytes, k.length);
+                uint32_t ol = (uint32_t)k.length;
+                for (int i = 7; i >= 0; i--) {
+                    unsigned char b = (unsigned char)((uint64_t)seq >> (8 * i));
+                    v3_put(&key, &b, 1);
+                }
+                unsigned char lens[8];
+                for (int i = 0; i < 4; i++) {
+                    lens[i] = (unsigned char)(pl >> (8 * i));
+                    lens[4 + i] = (unsigned char)(ol >> (8 * i));
+                }
+                if ((xr = gs_xsort_add(s, key.bytes, key.length, lens, 8))) {
+                    rc = xsort_fail(c, xr);
+                }
+            }
+            gsql_key_free(&k);
+        }
+        if (rc == GSQL_OK && (xr = gs_xsort_finish(s))) {
+            rc = xsort_fail(c, xr);
+        }
+        /* the partitions, one at a time */
+        m = 0;
+        int have_part = 0;
+        while (rc == GSQL_OK) {
+            GsBytes ek, ev;
+            int have;
+            if ((xr = gs_xsort_next(s, &ek, &ev, &have))) {
+                rc = xsort_fail(c, xr);
+                break;
+            }
+            if (!have) {
+                break;
+            }
+            uint32_t pl = get_u32(ev.p), ol = get_u32(ev.p + 4);
+            size_t seq = (size_t)key_seq(ek.p, ek.n);
+            int newpart = !have_part || pk.length != pl || memcmp(pk.bytes, ek.p, pl) != 0;
+            if (newpart && have_part) {
+                plo = realloc(plo, sizeof(size_t) * (m ? m : 1));
+                phi = realloc(phi, sizeof(size_t) * (m ? m : 1));
+                if (!plo || !phi) {
+                    abort();
+                }
+                rc = win_flush(c, o, seqs, brk, m, plo, phi);
+                m = 0;
+                if (rc != GSQL_OK) {
+                    break;
+                }
+            }
+            if (newpart) {
+                pk.length = 0;
+                v3_put(&pk, ek.p, pl);
+                have_part = 1;
+            }
+            if (m == cap) {
+                cap *= 2;
+                seqs = realloc(seqs, sizeof(size_t) * cap);
+                brk = realloc(brk, cap);
+                if (!seqs || !brk) {
+                    abort();
+                }
+            }
+            brk[m] = m == 0 || ok.length != ol || memcmp(ok.bytes, ek.p + pl, ol) != 0;
+            ok.length = 0;
+            v3_put(&ok, ek.p + pl, ol);
+            seqs[m++] = seq;
+        }
+        if (rc == GSQL_OK && m) {
+            plo = realloc(plo, sizeof(size_t) * m);
+            phi = realloc(phi, sizeof(size_t) * m);
+            if (!plo || !phi) {
+                abort();
+            }
+            rc = win_flush(c, o, seqs, brk, m, plo, phi);
+        }
+        c->q->spill_runs += gs_xsort_runs(s);
+        gs_xsort_close(s);
+    }
+    free(seqs);
+    free(brk);
+    free(plo);
+    free(phi);
+    gsql_buf_free(&key);
+    gsql_buf_free(&pk);
+    gsql_buf_free(&ok);
+    rel(x, c->wpeek);
+    c->wpeek = NULL;
+    if (rc == GSQL_OK && (xr = gs_xsort_finish(c->wres))) {
+        rc = xsort_fail(c, xr);
+    }
+    c->wpos = 0;
+    return rc;
+}
+
+/* the next spilled row, replayed in arrival order with its answers */
+static int next_win_row_spilled(SqlCursor *c) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    x->winv = NULL;
+    if (!c->wrow_res) {
+        c->wrow_res = calloc(p->nwins ? p->nwins : 1, sizeof(GsqlHv *));
+        if (!c->wrow_res) {
+            abort();
+        }
+    }
+    for (size_t k = 0; k < p->nwins; k++) {
+        rel(x, c->wrow_res[k]);
+        c->wrow_res[k] = NULL;
+    }
+    if (c->wpos >= c->wstore.n) {
+        return 0;
+    }
+    size_t seq = c->wpos++;
+    if (rs_get(x, &c->wstore, seq, &c->wbuf) != GSQL_OK) {
+        return -1;
+    }
+    /* the row's state */
+    const unsigned char *b = c->wbuf.bytes;
+    size_t n = c->wbuf.length, at = 0;
+    row_clear(x);
+    for (size_t k = 0; k < x->nsx; k++) {
+        if (at + 5 > n) {
+            return wrd_fail(c), -1;
+        }
+        unsigned char st = b[at];
+        uint32_t len = get_u32(b + at + 1);
+        at += 5;
+        if (len > n - at) {
+            return wrd_fail(c), -1;
+        }
+        XScan *xs = &x->sx[k];
+        if (st == 1) {
+            xs->row.length = 0;
+            v3_put(&xs->row, b + at, len);
+            xs->have_row = 1;
+        } else if (st == 2) {
+            xs->nulled = 1;
+        }
+        at += len;
+    }
+    if (at + 8 > n) {
+        return wrd_fail(c), -1;
+    }
+    size_t group = (size_t)get_u64(b + at);
+    if (c->grouped) {
+        group_restore(x, &c->groups.v[group]);
+    }
+    /* and its answers, which come off the sorter in arrival order */
+    for (size_t k = 0; k < p->nwins; k++) {
+        GsBytes ek, ev;
+        int have;
+        int xr = gs_xsort_next(c->wres, &ek, &ev, &have);
+        if (xr) {
+            xsort_fail(c, xr);
+            return -1;
+        }
+        if (!have || ek.n != 12 || key_seq(ek.p, 8) != seq) {
+            xfail(x->err, GSQL_MISUSE, 0, "a window's answers did not come back with their row");
+            return -1;
+        }
+        size_t slot = (size_t)ek.p[8] << 24 | (size_t)ek.p[9] << 16 | (size_t)ek.p[10] << 8 | ek.p[11];
+        if (slot >= p->nwins || !(c->wrow_res[slot] = hv_bytes(x, ev.p, ev.n))) {
+            xfail(x->err, GSQL_MISUSE, 0, "a window's answer did not read back");
+            return -1;
+        }
+    }
+    x->winv = c->wrow_res;
+    return 1;
 }
 
 /* every row collected: each ordering sorted, each window answered */
 static int win_compute(SqlCursor *c) {
     X *x = &c->x;
     SqlPlan *p = &c->plan;
+    if (c->wspilled) {
+        return win_compute_spilled(c);
+    }
     size_t n = c->nwrows;
     size_t *v = malloc(sizeof(size_t) * (n ? n : 1)), *tmp = malloc(sizeof(size_t) * (n ? n : 1));
     size_t *plo = malloc(sizeof(size_t) * (n ? n : 1)), *phi = malloc(sizeof(size_t) * (n ? n : 1));
@@ -3329,6 +3907,9 @@ static int win_compute(SqlCursor *c) {
 /* the next windowed row, replayed in the order collected: 1, 0 at the end */
 static int next_win_row(SqlCursor *c) {
     X *x = &c->x;
+    if (c->wspilled) {
+        return next_win_row_spilled(c);
+    }
     if (c->wpos) {
         winrow_free(c, &c->wrows[c->wpos - 1]);   /* freed as it goes, as a sort's rows are */
     }

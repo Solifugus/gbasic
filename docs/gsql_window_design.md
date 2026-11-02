@@ -73,7 +73,7 @@ A windowed query never reads its table in the statement's `ORDER BY` order to sa
 
 Then the rows are replayed in the order collected: each row's state restored, as a group's is, with its window answers where `eval` finds them, so the select list, `DISTINCT` and the statement's `ORDER BY` run over them unchanged.
 
-**Cost.** An aggregate whose frame starts at the partition's start is a running fold, and one whose frame ends at the partition's end is folded from the end backwards, so either is one pass. A frame bounded at both ends (`ROWS BETWEEN 3 PRECEDING AND 3 FOLLOWING`) is folded afresh for each row, which costs the frame's width per row. The rows are held in memory, as a sort's are today (`gsql_practices.md` §2); they move to disk with the other operators (`gsql_operator_spill_design.md`). The collection is sliced (`gsql_slicing_design.md`); in this first increment, the computing that follows it runs in one piece.
+**Cost.** An aggregate whose frame starts at the partition's start is a running fold, and one whose frame ends at the partition's end is folded from the end backwards, so either is one pass. A frame bounded at both ends (`ROWS BETWEEN 3 PRECEDING AND 3 FOLLOWING`) is folded afresh for each row, which costs the frame's width per row. The rows are held in memory up to the operator budget and spill to disk past it (`gsql_operator_spill_design.md` §11, shipped the same day). The collection is sliced (`gsql_slicing_design.md`); in this first increment, the computing that follows it runs in one piece.
 
 ## 6. Tests
 
