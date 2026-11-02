@@ -28,28 +28,28 @@ sql from_sensor_3 on readings
     select count(*) as n from reading where sensor = 3
 end sql
 
-gsql.exec(make)
+make.exec()
 
 batch = 1000
 commits = 0
-gsql.begin(readings)
+readings.begin()
 for i = 1 to 2500
     id = i
     sensor = mod(i, 7)
     value = i / 4
-    gsql.exec(add)
+    add.exec()
     if mod(i, batch) = 0 then
-        gsql.commit(readings)
+        readings.commit()
         commits = commits + 1
-        gsql.begin(readings)
+        readings.begin()
     end if
 next
-gsql.commit(readings)           ' the last, partial batch
+readings.commit()           ' the last, partial batch
 commits = commits + 1
 
-r = gsql.query(how_many)[0]
+r = how_many.query()[0]
 print string(r.n) + " rows in " + string(commits) + " commits"
-print string(gsql.query(from_sensor_3)[0].n) + " readings from sensor 3"
+print string(from_sensor_3.query()[0].n) + " readings from sensor 3"
 
-gsql.close(readings)
+readings.close()
 remove_tree({dir}"cookbook_load.gsql")

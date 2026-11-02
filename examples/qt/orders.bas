@@ -39,11 +39,11 @@ window orders( title: "Orders", width: 560, height: 380 )
     ' `qt.selected` answers an INDEX, which is what lets it index the very
     ' list the table was built from.
     on lines_view.itemSelectionChanged
-        at = qt.selected(orders, "lines_view")
+        at = orders.selected("lines_view")
         if not is_unknown(at) then
             row = lines[at]
-            x = qt.write(orders, "who", row.who)
-            x = qt.write(orders, "total", row.total)
+            x = orders.write("who", row.who)
+            x = orders.write("total", row.total)
         end if
     end on
 
@@ -68,21 +68,21 @@ program main(args)
         qt.open(orders)
         ' A ROW CHOSEN FROM THE PROGRAM, so the window opens with something in
         ' it rather than waiting to be clicked.
-        qt.select(orders, "lines_view", 0)
+        orders.select("lines_view", 0)
 
         if contains(args, "check") then
             print "rows:          " + string(len(lines))
-            print "chosen row:    " + string(qt.selected(orders, "lines_view"))
-            print "its customer:  " + qt.cell(orders, "lines_view", 0, "who")
+            print "chosen row:    " + string(orders.selected("lines_view"))
+            print "its customer:  " + orders.cell("lines_view", 0, "who")
             ' THE CAPTION COMES FROM `label:` WHERE THE DATA COMES FROM `name`,
             ' which is why the heading is an independent oracle: a column
             ' reading the wrong field still shows a plausible value under a
             ' heading that would have to be wrong too.
-            print "its heading:   " + qt.heading(orders, "lines_view", "who")
-            print "by position:   " + qt.heading(orders, "lines_view", 1)
-            qt.select(orders, "lines_view", 2)
-            print "after select:  " + string(qt.selected(orders, "lines_view"))
-            print "that customer: " + qt.cell(orders, "lines_view", 2, "who")
+            print "its heading:   " + orders.heading("lines_view", "who")
+            print "by position:   " + orders.heading("lines_view", 1)
+            orders.select("lines_view", 2)
+            print "after select:  " + string(orders.selected("lines_view"))
+            print "that customer: " + orders.cell("lines_view", 2, "who")
             qt.stop()
             return
         end if

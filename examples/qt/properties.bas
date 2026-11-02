@@ -52,7 +52,7 @@ window form( title: "Properties", width: 440, height: 340 )
     ' declaration is written before anybody has typed anything, so "enable Save
     ' once there is a name" has nowhere else to live.
     on name.textChanged
-        qt.set(form, "save", "enabled", len(qt.read(form, "name")) > 0)
+        form.set("save", "enabled", len(form.read("name")) > 0)
     end on
 
     on close.clicked
@@ -71,31 +71,31 @@ program main(args)
 
     if contains(args, "check") then
         print "-- read back what the DECLARATION set"
-        print "pin maxLength:     " + string(qt.read(form, "pin", "maxLength"))
-        print "pin echoMode:      " + string(qt.read(form, "pin", "echoMode"))
-        print "name placeholder:  " + qt.read(form, "name", "placeholderText")
-        print "note toolTip:      " + qt.read(form, "note", "toolTip")
-        print "locked readOnly:   " + string(qt.read(form, "locked", "readOnly"))
+        print "pin maxLength:     " + string(form.read("pin", "maxLength"))
+        print "pin echoMode:      " + string(form.read("pin", "echoMode"))
+        print "name placeholder:  " + form.read("name", "placeholderText")
+        print "note toolTip:      " + form.read("note", "toolTip")
+        print "locked readOnly:   " + string(form.read("locked", "readOnly"))
 
         ' AND AN ENUM ANSWERS ITS NAME: `echoMode: 2` goes in as a number and
         ' comes back as "Password", because the QVariant Qt hands over carries
         ' the enumerator. Worth knowing before comparing one to the number you
         ' set.
         print "-- the KIND is Qt's, not the caller's"
-        print "maxLength is a:    " + type(qt.read(form, "pin", "maxLength"))
-        print "readOnly is a:     " + type(qt.read(form, "locked", "readOnly"))
+        print "maxLength is a:    " + type(form.read("pin", "maxLength"))
+        print "readOnly is a:     " + type(form.read("locked", "readOnly"))
 
         print "-- `qt.set`: what the declaration could not know"
-        print "save enabled:      " + string(qt.read(form, "save", "enabled"))
-        qt.write(form, "name", "Ada Lovelace")
-        print "after typing:      " + string(qt.read(form, "save", "enabled"))
+        print "save enabled:      " + string(form.read("save", "enabled"))
+        form.write("name", "Ada Lovelace")
+        print "after typing:      " + string(form.read("save", "enabled"))
 
         print "-- a misspelling is refused BY NAME, at both doors"
         print "reading `maxLenght`: " + probe_read("pin", "maxLenght")
         print "setting `maxLenght`: " + probe_set("pin", "maxLenght")
         ' AND THE CONTROL, or "it refuses" is satisfied by refusing everything.
-        qt.set(form, "pin", "maxLength", 6)
-        print "a REAL property set:  " + string(qt.read(form, "pin", "maxLength"))
+        form.set("pin", "maxLength", 6)
+        print "a REAL property set:  " + string(form.read("pin", "maxLength"))
         qt.stop()
         return
     end if
@@ -104,7 +104,7 @@ end program
 
 function probe_read(part, prop)
     on error goto handle
-    v = qt.read(form, part, prop)
+    v = form.read(part, prop)
     return "ANSWERED " + string(v)
 handle:
     m = error.message
@@ -114,7 +114,7 @@ end function
 
 function probe_set(part, prop)
     on error goto handle
-    qt.set(form, part, prop, 1)
+    form.set(part, prop, 1)
     return "ACCEPTED"
 handle:
     m = error.message

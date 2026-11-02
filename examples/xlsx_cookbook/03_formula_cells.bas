@@ -8,17 +8,17 @@
 program main(args)
   wb = xlsx.open("examples/fixtures/xlsx/basic.xlsx")
 
-  b5 = xlsx.cell(wb, "Ledger", "B5")
+  b5 = wb.cell("Ledger", "B5")
   print "B5 formula      = " + b5.formula
   print "B5 cached value = " + b5.value
   print "B5 kind         = " + b5.kind
 
   ' `evaluate` ignores the cached value and computes the formula now.
-  print "B5 evaluated    = " + xlsx.evaluate(wb, "Ledger", "B5")
+  print "B5 evaluated    = " + wb.evaluate("Ledger", "B5")
 
   ' A cell with no formula reports `unknown` for it -- test with is_unknown,
   ' do not compare against "".
-  b2 = xlsx.cell(wb, "Ledger", "B2")
+  b2 = wb.cell("Ledger", "B2")
   print ""
   print "B2 has a formula = " + (not is_unknown(b2.formula))
   print "B2 value         = " + b2.value

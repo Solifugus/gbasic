@@ -56,36 +56,36 @@ program main( args )
     qt.open(ide)
 
     ' WHERE A PANE IS, asked of the window rather than of the declaration.
-    print "branches: " + qt.dock(ide, "branches").area + ", sharing a tab group with " + string(qt.dock(ide, "branches").tabbed_with)
-    print "console:  " + qt.dock(ide, "console").area + ", sharing a tab group with " + string(qt.dock(ide, "console").tabbed_with)
+    print "branches: " + ide.dock("branches").area + ", sharing a tab group with " + string(ide.dock("branches").tabbed_with)
+    print "console:  " + ide.dock("console").area + ", sharing a tab group with " + string(ide.dock("console").tabbed_with)
 
     ' A STATUS BAR NEEDS NO VERB: a `text` part in it is an ordinary widget
     ' whose `text` property `qt.set` reaches, which is why there is nothing
     ' like `qt.status(...)` to learn.
-    print "status says:              " + qt.read(ide, "msg", "text")
-    qt.set(ide, "msg", "text", "Saved notes.bas")
-    print "and after qt.set:         " + qt.read(ide, "msg", "text")
+    print "status says:              " + ide.read("msg", "text")
+    ide.set("msg", "text", "Saved notes.bas")
+    print "and after qt.set:         " + ide.read("msg", "text")
 
     ' A TOOLBAR HOLDS WHAT A MENU HOLDS -- the same items, so `checkable:` and
     ' `icon:` work on them too.
-    print "a toolbar item's label:   " + qt.read(ide, "open", "text")
-    qt.set(ide, "save", "checkable", true)
-    print "and one can be checkable: " + string(qt.read(ide, "save", "checkable"))
+    print "a toolbar item's label:   " + ide.read("open", "text")
+    ide.set("save", "checkable", true)
+    print "and one can be checkable: " + string(ide.read("save", "checkable"))
 
     ' KEEP THE ARRANGEMENT. The text is Qt's own format -- store it, do not
     ' read it; `qt.dock` is what answers questions about a pane.
-    saved = qt.layout(ide)
+    saved = ide.layout()
     print "the layout is text, kept as " + string(len(saved)) + " characters"
 
     ' A PERSON DRAGS A PANE OUT; the program puts it back.
-    qt.set(ide, "branches", "floating", true)
-    print "floated:                  " + string(qt.dock(ide, "branches").floating)
-    print "restored:                 " + string(qt.restore_layout(ide, saved))
-    print "floating now:             " + string(qt.dock(ide, "branches").floating)
+    ide.set("branches", "floating", true)
+    print "floated:                  " + string(ide.dock("branches").floating)
+    print "restored:                 " + string(ide.restore_layout(saved))
+    print "floating now:             " + string(ide.dock("branches").floating)
 
     ' AND AN ARRANGEMENT SAVED BEFORE THE WINDOW CHANGED IS REPORTED, NOT
     ' RAISED -- an ordinary thing to find on startup.
-    print "an unrecognised layout:   " + string(qt.restore_layout(ide, "bm90IG1pbmU="))
+    print "an unrecognised layout:   " + string(ide.restore_layout("bm90IG1pbmU="))
 
-    qt.close(ide)
+    ide.close()
 end program

@@ -59,7 +59,7 @@ window app( title: "Browser", width: 620, height: 420 )
     on files.customContextMenuRequested
         ' QT MOVED THE SELECTION ON THE RIGHT-PRESS, so this is the row under
         ' the pointer and not wherever the selection happened to be.
-        at = qt.selected(app, "files")
+        at = app.selected("files")
         if is_unknown(at) then
             return
         end if
@@ -68,13 +68,13 @@ window app( title: "Browser", width: 620, height: 420 )
 
         is_file = row.kind = "file"
         is_dir = row.kind = "folder"
-        qt.set(app, "open_it",   "visible", is_file)
-        qt.set(app, "rename_it", "visible", is_file or is_dir)
-        qt.set(app, "delete_it", "visible", is_file or is_dir)
-        qt.set(app, "new_here",  "visible", is_dir)
-        qt.set(app, "info_it",   "visible", is_file or is_dir)
+        app.set("open_it",   "visible", is_file)
+        app.set("rename_it", "visible", is_file or is_dir)
+        app.set("delete_it", "visible", is_file or is_dir)
+        app.set("new_here",  "visible", is_dir)
+        app.set("info_it",   "visible", is_file or is_dir)
 
-        g.offered = qt.popup(app, "row_actions")
+        g.offered = app.popup("row_actions")
         if g.offered then
             g.lines = append(g.lines, ("right-click on " + row.name +
                                        " (" + row.kind + ")"))
@@ -83,32 +83,32 @@ window app( title: "Browser", width: 620, height: 420 )
             ' menu, which is what the `false` is for.
             g.lines = append(g.lines, row.name + " offers nothing")
         end if
-        x = qt.write(app, "log", join(g.lines, chr(10)))
+        x = app.write("log", join(g.lines, chr(10)))
     end on
 
     on open_it.triggered
         g.lines = append(g.lines, "  -> open " + g.clicked)
-        x = qt.write(app, "log", join(g.lines, chr(10)))
+        x = app.write("log", join(g.lines, chr(10)))
     end on
 
     on rename_it.triggered
         g.lines = append(g.lines, "  -> rename " + g.clicked)
-        x = qt.write(app, "log", join(g.lines, chr(10)))
+        x = app.write("log", join(g.lines, chr(10)))
     end on
 
     on new_here.triggered
         g.lines = append(g.lines, "  -> new file in " + g.clicked)
-        x = qt.write(app, "log", join(g.lines, chr(10)))
+        x = app.write("log", join(g.lines, chr(10)))
     end on
 
     on delete_it.triggered
         g.lines = append(g.lines, "  -> delete " + g.clicked)
-        x = qt.write(app, "log", join(g.lines, chr(10)))
+        x = app.write("log", join(g.lines, chr(10)))
     end on
 
     on info_it.triggered
         g.lines = append(g.lines, "  -> properties of " + g.clicked)
-        x = qt.write(app, "log", join(g.lines, chr(10)))
+        x = app.write("log", join(g.lines, chr(10)))
     end on
 end window
 
@@ -134,31 +134,31 @@ program main(args)
         ' which is also the only way to reach a table at all, since a table
         ' answers a right-click on its scrolling area rather than on the
         ' widget, and nothing in gBASIC can name that.
-        qt.right_click(app, "files", 1)
+        app.right_click("files", 1)
         print "folder:   clicked " + g.clicked + ", menu " + string(g.offered)
         print ("          open offered " +
-               string(qt.read(app, "open_it", "visible")) +
+               string(app.read("open_it", "visible")) +
                ", new-here offered " +
-               string(qt.read(app, "new_here", "visible")))
+               string(app.read("new_here", "visible")))
 
-        qt.right_click(app, "files", 0)
+        app.right_click("files", 0)
         print "file:     clicked " + g.clicked + ", menu " + string(g.offered)
         print ("          open offered " +
-               string(qt.read(app, "open_it", "visible")) +
+               string(app.read("open_it", "visible")) +
                ", new-here offered " +
-               string(qt.read(app, "new_here", "visible")))
-        qt.invoke(app, "open_it", "trigger")
+               string(app.read("new_here", "visible")))
+        app.invoke("open_it", "trigger")
 
-        qt.right_click(app, "files", 3)
+        app.right_click("files", 3)
         print "project:  clicked " + g.clicked + ", menu " + string(g.offered)
 
-        print "the menu: " + string(qt.menus(app, "row_actions"))
-        print "the bar:  " + string(qt.menus(app))
+        print "the menu: " + string(app.menus("row_actions"))
+        print "the bar:  " + string(app.menus())
         print "log:"
         for each line in g.lines
             print "  " + line
         end for
-        qt.close(app)
+        app.close()
         return
     end if
 

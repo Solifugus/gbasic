@@ -13,14 +13,14 @@ program main(args)
   ' Or name the driver and give it its own options directly:
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
 
-  odbc.exec(db, "drop table if exists staff")
-  odbc.exec(db, "create table staff (id integer, name varchar(40), team varchar(20))")
-  odbc.exec(db, "insert into staff values (1, 'Ada', 'compilers')")
-  odbc.exec(db, "insert into staff values (2, 'Grace', 'runtime')")
+  db.exec("drop table if exists staff")
+  db.exec("create table staff (id integer, name varchar(40), team varchar(20))")
+  db.exec("insert into staff values (1, 'Ada', 'compilers')")
+  db.exec("insert into staff values (2, 'Grace', 'runtime')")
 
   ' A query returns an ARRAY OF RECORDS. Each record's fields are the result
   ' columns, named exactly as the SQL named them.
-  rows = odbc.query(db, "select id, name, team from staff order by id")
+  rows = db.query("select id, name, team from staff order by id")
 
   print "rows: " + string(count(rows))
   for each row in rows
@@ -32,7 +32,7 @@ program main(args)
   print "first name: " + rows[0].name
   print "field names: " + string(keys(rows[0]))
 
-  odbc.close(db)
+  db.close()
   f {file}= "examples/tmp_cookbook_odbc.db"
   if exists(f) then
     delete(f)

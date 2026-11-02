@@ -113,6 +113,39 @@ end watch
 total = 1
 ```
 
+G-SQL is gBASIC's own database, where a stored value comes back as the value it
+was: money with its currency, an exact integer, a date. SQL is written in
+blocks, a `:name` reads the variable of that name, and a connection and a block
+are handles whose verbs are methods:
+
+```basic
+load gsql
+
+database shop( file: "shop.gsql", create: true )
+
+sql make on shop
+    create table item (name string primary key, price money)
+end sql
+
+sql add on shop
+    insert into item (name, price) values (:name, :price)
+end sql
+
+sql cheap on shop
+    select name, price from item where price < :limit order by price
+end sql
+
+make.exec()
+add.exec({ name: "apple", price: {USD}"0.50" })
+add.exec({ name: "melon", price: {USD}"3.25" })
+
+limit {USD}= 1.00
+for each row in cheap
+    print(row.name + " costs " + string(row.price))
+end for
+shop.close()
+```
+
 The [tutorial](docs/tutorial.md) covers the language properly; the
 [reference](docs/reference.md) documents every construct and builtin.
 
@@ -129,7 +162,7 @@ continue across a line break inside an unclosed `(`, `[` or `{`; `for each` with
 `break`/`continue` that may name their loop; arrays, records and nested
 assignment; functions with literal default parameter values, programs,
 libraries and `load` (with `as` to pick the qualifier); first-class function
-values; **prototypal objects** with per-property inheritance policies;
+values; methods on records and on handles (`db.close()` is `gsql.close(db)`); **prototypal objects** with per-property inheritance policies;
 modifiers that validate or convert — as an
 assignment clause, inline in any expression, chained with `;`, and any of them
 usable as a comparison lens; watchers and locks; frame-scoped

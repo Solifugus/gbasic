@@ -22,12 +22,12 @@ sql paid_in_all on pay_db
     select count(*) as n, sum(amount) as s from payment
 end sql
 
-gsql.exec(make)
+make.exec()
 
 ' :request and :amount are this function's own parameters
 function pay(request, amount)
     on error goto next
-    gsql.exec(record_payment)
+    record_payment.exec()
     if error then
         if error.details.code = "DUPLICATE" then
             return "already done"
@@ -40,8 +40,8 @@ end function
 print pay("req-1001", {USD}"25.00")
 print pay("req-1001", {USD}"25.00")       ' the retry
 print pay("req-1002", {USD}"40.00")
-r = gsql.query(paid_in_all)[0]
+r = paid_in_all.query()[0]
 print string(r.n) + " payments, " + string(r.s) + " in all"
 
-gsql.close(pay_db)
+pay_db.close()
 remove_tree({dir}"cookbook_pay.gsql")

@@ -50,11 +50,11 @@ program main(args)
     qt.open(invoice)
 
     print "it generated " + string(len(lines)) + " rows"
-    print "row 0 shows:  " + qt.read(invoice, "d1")
-    print "row 2 holds:  " + qt.read(invoice, "q3")
+    print "row 0 shows:  " + invoice.read("d1")
+    print "row 2 holds:  " + invoice.read("q3")
     ' AND THE GEOMETRY IS REAL, asked of the layout rather than of any record
     ' of where we put things.
-    at = qt.at(invoice, "q3")
+    at = invoice.at("q3")
     print "q3 sits at row " + string(at.row) + ", column " + string(at.column)
     qt.stop()
 

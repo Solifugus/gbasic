@@ -35,7 +35,7 @@ window editor( title: "Menus", width: 480, height: 300 )
     ' TYPING ENABLES Save, which is the ordinary reason a menu item's state
     ' changes: a fact about the program rather than about the declaration.
     on title.textChanged
-        qt.set(editor, "act_save", "enabled", len(qt.read(editor, "title")) > 0)
+        editor.set("act_save", "enabled", len(editor.read("title")) > 0)
     end on
 end window
 
@@ -49,17 +49,17 @@ program main(args)
     ' THE BAR IS A TREE AND THE PARTS REGISTRY IS FLAT, so `qt.menus` is the
     ' only thing that can witness the STRUCTURE -- an item in the wrong menu or
     ' a submenu hung off the bar is invisible to a lookup by name.
-    print "the bar:        " + string(qt.menus(editor))
-    print "File holds:     " + string(qt.menus(editor, 0))
-    print "View holds:     " + string(qt.menus(editor, 1))
+    print "the bar:        " + string(editor.menus())
+    print "File holds:     " + string(editor.menus(0))
+    print "View holds:     " + string(editor.menus(1))
     ' A SEPARATOR ANSWERS `unknown`, NOT "": it HAS no caption, where an item
     ' with `label: ""` has an empty one.
     print ("entry 2 of File is a separator: " +
-           string(is_unknown(qt.menus(editor, 0)[2])))
+           string(is_unknown(editor.menus(0)[2])))
 
-    print "Save's shortcut: " + qt.read(editor, "act_save", "shortcut")
-    print "Save enabled:    " + string(qt.read(editor, "act_save", "enabled"))
-    qt.write(editor, "title", "notes.txt")
-    print "after typing:    " + string(qt.read(editor, "act_save", "enabled"))
+    print "Save's shortcut: " + editor.read("act_save", "shortcut")
+    print "Save enabled:    " + string(editor.read("act_save", "enabled"))
+    editor.write("title", "notes.txt")
+    print "after typing:    " + string(editor.read("act_save", "enabled"))
     qt.stop()
 end program

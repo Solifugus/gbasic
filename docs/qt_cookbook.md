@@ -44,6 +44,8 @@ introspectable record and costs no display — which is why `qt.check` can apply
 its rules on a text-only machine, and why `qt.open` runs that same check before
 it builds anything.
 
+A window is a **handle**, and the `qt` verbs that take one are its methods: `app.open()`, `app.read("who", "text")`, `app.set("save", "enabled", false)`. `qt.read(app, "who", "text")` is the same call written the other way. Verbs that take no window, `qt.run()`, `qt.stop()`, `qt.theme(...)`, `qt.can_display()`, stay module calls.
+
 `qt.can_display()` **answers rather than raising**, including on a build with no
 Qt at all, so a program degrades instead of dying. That guard is the idiom
 rather than a nicety: without a display Qt itself aborts *uncatchably*, and a
@@ -69,7 +71,7 @@ window greeter( title: "Greeter", width: 360, height: 160 )
     end column
 
     on hello.clicked
-        qt.write(greeter, "said", "Hello, " + qt.read(greeter, "who") + "!")
+        greeter.write("said", "Hello, " + greeter.read("who") + "!")
     end on
 end window
 
@@ -86,18 +88,18 @@ program main(args)
     qt.open(greeter)
 
     ' EVERY NAMED PART IS REACHABLE BY NAME.
-    qt.write(greeter, "who", "Ada")
-    print "the field holds:   " + qt.read(greeter, "who")
+    greeter.write("who", "Ada")
+    print "the field holds:   " + greeter.read("who")
 
     ' A real program ends with `qt.run()`, which hands Qt the thread until
     ' something calls `qt.stop()`. A recipe fires the button itself instead, so
     ' it finishes without anybody clicking.
-    qt.invoke(greeter, "hello", "click")
-    print "after the click:   " + qt.read(greeter, "said")
+    greeter.invoke("hello", "click")
+    print "after the click:   " + greeter.read("said")
 
     ' ANY QT PROPERTY, BY NAME, IN THE KIND QT DECLARES IT.
-    print "the button's text: " + qt.read(greeter, "hello", "text")
-    print "the field accepts:  " + string(qt.read(greeter, "who", "maxLength")) + " characters"
+    print "the button's text: " + greeter.read("hello", "text")
+    print "the field accepts:  " + string(greeter.read("who", "maxLength")) + " characters"
     qt.stop()
 end program
 ```
@@ -154,19 +156,19 @@ program main(args)
     qt.open(customer)
 
     print "the form filled itself:"
-    print "  name:    " + qt.read(customer, "name")
-    print "  limit:   " + qt.read(customer, "limit")
-    print "  on hold: " + string(qt.read(customer, "hold"))
+    print "  name:    " + customer.read("name")
+    print "  limit:   " + customer.read("limit")
+    print "  on hold: " + string(customer.read("hold"))
 
     ' A PERSON EDITS; here the program does the typing.
-    qt.write(customer, "limit", {USD}4000.00)
-    qt.write(customer, "hold", true)
+    customer.write("limit", {USD}4000.00)
+    customer.write("hold", true)
 
     ' AND THE RECORD IS FOLDED BACK ON DEMAND -- read at the moment you ask,
     ' never tracked between, so no change can be missed. Each field KEEPS ITS
     ' KIND: `limit` comes back as money because the field declared
     ' `type: {USD}`, not as the text the widget holds.
-    back = qt.subject(customer, "cust")
+    back = customer.subject("cust")
     print "after editing:"
     print "  limit:   " + string(back.limit) + "  (type " + type(back.limit) + ")"
     print "  on hold: " + string(back.hold) + "  (type " + type(back.hold) + ")"
@@ -237,7 +239,7 @@ end window
 ' A FUNCTION CALLED FROM A HANDLER can read the same record and write widgets.
 ' It must `return nothing`, or warning 2101 fires on the discarded result.
 function show_count()
-    qt.write(tally, "shown", string(g.count) + " so far")
+    tally.write("shown", string(g.count) + " so far")
     return nothing
 end function
 
@@ -251,15 +253,15 @@ program main(args)
     end if
     qt.open(tally)
 
-    qt.invoke(tally, "up", "click")
-    qt.invoke(tally, "up", "click")
-    qt.invoke(tally, "up", "click")
-    print "after three clicks the widget says: " + qt.read(tally, "shown")
+    tally.invoke("up", "click")
+    tally.invoke("up", "click")
+    tally.invoke("up", "click")
+    print "after three clicks the widget says: " + tally.read("shown")
     ' AND MAIN CAN SEE IT, which is the whole point: the handler mutated the
     ' record this frame holds.
     print "and main's own record says:        " + string(g.count)
 
-    qt.invoke(tally, "reset", "click")
+    tally.invoke("reset", "click")
     print "after reset:                       " + string(g.count)
     qt.stop()
 end program
@@ -333,11 +335,11 @@ program main(args)
     ' ONLY A GRID HAS COORDINATES TO REPORT, and `qt.at` asks the LAYOUT rather
     ' than any record of where we put things -- so it answers where a widget
     ' REALLY is.
-    at = qt.at(shapes, "code")
+    at = shapes.at("code")
     print "code sits at row " + string(at.row) + ", column " + string(at.column)
-    at = qt.at(shapes, "qty")
+    at = shapes.at("qty")
     print "qty  sits at row " + string(at.row) + ", column " + string(at.column)
-    at = qt.at(shapes, "note")
+    at = shapes.at("note")
     ' BRACKETED: a line break continues a statement only inside brackets.
     print ("note sits at row " + string(at.row) + ", column " +
            string(at.column) + " and spans " + string(at.across))
@@ -407,7 +409,7 @@ window orders( title: "Orders", width: 620, height: 360 )
 end window
 
 function pick()
-    at = qt.selected(orders, "lines")
+    at = orders.selected("lines")
     if is_unknown(at) then
         return nothing
     end if
@@ -419,7 +421,7 @@ function pick()
     ' it, addressed by the form's SUBJECT because a form has no name.
     chosen.who = row.who
     chosen.total = row.total
-    drew = qt.refresh(orders, "chosen")
+    drew = orders.refresh("chosen")
     return nothing
 end function
 
@@ -443,14 +445,14 @@ program main(args)
     ' A HEADING COMES FROM `label:` AND A CELL FROM `name:` -- two different
     ' sources, which is what makes the heading an independent check that the
     ' columns are mapped the way the declaration says.
-    print "heading 1 is:      " + qt.heading(orders, "lines", 1)
-    print "cell (1, who) is:  " + qt.cell(orders, "lines", 1, "who")
+    print "heading 1 is:      " + orders.heading("lines", 1)
+    print "cell (1, who) is:  " + orders.cell("lines", 1, "who")
 
     ' CHOOSING A ROW FROM THE PROGRAM fires the same handler a click would.
-    qt.select(orders, "lines", 2)
-    print "chosen row:        " + string(qt.selected(orders, "lines"))
-    print "the form now says: " + qt.read(orders, "who")
-    print "               and " + qt.read(orders, "total")
+    orders.select("lines", 2)
+    print "chosen row:        " + string(orders.selected("lines"))
+    print "the form now says: " + orders.read("who")
+    print "               and " + orders.read("total")
     qt.stop()
 end program
 ```
@@ -521,7 +523,7 @@ window editor( title: "Menus", width: 480, height: 300 )
     ' TYPING ENABLES Save, which is the ordinary reason a menu item's state
     ' changes: a fact about the program rather than about the declaration.
     on title.textChanged
-        qt.set(editor, "act_save", "enabled", len(qt.read(editor, "title")) > 0)
+        editor.set("act_save", "enabled", len(editor.read("title")) > 0)
     end on
 end window
 
@@ -535,18 +537,18 @@ program main(args)
     ' THE BAR IS A TREE AND THE PARTS REGISTRY IS FLAT, so `qt.menus` is the
     ' only thing that can witness the STRUCTURE -- an item in the wrong menu or
     ' a submenu hung off the bar is invisible to a lookup by name.
-    print "the bar:        " + string(qt.menus(editor))
-    print "File holds:     " + string(qt.menus(editor, 0))
-    print "View holds:     " + string(qt.menus(editor, 1))
+    print "the bar:        " + string(editor.menus())
+    print "File holds:     " + string(editor.menus(0))
+    print "View holds:     " + string(editor.menus(1))
     ' A SEPARATOR ANSWERS `unknown`, NOT "": it HAS no caption, where an item
     ' with `label: ""` has an empty one.
     print ("entry 2 of File is a separator: " +
-           string(is_unknown(qt.menus(editor, 0)[2])))
+           string(is_unknown(editor.menus(0)[2])))
 
-    print "Save's shortcut: " + qt.read(editor, "act_save", "shortcut")
-    print "Save enabled:    " + string(qt.read(editor, "act_save", "enabled"))
-    qt.write(editor, "title", "notes.txt")
-    print "after typing:    " + string(qt.read(editor, "act_save", "enabled"))
+    print "Save's shortcut: " + editor.read("act_save", "shortcut")
+    print "Save enabled:    " + string(editor.read("act_save", "enabled"))
+    editor.write("title", "notes.txt")
+    print "after typing:    " + string(editor.read("act_save", "enabled"))
     qt.stop()
 end program
 ```
@@ -616,17 +618,17 @@ program main(args)
     for each a in areas
         names = append(names, a.name)
     end for
-    shown = qt.options(move_form, "leads_to", names)
+    shown = move_form.options("leads_to", names)
     print "the dropdown offers " + string(shown) + " choices"
 
     ' CHOOSING BY NAME. `qt.write` on a choice REFUSES a name that is not in
     ' the list rather than silently doing nothing, which is what Qt's own
     ' setCurrentText does on an uneditable box.
-    qt.write(move_form, "leads_to", "The Garden")
-    print "the box shows:      " + qt.read(move_form, "leads_to")
+    move_form.write("leads_to", "The Garden")
+    print "the box shows:      " + move_form.read("leads_to")
 
     ' AND BACK TO AN ID, which is the program's half of the translation.
-    chosen = qt.read(move_form, "leads_to")
+    chosen = move_form.read("leads_to")
     goes_to = 0
     for each a in areas
         if a.name = chosen then
@@ -634,7 +636,7 @@ program main(args)
         end if
     end for
     print "which is area id:   " + string(goes_to)
-    print "the direction is:   " + qt.read(move_form, "heading")
+    print "the direction is:   " + move_form.read("heading")
     qt.stop()
 end program
 ```
@@ -697,20 +699,20 @@ window board( title: "Keeping current", width: 560, height: 340 )
         ' it cannot REBIND anything there. A snapshot (`rows = g.rows`) would
         ' leave the refresh re-reading an unchanged copy.
         append(tasks, { what: "Task " + string(len(tasks) + 1), state: "open" })
-        drew = qt.refresh(board, "jobs")
+        drew = board.refresh("jobs")
         return nothing
     end on
 
     on done.clicked
-        at = qt.selected(board, "jobs")
+        at = board.selected("jobs")
         if not is_unknown(at) then
             tasks[at].state = "done"
-            drew = qt.refresh(board, "jobs")
+            drew = board.refresh("jobs")
             ' AND THE FORM, by its SUBJECT. Mutate the subject's FIELDS rather
             ' than rebinding it: a handler cannot rebind `current`.
             current.what = tasks[at].what
             current.state = tasks[at].state
-            drew = qt.refresh(board, "current")
+            drew = board.refresh("current")
         end if
         return nothing
     end on
@@ -729,15 +731,15 @@ program main(args)
     qt.open(board)
 
     print "the table starts with " + string(len(tasks)) + " rows"
-    qt.invoke(board, "add", "click")
-    qt.invoke(board, "add", "click")
+    board.invoke("add", "click")
+    board.invoke("add", "click")
     print "after adding twice:   " + string(len(tasks)) + " rows"
-    print "the new last row is:  " + qt.cell(board, "jobs", 3, "what")
+    print "the new last row is:  " + board.cell("jobs", 3, "what")
 
-    qt.select(board, "jobs", 1)
-    qt.invoke(board, "done", "click")
-    print "row 1's state is now: " + qt.cell(board, "jobs", 1, "state")
-    print "and the form says:    " + qt.read(board, "state")
+    board.select("jobs", 1)
+    board.invoke("done", "click")
+    print "row 1's state is now: " + board.cell("jobs", 1, "state")
+    print "and the form says:    " + board.read("state")
     qt.stop()
 end program
 ```
@@ -800,15 +802,15 @@ program main(args)
 
     sample = ("' a comment" + chr(10) + "program main()" + chr(10) +
               "    x = 42" + chr(10) + "end program")
-    qt.write(pad, "code", sample)
-    qt.write(pad, "prose", sample)
+    pad.write("code", sample)
+    pad.write("prose", sample)
 
     ' WHAT IS ACTUALLY HIGHLIGHTING IT. `qt.highlighting` answers a record, or
     ' `unknown` when nothing is -- and an absent definition is a WARNING rather
     ' than a refusal, because the editor still works and an unhighlighted one
     ' looks entirely ordinary: the theme's normal text is applied to every line
     ' either way, so there is nothing on screen to notice.
-    h = qt.highlighting(pad, "code")
+    h = pad.highlighting("code")
     if is_unknown(h) then
         print "highlighting:  none installed (the editor still works)"
     else
@@ -820,14 +822,14 @@ program main(args)
     ' a memo than as values.
     print "-- against a memo in the same window"
     print ("wrap:          source=" +
-           string(qt.read(pad, "code", "lineWrapMode")) + "  memo=" +
-           string(qt.read(pad, "prose", "lineWrapMode")))
-    print ("narrower tab:  " + string(qt.read(pad, "code", "tabStopDistance") <
-                                      qt.read(pad, "prose", "tabStopDistance")))
-    print ("fonts differ:  " + string(qt.read(pad, "code", "font") !=
-                                      qt.read(pad, "prose", "font")))
-    print "memo has none: " + string(is_unknown(qt.highlighting(pad, "prose")))
-    print "text survives: " + string(len(qt.read(pad, "code")) = len(sample))
+           string(pad.read("code", "lineWrapMode")) + "  memo=" +
+           string(pad.read("prose", "lineWrapMode")))
+    print ("narrower tab:  " + string(pad.read("code", "tabStopDistance") <
+                                      pad.read("prose", "tabStopDistance")))
+    print ("fonts differ:  " + string(pad.read("code", "font") !=
+                                      pad.read("prose", "font")))
+    print "memo has none: " + string(is_unknown(pad.highlighting("prose")))
+    print "text survives: " + string(len(pad.read("code")) = len(sample))
     qt.stop()
 end program
 ```
@@ -916,11 +918,11 @@ program main(args)
     qt.open(invoice)
 
     print "it generated " + string(len(lines)) + " rows"
-    print "row 0 shows:  " + qt.read(invoice, "d1")
-    print "row 2 holds:  " + qt.read(invoice, "q3")
+    print "row 0 shows:  " + invoice.read("d1")
+    print "row 2 holds:  " + invoice.read("q3")
     ' AND THE GEOMETRY IS REAL, asked of the layout rather than of any record
     ' of where we put things.
-    at = qt.at(invoice, "q3")
+    at = invoice.at("q3")
     print "q3 sits at row " + string(at.row) + ", column " + string(at.column)
     qt.stop()
 
@@ -958,7 +960,7 @@ field, a row, a group or a whole `table` works inside one with no further
 vocabulary. A `tab` **needs a caption**, so a declared one spends its single
 slot there and cannot also be named; the `tabs` *is* named, because it has state
 a handler can ask about. (Since §0.27 a `tab` may carry a name in a **record**,
-which is what gives `qt.refresh(win, name, items)` an identity to keep a page
+which is what gives `win.refresh(name, items)` an identity to keep a page
 by — the caption being the thing that changes.)
 
 A `QTabWidget` has no layout of its own, so anything placed directly in one
@@ -1015,23 +1017,23 @@ program main(args)
     ' THE `tabs` IS NAMED, so its state is reachable by name like any other
     ' property -- `currentIndex` is Qt's own, and nothing in this backend knows
     ' about it.
-    print "pages:         " + string(qt.read(settings, "pages", "count"))
-    print "showing page:  " + string(qt.read(settings, "pages", "currentIndex"))
+    print "pages:         " + string(settings.read("pages", "count"))
+    print "showing page:  " + string(settings.read("pages", "currentIndex"))
 
     ' A CONTAINER CARRIES A NAME OR OPTIONS, NEVER BOTH -- `tabs pages( ... )`
     ' costs four reduce/reduce conflicts in the grammar and is refused, which is
     ' why an option that moves is set at run time instead.
-    qt.set(settings, "pages", "movable", true)
-    print "movable now:   " + string(qt.read(settings, "pages", "movable"))
+    settings.set("pages", "movable", true)
+    print "movable now:   " + string(settings.read("pages", "movable"))
 
-    qt.set(settings, "pages", "currentIndex", 2)
-    print "after turning: " + string(qt.read(settings, "pages", "currentIndex"))
+    settings.set("pages", "currentIndex", 2)
+    print "after turning: " + string(settings.read("pages", "currentIndex"))
 
     ' PARTS ON ANY PAGE ARE REACHABLE BY NAME, whichever page is in front:
     ' the registry is flat, and a page is not a namespace.
-    qt.write(settings, "who", "Ada")
-    print "a part on page 0: " + qt.read(settings, "who")
-    at = qt.at(settings, "hard")
+    settings.write("who", "Ada")
+    print "a part on page 0: " + settings.read("who")
+    at = settings.at("hard")
     print ("and a grid on page 2 still has coordinates: column " +
            string(at.column))
     qt.stop()
@@ -1116,9 +1118,9 @@ program main(args)
     ' WRITING onto every widget would pass a check that only asked whether the
     ' app sheet was set, and would silently flatten this.
     print ("the ordinary field has no sheet of its own: " +
-                 string(len(qt.read(panel, "normal", "styleSheet")) = 0))
+                 string(len(panel.read("normal", "styleSheet")) = 0))
     print ("the special one kept its own:               " +
-                 string(contains(qt.read(panel, "special", "styleSheet"), "#ffd")))
+                 string(contains(panel.read("special", "styleSheet"), "#ffd")))
 
     ' CHANGING IT AT RUN TIME is the same call. A dark and a light theme are
     ' two strings; there is no theme registry to keep in step.
@@ -1206,9 +1208,9 @@ program main(args)
             ev = take_first(timer.ticks)
             seen = seen + 1
             ' ORDINARY gBASIC WRITING INTO A Qt WIDGET, from inside Qt's loop.
-            qt.write(clock, "ticks", string(seen) + " ticks")
-            qt.write(clock, "log",
-                     qt.read(clock, "log") + "tick " + string(seen) + chr(10))
+            clock.write("ticks", string(seen) + " ticks")
+            clock.write("log",
+                     clock.read("log") + "tick " + string(seen) + chr(10))
             if seen >= 3 then
                 ' BOTH, AND THE CANCEL MATTERS: `qt.stop()` DOES NOT CANCEL
                 ' YOUR TIMERS, and it should not -- a program may have work
@@ -1227,9 +1229,9 @@ program main(args)
     ' afterwards.
     rc = qt.run()
     print "ticks serviced while Qt held the thread: " + string(seen)
-    print "the window reads back:                   " + qt.read(clock, "ticks")
+    print "the window reads back:                   " + clock.read("ticks")
     print("and the memo grew to lines:              " +
-          string(len(split(qt.read(clock, "log"), chr(10))) - 1))
+          string(len(split(clock.read("log"), chr(10))) - 1))
     print "qt.run returned, so the program continues"
 end program
 ```
@@ -1316,7 +1318,7 @@ program main(args)
         return
     end if
     qt.open(app)
-    qt.write(app, "who", "Ada Lovelace")
+    app.write("who", "Ada Lovelace")
 
     ' A RECIPE HAS NOBODY TO CLICK, so a timer answers for one. In a real
     ' program this is how a dialog TIMES OUT -- and `qt.answer` refuses when
@@ -1332,23 +1334,23 @@ program main(args)
 
     ' THE QUESTION. Guarding a destructive act is the commonest use there is.
     g.want = false
-    if qt.confirm(app, "Delete " + qt.read(app, "who") + "?") then
-        qt.write(app, "state", "deleted")
+    if app.confirm("Delete " + app.read("who") + "?") then
+        app.write("state", "deleted")
     else
-        qt.write(app, "state", "kept")
+        app.write("state", "kept")
     end if
-    print "answered no  -> " + qt.read(app, "state")
+    print "answered no  -> " + app.read("state")
 
     g.want = true
-    if qt.confirm(app, "Delete " + qt.read(app, "who") + "?") then
-        qt.write(app, "state", "deleted")
+    if app.confirm("Delete " + app.read("who") + "?") then
+        app.write("state", "deleted")
     else
-        qt.write(app, "state", "kept")
+        app.write("state", "kept")
     end if
-    print "answered yes -> " + qt.read(app, "state")
+    print "answered yes -> " + app.read("state")
 
     ' THE STATEMENT, which has one button and so is answered either way.
-    told = qt.inform(app, "Customer deleted.")
+    told = app.inform("Customer deleted.")
     print "inform returned " + string(told)
 
     cancelled = timer.cancel(beat)
@@ -1371,7 +1373,7 @@ inform returned true
 Three verbs, because they ask three different questions — *which existing
 file?*, *what shall I call it?*, *which folder?* — and each refuses the options
 that mean nothing to it rather than ignoring them. `qt.open_file` was rejected
-as a name: it reads as though it opens the file, and `f = qt.open_file(app)`
+as a name: it reads as though it opens the file, and `f = app.open_file()`
 looks like it answers contents or a handle. These verbs **choose**; your
 program does the reading.
 
@@ -1458,7 +1460,7 @@ program main(args)
     ' WHICH EXISTING FILE. A list of filters is joined with Qt's own `;;` for
     ' you, which is a spelling nobody should have to know.
     g.want = work + "/report.txt"
-    chosen = qt.choose_file(app, { title: "Open a report", folder: work,
+    chosen = app.choose_file({ title: "Open a report", folder: work,
         filter: ["Text files (*.txt)", "All files (*)"] })
     print "chose    " + file_name(chosen)
     print "and it reads " + string(len(read({file}chosen))) + " bytes"
@@ -1466,7 +1468,7 @@ program main(args)
     ' WHAT SHALL I CALL IT. The file need not exist yet, which is the whole
     ' difference from the verb above.
     g.want = work + "/summary.txt"
-    saving = qt.choose_save(app, { title: "Save as", folder: work,
+    saving = app.choose_save({ title: "Save as", folder: work,
         name: "summary.txt" })
     print ("saving   " + file_name(saving) + ", exists already: " +
         string(exists({file}saving)))
@@ -1474,13 +1476,13 @@ program main(args)
 
     ' WHICH FOLDER.
     g.want = work
-    folder = qt.choose_folder(app, { title: "Where to put things",
+    folder = app.choose_folder({ title: "Where to put things",
         folder: work })
     print "folder   has " + string(count(files({dir}folder, "*.txt"))) + " text files"
 
     ' AND WHAT A CANCEL LOOKS LIKE, which is the branch every program needs.
     g.mode = "cancel"
-    none = qt.choose_file(app, { folder: work })
+    none = app.choose_file({ folder: work })
     if is_unknown(none) then
         print "cancelled, so nothing to open"
     else
@@ -1507,7 +1509,7 @@ cancelled, so nothing to open
 
 ## Closing a window
 
-`qt.close(win)` is the other half of `qt.open`, and **a close is bookkeeping
+`win.close()` is the other half of `qt.open`, and **a close is bookkeeping
 rather than a hide**. Qt leaves a dismissed window alive and still holding its
 values — it does not set `WA_DeleteOnClose` — so a program that went on reading
 one would be reading values off a screen nobody is looking at, and nothing
@@ -1522,8 +1524,8 @@ every day. A program with nothing to save needs no handler; one that has
 something has exactly one place to put it.
 
 **The window is a part of itself.** Its own name reaches it in the same by-name
-table every part lives in, so `qt.read(app, "app", "windowTitle")`,
-`qt.set(app, "app", ...)` and `qt.invoke(app, "app", "close")` all work with no
+table every part lives in, so `app.read("app", "windowTitle")`,
+`app.set("app", ...)` and `app.invoke("app", "close")` all work with no
 extra vocabulary. The one cost is a collision: **a part may not take the
 window's name**, and is refused by name at load time, because it would
 otherwise register over the window and `on app.closed` would reach a widget.
@@ -1578,7 +1580,7 @@ window app( title: "Closing", width: 360, height: 180 )
     ' GUI state lives in gBASIC -- a handler cannot rebind a variable in `main`
     ' (warning 2104 says so and names this remedy), but it can write a field.
     on app.closed
-        g.saved  = qt.subject(app, "cust")
+        g.saved  = app.subject("cust")
         g.closes = g.closes + 1
     end on
 end window
@@ -1593,25 +1595,25 @@ program main(args)
 
     cust = { who: "Ada Lovelace", limit: {USD}"500.00" }
     qt.open(app)
-    print "open:    " + string(qt.is_open(app))
+    print "open:    " + string(app.is_open())
 
     ' THE WINDOW ITSELF, ADDRESSED BY ITS OWN NAME.
-    print "title:   " + qt.read(app, "app", "windowTitle")
-    x = qt.set(app, "app", "windowTitle", "Closing (edited)")
-    print "renamed: " + qt.read(app, "app", "windowTitle")
+    print "title:   " + app.read("app", "windowTitle")
+    x = app.set("app", "windowTitle", "Closing (edited)")
+    print "renamed: " + app.read("app", "windowTitle")
 
     ' Somebody types.
-    y = qt.write(app, "who", "Grace Hopper")
+    y = app.write("who", "Grace Hopper")
 
     ' CLOSING RUNS THE HANDLER FIRST.
-    ok = qt.close(app)
-    print "closed:  " + string(qt.is_open(app))
+    ok = app.close()
+    print "closed:  " + string(app.is_open())
     print "saved:   " + g.saved.who + ", " + string(g.saved.limit)
 
     ' AND AFTERWARDS THE WINDOW REFUSES, which is the point: there is nothing
     ' on screen to read. `qt.is_open` is how you ask without raising.
     on error goto next
-    stale = qt.read(app, "who")
+    stale = app.read("who")
     if error then
         print "after:   " + error.message
         error.clear()
@@ -1621,8 +1623,8 @@ program main(args)
     ' what was typed before the close is gone -- a close is not a hide you can
     ' undo.
     qt.open(app)
-    print "reopened who: " + qt.read(app, "who")
-    print "reopened title: " + qt.read(app, "app", "windowTitle")
+    print "reopened who: " + app.read("who")
+    print "reopened title: " + app.read("app", "windowTitle")
 
     ' AND `qt.stop()` IS NOT A CLOSE. It means "give me the thread back" and
     ' nothing more: the window stays open, stays readable, and no `closed`
@@ -1725,17 +1727,17 @@ window edit( title: "Customer", width: 360, height: 200 )
     ' the program when nobody is there -- a timeout, an unattended run. These
     ' are the person's own answer arriving through a button they pressed.
     on save.clicked
-        x = qt.accept(edit)
+        x = edit.accept()
     end on
     on cancel.clicked
-        x = qt.reject(edit)
+        x = edit.reject()
     end on
 
     ' THE ONE PLACE THE FORM IS READ, because the next thing that happens is
     ' the window closing. `g` is one record whose fields handlers mutate, which
     ' is where GUI state lives in gBASIC.
     on edit.closed
-        g.typed = qt.subject(edit, "cust")
+        g.typed = edit.subject("cust")
     end on
 end window
 
@@ -1758,27 +1760,27 @@ program main(args)
             ev = take_first(timer.ticks)
             g.ticks = g.ticks + 1
             if g.ticks = 2 then
-                y = qt.write(edit, "who", "Grace Hopper")
-                z = qt.invoke(edit, g.press, "click")
+                y = edit.write("who", "Grace Hopper")
+                z = edit.invoke(g.press, "click")
             end if
         end while
     end watch
 
     ' SAVED.
-    if qt.open_modal(edit) then
+    if edit.open_modal() then
         print "saved:     " + g.typed.who + ", " + string(g.typed.limit)
     else
         print "cancelled"
     end if
     print "limit kind: " + type(g.typed.limit)
-    print "open after: " + string(qt.is_open(edit))
+    print "open after: " + string(edit.is_open())
 
     ' CANCELLED. The same window, the same declaration, a different button --
     ' and the handler still read the form, because `closed` fires either way.
     ' What decides whether to USE it is the answer, not the handler.
     g.ticks = 0
     g.press = "cancel"
-    if qt.open_modal(edit) then
+    if edit.open_modal() then
         print "saved:     " + g.typed.who
     else
         print "cancelled, and the form read anyway: " + g.typed.who
@@ -1837,7 +1839,7 @@ also the only way to reach a `table`, `memo` or `source` at all: those answer a
 right-click on their *scrolling area* rather than on the widget, which nothing
 in gBASIC can name.
 
-`qt.menus(win, "row_actions")` reads a popup's entries, which is how you check
+`win.menus("row_actions")` reads a popup's entries, which is how you check
 that an item landed in the menu you meant. A number there is a position on the
 bar and text is a popup's name — a popup is not on the bar, so it *has* no
 position.
@@ -1880,13 +1882,13 @@ window app( title: "Files", width: 460, height: 300 )
     end table
 
     on files.customContextMenuRequested
-        row = g.listing[qt.selected(app, "files")]
+        row = g.listing[app.selected("files")]
         g.asked = row.name
         ' A FOLDER CANNOT BE OPENED OR DELETED HERE, so those two go away.
         ' `visible` is an ordinary property of a menu item.
-        qt.set(app, "open_it", "visible", row.kind = "file")
-        qt.set(app, "delete_it", "visible", row.kind = "file")
-        g.offered = qt.popup(app, "row_actions")
+        app.set("open_it", "visible", row.kind = "file")
+        app.set("delete_it", "visible", row.kind = "file")
+        g.offered = app.popup("row_actions")
     end on
 
     on open_it.triggered
@@ -1910,23 +1912,23 @@ program main(args)
 
     ' RIGHT-CLICK THE FOLDER. `qt.right_click` drives it the way a mouse does,
     ' which is how a program can check its own menu with nobody there.
-    qt.right_click(app, "files", 1)
+    app.right_click("files", 1)
     print "right-clicked:  " + g.asked
     print "menu appeared:  " + string(g.offered)
-    print "open offered:   " + string(qt.read(app, "open_it", "visible"))
+    print "open offered:   " + string(app.read("open_it", "visible"))
 
     ' AND NOW A FILE, where all three apply.
-    qt.right_click(app, "files", 2)
+    app.right_click("files", 2)
     print "right-clicked:  " + g.asked
-    print "open offered:   " + string(qt.read(app, "open_it", "visible"))
+    print "open offered:   " + string(app.read("open_it", "visible"))
 
-    qt.invoke(app, "open_it", "trigger")
+    app.invoke("open_it", "trigger")
     print "opened:         " + g.opened
 
     ' WHAT THE MENU HOLDS, in order. A separator has no caption of its own.
-    print "the menu:       " + string(qt.menus(app, "row_actions"))
+    print "the menu:       " + string(app.menus("row_actions"))
 
-    qt.close(app)
+    app.close()
 end program
 ```
 
@@ -2008,12 +2010,12 @@ window app( title: "Zoom", width: 520, height: 360 )
             ' NOTHING, and the event is left alone so the editor scrolls.
             return
         end if
-        f = split(qt.read(app, "code", "font"), ",")
+        f = split(app.read("code", "font"), ",")
         bigger = 1
         if ev.dy < 0 then
             bigger = 0 - 1
         end if
-        qt.set(app, "code", "font", f[0] + "," + string(number(f[1]) + bigger))
+        app.set("code", "font", f[0] + "," + string(number(f[1]) + bigger))
         g.zooms = g.zooms + 1
         qt.swallow()
     end on
@@ -2032,30 +2034,30 @@ program main(args)
     for i = 1 to 200
         lines = append(lines, "print " + string(i))
     end for
-    x = qt.write(app, "code", join(lines, chr(10)))
+    x = app.write("code", join(lines, chr(10)))
 
-    size = number(split(qt.read(app, "code", "font"), ",")[1])
+    size = number(split(app.read("code", "font"), ",")[1])
     print "font at first:   " + string(size)
 
     ' A PLAIN WHEEL SCROLLS and does not zoom. `qt.scroll` drives the wheel the
     ' way a mouse does, and answers whether anything CLAIMED the event.
-    qt.scroll_to(app, "code", 50)
-    claimed = qt.scroll(app, "code", -2)
+    app.scroll_to("code", 50)
+    claimed = app.scroll("code", -2)
     print ("plain wheel:     claimed " + string(claimed) +
            ", zooms " + string(g.zooms))
     print ("                 and it scrolled to " +
-           string(qt.scrolled(app, "code")))
+           string(app.scrolled("code")))
 
     ' CTRL + WHEEL ZOOMS and claims the event, so the view stays put.
-    was = qt.scrolled(app, "code")
-    claimed = qt.scroll(app, "code", 3, "ctrl")
+    was = app.scrolled("code")
+    claimed = app.scroll("code", 3, "ctrl")
     print ("ctrl+wheel:      claimed " + string(claimed) +
            ", zooms " + string(g.zooms))
     print ("                 font now " +
-           string(number(split(qt.read(app, "code", "font"), ",")[1])))
-    print "                 view stayed at " + string(qt.scrolled(app, "code") = was)
+           string(number(split(app.read("code", "font"), ",")[1])))
+    print "                 view stayed at " + string(app.scrolled("code") = was)
 
-    qt.close(app)
+    app.close()
 end program
 ```
 
@@ -2158,52 +2160,52 @@ program main(args)
 
     ' WHAT THE SPLIT LOOKS LIKE NOW. `browser` is a part of the outer split, so
     ' naming it is how the outer split is addressed.
-    outer = qt.pane(app, "browser")
+    outer = app.pane("browser")
     print ("the outer split is " + outer.direction + " with " +
            string(outer.panes) + " panes")
     print "the browser is pane " + string(outer.index)
 
     ' SET IT. Think of these as a ratio: a narrow browser beside a wide editor.
-    qt.resize_panes(app, "browser", [200, 700])
-    now = qt.pane(app, "browser").sizes
+    app.resize_panes("browser", [200, 700])
+    now = app.pane("browser").sizes
     print "browser narrower than the rest: " + string(now[0] < now[1])
 
     ' THE INNER SPLIT IS A DIFFERENT SPLIT, addressed by a part of its own.
-    qt.resize_panes(app, "code", [300, 100])
-    inner = qt.pane(app, "code").sizes
+    app.resize_panes("code", [300, 100])
+    inner = app.pane("code").sizes
     print "editor taller than the console: " + string(inner[0] > inner[1])
     ' AND THE OUTER ONE DID NOT MOVE.
-    still = qt.pane(app, "browser").sizes
+    still = app.pane("browser").sizes
     print "the outer split stayed put:     " + string(still[0] = now[0])
 
     ' REMEMBER AND RESTORE, which is the whole point. In a real program these
     ' go into `persist` with the rest of the session.
-    saved = { browser: qt.pane(app, "browser").sizes,
-              editor:  qt.pane(app, "code").sizes }
-    qt.resize_panes(app, "browser", [450, 450])
-    even = qt.pane(app, "browser").sizes
+    saved = { browser: app.pane("browser").sizes,
+              editor:  app.pane("code").sizes }
+    app.resize_panes("browser", [450, 450])
+    even = app.pane("browser").sizes
     print ("after a change, even:           " +
            string(even[0] = even[1]))
-    qt.resize_panes(app, "browser", saved.browser)
-    back = qt.pane(app, "browser").sizes
+    app.resize_panes("browser", saved.browser)
+    back = app.pane("browser").sizes
     print "and restored to narrow again:   " + string(back[0] < back[1])
 
     ' HIDING A PANEL: zero, and it comes back.
-    qt.resize_panes(app, "browser", [0, 900])
+    app.resize_panes("browser", [0, 900])
     print ("browser hidden:                 " +
-           string(qt.pane(app, "browser").sizes[0] = 0))
-    qt.resize_panes(app, "browser", saved.browser)
+           string(app.pane("browser").sizes[0] = 0))
+    app.resize_panes("browser", saved.browser)
     print ("and shown again:                " +
-           string(qt.pane(app, "browser").sizes[0] > 0))
+           string(app.pane("browser").sizes[0] > 0))
 
     ' A WRONG COUNT IS REFUSED, naming both numbers.
     on error goto next
-    qt.resize_panes(app, "browser", [500])
+    app.resize_panes("browser", [500])
     print "one size for two panes:         " + error.message
     error.clear()
     on error stop
 
-    qt.close(app)
+    app.close()
 end program
 ```
 
@@ -2310,33 +2312,33 @@ program main(args)
     qt.open(app)
 
     ' WHETHER ONE ARRIVED. There is no other way to ask: an icon has no text.
-    print "OK has an icon:      " + string(qt.has_icon(app, "ok_it"))
-    print "Cancel has one:      " + string(qt.has_icon(app, "cancel_it"))
-    print "Plain has none:      " + string(qt.has_icon(app, "plain_it"))
-    print "the menu item has:   " + string(qt.has_icon(app, "act_open"))
+    print "OK has an icon:      " + string(app.has_icon("ok_it"))
+    print "Cancel has one:      " + string(app.has_icon("cancel_it"))
+    print "Plain has none:      " + string(app.has_icon("plain_it"))
+    print "the menu item has:   " + string(app.has_icon("act_open"))
 
     ' SET ONE AT RUN TIME, through the same conversion.
-    qt.set(app, "plain_it", "icon", "SP_DialogApplyButton")
-    print "and now Plain has:   " + string(qt.has_icon(app, "plain_it"))
+    app.set("plain_it", "icon", "SP_DialogApplyButton")
+    print "and now Plain has:   " + string(app.has_icon("plain_it"))
 
     ' AND TAKE IT AWAY, which a play/pause button needs.
-    qt.set(app, "plain_it", "icon", "")
-    print "cleared again:       " + string(qt.has_icon(app, "plain_it"))
+    app.set("plain_it", "icon", "")
+    print "cleared again:       " + string(app.has_icon("plain_it"))
 
     ' THE REFUSALS, each naming what was wrong.
     on error goto next
-    qt.set(app, "ok_it", "icon", "SP_NotAThing")
+    app.set("ok_it", "icon", "SP_NotAThing")
     print "a misspelled Qt name: " + error.message
     error.clear()
-    qt.set(app, "ok_it", "icon", "/no/such/icon.png")
+    app.set("ok_it", "icon", "/no/such/icon.png")
     print "a path that is not there: " + error.message
     error.clear()
-    qt.read(app, "ok_it", "icon")
+    app.read("ok_it", "icon")
     print "reading one as text: " + error.message
     error.clear()
     on error stop
 
-    qt.close(app)
+    app.close()
 end program
 ```
 
@@ -2453,14 +2455,14 @@ program main(args)
 
     ' HOW MANY ROWS THERE ARE. This is a verb and not part of the declaration
     ' because it changes: a results grid is refilled by every query.
-    qt.rows(app, "results", 1000000)
-    print "rows:          " + string(qt.rows(app, "results"))
+    app.rows("results", 1000000)
+    print "rows:          " + string(app.rows("results"))
 
     ' READ ANY CELL, which asks the callback for exactly that one.
-    print "row 0:         " + string(qt.cell(app, "results", 0, "who"))
-    print "row 999999:    " + string(qt.cell(app, "results", 999999, "who"))
-    print "money reads:   " + string(qt.cell(app, "results", 0, "total"))
-    print "a date reads:  " + string(qt.cell(app, "results", 0, "when"))
+    print "row 0:         " + string(app.cell("results", 0, "who"))
+    print "row 999999:    " + string(app.cell("results", 999999, "who"))
+    print "money reads:   " + string(app.cell("results", 0, "total"))
+    print "a date reads:  " + string(app.cell("results", 0, "when"))
 
     ' AND NOW LET QT DRAW IT, so the count below is what painting a
     ' million-row table actually costs. The timer hands the thread back; see
@@ -2482,7 +2484,7 @@ program main(args)
     print "cells asked for to draw a MILLION rows: " + string(g.asked)
     print "which is fewer than a thousand:         " + string(g.asked < 1000)
 
-    qt.close(app)
+    app.close()
 end program
 ```
 
@@ -2510,7 +2512,7 @@ is **built as a record** (recipe 10) — and that record is read once, at
 opening a file has to add a tab, closing one has to take it away, and neither
 should disturb what you have typed in the others.
 
-`qt.refresh(win, name, items)` reconciles a named container against the same
+`win.refresh(name, items)` reconciles a named container against the same
 `items` array the record holds. It is the **third form** of the verb that
 already re-shows a table or a form, and it answers how many children it placed.
 
@@ -2534,7 +2536,7 @@ declared positions, so both are refused by name rather than quietly doing
 nothing. A child with **no** name is always rebuilt — there is nothing to match
 it by.
 
-`qt.tabs(win, name)` answers a tab set's captions and `qt.children(win, name)`
+`win.tabs(name)` answers a tab set's captions and `win.children(name)`
 the names of a container's children, both in order. They exist because neither
 is readable any other way: `QTabWidget::tabText` takes an argument, which
 `qt.invoke` cannot pass, and `qt.at` reads coordinates in a `cells` grid only.
@@ -2597,43 +2599,43 @@ program main(args)
     end if
 
     qt.open(editor)
-    print "tabs at the start:   " + join(qt.tabs(editor, "book"), ", ")
+    print "tabs at the start:   " + join(editor.tabs("book"), ", ")
 
     ' SOMEBODY TYPES. This is the state that has to survive everything below.
-    x = qt.write(editor, "ed1", "print 1" + chr(10) + "print 2")
+    x = editor.write("ed1", "print 1" + chr(10) + "print 2")
 
     ' A SECOND FILE IS OPENED: append to the list, rebuild the items, reconcile.
     open_docs = append(open_docs, { id: 2, title: "main.bas", text: "run()" })
-    n = qt.refresh(editor, "book", pages_for(open_docs))
-    print "after opening one:   " + join(qt.tabs(editor, "book"), ", ")
+    n = editor.refresh("book", pages_for(open_docs))
+    print "after opening one:   " + join(editor.tabs("book"), ", ")
     print "the reconcile placed " + string(n) + " pages"
     print("and the typing survived: " +
-          string(qt.read(editor, "ed1") = "print 1" + chr(10) + "print 2"))
+          string(editor.read("ed1") = "print 1" + chr(10) + "print 2"))
 
     ' THE FIRST FILE IS EDITED, so its caption gains a marker. Only the caption
     ' moves -- the page is the same widget, which is the whole point.
     open_docs[0].title = "* notes.bas"
-    n = qt.refresh(editor, "book", pages_for(open_docs))
-    print "after an edit:       " + join(qt.tabs(editor, "book"), ", ")
+    n = editor.refresh("book", pages_for(open_docs))
+    print "after an edit:       " + join(editor.tabs("book"), ", ")
     print("still the same page: " +
-          string(qt.read(editor, "ed1") = "print 1" + chr(10) + "print 2"))
+          string(editor.read("ed1") = "print 1" + chr(10) + "print 2"))
 
     ' AND ONE IS CLOSED. An absent child is DELETED, so its parts leave the
     ' window with it -- `qt.read` on a closed document's editor refuses, which
     ' is what stops a program reading off a screen nobody is looking at.
     open_docs = [ open_docs[0] ]
-    n = qt.refresh(editor, "book", pages_for(open_docs))
-    print "after closing one:   " + join(qt.tabs(editor, "book"), ", ")
-    print "children by name:    " + join(qt.children(editor, "book"), ", ")
+    n = editor.refresh("book", pages_for(open_docs))
+    print "after closing one:   " + join(editor.tabs("book"), ", ")
+    print "children by name:    " + join(editor.children("book"), ", ")
     on error goto next
-    gone = qt.read(editor, "ed2")
+    gone = editor.read("ed2")
     if error then
         print "the closed one is gone: " + error.message
         error.clear()
     end if
     on error stop
 
-    qt.close(editor)
+    editor.close()
 end program
 ```
 
@@ -2701,7 +2703,7 @@ plain child widget that emits nothing, and the handler **asks** which line it
 was. The filter sits on the margin itself, so an ordinary press in the text is
 still an ordinary caret move.
 
-`qt.gutter(win, part)` answers `{ line_numbers, marks, width }`, or `unknown`
+`win.gutter(part)` answers `{ line_numbers, marks, width }`, or `unknown`
 for a `source` with no margin. The `width` follows the **digit count**, so a
 thousand-line document reserves more room than a nine-line one.
 
@@ -2729,11 +2731,11 @@ window ed( title: "Editor", width: 620, height: 420 )
     ' `qt.wheel()` already follows.
     on code.gutter
         c = qt.gutter_click()
-        b = qt.marks(ed, "code", "break")
+        b = ed.marks("code", "break")
         if contains(b, c.line) then
-            qt.mark(ed, "code", "break", b excluding [c.line])
+            ed.mark("code", "break", b excluding [c.line])
         else
-            qt.mark(ed, "code", "break", concat(b, [c.line]))
+            ed.mark("code", "break", concat(b, [c.line]))
         end if
         append(g.clicked, c.line)
     end on
@@ -2747,7 +2749,7 @@ program main( args )
     end if
 
     qt.open(ed)
-    qt.write(ed, "code", join([ "function total(rows)",
+    ed.write("code", join([ "function total(rows)",
                                 "    t = 0",
                                 "    for each r in rows",
                                 "        t = t + r.amount",
@@ -2756,45 +2758,45 @@ program main( args )
                                 "end function" ], chr(10)))
 
     ' WHAT THE MARGIN IS, or `unknown` for a `source` that has none.
-    gut = qt.gutter(ed, "code")
+    gut = ed.gutter("code")
     print "numbers: " + string(gut.line_numbers) + "   marks: " + string(gut.marks)
     print "reserved a width:            " + string(gut.width > 0)
 
     ' A SECTION STARTS AT LINE 1 -- 1-BASED, like `source_outline`'s own
     ' `start_line` and like every diagnostic gBASIC prints, so a line number
     ' read out of one goes straight in here with no arithmetic.
-    qt.mark(ed, "code", "section", [1])
-    qt.mark(ed, "code", "warning", [4])
-    print "section lines:               " + string(qt.marks(ed, "code", "section"))
-    print "warning lines:               " + string(qt.marks(ed, "code", "warning"))
+    ed.mark("code", "section", [1])
+    ed.mark("code", "warning", [4])
+    print "section lines:               " + string(ed.marks("code", "section"))
+    print "warning lines:               " + string(ed.marks("code", "warning"))
 
     ' SETTING A CATEGORY REPLACES IT, which is what a gutter recomputed on
     ' every redraw wants: there is no list of what was already drawn to keep.
-    qt.mark(ed, "code", "warning", [2, 5])
-    print "warning, recomputed:         " + string(qt.marks(ed, "code", "warning"))
-    qt.mark(ed, "code", "warning", [])
-    print "warning, cleared:            " + string(qt.marks(ed, "code", "warning"))
+    ed.mark("code", "warning", [2, 5])
+    print "warning, recomputed:         " + string(ed.marks("code", "warning"))
+    ed.mark("code", "warning", [])
+    print "warning, cleared:            " + string(ed.marks("code", "warning"))
 
     ' A BREAKPOINT, SET THE WAY A PERSON SETS ONE. `qt.gutter_press` is what
     ' stands in for the mouse; a line that is not on screen is refused,
     ' because a mouse could not land there either.
-    qt.gutter_press(ed, "code", 4)
-    qt.gutter_press(ed, "code", 6)
+    ed.gutter_press("code", 4)
+    ed.gutter_press("code", 6)
     print "lines clicked:               " + string(g.clicked)
-    print "breakpoints:                 " + string(qt.marks(ed, "code", "break"))
+    print "breakpoints:                 " + string(ed.marks("code", "break"))
 
     ' CLICKING THE SAME LINE AGAIN CLEARS IT -- the handler above decides that,
     ' not the margin: `qt.mark` replaces a list and the program says what the
     ' list is.
-    qt.gutter_press(ed, "code", 4)
-    print "after clicking 4 again:      " + string(qt.marks(ed, "code", "break"))
+    ed.gutter_press("code", 4)
+    print "after clicking 4 again:      " + string(ed.marks("code", "break"))
 
     ' A LINE CARRIES ONE GLYPH, and `break` outranks everything because a mark
     ' somebody PLACED must not be hidden by one the program COMPUTED.
-    qt.mark(ed, "code", "error", [6])
+    ed.mark("code", "error", [6])
     print "line 6 is both error and break, and break is what shows"
 
-    qt.close(ed)
+    ed.close()
 end program
 ```
 
@@ -2850,9 +2852,9 @@ widget whose `text` property `qt.set` reaches, so there is nothing new to learn
 — and `stretch()` pushes what follows to the right. There is one status bar per
 window, so a second is refused rather than quietly merged into the first.
 
-**`qt.dock(win, name)`** answers where a pane is and what it is doing, asked of
-the window rather than of the declaration. **`qt.layout(win)`** and
-**`qt.restore_layout(win, text)`** keep and put back the whole arrangement —
+**`win.dock(name)`** answers where a pane is and what it is doing, asked of
+the window rather than of the declaration. **`win.layout()`** and
+**`win.restore_layout(text)`** keep and put back the whole arrangement —
 which area each pane is in, their order, which tab is raised, what is floating.
 The text is Qt's own format: store it, do not read it. An arrangement saved
 before the window's declaration changed is **reported, not raised**, because
@@ -2919,38 +2921,38 @@ program main( args )
     qt.open(ide)
 
     ' WHERE A PANE IS, asked of the window rather than of the declaration.
-    print "branches: " + qt.dock(ide, "branches").area + ", sharing a tab group with " + string(qt.dock(ide, "branches").tabbed_with)
-    print "console:  " + qt.dock(ide, "console").area + ", sharing a tab group with " + string(qt.dock(ide, "console").tabbed_with)
+    print "branches: " + ide.dock("branches").area + ", sharing a tab group with " + string(ide.dock("branches").tabbed_with)
+    print "console:  " + ide.dock("console").area + ", sharing a tab group with " + string(ide.dock("console").tabbed_with)
 
     ' A STATUS BAR NEEDS NO VERB: a `text` part in it is an ordinary widget
     ' whose `text` property `qt.set` reaches, which is why there is nothing
     ' like `qt.status(...)` to learn.
-    print "status says:              " + qt.read(ide, "msg", "text")
-    qt.set(ide, "msg", "text", "Saved notes.bas")
-    print "and after qt.set:         " + qt.read(ide, "msg", "text")
+    print "status says:              " + ide.read("msg", "text")
+    ide.set("msg", "text", "Saved notes.bas")
+    print "and after qt.set:         " + ide.read("msg", "text")
 
     ' A TOOLBAR HOLDS WHAT A MENU HOLDS -- the same items, so `checkable:` and
     ' `icon:` work on them too.
-    print "a toolbar item's label:   " + qt.read(ide, "open", "text")
-    qt.set(ide, "save", "checkable", true)
-    print "and one can be checkable: " + string(qt.read(ide, "save", "checkable"))
+    print "a toolbar item's label:   " + ide.read("open", "text")
+    ide.set("save", "checkable", true)
+    print "and one can be checkable: " + string(ide.read("save", "checkable"))
 
     ' KEEP THE ARRANGEMENT. The text is Qt's own format -- store it, do not
     ' read it; `qt.dock` is what answers questions about a pane.
-    saved = qt.layout(ide)
+    saved = ide.layout()
     print "the layout is text, kept as " + string(len(saved)) + " characters"
 
     ' A PERSON DRAGS A PANE OUT; the program puts it back.
-    qt.set(ide, "branches", "floating", true)
-    print "floated:                  " + string(qt.dock(ide, "branches").floating)
-    print "restored:                 " + string(qt.restore_layout(ide, saved))
-    print "floating now:             " + string(qt.dock(ide, "branches").floating)
+    ide.set("branches", "floating", true)
+    print "floated:                  " + string(ide.dock("branches").floating)
+    print "restored:                 " + string(ide.restore_layout(saved))
+    print "floating now:             " + string(ide.dock("branches").floating)
 
     ' AND AN ARRANGEMENT SAVED BEFORE THE WINDOW CHANGED IS REPORTED, NOT
     ' RAISED -- an ordinary thing to find on startup.
-    print "an unrecognised layout:   " + string(qt.restore_layout(ide, "bm90IG1pbmU="))
+    print "an unrecognised layout:   " + string(ide.restore_layout("bm90IG1pbmU="))
 
-    qt.close(ide)
+    ide.close()
 end program
 ```
 
@@ -2987,7 +2989,7 @@ page is where the text is. It also answers the index `tabCloseRequested`
 carries, which is what makes `tabsClosable: true` usable — a zero-argument
 handler cannot see that signal's argument either.
 
-**`qt.right_click(win, part, n)` aims at a tab's own rectangle**, through the
+**`win.right_click(part, n)` aims at a tab's own rectangle**, through the
 tab bar, which is where a real click lands — the same third argument that aims
 at a table or a tree row.
 
@@ -3001,7 +3003,7 @@ clipboard belongs to the windowing system, so there is none without a display
 and `qt.copy` says so rather than naming a window.
 
 The menu **stays up** until something dismisses it, and a visible menu grabs the
-mouse — so a program driving itself calls `qt.invoke(win, menu, "hide")` before
+mouse — so a program driving itself calls `win.invoke(menu, "hide")` before
 doing anything else.
 
 <!--CODE:26_the_tab_that_was_clicked-->
@@ -3049,12 +3051,12 @@ window app( title: "Notebook", width: 520, height: 300 )
         ' that reads `currentIndex` here is reading the wrong tab.
         which = qt.which_tab()
         if is_unknown(which) then
-            qt.set(app, "said", "text", "that was the page, not a tab")
+            app.set("said", "text", "that was the page, not a tab")
         else
             g.aimed = which
-            qt.set(app, "said", "text",
+            app.set("said", "text",
                    "right-clicked " + g.paths[which])
-            shown = qt.popup(app, "tab_menu")
+            shown = app.popup("tab_menu")
         end if
     end on
 
@@ -3063,7 +3065,7 @@ window app( title: "Notebook", width: 520, height: 300 )
         ' there is nothing to name. It copies eagerly, so the text is on the
         ' clipboard the moment this returns.
         ok = qt.copy(g.paths[g.aimed])
-        qt.set(app, "said", "text", "copied " + qt.clipboard())
+        app.set("said", "text", "copied " + qt.clipboard())
     end on
 end window
 
@@ -3077,30 +3079,30 @@ program main(args)
     end if
 
     qt.open(app)
-    qt.set(app, "book", "currentIndex", 0)
-    print "the first tab is current: " + string(qt.read(app, "book", "currentIndex"))
+    app.set("book", "currentIndex", 0)
+    print "the first tab is current: " + string(app.read("book", "currentIndex"))
 
     ' A PERSON WOULD RIGHT-CLICK THE THIRD TAB. `qt.right_click`'s third
     ' argument aims at a tab's own rectangle, through the tab bar, which is
     ' where a real click lands.
-    qt.right_click(app, "book", 2)
-    print "the status line says:   " + qt.read(app, "said", "text")
-    print "and the current tab is still: " + string(qt.read(app, "book", "currentIndex"))
+    app.right_click("book", 2)
+    print "the status line says:   " + app.read("said", "text")
+    print "and the current tab is still: " + string(app.read("book", "currentIndex"))
 
     ' THE MENU IS STILL UP and a visible menu grabs the mouse, so a program
     ' driving itself hides it before doing anything else.
-    qt.invoke(app, "tab_menu", "hide")
+    app.invoke("tab_menu", "hide")
 
     ' NOW THE MENU ITEM, which is what a person would click next.
-    qt.invoke(app, "copy_path", "trigger")
-    print "after Copy file path:   " + qt.read(app, "said", "text")
+    app.invoke("copy_path", "trigger")
+    print "after Copy file path:   " + app.read("said", "text")
     print "the clipboard holds:    " + qt.clipboard()
 
     ' AND A RIGHT-CLICK THAT MISSES EVERY TAB: the page emits the same signal.
-    qt.right_click(app, "book")
-    print "clicking the page:      " + qt.read(app, "said", "text")
+    app.right_click("book")
+    print "clicking the page:      " + app.read("said", "text")
 
-    qt.close(app)
+    app.close()
 end program
 ```
 

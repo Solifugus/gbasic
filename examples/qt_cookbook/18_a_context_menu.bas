@@ -33,13 +33,13 @@ window app( title: "Files", width: 460, height: 300 )
     end table
 
     on files.customContextMenuRequested
-        row = g.listing[qt.selected(app, "files")]
+        row = g.listing[app.selected("files")]
         g.asked = row.name
         ' A FOLDER CANNOT BE OPENED OR DELETED HERE, so those two go away.
         ' `visible` is an ordinary property of a menu item.
-        qt.set(app, "open_it", "visible", row.kind = "file")
-        qt.set(app, "delete_it", "visible", row.kind = "file")
-        g.offered = qt.popup(app, "row_actions")
+        app.set("open_it", "visible", row.kind = "file")
+        app.set("delete_it", "visible", row.kind = "file")
+        g.offered = app.popup("row_actions")
     end on
 
     on open_it.triggered
@@ -63,21 +63,21 @@ program main(args)
 
     ' RIGHT-CLICK THE FOLDER. `qt.right_click` drives it the way a mouse does,
     ' which is how a program can check its own menu with nobody there.
-    qt.right_click(app, "files", 1)
+    app.right_click("files", 1)
     print "right-clicked:  " + g.asked
     print "menu appeared:  " + string(g.offered)
-    print "open offered:   " + string(qt.read(app, "open_it", "visible"))
+    print "open offered:   " + string(app.read("open_it", "visible"))
 
     ' AND NOW A FILE, where all three apply.
-    qt.right_click(app, "files", 2)
+    app.right_click("files", 2)
     print "right-clicked:  " + g.asked
-    print "open offered:   " + string(qt.read(app, "open_it", "visible"))
+    print "open offered:   " + string(app.read("open_it", "visible"))
 
-    qt.invoke(app, "open_it", "trigger")
+    app.invoke("open_it", "trigger")
     print "opened:         " + g.opened
 
     ' WHAT THE MENU HOLDS, in order. A separator has no caption of its own.
-    print "the menu:       " + string(qt.menus(app, "row_actions"))
+    print "the menu:       " + string(app.menus("row_actions"))
 
-    qt.close(app)
+    app.close()
 end program

@@ -61,14 +61,14 @@ program main(args)
 
     ' HOW MANY ROWS THERE ARE. This is a verb and not part of the declaration
     ' because it changes: a results grid is refilled by every query.
-    qt.rows(app, "results", 1000000)
-    print "rows:          " + string(qt.rows(app, "results"))
+    app.rows("results", 1000000)
+    print "rows:          " + string(app.rows("results"))
 
     ' READ ANY CELL, which asks the callback for exactly that one.
-    print "row 0:         " + string(qt.cell(app, "results", 0, "who"))
-    print "row 999999:    " + string(qt.cell(app, "results", 999999, "who"))
-    print "money reads:   " + string(qt.cell(app, "results", 0, "total"))
-    print "a date reads:  " + string(qt.cell(app, "results", 0, "when"))
+    print "row 0:         " + string(app.cell("results", 0, "who"))
+    print "row 999999:    " + string(app.cell("results", 999999, "who"))
+    print "money reads:   " + string(app.cell("results", 0, "total"))
+    print "a date reads:  " + string(app.cell("results", 0, "when"))
 
     ' AND NOW LET QT DRAW IT, so the count below is what painting a
     ' million-row table actually costs. The timer hands the thread back; see
@@ -90,5 +90,5 @@ program main(args)
     print "cells asked for to draw a MILLION rows: " + string(g.asked)
     print "which is fewer than a thousand:         " + string(g.asked < 1000)
 
-    qt.close(app)
+    app.close()
 end program

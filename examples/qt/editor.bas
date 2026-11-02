@@ -90,9 +90,9 @@ end window
 ' rather than three lines invented to look like it.
 function load_self()
     text = read({file}"examples/qt/editor.bas")
-    qt.write(app, "code", text)
-    qt.write(app, "plain", text)
-    qt.write(app, "shown", string(len(split(text, chr(10)))) + " lines")
+    app.write("code", text)
+    app.write("plain", text)
+    app.write("shown", string(len(split(text, chr(10)))) + " lines")
     return nothing
 end function
 
@@ -113,7 +113,7 @@ program main(args)
         ' installed in their own home SHADOWS the one gBASIC ships and reports
         ' the identical name. Which of the two wins is the machine's business;
         ' not being able to SEE which would not be.
-        h = qt.highlighting(app, "code")
+        h = app.highlighting("code")
         if is_unknown(h) then
             print "highlighting:   none -- the gBASIC definition is not installed"
             print "                (the editor still works; this is warning 2115)"
@@ -126,18 +126,18 @@ program main(args)
         print "-- a source is a memo with four differences"
         ' BRACKETED: a line break continues a statement only inside brackets.
         print ("wrap:           source=" +
-               string(qt.read(app, "code", "lineWrapMode")) + "  memo=" +
-               string(qt.read(app, "plain", "lineWrapMode")))
+               string(app.read("code", "lineWrapMode")) + "  memo=" +
+               string(app.read("plain", "lineWrapMode")))
         print ("tab narrower:   " +
-               string(qt.read(app, "code", "tabStopDistance") <
-                      qt.read(app, "plain", "tabStopDistance")))
-        print ("fonts differ:   " + string(qt.read(app, "code", "font") !=
-                                           qt.read(app, "plain", "font")))
-        print "memo has none:  " + string(is_unknown(qt.highlighting(app, "plain")))
+               string(app.read("code", "tabStopDistance") <
+                      app.read("plain", "tabStopDistance")))
+        print ("fonts differ:   " + string(app.read("code", "font") !=
+                                           app.read("plain", "font")))
+        print "memo has none:  " + string(is_unknown(app.highlighting("plain")))
 
         print "-- and it is an editor, not a view"
-        print "read back:      " + string(len(qt.read(app, "code"))) + " bytes"
-        print "editable:       " + string(not qt.read(app, "code", "readOnly"))
+        print "read back:      " + string(len(app.read("code"))) + " bytes"
+        print "editable:       " + string(not app.read("code", "readOnly"))
 
         ' THE HONEST LIMITS, printed rather than left in a comment, because
         ' somebody evaluating this for an editor needs to know what is missing

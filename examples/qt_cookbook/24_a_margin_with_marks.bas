@@ -19,11 +19,11 @@ window ed( title: "Editor", width: 620, height: 420 )
     ' `qt.wheel()` already follows.
     on code.gutter
         c = qt.gutter_click()
-        b = qt.marks(ed, "code", "break")
+        b = ed.marks("code", "break")
         if contains(b, c.line) then
-            qt.mark(ed, "code", "break", b excluding [c.line])
+            ed.mark("code", "break", b excluding [c.line])
         else
-            qt.mark(ed, "code", "break", concat(b, [c.line]))
+            ed.mark("code", "break", concat(b, [c.line]))
         end if
         append(g.clicked, c.line)
     end on
@@ -37,7 +37,7 @@ program main( args )
     end if
 
     qt.open(ed)
-    qt.write(ed, "code", join([ "function total(rows)",
+    ed.write("code", join([ "function total(rows)",
                                 "    t = 0",
                                 "    for each r in rows",
                                 "        t = t + r.amount",
@@ -46,43 +46,43 @@ program main( args )
                                 "end function" ], chr(10)))
 
     ' WHAT THE MARGIN IS, or `unknown` for a `source` that has none.
-    gut = qt.gutter(ed, "code")
+    gut = ed.gutter("code")
     print "numbers: " + string(gut.line_numbers) + "   marks: " + string(gut.marks)
     print "reserved a width:            " + string(gut.width > 0)
 
     ' A SECTION STARTS AT LINE 1 -- 1-BASED, like `source_outline`'s own
     ' `start_line` and like every diagnostic gBASIC prints, so a line number
     ' read out of one goes straight in here with no arithmetic.
-    qt.mark(ed, "code", "section", [1])
-    qt.mark(ed, "code", "warning", [4])
-    print "section lines:               " + string(qt.marks(ed, "code", "section"))
-    print "warning lines:               " + string(qt.marks(ed, "code", "warning"))
+    ed.mark("code", "section", [1])
+    ed.mark("code", "warning", [4])
+    print "section lines:               " + string(ed.marks("code", "section"))
+    print "warning lines:               " + string(ed.marks("code", "warning"))
 
     ' SETTING A CATEGORY REPLACES IT, which is what a gutter recomputed on
     ' every redraw wants: there is no list of what was already drawn to keep.
-    qt.mark(ed, "code", "warning", [2, 5])
-    print "warning, recomputed:         " + string(qt.marks(ed, "code", "warning"))
-    qt.mark(ed, "code", "warning", [])
-    print "warning, cleared:            " + string(qt.marks(ed, "code", "warning"))
+    ed.mark("code", "warning", [2, 5])
+    print "warning, recomputed:         " + string(ed.marks("code", "warning"))
+    ed.mark("code", "warning", [])
+    print "warning, cleared:            " + string(ed.marks("code", "warning"))
 
     ' A BREAKPOINT, SET THE WAY A PERSON SETS ONE. `qt.gutter_press` is what
     ' stands in for the mouse; a line that is not on screen is refused,
     ' because a mouse could not land there either.
-    qt.gutter_press(ed, "code", 4)
-    qt.gutter_press(ed, "code", 6)
+    ed.gutter_press("code", 4)
+    ed.gutter_press("code", 6)
     print "lines clicked:               " + string(g.clicked)
-    print "breakpoints:                 " + string(qt.marks(ed, "code", "break"))
+    print "breakpoints:                 " + string(ed.marks("code", "break"))
 
     ' CLICKING THE SAME LINE AGAIN CLEARS IT -- the handler above decides that,
     ' not the margin: `qt.mark` replaces a list and the program says what the
     ' list is.
-    qt.gutter_press(ed, "code", 4)
-    print "after clicking 4 again:      " + string(qt.marks(ed, "code", "break"))
+    ed.gutter_press("code", 4)
+    print "after clicking 4 again:      " + string(ed.marks("code", "break"))
 
     ' A LINE CARRIES ONE GLYPH, and `break` outranks everything because a mark
     ' somebody PLACED must not be hidden by one the program COMPUTED.
-    qt.mark(ed, "code", "error", [6])
+    ed.mark("code", "error", [6])
     print "line 6 is both error and break, and break is what shows"
 
-    qt.close(ed)
+    ed.close()
 end program

@@ -20,16 +20,16 @@ program main(args)
   load odbc
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
 
-  odbc.exec(db, "drop table if exists ledger")
-  odbc.exec(db, "create table ledger (id bigint, note varchar(40), amount varchar(30))")
+  db.exec("drop table if exists ledger")
+  db.exec("create table ledger (id bigint, note varchar(40), amount varchar(30))")
 
   ' 9007199254740993 is 2^53+1: the smallest positive integer a DOUBLE cannot
   ' represent -- which is why this column is text, and why converting it used to
   ' cost you the last digit.
   big = "9007199254740993"
-  odbc.exec(db, "insert into ledger values (?, ?, ?)", [big, "an account number", "12345678901234.5678"])
+  db.exec("insert into ledger values (?, ?, ?)", [big, "an account number", "12345678901234.5678"])
 
-  row = odbc.query(db, "select id, note, amount from ledger")[0]
+  row = db.query("select id, note, amount from ledger")[0]
 
   print "id type   : " + type(row.id)
   print "id exact  : " + row.id
@@ -44,22 +44,22 @@ program main(args)
   ' is exact integer cents.
   print ""
   price {USD}= 1234.56
-  odbc.exec(db, "insert into ledger values (?, ?, ?)", ["2", "a price", price])
-  back = odbc.query(db, "select amount from ledger where note = ?", ["a price"])
+  db.exec("insert into ledger values (?, ?, ?)", ["2", "a price", price])
+  back = db.query("select amount from ledger where note = ?", ["a price"])
   print "money in, text out: " + back[0].amount
 
   ' Ordinary INTEGER, REAL and FLOAT columns are numbers, as you would expect.
   ' Only the three types whose values may not survive the conversion -- BIGINT,
   ' DECIMAL and NUMERIC -- are held back as text.
-  odbc.exec(db, "drop table if exists sizes")
-  odbc.exec(db, "create table sizes (n integer, x real)")
-  odbc.exec(db, "insert into sizes values (?, ?)", [42, 0.5])
-  s = odbc.query(db, "select n, x from sizes")[0]
+  db.exec("drop table if exists sizes")
+  db.exec("create table sizes (n integer, x real)")
+  db.exec("insert into sizes values (?, ?)", [42, 0.5])
+  s = db.query("select n, x from sizes")[0]
   print ""
   print "integer -> " + type(s.n) + " " + string(s.n)
   print "real    -> " + type(s.x) + " " + string(s.x)
 
-  odbc.close(db)
+  db.close()
   f {file}= "examples/tmp_cookbook_odbc.db"
   if exists(f) then
     delete(f)

@@ -49,31 +49,31 @@ program main(args)
     qt.open(app)
 
     ' WHETHER ONE ARRIVED. There is no other way to ask: an icon has no text.
-    print "OK has an icon:      " + string(qt.has_icon(app, "ok_it"))
-    print "Cancel has one:      " + string(qt.has_icon(app, "cancel_it"))
-    print "Plain has none:      " + string(qt.has_icon(app, "plain_it"))
-    print "the menu item has:   " + string(qt.has_icon(app, "act_open"))
+    print "OK has an icon:      " + string(app.has_icon("ok_it"))
+    print "Cancel has one:      " + string(app.has_icon("cancel_it"))
+    print "Plain has none:      " + string(app.has_icon("plain_it"))
+    print "the menu item has:   " + string(app.has_icon("act_open"))
 
     ' SET ONE AT RUN TIME, through the same conversion.
-    qt.set(app, "plain_it", "icon", "SP_DialogApplyButton")
-    print "and now Plain has:   " + string(qt.has_icon(app, "plain_it"))
+    app.set("plain_it", "icon", "SP_DialogApplyButton")
+    print "and now Plain has:   " + string(app.has_icon("plain_it"))
 
     ' AND TAKE IT AWAY, which a play/pause button needs.
-    qt.set(app, "plain_it", "icon", "")
-    print "cleared again:       " + string(qt.has_icon(app, "plain_it"))
+    app.set("plain_it", "icon", "")
+    print "cleared again:       " + string(app.has_icon("plain_it"))
 
     ' THE REFUSALS, each naming what was wrong.
     on error goto next
-    qt.set(app, "ok_it", "icon", "SP_NotAThing")
+    app.set("ok_it", "icon", "SP_NotAThing")
     print "a misspelled Qt name: " + error.message
     error.clear()
-    qt.set(app, "ok_it", "icon", "/no/such/icon.png")
+    app.set("ok_it", "icon", "/no/such/icon.png")
     print "a path that is not there: " + error.message
     error.clear()
-    qt.read(app, "ok_it", "icon")
+    app.read("ok_it", "icon")
     print "reading one as text: " + error.message
     error.clear()
     on error stop
 
-    qt.close(app)
+    app.close()
 end program

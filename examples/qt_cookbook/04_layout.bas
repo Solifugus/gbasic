@@ -42,11 +42,11 @@ program main(args)
     ' ONLY A GRID HAS COORDINATES TO REPORT, and `qt.at` asks the LAYOUT rather
     ' than any record of where we put things -- so it answers where a widget
     ' REALLY is.
-    at = qt.at(shapes, "code")
+    at = shapes.at("code")
     print "code sits at row " + string(at.row) + ", column " + string(at.column)
-    at = qt.at(shapes, "qty")
+    at = shapes.at("qty")
     print "qty  sits at row " + string(at.row) + ", column " + string(at.column)
-    at = qt.at(shapes, "note")
+    at = shapes.at("note")
     ' BRACKETED: a line break continues a statement only inside brackets.
     print ("note sits at row " + string(at.row) + ", column " +
            string(at.column) + " and spans " + string(at.across))

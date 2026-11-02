@@ -28,7 +28,7 @@ end window
 ' A FUNCTION CALLED FROM A HANDLER can read the same record and write widgets.
 ' It must `return nothing`, or warning 2101 fires on the discarded result.
 function show_count()
-    qt.write(tally, "shown", string(g.count) + " so far")
+    tally.write("shown", string(g.count) + " so far")
     return nothing
 end function
 
@@ -42,15 +42,15 @@ program main(args)
     end if
     qt.open(tally)
 
-    qt.invoke(tally, "up", "click")
-    qt.invoke(tally, "up", "click")
-    qt.invoke(tally, "up", "click")
-    print "after three clicks the widget says: " + qt.read(tally, "shown")
+    tally.invoke("up", "click")
+    tally.invoke("up", "click")
+    tally.invoke("up", "click")
+    print "after three clicks the widget says: " + tally.read("shown")
     ' AND MAIN CAN SEE IT, which is the whole point: the handler mutated the
     ' record this frame holds.
     print "and main's own record says:        " + string(g.count)
 
-    qt.invoke(tally, "reset", "click")
+    tally.invoke("reset", "click")
     print "after reset:                       " + string(g.count)
     qt.stop()
 end program

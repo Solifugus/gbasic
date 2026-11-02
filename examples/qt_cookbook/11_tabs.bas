@@ -39,23 +39,23 @@ program main(args)
     ' THE `tabs` IS NAMED, so its state is reachable by name like any other
     ' property -- `currentIndex` is Qt's own, and nothing in this backend knows
     ' about it.
-    print "pages:         " + string(qt.read(settings, "pages", "count"))
-    print "showing page:  " + string(qt.read(settings, "pages", "currentIndex"))
+    print "pages:         " + string(settings.read("pages", "count"))
+    print "showing page:  " + string(settings.read("pages", "currentIndex"))
 
     ' A CONTAINER CARRIES A NAME OR OPTIONS, NEVER BOTH -- `tabs pages( ... )`
     ' costs four reduce/reduce conflicts in the grammar and is refused, which is
     ' why an option that moves is set at run time instead.
-    qt.set(settings, "pages", "movable", true)
-    print "movable now:   " + string(qt.read(settings, "pages", "movable"))
+    settings.set("pages", "movable", true)
+    print "movable now:   " + string(settings.read("pages", "movable"))
 
-    qt.set(settings, "pages", "currentIndex", 2)
-    print "after turning: " + string(qt.read(settings, "pages", "currentIndex"))
+    settings.set("pages", "currentIndex", 2)
+    print "after turning: " + string(settings.read("pages", "currentIndex"))
 
     ' PARTS ON ANY PAGE ARE REACHABLE BY NAME, whichever page is in front:
     ' the registry is flat, and a page is not a namespace.
-    qt.write(settings, "who", "Ada")
-    print "a part on page 0: " + qt.read(settings, "who")
-    at = qt.at(settings, "hard")
+    settings.write("who", "Ada")
+    print "a part on page 0: " + settings.read("who")
+    at = settings.at("hard")
     print ("and a grid on page 2 still has coordinates: column " +
            string(at.column))
     qt.stop()

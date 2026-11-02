@@ -26,6 +26,8 @@ Where to read more:
 
 A database is a directory, created on first use with `create: true`. A `database` block names it, and opens it the first time one of its statements runs. Its **owner**, the one process that serves every program using it, is started by the first program that connects. It serves every program connected to it, and stops by itself once nobody has been connected for 3 seconds (`linger:` changes that).
 
+A connection and a block are **handles**, and a handle's verbs are its methods: `add.exec()`, `shop.close()`. `gsql.exec(add)` and `gsql.close(shop)` are the same calls written the other way; this page uses the methods throughout.
+
 <!--CODE:01_first_database-->
 
 ```basic
@@ -59,17 +61,17 @@ sql under on shop
     select id, name, price from item where price < :limit order by price
 end sql
 
-gsql.exec(make)
+make.exec()
 
 id = 1
 name = "apple"
 price = {USD}"0.50"
-gsql.exec(add)
+add.exec()
 id = 2
 name = "pear"
 price = {USD}"0.75"
-gsql.exec(add)
-r = gsql.exec(add_two)
+add.exec()
+r = add_two.exec()
 print r.command + ": " + string(r.rows_affected) + " rows"
 
 ' a select block is iterated a row at a time, fields in select-list order
@@ -78,7 +80,7 @@ for each row in under
     print string(row.id) + "  " + row.name + "  " + string(row.price)
 next
 
-gsql.close(shop)
+shop.close()
 remove_tree({dir}"cookbook_first.gsql")
 ```
 
@@ -138,29 +140,29 @@ sql second_note on vals
     select note from v where id = 2
 end sql
 
-gsql.exec(make)
+make.exec()
 
 big {number}= "9007199254740993"            ' 2^53 + 1: past what a double holds exactly
 cost = {EUR}"19.99"
 day = {date}"2026-11-01"
 note = ""
-gsql.exec(add_full)
-gsql.exec(add_bare)                          ' every other column NULL
+add_full.exec()
+add_bare.exec()                          ' every other column NULL
 
 for each row in everything
     print row
 next
 
-back = gsql.query(first)[0]
+back = first.query()[0]
 print "big + 1 = " + string(back.big + 1)          ' exact: ...994
 print "cost is " + money.currency(back.cost)
 print "day is a " + type(back.day) + ", note is " + type(back.note) + " of length " + string(len(back.note))
 
 ' SQL NULL reads back as unknown, which is not the empty string
-gap = gsql.query(second_note)[0].note
+gap = second_note.query()[0].note
 print "a missing note is unknown: " + string(is_unknown(gap))
 
-gsql.close(vals)
+vals.close()
 remove_tree({dir}"cookbook_values.gsql")
 ```
 
@@ -215,53 +217,53 @@ sql first_two on bank
     select id, bal from acct where id <= 2 order by id
 end sql
 
-gsql.exec(make)
+make.exec()
 
 ' Every exec outside begin/commit is its own transaction, and each commit is
 ' one sync to disk. Batching rows into one transaction is the single biggest
 ' thing a program can do for write speed (docs/gsql_practices.md).
-gsql.begin(bank)
+bank.begin()
 bal = {USD}"100.00"
 for i = 1 to 100
     id = i
     owner = "owner " + string(i)
-    gsql.exec(open_acct)
+    open_acct.exec()
 next
-gsql.commit(bank)
-print "after the batch: " + string(gsql.query(how_many)[0].n) + " accounts"
+bank.commit()
+print "after the batch: " + string(how_many.query()[0].n) + " accounts"
 
 ' a transfer: both halves or neither
 amount = {USD}"30"
 from_id = 1
 to_id = 2
-gsql.begin(bank)
-gsql.exec(debit)
-gsql.exec(credit)
-gsql.rollback(bank)                    ' changed our mind: neither happened
-r = gsql.query(first_two)
+bank.begin()
+debit.exec()
+credit.exec()
+bank.rollback()                    ' changed our mind: neither happened
+r = first_two.query()
 print "after a rollback: " + string(r[0].bal) + " and " + string(r[1].bal)
 
 ' A refused statement that changed nothing leaves the transaction usable.
 function insert_twice()
     on error goto next
-    gsql.begin(bank)
+    bank.begin()
     id = 1                             ' id 1 is taken
     owner = "again"
     bal = {USD}"1"
-    gsql.exec(open_acct)
+    open_acct.exec()
     if error then
         print "refused: " + error.details.code + ", and the transaction carries on"
     end if
     id = 101
     owner = "new"
-    gsql.exec(open_acct)
-    gsql.commit(bank)
+    open_acct.exec()
+    bank.commit()
     return nothing
 end function
 insert_twice()
-print "now " + string(gsql.query(how_many)[0].n) + " accounts"
+print "now " + string(how_many.query()[0].n) + " accounts"
 
-gsql.close(bank)
+bank.close()
 remove_tree({dir}"cookbook_bank.gsql")
 ```
 
@@ -278,7 +280,7 @@ now 101 accounts
 
 Every recipe here is written with blocks; this one shows their details. A `:name` parameter is read from whatever variable of that name is in scope when the statement runs, including a function's own parameters. A block ends at `end sql`, so SQL's own `CASE … END` reads naturally, and `for each row in block` streams a result a batch at a time, closing its cursor if the loop is left early.
 
-A string is for SQL assembled as the program runs, such as a table name it chose: `gsql.query(db, text, parameters)`, with every value bound as a parameter, never pasted in.
+A string is for SQL assembled as the program runs, such as a table name it chose: `db.query(text, parameters)`, with every value bound as a parameter, never pasted in.
 
 <!--CODE:04_database_and_sql_blocks-->
 
@@ -312,11 +314,11 @@ sql priced on shop
     order by id
 end sql
 
-gsql.exec(make)
+make.exec()
 
 ' :name parameters are read from the variables in scope when the block runs
 function stock(id, name, price)
-    gsql.exec(add)
+    add.exec()
     return nothing
 end function
 stock(1, "apple", {USD}"0.50")
@@ -328,7 +330,7 @@ for each row in priced          ' a statement block is iterated a batch at a tim
     print row.name + "  " + string(row.price) + "  " + row.band
 next
 
-gsql.close(shop)
+shop.close()
 remove_tree({dir}"cookbook_blocks.gsql")
 ```
 
@@ -373,7 +375,7 @@ sql customers on keys
     select id, name from customer order by id
 end sql
 
-gsql.exec(customers_in)
+customers_in.exec()
 for each row in customers
     print string(row.id) + " " + row.name             ' 3 is gone for good: Barbara is 4
 next
@@ -388,7 +390,7 @@ sql logged on keys
     select task, n, note from task_log order by task, n
 end sql
 
-gsql.exec(log_lines)
+log_lines.exec()
 for each row in logged
     print "task " + string(row.task) + " #" + string(row.n) + " " + row.note
 next
@@ -405,7 +407,7 @@ sql requests on keys
     select at, no from request order by at
 end sql
 
-gsql.exec(requests_in)
+requests_in.exec()
 for each row in requests
     print string(row.at) + "  #" + string(row.no)
 next
@@ -420,13 +422,13 @@ sql members on keys
     select id, pin, name from member order by name
 end sql
 
-gsql.exec(members_in)
+members_in.exec()
 for each row in members
     ' the values differ every run, so this prints their shape, not them
     print row.name + ": id of " + string(len(row.id)) + " characters, pin of " + string(len(row.pin)) + " digits"
 next
 
-gsql.close(keys)
+keys.close()
 remove_tree({dir}"cookbook_keys.gsql")
 ```
 
@@ -507,11 +509,11 @@ sql order_count on shop
     select count(*) as n from orders
 end sql
 
-gsql.exec(schema)
+schema.exec()
 
 function try(statement)
     on error goto next
-    gsql.exec(statement)
+    statement.exec()
     if error then
         print "refused  " + error.details.code
         return nothing
@@ -527,9 +529,9 @@ try(zero_total)             ' CHECK
 try(no_such_customer)       ' FOREIGN_KEY: no customer 9
 try(drop_ada)               ' FOREIGN_KEY: an order points at it
 try(text_customer)          ' TYPE: text is not an integer
-print string(gsql.query(order_count)[0].n) + " order kept"
+print string(order_count.query()[0].n) + " order kept"
 
-gsql.close(shop)
+shop.close()
 remove_tree({dir}"cookbook_orders.gsql")
 ```
 
@@ -599,7 +601,7 @@ sql above_average_in_steps on sales
     order by s.id
 end sql
 
-gsql.exec(setup)
+setup.exec()
 
 print "-- totals by region, joined to its name, regions with nothing sold included"
 for each row in by_region
@@ -621,7 +623,7 @@ for each row in above_average_in_steps
     print row.id
 next
 
-gsql.close(sales)
+sales.close()
 remove_tree({dir}"cookbook_sales.gsql")
 ```
 
@@ -686,41 +688,41 @@ sql rename_new on shop
     alter table item_new rename to item
 end sql
 
-gsql.exec(setup)
-print gsql.query(read_cheap)
+setup.exec()
+print read_cheap.query()
 
-gsql.exec(build_new)
+build_new.exec()
 
 function drop_old()
     on warning goto next
-    gsql.exec(drop_item)
+    drop_item.exec()
     if warning then
         print "warned " + string(warning.code) + ": " + warning.message
     end if
     return nothing
 end function
 drop_old()                                        ' the view now reads nothing
-gsql.exec(rename_new)
-print gsql.query(read_cheap)                      ' and reads again, once item is back
+rename_new.exec()
+print read_cheap.query()                      ' and reads again, once item is back
 
 ' the careful version: under `on warning stop`, inside a transaction, the
 ' warning is an error before anything commits
 function careful()
     on error goto next
     on warning stop
-    gsql.begin(shop)
-    gsql.exec(drop_item)
+    shop.begin()
+    drop_item.exec()
     if error then
-        gsql.rollback(shop)
+        shop.rollback()
         return "rolled back: " + string(error.code)
     end if
-    gsql.commit(shop)
+    shop.commit()
     return "committed"
 end function
 print careful()
-print gsql.query(read_cheap)
+print read_cheap.query()
 
-gsql.close(shop)
+shop.close()
 remove_tree({dir}"cookbook_views.gsql")
 ```
 
@@ -779,16 +781,16 @@ sql user_count on log
     select count(*) as n from event where user_id = 7
 end sql
 
-gsql.exec(make_event)
-gsql.begin(log)
+make_event.exec()
+log.begin()
 kind = "click"
 at = {date}"2026-11-01"
 for i = 1 to 2000
     id = i
     user_id = mod(i, 50)
-    gsql.exec(add_event)
+    add_event.exec()
 next
-gsql.commit(log)
+log.commit()
 
 function plan(explained)
     for each row in explained
@@ -801,14 +803,14 @@ print "by the primary key:"
 plan(by_id)
 print "by a column with no index -- every row is read:"
 plan(by_user)
-gsql.exec(index_user)
+index_user.exec()
 print "the same, with an index on it:"
 plan(by_user)
 print "an index narrows; every condition is still checked:"
 plan(by_user_and_kind)
-print string(gsql.query(user_count)[0].n) + " events for user 7"
+print string(user_count.query()[0].n) + " events for user 7"
 
-gsql.close(log)
+log.close()
 remove_tree({dir}"cookbook_log.gsql")
 ```
 
@@ -848,11 +850,11 @@ load gsql
 
 work = temp_dir()
 db = gsql.connect(join_path(work, "e.gsql"), { create: true })
-gsql.exec(db, "create table t (id integer primary key, name text)")
+db.exec("create table t (id integer primary key, name text)")
 
 function explain_error(sql)
     on error goto next
-    gsql.query(db, sql)
+    db.query(sql)
     if error then
         where = ""
         if has(error.details, "position") then
@@ -870,7 +872,7 @@ explain_error("selct * from t")                ' SYNTAX
 ' reaches it, so a query that will be refused later answers nothing now:
 explain_error("select * from t where name = 1")
 print "  (said nothing: the table is empty)"
-gsql.exec(db, "insert into t values (1, 'one')")
+db.exec("insert into t values (1, 'one')")
 explain_error("select * from t where name = 1")   ' EXPRESSION: no implicit casts
 explain_error("select * from t where name = '1'") ' fine: says nothing
 
@@ -879,7 +881,7 @@ explain_error("select * from t where name = '1'") ' fine: says nothing
 ' (gsql.exec runs anything, and answers rows too when there are any.)
 function wrong_verb()
     on error goto next
-    gsql.query(db, "update t set name = 'uno' where id = 1")
+    db.query("update t set name = 'uno' where id = 1")
     if error then
         print error.details.code + ": " + error.message
     end if
@@ -887,7 +889,7 @@ function wrong_verb()
 end function
 wrong_verb()
 
-gsql.close(db)
+db.close()
 remove_tree(work)
 ```
 
@@ -909,7 +911,7 @@ These follow from how G-SQL is built, and the figures behind them are in `docs/g
 
 ## 11. One database per tenant, and combining their answers
 
-When tenants are independent, give each a database. The SQL is the same for all of them, so it is written once, on a database chosen at run time: `database tenant()`, with no file, and each statement given the tenant's connection, `gsql.exec(db, bill)` or `for each row in gsql.on(db, totals)`. Each database stays small and fast. It is backed up, moved or deleted as a whole. And one tenant's long report never stalls another's work, since each database has its own owner.
+When tenants are independent, give each a database. The SQL is the same for all of them, so it is written once, on a database chosen at run time: `database tenant()`, with no file, and each statement given the tenant's connection, `db.exec(bill)` or `for each row in db.on(totals)`. Each database stays small and fast. It is backed up, moved or deleted as a whole. And one tenant's long report never stalls another's work, since each database has its own owner.
 
 **Across databases, combine parts, not answers.** `count`, `sum`, `min` and `max` merge directly. An average is the sums over the counts: averaging the averages is wrong whenever the databases hold different numbers of rows.
 
@@ -1014,12 +1016,12 @@ sql paid_in_all on pay_db
     select count(*) as n, sum(amount) as s from payment
 end sql
 
-gsql.exec(make)
+make.exec()
 
 ' :request and :amount are this function's own parameters
 function pay(request, amount)
     on error goto next
-    gsql.exec(record_payment)
+    record_payment.exec()
     if error then
         if error.details.code = "DUPLICATE" then
             return "already done"
@@ -1032,10 +1034,10 @@ end function
 print pay("req-1001", {USD}"25.00")
 print pay("req-1001", {USD}"25.00")       ' the retry
 print pay("req-1002", {USD}"40.00")
-r = gsql.query(paid_in_all)[0]
+r = paid_in_all.query()[0]
 print string(r.n) + " payments, " + string(r.s) + " in all"
 
-gsql.close(pay_db)
+pay_db.close()
 remove_tree({dir}"cookbook_pay.gsql")
 ```
 
@@ -1087,30 +1089,30 @@ sql from_sensor_3 on readings
     select count(*) as n from reading where sensor = 3
 end sql
 
-gsql.exec(make)
+make.exec()
 
 batch = 1000
 commits = 0
-gsql.begin(readings)
+readings.begin()
 for i = 1 to 2500
     id = i
     sensor = mod(i, 7)
     value = i / 4
-    gsql.exec(add)
+    add.exec()
     if mod(i, batch) = 0 then
-        gsql.commit(readings)
+        readings.commit()
         commits = commits + 1
-        gsql.begin(readings)
+        readings.begin()
     end if
 next
-gsql.commit(readings)           ' the last, partial batch
+readings.commit()           ' the last, partial batch
 commits = commits + 1
 
-r = gsql.query(how_many)[0]
+r = how_many.query()[0]
 print string(r.n) + " rows in " + string(commits) + " commits"
-print string(gsql.query(from_sensor_3)[0].n) + " readings from sensor 3"
+print string(from_sensor_3.query()[0].n) + " readings from sensor 3"
 
-gsql.close(readings)
+readings.close()
 remove_tree({dir}"cookbook_load.gsql")
 ```
 
@@ -1123,7 +1125,7 @@ remove_tree({dir}"cookbook_load.gsql")
 
 ## 14. Back up while in use, and report on the copy
 
-`gsql.backup(db, dir)` makes a consistent copy while other programs go on working. It copies a slice at a time, and the owner serves everyone else between slices. Backing up into the same directory again **refreshes** it: files the copy already holds are kept, so the cost is roughly what changed.
+`db.backup(dir)` makes a consistent copy while other programs go on working. It copies a slice at a time, and the owner serves everyone else between slices. Backing up into the same directory again **refreshes** it: files the copy already holds are kept, so the cost is roughly what changed.
 
 **The copy is an ordinary database,** which makes it the place for long reports: each database has its own owner, so a report there stalls nobody on the live one.
 
@@ -1159,39 +1161,39 @@ sql sales_total on reporting
     select count(*) as n, sum(amount) as total from sale
 end sql
 
-gsql.exec(make)
-gsql.begin(live)
+make.exec()
+live.begin()
 amount = {USD}"10.00"
 for i = 1 to 1000
-    gsql.exec(sell)
+    sell.exec()
 next
-gsql.commit(live)
+live.commit()
 
 work = temp_dir()
 copy = join_path(work, "reporting.gsql")
-first = gsql.backup(live, copy)
+first = live.backup(copy)
 print "first backup: " + string(first.files) + " file, nothing kept: " + string(first.reused = 0)
 
 amount = {USD}"99.00"
-gsql.exec(sell)
-gsql.backup(live, copy)                  ' a refresh: as of now
+sell.exec()
+live.backup(copy)                  ' a refresh: as of now
 
 ' The report runs on the copy, so a long one stalls nobody on the live
 ' database. (This program now holds the copy open, and a copy that is open is
 ' not refreshed: a report runs as a program of its own, and its hold ends with
 ' it.)
 report = gsql.connect(copy)
-r = gsql.query(report, sales_total)[0]
+r = report.query(sales_total)[0]
 print "the copy: " + string(r.n) + " sales, " + string(r.total)
 
 on error goto next
-gsql.backup(live, copy)
+live.backup(copy)
 if error then
     print "refreshing it while it is open is refused: " + error.details.code
 end if
 
-gsql.close(report)
-gsql.close(live)
+report.close()
+live.close()
 remove_tree(work)
 remove_tree({dir}"cookbook_live.gsql")
 ```
@@ -1206,7 +1208,7 @@ refreshing it while it is open is refused: STATE
 
 ## 15. A SQL dump, to read a design and to upgrade it
 
-`gsql.dump(db, file)` writes the database as SQL text: its tables, indexes, rows, serial counters, constraints and views, from one snapshot, a slice at a time while other programs go on working. With `{ schema_only: true }` it writes the design alone, which is the database's design on one page. `gsql.restore(db, file)` runs a dump into another database.
+`db.dump(file)` writes the database as SQL text: its tables, indexes, rows, serial counters, constraints and views, from one snapshot, a slice at a time while other programs go on working. With `{ schema_only: true }` it writes the design alone, which is the database's design on one page. `db.restore(file)` runs a dump into another database.
 
 **Edit the text, then restore it, to change a design** in a way `ALTER TABLE` does not offer: here a column becomes `NOT NULL` with a default, and the one row that broke the new rule is fixed in the same pass.
 
@@ -1250,12 +1252,12 @@ sql highest on v2
     select max(id) as m from customer
 end sql
 
-gsql.exec(make)
+make.exec()
 
 ' the design, on one page
 work = temp_dir()
 schema = join_path(work, "shop-schema.sql")
-gsql.dump(shop, schema, { schema_only: true })
+shop.dump(schema, { schema_only: true })
 print read({file}schema)
 
 ' everything, then the design changed in the text: phone becomes NOT NULL
@@ -1263,7 +1265,7 @@ print read({file}schema)
 ' filled in the same pass. The dump is text, edited as text: this is where a
 ' string, not a block, is the right tool.
 full = join_path(work, "shop.sql")
-r = gsql.dump(shop, full)
+r = shop.dump(full)
 print "dumped " + string(r.tables) + " table, " + string(r.rows) + " rows"
 text = read({file}full)
 text = replace(text, "phone TEXT", "phone TEXT NOT NULL DEFAULT 'unlisted'")
@@ -1271,27 +1273,27 @@ text = replace(text, "'Grace', NULL", "'Grace', 'unlisted'")
 upgraded = join_path(work, "shop-v2.sql")
 write({file}upgraded, text)
 
-r = gsql.restore(v2, upgraded)
+r = v2.restore(upgraded)
 print "restored " + string(r.statements) + " statements, " + string(r.rows) + " rows"
 for each c in customers
     print string(c.id) + " " + c.name + " " + c.phone
 next
 
 ' the serial carries on from where the old database left off
-gsql.exec(add_linus)
-print "next id: " + string(gsql.query(highest)[0].m)
+add_linus.exec()
+print "next id: " + string(highest.query()[0].m)
 
 ' a restore only writes to tables it made, so a file cannot touch data
 ' already there
 on error goto next
 write({file}upgraded, "delete from customer;")
-gsql.restore(v2, upgraded)
+v2.restore(upgraded)
 if error then
     print "a DELETE in the file is refused: " + error.details.code
 end if
 
-gsql.close(v2)
-gsql.close(shop)
+v2.close()
+shop.close()
 remove_tree(work)
 remove_tree({dir}"cookbook_dump.gsql")
 remove_tree({dir}"cookbook_dump_v2.gsql")

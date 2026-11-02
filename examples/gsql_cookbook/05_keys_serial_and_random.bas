@@ -20,7 +20,7 @@ sql customers on keys
     select id, name from customer order by id
 end sql
 
-gsql.exec(customers_in)
+customers_in.exec()
 for each row in customers
     print string(row.id) + " " + row.name             ' 3 is gone for good: Barbara is 4
 next
@@ -35,7 +35,7 @@ sql logged on keys
     select task, n, note from task_log order by task, n
 end sql
 
-gsql.exec(log_lines)
+log_lines.exec()
 for each row in logged
     print "task " + string(row.task) + " #" + string(row.n) + " " + row.note
 next
@@ -52,7 +52,7 @@ sql requests on keys
     select at, no from request order by at
 end sql
 
-gsql.exec(requests_in)
+requests_in.exec()
 for each row in requests
     print string(row.at) + "  #" + string(row.no)
 next
@@ -67,11 +67,11 @@ sql members on keys
     select id, pin, name from member order by name
 end sql
 
-gsql.exec(members_in)
+members_in.exec()
 for each row in members
     ' the values differ every run, so this prints their shape, not them
     print row.name + ": id of " + string(len(row.id)) + " characters, pin of " + string(len(row.pin)) + " digits"
 next
 
-gsql.close(keys)
+keys.close()
 remove_tree({dir}"cookbook_keys.gsql")

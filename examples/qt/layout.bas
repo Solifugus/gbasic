@@ -92,23 +92,23 @@ program main(args)
         ' LAYOUT rather than from any record of where things were put, which is
         ' the only way to tell a widget that was placed from one that was
         ' merely made.
-        print "heading:           " + qt.read(shapes, "heading")
-        print "title spans:       " + string(qt.at(shapes, "title").across)
-        print("a is at:           " + string(qt.at(shapes, "a").row) + "," +
-              string(qt.at(shapes, "a").column))
-        print("d is at:           " + string(qt.at(shapes, "d").row) + "," +
-              string(qt.at(shapes, "d").column))
+        print "heading:           " + shapes.read("heading")
+        print "title spans:       " + string(shapes.at("title").across)
+        print("a is at:           " + string(shapes.at("a").row) + "," +
+              string(shapes.at("a").column))
+        print("d is at:           " + string(shapes.at("d").row) + "," +
+              string(shapes.at("d").column))
         ' AND THE FACT THOSE NUMBERS TEACH: a labelled `field` takes TWO
         ' cells -- its label and itself -- so `a` sits in column 1 with its
         ' "A" in column 0. That is why a grid of labelled fields lines up at
         ' all, and the column is the only way to see the label was placed.
-        print "a's label is at:   0," + string(qt.at(shapes, "a").column - 1)
+        print "a's label is at:   0," + string(shapes.at("a").column - 1)
         print("b and d share a column: " +
-              string(qt.at(shapes, "b").column = qt.at(shapes, "d").column))
+              string(shapes.at("b").column = shapes.at("d").column))
         ' AND THE HONEST LIMIT, printed rather than hidden: a box has no
         ' coordinates, so this is a refusal and not an absence.
         on error goto no_coords
-        at = qt.at(shapes, "left")
+        at = shapes.at("left")
         print "a button in a row answered " + string(at)
         qt.stop()
         return

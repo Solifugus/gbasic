@@ -24,15 +24,15 @@ program main(args)
 
     sample = ("' a comment" + chr(10) + "program main()" + chr(10) +
               "    x = 42" + chr(10) + "end program")
-    qt.write(pad, "code", sample)
-    qt.write(pad, "prose", sample)
+    pad.write("code", sample)
+    pad.write("prose", sample)
 
     ' WHAT IS ACTUALLY HIGHLIGHTING IT. `qt.highlighting` answers a record, or
     ' `unknown` when nothing is -- and an absent definition is a WARNING rather
     ' than a refusal, because the editor still works and an unhighlighted one
     ' looks entirely ordinary: the theme's normal text is applied to every line
     ' either way, so there is nothing on screen to notice.
-    h = qt.highlighting(pad, "code")
+    h = pad.highlighting("code")
     if is_unknown(h) then
         print "highlighting:  none installed (the editor still works)"
     else
@@ -44,13 +44,13 @@ program main(args)
     ' a memo than as values.
     print "-- against a memo in the same window"
     print ("wrap:          source=" +
-           string(qt.read(pad, "code", "lineWrapMode")) + "  memo=" +
-           string(qt.read(pad, "prose", "lineWrapMode")))
-    print ("narrower tab:  " + string(qt.read(pad, "code", "tabStopDistance") <
-                                      qt.read(pad, "prose", "tabStopDistance")))
-    print ("fonts differ:  " + string(qt.read(pad, "code", "font") !=
-                                      qt.read(pad, "prose", "font")))
-    print "memo has none: " + string(is_unknown(qt.highlighting(pad, "prose")))
-    print "text survives: " + string(len(qt.read(pad, "code")) = len(sample))
+           string(pad.read("code", "lineWrapMode")) + "  memo=" +
+           string(pad.read("prose", "lineWrapMode")))
+    print ("narrower tab:  " + string(pad.read("code", "tabStopDistance") <
+                                      pad.read("prose", "tabStopDistance")))
+    print ("fonts differ:  " + string(pad.read("code", "font") !=
+                                      pad.read("prose", "font")))
+    print "memo has none: " + string(is_unknown(pad.highlighting("prose")))
+    print "text survives: " + string(len(pad.read("code")) = len(sample))
     qt.stop()
 end program

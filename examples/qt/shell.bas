@@ -102,7 +102,7 @@ window shell( title: "Shell", width: 820, height: 520 )
 
     on act_open.triggered
         g.log = g.log + "opened" + chr(10)
-        x = qt.write(shell, "code", ("' " + qt.read(shell, "f1") + chr(10) +
+        x = shell.write("code", ("' " + shell.read("f1") + chr(10) +
                      "print hello" + chr(10)))
     end on
 
@@ -111,14 +111,14 @@ window shell( title: "Shell", width: 820, height: 520 )
     end on
 
     on out.itemSelectionChanged
-        at = qt.selected(shell, "out")
+        at = shell.selected("out")
         if not is_unknown(at) then
             g.log = g.log + "picked row " + string(at) + chr(10)
         end if
     end on
 
     on proj_btn.clicked
-        g.menu_shown = qt.popup(shell, "proj_menu", "proj_btn")
+        g.menu_shown = shell.popup("proj_menu", "proj_btn")
     end on
 
     on code.wheel
@@ -127,12 +127,12 @@ window shell( title: "Shell", width: 820, height: 520 )
             ' DECLINED, so the editor scrolls as it always did.
             return
         end if
-        f = split(qt.read(shell, "code", "font"), ",")
+        f = split(shell.read("code", "font"), ",")
         bigger = 1
         if ev.dy < 0 then
             bigger = 0 - 1
         end if
-        qt.set(shell, "code", "font", f[0] + "," + string(number(f[1]) + bigger))
+        shell.set("code", "font", f[0] + "," + string(number(f[1]) + bigger))
         g.zooms = g.zooms + 1
         qt.swallow()
     end on
@@ -151,52 +151,52 @@ program main(args)
               { at: "2", says: "no errors" } ]
 
     qt.open(shell)
-    x = qt.write(shell, "code", "x = 1" + chr(10) + "print x" + chr(10))
+    x = shell.write("code", "x = 1" + chr(10) + "print x" + chr(10))
 
     if contains(args, "check") then
         print "-- the shell's regions, asked of the layout"
-        nav = qt.pane(shell, "files")
+        nav = shell.pane("files")
         print("the file list is pane " + string(nav.index) + " of " +
               string(nav.panes) + " in the " + nav.direction + " split")
         ' TWO PANES IS THE NESTING CHECK: the outer split holds the file list
         ' AND the inner split, so an inner one hung off the window instead of
         ' its parent would report ONE here and every other line would still
         ' read correctly.
-        ed = qt.pane(shell, "code")
-        tb = qt.pane(shell, "out")
+        ed = shell.pane("code")
+        tb = shell.pane("out")
         print("the editor is pane " + string(ed.index) + " of " +
               string(ed.panes) + " in the " + ed.direction + " split")
         print "the table is pane  " + string(tb.index)
 
         print "-- the toolbar"
-        qt.invoke(shell, "proj_btn", "click")
+        shell.invoke("proj_btn", "click")
         print("the Project menu dropped under its button: " +
               string(g.menu_shown))
         print("the group divider is " +
-              string(qt.read(shell, "group_bar", "frameShape")) +
+              string(shell.read("group_bar", "frameShape")) +
               ", the header rule is " +
-              string(qt.read(shell, "header_rule", "frameShape")))
+              string(shell.read("header_rule", "frameShape")))
         ' AND PUT IT AWAY. A popped menu STAYS UP until something dismisses it
         ' -- a person clicks an item or presses Escape, and a program that
         ' pops one in `check` mode has to close it, or it goes on grabbing
         ' the mouse while everything below runs. `hide` is an ordinary method.
-        qt.invoke(shell, "proj_menu", "hide")
+        shell.invoke("proj_menu", "hide")
 
         print "-- the menu items' icons"
-        print("Open has an icon:   " + string(qt.has_icon(shell, "act_open")))
-        print("Quit has an icon:   " + string(qt.has_icon(shell, "act_quit")))
+        print("Open has an icon:   " + string(shell.has_icon("act_open")))
+        print("Quit has an icon:   " + string(shell.has_icon("act_quit")))
 
         print "-- ctrl + wheel over the editor"
-        was = number(split(qt.read(shell, "code", "font"), ",")[1])
-        claimed = qt.scroll(shell, "code", 2, "ctrl")
+        was = number(split(shell.read("code", "font"), ",")[1])
+        claimed = shell.scroll("code", 2, "ctrl")
         print("claimed " + string(claimed) + ", font " + string(was) + " -> " +
-              string(number(split(qt.read(shell, "code", "font"), ",")[1])))
+              string(number(split(shell.read("code", "font"), ",")[1])))
         ' A PLAIN WHEEL IS LEFT ALONE, which is what keeps the editor usable.
         print("a plain wheel claims nothing: " +
-              string(qt.scroll(shell, "code", -1)))
+              string(shell.scroll("code", -1)))
 
         print "-- the nearest region wins"
-        deep = qt.pane(shell, "f1")
+        deep = shell.pane("f1")
         print("a file label reports the " + deep.kind +
               ", resizable " + string(deep.resizable))
         ' QT DEFAULTS `widgetResizable` TO FALSE, and left alone the inner
@@ -204,15 +204,15 @@ program main(args)
         ' and a resized window shows a stripe of widgets beside a grey
         ' expanse, with nothing raised.
         print("and by name:           " +
-              string(qt.read(shell, "files", "widgetResizable")))
+              string(shell.read("files", "widgetResizable")))
 
         print "-- and it all works"
-        e = qt.refresh(shell, "out")
+        e = shell.refresh("out")
         print "the table drew " + string(e) + " rows"
-        qt.invoke(shell, "act_open", "trigger")
-        qt.select(shell, "out", 1)
+        shell.invoke("act_open", "trigger")
+        shell.select("out", 1)
         print "the log says: " + replace(g.log, chr(10), " / ")
-        print "the editor now starts: " + left(qt.read(shell, "code"), 12)
+        print "the editor now starts: " + left(shell.read("code"), 12)
         qt.stop()
         return
     end if

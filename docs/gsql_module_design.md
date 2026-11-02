@@ -8,23 +8,23 @@
 load gsql
 
 db = gsql.connect("shop.gsql", { create: true })
-gsql.exec(db, "create table item (id integer primary key, name string not null, price money)")
-gsql.exec(db, "insert into item (id, name, price) values (:id, :name, :price)",
+db.exec("create table item (id integer primary key, name string not null, price money)")
+db.exec("insert into item (id, name, price) values (:id, :name, :price)",
           { id: 1, name: "apple", price: {USD}"0.50" })
-for each row in gsql.query(db, "select id, name, price from item where price < $1", [{USD}"1.00"])
+for each row in db.query("select id, name, price from item where price < $1", [{USD}"1.00"])
     print row.name
 next
-gsql.close(db)
+db.close()
 ```
 
 | call | answers |
 |---|---|
 | `gsql.connect(path [, { create: true }])` | a `gsql_connection`. Without `create`, a database that is not there is refused, saying how to make one |
-| `gsql.query(db, sql [, parameters])` | an array of records, one per row, fields in select-list order |
-| `gsql.exec(db, sql [, parameters])` | `{ command, rows_affected }`, the shape `sqlite`, `pg` and `odbc` answer; `rows_affected` is `nothing` for a statement with no count, such as `CREATE` |
+| `db.query(sql [, parameters])` | an array of records, one per row, fields in select-list order |
+| `db.exec(sql [, parameters])` | `{ command, rows_affected }`, the shape `sqlite`, `pg` and `odbc` answer; `rows_affected` is `nothing` for a statement with no count, such as `CREATE` |
 | `gsql.begin(db [, "read" or "write"])` | `true`. `"write"` is the default |
-| `gsql.commit(db)`, `gsql.rollback(db)` | `true` |
-| `gsql.close(db)` | `true`. A closed connection is refused by every verb, `close` included |
+| `db.commit()`, `db.rollback()` | `true` |
+| `db.close()` | `true`. A closed connection is refused by every verb, `close` included |
 
 **Parameters** are a record for `:name` and an array for `$1`, `$2`, …, the SQL layer's two forms (`gsql_sql_design.md` §1). Anything else is refused before anything is sent.
 
@@ -107,7 +107,7 @@ The design's sketch (`gsql_design.md` §2) is kept, with three decisions the bui
 
 | block | binds | which is |
 |---|---|---|
-| `database NAME( file: "…"[, create: true] )` | a `gsql_connection` | the kind `gsql.connect` answers, so every verb takes it, dynamic SQL included (`gsql.query(shop, sql_text)`, the §10G requirement that both entry points share one engine) |
+| `database NAME( file: "…"[, create: true] )` | a `gsql_connection` | the kind `gsql.connect` answers, so every verb takes it, dynamic SQL included (`shop.query(sql_text)`, the §10G requirement that both entry points share one engine) |
 | `sql NAME on DB` … `end sql` | a `gsql_statement` | one statement and the name of its database |
 
 **A declared database connects on first use.** Declaring one starts no owner and creates no file. The fixture asserts the file is absent until the first block runs, and that closing a database never used creates nothing either. The head's options are a closed set of literals, the server block's rule and for its reason: the block is registered before anything runs, so there is nothing to evaluate an expression in. A database chosen at run time is `gsql.connect`.
@@ -117,8 +117,8 @@ The design's sketch (`gsql_design.md` §2) is kept, with three decisions the bui
 ### 7.2 Running a block
 
 - **`for each row in block`** runs a `select` and hands over one row per pass. Rows arrive a batch at a time (500, as `gsql.query` fetches them), so a result is never held whole. **The loop owns the cursor**, as `for each line in f` owns its file: `break`, `return`, a named `break` to an outer loop, and a raise all end it, and the owner's cursor is closed. A failure partway, such as the owner lost, raises after the rows already handed over; what the loop did with them stays done.
-- **`gsql.query(block)`** answers every row as an array, and **`gsql.exec(block)`** answers `{ command, rows_affected }`, with `rows` when its last statement returns rows (since 2026-11-01, `gsql_store_conversion_design.md` §2). Each takes the block alone or **with a record of its `:name` values** (since 2026-11-01, Matthew's ruling): a field supplies its name, and a name the record lacks is read from the frame, which "has real utility".
-- **On a database chosen at run time** (*since 2026-11-01*, `gsql_block_connection_design.md`): `gsql.exec(connection, block)` and `gsql.query(connection, block)` run a block on that connection, and `gsql.on(connection, block)` answers a copy bound to it, for `for each`. `database NAME()` with no `file:` declares a role, whose blocks must be given a connection.
+- **`block.query()`** answers every row as an array, and **`block.exec()`** answers `{ command, rows_affected }`, with `rows` when its last statement returns rows (since 2026-11-01, `gsql_store_conversion_design.md` §2). Each takes the block alone or **with a record of its `:name` values** (since 2026-11-01, Matthew's ruling): a field supplies its name, and a name the record lacks is read from the frame, which "has real utility".
+- **On a database chosen at run time** (*since 2026-11-01*, `gsql_block_connection_design.md`): `connection.exec(block)` and `connection.query(block)` run a block on that connection, and `connection.on(block)` answers a copy bound to it, for `for each`. `database NAME()` with no `file:` declares a role, whose blocks must be given a connection.
 - The module's refusals carry over and name the block (`sql cheap: …`). `exec` over a `select` block is refused and says to iterate it. `query` or `for each` over a block that returns no rows is refused and **says it ran**, with its count. That matters more here than for `gsql.query`, because a loop is the natural way to "run" a block.
 
 ### 7.3 Checked when the program loads

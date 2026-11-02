@@ -90,12 +90,12 @@ program main(args)
     qt.open(win)
     ' READ BACK BY NAME, generated or not: nothing distinguishes a built part
     ' from a declared one.
-    print "the second line reads: " + qt.read(win, "a_b2", "text")
+    print "the second line reads: " + win.read("a_b2", "text")
     ' AND PLACED BY THE LAYOUT, which is the half a property read cannot see.
-    print "it sits at " + string(qt.at(win, "a_b2"))
+    print "it sits at " + string(win.at("a_b2"))
     if contains(args, "check") then
         print "generated lines: " + string(len(lines))
-        print "the total shows: " + qt.read(win, "sum")
+        print "the total shows: " + win.read("sum")
         qt.stop()
         return
     end if

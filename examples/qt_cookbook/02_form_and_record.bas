@@ -24,19 +24,19 @@ program main(args)
     qt.open(customer)
 
     print "the form filled itself:"
-    print "  name:    " + qt.read(customer, "name")
-    print "  limit:   " + qt.read(customer, "limit")
-    print "  on hold: " + string(qt.read(customer, "hold"))
+    print "  name:    " + customer.read("name")
+    print "  limit:   " + customer.read("limit")
+    print "  on hold: " + string(customer.read("hold"))
 
     ' A PERSON EDITS; here the program does the typing.
-    qt.write(customer, "limit", {USD}4000.00)
-    qt.write(customer, "hold", true)
+    customer.write("limit", {USD}4000.00)
+    customer.write("hold", true)
 
     ' AND THE RECORD IS FOLDED BACK ON DEMAND -- read at the moment you ask,
     ' never tracked between, so no change can be missed. Each field KEEPS ITS
     ' KIND: `limit` comes back as money because the field declared
     ' `type: {USD}`, not as the text the widget holds.
-    back = qt.subject(customer, "cust")
+    back = customer.subject("cust")
     print "after editing:"
     print "  limit:   " + string(back.limit) + "  (type " + type(back.limit) + ")"
     print "  on hold: " + string(back.hold) + "  (type " + type(back.hold) + ")"

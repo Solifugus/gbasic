@@ -31,51 +31,51 @@ sql first_two on bank
     select id, bal from acct where id <= 2 order by id
 end sql
 
-gsql.exec(make)
+make.exec()
 
 ' Every exec outside begin/commit is its own transaction, and each commit is
 ' one sync to disk. Batching rows into one transaction is the single biggest
 ' thing a program can do for write speed (docs/gsql_practices.md).
-gsql.begin(bank)
+bank.begin()
 bal = {USD}"100.00"
 for i = 1 to 100
     id = i
     owner = "owner " + string(i)
-    gsql.exec(open_acct)
+    open_acct.exec()
 next
-gsql.commit(bank)
-print "after the batch: " + string(gsql.query(how_many)[0].n) + " accounts"
+bank.commit()
+print "after the batch: " + string(how_many.query()[0].n) + " accounts"
 
 ' a transfer: both halves or neither
 amount = {USD}"30"
 from_id = 1
 to_id = 2
-gsql.begin(bank)
-gsql.exec(debit)
-gsql.exec(credit)
-gsql.rollback(bank)                    ' changed our mind: neither happened
-r = gsql.query(first_two)
+bank.begin()
+debit.exec()
+credit.exec()
+bank.rollback()                    ' changed our mind: neither happened
+r = first_two.query()
 print "after a rollback: " + string(r[0].bal) + " and " + string(r[1].bal)
 
 ' A refused statement that changed nothing leaves the transaction usable.
 function insert_twice()
     on error goto next
-    gsql.begin(bank)
+    bank.begin()
     id = 1                             ' id 1 is taken
     owner = "again"
     bal = {USD}"1"
-    gsql.exec(open_acct)
+    open_acct.exec()
     if error then
         print "refused: " + error.details.code + ", and the transaction carries on"
     end if
     id = 101
     owner = "new"
-    gsql.exec(open_acct)
-    gsql.commit(bank)
+    open_acct.exec()
+    bank.commit()
     return nothing
 end function
 insert_twice()
-print "now " + string(gsql.query(how_many)[0].n) + " accounts"
+print "now " + string(how_many.query()[0].n) + " accounts"
 
-gsql.close(bank)
+bank.close()
 remove_tree({dir}"cookbook_bank.gsql")

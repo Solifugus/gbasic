@@ -99,7 +99,7 @@ window editor( title: "BAG: areas", width: 680, height: 520 )
     ' handler would have to `qt.write` every part by hand, which is the whole
     ' of what binding exists to avoid.
     on listing.itemSelectionChanged
-        at = qt.selected(editor, "listing")
+        at = editor.selected("listing")
         if not is_unknown(at) then
             g.chosen = at
             g.current = g.areas[at]
@@ -189,28 +189,28 @@ function load_current()
     ' and this function can only READ `g` -- a function cannot change its
     ' caller -- so the handler assigned `g.current` and this hands it over.
     current = g.current
-    drew = qt.refresh(editor, "current")
+    drew = editor.refresh("current")
 
     ' AND THE SIX DROPDOWNS, whose lists are the areas that exist. Filled
     ' before being set, because `qt.write` REFUSES a choice that is not in the
     ' list -- which is what stops a stale exit being shown as if it were real.
     names = exit_names()
     for each d in ["north", "south", "east", "west", "up", "down"]
-        filled = qt.options(editor, d, names)
-        qt.write(editor, d, name_of_id(g.current[d]))
+        filled = editor.options(d, names)
+        editor.write(d, name_of_id(g.current[d]))
     end for
     return nothing
 end function
 
 function refresh_listing()
     area_rows = rows_of_areas()
-    shown = qt.refresh(editor, "listing")
+    shown = editor.refresh("listing")
     return nothing
 end function
 
 function say(what)
     g.saying = what
-    qt.write(editor, "saying", what)
+    editor.write("saying", what)
     return nothing
 end function
 
@@ -219,17 +219,17 @@ end function
 function keep()
     ' THE FORM BACK INTO THE RECORD. `qt.subject` reads the widgets AT THE
     ' MOMENT ASKED, so there is nothing to have kept in step.
-    typed = qt.subject(editor, "current")
+    typed = editor.subject("current")
     kept = g.current
     kept.name = typed.name
     kept.description = typed.description
     ' AND THE SIX EXITS, each read as a NAME and stored as an ID.
-    kept.north = id_of_name(qt.read(editor, "north"))
-    kept.south = id_of_name(qt.read(editor, "south"))
-    kept.east  = id_of_name(qt.read(editor, "east"))
-    kept.west  = id_of_name(qt.read(editor, "west"))
-    kept.up    = id_of_name(qt.read(editor, "up"))
-    kept.down  = id_of_name(qt.read(editor, "down"))
+    kept.north = id_of_name(editor.read("north"))
+    kept.south = id_of_name(editor.read("south"))
+    kept.east  = id_of_name(editor.read("east"))
+    kept.west  = id_of_name(editor.read("west"))
+    kept.up    = id_of_name(editor.read("up"))
+    kept.down  = id_of_name(editor.read("down"))
 
     g.current = kept
     g.areas = replace_area(g.chosen, kept)
@@ -293,29 +293,29 @@ program main(args)
     load_current()
 
     if contains(args, "check") then
-        print "areas:          " + string(qt.read(editor, "listing", "rowCount"))
-        print "showing:        " + qt.read(editor, "name")
-        print "its north:      " + qt.read(editor, "north")
-        print "exit choices:   " + string(qt.read(editor, "north", "count"))
+        print "areas:          " + string(editor.read("listing", "rowCount"))
+        print "showing:        " + editor.read("name")
+        print "its north:      " + editor.read("north")
+        print "exit choices:   " + string(editor.read("north", "count"))
         ' CHOOSING A ROW SHOWS THAT AREA, which is the form refresh.
-        qt.select(editor, "listing", 2)
-        print "after choosing: " + qt.read(editor, "name")
-        print "its south:      " + qt.read(editor, "south")
+        editor.select("listing", 2)
+        print "after choosing: " + editor.read("name")
+        print "its south:      " + editor.read("south")
         ' EDITING AND KEEPING, which is the fold plus the id translation.
-        qt.write(editor, "name", "The Long Tunnel")
-        qt.write(editor, "description", "Longer than it looks." + chr(10) + "Much longer.")
-        qt.write(editor, "north", "The Cellar")
+        editor.write("name", "The Long Tunnel")
+        editor.write("description", "Longer than it looks." + chr(10) + "Much longer.")
+        editor.write("north", "The Cellar")
         keep()
         print "kept name:      " + g.areas[2].name
         print "kept north id:  " + string(g.areas[2].north)
         print "kept lines:     " + string(len(split(g.areas[2].description, chr(10))))
-        print "listing says:   " + qt.cell(editor, "listing", 2, "name")
+        print "listing says:   " + editor.cell("listing", 2, "name")
         ' A NEW AREA, which grows the list AND every dropdown.
         add_area()
-        print "after adding:   " + string(qt.read(editor, "listing", "rowCount"))
-        print "choices now:    " + string(qt.read(editor, "north", "count"))
-        print "editing:        " + qt.read(editor, "name")
-        print "saying:         " + qt.read(editor, "saying")
+        print "after adding:   " + string(editor.read("listing", "rowCount"))
+        print "choices now:    " + string(editor.read("north", "count"))
+        print "editing:        " + editor.read("name")
+        print "saying:         " + editor.read("saying")
         qt.stop()
         return
     end if

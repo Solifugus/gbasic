@@ -44,6 +44,8 @@ that turn sheets into tables you can query.
 
 ## 1. Open a workbook and see what is in it
 
+An open workbook is a **handle**, and its verbs are its methods: `wb.sheets()`, `wb.cell("Sheet1", "A1")`. `xlsx.sheets(wb)` is the same call written the other way; `xlsx.open` makes the handle, so it stays a module call.
+
 <!--CODE:01_open_and_look-->
 
 ```basic
@@ -55,14 +57,14 @@ that turn sheets into tables you can query.
 program main(args)
   wb = xlsx.open("examples/fixtures/xlsx/basic.xlsx")
 
-  print "sheets: " + join(xlsx.sheets(wb), ", ")
+  print "sheets: " + join(wb.sheets(), ", ")
 
   ' `dims` reports the USED range of a sheet, not a fixed grid.
   '
   ' MIND THE BASES, they differ: rows are 1-BASED (row 1 is row 1, as Excel
   ' shows it) and columns are 0-BASED (column A is 0). So the range below is
   ' rows 1..7 and columns A..D.
-  d = xlsx.dims(wb, "Ledger")
+  d = wb.dims("Ledger")
   print "Ledger rows " + d.first_row + "-" + d.last_row + ", cols " + d.first_col + "-" + d.last_col
 
   ' A workbook is a tree of ZIP parts. The reader keeps ALL of them, including
@@ -70,7 +72,7 @@ program main(args)
   ' existing workbook possible instead of generating a new one.
   print ""
   print "parts (modelled = something interpreted it):"
-  for each p in xlsx.parts(wb)
+  for each p in wb.parts()
     print "  " + p.name + " bytes=" + p.bytes + " modelled=" + p.modelled
   end for
 end program
@@ -123,7 +125,7 @@ design: a reader that discarded it could never write the file back safely.
 program main(args)
   wb = xlsx.open("examples/fixtures/xlsx/basic.xlsx")
 
-  cells = xlsx.cells(wb, "Ledger")
+  cells = wb.cells("Ledger")
   print "stored cells: " + count(cells)
   print ""
 
@@ -140,8 +142,8 @@ program main(args)
   ' not a failure of the read.
   print ""
   print "the sheet has no row 4 and no column C, so those cells are simply not there:"
-  print "  C2 present = " + (not is_unknown(xlsx.cell(wb, "Ledger", "C2")))
-  print "  A4 present = " + (not is_unknown(xlsx.cell(wb, "Ledger", "A4")))
+  print "  C2 present = " + (not is_unknown(wb.cell("Ledger", "C2")))
+  print "  A4 present = " + (not is_unknown(wb.cell("Ledger", "A4")))
 end program
 ```
 
@@ -194,17 +196,17 @@ failure of the read.
 program main(args)
   wb = xlsx.open("examples/fixtures/xlsx/basic.xlsx")
 
-  b5 = xlsx.cell(wb, "Ledger", "B5")
+  b5 = wb.cell("Ledger", "B5")
   print "B5 formula      = " + b5.formula
   print "B5 cached value = " + b5.value
   print "B5 kind         = " + b5.kind
 
   ' `evaluate` ignores the cached value and computes the formula now.
-  print "B5 evaluated    = " + xlsx.evaluate(wb, "Ledger", "B5")
+  print "B5 evaluated    = " + wb.evaluate("Ledger", "B5")
 
   ' A cell with no formula reports `unknown` for it -- test with is_unknown,
   ' do not compare against "".
-  b2 = xlsx.cell(wb, "Ledger", "B2")
+  b2 = wb.cell("Ledger", "B2")
   print ""
   print "B2 has a formula = " + (not is_unknown(b2.formula))
   print "B2 value         = " + b2.value
@@ -252,27 +254,27 @@ program main(args)
   out = "examples/tmp_cookbook_edit.xlsx"
 
   wb = xlsx.open("examples/fixtures/xlsx/basic.xlsx")
-  print "before: B2 = " + xlsx.cell(wb, "Ledger", "B2").value
+  print "before: B2 = " + wb.cell("Ledger", "B2").value
 
   ' Types are preserved: a number stays a number, a string a string.
-  xlsx.set(wb, "Ledger", "B2", 9999.99)
-  xlsx.set(wb, "Ledger", "A1", "Renamed")
-  xlsx.set(wb, "Ledger", "B6", false)
+  wb.set("Ledger", "B2", 9999.99)
+  wb.set("Ledger", "A1", "Renamed")
+  wb.set("Ledger", "B6", false)
 
-  n = xlsx.save(wb, out)
+  n = wb.save(out)
   print "wrote " + n + " bytes"
 
   ' Re-open the file we just wrote and confirm it round-tripped.
   wb2 = xlsx.open(out)
   print ""
-  print "after:  A1 = " + xlsx.cell(wb2, "Ledger", "A1").value
-  print "after:  B2 = " + xlsx.cell(wb2, "Ledger", "B2").value
-  print "after:  B6 = " + xlsx.cell(wb2, "Ledger", "B6").value
+  print "after:  A1 = " + wb2.cell("Ledger", "A1").value
+  print "after:  B2 = " + wb2.cell("Ledger", "B2").value
+  print "after:  B6 = " + wb2.cell("Ledger", "B6").value
 
   ' The part nothing models survived the round trip untouched.
   print ""
-  print "vendor part still present = " + (not is_unknown(xlsx.part(wb2, "xl/customData/vendor.xml")))
-  print "sheets unchanged          = " + join(xlsx.sheets(wb2), ", ")
+  print "vendor part still present = " + (not is_unknown(wb2.part("xl/customData/vendor.xml")))
+  print "sheets unchanged          = " + join(wb2.sheets(), ", ")
 
   ' Saves are byte-deterministic: the ZIP timestamps are fixed rather than
   ' taken from the clock, so saving the same workbook twice gives identical
@@ -330,21 +332,21 @@ program main(args)
   '    value. Writing a literal over it would leave the formula in place, so
   '    Excel would silently revert your edit on its next recalculation. Change
   '    the inputs and recalc instead (recipe 8).
-  xlsx.set(wb, "Ledger", "B5", 1)
+  wb.set("Ledger", "B5", 1)
   print "overwrite a formula cell: " + error.message
   error.clear()
 
   ' 2. Creating a cell that does not exist. The sheet is sparse, and inventing
   '    a cell means guessing its style and its place in the row order, so a new
   '    cell is refused rather than placed wrongly.
-  xlsx.set(wb, "Ledger", "Z99", 1)
+  wb.set("Ledger", "Z99", 1)
   print "create a new cell:        " + error.message
   error.clear()
 
   ' 3. A sheet that is not there. Note this is a genuine miss -- a name that
   '    IS in the workbook but has no worksheet behind it (a macro sheet) reads
   '    as empty rather than erroring.
-  xlsx.cells(wb, "No Such Sheet")
+  wb.cells("No Such Sheet")
   print "unknown sheet:            " + error.message
   error.clear()
 end program
@@ -471,22 +473,22 @@ program main(args)
   wb = xlsx.open("examples/fixtures/xlsx/basic.xlsx")
 
   print "B5 = SUM(B2:B3), and D7 = B5*2 -- but D7 sits ABOVE B5 in sheet order."
-  print "before: B2=" + xlsx.cell(wb, "Ledger", "B2").value + " B5=" + xlsx.cell(wb, "Ledger", "B5").value + " D7=" + xlsx.cell(wb, "Ledger", "D7").value
+  print "before: B2=" + wb.cell("Ledger", "B2").value + " B5=" + wb.cell("Ledger", "B5").value + " D7=" + wb.cell("Ledger", "D7").value
 
   ' Change an input.
-  xlsx.set(wb, "Ledger", "B2", 1000)
+  wb.set("Ledger", "B2", 1000)
 
-  r = xlsx.recalc(wb, "Ledger")
+  r = wb.recalc("Ledger")
   print ""
   print "evaluated=" + r.evaluated + " changed=" + r.changed + " circular=" + r.circular
-  print "after:  B2=" + xlsx.cell(wb, "Ledger", "B2").value + " B5=" + xlsx.cell(wb, "Ledger", "B5").value + " D7=" + xlsx.cell(wb, "Ledger", "D7").value
+  print "after:  B2=" + wb.cell("Ledger", "B2").value + " B5=" + wb.cell("Ledger", "B5").value + " D7=" + wb.cell("Ledger", "D7").value
   print ""
   print "D7 is 1801.5, not 2302.5 -- it was recomputed from the NEW B5, not the"
   print "stale one, because recalc walks dependencies rather than sheet order."
 
   ' A circular reference is REPORTED, not iterated toward a fixed point. Healthy
   ' cells on the same sheet still evaluate: one cycle must not sink a sheet.
-  c = xlsx.recalc(wb, "Circular")
+  c = wb.recalc("Circular")
   print ""
   print "Circular sheet: evaluated=" + c.evaluated + " circular=" + c.circular
 end program
@@ -512,7 +514,7 @@ The fixture is built to make the trap visible: `D7 = B5*2` sits **above**
 hand `D7` a stale `B5` and print `2302.5` — a perfectly plausible number.
 Dependency-ordered recalculation gives `1801.5`.
 
-**Prefer `xlsx.recalc(wb)` with no sheet argument.** The per-sheet form became a
+**Prefer `wb.recalc()` with no sheet argument.** The per-sheet form became a
 trap once cross-sheet references worked: a formula can depend on a formula on
 another sheet, and recalculating only its own sheet reads the other's stale
 cached value. Nothing errors; the number is just wrong.
@@ -718,7 +720,7 @@ program main(args)
   wb = xlsx.open("examples/fixtures/xlsx/tapes.xlsx")
 
   sources = []
-  for each s in xlsx.sheets(wb)
+  for each s in wb.sheets()
     r = grid.extract(grid.of(wb, s), { header_row: 1 })
     print s + ": " + join(frame.columns(r.frame), " | ")
     append(sources, { name: s, frame: r.frame })
@@ -825,7 +827,7 @@ program main(args)
 
   wb = xlsx.open("examples/fixtures/xlsx/tapes.xlsx")
   sources = []
-  for each s in xlsx.sheets(wb)
+  for each s in wb.sheets()
     r = grid.extract(grid.of(wb, s), { header_row: 1 })
     append(sources, { name: s, frame: r.frame })
   end for
@@ -856,13 +858,13 @@ program main(args)
   print out.sql
 
   print ""
-  for each row in sqlite.query(db, "select tape, count(*) n from loans group by tape order by tape", [])
+  for each row in db.query("select tape, count(*) n from loans group by tape order by tape", [])
     print "  " + row.tape + "  loans " + row.n
   end for
 
   ' Assert exactness by COMPARING, not by printing: the point of the pipeline
   ' is that the cents survive it.
-  t = sqlite.query(db, "select sum(balance) s from loans", [])[0].s
+  t = db.query("select sum(balance) s from loans", [])[0].s
   print ""
   print "total balance = " + t
   print "exact         = " + (t = 265550.75)
@@ -953,17 +955,17 @@ program main(args)
   db = sqlite.connect(":memory:")
   dbframe.to_table(r.frame, db, "loans", { replace: true })
 
-  f = xlsx.cell(wb, "Loans", "E2").formula
+  f = wb.cell("Loans", "E2").formula
   c = xlsx.to_sql(f, mapping)
   print ""
   print "column E formula = " + f
   print "compiled         = " + c.sql
 
-  rows = sqlite.query(db, "select id, (" + c.sql + ") v from loans order by id", [])
+  rows = db.query("select id, (" + c.sql + ") v from loans order by id", [])
   agree = 0
   i = 0
   while i < count(rows)
-    interp = xlsx.evaluate(wb, "Loans", "E" + (i + 2))
+    interp = wb.evaluate("Loans", "E" + (i + 2))
     if abs(number(interp) - number(rows[i].v)) < 0.0000001 then
       agree = agree + 1
     end if

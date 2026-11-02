@@ -9,11 +9,11 @@ load gsql
 
 work = temp_dir()
 db = gsql.connect(join_path(work, "e.gsql"), { create: true })
-gsql.exec(db, "create table t (id integer primary key, name text)")
+db.exec("create table t (id integer primary key, name text)")
 
 function explain_error(sql)
     on error goto next
-    gsql.query(db, sql)
+    db.query(sql)
     if error then
         where = ""
         if has(error.details, "position") then
@@ -31,7 +31,7 @@ explain_error("selct * from t")                ' SYNTAX
 ' reaches it, so a query that will be refused later answers nothing now:
 explain_error("select * from t where name = 1")
 print "  (said nothing: the table is empty)"
-gsql.exec(db, "insert into t values (1, 'one')")
+db.exec("insert into t values (1, 'one')")
 explain_error("select * from t where name = 1")   ' EXPRESSION: no implicit casts
 explain_error("select * from t where name = '1'") ' fine: says nothing
 
@@ -40,7 +40,7 @@ explain_error("select * from t where name = '1'") ' fine: says nothing
 ' (gsql.exec runs anything, and answers rows too when there are any.)
 function wrong_verb()
     on error goto next
-    gsql.query(db, "update t set name = 'uno' where id = 1")
+    db.query("update t set name = 'uno' where id = 1")
     if error then
         print error.details.code + ": " + error.message
     end if
@@ -48,5 +48,5 @@ function wrong_verb()
 end function
 wrong_verb()
 
-gsql.close(db)
+db.close()
 remove_tree(work)

@@ -163,7 +163,7 @@ for error handling, `ERRORS.md`.
   including `nothing`, `unknown` and the non-finite numbers, which is what makes
   it a gBASIC DIALECT and not JSON.
   → `examples/serialization_test.bas`, `examples/encode_roundtrip_test.bas`
-- **Opening a workbook that might be bad** — `xlsx.try_open(path)` returns
+- **Opening a workbook that might be bad** — `path.try_open()` returns
   `{ok, workbook, message}` and never raises on a bad FILE, so one malformed
   workbook does not end a batch. `xlsx.open` still raises; both give the same
   verdict for the same file. → `examples/xlsx_try_open_test.bas`

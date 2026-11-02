@@ -41,9 +41,9 @@ program main(args)
     ' WRITING onto every widget would pass a check that only asked whether the
     ' app sheet was set, and would silently flatten this.
     print ("the ordinary field has no sheet of its own: " +
-                 string(len(qt.read(panel, "normal", "styleSheet")) = 0))
+                 string(len(panel.read("normal", "styleSheet")) = 0))
     print ("the special one kept its own:               " +
-                 string(contains(qt.read(panel, "special", "styleSheet"), "#ffd")))
+                 string(contains(panel.read("special", "styleSheet"), "#ffd")))
 
     ' CHANGING IT AT RUN TIME is the same call. A dark and a light theme are
     ' two strings; there is no theme registry to keep in step.

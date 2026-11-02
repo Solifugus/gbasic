@@ -42,7 +42,7 @@ sql above_average_in_steps on sales
     order by s.id
 end sql
 
-gsql.exec(setup)
+setup.exec()
 
 print "-- totals by region, joined to its name, regions with nothing sold included"
 for each row in by_region
@@ -64,5 +64,5 @@ for each row in above_average_in_steps
     print row.id
 next
 
-gsql.close(sales)
+sales.close()
 remove_tree({dir}"cookbook_sales.gsql")

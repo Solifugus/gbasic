@@ -29,7 +29,7 @@ window app( title: "Closing", width: 360, height: 180 )
     ' GUI state lives in gBASIC -- a handler cannot rebind a variable in `main`
     ' (warning 2104 says so and names this remedy), but it can write a field.
     on app.closed
-        g.saved  = qt.subject(app, "cust")
+        g.saved  = app.subject("cust")
         g.closes = g.closes + 1
     end on
 end window
@@ -44,25 +44,25 @@ program main(args)
 
     cust = { who: "Ada Lovelace", limit: {USD}"500.00" }
     qt.open(app)
-    print "open:    " + string(qt.is_open(app))
+    print "open:    " + string(app.is_open())
 
     ' THE WINDOW ITSELF, ADDRESSED BY ITS OWN NAME.
-    print "title:   " + qt.read(app, "app", "windowTitle")
-    x = qt.set(app, "app", "windowTitle", "Closing (edited)")
-    print "renamed: " + qt.read(app, "app", "windowTitle")
+    print "title:   " + app.read("app", "windowTitle")
+    x = app.set("app", "windowTitle", "Closing (edited)")
+    print "renamed: " + app.read("app", "windowTitle")
 
     ' Somebody types.
-    y = qt.write(app, "who", "Grace Hopper")
+    y = app.write("who", "Grace Hopper")
 
     ' CLOSING RUNS THE HANDLER FIRST.
-    ok = qt.close(app)
-    print "closed:  " + string(qt.is_open(app))
+    ok = app.close()
+    print "closed:  " + string(app.is_open())
     print "saved:   " + g.saved.who + ", " + string(g.saved.limit)
 
     ' AND AFTERWARDS THE WINDOW REFUSES, which is the point: there is nothing
     ' on screen to read. `qt.is_open` is how you ask without raising.
     on error goto next
-    stale = qt.read(app, "who")
+    stale = app.read("who")
     if error then
         print "after:   " + error.message
         error.clear()
@@ -72,8 +72,8 @@ program main(args)
     ' what was typed before the close is gone -- a close is not a hide you can
     ' undo.
     qt.open(app)
-    print "reopened who: " + qt.read(app, "who")
-    print "reopened title: " + qt.read(app, "app", "windowTitle")
+    print "reopened who: " + app.read("who")
+    print "reopened title: " + app.read("app", "windowTitle")
 
     ' AND `qt.stop()` IS NOT A CLOSE. It means "give me the thread back" and
     ' nothing more: the window stays open, stays readable, and no `closed`

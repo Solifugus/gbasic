@@ -49,50 +49,50 @@ program main(args)
 
     ' WHAT THE SPLIT LOOKS LIKE NOW. `browser` is a part of the outer split, so
     ' naming it is how the outer split is addressed.
-    outer = qt.pane(app, "browser")
+    outer = app.pane("browser")
     print ("the outer split is " + outer.direction + " with " +
            string(outer.panes) + " panes")
     print "the browser is pane " + string(outer.index)
 
     ' SET IT. Think of these as a ratio: a narrow browser beside a wide editor.
-    qt.resize_panes(app, "browser", [200, 700])
-    now = qt.pane(app, "browser").sizes
+    app.resize_panes("browser", [200, 700])
+    now = app.pane("browser").sizes
     print "browser narrower than the rest: " + string(now[0] < now[1])
 
     ' THE INNER SPLIT IS A DIFFERENT SPLIT, addressed by a part of its own.
-    qt.resize_panes(app, "code", [300, 100])
-    inner = qt.pane(app, "code").sizes
+    app.resize_panes("code", [300, 100])
+    inner = app.pane("code").sizes
     print "editor taller than the console: " + string(inner[0] > inner[1])
     ' AND THE OUTER ONE DID NOT MOVE.
-    still = qt.pane(app, "browser").sizes
+    still = app.pane("browser").sizes
     print "the outer split stayed put:     " + string(still[0] = now[0])
 
     ' REMEMBER AND RESTORE, which is the whole point. In a real program these
     ' go into `persist` with the rest of the session.
-    saved = { browser: qt.pane(app, "browser").sizes,
-              editor:  qt.pane(app, "code").sizes }
-    qt.resize_panes(app, "browser", [450, 450])
-    even = qt.pane(app, "browser").sizes
+    saved = { browser: app.pane("browser").sizes,
+              editor:  app.pane("code").sizes }
+    app.resize_panes("browser", [450, 450])
+    even = app.pane("browser").sizes
     print ("after a change, even:           " +
            string(even[0] = even[1]))
-    qt.resize_panes(app, "browser", saved.browser)
-    back = qt.pane(app, "browser").sizes
+    app.resize_panes("browser", saved.browser)
+    back = app.pane("browser").sizes
     print "and restored to narrow again:   " + string(back[0] < back[1])
 
     ' HIDING A PANEL: zero, and it comes back.
-    qt.resize_panes(app, "browser", [0, 900])
+    app.resize_panes("browser", [0, 900])
     print ("browser hidden:                 " +
-           string(qt.pane(app, "browser").sizes[0] = 0))
-    qt.resize_panes(app, "browser", saved.browser)
+           string(app.pane("browser").sizes[0] = 0))
+    app.resize_panes("browser", saved.browser)
     print ("and shown again:                " +
-           string(qt.pane(app, "browser").sizes[0] > 0))
+           string(app.pane("browser").sizes[0] > 0))
 
     ' A WRONG COUNT IS REFUSED, naming both numbers.
     on error goto next
-    qt.resize_panes(app, "browser", [500])
+    app.resize_panes("browser", [500])
     print "one size for two panes:         " + error.message
     error.clear()
     on error stop
 
-    qt.close(app)
+    app.close()
 end program

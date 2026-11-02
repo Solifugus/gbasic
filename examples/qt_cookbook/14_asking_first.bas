@@ -29,7 +29,7 @@ program main(args)
         return
     end if
     qt.open(app)
-    qt.write(app, "who", "Ada Lovelace")
+    app.write("who", "Ada Lovelace")
 
     ' A RECIPE HAS NOBODY TO CLICK, so a timer answers for one. In a real
     ' program this is how a dialog TIMES OUT -- and `qt.answer` refuses when
@@ -45,23 +45,23 @@ program main(args)
 
     ' THE QUESTION. Guarding a destructive act is the commonest use there is.
     g.want = false
-    if qt.confirm(app, "Delete " + qt.read(app, "who") + "?") then
-        qt.write(app, "state", "deleted")
+    if app.confirm("Delete " + app.read("who") + "?") then
+        app.write("state", "deleted")
     else
-        qt.write(app, "state", "kept")
+        app.write("state", "kept")
     end if
-    print "answered no  -> " + qt.read(app, "state")
+    print "answered no  -> " + app.read("state")
 
     g.want = true
-    if qt.confirm(app, "Delete " + qt.read(app, "who") + "?") then
-        qt.write(app, "state", "deleted")
+    if app.confirm("Delete " + app.read("who") + "?") then
+        app.write("state", "deleted")
     else
-        qt.write(app, "state", "kept")
+        app.write("state", "kept")
     end if
-    print "answered yes -> " + qt.read(app, "state")
+    print "answered yes -> " + app.read("state")
 
     ' THE STATEMENT, which has one button and so is answered either way.
-    told = qt.inform(app, "Customer deleted.")
+    told = app.inform("Customer deleted.")
     print "inform returned " + string(told)
 
     cancelled = timer.cancel(beat)

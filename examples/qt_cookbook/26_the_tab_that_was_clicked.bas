@@ -40,12 +40,12 @@ window app( title: "Notebook", width: 520, height: 300 )
         ' that reads `currentIndex` here is reading the wrong tab.
         which = qt.which_tab()
         if is_unknown(which) then
-            qt.set(app, "said", "text", "that was the page, not a tab")
+            app.set("said", "text", "that was the page, not a tab")
         else
             g.aimed = which
-            qt.set(app, "said", "text",
+            app.set("said", "text",
                    "right-clicked " + g.paths[which])
-            shown = qt.popup(app, "tab_menu")
+            shown = app.popup("tab_menu")
         end if
     end on
 
@@ -54,7 +54,7 @@ window app( title: "Notebook", width: 520, height: 300 )
         ' there is nothing to name. It copies eagerly, so the text is on the
         ' clipboard the moment this returns.
         ok = qt.copy(g.paths[g.aimed])
-        qt.set(app, "said", "text", "copied " + qt.clipboard())
+        app.set("said", "text", "copied " + qt.clipboard())
     end on
 end window
 
@@ -68,28 +68,28 @@ program main(args)
     end if
 
     qt.open(app)
-    qt.set(app, "book", "currentIndex", 0)
-    print "the first tab is current: " + string(qt.read(app, "book", "currentIndex"))
+    app.set("book", "currentIndex", 0)
+    print "the first tab is current: " + string(app.read("book", "currentIndex"))
 
     ' A PERSON WOULD RIGHT-CLICK THE THIRD TAB. `qt.right_click`'s third
     ' argument aims at a tab's own rectangle, through the tab bar, which is
     ' where a real click lands.
-    qt.right_click(app, "book", 2)
-    print "the status line says:   " + qt.read(app, "said", "text")
-    print "and the current tab is still: " + string(qt.read(app, "book", "currentIndex"))
+    app.right_click("book", 2)
+    print "the status line says:   " + app.read("said", "text")
+    print "and the current tab is still: " + string(app.read("book", "currentIndex"))
 
     ' THE MENU IS STILL UP and a visible menu grabs the mouse, so a program
     ' driving itself hides it before doing anything else.
-    qt.invoke(app, "tab_menu", "hide")
+    app.invoke("tab_menu", "hide")
 
     ' NOW THE MENU ITEM, which is what a person would click next.
-    qt.invoke(app, "copy_path", "trigger")
-    print "after Copy file path:   " + qt.read(app, "said", "text")
+    app.invoke("copy_path", "trigger")
+    print "after Copy file path:   " + app.read("said", "text")
     print "the clipboard holds:    " + qt.clipboard()
 
     ' AND A RIGHT-CLICK THAT MISSES EVERY TAB: the page emits the same signal.
-    qt.right_click(app, "book")
-    print "clicking the page:      " + qt.read(app, "said", "text")
+    app.right_click("book")
+    print "clicking the page:      " + app.read("said", "text")
 
-    qt.close(app)
+    app.close()
 end program

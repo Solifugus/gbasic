@@ -28,17 +28,17 @@ sql under on shop
     select id, name, price from item where price < :limit order by price
 end sql
 
-gsql.exec(make)
+make.exec()
 
 id = 1
 name = "apple"
 price = {USD}"0.50"
-gsql.exec(add)
+add.exec()
 id = 2
 name = "pear"
 price = {USD}"0.75"
-gsql.exec(add)
-r = gsql.exec(add_two)
+add.exec()
+r = add_two.exec()
 print r.command + ": " + string(r.rows_affected) + " rows"
 
 ' a select block is iterated a row at a time, fields in select-list order
@@ -47,5 +47,5 @@ for each row in under
     print string(row.id) + "  " + row.name + "  " + string(row.price)
 next
 
-gsql.close(shop)
+shop.close()
 remove_tree({dir}"cookbook_first.gsql")

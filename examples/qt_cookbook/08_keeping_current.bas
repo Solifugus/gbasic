@@ -30,20 +30,20 @@ window board( title: "Keeping current", width: 560, height: 340 )
         ' it cannot REBIND anything there. A snapshot (`rows = g.rows`) would
         ' leave the refresh re-reading an unchanged copy.
         append(tasks, { what: "Task " + string(len(tasks) + 1), state: "open" })
-        drew = qt.refresh(board, "jobs")
+        drew = board.refresh("jobs")
         return nothing
     end on
 
     on done.clicked
-        at = qt.selected(board, "jobs")
+        at = board.selected("jobs")
         if not is_unknown(at) then
             tasks[at].state = "done"
-            drew = qt.refresh(board, "jobs")
+            drew = board.refresh("jobs")
             ' AND THE FORM, by its SUBJECT. Mutate the subject's FIELDS rather
             ' than rebinding it: a handler cannot rebind `current`.
             current.what = tasks[at].what
             current.state = tasks[at].state
-            drew = qt.refresh(board, "current")
+            drew = board.refresh("current")
         end if
         return nothing
     end on
@@ -62,14 +62,14 @@ program main(args)
     qt.open(board)
 
     print "the table starts with " + string(len(tasks)) + " rows"
-    qt.invoke(board, "add", "click")
-    qt.invoke(board, "add", "click")
+    board.invoke("add", "click")
+    board.invoke("add", "click")
     print "after adding twice:   " + string(len(tasks)) + " rows"
-    print "the new last row is:  " + qt.cell(board, "jobs", 3, "what")
+    print "the new last row is:  " + board.cell("jobs", 3, "what")
 
-    qt.select(board, "jobs", 1)
-    qt.invoke(board, "done", "click")
-    print "row 1's state is now: " + qt.cell(board, "jobs", 1, "state")
-    print "and the form says:    " + qt.read(board, "state")
+    board.select("jobs", 1)
+    board.invoke("done", "click")
+    print "row 1's state is now: " + board.cell("jobs", 1, "state")
+    print "and the form says:    " + board.read("state")
     qt.stop()
 end program

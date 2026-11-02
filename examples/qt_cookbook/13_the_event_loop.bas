@@ -37,9 +37,9 @@ program main(args)
             ev = take_first(timer.ticks)
             seen = seen + 1
             ' ORDINARY gBASIC WRITING INTO A Qt WIDGET, from inside Qt's loop.
-            qt.write(clock, "ticks", string(seen) + " ticks")
-            qt.write(clock, "log",
-                     qt.read(clock, "log") + "tick " + string(seen) + chr(10))
+            clock.write("ticks", string(seen) + " ticks")
+            clock.write("log",
+                     clock.read("log") + "tick " + string(seen) + chr(10))
             if seen >= 3 then
                 ' BOTH, AND THE CANCEL MATTERS: `qt.stop()` DOES NOT CANCEL
                 ' YOUR TIMERS, and it should not -- a program may have work
@@ -58,8 +58,8 @@ program main(args)
     ' afterwards.
     rc = qt.run()
     print "ticks serviced while Qt held the thread: " + string(seen)
-    print "the window reads back:                   " + qt.read(clock, "ticks")
+    print "the window reads back:                   " + clock.read("ticks")
     print("and the memo grew to lines:              " +
-          string(len(split(qt.read(clock, "log"), chr(10))) - 1))
+          string(len(split(clock.read("log"), chr(10))) - 1))
     print "qt.run returned, so the program continues"
 end program

@@ -33,17 +33,17 @@ window edit( title: "Customer", width: 360, height: 200 )
     ' the program when nobody is there -- a timeout, an unattended run. These
     ' are the person's own answer arriving through a button they pressed.
     on save.clicked
-        x = qt.accept(edit)
+        x = edit.accept()
     end on
     on cancel.clicked
-        x = qt.reject(edit)
+        x = edit.reject()
     end on
 
     ' THE ONE PLACE THE FORM IS READ, because the next thing that happens is
     ' the window closing. `g` is one record whose fields handlers mutate, which
     ' is where GUI state lives in gBASIC.
     on edit.closed
-        g.typed = qt.subject(edit, "cust")
+        g.typed = edit.subject("cust")
     end on
 end window
 
@@ -66,27 +66,27 @@ program main(args)
             ev = take_first(timer.ticks)
             g.ticks = g.ticks + 1
             if g.ticks = 2 then
-                y = qt.write(edit, "who", "Grace Hopper")
-                z = qt.invoke(edit, g.press, "click")
+                y = edit.write("who", "Grace Hopper")
+                z = edit.invoke(g.press, "click")
             end if
         end while
     end watch
 
     ' SAVED.
-    if qt.open_modal(edit) then
+    if edit.open_modal() then
         print "saved:     " + g.typed.who + ", " + string(g.typed.limit)
     else
         print "cancelled"
     end if
     print "limit kind: " + type(g.typed.limit)
-    print "open after: " + string(qt.is_open(edit))
+    print "open after: " + string(edit.is_open())
 
     ' CANCELLED. The same window, the same declaration, a different button --
     ' and the handler still read the form, because `closed` fires either way.
     ' What decides whether to USE it is the answer, not the handler.
     g.ticks = 0
     g.press = "cancel"
-    if qt.open_modal(edit) then
+    if edit.open_modal() then
         print "saved:     " + g.typed.who
     else
         print "cancelled, and the form read anyway: " + g.typed.who

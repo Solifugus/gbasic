@@ -28,12 +28,12 @@ window app( title: "Zoom", width: 520, height: 360 )
             ' NOTHING, and the event is left alone so the editor scrolls.
             return
         end if
-        f = split(qt.read(app, "code", "font"), ",")
+        f = split(app.read("code", "font"), ",")
         bigger = 1
         if ev.dy < 0 then
             bigger = 0 - 1
         end if
-        qt.set(app, "code", "font", f[0] + "," + string(number(f[1]) + bigger))
+        app.set("code", "font", f[0] + "," + string(number(f[1]) + bigger))
         g.zooms = g.zooms + 1
         qt.swallow()
     end on
@@ -52,28 +52,28 @@ program main(args)
     for i = 1 to 200
         lines = append(lines, "print " + string(i))
     end for
-    x = qt.write(app, "code", join(lines, chr(10)))
+    x = app.write("code", join(lines, chr(10)))
 
-    size = number(split(qt.read(app, "code", "font"), ",")[1])
+    size = number(split(app.read("code", "font"), ",")[1])
     print "font at first:   " + string(size)
 
     ' A PLAIN WHEEL SCROLLS and does not zoom. `qt.scroll` drives the wheel the
     ' way a mouse does, and answers whether anything CLAIMED the event.
-    qt.scroll_to(app, "code", 50)
-    claimed = qt.scroll(app, "code", -2)
+    app.scroll_to("code", 50)
+    claimed = app.scroll("code", -2)
     print ("plain wheel:     claimed " + string(claimed) +
            ", zooms " + string(g.zooms))
     print ("                 and it scrolled to " +
-           string(qt.scrolled(app, "code")))
+           string(app.scrolled("code")))
 
     ' CTRL + WHEEL ZOOMS and claims the event, so the view stays put.
-    was = qt.scrolled(app, "code")
-    claimed = qt.scroll(app, "code", 3, "ctrl")
+    was = app.scrolled("code")
+    claimed = app.scroll("code", 3, "ctrl")
     print ("ctrl+wheel:      claimed " + string(claimed) +
            ", zooms " + string(g.zooms))
     print ("                 font now " +
-           string(number(split(qt.read(app, "code", "font"), ",")[1])))
-    print "                 view stayed at " + string(qt.scrolled(app, "code") = was)
+           string(number(split(app.read("code", "font"), ",")[1])))
+    print "                 view stayed at " + string(app.scrolled("code") = was)
 
-    qt.close(app)
+    app.close()
 end program

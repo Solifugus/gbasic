@@ -76,17 +76,17 @@ program main(args)
             ' loop. Three different parts, one of them a `memo` that grows.
             ' A datetime's DOT FIELDS, which is how gBASIC says a clock time.
             tick_at = now()
-            qt.write(clock, "now", string(tick_at.hour) + ":" +
+            clock.write("now", string(tick_at.hour) + ":" +
                      string(tick_at.minute) + ":" + string(tick_at.second))
-            qt.write(clock, "ticks", string(seen) + " ticks")
-            qt.write(clock, "log", qt.read(clock, "log") + "tick " +
+            clock.write("ticks", string(seen) + " ticks")
+            clock.write("log", clock.read("log") + "tick " +
                      string(seen) + chr(10))
             if stop_after > 0 and seen >= stop_after then
                 print "ticks serviced while Qt held the thread: " + string(seen)
                 print("the window reads back:                   " +
-                      qt.read(clock, "ticks"))
+                      clock.read("ticks"))
                 print("and the memo grew to lines:              " +
-                      string(len(split(qt.read(clock, "log"), chr(10))) - 1))
+                      string(len(split(clock.read("log"), chr(10))) - 1))
                 ' BOTH, AND IN THIS ORDER. Cancelling first would be fine too;
                 ' leaving the timer live is what does not work.
                 cancelled = timer.cancel(beat)

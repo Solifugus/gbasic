@@ -58,14 +58,14 @@ window app( title: "Dialogs", width: 560, height: 420 )
     end column
 
     on say.clicked
-        told = qt.inform(app, "Saved three records.")
+        told = app.inform("Saved three records.")
         note("inform returned " + string(told))
     end on
 
     on ask.clicked
         ' NO IS THE DEFAULT BUTTON, so a question answered by pressing Return
         ' without reading is never the destructive one.
-        if qt.confirm(app, "Delete the selected record?") then
+        if app.confirm("Delete the selected record?") then
             note("confirm: yes -- would delete")
         else
             note("confirm: no -- kept")
@@ -73,7 +73,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
     end on
 
     on pick.clicked
-        p = qt.choose_file(app, { title: "Open a report", folder: g.work,
+        p = app.choose_file({ title: "Open a report", folder: g.work,
                                   filter: ["Text (*.txt)", "All files (*)"] })
         if is_unknown(p) then
             note("open: cancelled")
@@ -83,7 +83,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
     end on
 
     on save_as.clicked
-        p = qt.choose_save(app, { title: "Save the summary", folder: g.work,
+        p = app.choose_save({ title: "Save the summary", folder: g.work,
                                   name: "summary.txt" })
         if is_unknown(p) then
             note("save: cancelled")
@@ -96,7 +96,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
     end on
 
     on folder.clicked
-        p = qt.choose_folder(app, { title: "Pick a folder", folder: g.work })
+        p = app.choose_folder({ title: "Pick a folder", folder: g.work })
         if is_unknown(p) then
             note("folder: cancelled")
         else
@@ -108,7 +108,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
         ' THE SAME WINDOW AS ANY OTHER, shown a different way. `qt.open_modal`
         ' blocks until the form is answered and closes it on the way out, so
         ' `on edit.closed` is where its values are read.
-        if qt.open_modal(edit) then
+        if edit.open_modal() then
             note("modal: saved " + g.typed.who + ", " + string(g.typed.limit))
         else
             note("modal: cancelled (the form said " + g.typed.who + ")")
@@ -139,13 +139,13 @@ window edit( title: "Customer", width: 340, height: 170 )
     end column
 
     on ok.clicked
-        x = qt.accept(edit)
+        x = edit.accept()
     end on
     on nothanks.clicked
-        x = qt.reject(edit)
+        x = edit.reject()
     end on
     on edit.closed
-        g.typed = qt.subject(edit, "cust")
+        g.typed = edit.subject("cust")
     end on
 end window
 
@@ -154,7 +154,7 @@ end window
 ' and appending to the log goes through here.
 function note(line)
     g.lines = append(g.lines, line)
-    x = qt.write(app, "log", join(g.lines, chr(10)))
+    x = app.write("log", join(g.lines, chr(10)))
     print line
     return nothing
 end function
@@ -174,7 +174,7 @@ program main(args)
     made = write({file}(g.work + "/report.txt"), "the quarterly numbers" + chr(10))
 
     qt.open(app)
-    x = qt.write(app, "log", "")
+    x = app.write("log", "")
 
     if contains(args, "check") then
         ' THE TIMER ANSWERS WHATEVER IS OPEN. It only gets the chance because
@@ -184,10 +184,10 @@ program main(args)
             while count(timer.ticks) > 0
                 ev = take_first(timer.ticks)
                 if g.want = "accept" then
-                    a = qt.accept(edit)
+                    a = edit.accept()
                 else
                     if g.want = "reject" then
-                        a = qt.reject(edit)
+                        a = edit.reject()
                     else
                         d = qt.dialog()
                         if not is_unknown(d) then
@@ -208,31 +208,31 @@ program main(args)
 
         print "-- a statement"
         g.want = "yes"
-        note("inform returned " + string(qt.inform(app, "Saved three records.")))
+        note("inform returned " + string(app.inform("Saved three records.")))
 
         print "-- a question, both ways"
-        note("confirm yes: " + string(qt.confirm(app, "Delete?")))
+        note("confirm yes: " + string(app.confirm("Delete?")))
         g.want = "no"
-        note("confirm no:  " + string(qt.confirm(app, "Delete?")))
+        note("confirm no:  " + string(app.confirm("Delete?")))
 
         print "-- choosing a file"
         g.want = "path"
         g.path = g.work + "/report.txt"
-        chosen = qt.choose_file(app, { folder: g.work })
+        chosen = app.choose_file({ folder: g.work })
         note("chose " + file_name({file}chosen) + ", " +
              string(bytes({file}chosen)) + " bytes")
 
         g.want = "cancel"
-        none = qt.choose_file(app, { folder: g.work })
+        none = app.choose_file({ folder: g.work })
         note("cancelled gives unknown: " + string(is_unknown(none)))
 
         print "-- a window shown modally"
         g.want = "accept"
-        note("accepted: " + string(qt.open_modal(edit)))
+        note("accepted: " + string(edit.open_modal()))
         note("the form said " + g.typed.who + ", " + string(g.typed.limit))
 
         g.want = "reject"
-        note("rejected: " + string(qt.open_modal(edit)))
+        note("rejected: " + string(edit.open_modal()))
 
         cancelled = timer.cancel(beat)
         gone = remove_tree({dir}g.work)

@@ -53,7 +53,7 @@ program main(args)
     ' WHICH EXISTING FILE. A list of filters is joined with Qt's own `;;` for
     ' you, which is a spelling nobody should have to know.
     g.want = work + "/report.txt"
-    chosen = qt.choose_file(app, { title: "Open a report", folder: work,
+    chosen = app.choose_file({ title: "Open a report", folder: work,
         filter: ["Text files (*.txt)", "All files (*)"] })
     print "chose    " + file_name(chosen)
     print "and it reads " + string(len(read({file}chosen))) + " bytes"
@@ -61,7 +61,7 @@ program main(args)
     ' WHAT SHALL I CALL IT. The file need not exist yet, which is the whole
     ' difference from the verb above.
     g.want = work + "/summary.txt"
-    saving = qt.choose_save(app, { title: "Save as", folder: work,
+    saving = app.choose_save({ title: "Save as", folder: work,
         name: "summary.txt" })
     print ("saving   " + file_name(saving) + ", exists already: " +
         string(exists({file}saving)))
@@ -69,13 +69,13 @@ program main(args)
 
     ' WHICH FOLDER.
     g.want = work
-    folder = qt.choose_folder(app, { title: "Where to put things",
+    folder = app.choose_folder({ title: "Where to put things",
         folder: work })
     print "folder   has " + string(count(files({dir}folder, "*.txt"))) + " text files"
 
     ' AND WHAT A CANCEL LOOKS LIKE, which is the branch every program needs.
     g.mode = "cancel"
-    none = qt.choose_file(app, { folder: work })
+    none = app.choose_file({ folder: work })
     if is_unknown(none) then
         print "cancelled, so nothing to open"
     else

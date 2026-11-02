@@ -51,11 +51,11 @@ sql order_count on shop
     select count(*) as n from orders
 end sql
 
-gsql.exec(schema)
+schema.exec()
 
 function try(statement)
     on error goto next
-    gsql.exec(statement)
+    statement.exec()
     if error then
         print "refused  " + error.details.code
         return nothing
@@ -71,7 +71,7 @@ try(zero_total)             ' CHECK
 try(no_such_customer)       ' FOREIGN_KEY: no customer 9
 try(drop_ada)               ' FOREIGN_KEY: an order points at it
 try(text_customer)          ' TYPE: text is not an integer
-print string(gsql.query(order_count)[0].n) + " order kept"
+print string(order_count.query()[0].n) + " order kept"
 
-gsql.close(shop)
+shop.close()
 remove_tree({dir}"cookbook_orders.gsql")

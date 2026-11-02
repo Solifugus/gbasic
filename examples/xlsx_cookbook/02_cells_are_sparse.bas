@@ -8,7 +8,7 @@
 program main(args)
   wb = xlsx.open("examples/fixtures/xlsx/basic.xlsx")
 
-  cells = xlsx.cells(wb, "Ledger")
+  cells = wb.cells("Ledger")
   print "stored cells: " + count(cells)
   print ""
 
@@ -25,6 +25,6 @@ program main(args)
   ' not a failure of the read.
   print ""
   print "the sheet has no row 4 and no column C, so those cells are simply not there:"
-  print "  C2 present = " + (not is_unknown(xlsx.cell(wb, "Ledger", "C2")))
-  print "  A4 present = " + (not is_unknown(xlsx.cell(wb, "Ledger", "A4")))
+  print "  C2 present = " + (not is_unknown(wb.cell("Ledger", "C2")))
+  print "  A4 present = " + (not is_unknown(wb.cell("Ledger", "A4")))
 end program

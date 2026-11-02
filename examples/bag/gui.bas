@@ -103,15 +103,15 @@ window game( title: "The Lantern Room", width: 620, height: 520 )
     end on
 
     on send.clicked
-        obey(qt.read(game, "command"))
-        qt.write(game, "command", "")
+        obey(game.read("command"))
+        game.write("command", "")
     end on
 
     ' A FIELD'S Enter KEY is an ordinary Qt signal, so typing and pressing
     ' return works without a second code path.
     on command.returnPressed
-        obey(qt.read(game, "command"))
-        qt.write(game, "command", "")
+        obey(game.read("command"))
+        game.write("command", "")
     end on
 
     on restart.triggered
@@ -261,22 +261,22 @@ end function
 
 function redraw()
     place = area_at(g.location)
-    qt.write(game, "where", place.name)
-    qt.write(game, "blurb", place.description)
-    qt.write(game, "log", join(g.lines, chr(10)))
+    game.write("where", place.name)
+    game.write("blurb", place.description)
+    game.write("log", join(g.lines, chr(10)))
 
     ' THE BUTTONS SAY WHERE YOU CAN GO, which is `qt.set` doing the job the
     ' declaration cannot: which exits exist is a fact about the room you are
     ' standing in, and the declaration was written before the game began.
     for each d in ["north", "south", "east", "west", "up", "down"]
-        qt.set(game, d, "enabled", exit_of(place, d) != 0)
+        game.set(d, "enabled", exit_of(place, d) != 0)
     end for
 
     held = carrying()
     if len(held) = 0 then
-        qt.write(game, "carried", "You are carrying nothing.")
+        game.write("carried", "You are carrying nothing.")
     else
-        qt.write(game, "carried", "You are carrying: " + join(held, ", "))
+        game.write("carried", "You are carrying: " + join(held, ", "))
     end if
 
     ' WHAT IS HERE FOLLOWS THE ROOM. `visible` is the table's declared subject
@@ -285,7 +285,7 @@ function redraw()
     ' hands that to the table. The list is read AT THE MOMENT ASKED, which is
     ' `qt.subject`'s principle the other way round.
     visible = g.visible
-    shown = qt.refresh(game, "here")
+    shown = game.refresh("here")
     return nothing
 end function
 
@@ -493,27 +493,27 @@ program main(args)
         ' A WHOLE GAME PLAYED WITHOUT A PERSON, which is what makes this
         ' example a proof rather than a demo: every move goes through the same
         ' handlers a mouse would fire.
-        print "start:        " + qt.read(game, "where")
-        print "north open:   " + string(qt.read(game, "north", "enabled"))
-        print "east open:    " + string(qt.read(game, "east", "enabled"))
+        print "start:        " + game.read("where")
+        print "north open:   " + string(game.read("north", "enabled"))
+        print "east open:    " + string(game.read("east", "enabled"))
         obey("take brass key")
-        print "after taking: " + qt.read(game, "carried")
-        qt.invoke(game, "north", "click")
-        print "moved to:     " + qt.read(game, "where")
-        print "gate shut:    " + string(qt.read(game, "north", "enabled"))
+        print "after taking: " + game.read("carried")
+        game.invoke("north", "click")
+        print "moved to:     " + game.read("where")
+        print "gate shut:    " + string(game.read("north", "enabled"))
         obey("open brass key")
-        print "gate open:    " + string(qt.read(game, "north", "enabled"))
-        qt.invoke(game, "north", "click")
-        print "and through:  " + qt.read(game, "where")
+        print "gate open:    " + string(game.read("north", "enabled"))
+        game.invoke("north", "click")
+        print "and through:  " + game.read("where")
         obey("drop brass key")
-        print "after drop:   " + qt.read(game, "carried")
-        print "menus:        " + string(qt.menus(game))
+        print "after drop:   " + game.read("carried")
+        print "menus:        " + string(game.menus())
         print "transcript:   " + string(len(g.lines)) + " lines"
         ' THE TABLE FOLLOWED THE ROOM, which is what `qt.refresh` is for and
         ' what the first draft of this example could not do: the key was
         ' dropped in the Tunnel, so that is the one thing here.
-        print "here now:     " + string(qt.read(game, "here", "rowCount")) + " thing(s)"
-        print "and it is:    " + qt.cell(game, "here", 0, "name")
+        print "here now:     " + string(game.read("here", "rowCount")) + " thing(s)"
+        print "and it is:    " + game.cell("here", 0, "name")
         qt.stop()
         return
     end if

@@ -66,7 +66,7 @@ window prefs( title: "Preferences", width: 460, height: 360 )
 
     ' A `tabs` IS NAMED, so a handler can hear it change pages.
     on settings.currentChanged
-        print "page is now " + string(qt.read(prefs, "settings", "currentIndex"))
+        print "page is now " + string(prefs.read("settings", "currentIndex"))
     end on
 
     on close.clicked
@@ -88,22 +88,22 @@ program main(args)
     ' declaration could not carry `movable:` beside the name, so it is set
     ' here -- and that is a better place for it anyway, a program being able
     ' to decide.
-    qt.set(prefs, "settings", "movable", true)
-    qt.set(prefs, "settings", "documentMode", true)
+    prefs.set("settings", "movable", true)
+    prefs.set("settings", "documentMode", true)
 
     if contains(args, "check") then
-        print "page count:        " + string(qt.read(prefs, "settings", "count"))
-        print "on page:           " + string(qt.read(prefs, "settings", "currentIndex"))
-        print "movable:           " + string(qt.read(prefs, "settings", "movable"))
+        print "page count:        " + string(prefs.read("settings", "count"))
+        print "on page:           " + string(prefs.read("settings", "currentIndex"))
+        print "movable:           " + string(prefs.read("settings", "movable"))
         ' A PART ON ANY PAGE IS REACHED BY NAME, with nothing saying which page
         ' it is on -- the registry is flat, which is exactly why the tab
         ' structure needs its own oracle in the test suite.
-        print "a part on page 2:  " + qt.read(prefs, "note")
-        print "a part on page 4:  " + qt.read(prefs, "scratch")
-        print "a cell of page 3:  " + qt.cell(prefs, "places", 1, "kind")
+        print "a part on page 2:  " + prefs.read("note")
+        print "a part on page 4:  " + prefs.read("scratch")
+        print "a cell of page 3:  " + prefs.cell("places", 1, "kind")
         ' CHANGING PAGES FROM THE PROGRAM, which fires the handler above.
-        qt.set(prefs, "settings", "currentIndex", 2)
-        print "after setting:     " + string(qt.read(prefs, "settings", "currentIndex"))
+        prefs.set("settings", "currentIndex", 2)
+        print "after setting:     " + string(prefs.read("settings", "currentIndex"))
         qt.stop()
         return
     end if

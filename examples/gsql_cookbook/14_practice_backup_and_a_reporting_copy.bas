@@ -25,38 +25,38 @@ sql sales_total on reporting
     select count(*) as n, sum(amount) as total from sale
 end sql
 
-gsql.exec(make)
-gsql.begin(live)
+make.exec()
+live.begin()
 amount = {USD}"10.00"
 for i = 1 to 1000
-    gsql.exec(sell)
+    sell.exec()
 next
-gsql.commit(live)
+live.commit()
 
 work = temp_dir()
 copy = join_path(work, "reporting.gsql")
-first = gsql.backup(live, copy)
+first = live.backup(copy)
 print "first backup: " + string(first.files) + " file, nothing kept: " + string(first.reused = 0)
 
 amount = {USD}"99.00"
-gsql.exec(sell)
-gsql.backup(live, copy)                  ' a refresh: as of now
+sell.exec()
+live.backup(copy)                  ' a refresh: as of now
 
 ' The report runs on the copy, so a long one stalls nobody on the live
 ' database. (This program now holds the copy open, and a copy that is open is
 ' not refreshed: a report runs as a program of its own, and its hold ends with
 ' it.)
 report = gsql.connect(copy)
-r = gsql.query(report, sales_total)[0]
+r = report.query(sales_total)[0]
 print "the copy: " + string(r.n) + " sales, " + string(r.total)
 
 on error goto next
-gsql.backup(live, copy)
+live.backup(copy)
 if error then
     print "refreshing it while it is open is refused: " + error.details.code
 end if
 
-gsql.close(report)
-gsql.close(live)
+report.close()
+live.close()
 remove_tree(work)
 remove_tree({dir}"cookbook_live.gsql")

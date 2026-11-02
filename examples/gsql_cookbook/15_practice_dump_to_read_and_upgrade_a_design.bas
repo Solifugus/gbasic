@@ -31,12 +31,12 @@ sql highest on v2
     select max(id) as m from customer
 end sql
 
-gsql.exec(make)
+make.exec()
 
 ' the design, on one page
 work = temp_dir()
 schema = join_path(work, "shop-schema.sql")
-gsql.dump(shop, schema, { schema_only: true })
+shop.dump(schema, { schema_only: true })
 print read({file}schema)
 
 ' everything, then the design changed in the text: phone becomes NOT NULL
@@ -44,7 +44,7 @@ print read({file}schema)
 ' filled in the same pass. The dump is text, edited as text: this is where a
 ' string, not a block, is the right tool.
 full = join_path(work, "shop.sql")
-r = gsql.dump(shop, full)
+r = shop.dump(full)
 print "dumped " + string(r.tables) + " table, " + string(r.rows) + " rows"
 text = read({file}full)
 text = replace(text, "phone TEXT", "phone TEXT NOT NULL DEFAULT 'unlisted'")
@@ -52,27 +52,27 @@ text = replace(text, "'Grace', NULL", "'Grace', 'unlisted'")
 upgraded = join_path(work, "shop-v2.sql")
 write({file}upgraded, text)
 
-r = gsql.restore(v2, upgraded)
+r = v2.restore(upgraded)
 print "restored " + string(r.statements) + " statements, " + string(r.rows) + " rows"
 for each c in customers
     print string(c.id) + " " + c.name + " " + c.phone
 next
 
 ' the serial carries on from where the old database left off
-gsql.exec(add_linus)
-print "next id: " + string(gsql.query(highest)[0].m)
+add_linus.exec()
+print "next id: " + string(highest.query()[0].m)
 
 ' a restore only writes to tables it made, so a file cannot touch data
 ' already there
 on error goto next
 write({file}upgraded, "delete from customer;")
-gsql.restore(v2, upgraded)
+v2.restore(upgraded)
 if error then
     print "a DELETE in the file is refused: " + error.details.code
 end if
 
-gsql.close(v2)
-gsql.close(shop)
+v2.close()
+shop.close()
 remove_tree(work)
 remove_tree({dir}"cookbook_dump.gsql")
 remove_tree({dir}"cookbook_dump_v2.gsql")

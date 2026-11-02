@@ -43,10 +43,10 @@ program main(args)
   ' Errors from a live connection carry the SERVER's diagnostic, which is
   ' usually the sentence that tells you what to fix.
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
-  odbc.exec(db, "drop table if exists small")
-  odbc.exec(db, "create table small (id integer)")
+  db.exec("drop table if exists small")
+  db.exec("create table small (id integer)")
   on error goto next
-  odbc.query(db, "select nope from small")
+  db.query("select nope from small")
   if error then
     print ""
     print "bad column: " + left(error.message, 19) + " (plus the driver's own text)"
@@ -54,7 +54,7 @@ program main(args)
   end if
   on error stop
 
-  odbc.close(db)
+  db.close()
   f {file}= "examples/tmp_cookbook_odbc.db"
   if exists(f) then
     delete(f)

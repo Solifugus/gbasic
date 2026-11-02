@@ -34,17 +34,17 @@ program main(args)
     for each a in areas
         names = append(names, a.name)
     end for
-    shown = qt.options(move_form, "leads_to", names)
+    shown = move_form.options("leads_to", names)
     print "the dropdown offers " + string(shown) + " choices"
 
     ' CHOOSING BY NAME. `qt.write` on a choice REFUSES a name that is not in
     ' the list rather than silently doing nothing, which is what Qt's own
     ' setCurrentText does on an uneditable box.
-    qt.write(move_form, "leads_to", "The Garden")
-    print "the box shows:      " + qt.read(move_form, "leads_to")
+    move_form.write("leads_to", "The Garden")
+    print "the box shows:      " + move_form.read("leads_to")
 
     ' AND BACK TO AN ID, which is the program's half of the translation.
-    chosen = qt.read(move_form, "leads_to")
+    chosen = move_form.read("leads_to")
     goes_to = 0
     for each a in areas
         if a.name = chosen then
@@ -52,6 +52,6 @@ program main(args)
         end if
     end for
     print "which is area id:   " + string(goes_to)
-    print "the direction is:   " + qt.read(move_form, "heading")
+    print "the direction is:   " + move_form.read("heading")
     qt.stop()
 end program

@@ -43,7 +43,7 @@ window customer( title: "Customer", width: 420 )
     ' form is working on, read from the widgets at this moment -- so a handler
     ' says `saving` once rather than naming every part it wants back.
     on save.clicked
-        edited = qt.subject(customer, "cust")
+        edited = customer.subject("cust")
         print "saving:"
         print "  account " + edited.id
         print "  name    " + edited.name
@@ -84,13 +84,13 @@ program main(args)
         ' `check` PRINTS WHAT IT CAN SEE AND EXITS, which is how this example
         ' is gated and also how you verify a Qt install without a screen.
         if contains(args, "check") then
-            print "id shows:      " + qt.read(customer, "id")
-            print "name shows:    " + qt.read(customer, "name")
-            print "limit shows:   " + qt.read(customer, "limit")
-            print "hold shows:    " + qt.read(customer, "hold")
+            print "id shows:      " + customer.read("id")
+            print "name shows:    " + customer.read("name")
+            print "limit shows:   " + customer.read("limit")
+            print "hold shows:    " + customer.read("hold")
             ' TYPING, FROM THE PROGRAM -- and then the whole record back.
-            qt.write(customer, "name", "Grace Hopper")
-            back = qt.subject(customer, "cust")
+            customer.write("name", "Grace Hopper")
+            back = customer.subject("cust")
             print "folded name:   " + back.name
             ' AND THE KIND SURVIVED, which is what `type: {USD}` is for: a
             ' widget holds TEXT, so a fold that trusted the widget would turn

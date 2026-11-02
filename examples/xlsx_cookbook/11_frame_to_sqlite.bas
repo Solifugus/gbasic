@@ -11,7 +11,7 @@ program main(args)
 
   wb = xlsx.open("examples/fixtures/xlsx/tapes.xlsx")
   sources = []
-  for each s in xlsx.sheets(wb)
+  for each s in wb.sheets()
     r = grid.extract(grid.of(wb, s), { header_row: 1 })
     append(sources, { name: s, frame: r.frame })
   end for
@@ -42,13 +42,13 @@ program main(args)
   print out.sql
 
   print ""
-  for each row in sqlite.query(db, "select tape, count(*) n from loans group by tape order by tape", [])
+  for each row in db.query("select tape, count(*) n from loans group by tape order by tape", [])
     print "  " + row.tape + "  loans " + row.n
   end for
 
   ' Assert exactness by COMPARING, not by printing: the point of the pipeline
   ' is that the cents survive it.
-  t = sqlite.query(db, "select sum(balance) s from loans", [])[0].s
+  t = db.query("select sum(balance) s from loans", [])[0].s
   print ""
   print "total balance = " + t
   print "exact         = " + (t = 265550.75)

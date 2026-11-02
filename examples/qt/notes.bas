@@ -39,11 +39,11 @@ window notes( title: "Notes", width: 540, height: 360 )
     end column
 
     on note_list.itemSelectionChanged
-        at = qt.selected(notes, "note_list")
+        at = notes.selected("note_list")
         if not is_unknown(at) then
             picked = notes_held[at]
-            x = qt.write(notes, "title", picked.title)
-            x = qt.write(notes, "tag", picked.tag)
+            x = notes.write("title", picked.title)
+            x = notes.write("tag", picked.tag)
         end if
     end on
 
@@ -52,7 +52,7 @@ window notes( title: "Notes", width: 540, height: 360 )
     end on
 
     on show_done.toggled
-        print "show finished is now " + string(qt.read(notes, "show_done", "checked"))
+        print "show finished is now " + string(notes.read("show_done", "checked"))
     end on
 
     on quit_app.triggered
@@ -79,19 +79,19 @@ program main(args)
         current = {}
 
         qt.open(notes)
-        qt.select(notes, "note_list", 0)
+        notes.select("note_list", 0)
 
         if contains(args, "check") then
             ' THE MENU BAR IS A TREE and the by-name registry is FLAT, so the
             ' only way to see the structure is to ask Qt for it: a submenu hung
             ' off the bar, an item in the wrong menu and a missing separator
             ' all produce zero mismatches to a by-name check.
-            print "menus:         " + string(qt.menus(notes))
-            print "File holds:    " + string(qt.menus(notes, 0))
+            print "menus:         " + string(notes.menus())
+            print "File holds:    " + string(notes.menus(0))
             print "theme set:     " + string(len(qt.theme()) > 0)
             print "notes:         " + string(len(notes_held))
-            print "chosen:        " + string(qt.selected(notes, "note_list"))
-            print "its title:     " + qt.cell(notes, "note_list", 0, "title")
+            print "chosen:        " + string(notes.selected("note_list"))
+            print "its title:     " + notes.cell("note_list", 0, "title")
             qt.stop()
             return
         end if

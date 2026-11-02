@@ -51,6 +51,8 @@ Oracle and DB2 remain untested — treat those as expected rather than verified.
 One module, every backend. What changes between databases is the connection
 string and the SQL dialect — not the shape of this code.
 
+A connection is a **handle**, and its verbs are its methods: `db.query(sql)`, `db.close()`. `odbc.query(db, sql)` is the same call written the other way; `odbc.connect` makes the handle, so it stays a module call.
+
 <!--CODE:01_connect_and_query-->
 
 ```basic
@@ -69,14 +71,14 @@ program main(args)
   ' Or name the driver and give it its own options directly:
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
 
-  odbc.exec(db, "drop table if exists staff")
-  odbc.exec(db, "create table staff (id integer, name varchar(40), team varchar(20))")
-  odbc.exec(db, "insert into staff values (1, 'Ada', 'compilers')")
-  odbc.exec(db, "insert into staff values (2, 'Grace', 'runtime')")
+  db.exec("drop table if exists staff")
+  db.exec("create table staff (id integer, name varchar(40), team varchar(20))")
+  db.exec("insert into staff values (1, 'Ada', 'compilers')")
+  db.exec("insert into staff values (2, 'Grace', 'runtime')")
 
   ' A query returns an ARRAY OF RECORDS. Each record's fields are the result
   ' columns, named exactly as the SQL named them.
-  rows = odbc.query(db, "select id, name, team from staff order by id")
+  rows = db.query("select id, name, team from staff order by id")
 
   print "rows: " + string(count(rows))
   for each row in rows
@@ -88,7 +90,7 @@ program main(args)
   print "first name: " + rows[0].name
   print "field names: " + string(keys(rows[0]))
 
-  odbc.close(db)
+  db.close()
   f {file}= "examples/tmp_cookbook_odbc.db"
   if exists(f) then
     delete(f)
@@ -134,23 +136,23 @@ program main(args)
   load odbc
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
 
-  odbc.exec(db, "drop table if exists notes")
-  odbc.exec(db, "create table notes (id integer, body varchar(60))")
-  odbc.exec(db, "insert into notes values (1, 'hello')")
-  odbc.exec(db, "insert into notes values (2, 'goodbye')")
+  db.exec("drop table if exists notes")
+  db.exec("create table notes (id integer, body varchar(60))")
+  db.exec("insert into notes values (1, 'hello')")
+  db.exec("insert into notes values (2, 'goodbye')")
 
   ' A perfectly ordinary-looking search term that happens to be SQL.
   term = "' or '1'='1"
-  odbc.exec(db, "insert into notes (id, body) values (?, ?)", [3, term])
+  db.exec("insert into notes (id, body) values (?, ?)", [3, term])
 
   ' PASTED: the term closes the quote and its `or` takes over the condition,
   ' so the query answers about every row in the table.
-  pasted = odbc.query(db, "select id from notes where body = '" + term + "'")
+  pasted = db.query("select id from notes where body = '" + term + "'")
   print "pasted matched: " + string(count(pasted)) + " rows"
 
   ' BOUND: the same characters are a value, so it matches only the row whose
   ' body really is that text.
-  bound = odbc.query(db, "select id from notes where body = ?", [term])
+  bound = db.query("select id from notes where body = ?", [term])
   print "bound matched:  " + string(count(bound)) + " rows"
   print "and it is row:  " + string(bound[0].id)
 
@@ -158,14 +160,14 @@ program main(args)
   ' a mismatch is refused rather than run with the wrong query.
   print ""
   on error goto next
-  odbc.query(db, "select id from notes where id = ?", [1, 2])
+  db.query("select id from notes where id = ?", [1, 2])
   if error then
     print "refused: " + error.message
     error.clear()
   end if
   on error stop
 
-  odbc.close(db)
+  db.close()
   f {file}= "examples/tmp_cookbook_odbc.db"
   if exists(f) then
     delete(f)
@@ -210,38 +212,38 @@ program main(args)
   load odbc
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
 
-  r = odbc.exec(db, "drop table if exists jobs")
-  r = odbc.exec(db, "create table jobs (id integer, state varchar(20))")
+  r = db.exec("drop table if exists jobs")
+  r = db.exec("create table jobs (id integer, state varchar(20))")
   print r.command
 
-  r = odbc.exec(db, "insert into jobs values (?, ?)", [1, "queued"])
+  r = db.exec("insert into jobs values (?, ?)", [1, "queued"])
   print r.command + " " + string(r.rows_affected)
-  odbc.exec(db, "insert into jobs values (?, ?)", [2, "queued"])
-  odbc.exec(db, "insert into jobs values (?, ?)", [3, "done"])
+  db.exec("insert into jobs values (?, ?)", [2, "queued"])
+  db.exec("insert into jobs values (?, ?)", [3, "done"])
 
   ' rows_affected is how you tell "I updated the row" from "there was no such
   ' row" -- both are successes, and only this number separates them.
-  r = odbc.exec(db, "update jobs set state = ? where state = ?", ["running", "queued"])
+  r = db.exec("update jobs set state = ? where state = ?", ["running", "queued"])
   print r.command + " " + string(r.rows_affected)
 
-  r = odbc.exec(db, "update jobs set state = ? where id = ?", ["running", 99])
+  r = db.exec("update jobs set state = ? where id = ?", ["running", 99])
   print r.command + " " + string(r.rows_affected) + "   (no such row)"
 
-  r = odbc.exec(db, "delete from jobs where state = ?", ["done"])
+  r = db.exec("delete from jobs where state = ?", ["done"])
   print r.command + " " + string(r.rows_affected)
 
   ' A `select` handed to `exec` is a caller who wrote a query and meant a
   ' command. Discarding the rows silently is how a check becomes a no-op.
   print ""
   on error goto next
-  odbc.exec(db, "select id from jobs")
+  db.exec("select id from jobs")
   if error then
     print "refused: " + error.message
     error.clear()
   end if
   on error stop
 
-  odbc.close(db)
+  db.close()
   f {file}= "examples/tmp_cookbook_odbc.db"
   if exists(f) then
     delete(f)
@@ -298,16 +300,16 @@ program main(args)
   load odbc
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
 
-  odbc.exec(db, "drop table if exists ledger")
-  odbc.exec(db, "create table ledger (id bigint, note varchar(40), amount varchar(30))")
+  db.exec("drop table if exists ledger")
+  db.exec("create table ledger (id bigint, note varchar(40), amount varchar(30))")
 
   ' 9007199254740993 is 2^53+1: the smallest positive integer a DOUBLE cannot
   ' represent -- which is why this column is text, and why converting it used to
   ' cost you the last digit.
   big = "9007199254740993"
-  odbc.exec(db, "insert into ledger values (?, ?, ?)", [big, "an account number", "12345678901234.5678"])
+  db.exec("insert into ledger values (?, ?, ?)", [big, "an account number", "12345678901234.5678"])
 
-  row = odbc.query(db, "select id, note, amount from ledger")[0]
+  row = db.query("select id, note, amount from ledger")[0]
 
   print "id type   : " + type(row.id)
   print "id exact  : " + row.id
@@ -322,22 +324,22 @@ program main(args)
   ' is exact integer cents.
   print ""
   price {USD}= 1234.56
-  odbc.exec(db, "insert into ledger values (?, ?, ?)", ["2", "a price", price])
-  back = odbc.query(db, "select amount from ledger where note = ?", ["a price"])
+  db.exec("insert into ledger values (?, ?, ?)", ["2", "a price", price])
+  back = db.query("select amount from ledger where note = ?", ["a price"])
   print "money in, text out: " + back[0].amount
 
   ' Ordinary INTEGER, REAL and FLOAT columns are numbers, as you would expect.
   ' Only the three types whose values may not survive the conversion -- BIGINT,
   ' DECIMAL and NUMERIC -- are held back as text.
-  odbc.exec(db, "drop table if exists sizes")
-  odbc.exec(db, "create table sizes (n integer, x real)")
-  odbc.exec(db, "insert into sizes values (?, ?)", [42, 0.5])
-  s = odbc.query(db, "select n, x from sizes")[0]
+  db.exec("drop table if exists sizes")
+  db.exec("create table sizes (n integer, x real)")
+  db.exec("insert into sizes values (?, ?)", [42, 0.5])
+  s = db.query("select n, x from sizes")[0]
   print ""
   print "integer -> " + type(s.n) + " " + string(s.n)
   print "real    -> " + type(s.x) + " " + string(s.x)
 
-  odbc.close(db)
+  db.close()
   f {file}= "examples/tmp_cookbook_odbc.db"
   if exists(f) then
     delete(f)
@@ -389,14 +391,14 @@ program main(args)
   load odbc
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
 
-  odbc.exec(db, "drop table if exists tickets")
-  odbc.exec(db, "create table tickets (id integer, closed_on date, note varchar(40))")
+  db.exec("drop table if exists tickets")
+  db.exec("create table tickets (id integer, closed_on date, note varchar(40))")
 
   opened {date}= "2026-03-05"
-  odbc.exec(db, "insert into tickets values (?, ?, ?)", [1, opened, "shipped"])
-  odbc.exec(db, "insert into tickets values (?, ?, ?)", [2, nothing, nothing])
+  db.exec("insert into tickets values (?, ?, ?)", [1, opened, "shipped"])
+  db.exec("insert into tickets values (?, ?, ?)", [2, nothing, nothing])
 
-  rows = odbc.query(db, "select id, closed_on, note from tickets order by id")
+  rows = db.query("select id, closed_on, note from tickets order by id")
 
   ' NULL becomes `nothing` -- which is NOT the empty string. Comparing against
   ' "" is the mistake this recipe exists to prevent: it is false for a NULL
@@ -418,14 +420,14 @@ program main(args)
 
   ' TIME and TIMESTAMP columns convert the same way. Fractional seconds are
   ' dropped: gBASIC datetimes carry whole seconds.
-  odbc.exec(db, "drop table if exists events")
-  odbc.exec(db, "create table events (at_time timestamp)")
-  odbc.exec(db, "insert into events values (?)", ["2026-03-05 13:45:01"])
-  e = odbc.query(db, "select at_time from events")[0]
+  db.exec("drop table if exists events")
+  db.exec("create table events (at_time timestamp)")
+  db.exec("insert into events values (?)", ["2026-03-05 13:45:01"])
+  e = db.query("select at_time from events")[0]
   print ""
   print "timestamp -> " + type(e.at_time) + " " + string(e.at_time)
 
-  odbc.close(db)
+  db.close()
   f {file}= "examples/tmp_cookbook_odbc.db"
   if exists(f) then
     delete(f)
@@ -477,32 +479,32 @@ program main(args)
   load odbc
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
 
-  odbc.exec(db, "drop table if exists accounts")
-  odbc.exec(db, "create table accounts (name varchar(20), balance integer)")
-  odbc.exec(db, "insert into accounts values ('alice', 100)")
-  odbc.exec(db, "insert into accounts values ('bob', 0)")
+  db.exec("drop table if exists accounts")
+  db.exec("create table accounts (name varchar(20), balance integer)")
+  db.exec("insert into accounts values ('alice', 100)")
+  db.exec("insert into accounts values ('bob', 0)")
 
   ' A transfer is two writes that must both happen or neither.
-  odbc.begin(db)
-  odbc.exec(db, "update accounts set balance = balance - ? where name = ?", [40, "alice"])
-  odbc.exec(db, "update accounts set balance = balance + ? where name = ?", [40, "bob"])
-  odbc.commit(db)
+  db.begin()
+  db.exec("update accounts set balance = balance - ? where name = ?", [40, "alice"])
+  db.exec("update accounts set balance = balance + ? where name = ?", [40, "bob"])
+  db.commit()
   print "after commit:   " + balances(db)
 
   ' The same pair, abandoned. Nothing survives -- not even the first write,
   ' which is the point.
-  odbc.begin(db)
-  odbc.exec(db, "update accounts set balance = balance - ? where name = ?", [999, "alice"])
-  odbc.exec(db, "update accounts set balance = balance + ? where name = ?", [999, "bob"])
-  odbc.rollback(db)
+  db.begin()
+  db.exec("update accounts set balance = balance - ? where name = ?", [999, "alice"])
+  db.exec("update accounts set balance = balance + ? where name = ?", [999, "bob"])
+  db.rollback()
   print "after rollback: " + balances(db)
 
   ' Autocommit is back on after either, so an ordinary write needs no
   ' ceremony and is durable on its own.
-  odbc.exec(db, "update accounts set balance = ? where name = ?", [7, "bob"])
+  db.exec("update accounts set balance = ? where name = ?", [7, "bob"])
   print "plain write:    " + balances(db)
 
-  odbc.close(db)
+  db.close()
   f {file}= "examples/tmp_cookbook_odbc.db"
   if exists(f) then
     delete(f)
@@ -511,7 +513,7 @@ end program
 
 function balances(db)
   parts = []
-  for each row in odbc.query(db, "select name, balance from accounts order by name")
+  for each row in db.query("select name, balance from accounts order by name")
     append(parts, row.name + "=" + string(row.balance))
   next
   return join(parts, " ")
@@ -584,10 +586,10 @@ program main(args)
   ' Errors from a live connection carry the SERVER's diagnostic, which is
   ' usually the sentence that tells you what to fix.
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
-  odbc.exec(db, "drop table if exists small")
-  odbc.exec(db, "create table small (id integer)")
+  db.exec("drop table if exists small")
+  db.exec("create table small (id integer)")
   on error goto next
-  odbc.query(db, "select nope from small")
+  db.query("select nope from small")
   if error then
     print ""
     print "bad column: " + left(error.message, 19) + " (plus the driver's own text)"
@@ -595,7 +597,7 @@ program main(args)
   end if
   on error stop
 
-  odbc.close(db)
+  db.close()
   f {file}= "examples/tmp_cookbook_odbc.db"
   if exists(f) then
     delete(f)
@@ -645,13 +647,13 @@ program main(args)
   load frame
 
   db = odbc.connect("Driver=SQLite3;Database=examples/tmp_cookbook_odbc.db")
-  odbc.exec(db, "drop table if exists sales")
-  odbc.exec(db, "create table sales (region varchar(20), units integer)")
-  odbc.exec(db, "insert into sales values ('north', 120)")
-  odbc.exec(db, "insert into sales values ('south', 80)")
-  odbc.exec(db, "insert into sales values ('north', 45)")
+  db.exec("drop table if exists sales")
+  db.exec("create table sales (region varchar(20), units integer)")
+  db.exec("insert into sales values ('north', 120)")
+  db.exec("insert into sales values ('south', 80)")
+  db.exec("insert into sales values ('north', 45)")
 
-  rows = odbc.query(db, "select region, units from sales order by region, units")
+  rows = db.query("select region, units from sales order by region, units")
 
   ' Straight into a frame -- no mapping, no rename.
   f = frame.from_rows(rows)
@@ -668,11 +670,11 @@ program main(args)
   ' SQL moves three numbers over the wire instead of three thousand -- and
   ' this is the habit that matters once the table is real.
   print ""
-  for each row in odbc.query(db, "select region, sum(units) as total from sales group by region order by region")
+  for each row in db.query("select region, sum(units) as total from sales group by region order by region")
     print row.region + ": " + string(row.total)
   next
 
-  odbc.close(db)
+  db.close()
   g {file}= "examples/tmp_cookbook_odbc.db"
   if exists(g) then
     delete(g)

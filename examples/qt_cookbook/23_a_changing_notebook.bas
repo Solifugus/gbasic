@@ -53,41 +53,41 @@ program main(args)
     end if
 
     qt.open(editor)
-    print "tabs at the start:   " + join(qt.tabs(editor, "book"), ", ")
+    print "tabs at the start:   " + join(editor.tabs("book"), ", ")
 
     ' SOMEBODY TYPES. This is the state that has to survive everything below.
-    x = qt.write(editor, "ed1", "print 1" + chr(10) + "print 2")
+    x = editor.write("ed1", "print 1" + chr(10) + "print 2")
 
     ' A SECOND FILE IS OPENED: append to the list, rebuild the items, reconcile.
     open_docs = append(open_docs, { id: 2, title: "main.bas", text: "run()" })
-    n = qt.refresh(editor, "book", pages_for(open_docs))
-    print "after opening one:   " + join(qt.tabs(editor, "book"), ", ")
+    n = editor.refresh("book", pages_for(open_docs))
+    print "after opening one:   " + join(editor.tabs("book"), ", ")
     print "the reconcile placed " + string(n) + " pages"
     print("and the typing survived: " +
-          string(qt.read(editor, "ed1") = "print 1" + chr(10) + "print 2"))
+          string(editor.read("ed1") = "print 1" + chr(10) + "print 2"))
 
     ' THE FIRST FILE IS EDITED, so its caption gains a marker. Only the caption
     ' moves -- the page is the same widget, which is the whole point.
     open_docs[0].title = "* notes.bas"
-    n = qt.refresh(editor, "book", pages_for(open_docs))
-    print "after an edit:       " + join(qt.tabs(editor, "book"), ", ")
+    n = editor.refresh("book", pages_for(open_docs))
+    print "after an edit:       " + join(editor.tabs("book"), ", ")
     print("still the same page: " +
-          string(qt.read(editor, "ed1") = "print 1" + chr(10) + "print 2"))
+          string(editor.read("ed1") = "print 1" + chr(10) + "print 2"))
 
     ' AND ONE IS CLOSED. An absent child is DELETED, so its parts leave the
     ' window with it -- `qt.read` on a closed document's editor refuses, which
     ' is what stops a program reading off a screen nobody is looking at.
     open_docs = [ open_docs[0] ]
-    n = qt.refresh(editor, "book", pages_for(open_docs))
-    print "after closing one:   " + join(qt.tabs(editor, "book"), ", ")
-    print "children by name:    " + join(qt.children(editor, "book"), ", ")
+    n = editor.refresh("book", pages_for(open_docs))
+    print "after closing one:   " + join(editor.tabs("book"), ", ")
+    print "children by name:    " + join(editor.children("book"), ", ")
     on error goto next
-    gone = qt.read(editor, "ed2")
+    gone = editor.read("ed2")
     if error then
         print "the closed one is gone: " + error.message
         error.clear()
     end if
     on error stop
 
-    qt.close(editor)
+    editor.close()
 end program

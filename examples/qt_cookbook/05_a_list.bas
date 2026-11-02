@@ -27,7 +27,7 @@ window orders( title: "Orders", width: 620, height: 360 )
 end window
 
 function pick()
-    at = qt.selected(orders, "lines")
+    at = orders.selected("lines")
     if is_unknown(at) then
         return nothing
     end if
@@ -39,7 +39,7 @@ function pick()
     ' it, addressed by the form's SUBJECT because a form has no name.
     chosen.who = row.who
     chosen.total = row.total
-    drew = qt.refresh(orders, "chosen")
+    drew = orders.refresh("chosen")
     return nothing
 end function
 
@@ -63,13 +63,13 @@ program main(args)
     ' A HEADING COMES FROM `label:` AND A CELL FROM `name:` -- two different
     ' sources, which is what makes the heading an independent check that the
     ' columns are mapped the way the declaration says.
-    print "heading 1 is:      " + qt.heading(orders, "lines", 1)
-    print "cell (1, who) is:  " + qt.cell(orders, "lines", 1, "who")
+    print "heading 1 is:      " + orders.heading("lines", 1)
+    print "cell (1, who) is:  " + orders.cell("lines", 1, "who")
 
     ' CHOOSING A ROW FROM THE PROGRAM fires the same handler a click would.
-    qt.select(orders, "lines", 2)
-    print "chosen row:        " + string(qt.selected(orders, "lines"))
-    print "the form now says: " + qt.read(orders, "who")
-    print "               and " + qt.read(orders, "total")
+    orders.select("lines", 2)
+    print "chosen row:        " + string(orders.selected("lines"))
+    print "the form now says: " + orders.read("who")
+    print "               and " + orders.read("total")
     qt.stop()
 end program

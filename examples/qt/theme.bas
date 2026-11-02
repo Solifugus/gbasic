@@ -82,8 +82,8 @@ program main(args)
         print "still the same after open:  " + string(qt.theme() = sheet)
         ' A WIDGET KEEPS ITS OWN, which is the check that separates a real
         ' cascade from a backend that stamped the sheet onto everything.
-        print "a plain label's own sheet:  [" + qt.read(styled, "ordinary", "styleSheet") + "]"
-        print "the special one's:          " + qt.read(styled, "special", "styleSheet")
+        print "a plain label's own sheet:  [" + styled.read("ordinary", "styleSheet") + "]"
+        print "the special one's:          " + styled.read("special", "styleSheet")
         ' AND A THEME CAN CHANGE WHILE THE WINDOW IS UP.
         qt.theme(sheet + "QPushButton { padding: 6px 14px; }")
         print "changed while open:         " + string(qt.theme() != sheet)

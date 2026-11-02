@@ -31,27 +31,27 @@ sql second_note on vals
     select note from v where id = 2
 end sql
 
-gsql.exec(make)
+make.exec()
 
 big {number}= "9007199254740993"            ' 2^53 + 1: past what a double holds exactly
 cost = {EUR}"19.99"
 day = {date}"2026-11-01"
 note = ""
-gsql.exec(add_full)
-gsql.exec(add_bare)                          ' every other column NULL
+add_full.exec()
+add_bare.exec()                          ' every other column NULL
 
 for each row in everything
     print row
 next
 
-back = gsql.query(first)[0]
+back = first.query()[0]
 print "big + 1 = " + string(back.big + 1)          ' exact: ...994
 print "cost is " + money.currency(back.cost)
 print "day is a " + type(back.day) + ", note is " + type(back.note) + " of length " + string(len(back.note))
 
 ' SQL NULL reads back as unknown, which is not the empty string
-gap = gsql.query(second_note)[0].note
+gap = second_note.query()[0].note
 print "a missing note is unknown: " + string(is_unknown(gap))
 
-gsql.close(vals)
+vals.close()
 remove_tree({dir}"cookbook_values.gsql")

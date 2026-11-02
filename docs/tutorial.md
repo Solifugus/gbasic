@@ -1347,13 +1347,13 @@ SQL `NULL` maps to `nothing`.
 load sqlite
 
 db = sqlite.connect("app.db")
-sqlite.exec(db, "create table if not exists users (id integer primary key, name text, active integer)")
-sqlite.exec(db, "insert into users (name, active) values (?, ?)", ["Ada", true])
-rows = sqlite.query(db, "select id, name from users where active = ?", [true])
+db.exec("create table if not exists users (id integer primary key, name text, active integer)")
+db.exec("insert into users (name, active) values (?, ?)", ["Ada", true])
+rows = db.query("select id, name from users where active = ?", [true])
 for each row in rows
     print(row.name)
 end for
-sqlite.close(db)
+db.close()
 ```
 
 Also: `sqlite.begin/commit/rollback`, `sqlite.last_insert_rowid`. Placeholders are
@@ -1366,9 +1366,9 @@ positional `?`. Errors carry `error.source = "sqlite"`.
 load pg
 
 db = pg.connect({ host:"localhost", database:"app", user:"app", password:"secret" })
-rows = pg.query(db, "select id, name from users where active = $1", [true])
-result = pg.exec(db, "update users set active = false where id = $1", [10])
-pg.close(db)
+rows = db.query("select id, name from users where active = $1", [true])
+result = db.exec("update users set active = false where id = $1", [10])
+db.close()
 ```
 
 Also: `pg.begin/commit/rollback`. `bigint`/`numeric` come back as strings to
@@ -1483,7 +1483,7 @@ window greeter( title: "Greeter", width: 360, height: 160 )
     end column
 
     on hello.clicked
-        qt.write(greeter, "said", "Hello, " + qt.read(greeter, "who") + "!")
+        greeter.write("said", "Hello, " + greeter.read("who") + "!")
     end on
 end window
 ```
@@ -1519,9 +1519,9 @@ and an actor mailbox all keep running.
 
 ### Reading and writing, and the parts you address
 
-Every named part is reachable by name: `qt.read(win, "who")` gives what it
-shows, `qt.write(win, "who", value)` puts a value in it (rendered exactly as
-`print` would), and `qt.read(win, "who", "readOnly")` reads **any Qt property**
+Every named part is reachable by name: `win.read("who")` gives what it
+shows, `win.write("who", value)` puts a value in it (rendered exactly as
+`print` would), and `win.read("who", "readOnly")` reads **any Qt property**
 of that widget — in the kind Qt declares it, so `readOnly` answers a boolean.
 A property the widget does not carry is refused **by name**, which matters
 because Qt's own `setProperty` succeeds on a name nothing reads.
@@ -1539,13 +1539,13 @@ window customer( title: "Customer", width: 420, height: 220 )
         check hold( label: "On hold" )
     end form
     on hold.toggled
-        qt.set(customer, "limit", "enabled", not qt.read(customer, "hold"))
+        customer.set("limit", "enabled", not customer.read("hold"))
     end on
 end window
 ```
 
 `form to edit cust` takes `cust` from the frame that opens the window and fills
-every part from the matching field. `qt.subject(customer, "cust")` reads the
+every part from the matching field. `customer.subject("cust")` reads the
 widgets **at the moment you ask** and folds them back into that record, keeping
 each field's kind — `limit` comes back as money because the field declared it.
 `form to show cust` is the same thing one way: the parts are read-only and the
@@ -1567,7 +1567,7 @@ window counter( title: "Counter", width: 240, height: 120 )
     end column
     on bump.clicked
         g.count = g.count + 1
-        qt.write(counter, "shown", g.count)
+        counter.write("shown", g.count)
     end on
 end window
 ```

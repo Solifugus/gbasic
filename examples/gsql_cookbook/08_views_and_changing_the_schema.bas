@@ -33,39 +33,39 @@ sql rename_new on shop
     alter table item_new rename to item
 end sql
 
-gsql.exec(setup)
-print gsql.query(read_cheap)
+setup.exec()
+print read_cheap.query()
 
-gsql.exec(build_new)
+build_new.exec()
 
 function drop_old()
     on warning goto next
-    gsql.exec(drop_item)
+    drop_item.exec()
     if warning then
         print "warned " + string(warning.code) + ": " + warning.message
     end if
     return nothing
 end function
 drop_old()                                        ' the view now reads nothing
-gsql.exec(rename_new)
-print gsql.query(read_cheap)                      ' and reads again, once item is back
+rename_new.exec()
+print read_cheap.query()                      ' and reads again, once item is back
 
 ' the careful version: under `on warning stop`, inside a transaction, the
 ' warning is an error before anything commits
 function careful()
     on error goto next
     on warning stop
-    gsql.begin(shop)
-    gsql.exec(drop_item)
+    shop.begin()
+    drop_item.exec()
     if error then
-        gsql.rollback(shop)
+        shop.rollback()
         return "rolled back: " + string(error.code)
     end if
-    gsql.commit(shop)
+    shop.commit()
     return "committed"
 end function
 print careful()
-print gsql.query(read_cheap)
+print read_cheap.query()
 
-gsql.close(shop)
+shop.close()
 remove_tree({dir}"cookbook_views.gsql")

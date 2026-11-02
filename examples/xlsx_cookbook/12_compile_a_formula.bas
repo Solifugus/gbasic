@@ -38,17 +38,17 @@ program main(args)
   db = sqlite.connect(":memory:")
   dbframe.to_table(r.frame, db, "loans", { replace: true })
 
-  f = xlsx.cell(wb, "Loans", "E2").formula
+  f = wb.cell("Loans", "E2").formula
   c = xlsx.to_sql(f, mapping)
   print ""
   print "column E formula = " + f
   print "compiled         = " + c.sql
 
-  rows = sqlite.query(db, "select id, (" + c.sql + ") v from loans order by id", [])
+  rows = db.query("select id, (" + c.sql + ") v from loans order by id", [])
   agree = 0
   i = 0
   while i < count(rows)
-    interp = xlsx.evaluate(wb, "Loans", "E" + (i + 2))
+    interp = wb.evaluate("Loans", "E" + (i + 2))
     if abs(number(interp) - number(rows[i].v)) < 0.0000001 then
       agree = agree + 1
     end if

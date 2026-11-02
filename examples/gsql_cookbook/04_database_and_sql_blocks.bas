@@ -27,11 +27,11 @@ sql priced on shop
     order by id
 end sql
 
-gsql.exec(make)
+make.exec()
 
 ' :name parameters are read from the variables in scope when the block runs
 function stock(id, name, price)
-    gsql.exec(add)
+    add.exec()
     return nothing
 end function
 stock(1, "apple", {USD}"0.50")
@@ -43,5 +43,5 @@ for each row in priced          ' a statement block is iterated a batch at a tim
     print row.name + "  " + string(row.price) + "  " + row.band
 next
 
-gsql.close(shop)
+shop.close()
 remove_tree({dir}"cookbook_blocks.gsql")

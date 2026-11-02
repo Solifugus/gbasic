@@ -36,16 +36,16 @@ sql user_count on log
     select count(*) as n from event where user_id = 7
 end sql
 
-gsql.exec(make_event)
-gsql.begin(log)
+make_event.exec()
+log.begin()
 kind = "click"
 at = {date}"2026-11-01"
 for i = 1 to 2000
     id = i
     user_id = mod(i, 50)
-    gsql.exec(add_event)
+    add_event.exec()
 next
-gsql.commit(log)
+log.commit()
 
 function plan(explained)
     for each row in explained
@@ -58,12 +58,12 @@ print "by the primary key:"
 plan(by_id)
 print "by a column with no index -- every row is read:"
 plan(by_user)
-gsql.exec(index_user)
+index_user.exec()
 print "the same, with an index on it:"
 plan(by_user)
 print "an index narrows; every condition is still checked:"
 plan(by_user_and_kind)
-print string(gsql.query(user_count)[0].n) + " events for user 7"
+print string(user_count.query()[0].n) + " events for user 7"
 
-gsql.close(log)
+log.close()
 remove_tree({dir}"cookbook_log.gsql")

@@ -12,7 +12,7 @@ program main(args)
   wb = xlsx.open("examples/fixtures/xlsx/tapes.xlsx")
 
   sources = []
-  for each s in xlsx.sheets(wb)
+  for each s in wb.sheets()
     r = grid.extract(grid.of(wb, s), { header_row: 1 })
     print s + ": " + join(frame.columns(r.frame), " | ")
     append(sources, { name: s, frame: r.frame })
