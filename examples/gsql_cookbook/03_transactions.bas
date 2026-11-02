@@ -19,11 +19,11 @@ sql how_many on bank
     select count(*) as n from acct
 end sql
 
-sql debit on bank
+sql take_out on bank
     update acct set bal = bal - :amount where id = :from_id
 end sql
 
-sql credit on bank
+sql pay_in on bank
     update acct set bal = bal + :amount where id = :to_id
 end sql
 
@@ -51,8 +51,8 @@ amount = {USD}"30"
 from_id = 1
 to_id = 2
 bank.begin()
-debit.exec()
-credit.exec()
+take_out.exec()
+pay_in.exec()
 bank.rollback()                    ' changed our mind: neither happened
 r = first_two.query()
 print "after a rollback: " + string(r[0].bal) + " and " + string(r[1].bal)

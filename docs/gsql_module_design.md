@@ -2,6 +2,8 @@
 
 **Status:** built 2026-10-30 (`src/modules/gsql.c`, `tests/run_gsql_module.sh`). This is increment 4 of `gsql_design.md` §11, Phase 1, in two halves. The first is a module a program loads, with the same verbs the `sqlite`, `pg` and `odbc` modules have (§1–§5). The second is the `database` and `sql` blocks of `gsql_design.md` §2, built on the module (§7).
 
+**Current state:** `gsql_overview.md` says how G-SQL works today, in one page, with the later rulings folded in. This document records how it was designed, and is amended in place only where a later ruling reversed it.
+
 ## 1. The surface
 
 ```basic
@@ -44,7 +46,7 @@ Every refusal from G-SQL raises with `error.source = "gsql"`, `error.code = 2005
 
 Three refusals are the module's own:
 
-- **`exec` over a statement that returns rows** is refused, and its cursor closed. Nothing was changed.
+- **`exec` over a statement that returns rows** is refused, and its cursor closed. Nothing was changed. *Since 2026-11-01* `exec` answers the rows instead (`gsql_store_conversion_design.md` §2).
 - **`query` over a statement that returns none** is refused, and **the message says the statement ran**, with its row count. In autocommit the change is committed by then, so a refusal that read as "nothing happened" would be false.
 - **Two result columns with one name** are refused, since a row is a record and a record would keep one of them silently. The message names the remedy, `AS`.
 
@@ -119,7 +121,7 @@ The design's sketch (`gsql_design.md` §2) is kept, with three decisions the bui
 - **`for each row in block`** runs a `select` and hands over one row per pass. Rows arrive a batch at a time (500, as `gsql.query` fetches them), so a result is never held whole. **The loop owns the cursor**, as `for each line in f` owns its file: `break`, `return`, a named `break` to an outer loop, and a raise all end it, and the owner's cursor is closed. A failure partway, such as the owner lost, raises after the rows already handed over; what the loop did with them stays done.
 - **`block.query()`** answers every row as an array, and **`block.exec()`** answers `{ command, rows_affected }`, with `rows` when its last statement returns rows (since 2026-11-01, `gsql_store_conversion_design.md` §2). Each takes the block alone or **with a record of its `:name` values** (since 2026-11-01, Matthew's ruling): a field supplies its name, and a name the record lacks is read from the frame, which "has real utility".
 - **On a database chosen at run time** (*since 2026-11-01*, `gsql_block_connection_design.md`): `connection.exec(block)` and `connection.query(block)` run a block on that connection, and `connection.on(block)` answers a copy bound to it, for `for each`. `database NAME()` with no `file:` declares a role, whose blocks must be given a connection.
-- The module's refusals carry over and name the block (`sql cheap: …`). `exec` over a `select` block is refused and says to iterate it. `query` or `for each` over a block that returns no rows is refused and **says it ran**, with its count. That matters more here than for `gsql.query`, because a loop is the natural way to "run" a block.
+- The module's refusals carry over and name the block (`sql cheap: …`). `exec` over a `select` block is refused and says to iterate it. *Since 2026-11-01* it answers the rows. `query` or `for each` over a block that returns no rows is refused and **says it ran**, with its count. That matters more here than for `gsql.query`, because a loop is the natural way to "run" a block.
 
 ### 7.3 Checked when the program loads
 

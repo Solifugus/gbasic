@@ -5,6 +5,8 @@
 **Project:** [gBASIC](https://github.com/Solifugus/gbasic)
 **Scope:** Native embedded relational engine, pre-G-SQL core contracts, temporal history, scoped serials, relationships, dynamic SQL, shared expression semantics, statistical integration, and windowed iteration
 
+**Current state:** `gsql_overview.md` says how G-SQL works today, in one page, with the later rulings folded in. This document records how it was designed, and is amended in place only where a later ruling reversed it.
+
 **This file supersedes `gbasic_gsql_design.md`, which is retired.** That document was checked line by line against this one before deletion (v0.3): of its 233 non-blank lines, 219 appear here verbatim, and the 14 that do not are the old status/date/scope header, three phase paragraphs extended here rather than dropped, and the two positions v0.3 **reverses with reasons** — a new `integer` type (§3.2) and `NULL` as a gBASIC alias (§3.1). Nothing else was lost. The filename carries no version number on purpose — the status line above is where the version lives, so a revision does not orphan the index row or anybody's link.
 
 ## 0. What is already settled in the tree (v0.3)
@@ -78,7 +80,7 @@ next
 - `:name` binds a typed gBASIC value; never interpolate SQL strings to bind data.
 - A single `SELECT` returns a lazy, per-execution row iterator.
 - A single DML statement returns a structured execution result (affected rows, etc.).
-- Multiple statements need defined result behavior; proposed default is a per-statement result collection, with an explicit SQL-block `RETURN` to select one result and terminate the block.
+- Multiple statements need defined result behavior; proposed default is a per-statement result collection, with an explicit SQL-block `RETURN` to select one result and terminate the block. *Settled 2026-11-01 otherwise:* the last statement answers and a `select` may only be last (`gsql_multi_statement_design.md`).
 - Re-executing a block, including from a gBASIC function, rebinds its parameters and obtains a new iterator. Prepared plans may be cached and invalidated on schema change.
 - Provide file-backed and in-memory databases; default database selection should be explicit and documented.
 - Existing external database adapters remain supported; native G-SQL extensions must not be silently passed through to external SQL dialects.
@@ -225,7 +227,7 @@ Persist stable, serializable value kinds, not executable/process-bound values su
 - **record fields:** `params.vendor` and `params[:field]` (§3.5);
 - **`unknown`:** SQL's truth tables, with `NULL` and `UNKNOWN` as two spellings (§3.1.1);
 - **parameters:** `:name`, which both PostgreSQL drivers and SQLite accept;
-- **anything requiring an implicit cast:** refused rather than coerced (§9), which is stricter than SQLite.
+- **anything requiring an implicit cast:** refused rather than coerced (§9), which is stricter than SQLite. *Since 2026-11-01* storing into a typed column converts text and numbers to the column's kind; everywhere else stays strict (`gsql_store_conversion_design.md`).
 
 **Where PostgreSQL and SQLite disagree** (string concatenation and `LIKE` case-sensitivity, `LIMIT`/`OFFSET` forms, date functions, `||` against `CONCAT`, boolean literals, `RETURNING`, upsert spelling), G-SQL takes the SQL standard's answer, and PostgreSQL's where the standard has none. The list is to be **measured, not guessed**: G-Dash's dataset SQL, the queries `nlq` generates against estateforge, and the SQL in this repository's tests are the corpus, and each construct they use is recorded as supported, deviating, or refused.
 
@@ -320,7 +322,7 @@ These are non-negotiable architectural requirements even if the first implementa
 - **The owner's own concurrency:** proposed single-threaded, serving requests in order, with long queries made incremental (a cursor returns a batch per request) so one client cannot stall the others. Measure before adding threads.
 
 **Decided (v0.4): the owner's lifetime is handed off, never detached.** *Superseded 2026-11-01 by Matthew's ruling (`gsql_owner_lifetime_design.md`): an owner is detached and stops after a linger once its last connection closes. The first reason below lost to the defect it caused, a second program cut off when the first exited; the second had already gone, since a planned handoff flushes and replays nothing (`gsql_storage_design.md` step 5).*
-- gBASIC promises that **nothing it starts outlives it** (`PR_SET_PDEATHSIG`, `run_process_lifetime.sh`), and G-SQL keeps that promise. An owner started by a client is that client's child and dies with it, even while other clients are still using the database.
+- gBASIC promises that **nothing it starts outlives it** (`PR_SET_PDEATHSIG`, `run_process_lifetime.sh`), and G-SQL keeps that promise. An owner started by a client is that client's child and dies with it, even while other clients are still using the database. *Replaced 2026-11-01:* the owner is detached and stops a linger after its last connection (`gsql_owner_lifetime_design.md`).
 - **When the owner disappears, a surviving client takes the lock and becomes, or starts, the next owner, which runs crash recovery on open.** An owner ending is therefore always the recovery path, so recovery is exercised on every handoff rather than only after a real crash. A clean exit and a kill -9 take the same route, which is what makes the crash harness (§6.2) a test of ordinary operation.
 - **Rejected:** an owner that detaches and lingers after its last client. It would break the lifetime promise, and it would leave recovery as a path that runs only after accidents.
 - **To specify and measure:** which client wins the takeover (the first to take the exclusive lock; the others reconnect to it), how long a handoff takes including recovery, and what a client's in-flight request sees (proposed: an open transaction is reported as **failed**, and is never silently retried; a read-only cursor may be reopened at its snapshot if the engine can name one).

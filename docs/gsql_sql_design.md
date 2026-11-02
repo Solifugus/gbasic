@@ -2,6 +2,8 @@
 
 **Status:** designed and built 2026-10-30 (`include/gsql_sql.h`, `src/gsql/sql_parse.c`, `sql_plan.c`, `sql_exec.c`, `src/modules/gsql.c`, `tests/run_gsql_sql.sh`). This is the third layer of Phase 1 (`gsql_table_design.md` §1): parser, binder, planner and executor, with `EXPLAIN`, run inside the owner as its service (`gsql_owner_design.md` §5.3). With it, the owner has something to answer, so G-SQL is linked into `gbasic` for the first time: `gbasic --gsql-owner` is the owner process the client starts.
 
+**Current state:** `gsql_overview.md` says how G-SQL works today, in one page, with the later rulings folded in. This document records how it was designed, and is amended in place only where a later ruling reversed it.
+
 ## 1. What this increment is, and what it is not
 
 **It is** single-table SQL over the table layer, in the dialect `gsql_design.md` §4.0 decided (standard SQL, PostgreSQL's choice where the standard is silent):

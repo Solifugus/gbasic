@@ -2399,13 +2399,13 @@ Connections are opaque `sqlite_connection` values. They close explicitly with
 The module provides:
 
 - `sqlite.connect(path_string)`
-- `connection.close()`
-- `connection.query(sql[, params])`
-- `connection.exec(sql[, params])`
-- `connection.begin()`
-- `connection.commit()`
-- `connection.rollback()`
-- `connection.last_insert_rowid()`
+- `connection.close()` (`sqlite.close`)
+- `connection.query(sql[, params])` (`sqlite.query`)
+- `connection.exec(sql[, params])` (`sqlite.exec`)
+- `connection.begin()` (`sqlite.begin`)
+- `connection.commit()` (`sqlite.commit`)
+- `connection.rollback()` (`sqlite.rollback`)
+- `connection.last_insert_rowid()` (`sqlite.last_insert_rowid`)
 
 Parameters are arrays and are bound separately through sqlite3. Use SQLite
 positional placeholders such as `?`. SQL `NULL` maps to `nothing`. Query
@@ -2461,12 +2461,12 @@ db.close()
 The module provides:
 
 - `gsql.connect(path[, { create: true, linger: seconds }])` — without `create`, a database that is not there is refused. `linger` is how long an owner this connection **starts** waits after its last connection closes before it stops, from 0 to 86400; 0 stops it at the last close. It is the starter's choice: when an owner is already running, a `linger` given here is ignored. A `database` block takes `linger:` too
-- `connection.query(sql[, parameters])` — an array of records, fields in select-list order
-- `connection.exec(sql[, parameters])` — runs anything and answers `{ command, rows_affected }`, as `sqlite`, `pg` and `odbc` answer, plus **`rows`, every row, when the statement returns rows**; `rows_affected` is `nothing` for a statement with no count. `gsql.query` is the shortcut for the rows alone, and `for each` streams a large result
-- `gsql.begin(connection[, "read" | "write"])` — `"write"` by default
-- `connection.commit()`, `connection.rollback()`
-- `connection.close()`
-- `connection.backup(dir)` — a consistent copy as of now, made while the
+- `connection.query(sql[, parameters])` (`gsql.query`) — an array of records, fields in select-list order
+- `connection.exec(sql[, parameters])` (`gsql.exec`) — runs anything and answers `{ command, rows_affected }`, as `sqlite`, `pg` and `odbc` answer, plus **`rows`, every row, when the statement returns rows**; `rows_affected` is `nothing` for a statement with no count. `gsql.query` is the shortcut for the rows alone, and `for each` streams a large result
+- `connection.begin(["read" | "write"])` (`gsql.begin`) — `"write"` by default
+- `connection.commit()` (`gsql.commit`), `connection.rollback()` (`gsql.rollback`)
+- `connection.close()` (`gsql.close`)
+- `connection.backup(dir)` (`gsql.backup`) — a consistent copy as of now, made while the
   database stays in use (`docs/gsql_backup_design.md`). It answers
   `{ bytes, files, reused }`. Backing up into a copy of the same database
   **refreshes** it, keeping the files it already holds. A relative `dir` is the
@@ -2474,7 +2474,7 @@ The module provides:
   itself included) and as `EXISTS` for a directory holding other files. The copy
   is an ordinary database; restore by using it, or by copying its directory back
   with no owner running.
-- `connection.dump(file[, { schema_only: true }])` — the database as SQL
+- `connection.dump(file[, { schema_only: true }])` (`gsql.dump`) — the database as SQL
   text: tables, indexes, rows, serial counters, constraints and views, from one
   snapshot, written a slice at a time while the database stays in use
   (`docs/gsql_dump_design.md`). It answers `{ tables, rows, skipped, bytes }`;
@@ -2482,7 +2482,7 @@ The module provides:
   foreign key whose parent is gone), each named by a `-- not written:` line. A
   record holding a date or money is refused as `TYPE`, naming its table and
   column. A relative `file` is the program's, and a dump that fails leaves no file.
-- `connection.restore(file)` — runs a dump into a database, the rows ten
+- `connection.restore(file)` (`gsql.restore`) — runs a dump into a database, the rows ten
   statements a transaction, the file streamed. It answers `{ statements, rows }`.
   It runs only what a dump writes, and only onto tables it created itself, so a
   file cannot change data that was already there; anything else is refused as
@@ -2568,11 +2568,11 @@ next
 - `for each row in NAME` runs a `select` block and hands over **one row per
   pass**, fetching a batch at a time, so a result is never held whole. The loop
   owns the result: leaving it early by `break`, `return` or a raise ends it.
-- `NAME.query()` answers every row as an array, and `NAME.exec()`
+- `NAME.query()` (`gsql.query`) answers every row as an array, and `NAME.exec()` (`gsql.exec`)
   answers `{ command, rows_affected }`, with `rows` when it returns rows.
-  **Both are methods too**: `NAME.query()`, `NAME.exec(record)`, and a
-  connection's `db.begin()`, `db.commit()`, `db.close()`, `db.exec(block)`.
-- **A record supplies the values:** `NAME.exec(record)` and
+  A connection's verbs are methods the same way: `db.begin()`, `db.commit()`,
+  `db.close()`, `db.exec(block)`.
+- **A record supplies the values:** `NAME.exec(record)` (`gsql.exec`) and
   `NAME.query(record)` read each `:name` from the record's field of that
   name, and a name the record lacks from the variable in scope, so a row read
   from a file or another query goes straight in:
@@ -2638,12 +2638,12 @@ with `pg.close` and automatically during interpreter cleanup.
 The module provides:
 
 - `pg.connect(config_record)`
-- `connection.close()`
-- `connection.query(sql[, params])`
-- `connection.exec(sql[, params])`
-- `connection.begin()`
-- `connection.commit()`
-- `connection.rollback()`
+- `connection.close()` (`pg.close`)
+- `connection.query(sql[, params])` (`pg.query`)
+- `connection.exec(sql[, params])` (`pg.exec`)
+- `connection.begin()` (`pg.begin`)
+- `connection.commit()` (`pg.commit`)
+- `connection.rollback()` (`pg.rollback`)
 
 Parameters are arrays and are bound separately through libpq. SQL `NULL`
 maps to `nothing`. Query results are arrays of records; duplicate column names
@@ -2732,22 +2732,22 @@ Connections are opaque `odbc_connection` values. They close explicitly with
 The module provides:
 
 - `odbc.connect(connection_string)`
-- `connection.close()`
-- `connection.query(sql[, params])` → array of records
-- `connection.exec(sql[, params])` → `{command, rows_affected}`
-- `connection.begin()`
-- `connection.commit()`
-- `connection.rollback()`
+- `connection.close()` (`odbc.close`)
+- `connection.query(sql[, params])` (`odbc.query`) → array of records
+- `connection.exec(sql[, params])` (`odbc.exec`) → `{command, rows_affected}`
+- `connection.begin()` (`odbc.begin`)
+- `connection.commit()` (`odbc.commit`)
+- `connection.rollback()` (`odbc.rollback`)
 - `odbc.drivers()` → array of `{name, attributes}` — the drivers the driver
   manager can load
 - `odbc.sources()` → array of `{name, description}` — the configured DSNs
 
 The **catalog** — what the database says about itself:
 
-- `odbc.tables(connection[, {catalog, schema, table, types}])`
-- `odbc.columns(connection[, {catalog, schema, table, column}])`
-- `connection.primary_keys({catalog, schema, table})` — `table` required
-- `connection.foreign_keys({catalog, schema, table, referenced_catalog, referenced_schema, referenced_table})`
+- `connection.tables([{catalog, schema, table, types}])` (`odbc.tables`)
+- `connection.columns([{catalog, schema, table, column}])` (`odbc.columns`)
+- `connection.primary_keys({catalog, schema, table})` (`odbc.primary_keys`) — `table` required
+- `connection.foreign_keys({catalog, schema, table, referenced_catalog, referenced_schema, referenced_table})` (`odbc.foreign_keys`)
 
 Each returns an array of records, exactly as a query does. These read through
 the **driver manager**, not through `information_schema`, and that is the
@@ -3239,11 +3239,11 @@ print(h.read().body)
 ```
 
 - `http.start(request) -> handle`
-- `handle.poll() -> status` — never blocks
-- `handle.read() -> { id, body }` — the bytes that have arrived
-- `http.wait(handle [, seconds]) -> status` — blocks until it finishes
+- `handle.poll() -> status` (`http.poll`) — never blocks
+- `handle.read() -> { id, body }` (`http.read`) — the bytes that have arrived
+- `handle.wait([seconds]) -> status` (`http.wait`) — blocks until it finishes
 - `http.stop(handle) -> true` — cancels; what arrived stays readable
-- `handle.release() -> true` — explicit end of interest
+- `handle.release() -> true` (`http.release`) — explicit end of interest
 
 The request record is `webclient.request`'s, with one difference: `timeout` has
 **no default**. A handle is the shape a stream arrives in, and a stream meant to
@@ -4022,11 +4022,11 @@ parse — paid only when `positions` is asked for.
 
 Navigation (a *path* is a `/`-separated chain of child element names):
 
-- `node.find(path)` — the first matching descendant, or `unknown`.
-- `node.find_all(path)` — an array of all matches (empty when none).
-- `node.attr(name[, default])` — an attribute value as a string; returns
+- `node.find(path)` (`xml.find`) — the first matching descendant, or `unknown`.
+- `node.find_all(path)` (`xml.find_all`) — an array of all matches (empty when none).
+- `node.attr(name[, default])` (`xml.attr`) — an attribute value as a string; returns
   `default` (or `unknown`) when the attribute is absent.
-- `node.text()` — the node's text content.
+- `node.text()` (`xml.text`) — the node's text content.
 - `xml.encode(node[, pretty])` — serialize a node back to an XML string; pass
   `true` to pretty-print.
 
@@ -4034,10 +4034,10 @@ Streaming reader, for documents too large to hold as a tree — it walks the fil
 forward without materializing the whole document:
 
 - `xml.reader(path)` — open a streaming reader over a file.
-- `reader.read()` — advance to and return the next element, or `unknown` at end.
-- `reader.skip_to(name)` — advance until an element named `name`.
-- `reader.subtree()` — materialize the reader's current element as a node tree.
-- `reader.close()` — release the reader.
+- `reader.read()` (`xml.read`) — advance to and return the next element, or `unknown` at end.
+- `reader.skip_to(name)` (`xml.skip_to`) — advance until an element named `name`.
+- `reader.subtree()` (`xml.subtree`) — materialize the reader's current element as a node tree.
+- `reader.close()` (`xml.close`) — release the reader.
 
 Each event carries a `line` — the line its element **starts** on. An `end` event
 therefore reports where the element *opened*, not where its closing tag sits, so
@@ -4096,66 +4096,66 @@ end program
 |---|---|
 | `qt.can_display()` | whether a window can be opened at all. **Answers rather than raising**, including on a build with no Qt — a program asking this is degrading gracefully, and "this build has no Qt" is one of the answers |
 | `qt.open(win)` | build and show the declaration. Refuses, naming **a display**, when there is none, and runs `qt.check` first so a window nobody validated cannot open |
-| `win.open_modal()` | open it **modally and block** until somebody answers, which is what `qt.confirm` is not: two buttons is the whole of what a message box offers, so anything with a layout of its own comes through here. Answers **true** when accepted and **false** for a reject, a close, or the window being dismissed. It is the **same window** — one shared open path, so the declaration, the binding and the handlers are the same code — and it **closes the window before returning**, so the `closed` handler is where the form is read |
-| `win.accept()` / `win.reject()` | say yes or no to a modally shown window, which is what a button handler calls. Refused on a window that was not opened modally, naming the verb that would have made it one. Not `qt.answer`, which drives a *dialog* from the program when nobody is there |
-| `win.close()` | close it: the window is **removed from gBASIC's registry**, and every verb that needs an open one then refuses by name. Not a hide — Qt leaves a dismissed window alive and still readable, so a program would otherwise go on reading values off a screen nobody is looking at. **Refuses** when the window is not open, rather than being a silent no-op; `qt.is_open` is how a program asks without raising. Reopening builds a **fresh** window, so a form captures its subject again |
-| `win.is_open()` | whether it is still there. **Answers rather than raising**, like `qt.can_display`, because a window can close *without the program asking* — once the person can dismiss one, every other verb starts refusing for a reason that is nobody's mistake |
+| `win.open_modal()` (`qt.open_modal`) | open it **modally and block** until somebody answers, which is what `qt.confirm` is not: two buttons is the whole of what a message box offers, so anything with a layout of its own comes through here. Answers **true** when accepted and **false** for a reject, a close, or the window being dismissed. It is the **same window** — one shared open path, so the declaration, the binding and the handlers are the same code — and it **closes the window before returning**, so the `closed` handler is where the form is read |
+| `win.accept()` (`qt.accept`) / `win.reject()` (`qt.reject`) | say yes or no to a modally shown window, which is what a button handler calls. Refused on a window that was not opened modally, naming the verb that would have made it one. Not `qt.answer`, which drives a *dialog* from the program when nobody is there |
+| `win.close()` (`qt.close`) | close it: the window is **removed from gBASIC's registry**, and every verb that needs an open one then refuses by name. Not a hide — Qt leaves a dismissed window alive and still readable, so a program would otherwise go on reading values off a screen nobody is looking at. **Refuses** when the window is not open, rather than being a silent no-op; `qt.is_open` is how a program asks without raising. Reopening builds a **fresh** window, so a form captures its subject again |
+| `win.is_open()` (`qt.is_open`) | whether it is still there. **Answers rather than raising**, like `qt.can_display`, because a window can close *without the program asking* — once the person can dismiss one, every other verb starts refusing for a reason that is nobody's mistake |
 | `qt.check(win)` | the declaration's own load-time rules, over a window record — **answers on a build with no Qt and needs no display**, because it is a check on a declaration. Answers `true` or refuses with the first problem and a count of the rest |
-| `win.read(name)` | the text a part is showing (`"true"`/`"false"`for a check box) |
-| `win.read(name, property)` | one named Qt property of that part, **in the kind Qt declares it** — `readOnly` answers a boolean, `maxLength` a number. A property the widget does not carry is refused by name, as it is when set |
-| `win.write(name, value)` | show a value, rendered exactly as `print` would render it |
-| `win.selected(table)` | which row a person has chosen, as an **index** so it composes with the list the program holds; `unknown` when none is — not `-1` and not `0`, both of which are valid-looking indices |
-| `win.select(table, row)` | choose a row from the program, for a window that opens with one highlighted; `unknown` chooses nothing |
-| `win.cell(table, row, column)` | one cell, addressed by the **column's own name** rather than its position |
-| `win.alignment(table, row, column)` | where that cell's text sits, `"left"`, `"right"` or `"center"`, **asked of Qt** (an asking table's model, or the cell item) rather than of the declaration, so an `align:` declared and never applied cannot pass. Addressed and refused exactly as `qt.cell` is |
-| `win.heading(table, column)` | a column's caption, by its name **or** its position |
-| `win.options(part, list)` | fill a `choice`'s list from data, answering how many items it put in. Clearing **resets the selection**, deliberately: a list that has changed may not contain what was chosen, and an index into a list that has moved is how a form reports a value nobody picked |
-| `win.rows(table)` / `win.rows(table, n)` | how many rows a **`to ask`** table has, or tell it. A verb rather than part of the declaration because it changes — a results grid is refilled by every query — and setting it is also how *"the data changed"* is said, since it resets the model and Qt re-asks. A negative count is refused rather than shown as empty |
-| `win.refresh(name, items)` | **reconcile a container's children** against `items`, the same array `items:` holds in the record `qt.open` read, answering how many it reconciled. A child whose **name and word** are unchanged is KEPT — with its text, its caret, its scroll position and its undo stack — a new one is BUILT through the same door `qt.open` uses, an absent one is DELETED and its name leaves the window, and a `tab`'s caption is re-read. A `tabs`, `column`, `row` or `group`; a `split` cannot be named and a `cells` grid has declared positions, so both are refused by name. An **unnamed** child is always rebuilt, there being nothing to match it by |
-| `win.depth(name, row)` | how deep that row sits in a **tree** — 0 for a top-level row — asked of the WIDGET by walking the item's parents, never of the record. A part that is not a tree and a row that is not there are refused separately, being different questions |
-| `win.children(name)` | the **names** of that container's children, **in order** — `""` for one nobody named, which is a different answer from absent. The order oracle for `qt.refresh`: `qt.at` reads coordinates in a `cells` grid only, so a box's order is observable through nothing else |
-| `win.tabs(name)` | the **captions** of a `tabs`, in order, as a list. `QTabWidget::tabText(int)` takes an argument and `qt.invoke` passes none, so without this a caption cannot be read back at all |
-| `win.refresh(what)` | show a subject **as it is now**, answering how many rows or parts it drew. `what` is a **table's name** or a **form's subject** — a form has no name, so the subject is the only thing that addresses one, and a name meaning both is refused rather than resolved. A table grows, shrinks and redraws changed cells; a form fills every part, across **all** the forms carrying that subject. The symmetric half of `qt.subject`, which reads the widgets at the moment asked |
-| `win.set(part, property, value)` | set one named Qt property at run time — the write half of `win.read(part, property)`. The only other way to set one is the declaration, which is written before anything has happened |
-| `win.pane(part)` | which draggable or scrolled region a part sits in: `{ kind: "split", direction, panes, index, sizes }` or `{ kind: "scroll", resizable }`, and **`unknown`** when it is in neither — a record saying `panes: 0` would read as a splitter holding nothing. Asked of the **layout**, walking up from the part, and it reports the **nearest** region. This is the only way to observe a `split`, which spends its one slot on the direction and so cannot be named |
-| `win.resize_panes(part, sizes)` | set the pane sizes of the split a part is in — how *"restore my layout"* is written, and the only route to them: `setSizes` takes a list, so it is neither a property nor invokable, and a `split` cannot be named. A **count mismatch is refused, naming both numbers**, because one size on a two-pane split *collapses* the second and three honour none of them, both silently. What you set is a **ratio** in effect: Qt adds the handle and the margins, and re-proportions on resize, so the same numbers do not come back |
-| `win.at(part)` | where a part sits in its `cells`: `{ row, column, across, down }`, asked of the layout |
-| `win.menus()` / `win.menus(n)` / `win.menus("name")` | the menu bar's top-level captions, the entries of the menu at position `n`, or the entries of the **`popup`** of that name. A number is a position on the bar and text is a popup's name — a popup is not on the bar, so it *has* no position. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
-| `win.popup(name [, under])` | raise a `popup`, answering **whether anything was shown**. With a third argument it pops **under that part** rather than at the pointer, which is what a menu *button* wants — its menu belongs under the button, not wherever the mouse happens to be. A name that is not there is refused, since popping at the pointer instead would look like a bug in the program rather than a name that was wrong. **The menu stays up until something dismisses it** — a person clicks an item or presses Escape, and a program driving itself calls `win.invoke(menu, "hide")`, because a menu left up goes on grabbing the mouse. `false` when every item is hidden — a row that offers nothing rather than an error, since Qt declines to show such a menu and an empty context menu reads as a control that failed. The count **recurses**, so a lone empty submenu is not something to show |
-| `win.right_click(part [, row])` | right-click a part the way a mouse does, for a program driving itself. It sends a **press, a release and then the context event**, so the selection moves as it would for a person — without which a handler would read a stale row. A third argument aims at a **table row, a tree row or a tab** by its own rectangle; for a tab it aims through the tab *bar*, which is where a real right-click lands. Routed through the widget's **viewport** where there is one, which is what a `table`, `memo` and `source` answer to and nothing else can reach |
+| `win.read(name)` (`qt.read`) | the text a part is showing (`"true"`/`"false"`for a check box) |
+| `win.read(name, property)` (`qt.read`) | one named Qt property of that part, **in the kind Qt declares it** — `readOnly` answers a boolean, `maxLength` a number. A property the widget does not carry is refused by name, as it is when set |
+| `win.write(name, value)` (`qt.write`) | show a value, rendered exactly as `print` would render it |
+| `win.selected(table)` (`qt.selected`) | which row a person has chosen, as an **index** so it composes with the list the program holds; `unknown` when none is — not `-1` and not `0`, both of which are valid-looking indices |
+| `win.select(table, row)` (`qt.select`) | choose a row from the program, for a window that opens with one highlighted; `unknown` chooses nothing |
+| `win.cell(table, row, column)` (`qt.cell`) | one cell, addressed by the **column's own name** rather than its position |
+| `win.alignment(table, row, column)` (`qt.alignment`) | where that cell's text sits, `"left"`, `"right"` or `"center"`, **asked of Qt** (an asking table's model, or the cell item) rather than of the declaration, so an `align:` declared and never applied cannot pass. Addressed and refused exactly as `qt.cell` is |
+| `win.heading(table, column)` (`qt.heading`) | a column's caption, by its name **or** its position |
+| `win.options(part, list)` (`qt.options`) | fill a `choice`'s list from data, answering how many items it put in. Clearing **resets the selection**, deliberately: a list that has changed may not contain what was chosen, and an index into a list that has moved is how a form reports a value nobody picked |
+| `win.rows(table)` (`qt.rows`) / `win.rows(table, n)` (`qt.rows`) | how many rows a **`to ask`** table has, or tell it. A verb rather than part of the declaration because it changes — a results grid is refilled by every query — and setting it is also how *"the data changed"* is said, since it resets the model and Qt re-asks. A negative count is refused rather than shown as empty |
+| `win.refresh(name, items)` (`qt.refresh`) | **reconcile a container's children** against `items`, the same array `items:` holds in the record `qt.open` read, answering how many it reconciled. A child whose **name and word** are unchanged is KEPT — with its text, its caret, its scroll position and its undo stack — a new one is BUILT through the same door `qt.open` uses, an absent one is DELETED and its name leaves the window, and a `tab`'s caption is re-read. A `tabs`, `column`, `row` or `group`; a `split` cannot be named and a `cells` grid has declared positions, so both are refused by name. An **unnamed** child is always rebuilt, there being nothing to match it by |
+| `win.depth(name, row)` (`qt.depth`) | how deep that row sits in a **tree** — 0 for a top-level row — asked of the WIDGET by walking the item's parents, never of the record. A part that is not a tree and a row that is not there are refused separately, being different questions |
+| `win.children(name)` (`qt.children`) | the **names** of that container's children, **in order** — `""` for one nobody named, which is a different answer from absent. The order oracle for `qt.refresh`: `qt.at` reads coordinates in a `cells` grid only, so a box's order is observable through nothing else |
+| `win.tabs(name)` (`qt.tabs`) | the **captions** of a `tabs`, in order, as a list. `QTabWidget::tabText(int)` takes an argument and `qt.invoke` passes none, so without this a caption cannot be read back at all |
+| `win.refresh(what)` (`qt.refresh`) | show a subject **as it is now**, answering how many rows or parts it drew. `what` is a **table's name** or a **form's subject** — a form has no name, so the subject is the only thing that addresses one, and a name meaning both is refused rather than resolved. A table grows, shrinks and redraws changed cells; a form fills every part, across **all** the forms carrying that subject. The symmetric half of `qt.subject`, which reads the widgets at the moment asked |
+| `win.set(part, property, value)` (`qt.set`) | set one named Qt property at run time — the write half of `win.read(part, property)` (`qt.read`). The only other way to set one is the declaration, which is written before anything has happened |
+| `win.pane(part)` (`qt.pane`) | which draggable or scrolled region a part sits in: `{ kind: "split", direction, panes, index, sizes }` or `{ kind: "scroll", resizable }`, and **`unknown`** when it is in neither — a record saying `panes: 0` would read as a splitter holding nothing. Asked of the **layout**, walking up from the part, and it reports the **nearest** region. This is the only way to observe a `split`, which spends its one slot on the direction and so cannot be named |
+| `win.resize_panes(part, sizes)` (`qt.resize_panes`) | set the pane sizes of the split a part is in — how *"restore my layout"* is written, and the only route to them: `setSizes` takes a list, so it is neither a property nor invokable, and a `split` cannot be named. A **count mismatch is refused, naming both numbers**, because one size on a two-pane split *collapses* the second and three honour none of them, both silently. What you set is a **ratio** in effect: Qt adds the handle and the margins, and re-proportions on resize, so the same numbers do not come back |
+| `win.at(part)` (`qt.at`) | where a part sits in its `cells`: `{ row, column, across, down }`, asked of the layout |
+| `win.menus()` (`qt.menus`) / `win.menus(n)` (`qt.menus`) / `win.menus("name")` (`qt.menus`) | the menu bar's top-level captions, the entries of the menu at position `n`, or the entries of the **`popup`** of that name. A number is a position on the bar and text is a popup's name — a popup is not on the bar, so it *has* no position. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
+| `win.popup(name [, under])` (`qt.popup`) | raise a `popup`, answering **whether anything was shown**. With a third argument it pops **under that part** rather than at the pointer, which is what a menu *button* wants — its menu belongs under the button, not wherever the mouse happens to be. A name that is not there is refused, since popping at the pointer instead would look like a bug in the program rather than a name that was wrong. **The menu stays up until something dismisses it** — a person clicks an item or presses Escape, and a program driving itself calls `win.invoke(menu, "hide")` (`qt.invoke`), because a menu left up goes on grabbing the mouse. `false` when every item is hidden — a row that offers nothing rather than an error, since Qt declines to show such a menu and an empty context menu reads as a control that failed. The count **recurses**, so a lone empty submenu is not something to show |
+| `win.right_click(part [, row])` (`qt.right_click`) | right-click a part the way a mouse does, for a program driving itself. It sends a **press, a release and then the context event**, so the selection moves as it would for a person — without which a handler would read a stale row. A third argument aims at a **table row, a tree row or a tab** by its own rectangle; for a tab it aims through the tab *bar*, which is where a real right-click lands. Routed through the widget's **viewport** where there is one, which is what a `table`, `memo` and `source` answer to and nothing else can reach |
 | `qt.which_tab()` | which tab the event **being handled** is about — a number, or **`unknown`** both outside a handler and when the click was not over a tab, which is an ordinary case since a right-click on a tab widget's *page* emits the same signal. It exists because a tab is the one case Qt does not answer by itself: a right-press **moves** a table's or a tree's current row, so `qt.selected` already says which was clicked, and a right-press on a tab bar correctly does **not** move the current index — so `currentIndex` answers the tab that was already active, and a menu acting on it closes the wrong document. It also answers the index `tabCloseRequested` carries, which is what makes `tabsClosable: true` usable at all |
-| `win.scroll(part, notches [, modifier])` | turn the wheel on a part, for a program driving itself, answering **whether anything claimed the event**. `notches` may be **fractional** — a trackpad sends less than one, and that is the case the direction rounding exists for. The modifier is `"ctrl"`, `"shift"` or `"alt"`, refused by name, because one silently ignored sends a plain wheel while the author believes they sent a modified one |
-| `win.key(part, keys)` | press one key combination on a part, for a program driving itself: a real key press and release, sent with the part focused and its window active, so **Qt's shortcut map sees it** and a bound item fires, while an unmodified key types into the widget. Answers **whether anything took the key**. One combination per call; a chord is refused. **The limit:** this is the key Qt *delivers*, not the physical keys, so it cannot reproduce a keyboard layout. On a real US keyboard Ctrl+Shift+= reaches a `Ctrl++` shortcut through the platform's key mapper; here that route is pressed as `"Ctrl++"` |
-| `win.shortcuts(part)` | **every** shortcut a menu or toolbar item answers to, as a list of texts (a button's single one, too). `qt.read(..., "shortcut")` reports only the first, so this is how both of `["Ctrl++", "Ctrl+="]` are checked |
+| `win.scroll(part, notches [, modifier])` (`qt.scroll`) | turn the wheel on a part, for a program driving itself, answering **whether anything claimed the event**. `notches` may be **fractional** — a trackpad sends less than one, and that is the case the direction rounding exists for. The modifier is `"ctrl"`, `"shift"` or `"alt"`, refused by name, because one silently ignored sends a plain wheel while the author believes they sent a modified one |
+| `win.key(part, keys)` (`qt.key`) | press one key combination on a part, for a program driving itself: a real key press and release, sent with the part focused and its window active, so **Qt's shortcut map sees it** and a bound item fires, while an unmodified key types into the widget. Answers **whether anything took the key**. One combination per call; a chord is refused. **The limit:** this is the key Qt *delivers*, not the physical keys, so it cannot reproduce a keyboard layout. On a real US keyboard Ctrl+Shift+= reaches a `Ctrl++` shortcut through the platform's key mapper; here that route is pressed as `"Ctrl++"` |
+| `win.shortcuts(part)` (`qt.shortcuts`) | **every** shortcut a menu or toolbar item answers to, as a list of texts (a button's single one, too). `qt.read(..., "shortcut")` reports only the first, so this is how both of `["Ctrl++", "Ctrl+="]` are checked |
 | `qt.wheel()` | the wheel event **being handled** — `{ dy, dx, dy_exact, dx_exact, ctrl, shift, alt }`, with `dy` in **notches** rather than Qt's 120-unit delta and **positive meaning away from you** (Qt's sign, and the opposite of GTK's). `dy` is whole notches, and a sub-notch turn is rounded **away from zero** so its sign survives; `dy_exact` is the same turn **unrounded** (a quarter-notch is `0.25`), for a program that accumulates a trackpad's small deltas rather than counting each as a notch. Refuses outside a wheel handler, since there is no sensible record to hand back and a program asking in the wrong place would otherwise read zeros and act on them |
 | `qt.swallow()` | claim the event being handled, so the view does not also act on it. Not optional for a zoom: Ctrl+wheel scrolls a `source` *faster* than a plain wheel, so a handler that zooms without claiming leaves the editor jumping about while it resizes. Refuses when nothing is in flight rather than being a silent no-op |
-| `win.has_icon(part)` | whether a part has an icon. It exists because a QIcon has **no text form** — measured, a button carrying a real image and one carrying nothing both read back as `""` — so `win.read(part, "icon")` **refuses** and names this instead, an empty answer for a property that *is* set being a wrong answer rather than no answer. A part that cannot carry one (a `text`, a `table`) is refused, naming its kind |
-| `win.scrolled(part)` | how far a part is scrolled, or **`unknown`** for one that does not scroll — a different claim from *scrolled to nowhere*, since a `button` has no position where a `source` at the top has position 0. A `QAbstractScrollArea` reaches its scrollbar by a method, so this is the only route to it |
-| `win.scroll_to(part, position)` | put it back, which is how *"reopen the editor where I left it"* is written. A part that does not scroll is refused by name rather than succeeding and doing nothing; the range is Qt's own, so a position past the end is clamped |
+| `win.has_icon(part)` (`qt.has_icon`) | whether a part has an icon. It exists because a QIcon has **no text form** — measured, a button carrying a real image and one carrying nothing both read back as `""` — so `win.read(part, "icon")` (`qt.read`) **refuses** and names this instead, an empty answer for a property that *is* set being a wrong answer rather than no answer. A part that cannot carry one (a `text`, a `table`) is refused, naming its kind |
+| `win.scrolled(part)` (`qt.scrolled`) | how far a part is scrolled, or **`unknown`** for one that does not scroll — a different claim from *scrolled to nowhere*, since a `button` has no position where a `source` at the top has position 0. A `QAbstractScrollArea` reaches its scrollbar by a method, so this is the only route to it |
+| `win.scroll_to(part, position)` (`qt.scroll_to`) | put it back, which is how *"reopen the editor where I left it"* is written. A part that does not scroll is refused by name rather than succeeding and doing nothing; the range is Qt's own, so a position past the end is clamped |
 | `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
-| `win.highlighting(part)` | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
-| `win.caret(part)` | where the caret is in a `source` or a `memo` — `{ line, column, selecting }`, **1-based** — or **`unknown`** for a part that is not a text editor. The numbering is the one gBASIC's diagnostics, `source_outline` and `qt.mark` all use, so a `line:column` from any of them goes straight into `qt.caret_to` with no arithmetic. `selecting` is there because a caret inside a selection is one end of a range, and a bare line and column would be an ambiguous reading |
-| `win.caret_to(part, line, column)` | put it there, which is how *"stopped at line 7 — show me why"* is written. A **line past the end is refused**, naming the document's real length: a program placing the caret where a diagnostic said is working from a model of the document, and clamping would put it on the wrong line and look like it worked. A **column** past the end of its own line clamps, landing where End would — that case is ordinary rather than a stale model |
-| `win.mark(part, category, lines)` | put a mark beside each of those lines in a `source`'s margin, **replacing that category's whole list** — which is the consumer's own shape, since a gutter is recomputed on every redraw and an add/remove pair would make the caller keep a record of what it had already drawn. An empty list clears it. The categories are `section`, `error`, `warning`, `note` and `break`, and an unknown one is **refused by name** with a near-miss hint: unlike a widget's properties the set *can* be closed, because a category decides a glyph and a priority and the backend has to know both. **Line 1 is the first line** — `source_outline` reports `start_line = 1` and a parse diagnostic carries a 1-based line, so there is no conversion anywhere — and **line 0 is refused** rather than dropped, a silently dropped mark reporting success while drawing nothing |
-| `win.marks(part, category)` | that category's lines, as a list. **What was set, never what is currently drawable**: a program may mark line 40 and then shorten the document, and a read filtered to the lines still in the file would disagree with the write for a reason the caller cannot see. The drawing is the widget's business; the list is the program's |
-| `win.gutter(part)` | what that `source`'s margin is — `{ line_numbers, marks, width }` — or **`unknown`** for one that has none, since `width: 0` would say a margin exists and is empty. The `width` follows the **digit count**, so a thousand-line document reserves more than a nine-line one |
-| `win.gutter_press(part, line)` | press the margin beside a line, which is what makes a `gutter` handler drivable without a person — `qt.right_click`'s and `qt.scroll`'s shape. A line that is **not on screen** is refused, because a mouse cannot land there |
+| `win.highlighting(part)` (`qt.highlighting`) | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
+| `win.caret(part)` (`qt.caret`) | where the caret is in a `source` or a `memo` — `{ line, column, selecting }`, **1-based** — or **`unknown`** for a part that is not a text editor. The numbering is the one gBASIC's diagnostics, `source_outline` and `qt.mark` all use, so a `line:column` from any of them goes straight into `qt.caret_to` with no arithmetic. `selecting` is there because a caret inside a selection is one end of a range, and a bare line and column would be an ambiguous reading |
+| `win.caret_to(part, line, column)` (`qt.caret_to`) | put it there, which is how *"stopped at line 7 — show me why"* is written. A **line past the end is refused**, naming the document's real length: a program placing the caret where a diagnostic said is working from a model of the document, and clamping would put it on the wrong line and look like it worked. A **column** past the end of its own line clamps, landing where End would — that case is ordinary rather than a stale model |
+| `win.mark(part, category, lines)` (`qt.mark`) | put a mark beside each of those lines in a `source`'s margin, **replacing that category's whole list** — which is the consumer's own shape, since a gutter is recomputed on every redraw and an add/remove pair would make the caller keep a record of what it had already drawn. An empty list clears it. The categories are `section`, `error`, `warning`, `note` and `break`, and an unknown one is **refused by name** with a near-miss hint: unlike a widget's properties the set *can* be closed, because a category decides a glyph and a priority and the backend has to know both. **Line 1 is the first line** — `source_outline` reports `start_line = 1` and a parse diagnostic carries a 1-based line, so there is no conversion anywhere — and **line 0 is refused** rather than dropped, a silently dropped mark reporting success while drawing nothing |
+| `win.marks(part, category)` (`qt.marks`) | that category's lines, as a list. **What was set, never what is currently drawable**: a program may mark line 40 and then shorten the document, and a read filtered to the lines still in the file would disagree with the write for a reason the caller cannot see. The drawing is the widget's business; the list is the program's |
+| `win.gutter(part)` (`qt.gutter`) | what that `source`'s margin is — `{ line_numbers, marks, width }` — or **`unknown`** for one that has none, since `width: 0` would say a margin exists and is empty. The `width` follows the **digit count**, so a thousand-line document reserves more than a nine-line one |
+| `win.gutter_press(part, line)` (`qt.gutter_press`) | press the margin beside a line, which is what makes a `gutter` handler drivable without a person — `qt.right_click`'s and `qt.scroll`'s shape. A line that is **not on screen** is refused, because a mouse cannot land there |
 | `qt.gutter_click()` | which line the margin click being handled was on: `{ line }`, or **`unknown`** outside a handler — a different claim from *line 0*. Takes no arguments, because a handler here takes none and the event is asked for instead, the rule `qt.wheel()` and `principal()` already follow |
-| `win.dock(name)` | what that dock pane is doing — `{ area, floating, visible, tabbed_with }` — or **`unknown`** for a name that is not a pane. The `area` is asked of the **window**, not of anything remembered when it was built, because a remembered position agrees with a placement that was wrong; `tabbed_with` counts the panes sharing its tab group, which only the window can answer |
-| `win.layout()` | the window's whole dock and toolbar arrangement as **text** to keep — which area each pane is in, their order, which tab is raised, what is floating and how big. **Base64**, because Qt's own blob is not valid UTF-8 and the obvious thing to do with it is store it, through `encode` or `persist`, both of which write JSON. It is Qt's format, not ours: keep it, do not read it — `qt.dock` is what answers questions |
-| `win.restore_layout(text)` | put the panes back, answering whether it took. **Reported, never raised**: an arrangement saved before the window's declaration changed is an ordinary thing to find on startup, and losing it is not worth stopping a program for — the panes stay where the declaration put them |
+| `win.dock(name)` (`qt.dock`) | what that dock pane is doing — `{ area, floating, visible, tabbed_with }` — or **`unknown`** for a name that is not a pane. The `area` is asked of the **window**, not of anything remembered when it was built, because a remembered position agrees with a placement that was wrong; `tabbed_with` counts the panes sharing its tab group, which only the window can answer |
+| `win.layout()` (`qt.layout`) | the window's whole dock and toolbar arrangement as **text** to keep — which area each pane is in, their order, which tab is raised, what is floating and how big. **Base64**, because Qt's own blob is not valid UTF-8 and the obvious thing to do with it is store it, through `encode` or `persist`, both of which write JSON. It is Qt's format, not ours: keep it, do not read it — `qt.dock` is what answers questions |
+| `win.restore_layout(text)` (`qt.restore_layout`) | put the panes back, answering whether it took. **Reported, never raised**: an arrangement saved before the window's declaration changed is an ordinary thing to find on startup, and losing it is not worth stopping a program for — the panes stay where the declaration put them |
 | `qt.copy(text)` | put text on the clipboard, answering true. **No window argument**: `QGuiApplication::clipboard()` is a class static and there is one clipboard per application, so taking one would imply otherwise. It takes text or a **`{file}`/`{dir}` reference**, copying its path, which is the use it was built for. It copies **eagerly** — measured, because the GTK route this replaces reads its buffer *at paste time*, so a buffer going out of scope there gives a successful-looking copy and an empty paste. A **NUL is carried**, not truncated: the clipboard takes a counted string. A display is still needed, since the clipboard belongs to a QApplication, and the refusal says so rather than naming a window |
 | `qt.clipboard()` | what is on it, or **`unknown`** when there is no text there — a different claim from `""`, which is what somebody copying an empty string put there. Qt distinguishes the two, so neither answer is a guess |
-| `win.inform(text)` | a message box with one button, parented to `win` so Qt centres it there and makes it modal to that window |
-| `win.confirm(question)` | a message box with two, answering **`true` or `false`** rather than a button code — two buttons is the whole of what it offers, and anything richer is a window shown modally. **No is the default**, because a question answered by pressing Return without reading should not be the destructive one |
+| `win.inform(text)` (`qt.inform`) | a message box with one button, parented to `win` so Qt centres it there and makes it modal to that window |
+| `win.confirm(question)` (`qt.confirm`) | a message box with two, answering **`true` or `false`** rather than a button code — two buttons is the whole of what it offers, and anything richer is a window shown modally. **No is the default**, because a question answered by pressing Return without reading should not be the destructive one |
 | `qt.answer(value)` | answer the dialog that is open, from the program rather than a person — a timeout, an unattended run, a suite. `true`/`false` for a message box; **a path** for a file chooser, and `false` there is a *cancel*. `true` on a chooser is **refused**, because it would have to mean "accept *what?*", and a path on a message box likewise — each refusal names the dialog that is actually open. **Refuses when nothing is open**, rather than being a silent no-op that would leave a program waiting for somebody who is not there |
-| `qt.choose_file(win [, opts])` | *which existing file?* Answers the path as **text**, or **`unknown`** if they cancelled |
-| `qt.choose_save(win [, opts])` | *what shall I call it?* — a name to write to, which need not exist yet |
-| `qt.choose_folder(win [, opts])` | *which folder?* |
+| `win.choose_file([opts])` (`qt.choose_file`) | *which existing file?* Answers the path as **text**, or **`unknown`** if they cancelled |
+| `win.choose_save([opts])` (`qt.choose_save`) | *what shall I call it?* — a name to write to, which need not exist yet |
+| `win.choose_folder([opts])` (`qt.choose_folder`) | *which folder?* |
 | `qt.dialog()` | the innermost open dialog as a record — `kind` (`"message"` or `"chooser"`), `title`, and `text` or `folder`/`filter` — or **`unknown`** when none is open, which is a different claim from a dialog carrying no fields |
 | `qt.theme(css)` / `qt.theme()` | set or read **one stylesheet for the whole application**. Needs no display, and is remembered until there is a `QApplication` to put it on, so a program themes first and opens second |
-| `win.subject(name)` | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
-| `win.invoke(name, method)` | call a widget method by name — `click`, `clear`, `setFocus`, or `close`/`showMaximized` on the **window itself** |
+| `win.subject(name)` (`qt.subject`) | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
+| `win.invoke(name, method)` (`qt.invoke`) | call a widget method by name — `click`, `clear`, `setFocus`, or `close`/`showMaximized` on the **window itself** |
 | `qt.run()` | hand the thread to Qt's event loop. gBASIC's own sources (a webserver, transfers, timers, the actor inbox) keep being serviced |
 | `qt.stop()` | end that loop; ordinarily called from a handler. It means *give me the thread back* and **nothing more** — the windows stay open and readable, and no `closed` handler fires. (Qt's own `quit()` closes every top-level window; this does not use it.) |
 
@@ -4194,9 +4194,9 @@ returns, so the four ways it can end leave one state rather than two:
 
 | | `qt.open_modal` answers | `closed` fires |
 |---|---|---|
-| `win.accept()` | **true** | yes |
-| `win.reject()` | false | yes |
-| `win.close()` | false | yes |
+| `win.accept()` (`qt.accept`) | **true** | yes |
+| `win.reject()` (`qt.reject`) | false | yes |
+| `win.close()` (`qt.close`) | false | yes |
 | the window manager's button | false | yes |
 
 **It does not starve the rest of the program.** A modal window opened from

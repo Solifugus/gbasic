@@ -26,14 +26,14 @@ tenants = ["acme", "globex"]
 dbs = {}
 for each t in tenants
     dbs[t] = gsql.connect(join_path(work, t + ".gsql"), { create: true })
-    gsql.exec(dbs[t], make)
+    dbs[t].exec(make)
 next
 ' acme: three small invoices; globex: one large one
 for each amount in [{USD}"10", {USD}"20", {USD}"30"]
-    gsql.exec(dbs["acme"], bill)
+    dbs["acme"].exec(bill)
 next
 amount = {USD}"300"
-gsql.exec(dbs["globex"], bill)
+dbs["globex"].exec(bill)
 
 ' Combine PARTS, not answers. count, sum, min and max merge directly; an
 ' average is the sums over the counts, never the averages averaged.
@@ -41,7 +41,7 @@ total = {USD}"0"
 count = 0
 averages = []
 for each t in tenants
-    r = gsql.query(dbs[t], totals)[0]
+    r = dbs[t].query(totals)[0]
     count = count + r.n
     total = total + r.s
     append(averages, r.a)
@@ -51,6 +51,6 @@ print "the right average across tenants:   " + string(total / count)
 print "the average of the averages (wrong): " + string((averages[0] + averages[1]) / 2)
 
 for each t in tenants
-    gsql.close(dbs[t])
+    dbs[t].close()
 next
 remove_tree(work)
