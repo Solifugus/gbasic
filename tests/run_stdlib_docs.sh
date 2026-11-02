@@ -123,6 +123,13 @@ DELIBERATE = {
     # whole reason the API is pure functions of (seed, index).
     'fake.stream':
         'named as the shape gBASIC cannot express; generators are (seed, index)',
+    # A PRIVATE helper, and real: stdlib/web.bas defines `_head_options` and
+    # run_web_configure.sh's tripwire compares it with src/frontend.c's table.
+    # Its note, kept verbatim in docs/test_suite_history.md (a Record), names
+    # it as a call; private names are not the documented surface this tier
+    # checks, so the record is excused rather than reworded.
+    'web._head_options':
+        'a real private helper, named in a verbatim record of the suite notes',
     # intake.archive and intake.purge were allowlisted here for one day, while
     # increment 1 shipped and section 6 did not. Both STRUCK 2026-10-16 when
     # increment 2 landed -- and this tier is what said so, refusing to let an
