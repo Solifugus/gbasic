@@ -1219,6 +1219,24 @@ call-result receiver as a *bare statement* — `make_widget().show()` with the r
 discarded — does not parse; use it in expression position, or bind the result to a
 variable first.)
 
+**A handle's methods are its module's verbs** (`docs/handle_methods_design.md`):
+`h.verb(args)` is `module.verb(h, args)`. So far this covers a G-SQL connection
+and an `sql` block (`gsql`) and a `window` declaration (`qt`):
+
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
+```basic
+r = add.exec(row)            ' gsql.exec(add, row)
+for each s in shares.query()  ' gsql.query(shares)
+b = db.begin()                ' gsql.begin(db)
+t = app.read("who", "text")   ' qt.read(app, "who", "text")
+```
+
+The module form keeps working; the two are one call. The methods are derived
+from the module, not listed, so the module decides what each verb does and a
+verb whose first argument is not the handle (`db.connect()`) is refused by that
+verb. A record's own function field wins over a module verb of the same name,
+and a variable named like a module (`gsql`, `qt`) is a receiver, not the module.
+
 A field named `constructor` is auto-invoked by `new … with { … }` after
 derivation, with `this` bound to the new instance; its inputs arrive through the
 `with` block and are read from `this`, and its return value is ignored (see
@@ -2549,6 +2567,8 @@ next
   owns the result: leaving it early by `break`, `return` or a raise ends it.
 - `gsql.query(NAME)` answers every row as an array, and `gsql.exec(NAME)`
   answers `{ command, rows_affected }`, with `rows` when it returns rows.
+  **Both are methods too**: `NAME.query()`, `NAME.exec(record)`, and a
+  connection's `db.begin()`, `db.commit()`, `db.close()`, `db.exec(block)`.
 - **A record supplies the values:** `gsql.exec(NAME, record)` and
   `gsql.query(NAME, record)` read each `:name` from the record's field of that
   name, and a name the record lacks from the variable in scope, so a row read
@@ -4036,7 +4056,8 @@ programs for the full surface and worked SEC-filing examples.
 The `qt` module renders a `window` declaration with Qt 6 Widgets. It is
 available when gBASIC is built with Qt 6 and `moc`; otherwise every verb but
 one raises a clean runtime error (`error.source = "qt"`), the way the other
-optional modules degrade.
+optional modules degrade. Every verb that takes a window first is also the
+window's method: `app.open()`, `app.read("who", "text")`, `app.close()`.
 
 ```basic
 window customer( title: "Customer", width: 480 )

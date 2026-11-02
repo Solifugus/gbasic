@@ -16,7 +16,8 @@ Every figure cites where it was measured. When a limit closes, its entry in §2 
 - **Injection is impossible by construction.** A block is fixed text in the program, and values reach it only as `:name` parameters, so nothing a user types can become part of a statement. A string is safe only while everybody binds every value; one `"... where name = '" + name + "'"` is the classic hole.
 - **Mistakes are found before anything runs.** The SQL is parsed when the program loads and a syntax error is located at its line and column.
 - **It sits beside the code that uses it,** with no quoting, no escapes and no connection to manage: the database opens itself on first use.
-- **A database chosen at run time still uses blocks:** declare it as a role, `database tenant()`, and give its blocks the connection, `gsql.exec(db, add)` or `for each row in gsql.on(db, items)`.
+- **A database chosen at run time still uses blocks:** declare it as a role, `database tenant()`, and give its blocks the connection, `db.exec(add)` or `for each row in db.on(items)`.
+- **Call a block's verbs as its methods:** `add.exec(row)`, `shares.query()`, `db.close()`. They are the module's verbs (`gsql.exec(add, row)`), so the two spellings are one call; the method reads with the thing being acted on first.
 
 **Use a string for SQL that is assembled as the program runs**, such as a table or column name the program chooses, and bind every value it carries as a parameter.
 
