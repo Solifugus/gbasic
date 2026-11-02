@@ -25,6 +25,9 @@
 #                requires that some were (docs/gsql_rowcount_design.md)
 #   window differential  random rows and windows, every answer computed by
 #                SQLite (tests/gsql/gen_window_diff.py), with a census floor
+#   recursive differential  random graphs, cycles included, and WITH
+#                RECURSIVE queries, every answer computed by SQLite
+#                (tests/gsql/gen_recursive_diff.py)
 #   order cost   a join written large-first, chosen order against FROM's, as a
 #                ratio, the answers equal and the plan really reordered
 #   order        which table a join reads first, asked of EXPLAIN: smallest
@@ -248,6 +251,24 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null
     done
 else
     printf '  SKIP window differential (no python3 with sqlite3): window functions were NOT checked against SQLite\n'
+fi
+
+printf 'TIER recursive differential: random graphs and WITH RECURSIVE, every answer computed by SQLite\n'
+# cycles in every graph; CYCLE checked against the rule written out for SQLite
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null; then
+    for seed in 1 2 3 4 5; do
+        rm -rf "$work/rdiff"
+        mkdir -p "$work/rdiff"
+        if ! python3 tests/gsql/gen_recursive_diff.py "$seed" 200 "$work/rdiff$seed.txt" >"$work/rgen$seed.out" 2>&1; then
+            sed 's/^/       /' "$work/rgen$seed.out"
+            fail "recursive differential seed $seed: the generator failed"
+            continue
+        fi
+        bounded 120 "$work/sql_test" script "$work/rdiff$seed.txt" "$work/rdiff/db" >"$work/rdiff$seed.out" 2>&1
+        verdict "recursive differential seed $seed (200 queries)" "$work/rdiff$seed.out" $?
+    done
+else
+    printf '  SKIP recursive differential (no python3 with sqlite3): WITH RECURSIVE was NOT checked against SQLite\n'
 fi
 
 printf 'TIER hash cost: an unindexed join hashed against its nested loop, as a ratio\n'

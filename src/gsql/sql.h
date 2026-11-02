@@ -241,12 +241,18 @@ typedef struct {
     uint32_t pos;
 } SqlCheck;
 
-/* WITH name [(cols)] AS (q) */
+/* WITH [RECURSIVE] name [(cols)] AS (q) [CYCLE c, ... SET mark USING route]
+ * (docs/gsql_recursive_design.md) */
 typedef struct {
     char *name;
     SqlNameList cols;
     struct SqlStmt *q;
     uint32_t pos;
+    int recursive;           /* written in a WITH RECURSIVE list */
+    char **cycle;            /* CYCLE's columns */
+    size_t ncycle;
+    char *cycle_mark, *cycle_route;
+    uint32_t cycle_pos;
 } SqlCte;
 
 typedef struct {
@@ -423,6 +429,12 @@ typedef struct SqlScan {
        when it gave one */
     uint64_t est;
     int has_est;
+    /* a recursive WITH query's step reading the query itself
+       (docs/gsql_recursive_design.md §5): the round before's rows, set by the
+       executor for each round */
+    int self;
+    const GsqlBuf *work;
+    size_t nwork;
 } SqlScan;
 
 typedef struct SqlPlan {
@@ -465,6 +477,18 @@ typedef struct SqlPlan {
     /* UPDATE: column positions, and INSERT's: the column each value goes to */
     unsigned *targets;
     size_t ntargets;
+    /* a recursive WITH query (docs/gsql_recursive_design.md): `left` its
+       anchor, `right` its step, whose scan `rec_self` reads the query;
+       UNION ALL or UNION; CYCLE's columns, by position, which add the mark
+       and route columns after the query's own `rec_ncols` */
+    int recursive;
+    int rec_all;
+    size_t rec_self;
+    size_t rec_ncols;
+    unsigned *cycle;
+    size_t ncycle;
+    const char *rec_name;
+    uint32_t rec_pos;
 } SqlPlan;
 
 /* Binds `s` against the catalog and chooses an access path. `force_scan`

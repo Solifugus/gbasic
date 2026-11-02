@@ -14,11 +14,21 @@
 #include <string.h>
 
 /* The WITH queries in reach, innermost first (docs/gsql_derived_design.md §3) */
+/* a recursive WITH query, as its own step sees it (docs/gsql_recursive_design.md) */
+typedef struct RecSelf {
+    const char *name;
+    size_t ncols;            /* with CYCLE's mark and route */
+    const char **names;
+    const char **kinds;
+    SqlPlan *anchor;
+} RecSelf;
+
 typedef struct CteScope {
     const SqlCte *defs;
     SqlPlan **plans;
     size_t n;                /* how many are planned, and so visible */
     const struct CteScope *up;
+    const RecSelf *self;     /* a recursive query's step: the query itself */
 } CteScope;
 
 typedef struct B B;
@@ -1100,6 +1110,27 @@ static int open_scan(B *b, const GsEngine *e, GsTxn *t, size_t k, const char *ta
         goto named;
     }
     for (const CteScope *cs = b->scope; cs; cs = cs->up) {
+        if (cs->self && strcmp(cs->self->name, table) == 0) {
+            /* the step of a recursive query reading the query: the round
+               before's rows, which have the anchor's columns */
+            if (join == SQL_JOIN_LEFT) {
+                return bfail(b, pos, GSQL_SYNTAX, "the step of WITH RECURSIVE `%s` cannot read it on the null-filled "
+                             "side of a LEFT JOIN: read it first, or with an inner join", table);
+            }
+            if (cols && cols->n) {
+                return bfail(b, cols->pos, GSQL_UNSUPPORTED, "the step of WITH RECURSIVE `%s` reads its columns by "
+                             "the names the query gives them", table);
+            }
+            sc->derived = cs->self->anchor;
+            sc->cte = cs->self->name;
+            sc->self = 1;
+            sc->access = ACC_DERIVED;
+            sc->qualifier = alias ? alias : table;
+            sc->ndcols = cs->self->ncols;
+            sc->dnames = cs->self->names;
+            sc->dkinds = cs->self->kinds;
+            goto named;
+        }
         for (size_t i = cs->n; i-- > 0;) {
             if (strcmp(cs->defs[i].name, table) != 0) {
                 continue;
@@ -1108,7 +1139,9 @@ static int open_scan(B *b, const GsEngine *e, GsTxn *t, size_t k, const char *ta
             sc->cte = cs->defs[i].name;
             sc->access = ACC_DERIVED;
             sc->qualifier = alias ? alias : table;
-            if (!derived_columns(b, sc, &cs->defs[i].cols, "WITH query", table)) {
+            /* a recursive query's plan has its column list's names already,
+               and CYCLE's two columns after them */
+            if (!derived_columns(b, sc, cs->plans[i]->recursive ? NULL : &cs->defs[i].cols, "WITH query", table)) {
                 return 0;
             }
             if (cols && cols->n) {
@@ -2016,6 +2049,204 @@ int sql_plan(const GsEngine *e, GsTxn *t, SqlStmt *s, SqlArena *arena, const cha
     return plan_at(e, t, s, arena, text, force_scan, out, err, NULL, NULL, &nsubq, NULL, 0);
 }
 
+/* ---- WITH RECURSIVE (docs/gsql_recursive_design.md) -------------------- */
+
+static void stmt_reads(const SqlStmt *s, const char *name, int top, int *ntop, int *nested);
+
+static void expr_reads(const SqlExpr *e, const char *name, int *nested) {
+    if (!e) {
+        return;
+    }
+    if (e->kind == SX_SUBQ && e->sub) {
+        int ignored = 0;
+        stmt_reads(e->sub, name, 0, &ignored, nested);
+    }
+    expr_reads(e->operand, name, nested);
+    for (size_t k = 0; k < e->na; k++) {
+        expr_reads(e->a[k], name, nested);
+    }
+    for (size_t k = 0; e->over && k < e->over->npart; k++) {
+        expr_reads(e->over->part[k], name, nested);
+    }
+    for (size_t k = 0; e->over && k < e->over->norder; k++) {
+        expr_reads(e->over->order[k].e, name, nested);
+    }
+}
+
+/* How often `s` reads a table called `name`: in its own FROM (counted in
+ * *ntop when `top`) or anywhere deeper (*nested): a subquery, a derived table,
+ * a WITH query, a compound's sides. Read from the text, before planning. */
+static void stmt_reads(const SqlStmt *s, const char *name, int top, int *ntop, int *nested) {
+    if (!s) {
+        return;
+    }
+    int *here = top ? ntop : nested;
+    if (s->setop) {
+        stmt_reads(s->left, name, 0, ntop, nested);
+        stmt_reads(s->right, name, 0, ntop, nested);
+    }
+    for (size_t k = 0; k < s->nctes; k++) {
+        stmt_reads(s->ctes[k].q, name, 0, ntop, nested);
+    }
+    if (s->table && !s->table_sub && strcmp(s->table, name) == 0) {
+        (*here)++;
+    }
+    stmt_reads(s->table_sub, name, 0, ntop, nested);
+    for (size_t k = 0; k < s->njoins; k++) {
+        if (s->joins[k].table && !s->joins[k].sub && strcmp(s->joins[k].table, name) == 0) {
+            (*here)++;
+        }
+        stmt_reads(s->joins[k].sub, name, 0, ntop, nested);
+        expr_reads(s->joins[k].on, name, nested);
+    }
+    for (size_t k = 0; k < s->nitems; k++) {
+        expr_reads(s->items[k].e, name, nested);
+    }
+    expr_reads(s->where, name, nested);
+    expr_reads(s->having, name, nested);
+    for (size_t k = 0; k < s->ngroup; k++) {
+        expr_reads(s->group[k], name, nested);
+    }
+    for (size_t k = 0; k < s->norder; k++) {
+        expr_reads(s->order[k].e, name, nested);
+    }
+}
+
+/* WITH RECURSIVE query `k` of scope `cs`, which reads itself: its anchor
+ * planned as any WITH query, then its step with the query in scope as the
+ * round before's rows. */
+static int plan_recursive(B *b, CteScope *cs, size_t k) {
+    const SqlCte *d = &cs->defs[k];
+    SqlStmt *q = d->q;
+    if (q->setop != SQL_SET_UNION) {
+        return bfail(b, d->pos, GSQL_SYNTAX, "WITH RECURSIVE `%s` reads itself, so it must be an anchor, then UNION or "
+                     "UNION ALL, then a step that reads it", d->name);
+    }
+    if (q->norder || q->limit || q->offset) {
+        return bfail(b, d->pos, GSQL_SYNTAX, "ORDER BY, LIMIT and OFFSET cannot stand inside WITH RECURSIVE `%s`: "
+                     "order or limit the query that reads it", d->name);
+    }
+    int ntop = 0, nested = 0;
+    stmt_reads(q->left, d->name, 0, &ntop, &nested);
+    if (ntop + nested) {
+        return bfail(b, q->left->pos, GSQL_SYNTAX, "the anchor of WITH RECURSIVE `%s`, everything before its last "
+                     "UNION, cannot read `%s`: the anchor starts the rows the step goes on from", d->name, d->name);
+    }
+    SqlStmt *step = q->right;
+    ntop = nested = 0;
+    stmt_reads(step, d->name, !step->setop, &ntop, &nested);
+    if (step->setop || ntop != 1 || nested) {
+        return bfail(b, step->pos, GSQL_SYNTAX, "the step of WITH RECURSIVE `%s`, after its last UNION, must be one "
+                     "SELECT reading `%s` once, in its own FROM, and not inside a subquery or derived table",
+                     d->name, d->name);
+    }
+    SqlPlan *ap = sql_alloc(b->arena, sizeof *ap);
+    if (plan_at(b->e, b->t, q->left, b->arena, b->p->text, b->force_scan, ap, b->err, NULL, NULL, b->nsubq, cs, 1)
+        != GSQL_OK) {
+        return 0;
+    }
+    size_t n = ap->nout;
+    if (d->cols.n && d->cols.n != n) {
+        sql_plan_free(ap);
+        return bfail(b, d->cols.pos, GSQL_SYNTAX, "WITH query `%s` is given %zu column name%s, and its query has %zu "
+                     "column%s", d->name, d->cols.n, d->cols.n == 1 ? "" : "s", n, n == 1 ? "" : "s");
+    }
+    size_t full = n + (d->ncycle ? 2 : 0);
+    const char **names = sql_alloc(b->arena, sizeof(char *) * (full ? full : 1));
+    const char **kinds = sql_alloc(b->arena, sizeof(char *) * (full ? full : 1));
+    for (size_t j = 0; j < n; j++) {
+        names[j] = d->cols.n ? d->cols.cols[j] : ap->names[j];
+        kinds[j] = ap->kinds[j];
+    }
+    unsigned *cyc = sql_alloc(b->arena, sizeof(unsigned) * (d->ncycle ? d->ncycle : 1));
+    if (d->ncycle) {
+        names[n] = d->cycle_mark;
+        kinds[n] = "boolean";
+        names[n + 1] = d->cycle_route;
+        kinds[n + 1] = "any";
+        for (size_t j = 0; j < d->ncycle; j++) {
+            size_t at = 0;
+            while (at < n && strcmp(names[at], d->cycle[j]) != 0) {
+                at++;
+            }
+            if (at == n) {
+                sql_plan_free(ap);
+                return bfail(b, d->cycle_pos, GSQL_NOT_FOUND, "CYCLE watches `%s`, which is not a column of `%s`",
+                             d->cycle[j], d->name);
+            }
+            cyc[j] = (unsigned)at;
+        }
+        for (size_t j = 0; j < n + 1; j++) {
+            for (size_t i = j + 1; i < n + 2; i++) {
+                if (strcmp(names[j], names[i]) == 0) {
+                    sql_plan_free(ap);
+                    return bfail(b, d->cycle_pos, GSQL_SYNTAX, "CYCLE's mark and route need names of their own, and "
+                                 "`%s` is already a column of `%s`", names[i], d->name);
+                }
+            }
+        }
+    }
+    RecSelf *self = sql_alloc(b->arena, sizeof *self);
+    self->name = d->name;
+    self->ncols = full;
+    self->names = names;
+    self->kinds = kinds;
+    self->anchor = ap;
+    CteScope *rs = sql_alloc(b->arena, sizeof *rs);
+    rs->up = cs;
+    rs->self = self;
+    SqlPlan *sp = sql_alloc(b->arena, sizeof *sp);
+    if (plan_at(b->e, b->t, step, b->arena, b->p->text, b->force_scan, sp, b->err, NULL, NULL, b->nsubq, rs, 1)
+        != GSQL_OK) {
+        sql_plan_free(ap);
+        return 0;
+    }
+    int rc = 1;
+    if (sp->grouped || sp->nwins) {
+        rc = bfail(b, step->pos, GSQL_SYNTAX, "the step of WITH RECURSIVE `%s` cannot aggregate or use a window "
+                   "function: each round's rows are rows, not a group, so aggregate in the query that reads `%s`",
+                   d->name, d->name);
+    } else if (sp->nout != n) {
+        rc = bfail(b, step->pos, GSQL_SYNTAX, "each side of a UNION must have as many columns as the other: the anchor "
+                   "of `%s` has %zu and its step %zu", d->name, n, sp->nout);
+    }
+    if (!rc) {
+        sql_plan_free(ap);
+        sql_plan_free(sp);
+        return 0;
+    }
+    SqlPlan *qp = sql_alloc(b->arena, sizeof *qp);
+    qp->s = q;
+    qp->text = b->p->text;
+    qp->left = ap;
+    qp->right = sp;
+    qp->recursive = 1;
+    qp->rec_all = q->set_all;
+    qp->rec_name = d->name;
+    qp->rec_pos = d->pos;
+    qp->rec_ncols = n;
+    qp->cycle = cyc;
+    qp->ncycle = d->ncycle;
+    for (size_t j = 0; j < sp->nscans; j++) {
+        if (sp->scans[j].self) {
+            qp->rec_self = j;
+        }
+    }
+    qp->scans = sql_alloc(b->arena, sizeof(SqlScan));
+    qp->nscans = 1;
+    qp->scans[0].access = ACC_NONE;
+    qp->nout = full;
+    qp->names = names;
+    qp->kinds = sql_alloc(b->arena, sizeof(char *) * (full ? full : 1));
+    qp->out = sql_alloc(b->arena, sizeof(SqlExpr *) * (full ? full : 1));
+    for (size_t j = 0; j < full; j++) {
+        qp->kinds[j] = j < n && strcmp(ap->kinds[j], sp->kinds[j]) != 0 ? "any" : kinds[j];
+        qp->out[j] = j < n ? ap->out[j] : ap->out[0];
+    }
+    cs->plans[k] = qp;
+    return 1;
+}
+
 /* The WITH queries a statement defines, each planned once with no enclosing
  * query, seeing those before it; then the scope the statement binds in. */
 static int plan_ctes(B *b) {
@@ -2029,6 +2260,22 @@ static int plan_ctes(B *b) {
     cs->up = b->scope;
     b->p->ctes = cs->plans;
     for (size_t k = 0; k < s->nctes; k++) {
+        int ntop = 0, nested = 0;
+        if (s->ctes[k].recursive) {
+            stmt_reads(s->ctes[k].q, s->ctes[k].name, 0, &ntop, &nested);
+        }
+        if (ntop + nested) {
+            if (!plan_recursive(b, cs, k)) {
+                return 0;
+            }
+            cs->n = k + 1;
+            b->p->nctes = k + 1;
+            continue;
+        }
+        if (s->ctes[k].ncycle) {
+            return bfail(b, s->ctes[k].cycle_pos, GSQL_SYNTAX, "CYCLE watches a recursive query, and `%s` does not "
+                         "read itself", s->ctes[k].name);
+        }
         SqlPlan *q = sql_alloc(b->arena, sizeof *q);
         if (plan_at(b->e, b->t, s->ctes[k].q, b->arena, b->p->text, b->force_scan, q, b->err, NULL, NULL, b->nsubq,
                     cs, 1) != GSQL_OK) {
@@ -2304,6 +2551,9 @@ static void explain_at(const SqlPlan *p, void (*line)(void *, const char *), voi
     int indent = base;
     if (s->setop) {
         static const char *const words[] = { "", "Union", "Intersect", "Except" };
+        if (p->recursive) {
+            put(&b, "Recursive ");
+        }
         put(&b, words[s->setop]);
         if (s->set_all) {
             put(&b, " All");

@@ -303,7 +303,7 @@
 > select a from (1) x
 ! SYNTAX 16 expected a SELECT inside ( ) in FROM
 > with recursive x as (select 1) select * from x
-! UNSUPPORTED 6 WITH RECURSIVE is not in this release
+= WITH RECURSIVE x AS (SELECT 1) SELECT * FROM x
 > with x as (select 1), x as (select 2) select * from x
 ! SYNTAX 23 WITH defines `x` twice
 > with x as (select 1) delete from t
@@ -427,3 +427,19 @@
 ! SYNTAX 44 ROW after CURRENT
 > select sum(a) over (order by d limit 1) from t
 ! SYNTAX 32 PARTITION BY, ORDER BY, ROWS, RANGE or `)` in the window
+
+# ---- WITH RECURSIVE (docs/gsql_recursive_design.md) -----------------
+> with recursive c (i) as (select 1 union all select i + 1 from c where i < 5) select i from c
+= WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT (i + 1) FROM c WHERE (i < 5)) SELECT i FROM c
+> with recursive r (n) as (select 1 union all select e.b from r join e on e.a = r.n) cycle n set looped using route select * from r
+= WITH RECURSIVE r (n) AS (SELECT 1 UNION ALL SELECT e.b FROM r JOIN e ON (e.a = r.n)) CYCLE n SET looped USING route SELECT * FROM r
+> with recursive r as (select 1 as n union select n from r) cycle n, m set "Loop" using p select n from r
+= WITH RECURSIVE r AS (SELECT 1 AS n UNION SELECT n FROM r) CYCLE n, m SET "Loop" USING p SELECT n FROM r
+> with r as (select 1) cycle n set m using p select 1
+! SYNTAX 22 CYCLE belongs to a WITH RECURSIVE query
+> with recursive r as (select 1) search depth first by n set o select 1
+! UNSUPPORTED 32 SEARCH is not in this release
+> with recursive r as (select 1) cycle n set m to 1 default 0 using p select 1
+! UNSUPPORTED 46 SET ... TO ... DEFAULT ... is not in this release
+> with recursive r as (select 1) cycle n set m select 1
+! SYNTAX 46 USING and a name

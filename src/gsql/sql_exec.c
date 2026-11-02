@@ -34,6 +34,10 @@ struct GsqlSql {
     char **wmsg;
     int *wcode;
     size_t nw;
+    /* WITH RECURSIVE: the rounds a recursive query may run before it is
+       refused (docs/gsql_recursive_design.md §3) */
+    uint64_t rec_limit;
+    uint64_t rec_bytes;      /* and the bytes of rows it may hold */
 };
 
 /* A warning of the SQL layer's own, for the statement now running. */
@@ -6312,9 +6316,27 @@ static int in_step(X *x, SqlExpr *e, GsqlHv *a, GsqlHv *b, int *acc) {
 /* A derived scan's rows, through a cursor over its plan. A derived table
  * reads its query's enclosing query, as the scan's own query does; a WITH
  * query reads no enclosing query at all. */
+static int recursive_rows(X *x, size_t k);
+
 static int derived_rows(X *x, size_t k) {
     const SqlScan *sc = &x->p->scans[k];
     XScan *xs = &x->sx[k];
+    if (sc->self) {
+        /* a recursive query's step reading the query: the round before's rows */
+        xs->drows = calloc(sc->nwork ? sc->nwork : 1, sizeof(GsqlBuf));
+        if (!xs->drows) {
+            abort();
+        }
+        for (size_t r = 0; r < sc->nwork; r++) {
+            v3_put(&xs->drows[r], sc->work[r].bytes, sc->work[r].length);
+        }
+        xs->ndrows = sc->nwork;
+        xs->dready = 1;
+        return GSQL_OK;
+    }
+    if (sc->derived->recursive) {
+        return recursive_rows(x, k);
+    }
     SqlCursor *c = sub_open(x, sc->derived, sc->cte ? NULL : x->outer);
     if (!c) {
         return x->err->code ? x->err->code : GSQL_EXPRESSION;
@@ -6347,6 +6369,293 @@ static int derived_rows(X *x, size_t k) {
     cursor_free(c);
     xs->dready = rc == GSQL_OK;
     return rc;
+}
+
+/* ---- WITH RECURSIVE (docs/gsql_recursive_design.md §5) -----------------
+ *
+ * Rounds: the anchor's rows, then the step run again and again, its scan of
+ * the query reading the round before's rows, until a round adds none. UNION
+ * drops a row the same as one kept, keyed as DISTINCT keys it; CYCLE gives
+ * each row its route and marks one whose watched values its parent's route
+ * already holds, and a marked row starts no further rows. */
+
+typedef struct {
+    KeyMap map;
+    GsqlBuf *keys;
+    size_t n, cap;
+} RecSeen;
+
+static const GsqlBuf *rec_key_of(void *ctx, size_t i) {
+    return &((RecSeen *)ctx)->keys[i];
+}
+
+/* a whole row's key, as DISTINCT keys a row: GSQL_OK or a refusal */
+static int rec_row_key(X *x, const GsqlBuf *row, GsqlKey *key) {
+    GsBytes items[1024];
+    long n = v3_array_items(row->bytes, row->length, items, 1024);
+    if (n < 0) {
+        return xfail(x->err, GSQL_MISUSE, 0, "a recursive query's row did not hold its columns");
+    }
+    for (long k = 0; k < n; k++) {
+        if (gsql_key_append(key, items[k].p, items[k].n, NULL, 0) != GSQL_KEY_OK) {
+            return xfail(x->err, GSQL_EXPRESSION, x->p->s->pos,
+                         "%s cannot be made distinct by UNION: it has no single equality G-SQL can key",
+                         tag_word(items[k].n ? items[k].p[0] : 0));
+        }
+    }
+    return GSQL_OK;
+}
+
+/* whether `row` is the first of its kind: 1 it is, 0 it repeats one, -1 failed */
+static int rec_first(X *x, RecSeen *s, const GsqlBuf *row) {
+    GsqlKey key;
+    gsql_key_init(&key);
+    if (rec_row_key(x, row, &key) != GSQL_OK) {
+        gsql_key_free(&key);
+        return -1;
+    }
+    int first = !keymap_find(&s->map, rec_key_of, s, key.bytes, key.length, 0);
+    if (first) {
+        if (s->n == s->cap) {
+            s->cap = s->cap ? s->cap * 2 : 64;
+            s->keys = realloc(s->keys, sizeof(GsqlBuf) * s->cap);
+            if (!s->keys) {
+                abort();
+            }
+        }
+        memset(&s->keys[s->n], 0, sizeof(GsqlBuf));
+        v3_put(&s->keys[s->n], key.bytes, key.length);
+        s->n++;
+        keymap_find(&s->map, rec_key_of, s, key.bytes, key.length, s->n);
+    }
+    gsql_key_free(&key);
+    return first;
+}
+
+static void rec_seen_free(RecSeen *s) {
+    for (size_t k = 0; k < s->n; k++) {
+        gsql_buf_free(&s->keys[k]);
+    }
+    free(s->keys);
+    free(s->map.slot);
+}
+
+/* the key of CYCLE's watched values, as a route element holds them: one value,
+ * or an array of several */
+static int cycle_key(X *x, const SqlPlan *rp, const unsigned char *el, size_t n, GsqlKey *key) {
+    GsBytes items[64];
+    const GsBytes one = { el, n };
+    const GsBytes *v = &one;
+    size_t nv = 1;
+    if (rp->ncycle > 1) {
+        if (v3_array_items(el, n, items, 64) != (long)rp->ncycle) {
+            return xfail(x->err, GSQL_MISUSE, 0, "a route element did not hold its values");
+        }
+        v = items;
+        nv = rp->ncycle;
+    }
+    for (size_t k = 0; k < nv; k++) {
+        if (gsql_key_append(key, v[k].p, v[k].n, NULL, 0) != GSQL_KEY_OK) {
+            return xfail(x->err, GSQL_EXPRESSION, x->p->s->pos,
+                         "%s cannot be watched by CYCLE: it has no single equality G-SQL can key",
+                         tag_word(v[k].n ? v[k].p[0] : 0));
+        }
+    }
+    return GSQL_OK;
+}
+
+/* A row of the query's own columns, made a full row: with CYCLE, the mark and
+ * the route, extending `parent`'s (NULL for an anchor row). *marked: the row
+ * closes a cycle. */
+static int cycle_row(X *x, const SqlPlan *rp, const GsqlBuf *row, const GsqlBuf *parent, GsqlBuf *out, int *marked) {
+    *marked = 0;
+    out->length = 0;
+    if (!rp->ncycle) {
+        v3_put(out, row->bytes, row->length);
+        return GSQL_OK;
+    }
+    size_t n = rp->rec_ncols;
+    GsBytes *items = malloc(sizeof(GsBytes) * (n + 2));
+    if (!items) {
+        abort();
+    }
+    int rc = GSQL_OK;
+    if (v3_array_items(row->bytes, row->length, items, (long)n) != (long)n) {
+        free(items);
+        return xfail(x->err, GSQL_MISUSE, 0, "a recursive query's row did not hold its columns");
+    }
+    /* this row's element of the route */
+    GsqlBuf el = {0};
+    if (rp->ncycle == 1) {
+        v3_put(&el, items[rp->cycle[0]].p, items[rp->cycle[0]].n);
+    } else {
+        v3_w_array(&el, rp->ncycle);
+        for (size_t k = 0; k < rp->ncycle; k++) {
+            v3_put(&el, items[rp->cycle[k]].p, items[rp->cycle[k]].n);
+        }
+    }
+    GsqlKey mine;
+    gsql_key_init(&mine);
+    rc = cycle_key(x, rp, el.bytes, el.length, &mine);
+    /* the parent's route */
+    GsBytes *route = NULL;
+    long nroute = 0;
+    if (rc == GSQL_OK && parent) {
+        GsBytes *pitems = malloc(sizeof(GsBytes) * (n + 2));
+        if (!pitems) {
+            abort();
+        }
+        if (v3_array_items(parent->bytes, parent->length, pitems, (long)n + 2) != (long)n + 2) {
+            rc = xfail(x->err, GSQL_MISUSE, 0, "a recursive query's row did not hold its route");
+        } else {
+            V3In in = { pitems[n + 1].p, pitems[n + 1].n, 0, 1 };
+            if (v3_in_le(&in, 1) != SER_ARRAY) {
+                rc = xfail(x->err, GSQL_MISUSE, 0, "a recursive query's route was not an array");
+            } else {
+                uint64_t cnt = v3_in_uleb(&in);
+                route = malloc(sizeof(GsBytes) * (cnt ? cnt : 1));
+                if (!route) {
+                    abort();
+                }
+                nroute = v3_array_items(pitems[n + 1].p, pitems[n + 1].n, route, (long)cnt);
+                if (nroute < 0) {
+                    rc = xfail(x->err, GSQL_MISUSE, 0, "a recursive query's route did not read back");
+                }
+            }
+        }
+        free(pitems);
+    }
+    for (long k = 0; rc == GSQL_OK && k < nroute && !*marked; k++) {
+        GsqlKey theirs;
+        gsql_key_init(&theirs);
+        rc = cycle_key(x, rp, route[k].p, route[k].n, &theirs);
+        *marked = rc == GSQL_OK && theirs.length == mine.length && memcmp(theirs.bytes, mine.bytes, mine.length) == 0;
+        gsql_key_free(&theirs);
+    }
+    if (rc == GSQL_OK) {
+        v3_w_array(out, n + 2);
+        for (size_t k = 0; k < n; k++) {
+            v3_put(out, items[k].p, items[k].n);
+        }
+        v3_w_bool(out, *marked);
+        v3_w_array(out, (size_t)nroute + 1);
+        for (long k = 0; k < nroute; k++) {
+            v3_put(out, route[k].p, route[k].n);
+        }
+        v3_put(out, el.bytes, el.length);
+    }
+    free(route);
+    gsql_key_free(&mine);
+    gsql_buf_free(&el);
+    free(items);
+    return rc;
+}
+
+/* what a row held costs in memory, not only its bytes: a small row's buffer is
+ * 64 bytes at least, and a row array grows by doubling */
+static uint64_t rec_row_cost(const GsqlBuf *b) {
+    return b->capacity + 16 + 2 * sizeof(GsqlBuf);
+}
+
+/* A recursive WITH query's rows, round by round, into scan `k`'s rows. */
+static int recursive_rows(X *x, size_t k) {
+    const SqlScan *sc = &x->p->scans[k];
+    XScan *xs = &x->sx[k];
+    SqlPlan *rp = sc->derived;
+    SqlScan *self = &rp->right->scans[rp->rec_self];
+    Rows all = {0}, work = {0}, next = {0};
+    RecSeen seen;
+    memset(&seen, 0, sizeof seen);
+    GsqlBuf row = {0}, full = {0};
+    int rc = GSQL_OK;
+    uint64_t held = 0;   /* the memory of rows kept, and of the next round's */
+    for (uint64_t round = 0; rc == GSQL_OK; round++) {
+        if (round > 0 && work.n == 0) {
+            break;
+        }
+        if (round > 0) {
+            self->work = work.v;
+            self->nwork = work.n;
+        }
+        SqlCursor *c = sub_open(x, round ? rp->right : rp->left, NULL);
+        if (!c) {
+            rc = x->err->code ? x->err->code : GSQL_EXPRESSION;
+            break;
+        }
+        for (;;) {
+            int r = cursor_next(c, &row);
+            if (r < 0) {
+                *x->err = c->err;
+                rc = x->err->code ? x->err->code : GSQL_EXPRESSION;
+                break;
+            }
+            if (r == 0) {
+                break;
+            }
+            const XScan *px = round ? &c->x.sx[rp->rec_self] : NULL;
+            int marked;
+            rc = cycle_row(x, rp, &row, px && px->have_row ? &px->row : NULL, &full, &marked);
+            if (rc != GSQL_OK) {
+                break;
+            }
+            if (!rp->rec_all) {
+                int f = rec_first(x, &seen, &full);
+                if (f < 0) {
+                    rc = x->err->code;
+                    break;
+                }
+                if (!f) {
+                    continue;
+                }
+            }
+            rows_add(&all, &full);
+            held += rec_row_cost(&all.v[all.n - 1]);
+            if (!marked) {
+                rows_add(&next, &full);
+                held += rec_row_cost(&next.v[next.n - 1]);
+            }
+            if (held > x->q->rec_bytes) {
+                /* rows that double each round reach any round limit long
+                   after memory: measured, a graph with two cycles under
+                   UNION ALL ended the process at 2.7 GB in 27 s */
+                rc = xfail(x->err, GSQL_EXPRESSION, rp->rec_pos, "WITH RECURSIVE `%s` grew past %llu MB of rows in "
+                           "%llu rounds: if the data has a cycle, mark it with CYCLE or use UNION in place of UNION "
+                           "ALL; otherwise bound the step, as WHERE depth < 100", rp->rec_name,
+                           (unsigned long long)(x->q->rec_bytes >> 20), (unsigned long long)round);
+                break;
+            }
+        }
+        cursor_free(c);
+        self->work = NULL;
+        self->nwork = 0;
+        if (rc == GSQL_OK && round > x->q->rec_limit && next.n) {
+            /* the round past the limit still added rows: refused, rather than
+               run until memory gives out */
+            rc = xfail(x->err, GSQL_EXPRESSION, rp->rec_pos, "WITH RECURSIVE `%s` was still adding rows after %llu "
+                       "rounds: if the data has a cycle, mark it with CYCLE or use UNION in place of UNION ALL; "
+                       "otherwise bound the step, as WHERE depth < 100", rp->rec_name,
+                       (unsigned long long)x->q->rec_limit);
+        }
+        for (size_t r = 0; r < work.n; r++) {
+            held -= rec_row_cost(&work.v[r]);   /* the round before's copies, now dropped */
+        }
+        rows_free(&work);
+        work = next;
+        memset(&next, 0, sizeof next);
+    }
+    rows_free(&work);
+    rows_free(&next);
+    rec_seen_free(&seen);
+    gsql_buf_free(&row);
+    gsql_buf_free(&full);
+    if (rc != GSQL_OK) {
+        rows_free(&all);
+        return rc;
+    }
+    xs->drows = all.v;
+    xs->ndrows = all.n;
+    xs->dready = 1;
+    return GSQL_OK;
 }
 
 static GsqlHv *eval_subquery(X *x, SqlExpr *e) {
@@ -7444,6 +7753,8 @@ GsqlSql *gsql_sql_new(const GsqlHost *host) {
         abort();
     }
     q->h = *host;
+    q->rec_limit = 100000;
+    q->rec_bytes = (uint64_t)1 << 30;
     return q;
 }
 
@@ -7471,6 +7782,14 @@ GsqlService gsql_sql_service(GsqlSql *q) {
 
 void gsql_sql_force_scan(GsqlSql *q, int on) {
     q->force_scan = on;
+}
+
+void gsql_sql_recursion_limit(GsqlSql *q, uint64_t rounds) {
+    q->rec_limit = rounds;
+}
+
+void gsql_sql_recursion_bytes(GsqlSql *q, uint64_t bytes) {
+    q->rec_bytes = bytes;
 }
 
 void gsql_sql_counts(const GsqlSql *q, unsigned long *seeks, unsigned long *scans) {

@@ -657,12 +657,49 @@ static int at_word(P *p, const char *w);
 static SqlStmt *query_stmt(P *p);
 static int alias_follows(P *p);
 
+/* CYCLE c, ... SET mark USING route: the current token `cycle`
+ * (docs/gsql_recursive_design.md §3) */
+static int cycle_clause(P *p, SqlCte *c) {
+    if (!c->recursive) {
+        return fail_at(p, p->tok.pos, GSQL_SYNTAX, "CYCLE belongs to a WITH RECURSIVE query");
+    }
+    c->cycle_pos = p->tok.pos;
+    next(p);
+    char *names[64];
+    size_t n = 0;
+    do {
+        if (n == 64) {
+            return fail_at(p, p->tok.pos, GSQL_SYNTAX, "CYCLE may watch at most 64 columns");
+        }
+        if (!(names[n++] = name(p, "a column for CYCLE to watch"))) {
+            return 0;
+        }
+    } while (accept_sym(p, ","));
+    c->cycle = sql_alloc(p->arena, sizeof(char *) * n);
+    memcpy(c->cycle, names, sizeof(char *) * n);
+    c->ncycle = n;
+    if (!expect_kw(p, "set") || !(c->cycle_mark = name(p, "a name for CYCLE's mark column"))) {
+        return 0;
+    }
+    if (at_word(p, "to")) {
+        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "CYCLE's SET ... TO ... DEFAULT ... is not in this release: "
+                       "the mark is TRUE or FALSE");
+    }
+    if (!at_word(p, "using")) {
+        return expected(p, "USING and a name for CYCLE's route column");
+    }
+    next(p);
+    return (c->cycle_route = name(p, "a name for CYCLE's route column")) != NULL;
+}
+
 /* WITH name [(cols)] AS (SELECT ...), ...: the current token `with`
  * (docs/gsql_derived_design.md §1) */
 static int with_list(P *p, SqlCte **out, size_t *nout) {
     next(p);
+    int recursive = 0;
     if (at_word(p, "recursive")) {
-        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "WITH RECURSIVE is not in this release of G-SQL");
+        next(p);
+        recursive = 1;
     }
     SqlCte v[64];
     size_t n = 0;
@@ -686,6 +723,14 @@ static int with_list(P *p, SqlCte **out, size_t *nout) {
             return expected(p, "a SELECT inside the WITH query's ( )");
         }
         if (!(c->q = subquery(p))) {
+            return 0;
+        }
+        c->recursive = recursive;
+        if (at_word(p, "search")) {
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "SEARCH is not in this release of G-SQL: order the "
+                           "rows by a column the query keeps, such as a depth");
+        }
+        if (at_word(p, "cycle") && !cycle_clause(p, c)) {
             return 0;
         }
         for (size_t k = 0; k < n; k++) {
@@ -3380,7 +3425,7 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
     case SQ_SELECT:
         for (size_t k = 0; k < s->nctes; k++) {
             const SqlCte *c = &s->ctes[k];
-            puts_(o, k ? ", " : "WITH ");
+            puts_(o, k ? ", " : c->recursive ? "WITH RECURSIVE " : "WITH ");
             print_name(o, c->name);
             if (c->cols.n) {
                 v3_put(o, " ", 1);
@@ -3389,6 +3434,16 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
             puts_(o, " AS (");
             sql_print_stmt(o, c->q);
             v3_put(o, ")", 1);
+            for (size_t j = 0; j < c->ncycle; j++) {
+                puts_(o, j ? ", " : " CYCLE ");
+                print_name(o, c->cycle[j]);
+            }
+            if (c->ncycle) {
+                puts_(o, " SET ");
+                print_name(o, c->cycle_mark);
+                puts_(o, " USING ");
+                print_name(o, c->cycle_route);
+            }
         }
         if (s->nctes) {
             v3_put(o, " ", 1);

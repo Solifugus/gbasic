@@ -11,7 +11,9 @@
  * or a date), and then `=` and the answer, `!` and a refusal (code, position,
  * a part of the message), or `%` and the result's columns. `begin write`,
  * `begin read`, `commit` and `rollback` lines hold a transaction across cases,
- * as a connection does; outside one, each statement runs in its own. */
+ * as a connection does; outside one, each statement runs in its own. A
+ * `rounds N` line sets WITH RECURSIVE's round limit for the cases after it,
+ * and `rowbytes N` the bytes of rows it may hold. */
 
 #define _POSIX_C_SOURCE 200809L   /* clock_gettime, for the hash-cost tier */
 #include "gsql_sql.h"
@@ -333,6 +335,15 @@ static char *as_text(const GsqlBuf *b) {
     return s;
 }
 
+/* WITH RECURSIVE's round limit; script() names its statement text `sql` */
+static void set_rounds(uint64_t n) {
+    gsql_sql_recursion_limit(sql, n);
+}
+
+static void set_rowbytes(uint64_t n) {
+    gsql_sql_recursion_bytes(sql, n);
+}
+
 static int script(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -351,6 +362,15 @@ static int script(const char *path) {
     while (fgets(line, sizeof line, f)) {
         lineno++;
         line[strcspn(line, "\n")] = 0;
+        if (strncmp(line, "rowbytes ", 9) == 0) {
+            set_rowbytes(strtoull(line + 9, NULL, 10));
+            continue;
+        }
+        if (strncmp(line, "rounds ", 7) == 0) {
+            /* WITH RECURSIVE's round limit, lowered so its refusal is reached */
+            set_rounds(strtoull(line + 7, NULL, 10));
+            continue;
+        }
         if (strcmp(line, "begin write") == 0 || strcmp(line, "begin read") == 0) {
             held_write = line[6] == 'w';
             if ((held_write ? E->begin_write(db, &held) : E->begin_read(db, &held)) != 0) {

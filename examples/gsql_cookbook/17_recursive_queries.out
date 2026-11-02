@@ -1,0 +1,8 @@
+Parts in one robot arm:
+  bolt  x24  (down to level 3)
+  finger  x3  (down to level 2)
+  gripper  x1  (down to level 1)
+  joint  x3  (down to level 1)
+  motor  x5  (down to level 2)
+Loops in the bill of materials:
+  gripper is inside itself: gripper > finger > gripper

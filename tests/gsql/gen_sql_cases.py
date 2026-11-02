@@ -1064,6 +1064,89 @@ stmt("SELECT sum(amt) OVER (ORDER BY id ROWS BETWEEN NULL PRECEDING AND CURRENT 
 stmt("SELECT rank() OVER (ORDER BY CASE WHEN id < 3 THEN id ELSE 'x' END) FROM wn",
      ("EXPRESSION", "CASE", "< compares text with a number"))
 
+sec("WITH RECURSIVE (docs/gsql_recursive_design.md)")
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 5) SELECT i FROM c", "= 1 | 2 | 3 | 4 | 5")
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 100) SELECT sum(i), count(*) FROM c",
+     "= 5050, 100")
+# an ordinary query in a RECURSIVE list is an ordinary WITH query
+stmt("WITH RECURSIVE two (x) AS (SELECT 2), c (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c, two WHERE i < two.x) "
+     "SELECT i FROM c", "= 1 | 2")
+stmt("CREATE TABLE staff (id INTEGER PRIMARY KEY, boss INTEGER, name TEXT)", "= done 0")
+stmt("INSERT INTO staff VALUES (1, NULL, 'ada'), (2, 1, 'bo'), (3, 1, 'cy'), (4, 2, 'di'), (5, 4, 'ed'), (6, 3, 'fy')",
+     "= done 6")
+stmt("WITH RECURSIVE t (id, name, depth) AS (SELECT id, name, 0 FROM staff WHERE boss IS NULL UNION ALL "
+     "SELECT e.id, e.name, t.depth + 1 FROM staff e JOIN t ON e.boss = t.id) SELECT name, depth FROM t ORDER BY depth, name",
+     "= 'ada', 0 | 'bo', 1 | 'cy', 1 | 'di', 2 | 'fy', 2 | 'ed', 3")
+# the query read second in FROM, and read by name with an alias
+stmt("WITH RECURSIVE under (id) AS (SELECT 2 UNION SELECT e.id FROM under AS u JOIN staff e ON e.boss = u.id) "
+     "SELECT id FROM under ORDER BY id", "= 2 | 4 | 5")
+# a bill of materials: quantities multiplied down, then totalled by the query that reads it
+stmt("CREATE TABLE bom (id INTEGER PRIMARY KEY, assembly TEXT, component TEXT, qty INTEGER)", "= done 0")
+stmt("INSERT INTO bom VALUES (1, 'arm', 'joint', 2), (2, 'arm', 'motor', 1), (3, 'joint', 'bolt', 4), "
+     "(4, 'joint', 'motor', 1), (5, 'motor', 'bolt', 2)", "= done 5")
+stmt("WITH RECURSIVE parts (part, qty) AS (SELECT component, qty FROM bom WHERE assembly = 'arm' UNION ALL "
+     "SELECT b.component, p.qty * b.qty FROM parts p JOIN bom b ON b.assembly = p.part) "
+     "SELECT part, sum(qty) FROM parts GROUP BY part ORDER BY part", "= 'bolt', 14 | 'joint', 2 | 'motor', 3")
+# 1 -> 2 -> 3 -> 1 is a cycle, and 3 -> 4 leaves it
+stmt("CREATE TABLE edge (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)", "= done 0")
+stmt("INSERT INTO edge VALUES (1, 1, 2), (2, 2, 3), (3, 3, 1), (4, 3, 4)", "= done 4")
+# UNION drops a row it has kept, so a cycle over rows that repeat ends
+stmt("WITH RECURSIVE r (n) AS (SELECT 1 UNION SELECT edge.b FROM r JOIN edge ON edge.a = r.n) SELECT n FROM r ORDER BY n",
+     "= 1 | 2 | 3 | 4")
+# the anchor's own repeats are dropped too, and the rows come round by round
+stmt("WITH RECURSIVE r (n) AS (SELECT 4 UNION SELECT 4 UNION SELECT edge.b FROM r JOIN edge ON edge.a = r.n) SELECT n FROM r",
+     "= 4")
+# CYCLE: the looping row is answered, marked, and goes no further
+stmt("WITH RECURSIVE r (n, d) AS (SELECT 1, 0 UNION ALL SELECT edge.b, r.d + 1 FROM r JOIN edge ON edge.a = r.n) "
+     "CYCLE n SET looped USING route SELECT n, d, looped, route FROM r ORDER BY d, n",
+     "= 1, 0, FALSE, [1] | 2, 1, FALSE, [1,2] | 3, 2, FALSE, [1,2,3] | 1, 3, TRUE, [1,2,3,1] | "
+     "4, 3, FALSE, [1,2,3,4]")
+stmt("WITH RECURSIVE r (n, k) AS (SELECT 1, 'x' UNION ALL SELECT edge.b, r.k FROM r JOIN edge ON edge.a = r.n) "
+     "CYCLE n, k SET c USING p SELECT n, c, p FROM r WHERE c",
+     "= 1, TRUE, [[1,\"x\"],[2,\"x\"],[3,\"x\"],[1,\"x\"]]")
+stmt("WITH RECURSIVE r (n) AS (SELECT 1 UNION ALL SELECT edge.b FROM r JOIN edge ON edge.a = r.n) CYCLE n SET looped "
+     "USING route SELECT * FROM r", "% n:any, looped:boolean, route:any")
+# the round limit, lowered here: rounds past it may run, but not add rows
+c("rounds 5")
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 6) SELECT count(*) FROM c", "= 6")
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 7) SELECT count(*) FROM c",
+     ("EXPRESSION", "c (i)", "WITH RECURSIVE `c` was still adding rows after 5 rounds: if the data has a cycle"))
+stmt("WITH RECURSIVE r (n, d) AS (SELECT 1, 0 UNION ALL SELECT edge.b, r.d + 1 FROM r JOIN edge ON edge.a = r.n) "
+     "SELECT count(*) FROM r", ("EXPRESSION", "r (n, d)", "mark it with CYCLE"))
+c("rounds 100000")
+# rows that double each round: refused by the bytes they hold, lowered here to 1 MB
+stmt("CREATE TABLE g2 (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)", "= done 0")
+stmt("INSERT INTO g2 VALUES (1, 1, 2), (2, 2, 1), (3, 1, 1)", "= done 3")
+c("rowbytes 1048576")
+stmt("WITH RECURSIVE r (n) AS (SELECT 1 UNION ALL SELECT g2.b FROM r JOIN g2 ON g2.a = r.n) SELECT count(*) FROM r",
+     ("EXPRESSION", "r (n)", "WITH RECURSIVE `r` grew past 1 MB of rows in"))
+c("rowbytes 1073741824")
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 INTERSECT SELECT i FROM c) SELECT i FROM c",
+     ("SYNTAX", "c (i)", "must be an anchor, then UNION or UNION ALL, then a step"))
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c ORDER BY 1 LIMIT 3) SELECT i FROM c",
+     ("SYNTAX", "c (i)", "ORDER BY, LIMIT and OFFSET cannot stand inside WITH RECURSIVE `c`"))
+stmt("WITH RECURSIVE c (i) AS (SELECT i FROM c UNION ALL SELECT i + 1 FROM c) SELECT i FROM c",
+     ("SYNTAX", "SELECT", "the anchor of WITH RECURSIVE `c`, everything before its last UNION, cannot read `c`"))
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT a.i + b.i FROM c a, c b) SELECT i FROM c",
+     ("SYNTAX", "SELECT", "must be one SELECT reading `c` once", 2))
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM staff WHERE id IN (SELECT i FROM c)) SELECT i FROM c",
+     ("SYNTAX", "SELECT", "not inside a subquery or derived table", 2))
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT staff.id FROM staff LEFT JOIN c ON c.i = staff.boss) SELECT i FROM c",
+     ("SYNTAX", "c ON", "cannot read it on the null-filled side of a LEFT JOIN"))
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT count(*) FROM c) SELECT i FROM c",
+     ("SYNTAX", "SELECT", "cannot aggregate or use a window function", 2))
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT i, i FROM c) SELECT i FROM c",
+     ("SYNTAX", "SELECT", "the anchor of `c` has 1 and its step 2", 2))
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c) CYCLE j SET m USING r SELECT i FROM c",
+     ("NOT_FOUND", "CYCLE", "CYCLE watches `j`, which is not a column of `c`"))
+stmt("WITH RECURSIVE c (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c) CYCLE i SET i USING r SELECT i FROM c",
+     ("SYNTAX", "CYCLE", "`i` is already a column of `c`"))
+stmt("EXPLAIN WITH RECURSIVE r (n) AS (SELECT 1 UNION SELECT edge.b FROM r JOIN edge ON edge.a = r.n) SELECT n FROM r",
+     "= 'CTE Scan on r' | 'CTE r' | '  Recursive Union' | '    Result' | '    Nested Loop' | '      CTE Scan on r' | "
+     "'      Hash Scan on edge using (a = r.n)'")
+stmt("WITH RECURSIVE c (i) AS (SELECT 1) CYCLE i SET m USING r SELECT i FROM c",
+     ("SYNTAX", "CYCLE", "`c` does not read itself"))
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

@@ -67,6 +67,13 @@ const GsqlHost *gb_gsql_host(void);
 /* For tests: answer every SELECT, UPDATE and DELETE by scanning the whole
  * table, so an access path can be compared with the scan it narrows. */
 void gsql_sql_force_scan(GsqlSql *q, int on);
+/* For tests: the rounds a WITH RECURSIVE query may run before it is refused
+ * (100 000 unless set), so the refusal is reached in a few. */
+void gsql_sql_recursion_limit(GsqlSql *q, uint64_t rounds);
+/* For tests: the bytes of rows a WITH RECURSIVE query may hold (1 GiB unless
+ * set): rows that double each round reach memory's end before any round
+ * limit. */
+void gsql_sql_recursion_bytes(GsqlSql *q, uint64_t bytes);
 /* For tests: how many statements used a seek or a point read, and a scan. */
 void gsql_sql_counts(const GsqlSql *q, unsigned long *seeks, unsigned long *scans);
 /* For tests: how many plans so far read a join's tables in an order chosen by
