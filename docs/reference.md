@@ -2564,7 +2564,13 @@ Every refusal raises with `error.source = "gsql"` and **`error.details.code`
 naming G-SQL's code** — `SYNTAX`, `EXPRESSION`, `NOT_FOUND`, `DUPLICATE`,
 `NOT_NULL`, `TYPE`, `READ_ONLY`, `STATE`, `LOST` and the rest — plus
 `error.details.position`, a 1-based character offset, where the statement has
-a place to point at. `query` refuses a statement that returns no rows,
+a place to point at. **A refused row names what it is about** *(after 0.10.0)*:
+`error.details.table`, `error.details.column` for `TYPE` and `NOT_NULL`, and
+`error.details.constraint` for `CHECK` and `FOREIGN_KEY` (the constraint's name)
+and `DUPLICATE` (the unique index's name, or `"primary key"`). A name that does
+not apply is absent rather than empty, so a reject report routes rows by
+`has(e.details, "column")` and the values, never by the message's words
+(`docs/gsql_error_details_design.md`). `query` refuses a statement that returns no rows,
 saying that it ran.
 
 **A value stored into a typed column takes the column's kind.** In `INSERT`,

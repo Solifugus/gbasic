@@ -47,7 +47,16 @@ typedef struct {
      * lets a random value be drawn again only for a key it is in
      * (docs/gsql_generated_design.md §3). */
     int dup;
+    /* What the refusal is about, by name, for `error.details`
+     * (docs/gsql_error_details_design.md): empty where it does not apply.
+     * Cleared by every fail helper, so a name cannot outlive its refusal. */
+    char table[128];
+    char column[128];
+    char constraint[128];
 } GsqlError;
+
+/* Name what a refusal is about; any of the three may be NULL. */
+void gsql_error_about(GsqlError *err, const char *table, const char *column, const char *constraint);
 
 typedef enum {
     GSQL_COL_NUMBER = 1,

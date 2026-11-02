@@ -104,7 +104,12 @@ A refusal raises an ordinary gBASIC error, with G-SQL's code in
 `error.details.code` and, where the statement has one, a position in
 `error.details.position`. The codes you will meet: `SYNTAX`, `NOT_FOUND`,
 `EXPRESSION`, `TYPE`, `DUPLICATE`, `NOT_NULL`, `FOREIGN_KEY`, `CHECK`,
-`SERIAL`, `UNSUPPORTED`, `STATE`, `LOST`. Catch in the frame that can act:
+`SERIAL`, `UNSUPPORTED`, `STATE`, `LOST`. A refused row also says what it is
+about, beside `code`: `error.details.table`, `.column` (for `TYPE` and
+`NOT_NULL`) and `.constraint` (the check's or foreign key's name, a unique
+index's name, or `"primary key"`). A name that does not apply is absent, so ask
+`has(e.details, "column")`. Route rejects by these, never by the message's
+words. Catch in the frame that can act:
 
 ```basic
 function insert_once(id)

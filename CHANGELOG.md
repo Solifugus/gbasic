@@ -39,6 +39,12 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### G-SQL refusals name their table, column and constraint
+
+`error.details.table`, `.column` and `.constraint` sit beside `code` on a refused
+row, so a program can route a reject by what was wrong without reading the
+message. Each is absent where it does not apply.
+
 ### G-SQL blocks inside a library
 
 A `database` or `sql` block written in a library is the library's own: its

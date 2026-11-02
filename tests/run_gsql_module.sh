@@ -106,6 +106,18 @@ if [ -s "$work/maxrec.err" ]; then
     fail "max_recursion: the fixture wrote to stderr"
 fi
 
+printf 'TIER details: a refusal names its table, column and constraint beside its code\n'
+# gbasic-books volume 3, G2: the names were only inside the message, so a reject
+# report routing by reason had to parse English (docs/gsql_error_details_design.md)
+mkdir -p "$work/details"
+(cd "$work/details" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/error_details_test.bas") \
+    >"$work/details.out" 2>"$work/details.err"
+verdict details "$work/details.out" $? 12
+if [ -s "$work/details.err" ]; then
+    sed 's/^/       /' "$work/details.err" | head -5
+    fail "details: the fixture wrote to stderr"
+fi
+
 printf 'TIER library: `database` and `sql` blocks inside a library are the library'"'"'s own\n'
 # gbasic-books volume 3, G3: declared in a loaded library they used to be
 # accepted and bound nowhere, so every use failed three different ways, none

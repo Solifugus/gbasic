@@ -87,7 +87,7 @@ static void render(GsqlBuf *o, const unsigned char *v, size_t n) {
     default: {
         /* money, a date-time, a record: as gBASIC's string() writes it */
         const GsqlHost *h = gb_gsql_host();
-        GsqlError err = { GSQL_OK, "", 0, 0 };
+        GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
         GsqlHv *x = h->load(h->ctx, v, n, &err);
         GsqlHv *args[1] = { x };
         GsqlHv *s = x ? h->call(h->ctx, "string", args, 1, &err) : NULL;
@@ -758,7 +758,7 @@ static int both_ways(const char *q, int *seek_runs) {
 static const GsqlHost *H;
 
 static GsqlHv *hload(const unsigned char *v, size_t n) {
-    GsqlError err = { GSQL_OK, "", 0, 0 };
+    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
     return H->load(H->ctx, v, n, &err);
 }
 
@@ -769,7 +769,7 @@ static int hnull(const GsqlHv *v) {
 
 static void hrender(GsqlBuf *o, const GsqlHv *v) {
     GsqlBuf b = {0};
-    GsqlError err = { GSQL_OK, "", 0, 0 };
+    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
     H->store(H->ctx, v, &b, &err);
     render(o, b.bytes, b.length);
     gsql_buf_free(&b);
@@ -777,7 +777,7 @@ static void hrender(GsqlBuf *o, const GsqlHv *v) {
 
 static int hcmp(const GsqlHv *a, const GsqlHv *b) {
     int c = 0;
-    GsqlError err = { GSQL_OK, "", 0, 0 };
+    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
     H->order(H->ctx, a, b, &c, &err);
     return c;
 }
@@ -815,7 +815,7 @@ static void og_flush(OGroup *og, GsqlBuf *o, long having, size_t *nrows) {
             v3_w_int(&nb, (uint64_t)og->nv);
             GsqlHv *n = hload(nb.bytes, nb.length);
             gsql_buf_free(&nb);
-            GsqlError err = { GSQL_OK, "", 0, 0 };
+            GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
             GsqlHv *avg = H->op(H->ctx, GSQL_HOP_DIV, og->sum, n, &err);
             hrender(o, avg ? avg : none);
             if (avg) {
@@ -867,7 +867,7 @@ static void oracle_fold(const GsqlBuf *raw, long having, GsqlBuf *o) {
             og.hi = v;
             continue;
         }
-        GsqlError err = { GSQL_OK, "", 0, 0 };
+        GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
         GsqlHv *s2 = H->op(H->ctx, GSQL_HOP_ADD, og.sum, v, &err);
         H->release(H->ctx, og.sum);
         og.sum = s2;
@@ -1343,7 +1343,7 @@ static void oracle_join(const GsqlBuf *rr, const GsqlBuf *qq, int left, GsqlBuf 
             GsBytes qc[3];
             v3_array_items(qi[b].p, qi[b].n, qc, 3);
             GsqlHv *qk = hload(qc[1].p, qc[1].n);
-            GsqlError err = { GSQL_OK, "", 0, 0 };
+            GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
             GsqlHv *eq = H->op(H->ctx, GSQL_HOP_EQ, qk, rk, &err);
             int t = eq ? H->truth(H->ctx, eq) : 0;
             if (eq) {
@@ -1468,7 +1468,7 @@ static const char *const qpreds[] = { "TRUE", "q.v > 0", "q.v IS NULL", "q.t = '
 /* the truth of `=` between two stored values, through the host */
 static int host_eq(const unsigned char *a, size_t an, const unsigned char *b, size_t bn) {
     GsqlHv *x = hload(a, an), *y = hload(b, bn);
-    GsqlError err = { GSQL_OK, "", 0, 0 };
+    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
     GsqlHv *eq = H->op(H->ctx, GSQL_HOP_EQ, x, y, &err);
     int t = eq ? H->truth(H->ctx, eq) : -2;
     if (eq) {

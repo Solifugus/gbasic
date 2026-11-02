@@ -349,7 +349,7 @@ static void drop(GsqlClient *c) {
 
 /* Reaches an owner: connect, or start one. Bounded in attempts and time. */
 static int reach(GsqlClient *c, GsqlError *err) {
-    GsqlError last = { GSQL_NO_OWNER, "", 0, 0 };
+    GsqlError last = { GSQL_NO_OWNER, "", 0, 0, "", "", "" };
     for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
         char sock[200];
         int rc = gsql_socket_path(c->db, sock, sizeof sock, &c->device, &c->inode, &last);

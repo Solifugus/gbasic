@@ -477,8 +477,20 @@ void gb_gsql_host_teardown(void) {
 /* A refusal from G-SQL. `error.details.code` names it, so a program can tell a
  * duplicate from a lost owner without reading English, and `position` says
  * where in the statement when there is a place. */
+static void gsql_module_raise_about(const char *verb, const char *code, const char *message, long position,
+                                    const char *sql, Value *reply);
+
 static void gsql_module_raise(const char *verb, const char *code, const char *message, long position,
                               const char *sql) {
+    gsql_module_raise_about(verb, code, message, position, sql, NULL);
+}
+
+static Value *gsql_field(Value *record, const char *name);
+
+/* ...with the owner's reply, whose `table`, `column` and `constraint` go into
+ * `details` beside `code` (docs/gsql_error_details_design.md). */
+static void gsql_module_raise_about(const char *verb, const char *code, const char *message, long position,
+                                    const char *sql, Value *reply) {
     if (raise_in_flight) {
         return;
     }
@@ -495,6 +507,13 @@ static void gsql_module_raise(const char *verb, const char *code, const char *me
     record_set(&details, "code", value_string(code));
     if (position > 0) {
         record_set(&details, "position", value_number_exact(position));
+    }
+    static const char *about[] = { "table", "column", "constraint" };
+    for (size_t k = 0; reply && k < 3; k++) {
+        Value *f = gsql_field(reply, about[k]);
+        if (f && f->kind == VALUE_STRING) {
+            record_set(&details, about[k], value_copy(*f));
+        }
     }
     error_set_state_full(text, GSQL_ERROR_CODE, "gsql", details, value_null(), 0, 0);
     error_generation++;
@@ -691,9 +710,10 @@ static int gsql_request(GsqlConnectionValue *c, unsigned type, Value body, const
         Value *code = gsql_field(&v, "code");
         Value *message = gsql_field(&v, "message");
         Value *position = gsql_field(&v, "position");
-        gsql_module_raise(verb, code && code->kind == VALUE_STRING ? code->as.string : "?",
-                          message && message->kind == VALUE_STRING ? message->as.string : "(no message)",
-                          position && position->kind == VALUE_NUMBER ? (long)position->as.num.value : 0, sql);
+        gsql_module_raise_about(verb, code && code->kind == VALUE_STRING ? code->as.string : "?",
+                                message && message->kind == VALUE_STRING ? message->as.string : "(no message)",
+                                position && position->kind == VALUE_NUMBER ? (long)position->as.num.value : 0, sql,
+                                &v);
         value_free(v);
         return 0;
     }

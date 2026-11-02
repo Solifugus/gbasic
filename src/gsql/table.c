@@ -57,10 +57,26 @@ static int fail(GsqlError *err, int code, const char *fmt, ...) {
         va_start(ap, fmt);
         err->code = code;
         err->dup = 0;
+        err->table[0] = err->column[0] = err->constraint[0] = '\0';
         vsnprintf(err->message, sizeof err->message, fmt, ap);
         va_end(ap);
     }
     return code;
+}
+
+void gsql_error_about(GsqlError *err, const char *table, const char *column, const char *constraint) {
+    if (!err) {
+        return;
+    }
+    if (table) {
+        snprintf(err->table, sizeof err->table, "%s", table);
+    }
+    if (column) {
+        snprintf(err->column, sizeof err->column, "%s", column);
+    }
+    if (constraint) {
+        snprintf(err->constraint, sizeof err->constraint, "%s", constraint);
+    }
 }
 
 static int ok(GsqlError *err) {
@@ -639,7 +655,7 @@ static int check_name(const char *what, const char *name, GsqlError *err) {
     return GSQL_OK;
 }
 
-static int value_fits(const char *table, const GsqlColumn *c, const unsigned char *p, size_t n, GsqlError *err) {
+static int value_fits_rule(const char *table, const GsqlColumn *c, const unsigned char *p, size_t n, GsqlError *err) {
     V3Walk w;
     if (!v3_walk_whole(p, n, &w)) {
         return fail(err, GSQL_TYPE, "%s.%s: the value is not one well-formed value", table, c->name);
@@ -709,6 +725,16 @@ static int value_fits(const char *table, const GsqlColumn *c, const unsigned cha
     return GSQL_OK;
 }
 
+/* Every refusal above is about one column of one table: named here, once,
+ * rather than at each of its returns (docs/gsql_error_details_design.md). */
+static int value_fits(const char *table, const GsqlColumn *c, const unsigned char *p, size_t n, GsqlError *err) {
+    int rc = value_fits_rule(table, c, p, n, err);
+    if (rc != GSQL_OK) {
+        gsql_error_about(err, table, c->name, NULL);
+    }
+    return rc;
+}
+
 int gsql_value_fits(const GsqlColumn *c, const unsigned char *value, size_t n, GsqlError *err) {
     int rc = value_fits("?", c, value, n, err);
     return rc == GSQL_OK ? ok(err) : rc;
@@ -770,7 +796,9 @@ static int primary_key(const GsqlTable *tb, const GsBytes *vals, GsqlKey *k, Gsq
     for (size_t i = 0; i < tb->nkey; i++) {
         const GsqlColumn *c = &tb->cols[tb->key[i]];
         if (!key_component(k, c, vals[tb->key[i]], 0)) {
-            return fail(err, GSQL_TYPE, "%s.%s: the value has no order, so it cannot be a key", tb->name, c->name);
+            fail(err, GSQL_TYPE, "%s.%s: the value has no order, so it cannot be a key", tb->name, c->name);
+            gsql_error_about(err, tb->name, c->name, NULL);
+            return GSQL_TYPE;
         }
     }
     return GSQL_OK;
@@ -874,7 +902,9 @@ int gsql_row_key(const GsqlTable *tb, const GsqlIn *vals, GsqlBuf *rowkey, GsqlE
         GsBytes v = { vals[i].p, vals[i].n };
         if (!vals[i].present || !key_component(&k, c, v, 0)) {
             gsql_key_free(&k);
-            return fail(err, GSQL_TYPE, "%s.%s: the value has no order, so it cannot be a key", tb->name, c->name);
+            fail(err, GSQL_TYPE, "%s.%s: the value has no order, so it cannot be a key", tb->name, c->name);
+            gsql_error_about(err, tb->name, c->name, NULL);
+            return GSQL_TYPE;
         }
     }
     v3_set(rowkey, k.bytes, k.length);
@@ -1463,6 +1493,7 @@ static int unique_taken(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t
         return GSQL_OK;
     }
     fail(err, GSQL_DUPLICATE, "%s: unique index %s already holds that value", tb->name, tb->idx[i].name);
+    gsql_error_about(err, tb->name, NULL, tb->idx[i].name);
     if (err) {
         err->dup = (int)i + 1;
     }
@@ -1507,6 +1538,7 @@ int gsql_row_insert(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlIn *va
         int st = e->get(t, gsql_table_rows_tree(tb), key_bytes(&k), &got);
         if (st == GS_OK) {
             rc = fail(err, GSQL_DUPLICATE, "%s: the primary key already holds that value", tb->name);
+            gsql_error_about(err, tb->name, NULL, "primary key");
             if (err) {
                 err->dup = -1;
             }
@@ -1605,6 +1637,7 @@ int gsql_row_update(const GsEngine *e, GsTxn *t, GsqlTable *tb, GsBytes rowkey, 
         int st = e->get(t, gsql_table_rows_tree(tb), key_bytes(&k), &got);
         if (st == GS_OK) {
             rc = fail(err, GSQL_DUPLICATE, "%s: the primary key already holds that value", tb->name);
+            gsql_error_about(err, tb->name, NULL, "primary key");
             if (err) {
                 err->dup = -1;
             }
