@@ -2044,9 +2044,21 @@ int main(int argc, char **argv) {
         }
         const char *sl = getenv("GSQL_TEST_SLICE");
         slice_rows = sl ? strtoull(sl, NULL, 10) : 0;
+        /* GSQL_TEST_SORT_BUDGET=N: an ORDER BY spills past N bytes, to a
+           sorter writing a run each GSQL_TEST_SORT_RUN bytes (1 KiB), so the
+           script's sorts run on disk */
+        const char *sb = getenv("GSQL_TEST_SORT_BUDGET"), *sr = getenv("GSQL_TEST_SORT_RUN");
+        if (sb) {
+            gsql_sql_sort_budget(sql, strtoull(sb, NULL, 10), sr ? strtoull(sr, NULL, 10) : 1024);
+        }
         int rc = script(argv[2]);
         if (slice_rows) {
             printf("sliced: %lu resumes\n", resumes);
+        }
+        if (sb) {
+            unsigned long sorts, runs;
+            gsql_sql_spills(sql, &sorts, &runs);
+            printf("spilled: %lu sorts, %lu runs\n", sorts, runs);
         }
         if (held) {
             E->abort(held);

@@ -1593,6 +1593,12 @@ rowbytes 1073741824
 > SELECT count(*) FROM sale GROUP BY CUBE(id, region, product, amount, id, region, product, amount, id, region, product)
 ! UNSUPPORTED 36 CUBE of 11 expressions makes 2048 sets
 
+# ---- ORDER BY past its budget refuses as in memory (docs/gsql_operator_spill_design.md) -
+> SELECT id FROM wn ORDER BY CASE WHEN id < 3 THEN id ELSE 'x' END
+! EXPRESSION 28 < compares text with a number
+> SELECT id FROM wn ORDER BY CASE WHEN id < 3 THEN NULL ELSE 'x' END, id DESC
+= 7 | 6 | 5 | 4 | 3 | 2 | 1
+
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
 = done 0

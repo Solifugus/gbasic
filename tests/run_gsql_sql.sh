@@ -17,6 +17,8 @@
 #                answer written by hand (tests/gsql/gen_sql_cases.py), each
 #                refusal pinned to a phrase of its cause
 #   valgrind     the semantics tier again, no invalid access, no definite leak
+#   spilled      the semantics tier with every ORDER BY on disk, with floors on
+#                the sorts spilled and the runs written
 #   differential random rows and predicates, each query run with access paths
 #                and forced to a scan: identical answers, with a census floor
 #                so a planner that never seeks cannot pass by agreeing; a
@@ -217,6 +219,22 @@ if vg_available; then
     fi
 else
     printf '  SKIP valgrind (unavailable)\n'
+fi
+
+printf 'TIER spilled: the semantics corpus with every ORDER BY through the external sorter\n'
+# a budget of one byte spills every sort, to runs of 64 bytes, so the merge
+# from disk answers every case; the floors keep a budget that quietly never
+# spilled from passing (docs/gsql_operator_spill_design.md)
+mkdir -p "$work/spill"
+GSQL_TEST_SORT_BUDGET=1 GSQL_TEST_SORT_RUN=64 bounded 300 "$work/sql_test" script tests/gsql/sql_cases.txt \
+    "$work/spill/db" >"$work/spill.out" 2>"$work/spill.err"
+src=$?
+verdict "spilled semantics" "$work/spill.out" $src
+spilled=$(sed -n 's/^spilled: \([0-9]*\) sorts, \([0-9]*\) runs$/\1 \2/p' "$work/spill.out")
+if [ -n "$spilled" ] && [ "${spilled% *}" -ge 50 ] && [ "${spilled#* }" -ge 100 ]; then
+    pass "spilled: ${spilled% *} sorts went to disk, writing ${spilled#* } runs (floors 50 and 100)"
+else
+    fail "spilled: the sorts did not reach disk as the floors require (got '${spilled:-nothing}')"
 fi
 
 printf 'TIER differential: access paths against a forced scan, five seeds\n'

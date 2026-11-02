@@ -1202,6 +1202,13 @@ stmt("SELECT product FROM sale GROUP BY ROLLUP(region)",
 stmt("SELECT count(*) FROM sale GROUP BY CUBE(id, region, product, amount, id, region, product, amount, id, region, "
      "product)", ("UNSUPPORTED", "CUBE", "CUBE of 11 expressions makes 2048 sets"))
 
+sec("ORDER BY past its budget refuses as in memory (docs/gsql_operator_spill_design.md)")
+# every value of an ORDER BY term must be comparable with its first, spilled or not; the spilled
+# tier runs this whole corpus with every sort on disk
+stmt("SELECT id FROM wn ORDER BY CASE WHEN id < 3 THEN id ELSE 'x' END",
+     ("EXPRESSION", "CASE", "< compares text with a number"))
+stmt("SELECT id FROM wn ORDER BY CASE WHEN id < 3 THEN NULL ELSE 'x' END, id DESC", "= 7 | 6 | 5 | 4 | 3 | 2 | 1")
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

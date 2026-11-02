@@ -74,6 +74,11 @@ void gsql_sql_recursion_limit(GsqlSql *q, uint64_t rounds);
  * set): rows that double each round reach memory's end before any round
  * limit. */
 void gsql_sql_recursion_bytes(GsqlSql *q, uint64_t bytes);
+/* For tests: the memory an ORDER BY's rows may take before they go to the
+ * external sorter (64 MB unless set), and the sorter's own run size (0: its
+ * 64 MB); and how many sorts spilled, and the runs they wrote. */
+void gsql_sql_sort_budget(GsqlSql *q, size_t bytes, size_t run);
+void gsql_sql_spills(const GsqlSql *q, unsigned long *sorts, unsigned long *runs);
 /* For tests: how many statements used a seek or a point read, and a scan. */
 void gsql_sql_counts(const GsqlSql *q, unsigned long *seeks, unsigned long *scans);
 /* For tests: how many plans so far read a join's tables in an order chosen by

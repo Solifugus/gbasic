@@ -13,6 +13,7 @@
 #include "gsql_wire.h"
 #include "serialize_tags.h"
 #include "platform.h"
+#include "xsort.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -38,6 +39,10 @@ struct GsqlSql {
        refused (docs/gsql_recursive_design.md §3) */
     uint64_t rec_limit;
     uint64_t rec_bytes;      /* and the bytes of rows it may hold */
+    /* ORDER BY's budget before it spills to the external sorter, and the
+       sorter's own (docs/gsql_operator_spill_design.md); sorts spilled */
+    size_t sort_budget, sort_run;
+    unsigned long spills, spill_runs;
 };
 
 /* A warning of the SQL layer's own, for the statement now running. */
@@ -1999,6 +2004,16 @@ typedef struct {
     KeyMap seen;        /* SELECT DISTINCT: the output rows' keys so far */
     GsqlBuf *seen_keys;
     size_t nseen, capseen;
+    /* ORDER BY past its budget (docs/gsql_operator_spill_design.md): the
+       sorter holding the rows, the memory the rows in hand take, each ORDER
+       BY term's first value (which every other must be comparable with), and
+       whether a value with no sort key was seen, which keeps the sort in
+       memory */
+    struct GsXsort *xs;
+    int spilled;
+    size_t held;
+    GsqlHv **first;
+    int unkeyed;
     /* window functions (docs/gsql_window_design.md §5): the rows collected,
        replayed from wpos */
     int windowed;
@@ -2966,6 +2981,13 @@ static void cursor_free(SqlCursor *c) {
     if (!c) {
         return;
     }
+    if (c->xs) {
+        gs_xsort_close(c->xs);
+    }
+    for (size_t k = 0; c->first && k < c->plan.s->norder; k++) {
+        rel(&c->x, c->first[k]);
+    }
+    free(c->first);
     dump_free(c->dump);
     free(c->sort_tmp);   /* a sort stopped part way */
     if (c->backup) {
@@ -3034,6 +3056,29 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
     if (c->produced >= c->limit) {
         c->ended = 1;
         return 0;
+    }
+    if (c->sorted && c->spilled) {
+        for (;;) {
+            GsBytes k, v;
+            int have;
+            int xr = gs_xsort_next(c->xs, &k, &v, &have);
+            if (xr) {
+                xfail(c->x.err, GSQL_STORAGE, 0, "an ORDER BY's sort on disk failed: %s", strerror(xr));
+                return -1;
+            }
+            if (!have) {
+                c->ended = 1;
+                return 0;
+            }
+            if (c->offset) {
+                c->offset--;
+                continue;
+            }
+            out->length = 0;
+            v3_put(out, v.p, v.n);
+            c->produced++;
+            return 1;
+        }
     }
     if (c->sorted) {
         if (c->pos >= c->nrows) {
@@ -3130,6 +3175,112 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
     }
 }
 
+/* ---- ORDER BY past its budget (docs/gsql_operator_spill_design.md §2) ----
+ *
+ * The rows go to the external sorter keyed by the index key encoding, whose
+ * memcmp order is gBASIC's order, NULL last ascending and first descending,
+ * ties in the order added. Where the two could disagree the in-memory rules
+ * are kept: each ORDER BY term's values must be comparable with its first,
+ * checked as `<` checks them, whether or not the sort spills; and a value
+ * with no key (a duration) keeps the sort in memory, so its answer is the
+ * same as it always was. */
+
+/* row `r`'s sort key: its ORDER BY values, each its key component */
+static int spill_key(SqlCursor *c, const SortRow *r, GsqlKey *key) {
+    X *x = &c->x;
+    for (size_t k = 0; k < c->plan.s->norder; k++) {
+        GsqlBuf b = {0};
+        int rc = x->h->store(x->h->ctx, r->keys[k], &b, x->err);
+        if (rc == GSQL_OK && gsql_key_append(key, b.bytes, b.length, NULL,
+                                             c->plan.s->order[k].desc ? GSQL_KEY_DESC : 0) != GSQL_KEY_OK) {
+            rc = xfail(x->err, GSQL_EXPRESSION, c->plan.order[k]->pos,
+                       "ORDER BY sorts more rows than fit in memory, and %s has no sort key G-SQL can put on disk",
+                       tag_word(b.length ? b.bytes[0] : 0));
+        }
+        gsql_buf_free(&b);
+        if (rc != GSQL_OK) {
+            return rc;
+        }
+    }
+    return GSQL_OK;
+}
+
+/* row `r` handed to the sorter, and freed */
+static int spill_row(SqlCursor *c, SortRow *r) {
+    GsqlKey key;
+    gsql_key_init(&key);
+    int rc = spill_key(c, r, &key);
+    if (rc == GSQL_OK) {
+        int xr = gs_xsort_add(c->xs, key.bytes, key.length, r->out.bytes, r->out.length);
+        if (xr) {
+            rc = xfail(c->x.err, GSQL_STORAGE, 0, "an ORDER BY's sort on disk failed: %s", strerror(xr));
+        }
+    }
+    gsql_key_free(&key);
+    gsql_buf_free(&r->out);
+    for (size_t k = 0; k < c->plan.s->norder; k++) {
+        rel(&c->x, r->keys[k]);
+    }
+    free(r->keys);
+    r->keys = NULL;
+    return rc;
+}
+
+/* the rows in hand past the budget: from here on they go to the sorter */
+static int spill_start(SqlCursor *c) {
+    int xr = gs_xsort_open(NULL, c->q->sort_run, &c->xs);
+    if (xr) {
+        c->xs = NULL;
+        return xfail(c->x.err, GSQL_STORAGE, 0, "an ORDER BY could not start its sort on disk: %s", strerror(xr));
+    }
+    c->spilled = 1;
+    c->q->spills++;
+    int rc = GSQL_OK;
+    for (size_t k = 0; k < c->nrows; k++) {
+        if (rc == GSQL_OK) {
+            rc = spill_row(c, &c->rows[k]);
+        } else {
+            gsql_buf_free(&c->rows[k].out);
+            for (size_t j = 0; j < c->plan.s->norder; j++) {
+                rel(&c->x, c->rows[k].keys[j]);
+            }
+            free(c->rows[k].keys);
+        }
+    }
+    c->nrows = 0;
+    return rc;
+}
+
+/* each ORDER BY value comparable with its term's first, as `<` requires;
+ * noting a value with no key */
+static int sort_kinds(SqlCursor *c, const SortRow *r) {
+    X *x = &c->x;
+    size_t nord = c->plan.s->norder;
+    if (!c->first) {
+        c->first = calloc(nord ? nord : 1, sizeof(GsqlHv *));
+        if (!c->first) {
+            abort();
+        }
+    }
+    for (size_t k = 0; k < nord; k++) {
+        GsqlHv *v = r->keys[k];
+        if (is_null(x, v)) {
+            continue;
+        }
+        int kind = kind_of(x, v);
+        if (kind == SER_DURATION || kind == SER_ARRAY || kind == SER_RECORD) {
+            c->unkeyed = 1;
+        }
+        if (!c->first[k]) {
+            c->first[k] = x->h->copy(x->h->ctx, v);
+        } else if (!comparable(x, v, c->first[k], SQL_OP_LT, c->plan.order[k])) {
+            /* the later row first, as the merge sort named them */
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* The rows a sort needs, up to `budget` of them: 1 more remain, 0 all
  * collected, -1 refused. Resumes where it stopped, as the fold does. */
 static int collect_step(SqlCursor *c, uint64_t budget) {
@@ -3190,6 +3341,28 @@ static int collect_step(SqlCursor *c, uint64_t budget) {
                 return -1;
             }
         }
+        if (sort_kinds(c, row) < 0) {
+            return -1;
+        }
+        if (c->spilled) {
+            c->nrows--;
+            if (spill_row(c, row) != GSQL_OK) {
+                return -1;
+            }
+            continue;
+        }
+        c->held += sizeof(SortRow) + row->out.capacity + 64 * nord;
+        if (c->held > c->q->sort_budget && !c->unkeyed && spill_start(c) != GSQL_OK) {
+            return -1;
+        }
+    }
+    if (c->spilled) {
+        int xr = gs_xsort_finish(c->xs);
+        if (xr) {
+            xfail(x->err, GSQL_STORAGE, 0, "an ORDER BY's sort on disk failed: %s", strerror(xr));
+            return -1;
+        }
+        c->q->spill_runs += gs_xsort_runs(c->xs);
     }
     return 0;
 }
@@ -6050,6 +6223,10 @@ static int advance(SqlCursor *c, uint64_t budget) {
             if (r > 0) {
                 return PH_WORKING;
             }
+            if (c->spilled) {
+                c->phase = PH_READY;   /* the sorter's merge is the sort */
+                break;
+            }
             sort_begin(c);
             c->phase = PH_SORT;
             break;
@@ -7870,6 +8047,8 @@ GsqlSql *gsql_sql_new(const GsqlHost *host) {
     q->h = *host;
     q->rec_limit = 100000;
     q->rec_bytes = (uint64_t)1 << 30;
+    q->sort_budget = (size_t)64 << 20;
+    q->sort_run = 0;   /* the sorter's 64 MB */
     return q;
 }
 
@@ -7905,6 +8084,16 @@ void gsql_sql_recursion_limit(GsqlSql *q, uint64_t rounds) {
 
 void gsql_sql_recursion_bytes(GsqlSql *q, uint64_t bytes) {
     q->rec_bytes = bytes;
+}
+
+void gsql_sql_sort_budget(GsqlSql *q, size_t bytes, size_t run) {
+    q->sort_budget = bytes;
+    q->sort_run = run;
+}
+
+void gsql_sql_spills(const GsqlSql *q, unsigned long *sorts, unsigned long *runs) {
+    *sorts = q->spills;
+    *runs = q->spill_runs;
 }
 
 void gsql_sql_counts(const GsqlSql *q, unsigned long *seeks, unsigned long *scans) {

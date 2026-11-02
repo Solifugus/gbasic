@@ -1,6 +1,6 @@
 # G-SQL: query operators that spill to disk
 
-**Status:** Proposal 2026-11-01, for Matthew's review: the rest of work-order item 6 (`gsql_scale_measurements.md` §4), *"the query operators are still to come"* (`gsql_spill_design.md`). Nothing here is built. §5 lists the decisions that are his.
+**Status:** Partial 2026-11-02: §4's first step, `ORDER BY`, is built (§6). The rest of work-order item 6 (`gsql_scale_measurements.md` §4), *"the query operators are still to come"* (`gsql_spill_design.md`). Matthew said "go ahead" on 2026-11-02 without ruling on §5, so §5 records the defaults taken, each his to reverse.
 
 ## 1. The gap
 
@@ -17,7 +17,8 @@ A row is sorted, grouped or deduplicated by gBASIC's own order and equality. The
 | case | in memory today | `memcmp` of keys | so a spilled operator |
 |---|---|---|---|
 | two currencies in one sort column | refused (`EXPRESSION`) | the encoder refuses too | refuses, the same |
-| a record, a duration, an array | refused | no key exists | refuses, the same |
+| an array, a record | refused (`<` has no order for them) | no key exists | refuses, the same |
+| a duration | **sorted**, by its total seconds | no key exists (its equality is field by field) | **stays in memory**: a sort that meets one does not spill, so it answers as it always did and only its memory bound is lost |
 | a number against text in one column | `<` refuses | ordered by kind tag, silently | **records each column's kind** as rows arrive, and refuses at the first row of another kind, naming the column |
 | `NULL` | after every value | the encoding's absence placement | the same, `DESC` included |
 | ties | stable | the sorter is stable | the same |
@@ -46,8 +47,25 @@ Each spills only once its rows pass the budget, so a small query runs exactly as
 
 Each is its own increment with a design note, and each is tested the way the differential tier already tests access paths: every generated query run with a budget of one row, so it spills, against the same query in memory, with a floor on spilled runs so a budget that quietly never spilled cannot pass.
 
-## 5. Decisions for Matthew
+## 5. Decisions for Matthew, and the defaults taken
 
-1. **The budget:** 64 MB per operator, as the index build has, or one budget shared by every operator in a statement, or one per owner shared by every client? Per operator is simplest; per owner is what bounds the process.
-2. **A group's output order.** `GROUP BY` without `ORDER BY` has no promised order. A spilled `GROUP BY` would answer in group-key order, and the in-memory one answers in whatever order it does today. Fine to let them differ, as SQL allows?
-3. **Where spill files go:** `$TMPDIR` or `/var/tmp`, as the sorter does now, or a directory inside the database, so a database on a NAS spills to the NAS? The local disk is faster; inside the database keeps a tenant's data in one place.
+1. **The budget:** 64 MB per operator, as the index build has, or one budget shared by every operator in a statement, or one per owner shared by every client? Per operator is simplest; per owner is what bounds the process. **Taken: per operator**, the simplest, and the index build's.
+2. **A group's output order.** This turned out not to be a question: an in-memory `GROUP BY` already answers its groups in key order (`agg_finish` sorts them by their keys), which is the order a spilled one would have. **Nothing differs.**
+3. **Where spill files go:** `$TMPDIR` or `/var/tmp`, as the sorter does now, or a directory inside the database, so a database on a NAS spills to the NAS? The local disk is faster; inside the database keeps a tenant's data in one place. **Taken: as the sorter does now.**
+
+## 6. Built: `ORDER BY` (2026-11-02)
+
+A sort collects its rows as before, counting the memory they take (each row's bytes, its ORDER BY values and its slot). Past the budget, every row in hand goes to the external sorter, keyed by its ORDER BY values in the key encoding (`DESC` terms inverted), and so does every row after; the sorter's merge is then the sort, and `OFFSET` skips from its front. Whether or not it spills, each ORDER BY term's values must be comparable with its first, checked as `<` checks them, so a spilled sort refuses exactly where the in-memory one does, with the same words.
+
+**Measured** (`sql_test` in process, rows of an integer key, an integer and 47 bytes of text, `ORDER BY v DESC, id`, peak resident memory of the whole process including its 64 MB of sorter run buffer):
+
+| rows | spilled | in memory |
+|---|---|---|
+| 2 000 000 | 236 MB, 3.6 s (3 runs) | 614 MB, 5.2 s |
+| 6 000 000 | 247 MB, 10.7 s (7 runs) | 1 706 MB, 17.4 s |
+
+The spilled sort's memory stays flat as its input triples, and it is faster, since the sorter compares bytes where the in-memory merge sort calls back into gBASIC for each comparison.
+
+**Tested** by running the whole semantics corpus with a budget of one byte and 64-byte runs, so that every `ORDER BY` in it goes through disk (76 sorts, 295 runs), requiring the same answers, with floors on both counts; and under valgrind the same way.
+
+**Not yet measured:** a sort meeting a duration staying in memory, since SQL reaches a duration only through a record's field or a parameter, and no corpus case orders by one. **A limit found on the way:** the sorter merges all its runs at once, a file each, so past about a thousand runs (64 GB of sort at 64 MB a run) it would meet the open-file limit. The index build shares it. It needs a merge in passes before a sort that size.
