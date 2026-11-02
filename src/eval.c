@@ -29354,8 +29354,18 @@ static Value reflect_eval_call(AstExpr *expr) {
  * HELD argument, already evaluated, so `blocks[0].exec()` evaluates it once.
  * Answers the module's name for a receiver that has one, else NULL. */
 static const char *handle_method_module(const Value *v) {
-    if (v->kind == VALUE_GSQL_CONNECTION || v->kind == VALUE_GSQL_STATEMENT) {
-        return "gsql";
+    switch (v->kind) {
+    case VALUE_GSQL_CONNECTION:
+    case VALUE_GSQL_STATEMENT:   return "gsql";
+    case VALUE_SQLITE_CONNECTION: return "sqlite";
+    case VALUE_POSTGRES_CONNECTION: return "pg";
+    case VALUE_ODBC_CONNECTION:  return "odbc";
+    case VALUE_LDAP_CONNECTION:  return "ldap";
+    case VALUE_XML_READER:       return "xml";
+    case VALUE_PROCESS:          return "process";
+    case VALUE_HTTP:             return "http";
+    case VALUE_WORKBOOK:         return "xlsx";
+    default:                     break;
     }
     if (v->kind == VALUE_RECORD) {
         RecordField *kind = record_find((Value *)v, "kind");

@@ -15,6 +15,11 @@
 #               module still winning
 #   unused      a block used only as `add.exec()` is a use, so warning 2121
 #               stays quiet; and 2121 names the method form when it does fire
+#   more        sqlite, an xml reader, a process, an http handle (to a port
+#               nothing listens on, so no network) and an xlsx workbook, each
+#               method beside its module form
+#   conn        an odbc connection over the SQLite3 driver, an ldap one bound
+#               to a port nothing listens on (`unreachable`, as a value)
 #   qt          a window opened, written, read, set, invoked and closed through
 #               methods, offscreen
 #   valgrind    the gsql fixture, no invalid access, no definite leak
@@ -37,6 +42,8 @@ fi
 root=$PWD
 GSQL_FIX=$root/tests/handle_methods/gsql_methods.bas
 QT_FIX=$root/tests/handle_methods/qt_methods.bas
+MORE_FIX=$root/tests/handle_methods/more_methods.bas
+CONN_FIX=$root/tests/handle_methods/conn_methods.bas
 
 # a fixture's verdict: no MISMATCH, its last line `done`, and a floor
 verdict() {
@@ -118,6 +125,38 @@ GB
         fi
     else
         printf '  SKIP valgrind (unavailable)\n'
+    fi
+fi
+
+printf 'TIER more: sqlite, an xml reader, a process, an http handle, a workbook\n'
+printf 'load sqlite\nload xml\nload http\nprint "loaded"\n' > "$work/mprobe.bas"
+if ! mprobe=$(./gbasic "$work/mprobe.bas" 2>&1) || [ "$mprobe" != loaded ]; then
+    printf '  SKIP more (this build lacks sqlite, xml or http: %s -- those methods were NOT measured)\n' "$mprobe"
+else
+    mkdir -p "$work/m"
+    # bounded: a reader loop that never ends is a hang, reported as one
+    timeout -k 5 60 ./gbasic "$MORE_FIX" "$work/m" >"$work/m.out" 2>&1
+    rc=$?
+    if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+        fail "more: did not finish -- a hang, reported as one"
+    else
+        verdict "more" "$work/m.out" "$rc" 8
+    fi
+fi
+
+printf 'TIER conn: an odbc and an ldap connection\n'
+printf 'load odbc\nload ldap\nprint "loaded"\n' > "$work/cprobe.bas"
+if ! cprobe=$(./gbasic "$work/cprobe.bas" 2>&1) || [ "$cprobe" != loaded ]; then
+    printf '  SKIP conn (this build lacks odbc or ldap: %s -- those methods were NOT measured)\n' "$cprobe"
+elif ! command -v odbcinst >/dev/null 2>&1 || ! odbcinst -q -d 2>/dev/null | grep -qx '\[SQLite3\]'; then
+    printf '  SKIP conn (no SQLite3 ODBC driver installed -- odbc and ldap methods were NOT measured)\n'
+else
+    timeout -k 5 60 ./gbasic "$CONN_FIX" "Driver=SQLite3;Database=$work/o.db" >"$work/c.out" 2>&1
+    rc=$?
+    if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+        fail "conn: did not finish -- a hang, reported as one"
+    else
+        verdict "conn" "$work/c.out" "$rc" 4
     fi
 fi
 
