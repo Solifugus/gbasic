@@ -2058,7 +2058,7 @@ int main(int argc, char **argv) {
         if (sb) {
             unsigned long sorts, runs;
             gsql_sql_spills(sql, &sorts, &runs);
-            printf("spilled: %lu sorts, %lu runs\n", sorts, runs);
+            printf("spilled: %lu sorts, %lu runs, %lu spools\n", sorts, runs, gsql_sql_spools(sql));
         }
         if (held) {
             E->abort(held);

@@ -348,3 +348,92 @@ void gs_xsort_close(GsXsort *s) {
     free(s->ents);
     free(s);
 }
+
+/* ---- the row spool ------------------------------------------------------- */
+
+struct GsSpool {
+    char dir[512];
+    char path[600];
+    FILE *f;
+    uint64_t end;        /* where the next entry is written */
+};
+
+int gs_spool_open(const char *tmpdir, GsSpool **out) {
+    GsSpool *s = calloc(1, sizeof *s);
+    if (!s) {
+        return ENOMEM;
+    }
+    if (snprintf(s->dir, sizeof s->dir, "%s/gsql-spool-XXXXXX", tmpdir ? tmpdir : temp_base()) >= (int)sizeof s->dir) {
+        free(s);
+        return ENAMETOOLONG;
+    }
+    if (!mkdtemp(s->dir)) {
+        int e = errno;
+        free(s);
+        return e;
+    }
+    snprintf(s->path, sizeof s->path, "%s/rows", s->dir);
+    if (!(s->f = fopen(s->path, "w+b"))) {
+        int e = errno;
+        rmdir(s->dir);
+        free(s);
+        return e;
+    }
+    *out = s;
+    return 0;
+}
+
+int gs_spool_add(GsSpool *s, const void *p, size_t n, uint64_t *offset) {
+    unsigned char len[8];
+    for (int k = 0; k < 8; k++) {
+        len[k] = (unsigned char)((uint64_t)n >> (8 * k));
+    }
+    /* a write after a read needs a seek between them (C11 7.21.5.3) */
+    if (fseeko(s->f, (off_t)s->end, SEEK_SET) || fwrite(len, 1, 8, s->f) != 8 || (n && fwrite(p, 1, n, s->f) != n)) {
+        return EIO;
+    }
+    *offset = s->end;
+    s->end += 8 + n;
+    return 0;
+}
+
+int gs_spool_get(GsSpool *s, uint64_t offset, unsigned char **buf, size_t *cap, size_t *n) {
+    unsigned char len[8];
+    if (fseeko(s->f, (off_t)offset, SEEK_SET) || fread(len, 1, 8, s->f) != 8) {
+        return EIO;
+    }
+    uint64_t m = 0;
+    for (int k = 0; k < 8; k++) {
+        m |= (uint64_t)len[k] << (8 * k);
+    }
+    if (m > s->end - offset - 8) {
+        return EIO;
+    }
+    if (m > *cap) {
+        unsigned char *g = realloc(*buf, m ? m : 1);
+        if (!g) {
+            return ENOMEM;
+        }
+        *buf = g;
+        *cap = m;
+    }
+    if (m && fread(*buf, 1, m, s->f) != m) {
+        return EIO;
+    }
+    *n = m;
+    return 0;
+}
+
+uint64_t gs_spool_size(const GsSpool *s) { return s->end; }
+
+void gs_spool_close(GsSpool *s) {
+    if (!s) {
+        return;
+    }
+    if (s->f) {
+        fclose(s->f);
+    }
+    remove(s->path);
+    rmdir(s->dir);
+    free(s);
+}

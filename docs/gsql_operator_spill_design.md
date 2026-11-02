@@ -1,6 +1,6 @@
 # G-SQL: query operators that spill to disk
 
-**Status:** Partial 2026-11-02: §4's first two steps, `ORDER BY` (§6) and `GROUP BY` (§7), are built. The rest of work-order item 6 (`gsql_scale_measurements.md` §4), *"the query operators are still to come"* (`gsql_spill_design.md`). Matthew said "go ahead" on 2026-11-02 without ruling on §5, so §5 records the defaults taken, each his to reverse.
+**Status:** Partial 2026-11-02: §4's steps 1, 2 and 4 are built: `ORDER BY` (§6), `GROUP BY` (§7) and the row spool (§8). `DISTINCT` and the set operations (step 3), the join (step 5) and window functions remain. The rest of work-order item 6 (`gsql_scale_measurements.md` §4), *"the query operators are still to come"* (`gsql_spill_design.md`). Matthew said "go ahead" on 2026-11-02 without ruling on §5, so §5 records the defaults taken, each his to reverse.
 
 ## 1. The gap
 
@@ -85,6 +85,26 @@ Reading the input again costs, at most, the rows read before the budget was pass
 | 2 000 000 | 185 MB, 4.2 s (4 runs) | 1 358 MB, 6.0 s |
 | 6 000 000 | 198 MB, 13.8 s (11 runs) | 3 969 MB, 17.7 s |
 
-A first measurement read the groups through a derived table, `SELECT count(*) FROM (SELECT id, count(*) ... GROUP BY id)`, and grew from 287 to 724 MB: that was the derived table holding every group it was given, which is the row spool's work (§4, step 4), not the fold's.
+A first measurement read the groups through a derived table, `SELECT count(*) FROM (SELECT id, count(*) ... GROUP BY id)`, and grew from 287 to 724 MB: that was the derived table holding every group it was given, which is the row spool's work (§4, step 4, now §8), not the fold's.
 
 **Tested** by the spilled tier, the whole corpus with every `GROUP BY` and `ORDER BY` through disk (113 sorts), and one seed of the grouping sets differential spilled (about 400 sorts, 36 000 runs), each answering as in memory; under valgrind the same way. Three perturbations (a stream that never joins equal keys, no restart of the input, a grouping set's number lost) each went red in both.
+
+## 8. Built: the row spool (2026-11-02)
+
+Every place that held rows to read back now holds them in one **row store**: a derived table's and a `WITH` query's rows, a hash join's inner side, and `INSERT ... SELECT`'s rows (read in full before any is written, so a table copied into itself never meets its own new rows). A store keeps its rows in memory until they take the operator budget, then writes every one to a **spool**, an append-only file in a private temporary directory beside the sorter's, and keeps only each row's offset, eight bytes in place of the row. A row is read back by its offset, in any order and any number of times, which a nested loop rescanning a derived table and a hash chain both need.
+
+**Measured**, peak memory of the whole process:
+
+| statement | rows | spooled | in memory |
+|---|---|---|---|
+| `SELECT count(*), sum(n) FROM (SELECT id, count(*) AS n FROM b GROUP BY id) AS t` | 2 000 000 | 205 MB, 7.7 s | 1 334 MB, 6.4 s |
+| the same | 6 000 000 | 206 MB, 23.0 s | 3 899 MB, 19.6 s |
+| `INSERT INTO b2 SELECT id, v, pad FROM b` | 2 000 000 | 150 MB, 10.8 s | 456 MB, 8.2 s |
+| the same | 6 000 000 | 213 MB, 34.9 s | 1 141 MB, 26.7 s |
+
+Spooling costs about a fifth more time, for reading rows back from disk. The derived table's memory is flat; the `INSERT`'s still grows a little, which is the write transaction's own buffering, not the rows read. A hash join over this table hashed its three-row partner, as it should, so a large inner side was not measured; the spilled tier covers it for correctness.
+
+**Not spooled:** a `WITH RECURSIVE` query's rows, which keep their own 1 GiB guard (`gsql_recursive_design.md` §3), and a hash join's keys (one per distinct key), which stay in memory.
+
+**Tested** by the spilled tier, which now also spools every row store in the corpus (269), with a floor, and by the recursive differential spooled (about 1 600 spools a seed, through self-scans and hash joins), each answering as in memory; clean under valgrind spooled. Two perturbations (the rows before the budget lost, a read from the wrong offset) went red. A third, writing without seeking after a read, **stayed green**: no store is read before it is complete, so no read is ever followed by a write. The seek stays, because C requires it between a read and a write.
+

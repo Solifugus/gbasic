@@ -28,4 +28,17 @@ unsigned gs_xsort_runs(const GsXsort *s);
 /* Removes every file and the directory, whatever happened. */
 void gs_xsort_close(GsXsort *s);
 
+/* A row spool (docs/gsql_operator_spill_design.md §8): entries appended to one
+ * file in a private temporary directory, and read back by the offset each
+ * was given, any number of times and in any order. */
+typedef struct GsSpool GsSpool;
+
+int gs_spool_open(const char *tmpdir, GsSpool **out);
+int gs_spool_add(GsSpool *s, const void *p, size_t n, uint64_t *offset);
+/* The entry at `offset` into *buf (grown as needed, the caller's to free) */
+int gs_spool_get(GsSpool *s, uint64_t offset, unsigned char **buf, size_t *cap, size_t *n);
+/* How many bytes the spool has written */
+uint64_t gs_spool_size(const GsSpool *s);
+void gs_spool_close(GsSpool *s);
+
 #endif

@@ -42,7 +42,7 @@ struct GsqlSql {
     /* ORDER BY's budget before it spills to the external sorter, and the
        sorter's own (docs/gsql_operator_spill_design.md); sorts spilled */
     size_t sort_budget, sort_run;
-    unsigned long spills, spill_runs;
+    unsigned long spills, spill_runs, spools;
 };
 
 /* A warning of the SQL layer's own, for the statement now running. */
@@ -166,6 +166,31 @@ typedef struct {
     size_t cap, n;
 } KeyMap;
 
+/* Rows held for reading back (docs/gsql_operator_spill_design.md §8): a
+ * derived table's or WITH query's, a hash join's inner side's, and INSERT ...
+ * SELECT's. In memory until they take the operator budget, then every row in
+ * a spool on disk, each found again by its offset: eight bytes a row in
+ * memory in place of the row. */
+typedef struct {
+    GsqlBuf *v;
+    size_t n, cap;
+    size_t held;
+    struct GsSpool *spool;
+    uint64_t *offs;
+    size_t capoffs;
+} RowStore;
+
+static void rs_free(RowStore *rs) {
+    for (size_t r = 0; rs->v && r < rs->n; r++) {
+        gsql_buf_free(&rs->v[r]);
+    }
+    free(rs->v);
+    free(rs->offs);
+    gs_spool_close(rs->spool);
+    memset(rs, 0, sizeof *rs);
+}
+
+
 /* A scan's row: the bytes, its key, and its columns as host values, loaded
  * on first use. `nulled` is a LEFT join's null-extended row, every column of
  * which reads NULL. */
@@ -177,14 +202,14 @@ typedef struct XScan {
     GsqlHv **cols;
     size_t ncols;
     /* a derived scan's rows, materialized on its first opening in this
-       execution (docs/gsql_derived_design.md §4) */
-    GsqlBuf *drows;
-    size_t ndrows;
+       execution (docs/gsql_derived_design.md §4), and a hash join's inner
+       side's: in memory, or spooled past the budget */
+    RowStore d;
     int dready;
     /* a CHECK's row (docs/gsql_check_design.md): the values about to be
        written, read by position instead of from stored row bytes */
     const GsBytes *direct;
-    /* a hash join's inner side (docs/gsql_hashjoin_design.md §2): drows
+    /* a hash join's inner side (docs/gsql_hashjoin_design.md §2): d's rows
        grouped by their hashed column's key, each group a chain of 1-based
        row numbers in the order read */
     int hready;
@@ -193,6 +218,75 @@ typedef struct XScan {
     size_t nhkeys;
     size_t *hfirst, *hlast, *hnext;
 } XScan;
+
+/* a row kept: in memory until the store takes the budget, then on disk */
+static int rs_add(X *x, RowStore *rs, const unsigned char *p, size_t n) {
+    if (!rs->spool) {
+        if (rs->n == rs->cap) {
+            rs->cap = rs->cap ? rs->cap * 2 : 64;
+            rs->v = realloc(rs->v, sizeof(GsqlBuf) * rs->cap);
+            if (!rs->v) {
+                abort();
+            }
+        }
+        memset(&rs->v[rs->n], 0, sizeof(GsqlBuf));
+        v3_put(&rs->v[rs->n], p, n);
+        rs->held += sizeof(GsqlBuf) + rs->v[rs->n].capacity + 16;
+        rs->n++;
+        if (rs->held <= x->q->sort_budget) {
+            return GSQL_OK;
+        }
+        /* past the budget: every row so far to the spool */
+        int xr = gs_spool_open(NULL, &rs->spool);
+        if (xr) {
+            rs->spool = NULL;
+            return xfail(x->err, GSQL_STORAGE, 0, "rows could not be spooled to disk: %s", strerror(xr));
+        }
+        x->q->spools++;
+        rs->capoffs = rs->n * 2;
+        rs->offs = malloc(sizeof(uint64_t) * rs->capoffs);
+        if (!rs->offs) {
+            abort();
+        }
+        for (size_t r = 0; r < rs->n; r++) {
+            if ((xr = gs_spool_add(rs->spool, rs->v[r].bytes, rs->v[r].length, &rs->offs[r]))) {
+                return xfail(x->err, GSQL_STORAGE, 0, "rows could not be spooled to disk: %s", strerror(xr));
+            }
+            gsql_buf_free(&rs->v[r]);
+        }
+        free(rs->v);
+        rs->v = NULL;
+        rs->cap = 0;
+        return GSQL_OK;
+    }
+    if (rs->n == rs->capoffs) {
+        rs->capoffs = rs->capoffs ? rs->capoffs * 2 : 64;
+        rs->offs = realloc(rs->offs, sizeof(uint64_t) * rs->capoffs);
+        if (!rs->offs) {
+            abort();
+        }
+    }
+    int xr = gs_spool_add(rs->spool, p, n, &rs->offs[rs->n]);
+    if (xr) {
+        return xfail(x->err, GSQL_STORAGE, 0, "rows could not be spooled to disk: %s", strerror(xr));
+    }
+    rs->n++;
+    return GSQL_OK;
+}
+
+/* row `i` into `out`, replacing what it held */
+static int rs_get(X *x, RowStore *rs, size_t i, GsqlBuf *out) {
+    out->length = 0;
+    if (!rs->spool) {
+        v3_put(out, rs->v[i].bytes, rs->v[i].length);
+        return GSQL_OK;
+    }
+    int xr = gs_spool_get(rs->spool, rs->offs[i], &out->bytes, &out->capacity, &out->length);
+    if (xr) {
+        return xfail(x->err, GSQL_STORAGE, 0, "a spooled row could not be read back: %s", strerror(xr));
+    }
+    return GSQL_OK;
+}
 
 static void row_clear_scan(X *x, size_t k) {
     XScan *xs = &x->sx[k];
@@ -238,10 +332,7 @@ static void x_free(X *x) {
         free(x->sx[k].cols);
         gsql_buf_free(&x->sx[k].row);
         gsql_buf_free(&x->sx[k].rowkey);
-        for (size_t r = 0; r < x->sx[k].ndrows; r++) {
-            gsql_buf_free(&x->sx[k].drows[r]);
-        }
-        free(x->sx[k].drows);
+        rs_free(&x->sx[k].d);
         for (size_t g = 0; g < x->sx[k].nhkeys; g++) {
             gsql_buf_free(&x->sx[k].hkeys[g]);
         }
@@ -1271,22 +1362,23 @@ static int next_row(Iter *it) {
             it->done = 1;
             return 0;
         }
-        const GsqlBuf *r = &xs->drows[it->hcur - 1];
-        it->hcur = xs->hnext[it->hcur - 1];
-        xs->row.length = 0;
-        v3_put(&xs->row, r->bytes, r->length);
+        size_t at = it->hcur - 1;
+        it->hcur = xs->hnext[at];
+        if (rs_get(x, &xs->d, at, &xs->row) != GSQL_OK) {
+            return -1;
+        }
         xs->rowkey.length = 0;
         xs->have_row = 1;
         return 1;
     }
     if (it->derived || it->hashing) {
-        if (it->dpos >= xs->ndrows) {
+        if (it->dpos >= xs->d.n) {
             it->done = 1;
             return 0;
         }
-        const GsqlBuf *r = &xs->drows[it->dpos++];
-        xs->row.length = 0;
-        v3_put(&xs->row, r->bytes, r->length);
+        if (rs_get(x, &xs->d, it->dpos++, &xs->row) != GSQL_OK) {
+            return -1;
+        }
         xs->rowkey.length = 0;
         xs->have_row = 1;
         return 1;
@@ -1627,19 +1719,12 @@ static int hash_build(X *x, size_t k) {
             return xfail(x->err, GSQL_STORAGE, 0, "a cursor could not be opened: the engine answered %s",
                          gs_status_name(erc));
         }
-        size_t cap = 0;
         int r;
         while ((r = next_row(&it)) == 1) {
-            if (xs->ndrows == cap) {
-                cap = cap ? cap * 2 : 64;
-                xs->drows = realloc(xs->drows, sizeof(GsqlBuf) * cap);
-                if (!xs->drows) {
-                    abort();
-                }
+            if (rs_add(x, &xs->d, xs->row.bytes, xs->row.length) != GSQL_OK) {
+                r = -1;
+                break;
             }
-            memset(&xs->drows[xs->ndrows], 0, sizeof(GsqlBuf));
-            v3_put(&xs->drows[xs->ndrows], xs->row.bytes, xs->row.length);
-            xs->ndrows++;
         }
         iter_close(&it);
         row_clear_scan(x, k);
@@ -1648,14 +1733,16 @@ static int hash_build(X *x, size_t k) {
         }
         xs->dready = 1;
     }
-    xs->hnext = calloc(xs->ndrows ? xs->ndrows : 1, sizeof(size_t));
+    xs->hnext = calloc(xs->d.n ? xs->d.n : 1, sizeof(size_t));
     if (!xs->hnext) {
         abort();
     }
     size_t capkeys = 0;
-    for (size_t i = 0; i < xs->ndrows; i++) {
+    GsqlBuf held = {0};
+    for (size_t i = 0; i < xs->d.n; i++) {
         GsBytes v;
-        if ((rc = held_value(x, k, &xs->drows[i], &v)) != GSQL_OK) {
+        if ((rc = rs_get(x, &xs->d, i, &held)) != GSQL_OK || (rc = held_value(x, k, &held, &v)) != GSQL_OK) {
+            gsql_buf_free(&held);
             return rc;
         }
         if (v.n && (v.p[0] == SER_UNKNOWN || v.p[0] == SER_NULL)) {
@@ -1692,6 +1779,7 @@ static int hash_build(X *x, size_t k) {
         }
         xs->hlast[g - 1] = i + 1;
     }
+    gsql_buf_free(&held);
     xs->hready = 1;
     return GSQL_OK;
 }
@@ -5166,14 +5254,11 @@ static SqlCursor *sub_open(X *x, SqlPlan *p, X *outer);
 /* INSERT ... SELECT (docs/gsql_insert_select_design.md): the query's rows,
  * every one read before any is written, so a table copied into itself never
  * meets its own new rows. */
-static int insert_rows(X *x, GsqlBuf **out, size_t *n) {
-    *out = NULL;
-    *n = 0;
+static int insert_rows(X *x, RowStore *out) {
     SqlCursor *c = sub_open(x, x->p->left, NULL);
     if (!c) {
         return x->err->code ? x->err->code : GSQL_EXPRESSION;
     }
-    size_t cap = 0;
     GsqlBuf row = {0};
     int rc = GSQL_OK;
     for (;;) {
@@ -5186,16 +5271,11 @@ static int insert_rows(X *x, GsqlBuf **out, size_t *n) {
         if (r == 0) {
             break;
         }
-        if (*n == cap) {
-            cap = cap ? cap * 2 : 64;
-            *out = realloc(*out, sizeof(GsqlBuf) * cap);
-            if (!*out) {
-                abort();
-            }
+        /* the query's rows held, spooled past the budget, so a large INSERT
+           ... SELECT does not hold them all (docs/gsql_operator_spill_design.md §8) */
+        if ((rc = rs_add(x, out, row.bytes, row.length)) != GSQL_OK) {
+            break;
         }
-        memset(&(*out)[*n], 0, sizeof(GsqlBuf));
-        v3_put(&(*out)[*n], row.bytes, row.length);
-        (*n)++;
     }
     gsql_buf_free(&row);
     cursor_free(c);
@@ -5205,19 +5285,17 @@ static int insert_rows(X *x, GsqlBuf **out, size_t *n) {
 static int run_insert(X *x, GsqlResult *out) {
     SqlPlan *p = x->p;
     SqlStmt *s = p->s;
-    GsqlBuf *qrows = NULL;
-    size_t nq = 0;
+    RowStore qrows;
+    memset(&qrows, 0, sizeof qrows);
+    GsqlBuf qrow = {0};
     if (s->ins_q) {
-        int qrc = insert_rows(x, &qrows, &nq);
+        int qrc = insert_rows(x, &qrows);
         if (qrc != GSQL_OK) {
-            for (size_t k = 0; k < nq; k++) {
-                gsql_buf_free(&qrows[k]);
-            }
-            free(qrows);
+            rs_free(&qrows);
             return qrc;
         }
     }
-    size_t nrows = s->ins_q ? nq : s->nrows;
+    size_t nrows = s->ins_q ? qrows.n : s->nrows;
     GsBytes *items = calloc(p->ntargets ? p->ntargets : 1, sizeof(GsBytes));
     if (!items) {
         abort();
@@ -5251,7 +5329,9 @@ static int run_insert(X *x, GsqlResult *out) {
     for (size_t r = 0; r < nrows && rc == GSQL_OK; r++) {
         memset(vals, 0, sizeof(GsqlIn) * ncols);
         if (s->ins_q) {
-            if (v3_array_items(qrows[r].bytes, qrows[r].length, items, (long)p->ntargets) != (long)p->ntargets) {
+            rc = rs_get(x, &qrows, r, &qrow);
+            if (rc == GSQL_OK &&
+                v3_array_items(qrow.bytes, qrow.length, items, (long)p->ntargets) != (long)p->ntargets) {
                 rc = xfail(x->err, GSQL_MISUSE, 0, "a row of the query did not hold its columns");
             }
             for (size_t k = 0; k < p->ntargets && rc == GSQL_OK; k++) {
@@ -5352,10 +5432,8 @@ static int run_insert(X *x, GsqlResult *out) {
     fk_list_free(&fks);
     ck_set_free(&cks);
     free(items);
-    for (size_t k = 0; k < nq; k++) {
-        gsql_buf_free(&qrows[k]);
-    }
-    free(qrows);
+    rs_free(&qrows);
+    gsql_buf_free(&qrow);
     if (rc != GSQL_OK) {
         out->failed_part_way = done > 0;
         return rc;
@@ -6860,16 +6938,12 @@ static int derived_rows(X *x, size_t k) {
     XScan *xs = &x->sx[k];
     if (sc->self) {
         /* a recursive query's step reading the query: the round before's rows */
-        xs->drows = calloc(sc->nwork ? sc->nwork : 1, sizeof(GsqlBuf));
-        if (!xs->drows) {
-            abort();
+        int rc = GSQL_OK;
+        for (size_t r = 0; r < sc->nwork && rc == GSQL_OK; r++) {
+            rc = rs_add(x, &xs->d, sc->work[r].bytes, sc->work[r].length);
         }
-        for (size_t r = 0; r < sc->nwork; r++) {
-            v3_put(&xs->drows[r], sc->work[r].bytes, sc->work[r].length);
-        }
-        xs->ndrows = sc->nwork;
-        xs->dready = 1;
-        return GSQL_OK;
+        xs->dready = rc == GSQL_OK;
+        return rc;
     }
     if (sc->derived->recursive) {
         return recursive_rows(x, k);
@@ -6878,7 +6952,6 @@ static int derived_rows(X *x, size_t k) {
     if (!c) {
         return x->err->code ? x->err->code : GSQL_EXPRESSION;
     }
-    size_t cap = 0;
     GsqlBuf row = {0};
     int rc = GSQL_OK;
     for (;;) {
@@ -6891,16 +6964,9 @@ static int derived_rows(X *x, size_t k) {
         if (r == 0) {
             break;
         }
-        if (xs->ndrows == cap) {
-            cap = cap ? cap * 2 : 64;
-            xs->drows = realloc(xs->drows, sizeof(GsqlBuf) * cap);
-            if (!xs->drows) {
-                abort();
-            }
+        if ((rc = rs_add(x, &xs->d, row.bytes, row.length)) != GSQL_OK) {
+            break;
         }
-        memset(&xs->drows[xs->ndrows], 0, sizeof(GsqlBuf));
-        v3_put(&xs->drows[xs->ndrows], row.bytes, row.length);
-        xs->ndrows++;
     }
     gsql_buf_free(&row);
     cursor_free(c);
@@ -7189,8 +7255,9 @@ static int recursive_rows(X *x, size_t k) {
         rows_free(&all);
         return rc;
     }
-    xs->drows = all.v;
-    xs->ndrows = all.n;
+    xs->d.v = all.v;
+    xs->d.n = all.n;
+    xs->d.cap = all.cap;
     xs->dready = 1;
     return GSQL_OK;
 }
@@ -8339,6 +8406,10 @@ void gsql_sql_sort_budget(GsqlSql *q, size_t bytes, size_t run) {
 void gsql_sql_spills(const GsqlSql *q, unsigned long *sorts, unsigned long *runs) {
     *sorts = q->spills;
     *runs = q->spill_runs;
+}
+
+unsigned long gsql_sql_spools(const GsqlSql *q) {
+    return q->spools;
 }
 
 void gsql_sql_counts(const GsqlSql *q, unsigned long *seeks, unsigned long *scans) {

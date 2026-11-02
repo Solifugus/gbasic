@@ -79,6 +79,9 @@ void gsql_sql_recursion_bytes(GsqlSql *q, uint64_t bytes);
  * 64 MB); and how many sorts spilled, and the runs they wrote. */
 void gsql_sql_sort_budget(GsqlSql *q, size_t bytes, size_t run);
 void gsql_sql_spills(const GsqlSql *q, unsigned long *sorts, unsigned long *runs);
+/* For tests: how many row stores (derived tables, WITH queries, hash join
+ * inner sides, INSERT ... SELECT) went to a spool on disk. */
+unsigned long gsql_sql_spools(const GsqlSql *q);
 /* For tests: how many statements used a seek or a point read, and a scan. */
 void gsql_sql_counts(const GsqlSql *q, unsigned long *seeks, unsigned long *scans);
 /* For tests: how many plans so far read a join's tables in an order chosen by
