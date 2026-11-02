@@ -754,6 +754,29 @@ static void sorted_load(const char *base, GsqlIo *io) {
     GsCursor *c;
     int pos, n = 0;
     E->begin_read(db, &r);
+    {
+        /* A key sorting below a level's files is in none of them, and a
+         * level >= 1's files do not overlap, so a lookup asks at most one
+         * file per level. The walk went on through the whole level instead,
+         * rejecting each on its range: a point read's catalog lookups did
+         * that at every level, 937 rejections a read at 10^8 rows
+         * (gsql_profile_design.md). Counted on the engine's own stats. */
+        GsStats a, b;
+        GsBytes got;
+        E->stats(db, &a);
+        /* a key that is not there, so the lookup asks every level: `schema`
+         * itself is found in level 0 and never reaches them */
+        int grc = E->get(r, gss("meta"), gss("absent"), &got);
+        E->stats(db, &b);
+        CHECK(grc == GS_NOT_FOUND, "a missing meta key answered %s", gs_status_name(grc));
+        if (getenv("STORE_TEST_SKIPS")) fprintf(stderr, "skips %llu\n", (unsigned long long)(b.lookup_range_skips - a.lookup_range_skips));
+        uint64_t skips = b.lookup_range_skips - a.lookup_range_skips;
+        /* a get is two lookups (its tree's name in the catalog, then the
+         * key); measured 2 skips between them with the walk stopping, 42
+         * with it walking on, so the bound sits between with room */
+        CHECK(skips <= 8, "a get below every row skipped %llu files on range: the level walk did not stop at "
+              "the one file the search found", (unsigned long long)skips);
+    }
     if (E->cursor_open(r, gss("sorted"), &c) == GS_OK) {
         for (int st = E->first(c, &pos); st == GS_OK && pos; st = E->next(c, &pos)) n++;
         E->cursor_close(c);

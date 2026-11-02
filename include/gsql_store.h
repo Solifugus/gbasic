@@ -96,6 +96,7 @@ typedef struct {
     uint64_t comp_started, comp_moves, stalls;
     uint64_t flush_us, comp_us, sync_us;
     uint64_t lookups, lookup_files, lookup_bloom_rejects, lookup_range_skips;
+    uint64_t fd_opens, index_loads; /* handles really opened; files whose index was read in */
 } GsStats;
 
 /* A borrowed byte string: valid until the next call on the same txn/cursor. */

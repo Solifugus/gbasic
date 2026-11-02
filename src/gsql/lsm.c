@@ -489,6 +489,7 @@ static int hnd_get(GsStore *db, Hnd *h, GsqlFile **f) {
     hnd_make_room(db);
     int rc = gsql_io_open(db->io, h->name, h->flags, &h->f);
     if (rc) { h->f = NULL; return rc; }
+    db->st.fd_opens++;
     hnd_link(db, h);
     db->nopen++;
     *f = h->f;
@@ -960,6 +961,7 @@ static int file_fd(GsStore *db, FileMeta *m, GsqlFile **f) {
 
 static int file_open(GsStore *db, FileMeta *m) {
     if (m->index) return GS_OK;
+    db->st.index_loads++;
     GsqlFile *f;
     int rc = file_fd(db, m, &f);
     if (rc) return rc;
@@ -3021,7 +3023,14 @@ static int lookup(struct GsTxn *t, const unsigned char *k, size_t kn, Ent *out, 
             }
             first = lo;
         }
-        for (size_t j = first; j < cnt; j++) {
+        /* and ONLY that file: the search found the one whose largest key is
+         * not below the key, and every later file starts above it. The walk
+         * went on to the end of the level, rejecting each on its range --
+         * a catalog key sorts below every row, so each of a point read's
+         * five lookups walked whole levels: 3 skips a read at 10^6 rows,
+         * 87 at 10^7 (gsql_profile_design.md) */
+        size_t end = l == 0 ? cnt : (first < cnt ? first + 1 : first);
+        for (size_t j = first; j < end; j++) {
             FileMeta *m = v->files[l][l == 0 ? cnt - 1 - j : j];
             if (bytes_cmp(gsb(k, kn), gsb(m->smallest.p, m->smallest.n)) < 0 ||
                 bytes_cmp(gsb(k, kn), gsb(m->largest.p, m->largest.n)) > 0) {

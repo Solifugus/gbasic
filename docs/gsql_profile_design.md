@@ -1,6 +1,6 @@
 # G-SQL: where load time and the point-read tail go at 10⁸ rows
 
-**Status:** Proposal 2026-11-01, work-order item 8 of `gsql_scale_measurements.md` §4: *"profile load at 10⁸ (§1, item 2) and the point-read tail (item 3)."* A measurement first; what it finds decides what is changed.
+**Status:** Shipped 2026-11-01, work-order item 8 of `gsql_scale_measurements.md` §4: *"profile load at 10⁸ (§1, item 2) and the point-read tail (item 3)."* The counters are in `GsStats` and printed by `research/gsql/scale.c`; what they found is §5, and the one change it led to is §6.
 
 ## 1. The two questions
 
@@ -35,3 +35,36 @@ From `gsql_scale_measurements.md` §1, through the whole stack in one process (`
 - **Reads in the tail consulting many files, or reading blocks the filter should have rejected,** point at level 0's depth during the load or at the filter.
 
 Nothing is changed until the counters say which of these it is.
+
+## 5. What they found
+
+At 10⁶, 10⁷ and 10⁸ rows on ext4 (`/var/tmp/gsql-bench`), the data in the page cache, one process:
+
+**The load does not slow down any more.** At 10⁸ each tenth of the load ran at 166 000 to 162 000 rows/s, the same as 10⁶ and 10⁷:
+
+| per tenth of the load at 10⁸ | |
+|---|---|
+| bytes written per row | about 147: the log, and one flush of about 78 |
+| bytes compactions wrote or merged | none: all 72 compactions were trivial moves |
+| level-0 stalls | none |
+| time in flushes and syncs | about 4.2 s of 61 |
+| lookups per row | 2, all answered without touching a file |
+
+So for a load in key order the tree does what it should: the files go down a level as they are. The halving §1 recorded (90 000 rows/s) predates the level-0 fix made for the index build (`gsql_spill_design.md` §7) and has not recurred. What a load spends its time on is the SQL and table layers, about 6 µs a row, which is the next place to look for load speed.
+
+**The point-read tail is a file's first read after an open.** The first pass of reads after a reopen, each with its own counters:
+
+| at 10⁸, first pass | mean | files opened | indexes read | pages read |
+|---|---|---|---|---|
+| the slowest 1% | 558 µs | 1.0 | 1.0 | 5.0 |
+| the other 99% | 24 µs | 0.008 | 0.008 | 1.0 |
+
+A sorted file's index and filter are read in at its first use (`file_open`), and the slowest 1% are exactly those reads. A second pass has no tail: its slowest 1% average 25 µs. A long-running owner pays this once per file. Loading every file's index at open would move the cost to the open instead (not measured); not done, since nothing here needs it.
+
+**And a defect in the level walk, found by the range counter:** each SQL point read made 5 engine lookups, mostly the catalog's, whose keys sort below every row. On levels 1 and below, a binary search found the one file that could hold the key, and the loop then went on through every later file in the level, rejecting each on its range: 3 rejections a read at 10⁶, 87 at 10⁷, 937 at 10⁸.
+
+## 6. What changed
+
+- **The level walk stops at the one file the search found** (`lookup` in `src/gsql/lsm.c`). At 10⁸ a point read's range rejections went from 937 to 19.5, the remainder level 0's files, which overlap and must each be asked. The point-read median went from 27.5 to 18.8 µs. `store_test`'s sorted load counts the rejections for a key below every row: 2 with the fix, 42 without, bound at 8.
+- **An unset status found by adding the counters:** `maybe_compact` returned `rc` unassigned when given no budget, the call a large transaction's commit makes. It answered whatever the stack held; with the stack under it changed, `CREATE INDEX` over a million rows failed its commit as `IO`, from no failing system call. Initialised. Valgrind, ASan and UBSan, gcc's `-fanalyzer` and `-Wall -Werror` all miss it on the old code, so it has no tier.
+

@@ -208,7 +208,7 @@ static int cmp_pr(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 static void q_point(char *q, size_t cap, uint64_t n);
-static void point_profile(int ops, uint64_t n) {
+static void point_profile(const char *pass, int ops, uint64_t n) {
     PRead *r = calloc((size_t)ops, sizeof *r);
     char q[256];
     for (int i = 0; i < ops; i++) {
@@ -225,22 +225,25 @@ static void point_profile(int ops, uint64_t n) {
         r[i].d.lookup_range_skips = b.lookup_range_skips - a.lookup_range_skips;
         r[i].d.pages_read = b.pages_read - a.pages_read;
         r[i].d.cache_hits = b.cache_hits - a.cache_hits;
+        r[i].d.fd_opens = b.fd_opens - a.fd_opens;
+        r[i].d.index_loads = b.index_loads - a.index_loads;
     }
     qsort(r, (size_t)ops, sizeof *r, cmp_pr);
     int cut = ops * 99 / 100;
     for (int part = 0; part < 2; part++) {
         int lo = part ? cut : 0, hi = part ? ops : cut;
-        double us = 0, f = 0, rej = 0, sk = 0, pg = 0, ch = 0, lk = 0;
+        double us = 0, f = 0, rej = 0, sk = 0, pg = 0, ch = 0, lk = 0, fo = 0, il = 0;
         for (int i = lo; i < hi; i++) {
             us += r[i].us; lk += r[i].d.lookups; f += r[i].d.lookup_files; rej += r[i].d.lookup_bloom_rejects;
             sk += r[i].d.lookup_range_skips; pg += r[i].d.pages_read; ch += r[i].d.cache_hits;
+            fo += r[i].d.fd_opens; il += r[i].d.index_loads;
         }
         double c = hi - lo;
         fprintf(stderr,
-                "{\"profile\": \"point reads, %s\", \"reads\": %d, \"mean_us\": %.1f, \"lookups\": %.2f, "
+                "{\"profile\": \"point reads %s, %s\", \"reads\": %d, \"mean_us\": %.1f, \"lookups\": %.2f, "
                 "\"files\": %.2f, \"bloom_rejects\": %.2f, \"range_skips\": %.2f, \"pages_read\": %.2f, "
-                "\"cache_hits\": %.2f}\n",
-                part ? "slowest 1%" : "other 99%", hi - lo, us / c, lk / c, f / c, rej / c, sk / c, pg / c, ch / c);
+                "\"cache_hits\": %.2f, \"fd_opens\": %.3f, \"index_loads\": %.3f}\n",
+                pass, part ? "slowest 1%" : "other 99%", hi - lo, us / c, lk / c, f / c, rej / c, sk / c, pg / c, ch / c, fo / c, il / c);
     }
     free(r);
 }
@@ -300,8 +303,12 @@ int main(int argc, char **argv) {
 
     int ops = 20000;
     double pmed, pp99, rmed, rp99, kmed, kp99;
+    /* SCALE_COLD_PROFILE=1 profiles the first, cold pass after the reopen
+     * as well, which changes what `timed` then measures, so it is off for
+     * the recorded runs */
+    if (getenv("SCALE_COLD_PROFILE")) point_profile("cold", ops, n);
     timed(ops, q_point, n, &pmed, &pp99);
-    point_profile(ops, n);
+    point_profile("warm", ops, n);
     timed(2000, q_range, n, &rmed, &rp99);
 
     t0 = now();
