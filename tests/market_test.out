@@ -32,6 +32,8 @@ ok   and says which symbol
 ok   and hands back no frame
 ok   a header with no rows is a failure, not an empty frame
 ok   and says so
+ok   a row with an extra field is a failure, not a lost row
+ok   and names its line
 ok   an empty symbol is refused
 ok   a reversed date range is refused
 
@@ -60,5 +62,5 @@ ok   closes() gives the flat array
 ok   in the same order
 ok   and is unknown on failure
 
-checks: 44
+checks: 46
 mismatches: 0

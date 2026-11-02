@@ -386,7 +386,7 @@ GSQL_OBJS := src/gsql/lsm.o src/gsql/lease.o src/gsql/xsort.o src/gsql/store_com
 CFLAGS += -DGBASIC_GSQL=1
 endif
 
-LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS) $(GSQL_OBJS)
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o src/csv_reader.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS) $(GSQL_OBJS)
 OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
@@ -527,7 +527,7 @@ src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/serialize_tags.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c src/modules/gsql.c include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h .stdlibdir-stamp .buildswitch-stamp
+src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c src/modules/gsql.c src/modules/csv.c include/gb_csv.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # THE QT BACKEND: moc, then C++. The generated unit is `#include`d by the .cpp
@@ -562,6 +562,9 @@ src/diagnostics.o: src/diagnostics.c include/diagnostics.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/window_check.o: src/window_check.c include/window_check.h .buildswitch-stamp
+	$(CC) $(CFLAGS) -c $< -o $@
+
+src/csv_reader.o: src/csv_reader.c include/gb_csv.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/frontend.o: src/frontend.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gbasic.h include/diagnostics.h include/ast.h include/window_check.h .buildswitch-stamp

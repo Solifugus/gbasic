@@ -1,1 +1,1 @@
-runtime error at tests/negative_for_each_record.bas:1:1: for in expects an array, a file or an sql block
+runtime error at tests/negative_for_each_record.bas:1:1: for in expects an array, a file, an sql block or a csv source

@@ -203,40 +203,40 @@ library market
         return { ok: false, frame: unknown, adjusted: false, message: message }
     end function
 
-    ' A CSV body -> array of records. frame.read_csv reads a PATH; a provider
-    ' hands us a string, so the header/row split lives here.
+    ' A CSV body -> { rows, problem }. A provider hands us a string, so this is
+    ' csv.parse rather than frame.read_csv, which reads a PATH. Names are
+    ' lowered and trimmed, values trimmed. A record whose field count differs
+    ' from the header's makes the fetch FAIL, naming its line: this used to drop
+    ' such a row without a word, so a price series could come back short.
     function _rows_from_csv(body)
-        lines = split(body, "\n")
-        if count(lines) < 2 then
-            return []
-        end if
-        head = split(trim(lines[0]), ",")
+        on error goto next
         names = []
-        i = 0
-        while i < count(head)
-            append(names, lower(trim(head[i])))
-            i = i + 1
-        end while
-
         rows = []
-        r = 1
-        while r < count(lines)
-            line = trim(lines[r])
-            if len(line) > 0 then
-                cells = split(line, ",")
-                if count(cells) = count(names) then
-                    rec = {}
-                    c = 0
-                    while c < count(names)
-                        rec[names[c]] = trim(cells[c])
-                        c = c + 1
-                    end while
-                    append(rows, rec)
+        first = true
+        for each cells, at in csv.parse(body, { header: false })
+            if first then
+                for each h in cells
+                    append(names, lower(trim(h)))
+                end for
+                first = false
+            else
+                if count(cells) != count(names) then
+                    return { rows: [], problem: "line " + string(at.line) + " has " + string(count(cells)) + " fields where the header has " + string(count(names)) }
                 end if
+                rec = {}
+                c = 0
+                while c < count(names)
+                    rec[names[c]] = trim(cells[c])
+                    c = c + 1
+                end while
+                append(rows, rec)
             end if
-            r = r + 1
-        end while
-        return rows
+        end for
+        e = error
+        if e then
+            return { rows: [], problem: e.message }
+        end if
+        return { rows: rows, problem: "" }
     end function
 
     ' Tiingo serves a JSON array of objects, not CSV. Parsed with `try_decode`
@@ -349,7 +349,11 @@ library market
         if _wire(m) = "json" then
             rows = _rows_from_json(resp.body)
         else
-            rows = _rows_from_csv(resp.body)
+            parsed = _rows_from_csv(resp.body)
+            if parsed.problem != "" then
+                return _fail("market: " + m.provider + " sent CSV that does not read: " + parsed.problem)
+            end if
+            rows = parsed.rows
         end if
         if count(rows) = 0 then
             return _fail("market: " + m.provider + " returned no rows for '" + symbol + "'")

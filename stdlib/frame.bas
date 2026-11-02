@@ -590,48 +590,40 @@ library frame
     ' read_csv infers each column's type: a column becomes numeric only when
     ' every non-empty cell is a plain decimal AND none is ID-like (leading zero
     ' or > 15 digits — kept as strings to avoid silent precision loss, §4.1).
-    ' Empty cells become `unknown`. Simple comma splitting only: quoted fields
-    ' and embedded commas/newlines are not yet handled.
+    ' Empty cells become `unknown`. Fields are read by `csv.records`, so a quoted
+    ' comma, a quoted line break and a doubled quote are one field, and a record
+    ' whose field count differs from the header's raises naming its line rather
+    ' than being padded or dropped (docs/csv_design.md).
     function read_csv(path)
         source{file}= path
-        lines = read_lines(source)
-        if len(lines) = 0 then
-            return {}
-        end if
 
-        ' Header -> trimmed column names, in order.
+        ' Header -> trimmed column names, in order; then raw text cells per column.
         names = []
-        h = split(lines[0], ",")
-        c = 0
-        while c < len(h)
-            append(names, trim(h[c]))
-            c = c + 1
-        end while
-        ncol = len(names)
-
-        ' Gather raw string cells per column (skipping blank lines).
         raw = []
-        c = 0
-        while c < ncol
-            append(raw, [])
-            c = c + 1
-        end while
-        r = 1
-        while r < len(lines)
-            if len(trim(lines[r])) > 0 then
-                cells = split(lines[r], ",")
+        ncol = 0
+        first = true
+        for each cells, at in csv.records(source, { header: false })
+            if first then
+                for each h in cells
+                    append(names, trim(h))
+                    append(raw, [])
+                end for
+                ncol = count(names)
+                first = false
+            else
+                if count(cells) != ncol then
+                    error ("frame.read_csv: line " + string(at.line) + " of " + string(path) + " has " + string(count(cells)) + " fields where the header has " + string(ncol))
+                end if
                 c = 0
                 while c < ncol
-                    cell = ""
-                    if c < len(cells) then
-                        cell = cells[c]
-                    end if
-                    append(raw[c], cell)
+                    append(raw[c], cells[c])
                     c = c + 1
                 end while
             end if
-            r = r + 1
-        end while
+        end for
+        if first then
+            return {}
+        end if
 
         ' Infer per column, then build the typed column.
         df = {}
@@ -679,38 +671,24 @@ library frame
         return df
     end function
 
-    ' Write a frame to CSV. Missing cells are written as empty fields.
+    ' Write a frame to CSV. Missing cells are written as empty fields, and a
+    ' field is quoted when it holds a comma, a quote or a line break, so the
+    ' file reads back as it was written (csv.write, docs/csv_design.md §6).
     function write_csv(df, path)
         names = keys(df)
         n = _nrows(df)
-        text = ""
-        c = 0
-        while c < len(names)
-            if c > 0 then
-                text = text + ","
-            end if
-            text = text + names[c]
-            c = c + 1
-        end while
-        text = text + chr(10)
+        rows = []
         i = 0
         while i < n
-            c = 0
-            while c < len(names)
-                if c > 0 then
-                    text = text + ","
-                end if
-                cell = df[names[c]][i]
-                if not is_unknown(cell) then
-                    text = text + string(cell)
-                end if
-                c = c + 1
-            end while
-            text = text + chr(10)
+            row = []
+            for each name in names
+                append(row, df[name][i])
+            end for
+            append(rows, row)
             i = i + 1
         end while
         sink{file}= path
-        write(sink, text)
+        csv.write(sink, rows, { names: names })
         return path
     end function
 

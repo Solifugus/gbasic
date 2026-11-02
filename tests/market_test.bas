@@ -91,6 +91,13 @@ empty = market.daily(m, "EMPTY", from_d, to_d)
 append(results, check("a header with no rows is a failure, not an empty frame", false, empty.ok))
 append(results, check("and says so", true, contains(empty.message, "no rows")))
 
+' A row with a field too many used to be DROPPED without a word, so the series
+' came back one day short and nothing said so. It is a failed fetch now, naming
+' the line (gbasic-books volume 3 gap ledger, G1).
+long = market.daily(m, "LONG", from_d, to_d)
+append(results, check("a row with an extra field is a failure, not a lost row", false, long.ok))
+append(results, check("and names its line", true, contains(long.message, "line 3 has 7 fields where the header has 6")))
+
 bad = market.daily(m, "", from_d, to_d)
 append(results, check("an empty symbol is refused", false, bad.ok))
 

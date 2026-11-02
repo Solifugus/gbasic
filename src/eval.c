@@ -205,6 +205,9 @@ typedef struct GsqlStatementValue GsqlStatementValue;
 typedef struct RegexValue RegexValue;
 typedef struct XlsxWorkbook XlsxWorkbook;
 typedef struct XmlReaderValue XmlReaderValue;
+typedef struct CsvSourceValue CsvSourceValue;
+static void csv_source_release(CsvSourceValue *source);
+static void csv_source_retain(CsvSourceValue *source);
 typedef struct ActorHandle ActorHandle;
 typedef struct ProcessHandle ProcessHandle;
 typedef struct HttpHandle HttpHandle;
@@ -237,7 +240,8 @@ typedef enum {
     VALUE_WATCHER,
     VALUE_WORKBOOK,
     VALUE_GSQL_CONNECTION,
-    VALUE_GSQL_STATEMENT
+    VALUE_GSQL_STATEMENT,
+    VALUE_CSV_SOURCE
 } ValueKind;
 
 typedef enum {
@@ -378,6 +382,7 @@ struct Value {
         size_t watcher_id;
         XlsxWorkbook *workbook;
         XmlReaderValue *xml_reader;
+        CsvSourceValue *csv_source;
         ActorHandle *actor;
         ProcessHandle *process;
         HttpHandle *http;
@@ -1077,6 +1082,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "gsql_connection";
     case VALUE_GSQL_STATEMENT:
         return "gsql_statement";
+    case VALUE_CSV_SOURCE:
+        return "csv_source";
     case VALUE_XML_READER:
         return "xml_reader";
     case VALUE_ACTOR:
@@ -4448,6 +4455,10 @@ static Value value_copy(Value value) {
         value.as.gsql_statement->ref_count++;
         return value_gsql_statement(value.as.gsql_statement);
     }
+    if (value.kind == VALUE_CSV_SOURCE) {
+        csv_source_retain(value.as.csv_source);
+        return value;
+    }
     if (value.kind == VALUE_XML_READER) {
         value.as.xml_reader->ref_count++;
         return value_xml_reader(value.as.xml_reader);
@@ -4601,6 +4612,8 @@ static void value_free(Value value) {
 #endif
             free(connection);
         }
+    } else if (value.kind == VALUE_CSV_SOURCE) {
+        csv_source_release(value.as.csv_source);
     } else if (value.kind == VALUE_XML_READER) {
         xml_reader_release(value.as.xml_reader);
     } else if (value.kind == VALUE_PROCESS) {
@@ -4759,6 +4772,13 @@ static int value_truthy(Value value, int *raised) {
         runtime_error_raise("postgres connection cannot be used as a condition",
                             2001,
                             "postgres");
+        if (raised) {
+            *raised = 1;
+        }
+        return 0;
+    case VALUE_CSV_SOURCE:
+        runtime_error_raise("a csv source cannot be used as a condition; loop over it "
+                            "with for each", 5101, "csv");
         if (raised) {
             *raised = 1;
         }
@@ -6176,6 +6196,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.gsql_statement == right->as.gsql_statement;
     case VALUE_XML_READER:
         return left->as.xml_reader == right->as.xml_reader;
+    case VALUE_CSV_SOURCE:
+        return left->as.csv_source == right->as.csv_source;
     case VALUE_ACTOR:
         return left->as.actor->id == right->as.actor->id;
     case VALUE_PROCESS:
@@ -8893,7 +8915,7 @@ static size_t library_name_count = 0;
  * directions are refused rather than silently not working. */
 static int library_is_native_qualifier(const char *name) {
     static const char *native[] = {
-        "gsql", "http", "ldap", "money", "odbc", "pg", "process",
+        "csv", "gsql", "http", "ldap", "money", "odbc", "pg", "process",
         "qt", "reflect", "smtp", "sqlite", "this", "timer",
         "webclient", "webserver", "xlsx", "xml", NULL
     };
@@ -8947,6 +8969,8 @@ static const GbCapability gb_capability_table[] = {
     /* native qualifiers -- must match library_is_native_qualifier exactly */
     /* a database in a file, served by an owner process this one starts:
        the process is gbasic itself, never a program the caller names */
+    /* csv.records and csv.parse read, csv.write replaces a file */
+    { "csv",       "fs:read fs:write" },
     { "gsql",      "db fs:write" },
     { "http",      "net" },
     { "ldap",      "net" },
@@ -13987,6 +14011,8 @@ static const char *builtin_type_name(Value value) {
         return "gsql_connection";
     case VALUE_GSQL_STATEMENT:
         return "gsql_statement";
+    case VALUE_CSV_SOURCE:
+        return "csv_source";
     case VALUE_XML_READER:
         return "xml_reader";
     case VALUE_ACTOR:
@@ -14679,6 +14705,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_GSQL_STATEMENT:
         value_free(value);
         return value_string("<gsql_statement>");
+    case VALUE_CSV_SOURCE:
+        value_free(value);
+        return value_string("<csv_source>");
     case VALUE_XML_READER:
         value_free(value);
         return value_string("<xml_reader>");
@@ -14820,6 +14849,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
     case VALUE_LDAP_CONNECTION:
     case VALUE_GSQL_CONNECTION:
     case VALUE_GSQL_STATEMENT:
+    case VALUE_CSV_SOURCE:
     case VALUE_XML_READER:
     case VALUE_ACTOR:
     case VALUE_PROCESS:
@@ -15241,6 +15271,10 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
     case VALUE_GSQL_STATEMENT:
         runtime_error_raise("serialize: an sql block cannot be serialized -- it names a "
                             "database this process holds", 1003, "actor");
+        return 0;
+    case VALUE_CSV_SOURCE:
+        runtime_error_raise("serialize: a csv source cannot be serialized; send the "
+                            "records it reads", 1003, "actor");
         return 0;
     case VALUE_PROCESS:
         /* A process handle owns pipe fds and a wait(2) relationship that only the
@@ -26742,6 +26776,9 @@ static Value pg_eval_call(AstExpr *expr) {
 }
 #endif
 
+/* The csv module (docs/csv_design.md): no optional dependency, so no guard. */
+#include "modules/csv.c"
+
 /* XML module (xml_design.md, WP-XML-1). Translation-unit include so it can use
  * the static Value API above; guarded internally by HAVE_LIBXML2. */
 #include "modules/xml.c"
@@ -29052,6 +29089,7 @@ static const char *reflect_category(Value v) {
     case VALUE_LDAP_CONNECTION:
     case VALUE_GSQL_CONNECTION:
     case VALUE_GSQL_STATEMENT:
+    case VALUE_CSV_SOURCE:
     case VALUE_XML_READER:
     case VALUE_WORKBOOK:
         return "foreign";
@@ -30869,6 +30907,10 @@ static Value eval_call(AstExpr *expr) {
                                 "postgres");
             return value_null();
 #endif
+        }
+
+        if (strcmp(expr->as.call.library, "csv") == 0) {
+            return csv_eval_call(expr);
         }
 
         if (strcmp(expr->as.call.library, "xml") == 0) {
@@ -42158,6 +42200,76 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
             break;
         }
+        if (iterable.kind == VALUE_CSV_SOURCE) {
+            /* --- A DELIMITED FILE, RECORD BY RECORD (docs/csv_design.md §2) --
+             *
+             * The shape of the file stream above and for its reasons: the loop
+             * opens the source and every exit below closes it, so a `break`, a
+             * `return` or a raise cannot leave a file open. The second name is
+             * WHERE the record came from, a record rather than a count, because
+             * a record can span lines and a reject report needs the line it
+             * started on. */
+            CsvCursor cursor;
+            if (!csv_cursor_open(&cursor, iterable.as.csv_source)) {
+                value_free(iterable);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            loop_depth++;
+            EvalResult out = eval_no_result();
+            int returning = 0;
+            int failed = 0;
+            Value element, where;
+            for (;;) {
+                int got = csv_cursor_next(&cursor, &element, &where);
+                if (got < 0) {
+                    failed = 1;
+                    break;
+                }
+                if (got == 0) {
+                    break;
+                }
+                env_set(stmt->as.for_each.name, element);
+                if (stmt->as.for_each.index_name) {
+                    env_set(stmt->as.for_each.index_name, where);
+                } else {
+                    value_free(where);
+                }
+                EvalResult result = eval_stmt_list(stmt->as.for_each.body);
+                if ((result.did_break || result.did_continue) &&
+                    !loop_claims_flow(result, stmt->as.for_each.name)) {
+                    out = result;
+                    returning = 1;
+                    break;
+                }
+                if (result.did_break) {
+                    value_free(result.value);
+                    break;
+                }
+                if (result.did_continue) {
+                    value_free(result.value);
+                    continue;
+                }
+                if (eval_result_exits_block(result)) {
+                    out = result;
+                    returning = 1;
+                    break;
+                }
+            }
+            csv_cursor_close(&cursor);
+            loop_depth--;
+            value_free(iterable);
+            current_line = previous_line;
+            current_column = previous_column;
+            if (returning) {
+                return out;
+            }
+            if (failed) {
+                return eval_error_result();
+            }
+            break;
+        }
         if (iterable.kind == VALUE_GSQL_STATEMENT) {
             /* --- AN `sql` BLOCK, ROW BY ROW (docs/gsql_module_design.md §7) --
              *
@@ -42230,7 +42342,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
 #endif
         }
         if (iterable.kind != VALUE_ARRAY) {
-            runtime_error_raise("for in expects an array, a file or an sql block", 1003,
+            runtime_error_raise("for in expects an array, a file, an sql block or a csv source", 1003,
                                 "invalid operation");
             value_free(iterable);
             current_line = previous_line;

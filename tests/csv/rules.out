@@ -1,0 +1,109 @@
+-- plain
+  line 2 @4 #1 {"a":"1","b":"2"}
+  line 3 @8 #2 {"a":"3","b":"4"}
+-- no final line break
+  line 2 @4 #1 {"a":"1","b":"2"}
+-- quoted delimiter
+  line 2 @4 #1 {"a":"x,y","b":"2"}
+-- quoted line break spans lines
+  line 2 @4 #1 {"a":"x\ny","b":"2"}
+  line 4 @12 #2 {"a":"3","b":"4"}
+-- doubled quote
+  line 2 @2 #1 {"a":"say \"hi\""}
+-- quoted empty and unquoted empty
+  line 2 @6 #1 {"a":"","b":"","c":"x"}
+-- crlf endings
+  line 2 @5 #1 {"a":"1","b":"2"}
+  line 3 @10 #2 {"a":"3","b":"4"}
+-- lone cr endings
+  line 2 @4 #1 {"a":"1","b":"2"}
+  line 3 @8 #2 {"a":"3","b":"4"}
+-- crlf inside quotes kept as written
+  line 2 @2 #1 {"a":"x\r\ny"}
+-- bom
+  line 2 @7 #1 {"a":"1","b":"2"}
+-- bom only at the start
+  line 2 @4 #1 {"a":"﻿1","b":"2"}
+-- blank lines skipped and counted
+  line 3 @5 #1 {"a":"1","b":"2"}
+  line 6 @11 #2 {"a":"3","b":"4"}
+-- a line of delimiters is not blank
+  line 2 @4 #1 {"a":"","b":""}
+-- quote inside an unquoted field
+  line 2 @4 #1 {"a":"5\" pipe","b":"2"}
+-- not trimmed
+  line 2 @5 #1 {"a":"1"," b":" 2"}
+-- nul is content
+  line 2 @2 #1 {"a":"x\u0000y"}
+-- no header
+  line 1 @0 #1 ["1","2"]
+  line 2 @4 #2 ["3"]
+-- names
+  line 1 @0 #1 {"x":"1","y":"2"}
+  line 2 @4 #2 {"x":"3","y":"4"}
+-- tab
+  line 2 @4 #1 {"a":"1","b":"2\t3"}
+-- pipe
+  line 2 @4 #1 {"a":"1","b":"2"}
+-- no quoting
+  line 2 @4 #1 {"a":"\"1","b":"2"}
+-- other quote
+  line 2 @4 #1 {"a":"x,y","b":"2"}
+-- empty text
+-- header only
+-- long record raises
+  line 2 @4 #1 {"a":"1","b":"2"}
+  RAISED csv.parse: line 3 (record 2) has 3 fields where the header has 2
+  details {"line":3,"offset":8,"record":2}
+-- short record raises
+  line 2 @4 #1 {"a":"1","b":"2"}
+  RAISED csv.parse: line 3 (record 2) has 1 field where the header has 2
+  details {"line":3,"offset":8,"record":2}
+-- text after a closing quote raises
+  RAISED csv.parse: line 2 (record 1) has text after a closing quote
+  details {"line":2,"offset":4,"record":1}
+-- deliver
+  line 2 @4 #1 {"a":"1","b":"2"} PROBLEM line 2 (record 1) has 3 fields where the header has 2 fields ["1","2","3"]
+  line 3 @10 #2 {"a":"4"} PROBLEM line 3 (record 2) has 1 field where the header has 2 fields ["4"]
+  line 4 @12 #3 {"a":"xy","b":"5"} PROBLEM line 4 (record 3) has text after a closing quote fields ["xy","5"]
+  line 5 @19 #4 {"a":"6","b":"7"}
+-- unterminated quote names its line
+  line 2 @4 #1 {"a":"1","b":"2"}
+  RAISED csv.parse: the quote opened on line 3 is never closed
+-- unterminated quote, delivered too
+  RAISED csv.parse: the quote opened on line 2 is never closed
+-- empty header name
+  RAISED csv.parse: column 2 of the header on line 1 has no name; give names: and header: false to name the columns yourself
+  details {"line":1,"offset":0}
+-- duplicate header name
+  RAISED csv.parse: columns 1 and 3 of the header on line 1 are both named 'a'
+  details {"line":1,"offset":0}
+-- case kept in names
+  line 2 @12 #1 {"Price":"1","price":"2"}
+-- header with text after a quote
+  RAISED csv.parse: the header on line 1 has text after a closing quote
+  details {"line":1,"offset":0}
+-- unknown option
+  RAISED csv.parse: 'delimeter' is not an option; the options are delimiter, quote, header, names and problems
+-- delimiter too long
+  RAISED csv.parse: delimiter must be one character
+-- delimiter a line break
+  RAISED csv.parse: delimiter cannot be a line break
+-- delimiter same as quote
+  RAISED csv.parse: the delimiter and the quote are the same character
+-- names beside header true
+  RAISED csv.parse: names are for a file with no header line, so they cannot go with header: true
+-- duplicate names
+  RAISED csv.parse: names 1 and 2 are both 'x'
+-- problems misspelt
+  RAISED csv.parse: problems must be "raise" or "deliver"
+-- header not a boolean
+  RAISED csv.parse: header must be true or false
+-- csv.parse of a number: RAISED csv.parse expects text; for a file, use csv.records(f)
+-- csv.records of a number: RAISED csv.records expects a file, such as {file}"catalog.csv"; for text already in memory, use csv.parse(text)
+-- options not a record: RAISED csv.parse: options must be a record, such as { delimiter: "\t" }
+-- no such verb: RAISED undefined function: csv.read -- the 'csv' module does not define 'read'
+-- a source as a condition: RAISED a csv source cannot be used as a condition; loop over it with for each
+-- a short record's missing field: RAISED unknown record field: b
+-- a missing file: RAISED could not read file: /nonexistent/csv/file.csv (No such file or directory)
+-- twice: 4, copy equal true, type csv_source, renders <csv_source>

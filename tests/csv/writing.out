@@ -1,0 +1,32 @@
+plain: "a,b\n"
+needs quoting: "\"a,b\",\"say \"\"hi\"\"\",\"two\nlines\",\"cr\r\",ok\n"
+spaces are not quoted: " a ,\n"
+one empty field: "\"\"\n"
+one empty field, no quoting: RAISED csv.line: a record of one empty field cannot be written with quote: ""; it would be an empty line, which a reader skips
+record in its own order: "2,1\n"
+names order a record: "1,2\n"
+typed values: "3,2.5,1.50,2026-11-02,true,,\n"
+exact integer: "12345678901234567\n"
+tab: "\"a\tb\"\tc\n"
+crlf: "a,b\r\n"
+other quote: "'it''s','a,b'\n"
+no quoting, plain: "a,b\n"
+no quoting, needs it: RAISED csv.line: field 1 holds the delimiter or a line break, and with quote: "" it cannot be written
+nested array: RAISED csv.line: field 2 is an array, which is not one field
+nested record: RAISED csv.line: field 1 is a record, which is not one field
+not fields: RAISED csv.line expects an array or a record of fields
+line_end other: RAISED csv.line: line_end must be "\n" or "\r\n"
+reader option: RAISED csv.line: 'header' is not an option; the options are delimiter, quote, names and line_end
+missing named field: RAISED csv.line: the record has 1 field where the names give 2; a column that shifts is the defect this refuses
+misnamed field: RAISED csv.line: the record has no field 'b', which the names give
+records: "sku,description,price\nA-100,\"Gripper, two-finger\",120.50\nA-200,\"Servo motor\n24V, 400W\",310.00\n"
+names choose the header: "price,sku,description\n120.50,A-100,\"Gripper, two-finger\"\n310.00,A-200,\"Servo motor\n24V, 400W\"\n"
+arrays need names: "x,y\n1,2\n3,4\n"
+arrays with no header: "1,2\n3,4\n"
+a shifted record: RAISED csv.write: row 2 has no field 'b', which the header names
+a short record: RAISED csv.write: row 2 has 1 field where the header has 2; a column that shifts is the defect this refuses
+a record after arrays: RAISED csv.write: a record row needs a header; the first row is an array, so give names:
+not rows: RAISED csv.write expects the rows as an array of records or arrays
+no rows: ""
+read back line 2: {"sku":"A-100","description":"Gripper, two-finger","price":"120.50"}
+read back line 3: {"sku":"A-200","description":"Servo motor\n24V, 400W","price":"310.00"}
