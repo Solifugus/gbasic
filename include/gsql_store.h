@@ -86,6 +86,16 @@ typedef struct {
     uint64_t file_bytes;    /* every file the store owns */
     uint64_t replayed;      /* log records replayed by the open (0 where there is no log) */
     uint64_t lease_renewals, lease_renew_us_max; /* what the lease costs where it runs */
+    /* Where write and read work goes (docs/gsql_profile_design.md): bytes
+     * written by flushes and by compactions per OUTPUT level, bytes merged,
+     * compactions begun and trivial moves, time in flushes, compactions and
+     * syncs, commits that stalled on level 0; and per point lookup the files
+     * whose range held the key, those a filter rejected, and the files the
+     * level walk skipped on range. Counted, never acted on. */
+    uint64_t flush_bytes, comp_bytes[7], comp_read_bytes;
+    uint64_t comp_started, comp_moves, stalls;
+    uint64_t flush_us, comp_us, sync_us;
+    uint64_t lookups, lookup_files, lookup_bloom_rejects, lookup_range_skips;
 } GsStats;
 
 /* A borrowed byte string: valid until the next call on the same txn/cursor. */

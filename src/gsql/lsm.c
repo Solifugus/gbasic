@@ -45,6 +45,15 @@
 #include <stdlib.h>
 #include <time.h>
 
+/* Durations for the profile counters only (GsStats, docs/gsql_profile_design.md),
+ * counted and never acted on: C11's clock, since this file is built without
+ * POSIX's, and the engine's own clock is the I/O layer's, in milliseconds. */
+static uint64_t prof_us(void) {
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
 #define TYPE_DEL 0
 #define TYPE_PUT 1
 /* A value kept in a blob file; the entry's value is a pointer to it:
@@ -623,7 +632,9 @@ static char *log_name(const char *path, uint64_t num) {
 }
 
 static int flush_file(GsStore *db, GsqlFile *f) {
+    uint64_t t0 = prof_us();
     int rc = gsql_io_sync(f);
+    db->st.sync_us += prof_us() - t0;
     db->st.flushes++;
     if (rc) { db->failed = 1; return GS_IO; } /* §1.3 */
     return GS_OK;
@@ -2181,7 +2192,20 @@ static int comp_install(GsStore *db) {
  * a deletion no snapshot needs can go too. The snapshot boundary is the one
  * taken at the start, which stays safe as it runs: a snapshot opened since is
  * newer than every input entry, and needs only the newest of each key. */
+static int comp_step_run(GsStore *db, uint64_t budget, uint64_t *used);
+
 static int comp_step(GsStore *db, uint64_t budget, uint64_t *used) {
+    int next = db->comp ? db->comp->next : 0;
+    uint64_t t0 = prof_us(), w0 = db->st.bytes_written, u = 0;
+    int rc = comp_step_run(db, budget, &u);
+    db->st.comp_us += prof_us() - t0;
+    if (next >= 0 && next < 7) db->st.comp_bytes[next] += db->st.bytes_written - w0;
+    db->st.comp_read_bytes += u;
+    if (used) *used = u;
+    return rc;
+}
+
+static int comp_step_run(GsStore *db, uint64_t budget, uint64_t *used) {
     Comp *c = db->comp;
     Merge m = {c->src, c->ns};
     int rc = GS_OK;
@@ -2417,8 +2441,10 @@ static int comp_start(GsStore *db, int level) {
             version_remove(db, nv, level, inputs[i]);
         }
         free(inputs);
+        db->st.comp_moves++;
         return install(db, nv, NULL, 0);
     }
+    db->st.comp_started++;
     return comp_make(db, level, next, inputs, nin, first_below);
 }
 
@@ -2555,7 +2581,12 @@ static int maybe_compact(GsStore *db, uint64_t wrote) {
     if (db->sweep) { int rc = sweep_dead(db); if (rc) return rc; }
     uint64_t budget = wrote * comp_credit(db);
     for (int guard = 0; guard < 64; guard++) {
-        int rc;
+        /* GS_OK, not left unset: with no budget, `!budget` short-circuits
+         * past gc_start and rc was returned unassigned -- whatever the stack
+         * held. Usually 0; a CREATE INDEX over existing rows (commit_runs ->
+         * flush_memtable -> here with 0) failed its commit as IO once the
+         * stack under it changed, from a status no code had produced. */
+        int rc = GS_OK;
         if (!db->comp) {
             int l = comp_wanted(db);
             if (l < 0) {
@@ -2568,6 +2599,7 @@ static int maybe_compact(GsStore *db, uint64_t wrote) {
             }
         }
         int stall = db->cur->nfiles[0] >= db->l0_trigger * COMP_STALL;
+        if (stall) db->st.stalls++;
         if (!stall && !budget) return GS_OK;
         if (!stall && db->comp->for_gc && comp_wanted(db) < 0) {
             /* a commit's GC share, and no more after it this commit; once
@@ -2805,7 +2837,18 @@ static int flush_install(GsStore *db) {
  * it installs, whose snapshots are past every frozen commit (the freeze made
  * them durable). Writing every version left level 0 holding ~100 MB of
  * shadowed versions for 1,000 hot keys. */
+static int flush_step_run(GsStore *db, uint64_t budget);
+
 static int flush_step(GsStore *db, uint64_t budget) {
+    if (!db->fl) return GS_OK;
+    uint64_t t0 = prof_us(), w0 = db->st.bytes_written;
+    int rc = flush_step_run(db, budget);
+    db->st.flush_us += prof_us() - t0;
+    db->st.flush_bytes += db->st.bytes_written - w0;
+    return rc;
+}
+
+static int flush_step_run(GsStore *db, uint64_t budget) {
     Flush *f = db->fl;
     if (!f) return GS_OK;
     uint64_t spent = 0;
@@ -2959,6 +3002,7 @@ static int lookup(struct GsTxn *t, const unsigned char *k, size_t kn, Ent *out, 
         }
     }
     Version *v = t->v;
+    db->st.lookups++;
     for (int l = 0; l < LEVELS; l++) {
         size_t cnt = v->nfiles[l], first = 0;
         if (l > 0 && cnt) {
@@ -2980,11 +3024,14 @@ static int lookup(struct GsTxn *t, const unsigned char *k, size_t kn, Ent *out, 
         for (size_t j = first; j < cnt; j++) {
             FileMeta *m = v->files[l][l == 0 ? cnt - 1 - j : j];
             if (bytes_cmp(gsb(k, kn), gsb(m->smallest.p, m->smallest.n)) < 0 ||
-                bytes_cmp(gsb(k, kn), gsb(m->largest.p, m->largest.n)) > 0)
+                bytes_cmp(gsb(k, kn), gsb(m->largest.p, m->largest.n)) > 0) {
+                db->st.lookup_range_skips++;
                 continue;
+            }
+            db->st.lookup_files++;
             int rc = file_open(db, m);
             if (rc) return rc;
-            if (!bloom_may(m, k, kn)) continue;
+            if (!bloom_may(m, k, kn)) { db->st.lookup_bloom_rejects++; continue; }
             Src s = {0};
             s.kind = 1;
             s.db = db;

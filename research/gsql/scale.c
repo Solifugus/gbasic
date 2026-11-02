@@ -158,6 +158,27 @@ static void load(uint64_t from, uint64_t to) {
     free(q);
 }
 
+/* The engine's own counters (docs/gsql_profile_design.md), as the difference
+ * between two snapshots, one JSON line on stderr: stdout stays the one result
+ * line scale.sh records, comparable with runs before the counters existed. */
+static void prof_line(const char *what, uint64_t rows, double secs, const GsStats *a, const GsStats *b) {
+#define D(f) ((unsigned long long)(b->f - a->f))
+    fprintf(stderr,
+            "{\"profile\": \"%s\", \"rows\": %llu, \"secs\": %.2f, \"rows_per_s\": %.0f, "
+            "\"bytes_written\": %llu, \"flush_bytes\": %llu, \"comp_bytes\": [%llu, %llu, %llu, %llu, %llu, %llu, %llu], "
+            "\"comp_read_bytes\": %llu, \"comp_started\": %llu, \"comp_moves\": %llu, \"stalls\": %llu, "
+            "\"flush_s\": %.2f, \"comp_s\": %.2f, \"sync_s\": %.2f, \"syncs\": %llu, "
+            "\"lookups\": %llu, \"lookup_files\": %llu, \"bloom_rejects\": %llu, \"range_skips\": %llu, "
+            "\"pages_read\": %llu, \"cache_hits\": %llu, \"file_bytes\": %llu}\n",
+            what, (unsigned long long)rows, secs, secs > 0 ? rows / secs : 0.0, D(bytes_written), D(flush_bytes),
+            D(comp_bytes[0]), D(comp_bytes[1]), D(comp_bytes[2]), D(comp_bytes[3]), D(comp_bytes[4]),
+            D(comp_bytes[5]), D(comp_bytes[6]), D(comp_read_bytes), D(comp_started), D(comp_moves), D(stalls),
+            D(flush_us) / 1e6, D(comp_us) / 1e6, D(sync_us) / 1e6, D(flushes), D(lookups), D(lookup_files),
+            D(lookup_bloom_rejects), D(lookup_range_skips), D(pages_read), D(cache_hits),
+            (unsigned long long)b->file_bytes);
+#undef D
+}
+
 static int cmp_d(const void *a, const void *b) {
     double x = *(const double *)a, y = *(const double *)b;
     return x < y ? -1 : x > y;
@@ -177,6 +198,51 @@ static void timed(int ops, void (*make)(char *, size_t, uint64_t), uint64_t n, d
     *med = lat[ops / 2];
     *p99 = lat[(size_t)ops * 99 / 100];
     free(lat);
+}
+
+/* The point reads again, each with its own counters, so the slowest 1% can
+ * be compared with the rest: files consulted, filters, blocks read. */
+typedef struct { double us; GsStats d; } PRead;
+static int cmp_pr(const void *a, const void *b) {
+    double x = ((const PRead *)a)->us, y = ((const PRead *)b)->us;
+    return x < y ? -1 : x > y;
+}
+static void q_point(char *q, size_t cap, uint64_t n);
+static void point_profile(int ops, uint64_t n) {
+    PRead *r = calloc((size_t)ops, sizeof *r);
+    char q[256];
+    for (int i = 0; i < ops; i++) {
+        GsStats a, b;
+        q_point(q, sizeof q, n);
+        E->stats(db, &a);
+        double t0 = now();
+        read_stmt(q);
+        r[i].us = (now() - t0) * 1e6;
+        E->stats(db, &b);
+        r[i].d.lookups = b.lookups - a.lookups;
+        r[i].d.lookup_files = b.lookup_files - a.lookup_files;
+        r[i].d.lookup_bloom_rejects = b.lookup_bloom_rejects - a.lookup_bloom_rejects;
+        r[i].d.lookup_range_skips = b.lookup_range_skips - a.lookup_range_skips;
+        r[i].d.pages_read = b.pages_read - a.pages_read;
+        r[i].d.cache_hits = b.cache_hits - a.cache_hits;
+    }
+    qsort(r, (size_t)ops, sizeof *r, cmp_pr);
+    int cut = ops * 99 / 100;
+    for (int part = 0; part < 2; part++) {
+        int lo = part ? cut : 0, hi = part ? ops : cut;
+        double us = 0, f = 0, rej = 0, sk = 0, pg = 0, ch = 0, lk = 0;
+        for (int i = lo; i < hi; i++) {
+            us += r[i].us; lk += r[i].d.lookups; f += r[i].d.lookup_files; rej += r[i].d.lookup_bloom_rejects;
+            sk += r[i].d.lookup_range_skips; pg += r[i].d.pages_read; ch += r[i].d.cache_hits;
+        }
+        double c = hi - lo;
+        fprintf(stderr,
+                "{\"profile\": \"point reads, %s\", \"reads\": %d, \"mean_us\": %.1f, \"lookups\": %.2f, "
+                "\"files\": %.2f, \"bloom_rejects\": %.2f, \"range_skips\": %.2f, \"pages_read\": %.2f, "
+                "\"cache_hits\": %.2f}\n",
+                part ? "slowest 1%" : "other 99%", hi - lo, us / c, lk / c, f / c, rej / c, sk / c, pg / c, ch / c);
+    }
+    free(r);
 }
 
 static void q_point(char *q, size_t cap, uint64_t n) {
@@ -205,7 +271,20 @@ int main(int argc, char **argv) {
     write_stmt("CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER, v TEXT, amt NUMBER)");
 
     double t0 = now();
-    load(0, n);
+    {
+        GsStats a, b;
+        E->stats(db, &a);
+        for (int s = 0; s < 10; s++) {
+            uint64_t from = n * (uint64_t)s / 10, to = n * (uint64_t)(s + 1) / 10;
+            double s0 = now();
+            load(from, to);
+            E->stats(db, &b);
+            char what[32];
+            snprintf(what, sizeof what, "load %d/10", s + 1);
+            prof_line(what, to - from, now() - s0, &a, &b);
+            a = b;
+        }
+    }
     double load_s = now() - t0;
     long rss_load = peak_rss_kb();
 
@@ -222,6 +301,7 @@ int main(int argc, char **argv) {
     int ops = 20000;
     double pmed, pp99, rmed, rp99, kmed, kp99;
     timed(ops, q_point, n, &pmed, &pp99);
+    point_profile(ops, n);
     timed(2000, q_range, n, &rmed, &rp99);
 
     t0 = now();

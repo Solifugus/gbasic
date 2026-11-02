@@ -481,8 +481,13 @@ static unsigned scan_model(GsTxn *t, const char *tree, const unsigned *gen, unsi
         E->value(c, &v);
         (*seen)++;
         unsigned i;
-        char want[16];
-        if (k.n != 7 || sscanf((const char *)k.p + 1, "%6u", &i) != 1 || i >= n) continue;
+        char want[16], kz[8];
+        if (k.n != 7) continue;
+        /* a key is counted bytes, not a C string: sscanf on it ran strlen
+         * past its seven bytes (valgrind, uninitialised reads) */
+        memcpy(kz, k.p, 7);
+        kz[7] = 0;
+        if (sscanf(kz + 1, "%6u", &i) != 1 || i >= n) continue;
         snprintf(want, sizeof want, "g%06u-", gen[i]);
         if (v.n > 8 && memcmp(v.p, want, 8) == 0) ok++;
     }
