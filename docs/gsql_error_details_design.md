@@ -46,6 +46,14 @@ referenced is about the parent's), an sql block's refusal, and an `EXPRESSION`
 and a `SYNTAX` refusal naming none. A foreign key declared without a name is
 named `TABLE_COLUMN_fkey` by G-SQL, and `constraint` gives that name.
 
+Two perturbations: the owner not sending the names turned four checks red.
+**Neither fail helper clearing them turned nothing red**, and that is a
+measured fact about where the protection is rather than a gap in the fixture:
+the owner starts every request with a fresh error, so a name cannot outlive its
+refusal across requests, and no path found within one request reuses a filled
+error before a second refusal. The clearing stays as a defence for such a path
+appearing; it is not what the fixture holds.
+
 What was planned:
 
 A fixture refusing one row of each kind, asserting each field by value and
