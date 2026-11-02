@@ -29346,6 +29346,57 @@ static Value reflect_eval_call(AstExpr *expr) {
  * is resolved to its LIVE cell so a record method mutates through it exactly like
  * obj.method(); a non-lvalue receiver (a call result) is evaluated to a temporary.
  * This never produces an lvalue, so `a.b().c = x` stays invalid via assign_lvalue. */
+/* METHODS ON HANDLES (docs/handle_methods_design.md, Matthew's ruling): a
+ * handle's methods are its module's verbs, so `h.verb(args)` is
+ * `module.verb(h, args)`. Derived rather than listed -- the module decides
+ * what the verb does and refuses what it does not take, in its own words --
+ * so a verb added to a module is a method at once. The receiver goes in as a
+ * HELD argument, already evaluated, so `blocks[0].exec()` evaluates it once.
+ * Answers the module's name for a receiver that has one, else NULL. */
+static const char *handle_method_module(const Value *v) {
+    if (v->kind == VALUE_GSQL_CONNECTION || v->kind == VALUE_GSQL_STATEMENT) {
+        return "gsql";
+    }
+    if (v->kind == VALUE_RECORD) {
+        RecordField *kind = record_find((Value *)v, "kind");
+        if (kind && kind->value->kind == VALUE_STRING &&
+            strcmp(kind->value->as.string, "window") == 0) {
+            return "qt";
+        }
+    }
+    return NULL;
+}
+
+static Value eval_call(AstExpr *expr);
+
+static Value handle_method_call(AstExpr *expr, const char *module, Value *receiver) {
+    AstExpr held;
+    memset(&held, 0, sizeof held);
+    held.kind = AST_EXPR_HELD;
+    held.line = expr->line;
+    held.column = expr->column;
+    held.as.held.value = receiver;
+
+    size_t n = expr->as.call.args.count;
+    AstExpr **items = malloc(sizeof(AstExpr *) * (n + 1));
+    if (!items) {
+        abort();
+    }
+    items[0] = &held;
+    for (size_t i = 0; i < n; i++) {
+        items[i + 1] = expr->as.call.args.items[i];
+    }
+
+    AstExpr call = *expr;
+    call.as.call.library = (char *)module;
+    call.as.call.receiver = NULL;
+    call.as.call.args.items = items;
+    call.as.call.args.count = n + 1;
+    Value out = eval_call(&call);
+    free(items);
+    return out;
+}
+
 static Value eval_method_call(AstExpr *expr) {
     AstExpr *recv = expr->as.call.receiver;
     const char *method = expr->as.call.name;
@@ -29392,6 +29443,16 @@ static Value eval_method_call(AstExpr *expr) {
             if (have_temp) value_free(temp);
             return out;
         }
+    }
+
+    const char *module = handle_method_module(ref);
+    if (module) {
+        Value out = handle_method_call(expr, module, ref);
+        if (have_temp) value_free(temp);
+        return out;
+    }
+
+    if (ref->kind == VALUE_RECORD) {
         char message[256];
         snprintf(message, sizeof(message), "unknown method: %s", method);
         runtime_error_raise(message, 1003, "invalid function call");
@@ -30615,6 +30676,16 @@ static Value eval_call(AstExpr *expr) {
                 }
                 return eval_user_function_bound(expr, method, receiver_value,
                                                 method_field->value->as.function.context);
+            }
+        }
+
+        /* A handle's methods are its module's verbs (handle_method_module):
+         * `db.close()` is `gsql.close(db)`. After a record's own methods, so a
+         * function field the programmer wrote still wins. */
+        if (receiver_value) {
+            const char *module = handle_method_module(receiver_value);
+            if (module) {
+                return handle_method_call(expr, module, receiver_value);
             }
         }
 
@@ -39015,6 +39086,8 @@ static Value eval_expr(AstExpr *expr) {
         return eval_spawn(expr);
     case AST_EXPR_BINARY:
         return eval_binary(expr);
+    case AST_EXPR_HELD:
+        return value_copy(*(Value *)expr->as.held.value);
     case AST_EXPR_MODIFIER_APPLY: {
         /* The inline form of the assignment clause, and DELIBERATELY the same
          * function: `{USD}x` and `x {USD}= ...` must not be able to disagree
@@ -41399,6 +41472,7 @@ static void dead_scan_expr(const AstExpr *e, DeadScan *s) {
         break;
     case AST_EXPR_UNARY:   dead_scan_expr(e->as.unary.expr, s); break;
     case AST_EXPR_MODIFIER_APPLY: dead_scan_expr(e->as.modifier_apply.value, s); break;
+    case AST_EXPR_HELD: break;
     case AST_EXPR_NEW:
         dead_scan_expr(e->as.derive.proto, s);
         dead_scan_expr(e->as.derive.with, s);
@@ -42935,7 +43009,7 @@ static void gsql_blocks_unused(AstStmtList program) {
             if (x->kind == AST_STMT_SQL && x->as.sql.unused) {
                 warn_fmt_at(2121, "unused block", x->line, x->column,
                             "sql '%s' is declared and never used, so it never runs -- a block runs "
-                            "only when gsql.exec(%s), gsql.query(%s) or `for each row in %s` reaches it",
+                            "only when %s.exec(), %s.query() or `for each row in %s` reaches it",
                             x->as.sql.name, x->as.sql.name, x->as.sql.name, x->as.sql.name);
             }
         }

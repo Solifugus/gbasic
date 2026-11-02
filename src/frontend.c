@@ -977,11 +977,19 @@ static void gsq_mark_unused(const GsqDecls *d, const char *source, int first_lin
         if (t.type == TOKEN_EOF || t.type == TOKEN_ERROR) {
             break;
         }
-        if (t.type == TOKEN_IDENT && before != TOKEN_SQL_OPEN) {
+        /* `add.exec()` arrives as one QUALIFIED_IDENT, a method on the block
+         * (docs/handle_methods_design.md), so its receiver is a use too. */
+        int span = t.length;
+        if (t.type == TOKEN_QUALIFIED_IDENT) {
+            const char *dot = memchr(t.start, '.', (size_t)t.length);
+            span = dot ? (int)(dot - t.start) : t.length;
+        }
+        if ((t.type == TOKEN_IDENT || t.type == TOKEN_QUALIFIED_IDENT) &&
+            before != TOKEN_SQL_OPEN) {
             for (size_t i = 0; i < n; i++) {
                 const char *name = gsq_decl_name(d->decls[i]);
-                if (d->decls[i]->kind == AST_STMT_SQL && (int)strlen(name) == t.length &&
-                    strncmp(name, t.start, (size_t)t.length) == 0) {
+                if (d->decls[i]->kind == AST_STMT_SQL && (int)strlen(name) == span &&
+                    strncmp(name, t.start, (size_t)span) == 0) {
                     used[i] = 1;
                 }
             }

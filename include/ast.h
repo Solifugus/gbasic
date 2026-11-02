@@ -71,7 +71,12 @@ typedef enum {
      * SAME AstModifierUse an assignment clause carries and the same
      * value->value semantics -- what differs is only that there is no target,
      * so it may appear wherever an expression may. */
-    AST_EXPR_MODIFIER_APPLY
+    AST_EXPR_MODIFIER_APPLY,
+    /* A value already evaluated, standing in an argument list. Never parsed:
+     * the interpreter builds one for `h.verb(args)`, which hands the receiver
+     * to `module.verb` as its first argument without evaluating it twice
+     * (docs/handle_methods_design.md). Points at a Value it does not own. */
+    AST_EXPR_HELD
 } AstExprKind;
 
 typedef struct AstExpr AstExpr;
@@ -309,6 +314,9 @@ struct AstExpr {
             AstModifierUse modifier;
             AstExpr *value;
         } modifier_apply;
+        struct {
+            void *value;   /* a Value *, borrowed */
+        } held;
     } as;
 };
 
