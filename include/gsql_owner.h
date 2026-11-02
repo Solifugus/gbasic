@@ -28,6 +28,9 @@ typedef struct {
     const unsigned char *principal;   /* the client's principal(), any value */
     size_t principal_length;
     uint32_t batch;                   /* rows per batch, at least 1 */
+    /* WITH RECURSIVE's round limit for this statement: the connection's
+       max_recursion (docs/gsql_recursive_design.md §3); 0: the service's */
+    uint64_t max_recursion;
     /* the caller can resume a statement in slices: run may answer it
        `working` (docs/gsql_slicing_design.md). 0: run answers whole. */
     int sliced;

@@ -94,6 +94,18 @@ if [ -s "$work/random.err" ]; then
     fail "random: the fixture wrote to stderr"
 fi
 
+printf 'TIER max_recursion: the WITH RECURSIVE round limit of a database, set from the program\n'
+# each limit asserted as a difference: the same statement answering under one
+# setting and refused under another (docs/gsql_recursive_design.md §3)
+mkdir -p "$work/maxrec"
+(cd "$work/maxrec" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/max_recursion_test.bas") \
+    >"$work/maxrec.out" 2>"$work/maxrec.err"
+verdict max_recursion "$work/maxrec.out" $? 15
+if [ -s "$work/maxrec.err" ]; then
+    sed 's/^/       /' "$work/maxrec.err" | head -5
+    fail "max_recursion: the fixture wrote to stderr"
+fi
+
 printf 'TIER backup: gsql.backup, a copy made while the database is in use, and refreshed\n'
 mkdir -p "$work/backup"
 (cd "$work/backup" && GBASIC_BIN="$OLDPWD/gbasic" GBASIC_PATH="$OLDPWD/stdlib" timeout -k 5 300 \

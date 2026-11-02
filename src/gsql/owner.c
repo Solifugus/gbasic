@@ -548,6 +548,8 @@ static int do_query(Owner *o, Conn *c, Req *r) {
     }
     uint64_t batch = 0;
     s.batch = field_u64(f, nf, "batch", &batch) && batch > 0 ? (batch > UINT32_MAX ? UINT32_MAX : (uint32_t)batch) : 100;
+    uint64_t rounds = 0;
+    s.max_recursion = field_u64(f, nf, "max_recursion", &rounds) ? rounds : 0;
 
     GsqlError err = { GSQL_OK, "", 0, 0 };
     int w = o->svc->writes(o->svc->ctx, &s, &err);

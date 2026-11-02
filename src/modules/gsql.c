@@ -595,6 +595,56 @@ static void gsql_trace(unsigned type) {
     }
 }
 
+/* ---- a connection's attributes (docs/gsql_recursive_design.md §3) --------
+ *
+ * `bank.max_recursion = 2000`: WITH RECURSIVE's round limit for every
+ * statement run on the connection, sent with each request. The only
+ * attribute a connection has; a name it lacks is refused naming it. */
+
+static void gsql_attr_refuse(const char *name, int set) {
+    char msg[300];
+    snprintf(msg, sizeof msg, "a database has no attribute `%s` to %s: its one attribute is max_recursion, the rounds a "
+             "WITH RECURSIVE query may run (and its verbs are called, as db.close())", name, set ? "set" : "read");
+    runtime_error_raise(msg, 1003, set ? "assignment" : "field access");
+}
+
+static int gsql_connection_attr_get(const GsqlConnectionValue *c, const char *name, Value *out) {
+    if (strcmp(name, "max_recursion") != 0) {
+        gsql_attr_refuse(name, 0);
+        return 0;
+    }
+    *out = value_number_exact((long long)(c->max_recursion ? c->max_recursion : GSQL_MAX_RECURSION_DEFAULT));
+    return 1;
+}
+
+static int gsql_connection_attr_set(GsqlConnectionValue *c, const char *name, Value v) {
+    /* refused, `v` stays the caller's, which frees it (assign_lvalue's
+       contract: only a change takes the value) */
+    if (strcmp(name, "max_recursion") != 0) {
+        gsql_attr_refuse(name, 1);
+        return 0;
+    }
+    if (v.kind == VALUE_UNKNOWN) {
+        c->max_recursion = 0;   /* back to the default */
+        value_free(v);
+        return 1;
+    }
+    int whole = v.kind == VALUE_NUMBER &&
+                (v.as.num.is_exact ? v.as.num.exact >= 1
+                                   : v.as.num.value >= 1 && v.as.num.value <= 9007199254740992.0 &&
+                                         v.as.num.value == (double)(long long)v.as.num.value);
+    if (!whole) {
+        char phrase[48], msg[200];
+        snprintf(msg, sizeof msg, "max_recursion takes a whole number of rounds, one or more (or unknown, for the "
+                 "default of %d), not %s", GSQL_MAX_RECURSION_DEFAULT, kind_phrase(v.kind, phrase, sizeof phrase));
+        runtime_error_raise(msg, 1003, "assignment");
+        return 0;
+    }
+    c->max_recursion = v.as.num.is_exact ? (uint64_t)v.as.num.exact : (uint64_t)v.as.num.value;
+    value_free(v);
+    return 1;
+}
+
 /* One request and its reply. 1 with *reply (a record) and *type; 0 with a
  * raise, the owner's own ERROR included. */
 static void gsql_cursor_close_quiet(GsqlConnectionValue *c, Value cursor);
@@ -602,6 +652,11 @@ static void gsql_cursor_close_quiet(GsqlConnectionValue *c, Value cursor);
 static int gsql_request(GsqlConnectionValue *c, unsigned type, Value body, const char *verb, const char *sql,
                         Value *reply, unsigned *reply_type) {
     *reply = value_null();
+    if (type == GSQL_M_QUERY && c->max_recursion) {
+        /* the connection's max_recursion, on each statement it runs
+           (docs/gsql_recursive_design.md §3) */
+        record_set(&body, "max_recursion", value_number_exact((int64_t)c->max_recursion));
+    }
     SerBuf sb;
     serbuf_init(&sb);
     int ok = serialize_value(&sb, body, 0);
@@ -2028,6 +2083,9 @@ static int gsql_restore_send(GsqlConnectionValue *c, const char *sql, size_t len
                              double *affected) {
     Value body = value_record(NULL, 0);
     record_set(&body, "statement", value_string_n(sql, len));
+    if (c->max_recursion) {
+        record_set(&body, "max_recursion", value_number_exact((int64_t)c->max_recursion));
+    }
     SerBuf sb;
     serbuf_init(&sb);
     int ok = serialize_value(&sb, body, 0);

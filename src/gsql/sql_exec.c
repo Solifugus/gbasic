@@ -118,6 +118,9 @@ typedef struct X {
     GsqlHv **aggv;
     /* a windowed query's current row: each window function's answer, by slot */
     GsqlHv **winv;
+    /* WITH RECURSIVE's round limit for this statement, which its subqueries,
+       derived tables and compound sides share (docs/gsql_recursive_design.md §3) */
+    uint64_t rec_limit;
     /* a grouping set's group: which GROUP BY expressions its set holds
        (docs/gsql_rollup_design.md); NULL for a plain GROUP BY */
     const unsigned char *gset;
@@ -312,6 +315,7 @@ static void x_init(X *x, GsqlSql *q, const GsEngine *e, GsTxn *t, SqlPlan *p, Gs
     x->t = t;
     x->p = p;
     x->err = err;
+    x->rec_limit = q->rec_limit;
     x->nsx = p->nscans ? p->nscans : 1;
     x->sx = calloc(x->nsx, sizeof(XScan));
     if (!x->sx) {
@@ -7161,6 +7165,7 @@ static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, RowS
     x_init(&k->x, c->q, e, t, &k->plan, &k->err);
     k->x.params = c->x.params;
     k->x.paramslen = c->x.paramslen;
+    k->x.rec_limit = c->x.rec_limit;
     k->x.outer = c->x.outer;   /* a side is at its compound's level */
     k->limit = UINT64_MAX;
     int rc = select_start(k);
@@ -7258,6 +7263,7 @@ static SqlCursor *sub_open(X *x, SqlPlan *p, X *outer) {
     x_init(&k->x, x->q, x->e, x->t, &k->plan, &k->err);
     k->x.params = x->params;
     k->x.paramslen = x->paramslen;
+    k->x.rec_limit = x->rec_limit;
     k->x.outer = outer;
     k->limit = UINT64_MAX;
     SqlStmt *s = p->s;
@@ -7610,13 +7616,13 @@ static int recursive_rows(X *x, size_t k) {
         cursor_free(c);
         self->work = NULL;
         self->nwork = 0;
-        if (rc == GSQL_OK && round > x->q->rec_limit && next.n) {
+        if (rc == GSQL_OK && round > x->rec_limit && next.n) {
             /* the round past the limit still added rows: refused, rather than
                run until memory gives out */
             rc = xfail(x->err, GSQL_EXPRESSION, rp->rec_pos, "WITH RECURSIVE `%s` was still adding rows after %llu "
                        "rounds: if the data has a cycle, mark it with CYCLE or use UNION in place of UNION ALL; "
-                       "otherwise bound the step, as WHERE depth < 100", rp->rec_name,
-                       (unsigned long long)x->q->rec_limit);
+                       "otherwise bound the step, as WHERE depth < 100, or, if it is meant to run longer, raise "
+                       "the database's max_recursion", rp->rec_name, (unsigned long long)x->rec_limit);
         }
         for (size_t r = 0; r < work.n; r++) {
             held -= rec_row_cost(&work.v[r]);   /* the round before's copies, now dropped */
@@ -8487,6 +8493,9 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
     x_init(&c->x, q, e, t, &c->plan, &c->err);
     c->x.params = st->parameters;
     c->x.paramslen = st->parameters_length;
+    if (st->max_recursion) {
+        c->x.rec_limit = st->max_recursion;   /* the connection's max_recursion */
+    }
     SqlStmt *s = c->parsed.stmt;
     if (s->kind == SQ_BACKUP) {
         if (backup_start(c, e, t) != GSQL_OK) {
@@ -8736,7 +8745,7 @@ GsqlSql *gsql_sql_new(const GsqlHost *host) {
         abort();
     }
     q->h = *host;
-    q->rec_limit = 100000;
+    q->rec_limit = GSQL_MAX_RECURSION_DEFAULT;
     q->rec_bytes = (uint64_t)1 << 30;
     q->sort_budget = (size_t)64 << 20;
     q->sort_run = 0;   /* the sorter's 64 MB */

@@ -20,6 +20,12 @@
 #define GSQL_FRAME_HEADER 9
 #define GSQL_FRAME_MAX (16u << 20)   /* the rest of the frame: type, id, body */
 
+/* WITH RECURSIVE's round limit when a connection sets no max_recursion
+ * (docs/gsql_recursive_design.md §3): the owner's default, and what
+ * `bank.max_recursion` answers when it was never set. One definition, so the
+ * two cannot disagree. */
+#define GSQL_MAX_RECURSION_DEFAULT 1000000
+
 typedef enum {
     GSQL_M_HELLO = 1,
     GSQL_M_WELCOME,

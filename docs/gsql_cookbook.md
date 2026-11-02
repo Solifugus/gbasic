@@ -1449,7 +1449,7 @@ Accounts by total:
 
 A hierarchy of unknown depth, such as parts within parts, managers over managers or accounts rolling up, is one `WITH RECURSIVE` query. Its **anchor** is where the walk starts, and its **step**, after `UNION ALL`, goes one level further each round, reading the rows the round before produced. Here the step multiplies the quantities down, so the query that reads it totals every part in a robot arm.
 
-**A cycle in the data,** a part listed inside itself, would make the walk go round forever. `CYCLE part SET looped USING route` watches the part: a row whose part is already on its route is answered, marked `looped`, and goes no further, so the walk ends and the loop can be reported with the route that found it. Without `CYCLE`, G-SQL refuses a recursive query still adding rows after 100 000 rounds, or holding more than 1 GiB, rather than run until memory gives out. `docs/gsql_recursive_design.md` has the rules.
+**A cycle in the data,** a part listed inside itself, would make the walk go round forever. `CYCLE part SET looped USING route` watches the part: a row whose part is already on its route is answered, marked `looped`, and goes no further, so the walk ends and the loop can be reported with the route that found it. Without `CYCLE`, G-SQL refuses a recursive query still adding rows after a million rounds, or holding more than 1 GiB, rather than run until memory gives out; a program whose recursion is meant to run longer sets the database's limit, as `plant.max_recursion = 5000000`. `docs/gsql_recursive_design.md` has the rules.
 
 <!--CODE:17_recursive_queries-->
 

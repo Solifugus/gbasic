@@ -135,3 +135,13 @@ The sorter opened every run at once for its one merge, a file and a 64 KB buffer
 
 **Tested** in `run_gsql_table.sh`'s sort tier: 300 000 entries with a 4 KB budget make over 2 000 runs, sorted with the process allowed only 256 open files, against an in-memory stable sort, every file removed after. The sorter before this change fails it (28 432 mismatches, measured); the merged runs written out of order fail it too (299 219). The index build uses the same sorter, so it gains the same.
 
+## 11. Proposal: window functions (Matthew's ruling, 2026-11-02: option C)
+
+A windowed query holds every row, its state and its windows' inputs (`gsql_window_design.md` §5). Three ways were weighed: refusing past a budget (cheap, but a large window query then cannot run); one partition at a time in memory (bounded by the largest partition, so a window with no `PARTITION BY` over a large table is still the whole table); and **the partition-at-a-time form with each partition in a spooling row store**, which bounds even that. The last was ruled.
+
+**The plan.** The rows are collected as now, but into a row store (§8) as encoded entries: each row's state, its windows' arguments, and its arrival number. Past the budget, each ordering's pass goes through the sorter keyed by partition key and the window's `ORDER BY` values in the key encoding, with the same comparability check `ORDER BY` makes (§6), and the partitions are read off one at a time, each into a row store of its own, which spools past the budget; the computing reads it by position, as it reads the in-memory array now. Each answer is written beside its row's arrival number, and a last sort by arrival number puts the rows and their answers back in the order the in-memory form answers in. A row store keeps eight bytes a row in memory, so the largest partition costs that much at most.
+
+**Kept as now:** a query whose rows fit in the budget runs exactly as today. A value with no sort key (a duration) in a window's `ORDER BY` keeps that ordering in memory, as `ORDER BY` does, and the 1 GiB refusal stays the backstop for it.
+
+**Tests:** the spilled tier and the window differential run spilled, as for every other operator, with a floor on the windows that spilled.
+

@@ -459,6 +459,9 @@ struct GsqlConnectionValue {
     /* a `database` block with no `file:`, a role: its blocks are given a
      * connection when used (docs/gsql_block_connection_design.md) */
     char *role;
+    /* `bank.max_recursion = n`: WITH RECURSIVE's round limit for every
+     * statement run on it; 0, the owner's default (docs/gsql_recursive_design.md §3) */
+    uint64_t max_recursion;
 };
 
 /* An `sql` block: its statement, the database it is on (by NAME, looked up in
@@ -3584,6 +3587,8 @@ static Value value_copy(Value value);
 static void value_free(Value value);
 #if GBASIC_GSQL
 static void gsql_connection_shut(GsqlConnectionValue *c);
+static int gsql_connection_attr_get(const GsqlConnectionValue *c, const char *name, Value *out);
+static int gsql_connection_attr_set(GsqlConnectionValue *c, const char *name, Value v);
 static Value gsql_eval_call(AstExpr *expr);
 struct GsqlRows;
 static struct GsqlRows *gsql_block_rows(const GsqlStatementValue *st);
@@ -39064,6 +39069,15 @@ static Value eval_expr(AstExpr *expr) {
             value_free(object);
             return value_array(items, n);
         }
+#if GBASIC_GSQL
+        if (object.kind == VALUE_GSQL_CONNECTION) {
+            /* a connection's attribute, `bank.max_recursion` */
+            Value got;
+            int ok = gsql_connection_attr_get(object.as.gsql_connection, expr->as.field.field, &got);
+            value_free(object);
+            return ok ? got : value_null();
+        }
+#endif
         if (object.kind != VALUE_RECORD) {
             runtime_error_raise("field access expects a record", 1003, "field access");
             value_free(object);
@@ -40480,6 +40494,14 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
         if (!object) {
             return LVALUE_ASSIGN_ERROR;
         }
+#if GBASIC_GSQL
+        if (object->kind == VALUE_GSQL_CONNECTION) {
+            /* `bank.max_recursion = 2000`: an attribute of the connection,
+               which every copy of it shares */
+            return gsql_connection_attr_set(object->as.gsql_connection, target->as.field.field, value)
+                       ? LVALUE_ASSIGN_CHANGED : LVALUE_ASSIGN_ERROR;
+        }
+#endif
         if (object->kind != VALUE_RECORD) {
             runtime_error_raise("field assignment target expects a record", 1003, "assignment");
             return LVALUE_ASSIGN_ERROR;

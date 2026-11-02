@@ -47,7 +47,17 @@ SELECT part, qty, looped, route FROM parts
 
 It adds two columns to the query: `route`, an array of the `CYCLE` columns' values from the anchor row down to this one, and `looped`, `TRUE` on a row whose `CYCLE` values are already in its parent's route. A looped row is answered, so the cycle can be seen and reported, but it starts no further rows. One `CYCLE` column gives a route of its values, as `[1, 4, 7]`; several give a route of arrays. Values are matched as `DISTINCT` matches them. In this release the mark is `TRUE` or `FALSE` (`TO ... DEFAULT ...` is refused), and `SEARCH` is not offered.
 
-**A limit on rounds**, which needs nothing written: a query still adding rows after **100 000 rounds** is refused with `EXPRESSION`, naming the query and the remedies (`CYCLE`, `UNION` in place of `UNION ALL`, or a bound such as `WHERE depth < 50` in the step). That is far more than any hierarchy needs, and enough for a ten-year calendar a day at a time (3 653 rounds), so it refuses only a query that would not end. The limit is a constant in this release.
+**A limit on rounds**, which needs nothing written: a query still adding rows after **1 000 000 rounds** is refused with `EXPRESSION`, naming the query and the remedies (`CYCLE`, `UNION` in place of `UNION ALL`, or a bound such as `WHERE depth < 50` in the step). A round costs about 2 µs, so a runaway is refused in about two seconds, and no hierarchy, calendar or generated series of a realistic size meets it. *Amended 2026-11-02:* it was 100 000 when it shipped, which refused a generated series of two million rows; Matthew ruled for a default of a million, with a way to set it.
+
+**Setting it on the database** (Matthew's ruling, 2026-11-02, with the form he gave: *"if it was my test.bas program then `bank.max_recursion = 2000`"*):
+
+```basic
+database bank( file: "shares.gsql", create: true )
+
+bank.max_recursion = 2000
+```
+
+`max_recursion` is an attribute of a `database` block, the connection, not a field of a record. It is set by assignment and read back the same way, answering 1 000 000 when it was never set, and it holds for every statement run on that connection from then on, through its `sql` blocks and SQL strings alike, until set again; `unknown` sets it back to the default. It must be a whole number of one or more. A connection takes no other attribute, and the refusal of one names `max_recursion`. The limit travels with each statement's request, so it governs that statement only, and each execution, its subqueries, derived tables and compound sides included, holds its own: two programs sharing a database each run with theirs.
 
 **A limit on memory**, also needing nothing written. Rows that double each round reach the end of memory long before any round limit: measured, a graph with two cycles read with `UNION ALL` ended the process at 2.7 GB after 27 seconds, which in an owner would be `LOST` for every client. So a recursive query whose rows hold more than **1 GiB** of memory is refused the same way, naming the same remedies; that one was refused at 1 GB after 8 seconds. Both limits stand until the spill work (`gsql_operator_spill_design.md`) puts these rows on disk; the round limit stays after it.
 
@@ -73,5 +83,5 @@ Like `WITH` today it runs in memory and as one piece (`gsql_practices.md` §2): 
 ## 6. Tests
 
 - **parse:** each form printed back canonically, `CYCLE` included, and each refusal at its position.
-- **semantics:** hand-written answers for a count, a tree's depths, a bill of materials with quantities multiplied down, a cyclic graph ending under `UNION`, `CYCLE` marking the loop and stopping, and every refusal. The round limit is lowered for the test through a test-only setter, as `force_scan` is, so the refusal is reached in a few rounds and the test does not take the time 100 000 would.
+- **semantics:** hand-written answers for a count, a tree's depths, a bill of materials with quantities multiplied down, a cyclic graph ending under `UNION`, `CYCLE` marking the loop and stopping, and every refusal. The round limit is lowered for the test through a test-only setter, as `force_scan` is, so the refusal is reached in a few rounds and the test does not take the time a million would; and `bank.max_recursion` is tested from a program, the limit it sets refusing where the default would not.
 - **differential:** random directed graphs (cycles included) and random recursive queries (reachability under `UNION`; paths with a depth bound under `UNION ALL`; with and without a join to another table), every answer computed by SQLite's `WITH RECURSIVE` on the same rows and compared ordered. A census floor makes cyclic graphs, `UNION` and `UNION ALL` all appear.

@@ -68,7 +68,8 @@ const GsqlHost *gb_gsql_host(void);
  * table, so an access path can be compared with the scan it narrows. */
 void gsql_sql_force_scan(GsqlSql *q, int on);
 /* For tests: the rounds a WITH RECURSIVE query may run before it is refused
- * (100 000 unless set), so the refusal is reached in a few. */
+ * (1 000 000 unless set), so the refusal is reached in a few. A connection's
+ * max_recursion overrides it statement by statement (GsqlStatement). */
 void gsql_sql_recursion_limit(GsqlSql *q, uint64_t rounds);
 /* For tests: the bytes of rows a WITH RECURSIVE query may hold (1 GiB unless
  * set): rows that double each round reach memory's end before any round

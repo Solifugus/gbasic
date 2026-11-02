@@ -2466,6 +2466,7 @@ The module provides:
 - `connection.begin(["read" | "write"])` (`gsql.begin`) — `"write"` by default
 - `connection.commit()` (`gsql.commit`), `connection.rollback()` (`gsql.rollback`)
 - `connection.close()` (`gsql.close`)
+- `connection.max_recursion` — an **attribute**, set and read like a field: the rounds a `WITH RECURSIVE` query may run on this connection before it is refused, 1 000 000 unless set. `bank.max_recursion = 5000000` holds for every later statement on the connection, through its `sql` blocks and SQL strings alike; `unknown` sets it back. It takes a whole number of one or more, and a connection has no other attribute (`docs/gsql_recursive_design.md` §3)
 - `connection.backup(dir)` (`gsql.backup`) — a consistent copy as of now, made while the
   database stays in use (`docs/gsql_backup_design.md`). It answers
   `{ bytes, files, reused }`. Backing up into a copy of the same database
