@@ -68,7 +68,7 @@ The spilled sort's memory stays flat as its input triples, and it is faster, sin
 
 **Tested** by running the whole semantics corpus with a budget of one byte and 64-byte runs, so that every `ORDER BY` in it goes through disk (76 sorts, 295 runs), requiring the same answers, with floors on both counts; and under valgrind the same way.
 
-**Not yet measured:** a sort meeting a duration staying in memory, since SQL reaches a duration only through a record's field or a parameter, and no corpus case orders by one. **A limit found on the way:** the sorter merges all its runs at once, a file each, so past about a thousand runs (64 GB of sort at 64 MB a run) it would meet the open-file limit. The index build shares it. It needs a merge in passes before a sort that size.
+**Not yet measured:** a sort meeting a duration staying in memory, since SQL reaches a duration only through a record's field or a parameter, and no corpus case orders by one. **A limit found on the way:** the sorter merged all its runs at once, a file each, so past about a thousand runs (64 GB of sort at 64 MB a run) it would meet a common open-file limit, and each open run held a 64 KB buffer. The index build shared it. **Fixed the same day (§10).**
 
 ## 7. Built: `GROUP BY` (2026-11-02)
 
@@ -127,5 +127,11 @@ Not flat, as §6 to §8 are: each row store keeps an eight-byte offset per row, 
 
 **Tested** by a differential (`tests/gsql/gen_setop_diff.py`): random rows with repeats and NULLs and random `DISTINCT` and nested set operations, every answer computed outside G-SQL (SQLite for each `SELECT`, the multiset definition for the compound, since SQLite has no `INTERSECT ALL` or `EXCEPT ALL`), in memory and spilled; and the same queries with no `ORDER BY`, which must come back **in the same order** spilled as in memory, the order being what the second sort keeps. The spilled corpus now spills 166 operators. Clean under valgrind spilled. Three perturbations (the rows' arrival numbers lost, `EXCEPT ALL` keeping one row too many, `DISTINCT` keeping a key already answered) each went red, the last two in the order-parity check as well.
 
-**What remains of §4:** the join (step 5) and window functions, which hold every row of their query; and a merge in passes for the sorter past about a thousand runs (§6).
+**What remains of §4:** the join (step 5) and window functions, which hold every row of their query; and the sorter's merge in passes is done (§10).
+
+## 10. Built: the sorter merges in passes (2026-11-02)
+
+The sorter opened every run at once for its one merge, a file and a 64 KB buffer each. This machine allows 524 288 open files, so tests writing 35 755 runs passed, holding 2.3 GB of buffers; on a system allowing the common 1 024, a sort of about 64 GB would have failed. Now, past 128 runs, each 128 consecutive runs are merged into one longer run first, in passes, until 128 or fewer remain for the last merge: at most 128 files and 8 MB of buffers open at once, however large the sort. Consecutive runs merged in order keep a tie with the earlier entry, so the sort stays stable. Each pass reads and writes the data once more, which only a sort of more than 128 runs (8 GB at the default run size) pays.
+
+**Tested** in `run_gsql_table.sh`'s sort tier: 300 000 entries with a 4 KB budget make over 2 000 runs, sorted with the process allowed only 256 open files, against an in-memory stable sort, every file removed after. The sorter before this change fails it (28 432 mismatches, measured); the merged runs written out of order fail it too (299 219). The index build uses the same sorter, so it gains the same.
 

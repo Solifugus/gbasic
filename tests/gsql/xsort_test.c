@@ -1,9 +1,10 @@
 /* The external sorter against an in-memory stable sort (tests/run_gsql_table.sh,
  * TIER sort; docs/gsql_spill_design.md §5). xsort_test DIR: runs go in DIR,
  * which must be left empty. */
-#define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 #include "xsort.h"
 #include <dirent.h>
+#include <sys/resource.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,9 @@ static void one(const char *tmp, size_t n, size_t budget, unsigned keyspace, uns
     }
     EXPECT(gs_xsort_finish(s) == 0, "finish");
     EXPECT(expect_runs ? gs_xsort_runs(s) > 50 : gs_xsort_runs(s) == 0, "n=%zu budget=%zu runs=%u", n, budget, gs_xsort_runs(s));
+    /* 2: more runs than one merge opens, so at least one pass ran first */
+    EXPECT(expect_runs != 2 || (gs_xsort_runs(s) > 2000 && gs_xsort_passes(s) >= 1), "n=%zu runs=%u passes=%u", n,
+           gs_xsort_runs(s), gs_xsort_passes(s));
     qsort(es, n, sizeof *es, cmpE);
     size_t got = 0; int have = 1;
     while (have) {
@@ -49,6 +53,15 @@ int main(int argc, char **argv) {
     one(tmp, 50000, 0, 4, 3, 0);            /* fits: no runs, many ties */
     one(tmp, 200000, 64 * 1024, 4, 4, 1);   /* hundreds of runs, many ties */
     one(tmp, 200000, 64 * 1024, 256, 5, 1);
+    /* thousands of runs, merged in passes: with at most 256 files open, a
+       merge of every run at once cannot open them (measured: it failed) */
+    struct rlimit rl;
+    getrlimit(RLIMIT_NOFILE, &rl);
+    struct rlimit low = rl;
+    low.rlim_cur = 256;
+    setrlimit(RLIMIT_NOFILE, &low);
+    one(tmp, 300000, 4096, 4, 6, 2);
+    setrlimit(RLIMIT_NOFILE, &rl);
     printf("ok %ld checks, %ld mismatches\n", checks, bad);
     return bad != 0;
 }

@@ -25,6 +25,8 @@ int gs_xsort_finish(GsXsort *s);
 int gs_xsort_next(GsXsort *s, GsBytes *key, GsBytes *value, int *have);
 /* How many runs were written: 0 when everything fit. */
 unsigned gs_xsort_runs(const GsXsort *s);
+/* How many merge passes ran before the last merge: 0 for up to 128 runs. */
+unsigned gs_xsort_passes(const GsXsort *s);
 /* Removes every file and the directory, whatever happened. */
 void gs_xsort_close(GsXsort *s);
 

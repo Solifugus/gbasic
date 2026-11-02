@@ -1,7 +1,11 @@
 /* The external sorter (docs/gsql_spill_design.md §3): entries held in a
  * bounded arena, sorted and written as runs to a private temporary
- * directory when it fills, then merged once through a heap of the runs'
- * heads. Keys compare by memcmp, which is gBASIC's order for index keys. */
+ * directory when it fills, then merged through a heap of the runs' heads,
+ * at most XSORT_FAN runs at a time: past that, consecutive runs are merged
+ * into longer ones first, in passes, so the files open at once and their
+ * buffers stay bounded however large the sort
+ * (docs/gsql_operator_spill_design.md §10). Keys compare by memcmp, which is
+ * gBASIC's order for index keys. */
 
 #define _POSIX_C_SOURCE 200809L
 #include "xsort.h"
@@ -15,6 +19,8 @@
 
 #define DEFAULT_BUDGET ((size_t)64 << 20)
 #define RUN_BUFFER (64 * 1024)
+/* runs open at once: 128 files and 8 MB of their buffers */
+#define XSORT_FAN 128
 
 typedef struct {
     size_t off;          /* into the arena: key bytes, then value bytes */
@@ -40,6 +46,12 @@ struct GsXsort {
     size_t nents, entcap;
     uint64_t seq;
     unsigned nruns;
+    /* each run's file number, in run order; the numbers made so far (a pass
+       makes new ones); the passes merged before the last */
+    unsigned *ids;
+    unsigned capids, nextid, passes;
+    unsigned written;    /* runs the arena wrote, for the caller's count */
+    unsigned nopen;      /* runs open now */
     /* reading */
     int finished;
     size_t at;           /* in memory: the next entry */
@@ -102,6 +114,22 @@ static void run_name(const GsXsort *s, unsigned n, char *out, size_t cap) {
     snprintf(out, cap, "%s/run-%u", s->dir, n);
 }
 
+/* a new run's file number, appended to the runs */
+static int run_new(GsXsort *s, unsigned *id) {
+    if (s->nruns == s->capids) {
+        unsigned c = s->capids ? s->capids * 2 : 64;
+        unsigned *g = realloc(s->ids, c * sizeof *g);
+        if (!g) {
+            return ENOMEM;
+        }
+        s->ids = g;
+        s->capids = c;
+    }
+    *id = s->nextid++;
+    s->ids[s->nruns] = *id;
+    return 0;
+}
+
 /* The arena, sorted, as the next run; the arena is empty after. */
 static int spill(GsXsort *s) {
     if (!s->made_dir) {
@@ -111,8 +139,13 @@ static int spill(GsXsort *s) {
         s->made_dir = 1;
     }
     sort_arena(s);
+    unsigned id;
+    int nr = run_new(s, &id);
+    if (nr) {
+        return nr;
+    }
     char name[600];
-    run_name(s, s->nruns, name, sizeof name);
+    run_name(s, id, name, sizeof name);
     FILE *f = fopen(name, "wb");
     if (!f) {
         return errno;
@@ -133,6 +166,7 @@ static int spill(GsXsort *s) {
         return rc;
     }
     s->nruns++;
+    s->written++;
     s->used = 0;
     s->nents = 0;
     return 0;
@@ -236,6 +270,112 @@ static void sift_down(GsXsort *s, unsigned i) {
     }
 }
 
+/* Runs `ids[0..n)` opened, each at its first entry, as the heap */
+static int open_runs(GsXsort *s, const unsigned *ids, unsigned n) {
+    s->runs = calloc(n ? n : 1, sizeof *s->runs);
+    s->heap = calloc(n ? n : 1, sizeof *s->heap);
+    s->nheap = 0;
+    s->nopen = n;
+    if (!s->runs || !s->heap) {
+        return ENOMEM;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        char name[600];
+        run_name(s, ids[i], name, sizeof name);
+        Run *r = &s->runs[i];
+        if (!(r->f = fopen(name, "rb"))) {
+            return errno;
+        }
+        setvbuf(r->f, NULL, _IOFBF, RUN_BUFFER);
+        int rc = run_step(r);
+        if (rc) {
+            return rc;
+        }
+        if (r->live) {
+            s->heap[s->nheap++] = i;
+        }
+    }
+    for (unsigned i = s->nheap / 2; i-- > 0;) {
+        sift_down(s, i);
+    }
+    s->at = 0;   /* the heap's top is not yet handed out */
+    return 0;
+}
+
+/* the runs open_runs opened, closed */
+static void close_runs(GsXsort *s) {
+    for (unsigned i = 0; s->runs && i < s->nopen; i++) {
+        if (s->runs[i].f) {
+            fclose(s->runs[i].f);
+        }
+        free(s->runs[i].buf);
+    }
+    free(s->runs);
+    free(s->heap);
+    s->runs = NULL;
+    s->heap = NULL;
+    s->nheap = 0;
+    s->nopen = 0;
+}
+
+/* One pass: each XSORT_FAN consecutive runs merged into one, in order, so a
+ * tie still goes to the earlier run and the sort stays stable; the merged
+ * runs' files removed. */
+static int merge_pass(GsXsort *s) {
+    unsigned n = s->nruns;
+    unsigned *old = s->ids;
+    s->ids = NULL;
+    s->capids = 0;
+    s->nruns = 0;
+    int rc = 0;
+    for (unsigned first = 0; first < n && !rc; first += XSORT_FAN) {
+        unsigned m = n - first < XSORT_FAN ? n - first : XSORT_FAN;
+        unsigned id = 0;
+        rc = open_runs(s, old + first, m);
+        if (!rc) {
+            rc = run_new(s, &id);
+        }
+        FILE *f = NULL;
+        if (!rc) {
+            char name[600];
+            run_name(s, id, name, sizeof name);
+            if (!(f = fopen(name, "wb"))) {
+                rc = errno;
+            } else {
+                setvbuf(f, NULL, _IOFBF, RUN_BUFFER);
+                s->nruns++;
+            }
+        }
+        while (!rc && s->nheap) {
+            Run *r = &s->runs[s->heap[0]];
+            rc = put32le(f, r->kn);
+            if (!rc) rc = put32le(f, r->vn);
+            if (!rc && r->kn + r->vn && fwrite(r->buf, 1, (size_t)r->kn + r->vn, f) != (size_t)r->kn + r->vn) {
+                rc = EIO;
+            }
+            if (!rc) rc = run_step(r);
+            if (!rc && !r->live) {
+                s->heap[0] = s->heap[--s->nheap];
+            }
+            if (!rc && s->nheap) {
+                sift_down(s, 0);
+            }
+        }
+        if (f && fclose(f) && !rc) {
+            rc = EIO;
+        }
+        close_runs(s);
+        for (unsigned i = 0; i < m; i++) {
+            char name[600];
+            run_name(s, old[first + i], name, sizeof name);
+            unlink(name);
+        }
+    }
+    free(old);
+    s->passes++;
+    return rc;
+}
+
 int gs_xsort_finish(GsXsort *s) {
     if (s->finished) {
         return EINVAL;
@@ -253,31 +393,12 @@ int gs_xsort_finish(GsXsort *s) {
     s->arena = NULL;
     free(s->ents);
     s->ents = NULL;
-    s->runs = calloc(s->nruns, sizeof *s->runs);
-    s->heap = calloc(s->nruns, sizeof *s->heap);
-    if (!s->runs || !s->heap) {
-        return ENOMEM;
-    }
-    for (unsigned i = 0; i < s->nruns; i++) {
-        char name[600];
-        run_name(s, i, name, sizeof name);
-        Run *r = &s->runs[i];
-        if (!(r->f = fopen(name, "rb"))) {
-            return errno;
-        }
-        setvbuf(r->f, NULL, _IOFBF, RUN_BUFFER);
-        if ((rc = run_step(r))) {
+    while (s->nruns > XSORT_FAN) {
+        if ((rc = merge_pass(s))) {
             return rc;
         }
-        if (r->live) {
-            s->heap[s->nheap++] = i;
-        }
     }
-    for (unsigned i = s->nheap / 2; i-- > 0;) {
-        sift_down(s, i);
-    }
-    s->at = 0;   /* the heap's top is not yet handed out */
-    return 0;
+    return open_runs(s, s->ids, s->nruns);
 }
 
 int gs_xsort_next(GsXsort *s, GsBytes *k, GsBytes *v, int *have) {
@@ -324,25 +445,24 @@ int gs_xsort_next(GsXsort *s, GsBytes *k, GsBytes *v, int *have) {
     return 0;
 }
 
-unsigned gs_xsort_runs(const GsXsort *s) { return s->nruns; }
+unsigned gs_xsort_runs(const GsXsort *s) { return s->written; }
+
+unsigned gs_xsort_passes(const GsXsort *s) { return s->passes; }
 
 void gs_xsort_close(GsXsort *s) {
     if (!s) {
         return;
     }
-    for (unsigned i = 0; s->runs && i < s->nruns; i++) {
-        if (s->runs[i].f) fclose(s->runs[i].f);
-        free(s->runs[i].buf);
-    }
+    close_runs(s);
     if (s->made_dir) {
-        for (unsigned i = 0; i < s->nruns + 1; i++) {
+        for (unsigned i = 0; i < s->nextid; i++) {
             char name[600];
             run_name(s, i, name, sizeof name);
-            unlink(name);   /* the last may be a run whose write failed */
+            unlink(name);   /* every file a run or a pass made, whatever became of it */
         }
         rmdir(s->dir);
     }
-    free(s->runs);
+    free(s->ids);
     free(s->heap);
     free(s->arena);
     free(s->ents);
