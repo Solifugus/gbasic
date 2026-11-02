@@ -158,6 +158,12 @@ the standing ones.
   copies both sides each time, so collect pieces in an array and `join` at the
   end.
 
+- **Never read a CSV with `split(line, ",")`**, and never with `for each line in
+  f` either: a quoted field holds commas and line breaks, so a record is not a
+  line, and both move fields into the wrong column with no error. Use
+  `for each item, at in csv.records(f)` (no `load`); it streams and raises on a
+  record that does not fit the header, naming the line. Every field is text.
+
 ## Variables, records, arrays
 
 - **No `dim` / `redim`.** Variables are created by assignment; reading an

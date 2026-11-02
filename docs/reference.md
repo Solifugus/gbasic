@@ -510,6 +510,60 @@ Writing to the element is **not** reported here as it is for an array
 has no `list` to write back to — advice that cannot be followed is worse than
 silence.
 
+#### Reading a delimited file — `for each item, at in csv.records(f)`
+
+*(after 0.10.0)* **Never split a CSV line on commas.** A quoted field holds commas,
+quotes and line breaks, so a record is not a line: `split` moves every later field
+into the wrong column and makes two records out of one, with no error.
+`csv.records(f, options)` reads the format properly (RFC 4180, plus what real files
+do: CRLF, a lone CR, a UTF-8 byte order mark) and **streams**, holding one record
+rather than the file — measured flat at 31 MB over 40,000 and 400,000 records.
+
+```basic
+for each item, at in csv.records({file}"catalog.csv")
+    if not at.ok then
+        print to error "line " + string(at.line) + ": " + at.problem
+        continue
+    end if
+    take(item.sku, item.price)
+end for
+```
+
+- **The element is a record of text** keyed by the header's names, as written
+  (not trimmed, not lowered). With `header: false` it is an array of text. Nothing
+  is typed: `"25"` stays text, and the program or G-SQL decides what it is.
+- **The second name is where the record came from**: `{ line, offset, record, ok,
+  problem }`. `line` is the line the record **starts** on counted from **1**, as an
+  editor counts, since a record can span lines — unlike `n` in
+  `for each line, n in f`, which counts from 0. `offset` is the byte, from 0;
+  `record` the data record's number, from 1.
+- **A record that does not fit raises by default**, naming its line:
+  `csv.records: line 14 (record 13) has 4 fields where the header has 3`, with
+  `error.details.line`, `.offset` and `.record`. A short record is never padded and
+  a long one never dropped. Text after a closing quote (`"abc"def`) is the same kind
+  of problem. With `problems: "deliver"` such a record reaches the loop instead,
+  `at.ok` false, `at.problem` saying why and `at.fields` holding every field read;
+  the element then lacks the missing names, so reading one raises.
+- **An empty field is not a missing one**: `a,,c` has a middle field `""`.
+- An unterminated quote always raises, naming the line it opened on, and so does a
+  record over 64 MiB (almost always the same mistake).
+- **Options**, a closed set: `delimiter` (one character, default `","`), `quote`
+  (default `"\""`, or `""` for none), `header` (default `true`), `names` (for a
+  file with no header line), `problems` (`"raise"` or `"deliver"`).
+- **The loop owns the file**, closed on every exit, as for `for each line in f`.
+- **`csv.parse(text, options)`** is the same over text in memory, such as a web
+  response body. It is a separate name because a string is a path to every file
+  builtin.
+- **Writing**: `csv.line(values, options)` answers one record's text, line ending
+  included, quoting a field only when it holds the delimiter, the quote or a line
+  break. `csv.write(f, rows, options)` writes a header (the first record's names,
+  or `names:`) and the rows; a record with different names is refused naming its
+  row. Options: `delimiter`, `quote`, `names`, `line_end` (`"\n"` or `"\r\n"`).
+  `unknown` and `nothing` are written as an empty field.
+
+The design and its evidence are `docs/csv_design.md`; the suite is
+`tests/run_csv.sh`.
+
 **`for each item, i in list` gives you the index**, and it is what makes a
 write-back expressible. gBASIC has no references, so the loop variable is a
 **copy**: `item.x = 1` mutates that copy and is silently discarded. `list[i]`
@@ -6174,7 +6228,7 @@ cannot keep a paragraph on this page either.
 | core | `number`, `string`, `boolean`, `array`, `record`, `nothing`, `unknown` |
 | typed values | `datetime`, `duration`, `money`, `file`, `directory` |
 | language | `function`, `regex`, `watcher`, `actor`, `process` |
-| handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `gsql_connection`, `gsql_statement`, `xml_reader`, `http`, `workbook` |
+| handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `gsql_connection`, `gsql_statement`, `csv_source`, `xml_reader`, `http`, `workbook` |
 <!--/TYPEKINDS-->
 
 **Two answers are not the word you wrote**, and both read as a bug in your own

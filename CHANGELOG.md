@@ -16,6 +16,29 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `csv`: delimited files read correctly, and told where they went wrong
+
+`frame.read_csv` split each line on `,`, so a quoted comma, a quoted line break
+or a doubled quote moved fields into the wrong rows with no error, and
+`market` dropped any row with an extra comma without a word. The gBASIC books
+measured it on a three-record catalog that came back as four.
+
+- **`for each item, at in csv.records(f)`** streams a delimited file a record at
+  a time, in bounded memory. `item` is a record of text keyed by the header;
+  `at` says where it came from: `line` (counted from 1, the line the record
+  starts on), `offset`, `record`, `ok`, `problem`.
+- **A record that does not fit the header raises, naming its line**, with
+  `error.details.line`. `problems: "deliver"` hands it to the loop instead.
+- **`csv.parse(text)`** is the same over text; **`csv.line`** and **`csv.write`**
+  write, quoting only what needs it.
+- **Changed behaviour.** `frame.read_csv` raises on a record with the wrong
+  number of fields, where it used to pad a short one with empty cells.
+  `frame.write_csv` quotes a field holding a comma, a quote or a line break.
+  `market.daily` fails, naming the line, where it dropped a row. `csv` is now a
+  native module name, so a library loaded under the name `csv` is refused.
+  `for each` over something it cannot loop over now names a csv source among
+  what it can.
+
 ### G-SQL: gBASIC's own database
 
 New since 0.10.0. A database is a directory; a stored value comes back as the

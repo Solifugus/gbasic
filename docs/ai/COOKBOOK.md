@@ -367,6 +367,12 @@ for error handling, `ERRORS.md`.
   → `tests/webclient_integration.bas`
 - **WebServer** — `load webserver`; single request/connection.
   → `tests/webserver_integration.bas`
+- **CSV and other delimited files** — no `load`. `for each item, at in
+  csv.records(f)` streams, `item` keyed by the header and `at.line` the line the
+  record started on (from 1). Never `split(line, ",")`: a quoted comma or line
+  break silently moves fields. A record that does not fit raises naming its line;
+  `problems: "deliver"` hands it over with `at.ok` false. `csv.line`/`csv.write`
+  write. → `tests/csv/rules.bas`, `tests/csv/writing.bas`
 - **XML** — `load xml`; parse and navigate by path; streaming reader for large
   files. → `examples/xml_parse_test.bas`
 - **Spreadsheets (`xlsx`)** — no `load`; needs zlib + libxml2. Read, EDIT and

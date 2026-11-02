@@ -1,6 +1,6 @@
 # csv: reading and writing delimited files
 
-**Status:** Proposal, 2026-11-02. Asked for by the gBASIC books' volume 3
+**Status:** Shipped 2026-11-02, held by `tests/run_csv.sh`. Asked for by the gBASIC books' volume 3
 (`gbasic-books/docs/volume-3/gap-ledger.md`, G1), which measured the gap as
 silent corruption: `frame.read_csv` over a three-record catalog with a quoted
 comma, a quoted line break and a doubled quote answered **four** records, with
@@ -42,11 +42,14 @@ dependency, always in the build.
   of text fields keyed by the header's names, in the header's order. With
   `header: false` it is an array of text.
 - **The second loop name is where the record came from**: a record
-  `{ line, offset, record, problem }`. `line` is the line the record **starts
+  `{ line, offset, record, ok, problem }`. `line` is the line the record **starts
   on, counted from 1** as an editor and a reject report count, since a record
   can span lines; `offset` is the byte where it starts, counted from 0;
   `record` is the data record's number, counted from 1, not counting the
-  header; `problem` is `unknown` for a well-formed record (§4).
+  header; `ok` is `true` for a well-formed record, and `problem` says what is
+  wrong when it is not, `""` when it is (§4). A boolean and a text rather than
+  an `unknown` problem, because `if` refuses an `unknown` and
+  `if not at.ok then` is the line every loop writes.
 
 `at.line` counts from 1 while `n` in `for each line, n in f` counts from 0, and
 that difference is deliberate: `n` is an index into a sequence of lines, while
@@ -77,6 +80,9 @@ saying "line 0" is a defect. The reference says this beside both.
 - **An unterminated quote at end of input always raises**, naming the line the
   quote opened on. Nothing after an open quote can be read with confidence, so
   this is not a deliverable problem.
+- **A record over 64 MiB is refused**, naming the line it started on. That is
+  almost always a quote that never closes, and without a limit it would read
+  the rest of a 10 GB file into memory before saying so.
 
 ## 4. A record that does not fit
 
@@ -89,7 +95,8 @@ that record, never dropped and never padded. So is text after a closing quote.
   than one that stores wrong data.
 - **With `problems: "deliver"`** the record is handed to the loop instead, with
   `at.problem` saying what is wrong and `at.fields` holding **every** field read,
-  in order, as an array of text. The element itself holds the fields that have
+  in order, as an array of text (`fields` is there only on such a record). The
+  element itself holds the fields that have
   a name: a short record lacks the missing names, so reading one raises
   (`unknown record field`), and a long record's extra fields are only in
   `at.fields`. This is the mode for a load that sets bad rows aside with their
@@ -119,8 +126,9 @@ lowered, so `item.Price` and `item.price` stay different fields.
 - **`csv.line(values, options)`** answers one record as text, ending with the line
   ending. `values` is an array, or a record written in its own field order. A
   field is quoted **only when it needs it**: when it holds the delimiter, the
-  quote, `\r` or `\n`. A quote inside is doubled. So the output survives the
-  next reader's naive `split`, wherever it can.
+  quote, `\r` or `\n`. A quote inside is doubled. A record of one empty field
+  is written `""`, since unquoted it is an empty line, which every reader
+  skips (Python's writer does the same).
 - **`csv.write(f, rows, options)`** writes a header and the rows to a file,
   replacing it. The header is the first record's field names, or `names:`;
   every later record must have exactly those names, or it is refused naming
@@ -154,6 +162,24 @@ For a file too large to build in memory, a program writes the header with
   naming the line, instead of losing the row.
 
 ## 9. Evidence
+
+Measured 2026-11-02:
+
+- **Memory is one record's.** 31.8 MB resident streaming 40,000 records and
+  31.3 MB streaming 400,000, against a control that keeps every record:
+  64 MB growing to 379 MB.
+- **Speed.** About a million records a second through `for each` with a body
+  that counts, against 1.5 million for Python's `csv.DictReader` over the same
+  file.
+- **Six perturbations, each turned red** (§9's tiers): counting a CRLF inside
+  quotes as two lines (the differential; the rules golden could not see it),
+  ignoring a doubled quote, leaving the file open on `return` (valgrind),
+  reading the whole file into the buffer (memory), the writer not quoting a
+  `\r` (writing golden and round trip), and taking a CRLF pair split across
+  two reads as two line breaks, which **only the big files** caught: no small
+  fixture puts a pair across the 64 KiB buffer.
+
+The tiers:
 
 `tests/run_csv.sh`:
 
