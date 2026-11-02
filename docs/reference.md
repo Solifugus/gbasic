@@ -1220,8 +1220,10 @@ discarded — does not parse; use it in expression position, or bind the result 
 variable first.)
 
 **A handle's methods are its module's verbs** (`docs/handle_methods_design.md`):
-`h.verb(args)` is `module.verb(h, args)`. So far this covers a G-SQL connection
-and an `sql` block (`gsql`) and a `window` declaration (`qt`):
+`h.verb(args)` is `module.verb(h, args)`, for every handle kind: a G-SQL
+connection or `sql` block (`gsql`), a `window` (`qt`), a `sqlite`, `pg`,
+`odbc` or `ldap` connection, an `xml` reader, a process, an `http` handle and
+an `xlsx` workbook. A timer is a plain record and is not yet one:
 
 <!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
@@ -1229,6 +1231,7 @@ r = add.exec(row)            ' gsql.exec(add, row)
 for each s in shares.query()  ' gsql.query(shares)
 b = db.begin()                ' gsql.begin(db)
 t = app.read("who", "text")   ' qt.read(app, "who", "text")
+s = p.wait()                  ' process.wait(p)
 ```
 
 The module form keeps working; the two are one call. The methods are derived
