@@ -2273,6 +2273,11 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
     if (p < base) {
         return NULL;
     }
+    /* an error AT the newline that ends a line (`endif` alone) is that line's,
+       not the next one's */
+    if (p > base && p[-1] == '\n') {
+        p--;
+    }
     while (p > base && p[-1] != '\n') {
         p--;
     }
@@ -2284,15 +2289,15 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
         p++;
     }
     size_t n = (size_t)(p - w);
-    if (n != 3) {
+    if (n < 3 || n > 6) {
         return NULL;
     }
-    char word[4];
-    for (size_t i = 0; i < 3; i++) {
+    char word[8];
+    for (size_t i = 0; i < n; i++) {
         char c = w[i];
         word[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
     }
-    word[3] = '\0';
+    word[n] = '\0';
     while (*p == ' ' || *p == '\t') {
         p++;
     }
@@ -2304,6 +2309,21 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
     }
     if (strcmp(word, "rem") == 0) {
         return "`rem` is not a gBASIC comment; a comment starts with ' and runs to the end of the line";
+    }
+    /* VB's, Ada's and Python's spellings of a chain (DOGFOOD 2026-11-02): the
+       same misdirection, `expecting LPAREN`, for the word every one of those
+       readers types */
+    if (strcmp(word, "elseif") == 0) {
+        return "`elseif` is not gBASIC; write `else if`, two words, and one `end if` closes the whole chain";
+    }
+    if (strcmp(word, "elsif") == 0) {
+        return "`elsif` is not gBASIC; write `else if`, two words, and one `end if` closes the whole chain";
+    }
+    if (strcmp(word, "elif") == 0) {
+        return "`elif` is not gBASIC; write `else if`, two words, and one `end if` closes the whole chain";
+    }
+    if (strcmp(word, "endif") == 0) {
+        return "`endif` is not gBASIC; an if ends with `end if`, two words";
     }
     return NULL;
 }

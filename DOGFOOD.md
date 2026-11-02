@@ -13192,4 +13192,9 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   With `r.level` after it the message was "unexpected DOT, expecting LPAREN".
   `elsif` and `elif` are the same fumble. The message could name the
   spelling: "gBASIC writes `else if`, two words".
-- **Workaround:** wrote `else if`. The diagnostic is not built yet.
+- **Workaround:** wrote `else if`. **RESOLVED** the same day: `elseif`,
+  `elsif`, `elif` and `endif` at the start of a line each name gBASIC's
+  spelling, through the scan `let` and `rem` use, and the `expecting LPAREN`
+  advice is gone (tests/run_qbasic_diagnostics.sh). `endif` needed one more
+  step: its error is at the newline ending its line, which the scan had read
+  as the start of the next line.

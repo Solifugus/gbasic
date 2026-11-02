@@ -267,6 +267,42 @@ print let(2)'                                    '3'
 #                     sees `let` at all and the `(` discriminator is not what
 #                     protects it. Only a line that BEGINS `let(` can reach it.
 lacks 'letter x = 1 is not let advice' 'letter x = 1' 'not a gBASIC statement'
+# `elseif`, `elsif`, `elif` and `endif` (DOGFOOD 2026-11-02): found writing a
+# cookbook recipe, where `elseif r.level = 1` said `unexpected DOT, expecting
+# LPAREN`; the same scan, the same `(` discriminator
+want 'elseif named'  'if 1 = 2 then
+    print 1
+elseif 1 = 1 then
+    print 2
+end if'                                          'write `else if`, two words'
+want 'ELSEIF capitals' 'if 1 = 2 then
+    print 1
+ELSEIF 1 = 1 then
+    print 2
+end if'                                          '`elseif` is not gBASIC'
+want 'elsif named'   'if 1 = 2 then
+    print 1
+elsif 1 = 1 then
+    print 2
+end if'                                          '`elsif` is not gBASIC'
+want 'elif named'    'if 1 = 2 then
+    print 1
+elif 1 = 1 then
+    print 2
+end if'                                          '`elif` is not gBASIC'
+want 'endif named'   'if 1 = 1 then
+    print 1
+endif'                                           'an if ends with `end if`'
+lacks 'elseif drops the paren advice' 'if 1 = 2 then
+    print 1
+elseif 1 = 1 then
+    print 2
+end if'                                          'LPAREN'
+want 'elseif as a function' 'function elseif(a)
+    return a + 1
+end function
+print elseif(2)'                                 '3'
+lacks 'elseifs x = 1 is not elseif advice' 'elseifs x = 1' 'not gBASIC'
 lacks 'let( as a statement is not let advice' 'let(2 +)' 'not a gBASIC statement'
 # The operators that DO exist, and the money modifier the $ message points at.
 want 'not-equal operator'  'a = 1
