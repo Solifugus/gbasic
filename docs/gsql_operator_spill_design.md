@@ -1,6 +1,6 @@
 # G-SQL: query operators that spill to disk
 
-**Status:** Partial 2026-11-02: §4's first step, `ORDER BY`, is built (§6). The rest of work-order item 6 (`gsql_scale_measurements.md` §4), *"the query operators are still to come"* (`gsql_spill_design.md`). Matthew said "go ahead" on 2026-11-02 without ruling on §5, so §5 records the defaults taken, each his to reverse.
+**Status:** Partial 2026-11-02: §4's first two steps, `ORDER BY` (§6) and `GROUP BY` (§7), are built. The rest of work-order item 6 (`gsql_scale_measurements.md` §4), *"the query operators are still to come"* (`gsql_spill_design.md`). Matthew said "go ahead" on 2026-11-02 without ruling on §5, so §5 records the defaults taken, each his to reverse.
 
 ## 1. The gap
 
@@ -69,3 +69,22 @@ The spilled sort's memory stays flat as its input triples, and it is faster, sin
 **Tested** by running the whole semantics corpus with a budget of one byte and 64-byte runs, so that every `ORDER BY` in it goes through disk (76 sorts, 295 runs), requiring the same answers, with floors on both counts; and under valgrind the same way.
 
 **Not yet measured:** a sort meeting a duration staying in memory, since SQL reaches a duration only through a record's field or a parameter, and no corpus case orders by one. **A limit found on the way:** the sorter merges all its runs at once, a file each, so past about a thousand runs (64 GB of sort at 64 MB a run) it would meet the open-file limit. The index build shares it. It needs a merge in passes before a sort that size.
+
+## 7. Built: `GROUP BY` (2026-11-02)
+
+The fold counts the memory its groups take (each group's key, first row and accumulators). Past the budget it does not merge what it has with a sorted stream: it **drops the groups and reads its input again from the start**, in the same snapshot, every row going to the sorter under its group key (once per grouping set, for `ROLLUP` and the others), with its scans' rows as the value. The groups then come off the sorter in key order, which is the order the in-memory fold already answers in, each folded as its rows stream past and finished before the next begins, so one group is in memory at a time. `HAVING`, `DISTINCT`, the statement's `ORDER BY` (which may spill itself) and `LIMIT` then see the groups as before.
+
+Reading the input again costs, at most, the rows read before the budget was passed, a second time. That was chosen over merging the groups already folded with the sorted rows, which would need the fold's accumulators kept and combined, a second way of folding that could disagree with the first.
+
+**Not spilled:** a grouped query that feeds window functions, since the windows hold every group themselves (their spill is §4's later work); one with no `GROUP BY`, which is one group; and a grouped query with no `FROM`.
+
+**Measured**, `GROUP BY id HAVING count(*) > 1` over the same table, so every row is a group and none is answered, peak memory of the whole process:
+
+| groups | spilled | in memory |
+|---|---|---|
+| 2 000 000 | 185 MB, 4.2 s (4 runs) | 1 358 MB, 6.0 s |
+| 6 000 000 | 198 MB, 13.8 s (11 runs) | 3 969 MB, 17.7 s |
+
+A first measurement read the groups through a derived table, `SELECT count(*) FROM (SELECT id, count(*) ... GROUP BY id)`, and grew from 287 to 724 MB: that was the derived table holding every group it was given, which is the row spool's work (§4, step 4), not the fold's.
+
+**Tested** by the spilled tier, the whole corpus with every `GROUP BY` and `ORDER BY` through disk (113 sorts), and one seed of the grouping sets differential spilled (about 400 sorts, 36 000 runs), each answering as in memory; under valgrind the same way. Three perturbations (a stream that never joins equal keys, no restart of the input, a grouping set's number lost) each went red in both.

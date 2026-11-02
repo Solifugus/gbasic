@@ -2014,6 +2014,14 @@ typedef struct {
     size_t held;
     GsqlHv **first;
     int unkeyed;
+    /* GROUP BY past its budget: the current row's group keys, the memory the
+       groups take, the sorter, and its next entry, read ahead */
+    GsqlBuf *gkeys;
+    size_t ngkeys;
+    size_t gheld;
+    struct GsXsort *gxs;
+    GsqlBuf gpkey, gpval;
+    int gpend;
     /* window functions (docs/gsql_window_design.md §5): the rows collected,
        replayed from wpos */
     int windowed;
@@ -2126,10 +2134,48 @@ static void set_key(const SqlPlan *p, size_t set, GsqlKey *comps, GsqlBuf *out) 
     v3_put(out, id, 2);
 }
 
-/* The current row folded into one group per grouping set */
-static int fold_sets(SqlCursor *c) {
+static void group_restore(X *x, const Group *gr);
+
+/* ---- GROUP BY past its budget (docs/gsql_operator_spill_design.md §7) ---
+ *
+ * Groups take memory as the fold makes them. Past the budget the groups so
+ * far are dropped and the input is read again from its start, in the same
+ * snapshot, every row going to the external sorter keyed by its group key
+ * (one entry per grouping set), its scans' rows as the value. The groups then
+ * come off the sorter in key order, which is the order the in-memory fold
+ * puts them in, each folded as its rows stream past, one group in memory at a
+ * time. Re-reading costs at most the rows read before the budget was passed,
+ * again. */
+
+/* the current row's group keys: one, or one per grouping set */
+static int row_group_keys(SqlCursor *c) {
     X *x = &c->x;
     SqlPlan *p = &c->plan;
+    size_t n = p->ngsets ? p->ngsets : 1;
+    if (!c->gkeys) {
+        c->gkeys = calloc(n, sizeof(GsqlBuf));
+        if (!c->gkeys) {
+            abort();
+        }
+    }
+    c->ngkeys = n;
+    if (!p->ngsets) {
+        GsqlKey key;
+        gsql_key_init(&key);
+        for (size_t k = 0; k < p->s->ngroup; k++) {
+            GsqlHv *v = eval(x, p->s->group[k]);
+            int rc = v ? key_of_value(x, v, p->s->group[k], &key) : (x->err->code ? x->err->code : GSQL_EXPRESSION);
+            rel(x, v);
+            if (rc != GSQL_OK) {
+                gsql_key_free(&key);
+                return rc;
+            }
+        }
+        c->gkeys[0].length = 0;
+        v3_put(&c->gkeys[0], key.bytes, key.length);
+        gsql_key_free(&key);
+        return GSQL_OK;
+    }
     GsqlKey *comps = calloc(p->ngcanon ? p->ngcanon : 1, sizeof(GsqlKey));
     if (!comps) {
         abort();
@@ -2146,21 +2192,203 @@ static int fold_sets(SqlCursor *c) {
         rc = v ? key_of_value(x, v, p->s->group[k], &comps[cn]) : (x->err->code ? x->err->code : GSQL_EXPRESSION);
         rel(x, v);
     }
-    GsqlBuf key = {0};
     for (size_t set = 0; set < p->ngsets && rc == GSQL_OK; set++) {
-        set_key(p, set, comps, &key);
-        Group *gr = group_at(x, &c->groups, key.bytes, key.length);
-        gr->set = set;
-        for (size_t a = 0; a < p->naggs && rc == GSQL_OK; a++) {
-            rc = fold(x, &gr->acc[a], p->aggs[a]);
-        }
+        set_key(p, set, comps, &c->gkeys[set]);
     }
-    gsql_buf_free(&key);
     for (size_t k = 0; k < p->ngcanon; k++) {
         gsql_key_free(&comps[k]);
     }
     free(comps);
     return rc;
+}
+
+/* what a group holds in memory, roughly: its key, its first row, its
+   accumulators */
+static size_t group_cost(SqlCursor *c, const Group *gr) {
+    size_t n = sizeof(Group) + gr->key.capacity + c->plan.naggs * (sizeof(Acc) + sizeof(GsqlHv *) + 64);
+    for (size_t k = 0; k < c->x.nsx; k++) {
+        n += sizeof(GsqlBuf) + 1 + gr->reps[k].capacity;
+    }
+    return n;
+}
+
+/* whether this GROUP BY may spill: one with GROUP BY, read through a join, and
+   not feeding windows, which hold the groups themselves */
+static int group_spill_ok(const SqlCursor *c) {
+    return !c->gxs && c->plan.s->ngroup && c->plan.scans[0].access != ACC_NONE && !c->plan.nwins;
+}
+
+static void put_u64(GsqlBuf *b, uint64_t v) {
+    unsigned char t[8];
+    for (int k = 0; k < 8; k++) {
+        t[k] = (unsigned char)(v >> (8 * k));
+    }
+    v3_put(b, t, 8);
+}
+
+static uint64_t get_u64(const unsigned char *p) {
+    uint64_t v = 0;
+    for (int k = 0; k < 8; k++) {
+        v |= (uint64_t)p[k] << (8 * k);
+    }
+    return v;
+}
+
+/* the current row to the sorter: its scans' rows, each a state byte and its
+   bytes, under each of its group keys */
+static int spill_group_row(SqlCursor *c) {
+    X *x = &c->x;
+    GsqlBuf v = {0};
+    for (size_t k = 0; k < x->nsx; k++) {
+        XScan *xs = &x->sx[k];
+        unsigned char st = xs->nulled ? 2 : xs->have_row ? 1 : 0;
+        v3_put(&v, &st, 1);
+        put_u64(&v, st == 1 ? xs->row.length : 0);
+        if (st == 1) {
+            v3_put(&v, xs->row.bytes, xs->row.length);
+        }
+    }
+    int rc = GSQL_OK;
+    for (size_t s = 0; s < c->ngkeys && rc == GSQL_OK; s++) {
+        int xr = gs_xsort_add(c->gxs, c->gkeys[s].bytes, c->gkeys[s].length, v.bytes, v.length);
+        if (xr) {
+            rc = xfail(x->err, GSQL_STORAGE, 0, "a GROUP BY's sort on disk failed: %s", strerror(xr));
+        }
+    }
+    gsql_buf_free(&v);
+    return rc;
+}
+
+/* a spilled row made the current row again */
+static int unspill_group_row(SqlCursor *c, const unsigned char *p, size_t n) {
+    X *x = &c->x;
+    row_clear(x);
+    size_t at = 0;
+    for (size_t k = 0; k < x->nsx; k++) {
+        if (at + 9 > n) {
+            return xfail(x->err, GSQL_MISUSE, 0, "a GROUP BY's spilled row did not read back");
+        }
+        unsigned char st = p[at];
+        uint64_t len = get_u64(p + at + 1);
+        at += 9;
+        XScan *xs = &x->sx[k];
+        if (st == 1) {
+            if (len > n - at) {
+                return xfail(x->err, GSQL_MISUSE, 0, "a GROUP BY's spilled row did not read back");
+            }
+            xs->row.length = 0;
+            v3_put(&xs->row, p + at, len);
+            xs->have_row = 1;
+            at += len;
+        } else if (st == 2) {
+            xs->nulled = 1;
+        }
+    }
+    return GSQL_OK;
+}
+
+/* the budget passed: the groups dropped, the input started again, and the
+   sorter opened */
+static int group_spill_start(SqlCursor *c) {
+    X *x = &c->x;
+    groups_free(x, &c->groups);
+    c->gheld = 0;
+    join_close(&c->j);
+    if (join_start(&c->j, x) != GSQL_OK) {
+        return x->err->code ? x->err->code : GSQL_EXPRESSION;
+    }
+    int xr = gs_xsort_open(NULL, c->q->sort_run, &c->gxs);
+    if (xr) {
+        c->gxs = NULL;
+        return xfail(x->err, GSQL_STORAGE, 0, "a GROUP BY could not start its sort on disk: %s", strerror(xr));
+    }
+    c->q->spills++;
+    return GSQL_OK;
+}
+
+/* the next group off the sorter, folded and finished and made the current
+   row: 1, 0 at the end, -1 failed */
+static int stream_group(SqlCursor *c) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    Groups *g = &c->groups;
+    if (!c->gpend) {
+        return 0;
+    }
+    groups_free(x, g);
+    Group *gr = group_new(x, g);
+    v3_put(&gr->key, c->gpkey.bytes, c->gpkey.length);
+    gr->set = p->ngsets && gr->key.length >= 2
+            ? (size_t)gr->key.bytes[gr->key.length - 2] << 8 | gr->key.bytes[gr->key.length - 1] : 0;
+    int first = 1;
+    for (;;) {
+        if (unspill_group_row(c, c->gpval.bytes, c->gpval.length) != GSQL_OK) {
+            return -1;
+        }
+        if (first) {
+            for (size_t k = 0; k < x->nsx; k++) {
+                XScan *xs = &x->sx[k];
+                if (xs->nulled) {
+                    gr->state[k] = 2;
+                } else if (xs->have_row) {
+                    v3_put(&gr->reps[k], xs->row.bytes, xs->row.length);
+                    gr->state[k] = 1;
+                }
+            }
+            first = 0;
+        }
+        for (size_t a = 0; a < p->naggs; a++) {
+            if (fold(x, &gr->acc[a], p->aggs[a]) != GSQL_OK) {
+                return -1;
+            }
+        }
+        GsBytes k, v;
+        int have;
+        int xr = gs_xsort_next(c->gxs, &k, &v, &have);
+        if (xr) {
+            xfail(x->err, GSQL_STORAGE, 0, "a GROUP BY's sort on disk failed: %s", strerror(xr));
+            return -1;
+        }
+        if (!have) {
+            c->gpend = 0;
+            break;
+        }
+        int same = k.n == gr->key.length && memcmp(k.p, gr->key.bytes, k.n) == 0;
+        c->gpkey.length = 0;
+        v3_put(&c->gpkey, k.p, k.n);
+        c->gpval.length = 0;
+        v3_put(&c->gpval, v.p, v.n);
+        if (!same) {
+            break;
+        }
+    }
+    gr->fin = calloc(p->naggs ? p->naggs : 1, sizeof(GsqlHv *));
+    if (!gr->fin) {
+        abort();
+    }
+    for (size_t a = 0; a < p->naggs; a++) {
+        if (!(gr->fin[a] = finish(x, &gr->acc[a], p->aggs[a]))) {
+            return -1;
+        }
+    }
+    group_restore(x, gr);
+    return 1;
+}
+
+/* the sorter's first entry in hand, so stream_group can take the groups */
+static int stream_begin(SqlCursor *c) {
+    GsBytes k, v;
+    int have;
+    int xr = gs_xsort_next(c->gxs, &k, &v, &have);
+    if (xr) {
+        return xfail(c->x.err, GSQL_STORAGE, 0, "a GROUP BY's sort on disk failed: %s", strerror(xr));
+    }
+    c->gpend = have;
+    if (have) {
+        v3_put(&c->gpkey, k.p, k.n);
+        v3_put(&c->gpval, v.p, v.n);
+    }
+    return GSQL_OK;
 }
 
 /* Folds every row the access path keeps into groups (docs/gsql_aggregate_design.md §5). */
@@ -2189,47 +2417,44 @@ static int agg_step(SqlCursor *c, uint64_t budget) {
         if (r == 0) {
             break;
         }
-        if (p->ngsets) {
-            if (fold_sets(c) != GSQL_OK) {
+        if (row_group_keys(c) != GSQL_OK) {
+            return -1;
+        }
+        if (c->gxs) {
+            /* spilled: the row goes to the sorter once per key it has */
+            if (spill_group_row(c) != GSQL_OK) {
                 return -1;
             }
             continue;
         }
-        GsqlKey key;
-        gsql_key_init(&key);
-        for (size_t k = 0; k < p->s->ngroup; k++) {
-            GsqlHv *v = eval(x, p->s->group[k]);
-            int rc = v ? key_of_value(x, v, p->s->group[k], &key) : (x->err->code ? x->err->code : GSQL_EXPRESSION);
-            rel(x, v);
-            if (rc != GSQL_OK) {
-                gsql_key_free(&key);
-                return -1;
+        for (size_t s = 0; s < c->ngkeys; s++) {
+            size_t before = g->n;
+            Group *gr = group_at(x, g, c->gkeys[s].bytes, c->gkeys[s].length);
+            gr->set = p->ngsets ? s : 0;
+            if (g->n > before) {
+                c->gheld += group_cost(c, gr);
             }
-        }
-        size_t at = keymap_find(&g->map, group_key_of, g, key.bytes, key.length, 0);
-        Group *gr;
-        if (at) {
-            gr = &g->v[at - 1];
-        } else {
-            gr = group_new(x, g);
-            v3_put(&gr->key, key.bytes, key.length);
-            for (size_t k = 0; k < x->nsx; k++) {
-                XScan *xs = &x->sx[k];
-                if (xs->nulled) {
-                    gr->state[k] = 2;
-                } else if (xs->have_row) {
-                    v3_put(&gr->reps[k], xs->row.bytes, xs->row.length);
-                    gr->state[k] = 1;
+            for (size_t a = 0; a < p->naggs; a++) {
+                if (fold(x, &gr->acc[a], p->aggs[a]) != GSQL_OK) {
+                    return -1;
                 }
             }
-            keymap_find(&g->map, group_key_of, g, key.bytes, key.length, g->n);
         }
-        gsql_key_free(&key);
-        for (size_t a = 0; a < p->naggs; a++) {
-            if (fold(x, &gr->acc[a], p->aggs[a]) != GSQL_OK) {
+        if (c->gheld > c->q->sort_budget && group_spill_ok(c)) {
+            /* past the budget: the groups so far are dropped and the input
+               read again from its start, every row to the sorter */
+            if (group_spill_start(c) != GSQL_OK) {
                 return -1;
             }
         }
+    }
+    if (c->gxs) {
+        int xr = gs_xsort_finish(c->gxs);
+        if (xr) {
+            xfail(x->err, GSQL_STORAGE, 0, "a GROUP BY's sort on disk failed: %s", strerror(xr));
+            return -1;
+        }
+        c->q->spill_runs += gs_xsort_runs(c->gxs);
     }
     return 0;
 }
@@ -2239,6 +2464,11 @@ static int agg_finish(SqlCursor *c) {
     X *x = &c->x;
     SqlPlan *p = &c->plan;
     Groups *g = &c->groups;
+    if (c->gxs) {
+        /* spilled: the groups come off the sorter, finished as they come */
+        row_clear(x);
+        return stream_begin(c);
+    }
     /* no GROUP BY: the input is one group, even when it is empty */
     if (p->s->ngroup == 0 && g->n == 0) {
         group_new(x, g);
@@ -2304,9 +2534,15 @@ static void group_restore(X *x, const Group *gr) {
 static int next_group(SqlCursor *c) {
     X *x = &c->x;
     Groups *g = &c->groups;
-    while (g->pos < g->n) {
-        Group *gr = &g->v[g->order[g->pos++]];
-        group_restore(x, gr);
+    while (c->gxs || g->pos < g->n) {
+        if (c->gxs) {
+            int r = stream_group(c);
+            if (r <= 0) {
+                return r;
+            }
+        } else {
+            group_restore(x, &g->v[g->order[g->pos++]]);
+        }
         if (!c->plan.s->having) {
             return 1;
         }
@@ -2984,6 +3220,15 @@ static void cursor_free(SqlCursor *c) {
     if (c->xs) {
         gs_xsort_close(c->xs);
     }
+    if (c->gxs) {
+        gs_xsort_close(c->gxs);
+    }
+    for (size_t k = 0; c->gkeys && k < (c->plan.ngsets ? c->plan.ngsets : 1); k++) {
+        gsql_buf_free(&c->gkeys[k]);
+    }
+    free(c->gkeys);
+    gsql_buf_free(&c->gpkey);
+    gsql_buf_free(&c->gpval);
     for (size_t k = 0; c->first && k < c->plan.s->norder; k++) {
         rel(&c->x, c->first[k]);
     }

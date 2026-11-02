@@ -236,6 +236,16 @@ if [ -n "$spilled" ] && [ "${spilled% *}" -ge 50 ] && [ "${spilled#* }" -ge 100 
 else
     fail "spilled: the sorts did not reach disk as the floors require (got '${spilled:-nothing}')"
 fi
+# and one seed of the grouping sets differential spilled, whose GROUP BYs
+# against SQLite reach every GROUP BY's spilled path, grouping sets included
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null; then
+    rm -rf "$work/gspill"
+    mkdir -p "$work/gspill"
+    python3 tests/gsql/gen_rollup_diff.py 2 200 "$work/gspill.txt" >/dev/null 2>&1
+    GSQL_TEST_SORT_BUDGET=1 GSQL_TEST_SORT_RUN=64 bounded 300 "$work/sql_test" script "$work/gspill.txt" \
+        "$work/gspill/db" >"$work/gspill.out" 2>&1
+    verdict "spilled grouping sets differential (seed 2)" "$work/gspill.out" $?
+fi
 
 printf 'TIER differential: access paths against a forced scan, five seeds\n'
 for seed in 1 2 3 4 5; do
