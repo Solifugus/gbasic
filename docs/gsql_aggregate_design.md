@@ -18,7 +18,7 @@ order by revenue desc
 - **`HAVING e`**: keeps a group whose condition is **true**, as `WHERE` keeps a row.
 - An aggregate with no `GROUP BY` makes the whole input **one group**, so `select count(*) from t` answers one row even when `t` is empty.
 
-**It is not** `stddev`/`variance` (still refused by name), `FILTER (WHERE …)`, `GROUPING SETS`/`ROLLUP`/`CUBE`, window functions, `SELECT DISTINCT` (a separate item, `gsql_distinct_design.md`), or spilling to disk.
+**It is not** `stddev`/`variance` (still refused by name), `FILTER (WHERE …)`, `GROUPING SETS`/`ROLLUP`/`CUBE` (shipped later: `gsql_rollup_design.md`), window functions (shipped later: `gsql_window_design.md`), `SELECT DISTINCT` (a separate item, `gsql_distinct_design.md`), or spilling to disk.
 
 ## 2. Every aggregate is gBASIC's arithmetic, applied by the host
 

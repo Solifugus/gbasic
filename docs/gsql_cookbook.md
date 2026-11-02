@@ -10,7 +10,7 @@ Run any recipe yourself:
 GBASIC_PATH=stdlib ./gbasic examples/gsql_cookbook/01_first_database.bas
 ```
 
-**SQL is written in blocks**, G-SQL's normal form: a `database` block names the file and an `sql` block holds one statement, checked when the program loads, with values reaching it only as `:name` parameters, so nothing a user types can become part of the SQL. A string appears only where a recipe needs SQL that is not fixed text: recipe 10 sends broken SQL on purpose, and recipe 15 edits a dump. Part 3 is SQL for reports: window functions and recursive queries. Each recipe's database is a file in the current directory, removed before and after, so it runs the same way every time.
+**SQL is written in blocks**, G-SQL's normal form: a `database` block names the file and an `sql` block holds one statement, checked when the program loads, with values reaching it only as `:name` parameters, so nothing a user types can become part of the SQL. A string appears only where a recipe needs SQL that is not fixed text: recipe 10 sends broken SQL on purpose, and recipe 15 edits a dump. Part 3 is SQL for reports: window functions, recursive queries and subtotals. Each recipe's database is a file in the current directory, removed before and after, so it runs the same way every time.
 
 Where to read more:
 
@@ -1534,5 +1534,71 @@ Parts in one robot arm:
   motor  x5  (down to level 2)
 Loops in the bill of materials:
   gripper is inside itself: gripper > finger > gripper
+```
+
+## 18. Subtotals with ROLLUP
+
+`GROUP BY ROLLUP(region, product)` groups three ways in one query: by region and product, by region alone, and not at all. So it answers the detail rows, each region's subtotal and the grand total, and with no `ORDER BY` they come in the order a report reads them, each region's rows followed by its subtotal and the grand total last.
+
+In a total, a column it leaves out reads NULL. `GROUPING(region, product)` says which rows are totals, one bit per column, so a NULL in the data is never mistaken for a subtotal: 0 on a detail row, 1 on a region's subtotal and 3 on the grand total. `CUBE(...)` groups by every combination, and `GROUPING SETS (...)` by the ones listed (`docs/gsql_rollup_design.md`).
+
+<!--CODE:18_subtotals_with_rollup-->
+
+```basic
+' Recipe 18: subtotals with ROLLUP -- one query answers each region's sales by
+' product, each region's subtotal and the grand total, in the order a report
+' reads them; GROUPING says which rows are totals.
+load gsql
+
+if exists({dir}"cookbook_rollup.gsql") then
+    remove_tree({dir}"cookbook_rollup.gsql")
+end if
+
+database sales( file: "cookbook_rollup.gsql", create: true )
+
+sql make on sales
+    create table sale (id integer primary key, region text, product text, amount money(USD));
+    insert into sale values
+        (1, 'east', 'gripper', 1200.00), (2, 'east', 'joint', 450.00),
+        (3, 'east', 'gripper', 800.00), (4, 'west', 'joint', 300.00),
+        (5, 'west', 'motor', 975.50), (6, 'west', 'joint', 150.00)
+end sql
+
+' GROUP BY ROLLUP(region, product) groups by both, then by region alone, then
+' not at all; a column a total leaves out reads NULL, and GROUPING(region,
+' product) is 0 on a detail row, 1 on a region's subtotal and 3 on the total
+sql report on sales
+    select region, product, sum(amount) as total, count(*) as sales,
+           grouping(region, product) as level
+    from sale
+    group by rollup(region, product)
+end sql
+
+make.exec()
+
+for each r in report
+    if r.level = 3 then
+        print "Grand total            " + string(r.total) + "  (" + string(r.sales) + " sales)"
+    else if r.level = 1 then
+        print "  " + r.region + " subtotal        " + string(r.total)
+    else
+        print "  " + r.region + "  " + r.product + "  " + string(r.total)
+    end if
+next
+
+sales.close()
+remove_tree({dir}"cookbook_rollup.gsql")
+```
+
+<!--OUT:18_subtotals_with_rollup-->
+
+```
+  east  gripper  2000.00
+  east  joint  450.00
+  east subtotal        2450.00
+  west  joint  450.00
+  west  motor  975.50
+  west subtotal        1425.50
+Grand total            3875.50  (6 sales)
 ```
 

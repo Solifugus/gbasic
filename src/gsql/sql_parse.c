@@ -1948,6 +1948,140 @@ static int select_tail(P *p, SqlStmt *s) {
     return 1;
 }
 
+/* `(` follows the current word, which is then a keyword */
+static int paren_follows(P *p) {
+    size_t si = p->i;
+    uint32_t sc = p->chars;
+    Tok save = p->tok;
+    next(p);
+    int yes = at_sym(p, "(");
+    p->i = si;
+    p->chars = sc;
+    p->tok = save;
+    return yes;
+}
+
+/* the word after the current one is `w` */
+static int word_follows(P *p, const char *w) {
+    size_t si = p->i;
+    uint32_t sc = p->chars;
+    Tok save = p->tok;
+    next(p);
+    int yes = at_word(p, w);
+    p->i = si;
+    p->chars = sc;
+    p->tok = save;
+    return yes;
+}
+
+/* one GROUP BY expression, gathered into g[]: its position, or -1 failed */
+static long group_expr(P *p, SqlExpr **g, size_t *ng) {
+    if (*ng == 256) {
+        fail_at(p, p->tok.pos, GSQL_SYNTAX, "GROUP BY may have at most 256 terms");
+        return -1;
+    }
+    if (!(g[*ng] = expr(p))) {
+        return -1;
+    }
+    return (long)(*ng)++;
+}
+
+/* GROUP BY's elements, after GROUP BY (docs/gsql_rollup_design.md §1):
+ * expressions, ROLLUP(...), CUBE(...) and GROUPING SETS (...). Every
+ * expression is gathered into s->group; the elements are kept, for printing
+ * and planning, when one is not a plain expression. */
+static int group_by(P *p, SqlStmt *s) {
+    SqlExpr *g[256];
+    size_t ng = 0;
+    SqlGroupElem el[256];
+    size_t nel = 0;
+    int special = 0;
+    do {
+        if (nel == 256) {
+            return fail_at(p, p->tok.pos, GSQL_SYNTAX, "GROUP BY may have at most 256 terms");
+        }
+        SqlGroupElem *e = &el[nel];
+        memset(e, 0, sizeof *e);
+        e->pos = p->tok.pos;
+        e->first = ng;
+        if ((at_word(p, "rollup") || at_word(p, "cube")) && paren_follows(p)) {
+            e->kind = at_word(p, "rollup") ? SQL_GE_ROLLUP : SQL_GE_CUBE;
+            special = 1;
+            next(p);
+            next(p);
+            do {
+                if (group_expr(p, g, &ng) < 0) {
+                    return 0;
+                }
+            } while (accept_sym(p, ","));
+            if (!expect_sym(p, ")")) {
+                return 0;
+            }
+        } else if (at_word(p, "grouping") && word_follows(p, "sets")) {
+            e->kind = SQL_GE_SETS;
+            special = 1;
+            next(p);
+            next(p);
+            if (!expect_sym(p, "(")) {
+                return 0;
+            }
+            size_t *sets[256];
+            size_t lens[256];
+            size_t nsets = 0;
+            do {
+                if (nsets == 256) {
+                    return fail_at(p, p->tok.pos, GSQL_SYNTAX, "GROUPING SETS may list at most 256 sets");
+                }
+                size_t mem[256];
+                size_t nm = 0;
+                long at;
+                if (accept_sym(p, "(")) {
+                    if (!at_sym(p, ")")) {
+                        do {
+                            if ((at = group_expr(p, g, &ng)) < 0) {
+                                return 0;
+                            }
+                            mem[nm++] = (size_t)at - e->first;
+                        } while (accept_sym(p, ","));
+                    }
+                    if (!expect_sym(p, ")")) {
+                        return 0;
+                    }
+                } else {
+                    if ((at = group_expr(p, g, &ng)) < 0) {
+                        return 0;
+                    }
+                    mem[nm++] = (size_t)at - e->first;
+                }
+                sets[nsets] = sql_alloc(p->arena, sizeof(size_t) * (nm ? nm : 1));
+                memcpy(sets[nsets], mem, sizeof(size_t) * nm);
+                lens[nsets++] = nm;
+            } while (accept_sym(p, ","));
+            if (!expect_sym(p, ")")) {
+                return 0;
+            }
+            e->sets = sql_alloc(p->arena, sizeof(size_t *) * nsets);
+            memcpy(e->sets, sets, sizeof(size_t *) * nsets);
+            e->setlen = sql_alloc(p->arena, sizeof(size_t) * nsets);
+            memcpy(e->setlen, lens, sizeof(size_t) * nsets);
+            e->nsets = nsets;
+        } else if (group_expr(p, g, &ng) < 0) {
+            return 0;
+        }
+        e->n = ng - e->first;
+        nel++;
+    } while (accept_sym(p, ","));
+    s->group = sql_alloc(p->arena, sizeof(SqlExpr *) * (ng ? ng : 1));
+    memcpy(s->group, g, sizeof(SqlExpr *) * ng);
+    s->ngroup = ng;
+    if (special) {
+        s->gelems = sql_alloc(p->arena, sizeof(SqlGroupElem) * nel);
+        memcpy(s->gelems, el, sizeof(SqlGroupElem) * nel);
+        s->ngelems = nel;
+    }
+    return 1;
+}
+
 static int select_stmt(P *p, SqlStmt *s) {
     if (accept_kw(p, "distinct")) {
         if (at_kw(p, "on")) {
@@ -2034,22 +2168,9 @@ static int select_stmt(P *p, SqlStmt *s) {
         }
     }
     if (accept_kw(p, "group")) {
-        if (!expect_kw(p, "by")) {
+        if (!expect_kw(p, "by") || !group_by(p, s)) {
             return 0;
         }
-        SqlExpr *g[256];
-        size_t ng = 0;
-        do {
-            if (ng == 256) {
-                return fail_at(p, p->tok.pos, GSQL_SYNTAX, "GROUP BY may have at most 256 terms");
-            }
-            if (!(g[ng++] = expr(p))) {
-                return 0;
-            }
-        } while (accept_sym(p, ","));
-        s->group = sql_alloc(p->arena, sizeof(SqlExpr *) * ng);
-        memcpy(s->group, g, sizeof(SqlExpr *) * ng);
-        s->ngroup = ng;
     }
     if (accept_kw(p, "having")) {
         if (!(s->having = expr(p))) {
@@ -3234,9 +3355,13 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc) {
         puts_(o, " END");
         return;
     }
+    case SX_GROUPREF:
+        print_expr_tb(o, e->a[0], pc);
+        return;
     case SX_CALL:
     case SX_AGG:
     case SX_WIN:
+    case SX_GROUPING:
         puts_(o, e->name);
         v3_put(o, "(", 1);
         if (e->star) {
@@ -3417,6 +3542,41 @@ static void print_from(GsqlBuf *o, const char *table, const char *alias, const S
     }
 }
 
+/* GROUP BY with ROLLUP, CUBE or GROUPING SETS, as written but canonical */
+static void print_group_elems(GsqlBuf *o, const SqlStmt *s) {
+    for (size_t k = 0; k < s->ngelems; k++) {
+        const SqlGroupElem *e = &s->gelems[k];
+        puts_(o, k ? ", " : " GROUP BY ");
+        if (e->kind == SQL_GE_PLAIN) {
+            sql_print_expr(o, s->group[e->first]);
+            continue;
+        }
+        if (e->kind == SQL_GE_SETS) {
+            puts_(o, "GROUPING SETS (");
+            for (size_t j = 0; j < e->nsets; j++) {
+                puts_(o, j ? ", (" : "(");
+                for (size_t i = 0; i < e->setlen[j]; i++) {
+                    if (i) {
+                        puts_(o, ", ");
+                    }
+                    sql_print_expr(o, s->group[e->first + e->sets[j][i]]);
+                }
+                v3_put(o, ")", 1);
+            }
+            v3_put(o, ")", 1);
+            continue;
+        }
+        puts_(o, e->kind == SQL_GE_ROLLUP ? "ROLLUP(" : "CUBE(");
+        for (size_t i = 0; i < e->n; i++) {
+            if (i) {
+                puts_(o, ", ");
+            }
+            sql_print_expr(o, s->group[e->first + i]);
+        }
+        v3_put(o, ")", 1);
+    }
+}
+
 void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
     if (s->explain) {
         puts_(o, "EXPLAIN ");
@@ -3502,9 +3662,13 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
             puts_(o, " WHERE ");
             sql_print_expr(o, s->where);
         }
-        for (size_t k = 0; k < s->ngroup; k++) {
-            puts_(o, k ? ", " : " GROUP BY ");
-            sql_print_expr(o, s->group[k]);
+        if (s->gelems) {
+            print_group_elems(o, s);
+        } else {
+            for (size_t k = 0; k < s->ngroup; k++) {
+                puts_(o, k ? ", " : " GROUP BY ");
+                sql_print_expr(o, s->group[k]);
+            }
         }
         if (s->having) {
             puts_(o, " HAVING ");

@@ -28,6 +28,9 @@
 #   recursive differential  random graphs, cycles included, and WITH
 #                RECURSIVE queries, every answer computed by SQLite
 #                (tests/gsql/gen_recursive_diff.py)
+#   grouping sets differential  ROLLUP, CUBE and GROUPING SETS against the
+#                UNION ALL of one GROUP BY per set, run by SQLite
+#                (tests/gsql/gen_rollup_diff.py)
 #   order cost   a join written large-first, chosen order against FROM's, as a
 #                ratio, the answers equal and the plan really reordered
 #   order        which table a join reads first, asked of EXPLAIN: smallest
@@ -269,6 +272,24 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null
     done
 else
     printf '  SKIP recursive differential (no python3 with sqlite3): WITH RECURSIVE was NOT checked against SQLite\n'
+fi
+
+printf 'TIER grouping sets differential: ROLLUP, CUBE and GROUPING SETS against their definition, run by SQLite\n'
+# SQLite has no ROLLUP: it runs the UNION ALL of one plain GROUP BY per set
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null; then
+    for seed in 1 2 3 4 5; do
+        rm -rf "$work/gdiff"
+        mkdir -p "$work/gdiff"
+        if ! python3 tests/gsql/gen_rollup_diff.py "$seed" 200 "$work/gdiff$seed.txt" >"$work/ggen$seed.out" 2>&1; then
+            sed 's/^/       /' "$work/ggen$seed.out"
+            fail "grouping sets differential seed $seed: the generator failed"
+            continue
+        fi
+        bounded 120 "$work/sql_test" script "$work/gdiff$seed.txt" "$work/gdiff/db" >"$work/gdiff$seed.out" 2>&1
+        verdict "grouping sets differential seed $seed (200 queries)" "$work/gdiff$seed.out" $?
+    done
+else
+    printf '  SKIP grouping sets differential (no python3 with sqlite3): ROLLUP was NOT checked against SQLite\n'
 fi
 
 printf 'TIER hash cost: an unindexed join hashed against its nested loop, as a ratio\n'

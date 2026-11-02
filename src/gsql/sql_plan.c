@@ -48,6 +48,9 @@ struct B {
     /* window functions: whether the clause being bound may hold one */
     int win_ok;
     size_t capwins;
+    /* GROUPING(...) nodes, resolved once GROUP BY is bound */
+    SqlExpr **groupings;
+    size_t ngroupings, capgroupings;
     /* subqueries (docs/gsql_subquery_design.md §3): the binder of the query
        enclosing this one, and the SX_SUBQ node this query is the body of;
        NULL at the top. What a subquery needs to be planned is kept here, and
@@ -452,6 +455,187 @@ static int bind_window(B *b, SqlExpr *e, int cols_allowed, const char *where) {
     return ok;
 }
 
+/* ---- grouping sets (docs/gsql_rollup_design.md) ------------------------ */
+
+/* GROUPING(a, ...): bound as an aggregate is placed, its arguments resolved to
+ * GROUP BY expressions once GROUP BY is bound */
+static int bind_grouping(B *b, SqlExpr *e, int cols_allowed, const char *where) {
+    if (!b->agg_ok || b->in_agg) {
+        return bfail(b, e->pos, GSQL_SYNTAX, "%s cannot use GROUPING: it reads a row's group, as an aggregate does",
+                     b->in_agg ? "an aggregate" : where);
+    }
+    if (e->distinct || e->star || e->na < 1 || e->na > 31) {
+        return bfail(b, e->pos, GSQL_SYNTAX, "GROUPING takes 1 to 31 GROUP BY expressions");
+    }
+    e->kind = SX_GROUPING;
+    if (b->ngroupings == b->capgroupings) {
+        b->capgroupings = b->capgroupings ? b->capgroupings * 2 : 4;
+        SqlExpr **grown = sql_alloc(b->arena, sizeof(SqlExpr *) * b->capgroupings);
+        if (b->ngroupings) {
+            memcpy(grown, b->groupings, sizeof(SqlExpr *) * b->ngroupings);
+        }
+        b->groupings = grown;
+    }
+    b->groupings[b->ngroupings++] = e;
+    int agg_ok = b->agg_ok, win_ok = b->win_ok;
+    b->agg_ok = b->win_ok = 0;
+    int ok = 1;
+    for (size_t k = 0; k < e->na && ok; k++) {
+        ok = bind(b, e->a[k], cols_allowed, "GROUPING");
+    }
+    b->agg_ok = agg_ok;
+    b->win_ok = win_ok;
+    return ok;
+}
+
+/* GROUP BY's expressions numbered once by canonical print, the sets its
+ * ROLLUP, CUBE and GROUPING SETS stand for, and each GROUPING's arguments */
+static int grouping_sets(B *b) {
+    SqlPlan *p = b->p;
+    SqlStmt *s = p->s;
+    size_t ng = s->ngroup;
+    char **txt = sql_alloc(b->arena, sizeof(char *) * (ng ? ng : 1));
+    p->gcanon = sql_alloc(b->arena, sizeof(unsigned) * (ng ? ng : 1));
+    p->ngcanon = 0;
+    for (size_t k = 0; k < ng; k++) {
+        GsqlBuf t = {0};
+        sql_print_expr_scans(&t, s->group[k], p->scans, p->nscans);
+        v3_put(&t, "", 1);
+        txt[k] = sql_strndup(b->arena, (char *)t.bytes, t.length);
+        gsql_buf_free(&t);
+        size_t j = 0;
+        while (j < k && strcmp(txt[j], txt[k]) != 0) {
+            j++;
+        }
+        p->gcanon[k] = j < k ? p->gcanon[j] : (unsigned)p->ngcanon++;
+    }
+    for (size_t g = 0; g < b->ngroupings; g++) {
+        SqlExpr *e = b->groupings[g];
+        if (!ng) {
+            return bfail(b, e->pos, GSQL_SYNTAX, "GROUPING says which GROUP BY expressions a row's group leaves out, "
+                         "and this query has no GROUP BY");
+        }
+        e->gidx = sql_alloc(b->arena, sizeof(unsigned) * e->na);
+        for (size_t a = 0; a < e->na; a++) {
+            GsqlBuf t = {0};
+            sql_print_expr_scans(&t, e->a[a], p->scans, p->nscans);
+            v3_put(&t, "", 1);
+            size_t k = 0;
+            while (k < ng && strcmp(txt[k], (char *)t.bytes) != 0) {
+                k++;
+            }
+            if (k == ng) {
+                int rc = bfail(b, e->a[a]->pos, GSQL_SYNTAX, "GROUPING's argument `%s` is not one of the GROUP BY "
+                               "expressions", (char *)t.bytes);
+                gsql_buf_free(&t);
+                return rc;
+            }
+            gsql_buf_free(&t);
+            e->gidx[a] = p->gcanon[k];
+        }
+    }
+    if (!s->gelems) {
+        return 1;
+    }
+    /* the sets: the product of each element's */
+    size_t nc = p->ngcanon;
+    size_t ncur = 1, cap = 4096;
+    unsigned char **cur = sql_alloc(b->arena, sizeof(unsigned char *) * cap);
+    cur[0] = sql_alloc(b->arena, nc ? nc : 1);
+    for (size_t k = 0; k < s->ngelems; k++) {
+        const SqlGroupElem *el = &s->gelems[k];
+        if (el->kind == SQL_GE_CUBE && el->n > 10) {
+            return bfail(b, el->pos, GSQL_UNSUPPORTED, "CUBE of %zu expressions makes %llu sets: at most 10 "
+                         "expressions in this release", el->n, 1ull << (el->n > 63 ? 63 : el->n));
+        }
+        size_t nes = el->kind == SQL_GE_PLAIN ? 1 : el->kind == SQL_GE_ROLLUP ? el->n + 1
+                   : el->kind == SQL_GE_CUBE ? (size_t)1 << el->n : el->nsets;
+        if (ncur * nes > cap) {
+            return bfail(b, el->pos, GSQL_UNSUPPORTED, "this GROUP BY stands for %zu grouping sets: at most %zu in "
+                         "this release", ncur * nes, cap);
+        }
+        unsigned char **out = sql_alloc(b->arena, sizeof(unsigned char *) * cap);
+        size_t nout = 0;
+        for (size_t c = 0; c < ncur; c++) {
+            for (size_t j = 0; j < nes; j++) {
+                unsigned char *m = sql_alloc(b->arena, nc ? nc : 1);
+                memcpy(m, cur[c], nc);
+                if (el->kind == SQL_GE_PLAIN) {
+                    m[p->gcanon[el->first]] = 1;
+                } else if (el->kind == SQL_GE_ROLLUP) {
+                    for (size_t i = 0; i < el->n - j; i++) {
+                        m[p->gcanon[el->first + i]] = 1;
+                    }
+                } else if (el->kind == SQL_GE_CUBE) {
+                    size_t mask = nes - 1 - j;
+                    for (size_t i = 0; i < el->n; i++) {
+                        if (mask & ((size_t)1 << (el->n - 1 - i))) {
+                            m[p->gcanon[el->first + i]] = 1;
+                        }
+                    }
+                } else {
+                    for (size_t i = 0; i < el->setlen[j]; i++) {
+                        m[p->gcanon[el->first + el->sets[j][i]]] = 1;
+                    }
+                }
+                out[nout++] = m;
+            }
+        }
+        cur = out;
+        ncur = nout;
+    }
+    p->gsets = cur;
+    p->ngsets = ncur;
+    return 1;
+}
+
+/* Wraps each GROUP BY expression a set leaves out, where the select list,
+ * HAVING and ORDER BY read it, so it reads NULL in that set's groups; an
+ * aggregate's argument reads the rows and is left alone. */
+static void grouping_wrap(B *b, SqlExpr **ep, const unsigned char *varies) {
+    SqlExpr *e = *ep;
+    SqlPlan *p = b->p;
+    if (!e || e->kind == SX_AGG || e->kind == SX_GROUPING || e->kind == SX_SUBQ || e->kind == SX_LIT ||
+        e->kind == SX_PARAM || e->kind == SX_GROUPREF) {
+        return;
+    }
+    GsqlBuf t = {0};
+    sql_print_expr_scans(&t, e, p->scans, p->nscans);
+    v3_put(&t, "", 1);
+    for (size_t k = 0; k < p->s->ngroup; k++) {
+        GsqlBuf g = {0};
+        sql_print_expr_scans(&g, p->s->group[k], p->scans, p->nscans);
+        v3_put(&g, "", 1);
+        int same = strcmp((char *)g.bytes, (char *)t.bytes) == 0;
+        gsql_buf_free(&g);
+        if (same) {
+            gsql_buf_free(&t);
+            if (varies[p->gcanon[k]]) {
+                SqlExpr *w = sql_alloc(b->arena, sizeof *w);
+                w->kind = SX_GROUPREF;
+                w->pos = e->pos;
+                w->index = p->gcanon[k];
+                w->a = sql_alloc(b->arena, sizeof(SqlExpr *));
+                w->a[0] = e;
+                w->na = 1;
+                *ep = w;
+            }
+            return;
+        }
+    }
+    gsql_buf_free(&t);
+    grouping_wrap(b, &e->operand, varies);
+    for (size_t k = 0; k < e->na; k++) {
+        grouping_wrap(b, &e->a[k], varies);
+    }
+    for (size_t k = 0; e->over && k < e->over->npart; k++) {
+        grouping_wrap(b, &e->over->part[k], varies);
+    }
+    for (size_t k = 0; e->over && k < e->over->norder; k++) {
+        grouping_wrap(b, &e->over->order[k].e, varies);
+    }
+}
+
 /* the windows that write the same PARTITION BY and ORDER BY share one
  * ordering, sorted once */
 static void window_orderings(B *b) {
@@ -495,6 +679,9 @@ static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where) {
     case SX_CALL: {
         if (e->over) {
             return bind_window(b, e, cols_allowed, where);
+        }
+        if (strcmp(e->name, "grouping") == 0) {
+            return bind_grouping(b, e, cols_allowed, where);
         }
         static const struct { const char *name; int agg; } aggregates[] = {
             { "count", SQL_AGG_COUNT }, { "sum", SQL_AGG_SUM }, { "avg", SQL_AGG_AVG }, { "min", SQL_AGG_MIN },
@@ -585,7 +772,7 @@ int sql_is_constant(const SqlExpr *e) {
     if (!e) {
         return 1;
     }
-    if (e->kind == SX_COL || e->kind == SX_NAME || e->kind == SX_WIN) {
+    if (e->kind == SX_COL || e->kind == SX_NAME || e->kind == SX_WIN || e->kind == SX_GROUPING) {
         return 0;
     }
     if (e->kind == SX_SUBQ && e->nrefs) {
@@ -1327,7 +1514,7 @@ static int is_grouped_expr(B *b, const SqlExpr *e, char **groups) {
 }
 
 static int check_grouped(B *b, const SqlExpr *e, char **groups, const char *where) {
-    if (!e || e->kind == SX_AGG || is_grouped_expr(b, e, groups)) {
+    if (!e || e->kind == SX_AGG || e->kind == SX_GROUPING || is_grouped_expr(b, e, groups)) {
         return 1;
     }
     if (e->kind == SX_COL) {
@@ -1718,7 +1905,8 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         } else if (it->e->kind == SX_COL) {
             name = it->e->nfields ? it->e->fields[it->e->nfields - 1]
                                   : sql_scan_col_name(&p->scans[it->e->tab], it->e->col);
-        } else if (it->e->kind == SX_CALL || it->e->kind == SX_AGG || it->e->kind == SX_WIN) {
+        } else if (it->e->kind == SX_CALL || it->e->kind == SX_AGG || it->e->kind == SX_WIN ||
+                   it->e->kind == SX_GROUPING) {
             name = it->e->name;
         } else if (it->e->kind == SX_SUBQ && it->e->op == SQL_SUB_SCALAR) {
             /* a scalar subquery is named, and typed, as its one column */
@@ -1731,6 +1919,8 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         if (it->e->kind == SX_COL && it->e->nfields == 0) {
             const SqlScan *sc = &p->scans[it->e->tab];
             kind = sc->derived ? sc->dkinds[it->e->col] : kind_text(b, gsql_table_col(sc->tb, it->e->col));
+        } else if (it->e->kind == SX_GROUPING) {
+            kind = "integer";
         } else if ((it->e->kind == SX_AGG || it->e->kind == SX_WIN) &&
                    (it->e->op == SQL_AGG_COUNT || it->e->op == SQL_AGG_COUNT_STAR || it->e->op == SQL_WIN_ROW_NUMBER ||
                     it->e->op == SQL_WIN_RANK || it->e->op == SQL_WIN_DENSE_RANK || it->e->op == SQL_WIN_NTILE)) {
@@ -1802,6 +1992,9 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         }
     }
     p->grouped = s->ngroup || s->having || p->naggs;
+    if ((s->gelems || b->ngroupings) && !grouping_sets(b)) {
+        return 0;
+    }
     window_orderings(b);
     if (p->grouped) {
         char **groups = sql_alloc(b->arena, sizeof(char *) * (s->ngroup ? s->ngroup : 1));
@@ -1822,6 +2015,24 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         for (size_t k = 0; k < s->norder; k++) {
             if (p->order_out[k] < 0 && !check_grouped(b, p->order[k], groups, "ORDER BY")) {
                 return 0;
+            }
+        }
+        if (p->ngsets) {
+            /* the expressions some set leaves out read NULL in its groups */
+            unsigned char *varies = sql_alloc(b->arena, p->ngcanon ? p->ngcanon : 1);
+            for (size_t g = 0; g < p->ngsets; g++) {
+                for (size_t c = 0; c < p->ngcanon; c++) {
+                    varies[c] |= !p->gsets[g][c];
+                }
+            }
+            for (size_t k = 0; k < p->nout; k++) {
+                grouping_wrap(b, &p->out[k], varies);
+            }
+            grouping_wrap(b, &s->having, varies);
+            for (size_t k = 0; k < s->norder; k++) {
+                if (p->order_out[k] < 0) {
+                    grouping_wrap(b, &p->order[k], varies);
+                }
             }
         }
     }
@@ -2616,10 +2827,22 @@ static void explain_at(const SqlPlan *p, void (*line)(void *, const char *), voi
     if (s->kind == SQ_SELECT && p->grouped) {
         put(&b, s->ngroup ? "Aggregate: group by " : "Aggregate: one group");
         for (size_t k = 0; k < s->ngroup; k++) {
+            size_t first = 0;   /* each expression once, where it is named twice */
+            while (p->ngsets && p->gcanon[first] != p->gcanon[k]) {
+                first++;
+            }
+            if (p->ngsets && first != k) {
+                continue;
+            }
             if (k) {
                 put(&b, ", ");
             }
             sql_print_expr_scans(&b, s->group[k], p->scans, p->nscans);
+        }
+        if (p->ngsets) {
+            char n[64];
+            snprintf(n, sizeof n, " (%zu grouping sets)", p->ngsets);
+            put(&b, n);
         }
         emit(line, ctx, indent + 1, &b);
         if (s->having) {

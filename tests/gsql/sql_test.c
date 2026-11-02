@@ -350,7 +350,10 @@ static int script(const char *path) {
         perror(path);
         return 2;
     }
-    char line[8192], sql[8192] = "";
+    /* a generated answer runs to thousands of rows on one line (measured:
+       11 053 bytes, which 8 KiB cut short in silence) */
+    static char line[1 << 20], sql[1 << 20];
+    sql[0] = 0;
     int lineno = 0, sqlline = 0;
     /* parameters, gathered as one v3 record */
     char *pnames[32];
@@ -361,6 +364,10 @@ static int script(const char *path) {
     memset(&last, 0, sizeof last);
     while (fgets(line, sizeof line, f)) {
         lineno++;
+        if (!strchr(line, '\n') && !feof(f)) {
+            fprintf(stderr, "line %d: longer than %zu bytes\n", lineno, sizeof line - 1);
+            return 2;
+        }
         line[strcspn(line, "\n")] = 0;
         if (strncmp(line, "rowbytes ", 9) == 0) {
             set_rowbytes(strtoull(line + 9, NULL, 10));

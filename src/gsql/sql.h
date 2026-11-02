@@ -50,6 +50,9 @@ typedef enum {
     SX_OUTER,     /* bound: column `col` of scan `tab` of the query `index` levels out */
     /* window functions (docs/gsql_window_design.md) */
     SX_WIN,       /* made from SX_CALL with `over`: `op` an SQL_AGG_* or SQL_WIN_*, `index` its slot */
+    /* grouping sets (docs/gsql_rollup_design.md) */
+    SX_GROUPREF,  /* a GROUP BY expression a set may leave out: a[0], or NULL where left out; `index` its number */
+    SX_GROUPING,  /* GROUPING(a...), made from SX_CALL: `gidx` the arguments' GROUP BY numbers */
 } SqlExprKind;
 
 typedef enum { SQL_SUB_SCALAR = 1, SQL_SUB_IN, SQL_SUB_EXISTS } SqlSub;
@@ -140,6 +143,8 @@ struct SqlExpr {
     void *hv;
     /* SX_CALL/SX_WIN: the OVER clause */
     SqlWindow *over;
+    /* SX_GROUPING: each argument's GROUP BY number */
+    unsigned *gidx;
 };
 
 /* ---- statements ------------------------------------------------------ */
@@ -241,6 +246,20 @@ typedef struct {
     uint32_t pos;
 } SqlCheck;
 
+/* A GROUP BY element (docs/gsql_rollup_design.md): an expression, ROLLUP(...),
+ * CUBE(...) or GROUPING SETS (...), over the statement's group[first ..
+ * first + n); a GROUPING SETS' sets list positions in that range */
+typedef enum { SQL_GE_PLAIN = 0, SQL_GE_ROLLUP, SQL_GE_CUBE, SQL_GE_SETS } SqlGroupKind;
+
+typedef struct {
+    int kind;
+    size_t first, n;
+    size_t **sets;
+    size_t *setlen;
+    size_t nsets;
+    uint32_t pos;
+} SqlGroupElem;
+
 /* WITH [RECURSIVE] name [(cols)] AS (q) [CYCLE c, ... SET mark USING route]
  * (docs/gsql_recursive_design.md) */
 typedef struct {
@@ -296,8 +315,10 @@ typedef struct SqlStmt {
     SqlOrder *order;
     size_t norder;
     SqlExpr *limit, *offset;
-    SqlExpr **group;         /* GROUP BY */
+    SqlExpr **group;         /* GROUP BY: every expression it names, in order */
     size_t ngroup;
+    SqlGroupElem *gelems;    /* its elements, when one is ROLLUP, CUBE or GROUPING SETS; else NULL */
+    size_t ngelems;
     SqlExpr *having;
     int distinct;            /* SELECT DISTINCT */
     /* a compound SELECT: `left op right`, each a SELECT; this statement then
@@ -469,6 +490,13 @@ typedef struct SqlPlan {
     int grouped;
     SqlExpr **aggs;
     size_t naggs;
+    /* grouping sets (docs/gsql_rollup_design.md): each set's membership,
+       over GROUP BY's expressions numbered once by canonical print
+       (gcanon[k] the number of group[k]); none for a plain GROUP BY */
+    unsigned char **gsets;
+    size_t ngsets;
+    unsigned *gcanon;
+    size_t ngcanon;
     /* window functions (docs/gsql_window_design.md): the SX_WIN nodes by
        slot, and how many distinct orderings they share */
     SqlExpr **wins;

@@ -1147,6 +1147,61 @@ stmt("EXPLAIN WITH RECURSIVE r (n) AS (SELECT 1 UNION SELECT edge.b FROM r JOIN 
 stmt("WITH RECURSIVE c (i) AS (SELECT 1) CYCLE i SET m USING r SELECT i FROM c",
      ("SYNTAX", "CYCLE", "`c` does not read itself"))
 
+sec("ROLLUP, CUBE, GROUPING SETS and GROUPING (docs/gsql_rollup_design.md)")
+stmt("CREATE TABLE sale (id INTEGER PRIMARY KEY, region TEXT, product TEXT, amount MONEY(USD))", "= done 0")
+stmt("INSERT INTO sale VALUES (1, 'east', 'apple', 1.00), (2, 'east', 'apple', 2.00), (3, 'east', 'pear', 3.00), "
+     "(4, 'west', 'apple', 4.00), (5, 'west', NULL, 5.00), (6, NULL, 'pear', 6.00)", "= done 6")
+# with no ORDER BY the groups come as a report reads them: each region's rows, its subtotal, the grand total last;
+# a NULL in the data (west's NULL product) comes before the subtotal, and GROUPING tells them apart
+stmt("SELECT region, product, sum(amount), GROUPING(region, product) FROM sale GROUP BY ROLLUP(region, product)",
+     "= 'east', 'apple', money 3.00, 0 | 'east', 'pear', money 3.00, 0 | 'east', NULL, money 6.00, 1 | "
+     "'west', 'apple', money 4.00, 0 | 'west', NULL, money 5.00, 0 | 'west', NULL, money 9.00, 1 | "
+     "NULL, 'pear', money 6.00, 0 | NULL, NULL, money 6.00, 1 | NULL, NULL, money 21.00, 3")
+stmt("SELECT region, product, count(*), GROUPING(region, product) AS g FROM sale GROUP BY CUBE(region, product) "
+     "ORDER BY g, region, product",
+     "= 'east', 'apple', 2, 0 | 'east', 'pear', 1, 0 | 'west', 'apple', 1, 0 | 'west', NULL, 1, 0 | NULL, 'pear', 1, 0 | "
+     "'east', NULL, 3, 1 | 'west', NULL, 2, 1 | NULL, NULL, 1, 1 | NULL, 'apple', 3, 2 | NULL, 'pear', 2, 2 | "
+     "NULL, NULL, 1, 2 | NULL, NULL, 6, 3")
+stmt("SELECT region, product, count(*) FROM sale GROUP BY GROUPING SETS ((region), (product), ())",
+     "= 'east', NULL, 3 | 'west', NULL, 2 | NULL, NULL, 1 | NULL, 'apple', 3 | NULL, 'pear', 2 | NULL, NULL, 1 | "
+     "NULL, NULL, 6")
+# a plain expression beside ROLLUP is in every set
+stmt("SELECT region, product, count(*) FROM sale WHERE region IS NOT NULL GROUP BY region, ROLLUP(product)",
+     "= 'east', 'apple', 2 | 'east', 'pear', 1 | 'east', NULL, 3 | 'west', 'apple', 1 | 'west', NULL, 1 | "
+     "'west', NULL, 2")
+stmt("SELECT region, sum(amount) FROM sale GROUP BY ROLLUP(region) HAVING GROUPING(region) = 1", "= NULL, money 21.00")
+stmt("SELECT region, sum(amount) FROM sale GROUP BY ROLLUP(region) HAVING region IS NULL",
+     "= NULL, money 6.00 | NULL, money 21.00")
+# an expression over a left-out one reads it as NULL; an aggregate's argument reads the rows
+stmt("SELECT upper(region), count(*), max(region) FROM sale GROUP BY ROLLUP(region)",
+     "= 'EAST', 3, 'east' | 'WEST', 2, 'west' | NULL, 1, NULL | NULL, 6, 'west'")
+stmt("SELECT upper(region), count(*) FROM sale GROUP BY ROLLUP(upper(region))",
+     "= 'EAST', 3 | 'WEST', 2 | NULL, 1 | NULL, 6")
+# a set named twice answers twice, as SQL says
+stmt("SELECT region, count(*) FROM sale GROUP BY region, ROLLUP(region)",
+     "= 'east', 3 | 'east', 3 | 'west', 2 | 'west', 2 | NULL, 1 | NULL, 1")
+# the empty set answers even over no rows
+stmt("SELECT count(*), sum(amount) FROM sale WHERE id > 99 GROUP BY ROLLUP(region)", "= 0, NULL")
+stmt("SELECT region, GROUPING(region) FROM sale GROUP BY region ORDER BY 1", "= 'east', 0 | 'west', 0 | NULL, 0")
+stmt("SELECT region, sum(amount), rank() OVER (ORDER BY sum(amount) DESC) FROM sale GROUP BY ROLLUP(region) ORDER BY 3",
+     "= NULL, money 21.00, 1 | 'west', money 9.00, 2 | 'east', money 6.00, 3 | NULL, money 6.00, 3")
+stmt("CREATE VIEW sale_totals AS SELECT region, product, sum(amount) AS total FROM sale GROUP BY ROLLUP(region, product)",
+     "= done 0")
+stmt("SELECT count(*), sum(total) FROM sale_totals", "= 9, money 63.00")
+stmt("SELECT region, GROUPING(region) FROM sale GROUP BY region", "% region:string, grouping:integer")
+stmt("EXPLAIN SELECT region, count(*) FROM sale GROUP BY region, ROLLUP(region, product)",
+     "= 'Scan on sale' | '  Aggregate: group by region, product (3 grouping sets)'")
+stmt("SELECT GROUPING(region) FROM sale", ("SYNTAX", "GROUPING", "this query has no GROUP BY"))
+stmt("SELECT region FROM sale WHERE GROUPING(region) = 0 GROUP BY region",
+     ("SYNTAX", "GROUPING", "WHERE cannot use GROUPING"))
+stmt("SELECT sum(GROUPING(region)) FROM sale GROUP BY region", ("SYNTAX", "GROUPING", "an aggregate cannot use GROUPING"))
+stmt("SELECT GROUPING(amount) FROM sale GROUP BY region",
+     ("SYNTAX", "amount", "GROUPING's argument `amount` is not one of the GROUP BY expressions"))
+stmt("SELECT product FROM sale GROUP BY ROLLUP(region)",
+     ("SYNTAX", "product", "the select list reads column `product`, which is neither grouped by"))
+stmt("SELECT count(*) FROM sale GROUP BY CUBE(id, region, product, amount, id, region, product, amount, id, region, "
+     "product)", ("UNSUPPORTED", "CUBE", "CUBE of 11 expressions makes 2048 sets"))
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")

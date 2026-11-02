@@ -113,6 +113,9 @@ typedef struct X {
     GsqlHv **aggv;
     /* a windowed query's current row: each window function's answer, by slot */
     GsqlHv **winv;
+    /* a grouping set's group: which GROUP BY expressions its set holds
+       (docs/gsql_rollup_design.md); NULL for a plain GROUP BY */
+    const unsigned char *gset;
     /* a subquery's execution: the enclosing query's, whose rows an outer
        reference reads (docs/gsql_subquery_design.md §4) */
     struct X *outer;
@@ -862,6 +865,22 @@ static GsqlHv *eval(X *x, SqlExpr *e) {
             return NULL;
         }
         return x->h->copy(x->h->ctx, x->aggv[e->index]);
+    case SX_GROUPREF:
+        if (x->gset && !x->gset[e->index]) {
+            return hv_unknown(x);   /* left out of this group's set */
+        }
+        return eval(x, e->a[0]);
+    case SX_GROUPING: {
+        uint64_t bits = 0;
+        for (size_t k = 0; k < e->na; k++) {
+            bits = bits << 1 | (x->gset && !x->gset[e->gidx[k]]);
+        }
+        GsqlBuf b = {0};
+        v3_w_int(&b, bits);
+        GsqlHv *v = hv_bytes(x, b.bytes, b.length);
+        gsql_buf_free(&b);
+        return v;
+    }
     case SX_WIN:
         if (!x->winv || !x->winv[e->index]) {
             xfail(x->err, GSQL_MISUSE, e->pos, "a window function was read outside its window");
@@ -1501,6 +1520,7 @@ typedef struct {
     unsigned char *state;/* per scan: 0 no row, 1 a row, 2 null-extended */
     Acc *acc;
     GsqlHv **fin;        /* the aggregates' final values */
+    size_t set;          /* its grouping set (docs/gsql_rollup_design.md) */
 } Group;
 
 typedef struct {
@@ -2054,6 +2074,80 @@ static int output_row(SqlCursor *c, GsqlBuf *out) {
     return GSQL_OK;
 }
 
+/* A group of `g` by its key, made with the current row as its first if new */
+static Group *group_at(X *x, Groups *g, const unsigned char *key, size_t n) {
+    size_t at = keymap_find(&g->map, group_key_of, g, key, n, 0);
+    if (at) {
+        return &g->v[at - 1];
+    }
+    Group *gr = group_new(x, g);
+    v3_put(&gr->key, key, n);
+    for (size_t k = 0; k < x->nsx; k++) {
+        XScan *xs = &x->sx[k];
+        if (xs->nulled) {
+            gr->state[k] = 2;
+        } else if (xs->have_row) {
+            v3_put(&gr->reps[k], xs->row.bytes, xs->row.length);
+            gr->state[k] = 1;
+        }
+    }
+    keymap_find(&g->map, group_key_of, g, key, n, g->n);
+    return gr;
+}
+
+/* A grouping set's key (docs/gsql_rollup_design.md §4): for each GROUP BY
+ * expression, 1 and its key where the set holds it, else 2, which sorts after
+ * every value; then the set's number, so two equal sets stay apart */
+static void set_key(const SqlPlan *p, size_t set, GsqlKey *comps, GsqlBuf *out) {
+    out->length = 0;
+    for (size_t c = 0; c < p->ngcanon; c++) {
+        unsigned char tag = p->gsets[set][c] ? 1 : 2;
+        v3_put(out, &tag, 1);
+        if (tag == 1) {
+            v3_put(out, comps[c].bytes, comps[c].length);
+        }
+    }
+    unsigned char id[2] = { (unsigned char)(set >> 8), (unsigned char)set };
+    v3_put(out, id, 2);
+}
+
+/* The current row folded into one group per grouping set */
+static int fold_sets(SqlCursor *c) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    GsqlKey *comps = calloc(p->ngcanon ? p->ngcanon : 1, sizeof(GsqlKey));
+    if (!comps) {
+        abort();
+    }
+    int rc = GSQL_OK;
+    /* each expression's key once, from the first GROUP BY term of its number */
+    for (size_t cn = 0; cn < p->ngcanon && rc == GSQL_OK; cn++) {
+        size_t k = 0;
+        while (p->gcanon[k] != cn) {
+            k++;
+        }
+        gsql_key_init(&comps[cn]);
+        GsqlHv *v = eval(x, p->s->group[k]);
+        rc = v ? key_of_value(x, v, p->s->group[k], &comps[cn]) : (x->err->code ? x->err->code : GSQL_EXPRESSION);
+        rel(x, v);
+    }
+    GsqlBuf key = {0};
+    for (size_t set = 0; set < p->ngsets && rc == GSQL_OK; set++) {
+        set_key(p, set, comps, &key);
+        Group *gr = group_at(x, &c->groups, key.bytes, key.length);
+        gr->set = set;
+        for (size_t a = 0; a < p->naggs && rc == GSQL_OK; a++) {
+            rc = fold(x, &gr->acc[a], p->aggs[a]);
+        }
+    }
+    gsql_buf_free(&key);
+    for (size_t k = 0; k < p->ngcanon; k++) {
+        gsql_key_free(&comps[k]);
+    }
+    free(comps);
+    return rc;
+}
+
 /* Folds every row the access path keeps into groups (docs/gsql_aggregate_design.md §5). */
 /* The fold, up to `budget` input rows: 1 more remain, 0 every row folded, -1
  * refused. All its state is the cursor's, so it resumes where it stopped. */
@@ -2079,6 +2173,12 @@ static int agg_step(SqlCursor *c, uint64_t budget) {
         }
         if (r == 0) {
             break;
+        }
+        if (p->ngsets) {
+            if (fold_sets(c) != GSQL_OK) {
+                return -1;
+            }
+            continue;
         }
         GsqlKey key;
         gsql_key_init(&key);
@@ -2128,6 +2228,20 @@ static int agg_finish(SqlCursor *c) {
     if (p->s->ngroup == 0 && g->n == 0) {
         group_new(x, g);
     }
+    /* and a grouping set of nothing, such as ROLLUP's grand total */
+    int none = g->n == 0;
+    for (size_t set = 0; set < p->ngsets && none; set++) {
+        int empty = 1;
+        for (size_t k = 0; k < p->ngcanon; k++) {
+            empty &= !p->gsets[set][k];
+        }
+        if (empty) {
+            GsqlBuf key = {0};
+            set_key(p, set, NULL, &key);
+            group_at(x, g, key.bytes, key.length)->set = set;
+            gsql_buf_free(&key);
+        }
+    }
     for (size_t i = 0; i < g->n; i++) {
         Group *gr = &g->v[i];
         gr->fin = calloc(p->naggs ? p->naggs : 1, sizeof(GsqlHv *));
@@ -2168,6 +2282,7 @@ static void group_restore(X *x, const Group *gr) {
         }
     }
     x->aggv = gr->fin;
+    x->gset = x->p->ngsets ? x->p->gsets[gr->set] : NULL;
 }
 
 /* the next group HAVING keeps, made the current row: 1, 0 at the end, -1 failed */

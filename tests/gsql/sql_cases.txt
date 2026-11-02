@@ -1543,6 +1543,56 @@ rowbytes 1073741824
 > WITH RECURSIVE c (i) AS (SELECT 1) CYCLE i SET m USING r SELECT i FROM c
 ! SYNTAX 36 `c` does not read itself
 
+# ---- ROLLUP, CUBE, GROUPING SETS and GROUPING (docs/gsql_rollup_design.md) -
+> CREATE TABLE sale (id INTEGER PRIMARY KEY, region TEXT, product TEXT, amount MONEY(USD))
+= done 0
+> INSERT INTO sale VALUES (1, 'east', 'apple', 1.00), (2, 'east', 'apple', 2.00), (3, 'east', 'pear', 3.00), (4, 'west', 'apple', 4.00), (5, 'west', NULL, 5.00), (6, NULL, 'pear', 6.00)
+= done 6
+> SELECT region, product, sum(amount), GROUPING(region, product) FROM sale GROUP BY ROLLUP(region, product)
+= 'east', 'apple', money 3.00, 0 | 'east', 'pear', money 3.00, 0 | 'east', NULL, money 6.00, 1 | 'west', 'apple', money 4.00, 0 | 'west', NULL, money 5.00, 0 | 'west', NULL, money 9.00, 1 | NULL, 'pear', money 6.00, 0 | NULL, NULL, money 6.00, 1 | NULL, NULL, money 21.00, 3
+> SELECT region, product, count(*), GROUPING(region, product) AS g FROM sale GROUP BY CUBE(region, product) ORDER BY g, region, product
+= 'east', 'apple', 2, 0 | 'east', 'pear', 1, 0 | 'west', 'apple', 1, 0 | 'west', NULL, 1, 0 | NULL, 'pear', 1, 0 | 'east', NULL, 3, 1 | 'west', NULL, 2, 1 | NULL, NULL, 1, 1 | NULL, 'apple', 3, 2 | NULL, 'pear', 2, 2 | NULL, NULL, 1, 2 | NULL, NULL, 6, 3
+> SELECT region, product, count(*) FROM sale GROUP BY GROUPING SETS ((region), (product), ())
+= 'east', NULL, 3 | 'west', NULL, 2 | NULL, NULL, 1 | NULL, 'apple', 3 | NULL, 'pear', 2 | NULL, NULL, 1 | NULL, NULL, 6
+> SELECT region, product, count(*) FROM sale WHERE region IS NOT NULL GROUP BY region, ROLLUP(product)
+= 'east', 'apple', 2 | 'east', 'pear', 1 | 'east', NULL, 3 | 'west', 'apple', 1 | 'west', NULL, 1 | 'west', NULL, 2
+> SELECT region, sum(amount) FROM sale GROUP BY ROLLUP(region) HAVING GROUPING(region) = 1
+= NULL, money 21.00
+> SELECT region, sum(amount) FROM sale GROUP BY ROLLUP(region) HAVING region IS NULL
+= NULL, money 6.00 | NULL, money 21.00
+> SELECT upper(region), count(*), max(region) FROM sale GROUP BY ROLLUP(region)
+= 'EAST', 3, 'east' | 'WEST', 2, 'west' | NULL, 1, NULL | NULL, 6, 'west'
+> SELECT upper(region), count(*) FROM sale GROUP BY ROLLUP(upper(region))
+= 'EAST', 3 | 'WEST', 2 | NULL, 1 | NULL, 6
+> SELECT region, count(*) FROM sale GROUP BY region, ROLLUP(region)
+= 'east', 3 | 'east', 3 | 'west', 2 | 'west', 2 | NULL, 1 | NULL, 1
+> SELECT count(*), sum(amount) FROM sale WHERE id > 99 GROUP BY ROLLUP(region)
+= 0, NULL
+> SELECT region, GROUPING(region) FROM sale GROUP BY region ORDER BY 1
+= 'east', 0 | 'west', 0 | NULL, 0
+> SELECT region, sum(amount), rank() OVER (ORDER BY sum(amount) DESC) FROM sale GROUP BY ROLLUP(region) ORDER BY 3
+= NULL, money 21.00, 1 | 'west', money 9.00, 2 | 'east', money 6.00, 3 | NULL, money 6.00, 3
+> CREATE VIEW sale_totals AS SELECT region, product, sum(amount) AS total FROM sale GROUP BY ROLLUP(region, product)
+= done 0
+> SELECT count(*), sum(total) FROM sale_totals
+= 9, money 63.00
+> SELECT region, GROUPING(region) FROM sale GROUP BY region
+% region:string, grouping:integer
+> EXPLAIN SELECT region, count(*) FROM sale GROUP BY region, ROLLUP(region, product)
+= 'Scan on sale' | '  Aggregate: group by region, product (3 grouping sets)'
+> SELECT GROUPING(region) FROM sale
+! SYNTAX 8 this query has no GROUP BY
+> SELECT region FROM sale WHERE GROUPING(region) = 0 GROUP BY region
+! SYNTAX 31 WHERE cannot use GROUPING
+> SELECT sum(GROUPING(region)) FROM sale GROUP BY region
+! SYNTAX 12 an aggregate cannot use GROUPING
+> SELECT GROUPING(amount) FROM sale GROUP BY region
+! SYNTAX 17 GROUPING's argument `amount` is not one of the GROUP BY expressions
+> SELECT product FROM sale GROUP BY ROLLUP(region)
+! SYNTAX 8 the select list reads column `product`, which is neither grouped by
+> SELECT count(*) FROM sale GROUP BY CUBE(id, region, product, amount, id, region, product, amount, id, region, product)
+! UNSUPPORTED 36 CUBE of 11 expressions makes 2048 sets
+
 # ---- EXPLAIN says which path, and lists only what it did not consume -
 > CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)
 = done 0

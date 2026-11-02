@@ -443,3 +443,13 @@
 ! UNSUPPORTED 46 SET ... TO ... DEFAULT ... is not in this release
 > with recursive r as (select 1) cycle n set m select 1
 ! SYNTAX 46 USING and a name
+
+# ---- ROLLUP, CUBE, GROUPING SETS (docs/gsql_rollup_design.md) --------
+> select a, sum(b) from t group by rollup(a, c), cube(d), grouping sets ((a, b), a, ()), e
+= SELECT a, sum(b) FROM t GROUP BY ROLLUP(a, c), CUBE(d), GROUPING SETS ((a, b), (a), ()), e
+> select rollup, cube from t group by rollup, cube
+= SELECT rollup, cube FROM t GROUP BY rollup, cube
+> select grouping(a, b) from t group by a, b
+= SELECT grouping(a, b) FROM t GROUP BY a, b
+> select a from t group by grouping sets (a
+! SYNTAX 42 expected `)`

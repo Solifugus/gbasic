@@ -13177,3 +13177,19 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
     SQL, and to use a `:name` parameter or `cast`.
   Neither is built yet.
 - **Workaround:** none needed.
+
+## 2026-11-02 — CC — while: writing G-SQL cookbook recipe 18 (ROLLUP)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** I wrote `elseif` from habit (VB and others spell it so). gBASIC
+  spells it `else if`, and the parse error did not say so: it named a token
+  after the word, as if `elseif` were a function name missing its `(`.
+  ```
+  if x = 2 then
+      print 1
+  elseif x = 1 then        ' parse error ... 4:10: syntax error, unexpected OP_EQ, expecting LPAREN
+  ```
+  With `r.level` after it the message was "unexpected DOT, expecting LPAREN".
+  `elsif` and `elif` are the same fumble. The message could name the
+  spelling: "gBASIC writes `else if`, two words".
+- **Workaround:** wrote `else if`. The diagnostic is not built yet.

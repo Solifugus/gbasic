@@ -1,0 +1,7 @@
+  east  gripper  2000.00
+  east  joint  450.00
+  east subtotal        2450.00
+  west  joint  450.00
+  west  motor  975.50
+  west subtotal        1425.50
+Grand total            3875.50  (6 sales)
