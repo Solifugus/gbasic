@@ -35,6 +35,9 @@ struct B {
     int agg_ok;
     int in_agg;
     size_t capaggs;
+    /* window functions: whether the clause being bound may hold one */
+    int win_ok;
+    size_t capwins;
     /* subqueries (docs/gsql_subquery_design.md §3): the binder of the query
        enclosing this one, and the SX_SUBQ node this query is the body of;
        NULL at the top. What a subquery needs to be planned is kept here, and
@@ -332,6 +335,144 @@ static int bind_subquery(B *b, SqlExpr *e, int cols_allowed, const char *where) 
     return 1;
 }
 
+/* ---- window functions (docs/gsql_window_design.md) -------------------- */
+
+static const struct {
+    const char *name;
+    int op;
+    int min, max;
+    int frame;      /* reads its frame */
+} window_fns[] = {
+    { "row_number", SQL_WIN_ROW_NUMBER, 0, 0, 0 }, { "rank", SQL_WIN_RANK, 0, 0, 0 },
+    { "dense_rank", SQL_WIN_DENSE_RANK, 0, 0, 0 }, { "percent_rank", SQL_WIN_PERCENT_RANK, 0, 0, 0 },
+    { "cume_dist", SQL_WIN_CUME_DIST, 0, 0, 0 }, { "ntile", SQL_WIN_NTILE, 1, 1, 0 },
+    { "lag", SQL_WIN_LAG, 1, 3, 0 }, { "lead", SQL_WIN_LEAD, 1, 3, 0 },
+    { "first_value", SQL_WIN_FIRST_VALUE, 1, 1, 1 }, { "last_value", SQL_WIN_LAST_VALUE, 1, 1, 1 },
+    { "nth_value", SQL_WIN_NTH_VALUE, 2, 2, 1 },
+    { "count", SQL_AGG_COUNT, 1, 1, 1 }, { "sum", SQL_AGG_SUM, 1, 1, 1 }, { "avg", SQL_AGG_AVG, 1, 1, 1 },
+    { "min", SQL_AGG_MIN, 1, 1, 1 }, { "max", SQL_AGG_MAX, 1, 1, 1 }, { NULL, 0, 0, 0, 0 }
+};
+
+/* a bound's place in a frame, earliest first */
+static int bound_rank(int bound) {
+    return bound - SQL_BOUND_UNBOUNDED_PRECEDING;
+}
+
+static int bind_window(B *b, SqlExpr *e, int cols_allowed, const char *where) {
+    SqlWindow *w = e->over;
+    if (!b->win_ok) {
+        int filters = strcmp(where, "WHERE") == 0 || strcmp(where, "HAVING") == 0 || strcmp(where, "GROUP BY") == 0;
+        return bfail(b, e->pos, GSQL_SYNTAX, "%s cannot use a window function%s", where,
+                     filters ? ": windows are computed after WHERE, GROUP BY and HAVING, so to filter on one, "
+                               "select it in a derived table and filter outside it" : "");
+    }
+    int k = 0;
+    while (window_fns[k].name && strcmp(window_fns[k].name, e->name) != 0) {
+        k++;
+    }
+    if (!window_fns[k].name) {
+        return bfail(b, e->pos, GSQL_NOT_FOUND, "`%s` is not a window function: the window functions are "
+                     "row_number, rank, dense_rank, percent_rank, cume_dist, ntile, lag, lead, first_value, "
+                     "last_value and nth_value, and the aggregates count, sum, avg, min and max", e->name);
+    }
+    if (e->distinct) {
+        return bfail(b, e->pos, GSQL_UNSUPPORTED, "DISTINCT in a window aggregate is not in this release of G-SQL");
+    }
+    if (!e->star && ((int)e->na < window_fns[k].min || (int)e->na > window_fns[k].max)) {
+        if (window_fns[k].min == window_fns[k].max) {
+            return bfail(b, e->pos, GSQL_SYNTAX, "%s takes %d argument%s, and was given %zu", e->name,
+                         window_fns[k].min, window_fns[k].min == 1 ? "" : "s", e->na);
+        }
+        return bfail(b, e->pos, GSQL_SYNTAX, "%s takes %d to %d arguments, and was given %zu", e->name,
+                     window_fns[k].min, window_fns[k].max, e->na);
+    }
+    if (w->frame) {
+        if (!window_fns[k].frame) {
+            return bfail(b, w->frame_pos, GSQL_SYNTAX, "%s does not read a frame: a frame reaches only the "
+                         "aggregates and first_value, last_value and nth_value", e->name);
+        }
+        if (w->start == SQL_BOUND_UNBOUNDED_FOLLOWING) {
+            return bfail(b, w->frame_pos, GSQL_SYNTAX, "a frame cannot start at UNBOUNDED FOLLOWING");
+        }
+        if (w->end == SQL_BOUND_UNBOUNDED_PRECEDING) {
+            return bfail(b, w->frame_pos, GSQL_SYNTAX, "a frame cannot end at UNBOUNDED PRECEDING");
+        }
+        if (bound_rank(w->start) > bound_rank(w->end)) {
+            return bfail(b, w->frame_pos, GSQL_SYNTAX, "a frame cannot start after it ends");
+        }
+        if (w->frame == SQL_FRAME_RANGE && (w->start_n || w->end_n)) {
+            return bfail(b, (w->start_n ? w->start_n : w->end_n)->pos, GSQL_UNSUPPORTED,
+                         "RANGE takes only UNBOUNDED and CURRENT ROW bounds in this release of G-SQL; ROWS counts "
+                         "rows");
+        }
+    }
+    for (size_t j = 0; j < w->norder; j++) {
+        const SqlExpr *oe = w->order[j].e;
+        if (oe->kind == SX_LIT && oe->lit[0] == SER_NUMBER && oe->lit[1] == 1) {
+            return bfail(b, oe->pos, GSQL_SYNTAX, "a window's ORDER BY sorts by values, so a number here sorts by "
+                         "that constant, not by an output column: name the column");
+        }
+    }
+    e->kind = SX_WIN;
+    e->op = e->star ? SQL_AGG_COUNT_STAR : window_fns[k].op;
+    SqlPlan *p = b->p;
+    if (p->nwins == b->capwins) {
+        b->capwins = b->capwins ? b->capwins * 2 : 8;
+        SqlExpr **grown = sql_alloc(b->arena, sizeof(SqlExpr *) * b->capwins);
+        if (p->nwins) {
+            memcpy(grown, p->wins, sizeof(SqlExpr *) * p->nwins);
+        }
+        p->wins = grown;
+    }
+    e->index = (unsigned)p->nwins;
+    p->wins[p->nwins++] = e;
+    b->win_ok = 0;
+    int ok = 1;
+    for (size_t j = 0; j < e->na && ok; j++) {
+        ok = bind(b, e->a[j], cols_allowed, "a window function");
+    }
+    for (size_t j = 0; j < w->npart && ok; j++) {
+        ok = bind(b, w->part[j], cols_allowed, "PARTITION BY");
+    }
+    for (size_t j = 0; j < w->norder && ok; j++) {
+        ok = bind(b, w->order[j].e, cols_allowed, "a window's ORDER BY");
+    }
+    ok = ok && bind(b, w->start_n, 0, "a window frame") && bind(b, w->end_n, 0, "a window frame");
+    b->win_ok = 1;
+    return ok;
+}
+
+/* the windows that write the same PARTITION BY and ORDER BY share one
+ * ordering, sorted once */
+static void window_orderings(B *b) {
+    SqlPlan *p = b->p;
+    char **seen = sql_alloc(b->arena, sizeof(char *) * (p->nwins ? p->nwins : 1));
+    p->norderings = 0;
+    for (size_t k = 0; k < p->nwins; k++) {
+        SqlWindow *w = p->wins[k]->over;
+        GsqlBuf t = {0};
+        for (size_t j = 0; j < w->npart; j++) {
+            sql_print_expr_scans(&t, w->part[j], p->scans, p->nscans);
+            v3_put(&t, ",", 1);
+        }
+        v3_put(&t, ";", 1);
+        for (size_t j = 0; j < w->norder; j++) {
+            sql_print_expr_scans(&t, w->order[j].e, p->scans, p->nscans);
+            v3_put(&t, w->order[j].desc ? " DESC," : ",", w->order[j].desc ? 6 : 1);
+        }
+        v3_put(&t, "", 1);
+        size_t o = 0;
+        while (o < p->norderings && strcmp(seen[o], (char *)t.bytes) != 0) {
+            o++;
+        }
+        if (o == p->norderings) {
+            seen[p->norderings++] = sql_strndup(b->arena, (char *)t.bytes, t.length);
+        }
+        w->ordering = (unsigned)o;
+        gsql_buf_free(&t);
+    }
+}
+
 static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where) {
     if (!e) {
         return 1;
@@ -342,6 +483,9 @@ static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where) {
     case SX_SUBQ:
         return bind_subquery(b, e, cols_allowed, where);
     case SX_CALL: {
+        if (e->over) {
+            return bind_window(b, e, cols_allowed, where);
+        }
         static const struct { const char *name; int agg; } aggregates[] = {
             { "count", SQL_AGG_COUNT }, { "sum", SQL_AGG_SUM }, { "avg", SQL_AGG_AVG }, { "min", SQL_AGG_MIN },
             { "max", SQL_AGG_MAX }, { NULL, 0 }
@@ -379,11 +523,14 @@ static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where) {
             e->index = (unsigned)p->naggs;
             p->aggs[p->naggs++] = e;
             b->in_agg = 1;
+            int win_ok = b->win_ok;
+            b->win_ok = 0;
             int ok = 1;
             for (size_t j = 0; j < e->na && ok; j++) {
                 ok = bind(b, e->a[j], cols_allowed, "an aggregate");
             }
             b->in_agg = 0;
+            b->win_ok = win_ok;
             return ok;
         }
         if (e->distinct) {
@@ -428,7 +575,7 @@ int sql_is_constant(const SqlExpr *e) {
     if (!e) {
         return 1;
     }
-    if (e->kind == SX_COL || e->kind == SX_NAME) {
+    if (e->kind == SX_COL || e->kind == SX_NAME || e->kind == SX_WIN) {
         return 0;
     }
     if (e->kind == SX_SUBQ && e->nrefs) {
@@ -482,7 +629,7 @@ static int const_before(const SqlExpr *e, size_t k) {
     if (!e) {
         return 1;
     }
-    if (e->kind == SX_NAME || e->kind == SX_AGG) {
+    if (e->kind == SX_NAME || e->kind == SX_AGG || e->kind == SX_WIN) {
         return 0;
     }
     if (e->kind == SX_COL) {
@@ -625,6 +772,13 @@ static int order_matches(const SqlPlan *p, const Cand *c) {
     }
     if (p->nscans > 1) {
         /* a join's rows come from several tables: sorted after */
+        return 0;
+    }
+    if (p->nwins) {
+        /* a windowed query is sorted after its windows, and reading the
+           table in ORDER BY's order would hand a window with no ORDER BY of
+           its own its rows in that order (measured: last_value answered each
+           partition's first row under ORDER BY id DESC) */
         return 0;
     }
     size_t j = 0;
@@ -1161,6 +1315,16 @@ static int check_grouped(B *b, const SqlExpr *e, char **groups, const char *wher
             return 0;
         }
     }
+    for (size_t k = 0; e->over && k < e->over->npart; k++) {
+        if (!check_grouped(b, e->over->part[k], groups, where)) {
+            return 0;
+        }
+    }
+    for (size_t k = 0; e->over && k < e->over->norder; k++) {
+        if (!check_grouped(b, e->over->order[k].e, groups, where)) {
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -1172,7 +1336,7 @@ static int reads_only(const SqlExpr *e, const int *placed) {
     if (!e) {
         return 1;
     }
-    if (e->kind == SX_NAME || e->kind == SX_AGG) {
+    if (e->kind == SX_NAME || e->kind == SX_AGG || e->kind == SX_WIN) {
         return 0;
     }
     if (e->kind == SX_COL) {
@@ -1507,8 +1671,10 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
             continue;
         }
         b->agg_ok = 1;
+        b->win_ok = 1;
         int bound = bind(b, it->e, 1, "the select list");
         b->agg_ok = 0;
+        b->win_ok = 0;
         if (!bound) {
             return 0;
         }
@@ -1519,7 +1685,7 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         } else if (it->e->kind == SX_COL) {
             name = it->e->nfields ? it->e->fields[it->e->nfields - 1]
                                   : sql_scan_col_name(&p->scans[it->e->tab], it->e->col);
-        } else if (it->e->kind == SX_CALL || it->e->kind == SX_AGG) {
+        } else if (it->e->kind == SX_CALL || it->e->kind == SX_AGG || it->e->kind == SX_WIN) {
             name = it->e->name;
         } else if (it->e->kind == SX_SUBQ && it->e->op == SQL_SUB_SCALAR) {
             /* a scalar subquery is named, and typed, as its one column */
@@ -1532,7 +1698,9 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         if (it->e->kind == SX_COL && it->e->nfields == 0) {
             const SqlScan *sc = &p->scans[it->e->tab];
             kind = sc->derived ? sc->dkinds[it->e->col] : kind_text(b, gsql_table_col(sc->tb, it->e->col));
-        } else if (it->e->kind == SX_AGG && (it->e->op == SQL_AGG_COUNT || it->e->op == SQL_AGG_COUNT_STAR)) {
+        } else if ((it->e->kind == SX_AGG || it->e->kind == SX_WIN) &&
+                   (it->e->op == SQL_AGG_COUNT || it->e->op == SQL_AGG_COUNT_STAR || it->e->op == SQL_WIN_ROW_NUMBER ||
+                    it->e->op == SQL_WIN_RANK || it->e->op == SQL_WIN_DENSE_RANK || it->e->op == SQL_WIN_NTILE)) {
             kind = "integer";
         }
         p->out[p->nout] = it->e;
@@ -1578,8 +1746,10 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
             }
         }
         b->agg_ok = 1;
+        b->win_ok = 1;
         int bound = bind(b, oe, 1, "ORDER BY");
         b->agg_ok = 0;
+        b->win_ok = 0;
         if (!bound) {
             return 0;
         }
@@ -1599,6 +1769,7 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         }
     }
     p->grouped = s->ngroup || s->having || p->naggs;
+    window_orderings(b);
     if (p->grouped) {
         char **groups = sql_alloc(b->arena, sizeof(char *) * (s->ngroup ? s->ngroup : 1));
         for (size_t k = 0; k < s->ngroup; k++) {
@@ -2206,6 +2377,20 @@ static void explain_at(const SqlPlan *p, void (*line)(void *, const char *), voi
             sql_print_expr_scans(&b, s->having, p->scans, p->nscans);
             emit(line, ctx, indent + 1, &b);
         }
+    }
+    if (s->kind == SQ_SELECT && p->nwins) {
+        /* each window function, and how many sorts its orderings cost */
+        put(&b, "Window: ");
+        for (size_t k = 0; k < p->nwins; k++) {
+            if (k) {
+                put(&b, ", ");
+            }
+            sql_print_expr_scans(&b, p->wins[k], p->scans, p->nscans);
+        }
+        char n[64];
+        snprintf(n, sizeof n, " (%zu ordering%s, sorted)", p->norderings, p->norderings == 1 ? "" : "s");
+        put(&b, n);
+        emit(line, ctx, indent + 1, &b);
     }
     if (s->kind == SQ_SELECT && s->distinct) {
         put(&b, "Distinct: ");

@@ -23,6 +23,8 @@
 #                forced scan also keeps FROM's order, so a join whose order row
 #                counts chose is compared with the order written, and a floor
 #                requires that some were (docs/gsql_rowcount_design.md)
+#   window differential  random rows and windows, every answer computed by
+#                SQLite (tests/gsql/gen_window_diff.py), with a census floor
 #   order cost   a join written large-first, chosen order against FROM's, as a
 #                ratio, the answers equal and the plan really reordered
 #   order        which table a join reads first, asked of EXPLAIN: smallest
@@ -220,6 +222,33 @@ for seed in 1 2 3 4 5; do
     grep '^census' "$work/diff$seed.out" | sed 's/^/       seed '"$seed"' /'
     verdict "differential seed $seed" "$work/diff$seed.out" $rc
 done
+
+printf 'TIER window differential: random windows, every answer computed by SQLite\n'
+# SQLite is an implementation of window functions that is not G-SQL's; the
+# generator pins where SQL leaves the answer open (NULL order, ties), and
+# fails when a function, frame kind or partitioning was too rarely drawn
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null; then
+    for seed in 1 2 3 4 5; do
+        rm -rf "$work/wdiff"
+        mkdir -p "$work/wdiff"
+        python3 tests/gsql/gen_window_diff.py "$seed" 300 "$work/wdiff$seed.txt" >"$work/wgen$seed.out" 2>&1
+        grc=$?
+        if [ "$grc" = 3 ]; then
+            printf '  SKIP window differential (%s): window functions were NOT checked against SQLite\n' \
+                "$(cat "$work/wgen$seed.out")"
+            break
+        fi
+        if [ "$grc" != 0 ]; then
+            sed 's/^/       /' "$work/wgen$seed.out"
+            fail "window differential seed $seed: the generator failed"
+            continue
+        fi
+        bounded 120 "$work/sql_test" script "$work/wdiff$seed.txt" "$work/wdiff/db" >"$work/wdiff$seed.out" 2>&1
+        verdict "window differential seed $seed (300 queries)" "$work/wdiff$seed.out" $?
+    done
+else
+    printf '  SKIP window differential (no python3 with sqlite3): window functions were NOT checked against SQLite\n'
+fi
 
 printf 'TIER hash cost: an unindexed join hashed against its nested loop, as a ratio\n'
 rm -rf "$work/hc"

@@ -389,3 +389,41 @@
 ! SYNTAX 8 TO
 > backup to
 ! SYNTAX 10
+
+# ---- window functions (docs/gsql_window_design.md) ------------------
+> select row_number() over () from t
+= SELECT row_number() OVER () FROM t
+> select sum(a) OVER (partition by b, c order by d desc, e) from t
+= SELECT sum(a) OVER (PARTITION BY b, c ORDER BY d DESC, e) FROM t
+> select count(*) over (order by d rows 2 preceding) from t
+= SELECT count(*) OVER (ORDER BY d ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM t
+> select avg(a) over (order by d rows between unbounded preceding and 1 following) from t
+= SELECT avg(a) OVER (ORDER BY d ROWS BETWEEN UNBOUNDED PRECEDING AND 1 FOLLOWING) FROM t
+> select last_value(a) over (partition by b range between current row and unbounded following) from t
+= SELECT last_value(a) OVER (PARTITION BY b RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM t
+> select lag(a, $1, 0) over (order by d) from t
+= SELECT lag(a, $1, 0) OVER (ORDER BY d) FROM t
+> select count(*) over from t
+= SELECT count(*) AS over FROM t
+> select a over from t
+= SELECT a AS over FROM t
+> select rank() over w from t
+! UNSUPPORTED 20 named windows are not in this release
+> select rank() over (w) from t
+! UNSUPPORTED 21 named windows are not in this release
+> select a from t window w as (order by a)
+! UNSUPPORTED 17 named windows are not in this release
+> select sum(a) over (order by d groups 1 preceding) from t
+! UNSUPPORTED 32 GROUPS frames are not in this release
+> select sum(a) over (order by d rows current row exclude ties) from t
+! UNSUPPORTED 49 EXCLUDE in a window frame
+> select sum(a) over (order by d nulls first) from t
+! UNSUPPORTED 32 NULLS FIRST and NULLS LAST
+> select sum(a) over (order by d rows between 1 preceding) from t
+! SYNTAX 56 expected AND
+> select sum(a) over (order by d rows unbounded) from t
+! SYNTAX 46 PRECEDING or FOLLOWING after UNBOUNDED
+> select sum(a) over (order by d rows current) from t
+! SYNTAX 44 ROW after CURRENT
+> select sum(a) over (order by d limit 1) from t
+! SYNTAX 32 PARTITION BY, ORDER BY, ROWS, RANGE or `)` in the window

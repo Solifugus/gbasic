@@ -107,6 +107,8 @@ typedef struct X {
     size_t ncached, capcached;
     /* a grouped query's current group: each aggregate's final value, by slot */
     GsqlHv **aggv;
+    /* a windowed query's current row: each window function's answer, by slot */
+    GsqlHv **winv;
     /* a subquery's execution: the enclosing query's, whose rows an outer
        reference reads (docs/gsql_subquery_design.md §4) */
     struct X *outer;
@@ -856,6 +858,12 @@ static GsqlHv *eval(X *x, SqlExpr *e) {
             return NULL;
         }
         return x->h->copy(x->h->ctx, x->aggv[e->index]);
+    case SX_WIN:
+        if (!x->winv || !x->winv[e->index]) {
+            xfail(x->err, GSQL_MISUSE, e->pos, "a window function was read outside its window");
+            return NULL;
+        }
+        return x->h->copy(x->h->ctx, x->winv[e->index]);
     case SX_CAST: {
         GsqlHv *a = eval(x, e->a[0]);
         if (!a) {
@@ -1758,6 +1766,8 @@ static void groups_free(X *x, Groups *g) {
     memset(g, 0, sizeof *g);
 }
 
+static int fold_value(X *x, Acc *acc, SqlExpr *e, GsqlHv *v);
+
 /* Folds the current row into aggregate `a` of group `gr`. */
 static int fold(X *x, Acc *acc, SqlExpr *e) {
     if (e->op == SQL_AGG_COUNT_STAR) {
@@ -1768,6 +1778,12 @@ static int fold(X *x, Acc *acc, SqlExpr *e) {
     if (!v) {
         return x->err->code ? x->err->code : GSQL_EXPRESSION;
     }
+    return fold_value(x, acc, e, v);
+}
+
+/* Folds value `v` of aggregate `e` into `acc`, taking `v`: the fold's own
+ * work, and a window aggregate's (docs/gsql_window_design.md §2). */
+static int fold_value(X *x, Acc *acc, SqlExpr *e, GsqlHv *v) {
     if (is_null(x, v)) {
         rel(x, v);
         return GSQL_OK;
@@ -1915,7 +1931,7 @@ typedef struct {
 } SortRow;
 
 /* where a SELECT that folds or collects has got to (docs/gsql_slicing_design.md) */
-enum { PH_READY = 0, PH_FOLD, PH_DECIDE, PH_COLLECT, PH_SORT, PH_WORKING };
+enum { PH_READY = 0, PH_FOLD, PH_DECIDE, PH_COLLECT, PH_SORT, PH_WCOLLECT, PH_WCOMPUTE, PH_WORKING };
 
 typedef struct {
     GsqlSql *q;
@@ -1959,6 +1975,13 @@ typedef struct {
     KeyMap seen;        /* SELECT DISTINCT: the output rows' keys so far */
     GsqlBuf *seen_keys;
     size_t nseen, capseen;
+    /* window functions (docs/gsql_window_design.md §5): the rows collected,
+       replayed from wpos */
+    int windowed;
+    struct WinRow *wrows;
+    size_t nwrows, capwrows, wpos;
+    size_t *ooff;       /* where each ordering's ORDER BY values start in a row's okeys */
+    size_t nokeys;
 } SqlCursor;
 
 static const GsqlBuf *row_key_of(void *ctx, size_t i) {
@@ -2127,24 +2150,29 @@ static int agg_finish(SqlCursor *c) {
     return GSQL_OK;
 }
 
+/* a group made the current row: its first row's scans, and its aggregates */
+static void group_restore(X *x, const Group *gr) {
+    row_clear(x);
+    for (size_t k = 0; k < x->nsx; k++) {
+        XScan *xs = &x->sx[k];
+        if (gr->state[k] == 1) {
+            xs->row.length = 0;
+            v3_put(&xs->row, gr->reps[k].bytes, gr->reps[k].length);
+            xs->have_row = 1;
+        } else if (gr->state[k] == 2) {
+            xs->nulled = 1;
+        }
+    }
+    x->aggv = gr->fin;
+}
+
 /* the next group HAVING keeps, made the current row: 1, 0 at the end, -1 failed */
 static int next_group(SqlCursor *c) {
     X *x = &c->x;
     Groups *g = &c->groups;
     while (g->pos < g->n) {
         Group *gr = &g->v[g->order[g->pos++]];
-        row_clear(x);
-        for (size_t k = 0; k < x->nsx; k++) {
-            XScan *xs = &x->sx[k];
-            if (gr->state[k] == 1) {
-                xs->row.length = 0;
-                v3_put(&xs->row, gr->reps[k].bytes, gr->reps[k].length);
-                xs->have_row = 1;
-            } else if (gr->state[k] == 2) {
-                xs->nulled = 1;
-            }
-        }
-        x->aggv = gr->fin;
+        group_restore(x, gr);
         if (!c->plan.s->having) {
             return 1;
         }
@@ -2167,7 +2195,565 @@ static int next_group(SqlCursor *c) {
     return 0;
 }
 
+/* ---- window functions (docs/gsql_window_design.md §5) -------------------
+ *
+ * A windowed query collects its rows after the source: each row's state (its
+ * scans' rows, or its group), each ordering's partition key and ORDER BY
+ * values, and each window's arguments. Each ordering is sorted once; each
+ * window's answers are worked out partition by partition into the rows; then
+ * the rows are replayed in the order collected, each with its answers. */
+
+typedef struct WinRow {
+    GsqlBuf *rows;          /* per scan: its row */
+    unsigned char *state;   /* per scan: 0 no row, 1 a row, 2 null-extended */
+    size_t group;           /* grouped: the group's slot */
+    GsqlBuf *pkey;          /* per ordering: the partition's key */
+    GsqlHv **okeys;         /* per ordering, from ooff: its ORDER BY values */
+    GsqlHv **args;          /* per window, three each: its arguments */
+    GsqlHv **res;           /* per window: its answer */
+} WinRow;
+
+static void winrow_free(SqlCursor *c, WinRow *r) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    if (r->rows) {
+        for (size_t k = 0; k < x->nsx; k++) {
+            gsql_buf_free(&r->rows[k]);
+        }
+    }
+    free(r->rows);
+    free(r->state);
+    for (size_t o = 0; r->pkey && o < p->norderings; o++) {
+        gsql_buf_free(&r->pkey[o]);
+    }
+    free(r->pkey);
+    for (size_t k = 0; r->okeys && k < c->nokeys; k++) {
+        rel(x, r->okeys[k]);
+    }
+    free(r->okeys);
+    for (size_t k = 0; r->args && k < 3 * p->nwins; k++) {
+        rel(x, r->args[k]);
+    }
+    free(r->args);
+    for (size_t k = 0; r->res && k < p->nwins; k++) {
+        rel(x, r->res[k]);
+    }
+    free(r->res);
+    memset(r, 0, sizeof *r);
+}
+
+static void windows_free(SqlCursor *c) {
+    for (size_t k = 0; k < c->nwrows; k++) {
+        winrow_free(c, &c->wrows[k]);
+    }
+    free(c->wrows);
+    c->wrows = NULL;
+    c->nwrows = 0;
+    free(c->ooff);
+    c->ooff = NULL;
+    c->x.winv = NULL;
+}
+
+/* any window of ordering `o`, whose PARTITION BY and ORDER BY it is */
+static const SqlWindow *ordering_window(const SqlPlan *p, size_t o) {
+    for (size_t k = 0; k < p->nwins; k++) {
+        if (p->wins[k]->over->ordering == o) {
+            return p->wins[k]->over;
+        }
+    }
+    return NULL;
+}
+
+/* the row the windows read: the next group HAVING keeps, the one row with no
+ * FROM, or the join's next */
+static int win_source(SqlCursor *c) {
+    if (c->grouped) {
+        return next_group(c);
+    }
+    if (c->plan.scans[0].access == ACC_NONE) {
+        int first = c->agg_first;
+        c->agg_first = 0;
+        return first ? keep(&c->x) : 0;
+    }
+    return join_next(&c->j, &c->x);
+}
+
+/* The collection, up to `budget` rows: 1 more remain, 0 all collected, -1
+ * refused. */
+static int win_collect_step(SqlCursor *c, uint64_t budget) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    if (!c->ooff) {
+        c->ooff = calloc(p->norderings ? p->norderings : 1, sizeof(size_t));
+        if (!c->ooff) {
+            abort();
+        }
+        c->nokeys = 0;
+        for (size_t o = 0; o < p->norderings; o++) {
+            c->ooff[o] = c->nokeys;
+            c->nokeys += ordering_window(p, o)->norder;
+        }
+    }
+    for (uint64_t done = 0;; done++) {
+        if (done == budget) {
+            return 1;
+        }
+        int r = win_source(c);
+        if (r < 0) {
+            return -1;
+        }
+        if (r == 0) {
+            return 0;
+        }
+        if (c->nwrows == c->capwrows) {
+            c->capwrows = c->capwrows ? c->capwrows * 2 : 64;
+            c->wrows = realloc(c->wrows, sizeof(WinRow) * c->capwrows);
+            if (!c->wrows) {
+                abort();
+            }
+        }
+        WinRow *w = &c->wrows[c->nwrows++];
+        memset(w, 0, sizeof *w);
+        if (c->grouped) {
+            w->group = c->groups.order[c->groups.pos - 1];
+        } else {
+            w->rows = calloc(x->nsx, sizeof(GsqlBuf));
+            w->state = calloc(x->nsx, 1);
+            if (!w->rows || !w->state) {
+                abort();
+            }
+            for (size_t k = 0; k < x->nsx; k++) {
+                XScan *xs = &x->sx[k];
+                if (xs->nulled) {
+                    w->state[k] = 2;
+                } else if (xs->have_row) {
+                    v3_put(&w->rows[k], xs->row.bytes, xs->row.length);
+                    w->state[k] = 1;
+                }
+            }
+        }
+        w->pkey = calloc(p->norderings ? p->norderings : 1, sizeof(GsqlBuf));
+        w->okeys = calloc(c->nokeys ? c->nokeys : 1, sizeof(GsqlHv *));
+        w->args = calloc(3 * p->nwins, sizeof(GsqlHv *));
+        w->res = calloc(p->nwins, sizeof(GsqlHv *));
+        if (!w->pkey || !w->okeys || !w->args || !w->res) {
+            abort();
+        }
+        for (size_t o = 0; o < p->norderings; o++) {
+            const SqlWindow *win = ordering_window(p, o);
+            GsqlKey key;
+            gsql_key_init(&key);
+            for (size_t j = 0; j < win->npart; j++) {
+                GsqlHv *v = eval(x, win->part[j]);
+                int rc = v ? key_of_value(x, v, win->part[j], &key) : (x->err->code ? x->err->code : GSQL_EXPRESSION);
+                rel(x, v);
+                if (rc != GSQL_OK) {
+                    gsql_key_free(&key);
+                    return -1;
+                }
+            }
+            v3_put(&w->pkey[o], key.bytes, key.length);
+            gsql_key_free(&key);
+            for (size_t j = 0; j < win->norder; j++) {
+                if (!(w->okeys[c->ooff[o] + j] = eval(x, win->order[j].e))) {
+                    return -1;
+                }
+            }
+        }
+        for (size_t k = 0; k < p->nwins; k++) {
+            SqlExpr *e = p->wins[k];
+            for (size_t j = 0; j < e->na; j++) {
+                if (!(w->args[3 * k + j] = eval(x, e->a[j]))) {
+                    return -1;
+                }
+            }
+        }
+    }
+}
+
+static int win_peer_cmp(SqlCursor *c, size_t o, const SqlWindow *win, const WinRow *a, const WinRow *b, int *failed);
+
+/* two rows' order in ordering `o`: partition, then ORDER BY as the statement's
+ * ORDER BY compares (NULL last, the kind check `<` makes) */
+static int win_cmp(SqlCursor *c, size_t o, const SqlWindow *win, const WinRow *a, const WinRow *b, int *failed) {
+    const GsqlBuf *ka = &a->pkey[o], *kb = &b->pkey[o];
+    size_t n = ka->length < kb->length ? ka->length : kb->length;
+    int cmp = memcmp(ka->bytes, kb->bytes, n);
+    if (cmp || ka->length != kb->length) {
+        return cmp ? cmp : ka->length < kb->length ? -1 : 1;
+    }
+    return win_peer_cmp(c, o, win, a, b, failed);
+}
+
+/* the ORDER BY half of win_cmp: 0 for peers */
+static int win_peer_cmp(SqlCursor *c, size_t o, const SqlWindow *win, const WinRow *a, const WinRow *b, int *failed) {
+    X *x = &c->x;
+    for (size_t j = 0; j < win->norder; j++) {
+        GsqlHv *va = a->okeys[c->ooff[o] + j], *vb = b->okeys[c->ooff[o] + j];
+        int na = is_null(x, va), nb = is_null(x, vb);
+        int cmp;
+        if (na || nb) {
+            cmp = na == nb ? 0 : na ? 1 : -1;
+        } else {
+            if (!comparable(x, va, vb, SQL_OP_LT, win->order[j].e)) {
+                *failed = 1;
+                return 0;
+            }
+            if (x->h->order(x->h->ctx, va, vb, &cmp, x->err) != GSQL_OK) {
+                if (x->err->position == 0) {
+                    x->err->position = win->order[j].e->pos;
+                }
+                *failed = 1;
+                return 0;
+            }
+        }
+        if (cmp) {
+            return win->order[j].desc ? -cmp : cmp;
+        }
+    }
+    return 0;
+}
+
+/* a stable merge sort of row numbers, which stops on a failed comparison */
+static int win_sort(SqlCursor *c, size_t o, const SqlWindow *win, size_t *v, size_t *tmp, size_t n) {
+    int failed = 0;
+    for (size_t width = 1; width < n; width *= 2) {
+        for (size_t lo = 0; lo < n; lo += 2 * width) {
+            size_t mid = lo + width < n ? lo + width : n, hi = lo + 2 * width < n ? lo + 2 * width : n;
+            size_t i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) {
+                int cmp = win_cmp(c, o, win, &c->wrows[v[j]], &c->wrows[v[i]], &failed);
+                if (failed) {
+                    return -1;
+                }
+                tmp[k++] = cmp < 0 ? v[j++] : v[i++];
+            }
+            while (i < mid) {
+                tmp[k++] = v[i++];
+            }
+            while (j < hi) {
+                tmp[k++] = v[j++];
+            }
+        }
+        memcpy(v, tmp, sizeof(size_t) * n);
+    }
+    return 0;
+}
+
+/* a host value's whole number, for lag's and lead's offset, ntile's buckets and
+ * nth_value's place: zero or more, or with `positive` one or more */
+static int hv_whole(X *x, const GsqlHv *v, const SqlExpr *e, const char *what, int positive, uint64_t *out) {
+    GsqlBuf b = {0};
+    int rc = x->h->store(x->h->ctx, v, &b, x->err);
+    if (rc != GSQL_OK) {
+        gsql_buf_free(&b);
+        return rc;
+    }
+    int ok = b.length == 10 && b.bytes[0] == SER_NUMBER && b.bytes[1] == 1;
+    uint64_t n = 0;
+    for (int k = 0; ok && k < 8; k++) {
+        n |= (uint64_t)b.bytes[2 + k] << (8 * k);
+    }
+    gsql_buf_free(&b);
+    if (!ok || (int64_t)n < 0 || (positive && n == 0)) {
+        return xfail(x->err, GSQL_EXPRESSION, e->pos, "%s needs a whole number %s", what,
+                     positive ? "of one or more" : "that is not negative");
+    }
+    *out = n;
+    return GSQL_OK;
+}
+
+/* a frame's n PRECEDING or n FOLLOWING, a constant: NULL is refused here,
+ * where LIMIT NULL is no limit */
+static int frame_count(X *x, SqlExpr *e, uint64_t *out) {
+    if (!e) {
+        *out = 0;
+        return GSQL_OK;
+    }
+    GsqlHv *v = eval(x, e);
+    if (!v) {
+        return x->err->code ? x->err->code : GSQL_EXPRESSION;
+    }
+    int rc = is_null(x, v) ? xfail(x->err, GSQL_EXPRESSION, e->pos, "a window frame needs a whole number that is "
+                                   "not negative, and this one is NULL")
+                           : hv_whole(x, v, e, "a window frame", 0, out);
+    rel(x, v);
+    return rc;
+}
+
+static void acc_reset(X *x, Acc *acc) {
+    rel(x, acc->v);
+    memset(acc, 0, sizeof *acc);
+}
+
+/* a / b, by gBASIC's division: percent_rank's and cume_dist's answers */
+static GsqlHv *hv_ratio(X *x, uint64_t a, uint64_t b, const SqlExpr *e) {
+    GsqlHv *va = hv_count(x, a), *vb = hv_count(x, b);
+    GsqlHv *v = va && vb ? placed(x, x->h->op(x->h->ctx, SQL_OP_DIV, va, vb, x->err), e) : NULL;
+    rel(x, va);
+    rel(x, vb);
+    return v;
+}
+
+/* Window `e`'s answers for one partition, rows v[ps..pe) in its order, with
+ * each row's peers [plo[i], phi[i]). */
+static int win_partition(SqlCursor *c, SqlExpr *e, const size_t *v, size_t ps, size_t pe, const size_t *plo,
+                         const size_t *phi, uint64_t nstart, uint64_t nend) {
+    X *x = &c->x;
+    const SqlWindow *w = e->over;
+    size_t slot = e->index;
+    size_t n = pe - ps;
+#define ARG(i, j) (c->wrows[v[i]].args[3 * slot + (j)])
+#define RES(i) (c->wrows[v[i]].res[slot])
+    if (e->op >= SQL_WIN_ROW_NUMBER && e->op <= SQL_WIN_LEAD) {
+        uint64_t dense = 0;
+        for (size_t i = ps; i < pe; i++) {
+            if (plo[i] == i) {
+                dense++;
+            }
+            GsqlHv *r = NULL;
+            switch (e->op) {
+            case SQL_WIN_ROW_NUMBER: r = hv_count(x, i - ps + 1); break;
+            case SQL_WIN_RANK: r = hv_count(x, plo[i] - ps + 1); break;
+            case SQL_WIN_DENSE_RANK: r = hv_count(x, dense); break;
+            case SQL_WIN_PERCENT_RANK: r = hv_ratio(x, plo[i] - ps, n > 1 ? n - 1 : 1, e); break;
+            case SQL_WIN_CUME_DIST: r = hv_ratio(x, phi[i] - ps, n, e); break;
+            case SQL_WIN_NTILE: {
+                uint64_t b;
+                if (is_null(x, ARG(i, 0))) {
+                    r = hv_unknown(x);
+                    break;
+                }
+                if (hv_whole(x, ARG(i, 0), e->a[0], "ntile", 1, &b) != GSQL_OK) {
+                    return x->err->code;
+                }
+                uint64_t j = i - ps, q = n / b, rem = n % b, big = rem * (q + 1);
+                r = hv_count(x, j < big ? j / (q + 1) + 1 : rem + (j - big) / q + 1);
+                break;
+            }
+            default: {   /* lag and lead */
+                uint64_t k = 1;
+                if (e->na > 1) {
+                    if (is_null(x, ARG(i, 1))) {
+                        r = hv_unknown(x);
+                        break;
+                    }
+                    if (hv_whole(x, ARG(i, 1), e->a[1], e->name, 0, &k) != GSQL_OK) {
+                        return x->err->code;
+                    }
+                }
+                int there = e->op == SQL_WIN_LAG ? k <= i - ps : k < pe - i;
+                if (there) {
+                    size_t at = e->op == SQL_WIN_LAG ? i - k : i + k;
+                    r = x->h->copy(x->h->ctx, ARG(at, 0));
+                } else {
+                    r = e->na > 2 ? x->h->copy(x->h->ctx, ARG(i, 2)) : hv_unknown(x);
+                }
+            }
+            }
+            if (!r) {
+                return x->err->code ? x->err->code : GSQL_EXPRESSION;
+            }
+            RES(i) = r;
+        }
+        return GSQL_OK;
+    }
+    /* the rest read a frame: none written is RANGE UNBOUNDED PRECEDING ..
+       CURRENT ROW, which with no ORDER BY is the whole partition */
+    int unit = w->frame ? w->frame : SQL_FRAME_RANGE;
+    int start = w->frame ? w->start : SQL_BOUND_UNBOUNDED_PRECEDING;
+    int end = w->frame ? w->end : SQL_BOUND_CURRENT;
+    Acc acc;
+    memset(&acc, 0, sizeof acc);
+    size_t folded_lo = ps, folded_hi = ps;   /* the running fold's rows */
+    int backward = start != SQL_BOUND_UNBOUNDED_PRECEDING && end == SQL_BOUND_UNBOUNDED_FOLLOWING;
+    if (backward) {
+        folded_lo = folded_hi = pe;
+    }
+    int rc = GSQL_OK;
+    for (size_t step = 0; step < n && rc == GSQL_OK; step++) {
+        size_t i = backward ? pe - 1 - step : ps + step;
+        size_t fs, fe;
+        switch (start) {
+        case SQL_BOUND_UNBOUNDED_PRECEDING: fs = ps; break;
+        case SQL_BOUND_PRECEDING: fs = i - ps >= nstart ? i - nstart : ps; break;
+        case SQL_BOUND_CURRENT: fs = unit == SQL_FRAME_ROWS ? i : plo[i]; break;
+        default: fs = pe - i > nstart ? i + nstart : pe; break;
+        }
+        switch (end) {
+        case SQL_BOUND_PRECEDING: fe = i - ps >= nend ? i - nend + 1 : ps; break;
+        case SQL_BOUND_CURRENT: fe = unit == SQL_FRAME_ROWS ? i + 1 : phi[i]; break;
+        case SQL_BOUND_FOLLOWING: fe = pe - i > nend ? i + nend + 1 : pe; break;
+        default: fe = pe; break;
+        }
+        if (fe < fs) {
+            fe = fs;
+        }
+        GsqlHv *r = NULL;
+        if (e->op == SQL_WIN_FIRST_VALUE || e->op == SQL_WIN_LAST_VALUE || e->op == SQL_WIN_NTH_VALUE) {
+            size_t at = SIZE_MAX;
+            if (e->op == SQL_WIN_FIRST_VALUE && fs < fe) {
+                at = fs;
+            } else if (e->op == SQL_WIN_LAST_VALUE && fs < fe) {
+                at = fe - 1;
+            } else if (e->op == SQL_WIN_NTH_VALUE) {
+                uint64_t k;
+                if (is_null(x, ARG(i, 1))) {
+                    at = SIZE_MAX;
+                } else if (hv_whole(x, ARG(i, 1), e->a[1], "nth_value", 1, &k) != GSQL_OK) {
+                    rc = x->err->code;
+                    break;
+                } else if (k <= fe - fs) {
+                    at = fs + k - 1;
+                }
+            }
+            r = at == SIZE_MAX ? hv_unknown(x) : x->h->copy(x->h->ctx, ARG(at, 0));
+        } else {
+            /* an aggregate: a running fold where the frame keeps one end at
+               the partition's, else folded afresh */
+            if (start == SQL_BOUND_UNBOUNDED_PRECEDING) {
+                for (; folded_hi < fe && rc == GSQL_OK; folded_hi++) {
+                    rc = e->op == SQL_AGG_COUNT_STAR ? (acc.count++, GSQL_OK)
+                                                     : fold_value(x, &acc, e, x->h->copy(x->h->ctx, ARG(folded_hi, 0)));
+                }
+            } else if (backward) {
+                for (; folded_lo > fs && rc == GSQL_OK; folded_lo--) {
+                    rc = e->op == SQL_AGG_COUNT_STAR ? (acc.count++, GSQL_OK)
+                                                     : fold_value(x, &acc, e, x->h->copy(x->h->ctx, ARG(folded_lo - 1, 0)));
+                }
+            } else {
+                acc_reset(x, &acc);
+                for (size_t f = fs; f < fe && rc == GSQL_OK; f++) {
+                    rc = e->op == SQL_AGG_COUNT_STAR ? (acc.count++, GSQL_OK)
+                                                     : fold_value(x, &acc, e, x->h->copy(x->h->ctx, ARG(f, 0)));
+                }
+            }
+            if (rc != GSQL_OK) {
+                break;
+            }
+            r = finish(x, &acc, e);
+        }
+        if (!r) {
+            rc = x->err->code ? x->err->code : GSQL_EXPRESSION;
+            break;
+        }
+        RES(i) = r;
+    }
+    acc_reset(x, &acc);
+    return rc;
+#undef ARG
+#undef RES
+}
+
+/* every row collected: each ordering sorted, each window answered */
+static int win_compute(SqlCursor *c) {
+    X *x = &c->x;
+    SqlPlan *p = &c->plan;
+    size_t n = c->nwrows;
+    size_t *v = malloc(sizeof(size_t) * (n ? n : 1)), *tmp = malloc(sizeof(size_t) * (n ? n : 1));
+    size_t *plo = malloc(sizeof(size_t) * (n ? n : 1)), *phi = malloc(sizeof(size_t) * (n ? n : 1));
+    if (!v || !tmp || !plo || !phi) {
+        abort();
+    }
+    int rc = GSQL_OK;
+    for (size_t o = 0; o < p->norderings && rc == GSQL_OK; o++) {
+        const SqlWindow *win = ordering_window(p, o);
+        for (size_t i = 0; i < n; i++) {
+            v[i] = i;
+        }
+        if (win_sort(c, o, win, v, tmp, n) != 0) {
+            rc = x->err->code ? x->err->code : GSQL_EXPRESSION;
+            break;
+        }
+        for (size_t ps = 0; ps < n && rc == GSQL_OK;) {
+            /* the partition, and its peer groups */
+            size_t pe = ps + 1;
+            const GsqlBuf *k0 = &c->wrows[v[ps]].pkey[o];
+            while (pe < n) {
+                const GsqlBuf *k1 = &c->wrows[v[pe]].pkey[o];
+                if (k1->length != k0->length || memcmp(k1->bytes, k0->bytes, k0->length) != 0) {
+                    break;
+                }
+                pe++;
+            }
+            int failed = 0;
+            for (size_t i = ps; i < pe;) {
+                size_t j = i + 1;
+                while (j < pe && win_peer_cmp(c, o, win, &c->wrows[v[i]], &c->wrows[v[j]], &failed) == 0 && !failed) {
+                    j++;
+                }
+                if (failed) {
+                    break;
+                }
+                for (size_t q = i; q < j; q++) {
+                    plo[q] = i;
+                    phi[q] = j;
+                }
+                i = j;
+            }
+            if (failed) {
+                rc = x->err->code ? x->err->code : GSQL_EXPRESSION;
+                break;
+            }
+            for (size_t k = 0; k < p->nwins && rc == GSQL_OK; k++) {
+                SqlExpr *e = p->wins[k];
+                if (e->over->ordering != o) {
+                    continue;
+                }
+                uint64_t ns = 0, ne = 0;
+                rc = frame_count(x, e->over->start_n, &ns);
+                if (rc == GSQL_OK) {
+                    rc = frame_count(x, e->over->end_n, &ne);
+                }
+                if (rc == GSQL_OK) {
+                    rc = win_partition(c, e, v, ps, pe, plo, phi, ns, ne);
+                }
+            }
+            ps = pe;
+        }
+    }
+    free(v);
+    free(tmp);
+    free(plo);
+    free(phi);
+    c->wpos = 0;
+    return rc;
+}
+
+/* the next windowed row, replayed in the order collected: 1, 0 at the end */
+static int next_win_row(SqlCursor *c) {
+    X *x = &c->x;
+    if (c->wpos) {
+        winrow_free(c, &c->wrows[c->wpos - 1]);   /* freed as it goes, as a sort's rows are */
+    }
+    x->winv = NULL;
+    if (c->wpos >= c->nwrows) {
+        return 0;
+    }
+    WinRow *w = &c->wrows[c->wpos++];
+    if (c->grouped) {
+        group_restore(x, &c->groups.v[w->group]);
+    } else {
+        row_clear(x);
+        for (size_t k = 0; k < x->nsx; k++) {
+            XScan *xs = &x->sx[k];
+            if (w->state[k] == 1) {
+                xs->row.length = 0;
+                v3_put(&xs->row, w->rows[k].bytes, w->rows[k].length);
+                xs->have_row = 1;
+            } else if (w->state[k] == 2) {
+                xs->nulled = 1;
+            }
+        }
+    }
+    x->winv = w->res;
+    return 1;
+}
+
 static int source_next(SqlCursor *c) {
+    if (c->windowed) {
+        return next_win_row(c);
+    }
     return c->grouped ? next_group(c) : join_next(&c->j, &c->x);
 }
 
@@ -2281,6 +2867,7 @@ static void cursor_free(SqlCursor *c) {
     }
     free(c->seen_keys);
     free(c->seen.slot);
+    windows_free(c);
     c->x.aggv = NULL;
     groups_free(&c->x, &c->groups);
     for (size_t k = 0; k < c->nlines; k++) {
@@ -2352,9 +2939,9 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
         c->produced++;
         return 1;
     }
-    if (c->grouped) {
+    if (c->grouped || c->windowed) {
         for (;;) {
-            int r = next_group(c);
+            int r = source_next(c);
             if (r <= 0) {
                 c->ended = 1;
                 return r;
@@ -5265,7 +5852,7 @@ static int select_begin(SqlCursor *c) {
     }
     (void)s;
     c->agg_first = 1;
-    c->phase = c->plan.grouped ? PH_FOLD : PH_DECIDE;
+    c->phase = c->plan.grouped ? PH_FOLD : c->plan.nwins ? PH_WCOLLECT : PH_DECIDE;
     if (c->plan.grouped) {
         c->grouped = 1;
     }
@@ -5300,17 +5887,35 @@ static int advance(SqlCursor *c, uint64_t budget) {
             if (agg_finish(c) != GSQL_OK) {
                 return -1;
             }
-            c->phase = PH_DECIDE;
+            c->phase = c->plan.nwins ? PH_WCOLLECT : PH_DECIDE;
             break;
         }
+        case PH_WCOLLECT: {
+            int r = win_collect_step(c, budget);
+            if (r < 0) {
+                return -1;
+            }
+            if (r > 0) {
+                return PH_WORKING;
+            }
+            c->phase = PH_WCOMPUTE;
+            break;
+        }
+        case PH_WCOMPUTE:
+            if (win_compute(c) != GSQL_OK) {
+                return -1;
+            }
+            c->windowed = 1;
+            c->phase = PH_DECIDE;
+            break;
         case PH_DECIDE:
             c->phase = PH_READY;
-            if (c->plan.scans[0].access != ACC_NONE || c->grouped) {
+            if (c->plan.scans[0].access != ACC_NONE || c->grouped || c->windowed) {
                 /* the access was to yield the order, and a bound that did not
                  * fit turned it into a scan: then it must be sorted after all.
                  * Groups come in key order, so a grouped query is always
                  * sorted. */
-                int need_sort = s->norder && (c->grouped || c->plan.nscans > 1 || !c->plan.scans[0].ordered ||
+                int need_sort = s->norder && (c->grouped || c->windowed || c->plan.nscans > 1 || !c->plan.scans[0].ordered ||
                                               (c->join_started && c->j.its[0].fell_back));
                 if (need_sort) {
                     c->sorted = 1;

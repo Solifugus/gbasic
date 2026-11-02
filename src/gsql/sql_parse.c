@@ -602,6 +602,7 @@ static SqlExpr *lit_string(P *p) {
 
 static int parse_type(P *p, SqlType *t);
 static SqlExpr *expr(P *p);
+static SqlExpr *concat(P *p);
 
 static void note_param(P *p, SqlExpr *e) {
     SqlStmt *s = p->stmt;
@@ -734,6 +735,165 @@ static SqlStmt *subquery(P *p) {
         return NULL;
     }
     return t;
+}
+
+/* A frame bound (docs/gsql_window_design.md §1): `bound` gets its SQL_BOUND_*, `n` the
+ * count of n PRECEDING and n FOLLOWING. */
+static int frame_bound(P *p, int *bound, SqlExpr **n) {
+    if (at_word(p, "unbounded")) {
+        next(p);
+        if (at_word(p, "preceding")) {
+            *bound = SQL_BOUND_UNBOUNDED_PRECEDING;
+        } else if (at_word(p, "following")) {
+            *bound = SQL_BOUND_UNBOUNDED_FOLLOWING;
+        } else {
+            return expected(p, "PRECEDING or FOLLOWING after UNBOUNDED");
+        }
+        next(p);
+        return 1;
+    }
+    if (at_word(p, "current")) {
+        next(p);
+        if (!at_word(p, "row")) {
+            return expected(p, "ROW after CURRENT");
+        }
+        next(p);
+        *bound = SQL_BOUND_CURRENT;
+        return 1;
+    }
+    if (!(*n = concat(p))) {
+        return 0;
+    }
+    if (at_word(p, "preceding")) {
+        *bound = SQL_BOUND_PRECEDING;
+    } else if (at_word(p, "following")) {
+        *bound = SQL_BOUND_FOLLOWING;
+    } else {
+        return expected(p, "PRECEDING or FOLLOWING");
+    }
+    next(p);
+    return 1;
+}
+
+/* A window: the current token `(` after OVER (docs/gsql_window_design.md §1). */
+static SqlWindow *over_clause(P *p) {
+    SqlWindow *w = sql_alloc(p->arena, sizeof *w);
+    w->pos = p->tok.pos;
+    next(p);
+    if (at_word(p, "partition")) {
+        next(p);
+        if (!expect_kw(p, "by")) {
+            return NULL;
+        }
+        SqlExpr *v[256];
+        size_t n = 0;
+        do {
+            if (n == 256) {
+                fail_at(p, p->tok.pos, GSQL_SYNTAX, "PARTITION BY may have at most 256 terms");
+                return NULL;
+            }
+            if (!(v[n++] = expr(p))) {
+                return NULL;
+            }
+        } while (accept_sym(p, ","));
+        w->part = sql_alloc(p->arena, sizeof(SqlExpr *) * n);
+        memcpy(w->part, v, sizeof(SqlExpr *) * n);
+        w->npart = n;
+    }
+    if (accept_kw(p, "order")) {
+        if (!expect_kw(p, "by")) {
+            return NULL;
+        }
+        SqlOrder ord[256];
+        size_t no = 0;
+        do {
+            if (no == 256) {
+                fail_at(p, p->tok.pos, GSQL_SYNTAX, "a window's ORDER BY may have at most 256 terms");
+                return NULL;
+            }
+            ord[no].pos = p->tok.pos;
+            if (!(ord[no].e = expr(p))) {
+                return NULL;
+            }
+            ord[no].desc = 0;
+            if (accept_kw(p, "desc")) {
+                ord[no].desc = 1;
+            } else {
+                accept_kw(p, "asc");
+            }
+            if (at_word(p, "nulls")) {
+                fail_at(p, p->tok.pos, GSQL_UNSUPPORTED,
+                        "NULLS FIRST and NULLS LAST are not in this release: NULL sorts last ascending "
+                        "and first descending, as an index stores it");
+                return NULL;
+            }
+            no++;
+        } while (accept_sym(p, ","));
+        w->order = sql_alloc(p->arena, sizeof(SqlOrder) * no);
+        memcpy(w->order, ord, sizeof(SqlOrder) * no);
+        w->norder = no;
+    }
+    if (at_word(p, "rows") || at_word(p, "range")) {
+        w->frame = at_word(p, "rows") ? SQL_FRAME_ROWS : SQL_FRAME_RANGE;
+        w->frame_pos = p->tok.pos;
+        next(p);
+        if (accept_kw(p, "between")) {
+            if (!frame_bound(p, &w->start, &w->start_n) || !expect_kw(p, "and") ||
+                !frame_bound(p, &w->end, &w->end_n)) {
+                return NULL;
+            }
+        } else {
+            if (!frame_bound(p, &w->start, &w->start_n)) {
+                return NULL;
+            }
+            w->end = SQL_BOUND_CURRENT;
+        }
+        if (at_word(p, "exclude")) {
+            fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "EXCLUDE in a window frame is not in this release of G-SQL");
+            return NULL;
+        }
+    } else if (at_word(p, "groups")) {
+        fail_at(p, p->tok.pos, GSQL_UNSUPPORTED,
+                "GROUPS frames are not in this release of G-SQL: ROWS counts rows, and RANGE peer groups "
+                "from UNBOUNDED or CURRENT ROW");
+        return NULL;
+    }
+    if (!at_sym(p, ")")) {
+        if (p->tok.kind == T_IDENT && !w->npart && !w->norder && !w->frame && !is_reserved(p->tok.text)) {
+            fail_at(p, p->tok.pos, GSQL_UNSUPPORTED,
+                    "named windows are not in this release of G-SQL: write the window in each OVER");
+            return NULL;
+        }
+        expected(p, "PARTITION BY, ORDER BY, ROWS, RANGE or `)` in the window");
+        return NULL;
+    }
+    next(p);
+    return w;
+}
+
+/* After a call's `)`: OVER (...) makes it a window function. `over` is not
+ * reserved, so it is one only when `(` follows; `over` before a name is a
+ * named window, refused. Answers 0 failed. */
+static int over_follows(P *p, SqlExpr *e) {
+    if (!at_word(p, "over")) {
+        return 1;
+    }
+    size_t si = p->i;
+    uint32_t sc = p->chars;
+    Tok save = p->tok;
+    next(p);
+    if (at_sym(p, "(")) {
+        return (e->over = over_clause(p)) != NULL;
+    }
+    if ((p->tok.kind == T_IDENT && !is_reserved(p->tok.text)) || p->tok.kind == T_QIDENT) {
+        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED,
+                       "named windows are not in this release of G-SQL: write the window in each OVER");
+    }
+    /* `over` was an alias */
+    p->i = si;
+    p->chars = sc;
+    p->tok = save;
+    return 1;
 }
 
 static SqlExpr *subquery_node(P *p, int form, uint32_t pos) {
@@ -901,7 +1061,7 @@ static SqlExpr *primary(P *p) {
                 }
                 next(p);
                 e->star = 1;
-                if (!expect_sym(p, ")")) {
+                if (!expect_sym(p, ")") || !over_follows(p, e)) {
                     return NULL;
                 }
                 return e;
@@ -918,6 +1078,9 @@ static SqlExpr *primary(P *p) {
                 return NULL;
             }
             take(e, &l);
+            if (!over_follows(p, e)) {
+                return NULL;
+            }
             return e;
         }
         SqlExpr *e = node(p, SX_NAME, pos);
@@ -1526,8 +1689,10 @@ static int coldef(P *p, SqlColDef *c) {
 
 /* a table alias, unmarked by AS: any name but the words a join begins with */
 static int alias_follows(P *p) {
+    /* and `window`, so WINDOW w AS (...) after a table is refused as a named
+       window rather than read as the table's alias */
     static const char *const join_words[] = { "inner", "left", "right", "cross", "full", "outer", "natural", "using",
-                                              NULL };
+                                              "window", NULL };
     if (p->tok.kind == T_QIDENT) {
         return 1;
     }
@@ -1845,6 +2010,10 @@ static int select_stmt(P *p, SqlStmt *s) {
         if (!(s->having = expr(p))) {
             return 0;
         }
+    }
+    if (at_word(p, "window")) {
+        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED,
+                       "named windows are not in this release of G-SQL: write the window in each OVER");
     }
     if (!phase2(p)) {
         return 0;
@@ -2861,6 +3030,45 @@ void sql_print_expr_scans(GsqlBuf *o, const SqlExpr *e, const SqlScan *scans, si
     print_expr_tb(o, e, &pc);
 }
 
+
+/* OVER (...), as written but canonical (docs/gsql_window_design.md) */
+static void print_bound(GsqlBuf *o, int bound, const SqlExpr *n, const PrintCtx *pc) {
+    switch (bound) {
+    case SQL_BOUND_UNBOUNDED_PRECEDING: puts_(o, "UNBOUNDED PRECEDING"); return;
+    case SQL_BOUND_UNBOUNDED_FOLLOWING: puts_(o, "UNBOUNDED FOLLOWING"); return;
+    case SQL_BOUND_CURRENT: puts_(o, "CURRENT ROW"); return;
+    default:
+        print_expr_tb(o, n, pc);
+        puts_(o, bound == SQL_BOUND_PRECEDING ? " PRECEDING" : " FOLLOWING");
+    }
+}
+
+static void print_window(GsqlBuf *o, const SqlWindow *w, const PrintCtx *pc) {
+    puts_(o, " OVER (");
+    int sp = 0;
+    for (size_t k = 0; k < w->npart; k++) {
+        puts_(o, k ? ", " : "PARTITION BY ");
+        print_expr_tb(o, w->part[k], pc);
+        sp = 1;
+    }
+    for (size_t k = 0; k < w->norder; k++) {
+        puts_(o, k ? ", " : sp ? " ORDER BY " : "ORDER BY ");
+        print_expr_tb(o, w->order[k].e, pc);
+        if (w->order[k].desc) {
+            puts_(o, " DESC");
+        }
+        sp = 1;
+    }
+    if (w->frame) {
+        puts_(o, sp ? " " : "");
+        puts_(o, w->frame == SQL_FRAME_ROWS ? "ROWS BETWEEN " : "RANGE BETWEEN ");
+        print_bound(o, w->start, w->start_n, pc);
+        puts_(o, " AND ");
+        print_bound(o, w->end, w->end_n, pc);
+    }
+    v3_put(o, ")", 1);
+}
+
 static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc) {
     char b[64];
     if (!e) {
@@ -2983,6 +3191,7 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc) {
     }
     case SX_CALL:
     case SX_AGG:
+    case SX_WIN:
         puts_(o, e->name);
         v3_put(o, "(", 1);
         if (e->star) {
@@ -2998,6 +3207,9 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc) {
             print_expr_tb(o, e->a[k], pc);
         }
         v3_put(o, ")", 1);
+        if (e->over) {
+            print_window(o, e->over, pc);
+        }
         return;
     case SX_SUBQ:
         if (e->op == SQL_SUB_IN) {

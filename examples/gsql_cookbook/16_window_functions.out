@@ -1,0 +1,21 @@
+Running balances:
+  card  2026-10-02  -45.50  balance -45.50
+  card  2026-10-05  -12.25  balance -57.75
+  card  2026-10-09  57.75  balance 0.00
+  cash  2026-10-01  500.00  balance 500.00
+  cash  2026-10-03  -120.00  balance 380.00
+  cash  2026-10-03  -30.00  balance 350.00
+  cash  2026-10-07  200.00  balance 550.00
+  savings  2026-10-04  1000.00  balance 1000.00
+Latest per account:
+  card  2026-10-09  57.75
+  cash  2026-10-07  200.00
+  savings  2026-10-04  1000.00
+Card, change since the row before:
+  2026-10-02  -45.50  change unknown
+  2026-10-05  -12.25  change 33.25
+  2026-10-09  57.75  change 70.00
+Accounts by total:
+  1. savings  1000.00
+  2. cash  550.00
+  3. card  0.00

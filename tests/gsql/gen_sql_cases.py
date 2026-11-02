@@ -969,6 +969,101 @@ stmt("BACKUP TO 'relative/copy'", ("EXPRESSION", "'relative/copy'", "the directo
 stmt("BACKUP TO 5", ("EXPRESSION", "5", "BACKUP TO takes the copy's directory as text"))
 stmt("BACKUP TO name", ("SYNTAX", "name", "BACKUP TO cannot read a column"))
 
+sec("window functions (docs/gsql_window_design.md)")
+# acct a's rows sorted by d are 1, 2, 3, 6, with 2 and 3 peers (d = 2), read in id order
+stmt("CREATE TABLE wn (id INTEGER PRIMARY KEY, acct TEXT, d INTEGER, amt INTEGER, m MONEY(USD))", "= done 0")
+stmt("INSERT INTO wn VALUES (1, 'a', 1, 10, 1.00), (2, 'a', 2, 20, 2.50), (3, 'a', 2, 5, 0.25), (4, 'b', 1, 7, NULL), "
+     "(5, 'b', 3, NULL, 3.00), (6, 'a', 4, 1, 1.00), (7, NULL, 5, 3, 0.50)", "= done 7")
+stmt("SELECT id, row_number() OVER (PARTITION BY acct ORDER BY d), rank() OVER (PARTITION BY acct ORDER BY d), "
+     "dense_rank() OVER (PARTITION BY acct ORDER BY d) FROM wn ORDER BY id",
+     "= 1, 1, 1, 1 | 2, 2, 2, 2 | 3, 3, 2, 2 | 4, 1, 1, 1 | 5, 2, 2, 2 | 6, 4, 4, 3 | 7, 1, 1, 1")
+# the default frame ends at the current row's last peer, so peers share a running total; NULLs are skipped
+stmt("SELECT id, sum(amt) OVER (PARTITION BY acct ORDER BY d), count(amt) OVER (PARTITION BY acct ORDER BY d) "
+     "FROM wn ORDER BY id", "= 1, 10, 1 | 2, 35, 3 | 3, 35, 3 | 4, 7, 1 | 5, 7, 1 | 6, 36, 4 | 7, 3, 1")
+# ROWS counts rows, so peers do not share
+stmt("SELECT id, sum(amt) OVER (PARTITION BY acct ORDER BY d ROWS UNBOUNDED PRECEDING) FROM wn WHERE acct = 'a' "
+     "ORDER BY id", "= 1, 10 | 2, 30 | 3, 35 | 6, 36")
+stmt("SELECT id, sum(amt) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM wn ORDER BY id",
+     "= 1, 30 | 2, 35 | 3, 32 | 4, 12 | 5, 8 | 6, 4 | 7, 4")
+# a frame that ends at the partition's end is folded from the end
+stmt("SELECT id, sum(amt) OVER (ORDER BY id ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM wn ORDER BY id",
+     "= 1, 46 | 2, 36 | 3, 16 | 4, 11 | 5, 4 | 6, 4 | 7, 3")
+stmt("SELECT id, sum(amt) OVER (PARTITION BY acct ORDER BY d RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) "
+     "FROM wn ORDER BY id", "= 1, 36 | 2, 26 | 3, 26 | 4, 7 | 5, NULL | 6, 1 | 7, 3")
+# a frame wholly before the row: empty for the first, where sum is NULL and count 0
+stmt("SELECT id, sum(amt) OVER (ORDER BY id ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING), "
+     "count(*) OVER (ORDER BY id ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) FROM wn ORDER BY id",
+     "= 1, NULL, 0 | 2, 10, 1 | 3, 30, 2 | 4, 25, 2 | 5, 12, 2 | 6, 7, 2 | 7, 1, 2")
+stmt("SELECT id, sum(amt) OVER (ORDER BY id ROWS BETWEEN :n PRECEDING AND CURRENT ROW) FROM wn ORDER BY id",
+     "= 1, 10 | 2, 30 | 3, 25 | 4, 12 | 5, 7 | 6, 1 | 7, 4", params=("n = 1",))
+# with no ORDER BY the frame is the whole partition; money stays money; NULL is a partition of its own
+stmt("SELECT id, count(*) OVER (PARTITION BY acct), sum(m) OVER (PARTITION BY acct), max(d) OVER () FROM wn ORDER BY id",
+     "= 1, 4, money 4.75, 5 | 2, 4, money 4.75, 5 | 3, 4, money 4.75, 5 | 4, 2, money 3.00, 5 | "
+     "5, 2, money 3.00, 5 | 6, 4, money 4.75, 5 | 7, 1, money 0.50, 5")
+stmt("SELECT id, lag(amt) OVER (ORDER BY id), lead(amt, 2) OVER (ORDER BY id), lag(id, 0) OVER (ORDER BY id), "
+     "lead(id, 1, -1) OVER (ORDER BY id) FROM wn ORDER BY id",
+     "= 1, NULL, 5, 1, 2 | 2, 10, 7, 2, 3 | 3, 20, NULL, 3, 4 | 4, 5, 1, 4, 5 | 5, 7, 3, 5, 6 | "
+     "6, NULL, NULL, 6, 7 | 7, 1, NULL, 7, -1")
+# last_value over the default frame is the current row's last peer, not the partition's last row
+stmt("SELECT id, first_value(id) OVER (PARTITION BY acct ORDER BY d), last_value(id) OVER (PARTITION BY acct ORDER BY d), "
+     "last_value(id) OVER (PARTITION BY acct ORDER BY d ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING), "
+     "nth_value(id, 2) OVER (PARTITION BY acct ORDER BY d) FROM wn ORDER BY id",
+     "= 1, 1, 1, 6, NULL | 2, 1, 3, 6, 2 | 3, 1, 3, 6, 2 | 4, 4, 4, 5, NULL | 5, 4, 5, 5, 5 | 6, 1, 6, 6, 2 | "
+     "7, 7, 7, 7, NULL")
+# rows 1..5 by d are 1, 4 | 2, 3 | 5: ranks 1, 1, 3, 3, 5 of 5
+stmt("SELECT id, ntile(2) OVER (ORDER BY d), percent_rank() OVER (ORDER BY d), cume_dist() OVER (ORDER BY d) "
+     "FROM wn WHERE id <= 5 ORDER BY id",
+     "= 1, 1, 0.0, 0.4 | 2, 1, 0.5, 0.8 | 3, 2, 0.5, 0.8 | 4, 1, 0.0, 0.4 | 5, 2, 1.0, 1.0")
+stmt("SELECT id, ntile(3) OVER (ORDER BY id) FROM wn ORDER BY id", "= 1, 1 | 2, 1 | 3, 1 | 4, 2 | 5, 2 | 6, 3 | 7, 3")
+# a grouped query's windows see its groups
+stmt("SELECT acct, sum(amt), sum(sum(amt)) OVER (ORDER BY acct), rank() OVER (ORDER BY count(*) DESC) FROM wn "
+     "GROUP BY acct ORDER BY acct", "= 'a', 36, 36, 1 | 'b', 7, 43, 2 | NULL, 3, 46, 3")
+# the latest row per key, filtered outside the window
+stmt("SELECT id, acct FROM (SELECT id, acct, row_number() OVER (PARTITION BY acct ORDER BY d DESC) AS rn FROM wn) AS t "
+     "WHERE rn = 1 ORDER BY id", "= 5, 'b' | 6, 'a' | 7, NULL")
+# with no ORDER BY of its own the query answers in the order it reads
+stmt("SELECT id, row_number() OVER (ORDER BY id DESC) FROM wn WHERE id < 4", "= 1, 3 | 2, 2 | 3, 1")
+# the statement's ORDER BY does not reorder a window's partition (measured: reading backward to save
+# a sort made last_value answer each partition's first row)
+stmt("SELECT id, last_value(id) OVER (PARTITION BY acct) FROM wn ORDER BY id DESC",
+     "= 7, 7 | 6, 6 | 5, 5 | 4, 5 | 3, 6 | 2, 6 | 1, 6")
+stmt("SELECT id FROM wn WHERE acct = 'a' ORDER BY row_number() OVER (ORDER BY amt DESC)", "= 2 | 1 | 3 | 6")
+stmt("SELECT DISTINCT acct, count(*) OVER (PARTITION BY acct) FROM wn ORDER BY 1", "= 'a', 4 | 'b', 2 | NULL, 1")
+stmt("SELECT row_number() OVER (), count(*) OVER ()", "= 1, 1")
+stmt("SELECT row_number() OVER () FROM wn WHERE id > 99", "= (none)")
+stmt("SELECT id, row_number() OVER (ORDER BY id) AS rn FROM wn ORDER BY rn DESC LIMIT 2 OFFSET 1", "= 6, 6 | 5, 5")
+# a view's text is the canonical print, so a window survives it
+stmt("CREATE VIEW wv AS SELECT id, rank() OVER (ORDER BY d) AS r FROM wn", "= done 0")
+stmt("SELECT * FROM wv ORDER BY id", "= 1, 1 | 2, 3 | 3, 3 | 4, 1 | 5, 5 | 6, 6 | 7, 7")
+stmt("SELECT row_number() OVER (), rank() OVER (ORDER BY d) FROM wn", "% row_number:integer, rank:integer")
+stmt("SELECT id FROM wn WHERE row_number() OVER () = 1",
+     ("SYNTAX", "row_number", "WHERE cannot use a window function: windows are computed after WHERE"))
+stmt("SELECT acct FROM wn GROUP BY acct HAVING rank() OVER (ORDER BY acct) = 1",
+     ("SYNTAX", "rank", "HAVING cannot use a window function"))
+stmt("SELECT sum(row_number() OVER ()) FROM wn", ("SYNTAX", "row_number", "an aggregate cannot use a window function"))
+stmt("SELECT sum(row_number() OVER ()) OVER () FROM wn",
+     ("SYNTAX", "row_number", "a window function cannot use a window function"))
+stmt("SELECT rank() OVER (ORDER BY d ROWS UNBOUNDED PRECEDING) FROM wn",
+     ("SYNTAX", "ROWS", "rank does not read a frame: a frame reaches only the aggregates and first_value"))
+stmt("SELECT sum(amt) OVER (ORDER BY d RANGE 1 PRECEDING) FROM wn",
+     ("UNSUPPORTED", "1", "RANGE takes only UNBOUNDED and CURRENT ROW bounds"))
+stmt("SELECT sum(amt) OVER (ORDER BY d ROWS BETWEEN CURRENT ROW AND 1 PRECEDING) FROM wn",
+     ("SYNTAX", "ROWS", "a frame cannot start after it ends"))
+stmt("SELECT sum(amt) OVER (ORDER BY d ROWS BETWEEN UNBOUNDED FOLLOWING AND UNBOUNDED FOLLOWING) FROM wn",
+     ("SYNTAX", "ROWS", "a frame cannot start at UNBOUNDED FOLLOWING"))
+stmt("SELECT id, rank() OVER (ORDER BY 2) FROM wn", ("SYNTAX", "2", "a number here sorts by that constant"))
+stmt("SELECT lower(acct) OVER () FROM wn", ("NOT_FOUND", "lower", "`lower` is not a window function"))
+stmt("SELECT count(DISTINCT acct) OVER () FROM wn", ("UNSUPPORTED", "count", "DISTINCT in a window aggregate"))
+stmt("SELECT ntile() OVER () FROM wn", ("SYNTAX", "ntile", "ntile takes 1 argument, and was given 0"))
+stmt("SELECT acct, sum(amt) OVER (ORDER BY acct) FROM wn GROUP BY acct",
+     ("SYNTAX", "amt", "the select list reads column `amt`, which is neither grouped by"))
+stmt("SELECT lag(amt, -1) OVER (ORDER BY id) FROM wn", ("EXPRESSION", "-", "lag needs a whole number that is not negative"))
+stmt("SELECT ntile(0) OVER (ORDER BY id) FROM wn", ("EXPRESSION", "0", "ntile needs a whole number of one or more"))
+stmt("SELECT sum(amt) OVER (ORDER BY id ROWS BETWEEN NULL PRECEDING AND CURRENT ROW) FROM wn",
+     ("EXPRESSION", "NULL", "and this one is NULL"))
+stmt("SELECT rank() OVER (ORDER BY CASE WHEN id < 3 THEN id ELSE 'x' END) FROM wn",
+     ("EXPRESSION", "CASE", "< compares text with a number"))
+
 sec("EXPLAIN says which path, and lists only what it did not consume")
 stmt("CREATE TABLE o (id INTEGER PRIMARY KEY, cust TEXT, total NUMBER, placed DATE)", "= done 0")
 stmt("CREATE INDEX o_cust ON o (cust, placed DESC)", "= done 0")
@@ -996,5 +1091,9 @@ stmt("EXPLAIN UPDATE o SET total = 0 WHERE cust = :c",
 stmt("EXPLAIN DELETE FROM o WHERE total < 0",
      "= 'Delete on o' | '  Scan on o' | '    Filter: (total < 0)'")
 stmt("EXPLAIN SELECT 1", "= 'Result'")
+stmt("EXPLAIN SELECT id, rank() OVER (ORDER BY total), sum(total) OVER (PARTITION BY cust), count(*) OVER (ORDER BY total) "
+     "FROM o ORDER BY id",
+     "= 'Scan on o' | '  Window: rank() OVER (ORDER BY total), sum(total) OVER (PARTITION BY cust), "
+     "count(*) OVER (ORDER BY total) (2 orderings, sorted)' | '  Order: id (sorted)'")
 
 open(sys.argv[1], "w").write("\n".join(out) + "\n")

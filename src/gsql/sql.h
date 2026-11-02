@@ -48,6 +48,8 @@ typedef enum {
     /* subqueries (docs/gsql_subquery_design.md) */
     SX_SUBQ,      /* `sub`, as `op`: SQL_SUB_*; IN's left side is a[0], NOT IN is neg */
     SX_OUTER,     /* bound: column `col` of scan `tab` of the query `index` levels out */
+    /* window functions (docs/gsql_window_design.md) */
+    SX_WIN,       /* made from SX_CALL with `over`: `op` an SQL_AGG_* or SQL_WIN_*, `index` its slot */
 } SqlExprKind;
 
 typedef enum { SQL_SUB_SCALAR = 1, SQL_SUB_IN, SQL_SUB_EXISTS } SqlSub;
@@ -63,6 +65,21 @@ typedef enum {
     SQL_OP_ADD, SQL_OP_SUB, SQL_OP_MUL, SQL_OP_DIV, SQL_OP_MOD
 } SqlOp;
 
+/* the window functions that are not aggregates; numbered apart from SqlAgg */
+typedef enum {
+    SQL_WIN_ROW_NUMBER = 100, SQL_WIN_RANK, SQL_WIN_DENSE_RANK, SQL_WIN_PERCENT_RANK, SQL_WIN_CUME_DIST,
+    SQL_WIN_NTILE, SQL_WIN_LAG, SQL_WIN_LEAD, SQL_WIN_FIRST_VALUE, SQL_WIN_LAST_VALUE, SQL_WIN_NTH_VALUE
+} SqlWinFn;
+
+/* a window frame's bound */
+typedef enum {
+    SQL_BOUND_UNBOUNDED_PRECEDING = 1, SQL_BOUND_PRECEDING, SQL_BOUND_CURRENT, SQL_BOUND_FOLLOWING,
+    SQL_BOUND_UNBOUNDED_FOLLOWING
+} SqlBound;
+
+/* a frame's unit: none written (RANGE UNBOUNDED PRECEDING .. CURRENT ROW), ROWS or RANGE */
+typedef enum { SQL_FRAME_DEFAULT = 0, SQL_FRAME_ROWS, SQL_FRAME_RANGE } SqlFrame;
+
 const char *sql_op_text(int op);     /* "=", "<>", "AND", "||" ... as SQL spells it */
 
 /* A column type as written: the table layer's kind plus a currency. */
@@ -72,6 +89,7 @@ typedef struct {
 } SqlType;
 
 typedef struct SqlExpr SqlExpr;
+typedef struct SqlWindow SqlWindow;
 struct SqlExpr {
     SqlExprKind kind;
     uint32_t pos;            /* 1-based character offset into the text */
@@ -120,6 +138,8 @@ struct SqlExpr {
     /* the executor's: a constant's or a parameter's host value, loaded once
      * per execution and released with it */
     void *hv;
+    /* SX_CALL/SX_WIN: the OVER clause */
+    SqlWindow *over;
 };
 
 /* ---- statements ------------------------------------------------------ */
@@ -158,6 +178,20 @@ typedef struct {
     int desc;
     uint32_t pos;
 } SqlOrder;
+
+/* OVER ( [PARTITION BY ...] [ORDER BY ...] [frame] ) (docs/gsql_window_design.md) */
+struct SqlWindow {
+    uint32_t pos;
+    SqlExpr **part;
+    size_t npart;
+    SqlOrder *order;
+    size_t norder;
+    int frame;               /* SQL_FRAME_* */
+    uint32_t frame_pos;
+    int start, end;          /* SQL_BOUND_*; a start alone ends at CURRENT ROW */
+    SqlExpr *start_n, *end_n;/* n of n PRECEDING / n FOLLOWING */
+    unsigned ordering;       /* the planner's: the ordering it shares with windows like it */
+};
 
 /* A table joined after the first (docs/gsql_join_design.md) */
 typedef enum { SQL_JOIN_FIRST = 0, SQL_JOIN_INNER, SQL_JOIN_LEFT, SQL_JOIN_CROSS } SqlJoin;
@@ -423,6 +457,11 @@ typedef struct SqlPlan {
     int grouped;
     SqlExpr **aggs;
     size_t naggs;
+    /* window functions (docs/gsql_window_design.md): the SX_WIN nodes by
+       slot, and how many distinct orderings they share */
+    SqlExpr **wins;
+    size_t nwins;
+    size_t norderings;
     /* UPDATE: column positions, and INSERT's: the column each value goes to */
     unsigned *targets;
     size_t ntargets;
