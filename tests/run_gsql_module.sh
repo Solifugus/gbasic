@@ -106,6 +106,32 @@ if [ -s "$work/maxrec.err" ]; then
     fail "max_recursion: the fixture wrote to stderr"
 fi
 
+printf 'TIER sweep: an owner starting removes a crashed process sorts and spools, and only those\n'
+# a process gone (a child that exited) and one alive (this shell) each with a
+# directory named for it, in a TMPDIR of their own; an owner the program
+# starts must remove the first and keep the second (gs_xsort_sweep)
+mkdir -p "$work/sweep/tmp"
+sh -c 'exit 0' &
+gone=$!
+wait "$gone"
+mkdir -p "$work/sweep/tmp/gsql-sort-$gone-abcdef" "$work/sweep/tmp/gsql-spool-$gone-abcdef" \
+    "$work/sweep/tmp/gsql-sort-$$-abcdef"
+printf 'x' >"$work/sweep/tmp/gsql-sort-$gone-abcdef/run-0"
+cat >"$work/sweep/s.bas" <<'GB'
+load gsql
+database d( file: "s.gsql", create: true, linger: 0 )
+print d.query("select 1 as one")[0].one
+d.close()
+GB
+sout=$(cd "$work/sweep" && TMPDIR="$work/sweep/tmp" timeout -k 5 60 "$OLDPWD/gbasic" s.bas 2>&1)
+if [ "$sout" = 1 ] && [ ! -e "$work/sweep/tmp/gsql-sort-$gone-abcdef" ] && \
+   [ ! -e "$work/sweep/tmp/gsql-spool-$gone-abcdef" ] && [ -d "$work/sweep/tmp/gsql-sort-$$-abcdef" ]; then
+    pass "sweep: the gone process's sort and spool were removed at the owner's start, a live one's kept"
+else
+    printf '       %s\n' "$sout" "$(ls "$work/sweep/tmp")"
+    fail "sweep: the owner's start did not remove exactly the gone process's directories"
+fi
+
 printf 'TIER backup: gsql.backup, a copy made while the database is in use, and refreshed\n'
 mkdir -p "$work/backup"
 (cd "$work/backup" && GBASIC_BIN="$OLDPWD/gbasic" GBASIC_PATH="$OLDPWD/stdlib" timeout -k 5 300 \

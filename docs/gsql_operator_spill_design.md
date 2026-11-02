@@ -156,3 +156,9 @@ Not flat, by design: the unpartitioned `row_number` is one partition of every ro
 
 **Tested** by the spilled tier, the corpus with every window spilled (194 operators spill in all), and the window differential spilled, every answer against SQLite (300 queries a seed, five seeds by hand, one in the suite); clean under valgrind spilled. Two perturbations (peers never breaking, `DESC` not inverted on disk) went red; a third, inverting the arrival numbers in the key, crashed instead, since the number is read back from the key, so it says nothing about tie order, which the hand-written cases with ties, run spilled, hold.
 
+## 12. Built: a crash's leftovers swept (2026-11-02)
+
+The sorter's and the spool's directories are removed by the process that made them, whatever its statement did; a process that **crashes** cannot, and nothing else did. Measured twice the same day, when perturbed builds made to fail crashed and left their directories in `/var/tmp`. Now each directory is named for the process that made it (`gsql-sort-<pid>-XXXXXX`, `gsql-spool-<pid>-XXXXXX`), and an **owner starting** removes those whose process no longer exists: their files (runs and rows, the only kind the two make) and then the directory. One whose process still runs, another owner's on the same machine or a program's own index build, is left alone, as is a link, a directory not ours, and any name the two do not make. A process ID reused since is kept, which errs on the side of leaving files.
+
+**Tested** in `run_gsql_table.sh`'s sort tier (a child that has exited and this process, each with directories named for it: the first removed with its files, the second kept, a near-miss name kept) and in `run_gsql_module.sh` (an owner a program starts, with its own `TMPDIR`, removes the exited process's directories and keeps a live one's). The owner without the call turns the second red.
+

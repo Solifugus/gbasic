@@ -2443,8 +2443,9 @@ starting connection said otherwise) it stops cleanly by itself
 storage**: on a disk shared between machines whose file locks do not reach
 across them, a second machine is refused with `ELSEWHERE`, naming the machine
 that has it, and after a crash there another machine waits about 14 seconds
-before taking it (`docs/gsql_lease_design.md`). Its SQL is described in
-`docs/gsql_sql_design.md` and this module in `docs/gsql_module_design.md`.
+before taking it (`docs/gsql_lease_design.md`). What SQL it understands, and the
+rules a program meets, are in `docs/gsql_overview.md`, which is kept current; the
+designs behind them are `docs/gsql_sql_design.md` and the pages it leads to.
 **To start, read `docs/gsql_cookbook.md`**: worked recipes from a first table
 to the practices a production program needs, every one run by the gate.
 

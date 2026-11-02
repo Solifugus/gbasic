@@ -43,4 +43,10 @@ int gs_spool_get(GsSpool *s, uint64_t offset, unsigned char **buf, size_t *cap, 
 uint64_t gs_spool_size(const GsSpool *s);
 void gs_spool_close(GsSpool *s);
 
+/* The sort and spool directories under `tmpdir` (NULL: $TMPDIR, else
+ * /var/tmp) left by a process that is gone, a crash's leftovers, removed: each
+ * directory is named for the process that made it, so one whose process still
+ * runs, another owner's or program's, is left alone. Answers how many. */
+unsigned gs_xsort_sweep(const char *tmpdir);
+
 #endif

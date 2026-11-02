@@ -10,7 +10,9 @@
 #define _POSIX_C_SOURCE 200809L
 #include "xsort.h"
 
+#include <dirent.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,7 +74,9 @@ int gs_xsort_open(const char *tmpdir, size_t budget, GsXsort **out) {
         return ENOMEM;
     }
     s->budget = budget ? budget : DEFAULT_BUDGET;
-    if (snprintf(s->dir, sizeof s->dir, "%s/gsql-sort-XXXXXX", tmpdir ? tmpdir : temp_base()) >= (int)sizeof s->dir) {
+    /* named for this process, so a sweep can tell a crashed one's (gs_xsort_sweep) */
+    if (snprintf(s->dir, sizeof s->dir, "%s/gsql-sort-%ld-XXXXXX", tmpdir ? tmpdir : temp_base(), (long)getpid()) >=
+        (int)sizeof s->dir) {
         free(s);
         return ENAMETOOLONG;
     }
@@ -483,7 +487,8 @@ int gs_spool_open(const char *tmpdir, GsSpool **out) {
     if (!s) {
         return ENOMEM;
     }
-    if (snprintf(s->dir, sizeof s->dir, "%s/gsql-spool-XXXXXX", tmpdir ? tmpdir : temp_base()) >= (int)sizeof s->dir) {
+    if (snprintf(s->dir, sizeof s->dir, "%s/gsql-spool-%ld-XXXXXX", tmpdir ? tmpdir : temp_base(), (long)getpid()) >=
+        (int)sizeof s->dir) {
         free(s);
         return ENAMETOOLONG;
     }
@@ -557,3 +562,73 @@ void gs_spool_close(GsSpool *s) {
     rmdir(s->dir);
     free(s);
 }
+
+/* ---- leftovers of a crash ------------------------------------------------- */
+
+/* the process a sort or spool directory's name says made it, or 0 */
+static long dir_pid(const char *name) {
+    const char *p = NULL;
+    if (strncmp(name, "gsql-sort-", 10) == 0) {
+        p = name + 10;
+    } else if (strncmp(name, "gsql-spool-", 11) == 0) {
+        p = name + 11;
+    }
+    if (!p || *p < '0' || *p > '9') {
+        return 0;
+    }
+    long pid = 0;
+    while (*p >= '0' && *p <= '9') {
+        pid = pid * 10 + (*p++ - '0');
+        if (pid > 1L << 30) {
+            return 0;
+        }
+    }
+    return *p == '-' ? pid : 0;
+}
+
+unsigned gs_xsort_sweep(const char *tmpdir) {
+    const char *base = tmpdir ? tmpdir : temp_base();
+    DIR *d = opendir(base);
+    if (!d) {
+        return 0;
+    }
+    unsigned removed = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        long pid = dir_pid(e->d_name);
+        /* a process still there, or one not ours to ask (EPERM), keeps it */
+        if (pid <= 0 || pid == (long)getpid() || kill((pid_t)pid, 0) == 0 || errno != ESRCH) {
+            continue;
+        }
+        char path[1024];
+        if (snprintf(path, sizeof path, "%s/%s", base, e->d_name) >= (int)sizeof path) {
+            continue;
+        }
+        struct stat st;
+        /* a directory of ours, not a link to one */
+        if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) {
+            continue;
+        }
+        DIR *in = opendir(path);
+        if (!in) {
+            continue;
+        }
+        struct dirent *f;
+        while ((f = readdir(in))) {
+            if (strcmp(f->d_name, ".") == 0 || strcmp(f->d_name, "..") == 0) {
+                continue;
+            }
+            char file[1300];
+            if (snprintf(file, sizeof file, "%s/%s", path, f->d_name) < (int)sizeof file) {
+                unlink(file);   /* a run or the rows: the sorter and the spool make files only */
+            }
+        }
+        closedir(in);
+        if (rmdir(path) == 0) {
+            removed++;
+        }
+    }
+    closedir(d);
+    return removed;
+}
+

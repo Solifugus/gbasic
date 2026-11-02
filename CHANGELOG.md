@@ -16,6 +16,86 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### G-SQL: gBASIC's own database
+
+New since 0.10.0. A database is a directory; a stored value comes back as the
+gBASIC value it was, money, dates and exact integers included; one **owner**
+process per database serves every program using it, started by the first and
+stopping by itself when the last has gone. Nothing to install. A program
+writes its SQL in `database` and `sql` blocks, checked when the program loads,
+with values reaching it only as `:name` parameters:
+
+```basic
+load gsql
+
+database shop( file: "shop.gsql", create: true )
+
+sql make on shop
+    create table item (name string primary key, price money)
+end sql
+
+sql add on shop
+    insert into item (name, price) values (:name, :price)
+end sql
+
+sql cheap on shop
+    select name, price from item where price < :limit order by price
+end sql
+
+make.exec()
+add.exec({ name: "apple", price: {USD}"0.50" })
+add.exec({ name: "melon", price: {USD}"3.25" })
+
+limit {USD}= 1.00
+for each row in cheap
+    print(row.name + " costs " + string(row.price))
+end for
+shop.close()
+```
+
+The SQL: tables with primary keys, `UNIQUE`, `NOT NULL`, defaults, `CHECK`,
+foreign keys, `SERIAL` and `RANDOM` keys; views; joins (`INNER`, `LEFT`,
+`CROSS`, nested loops and hash joins, read in the order row counts choose);
+aggregates; `DISTINCT`; `UNION`/`INTERSECT`/`EXCEPT`; subqueries; derived tables
+and `WITH`; `INSERT ... SELECT`; `EXPLAIN`; backup while in use, and dump and
+restore as SQL text. Where each rule comes from and how it is tested:
+`docs/gsql_overview.md`, then `docs/gsql_cookbook.md` (18 recipes, every one run
+by the gate) and `docs/gsql_practices.md`.
+
+**Added 2026-11-02**, for the books' volume 3:
+
+- **Window functions:** `row_number`, `rank`, `dense_rank`, `percent_rank`,
+  `cume_dist`, `ntile`, `lag`, `lead`, `first_value`, `last_value`, `nth_value`,
+  and `count`/`sum`/`avg`/`min`/`max` `OVER (PARTITION BY ... ORDER BY ...)`, with
+  `ROWS` frames and `RANGE` from `UNBOUNDED` or `CURRENT ROW`. A window in
+  `WHERE` is refused, and the message shows the derived-table form that filters
+  on one, which is how the latest row per key is kept
+  (`docs/gsql_window_design.md`, cookbook recipe 16).
+- **`WITH RECURSIVE`**, with SQL's `CYCLE ... SET mark USING route`, which marks
+  the row that closes a loop and stops there, so a cycle in a bill of
+  materials is reported rather than run forever. A recursion still adding rows
+  after 1 000 000 rounds, or holding more than 1 GiB, is refused rather than
+  ending the owner; a program whose recursion should run longer sets
+  `bank.max_recursion = 5000000` on its `database` block
+  (`docs/gsql_recursive_design.md`, recipe 17).
+- **`ROLLUP`, `CUBE`, `GROUPING SETS` and `GROUPING()`**: report subtotals in one
+  query, answered in the order a report reads them (each group's rows, its
+  subtotal, the grand total last) (`docs/gsql_rollup_design.md`, recipe 18).
+- **Large queries spill to disk** instead of holding their rows: `ORDER BY`,
+  `GROUP BY`, `DISTINCT`, the set operations, derived tables, `WITH`, a hash
+  join's inner side, `INSERT ... SELECT` and window functions each keep within a
+  64 MB budget, answering exactly as they do in memory. Measured at 6 million
+  rows: a sort 247 MB against 1.7 GB, a `GROUP BY` of 6 million groups 198 MB
+  against 4.0 GB (`docs/gsql_operator_spill_design.md`). An owner starting
+  removes the sort and spool files a crashed process left behind.
+- **Fixed on the way:** the external sorter opened every run at once, which
+  past about a thousand runs met a common open-file limit; it merges in passes
+  of 128 now.
+
+Each feature is checked against an implementation that is not G-SQL's: every
+window, recursive and grouping-sets answer in the gate's differential tiers
+is computed by SQLite, in memory and spilled.
+
 ### The Qt backend: a `window` is rendered, and "no display" is a sentence
 
 The `window` block shipped as a declaration with no Qt at all — parsed,

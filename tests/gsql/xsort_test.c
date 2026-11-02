@@ -5,6 +5,9 @@
 #include "xsort.h"
 #include <dirent.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,6 +65,28 @@ int main(int argc, char **argv) {
     setrlimit(RLIMIT_NOFILE, &low);
     one(tmp, 300000, 4096, 4, 6, 2);
     setrlimit(RLIMIT_NOFILE, &rl);
+    /* the sweep: a gone process's directories removed, files and all; this
+       process's, and a name not the sorter's, kept */
+    pid_t child = fork();
+    if (child == 0) {
+        _exit(0);
+    }
+    waitpid(child, NULL, 0);
+    char p1[600], p2[600], p3[600], p4[600], f1[700];
+    snprintf(p1, sizeof p1, "%s/gsql-sort-%ld-abcdef", tmp, (long)child);
+    snprintf(p2, sizeof p2, "%s/gsql-spool-%ld-abcdef", tmp, (long)child);
+    snprintf(p3, sizeof p3, "%s/gsql-sort-%ld-abcdef", tmp, (long)getpid());
+    snprintf(p4, sizeof p4, "%s/gsql-sorting-%ld", tmp, (long)child);
+    mkdir(p1, 0700); mkdir(p2, 0700); mkdir(p3, 0700); mkdir(p4, 0700);
+    snprintf(f1, sizeof f1, "%s/run-0", p1);
+    FILE *f = fopen(f1, "w"); if (f) { fputs("x", f); fclose(f); }
+    EXPECT(gs_xsort_sweep(tmp) == 2, "the sweep removed the gone process's two directories");
+    struct stat st;
+    EXPECT(stat(p1, &st) != 0 && stat(p2, &st) != 0, "a gone process's sort and spool are gone");
+    EXPECT(stat(p3, &st) == 0, "this process's own sort is kept");
+    EXPECT(stat(p4, &st) == 0, "a name not the sorter's is kept");
+    rmdir(p3); rmdir(p4);
+    EXPECT(entries_in(tmp) == 0, "the sweep test left %d files in %s", entries_in(tmp), tmp);
     printf("ok %ld checks, %ld mismatches\n", checks, bad);
     return bad != 0;
 }

@@ -1,6 +1,6 @@
 # G-SQL: spilling to disk, and the external-sort index build
 
-**Status:** The sorter and its first user shipped 2026-11-01 (`src/gsql/xsort.c`; `gsql_index_create` in `src/gsql/table.c`; `run_gsql_table.sh`'s sort tier and its model's spilling seeds). The query operators are still to come. What was measured is §6; what the measuring found in the engine is §7. It is item 6 of the work order in `gsql_scale_measurements.md` §4: *"spill-to-disk, with the external-sort index build as its first user"*. This document designs the sorter and its first user. The query operators that hold rows in memory (§3 of the measurements) come after, each its own increment, on the same sorter.
+**Status:** The sorter and its first user shipped 2026-11-01 (`src/gsql/xsort.c`; `gsql_index_create` in `src/gsql/table.c`; `run_gsql_table.sh`'s sort tier and its model's spilling seeds). *The query operators followed on 2026-11-02* (`gsql_operator_spill_design.md`), on this sorter, which now merges in passes past 128 runs (§10 there). What was measured is §6; what the measuring found in the engine is §7. It is item 6 of the work order in `gsql_scale_measurements.md` §4: *"spill-to-disk, with the external-sort index build as its first user"*. This document designs the sorter and its first user. The query operators that hold rows in memory (§3 of the measurements) come after, each its own increment, on the same sorter.
 
 ## 1. The gap
 

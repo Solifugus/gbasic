@@ -13,6 +13,7 @@
 #include "lease.h"
 #include "serialize_tags.h"
 #include "v3.h"
+#include "xsort.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1641,6 +1642,8 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
     sigaction(SIGTERM, &sa, NULL);
     signal(SIGALRM, SIG_DFL);   /* the stop's deadline must be able to end us */
     g_stop_grace_s = o.opt.stop_grace_s ? o.opt.stop_grace_s : 10;
+    /* what a crashed owner or program left of its sorts and spools */
+    gs_xsort_sweep(NULL);
 
     GsOptions so;
     memset(&so, 0, sizeof so);
