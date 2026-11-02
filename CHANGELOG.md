@@ -39,6 +39,13 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### `intake.repeats`: a file sent again is reported
+
+`intake.repeats(led, root, pattern)` lists the files `arrived` leaves out because
+their content (or path, or stamp) was already taken, each with the record of the
+file it repeats, and `intake.set_aside(entry, { to: dir })` moves one out of the
+drop folder without touching the ledger. A resend used to sit there unreported.
+
 ### G-SQL refusals name their table, column and constraint
 
 `error.details.table`, `.column` and `.constraint` sit beside `code` on a refused

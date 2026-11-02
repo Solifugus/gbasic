@@ -44,6 +44,10 @@
 #                way to make.
 #   COMPACTION   a journal folded into the snapshot leaves the same answer, and
 #                the snapshot is written BEFORE the journal is removed.
+#   REPEATS      tests/intake_repeats_test.bas -- a file whose identity was
+#                already taken is reported by `repeats` (never the original,
+#                still waiting for its archive) and moved by `set_aside`
+#                without touching the ledger (gbasic-books G4).
 #   VALGRIND
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
@@ -101,6 +105,28 @@ else
         fail "only ${n:-0} checks ran, wanted at least 40"
     else
         pass "$n checks"
+    fi
+fi
+
+printf 'TIER repeats: a file sent again is reported, and can be set aside\n'
+# gbasic-books volume 3, G4: `arrived` rightly leaves out a file whose identity
+# was already taken, and nothing else reported it, so a resend sat in the drop
+# folder for good. The fixture's load-bearing check is that the ORIGINAL --
+# taken, still where it was taken from -- is never reported as a repeat of
+# itself, under "content" and under "path".
+mkdir -p "$work/rep"
+if ! timeout -k 5 120 ./gbasic tests/intake_repeats_test.bas "$work/rep" >"$work/rep.out" 2>"$work/rep.err"; then
+    cat "$work/rep.err"; fail "the repeats fixture did not run"
+elif grep -q MISMATCH "$work/rep.out"; then
+    grep MISMATCH "$work/rep.out"; fail "the repeats fixture disagreed with itself"
+elif ! grep -qx 'mismatches: 0' "$work/rep.out"; then
+    fail "the repeats fixture did not finish"
+else
+    n=$(sed -n 's/^checks: //p' "$work/rep.out")
+    if [ -z "$n" ] || [ "$n" -lt 24 ]; then
+        fail "repeats: only ${n:-0} checks ran, wanted at least 24"
+    else
+        pass "repeats: $n checks"
     fi
 fi
 
@@ -901,6 +927,12 @@ if vg_available; then
         pass "no definite leak or invalid access"
     else
         tail -30 "$work/vg.err"; fail "valgrind objected"
+    fi
+    rm -rf "$work/vgrep"; mkdir -p "$work/vgrep"
+    if vg_run ./gbasic tests/intake_repeats_test.bas "$work/vgrep" >/dev/null 2>"$work/vgrep.err"; then
+        pass "repeats and set_aside: no definite leak or invalid access"
+    else
+        tail -30 "$work/vgrep.err"; fail "valgrind objected to repeats"
     fi
 else
     pass "SKIP (valgrind unavailable)"

@@ -9844,6 +9844,16 @@ whole program without needing a call site.
   and not a guarantee**: measured, a file's size held still across consecutive
   samples three times while it was still being written.
 
+  `intake.repeats(ledger, dir, pattern)` *(after 0.10.0)* lists what `arrived`
+  leaves out: files finished arriving whose identity the ledger has **already
+  taken**, such as a supplier sending the same catalog twice. Each is an
+  `arrived` entry plus `repeats`, the ledger's record of the file it repeats
+  (`entry_for`'s shape). The file the ledger took, still at the path it was taken
+  from and not yet archived, is the original, so it is never listed.
+  `intake.set_aside(entry, { to: dir })` moves a repeat out of the drop folder
+  with the same checked move `archive` uses (`on_collision:` too), answering where
+  it went, and **does not change the ledger**: a repeat was never taken.
+
   `intake.archive(ledger, entry, { to: dir, keep: 180 days })` moves a taken
   file into an archive, **mirroring the tree it came from** — `2026/Q1/vendor.xlsx`
   lands under `2026/Q1`, which is what `relative` is for, since two files in

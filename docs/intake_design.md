@@ -443,6 +443,32 @@ and by the same mechanism: one appended line per entry, replayed on `open`. The
 new fields are **optional on read**, so a ledger written by increment 1 opens
 unchanged and reads as "nothing archived yet" rather than needing a version bump.
 
+## 6a. Repeats — shipped 2026-11-02
+
+Asked for by the gBASIC books' volume 3 (gap G4). `arrived` leaves out a file
+whose identity was already taken, which is the library's whole point, and
+nothing else reported one: the program was never told, the file was never
+archived, and it sat in the drop folder for good. Nobody learned that the
+supplier sent the same catalog twice, when they may have meant a corrected one.
+
+- `intake.repeats(led, root, pattern)` is `arrived`'s other half: the ready files
+  whose identity IS in the ledger, each with `repeats`, the record of the file it
+  repeats. **The original is not a repeat of itself**: the file the ledger took,
+  still at its path and not yet archived or purged, is waiting for its archive,
+  and listing it would report every untidied drop folder as a resend. Under
+  identity `"path"` that makes a repeat a file dropped again at a path whose first
+  file has been moved on, which is what `"path"` says sameness is.
+- `intake.set_aside(entry, { to: dir })` moves one, mirroring its tree, through
+  the same checked move as `archive` (one function now, `_move_checked`, so the
+  rename-or-copy-check-delete rule is written once and the source tripwire still
+  finds both halves). **It does not write the ledger.** A repeat was never taken,
+  so it has no row, and recording it on the row of the file it repeats would
+  overwrite where that file went. A program wanting a record of resends keeps one
+  from the entry, which carries everything to write.
+
+Held by `tests/intake_repeats_test.bas` (24 checks) in `run_intake.sh`'s
+repeats tier, and under valgrind.
+
 ## 7. Two loads at once
 
 §5's last row asks that "one waits or refuses". Measured, **it waits and there

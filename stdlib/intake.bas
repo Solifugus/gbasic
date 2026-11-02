@@ -435,6 +435,85 @@ library intake
         return out
     end function
 
+    ' THE OTHER HALF OF `arrived`: every file matching `pattern` under `root`
+    ' that is finished arriving and whose identity this ledger has ALREADY
+    ' taken -- a supplier sending the same catalog twice, perhaps meaning to
+    ' send a corrected one. `arrived` leaves these out, rightly, and before this
+    ' nothing reported them, so the program was never told and the file sat in
+    ' the drop folder for good (gbasic-books volume 3, gap G4).
+    '
+    ' Each is `arrived`'s entry plus `repeats`, the ledger's record of the file
+    ' it repeats (`entry_for`'s shape, with when it was taken and where it was
+    ' archived). THE FILE THE LEDGER TOOK IS NOT A REPEAT OF ITSELF: one still at
+    ' the path it was taken from, not yet archived or purged, is the original
+    ' waiting for its archive, and is left out. Under identity "path" that makes
+    ' a repeat a file dropped again at a path whose first file has been moved
+    ' on, which is what "path" says sameness is.
+    function repeats(led, root, pattern)
+        norm = _normalise_root(root)
+        out = []
+        for each entry in files(root, pattern)
+            e = entry
+            e.relative = _relative_to(norm, entry.path)
+            if _is_ready(led, e) then
+                id = _identity_skipping_vanished(led, e)
+                if id != "" and has(led.taken, id) then
+                    row = led.taken[id]
+                    original = (row.path = e.path and row.archived_at = nothing
+                                and row.purged_at = nothing)
+                    if not original then
+                        e.identity = id
+                        e.repeats = entry_for(led, id)
+                        append(out, e)
+                    end if
+                end if
+            end if
+        end for
+        return out
+    end function
+
+    ' Move a repeat out of the drop folder, mirroring the tree it came from,
+    ' with the same checked move `archive` uses. THE LEDGER IS NOT CHANGED: a
+    ' repeat was never taken, so there is no row to record it in, and writing
+    ' it onto the row of the file it repeats would overwrite where THAT file
+    ' went. A program that wants a record of resends keeps one -- the entry
+    ' carries everything to write.
+    function set_aside(entry, opts)
+        if type(entry) != "record" or not has(entry, "repeats") then
+            error { message: "intake.set_aside expects an entry from"
+                             + " intake.repeats. A file that has not been taken"
+                             + " is taken or left where it is; one that has is"
+                             + " archived with intake.archive.",
+                    code: 1004, source: "intake" }
+        end if
+        if type(opts) != "record" or not has(opts, "to") then
+            error { message: "intake.set_aside expects { to: {dir}\"...\" },"
+                             + " the directory the repeat is moved into.",
+                    code: 1004, source: "intake" }
+        end if
+        for each k in keys(opts)
+            if k != "to" and k != "on_collision" then
+                error { message: "intake.set_aside: unknown option '" + k + "'."
+                                 + " Known options: to, on_collision",
+                        code: 1004, source: "intake" }
+            end if
+        next
+        collide = "refuse"
+        if has(opts, "on_collision") then
+            if opts.on_collision != "replace" and opts.on_collision != "refuse" then
+                error { message: "intake.set_aside: on_collision must be"
+                                 + " \"refuse\" (the default) or \"replace\", not "
+                                 + string(opts.on_collision),
+                        code: 1004, source: "intake" }
+            end if
+            collide = opts.on_collision
+        end if
+        root = directory_name(join_path(opts.to, "x"))
+        target = join_path(root, entry.relative)
+        _move_checked("intake.set_aside", entry, target, collide)
+        return target
+    end function
+
     ' A file can vanish between the listing and the read -- another process
     ' archiving it, or a sender withdrawing a drop. Measured, `read` and
     ' `file_size` RAISE with a named reason while `exists` answers a value, so
@@ -658,6 +737,26 @@ library intake
         if has(opts, "on_collision") then
             collide = opts.on_collision
         end if
+        _move_checked("intake.archive", entry, target, collide)
+
+        row.archived_at = epoch(now())
+        row.archived_to = target
+        row.keep_seconds = keep_seconds
+        _journal(led, entry.identity, row)
+        led.taken[entry.identity] = row
+        led.replayed = led.replayed + 1
+        return led
+    end function
+
+    ' THE MOVE ITSELF, shared by `archive` and `set_aside` so the rule above is
+    ' written once: refuse a collision unless told to replace, rename on one
+    ' filesystem, and across two copy, CHECK THE BYTE COUNT, then delete.
+    ' `who` names the caller in every refusal. Raises; answers nothing.
+    function _move_checked(who, entry, target, collide)
+        doing = "archiving"
+        if who != "intake.archive" then
+            doing = "setting aside"
+        end if
         ' `copy` OVERWRITES AN EXISTING TARGET IN SILENCE (measured), and under
         ' identity "content" a corrected re-drop has the same relative path as
         ' the file it corrects -- so the second archive would destroy the first
@@ -666,8 +765,8 @@ library intake
         ' idempotent.
         existing {file}= target
         if exists(existing) and collide = "refuse" then
-            error { message: "intake.archive: " + target + " already exists, so"
-                             + " archiving " + entry.path + " would overwrite"
+            error { message: who + ": " + target + " already exists, so"
+                             + " " + doing + " " + entry.path + " would overwrite"
                              + " it. Pass { on_collision: \"replace\" } to say"
                              + " that is what you want.",
                     code: 1004, source: "intake" }
@@ -675,8 +774,8 @@ library intake
 
         source {file}= entry.path
         if not exists(source) then
-            error { message: "intake.archive: " + entry.path + " is no longer"
-                             + " there. Nothing was archived and the ledger is"
+            error { message: who + ": " + entry.path + " is no longer"
+                             + " there. Nothing was moved and the ledger is"
                              + " unchanged.",
                     code: 1004, source: "intake" }
         end if
@@ -689,9 +788,9 @@ library intake
             why = error.message
             error.clear()
             if not contains(why, "same filesystem") then
-                error { message: "intake.archive: could not move " + entry.path
+                error { message: who + ": could not move " + entry.path
                                  + " to " + target + " (" + why + ")."
-                                 + " Nothing was archived.",
+                                 + " Nothing was moved.",
                         code: 1004, source: "intake" }
             end if
             ' ACROSS FILESYSTEMS. Copy, check, then delete -- in that order, so
@@ -700,7 +799,7 @@ library intake
             landed {file}= target
             after = file_size(landed)
             if after != before then
-                error { message: "intake.archive: " + target + " is "
+                error { message: who + ": " + target + " is "
                                  + string(after) + " bytes where "
                                  + entry.path + " is " + string(before)
                                  + ". The original has NOT been removed.",
@@ -708,14 +807,7 @@ library intake
             end if
             delete(source)
         end if
-
-        row.archived_at = epoch(now())
-        row.archived_to = target
-        row.keep_seconds = keep_seconds
-        _journal(led, entry.identity, row)
-        led.taken[entry.identity] = row
-        led.replayed = led.replayed + 1
-        return led
+        return nothing
     end function
 
     ' A duration in seconds, which is what the ledger file can hold. `keep` is
