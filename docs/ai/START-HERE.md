@@ -15,6 +15,10 @@ you. Read this layer first; it is short by design.
    module). Every snippet points at a real file under `examples/`/`tests/`.
 3. **`ERRORS.md`** — the diagnostic/runtime-error catalog: what each error domain
    and code means, its typical cause, and the fix.
+4. **`GSQL.md`** — before writing anything that uses G-SQL, gBASIC's own
+   database (`load gsql`): the surprises (SQL in blocks, `:name` parameters, no
+   conversion in comparisons, typed columns), catching refusals by code, the SQL
+   there is and what is refused.
 
 For the full **human** language reference (every construct and builtin library at
 reference depth), see `docs/reference.md` and `README.md`. This `docs/ai/` layer

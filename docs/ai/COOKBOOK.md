@@ -309,6 +309,22 @@ for error handling, `ERRORS.md`.
 
 ## Modules
 
+- **A database (G-SQL)** — `load gsql`; a `database` block names the file
+  (a literal), `sql` blocks hold the SQL, and values reach it only as `:name`
+  parameters read from the variables in scope or a record's fields. `x.query()`
+  answers rows, `x.exec()` what happened; `for each row in block` streams.
+  Nothing converts in a comparison: CAST one side. Refusals raise with
+  `error.details.code`. Read `docs/ai/GSQL.md` before writing any.
+  → `examples/gsql_cookbook/01_first_database.bas`,
+  `examples/gsql_cookbook/04_database_and_sql_blocks.bas`,
+  `examples/gsql_cookbook/10_when_sql_says_no.bas`
+- **The latest row per key, a running total, a hierarchy, subtotals (G-SQL)** —
+  a window can't stand in `WHERE`, so number the rows in a derived table and
+  filter outside it; `WITH RECURSIVE ... CYCLE` walks a hierarchy and stops at a
+  loop; `GROUP BY ROLLUP(...)` gives subtotals in report order.
+  → `examples/gsql_cookbook/16_window_functions.bas`,
+  `examples/gsql_cookbook/17_recursive_queries.bas`,
+  `examples/gsql_cookbook/18_subtotals_with_rollup.bas`
 - **Process (run)** — `process.run`; unconditional builtin, no `load`. Synchronous,
   argv passed literally (no shell). → `tests/native_platform/nap6_streams.bas`
 - **Process (supervise)** — `process.start` returns a handle;

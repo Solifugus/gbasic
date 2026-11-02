@@ -205,6 +205,7 @@ Read in this order. gBASIC diverges from QBasic/VB intuition in ways that fail
 | [ai/START-HERE.md](ai/START-HERE.md) | Shipped | The entry point. Read it first. |
 | [ai/UNLEARN.md](ai/UNLEARN.md) | Shipped | What your BASIC intuition gets wrong here. |
 | [ai/COOKBOOK.md](ai/COOKBOOK.md) | Shipped | One blessed idiom per task, each pointing at a suite-verified file. |
+| [ai/GSQL.md](ai/GSQL.md) | Shipped | Writing G-SQL code as an agent: what surprises (blocks, `:name`, no conversion in comparisons, typed columns, refusals checked when a row arrives), catching refusals by code, the SQL there is and what is refused by name. |
 | [ai/ERRORS.md](ai/ERRORS.md) | Shipped | Diagnostic and runtime-error catalog. |
 
 ## Finance, accounting and lending
