@@ -27,10 +27,11 @@ end function
 
 ' the number in "(a table of about N rows)", or -1
 function about(line)
-    at = find(line, "about ")
-    if is_unknown(at) then
+    ' `find` answers nothing on a miss, so ask `contains` first
+    if not contains(line, "about ") then
         return -1
     end if
+    at = find(line, "about ")
     rest = mid(line, at + 6, len(line))
     return number(left(rest, find(rest, " ")))
 end function

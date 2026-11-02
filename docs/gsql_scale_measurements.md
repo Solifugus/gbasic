@@ -117,6 +117,6 @@ The work list after this, in order, with Matthew's additions the same day:
    - held by a dump, restore and dump again that must be byte-identical.
 4. **One owner per database, enforced on any storage:** a lease kept in the database itself. *Shipped 2026-11-01* (`gsql_lease_design.md`).
 5. **Group commit sized from the measured sync,** and a storage probe. *Shipped 2026-11-01* (`gsql_group_commit_design.md`).
-6. **Spill-to-disk,** with the external-sort index build as its first user. *The sorter and the index build shipped 2026-11-01* (`gsql_spill_design.md`); the commit of a large build is still unexplained, and the query operators are still to come.
-7. **Row counts in the planner,** for join order and the side a hash join builds.
+6. **Spill-to-disk,** with the external-sort index build as its first user. *The sorter and the index build shipped 2026-11-01* (`gsql_spill_design.md`), and the large build's slow commit was found and removed (compaction of level 0 as one block, §7 there). The query operators are still to come.
+7. **Row counts in the planner,** for join order and the side a hash join builds. *Shipped 2026-11-01* (`gsql_rowcount_design.md`).
 8. Then profile load at 10⁸ (§1, item 2) and the point-read tail (item 3).

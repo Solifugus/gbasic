@@ -37,7 +37,7 @@ The tables are joined **left to right, in `FROM` order**, by nested loops. For e
 
 **Where each `WHERE` conjunct is checked:** at the first table by which every table it reads has a row. That is as early as possible for an inner join. For a left join it means after the null-extended row exists, which is what §2 requires.
 
-**The order is not chosen.** Reordering joins needs statistics and a cost model, which are later Phase 2 items (`gsql_design.md` §11). Until then `EXPLAIN` shows the order a query will use, and the author can change it by rewriting the `FROM`. A planner that reorders later changes no answer, only the cost.
+**The order was not chosen when joins shipped.** Since 2026-11-01 a statement whose joins are all inner and whose sources are all tables is read in the order row counts choose (`gsql_rowcount_design.md`); a `LEFT` join or a derived table keeps the order written. `EXPLAIN` shows the order a query will use and says when it was chosen. Reordering changes no answer, only the cost.
 
 **`EXPLAIN`** shows one access line per table, nested:
 

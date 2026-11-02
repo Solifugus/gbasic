@@ -1,6 +1,6 @@
 # G-SQL: row counts in the planner, and the join order they choose
 
-**Status:** Proposal, designed 2026-11-01 and being built: work-order item 7 of `gsql_scale_measurements.md` §4: *"row counts in the planner, for join order and the side a hash join builds."*
+**Status:** Shipped 2026-11-01 (`estimate` in `src/gsql/lsm.c`, `order_joins` in `src/gsql/sql_plan.c`, the join levels in `src/gsql/sql_exec.c`; tiers in `tests/run_gsql_sql.sh` and `tests/gsql/store_test.c`). Work-order item 7 of `gsql_scale_measurements.md` §4: *"row counts in the planner, for join order and the side a hash join builds."*
 
 ## 1. The gap
 
@@ -35,11 +35,13 @@ An overwritten key counts once per version still held, and a deleted one until c
 
 **Only when every join is `INNER` or a comma/`CROSS` join, and every source is a table.** A `LEFT` join's order is part of its meaning, and a derived table's size is not known until it runs. Those statements keep `FROM`'s order, as now.
 
-**A greedy order:**
+**A cost model, and every order costed:**
 
-1. **First:** the table with the fewest estimated rows. A table pinned to one row by an equality on its whole primary key (`where c.id = 7`) counts as one.
-2. **Each next:** among the rest, a table reachable by an **index seek** on columns of the tables already placed, the smallest such first. Failing that, one joined by an **equality** to them (a hash join, built on it), the smallest first. Failing both, the smallest (a cross product).
-3. **Ties keep `FROM`'s order,** so equal tables run as written.
+- **The cost of an order** is the rows it reads. A table reached by an index seek costs the log of its rows for each row read before it. One reached by an equality to earlier tables is hashed, costing one probe per earlier row and **four times its own rows to build**, since a hash holds its side in memory. Anything else costs its rows for every earlier row.
+- **Every order is costed for up to six tables** (720 orders at most), the cheapest kept, ties in `FROM`'s order. Beyond six, a greedy order: the smallest first (or one pinned to a row by a constant on a unique key), then each next one reachable by a seek, else by a hash, else the smallest.
+- **The order is changed only when it costs under two thirds of `FROM`'s.** A join written well, or a small one, runs as written.
+
+The build weight is what makes the hashed side the smaller. Weighed at its rows alone, smallest-first hashes the larger of two unindexed tables, and found by the order tier.
 
 The existing access-path choice then runs over that order, unchanged in what it asks: *"which conditions read only tables placed before this one."* The hash join's built side follows from the order, since the hash is always the inner table.
 
@@ -53,8 +55,19 @@ The existing access-path choice then runs over that order, unchanged in what it 
 
 ## 5. Tests
 
-- **The differential tier:** every generated join runs reordered and in `FROM` order (`force_scan` and a new `force_order`), and the two must return the same rows as multisets.
-- **The order chosen:** a small table and a large one, written in each order, both planned with the small one outer when the large one has an index on the join column, and with the large one outer, probing a hash of the small one, when it has none. `EXPLAIN` asserts both.
-- **The estimate:** within a factor of two of the true count, in the memtable alone, after a flush, across several files, and for a table sharing files with others. Overwrites and deletes are measured, not asserted.
-- **A `LEFT` join and a derived table** keep `FROM`'s order.
-- **The cost:** at 10⁵ × 10³ written large-first, the reordered join is at least 10× faster than `FROM` order, as a ratio.
+- **The differential tier** (`run_gsql_sql.sh`): a forced scan also keeps `FROM`'s order, so every generated join is compared reordered against as written. A floor requires reordered plans, 194 to 238 a seed.
+- **The join oracle** compares a join with `r` read alone, and must allow one case. **A plan reading `r` by another path may meet a row whose condition raises** (a cross-currency comparison) that `r`'s own path skipped, or skip one it met. SQL fixes no evaluation order. It is allowed only when `r` read whole really refuses, so the refusal is in the data, and is counted: 0 or 1 a seed. Before that rule, three seeds failed on exactly this.
+- **The order chosen** (`tests/gsql/order_test.bas`, through `EXPLAIN`):
+  - an indexed large table written first is read second, sought by its index;
+  - of two unindexed tables, the smaller is hashed, whichever is written first;
+  - a well-written join keeps its order;
+  - a `LEFT` join and a derived table keep `FROM`'s order;
+  - the estimates equal the true counts in the memtable.
+- **The estimate** (`store_test.c`): within a factor of two for three interleaved trees of 40, 400 and 2 000 entries, in the memtable alone, across sorted files that each hold all three, after a flush, and after a reopen. The three keep their order. The 40-entry tree read 84 before a block that only partly holds a tree counted as half.
+- **The cost** (`order cost`): 10⁴ orders by 10² customers written orders-first, the chosen order 68× faster than `FROM`'s, the answers equal and the plan really reordered.
+- **Seven perturbations red:**
+  - the memtable counts ignored;
+  - the shared files ignored;
+  - no reordering (the differential floor, the cost tier and the order tier);
+  - the build weighted at its rows;
+  - the conditions left where `FROM`'s order put them (wrong answers, caught by the differential).
