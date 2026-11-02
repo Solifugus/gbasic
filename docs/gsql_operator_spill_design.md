@@ -1,6 +1,6 @@
 # G-SQL: query operators that spill to disk
 
-**Status:** Partial 2026-11-02: §4's steps 1, 2 and 4 are built: `ORDER BY` (§6), `GROUP BY` (§7) and the row spool (§8). `DISTINCT` and the set operations (step 3), the join (step 5) and window functions remain. The rest of work-order item 6 (`gsql_scale_measurements.md` §4), *"the query operators are still to come"* (`gsql_spill_design.md`). Matthew said "go ahead" on 2026-11-02 without ruling on §5, so §5 records the defaults taken, each his to reverse.
+**Status:** Partial 2026-11-02: §4's steps 1 to 4 are built: `ORDER BY` (§6), `GROUP BY` (§7), the row spool (§8), and `DISTINCT` and the set operations (§9). The join (step 5) and window functions remain. The rest of work-order item 6 (`gsql_scale_measurements.md` §4), *"the query operators are still to come"* (`gsql_spill_design.md`). Matthew said "go ahead" on 2026-11-02 without ruling on §5, so §5 records the defaults taken, each his to reverse.
 
 ## 1. The gap
 
@@ -107,4 +107,25 @@ Spooling costs about a fifth more time, for reading rows back from disk. The der
 **Not spooled:** a `WITH RECURSIVE` query's rows, which keep their own 1 GiB guard (`gsql_recursive_design.md` §3), and a hash join's keys (one per distinct key), which stay in memory.
 
 **Tested** by the spilled tier, which now also spools every row store in the corpus (269), with a floor, and by the recursive differential spooled (about 1 600 spools a seed, through self-scans and hash joins), each answering as in memory; clean under valgrind spooled. Two perturbations (the rows before the budget lost, a read from the wrong offset) went red. A third, writing without seeking after a read, **stayed green**: no store is read before it is complete, so no read is ever followed by a write. The seek stays, because C requires it between a read and a write.
+
+## 9. Built: `DISTINCT` and the set operations (2026-11-02)
+
+Both keep the order the in-memory forms answer in, which is arrival order: `SELECT DISTINCT` answers each row's first occurrence where it first came, a `UNION` the left side's rows then the right's, an `INTERSECT` or `EXCEPT` the left side's. A spill that answered in key order would differ, so each spilled form sorts twice: once by row key, to decide which rows stay, and once by arrival number, to put them back.
+
+**The set operations.** Each side's rows go into a row store (§8). Past the budget, the decision is made off the sorter: each row is an entry keyed by its row key (the key `DISTINCT` uses), then its side (the right first), then its arrival number. Within one row key the right side's count is known before the left side's rows go past, which is all `INTERSECT [ALL]` and `EXCEPT [ALL]` need; a `UNION` keeps each key's first row; `UNION ALL` is the two stores read one after the other and needs no sort. The rows kept go to a second sorter keyed by arrival number, and are read back from their stores in that order. The compound's own `ORDER BY` then collects its rows as a plain query's does (§6), so it spills too.
+
+**`SELECT DISTINCT`.** The keys of the rows answered so far are held, to drop repeats. Past the budget, every key held goes to a sorter marked as already answered, and each later row goes in under its key with its arrival number, not answered yet. Once the input ends, the first row of each key not already answered is kept, and the kept rows come back in arrival order. A `DISTINCT` with no `ORDER BY` that passes its budget therefore answers its later rows only at the end, though in the same order; one with an `ORDER BY` collects them for its sort, as before.
+
+**Measured**, `SELECT id FROM b WHERE id < 0 UNION SELECT id FROM b EXCEPT SELECT v FROM b ORDER BY 1 LIMIT 2`, every row of the table on two sides, peak memory of the whole process:
+
+| rows | spilled | in memory |
+|---|---|---|
+| 2 000 000 | 291 MB, 13.6 s | 843 MB, 7.5 s |
+| 6 000 000 | 409 MB, 46.2 s | 2 643 MB, 27.0 s |
+
+Not flat, as §6 to §8 are: each row store keeps an eight-byte offset per row, and this statement holds several stores over the same rows, which is the growth left. And slower than in memory, by 1.7 to 1.8 times, since it sorts twice and reads its rows back from disk; it is a statement that would otherwise have ended the owner.
+
+**Tested** by a differential (`tests/gsql/gen_setop_diff.py`): random rows with repeats and NULLs and random `DISTINCT` and nested set operations, every answer computed outside G-SQL (SQLite for each `SELECT`, the multiset definition for the compound, since SQLite has no `INTERSECT ALL` or `EXCEPT ALL`), in memory and spilled; and the same queries with no `ORDER BY`, which must come back **in the same order** spilled as in memory, the order being what the second sort keeps. The spilled corpus now spills 166 operators. Clean under valgrind spilled. Three perturbations (the rows' arrival numbers lost, `EXCEPT ALL` keeping one row too many, `DISTINCT` keeping a key already answered) each went red, the last two in the order-parity check as well.
+
+**What remains of §4:** the join (step 5) and window functions, which hold every row of their query; and a merge in passes for the sorter past about a thousand runs (§6).
 

@@ -33,6 +33,9 @@
 #   grouping sets differential  ROLLUP, CUBE and GROUPING SETS against the
 #                UNION ALL of one GROUP BY per set, run by SQLite
 #                (tests/gsql/gen_rollup_diff.py)
+#   set operations differential  DISTINCT and the set operations against
+#                SQLite and the multiset definition, in memory and spilled, and
+#                in the same order spilled (tests/gsql/gen_setop_diff.py)
 #   order cost   a join written large-first, chosen order against FROM's, as a
 #                ratio, the answers equal and the plan really reordered
 #   order        which table a join reads first, asked of EXPLAIN: smallest
@@ -320,6 +323,42 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null
     done
 else
     printf '  SKIP grouping sets differential (no python3 with sqlite3): ROLLUP was NOT checked against SQLite\n'
+fi
+
+printf 'TIER set operations differential: DISTINCT and UNION/INTERSECT/EXCEPT [ALL], in memory and spilled\n'
+# answers from SQLite and the multiset definition; and the same queries
+# unordered, which must come back in the same order spilled as in memory
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null; then
+    for seed in 1 2 3; do
+        rm -rf "$work/sdiff"
+        mkdir -p "$work/sdiff"
+        if ! python3 tests/gsql/gen_setop_diff.py "$seed" 300 "$work/so$seed.txt" "$work/su$seed.txt" \
+                >"$work/sgen$seed.out" 2>&1; then
+            sed 's/^/       /' "$work/sgen$seed.out"
+            fail "set operations differential seed $seed: the generator failed"
+            continue
+        fi
+        bounded 120 "$work/sql_test" script "$work/so$seed.txt" "$work/sdiff/db" >"$work/so$seed.out" 2>&1
+        verdict "set operations seed $seed in memory" "$work/so$seed.out" $?
+        rm -rf "$work/sdiff" && mkdir -p "$work/sdiff"
+        GSQL_TEST_SORT_BUDGET=1 GSQL_TEST_SORT_RUN=64 bounded 120 "$work/sql_test" script "$work/so$seed.txt" \
+            "$work/sdiff/db" >"$work/sos$seed.out" 2>&1
+        verdict "set operations seed $seed spilled" "$work/sos$seed.out" $?
+        rm -rf "$work/sdiff" && mkdir -p "$work/sdiff"
+        bounded 120 "$work/sql_test" script "$work/su$seed.txt" "$work/sdiff/db" 2>/dev/null | grep '^  got:' \
+            >"$work/su$seed.mem"
+        rm -rf "$work/sdiff" && mkdir -p "$work/sdiff"
+        GSQL_TEST_SORT_BUDGET=1 GSQL_TEST_SORT_RUN=64 bounded 120 "$work/sql_test" script "$work/su$seed.txt" \
+            "$work/sdiff/db" 2>/dev/null | grep '^  got:' >"$work/su$seed.spill"
+        n=$(wc -l <"$work/su$seed.mem")
+        if [ "$n" -ge 100 ] && cmp -s "$work/su$seed.mem" "$work/su$seed.spill"; then
+            pass "set operations seed $seed: $n unordered answers in the same order spilled as in memory"
+        else
+            fail "set operations seed $seed: unordered answers differ spilled ($n answers in memory)"
+        fi
+    done
+else
+    printf '  SKIP set operations differential (no python3 with sqlite3): NOT checked\n'
 fi
 
 printf 'TIER hash cost: an unindexed join hashed against its nested loop, as a ratio\n'

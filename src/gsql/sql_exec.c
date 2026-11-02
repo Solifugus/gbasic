@@ -2110,6 +2110,16 @@ typedef struct {
     struct GsXsort *gxs;
     GsqlBuf gpkey, gpval;
     int gpend;
+    /* SELECT DISTINCT past its budget (§9): the memory its keys take, the
+       sorter deciding the later rows, the one putting them back in arrival
+       order, and the arrival number */
+    size_t dheld;
+    struct GsXsort *dxs, *dxs2;
+    uint64_t dseq;
+    /* a compound's rows when it has no ORDER BY: read out from here */
+    RowStore cstore;
+    size_t cpos;
+    int cstored;
     /* window functions (docs/gsql_window_design.md §5): the rows collected,
        replayed from wpos */
     int windowed;
@@ -2123,9 +2133,132 @@ static const GsqlBuf *row_key_of(void *ctx, size_t i) {
     return &((SqlCursor *)ctx)->seen_keys[i];
 }
 
+/* ---- SELECT DISTINCT past its budget (docs/gsql_operator_spill_design.md §9)
+ *
+ * The keys held go to a sorter as already answered (tag 0); each later row
+ * goes in under its key, tag 1 and its arrival number, the row its value.
+ * Once the input ends, each key's first later row is kept unless the key was
+ * answered, and the kept rows are put back in arrival order. */
+
+static void key_suffix(GsqlBuf *b, unsigned char tag, uint64_t seq) {
+    unsigned char t[9];
+    t[0] = tag;
+    for (int k = 0; k < 8; k++) {
+        t[1 + k] = (unsigned char)(seq >> (8 * (7 - k)));   /* big-endian: memcmp is numeric order */
+    }
+    v3_put(b, t, 9);
+}
+
+static uint64_t key_seq(const unsigned char *k, size_t n) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) {
+        v = v << 8 | k[n - 8 + i];
+    }
+    return v;
+}
+
+static int xsort_fail(SqlCursor *c, int xr) {
+    return xfail(c->x.err, GSQL_STORAGE, 0, "a sort on disk failed: %s", strerror(xr));
+}
+
+/* the keys held to the sorter, as already answered; from here on rows are deferred */
+static int distinct_spill(SqlCursor *c) {
+    int xr = gs_xsort_open(NULL, c->q->sort_run, &c->dxs);
+    if (xr) {
+        c->dxs = NULL;
+        return xsort_fail(c, xr);
+    }
+    c->q->spills++;
+    GsqlBuf k = {0};
+    for (size_t i = 0; i < c->nseen && !xr; i++) {
+        k.length = 0;
+        v3_put(&k, c->seen_keys[i].bytes, c->seen_keys[i].length);
+        key_suffix(&k, 0, 0);
+        xr = gs_xsort_add(c->dxs, k.bytes, k.length, NULL, 0);
+    }
+    gsql_buf_free(&k);
+    for (size_t i = 0; i < c->nseen; i++) {
+        gsql_buf_free(&c->seen_keys[i]);
+    }
+    free(c->seen_keys);
+    free(c->seen.slot);
+    c->seen_keys = NULL;
+    memset(&c->seen, 0, sizeof c->seen);
+    c->nseen = c->capseen = 0;
+    return xr ? xsort_fail(c, xr) : GSQL_OK;
+}
+
+static int distinct_defer(SqlCursor *c, const GsqlKey *key, const GsqlBuf *row) {
+    GsqlBuf k = {0};
+    v3_put(&k, key->bytes, key->length);
+    key_suffix(&k, 1, c->dseq++);
+    int xr = gs_xsort_add(c->dxs, k.bytes, k.length, row->bytes, row->length);
+    gsql_buf_free(&k);
+    return xr ? xsort_fail(c, xr) : GSQL_OK;
+}
+
+/* The deferred rows, decided and back in arrival order: the next into `out`,
+ * 1, 0 at the end, -1 failed. The first call makes the decision. */
+static int distinct_next_deferred(SqlCursor *c, GsqlBuf *out) {
+    if (!c->dxs2) {
+        int xr = gs_xsort_finish(c->dxs);
+        if (!xr) {
+            xr = gs_xsort_open(NULL, c->q->sort_run, &c->dxs2);
+        }
+        GsqlBuf group = {0}, seq = {0};
+        int have_group = 0, answered = 0, kept = 0;
+        while (!xr) {
+            GsBytes k, v;
+            int have;
+            if ((xr = gs_xsort_next(c->dxs, &k, &v, &have)) || !have) {
+                break;
+            }
+            size_t kn = k.n - 9;
+            if (!have_group || group.length != kn || memcmp(group.bytes, k.p, kn) != 0) {
+                group.length = 0;
+                v3_put(&group, k.p, kn);
+                have_group = 1;
+                answered = kept = 0;
+            }
+            if (k.p[kn] == 0) {
+                answered = 1;   /* tag 0 sorts first within a key */
+            } else if (!answered && !kept) {
+                seq.length = 0;
+                v3_put(&seq, k.p + kn + 1, 8);
+                xr = gs_xsort_add(c->dxs2, seq.bytes, seq.length, v.p, v.n);
+                kept = 1;
+            }
+        }
+        gsql_buf_free(&group);
+        gsql_buf_free(&seq);
+        if (!xr) {
+            xr = gs_xsort_finish(c->dxs2);
+        }
+        if (xr) {
+            xsort_fail(c, xr);
+            return -1;
+        }
+        c->q->spill_runs += gs_xsort_runs(c->dxs) + gs_xsort_runs(c->dxs2);
+    }
+    GsBytes k, v;
+    int have;
+    int xr = gs_xsort_next(c->dxs2, &k, &v, &have);
+    if (xr) {
+        xsort_fail(c, xr);
+        return -1;
+    }
+    if (!have) {
+        return 0;
+    }
+    out->length = 0;
+    v3_put(out, v.p, v.n);
+    return 1;
+}
+
 /* SELECT DISTINCT (docs/gsql_distinct_design.md): whether output row `row`
  * is the first of its kind, keyed as GROUP BY keys a group. 1 it is, 0 a row
- * the same as it came before, -1 failed. */
+ * the same as it came before (or, spilled, one decided at the end), -1
+ * failed. */
 static int distinct_first(SqlCursor *c, const GsqlBuf *row) {
     if (!c->plan.s->distinct) {
         return 1;
@@ -2154,6 +2287,12 @@ static int distinct_first(SqlCursor *c, const GsqlBuf *row) {
         }
     }
     free(items);
+    if (c->dxs) {
+        /* spilled: decided once the input ends */
+        int rc = distinct_defer(c, &key, row);
+        gsql_key_free(&key);
+        return rc == GSQL_OK ? 0 : -1;
+    }
     int first = !keymap_find(&c->seen, row_key_of, c, key.bytes, key.length, 0);
     if (first) {
         if (c->nseen == c->capseen) {
@@ -2168,6 +2307,11 @@ static int distinct_first(SqlCursor *c, const GsqlBuf *row) {
         v3_put(kb, key.bytes, key.length);
         c->nseen++;
         keymap_find(&c->seen, row_key_of, c, key.bytes, key.length, c->nseen);
+        c->dheld += sizeof(GsqlBuf) + 2 * sizeof(size_t) + c->seen_keys[c->nseen - 1].capacity;
+        if (c->dheld > c->q->sort_budget && distinct_spill(c) != GSQL_OK) {
+            gsql_key_free(&key);
+            return -1;
+        }
     }
     gsql_key_free(&key);
     return first;
@@ -3311,6 +3455,13 @@ static void cursor_free(SqlCursor *c) {
     if (c->gxs) {
         gs_xsort_close(c->gxs);
     }
+    if (c->dxs) {
+        gs_xsort_close(c->dxs);
+    }
+    if (c->dxs2) {
+        gs_xsort_close(c->dxs2);
+    }
+    rs_free(&c->cstore);
     for (size_t k = 0; c->gkeys && k < (c->plan.ngsets ? c->plan.ngsets : 1); k++) {
         gsql_buf_free(&c->gkeys[k]);
     }
@@ -3436,9 +3587,36 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
         c->produced++;
         return 1;
     }
+    if (c->cstored) {
+        /* a compound with no ORDER BY: its rows as combined */
+        while (c->cpos < c->cstore.n) {
+            if (rs_get(&c->x, &c->cstore, c->cpos++, out) != GSQL_OK) {
+                return -1;
+            }
+            if (c->offset) {
+                c->offset--;
+                continue;
+            }
+            c->produced++;
+            return 1;
+        }
+        c->ended = 1;
+        return 0;
+    }
     if (c->grouped || c->windowed) {
         for (;;) {
             int r = source_next(c);
+            if (r == 0 && c->dxs) {
+                r = distinct_next_deferred(c, out);
+                if (r > 0) {
+                    if (c->offset) {
+                        c->offset--;
+                        continue;
+                    }
+                    c->produced++;
+                    return 1;
+                }
+            }
             if (r <= 0) {
                 c->ended = 1;
                 return r;
@@ -3480,6 +3658,17 @@ static int cursor_next(SqlCursor *c, GsqlBuf *out) {
     }
     for (;;) {
         int r = join_next(&c->j, &c->x);
+        if (r == 0 && c->dxs) {
+            r = distinct_next_deferred(c, out);
+            if (r > 0) {
+                if (c->offset) {
+                    c->offset--;
+                    continue;
+                }
+                c->produced++;
+                return 1;
+            }
+        }
         if (r <= 0) {
             c->ended = 1;
             return r;
@@ -3614,6 +3803,55 @@ static int sort_kinds(SqlCursor *c, const SortRow *r) {
     return 0;
 }
 
+/* One output row taken into the sort whose ORDER BY names only outputs (a
+ * compound's, a DISTINCT's): its keys read from its own columns, kept in
+ * memory or handed to the sorter past the budget */
+static int sort_take(SqlCursor *c, const GsqlBuf *bytes) {
+    X *x = &c->x;
+    size_t nord = c->plan.s->norder;
+    if (c->nrows == c->rows_cap) {
+        c->rows_cap = c->rows_cap ? c->rows_cap * 2 : 64;
+        c->rows = realloc(c->rows, sizeof(SortRow) * c->rows_cap);
+        if (!c->rows) {
+            abort();
+        }
+    }
+    SortRow *row = &c->rows[c->nrows];
+    memset(row, 0, sizeof *row);
+    v3_put(&row->out, bytes->bytes, bytes->length);
+    row->keys = calloc(nord ? nord : 1, sizeof(GsqlHv *));
+    if (!row->keys) {
+        abort();
+    }
+    c->nrows++;
+    GsBytes *items = malloc(sizeof(GsBytes) * (c->plan.nout ? c->plan.nout : 1));
+    if (!items) {
+        abort();
+    }
+    long n = v3_array_items(row->out.bytes, row->out.length, items, (long)c->plan.nout);
+    for (size_t j = 0; j < nord; j++) {
+        long at = c->plan.order_out[j];
+        row->keys[j] = at >= 0 && n > at ? hv_bytes(x, items[at].p, items[at].n) : NULL;
+        if (!row->keys[j]) {
+            free(items);
+            return xfail(x->err, GSQL_MISUSE, 0, "an output column was not there to sort by");
+        }
+    }
+    free(items);
+    if (sort_kinds(c, row) < 0) {
+        return x->err->code;
+    }
+    if (c->spilled) {
+        c->nrows--;
+        return spill_row(c, row);
+    }
+    c->held += sizeof(SortRow) + row->out.capacity + 64 * nord;
+    if (c->held > c->q->sort_budget && !c->unkeyed) {
+        return spill_start(c);
+    }
+    return GSQL_OK;
+}
+
 /* The rows a sort needs, up to `budget` of them: 1 more remain, 0 all
  * collected, -1 refused. Resumes where it stopped, as the fold does. */
 static int collect_step(SqlCursor *c, uint64_t budget) {
@@ -3686,6 +3924,23 @@ static int collect_step(SqlCursor *c, uint64_t budget) {
         }
         c->held += sizeof(SortRow) + row->out.capacity + 64 * nord;
         if (c->held > c->q->sort_budget && !c->unkeyed && spill_start(c) != GSQL_OK) {
+            return -1;
+        }
+    }
+    if (c->dxs) {
+        /* SELECT DISTINCT spilled: its later rows, decided, in arrival
+           order; DISTINCT's ORDER BY names only outputs, so each row's keys
+           are its own columns */
+        GsqlBuf b = {0};
+        int r;
+        while ((r = distinct_next_deferred(c, &b)) > 0) {
+            if (sort_take(c, &b) != GSQL_OK) {
+                gsql_buf_free(&b);
+                return -1;
+            }
+        }
+        gsql_buf_free(&b);
+        if (r < 0) {
             return -1;
         }
     }
@@ -6678,25 +6933,150 @@ static int row_key(SqlCursor *c, const SqlPlan *p, const GsqlBuf *row, GsqlKey *
     return GSQL_OK;
 }
 
-static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, Rows *out);
+static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, RowStore *out);
 
 /* the rows of `l op r`, by the table in the design's §2 */
-static int combine(SqlCursor *c, const SqlPlan *p, Rows *l, Rows *r, Rows *out) {
+/* the rows a set operation keeps, decided off the sorter (§9): each row
+ * keyed by its row key, its side (the right first) and its arrival number;
+ * the kept rows' numbers back in arrival order through a second sorter */
+static int combine_spilled(SqlCursor *c, const SqlPlan *p, RowStore *l, RowStore *r, RowStore *out) {
     SqlSetOp op = p->s->setop;
     int all = p->s->set_all;
+    GsXsort *s1 = NULL, *s2 = NULL;
+    int xr = gs_xsort_open(NULL, c->q->sort_run, &s1);
+    if (!xr) {
+        xr = gs_xsort_open(NULL, c->q->sort_run, &s2);
+    }
+    c->q->spills++;
+    int rc = xr ? xsort_fail(c, xr) : GSQL_OK;
+    GsqlBuf row = {0}, k = {0};
+    /* the left side is numbered first, then the right */
+    for (int side = 0; side < 2 && rc == GSQL_OK; side++) {
+        RowStore *in = side ? r : l;
+        for (size_t i = 0; i < in->n && rc == GSQL_OK; i++) {
+            if ((rc = rs_get(&c->x, in, i, &row)) != GSQL_OK) {
+                break;
+            }
+            GsqlKey key;
+            gsql_key_init(&key);
+            rc = row_key(c, p, &row, &key);
+            if (rc == GSQL_OK) {
+                k.length = 0;
+                v3_put(&k, key.bytes, key.length);
+                /* a UNION's sides are one stream; otherwise the right side's
+                   rows sort first, so its count is known before the left's */
+                key_suffix(&k, op == SQL_SET_UNION ? 1 : side ? 0 : 1, side ? l->n + i : i);
+                if ((xr = gs_xsort_add(s1, k.bytes, k.length, NULL, 0))) {
+                    rc = xsort_fail(c, xr);
+                }
+            }
+            gsql_key_free(&key);
+        }
+    }
+    if (rc == GSQL_OK && (xr = gs_xsort_finish(s1))) {
+        rc = xsort_fail(c, xr);
+    }
+    GsqlBuf group = {0};
+    int have_group = 0;
+    uint64_t right = 0, kept = 0;
+    while (rc == GSQL_OK) {
+        GsBytes ek, ev;
+        int have;
+        if ((xr = gs_xsort_next(s1, &ek, &ev, &have))) {
+            rc = xsort_fail(c, xr);
+            break;
+        }
+        if (!have) {
+            break;
+        }
+        size_t kn = ek.n - 9;
+        if (!have_group || group.length != kn || memcmp(group.bytes, ek.p, kn) != 0) {
+            group.length = 0;
+            v3_put(&group, ek.p, kn);
+            have_group = 1;
+            right = kept = 0;
+        }
+        if (ek.p[kn] == 0) {
+            right++;   /* a right-side row of INTERSECT or EXCEPT */
+            continue;
+        }
+        int keep;
+        if (op == SQL_SET_UNION) {
+            keep = kept == 0;
+        } else if (op == SQL_SET_INTERSECT) {
+            keep = all ? kept < right : kept == 0 && right > 0;
+        } else if (all) {
+            keep = right == 0;
+            if (!keep) {
+                right--;
+            }
+        } else {
+            keep = kept == 0 && right == 0;
+        }
+        if (op == SQL_SET_INTERSECT || op == SQL_SET_UNION || !all) {
+            kept += keep;
+        }
+        if (keep && (xr = gs_xsort_add(s2, ek.p + kn + 1, 8, NULL, 0))) {
+            rc = xsort_fail(c, xr);
+        }
+    }
+    gsql_buf_free(&group);
+    if (rc == GSQL_OK && (xr = gs_xsort_finish(s2))) {
+        rc = xsort_fail(c, xr);
+    }
+    while (rc == GSQL_OK) {
+        GsBytes ek, ev;
+        int have;
+        if ((xr = gs_xsort_next(s2, &ek, &ev, &have))) {
+            rc = xsort_fail(c, xr);
+            break;
+        }
+        if (!have) {
+            break;
+        }
+        uint64_t seq = key_seq(ek.p, ek.n);
+        rc = rs_get(&c->x, seq < l->n ? l : r, seq < l->n ? seq : seq - l->n, &row);
+        if (rc == GSQL_OK) {
+            rc = rs_add(&c->x, out, row.bytes, row.length);
+        }
+    }
+    if (s1) {
+        c->q->spill_runs += gs_xsort_runs(s1);
+    }
+    if (s2) {
+        c->q->spill_runs += gs_xsort_runs(s2);
+    }
+    gs_xsort_close(s1);
+    gs_xsort_close(s2);
+    gsql_buf_free(&row);
+    gsql_buf_free(&k);
+    return rc;
+}
+
+static int combine(SqlCursor *c, const SqlPlan *p, RowStore *l, RowStore *r, RowStore *out) {
+    SqlSetOp op = p->s->setop;
+    int all = p->s->set_all;
+    GsqlBuf row = {0};
+    int rc = GSQL_OK;
     if (op == SQL_SET_UNION && all) {
-        for (size_t k = 0; k < l->n; k++) {
-            rows_add(out, &l->v[k]);
+        for (int side = 0; side < 2 && rc == GSQL_OK; side++) {
+            RowStore *in = side ? r : l;
+            for (size_t k = 0; k < in->n && rc == GSQL_OK; k++) {
+                rc = rs_get(&c->x, in, k, &row);
+                if (rc == GSQL_OK) {
+                    rc = rs_add(&c->x, out, row.bytes, row.length);
+                }
+            }
         }
-        for (size_t k = 0; k < r->n; k++) {
-            rows_add(out, &r->v[k]);
-        }
-        return GSQL_OK;
+        gsql_buf_free(&row);
+        return rc;
+    }
+    if (l->spool || r->spool || l->held + r->held > c->q->sort_budget) {
+        return combine_spilled(c, p, l, r, out);
     }
     Tally right, emitted;
     memset(&right, 0, sizeof right);
     memset(&emitted, 0, sizeof emitted);
-    int rc = GSQL_OK;
     if (op != SQL_SET_UNION) {
         for (size_t k = 0; k < r->n && rc == GSQL_OK; k++) {
             GsqlKey key;
@@ -6710,7 +7090,7 @@ static int combine(SqlCursor *c, const SqlPlan *p, Rows *l, Rows *r, Rows *out) 
         }
     }
     for (int side = 0; side < (op == SQL_SET_UNION ? 2 : 1) && rc == GSQL_OK; side++) {
-        Rows *in = side ? r : l;
+        RowStore *in = side ? r : l;
         for (size_t k = 0; k < in->n && rc == GSQL_OK; k++) {
             GsqlKey key;
             gsql_key_init(&key);
@@ -6743,19 +7123,22 @@ static int combine(SqlCursor *c, const SqlPlan *p, Rows *l, Rows *r, Rows *out) 
                 keep = emitted.count[e_at - 1]++ == 0;
             }
             if (keep) {
-                rows_add(out, &in->v[k]);
+                rc = rs_add(&c->x, out, in->v[k].bytes, in->v[k].length);
             }
             gsql_key_free(&key);
         }
     }
     tally_free(&right);
     tally_free(&emitted);
+    gsql_buf_free(&row);
     return rc;
 }
 
-static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, Rows *out) {
+static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, RowStore *out) {
     if (p->s->setop) {
-        Rows l = {0}, r = {0};
+        RowStore l, r;
+        memset(&l, 0, sizeof l);
+        memset(&r, 0, sizeof r);
         int rc = side_rows(c, p->left, e, t, &l);
         if (rc == GSQL_OK) {
             rc = side_rows(c, p->right, e, t, &r);
@@ -6763,8 +7146,8 @@ static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, Rows
         if (rc == GSQL_OK) {
             rc = combine(c, p, &l, &r, out);
         }
-        rows_free(&l);
-        rows_free(&r);
+        rs_free(&l);
+        rs_free(&r);
         return rc;
     }
     SqlCursor *k = calloc(1, sizeof *k);
@@ -6788,12 +7171,14 @@ static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, Rows
             rc = k->err.code ? k->err.code : GSQL_EXPRESSION;
         } else if (r == 0) {
             break;
-        } else {
-            rows_add(out, &row);
+        } else if ((rc = rs_add(&c->x, out, row.bytes, row.length)) != GSQL_OK) {
+            k->err = c->err;
         }
     }
     if (rc != GSQL_OK) {
-        c->err = k->err;
+        if (k->err.code != GSQL_OK) {
+            c->err = k->err;
+        }
         if (c->err.code == GSQL_OK) {
             c->err.code = rc;
         }
@@ -6806,55 +7191,49 @@ static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, Rows
 /* A compound SELECT's rows, gathered, combined and sorted; the cursor then
  * hands them out as it hands out any sorted rows. */
 static int compound_start(SqlCursor *c, const GsEngine *e, GsTxn *t) {
-    Rows all = {0};
+    RowStore all;
+    memset(&all, 0, sizeof all);
     int rc = side_rows(c, &c->plan, e, t, &all);
     if (rc != GSQL_OK) {
-        rows_free(&all);
+        rs_free(&all);
         return rc;
     }
-    size_t nord = c->plan.s->norder;
-    c->rows = calloc(all.n ? all.n : 1, sizeof(SortRow));
-    if (!c->rows) {
-        abort();
+    if (!c->plan.s->norder) {
+        /* no sort: read out as combined, spooled or not */
+        c->cstore = all;
+        c->cstored = 1;
+        c->cpos = 0;
+        return GSQL_OK;
     }
-    for (size_t k = 0; k < all.n; k++) {
-        SortRow *row = &c->rows[c->nrows++];
-        row->out = all.v[k];
-        row->keys = calloc(nord ? nord : 1, sizeof(GsqlHv *));
-        if (!row->keys) {
-            abort();
+    GsqlBuf row = {0};
+    for (size_t k = 0; k < all.n && rc == GSQL_OK; k++) {
+        rc = rs_get(&c->x, &all, k, &row);
+        if (rc == GSQL_OK) {
+            rc = sort_take(c, &row);
         }
-        if (!nord) {
-            continue;
-        }
-        GsBytes *items = malloc(sizeof(GsBytes) * (c->plan.nout ? c->plan.nout : 1));
-        if (!items) {
-            abort();
-        }
-        long n = v3_array_items(row->out.bytes, row->out.length, items, (long)c->plan.nout);
-        for (size_t j = 0; j < nord; j++) {
-            long at = c->plan.order_out[j];
-            row->keys[j] = n > at ? hv_bytes(&c->x, items[at].p, items[at].n) : NULL;
-            if (!row->keys[j]) {
-                free(items);
-                free(all.v);
-                return xfail(&c->err, GSQL_MISUSE, 0, "an output column was not there to sort by");
-            }
-        }
-        free(items);
     }
-    free(all.v);   /* the rows' bytes moved into c->rows */
-    if (nord) {
-        /* whole: a compound is not sliced (docs/gsql_slicing_design.md §2) */
-        sort_begin(c);
-        int r = sort_step(c, UINT64_MAX);
-        free(c->sort_tmp);
-        c->sort_tmp = NULL;
-        if (r < 0) {
-            return c->err.code ? c->err.code : GSQL_EXPRESSION;
-        }
+    gsql_buf_free(&row);
+    rs_free(&all);
+    if (rc != GSQL_OK) {
+        return c->err.code ? c->err.code : rc;
     }
     c->sorted = 1;
+    if (c->spilled) {
+        int xr = gs_xsort_finish(c->xs);
+        if (xr) {
+            return xsort_fail(c, xr);
+        }
+        c->q->spill_runs += gs_xsort_runs(c->xs);
+        return GSQL_OK;   /* OFFSET is skipped as the rows come off the sorter */
+    }
+    /* whole: a compound is not sliced (docs/gsql_slicing_design.md §2) */
+    sort_begin(c);
+    int r = sort_step(c, UINT64_MAX);
+    free(c->sort_tmp);
+    c->sort_tmp = NULL;
+    if (r < 0) {
+        return c->err.code ? c->err.code : GSQL_EXPRESSION;
+    }
     c->pos = c->offset < c->nrows ? (size_t)c->offset : c->nrows;
     c->offset = 0;
     return GSQL_OK;
