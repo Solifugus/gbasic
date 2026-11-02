@@ -22,12 +22,15 @@ Supported string escapes:
 
 - `\n` newline
 - `\t` tab
+- `\r` carriage return, so a CRLF line ending is `"\r\n"` *(after 0.10.0)*
 - `\\` backslash
 - `\"` double quote
 - `\u{...}` Unicode codepoint by hex value, e.g. `\u{1F600}` → `😀` (range
   `1..0x10FFFF`, excluding surrogates; for a literal NUL use `chr(0)`)
 
-Unknown escapes and unterminated strings are lexer errors and exit nonzero.
+An unterminated string is a lexer error and exits nonzero. An unknown escape
+(`\d`, say) keeps both characters and warns, so a regex can be written in an
+ordinary string; write `\\d` to say the backslash is meant.
 
 ### Line continuation
 

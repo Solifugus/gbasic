@@ -39,6 +39,12 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### `\r` in a string is a carriage return
+
+`"\r\n"` is CRLF. It used to keep both characters and warn, so the line ending
+of most files a business receives was written `chr(13) + chr(10)`. A program
+that meant the two characters `\r` now writes `\\r`.
+
 ### G-SQL: gBASIC's own database
 
 New since 0.10.0. A database is a directory; a stored value comes back as the

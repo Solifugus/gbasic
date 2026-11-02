@@ -53,7 +53,7 @@ FreeBASIC. `.gb` is unambiguous and needs none of this.
   (`and`, `or`, `not`)
 - The ~90 builtin functions (`print`, `len`, `split`, `list_files`,
   `password_hash`, `receive`, …)
-- Strings (with `\n \t \\ \"` and `\u{…}` escapes), numbers, and `'` comments
+- Strings (with `\n \t \r \\ \"` and `\u{…}` escapes), numbers, and `'` comments
 
 The keyword and builtin lists are derived from `src/lexer.c` and
 `src/builtins.c`; if the language gains keywords/builtins, update

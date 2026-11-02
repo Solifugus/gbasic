@@ -258,6 +258,12 @@ static char *copy_string_literal(gb_parse_ctx *ctx, const char *start, int lengt
                 text[out++] = '\n';
             } else if (start[i] == 't') {
                 text[out++] = '\t';
+            } else if (start[i] == 'r') {
+                /* CRLF is the line ending of most files a business receives,
+                 * so `"\r\n"` is written often enough to need no chr(13)
+                 * (gbasic-books volume 3, gap G5). It used to be an unknown
+                 * escape: the two characters, and a warning. */
+                text[out++] = '\r';
             } else if (start[i] == '"' || start[i] == '\\') {
                 text[out++] = start[i];
             } else if (start[i] == 'u') {

@@ -36908,6 +36908,8 @@ static Value modifier_string_literal(const char *inner, size_t len) {
             out[w++] = '\n';
         } else if (esc == 't') {
             out[w++] = '\t';
+        } else if (esc == 'r') {
+            out[w++] = '\r';
         } else if (esc == '"' || esc == '\\') {
             out[w++] = esc;
         } else if (esc == 'u') {

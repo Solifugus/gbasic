@@ -84,6 +84,23 @@ print len("a\u{41}b")'
     && ok 'n, t, quote, backslash and \u{} all still collapse to one character, silently' \
     || bad 'known escapes' "rc=$rc out=[$out] err=[$err]"
 
+echo "--- TIER 3b: \\r is a carriage return, in both stages (gbasic-books G5) ---"
+# It was an unknown escape until 2026-11-02 -- two characters and a warning --
+# so CRLF had to be written chr(13) + chr(10). Asserted by BYTE, since a kept
+# backslash-r also has a length, and in the modifier stage too, which has its
+# own decoder.
+run 'print len("a\rb")
+print byte_at("a\r\nb", 1)
+print byte_at("a\r\nb", 2)
+p {split "\r"}= "x" + chr(13) + "y"
+print count(p)'
+[ "$rc" = "0" ] && [ "$out" = "3
+13
+10
+2" ] && [ -z "$err" ] \
+    && ok '\r is one byte, 13, silently, in an ordinary literal and in a modifier literal' \
+    || bad '\r escape' "rc=$rc out=[$out] err=[$err]"
+
 echo "--- TIER 4: CONTROLS -- malformed unicode is STILL REFUSED ---"
 # The relaxation is narrow: an UNKNOWN escape is now advice, a MALFORMED \u{}
 # is still an error. Without this tier, "escapes were relaxed" could quietly
