@@ -147,7 +147,12 @@ done
 if [ -z "$left" ]; then
     pass "no owner process is left"
 else
-    fail "owner processes outlived their clients: $left"
+    fail "owner processes outlived their clients: $left (killed now, by these PIDs, after the failure is recorded)"
+    # a stuck owner never stops by itself, and one left behind spun for 35
+    # hours under every timing tier that ran after it (2026-11-02)
+    for pid in $left; do
+        kill -9 "$pid" 2>/dev/null
+    done
 fi
 
 if [ "$status" = 0 ]; then

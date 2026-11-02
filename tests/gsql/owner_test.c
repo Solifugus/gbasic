@@ -2123,6 +2123,12 @@ static int lifetime_main(const char *dir) {
     EXPECT(gone, "an owner stuck in a statement outlived its SIGTERM by %.0f ms: the stop has no deadline", took);
     EXPECT(took > 700, "the stuck owner was gone %.0f ms after SIGTERM, before its 1 s grace: something other than the "
            "deadline ended it, so this check measured nothing", took);
+    if (!gone) {
+        /* the check has failed; the owner must not go on spinning after it
+           (measured 2026-11-02: one left by a failed run on Nov 1 had spun at
+           100% CPU for 35 hours, under every timing tier since) */
+        kill((pid_t)owner, SIGKILL);
+    }
     return finish();
 }
 
