@@ -4238,3 +4238,74 @@ indices, which no slot here takes — nobody has asked.
 
 **The oracle is Qt.** `qt.alignment` reads the model's alignment role or the cell item's alignment, never the declaration, so a backend that stored `align:` and never applied it is caught. Five perturbations proven red: the model ignoring it, the held table ignoring it, the tree ignoring it, unknown column options accepted, and the value unchecked (`tests/run_qt_align.sh`).
 
+
+## 0.36 Studio's find-and-replace requests (2026-11-03)
+
+**Asked for by gBASIC Studio**, seven items, none blocking. Five are Qt, one is
+the binary's version, one is the regex engine (`docs/regex_pcre2_design.md`).
+
+### A `choice` in a form loses its label
+
+`choice licence( label: "Licence" )` in a `form` showed no label at all. §0.19
+already names the two words whose label **the parent places**, `field` and
+`choice`, and refuses both as a direct pane for that reason; but the placement
+code below the refusal tested only `field`, in all three parents (a form row, a
+`cells` grid, a `column` or `row`). So the derivation was right and one of its
+two uses ignored it. Now one predicate, `label_placed_by_parent(word)`, is asked
+by the refusal and by every placement, so they cannot disagree again.
+
+Studio asked for "any labelled part". The others are not dropped: a `button`, a
+`check`, a `text`, a `memo` and a `source` consume `label:` as their own text,
+so a row caption as well would show it twice.
+
+**Its observable is new.** Nothing could read a row's caption, so a fixture
+could not tell the fix from the defect. `qt.label(win, part)` answers the
+caption shown beside a part, or `nothing` when it has none. It reads **Qt**:
+the `QLabel` whose buddy is the part, which is what `QFormLayout::addRow`
+creates and what the grid and box placements now set too. It never reads the
+declaration.
+
+### Showing whitespace
+
+`QTextOption::ShowTabsAndSpaces | ShowLineAndParagraphSeparators` on the
+document's default text option is not a property, so `qt.set` could not reach
+it. `whitespace` is now a **named setting** on a `source` or a `memo`, through
+the same `qt.set` and `qt.get` as a property: `qt.set(win, "ed", "whitespace",
+true)` and `qt.get(win, "ed", "whitespace")`. The readback asks the document's
+text option, not a stored flag. It is off by default; on anything else it is
+refused, naming the two words.
+
+### Selecting a range, replacing as an edit, and marking every match
+
+Positions are **caret positions**, 1-based like `qt.caret` and `qt.caret_to`:
+`(line, column)` names the gap before that column, so `1, 1` to `1, 4`
+covers three characters and an equal start and end is an empty range. They
+are resolved by **one function**, shared with `qt.caret_to`. A line past the
+end is refused, giving the real length; a column past the end of its line
+clamps, as it does for the caret. Columns count **codepoints**, as `len` and
+`regex` do, so a match found in gBASIC can be handed straight over. Qt's
+`positionInBlock` counts UTF-16 units; `qt.caret` and `qt.caret_to` used them
+directly and disagreed with `len` after an astral character, so they move to
+codepoints too.
+
+- **`qt.select_text(win, part, line, column, line2, column2)`** selects from the
+  first position to the second (the caret ends at the second).
+  **`qt.selection(win, part)`** answers `{line, column, line2, column2, text}`
+  or `nothing` when nothing is selected.
+- **`qt.replace_text(win, part, edits)`** applies one edit
+  `{line, column, line2, column2, text}`, or an array of them, through a
+  `QTextCursor` inside **one** `beginEditBlock`/`endEditBlock`, so a Replace All
+  is one undo step. Every position refers to the text **before** the call: the
+  edits are applied from last to first, and overlapping edits are refused
+  before anything changes. An empty range inserts.
+- **`qt.highlight_text(win, part, ranges)`** sets Qt's extra selections from a
+  list of ranges, replacing the whole list as `qt.mark` replaces a category;
+  `[]` clears it. **`qt.highlights(win, part)`** reads the list back from Qt.
+
+### Clicking a row
+
+`qt.right_click` can aim at a row; nothing could fire `itemClicked`, so Studio's
+single-click-opens path had no test. **`qt.click(win, part)`** and
+**`qt.click(win, part, row)`** send a left press and release where a mouse would
+land, aimed exactly as `qt.right_click` aims, so Qt itself emits `clicked`,
+`itemClicked` and the selection change. It does not call a handler directly.

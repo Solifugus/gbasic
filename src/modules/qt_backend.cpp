@@ -45,6 +45,8 @@
 #include "qt_backend.h"
 
 #include <QApplication>
+#include <algorithm>
+#include <vector>
 #include <QCheckBox>
 #include <QEvent>
 #include <QSplitter>
@@ -1733,6 +1735,35 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
     return n;
 }
 
+/* THE TWO WORDS WHOSE `label:` THE PARENT PLACES (§0.19, §0.36): every other
+ * leaf consumes its label as its own text at construction. ONE PREDICATE for the
+ * pane refusal and all three placements, because the placements once tested
+ * `field` alone while the refusal named both, and a `choice` in a form showed
+ * no label at all. */
+static bool label_placed_by_parent(const char *word, bool in_form) {
+    if (strcmp(word, "field") == 0 || strcmp(word, "choice") == 0) {
+        return true;
+    }
+    /* IN A FORM, A `memo` OR A `source` IS A ROW TOO, and its label is the
+     * row's caption rather than its first text: `memo description( label:
+     * "Description" )` in BAG's editor and in the choice fixture put the word
+     * INSIDE the memo, where the bound data then replaced it, so it showed
+     * nowhere. Outside a form the label stays the text, which is how
+     * `memo log( label: "You are in the cellar." )` is written. A `button`, a
+     * `check` and a `text` keep theirs as their own text everywhere: it is
+     * what they show. */
+    return in_form && (strcmp(word, "memo") == 0 || strcmp(word, "source") == 0);
+}
+
+/* A caption placed beside `w` in a grid or a box, with `w` as its BUDDY -- as
+ * QFormLayout::addRow makes its own -- so `qt.label` finds every caption the one
+ * way, from Qt. */
+static QLabel *caption_for(const char *label, QWidget *w, GbQtNode *p) {
+    QLabel *l = new QLabel(QString::fromUtf8(label), host_of(p));
+    l->setBuddy(w);
+    return l;
+}
+
 extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
                             const char *label, char *err, size_t err_size) {
     GbQtNode *p = (GbQtNode *)parent;
@@ -1801,8 +1832,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
      * the two words whose label the parent places are the two that are
      * refused, and the suite asserts a `check` keeps its caption as a pane so
      * the rule cannot widen into one that fires on correct declarations. */
-    if (!p->layout && psplit && label && *label &&
-        (strcmp(word, "field") == 0 || strcmp(word, "choice") == 0)) {
+    if (!p->layout && psplit && label && *label && label_placed_by_parent(word, false)) {
         say(err, err_size,
             QByteArray("a pane has nowhere to put a label, so `") + word +
                 "` cannot carry one here -- put it in a `form` or a `column`");
@@ -1946,7 +1976,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * a program put in as a string, and nothing in this vocabulary asks
          * for formatting. */
         QPlainTextEdit *m = new QPlainTextEdit(host_of(p));
-        if (label && *label) {
+        if (label && *label && !label_placed_by_parent(word, pf != nullptr)) {
             m->setPlainText(QString::fromUtf8(label));
         }
         w = m;
@@ -1979,7 +2009,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
         se->setFont(mono);
         se->setLineWrapMode(QPlainTextEdit::NoWrap);
         se->setTabStopDistance(4 * QFontMetricsF(mono).horizontalAdvance(QLatin1Char(' ')));
-        if (label && *label) {
+        if (label && *label && !label_placed_by_parent(word, pf != nullptr)) {
             se->setPlainText(QString::fromUtf8(label));
         }
         w = se;
@@ -1999,9 +2029,8 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * what a form does with a QFormLayout and what an author writing a
          * labelled grid expects. It costs a column, which is why a `field`
          * with no label takes one cell and one with a label takes two. */
-        if (strcmp(word, "field") == 0 && label && *label) {
-            pg->addWidget(new QLabel(QString::fromUtf8(label), host_of(p)),
-                          p->grid_row, p->grid_col++);
+        if (label_placed_by_parent(word, false) && label && *label) {
+            pg->addWidget(caption_for(label, w, p), p->grid_row, p->grid_col++);
         }
         /* THE GRID AND THE POSITION ARE KEPT ON THE PART, because that is
          * what `across:`/`down:` need to re-add it -- and a part whose
@@ -2011,13 +2040,15 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
         n->grid_row = p->grid_row;
         n->grid_col = p->grid_col;
         pg->addWidget(w, p->grid_row, p->grid_col++);
-    } else if (strcmp(word, "field") == 0 && pf) {
+    } else if (label_placed_by_parent(word, true) && pf) {
+        /* addRow(text, w) makes the QLabel and makes `w` its buddy, which is
+         * what `qt.label` reads */
         pf->addRow(label && *label ? QString::fromUtf8(label) : QString(), w);
     } else if (pf) {
         pf->addRow(w);
     } else if (pb) {
-        if (strcmp(word, "field") == 0 && label && *label) {
-            pb->addWidget(new QLabel(QString::fromUtf8(label), host_of(p)));
+        if (label_placed_by_parent(word, false) && label && *label) {
+            pb->addWidget(caption_for(label, w, p));
         }
         pb->addWidget(w);
     }
@@ -2891,10 +2922,54 @@ extern "C" int gb_qt_set_part_number(void *window, const char *name,
     return o ? set_property(o, prop, QVariant(value), err, err_size) : 0;
 }
 
+/* SHOWING WHITESPACE (§0.36): a flag on the document's default text option,
+ * which is not a property, so `qt.set`/`qt.read` reach it by this name. Read
+ * back from the option itself, never from a stored flag. */
+static const QTextOption::Flags WHITESPACE_FLAGS =
+    QTextOption::ShowTabsAndSpaces | QTextOption::ShowLineAndParagraphSeparators;
+
+static QPlainTextEdit *whitespace_editor(QObject *o, const char *name,
+                                         char *err, size_t err_size) {
+    QPlainTextEdit *e = qobject_cast<QPlainTextEdit *>(o);
+    if (!e) {
+        say(err, err_size,
+            QByteArray("`whitespace` is a setting of a `source` or a `memo`, "
+                       "and `") + name + "` is neither");
+    }
+    return e;
+}
+
+static int set_whitespace(QObject *o, const char *name, bool on, char *err,
+                          size_t err_size) {
+    QPlainTextEdit *e = whitespace_editor(o, name, err, err_size);
+    if (!e) {
+        return 0;
+    }
+    QTextOption opt = e->document()->defaultTextOption();
+    QTextOption::Flags f = opt.flags();
+    opt.setFlags(on ? (f | WHITESPACE_FLAGS) : (f & ~WHITESPACE_FLAGS));
+    e->document()->setDefaultTextOption(opt);
+    return 1;
+}
+
+static int whitespace_of(QObject *o, const char *name, int *on, char *err,
+                         size_t err_size) {
+    QPlainTextEdit *e = whitespace_editor(o, name, err, err_size);
+    if (!e) {
+        return 0;
+    }
+    QTextOption::Flags f = e->document()->defaultTextOption().flags();
+    *on = (f & WHITESPACE_FLAGS) == WHITESPACE_FLAGS;
+    return 1;
+}
+
 extern "C" int gb_qt_set_part_bool(void *window, const char *name,
                                    const char *prop, int value, char *err,
                                    size_t err_size) {
     QObject *o = part_named(window, name, err, err_size);
+    if (o && strcmp(prop, "whitespace") == 0) {
+        return set_whitespace(o, name, value != 0, err, err_size);
+    }
     return o ? set_property(o, prop, QVariant(value != 0), err, err_size) : 0;
 }
 
@@ -2917,6 +2992,15 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
     if (!w) {
         say(err, err_size, QByteArray("this window has no `") + name + "`");
         return 0;
+    }
+    if (strcmp(prop, "whitespace") == 0) {
+        int on = 0;
+        if (!whitespace_of(w, name, &on, err, err_size)) {
+            return 0;
+        }
+        *kind = 'b';
+        *num = on ? 1.0 : 0.0;
+        return 1;
     }
     const QMetaObject *mo = w->metaObject();
     if (mo->indexOfProperty(prop) < 0) {
@@ -3243,8 +3327,11 @@ static QTreeWidget *tree_of(void *window, const char *name);
 static QTreeWidgetItem *tree_item_at(QTreeWidget *t, int index);
 static int tree_index_of(QTreeWidget *t, QTreeWidgetItem *want);
 
-extern "C" int gb_qt_right_click(void *window, const char *name, int row,
-                                 char *err, size_t err_size) {
+/* WHERE A MOUSE WOULD LAND on a part, a table or tree row, or a tab: shared by
+ * `qt.right_click` and `qt.click` (§0.36), so the two buttons aim the same
+ * way. */
+static int click_aim(void *window, const char *name, int row, QWidget **aimed,
+                     QPoint *aimed_at, char *err, size_t err_size) {
     GbQtNode *root = (GbQtNode *)window;
     if (!root) {
         say(err, err_size, "there is no window to click in");
@@ -3342,6 +3429,18 @@ extern "C" int gb_qt_right_click(void *window, const char *name, int row,
     } else if (target->width() > 8 && target->height() > 8) {
         at = QPoint(target->width() / 2, target->height() / 2);
     }
+    *aimed = target;
+    *aimed_at = at;
+    return 1;
+}
+
+extern "C" int gb_qt_right_click(void *window, const char *name, int row,
+                                 char *err, size_t err_size) {
+    QWidget *target = nullptr;
+    QPoint at;
+    if (!click_aim(window, name, row, &target, &at, err, err_size)) {
+        return 0;
+    }
     QPoint global = target->mapToGlobal(at);
     /* A PRESS AND A RELEASE, THEN THE CONTEXT EVENT, in the order a mouse
      * produces them -- the press is what MOVES THE SELECTION (measured: Qt
@@ -3356,6 +3455,28 @@ extern "C" int gb_qt_right_click(void *window, const char *name, int row,
     QApplication::sendEvent(target, &release);
     QContextMenuEvent ctx(QContextMenuEvent::Mouse, at, global);
     QApplication::sendEvent(target, &ctx);
+    return 1;
+}
+
+/* A LEFT CLICK (§0.36), asked for by gBASIC Studio, whose single-click-opens
+ * path had no test: nothing could fire `itemClicked`. A press and a release
+ * where a mouse would land, aimed as `qt.right_click` aims, so QT emits
+ * `clicked`, `itemClicked` and the selection change itself; no handler is
+ * called directly. */
+extern "C" int gb_qt_click(void *window, const char *name, int row, char *err,
+                           size_t err_size) {
+    QWidget *target = nullptr;
+    QPoint at;
+    if (!click_aim(window, name, row, &target, &at, err, err_size)) {
+        return 0;
+    }
+    QPoint global = target->mapToGlobal(at);
+    QMouseEvent press(QEvent::MouseButtonPress, at, global, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(target, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, at, global, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(target, &release);
     return 1;
 }
 
@@ -4027,6 +4148,92 @@ static GbQtSourceEdit *source_edit_named(void *window, const char *name,
     return e;
 }
 
+/* ---- POSITIONS IN A TEXT EDITOR (§0.32, §0.36) ----------------------------
+ *
+ * COLUMNS COUNT CODEPOINTS, as `len`, `mid` and `regex` do, so a match found in
+ * gBASIC goes straight into `qt.select_text`. Qt counts UTF-16 units, which
+ * differ after an astral character (an emoji is two), so the conversion lives
+ * here, once. */
+static int codepoints_before(const QString &text, int units) {
+    int n = 0;
+    for (int i = 0; i < units && i < text.size(); i++) {
+        if (!(text.at(i).isLowSurrogate() && i > 0 && text.at(i - 1).isHighSurrogate())) {
+            n++;
+        }
+    }
+    return n;
+}
+
+static int units_for(const QString &text, int codepoints) {
+    int i = 0;
+    for (int n = 0; n < codepoints && i < text.size(); n++) {
+        i += (text.at(i).isHighSurrogate() && i + 1 < text.size() &&
+              text.at(i + 1).isLowSurrogate()) ? 2 : 1;
+    }
+    return i;
+}
+
+/* A 1-BASED (line, column) TO A DOCUMENT POSITION, the one resolver `qt.caret_to`,
+ * `qt.select_text`, `qt.replace_text` and `qt.highlight_text` share.
+ *
+ * A LINE PAST THE END IS REFUSED, not clamped: a program working from a stale
+ * model of the document should be told so, and clamping would land on the
+ * wrong line looking right. The message carries the real length.
+ *
+ * A COLUMN PAST ITS LINE CLAMPS to the line's end, where a person pressing End
+ * would land: a position just past the last character is ordinary. The clamp
+ * is ours -- measured (§0.32), `movePosition(Right, n)` walks across lines. */
+static bool text_position(QPlainTextEdit *e, int line, int column, int *at,
+                          char *err, size_t err_size) {
+    if (line < 1 || column < 1) {
+        say(err, err_size,
+            "a line and a column both start at 1 -- the same numbering a "
+            "diagnostic and `qt.mark` use");
+        return false;
+    }
+    QTextBlock block = e->document()->findBlockByNumber(line - 1);
+    if (!block.isValid()) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "that line is past the end -- this editor holds %d",
+                 e->document()->blockCount());
+        say(err, err_size, buf);
+        return false;
+    }
+    QString text = block.text();
+    int units = units_for(text, column - 1);
+    *at = block.position() + units;
+    return true;
+}
+
+/* A DOCUMENT POSITION BACK TO (line, column), for every reader. */
+static void text_line_column(QPlainTextEdit *e, int at, int *line, int *column) {
+    QTextBlock block = e->document()->findBlock(at);
+    *line = block.blockNumber() + 1;
+    *column = codepoints_before(block.text(), at - block.position()) + 1;
+}
+
+static QPlainTextEdit *text_editor_named(void *window, const char *name,
+                                         const char *what, char *err,
+                                         size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!o) {
+        say(err, err_size, QByteArray("there is nothing called `") + name +
+                               "` in this window");
+        return nullptr;
+    }
+    QPlainTextEdit *e = qobject_cast<QPlainTextEdit *>(o);
+    if (!e) {
+        say(err, err_size,
+            QByteArray("only a `source` or a `memo` ") + what + ", and `" +
+                name + "` is neither");
+        return nullptr;
+    }
+    return e;
+}
+
 /* WHERE THE CARET IS, AND PUTTING IT SOMEWHERE (§0.32) -- asked for by the
  * gBASIC Studio session with the use that justifies it: *"stopped at line 7 --
  * put the caret there to see why"*, which is the difference between an editor
@@ -4062,7 +4269,7 @@ extern "C" int gb_qt_caret(void *window, const char *name, int *line,
     }
     QTextCursor c = e->textCursor();
     if (line)   { *line = c.blockNumber() + 1; }
-    if (column) { *column = c.positionInBlock() + 1; }
+    if (column) { *column = codepoints_before(c.block().text(), c.positionInBlock()) + 1; }
     /* A CARET INSIDE A SELECTION IS ONE END OF A RANGE, so saying so is what
      * keeps the reading unambiguous -- the `principal()` and `qt.dialog`
      * discipline, where an answer that could mean two things is worse than a
@@ -4075,64 +4282,16 @@ extern "C" int gb_qt_caret(void *window, const char *name, int *line,
 
 extern "C" int gb_qt_caret_to(void *window, const char *name, int line,
                               int column, char *err, size_t err_size) {
-    GbQtNode *root = (GbQtNode *)window;
-    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
-                      : nullptr;
-    if (!o) {
-        say(err, err_size, QByteArray("there is nothing called `") + name +
-                               "` in this window");
-        return 0;
-    }
-    QPlainTextEdit *e = qobject_cast<QPlainTextEdit *>(o);
+    QPlainTextEdit *e = text_editor_named(window, name, "has a caret", err, err_size);
     if (!e) {
-        say(err, err_size,
-            QByteArray("only a `source` or a `memo` has a caret, and `") +
-                name + "` is neither");
         return 0;
     }
-    if (line < 1 || column < 1) {
-        say(err, err_size,
-            "a line and a column both start at 1 -- the same numbering a "
-            "diagnostic and `qt.mark` use");
+    int at = 0;
+    if (!text_position(e, line, column, &at, err, err_size)) {
         return 0;
     }
-    QTextBlock block = e->document()->findBlockByNumber(line - 1);
-    if (!block.isValid()) {
-        /* REFUSED RATHER THAN CLAMPED TO THE LAST LINE, and the reason is the
-         * use: a program putting the caret on a line a diagnostic named is
-         * working from a model of the document, and if that model is stale the
-         * honest answer is to say so. Clamping would put the caret on the
-         * WRONG LINE and look like it worked, which is the silent class this
-         * backend is tested against. The message carries the real length,
-         * because that is what tells the caller their model has moved. */
-        char buf[128];
-        snprintf(buf, sizeof(buf),
-                 "that line is past the end -- this editor holds %d",
-                 e->document()->blockCount());
-        say(err, err_size, buf);
-        return 0;
-    }
-    QTextCursor c(block);
-    /* THE COLUMN CLAMPS, WHERE THE LINE DOES NOT, and the asymmetry is
-     * deliberate: a line past the end means the caller's idea of the document
-     * is wrong, where a column past the end of ITS line is ordinary -- a
-     * diagnostic pointing just past the last character, or a line that has
-     * since been shortened -- so it lands where a person pressing End would.
-     *
-     * AND THE CLAMP IS OURS, which a FIXTURE CORRECTED: the first version said
-     * "Qt stops at the line end by itself" and measured it does not --
-     * `movePosition(Right, n)` walks ACROSS block boundaries, so column 999 of
-     * line 2 landed on line 7 of a seven-line document. A plausible position,
-     * in the wrong place, which is the class this backend is tested against,
-     * and the second comment of mine this week that a measurement has
-     * contradicted. `block.length()` counts the separator, so the last
-     * position in the line is one less. */
-    int last = block.length() - 1;
-    int want = column - 1;
-    if (want > last) {
-        want = last;
-    }
-    c.movePosition(QTextCursor::Right, QTextCursor::MoveAnchor, want);
+    QTextCursor c(e->document());
+    c.setPosition(at);
     e->setTextCursor(c);
     /* RE-ENTRY (§0.31): MEASURED, `setTextCursor` emits
      * `cursorPositionChanged` exactly once, so a handler may run here and may
@@ -4140,6 +4299,209 @@ extern "C" int gb_qt_caret_to(void *window, const char *name, int line,
      * which is the cheapest form of the §0.31 discipline, and is why this
      * function ends on the call rather than reading anything back. */
     return 1;
+}
+
+/* ---- SELECTING, REPLACING AND MARKING MATCHES (§0.36) -------------------
+ * Asked for by gBASIC Studio's find and replace. Every position goes through
+ * `text_position`, so a range and the caret mean the same thing by a column. */
+
+/* Two positions, resolved and ordered; false (err set) when either refuses. */
+static bool text_range(QPlainTextEdit *e, const int *span, int *from, int *to,
+                       char *err, size_t err_size) {
+    if (!text_position(e, span[0], span[1], from, err, err_size) ||
+        !text_position(e, span[2], span[3], to, err, err_size)) {
+        return false;
+    }
+    if (*to < *from) {
+        say(err, err_size,
+            "a range ends before it starts -- give the earlier position first");
+        return false;
+    }
+    return true;
+}
+
+extern "C" int gb_qt_select_text(void *window, const char *name, int line,
+                                 int column, int line2, int column2, char *err,
+                                 size_t err_size) {
+    QPlainTextEdit *e = text_editor_named(window, name, "holds text to select",
+                                          err, err_size);
+    if (!e) {
+        return 0;
+    }
+    int from = 0, to = 0;
+    int span[4] = {line, column, line2, column2};
+    if (!text_range(e, span, &from, &to, err, err_size)) {
+        return 0;
+    }
+    QTextCursor c(e->document());
+    c.setPosition(from);
+    c.setPosition(to, QTextCursor::KeepAnchor);
+    e->setTextCursor(c);
+    /* re-entry (§0.31): a handler may run on cursorPositionChanged, so nothing
+     * is touched after the call */
+    return 1;
+}
+
+/* 1 a selection (all six written; *text malloc'd), 0 nothing selected, -1
+ * refused. */
+extern "C" int gb_qt_selection(void *window, const char *name, int *span,
+                               char **text, char *err, size_t err_size) {
+    QPlainTextEdit *e = text_editor_named(window, name, "holds a selection",
+                                          err, err_size);
+    if (!e) {
+        return -1;
+    }
+    QTextCursor c = e->textCursor();
+    if (!c.hasSelection()) {
+        return 0;
+    }
+    text_line_column(e, c.selectionStart(), &span[0], &span[1]);
+    text_line_column(e, c.selectionEnd(), &span[2], &span[3]);
+    /* selectedText() writes U+2029 between lines; the document's own text has
+     * a line feed, which is what `qt.read` answers */
+    QString t = c.selectedText();
+    t.replace(QChar(0x2029), QChar('\n'));
+    *text = dup_utf8(t);
+    return *text ? 1 : -1;
+}
+
+/* EDITS AS ONE UNDO STEP. Every span names a range in the text BEFORE this
+ * call; they are resolved first, refused if any overlaps another, and applied
+ * from last to first so an earlier edit never moves a later one. All inside one
+ * beginEditBlock/endEditBlock, so Replace All is undone by one undo. */
+extern "C" int gb_qt_replace_text(void *window, const char *name,
+                                  const int *spans, const char *const *texts,
+                                  size_t n, char *err, size_t err_size) {
+    QPlainTextEdit *e = text_editor_named(window, name, "holds text to replace",
+                                          err, err_size);
+    if (!e) {
+        return 0;
+    }
+    if (e->isReadOnly()) {
+        say(err, err_size,
+            QByteArray("`") + name + "` is read-only, so its text cannot be "
+                                     "replaced as an edit");
+        return 0;
+    }
+    std::vector<std::pair<std::pair<int, int>, size_t>> at;
+    for (size_t i = 0; i < n; i++) {
+        int from = 0, to = 0;
+        char why[256];
+        why[0] = '\0';
+        if (!text_range(e, spans + 4 * i, &from, &to, why, sizeof why)) {
+            char buf[320];
+            snprintf(buf, sizeof buf, "edit %zu: %s", i + 1, why);
+            say(err, err_size, buf);
+            return 0;
+        }
+        at.push_back({{from, to}, i});
+    }
+    std::sort(at.begin(), at.end());
+    for (size_t k = 1; k < at.size(); k++) {
+        if (at[k].first.first < at[k - 1].first.second ||
+            (at[k].first.first == at[k - 1].first.first)) {
+            char buf[160];
+            snprintf(buf, sizeof buf,
+                     "edits %zu and %zu overlap, so the result would depend on "
+                     "their order -- nothing was changed",
+                     at[k - 1].second + 1, at[k].second + 1);
+            say(err, err_size, buf);
+            return 0;
+        }
+    }
+    QTextCursor c(e->document());
+    c.beginEditBlock();
+    for (size_t k = at.size(); k-- > 0;) {
+        c.setPosition(at[k].first.first);
+        c.setPosition(at[k].first.second, QTextCursor::KeepAnchor);
+        c.insertText(QString::fromUtf8(texts[at[k].second] ? texts[at[k].second] : ""));
+    }
+    c.endEditBlock();
+    return 1;
+}
+
+/* EVERY MATCH MARKED, as Qt's extra selections: the whole list replaced per
+ * call, as `qt.mark` replaces a category, and [] clears it. */
+extern "C" int gb_qt_highlight_text(void *window, const char *name,
+                                    const int *spans, size_t n, char *err,
+                                    size_t err_size) {
+    QPlainTextEdit *e = text_editor_named(window, name, "can mark text", err,
+                                          err_size);
+    if (!e) {
+        return 0;
+    }
+    QList<QTextEdit::ExtraSelection> list;
+    QColor shade = e->palette().color(QPalette::Highlight);
+    shade.setAlpha(90);
+    for (size_t i = 0; i < n; i++) {
+        int from = 0, to = 0;
+        char why[256];
+        why[0] = '\0';
+        if (!text_range(e, spans + 4 * i, &from, &to, why, sizeof why)) {
+            char buf[320];
+            snprintf(buf, sizeof buf, "range %zu: %s", i + 1, why);
+            say(err, err_size, buf);
+            return 0;
+        }
+        QTextEdit::ExtraSelection sel;
+        sel.cursor = QTextCursor(e->document());
+        sel.cursor.setPosition(from);
+        sel.cursor.setPosition(to, QTextCursor::KeepAnchor);
+        sel.format.setBackground(shade);
+        list.append(sel);
+    }
+    e->setExtraSelections(list);
+    return 1;
+}
+
+/* The marked ranges as Qt holds them, 4 ints each (malloc'd), read from the
+ * editor's extra selections rather than from what was asked for. */
+extern "C" int gb_qt_highlights(void *window, const char *name, int **spans,
+                                size_t *n, char *err, size_t err_size) {
+    QPlainTextEdit *e = text_editor_named(window, name, "can mark text", err,
+                                          err_size);
+    if (!e) {
+        return 0;
+    }
+    QList<QTextEdit::ExtraSelection> list = e->extraSelections();
+    *n = (size_t)list.size();
+    *spans = (int *)malloc(sizeof(int) * 4 * (list.size() ? list.size() : 1));
+    if (!*spans) {
+        say(err, err_size, "out of memory reading the marked text");
+        return 0;
+    }
+    for (int i = 0; i < list.size(); i++) {
+        int *s = *spans + 4 * i;
+        text_line_column(e, list[i].cursor.selectionStart(), &s[0], &s[1]);
+        text_line_column(e, list[i].cursor.selectionEnd(), &s[2], &s[3]);
+    }
+    return 1;
+}
+
+/* THE CAPTION SHOWN BESIDE A PART (§0.36), read from Qt: the QLabel whose
+ * buddy is the part, which QFormLayout::addRow makes and `caption_for` makes
+ * in a grid or a box. 1 found (*text malloc'd), 0 none, -1 refused. */
+extern "C" int gb_qt_label(void *window, const char *name, char **text,
+                           char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr)
+                      : nullptr;
+    if (!o) {
+        say(err, err_size, QByteArray("there is nothing called `") + name +
+                               "` in this window");
+        return -1;
+    }
+    QWidget *w = qobject_cast<QWidget *>(o);
+    if (!w || !root->widget) {
+        return 0;
+    }
+    for (QLabel *l : root->widget->findChildren<QLabel *>()) {
+        if (l->buddy() == w) {
+            *text = dup_utf8(l->text());
+            return *text ? 1 : -1;
+        }
+    }
+    return 0;
 }
 
 extern "C" int gb_qt_gutter_enable(void *window, const char *name, int numbers,

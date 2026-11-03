@@ -3269,6 +3269,204 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
 
 #endif /* HAVE_QT */
 
+#if HAVE_QT
+/* A SPAN FROM A RECORD {line, column, line2, column2}, all numbers. */
+static int qt_span_of(Value v, int *span, const char **text, const char *verb,
+                      size_t at) {
+    static const char *names[4] = {"line", "column", "line2", "column2"};
+    char message[256];
+    if (v.kind != VALUE_RECORD) {
+        snprintf(message, sizeof(message),
+                 "qt.%s expects each range as a record {line, column, line2, "
+                 "column2%s}, and item %zu is not one", verb,
+                 text ? ", text" : "", at + 1);
+        qt_raise(message);
+        return 0;
+    }
+    for (int k = 0; k < 4; k++) {
+        RecordField *f = record_find(&v, names[k]);
+        if (!f || !f->value || f->value->kind != VALUE_NUMBER) {
+            snprintf(message, sizeof(message),
+                     "qt.%s: item %zu has no `%s` number", verb, at + 1,
+                     names[k]);
+            qt_raise(message);
+            return 0;
+        }
+        span[k] = (int)f->value->as.num.value;
+    }
+    if (text) {
+        RecordField *f = record_find(&v, "text");
+        if (!f || !f->value || f->value->kind != VALUE_STRING) {
+            snprintf(message, sizeof(message),
+                     "qt.%s: item %zu has no `text` to put in the range", verb,
+                     at + 1);
+            qt_raise(message);
+            return 0;
+        }
+        *text = f->value->as.string;
+    }
+    return 1;
+}
+
+static Value qt_span_record(const int *span) {
+    Value out = value_record(NULL, 0);
+    record_set(&out, "line", value_number((double)span[0]));
+    record_set(&out, "column", value_number((double)span[1]));
+    record_set(&out, "line2", value_number((double)span[2]));
+    record_set(&out, "column2", value_number((double)span[3]));
+    return out;
+}
+
+/* FIND AND REPLACE ON A `source` OR A `memo`, AND A PART'S CAPTION (§0.36):
+ * qt.select_text, qt.selection, qt.replace_text, qt.highlight_text,
+ * qt.highlights and qt.label. Every argument is evaluated before any is
+ * checked, and every value is freed on every path. */
+static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
+    char message[512];
+    char err[QT_ERRBUF];
+    err[0] = '\0';
+    int is_select = strcmp(verb, "select_text") == 0;
+    int is_replace = strcmp(verb, "replace_text") == 0;
+    int is_highlight = strcmp(verb, "highlight_text") == 0;
+    size_t want = is_select ? 6 : (is_replace || is_highlight) ? 3 : 2;
+    if (argc != want) {
+        snprintf(message, sizeof(message), "qt.%s expects %s", verb,
+                 is_select ? "a window, a part's name, and a line, a column, a "
+                             "second line and a second column"
+                 : is_replace ? "a window, a part's name, and an edit "
+                                "{line, column, line2, column2, text} or an "
+                                "array of them"
+                 : is_highlight ? "a window, a part's name, and an array of "
+                                  "ranges {line, column, line2, column2}"
+                                : "a window and a part's name");
+        qt_raise(message);
+        return value_null();
+    }
+    Value args[6];
+    for (size_t i = 0; i < want; i++) {
+        args[i] = eval_expr(expr->as.call.args.items[i]);
+    }
+    Value result = value_null();
+    if (error_action_pending()) {
+        goto done;
+    }
+    if (!qt_window_record(&args[0], verb) || args[1].kind != VALUE_STRING) {
+        if (!error_action_pending()) {
+            snprintf(message, sizeof(message),
+                     "qt.%s expects the part's name as text", verb);
+            qt_raise(message);
+        }
+        goto done;
+    }
+    const char *wname = qt_record_text(&args[0], "name");
+    void *root = wname ? qt_window_find(wname) : NULL;
+    if (!root) {
+        snprintf(message, sizeof(message), "window `%s` is not open",
+                 wname ? wname : "");
+        qt_raise(message);
+        goto done;
+    }
+    const char *part = args[1].as.string;
+    int ok = 1;
+    if (is_select) {
+        int span[4];
+        for (int k = 0; k < 4; k++) {
+            if (args[2 + k].kind != VALUE_NUMBER) {
+                qt_raise("qt.select_text expects the line and column numbers "
+                         "as numbers");
+                goto done;
+            }
+            span[k] = (int)args[2 + k].as.num.value;
+        }
+        ok = gb_qt_select_text(root, part, span[0], span[1], span[2], span[3],
+                               err, sizeof(err));
+        if (ok) {
+            result = value_bool(1);
+        }
+    } else if (is_replace || is_highlight) {
+        Value list = args[2];
+        int one = is_replace && list.kind == VALUE_RECORD;
+        if (!one && list.kind != VALUE_ARRAY) {
+            snprintf(message, sizeof(message), "qt.%s expects %s", verb,
+                     is_replace ? "an edit record or an array of them"
+                                : "an array of ranges ([] clears them)");
+            qt_raise(message);
+            goto done;
+        }
+        size_t n = one ? 1 : (list.as.array.store ? list.as.array.store->count : 0);
+        int *spans = malloc(sizeof(int) * 4 * (n ? n : 1));
+        const char **texts = malloc(sizeof(char *) * (n ? n : 1));
+        if (!spans || !texts) {
+            free(spans);
+            free(texts);
+            qt_raise("out of memory");
+            goto done;
+        }
+        for (size_t i = 0; i < n; i++) {
+            Value item = one ? list : list.as.array.store->items[i];
+            if (!qt_span_of(item, spans + 4 * i, is_replace ? &texts[i] : NULL,
+                            verb, i)) {
+                free(spans);
+                free(texts);
+                goto done;
+            }
+        }
+        ok = is_replace
+                 ? gb_qt_replace_text(root, part, spans, texts, n, err, sizeof(err))
+                 : gb_qt_highlight_text(root, part, spans, n, err, sizeof(err));
+        free(spans);
+        free(texts);
+        if (ok) {
+            result = value_bool(1);
+        }
+    } else if (strcmp(verb, "selection") == 0) {
+        int span[4];
+        char *text = NULL;
+        int got = gb_qt_selection(root, part, span, &text, err, sizeof(err));
+        ok = got >= 0;
+        if (got > 0) {
+            result = qt_span_record(span);
+            record_set(&result, "text", value_string(text));
+        } else if (got == 0) {
+            result = value_unknown();      /* nothing is selected */
+        }
+        free(text);
+    } else if (strcmp(verb, "highlights") == 0) {
+        int *spans = NULL;
+        size_t n = 0;
+        ok = gb_qt_highlights(root, part, &spans, &n, err, sizeof(err));
+        if (ok) {
+            Value *items = malloc(sizeof(Value) * (n ? n : 1));
+            for (size_t i = 0; items && i < n; i++) {
+                items[i] = qt_span_record(spans + 4 * i);
+            }
+            result = items ? value_array(items, n) : value_null();
+        }
+        free(spans);
+    } else {                                  /* label */
+        char *text = NULL;
+        int got = gb_qt_label(root, part, &text, err, sizeof(err));
+        ok = got >= 0;
+        if (got > 0) {
+            result = value_string(text);
+        } else if (got == 0) {
+            result = value_unknown();      /* no caption beside it */
+        }
+        free(text);
+    }
+    if (!ok) {
+        snprintf(message, sizeof(message), "qt.%s: %s", verb,
+                 err[0] ? err : "that could not be done");
+        qt_raise(message);
+    }
+done:
+    for (size_t i = 0; i < want; i++) {
+        value_free(args[i]);
+    }
+    return result;
+}
+#endif
+
 static Value qt_eval_call(AstExpr *expr) {
     const char *verb = expr->as.call.name;
     size_t argc = expr->as.call.args.count;
@@ -6346,10 +6544,15 @@ static Value qt_eval_call(AstExpr *expr) {
      * answer an event sent to the widget, only one sent to its VIEWPORT, which
      * gBASIC has no way to name -- so without this the path is drivable only
      * on the two kinds that happen to have no viewport. */
-    if (strcmp(verb, "right_click") == 0) {
+    /* `qt.click` is the left button through the same aiming (§0.36): Studio's
+     * single-click-opens path could not be driven, since nothing fired
+     * `itemClicked`. */
+    if (strcmp(verb, "right_click") == 0 || strcmp(verb, "click") == 0) {
+        int left = strcmp(verb, "click") == 0;
         if (argc != 2 && argc != 3) {
-            qt_raise("qt.right_click expects a window, a part's name and "
-                     "optionally a row");
+            snprintf(message, sizeof(message), "qt.%s expects a window, a part's name "
+                     "and optionally a row", verb);
+            qt_raise(message);
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -6369,7 +6572,8 @@ static Value qt_eval_call(AstExpr *expr) {
                 return value_null();
             }
             if (r.kind != VALUE_NUMBER) {
-                qt_raise("qt.right_click expects the row as a number");
+                snprintf(message, sizeof(message), "qt.%s expects the row as a number", verb);
+                qt_raise(message);
                 value_free(win);
                 value_free(which);
                 value_free(r);
@@ -6378,16 +6582,18 @@ static Value qt_eval_call(AstExpr *expr) {
             row = (int)r.as.num.value;
             value_free(r);
             if (row < 0) {
-                qt_raise("qt.right_click: a row is counted from 0");
+                snprintf(message, sizeof(message), "qt.%s: a row is counted from 0", verb);
+                qt_raise(message);
                 value_free(win);
                 value_free(which);
                 return value_null();
             }
         }
-        if (!qt_window_record(&win, "right_click") ||
+        if (!qt_window_record(&win, verb) ||
             which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.right_click expects the part's name as text");
+                snprintf(message, sizeof(message), "qt.%s expects the part's name as text", verb);
+                qt_raise(message);
             }
             value_free(win);
             value_free(which);
@@ -6404,8 +6610,10 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         err[0] = '\0';
-        if (!gb_qt_right_click(root, which.as.string, row, err, sizeof(err))) {
-            snprintf(message, sizeof(message), "qt.right_click: %s",
+        int clicked = left ? gb_qt_click(root, which.as.string, row, err, sizeof(err))
+                           : gb_qt_right_click(root, which.as.string, row, err, sizeof(err));
+        if (!clicked) {
+            snprintf(message, sizeof(message), "qt.%s: %s", verb,
                      err[0] ? err : "that part could not be clicked");
             qt_raise(message);
             value_free(win);
@@ -6546,6 +6754,12 @@ static Value qt_eval_call(AstExpr *expr) {
      * It is also what a program needs, an icon the machine's theme lacks being
      * a warning rather than a refusal -- so falling back to a text-only button
      * means being able to ask. */
+    if (strcmp(verb, "select_text") == 0 || strcmp(verb, "selection") == 0 ||
+        strcmp(verb, "replace_text") == 0 || strcmp(verb, "highlight_text") == 0 ||
+        strcmp(verb, "highlights") == 0 || strcmp(verb, "label") == 0) {
+        return qt_text_verb(expr, verb, argc);
+    }
+
     if (strcmp(verb, "has_icon") == 0) {
         if (argc != 2) {
             qt_raise("qt.has_icon expects a window and a part's name");

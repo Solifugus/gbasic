@@ -815,6 +815,31 @@ int gb_qt_caret(void *window, const char *name, int *line, int *column,
 int gb_qt_caret_to(void *window, const char *name, int line, int column,
                    char *err, size_t err_size);
 
+/* ---- FIND AND REPLACE (§0.36) ------------------------------------------
+ * Positions are caret positions, 1-based, columns in CODEPOINTS (as `len` and
+ * `regex` count); a span is four ints: line, column, line2, column2. A line
+ * past the end is refused; a column past its line clamps. */
+int gb_qt_select_text(void *window, const char *name, int line, int column,
+                      int line2, int column2, char *err, size_t err_size);
+/* 1 a selection (span and *text written, caller frees), 0 none, -1 refused */
+int gb_qt_selection(void *window, const char *name, int *span, char **text,
+                    char *err, size_t err_size);
+/* n edits, one undo step; spans refer to the text before the call */
+int gb_qt_replace_text(void *window, const char *name, const int *spans,
+                       const char *const *texts, size_t n, char *err,
+                       size_t err_size);
+int gb_qt_highlight_text(void *window, const char *name, const int *spans,
+                         size_t n, char *err, size_t err_size);
+/* *spans malloc'd, 4 per range; caller frees */
+int gb_qt_highlights(void *window, const char *name, int **spans, size_t *n,
+                     char *err, size_t err_size);
+/* the caption beside a part: 1 found (*text, caller frees), 0 none, -1 refused */
+int gb_qt_label(void *window, const char *name, char **text, char *err,
+                size_t err_size);
+/* a left press and release, aimed as gb_qt_right_click aims (row -1: none) */
+int gb_qt_click(void *window, const char *name, int row, char *err,
+                size_t err_size);
+
 /* ---- THE MARGIN ON A `source` (§0.29) ----------------------------------
  * `line_numbers:` and `marks:` are STRUCTURAL options, the shape `language:`
  * has: each builds a child widget rather than setting a property, so the
