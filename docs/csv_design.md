@@ -134,7 +134,11 @@ lowered, so `item.Price` and `item.price` stay different fields.
   every later record must have exactly those names, or it is refused naming
   the row, since a column that shifts is the defect this module exists to end.
 - A value that is not text is written as `string()` writes it: numbers as the
-  shortest decimal that reads back, money and dates in their text forms.
+  shortest decimal that reads back, dates in their text forms. **Money keeps
+  every digit it holds** (2026-11-02, gdash S1): `1250.7512` USD is written
+  `1250.7512`, where `string()` shows `1250.75`, because a file is data moving,
+  not money being shown. Never fewer than the currency's places: `3` USD is
+  `3.00`.
   `unknown` and `nothing` are written as an empty field. An array or record
   inside a field is refused.
 - Options: `delimiter`, `quote`, `names`, and `line_end` (default `"\n"`; a

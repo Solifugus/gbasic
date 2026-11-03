@@ -181,6 +181,13 @@ function main_checks(dir)
     check("a decimal into an integer column stays refused", code_of(e), "TYPE")
     gsql.exec(db, "insert into conv (id, x) values (8, '7.25')")
     check("text that is a number into a number column is the number", gsql.query(db, "select x from conv where id = 8")[0].x, 7.25)
+    ' a CAST to text moves data, so money keeps every digit it holds and never
+    ' fewer than its currency's places (gdash S1); string() still shows cents
+    gsql.exec(db, "insert into conv (id, m) values (9, '1250.7512')")
+    t9 = gsql.query(db, "select cast(m as string) as s from conv where id = 9")[0].s
+    check("CAST of money to text keeps every digit", t9, "1250.7512")
+    check("while string() shows the currency's places", string(gsql.query(db, "select m from conv where id = 9")[0].m), "1250.75")
+    check("and a whole amount keeps its places", gsql.query(db, "select cast(m as string) as s from conv where id = 2")[0].s, "5.25")
     e = attempt_exec(db, "insert into conv (id, x) values (81, 'seven')", nothing)
     check("text that is no number into a number column is refused", code_of(e), "TYPE")
     e = attempt_query(db, "select id from conv where at = '2026-11-01 04:31:00'", nothing)

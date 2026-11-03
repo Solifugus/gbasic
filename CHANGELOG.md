@@ -39,6 +39,13 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### A cast of money to text, and csv.write, keep every digit
+
+`CAST(m AS string)` in G-SQL and `csv.write`/`csv.line` write money with every
+digit it holds, never fewer than its currency's places: `1250.7512` USD stays
+`1250.7512`. They rounded to cents. `print` and `string()` still show the
+currency's places, and `money.text` is still the lossless form in a program.
+
 ### Money that rounds to zero shows no sign
 
 `-0.005` USD is shown as `0.00`, not `-0.00`. The value is unchanged: it is

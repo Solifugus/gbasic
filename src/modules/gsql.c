@@ -343,6 +343,13 @@ static GsqlHv *gsql_h_cast(void *ctx, const GsqlHv *v, int kind, const char *cur
         return r;
     }
     case GSQL_COL_STRING:
+        if (v->v.kind == VALUE_MONEY) {
+            /* a cast moves data, so money keeps every digit it holds, where
+               string() shows the currency's precision (gdash S1) */
+            char buf[64];
+            money_render_exact(v->v.as.money, buf, sizeof buf);
+            return gsql_hv(value_string(buf));
+        }
         return gsql_apply("string(sql_a)", args, 1, err);
     case GSQL_COL_BOOLEAN:
         if (v->v.kind == VALUE_BOOL) {

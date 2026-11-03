@@ -562,7 +562,9 @@ end for
   break. `csv.write(f, rows, options)` writes a header (the first record's names,
   or `names:`) and the rows; a record with different names is refused naming its
   row. Options: `delimiter`, `quote`, `names`, `line_end` (`"\n"` or `"\r\n"`).
-  `unknown` and `nothing` are written as an empty field.
+  `unknown` and `nothing` are written as an empty field. Money keeps every digit
+  it holds (`1250.7512`), where `print` and `string()` show the currency's
+  places (`1250.75`).
 
 The design and its evidence are `docs/csv_design.md`; the suite is
 `tests/run_csv.sh`.
@@ -2564,7 +2566,10 @@ Every refusal raises with `error.source = "gsql"` and **`error.details.code`
 naming G-SQL's code** — `SYNTAX`, `EXPRESSION`, `NOT_FOUND`, `DUPLICATE`,
 `NOT_NULL`, `TYPE`, `READ_ONLY`, `STATE`, `LOST` and the rest — plus
 `error.details.position`, a 1-based character offset, where the statement has
-a place to point at. **A refused row names what it is about** *(after 0.10.0)*:
+a place to point at. **`CAST(m AS string)` keeps every digit of money**
+*(after 0.10.0)*: a cast moves data, so `1250.7512` stays `1250.7512`, never
+fewer than the currency's places, where `string(m)` in a program shows
+`1250.75`. **A refused row names what it is about** *(after 0.10.0)*:
 `error.details.table`, `error.details.column` for `TYPE` and `NOT_NULL`, and
 `error.details.constraint` for `CHECK` and `FOREIGN_KEY` (the constraint's name)
 and `DUPLICATE` (the unique index's name, or `"primary key"`). A name that does

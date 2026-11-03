@@ -5073,6 +5073,28 @@ static void money_render(MoneyValue m, int digits, char *buf, size_t buflen) {
     }
 }
 
+/* Money as text that LOSES NO DIGIT, for moving data rather than showing it
+ * (gdash, 2026-11-02): every digit the value holds, and never fewer than the
+ * currency's own places, so 1250.7512 USD is "1250.7512" and 1250.75 USD is
+ * "1250.75". `print` and `string()` keep showing the currency's precision --
+ * that is what a person reading money expects -- and this is what a CAST to
+ * text and csv.write use, since a cast is a way of moving data. */
+static void money_render_exact(MoneyValue m, char *buf, size_t buflen) {
+    money_render(m, money_scale_of(m), buf, buflen);
+    char *dot = strchr(buf, '.');
+    if (!dot) {
+        return;
+    }
+    size_t keep = (size_t)(dot - buf) + 1 + m.exponent;
+    size_t n = strlen(buf);
+    while (n > keep && buf[n - 1] == '0') {
+        buf[--n] = '\0';
+    }
+    if (n > 0 && buf[n - 1] == '.') {
+        buf[--n] = '\0';      /* a currency with no minor unit: JPY 1995 */
+    }
+}
+
 static MoneyValue money_make(long long units, unsigned short currency,
                              unsigned char exponent) {
     MoneyValue m;

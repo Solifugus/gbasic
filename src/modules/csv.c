@@ -294,7 +294,8 @@ static int csv_put(char **buf, size_t *len, size_t *cap, const char *bytes, size
 }
 
 /* One field as the writer writes it: text as it is, `unknown` and nothing as
- * an empty field, anything else as string() writes it, quoted only when it
+ * an empty field, money with every digit it holds, anything else as string()
+ * writes it, quoted only when it
  * needs to be. Answers 0 having raised for a value that is not one field. */
 static int csv_put_field(const char *verb, Value v, const CsvOptions *o,
                          char **buf, size_t *len, size_t *cap, const char *where) {
@@ -308,7 +309,16 @@ static int csv_put_field(const char *verb, Value v, const CsvOptions *o,
         csv_raise(message);
         return 0;
     }
-    Value text = v.kind == VALUE_STRING ? value_copy(v) : builtin_string_value(value_copy(v));
+    Value text;
+    if (v.kind == VALUE_MONEY) {
+        /* every digit it holds: a file is data moving, not money being shown,
+           and string() would round 1250.7512 to 1250.75 (gdash S1) */
+        char buf[64];
+        money_render_exact(v.as.money, buf, sizeof buf);
+        text = value_string(buf);
+    } else {
+        text = v.kind == VALUE_STRING ? value_copy(v) : builtin_string_value(value_copy(v));
+    }
     if (error_action_pending() || text.kind != VALUE_STRING) {
         value_free(text);
         return 0;
