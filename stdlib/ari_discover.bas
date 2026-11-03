@@ -1982,7 +1982,23 @@ function label_token(literals)
     if count(alts) = 0 then
         return ""
     end if
-    return "/" + join(alts, "|") + "/"
+    ' LONGEST FIRST, because the engine takes the FIRST alternative that
+    ' matches (PCRE2, docs/regex_pcre2_design.md): with `BRANCH TOTAL` before
+    ' `BRANCH TOTALS`, "BRANCH TOTALS" matched as `BRANCH TOTAL` and the anchor
+    ' ended one letter early. POSIX took the longest and hid it. Stable, so
+    ' alternatives of one length keep the corpus's order.
+    ordered = []
+    for each a in alts
+        at = count(ordered)
+        for i = 0 to count(ordered) - 1
+            if len(a) > len(ordered[i]) then
+                at = i
+                break
+            end if
+        end for
+        insert(ordered, at, a)
+    end for
+    return "/" + join(ordered, "|") + "/"
 end function
 
 ' The `page:` block, from what Phase 0 measured rather than from a guess --
