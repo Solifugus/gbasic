@@ -1048,8 +1048,8 @@ int main(int argc, char **argv) {
         print_help(argv[0]);
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        /* GBASIC_REVISION is "" for a release tag built clean, else
-         * "+<rev>" or "+<rev>.dirty" (the Makefile says how) */
+        /* GBASIC_REVISION is "" for a release tag, else "+<rev>" (the
+         * Makefile says how) */
         printf("gBASIC 0.10.0%s\n", GBASIC_REVISION);
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--capabilities") == 0) {

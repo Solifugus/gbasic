@@ -542,7 +542,7 @@ if [ -f README.md ]; then
     #     what the deployment actually runs, so checking only one leaves the
     #     LIVE page free to drift -- which is the half that matters.
     site_version_ok=1
-    want_version=$(sed -n 's/.*printf("gBASIC \([0-9][^\\]*\)\\n").*/\1/p' src/main.c | head -1)
+    want_version=$(sed -n 's/.*printf("gBASIC \([0-9][^%\\]*\).*/\1/p' src/main.c | head -1)
     for f in examples/gbasic_site/site.bas examples/gbasic_site/site_postgres.bas; do
         said=$(grep -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+[^"]*"' "$f" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^"]*')
         if [ -z "$said" ]; then

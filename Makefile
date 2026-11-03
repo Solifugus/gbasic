@@ -506,18 +506,21 @@ BUILD_SWITCH_SIG := $(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE
 
 # WHICH BUILD THIS IS, for `--version` (asked for by gBASIC Studio 2026-11-03: a
 # build from HEAD 588e888 said "gBASIC 0.10.0" like the installed release, and
-# that produced a false test result). A build of a release TAG from a clean tree
-# says the version alone; anything else adds `+<revision>`, and `.dirty` when
-# tracked files differ from that revision, since then it is not that revision
-# either. Empty outside a git work tree (a tarball) -- and only THIS repository's
-# tree, so a source tree unpacked inside another repository does not report
-# that repository's HEAD.
+# that produced a false test result). A build of a release TAG says the version
+# alone; anything else adds `+<revision>`. Empty outside a git work tree (a
+# tarball) -- and only THIS repository's tree, so a source tree unpacked inside
+# another repository does not report that repository's HEAD.
+#
+# NO `.dirty` MARKER, measured: it was built, and the first gate failed on it.
+# Suites rewrite tracked files while they run and others run `make`, so the
+# marker came and went mid-gate and rebuilt main.o under the suites -- a build
+# whose identity depends on what the tests are doing. The revision changes only
+# with a commit.
 GBASIC_REVISION := $(shell \
   [ "$$(git rev-parse --show-toplevel 2>/dev/null)" = "$(CURDIR)" ] || exit 0; \
   rev=$$(git rev-parse --short HEAD 2>/dev/null) || exit 0; \
-  dirty=; git diff --quiet HEAD -- 2>/dev/null || dirty=.dirty; \
-  if [ -z "$$dirty" ] && git describe --tags --exact-match HEAD >/dev/null 2>&1; then exit 0; fi; \
-  printf '+%s%s' "$$rev" "$$dirty")
+  git describe --tags --exact-match HEAD >/dev/null 2>&1 && exit 0; \
+  printf '+%s' "$$rev")
 .revision-stamp: FORCE
 	@printf '%s' '$(GBASIC_REVISION)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(GBASIC_REVISION)' > $@
 

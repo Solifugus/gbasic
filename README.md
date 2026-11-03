@@ -699,9 +699,9 @@ design proposal as an available feature.
 ```
 
 That is a release built from its tag. Any other build names its revision, so
-it cannot be mistaken for the release: `gBASIC 0.10.0+99341ab`, and
-`gBASIC 0.10.0+99341ab.dirty` when tracked files differ from that revision. A
-build from a source tarball, which has no git history, says the version alone.
+it cannot be mistaken for the release: `gBASIC 0.10.0+99341ab`. A build from a
+source tarball, which has no git history, says the version alone. Uncommitted
+changes are not marked: the revision is the commit the tree was built from.
 
 ## Contributing
 

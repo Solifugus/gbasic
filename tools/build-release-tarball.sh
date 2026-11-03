@@ -345,7 +345,7 @@ runtime=""
 for c in podman docker; do command -v "$c" >/dev/null 2>&1 && { runtime="$c"; break; }; done
 [ -n "$runtime" ] || { echo "FAIL: need podman or docker to build against an older base" >&2; exit 1; }
 
-version="$(sed -n 's/.*printf("gBASIC \([0-9][^\\]*\)\\n").*/\1/p' src/main.c | head -1)"
+version="$(sed -n 's/.*printf("gBASIC \([0-9][^%\\]*\).*/\1/p' src/main.c | head -1)"
 [ -n "$version" ] || { echo "FAIL: could not read the version from src/main.c" >&2; exit 1; }
 arch="$(uname -m)"
 name="gbasic-${version}-linux-${arch}${TIER_SUFFIX}"
