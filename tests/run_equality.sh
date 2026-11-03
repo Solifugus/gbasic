@@ -125,23 +125,39 @@ else
 fi
 
 # 2a. NUMBER AGAINST TEXT THAT IS A NUMBER -- tests/number_text_equality_test.bas
-# (docs/number_text_equality_design.md, Matthew's ruling 2026-11-02): `=` reads
-# text that is a number with G-SQL's reader, text that is no number stays
-# unequal, and the same-value routes keep the kinds apart. Perturbed three ways
-# (no conversion; routes converting; a reader that takes hex), each went red.
+# (docs/number_text_equality_design.md): unequal, and said by warning 2122 when
+# the text reads as a number; text that is no number and every route stay
+# silent. `1 = "1"` reading the text was built 2026-11-02 and reverted
+# 2026-11-03 on Matthew's second ruling.
 if timeout 300 ./gbasic tests/number_text_equality_test.bas >"$work/numtext.txt" 2>"$err" </dev/null; then
     if grep -q '^mismatches: 0$' "$work/numtext.txt" \
-       && [ "$(sed -n 's/^checks: //p' "$work/numtext.txt")" -ge 46 ]; then
+       && [ "$(sed -n 's/^checks: //p' "$work/numtext.txt")" -ge 42 ] \
+       && [ ! -s "$err" ]; then
         printf 'PASS tests/number_text_equality_test.bas (%s checks)\n' \
             "$(sed -n 's/^checks: //p' "$work/numtext.txt")"
     else
         printf 'FAIL tests/number_text_equality_test.bas -- number-versus-text comparison moved\n'
         grep -E '^MISMATCH|^checks|^mismatches' "$work/numtext.txt"
+        cat "$err"
         status=1
     fi
 else
     printf 'FAIL tests/number_text_equality_test.bas (exit)\n'
     cat "$err"
+    status=1
+fi
+
+# 2b. Warning 2122 is said ONCE PER SITE on stderr, at the comparison's line,
+# and never for text that is no number: a loop of three says it once.
+printf 'for i = 1 to 3\n    r = i = string(i)\nend for\nr = 0 = "stop"\nprint "done"\n' >"$work/w2122.bas"
+./gbasic "$work/w2122.bas" >"$work/w2122.out" 2>"$work/w2122.err" </dev/null
+n2122=$(grep -c '\[2122\]$' "$work/w2122.err")
+if [ "$n2122" = 1 ] && grep -q 'w2122.bas:2:' "$work/w2122.err" \
+   && [ "$(wc -l <"$work/w2122.err")" -eq 1 ] && grep -qx done "$work/w2122.out"; then
+    printf 'PASS warning 2122 once per site, at line 2, and the program runs on\n'
+else
+    printf 'FAIL warning 2122 should be said once, at w2122.bas:2 (said %s times)\n' "$n2122"
+    cat "$work/w2122.err"
     status=1
 fi
 

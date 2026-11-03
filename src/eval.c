@@ -13232,9 +13232,10 @@ static int values_equal(Value left, Value right) {
     if (left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) {
         return left.kind == right.kind;
     }
-    /* A number and text are never the same value, though `=` reads text that
-     * is a number (number_from_plain_text): Matthew's ruling 2026-11-02 that
-     * `unique([1, "1"])` does not collapse. */
+    /* A number and text are never the same value. Answered here, before the
+     * operator, so a route does not say the operator's warning 2122:
+     * `contains(ids, "7")` is a membership question, not a comparison typed
+     * by hand. */
     if (number_and_text(left, right)) {
         value_free(left);
         value_free(right);
@@ -37463,11 +37464,10 @@ static int compare_normalise(AstModifierUse stage, Value *side) {
     return recognised;
 }
 
-/* TEXT THAT IS A NUMBER, READ AS ONE for a comparison with a number: trimmed,
- * then the shared reader (include/gb_number_text.h) decides, and integer text
- * is exact exactly as `number("...")` makes it. Answers 0 and writes nothing
- * for text that is no number, including text holding a NUL. */
-static int number_from_plain_text(Value text, Value *out) {
+/* Does this text read as a number by the reader G-SQL uses
+ * (include/gb_number_text.h)? Asked only to decide whether warning 2122 is
+ * said; nothing is converted. Text holding a NUL never reads. */
+static int text_reads_as_number(Value text) {
     size_t n = string_length(text.as.string);
     if (memchr(text.as.string, 0, n)) {
         return 0;
@@ -37477,14 +37477,9 @@ static int number_from_plain_text(Value text, Value *out) {
         return 0;
     }
     memcpy(copy, text.as.string, n + 1);
-    char *t = gb_number_text_trim(copy);
-    int ok = gb_number_text_problem(t, 0) == NULL;
-    if (ok) {
-        long long whole = 0;
-        *out = exact_from_integer_text(t, &whole) ? value_number_exact(whole) : value_number(strtod(t, NULL));
-    }
+    int reads = gb_number_text_problem(gb_number_text_trim(copy), 0) == NULL;
     free(copy);
-    return ok;
+    return reads;
 }
 
 static Value eval_comparison(AstExpr *expr, Value left, Value right) {
@@ -37690,21 +37685,27 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         return value_null();
     }
 
-    /* A NUMBER AGAINST TEXT THAT IS A NUMBER (docs/number_text_equality_design.md,
-     * Matthew's ruling 2026-11-02, gdash S4): the text is read with the reader
-     * G-SQL's comparison uses, and the two compare as numbers, so `1 = "1"` and
-     * `2 < "10"` are true. Text that is no number is left as it is and meets
-     * the string branch below: `=` false, ordering refused, as before. The
-     * routes never arrive here with this pair (values_equal and
-     * values_equal_for_consider answer first), so `unique([1, "1"])` stays two
-     * values. */
-    if ((left.kind == VALUE_NUMBER && right.kind == VALUE_STRING) ||
-        (left.kind == VALUE_STRING && right.kind == VALUE_NUMBER)) {
-        Value *text = left.kind == VALUE_STRING ? &left : &right;
-        Value read;
-        if (number_from_plain_text(*text, &read)) {
-            value_free(*text);
-            *text = read;
+    /* A NUMBER AGAINST TEXT THAT IS A NUMBER is still unequal, and SAID
+     * (warning 2122, docs/number_text_equality_design.md). `1 = "1"` reading
+     * the text was built and reverted 2026-11-03 on Matthew's second ruling:
+     * gBASIC's values carry no declared kind, so a conversion here guesses
+     * where SQL's follows a column, and it left `=` disagreeing with
+     * `contains` and with `[1] = ["1"]`. What gdash reported was the silence,
+     * so the remedy is a warning naming the conversion. Only for `=` and
+     * `!=`: ordering refuses below, with its own message. The routes answer
+     * this pair before asking the operator, so `contains` does not warn. */
+    if (((left.kind == VALUE_NUMBER && right.kind == VALUE_STRING) ||
+         (left.kind == VALUE_STRING && right.kind == VALUE_NUMBER)) &&
+        (strcmp(op, "=") == 0 || strcmp(op, "!=") == 0)) {
+        Value text = left.kind == VALUE_STRING ? left : right;
+        Value number = left.kind == VALUE_NUMBER ? left : right;
+        if (text_reads_as_number(text)) {
+            char shown[64];
+            format_number_value(shown, sizeof shown, number);
+            warn_fmt(2122, "number and text",
+                     "the number %s and the text \"%.40s\" are not equal, since text is never a number; "
+                     "convert one side with number() or {number} to compare them as numbers",
+                     shown, text.as.string);
         }
     }
 
