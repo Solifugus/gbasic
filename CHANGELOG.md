@@ -39,6 +39,14 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### `--version` names the build
+
+A release built from its tag says `gBASIC 0.10.0` as before. Any other build
+adds its revision, `gBASIC 0.10.0+4fa2559`, and `.dirty` when tracked files
+differ from it, so a development build cannot be mistaken for the installed
+release (gBASIC Studio's false test result). A source tarball says the version
+alone. **Changed behaviour** for anything parsing the output: split at `+`.
+
 ### Qt: find and replace in a `source`, a caption for a `choice`, and a left click
 
 Asked for by gBASIC Studio.
