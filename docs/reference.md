@@ -6379,7 +6379,13 @@ record({a:1, b:2})            ' {a:1, b:2}
 replace("hello", "l", "x")     ' "hexxo"
 replace("hello world", "o", "0")  ' "hell0 w0rld"
 replace("a1b2", regex("[0-9]"), "#")  ' "a#b#"
+replace("John Smith", regex("(\\w+) (\\w+)"), "$2, $1")   ' "Smith, John"
 ```
+In a regex replacement, `$1` and `\1` are the text of group 1 (`$0` the whole
+match), `${12}` reaches past nine, `${name}` a named group, and `$$` is a
+literal `$`. A reference to a group or name the pattern does not have
+**raises**, naming `$$` — so `"$5.00"` is refused rather than quietly becoming
+`".00"`. A `$` or `\` before anything else is literal.
 
 **`starts_with(text, prefix)`** - Returns `true` if text starts with prefix:
 ```basic
@@ -6438,8 +6444,9 @@ from_bytes([0, 255])           ' a two-byte binary string
 
 ### Regular Expressions
 
-Always available — the engine is the POSIX ERE support in libc, so there is no
-optional dependency and no `load`. Design: `docs/text_design.md`.
+Always available — the engine is **PCRE2**, a required part of the build like
+bison, so there is no optional dependency and no `load` *(PCRE2 after 0.10.0;
+POSIX ERE before)*. Design: `docs/text_design.md`, `docs/regex_pcre2_design.md`.
 
 **`regex(pattern [, flags])`** - Compiles a pattern into an immutable regex
 value. Compiling once and reusing it is how you keep a pattern out of a loop's
@@ -6488,15 +6495,29 @@ split("a1b22c", regex("[0-9]+"))         ' ["a", "b", "c"]
 `find` is **not** overloaded: it returns a single index, which cannot carry a
 match record, so `match` exists under its own name instead.
 
-**Supported syntax.** POSIX Extended Regular Expressions, plus a translation of
-`\d \D \w \W \s \S` to their POSIX classes. Not supported: `\b` word
-boundaries, lookaround, backreferences within a pattern, non-greedy
-quantifiers, and named groups. `\D`, `\W` and `\S` are rejected *inside* a
-`[...]` bracket expression, because POSIX offers no negated class there.
+**Supported syntax.** Perl-compatible, as PCRE2 reads it: `\b` and `\B`, lazy
+quantifiers (`*?`, `+?`, `??`), lookahead and lookbehind, backreferences
+(`\1`), named groups `(?<name>...)`, inline flags such as `(?i)`, and the
+`\d \w \s` classes inside or outside a bracket. **`\d`, `\w`, `\s` and `\b`
+are ASCII**: an Arabic-Indic digit is not `\d`. Case-insensitive matching (`"i"`)
+folds beyond ASCII (`É` matches `é`).
 
-A pattern may not contain an interior NUL byte (`regcomp` cannot honor one, so
-it raises rather than silently truncating). The **subject** has no such limit:
-matching is binary-safe and searches the full byte length.
+**The first alternative that matches wins**, not the longest: `a|ab` on `"ab"`
+matches `"a"`. Write the longer alternative first when one is a prefix of
+another. (POSIX took the longest; that was the one silent change in the move,
+and one place in the standard library depended on it.)
+
+**A named group** is also in the match record by name: a pattern with names
+gives `m.named`, a record from each name to its text (`unknown` when it did not
+take part). `groups` is the positional list either way.
+
+**Backtracking is bounded.** A pattern that backtracks without end on its text
+— `(a+)+$` against thirty `a`s and a `b` is 2³⁰ steps — **raises** after ten
+million steps instead of hanging.
+
+Matching is **binary-safe**: a NUL is content in the subject and in the
+pattern, and a subject that is not valid UTF-8 still matches where it is, never
+across the invalid bytes.
 
 ### Record Helpers
 

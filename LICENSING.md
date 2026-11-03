@@ -111,7 +111,7 @@ so it contains:
 - libxml2;
 - SQLite;
 - zlib;
-- TRE with libsystre;
+- PCRE2 (BSD-3, since 2026-11-03; TRE with libsystre before);
 - yescrypt;
 - the mingw-w64 and GCC runtimes.
 

@@ -1,8 +1,9 @@
 # Regular expressions on PCRE2
 
-**Status:** Proposal, 2026-11-03. Matthew's decision, relayed from gBASIC
-Studio: *"Move regex to PCRE2."* This page says how, what was measured first,
-and what changes.
+**Status:** Shipped 2026-11-03 for a build with a system libpcre2-8, held by
+`run_regex.sh` tier 6 (`tests/regex_pcre2_test.bas`). Matthew's decision,
+relayed from gBASIC Studio: *"Move regex to PCRE2."* The builds that install
+nothing but a compiler and bison (§5) are the open question.
 
 ## 1. Why
 
@@ -36,12 +37,15 @@ locale, so `\d` does not start matching Arabic-Indic digits silently.
 - **New syntax works**: `\b`, `\B`, `*?`/`+?`/`??`, lookahead and lookbehind,
   `(?<name>...)`, `\1` inside a pattern, `(?i)` inline, `[\D]` inside a bracket
   (POSIX could not, so it was refused).
-- **Replacement**: `$0`-`$9` and `$$` as today; `${10}` and `${name}` added, and
-  `\0`-`\9` as the same references. A `$` or `\` before anything else stays
-  literal, as today, so `"$5.00"` survives.
+- **Replacement**: `$0`-`$9` and `$$` as before; `${10}` and `${name}` added,
+  and `\0`-`\9` as the same references. A `$` or `\` before anything else
+  stays literal. **Found while building it:** `"$5.00"` had never survived --
+  `$5` is group 5, a group that did not exist expanded to nothing, and the price
+  became `".00"` in silence. Now a reference to a group or a name the pattern
+  does not have **raises**, naming `$$`, and the replacement is checked before
+  any matching, so the answer does not depend on whether something matched.
 - **Named groups in the match record**: `groups` stays a list in order; a
-  pattern with names also gets a `named` record. *(Decision to confirm in
-  building: it is the only new field.)*
+  pattern with names also gets a `named` record, the only new field.
 - **THE SILENT ONE: leftmost-longest becomes leftmost-first.** POSIX picks the
   longest match at the leftmost position; PCRE2 picks the first alternative
   that matches. `a|ab` on `"ab"` is `"ab"` in POSIX and `"a"` in PCRE2. This
@@ -87,3 +91,42 @@ So outside that generator nothing in the tree depends on leftmost-longest.
 - **Windows (MSYS2 UCRT64):** `mingw-w64-ucrt-x86_64-pcre2`, linked statically
   with `-DPCRE2_STATIC`, replacing `-lsystre -ltre` and the gettext shim TRE
   needed.
+
+## 6. Built, and the evidence
+
+- `src/eval.c`: `regex_translate` and its shorthand table are gone (the flags
+  map one-to-one); `regex_compile` and `regex_exec_at` call PCRE2 with one
+  reused match data per regex and one process-wide match context carrying the
+  limit; `regex_exec_at` raises when a match cannot finish and every caller
+  checks for it after its loop, so no half-replaced text or partial list is
+  returned. The Windows `libintl_gettext` shim TRE needed is gone.
+- `tests/regex_pcre2_test.bas`, 47 checks, plus valgrind; the existing golden,
+  flag matrix, negatives and actor round trip unchanged except the two
+  refusals PCRE2 lifted (`[\D]`, a NUL in a pattern). The fallback tier for the
+  no-`REG_STARTEND` path went with the path.
+- **Eight perturbations**, seven red: the match limit raised (the fixture hangs
+  until its timeout -- PCRE2's own default is the same ten million, so deleting
+  the call would have changed nothing, and the perturbation had to raise it),
+  `PCRE2_UCP` on (`\d` and `\w` stop being ASCII), UTF off, `named` dropped,
+  the replacement check skipped, matching from a pointer instead of an offset
+  (`^` mid-scan and a lookbehind -- my first lookbehind check could not see
+  it, and was replaced), and `$$` unhandled. **Green, and why:** dropping the
+  `i < rc` test on groups, because PCRE2 writes `PCRE2_UNSET` past `rc` itself;
+  the test was redundant and is gone.
+
+## 7. Open: the builds with nothing installed
+
+`.github/workflows/ci.yml` runs three jobs that install only a compiler and
+bison (`minimal`, `oldest-toolchain`, `musl-static`), and the release tarball's
+lean tier links nothing but libc and libm. A required system libpcre2 breaks
+that promise. The two ways out:
+
+1. **Require libpcre2-dev** (every distribution packages it; ubuntu 22.04 has
+   10.39): the three jobs install it, the musl job builds PCRE2 from source
+   with musl-gcc, and the tarball links it statically from a source build, as
+   it does libxml2.
+2. **Vendor PCRE2** under `third_party/`, as yescrypt and cJSON are: the build
+   needs only a compiler and bison again, at the cost of carrying a large
+   third-party library and its BSD notice.
+
+For Matthew. Until then the change is committed and not pushed.

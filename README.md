@@ -456,7 +456,8 @@ Two larger example programs live in the repository:
 
 ## Quick start
 
-On Linux, with a C11 compiler, `make` and `bison`. Everything else is optional:
+On Linux, with a C11 compiler, `make`, `bison` and PCRE2 (`libpcre2-dev`, the
+regex engine). Everything else is optional:
 
 | Dependency | Enables |
 | --- | --- |

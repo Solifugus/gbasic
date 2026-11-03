@@ -241,7 +241,7 @@ include/posix_compat.h):**
 | prompt line editing | none: plain line input, history file kept | works as a plain prompt |
 | `process.start/poll/read/wait/stop`, `process.which` | **refused by name** | next |
 | `spawn` (actors), `webserver.listen` | **refused by name** | out of Tier 1 |
-| regex | TRE through libsystre (BSD-2) | links; run_regex's flag matrix NOT yet run against it |
+| regex | PCRE2, static (BSD-3), since 2026-11-03; TRE through libsystre before | NOT yet built or run on Windows: docs/regex_pcre2_design.md |
 
 **What a Windows process.run cannot match, and says so:** there are no signals
 (`signal` is always 0; a timed-out child reports `exit_code` -1), and

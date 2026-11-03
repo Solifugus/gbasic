@@ -101,7 +101,7 @@ check("positions are codepoints", match(chr(233) + chr(233) + "x", "x").start, 2
 check("  as mid reads them", mid(chr(233) + "ab", match(chr(233) + "ab", "b").start, 1), "b")
 check("^ does not match mid-scan", texts(match_all("aaa", "^a")), ["a"])
 check("  with \"m\" it matches at each line", texts(match_all("a" + chr(10) + "a", regex("^a", "m"))), ["a", "a"])
-check("a lookbehind sees before the scan position", texts(match_all("abab", "(?<=a)b")), ["b", "b"])
+check("a lookbehind sees before the scan position", count(match_all("aaa", "(?<=a)a")), 2)
 check("a zero-width match still advances", count(match_all("abc", "x*")), 4)
 check("split on a pattern", split("a1b22c", regex("[0-9]+")), ["a", "b", "c"])
 check("caseless matches beyond ASCII", match(chr(201), regex(chr(233), "i")).text, chr(201))

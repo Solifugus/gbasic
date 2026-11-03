@@ -25,7 +25,8 @@ make clean && make         # full rebuild
 sudo make install          # install to /usr/local (binary + stdlib); PREFIX overridable
 ```
 
-Build requires a C11 compiler, `make`, and `bison`. Optional native modules are
+Build requires a C11 compiler, `make`, `bison`, and PCRE2 (`libpcre2-dev`; the
+regex engine, docs/regex_pcre2_design.md). Optional native modules are
 detected at build time via `pkg-config` and gated behind `HAVE_*` macros in the
 `Makefile` (`HAVE_LIBPQ`, `HAVE_SQLITE3`, `HAVE_ODBC`, `HAVE_LDAP`, `HAVE_LIBCURL`,
 `HAVE_LIBXCRYPT`, `HAVE_LIBCRYPTO`, `HAVE_LIBXML2`, `HAVE_QT`). The interpreter always builds; a missing dependency turns the

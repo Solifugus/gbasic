@@ -20,6 +20,7 @@ A two-layer library for finding and extracting structured data from text:
 
 - **Layer 0 — regex**: an always-available core value kind (`regex`) plus a small
   set of C builtins for linear pattern matching, backed by the POSIX regex engine
+  (PCRE2 since 2026-11-03: `docs/regex_pcre2_design.md`)
   already in libc.
 - **Layer 1 — ARI**: a pure-gBASIC `stdlib` library that parses *messy,
   semi-structured reports* declaratively and returns a **frame**. ARI is built

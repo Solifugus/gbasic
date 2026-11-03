@@ -39,6 +39,26 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### Regular expressions on PCRE2
+
+Matthew's decision, for gBASIC Studio's find and replace. The surface is
+unchanged (`regex`, `match`, `match_all`, the `contains`/`split`/`replace`
+overloads, the `i`/`m`/`s` flags, codepoint positions).
+
+- **New syntax:** `\b`, lazy quantifiers, lookahead and lookbehind,
+  backreferences, named groups (also in the match record as `m.named`), inline
+  `(?i)`, and `[\D]` inside a bracket.
+- **Replacement:** `\1` beside `$1`, `${12}` and `${name}`.
+- **Changed behaviour:** the first alternative that matches wins, not the
+  longest (`a|ab` on `"ab"` is `"a"`); measured across the whole gate, one
+  generated pattern in `ari_discover` depended on it and was fixed. A
+  replacement naming a group the pattern does not have **raises**, where it
+  expanded to nothing (`"$5.00"` became `".00"`). A pattern that backtracks
+  without end raises instead of hanging. A NUL in a pattern is accepted.
+- **Fixed:** `regex("a.b", "ms")` and `regex("a[^x]b", "m")` reported a capture
+  group the pattern did not have.
+- **Build:** PCRE2 (`libpcre2-dev`) is required. On Windows it replaces TRE.
+
 ### `--version` names the build
 
 A release built from its tag says `gBASIC 0.10.0` as before. Any other build
