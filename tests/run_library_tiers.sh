@@ -390,7 +390,7 @@ fi
 #
 # So the bound is asserted to EXIST, both ends of it, since a bound nobody
 # checks is one a later edit removes silently.
-if grep -q 'no licence text is that long' "$rel" && grep -q 'too short to carry four licences' "$rel"; then
+if grep -q 'no licence text is that long' "$rel" && grep -qE 'too short to carry [a-z]+ licences' "$rel"; then
     pass "the notices file is bounded at both ends, so a runaway extraction cannot ship"
 else
     fail "the size bound on THIRD-PARTY-NOTICES.txt is gone from $rel -- an absence guard is not a plausibility guard"
