@@ -1019,17 +1019,73 @@ static int eval_into(X *x, SqlExpr *e, GsqlBuf *out) {
  * column says what it holds, so there is nothing to guess, and spelling the
  * cast was ceremony. Through the host's CAST, so what text a kind accepts is
  * decided in one place. Everywhere else stays strict -- this is called only
- * where a value is STORED -- and an integer column is untouched, since a
- * decimal there is usually a mistake. `out` is replaced; GSQL_OK when there
- * was nothing to do. */
+ * where a value is STORED.
+ *
+ * AN INTEGER COLUMN TAKES TEXT THAT IS EXACTLY AN INTEGER (Matthew's ruling
+ * 2026-11-02, gbasic-books volume 3 Q1): every field `csv.records` reads is
+ * text, so without this every integer column in every import needed a cast.
+ * The ruling it extends still holds -- a decimal there is usually a mistake --
+ * because the host's CAST refuses anything that does not read as an EXACT
+ * integer: "2.5", "2.0", "1e3", " 25", "" and a number past 64 bits all stay
+ * refused, and so does a NUMBER that is not exact (6 / 2). "007" is 7: a column
+ * declared integer holds a number, and keeping the zeros is a string column's
+ * job. `out` is replaced; GSQL_OK when there was nothing to do. */
+/* What is wrong with `t` as an integer column's text, or NULL when it is a
+ * whole number written in digits: an optional sign, at least one digit,
+ * nothing else, within 64 bits. STRICTER THAN CAST, deliberately: `{number}`
+ * reads " 25" as 25, and the rule agreed for storing is digits and nothing
+ * else (2026-11-02), so a padded field is refused here and said why. */
+static const char *integer_text_problem(const char *t) {
+    if (!t) {
+        return "holds a NUL";
+    }
+    if (!*t) {
+        return "is empty";
+    }
+    const char *d = t + (*t == '+' || *t == '-');
+    if (!*d) {
+        return "is a sign with no digits";
+    }
+    for (const char *c = d; *c; c++) {
+        if (*c == ' ' || *c == '\t' || *c == '\r' || *c == '\n') {
+            return "has a space in it (trim it first: text is never trimmed for you)";
+        }
+        if (*c == '.' || *c == ',') {
+            return "is not a whole number";
+        }
+        if (*c < '0' || *c > '9') {
+            return "is not a number written in digits";
+        }
+    }
+    errno = 0;
+    (void)strtoll(t, NULL, 10);
+    if (errno == ERANGE) {
+        return "is past the 64-bit integer range";
+    }
+    return NULL;
+}
+
 static int store_convert(X *x, int kind, const char *currency, const char *table, const char *col, GsqlBuf *out) {
     if (!out->length) {
         return GSQL_OK;
     }
     int tag = out->bytes[0];
     int temporal = kind == GSQL_COL_DATE || kind == GSQL_COL_TIME || kind == GSQL_COL_DATETIME;
-    if (!((temporal && tag == SER_STRING) || (kind == GSQL_COL_MONEY && (tag == SER_STRING || tag == SER_NUMBER)))) {
+    if (!((temporal && tag == SER_STRING) || (kind == GSQL_COL_MONEY && (tag == SER_STRING || tag == SER_NUMBER)) ||
+          (kind == GSQL_COL_INTEGER && tag == SER_STRING))) {
         return GSQL_OK;
+    }
+    if (kind == GSQL_COL_INTEGER) {
+        char *t = v3_read_text(out->bytes, out->length);
+        const char *problem = integer_text_problem(t);
+        if (problem) {
+            int rc = xfail(x->err, GSQL_TYPE, 0, "%s.%s is integer, and the text given %s: '%.80s'", table, col,
+                           problem, t ? t : "");
+            gsql_error_about(x->err, table, col, NULL);
+            free(t);
+            return rc;
+        }
+        free(t);
     }
     GsqlHv *v = x->h->load(x->h->ctx, out->bytes, out->length, x->err);
     if (!v) {
@@ -1041,7 +1097,7 @@ static int store_convert(X *x, int kind, const char *currency, const char *table
     rel(x, v);
     if (!c) {
         const char *kw = kind == GSQL_COL_DATE ? "date" : kind == GSQL_COL_TIME ? "time"
-                         : kind == GSQL_COL_DATETIME ? "datetime" : "money";
+                         : kind == GSQL_COL_DATETIME ? "datetime" : kind == GSQL_COL_INTEGER ? "integer" : "money";
         int rc = xfail(x->err, GSQL_TYPE, 0, "%s.%s is %s%s%s%s, and the %s given does not read as one: %.300s",
                        table, col, kind == GSQL_COL_MONEY ? "money" : kw, kind == GSQL_COL_MONEY && currency[0] ? "(" : "",
                        kind == GSQL_COL_MONEY ? currency : "", kind == GSQL_COL_MONEY && currency[0] ? ")" : "",

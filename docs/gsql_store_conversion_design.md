@@ -18,11 +18,36 @@ Matthew expected the column to do it: *"the table already knows what they are"*.
 |---|---|---|
 | `date`, `time`, `datetime` | text | gBASIC's own `{date}`, `{time}`, `{datetime}` reading of it |
 | `money(CUR)` | text, or a number | gBASIC's own `{CUR}`, so text is exact and a number takes its shortest decimal |
+| `integer` | text that is a whole number written in digits *(2026-11-02, §1a)* | that integer, exact |
 
 - **Where:** `INSERT ... VALUES`, `INSERT ... SELECT`, `UPDATE ... SET`, and a column's `DEFAULT`, the places a value is stored. Each goes through the conversion `CAST` already uses, so what text a column accepts is decided in one place.
 - **Text that does not convert is refused,** naming the column, its kind and the text, as the kind refusal does today.
 - **Everywhere else stays strict:** a comparison, arithmetic and a function's argument make no implicit casts, so `where name = 1` is still refused rather than guessed.
-- **Integer columns stay strict** (Matthew: *"it is usually a mistake to assign a decimal value to an integer"*). A `number` column, text and boolean columns are unchanged.
+- **Integer columns refuse a decimal** (Matthew: *"it is usually a mistake to assign a decimal value to an integer"*), in text or as a number, and since 2026-11-02 take text that is exactly an integer (§1a). A `number` column, text and boolean columns are unchanged.
+
+### 1a. Text that is exactly an integer (2026-11-02)
+
+Asked by the gBASIC books' volume 3 (Q1): every field `csv.records` reads is text,
+so every integer column in every import needed `cast(:x as integer)`. Matthew
+ruled for converting, under a narrow rule: *"We want gBASIC to 'just work' in as
+many situations as is safely possible. If '007' and we want to retain the
+prefixed zeroes then we should use a proper text field."*
+
+**The rule:** an optional sign, at least one digit, nothing else, within 64
+bits. `"25"`, `"-7"`, `"+25"` and `"007"` (which is 7) are stored, exact. Each
+of the rest is refused as `TYPE`, naming the column, with its own reason:
+`"2.5"`, `"2.0"` and `"1,000"` are not a whole number; `"1e3"`, `"0x1A"`,
+`"inf"`, `"1_000"` and digits from another script are not a number written in
+digits; `" 25"` and `"25 "` have a space (text is never trimmed for you);
+`""`, a sign alone, a NUL, and one past the 64-bit range. A NUMBER that is not
+exact (`6 / 2`) is refused as before.
+
+**Stricter than CAST, on purpose, and measured first:** the conversion `CAST`
+uses (`{number}`) reads `" 25"` as an exact 25, so the store path checks the
+text against the rule before the cast rather than inheriting that. `CAST` itself
+is unchanged. Held by `tests/gsql/integer_text_test.bas` (30 checks, every
+answer by hand, each refused shape beside an accepted one) in
+`run_gsql_module.sh`.
 
 ## 2. `gsql.exec` answers rows
 

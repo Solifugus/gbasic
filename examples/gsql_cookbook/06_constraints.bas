@@ -40,11 +40,12 @@ sql drop_ada on shop
     delete from customer where id = 1
 end sql
 
-' a number into money is converted (the column says which currency), but
-' text into an integer is refused: a stored value takes its column's kind
-' only where nothing is guessed
+' a number into money is converted (the column says which currency), and so
+' is text that is a whole number into an integer column -- but text that is
+' not one is refused: a stored value takes its column's kind only where
+' nothing is guessed
 sql text_customer on shop
-    insert into orders (customer, total) values ('1', 5)
+    insert into orders (customer, total) values ('one', 5)
 end sql
 
 sql order_count on shop

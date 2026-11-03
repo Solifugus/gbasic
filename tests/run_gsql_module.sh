@@ -106,6 +106,18 @@ if [ -s "$work/maxrec.err" ]; then
     fail "max_recursion: the fixture wrote to stderr"
 fi
 
+printf 'TIER integer text: text that is exactly an integer is stored as one, and nothing else\n'
+# Matthew's ruling 2026-11-02 (gbasic-books volume 3, Q1); every shape's answer
+# by hand, each refused one beside an accepted neighbour
+mkdir -p "$work/inttext"
+(cd "$work/inttext" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/integer_text_test.bas") \
+    >"$work/inttext.out" 2>"$work/inttext.err"
+verdict "integer text" "$work/inttext.out" $? 30
+if [ -s "$work/inttext.err" ]; then
+    sed 's/^/       /' "$work/inttext.err" | head -5
+    fail "integer text: the fixture wrote to stderr"
+fi
+
 printf 'TIER details: a refusal names its table, column and constraint beside its code\n'
 # gbasic-books volume 3, G2: the names were only inside the message, so a reject
 # report routing by reason had to parse English (docs/gsql_error_details_design.md)

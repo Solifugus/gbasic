@@ -163,8 +163,20 @@ function main_checks(dir)
     check("naming the column and its kind", contains(message_of(e), "conv.at is datetime"), true)
     e = attempt_exec(db, "insert into conv (id, m) values (5, 'lots')", nothing)
     check("text that is no amount is refused", contains(message_of(e), "conv.m is money(EUR)"), true)
-    e = attempt_exec(db, "insert into conv (id, n) values (6, '7')", nothing)
-    check("text into an integer column stays refused", code_of(e), "TYPE")
+    ' text that is exactly an integer is stored as one (Matthew's ruling
+    ' 2026-11-02); anything else in text stays refused, saying why
+    gsql.exec(db, "insert into conv (id, n) values (6, '7')")
+    six = gsql.query(db, "select n from conv where id = 6")[0].n
+    check("text that is a whole number into an integer column is the number", six, 7)
+    ' exact, shown past 2^53, where a double could not hold it
+    gsql.exec(db, "insert into conv (id, n) values (63, '9007199254740993')")
+    big = gsql.query(db, "select n from conv where id = 63")[0].n
+    check("and an exact one, past 2^53", big + 1, 9007199254740994)
+    e = attempt_exec(db, "insert into conv (id, n) values (61, '7.5')", nothing)
+    check("text that is a decimal into an integer column stays refused", code_of(e), "TYPE")
+    check("saying it is not a whole number", contains(message_of(e), "conv.n is integer, and the text given is not a whole number"), true)
+    e = attempt_exec(db, "insert into conv (id, n) values (62, ' 7')", nothing)
+    check("padded text stays refused, since text is never trimmed", contains(message_of(e), "has a space in it"), true)
     e = attempt_exec(db, "insert into conv (id, n) values (7, 7.5)", nothing)
     check("a decimal into an integer column stays refused", code_of(e), "TYPE")
     e = attempt_exec(db, "insert into conv (id, x) values (8, '7')", nothing)

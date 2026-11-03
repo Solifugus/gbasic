@@ -39,6 +39,15 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### Text that is a whole number is stored into an integer column
+
+`insert into item (qty) values ('25')` stores 25, so an import from CSV, where
+every field is text, needs no `cast(:x as integer)`. The rule is narrow: an
+optional sign and digits, within 64 bits. `'2.5'`, `' 25'` (text is never
+trimmed), `''` and `'1e3'` are still refused, each saying why, and so is a number
+that is not exact. `'007'` is 7. **Changed behaviour:** such a store was refused
+as `TYPE` before.
+
 ### `intake.repeats`: a file sent again is reported
 
 `intake.repeats(led, root, pattern)` lists the files `arrived` leaves out because
