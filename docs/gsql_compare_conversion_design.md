@@ -76,5 +76,7 @@ answers each case both ways and requires the same rows.
   order values of one column, which are of one kind already.
 - **Arithmetic** does not convert: `'2' + 3` is still refused, and text is
   joined with `||`.
-- **gBASIC's own `=`** is a separate design (gdash S4), brought to Matthew
-  before it changes.
+- **gBASIC's own `=`** reads text that is a number with the same reader
+  (`include/gb_number_text.h`), but answers false for text that is no number
+  where a query refuses: `docs/number_text_equality_design.md`, ruled
+  2026-11-02.

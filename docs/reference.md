@@ -809,13 +809,24 @@ a !>= b
 a !<= b
 ```
 
-**Across kinds, equality answers and ordering refuses** (*since 0.1.0*). There
-is no implicit numeric/string coercion in a comparison any more than in
-arithmetic, so a string is never equal to a number — `0 = "stop"`, `0 = ""` and
-`1 = "1"` are all **false** — and `1 > "stop"` **raises**, naming both kinds.
-The same rule already governs arrays, records, functions, watchers, regexes,
-money and date/time: `=` and `!=` are questions with
-answers, ordering is not a question at all.
+**Across kinds, equality answers and ordering refuses** (*since 0.1.0*). A
+string that is no number is never equal to a number — `0 = "stop"` and `0 = ""`
+are **false** — and `1 > "stop"` **raises**, naming both kinds. The same rule
+already governs arrays, records, functions, watchers, regexes, money and
+date/time: `=` and `!=` are questions with answers, ordering is not a question
+at all.
+
+**Text that is a number is read as one** *(after 0.10.0)*. When one side is a
+number and the other text, the text is read the way G-SQL reads it — trimmed of
+spaces, tabs and line ends, then a sign, digits, an optional fraction and
+exponent — and the two compare as numbers: `1 = "1"`, `25 = " 25 "`,
+`1000 = "1e3"` and `2 < "10"` are **true**. Hex (`"0x10"`), `"inf"`, separators
+(`"1,000"`) and blank text are not numbers here. Integer text is exact, as
+`number("...")` makes it. Only the operator reads it: the "same value" routes
+below keep a number and text apart, so `unique([1, "1"])` is two values,
+`contains([1], "1")` is false and `consider "1"` does not take an `if 1`
+branch. `[1] = ["1"]` is false too, since a compound compares its stored
+values. See `docs/number_text_equality_design.md`.
 
 **`unknown` is three-valued** *(after 0.10.0)*. `unknown` is gBASIC's SQL
 `NULL` — a fact nobody has — and it follows SQL's rules:

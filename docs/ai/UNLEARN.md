@@ -480,8 +480,11 @@ day — so assume you will hit them too.
   calls its own functions with no prefix — in its own file, declared in the same
   file as the program, and inside a `modifier` body.
 
-- **A string is never equal to a number** (0.1.0). `0 = "stop"` is **false**,
-  and `1 > "stop"` **raises**. It used to be TRUE: every string became `0` in
+- **Text that is no number is never equal to a number** (0.1.0). `0 = "stop"`
+  is **false**, and `1 > "stop"` **raises**. Text that IS a number is read as
+  one by `=` and the ordering operators (after 0.10.0): `1 = "1"` and
+  `2 < "10"` are true, but `contains([1], "1")` and `unique([1, "1"])` keep the
+  kinds apart. It used to be TRUE: every string became `0` in
   the comparison fallthrough, so only the number zero equalled one, while
   `1 = "1"` was false — not a coercion, an omission. Numbers and booleans still
   coerce (`0 = false` is true, 1,472 uses in the suite). Watch for `x = 0` as a
