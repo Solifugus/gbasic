@@ -63,7 +63,14 @@ stmt("SELECT 1 WHERE NULL", "= (none)")
 stmt("SELECT 1 WHERE 1 = 1", "= 1")
 
 sec("no implicit casts (§2): each refusal beside the spelling that works")
-stmt("SELECT '1' = 1", ("EXPRESSION", "=", "= compares text with a number"))
+# text meeting a number is read as one (docs/gsql_compare_conversion_design.md,
+# Matthew's ruling 2026-11-02), with storing's reader: trimmed, written plainly
+stmt("SELECT '1' = 1", "= TRUE")
+stmt("SELECT ' 1.0 ' = 1", "= TRUE")
+stmt("SELECT '1.5' = 1", "= FALSE")
+stmt("SELECT 'one' = 1", ("EXPRESSION", "=", "= compares a number with text that is not a number written in digits"))
+stmt("SELECT '1' + 1", ("EXPRESSION", "+", "+ adds numbers and money, and one side is text"))
+stmt("SELECT TRUE = 'true'", ("EXPRESSION", "=", "= compares a boolean with text"))
 stmt("SELECT CAST('1' AS INTEGER) = 1", "= TRUE")
 stmt("SELECT 'a' + 1", ("EXPRESSION", "+", "join text with ||"))
 stmt("SELECT 'a' || CAST(1 AS TEXT)", "= 'a1'")
@@ -140,9 +147,14 @@ stmt("SELECT id FROM t ORDER BY id LIMIT :n", "= 1 | 2 | 3", params=("n = 3",))
 
 sec("a bound of the wrong kind is refused, never seeks to nothing (§5)")
 # the differential tier allows the scan to refuse where the path answers, so
-# these two are asserted here: a path that skipped the refusal would answer
-# (none), and pass the comparison
-stmt("SELECT name FROM t WHERE id = '1'", ("EXPRESSION", "=", "= compares a number with text"))
+# these are asserted here: a path that skipped the refusal would answer
+# (none), and pass the comparison. Text that reads as the column's kind seeks
+# it (docs/gsql_compare_conversion_design.md §3); text that does not, refuses
+stmt("SELECT name FROM t WHERE id = '1'", "= 'apple'")
+stmt("SELECT name FROM t WHERE id = ' 1 '", "= 'apple'")
+stmt("SELECT name FROM t WHERE id = '1.5'", "= (none)")
+stmt("SELECT name FROM t WHERE id IN ('1', '3') ORDER BY id", "= 'apple' | 'fig'")
+stmt("SELECT name FROM t WHERE id = 'one'", ("EXPRESSION", "=", "= compares a number with text that is not a number written in digits"))
 stmt("CREATE TABLE w (id INTEGER PRIMARY KEY, x MONEY)", "= done 0")
 stmt("CREATE INDEX w_x ON w (x)", "= done 0")
 stmt("INSERT INTO w VALUES (1, CAST('1' AS MONEY(USD))), (2, CAST('2' AS MONEY(EUR))), (3, CAST('3' AS MONEY(USD)))", "= done 3")
@@ -421,7 +433,7 @@ stmt("SELECT NULL IN (SELECT id FROM od WHERE id > 99), 13 NOT IN (SELECT id FRO
 stmt("SELECT 3 NOT IN (SELECT cust FROM od), 1 NOT IN (SELECT cust FROM od), 3 IN (SELECT cust FROM od)", "= NULL, FALSE, NULL")
 stmt("SELECT id, id NOT IN (SELECT cust FROM od WHERE od.id >= cu.id + 9) FROM cu ORDER BY id",
      "= 1, FALSE | 2, FALSE | 3, NULL | 4, NULL")
-stmt("SELECT 1 FROM cu WHERE name IN (SELECT cust FROM od)", ("EXPRESSION", "IN", "= compares text with a number"))
+stmt("SELECT 1 FROM cu WHERE name IN (SELECT cust FROM od)", ("EXPRESSION", "IN", "= compares a number with text that is not a number written in digits"))
 stmt("SELECT id FROM od WHERE total IN (SELECT amt FROM rf WHERE rf.od = od.id)", "= 11")
 stmt("SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id) ORDER BY id", "= 'ann' | 'bob'")
 stmt("SELECT name FROM cu WHERE NOT EXISTS (SELECT * FROM od WHERE od.cust = cu.id) ORDER BY id", "= 'cy' | 'dee'")

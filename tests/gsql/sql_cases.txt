@@ -44,7 +44,17 @@
 
 # ---- no implicit casts (§2): each refusal beside the spelling that works -
 > SELECT '1' = 1
-! EXPRESSION 12 = compares text with a number
+= TRUE
+> SELECT ' 1.0 ' = 1
+= TRUE
+> SELECT '1.5' = 1
+= FALSE
+> SELECT 'one' = 1
+! EXPRESSION 14 = compares a number with text that is not a number written in digits
+> SELECT '1' + 1
+! EXPRESSION 12 + adds numbers and money, and one side is text
+> SELECT TRUE = 'true'
+! EXPRESSION 13 = compares a boolean with text
 > SELECT CAST('1' AS INTEGER) = 1
 = TRUE
 > SELECT 'a' + 1
@@ -179,7 +189,15 @@
 
 # ---- a bound of the wrong kind is refused, never seeks to nothing (§5) -
 > SELECT name FROM t WHERE id = '1'
-! EXPRESSION 29 = compares a number with text
+= 'apple'
+> SELECT name FROM t WHERE id = ' 1 '
+= 'apple'
+> SELECT name FROM t WHERE id = '1.5'
+= (none)
+> SELECT name FROM t WHERE id IN ('1', '3') ORDER BY id
+= 'apple' | 'fig'
+> SELECT name FROM t WHERE id = 'one'
+! EXPRESSION 29 = compares a number with text that is not a number written in digits
 > CREATE TABLE w (id INTEGER PRIMARY KEY, x MONEY)
 = done 0
 > CREATE INDEX w_x ON w (x)
@@ -596,7 +614,7 @@ commit
 > SELECT id, id NOT IN (SELECT cust FROM od WHERE od.id >= cu.id + 9) FROM cu ORDER BY id
 = 1, FALSE | 2, FALSE | 3, NULL | 4, NULL
 > SELECT 1 FROM cu WHERE name IN (SELECT cust FROM od)
-! EXPRESSION 29 = compares text with a number
+! EXPRESSION 29 = compares a number with text that is not a number written in digits
 > SELECT id FROM od WHERE total IN (SELECT amt FROM rf WHERE rf.od = od.id)
 = 11
 > SELECT name FROM cu WHERE EXISTS (SELECT 1 FROM od WHERE od.cust = cu.id) ORDER BY id

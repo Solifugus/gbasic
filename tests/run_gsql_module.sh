@@ -118,6 +118,17 @@ if [ -s "$work/inttext.err" ]; then
     fail "integer text: the fixture wrote to stderr"
 fi
 
+printf 'TIER compare text: a comparison reads text as the other side'"'"'s kind, and a seek agrees with a scan\n'
+# gdash S3/S4, Matthew's ruling 2026-11-02 (docs/gsql_compare_conversion_design.md)
+mkdir -p "$work/cmptext"
+(cd "$work/cmptext" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/compare_text_test.bas") \
+    >"$work/cmptext.out" 2>"$work/cmptext.err"
+verdict "compare text" "$work/cmptext.out" $? 49
+if [ -s "$work/cmptext.err" ]; then
+    sed 's/^/       /' "$work/cmptext.err" | head -5
+    fail "compare text: the fixture wrote to stderr"
+fi
+
 printf 'TIER details: a refusal names its table, column and constraint beside its code\n'
 # gbasic-books volume 3, G2: the names were only inside the message, so a reject
 # report routing by reason had to parse English (docs/gsql_error_details_design.md)

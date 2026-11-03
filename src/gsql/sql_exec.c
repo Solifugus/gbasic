@@ -159,6 +159,10 @@ static int kind_of(X *x, const GsqlHv *v) {
     return x->h->kind(x->h->ctx, v);
 }
 
+static int null_kind_of(int k) {
+    return k == SER_UNKNOWN || k == SER_NULL;
+}
+
 static int is_null(X *x, const GsqlHv *v) {
     int k = kind_of(x, v);
     return k == SER_UNKNOWN || k == SER_NULL;
@@ -519,6 +523,144 @@ static GsqlHv *text_value(X *x, const char *s, size_t n) {
     return v;
 }
 
+static char *trim_text(char *t);
+static const char *number_text_problem(const char *t, int integer);
+
+/* The column kind text is read as when it meets `v` in a comparison
+ * (docs/gsql_compare_conversion_design.md §2), with money's currency in `cur`;
+ * -1 for a kind nothing is read as. */
+static int text_reads_as(X *x, const GsqlHv *v, char cur[8]) {
+    cur[0] = 0;
+    int k = kind_of(x, v);
+    if (k == SER_NUMBER) {
+        return GSQL_COL_NUMBER;
+    }
+    if (k != SER_MONEY && k != SER_DATETIME) {
+        return -1;
+    }
+    GsqlBuf b = {0};
+    if (x->h->store(x->h->ctx, v, &b, x->err) != GSQL_OK) {
+        gsql_buf_free(&b);
+        return -1;
+    }
+    V3Walk w;
+    int ok = v3_walk_whole(b.bytes, b.length, &w);
+    gsql_buf_free(&b);
+    if (!ok) {
+        return -1;
+    }
+    if (k == SER_MONEY) {
+        snprintf(cur, 8, "%s", w.currency);
+        return cur[0] ? GSQL_COL_MONEY : -1;
+    }
+    return w.time_only ? GSQL_COL_TIME : w.precision == 3 ? GSQL_COL_DATE : GSQL_COL_DATETIME;
+}
+
+static const char *col_kind_word(int kind) {
+    switch (kind) {
+    case GSQL_COL_NUMBER: return "a number";
+    case GSQL_COL_INTEGER: return "an integer";
+    case GSQL_COL_MONEY: return "money";
+    case GSQL_COL_DATE: return "a date";
+    case GSQL_COL_TIME: return "a time";
+    case GSQL_COL_DATETIME: return "a date-time";
+    default: return "that kind";
+    }
+}
+
+/* Text read as `kind` with the readers storing uses: a number trimmed and
+ * written plainly, a date as {date} reads it, money in `cur`. A new value, or
+ * NULL with `err` filled as EXPRESSION, naming the text and what it was
+ * compared with. */
+static GsqlHv *text_read_as(X *x, const GsqlHv *text, int kind, const char *cur, int op, uint32_t pos,
+                            GsqlError *err) {
+    size_t n = 0;
+    char *raw = text_of(x, text, &n);
+    if (!raw) {
+        return NULL;
+    }
+    char *t = raw;
+    if (kind == GSQL_COL_NUMBER || kind == GSQL_COL_INTEGER) {
+        int has_nul = memchr(raw, 0, n) != NULL;   /* before trimming, which writes one */
+        t = trim_text(raw);
+        const char *problem = number_text_problem(has_nul ? NULL : t, 0);
+        if (problem) {
+            xfail(err, GSQL_EXPRESSION, pos, "%s compares a number with text that %s: '%.80s'", sql_op_text(op),
+                  problem, t);
+            free(raw);
+            return NULL;
+        }
+    }
+    GsqlHv *src = text_value(x, t, strlen(t));
+    free(raw);
+    if (!src) {
+        return NULL;
+    }
+    GsqlError why;
+    memset(&why, 0, sizeof why);
+    GsqlHv *c = x->h->cast(x->h->ctx, src, kind, cur, &why);
+    if (!c) {
+        size_t m = 0;
+        char *shown = text_of(x, src, &m);
+        xfail(err, GSQL_EXPRESSION, pos, "%s compares %s with text that does not read as %s: '%.80s' (%.200s)",
+              sql_op_text(op), col_kind_word(kind), kind == GSQL_COL_MONEY ? "money" : col_kind_word(kind),
+              shown ? shown : "", why.message);
+        free(shown);
+    }
+    rel(x, src);
+    return c;
+}
+
+/* THE ONE IMPLICIT CONVERSION A COMPARISON MAKES (docs/gsql_compare_conversion_
+ * design.md, Matthew's ruling 2026-11-02): when the sides differ in kind and one
+ * is text, the text is read as the other side's kind; a number against money is
+ * money in that currency. *a and *b may be replaced by a converted value, which
+ * the caller releases through *own_a / *own_b. 0 with `err` filled when the text
+ * does not read as the kind. Pairs it does not cover are left for comparable()
+ * to refuse. */
+static int align_kinds(X *x, const GsqlHv **a, const GsqlHv **b, GsqlHv **own_a, GsqlHv **own_b, int op,
+                       const SqlExpr *e) {
+    *own_a = *own_b = NULL;
+    int ka = kind_of(x, *a), kb = kind_of(x, *b);
+    if (ka == kb || null_kind_of(ka) || null_kind_of(kb)) {
+        return 1;
+    }
+    for (int side = 0; side < 2; side++) {
+        const GsqlHv **from = side ? b : a, *other = side ? *a : *b;
+        GsqlHv **own = side ? own_b : own_a;
+        int kf = side ? kb : ka, ko = side ? ka : kb;
+        char cur[8];
+        if (kf == SER_STRING) {
+            int kind = text_reads_as(x, other, cur);
+            if (kind < 0) {
+                return 1;
+            }
+            *own = text_read_as(x, *from, kind, cur, op, e->pos, x->err);
+            if (!*own) {
+                return 0;
+            }
+            *from = *own;
+            return 1;
+        }
+        if (kf == SER_NUMBER && ko == SER_MONEY) {
+            if (text_reads_as(x, other, cur) != GSQL_COL_MONEY) {
+                return 1;
+            }
+            GsqlError why;
+            memset(&why, 0, sizeof why);
+            *own = x->h->cast(x->h->ctx, *from, GSQL_COL_MONEY, cur, &why);
+            if (!*own) {
+                xfail(x->err, GSQL_EXPRESSION, e->pos, "%s compares money with a number that is not money in %s: %.200s",
+                      sql_op_text(op), cur, why.message);
+                return 0;
+            }
+            *from = *own;
+            return 1;
+        }
+    }
+    return 1;
+}
+
 /* §2's no-implicit-cast rule for a comparison: two values of one kind, or a
  * NULL, which the host answers unknown */
 static int comparable(X *x, const GsqlHv *a, const GsqlHv *b, int op, const SqlExpr *e) {
@@ -571,10 +713,18 @@ static int logical(X *x, const GsqlHv *v, const char *what, const SqlExpr *e) {
 
 /* a comparison of two values already evaluated: Kleene's answer */
 static int compare(X *x, int op, const GsqlHv *a, const GsqlHv *b, const SqlExpr *e) {
+    GsqlHv *own_a, *own_b;
+    if (!align_kinds(x, &a, &b, &own_a, &own_b, op, e)) {
+        return -2;
+    }
     if (!comparable(x, a, b, op, e)) {
+        rel(x, own_a);
+        rel(x, own_b);
         return -2;
     }
     GsqlHv *r = placed(x, x->h->op(x->h->ctx, op, a, b, x->err), e);
+    rel(x, own_a);
+    rel(x, own_b);
     if (!r) {
         return -2;
     }
@@ -686,9 +836,13 @@ static GsqlHv *eval_bin(X *x, SqlExpr *e) {
             free(rs);
         }
     } else if (op >= SQL_OP_EQ && op <= SQL_OP_GE) {
-        if (comparable(x, l, r, op, e)) {
-            v = placed(x, x->h->op(x->h->ctx, op, l, r, x->err), e);
+        const GsqlHv *cl = l, *cr = r;
+        GsqlHv *own_l, *own_r;
+        if (align_kinds(x, &cl, &cr, &own_l, &own_r, op, e) && comparable(x, cl, cr, op, e)) {
+            v = placed(x, x->h->op(x->h->ctx, op, cl, cr, x->err), e);
         }
+        rel(x, own_l);
+        rel(x, own_r);
     } else if (arithmetic_ok(x, l, r, op, e)) {
         if (op == SQL_OP_MOD) {
             if (null_kind(kind_of(x, l)) || null_kind(kind_of(x, r))) {
@@ -1264,6 +1418,32 @@ static int bound_key(Iter *it, SqlExpr *e, size_t j, GsqlKey *key) {
     }
     GsqlColumn c = *gsql_table_col(it->sc->tb, it->sc->keycols[j]);
     c.not_null = 0;
+    /* the comparison's one conversion, against the column's kind, so a seek
+       answers what a scan would (docs/gsql_compare_conversion_design.md §3):
+       `id = '7'` seeks 7. A bound that does not convert does not seek, and
+       the scan's comparison refuses it with the reason. */
+    int tag = b.length ? b.bytes[0] : SER_NULL;
+    int text_kind = c.kind == GSQL_COL_INTEGER || c.kind == GSQL_COL_NUMBER || c.kind == GSQL_COL_MONEY ||
+                    c.kind == GSQL_COL_DATE || c.kind == GSQL_COL_TIME || c.kind == GSQL_COL_DATETIME;
+    if ((tag == SER_STRING && text_kind) || (tag == SER_NUMBER && c.kind == GSQL_COL_MONEY && c.currency[0])) {
+        GsqlError scratch = { GSQL_OK, "", 0, 0, "", "", "" };
+        GsqlHv *v = x->h->load(x->h->ctx, b.bytes, b.length, &scratch);
+        GsqlHv *conv = NULL;
+        if (v && tag == SER_STRING) {
+            conv = text_read_as(x, v, c.kind == GSQL_COL_INTEGER ? GSQL_COL_NUMBER : c.kind, c.currency,
+                                SQL_OP_EQ, 0, &scratch);
+        } else if (v) {
+            conv = x->h->cast(x->h->ctx, v, GSQL_COL_MONEY, c.currency, &scratch);
+        }
+        rel(x, v);
+        b.length = 0;
+        if (!conv || x->h->store(x->h->ctx, conv, &b, &scratch) != GSQL_OK) {
+            rel(x, conv);
+            gsql_buf_free(&b);
+            return 0;
+        }
+        rel(x, conv);
+    }
     GsqlError ignored = { GSQL_OK, "", 0, 0, "", "", "" };
     int fits = b.bytes[0] != SER_NULL && gsql_value_fits(&c, b.bytes, b.length, &ignored) == GSQL_OK;
     if (fits) {
