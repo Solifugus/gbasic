@@ -504,7 +504,25 @@ BUILD_SWITCH_SIG := $(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE
 .buildswitch-stamp: FORCE
 	@printf '%s' '$(BUILD_SWITCH_SIG)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(BUILD_SWITCH_SIG)' > $@
 
-src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h include/platform.h .stdlibdir-stamp .buildswitch-stamp
+# WHICH BUILD THIS IS, for `--version` (asked for by gBASIC Studio 2026-11-03: a
+# build from HEAD 588e888 said "gBASIC 0.10.0" like the installed release, and
+# that produced a false test result). A build of a release TAG from a clean tree
+# says the version alone; anything else adds `+<revision>`, and `.dirty` when
+# tracked files differ from that revision, since then it is not that revision
+# either. Empty outside a git work tree (a tarball) -- and only THIS repository's
+# tree, so a source tree unpacked inside another repository does not report
+# that repository's HEAD.
+GBASIC_REVISION := $(shell \
+  [ "$$(git rev-parse --show-toplevel 2>/dev/null)" = "$(CURDIR)" ] || exit 0; \
+  rev=$$(git rev-parse --short HEAD 2>/dev/null) || exit 0; \
+  dirty=; git diff --quiet HEAD -- 2>/dev/null || dirty=.dirty; \
+  if [ -z "$$dirty" ] && git describe --tags --exact-match HEAD >/dev/null 2>&1; then exit 0; fi; \
+  printf '+%s%s' "$$rev" "$$dirty")
+.revision-stamp: FORCE
+	@printf '%s' '$(GBASIC_REVISION)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(GBASIC_REVISION)' > $@
+
+src/main.o: CPPFLAGS += -DGBASIC_REVISION='"$(GBASIC_REVISION)"'
+src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h include/platform.h .stdlibdir-stamp .buildswitch-stamp .revision-stamp
 
 src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h include/lineedit.h include/platform.h .buildswitch-stamp
 
@@ -606,7 +624,7 @@ clean:
 	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h src/gbasic_win32.res.o
 	rm -f third_party/yescrypt/*.o
 	rm -f gbasic-lsp $(LSP_OBJS)
-	rm -f .stdlibdir-stamp .buildswitch-stamp
+	rm -f .stdlibdir-stamp .buildswitch-stamp .revision-stamp
 	rm -f src/modules/qt_backend.moc src/modules/qt_backend.o
 	rm -rf editors/kate/syntax
 

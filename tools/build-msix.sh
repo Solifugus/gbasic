@@ -41,6 +41,8 @@ signtool="$sdk_bin/signtool.exe"
 
 make >/dev/null
 version="$(./gbasic.exe --version | awk '{print $2}')"
+# a build that is not a clean release tag says 0.10.0+<rev>; MSIX wants the numbers
+version="${version%%+*}"
 case "$version" in
     [0-9]*.[0-9]*.[0-9]*) ;;
     *) echo "build-msix: cannot read a version from ./gbasic.exe --version" >&2; exit 1 ;;

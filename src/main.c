@@ -1,3 +1,7 @@
+#ifndef GBASIC_REVISION
+#define GBASIC_REVISION ""
+#endif
+
 #include "ast.h"
 #include "builtins.h"
 #include "eval.h"
@@ -1044,7 +1048,9 @@ int main(int argc, char **argv) {
         print_help(argv[0]);
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        printf("gBASIC 0.10.0\n");
+        /* GBASIC_REVISION is "" for a release tag built clean, else
+         * "+<rev>" or "+<rev>.dirty" (the Makefile says how) */
+        printf("gBASIC 0.10.0%s\n", GBASIC_REVISION);
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--capabilities") == 0) {
         /* WHAT THIS INTERPRETER CAN TOUCH: one name per line, tab, its labels,

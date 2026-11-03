@@ -698,6 +698,11 @@ design proposal as an available feature.
 ./gbasic --version        # gBASIC 0.10.0
 ```
 
+That is a release built from its tag. Any other build names its revision, so
+it cannot be mistaken for the release: `gBASIC 0.10.0+99341ab`, and
+`gBASIC 0.10.0+99341ab.dirty` when tracked files differ from that revision. A
+build from a source tarball, which has no git history, says the version alone.
+
 ## Contributing
 
 Issues, bug reports, questions and **code contributions** are welcome.

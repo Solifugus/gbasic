@@ -53,6 +53,7 @@ dist/
 # tools/build-msix.sh output, including the TEST signing key (.pfx)
 /build/
 .buildswitch-stamp
+.revision-stamp
 
 # moc output: generated from src/modules/qt_backend.cpp at build time.
 src/modules/*.moc

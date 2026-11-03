@@ -384,6 +384,19 @@ if ./gbasic --version >"$version_file"; then
     # still said rc1, and the release gate's piped invocation masked the
     # nonzero exit).
     expected_version="$(grep -m1 -oE 'gBASIC [0-9]+\.[0-9]+\.[0-9]+[^ ]*' README.md)"
+    # AND WHICH BUILD IT IS (Studio, 2026-11-03): a release tag built clean
+    # says the version alone, anything else `+<rev>` and `.dirty` when tracked
+    # files differ. The suffix is asked of git here, not read from the binary.
+    expected_suffix=""
+    if [ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$PWD" ]; then
+        rev="$(git rev-parse --short HEAD)"
+        dirty=""
+        git diff --quiet HEAD -- || dirty=".dirty"
+        if [ -n "$dirty" ] || ! git describe --tags --exact-match HEAD >/dev/null 2>&1; then
+            expected_suffix="+$rev$dirty"
+        fi
+    fi
+    expected_version="$expected_version$expected_suffix"
     if [[ -n "$expected_version" && "$version_text" == "$expected_version" ]]; then
         printf 'PASS %s\n' "gbasic --version"
     else
