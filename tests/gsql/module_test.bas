@@ -190,8 +190,11 @@ function main_checks(dir)
     check("and a whole amount keeps its places", gsql.query(db, "select cast(m as string) as s from conv where id = 2")[0].s, "5.25")
     e = attempt_exec(db, "insert into conv (id, x) values (81, 'seven')", nothing)
     check("text that is no number into a number column is refused", code_of(e), "TYPE")
-    e = attempt_query(db, "select id from conv where at = '2026-11-01 04:31:00'", nothing)
-    check("a comparison stays strict", code_of(e), "EXPRESSION")
+    ' a comparison reads text as the other side's kind (gdash S3, 2026-11-02),
+    ' and text that is no date-time is still refused
+    check("a comparison reads text as a date-time", count(gsql.query(db, "select id from conv where at = '2026-11-01 04:31:00'")), 1)
+    e = attempt_query(db, "select id from conv where at = 'soon'", nothing)
+    check("and refuses text that is none", code_of(e), "EXPRESSION")
     ' storing converts text and numbers, never money of another currency:
     ' that would be an exchange, which a program states with money.convert
     e = attempt_exec(db, "insert into conv (id, m) values (9, :m)", { m: {USD}"5.00" })

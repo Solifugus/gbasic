@@ -128,6 +128,26 @@ if [ -s "$work/cmptext.err" ]; then
     sed 's/^/       /' "$work/cmptext.err" | head -5
     fail "compare text: the fixture wrote to stderr"
 fi
+# ...and the text SEEKS, which no answer can show: a lookup that failed to
+# convert falls back to the scan and finds the same row. So it is timed from
+# outside, 100 lookups by text against 100 the index cannot serve. Measured
+# 0.02 s against 1.80 s; a 5x floor leaves room for a loaded machine.
+mkdir -p "$work/cmpseek"
+G="$PWD/gbasic"; F="$PWD/tests/gsql/compare_seek.bas"
+if (cd "$work/cmpseek" && "$G" "$F" setup >/dev/null 2>&1); then
+    (cd "$work/cmpseek" && /usr/bin/time -f '%e' -o "$work/cmpseek.ttext" "$G" "$F" text >"$work/cmpseek.text" 2>/dev/null)
+    (cd "$work/cmpseek" && /usr/bin/time -f '%e' -o "$work/cmpseek.tscan" "$G" "$F" scan >"$work/cmpseek.scan" 2>/dev/null)
+    t_text=$(tail -1 "$work/cmpseek.ttext"); t_scan=$(tail -1 "$work/cmpseek.tscan")
+    if [ "$(cat "$work/cmpseek.text")" != 100 ] || [ "$(cat "$work/cmpseek.scan")" != 100 ]; then
+        fail "compare text: the lookups did not each find their row"
+    elif awk -v a="$t_text" -v b="$t_scan" 'BEGIN { exit !(b >= 5 * (a < 0.01 ? 0.01 : a)) }'; then
+        pass "compare text: a lookup by text seeks (${t_text}s for 100, against ${t_scan}s scanning)"
+    else
+        fail "compare text: a lookup by text did not seek (${t_text}s for 100, against ${t_scan}s scanning)"
+    fi
+else
+    fail "compare text: the seek fixture's setup failed"
+fi
 
 printf 'TIER details: a refusal names its table, column and constraint beside its code\n'
 # gbasic-books volume 3, G2: the names were only inside the message, so a reject
