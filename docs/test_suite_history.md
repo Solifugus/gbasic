@@ -740,6 +740,12 @@ SEVERAL SHORTCUTS AND PRESSING A KEY (§0.34) -- `shortcut: [...]` on a menu or 
 
 A COLUMN'S ALIGNMENT (§0.35) -- `align:` on a table's or tree's `field`, and `qt.alignment`. Asked for by gBASIC Studio: its grid is an asking table whose model answered only DisplayRole, so a column could not be right-aligned. One option across held tables, asking tables and trees, applied to every cell as it is made, so a `qt.refresh` row is aligned too. AND A DEFECT FOUND ON THE WAY: a column's options were read for label/type/depth and nothing else, so `alignn: "right"` did nothing in silence; a column's option set is CLOSED now in the shared load-time pass, refused by name with the near miss, which the DECLARATION tier asserts with no Qt at all. THE ORACLE ASKS Qt (the model's alignment role, the item's alignment), never the declaration. Five perturbations proven red.
 
+## run_qt_find.sh
+
+`./tests/run_qt_find.sh`
+
+STUDIO'S FIND-AND-REPLACE REQUESTS (§0.36, 2026-11-03) -- `qt.label`, `whitespace` on a source or memo, `qt.select_text`/`qt.selection`, `qt.replace_text`, `qt.highlight_text`/`qt.highlights` and `qt.click`. FOUND: a `choice` in a form showed no label, because the placement code tested `field` alone while the pane refusal above it named both words the parent places; and a `memo` in a form took its label as its text, which bound data then replaced. Every oracle is Qt: a caption is the QLabel whose buddy is the part, the whitespace setting is the document's text option, a selection and the marks are read from the cursor and the extra selections, an undo is Qt's own slot, and a click is a mouse press Qt turns into `itemClicked`/`cellClicked`. Columns count codepoints, so an emoji is one column; `qt.caret` moved to the same count. Twelve perturbations red (the list is in §0.36). Skips without Qt.
+
 ## run_qt_gutter.sh
 
 `./tests/run_qt_gutter.sh`

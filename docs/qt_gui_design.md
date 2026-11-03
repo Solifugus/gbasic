@@ -4254,13 +4254,21 @@ code below the refusal tested only `field`, in all three parents (a form row, a
 two uses ignored it. Now one predicate, `label_placed_by_parent(word)`, is asked
 by the refusal and by every placement, so they cannot disagree again.
 
-Studio asked for "any labelled part". The others are not dropped: a `button`, a
-`check`, a `text`, a `memo` and a `source` consume `label:` as their own text,
-so a row caption as well would show it twice.
+Studio asked for "any labelled part". A `button`, a `check` and a `text` show
+`label:` as their own text, so a caption as well would show it twice. **A `memo`
+and a `source` in a form were the same defect in another shape:** each took its
+label as its first text, so `memo description( label: "Description" )` (BAG's
+editor, and the choice fixture) put the word inside the memo, where bound data
+then replaced it, and it showed nowhere. In a form they are rows, and their
+label is the row's caption now; outside a form it is still their text, which is
+how `memo log( label: "You are in the cellar." )` is written. Decided here, not
+asked: it is the one place this increment changes what an existing declaration
+shows.
 
 **Its observable is new.** Nothing could read a row's caption, so a fixture
 could not tell the fix from the defect. `qt.label(win, part)` answers the
-caption shown beside a part, or `nothing` when it has none. It reads **Qt**:
+caption shown beside a part, or `unknown` when it has none (the absence
+`qt.caret`, `qt.pane` and `qt.dock` answer). It reads **Qt**:
 the `QLabel` whose buddy is the part, which is what `QFormLayout::addRow`
 creates and what the grid and box placements now set too. It never reads the
 declaration.
@@ -4291,7 +4299,7 @@ codepoints too.
 - **`qt.select_text(win, part, line, column, line2, column2)`** selects from the
   first position to the second (the caret ends at the second).
   **`qt.selection(win, part)`** answers `{line, column, line2, column2, text}`
-  or `nothing` when nothing is selected.
+  or `unknown` when nothing is selected.
 - **`qt.replace_text(win, part, edits)`** applies one edit
   `{line, column, line2, column2, text}`, or an array of them, through a
   `QTextCursor` inside **one** `beginEditBlock`/`endEditBlock`, so a Replace All
@@ -4309,3 +4317,18 @@ single-click-opens path had no test. **`qt.click(win, part)`** and
 **`qt.click(win, part, row)`** send a left press and release where a mouse would
 land, aimed exactly as `qt.right_click` aims, so Qt itself emits `clicked`,
 `itemClicked` and the selection change. It does not call a handler directly.
+
+### Evidence, and what is open
+
+`tests/run_qt_find.sh` over `tests/qt_find_test.bas`, 55 checks, plus valgrind
+and no stderr. Twelve perturbations, each red: placement testing `field` alone
+(3: Studio's licence, a choice in a row, in cells), a caption with no buddy (3),
+a form memo keeping its label as text (1), no edit block (one undo restored one
+edit of four), edits applied first to last (2), the overlap check off (3), no
+`setExtraSelections` (2), a middle button for `qt.click` (1), the whitespace
+setting not applied (2) and not read (2), columns as UTF-16 units (a runtime
+error: column 2 lands inside the emoji) and the readback as units (1).
+
+**Open:** a box child moved by `qt.refresh` (`gb_qt_child_place`) moves without
+its caption, which stays where it was. Older than this increment, and outside
+Studio's ask.

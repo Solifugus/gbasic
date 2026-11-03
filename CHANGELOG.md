@@ -39,6 +39,28 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### Qt: find and replace in a `source`, a caption for a `choice`, and a left click
+
+Asked for by gBASIC Studio.
+
+- **A `choice` in a `form`, a `row` or `cells` shows its `label:`**, which it
+  silently dropped. **Changed behaviour:** in a `form`, a `memo`'s or a
+  `source`'s `label:` is the row's caption, not its first text; outside a form
+  it is still the text. `win.label(part)` (`qt.label`) reads a part's caption
+  from Qt.
+- **`qt.set(win, part, "whitespace", true)`** shows tabs, spaces and line ends
+  in a `source` or a `memo`; `qt.read` reads it back.
+- **`qt.select_text`** selects a range and **`qt.selection`** reads it.
+- **`qt.replace_text`** replaces one range or many as **one undoable edit**,
+  every position referring to the text before the call.
+- **`qt.highlight_text`** marks every match (Qt's extra selections, replaced as
+  a list) and **`qt.highlights`** reads them back.
+- **`qt.click(win, part [, row])`** is a left click aimed as `qt.right_click`
+  aims, so `itemClicked` and `cellClicked` can be driven.
+- **Changed behaviour:** `qt.caret` and `qt.caret_to` count columns in
+  codepoints, as `len` does. They counted UTF-16 units, so they differed after
+  an emoji.
+
 ### `1 = "1"` is still false, and now says so (warning 2122)
 
 A number compared with `=` or `!=` against text that reads as a number (G-SQL's
