@@ -1,6 +1,6 @@
 # G-SQL: a comparison reads text as the other side's kind
 
-**Status:** Proposal, 2026-11-02. Asked for by gdash, planning its move from
+**Status:** Shipped 2026-11-02, held by `run_gsql_module.sh`'s compare-text tier and the `run_gsql_sql.sh` corpus. Asked for by gdash, planning its move from
 SQLite to G-SQL (its S3 and S4), and ruled by Matthew the same day: *"I find
 it very convenient in T-SQL to be able to compare numbers in strings to actual
 numbers. Therefore, I strongly feel like G-SQL should do the same."*
@@ -51,6 +51,24 @@ applied there against the column's kind, so `WHERE id = '7'` seeks the integer
 7. A bound that does not convert does not seek; the query falls back to the
 scan, whose comparison then refuses with the reason. A differential tier
 answers each case both ways and requires the same rows.
+
+## 3a. Evidence
+
+- `tests/gsql/compare_text_test.bas`, 49 checks: 31 conditions asked of an
+  indexed table and of an unindexed copy, the answers required to agree,
+  refusals included; and 18 answers written by hand.
+- **The seek is timed, because no answer shows it.** Perturbed so a text bound
+  does not convert, every answer stayed right: the bound falls back to the scan,
+  which converts. Measured from outside, 100 lookups by text take 0.01 s against
+  1.83 s through `k + 0`; perturbed, the text took 2.86 s. A tier requires 5x.
+- The corpus's cases that pinned a refusal (`'1' = 1`, `id = '1'`) now pin the
+  answer, with the refusal moved to text that is no number (`id = 'one'`): the
+  section's own point, *a bound of the wrong kind never seeks to nothing*, holds.
+- **Cost:** a text literal is read on every row, through gBASIC's reader. Over
+  200 000 rows, `d >= '2026-06-01'` took 0.45 s against 0.35 s with a cast, and
+  `n >= '100000'` 0.35 s against 0.16 s for the number. Reading a constant once
+  needs a memo whose owner is the statement's execution, which is copied by value
+  in several places; left until a measured query needs it.
 
 ## 4. Not done
 

@@ -2583,8 +2583,16 @@ saying that it ran.
 `money` column is read as that kind, and a number into a `money` column is
 money in the column's currency: `values ('2026-11-01 04:31', 199.50)` stores
 a date-time and money. Text that does not read as one is refused, naming the
-column. Comparisons and arithmetic make **no** implicit conversion
-(`where name = 1` is refused). An integer column takes text that is a whole
+column. **A comparison reads text as the other side's kind** *(after 0.10.0)*:
+when the two sides differ and one is text -- a literal, a parameter, a string
+column -- the text is read as the other side's number, money, date, time or
+date-time with storing's readers, and a number against money is money in its
+currency. So `where id = '7'`, `where day >= '2026-10-01'` and `where amount >
+1000` work, and an index seeks on them. Text that does not read as the kind is
+refused, naming it; a boolean against anything else, a date against a number and
+an ordering across currencies stay refused. Arithmetic converts nothing (`'2' +
+3` is refused; join text with `||`) (`docs/gsql_compare_conversion_design.md`).
+An integer column takes text that is a whole
 number written in digits *(after 0.10.0)*, with spaces around it trimmed:
 `'25'`, `' 25 '`, `'-7'`, `'007'` (which is 7; keep the zeros in a string
 column). It refuses a decimal in text (`'2.5'`, `' 2.5'`) or as a number, and

@@ -39,6 +39,16 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### G-SQL: a comparison reads text as the other side's kind
+
+`where id = '7'`, `where id = $1` with a form value, `where day >= '2026-10-01'`
+and `where amount > 1000` (money, in its currency) now answer instead of being
+refused, and an index seeks on them, as T-SQL does. The text is read with
+storing's readers. Text that does not read as the kind is still refused, naming
+it, and so are a boolean against anything else, a date against a number and an
+ordering across currencies. Arithmetic still converts nothing. **Changed
+behaviour:** these comparisons were refused as `EXPRESSION`.
+
 ### A cast of money to text, and csv.write, keep every digit
 
 `CAST(m AS string)` in G-SQL and `csv.write`/`csv.line` write money with every

@@ -75,9 +75,15 @@ That is the README's example, run by the gate. The fuller forms are
   `for each row in block` streams a large result a batch at a time.
 - **A declared block that nothing runs is warning 2121.** A block runs only when
   `.exec()`, `.query()` or `for each` reaches it.
-- **Nothing converts in a comparison or in arithmetic.** `where id = '1'` against
-  an integer column is refused as `EXPRESSION` ("= compares a number with text").
-  `'a' + 'b'` is refused; text joins with `||`. CAST one side explicitly.
+- **A comparison reads text as the other side's kind; arithmetic converts
+  nothing.** `where id = '7'`, `where id = $1` with a form's text, `where day >=
+  '2026-10-01'` and `where amount > 1000` (money in its own currency) all work,
+  with storing's readers, so `' 7 '` is 7 and `'7.5'` is a number that is not 7.
+  Text that does not read as the kind is refused as `EXPRESSION`, and so are a
+  boolean against anything else, a date against a number, and an ordering across
+  currencies. `'a' + 'b'` and `'2' + 3` are refused; text joins with `||`. A
+  literal is read on every row: over 200 000 rows, `cast('2026-06-01' as date)`
+  took 0.35 s against 0.45 s for the text, and a number 0.16 s against 0.35 s.
 - **Storing does convert, into the column's declared kind.** Text stored into a
   `date`, `time`, `datetime` or `money(USD)` column is read as that kind, and a number
   into `money(USD)` takes the column's currency. A bare `money` column has no

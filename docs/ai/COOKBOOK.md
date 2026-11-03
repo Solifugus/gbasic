@@ -313,7 +313,8 @@ for error handling, `ERRORS.md`.
   (a literal), `sql` blocks hold the SQL, and values reach it only as `:name`
   parameters read from the variables in scope or a record's fields. `x.query()`
   answers rows, `x.exec()` what happened; `for each row in block` streams.
-  Nothing converts in a comparison: CAST one side. Refusals raise with
+  A comparison reads text as the other side's kind (`where id = $1` with a
+  form's text works); arithmetic converts nothing. Refusals raise with
   `error.details.code`. Read `docs/ai/GSQL.md` before writing any.
   → `examples/gsql_cookbook/01_first_database.bas`,
   `examples/gsql_cookbook/04_database_and_sql_blocks.bas`,
