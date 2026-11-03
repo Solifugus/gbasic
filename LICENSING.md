@@ -76,7 +76,7 @@ system.~~ **That was true until 2026-10-11 and is now only half true**, and the
 half that changed creates an obligation that did not exist before. A build from
 source still links everything dynamically, and redistributes nothing. **The
 published tarballs no longer do**: `tools/build-release-tarball.sh` compiles
-four things *into* `bin/gbasic`, so each download is a redistribution of each
+five things *into* `bin/gbasic`, so each download is a redistribution of each
 of them.
 
 | component | licence | why it is inside |
@@ -85,6 +85,7 @@ of them.
 | zlib | Zlib | ditto in effect, and tiny |
 | SQLite | public domain | removes a `DT_NEEDED` entry rather than adding one |
 | yescrypt | BSD-2-Clause | libxcrypt's soname is `.so.1` on Debian, `.so.2` on RHEL |
+| PCRE2 | BSD-3-Clause, with its binary-library exception | the regex engine, required, so the lean tier stays libc and libm (since 2026-11-03) |
 
 libxml2's MIT licence and yescrypt's BSD-2 **both require their notice to
 travel with a binary**, so every tarball now carries

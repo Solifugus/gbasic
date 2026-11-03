@@ -48,7 +48,7 @@ jobs:
           # check-deps.sh until 2026-08-15; because --install issues a single
           # apt-get, one bad name meant nothing was installed at all.
           sudo apt-get install -y -qq \
-            build-essential bison pkg-config \
+            build-essential bison pkg-config libpcre2-dev \
             zlib1g-dev libxml2-dev libsqlite3-dev libpq-dev \
             libcurl4-openssl-dev libssl-dev libcrypt-dev \
             unixodbc-dev libsqliteodbc
@@ -186,6 +186,23 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential bison musl-tools
 
+      # PCRE2 IS REQUIRED (the regex engine, docs/regex_pcre2_design.md), and the
+      # distribution's libpcre2 is built against glibc, so musl gets its own:
+      # the pinned release, checksummed, static, into a prefix of its own. The
+      # same recipe was run locally against musl-gcc before it went here.
+      - name: Build PCRE2 against musl
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSLfO https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.46/pcre2-10.46.tar.bz2
+          echo "15fbc5aba6beee0b17aecb04602ae39432393aba1ebd8e39b7cabf7db883299f  pcre2-10.46.tar.bz2" | sha256sum -c -
+          tar xjf pcre2-10.46.tar.bz2
+          cd pcre2-10.46
+          ./configure --quiet CC=musl-gcc --prefix="$RUNNER_TEMP/pcre2-musl" \
+            --disable-shared --enable-static --disable-pcre2grep-libz \
+            --disable-pcre2grep-libbz2 --disable-pcre2test-libreadline
+          make -j"$(nproc)" >/dev/null
+          make install >/dev/null
+
       - name: Build against musl, statically
         run: |
           # LEANNESS IS FORCED, not hoped for. musl's -nostdinc collides with the
@@ -202,7 +219,12 @@ jobs:
           # work and produces a convincing glibc binary -- which cost an evening
           # once already, and is why the next step asserts musl rather than
           # "statically linked".
-          PATH="$RUNNER_TEMP/shim:$PATH" make CC=musl-gcc LDLIBS="-lm -static"
+          #
+          # PCRE2's include path rides on CC and its library on LDLIBS, since
+          # both are command-line overrides that replace the Makefile's own.
+          P="$RUNNER_TEMP/pcre2-musl"
+          PATH="$RUNNER_TEMP/shim:$PATH" make CC="musl-gcc -I$P/include" \
+            LDLIBS="-L$P/lib -lpcre2-8 -lm -static"
 
       - name: It must really be musl, not merely static
         run: |
@@ -258,7 +280,9 @@ jobs:
       - name: Install only what is required
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential bison
+          # PCRE2 is the regex engine and required (docs/regex_pcre2_design.md);
+          # 22.04 packages 10.39, above the 10.34 MATCH_INVALID_UTF needs
+          sudo apt-get install -y -qq build-essential bison libpcre2-dev
 
       - name: Build
         run: make
@@ -300,7 +324,9 @@ jobs:
       - name: Install only what is required
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential bison
+          # PCRE2 is required (the regex engine); with no pkg-config the
+          # Makefile falls back to -lpcre2-8, which is what this job proves
+          sudo apt-get install -y -qq build-essential bison libpcre2-dev
 
       - name: Build
         run: make
@@ -337,7 +363,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential bison pkg-config \
+          sudo apt-get install -y -qq build-essential bison pkg-config libpcre2-dev \
             zlib1g-dev libxml2-dev libsqlite3-dev
 
       # The stdlib path is COMPILED IN, so `make` followed by `make install
@@ -433,7 +459,7 @@ jobs:
           # the brew one has to come FIRST on PATH -- a build that silently used
           # /usr/bin/bison would fail with a grammar error that names the
           # grammar and not the tool.
-          brew install bison pkg-config sqlite libxml2 openssl@3 zlib || true
+          brew install bison pkg-config pcre2 sqlite libxml2 openssl@3 zlib || true
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
 
       - name: Which bison

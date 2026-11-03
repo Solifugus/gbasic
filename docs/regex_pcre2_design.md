@@ -1,9 +1,8 @@
 # Regular expressions on PCRE2
 
-**Status:** Shipped 2026-11-03 for a build with a system libpcre2-8, held by
-`run_regex.sh` tier 6 (`tests/regex_pcre2_test.bas`). Matthew's decision,
-relayed from gBASIC Studio: *"Move regex to PCRE2."* The builds that install
-nothing but a compiler and bison (§5) are the open question.
+**Status:** Shipped 2026-11-03, held by `run_regex.sh` tier 6
+(`tests/regex_pcre2_test.bas`). Matthew's decision, relayed from gBASIC Studio:
+*"Move regex to PCRE2"*; and for the build, *"require libpcre2-dev"* (§7).
 
 ## 1. Why
 
@@ -114,19 +113,23 @@ So outside that generator nothing in the tree depends on leftmost-longest.
   `i < rc` test on groups, because PCRE2 writes `PCRE2_UNSET` past `rc` itself;
   the test was redundant and is gone.
 
-## 7. Open: the builds with nothing installed
+## 7. The builds with nothing installed: libpcre2-dev is required
 
-`.github/workflows/ci.yml` runs three jobs that install only a compiler and
-bison (`minimal`, `oldest-toolchain`, `musl-static`), and the release tarball's
-lean tier links nothing but libc and libm. A required system libpcre2 breaks
-that promise. The two ways out:
+Three CI jobs installed only a compiler and bison, and the release tarball's
+lean tier links nothing but libc and libm. Matthew ruled 2026-11-03: **require
+libpcre2-dev**, rather than vendoring PCRE2.
 
-1. **Require libpcre2-dev** (every distribution packages it; ubuntu 22.04 has
-   10.39): the three jobs install it, the musl job builds PCRE2 from source
-   with musl-gcc, and the tarball links it statically from a source build, as
-   it does libxml2.
-2. **Vendor PCRE2** under `third_party/`, as yescrypt and cJSON are: the build
-   needs only a compiler and bison again, at the cost of carrying a large
-   third-party library and its BSD notice.
-
-For Matthew. Until then the change is committed and not pushed.
+- **`minimal` and `oldest-toolchain`** install `libpcre2-dev`; `minimal` has no
+  pkg-config, so the Makefile's plain `-lpcre2-8` fallback is what it proves
+  (run locally with a pkg-config that always fails: builds, links, 47/47).
+- **`musl-static`** builds PCRE2 10.46 from the release tarball, checked against
+  the SHA-256 GitHub publishes for the asset, with musl-gcc into a prefix of
+  its own; the include path rides on `CC` and the library on `LDLIBS`. Run
+  locally first: a static musl binary with no glibc symbols, the NUL check,
+  the golden and 47/47.
+- **The release tarball** builds PCRE2 static in its container, as libxml2,
+  and carries `LICENCE.md` in `THIRD-PARTY-NOTICES.txt`, probed by
+  `pcre2_compile_8` being defined in the binary.
+- **Windows** links MSYS2's `mingw-w64-ucrt-x86_64-pcre2` statically; its
+  notice line replaces libsystre's and TRE's in `packaging/windows/notices.manifest`.
+  **Not built or run on Windows here.**

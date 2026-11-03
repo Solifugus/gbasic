@@ -240,6 +240,13 @@ LIBXML2_VERSION="2.15.4"
 LIBXML2_SHA256="98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821"
 LIBXML2_SERIES="${LIBXML2_VERSION%.*}"
 
+# THE ONE PLACE PCRE2'S VERSION IS WRITTEN. The regex engine, and REQUIRED
+# (docs/regex_pcre2_design.md), so both tiers link it statically: the lean
+# tier's link set stays libc and libm. The SHA-256 is the digest GitHub
+# publishes for the release asset, checked against the download on 2026-11-03.
+PCRE2_VERSION="10.46"
+PCRE2_SHA256="8d28d7f2c3b970c3a4bf3776bcbb5adfc923183ce74bc8df1ebaad8c1985bd07"
+
 # THE ONE PLACE SQLITE'S VERSION IS WRITTEN. sqlite.org publishes a SHA3-256
 # for every download (the fifth field of the PRODUCT line in download.html) and
 # that is what is verified, rather than a SHA-256 computed here -- so the chain
@@ -273,6 +280,7 @@ SQLITE_OPTS="-DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS \
 STATIC_XML="LIBXML2_AVAILABLE=1 LIBXML2_CFLAGS=-I/opt/xml2/include/libxml2"
 STATIC_XML_LIBS="/opt/xml2/lib/libxml2.a -Wl,-Bstatic -lz -Wl,-Bdynamic -lm"
 STATIC_SQLITE="SQLITE3_AVAILABLE=1 SQLITE3_CFLAGS=-I/opt/sqlite SQLITE3_LIBS=/opt/sqlite/libsqlite3.a"
+STATIC_PCRE2="PCRE2_CFLAGS=-I/opt/pcre2/include PCRE2_LIBS=/opt/pcre2/lib/libpcre2-8.a"
 
 # WHAT IS SATISFIED WITHOUT APPEARING IN EXPECTED_NEEDED, which the library
 # sweep below needs told because a static library leaves no trace in the link
@@ -292,7 +300,7 @@ TIER_STATIC_CAPS="libxml2 libsqlite3"
 # CAPABILITIES: yescrypt provides no module and so is absent there, while being
 # exactly the kind of redistribution a licence cares about. Both tiers carry the
 # same four, because all four are static in both.
-NOTICE_STATIC="libxml2 zlib sqlite yescrypt"
+NOTICE_STATIC="libxml2 zlib sqlite yescrypt pcre2"
 
 case "$TIER" in
     lean)
@@ -381,6 +389,22 @@ make -j\$(nproc) >/tmp/xml2make.log 2>&1 && make install >>/tmp/xml2make.log 2>&
     || { echo 'FAIL: libxml2 build'; tail -20 /tmp/xml2make.log; exit 1; }
 echo \"libxml2 ${LIBXML2_VERSION} static: \$(du -h /opt/xml2/lib/libxml2.a | cut -f1) archive\"
 
+# PCRE2, the regex engine, PINNED AND CHECKSUMMED and built static, as libxml2.
+cd /tmp
+curl -sfLO https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${PCRE2_VERSION}/pcre2-${PCRE2_VERSION}.tar.gz \
+    || { echo 'FAIL: could not fetch pcre2 ${PCRE2_VERSION}'; exit 1; }
+printf '%s  %s\n' '${PCRE2_SHA256}' 'pcre2-${PCRE2_VERSION}.tar.gz' | sha256sum -c - \
+    || { echo 'FAIL: pcre2 tarball does not match the pinned checksum -- NOT building'; exit 1; }
+tar xzf pcre2-${PCRE2_VERSION}.tar.gz
+cd pcre2-${PCRE2_VERSION}
+./configure --prefix=/opt/pcre2 --enable-static --disable-shared \
+    --disable-pcre2grep-libz --disable-pcre2grep-libbz2 \
+    --disable-pcre2test-libreadline >/tmp/pcre2conf.log 2>&1 \
+    || { echo 'FAIL: pcre2 configure'; tail -20 /tmp/pcre2conf.log; exit 1; }
+make -j\$(nproc) >/tmp/pcre2make.log 2>&1 && make install >>/tmp/pcre2make.log 2>&1 \
+    || { echo 'FAIL: pcre2 build'; tail -20 /tmp/pcre2make.log; exit 1; }
+echo \"pcre2 ${PCRE2_VERSION} static: \$(du -h /opt/pcre2/lib/libpcre2-8.a | cut -f1) archive\"
+
 # sqlite, from the AMALGAMATION -- upstream's own recommended way to embed it,
 # one .c file with no build system to argue with. Verified against the SHA3-256
 # sqlite.org publishes, not a hash computed on this machine.
@@ -418,7 +442,7 @@ make clean >/dev/null 2>&1 || true
 # run their OWN make and 'make install' legitimately, with none of these
 # switches: a tripwire that reports libxml2's install as the defect is one
 # somebody turns off.
-args=($TIER_MAKE_ARGS $STATIC_XML $STATIC_SQLITE)
+args=($TIER_MAKE_ARGS $STATIC_XML $STATIC_SQLITE $STATIC_PCRE2)
 args+=(\"LIBXML2_LIBS=$STATIC_XML_LIBS\" 'ZLIB_CFLAGS=' 'ZLIB_LIBS=-Wl,-Bstatic -lz -Wl,-Bdynamic')
 make \"\${args[@]}\" >/tmp/build.log 2>&1 || { echo 'FAIL: build'; tail -20 /tmp/build.log; exit 1; }
 
@@ -553,6 +577,17 @@ if have sqlite3_open_v2; then
         missing=\"\$missing sqlite(no dedication found in sqlite3.c)\"
     fi
 fi
+# PCRE2 -- BSD-3 with its binary-library exception. LICENCE.md from the pinned
+# tarball just compiled. The probe is the 8-bit compile entry, which every
+# regex() reaches.
+if have pcre2_compile_8; then
+    if [ -s /tmp/pcre2-${PCRE2_VERSION}/LICENCE.md ]; then
+        emit 'PCRE2 ${PCRE2_VERSION}   Licence: BSD-3-Clause (with the PCRE2 binary-library exception)' < /tmp/pcre2-${PCRE2_VERSION}/LICENCE.md
+        carried=\"\$carried pcre2\"
+    else
+        missing=\"\$missing pcre2(no LICENCE.md in the tarball)\"
+    fi
+fi
 # yescrypt -- BSD-2. The release carries no licence FILE, so the terms are each
 # source file's header; quote the header of every file compiled, deduplicated.
 # Same rule tools/make-notices.sh uses on Windows, so the two platforms agree.
@@ -580,7 +615,7 @@ nbytes=\$(wc -c < \"\$notices\")
 [ \"\$nbytes\" -le 262144 ] \
     || { echo \"FAIL: THIRD-PARTY-NOTICES.txt is \$nbytes bytes -- no licence text is that long, so an extraction has run away\"; exit 1; }
 [ \"\$nbytes\" -ge 1024 ] \
-    || { echo \"FAIL: THIRD-PARTY-NOTICES.txt is only \$nbytes bytes -- too short to carry four licences\"; exit 1; }
+    || { echo \"FAIL: THIRD-PARTY-NOTICES.txt is only \$nbytes bytes -- too short to carry five licences\"; exit 1; }
 
 got_notices=\$(printf '%s\n' \$carried | sort | tr '\n' ' ' | sed 's/ \$//')
 want_notices=\$(printf '%s\n' $NOTICE_STATIC | sort | tr '\n' ' ' | sed 's/ \$//')

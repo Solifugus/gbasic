@@ -23,8 +23,7 @@ mingw-w64-ucrt-x86_64-openssl	OpenSSL (libcrypto)	Apache-2.0	/ucrt64/share/licen
 mingw-w64-ucrt-x86_64-libxml2	libxml2	MIT	/ucrt64/share/licenses/libxml2/COPYING
 mingw-w64-ucrt-x86_64-sqlite3	SQLite	Public domain	/ucrt64/share/licenses/sqlite3/LICENSE
 mingw-w64-ucrt-x86_64-zlib	zlib	Zlib	/ucrt64/share/licenses/zlib/LICENSE
-mingw-w64-ucrt-x86_64-libsystre	libsystre	BSD-2-Clause	/ucrt64/share/licenses/libsystre/LICENSE
-mingw-w64-ucrt-x86_64-libtre	TRE	BSD-2-Clause	/ucrt64/share/licenses/libtre/LICENSE
+mingw-w64-ucrt-x86_64-pcre2	PCRE2	BSD-3-Clause (with the PCRE2 binary-library exception)	/ucrt64/share/licenses/pcre2/LICENCE.md
 mingw-w64-ucrt-x86_64-crt	mingw-w64 runtime	ZPL-2.1 and others (see text)	/ucrt64/share/licenses/crt/COPYING.MinGW-w64-runtime.txt
 mingw-w64-ucrt-x86_64-winpthreads	winpthreads	MIT AND BSD-3-Clause-Clear	/ucrt64/share/licenses/winpthreads/COPYING
 mingw-w64-ucrt-x86_64-gcc	GCC runtime (libgcc)	GPL-3.0-or-later WITH GCC-exception-3.1	/ucrt64/share/licenses/gcc/COPYING.RUNTIME
