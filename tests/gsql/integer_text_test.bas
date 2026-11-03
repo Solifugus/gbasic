@@ -1,4 +1,4 @@
-' Text stored into an integer column (Matthew's ruling 2026-11-02; gbasic-books
+' Text stored into an integer or number column (Matthew's rulings 2026-11-02; gbasic-books
 ' volume 3, Q1; docs/gsql_store_conversion_design.md §7). Text that is a whole
 ' number written in digits is stored as that integer, exact; anything else in
 ' text is refused with its reason. Every answer below is written by hand, and
@@ -59,10 +59,16 @@ check("one past it is refused", store("9223372036854775808"), "refused TYPE is p
 check("a decimal", store("2.5"), "refused TYPE is not a whole number")
 check("a decimal that is whole", store("2.0"), "refused TYPE is not a whole number")
 check("a thousands comma", store("1,000"), "refused TYPE is not a whole number")
-check("an exponent", store("1e3"), "refused TYPE is not a number written in digits")
+check("an exponent", store("1e3"), "refused TYPE is not a whole number written in digits")
 check("hex", store("0x1A"), "refused TYPE is not a number written in digits")
-check("a leading space", store(" 25"), "refused TYPE has a space in it (trim it first: text is never trimmed for you)")
-check("a trailing space", store("25 "), "refused TYPE has a space in it (trim it first: text is never trimmed for you)")
+' surrounding spaces are trimmed (Matthew, 2026-11-02: "' 25' should be seen
+' as 25"); a space INSIDE the number is not
+check("a leading space is trimmed", store(" 25"), "stored 25")
+check("a trailing space is trimmed", store("25 "), "stored 25")
+check("a tab and a line break are trimmed", store(chr(9) + "26" + chr(13) + chr(10)), "stored 26")
+check("a padded decimal is still a decimal", store(" 2.5"), "refused TYPE is not a whole number")
+check("a space inside the number is refused", store("2 5"), "refused TYPE has a space inside the number")
+check("spaces alone are empty", store("   "), "refused TYPE is empty")
 check("empty text", store(""), "refused TYPE is empty")
 check("a sign alone", store("-"), "refused TYPE is a sign with no digits")
 check("a word", store("abc"), "refused TYPE is not a number written in digits")
@@ -85,6 +91,29 @@ db.exec("insert into t (k, n) values (1001, '1'), (1002, 'x')")
 e = error
 check("a later row of VALUES is named", contains(e.message, "row 2 of VALUES: t.n is integer"), true)
 on error stop
+
+' a NUMBER column takes text that is a number written plainly, decimals and
+' exponents included, trimmed; the same refusals otherwise
+db.exec("create table u (k integer primary key, x number)")
+function store_x(k, v)
+    on error goto next
+    db.exec("insert into u (k, x) values ($1, $2)", [k, v])
+    e = error
+    if e then
+        return "refused " + e.details.code
+    end if
+    return "stored " + string(db.query("select x from u where k = $1", [k])[0].x)
+end function
+check("number: a decimal", store_x(1, "2.5"), "stored 2.5")
+check("number: a padded decimal", store_x(2, " -0.25 "), "stored -0.25")
+check("number: an exponent", store_x(3, "1.5e3"), "stored 1500")
+check("number: a leading point", store_x(4, ".5"), "stored 0.5")
+check("number: whole text is exact", store_x(5, "9007199254740993") , "stored 9007199254740993")
+check("number: a decimal comma is refused, being ambiguous", store_x(6, "1,5"), "refused TYPE")
+check("number: hex is refused", store_x(7, "0x10"), "refused TYPE")
+check("number: inf is refused", store_x(8, "inf"), "refused TYPE")
+check("number: a space inside is refused", store_x(9, "1 000"), "refused TYPE")
+check("number: empty is refused", store_x(10, ""), "refused TYPE")
 
 ' UPDATE, INSERT ... SELECT and an sql block, all of which store
 db.exec("update t set n = '41' where k = 1")

@@ -18,12 +18,13 @@ Matthew expected the column to do it: *"the table already knows what they are"*.
 |---|---|---|
 | `date`, `time`, `datetime` | text | gBASIC's own `{date}`, `{time}`, `{datetime}` reading of it |
 | `money(CUR)` | text, or a number | gBASIC's own `{CUR}`, so text is exact and a number takes its shortest decimal |
-| `integer` | text that is a whole number written in digits *(2026-11-02, §1a)* | that integer, exact |
+| `integer` | text that is a whole number written in digits, spaces around it trimmed *(2026-11-02, §1a)* | that integer, exact |
+| `number` | text that is a number written plainly, trimmed *(2026-11-02, §1a)* | that number; whole text is exact |
 
 - **Where:** `INSERT ... VALUES`, `INSERT ... SELECT`, `UPDATE ... SET`, and a column's `DEFAULT`, the places a value is stored. Each goes through the conversion `CAST` already uses, so what text a column accepts is decided in one place.
 - **Text that does not convert is refused,** naming the column, its kind and the text, as the kind refusal does today.
 - **Everywhere else stays strict:** a comparison, arithmetic and a function's argument make no implicit casts, so `where name = 1` is still refused rather than guessed.
-- **Integer columns refuse a decimal** (Matthew: *"it is usually a mistake to assign a decimal value to an integer"*), in text or as a number, and since 2026-11-02 take text that is exactly an integer (§1a). A `number` column, text and boolean columns are unchanged.
+- **Integer columns refuse a decimal** (Matthew: *"it is usually a mistake to assign a decimal value to an integer"*), in text or as a number, and since 2026-11-02 take text that is exactly an integer (§1a). A `number` column takes text that is a number (§1a). Text and boolean columns are unchanged.
 
 ### 1a. Text that is exactly an integer (2026-11-02)
 
@@ -33,19 +34,32 @@ ruled for converting, under a narrow rule: *"We want gBASIC to 'just work' in as
 many situations as is safely possible. If '007' and we want to retain the
 prefixed zeroes then we should use a proper text field."*
 
-**The rule:** an optional sign, at least one digit, nothing else, within 64
-bits. `"25"`, `"-7"`, `"+25"` and `"007"` (which is 7) are stored, exact. Each
-of the rest is refused as `TYPE`, naming the column, with its own reason:
-`"2.5"`, `"2.0"` and `"1,000"` are not a whole number; `"1e3"`, `"0x1A"`,
-`"inf"`, `"1_000"` and digits from another script are not a number written in
-digits; `" 25"` and `"25 "` have a space (text is never trimmed for you);
-`""`, a sign alone, a NUL, and one past the 64-bit range. A NUMBER that is not
-exact (`6 / 2`) is refused as before.
+**The rule, as first ruled:** an optional sign, at least one digit, nothing
+else, within 64 bits. `"25"`, `"-7"`, `"+25"` and `"007"` (which is 7) are
+stored, exact. Each of the rest is refused as `TYPE`, naming the column, with
+its own reason: `"2.5"`, `"2.0"` and `"1,000"` are not a whole number; `"1e3"`,
+`"0x1A"`, `"inf"`, `"1_000"` and digits from another script are not a number
+written in digits; `""`, a sign alone, a NUL, and one past the 64-bit range. A
+NUMBER that is not exact (`6 / 2`) is refused as before.
+
+**Then, the same day, two more rulings** (Matthew: *"' 25' should be seen as
+25 ... ' 2.5' should also be trimmed but '2.5' should not go into an integer
+column. In most cases, I think this would be a mistake and so should be
+refused"*):
+
+- **Spaces around the number are trimmed** (space, tab, CR, LF), in an integer
+  column and a number column. A space INSIDE it (`"2 5"`, `"1 000"`) is refused.
+  This had first been refused, and a fixture of mine asserted the refusal.
+- **A `number` column takes text that is a number written plainly:** an optional
+  sign, digits with an optional fraction (`".5"` and `"5."` included), and an
+  optional exponent. A decimal comma (`"1,5"`) is refused, being ambiguous, and so
+  are hex, `inf`, `nan` and separators. Whole text is exact (`"9007199254740993"`
+  reads back exactly).
 
 **Stricter than CAST, on purpose, and measured first:** the conversion `CAST`
-uses (`{number}`) reads `" 25"` as an exact 25, so the store path checks the
-text against the rule before the cast rather than inheriting that. `CAST` itself
-is unchanged.
+uses (`{number}`) also reads hex and `inf`, so the store path checks the text
+against the rule before the cast rather than inheriting that. `CAST` itself is
+unchanged.
 
 **Two messages moved, and one was a gap of its own.** A conversion refusal in a
 statement storing several rows now says which row (`row 2 of VALUES: ...`, `row

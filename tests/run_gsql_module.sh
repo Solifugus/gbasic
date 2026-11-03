@@ -112,7 +112,7 @@ printf 'TIER integer text: text that is exactly an integer is stored as one, and
 mkdir -p "$work/inttext"
 (cd "$work/inttext" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/integer_text_test.bas") \
     >"$work/inttext.out" 2>"$work/inttext.err"
-verdict "integer text" "$work/inttext.out" $? 31
+verdict "integer text" "$work/inttext.out" $? 45
 if [ -s "$work/inttext.err" ]; then
     sed 's/^/       /' "$work/inttext.err" | head -5
     fail "integer text: the fixture wrote to stderr"

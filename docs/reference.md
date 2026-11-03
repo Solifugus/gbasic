@@ -2580,10 +2580,12 @@ money in the column's currency: `values ('2026-11-01 04:31', 199.50)` stores
 a date-time and money. Text that does not read as one is refused, naming the
 column. Comparisons and arithmetic make **no** implicit conversion
 (`where name = 1` is refused). An integer column takes text that is a whole
-number written in digits *(after 0.10.0)*: `'25'`, `'-7'`, `'007'` (which is 7;
-keep the zeros in a string column). It refuses a decimal in text or as a number,
-padded text (`' 25'`, since text is never trimmed for you), and anything else,
-each with its reason (`docs/gsql_store_conversion_design.md` §1a). If the owner exits, the
+number written in digits *(after 0.10.0)*, with spaces around it trimmed:
+`'25'`, `' 25 '`, `'-7'`, `'007'` (which is 7; keep the zeros in a string
+column). It refuses a decimal in text (`'2.5'`, `' 2.5'`) or as a number, and
+anything else, each with its reason. A number column takes text that is a number
+written plainly, decimals and exponents included (`'2.5'`, `'1e3'`), trimmed the
+same way (`docs/gsql_store_conversion_design.md` §1a). If the owner exits, the
 request in flight fails with `LOST` and nothing is retried; the next call
 starts a new owner. An owner whose database another machine has taken writes
 nothing more and exits, so its clients see `LOST`, and their next call is

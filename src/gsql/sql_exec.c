@@ -1030,37 +1030,78 @@ static int eval_into(X *x, SqlExpr *e, GsqlBuf *out) {
  * refused, and so does a NUMBER that is not exact (6 / 2). "007" is 7: a column
  * declared integer holds a number, and keeping the zeros is a string column's
  * job. `out` is replaced; GSQL_OK when there was nothing to do. */
-/* What is wrong with `t` as an integer column's text, or NULL when it is a
- * whole number written in digits: an optional sign, at least one digit,
- * nothing else, within 64 bits. STRICTER THAN CAST, deliberately: `{number}`
- * reads " 25" as 25, and the rule agreed for storing is digits and nothing
- * else (2026-11-02), so a padded field is refused here and said why. */
-static const char *integer_text_problem(const char *t) {
+/* NUMBER TEXT, for an integer or number column (2026-11-02, Matthew's rulings):
+ * surrounding spaces are trimmed -- " 25" is 25 -- and then the text must be a
+ * number written plainly. For an INTEGER column that is an optional sign and
+ * digits within 64 bits, so "2.5" and " 2.5" are refused ("in most cases ...
+ * a mistake"); for a NUMBER column, an optional sign, digits with an optional
+ * fraction, and an optional exponent. Hex, inf, nan, digit separators and a
+ * space INSIDE the number are refused either way. `t` is trimmed in place;
+ * answers what is wrong, or NULL. STRICTER THAN CAST on purpose: `{number}`
+ * also reads hex and inf. */
+static char *trim_text(char *t) {
+    while (*t == ' ' || *t == '\t' || *t == '\r' || *t == '\n') {
+        t++;
+    }
+    size_t n = strlen(t);
+    while (n && (t[n - 1] == ' ' || t[n - 1] == '\t' || t[n - 1] == '\r' || t[n - 1] == '\n')) {
+        t[--n] = '\0';
+    }
+    return t;
+}
+
+static const char *number_text_problem(const char *t, int integer) {
     if (!t) {
         return "holds a NUL";
     }
     if (!*t) {
         return "is empty";
     }
-    const char *d = t + (*t == '+' || *t == '-');
-    if (!*d) {
+    const char *c = t + (*t == '+' || *t == '-');
+    if (!*c) {
         return "is a sign with no digits";
     }
-    for (const char *c = d; *c; c++) {
-        if (*c == ' ' || *c == '\t' || *c == '\r' || *c == '\n') {
-            return "has a space in it (trim it first: text is never trimmed for you)";
+    size_t digits = 0;
+    while (*c >= '0' && *c <= '9') {
+        c++;
+        digits++;
+    }
+    if (*c == '.' || *c == ',') {
+        if (integer || *c == ',') {
+            return integer ? "is not a whole number" : "is not a number written plainly";
         }
-        if (*c == '.' || *c == ',') {
-            return "is not a whole number";
-        }
-        if (*c < '0' || *c > '9') {
-            return "is not a number written in digits";
+        c++;
+        while (*c >= '0' && *c <= '9') {
+            c++;
+            digits++;
         }
     }
-    errno = 0;
-    (void)strtoll(t, NULL, 10);
-    if (errno == ERANGE) {
-        return "is past the 64-bit integer range";
+    if (!digits) {
+        return "is not a number written in digits";
+    }
+    if (!integer && (*c == 'e' || *c == 'E')) {
+        c++;
+        c += (*c == '+' || *c == '-');
+        if (!(*c >= '0' && *c <= '9')) {
+            return "is not a number written in digits";
+        }
+        while (*c >= '0' && *c <= '9') {
+            c++;
+        }
+    }
+    if (*c == ' ' || *c == '\t' || *c == '\r' || *c == '\n') {
+        return "has a space inside the number";
+    }
+    if (*c) {
+        return integer && (*c == 'e' || *c == 'E') ? "is not a whole number written in digits"
+                                                   : "is not a number written in digits";
+    }
+    if (integer) {
+        errno = 0;
+        (void)strtoll(t, NULL, 10);
+        if (errno == ERANGE) {
+            return "is past the 64-bit integer range";
+        }
     }
     return NULL;
 }
@@ -1071,20 +1112,26 @@ static int store_convert(X *x, int kind, const char *currency, const char *table
     }
     int tag = out->bytes[0];
     int temporal = kind == GSQL_COL_DATE || kind == GSQL_COL_TIME || kind == GSQL_COL_DATETIME;
+    int numeric = kind == GSQL_COL_INTEGER || kind == GSQL_COL_NUMBER;
     if (!((temporal && tag == SER_STRING) || (kind == GSQL_COL_MONEY && (tag == SER_STRING || tag == SER_NUMBER)) ||
-          (kind == GSQL_COL_INTEGER && tag == SER_STRING))) {
+          (numeric && tag == SER_STRING))) {
         return GSQL_OK;
     }
-    if (kind == GSQL_COL_INTEGER) {
+    if (numeric) {
         char *t = v3_read_text(out->bytes, out->length);
-        const char *problem = integer_text_problem(t);
+        char *trimmed = t ? trim_text(t) : NULL;
+        const char *problem = number_text_problem(trimmed, kind == GSQL_COL_INTEGER);
         if (problem) {
-            int rc = xfail(x->err, GSQL_TYPE, 0, "%s.%s is integer, and the text given %s: '%.80s'", table, col,
-                           problem, t ? t : "");
+            int rc = xfail(x->err, GSQL_TYPE, 0, "%s.%s is %s, and the text given %s: '%.80s'", table, col,
+                           kind == GSQL_COL_INTEGER ? "integer" : "number", problem,
+                           trimmed ? trimmed : "");
             gsql_error_about(x->err, table, col, NULL);
             free(t);
             return rc;
         }
+        /* the cast reads the trimmed text */
+        out->length = 0;
+        v3_w_text(out, trimmed);
         free(t);
     }
     GsqlHv *v = x->h->load(x->h->ctx, out->bytes, out->length, x->err);
@@ -1097,7 +1144,8 @@ static int store_convert(X *x, int kind, const char *currency, const char *table
     rel(x, v);
     if (!c) {
         const char *kw = kind == GSQL_COL_DATE ? "date" : kind == GSQL_COL_TIME ? "time"
-                         : kind == GSQL_COL_DATETIME ? "datetime" : kind == GSQL_COL_INTEGER ? "integer" : "money";
+                         : kind == GSQL_COL_DATETIME ? "datetime" : kind == GSQL_COL_INTEGER ? "integer"
+                         : kind == GSQL_COL_NUMBER ? "number" : "money";
         int rc = xfail(x->err, GSQL_TYPE, 0, "%s.%s is %s%s%s%s, and the %s given does not read as one: %.300s",
                        table, col, kind == GSQL_COL_MONEY ? "money" : kw, kind == GSQL_COL_MONEY && currency[0] ? "(" : "",
                        kind == GSQL_COL_MONEY ? currency : "", kind == GSQL_COL_MONEY && currency[0] ? ")" : "",

@@ -39,13 +39,14 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
-### Text that is a whole number is stored into an integer column
+### Text that is a number is stored into an integer or number column
 
 `insert into item (qty) values ('25')` stores 25, so an import from CSV, where
 every field is text, needs no `cast(:x as integer)`. The rule is narrow: an
-optional sign and digits, within 64 bits. `'2.5'`, `' 25'` (text is never
-trimmed), `''` and `'1e3'` are still refused, each saying why, and so is a number
-that is not exact. `'007'` is 7. **Changed behaviour:** such a store was refused
+optional sign and digits, within 64 bits, with spaces around them trimmed, so
+`' 25'` is 25. `'2.5'`, `' 2.5'`, `''` and `'1e3'` are still refused, each
+saying why, and so is a number that is not exact. `'007'` is 7. A `number`
+column takes text that is a number (`'2.5'`, `'1e3'`), trimmed the same way. **Changed behaviour:** such a store was refused
 as `TYPE` before. A refused conversion in a statement of several rows now names its row,
 for a date or amount as well, and `INTEGER DEFAULT 'x'` is refused as `TYPE`
 rather than `SCHEMA`.

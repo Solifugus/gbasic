@@ -84,8 +84,9 @@ That is the README's example, run by the gate. The fuller forms are
   currency to give, so it refuses text: declare `money(USD)`.
 - **An `integer` column refuses an inexact number,** including `6 / 2`, which is
   3.0 in gBASIC. It is refused rather than rounded. It does take text that is a
-  whole number in digits, so a CSV field `"25"` needs no cast; `"2.5"` and
-  `" 25"` (padded) are refused. `"007"` is 7: keep zeros in a `string` column.
+  whole number in digits, trimmed, so a CSV field `"25"` or `" 25"` needs no
+  cast; `"2.5"` is refused. `"007"` is 7: keep zeros in a `string` column. A
+  `number` column takes `"2.5"` and `"1e3"`.
 - **A refusal is checked when a row reaches it.** `where name = 1` over an empty
   table answers nothing; the same query refuses once a row exists. Test with rows.
 - **Text order is gBASIC's**: `'A' = 'a'` is false, and the order is not a
