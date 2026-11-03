@@ -297,6 +297,8 @@ commit
 > CREATE TABLE k2 (a INTEGER PRIMARY KEY, b INTEGER PRIMARY KEY)
 ! SYNTAX 41 PRIMARY KEY is declared twice
 > CREATE TABLE d (a INTEGER DEFAULT 'x')
+! TYPE 0 d.a is integer, and the text given is not a number written in digits
+> CREATE TABLE d (a INTEGER DEFAULT 2.5)
 ! SCHEMA 0 the default refused by its own column
 > CREATE TABLE d (a INTEGER DEFAULT a)
 ! SYNTAX 35 DEFAULT cannot read a column
@@ -1001,7 +1003,7 @@ rollback
 > INSERT INTO dst (id, k) SELECT id FROM src
 ! SYNTAX 25 the query gives 1 column for 2 columns of dst
 > INSERT INTO dst (id, k) SELECT id + 300, CASE WHEN id = 2 THEN 'x' ELSE k END FROM src ORDER BY id
-! TYPE 0 row 2 of the query: dst.k is integer, and the value is a string [part way]
+! TYPE 0 row 2 of the query: dst.k is integer, and the text given is not a number written in digits [part way]
 > CREATE TABLE fkd (id INTEGER PRIMARY KEY, s INTEGER REFERENCES src)
 = done 0
 > INSERT INTO fkd SELECT id, id FROM src

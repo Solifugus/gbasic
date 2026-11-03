@@ -6234,6 +6234,10 @@ static int run_insert(X *x, GsqlResult *out) {
     }
     for (size_t r = 0; r < nrows && rc == GSQL_OK; r++) {
         memset(vals, 0, sizeof(GsqlIn) * ncols);
+        /* a value its column's conversion refused: which row is said, as for a
+           refusal at the insert (it was not, for text that is no date or
+           amount, until integer text made the gap common) */
+        int at_store = 0;
         if (s->ins_q) {
             rc = rs_get(x, &qrows, r, &qrow);
             if (rc == GSQL_OK &&
@@ -6245,6 +6249,7 @@ static int run_insert(X *x, GsqlResult *out) {
                 bufs[k].length = 0;
                 v3_put(&bufs[k], items[k].p, items[k].n);
                 rc = store_convert(x, tc->kind, tc->currency, s->table, tc->name, &bufs[k]);
+                at_store = rc != GSQL_OK;
                 vals[p->targets[k]].present = 1;
                 vals[p->targets[k]].p = bufs[k].bytes;
                 vals[p->targets[k]].n = bufs[k].length;
@@ -6259,6 +6264,7 @@ static int run_insert(X *x, GsqlResult *out) {
             if (rc == GSQL_OK) {
                 const GsqlColumn *tc = gsql_table_col(p->tb, p->targets[k]);
                 rc = store_convert(x, tc->kind, tc->currency, s->table, tc->name, &bufs[k]);
+                at_store = rc != GSQL_OK;
             }
             vals[p->targets[k]].present = 1;
             vals[p->targets[k]].p = bufs[k].bytes;
@@ -6315,7 +6321,7 @@ static int run_insert(X *x, GsqlResult *out) {
         if (rc == GSQL_OK) {
             rc = gen_commit(x, p->tb, &gs);
         }
-        if (rc != GSQL_OK && at_insert) {
+        if (rc != GSQL_OK && (at_insert || at_store)) {
             if (nrows > 1) {
                 char m[sizeof x->err->message];
                 snprintf(m, sizeof m, "row %zu of %s: %.400s", r + 1, s->ins_q ? "the query" : "VALUES",

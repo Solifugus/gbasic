@@ -45,7 +45,15 @@ exact (`6 / 2`) is refused as before.
 **Stricter than CAST, on purpose, and measured first:** the conversion `CAST`
 uses (`{number}`) reads `" 25"` as an exact 25, so the store path checks the
 text against the rule before the cast rather than inheriting that. `CAST` itself
-is unchanged. Held by `tests/gsql/integer_text_test.bas` (30 checks, every
+is unchanged.
+
+**Two messages moved, and one was a gap of its own.** A conversion refusal in a
+statement storing several rows now says which row (`row 2 of VALUES: ...`, `row
+2 of the query: ...`), as a refusal at the insert always did; it did not for
+text that was no date or amount either, and integer text would have made that
+common. And `INTEGER DEFAULT 'x'` is refused as `TYPE` by the conversion, as a
+date column's bad default already was, where it was `SCHEMA` from the table
+layer; a default that is not text (`DEFAULT 2.5`) is still `SCHEMA`. Held by `tests/gsql/integer_text_test.bas` (30 checks, every
 answer by hand, each refused shape beside an accepted one) in
 `run_gsql_module.sh`.
 

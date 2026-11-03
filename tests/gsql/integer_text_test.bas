@@ -80,6 +80,10 @@ db.exec("insert into t (k, n) values (1000, '2.5')")
 e = error
 check("a refusal names the table", e.details.table, "t")
 check("and the column", e.details.column, "n")
+' a refusal by the conversion says which row, as a refusal at the insert does
+db.exec("insert into t (k, n) values (1001, '1'), (1002, 'x')")
+e = error
+check("a later row of VALUES is named", contains(e.message, "row 2 of VALUES: t.n is integer"), true)
 on error stop
 
 ' UPDATE, INSERT ... SELECT and an sql block, all of which store

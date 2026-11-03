@@ -46,7 +46,9 @@ every field is text, needs no `cast(:x as integer)`. The rule is narrow: an
 optional sign and digits, within 64 bits. `'2.5'`, `' 25'` (text is never
 trimmed), `''` and `'1e3'` are still refused, each saying why, and so is a number
 that is not exact. `'007'` is 7. **Changed behaviour:** such a store was refused
-as `TYPE` before.
+as `TYPE` before. A refused conversion in a statement of several rows now names its row,
+for a date or amount as well, and `INTEGER DEFAULT 'x'` is refused as `TYPE`
+rather than `SCHEMA`.
 
 ### `intake.repeats`: a file sent again is reported
 

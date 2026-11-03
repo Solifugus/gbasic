@@ -205,7 +205,12 @@ stmt("DROP INDEX by_name", "= done 0")
 stmt("DROP INDEX by_name", ("NOT_FOUND", "DROP", "there is no index `by_name`"))
 stmt("DROP INDEX IF EXISTS by_name", "= done 0")
 stmt("CREATE TABLE k2 (a INTEGER PRIMARY KEY, b INTEGER PRIMARY KEY)", ("SYNTAX", "b", "PRIMARY KEY is declared twice"))
-stmt("CREATE TABLE d (a INTEGER DEFAULT 'x')", ("SCHEMA", None, "the default refused by its own column"))
+# text into an integer column is read by the store conversion, so a default
+# that is no whole number is refused there, as a date column's is
+# (docs/gsql_store_conversion_design.md §1a); a default that is not text is
+# still the table layer's refusal
+stmt("CREATE TABLE d (a INTEGER DEFAULT 'x')", ("TYPE", None, "d.a is integer, and the text given is not a number written in digits"))
+stmt("CREATE TABLE d (a INTEGER DEFAULT 2.5)", ("SCHEMA", None, "the default refused by its own column"))
 stmt("CREATE TABLE d (a INTEGER DEFAULT a)", ("SYNTAX", "a", "DEFAULT cannot read a column", 2))
 
 sec("records (§3.5)")
@@ -713,7 +718,7 @@ stmt("SELECT id, note FROM dst WHERE id > 100 ORDER BY id", "= 103, 'c' | 201, '
 stmt("INSERT INTO dst (id, k) SELECT id FROM src", ("SYNTAX", "SELECT", "the query gives 1 column for 2 columns of dst"))
 # a later row refused is part way, and names its row of the query
 stmt("INSERT INTO dst (id, k) SELECT id + 300, CASE WHEN id = 2 THEN 'x' ELSE k END FROM src ORDER BY id",
-     ("TYPE", None, "row 2 of the query: dst.k is integer, and the value is a string [part way]"))
+     ("TYPE", None, "row 2 of the query: dst.k is integer, and the text given is not a number written in digits [part way]"))
 # foreign keys check each row
 stmt("CREATE TABLE fkd (id INTEGER PRIMARY KEY, s INTEGER REFERENCES src)", "= done 0")
 stmt("INSERT INTO fkd SELECT id, id FROM src", "= done 3")
