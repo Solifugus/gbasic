@@ -8,6 +8,7 @@
 #include "actor.h"
 #include "diagnostics.h"
 #include "window_check.h"
+#include "gb_number_text.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -13211,6 +13212,11 @@ static void call_label(AstExpr *expr, char *buffer, size_t size) {
     }
 }
 
+static int number_and_text(Value a, Value b) {
+    return (a.kind == VALUE_NUMBER && b.kind == VALUE_STRING) ||
+           (a.kind == VALUE_STRING && b.kind == VALUE_NUMBER);
+}
+
 static int values_equal(Value left, Value right) {
     /* A ROUTE, not the operator: the "same value" question (see
      * number_same_value). Only two numbers need answering here; every other
@@ -13225,6 +13231,14 @@ static int values_equal(Value left, Value right) {
      * not ask it. */
     if (left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) {
         return left.kind == right.kind;
+    }
+    /* A number and text are never the same value, though `=` reads text that
+     * is a number (number_from_plain_text): Matthew's ruling 2026-11-02 that
+     * `unique([1, "1"])` does not collapse. */
+    if (number_and_text(left, right)) {
+        value_free(left);
+        value_free(right);
+        return 0;
     }
     AstExpr fake = {0};
     fake.kind = AST_EXPR_BINARY;
@@ -37449,6 +37463,30 @@ static int compare_normalise(AstModifierUse stage, Value *side) {
     return recognised;
 }
 
+/* TEXT THAT IS A NUMBER, READ AS ONE for a comparison with a number: trimmed,
+ * then the shared reader (include/gb_number_text.h) decides, and integer text
+ * is exact exactly as `number("...")` makes it. Answers 0 and writes nothing
+ * for text that is no number, including text holding a NUL. */
+static int number_from_plain_text(Value text, Value *out) {
+    size_t n = string_length(text.as.string);
+    if (memchr(text.as.string, 0, n)) {
+        return 0;
+    }
+    char *copy = malloc(n + 1);
+    if (!copy) {
+        return 0;
+    }
+    memcpy(copy, text.as.string, n + 1);
+    char *t = gb_number_text_trim(copy);
+    int ok = gb_number_text_problem(t, 0) == NULL;
+    if (ok) {
+        long long whole = 0;
+        *out = exact_from_integer_text(t, &whole) ? value_number_exact(whole) : value_number(strtod(t, NULL));
+    }
+    free(copy);
+    return ok;
+}
+
 static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     const char *op = expr->as.binary.op;
     int result = 0;
@@ -37650,6 +37688,24 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         value_free(left);
         value_free(right);
         return value_null();
+    }
+
+    /* A NUMBER AGAINST TEXT THAT IS A NUMBER (docs/number_text_equality_design.md,
+     * Matthew's ruling 2026-11-02, gdash S4): the text is read with the reader
+     * G-SQL's comparison uses, and the two compare as numbers, so `1 = "1"` and
+     * `2 < "10"` are true. Text that is no number is left as it is and meets
+     * the string branch below: `=` false, ordering refused, as before. The
+     * routes never arrive here with this pair (values_equal and
+     * values_equal_for_consider answer first), so `unique([1, "1"])` stays two
+     * values. */
+    if ((left.kind == VALUE_NUMBER && right.kind == VALUE_STRING) ||
+        (left.kind == VALUE_STRING && right.kind == VALUE_NUMBER)) {
+        Value *text = left.kind == VALUE_STRING ? &left : &right;
+        Value read;
+        if (number_from_plain_text(*text, &read)) {
+            value_free(*text);
+            *text = read;
+        }
     }
 
     if (left.kind == VALUE_DATETIME && right.kind == VALUE_DATETIME) {
@@ -38679,6 +38735,10 @@ static int values_equal_for_consider(Value subject, Value candidate) {
      * subject, as it always has. */
     if (subject.kind == VALUE_UNKNOWN || candidate.kind == VALUE_UNKNOWN) {
         return subject.kind == candidate.kind;
+    }
+    /* and a route keeps a number and text apart, as values_equal does */
+    if (number_and_text(subject, candidate)) {
+        return 0;
     }
     AstExpr comparison = {0};
     comparison.kind = AST_EXPR_BINARY;

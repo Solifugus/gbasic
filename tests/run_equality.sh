@@ -124,6 +124,27 @@ else
     status=1
 fi
 
+# 2a. NUMBER AGAINST TEXT THAT IS A NUMBER -- tests/number_text_equality_test.bas
+# (docs/number_text_equality_design.md, Matthew's ruling 2026-11-02): `=` reads
+# text that is a number with G-SQL's reader, text that is no number stays
+# unequal, and the same-value routes keep the kinds apart. Perturbed three ways
+# (no conversion; routes converting; a reader that takes hex), each went red.
+if timeout 300 ./gbasic tests/number_text_equality_test.bas >"$work/numtext.txt" 2>"$err" </dev/null; then
+    if grep -q '^mismatches: 0$' "$work/numtext.txt" \
+       && [ "$(sed -n 's/^checks: //p' "$work/numtext.txt")" -ge 46 ]; then
+        printf 'PASS tests/number_text_equality_test.bas (%s checks)\n' \
+            "$(sed -n 's/^checks: //p' "$work/numtext.txt")"
+    else
+        printf 'FAIL tests/number_text_equality_test.bas -- number-versus-text comparison moved\n'
+        grep -E '^MISMATCH|^checks|^mismatches' "$work/numtext.txt"
+        status=1
+    fi
+else
+    printf 'FAIL tests/number_text_equality_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
 # --- Tier 1c: the kinds that had NO branch at all ------------------------------
 #
 # The two fixes above each routed a family AWAY from the numeric fallthrough

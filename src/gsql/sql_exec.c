@@ -14,6 +14,7 @@
 #include "serialize_tags.h"
 #include "platform.h"
 #include "xsort.h"
+#include "gb_number_text.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -523,8 +524,9 @@ static GsqlHv *text_value(X *x, const char *s, size_t n) {
     return v;
 }
 
-static char *trim_text(char *t);
-static const char *number_text_problem(const char *t, int integer);
+/* the shared reader of text that is a number (include/gb_number_text.h) */
+#define trim_text gb_number_text_trim
+#define number_text_problem gb_number_text_problem
 
 /* The column kind text is read as when it meets `v` in a comparison
  * (docs/gsql_compare_conversion_design.md §2), with money's currency in `cur`;
@@ -1184,82 +1186,6 @@ static int eval_into(X *x, SqlExpr *e, GsqlBuf *out) {
  * refused, and so does a NUMBER that is not exact (6 / 2). "007" is 7: a column
  * declared integer holds a number, and keeping the zeros is a string column's
  * job. `out` is replaced; GSQL_OK when there was nothing to do. */
-/* NUMBER TEXT, for an integer or number column (2026-11-02, Matthew's rulings):
- * surrounding spaces are trimmed -- " 25" is 25 -- and then the text must be a
- * number written plainly. For an INTEGER column that is an optional sign and
- * digits within 64 bits, so "2.5" and " 2.5" are refused ("in most cases ...
- * a mistake"); for a NUMBER column, an optional sign, digits with an optional
- * fraction, and an optional exponent. Hex, inf, nan, digit separators and a
- * space INSIDE the number are refused either way. `t` is trimmed in place;
- * answers what is wrong, or NULL. STRICTER THAN CAST on purpose: `{number}`
- * also reads hex and inf. */
-static char *trim_text(char *t) {
-    while (*t == ' ' || *t == '\t' || *t == '\r' || *t == '\n') {
-        t++;
-    }
-    size_t n = strlen(t);
-    while (n && (t[n - 1] == ' ' || t[n - 1] == '\t' || t[n - 1] == '\r' || t[n - 1] == '\n')) {
-        t[--n] = '\0';
-    }
-    return t;
-}
-
-static const char *number_text_problem(const char *t, int integer) {
-    if (!t) {
-        return "holds a NUL";
-    }
-    if (!*t) {
-        return "is empty";
-    }
-    const char *c = t + (*t == '+' || *t == '-');
-    if (!*c) {
-        return "is a sign with no digits";
-    }
-    size_t digits = 0;
-    while (*c >= '0' && *c <= '9') {
-        c++;
-        digits++;
-    }
-    if (*c == '.' || *c == ',') {
-        if (integer || *c == ',') {
-            return integer ? "is not a whole number" : "is not a number written plainly";
-        }
-        c++;
-        while (*c >= '0' && *c <= '9') {
-            c++;
-            digits++;
-        }
-    }
-    if (!digits) {
-        return "is not a number written in digits";
-    }
-    if (!integer && (*c == 'e' || *c == 'E')) {
-        c++;
-        c += (*c == '+' || *c == '-');
-        if (!(*c >= '0' && *c <= '9')) {
-            return "is not a number written in digits";
-        }
-        while (*c >= '0' && *c <= '9') {
-            c++;
-        }
-    }
-    if (*c == ' ' || *c == '\t' || *c == '\r' || *c == '\n') {
-        return "has a space inside the number";
-    }
-    if (*c) {
-        return integer && (*c == 'e' || *c == 'E') ? "is not a whole number written in digits"
-                                                   : "is not a number written in digits";
-    }
-    if (integer) {
-        errno = 0;
-        (void)strtoll(t, NULL, 10);
-        if (errno == ERANGE) {
-            return "is past the 64-bit integer range";
-        }
-    }
-    return NULL;
-}
-
 static int store_convert(X *x, int kind, const char *currency, const char *table, const char *col, GsqlBuf *out) {
     if (!out->length) {
         return GSQL_OK;

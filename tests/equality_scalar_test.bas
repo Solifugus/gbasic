@@ -50,11 +50,14 @@ check("and the reverse order", "stop" = 0, false)
 check("0 != \"stop\" is true", 0 != "stop", true)
 check("a nonzero number was already false, and stays false", 1 = "abc", false)
 
-' NO NUMERIC-STRING COERCION IS INTRODUCED. `1 = "1"` was false before and is
-' false now; making it true would be a NEW rule, not a fix. The pair below is
-' what says so -- without it, "0 = \"0\" is false" reads as an oversight.
-check("1 = \"1\" is false -- no coercion, as before", 1 = "1", false)
-check("0 = \"0\" is false -- consistently, not specially", 0 = "0", false)
+' TEXT THAT IS A NUMBER IS READ AS ONE, since 2026-11-02 (Matthew's ruling on
+' gdash S4, docs/number_text_equality_design.md). This pair said `1 = "1"` was
+' false, "no coercion, as before"; it is now the NEW rule that fix declined to
+' make, so it flips here as a listed rebaseline. The checks above are what
+' still matter: text that is NO number is never zero. The full rule, with its
+' controls, is tests/number_text_equality_test.bas.
+check("1 = \"1\" is true -- text that is a number is read", 1 = "1", true)
+check("0 = \"0\" is true -- consistently, not specially", 0 = "0", true)
 
 ' --- ORDERING REFUSES, which is the documented idiom ------------------------
 ' reference.md: "Equality answers while ordering refuses." Money says it, the
