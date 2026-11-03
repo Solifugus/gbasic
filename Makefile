@@ -194,6 +194,18 @@ endif
 
 LDLIBS += -lm
 
+# PCRE2 IS REQUIRED, like bison: regex is core (docs/regex_pcre2_design.md), so
+# there is no switch and no compiled-out error. pkg-config when it answers, and
+# the library's plain name when it does not -- a build with no pkg-config at all
+# still finds a system libpcre2-8. Windows links it statically (below).
+PCRE2_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libpcre2-8 2>/dev/null)
+PCRE2_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libpcre2-8 2>/dev/null)
+ifeq ($(strip $(PCRE2_LIBS)),)
+PCRE2_LIBS := -lpcre2-8
+endif
+CFLAGS += $(PCRE2_CFLAGS)
+LDLIBS += $(PCRE2_LIBS)
+
 ifeq ($(LIBPQ_AVAILABLE),1)
 CFLAGS += -DHAVE_LIBPQ=1 $(LIBPQ_CFLAGS)
 LDLIBS += $(LIBPQ_LIBS)
@@ -340,14 +352,14 @@ endif
 # gbasic.exe needs nothing beside it -- the UCRT itself ships with Windows.
 ifeq ($(OS),Windows_NT)
 PLATFORM_OBJ ?= src/platform_win32.o
-# libsystre: the POSIX regex.h API over TRE (BSD-2), since Windows has none.
-# TRE takes its messages through gettext; that one function is supplied by
-# src/platform_win32.c, so the LGPL libintl (and the libiconv it needs) is
-# NOT linked -- gbasic.exe carries permissive-licensed code only.
+# PCRE2 (BSD-3) linked statically, MSYS2's mingw-w64-ucrt-x86_64-pcre2: it
+# replaced libsystre/TRE on 2026-11-03 (docs/regex_pcre2_design.md), and with
+# them the gettext shim TRE's regerror needed.
+CFLAGS += -DPCRE2_STATIC
 # advapi32 for the owner-only security descriptor temp_file/temp_dir create
 # with: named rather than left to MinGW's default library list, since only the
 # optional curl and crypto lines named it before.
-LDLIBS += -lsystre -ltre -lws2_32 -lbcrypt -ladvapi32 -static
+LDLIBS += -lws2_32 -lbcrypt -ladvapi32 -static
 # AN 8 MB MAIN-THREAD STACK, the Linux default. Windows reserves 1 MB, and the
 # tree-walking evaluator and the JSON parser recurse: the parser's 10,000-level
 # nesting cap was sized for 8 MB, so on 1 MB a deep document CRASHED the

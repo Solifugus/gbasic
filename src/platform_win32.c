@@ -1898,15 +1898,6 @@ size_t libiconv(void *handle, char **inbuf, size_t *inleft, char **outbuf, size_
     return 0;
 }
 
-/* ---- gettext for TRE, without the LGPL libintl ---------------------------- */
-/* TRE's regerror() asks gettext to translate its messages -- the only reason
- * libintl was linked at all (nm -u: libintl_gettext, nothing else). With no
- * catalogue installed, gettext returns its argument, so this is what TRE
- * already got; defining it here keeps the LGPL library out of the binary. */
-char *libintl_gettext(const char *msgid) {
-    return (char *)msgid;
-}
-
 /* The system temp directory plus a random name, created with CREATE_NEW so the
  * creation is the test -- Windows has no `mkstemp`, and asking "does this name
  * exist" before creating it is the race these functions exist to avoid.

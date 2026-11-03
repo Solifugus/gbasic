@@ -14,26 +14,26 @@
 #      instead of passing quietly. Also pins codepoint offsets composing with
 #      mid, unknown-on-miss, the unknown-vs-"" group distinction, zero-width
 #      match termination, and binary safety across an interior NUL.
-#   2. FLAG MATRIX -- the one part of this work that is not a direct mapping
-#      onto libc. POSIX couples "dot matches newline" and "^/$ match at line
-#      boundaries" into the single REG_NEWLINE bit; gBASIC separates them. Two
-#      of the four combinations are therefore unreachable without rewriting the
-#      pattern, and REG_NEWLINE additionally stops [^x] matching a newline,
-#      which PCRE's /m does not. This tier asserts all four combinations for
-#      `.`, for `[^x]`, and for ^/$ -- 12 assertions that would each pass
-#      individually under a wrong REG_NEWLINE choice but cannot all pass
-#      together. Without it the translation table in eval.c is unguarded.
+#   2. FLAG MATRIX -- all four combinations of "m" and "s" for `.`, for `[^x]`
+#      and for ^/$. Under POSIX it guarded a rewriting table (REG_NEWLINE
+#      coupled the two flags); on PCRE2 the flags are one-to-one, and the
+#      matrix stays as the proof that they are still independent.
 #   3. NEGATIVE -- the error paths, each pinned to its message: an unknown
-#      flag, an uncompilable pattern, \D inside a bracket expression (POSIX has
-#      no negated class there, so it is rejected rather than mistranslated), an
-#      interior NUL in a PATTERN (rejected -- regcomp cannot honor it -- while
-#      a NUL in a SUBJECT works, which tier 1 proves), and the type errors.
+#      flag, an uncompilable pattern, and the type errors. `[\D]` and a NUL in
+#      a PATTERN were refused under POSIX and are answers now (tier 6).
 #   4. ACTOR ROUND-TRIP -- a regex value crossing a process boundary. It ships
-#      as pattern+flags and the receiver recompiles, because a regex_t holds
-#      internal pointers and is meaningless in another address space.
-#   5. VALGRIND -- the golden under valgrind. A refcounted value kind with a
-#      regfree() in its release path is exactly where a leak or double-free
-#      would hide.
+#      as pattern+flags and the receiver recompiles, because a compiled
+#      program holds internal pointers and is meaningless in another address
+#      space.
+#   5. VALGRIND -- both fixtures under valgrind. A refcounted value kind with
+#      a compiled program and match data in its release path is exactly where
+#      a leak or double-free would hide.
+#   6. PCRE2 -- tests/regex_pcre2_test.bas (docs/regex_pcre2_design.md): what
+#      the move added (\b, lazy, lookaround, backreferences, named groups,
+#      ${name}/\1 in a replacement), the one silent change (leftmost-first),
+#      the phantom group that went with POSIX's rewriting, the controls that
+#      must not move (ASCII classes, codepoint positions), bytes, a missing
+#      group in a replacement raising, and the backtracking bound.
 #
 # Headless, GI-independent, no display, no network. Never skips (bar valgrind).
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
@@ -153,18 +153,6 @@ negative "uncompilable pattern" \
 end program' \
     "regex:"
 
-negative "negated class in bracket" \
-    'program main(args)
-  print regex("[\\D]")
-end program' \
-    "have no meaning inside a"
-
-negative "NUL in pattern" \
-    'program main(args)
-  print regex(from_bytes([65, 0, 66]))
-end program' \
-    "cannot contain an interior NUL"
-
 negative "match on non-string" \
     'program main(args)
   print match(42, "a")
@@ -239,52 +227,41 @@ else
     printf 'SKIP valgrind (not installed)\n'
 fi
 
-# --- THE FALLBACK PATH, WHICH THIS MACHINE NEVER COMPILES ---------------------
-#
-# Subjects are matched with REG_STARTEND so that gBASIC's counted strings work:
-# an interior NUL is CONTENT (PLAT-NUL), and a NUL-terminated regexec would stop
-# at it. glibc defines REG_STARTEND; MUSL DOES NOT, so a musl build takes the
-# `#else` branch -- which no build on a glibc machine ever compiles, so a defect
-# there is invisible to every other tier in this file.
-#
-# It was not hypothetical. A static musl build answered
-# `contains(from_bytes([65,0,66]), regex("B"))` as FALSE where it must be TRUE:
-# one wrong boolean, in the one area a whole phase was spent closing, on a build
-# that otherwise passed 19 suites. It was found by building for another libc,
-# not by any test.
-#
-# So the path is compiled HERE by force and required to agree with the primary
-# one. ONE LIBC, TWO CODE PATHS -- which isolates the code from the libc, where
-# comparing a musl binary to a glibc binary confounds the two and could pass on
-# a fallback that is wrong in the same way musl is.
-printf '\n'
-if [ -z "${CC:-}" ] || command -v "${CC:-cc}" >/dev/null 2>&1; then
-    fb="$(mktemp -d)"
-    # third_party too: the Windows build compiles the vendored yescrypt.
-    cp -r src include Makefile stdlib tests third_party "$fb"/ 2>/dev/null
-    python3 - "$fb/src/eval.c" <<'FORCE'
-import sys
-p=sys.argv[1]; s=open(p).read()
-i=s.index("static int regex_exec_at(")
-open(p,"w").write(s[:i]+"#undef REG_STARTEND   /* forced by run_regex.sh */\n"+s[i:])
-FORCE
-    if ( cd "$fb" && make >/dev/null 2>&1 ); then
-        if ( cd "$fb" && GBASIC_PATH=stdlib ./gbasic tests/regex_test.bas 2>&1 ) \
-             | diff -q - tests/regex_test.out >/dev/null; then
-            printf 'PASS fallback (no REG_STARTEND: the two paths agree byte for byte)\n'
-        else
-            printf 'FAIL fallback -- the no-REG_STARTEND path disagrees with the primary one:\n'
-            ( cd "$fb" && GBASIC_PATH=stdlib ./gbasic tests/regex_test.bas 2>&1 ) \
-                | diff - tests/regex_test.out | head -8
-            status=1
-        fi
+# --- Tier 6: PCRE2 -----------------------------------------------------------
+# The fallback tier that stood here compiled the no-REG_STARTEND path musl took;
+# PCRE2 takes a length, so that path is gone and a NUL in the subject is
+# asserted directly. The backtracking bound must RAISE QUICKLY: timed from
+# outside, since a hang is what it exists to prevent.
+start=$SECONDS
+if timeout 60 ./gbasic tests/regex_pcre2_test.bas >"$out" 2>"$err" </dev/null; then
+    took=$((SECONDS - start))
+    if grep -q '^mismatches: 0$' "$out" \
+       && [ "$(sed -n 's/^checks: //p' "$out")" -ge 47 ] && [ ! -s "$err" ]; then
+        printf 'PASS tests/regex_pcre2_test.bas (%s checks, %ss)\n' "$(sed -n 's/^checks: //p' "$out")" "$took"
     else
-        printf 'FAIL fallback -- the no-REG_STARTEND path does not BUILD\n'
+        printf 'FAIL tests/regex_pcre2_test.bas\n'
+        grep -E '^MISMATCH|^checks|^mismatches' "$out"
+        cat "$err"
         status=1
     fi
-    rm -rf "$fb"
+    if [ "$took" -gt 20 ]; then
+        printf 'FAIL the backtracking bound took %ss -- it is meant to stop a hang, not to be one\n' "$took"
+        status=1
+    fi
 else
-    printf 'SKIP fallback (no compiler)\n'
+    printf 'FAIL tests/regex_pcre2_test.bas (exit or timeout)\n'
+    tail -3 "$out"; cat "$err"
+    status=1
+fi
+if vg_available; then
+    if vg_run ./gbasic tests/regex_pcre2_test.bas >"$out" 2>"$err" </dev/null \
+       && grep -q '^mismatches: 0$' "$out"; then
+        printf 'PASS valgrind tests/regex_pcre2_test.bas\n'
+    else
+        printf 'FAIL valgrind tests/regex_pcre2_test.bas\n'
+        grep -E '^MISMATCH' "$out"; tail -20 "$err"
+        status=1
+    fi
 fi
 
 exit "$status"

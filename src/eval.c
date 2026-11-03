@@ -16,7 +16,8 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
-#include <regex.h>   /* Windows: TRE through libsystre (docs/windows_port_status.md) */
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>   /* docs/regex_pcre2_design.md; static with -DPCRE2_STATIC on Windows */
 #include <signal.h>
 #include <stdarg.h>  /* va_list/va_start: used by warn_fmt and friends. Arrived
                       * transitively on newer toolchains; gcc 11 (Ubuntu 22.04)
@@ -526,14 +527,17 @@ struct LdapConnectionValue {
  *
  * `pattern` and `flags` keep the caller's ORIGINAL text, not the translated
  * form: they are what gets displayed, what equality compares, and what
- * serialization ships (the receiver re-compiles, since a regex_t is opaque and
- * not portable across a process boundary). */
+ * serialization ships (the receiver re-compiles, since a compiled program is
+ * opaque and not portable across a process boundary). */
 struct RegexValue {
     size_t ref_count;
-    char *pattern;       /* as written by the caller, pre-translation */
+    char *pattern;       /* as written by the caller */
+    size_t pattern_len;  /* a pattern may hold a NUL: PCRE2 takes a length */
     char *flags;         /* normalized, sorted, "" when none given */
-    regex_t compiled;
-    size_t group_count;  /* re_nsub: capture groups, excluding the whole match */
+    pcre2_code *code;
+    pcre2_match_data *match;  /* reused: nothing re-enters a match mid-match */
+    size_t group_count;  /* capture groups, excluding the whole match */
+    size_t name_count;   /* named groups, for the match record's `named` */
 };
 
 /* An opaque streaming XML reader handle (xml_design.md §4). Refcounted like the
@@ -2707,74 +2711,38 @@ static Value value_xml_reader(XmlReaderValue *reader) {
 
 static void runtime_error_raise(const char *message, int code, const char *source);
 
-/* --- Regular expressions (docs/text_design.md §2-§3) -----------------------
+/* --- Regular expressions (docs/text_design.md §2-§3, docs/regex_pcre2_design.md)
  *
- * The engine is libc's POSIX ERE (regcomp/regexec). It is NOT an optional
- * dependency — POSIX regex is in libc on every platform gBASIC targets — so
- * unlike sqlite/pg/xml there is no HAVE_* guard and no "compiled out" error.
+ * The engine is PCRE2 (8-bit), a REQUIRED dependency like bison: regex is core,
+ * so there is no HAVE_* guard and no "compiled out" error. It replaced libc's
+ * POSIX ERE (and TRE on Windows) on 2026-11-03 for gBASIC Studio's find and
+ * replace: `\b`, lazy quantifiers, lookaround, backreferences and named groups.
  *
- * Two adaptations sit between gBASIC's surface and POSIX, both in
- * regex_translate below:
+ * COMPILED WITH PCRE2_UTF | PCRE2_MATCH_INVALID_UTF. A gBASIC string is bytes
+ * and need not be UTF-8; MATCH_INVALID_UTF matches the valid stretches and never
+ * matches across invalid bytes, where plain UTF would refuse the subject. NOT
+ * PCRE2_UCP: `\d`, `\w`, `\s` and `\b` stay ASCII, as the POSIX classes were
+ * in the C locale.
  *
- *   1. SHORTHAND. POSIX spells classes [[:digit:]]; patterns are written \d.
- *      A bounded, whitelisted translation bridges the two (§2). It is
- *      bracket-aware, because inside [...] the expansion must drop its outer
- *      brackets ([\d\s] -> [[:digit:][:space:]]).
+ * THE FLAGS ARE ONE-TO-ONE now ("i" CASELESS, "m" MULTILINE, "s" DOTALL), so the
+ * `.` and `[^...]` rewriting POSIX's coupled REG_NEWLINE needed is gone -- and
+ * with it a defect measured on the way out: the rewrite's `(.|\n)` was a GROUP,
+ * so `regex("a.b", "ms")` reported a capture the pattern did not have.
  *
- *   2. NEWLINE FLAGS. gBASIC's "m" (^/$ match at line boundaries) and "s" (dot
- *      matches newline) are INDEPENDENT; POSIX couples both to the single
- *      REG_NEWLINE bit, which turns them on together:
+ * LEFTMOST-FIRST, NOT LEFTMOST-LONGEST: `a|ab` on "ab" is "a". Measured with
+ * both engines over the whole gate, one site depended on longest (a generated
+ * label alternation in ari_discover), fixed at its source.
  *
- *          REG_NEWLINE off:  `.` matches \n,      ^/$ anchor the string
- *          REG_NEWLINE on:   `.` excludes \n,     ^/$ anchor each line
- *
- *      So two of the four gBASIC combinations are unreachable directly, and the
- *      gap is closed by rewriting `.` (verified against the real engine, not
- *      inferred from the spec):
- *
- *          flags   REG_NEWLINE   `.` becomes
- *          ----    -----------   -----------
- *          (none)  off           [^\n]        exclude \n while ^/$ stay string
- *          "s"     off           .            native
- *          "m"     on            .            native
- *          "ms"    on            (.|\n)       re-admit \n under REG_NEWLINE
- *
- *      REG_NEWLINE has one further side effect: it also stops NEGATED BRACKETS
- *      ([^x]) from matching a newline, which PCRE's /m does not do. Any "m"
- *      pattern therefore rewrites [^...] to ([^...]|\n) to restore the
- *      familiar behavior. Without this, adding "m" would silently change what
- *      [^x] means — exactly the class of surprise this project logs.
- *
- * Subjects are matched with REG_STARTEND where available so that gBASIC's
- * binary-safe strings (which may hold interior NULs) match in full; see
- * regex_exec_at. */
+ * BACKTRACKING IS BOUNDED: past REGEX_MATCH_LIMIT steps a match RAISES rather
+ * than hanging (regex_exec_at). */
 
-/* The whitelisted shorthand set (§2). Negated forms have no in-bracket spelling
- * — POSIX offers no negated class inside a bracket expression — so they are
- * rejected there with a specific message rather than mistranslated. */
+#define REGEX_MATCH_LIMIT 10000000u
+
+/* One capture's byte range; -1 when the group did not take part. */
 typedef struct {
-    char letter;
-    const char *outside;   /* expansion when used on its own */
-    const char *inside;    /* expansion when used within [...]; NULL if illegal */
-} RegexShorthand;
-
-static const RegexShorthand regex_shorthands[] = {
-    { 'd', "[[:digit:]]",    "[:digit:]"    },
-    { 'D', "[^[:digit:]]",   NULL           },
-    { 'w', "[[:alnum:]_]",   "[:alnum:]_"   },
-    { 'W', "[^[:alnum:]_]",  NULL           },
-    { 's', "[[:space:]]",    "[:space:]"    },
-    { 'S', "[^[:space:]]",   NULL           },
-};
-
-static const RegexShorthand *regex_shorthand_find(char letter) {
-    for (size_t i = 0; i < sizeof regex_shorthands / sizeof regex_shorthands[0]; i++) {
-        if (regex_shorthands[i].letter == letter) {
-            return &regex_shorthands[i];
-        }
-    }
-    return NULL;
-}
+    long so;
+    long eo;
+} RegexSpan;
 
 /* A BOUND CONTEXT IS REFUSED WHERE IT CANNOT TRAVEL, never dropped.
  *
@@ -2826,151 +2794,8 @@ static void regex_buf_push(RegexBuf *b, const char *bytes, size_t n) {
     b->data[b->len] = '\0';
 }
 
-static void regex_buf_push_str(RegexBuf *b, const char *s) {
-    regex_buf_push(b, s, strlen(s));
-}
-
 static void regex_buf_push_char(RegexBuf *b, char c) {
     regex_buf_push(b, &c, 1);
-}
-
-/* Translate a gBASIC pattern into POSIX ERE. Returns a malloc'd string, or NULL
- * with *error set to a static message the caller raises.
- *
- * `newline_mode` is REG_NEWLINE's state (1 when the "m" flag is present) and
- * `dot_all` is the "s" flag; together they select the `.` rewrite from the table
- * above. */
-static char *regex_translate(const char *pattern,
-                             size_t length,
-                             int newline_mode,
-                             int dot_all,
-                             const char **error) {
-    RegexBuf out = {0};
-    int in_bracket = 0;
-    int bracket_negated = 0;
-    size_t bracket_start = 0;   /* out.len at the '[' that opened the bracket */
-    *error = NULL;
-
-    for (size_t i = 0; i < length; i++) {
-        char c = pattern[i];
-
-        /* An escape. Inside a bracket expression POSIX treats backslash as an
-         * ordinary character, but gBASIC translates the shorthand set in both
-         * positions so that [\d] means what it looks like. */
-        if (c == '\\' && i + 1 < length) {
-            char next = pattern[i + 1];
-            const RegexShorthand *sh = regex_shorthand_find(next);
-            if (sh) {
-                if (in_bracket) {
-                    if (!sh->inside) {
-                        free(out.data);
-                        *error = "regex: \\D, \\W and \\S have no meaning inside a "
-                                 "[...] bracket expression (POSIX has no negated "
-                                 "class there); negate the whole bracket instead";
-                        return NULL;
-                    }
-                    regex_buf_push_str(&out, sh->inside);
-                } else {
-                    regex_buf_push_str(&out, sh->outside);
-                }
-                i++;
-                continue;
-            }
-            /* Not a shorthand: pass the escape through untouched so \$ \. \\
-             * keep their POSIX meaning. */
-            regex_buf_push_char(&out, '\\');
-            regex_buf_push_char(&out, next);
-            i++;
-            continue;
-        }
-
-        if (!in_bracket && c == '[') {
-            in_bracket = 1;
-            bracket_negated = 0;
-            bracket_start = out.len;
-            regex_buf_push_char(&out, '[');
-            /* A leading ^ negates; a ] immediately after either is a literal. */
-            if (i + 1 < length && pattern[i + 1] == '^') {
-                bracket_negated = 1;
-                regex_buf_push_char(&out, '^');
-                i++;
-            }
-            if (i + 1 < length && pattern[i + 1] == ']') {
-                regex_buf_push_char(&out, ']');
-                i++;
-            }
-            continue;
-        }
-
-        /* A [:class:] inside a bracket copies through verbatim; its ] must not
-         * be mistaken for the end of the enclosing bracket. */
-        if (in_bracket && c == '[' && i + 1 < length &&
-            (pattern[i + 1] == ':' || pattern[i + 1] == '.' || pattern[i + 1] == '=')) {
-            char delim = pattern[i + 1];
-            size_t j = i + 2;
-            while (j + 1 < length && !(pattern[j] == delim && pattern[j + 1] == ']')) {
-                j++;
-            }
-            if (j + 1 < length) {
-                regex_buf_push(&out, pattern + i, j + 2 - i);
-                i = j + 1;
-                continue;
-            }
-            /* Unterminated: fall through and let regcomp report it. */
-        }
-
-        if (in_bracket && c == ']') {
-            regex_buf_push_char(&out, ']');
-            in_bracket = 0;
-            /* Under REG_NEWLINE a negated bracket stops matching \n. PCRE's /m
-             * does not do that, so re-admit it explicitly. */
-            if (newline_mode && bracket_negated) {
-                size_t span = out.len - bracket_start;
-                char *saved = malloc(span + 1);
-                if (!saved) {
-                    abort();
-                }
-                memcpy(saved, out.data + bracket_start, span);
-                saved[span] = '\0';
-                out.len = bracket_start;
-                out.data[out.len] = '\0';
-                regex_buf_push_char(&out, '(');
-                regex_buf_push(&out, saved, span);
-                regex_buf_push_str(&out, "|\n)");
-                free(saved);
-            }
-            continue;
-        }
-
-        /* `.` outside a bracket is the one construct whose meaning has to be
-         * reconstructed from the coupled REG_NEWLINE bit (see the table above). */
-        if (!in_bracket && c == '.') {
-            if (!dot_all && !newline_mode) {
-                regex_buf_push_str(&out, "[^\n]");
-            } else if (dot_all && newline_mode) {
-                regex_buf_push_str(&out, "(.|\n)");
-            } else {
-                regex_buf_push_char(&out, '.');
-            }
-            continue;
-        }
-
-        regex_buf_push_char(&out, c);
-    }
-
-    if (in_bracket) {
-        free(out.data);
-        *error = "regex: unterminated [ bracket expression";
-        return NULL;
-    }
-    if (!out.data) {
-        /* The empty pattern is legal and matches everywhere. */
-        out.data = calloc(1, 1);
-        if (!out.data) {
-            abort();
-        }
-    }
-    return out.data;
 }
 
 /* Parse and normalize a flag string. Returns 1 on success. Unknown letters are
@@ -3012,12 +2837,20 @@ static Value value_regex(RegexValue *regex) {
     return value;
 }
 
+/* Two patterns are the same text, compared by length: a pattern may hold a
+ * NUL now, and strcmp would stop at it. */
+static int regex_same_pattern(const RegexValue *a, const RegexValue *b) {
+    return a->pattern_len == b->pattern_len &&
+           memcmp(a->pattern, b->pattern, a->pattern_len) == 0;
+}
+
 static void regex_release(RegexValue *regex) {
     if (!regex) {
         return;
     }
     if (--regex->ref_count == 0) {
-        regfree(&regex->compiled);
+        pcre2_match_data_free(regex->match);
+        pcre2_code_free(regex->code);
         free(regex->pattern);
         free(regex->flags);
         free(regex);
@@ -3026,21 +2859,12 @@ static void regex_release(RegexValue *regex) {
 
 /* Compile a pattern into a RegexValue, or raise and return NULL. `pattern` and
  * `flags` are runtime string buffers (binary-safe, so lengths are explicit).
- *
- * A pattern containing an interior NUL is rejected rather than silently
- * truncated: regcomp takes a NUL-terminated pattern, so there is no way to honor
- * one, and quietly matching a prefix would be worse than saying so. (Subjects
- * are a different matter and ARE binary-safe — see regex_exec_at.) */
+ * PCRE2 takes the pattern's length, so a pattern may hold a NUL (POSIX's regcomp
+ * could not, and refused one). */
 static RegexValue *regex_compile(const char *pattern,
                                  size_t pattern_len,
                                  const char *flags,
                                  size_t flags_len) {
-    if (memchr(pattern, '\0', pattern_len) != NULL) {
-        runtime_error_raise("regex: a pattern cannot contain an interior NUL byte",
-                            1007, "regex");
-        return NULL;
-    }
-
     int icase = 0, newline_mode = 0, dot_all = 0;
     char normalized[4];
     char bad = '\0';
@@ -3054,11 +2878,28 @@ static RegexValue *regex_compile(const char *pattern,
         return NULL;
     }
 
-    const char *translate_error = NULL;
-    char *translated = regex_translate(pattern, pattern_len, newline_mode, dot_all,
-                                       &translate_error);
-    if (!translated) {
-        runtime_error_raise(translate_error, 1007, "regex");
+    uint32_t options = PCRE2_UTF | PCRE2_MATCH_INVALID_UTF |
+                       (icase ? PCRE2_CASELESS : 0) |
+                       (newline_mode ? PCRE2_MULTILINE : 0) |
+                       (dot_all ? PCRE2_DOTALL : 0);
+    int code = 0;
+    PCRE2_SIZE at = 0;
+    pcre2_code *compiled = pcre2_compile((PCRE2_SPTR)pattern, pattern_len, options,
+                                         &code, &at, NULL);
+    if (!compiled) {
+        PCRE2_UCHAR reason[200];
+        pcre2_get_error_message(code, reason, sizeof reason);
+        /* the offset is in bytes; said as a codepoint, as every position is */
+        size_t cp = 0;
+        for (size_t i = 0; i < at && i < pattern_len; i++) {
+            if ((((unsigned char)pattern[i]) & 0xC0) != 0x80) {
+                cp++;
+            }
+        }
+        char message[320];
+        snprintf(message, sizeof message, "regex: %s, at character %zu of the pattern",
+                 (const char *)reason, cp + 1);
+        runtime_error_raise(message, 1007, "regex");
         return NULL;
     }
 
@@ -3066,141 +2907,94 @@ static RegexValue *regex_compile(const char *pattern,
     if (!regex) {
         abort();
     }
-    int cflags = REG_EXTENDED | (icase ? REG_ICASE : 0) | (newline_mode ? REG_NEWLINE : 0);
-    int rc = regcomp(&regex->compiled, translated, cflags);
-    free(translated);
-    if (rc != 0) {
-        char reason[160];
-        regerror(rc, &regex->compiled, reason, sizeof reason);
-        regfree(&regex->compiled);
-        free(regex);
-        char message[320];
-        snprintf(message, sizeof message, "regex: %s", reason);
-        runtime_error_raise(message, 1007, "regex");
-        return NULL;
+    regex->code = compiled;
+    regex->match = pcre2_match_data_create_from_pattern(compiled, NULL);
+    if (!regex->match) {
+        abort();
     }
-
+    uint32_t groups = 0, names = 0;
+    pcre2_pattern_info(compiled, PCRE2_INFO_CAPTURECOUNT, &groups);
+    pcre2_pattern_info(compiled, PCRE2_INFO_NAMECOUNT, &names);
     regex->ref_count = 1;
-    regex->group_count = regex->compiled.re_nsub;
+    regex->group_count = groups;
+    regex->name_count = names;
     regex->pattern = malloc(pattern_len + 1);
     if (!regex->pattern) {
         abort();
     }
     memcpy(regex->pattern, pattern, pattern_len);
     regex->pattern[pattern_len] = '\0';
+    regex->pattern_len = pattern_len;
     regex->flags = copy_string(normalized);
     return regex;
 }
 
-/* Run the compiled program against `subject` starting at byte offset `from`.
+/* ONE MATCH CONTEXT FOR THE PROCESS, carrying the backtracking bound. Past it
+ * a match RAISES: `(a+)+$` against thirty a's and a b is 2^30 steps, a hang
+ * from a pattern that looks harmless, and Studio's search box is where such a
+ * pattern gets typed. */
+static pcre2_match_context *regex_match_context(void) {
+    static pcre2_match_context *ctx;
+    if (!ctx) {
+        ctx = pcre2_match_context_create(NULL);
+        if (!ctx) {
+            abort();
+        }
+        pcre2_set_match_limit(ctx, REGEX_MATCH_LIMIT);
+        pcre2_set_depth_limit(ctx, REGEX_MATCH_LIMIT);
+    }
+    return ctx;
+}
+
+/* Run the program against `subject` from byte offset `from`, filling
+ * `groups[0..group_slots)`. 1 matched, 0 did not; 0 too after RAISING when the
+ * match could not finish, so a caller that stops on 0 stops, and checks
+ * error_action_pending() to tell the two apart.
  *
- * REG_STARTEND is what makes a binary-safe subject work: it passes an explicit
- * byte range instead of relying on a NUL terminator, so a string holding an
- * interior NUL matches in full. Where the extension is unavailable the match is
- * bounded by the first NUL instead — the degradation is narrow and is stated
- * here rather than hidden.
- *
- * REG_NOTBOL matters when `from` > 0: without it, `^` would match at every
- * restart point during a scan, so `match_all(s, "^a")` would find an "a" in the
- * middle of the string. */
+ * The whole subject is passed with a start offset, not a pointer into it, so a
+ * lookbehind can see what precedes `from` and `^` (without "m") still means the
+ * start of the string. A subject is length-counted, so a NUL in it is content. */
 static int regex_exec_at(const RegexValue *regex,
                          const char *subject,
                          size_t subject_len,
                          size_t from,
-                         regmatch_t *groups,
+                         RegexSpan *groups,
                          size_t group_slots) {
-    int eflags = from > 0 ? REG_NOTBOL : 0;
-#ifdef REG_STARTEND
-    groups[0].rm_so = (regoff_t)from;
-    groups[0].rm_eo = (regoff_t)subject_len;
-    int rc = regexec(&regex->compiled, subject, group_slots, groups,
-                     eflags | REG_STARTEND);
-    if (rc == 0) {
-        /* REG_STARTEND reports offsets relative to the buffer start already;
-         * no adjustment is needed. */
-        return 1;
+    int rc = pcre2_match(regex->code, (PCRE2_SPTR)subject, subject_len, from, 0,
+                         regex->match, regex_match_context());
+    if (rc == PCRE2_ERROR_NOMATCH) {
+        return 0;
     }
-    return 0;
-#else
-    /* NO REG_STARTEND -- musl does not define it, and a NUL-terminated regexec
-     * stops at the first interior NUL. Left as a plain call, that BREAKS
-     * PLAT-NUL's guarantee that a gBASIC string is a counted sequence of bytes
-     * in which NUL is content: `contains(from_bytes([65,0,66]), regex("B"))`
-     * answers false where it must answer true. Measured, not predicted -- it is
-     * the one semantic difference a musl build showed across 30 suites.
-     *
-     * So the subject is matched SEGMENT BY SEGMENT between its NULs, and that
-     * is EXACT rather than an approximation. MEASURED against glibc with
-     * REG_STARTEND over the subject "A\0BC":
-     *
-     *     B       matches at [2,3)   -- a literal past the NUL is found
-     *     A.B     NO match           -- `.` does not match a NUL
-     *     A.*B    NO match           -- and `.*` does not cross one
-     *     ^A      matches at [0,1)
-     *     C$      matches at [3,4)   -- `$` is the BUFFER end, not the NUL
-     *
-     * Since no pattern can SPAN a NUL, matching each NUL-free run on its own
-     * reaches the same answer. What the rows above show needs care is the
-     * ANCHORS: `^` must not match at a segment start that is not the buffer
-     * start, and `$` must not match at a segment end that is not the buffer
-     * end -- hence REG_NOTBOL/REG_NOTEOL per segment rather than only at
-     * `from`. Without them `C$` would match at the NUL and `^` would match
-     * after every one, which is the failure mode the REG_NOTBOL comment above
-     * already describes for scanning.
-     *
-     * A subject with no interior NUL takes the single-segment path and is
-     * byte-for-byte the call this used to make. */
-    size_t seg = from;
-    while (seg <= subject_len) {
-        size_t end = seg;
-        while (end < subject_len && subject[end] != '\0') {
-            end++;
+    if (rc < 0) {
+        char message[320];
+        if (rc == PCRE2_ERROR_MATCHLIMIT || rc == PCRE2_ERROR_DEPTHLIMIT ||
+            rc == PCRE2_ERROR_HEAPLIMIT) {
+            snprintf(message, sizeof message,
+                     "regex: matching stopped after %u steps -- this pattern "
+                     "backtracks without end on this text (a nested quantifier "
+                     "like (a+)+ is the usual cause)", REGEX_MATCH_LIMIT);
+        } else {
+            PCRE2_UCHAR reason[200];
+            pcre2_get_error_message(rc, reason, sizeof reason);
+            snprintf(message, sizeof message, "regex: %s", (const char *)reason);
         }
-
-        /* A segment must be NUL-terminated for the plain regexec, and the
-         * subject is const, so the run is copied when it is not already
-         * terminated at `end`. The common case -- no interior NUL -- needs no
-         * copy, since the buffer's own terminator sits at subject_len. */
-        const char *run = subject + seg;
-        char *owned = NULL;
-        if (end < subject_len) {
-            owned = malloc(end - seg + 1);
-            if (!owned) {
-                abort();
-            }
-            memcpy(owned, subject + seg, end - seg);
-            owned[end - seg] = '\0';
-            run = owned;
-        }
-
-        int seg_flags = eflags;
-        if (seg > 0) {
-            seg_flags |= REG_NOTBOL;
-        }
-        if (end < subject_len) {
-            seg_flags |= REG_NOTEOL;
-        }
-
-        int rc = regexec(&regex->compiled, run, group_slots, groups, seg_flags);
-        free(owned);
-
-        if (rc == 0) {
-            for (size_t i = 0; i < group_slots; i++) {
-                if (groups[i].rm_so >= 0) {
-                    groups[i].rm_so += (regoff_t)seg;
-                    groups[i].rm_eo += (regoff_t)seg;
-                }
-            }
-            return 1;
-        }
-
-        if (end >= subject_len) {
-            break;
-        }
-        seg = end + 1;   /* step over the NUL; it can never be part of a match */
+        runtime_error_raise(message, 1007, "regex");
+        return 0;
     }
-    return 0;
-#endif
+    PCRE2_SIZE *ov = pcre2_get_ovector_pointer(regex->match);
+    uint32_t pairs = pcre2_get_ovector_count(regex->match);
+    for (size_t i = 0; i < group_slots; i++) {
+        /* rc is one more than the highest group that took part; past it, and
+         * for any group PCRE2 left unset, the group did not take part */
+        if (i < pairs && (int)i < rc && ov[2 * i] != PCRE2_UNSET) {
+            groups[i].so = (long)ov[2 * i];
+            groups[i].eo = (long)ov[2 * i + 1];
+        } else {
+            groups[i].so = -1;
+            groups[i].eo = -1;
+        }
+    }
+    return 1;
 }
 
 /* Build the match record described in §3:
@@ -3209,11 +3003,15 @@ static int regex_exec_at(const RegexValue *regex,
  * with mid/left/right exactly as `find`'s result does (§3, decision §13.A).
  * A group that did not participate is `unknown`, distinct from one that matched
  * the empty string (decision §13.F). */
-static Value regex_build_match(const char *subject,
-                               const regmatch_t *groups,
+static RecordField *record_find(Value *record, const char *name);
+static void record_set(Value *record, const char *name, Value value);
+static void value_free(Value value);
+static Value regex_build_match(const RegexValue *regex,
+                               const char *subject,
+                               const RegexSpan *groups,
                                size_t group_count) {
-    size_t so = (size_t)groups[0].rm_so;
-    size_t eo = (size_t)groups[0].rm_eo;
+    size_t so = (size_t)groups[0].so;
+    size_t eo = (size_t)groups[0].eo;
     size_t start_cp = string_cp_index_at_byte(subject, so);
     size_t end_cp = string_cp_index_at_byte(subject, eo);
 
@@ -3224,12 +3022,12 @@ static Value regex_build_match(const char *subject,
             abort();
         }
         for (size_t i = 0; i < group_count; i++) {
-            const regmatch_t *g = &groups[i + 1];
-            if (g->rm_so < 0) {
+            const RegexSpan *g = &groups[i + 1];
+            if (g->so < 0) {
                 items[i] = value_unknown();
             } else {
-                items[i] = value_string_n(subject + g->rm_so,
-                                          (size_t)(g->rm_eo - g->rm_so));
+                items[i] = value_string_n(subject + g->so,
+                                          (size_t)(g->eo - g->so));
             }
         }
     }
@@ -3250,7 +3048,37 @@ static Value regex_build_match(const char *subject,
     fields[3].name = field_name_new("groups");
     fields[3].value = cell_alloc();
     *fields[3].value = value_array(items, group_count);
-    return value_record(fields, 4);
+    Value match = value_record(fields, 4);
+    /* NAMED GROUPS ALSO BY NAME, in a `named` record, only when the pattern has
+     * any: `groups` stays the positional list every caller already reads. */
+    if (regex->name_count > 0) {
+        PCRE2_SPTR table = NULL;
+        uint32_t entry = 0;
+        pcre2_pattern_info(regex->code, PCRE2_INFO_NAMETABLE, &table);
+        pcre2_pattern_info(regex->code, PCRE2_INFO_NAMEENTRYSIZE, &entry);
+        Value named = value_record(NULL, 0);
+        for (size_t k = 0; k < regex->name_count; k++) {
+            PCRE2_SPTR e = table + k * entry;
+            size_t n = ((size_t)e[0] << 8) | e[1];
+            const char *name = (const char *)(e + 2);
+            Value v = value_unknown();
+            if (n <= group_count && groups[n].so >= 0) {
+                v = value_string_n(subject + groups[n].so,
+                                   (size_t)(groups[n].eo - groups[n].so));
+            }
+            /* duplicate names ((?J)) keep the first that took part */
+            RecordField *seen = record_find(&named, name);
+            if (!seen) {
+                record_set(&named, name, v);
+            } else if (seen->value->kind == VALUE_UNKNOWN) {
+                record_set(&named, name, v);
+            } else {
+                value_free(v);
+            }
+        }
+        record_set(&match, "named", named);
+    }
+    return match;
 }
 
 /* Step one CODEPOINT forward from a byte offset. Used to advance past a
@@ -3311,7 +3139,7 @@ static RegexValue *regex_from_argument(Value pattern,
 static int regex_matches_anywhere(const RegexValue *regex,
                                   const char *subject,
                                   size_t subject_len) {
-    regmatch_t groups[1];
+    RegexSpan groups[1];
     return regex_exec_at(regex, subject, subject_len, 0, groups, 1);
 }
 
@@ -3334,39 +3162,101 @@ static void regex_list_push(RegexList *list, Value value) {
     list->items[list->count++] = value;
 }
 
-/* Expand $0..$9 group references in a replacement string. $0 is the whole match,
- * $$ is a literal $, and a $ before anything else stays literal so that prices
- * and shell-ish text survive unescaped. A reference to a group that did not
- * participate expands to nothing. */
-static void regex_expand_replacement(RegexBuf *out,
-                                     const char *subject,
-                                     const regmatch_t *groups,
-                                     size_t group_count,
-                                     const char *repl,
-                                     size_t repl_len) {
+/* Push one group's text, if it took part. */
+static void regex_push_group(RegexBuf *out, const char *subject,
+                             const RegexSpan *groups, size_t group_count,
+                             size_t index) {
+    if (out && index <= group_count && groups[index].so >= 0) {
+        regex_buf_push(out, subject + groups[index].so,
+                       (size_t)(groups[index].eo - groups[index].so));
+    }
+}
+
+/* Expand group references in a replacement string: `$0`-`$9` and `\0`-`\9`
+ * (`$0` is the whole match), `${12}` past nine, `${name}` for a named group, and
+ * `$$` for a literal `$`. A `$` or `\` before anything else stays literal, so
+ * paths and a lone `$` survive unescaped. A group that did not take part
+ * expands to nothing.
+ *
+ * WITH `out` NULL IT CHECKS AND EXPANDS NOTHING, and is called once before any
+ * matching: a reference to a group or a name the pattern does not have RAISES.
+ * It used to expand to nothing, so `"$5.00"` became `".00"` in silence -- a
+ * price in a replacement, read as group 5. Checked up front so the answer does
+ * not depend on whether anything happened to match. Returns 0 after raising. */
+static int regex_expand_replacement(RegexBuf *out,
+                                    const RegexValue *regex,
+                                    const char *subject,
+                                    const RegexSpan *groups,
+                                    size_t group_count,
+                                    const char *repl,
+                                    size_t repl_len) {
     for (size_t i = 0; i < repl_len; i++) {
-        if (repl[i] == '$' && i + 1 < repl_len) {
+        char c = repl[i];
+        if ((c == '$' || c == '\\') && i + 1 < repl_len) {
             char next = repl[i + 1];
-            if (next == '$') {
-                regex_buf_push_char(out, '$');
-                i++;
-                continue;
-            }
-            if (next >= '0' && next <= '9') {
-                size_t index = (size_t)(next - '0');
-                if (index <= group_count) {
-                    const regmatch_t *g = &groups[index];
-                    if (g->rm_so >= 0) {
-                        regex_buf_push(out, subject + g->rm_so,
-                                       (size_t)(g->rm_eo - g->rm_so));
-                    }
+            if (c == '$' && next == '$') {
+                if (out) {
+                    regex_buf_push_char(out, '$');
                 }
                 i++;
                 continue;
             }
+            long index = -1;
+            size_t used = 0;
+            char name[128];
+            name[0] = '\0';
+            if (next >= '0' && next <= '9') {
+                index = next - '0';
+                used = 1;
+            } else if (c == '$' && next == '{') {
+                const char *close = memchr(repl + i + 2, '}', repl_len - i - 2);
+                size_t n = close ? (size_t)(close - (repl + i + 2)) : 0;
+                if (close && n > 0 && n < sizeof name) {
+                    memcpy(name, repl + i + 2, n);
+                    name[n] = '\0';
+                    int digits = 1;
+                    for (size_t k = 0; k < n; k++) {
+                        digits = digits && name[k] >= '0' && name[k] <= '9';
+                    }
+                    if (digits) {
+                        index = (long)strtoul(name, NULL, 10);
+                    } else {
+                        int number = pcre2_substring_number_from_name(regex->code,
+                                                                      (PCRE2_SPTR)name);
+                        index = number > 0 ? number : -2;
+                    }
+                    used = n + 2;
+                }
+            }
+            if (used) {
+                if (index == -2 || (size_t)index > group_count) {
+                    if (!out) {
+                        char message[320];
+                        if (index == -2) {
+                            snprintf(message, sizeof message,
+                                     "replace: ${%s} names a group the pattern does not "
+                                     "have; write $$ for a literal $", name);
+                        } else {
+                            snprintf(message, sizeof message,
+                                     "replace: %c%ld names group %ld, and the pattern has "
+                                     "%zu; write %s for a literal %c", c, index, index,
+                                     group_count, c == '$' ? "$$" : "the text another way", c);
+                        }
+                        runtime_error_raise(message, 1007, "regex");
+                        return 0;
+                    }
+                } else {
+                    regex_push_group(out, subject, groups, group_count, (size_t)index);
+                }
+                i += used;
+                continue;
+            }
         }
-        regex_buf_push_char(out, repl[i]);
+        if (out) {
+            regex_buf_push_char(out, c);
+        }
     }
+    return 1;
 }
 
 /* Refcount release: last owner frees the underlying xmlTextReader. Defined here
@@ -6302,7 +6192,7 @@ static int value_storage_equal(const Value *left, const Value *right) {
          * and flags, so two separately compiled copies of the same pattern are
          * the same value. Flags are compared in normalized form, so regex(p,
          * "si") equals regex(p, "is"). */
-        return strcmp(left->as.regex->pattern, right->as.regex->pattern) == 0 &&
+        return regex_same_pattern(left->as.regex, right->as.regex) &&
                strcmp(left->as.regex->flags, right->as.regex->flags) == 0;
     case VALUE_WATCHER:
         /* IDENTITY, not structure: two watchers with the same name and targets
@@ -15515,12 +15405,12 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
                             1003, "actor");
         return 0;
     case VALUE_REGEX:
-        /* Ship the SOURCE (pattern + flags), not the compiled program: a regex_t
-         * is an opaque libc structure holding internal pointers and is
-         * meaningless in another address space. The receiver recompiles, which
+        /* Ship the SOURCE (pattern + flags), not the compiled program: a
+         * pcre2_code holds internal pointers and is meaningless in another
+         * address space. The receiver recompiles, which
          * is deterministic — same pattern, same flags, same engine. */
         serbuf_u8(b, SER_REGEX);
-        serbuf_blob(b, v.as.regex->pattern, strlen(v.as.regex->pattern));
+        serbuf_blob(b, v.as.regex->pattern, v.as.regex->pattern_len);
         serbuf_blob(b, v.as.regex->flags, strlen(v.as.regex->flags));
         return 1;
     }
@@ -32988,9 +32878,17 @@ static Value eval_call(AstExpr *expr) {
             const char *repl = to.as.string;
             size_t repl_len = string_length(repl);
             size_t slots = regex->group_count + 1;
-            regmatch_t *groups = calloc(slots, sizeof(regmatch_t));
+            RegexSpan *groups = calloc(slots, sizeof(RegexSpan));
             if (!groups) {
                 abort();
+            }
+            if (!regex_expand_replacement(NULL, regex, NULL, NULL, regex->group_count,
+                                          repl, repl_len)) {
+                free(groups);
+                value_free(text);
+                value_free(from);
+                value_free(to);
+                return value_null();
             }
             RegexBuf out = {0};
             size_t pos = 0;
@@ -32999,10 +32897,10 @@ static Value eval_call(AstExpr *expr) {
                 if (!regex_exec_at(regex, bytes, len, pos, groups, slots)) {
                     break;
                 }
-                size_t so = (size_t)groups[0].rm_so;
-                size_t eo = (size_t)groups[0].rm_eo;
+                size_t so = (size_t)groups[0].so;
+                size_t eo = (size_t)groups[0].eo;
                 regex_buf_push(&out, bytes + last, so - last);
-                regex_expand_replacement(&out, bytes, groups, regex->group_count,
+                regex_expand_replacement(&out, regex, bytes, groups, regex->group_count,
                                          repl, repl_len);
                 last = eo;
                 if (eo == so) {
@@ -33019,8 +32917,17 @@ static Value eval_call(AstExpr *expr) {
                     pos = eo;
                 }
             }
-            regex_buf_push(&out, bytes + last, len - last);
             free(groups);
+            if (error_action_pending()) {
+                /* the match could not finish (regex_exec_at raised): no
+                 * half-replaced text */
+                free(out.data);
+                value_free(text);
+                value_free(from);
+                value_free(to);
+                return value_null();
+            }
+            regex_buf_push(&out, bytes + last, len - last);
             Value result = value_string_n(out.data ? out.data : "", out.len);
             free(out.data);
             value_free(text);
@@ -35076,7 +34983,7 @@ static Value eval_call(AstExpr *expr) {
         }
 
         size_t slots = regex->group_count + 1;
-        regmatch_t *groups = calloc(slots, sizeof(regmatch_t));
+        RegexSpan *groups = calloc(slots, sizeof(RegexSpan));
         if (!groups) {
             abort();
         }
@@ -35086,7 +34993,9 @@ static Value eval_call(AstExpr *expr) {
         if (!all) {
             Value result;
             if (regex_exec_at(regex, bytes, len, 0, groups, slots)) {
-                result = regex_build_match(bytes, groups, regex->group_count);
+                result = regex_build_match(regex, bytes, groups, regex->group_count);
+            } else if (error_action_pending()) {
+                result = value_null();
             } else {
                 /* A miss is unknown, not an error and not an empty record: the
                  * NA policy, so `is_unknown` is the miss test (§3). */
@@ -35104,9 +35013,9 @@ static Value eval_call(AstExpr *expr) {
             if (!regex_exec_at(regex, bytes, len, pos, groups, slots)) {
                 break;
             }
-            size_t so = (size_t)groups[0].rm_so;
-            size_t eo = (size_t)groups[0].rm_eo;
-            regex_list_push(&list, regex_build_match(bytes, groups, regex->group_count));
+            size_t so = (size_t)groups[0].so;
+            size_t eo = (size_t)groups[0].eo;
+            regex_list_push(&list, regex_build_match(regex, bytes, groups, regex->group_count));
             if (eo == so) {
                 /* A zero-width match (`a*` against "b") matches at every
                  * position. Advancing past it is what makes the scan finish. */
@@ -35121,6 +35030,13 @@ static Value eval_call(AstExpr *expr) {
         free(groups);
         regex_release(regex);
         value_free(subject);
+        if (error_action_pending()) {
+            for (size_t i = 0; i < list.count; i++) {
+                value_free(list.items[i]);
+            }
+            free(list.items);
+            return value_null();
+        }
         return value_array(list.items, list.count);
     }
 
@@ -35756,7 +35672,7 @@ static Value eval_call(AstExpr *expr) {
             RegexValue *regex = separator.as.regex;
             const char *bytes = text.as.string;
             size_t len = string_length(bytes);
-            regmatch_t groups[1];
+            RegexSpan groups[1];
             RegexList list = {0};
             size_t pos = 0;
             size_t last = 0;
@@ -35764,8 +35680,8 @@ static Value eval_call(AstExpr *expr) {
                 if (!regex_exec_at(regex, bytes, len, pos, groups, 1)) {
                     break;
                 }
-                size_t so = (size_t)groups[0].rm_so;
-                size_t eo = (size_t)groups[0].rm_eo;
+                size_t so = (size_t)groups[0].so;
+                size_t eo = (size_t)groups[0].eo;
                 if (so == eo) {
                     /* A zero-width match is not a separator — splitting on one
                      * would emit an empty piece between every character. Step
@@ -35779,6 +35695,15 @@ static Value eval_call(AstExpr *expr) {
                 regex_list_push(&list, value_string_n(bytes + last, so - last));
                 last = eo;
                 pos = eo;
+            }
+            if (error_action_pending()) {
+                for (size_t i = 0; i < list.count; i++) {
+                    value_free(list.items[i]);
+                }
+                free(list.items);
+                value_free(text);
+                value_free(separator);
+                return value_null();
             }
             regex_list_push(&list, value_string_n(bytes + last, len - last));
             value_free(text);
@@ -37943,7 +37868,7 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          * and its (normalized) flags, so two separately compiled copies of the
          * same pattern are the same value — unlike a gobject or a boxed handle,
          * which have identity but no comparable content. */
-        int equal = strcmp(left.as.regex->pattern, right.as.regex->pattern) == 0 &&
+        int equal = regex_same_pattern(left.as.regex, right.as.regex) &&
                     strcmp(left.as.regex->flags, right.as.regex->flags) == 0;
         if (strcmp(op, "=") == 0) {
             result = equal;
