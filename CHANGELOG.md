@@ -39,6 +39,11 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
+### Money that rounds to zero shows no sign
+
+`-0.005` USD is shown as `0.00`, not `-0.00`. The value is unchanged: it is
+still less than zero, and `money.text` still gives `-0.005000`.
+
 ### Text that is a number is stored into an integer or number column
 
 `insert into item (qty) values ('25')` stores 25, so an import from CSV, where

@@ -127,7 +127,7 @@ do
 done
 
 printf 'TIER the lossless exit (money.text)\n'
-run_fixture tests/money_text_test.bas 20 'money_text'
+run_fixture tests/money_text_test.bas 25 'money_text'
 
 # The control label is named explicitly: every other check in that fixture is
 # also satisfied by a money.text that simply called string(), except the round

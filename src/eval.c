@@ -5053,6 +5053,13 @@ static void money_render(MoneyValue m, int digits, char *buf, size_t buflen) {
         for (int i = scale; i < digits; i++) mag *= 10ULL;
     }
 
+    /* A value that ROUNDS to zero shows no sign: -0.005 USD is "0.00", not
+     * "-0.00" (gdash, 2026-11-02). Decided after the rounding, since before it
+     * the magnitude is not zero. */
+    if (mag == 0ULL) {
+        negative = 0;
+    }
+
     unsigned long long div = 1ULL;
     for (int i = 0; i < digits; i++) div *= 10ULL;
     unsigned long long whole = mag / div;

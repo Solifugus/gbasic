@@ -98,5 +98,15 @@ error.clear()
 
 on error stop
 
+' ------------------------------------- a value that ROUNDS TO ZERO has no sign
+' -0.005 USD displayed "-0.00" (gdash, 2026-11-02): the sign was decided before
+' the rounding. The value itself stays negative, and the lossless exit keeps it.
+nz {USD}= "-0.005"
+check("a value rounding to zero displays without a sign", string(nz), "0.00")
+check("in any currency's precision", string({JPY}"-0.4"), "0")
+check("but one that rounds to a cent keeps it", string({USD}"-0.006"), "-0.01")
+check("the value is still negative", nz < {USD}"0.00", true)
+check("and money.text keeps its sign and digits", money.text(nz), "-0.005000")
+
 print "checks: " + string(tally.checks)
 print "mismatches: " + string(tally.mismatches)
