@@ -39,16 +39,13 @@ measured it on a three-record catalog that came back as four.
   `for each` over something it cannot loop over now names a csv source among
   what it can.
 
-### `=` reads text that is a number
+### `1 = "1"` is still false, and now says so (warning 2122)
 
-`1 = "1"`, `25 = " 25 "` and `2 < "10"` are now true: when one side of a
-comparison is a number and the other is text, the text is read with G-SQL's
-reader (trimmed, a number written plainly) and the two compare as numbers, so a
-form value matches a stored id. Text that is no number is unchanged: `0 = "stop"`
-is false and `1 > "stop"` raises. Hex, `inf` and `1,000` are not read. The
-"same value" routes keep the kinds apart, so `unique([1, "1"])` is two values
-and `contains([1], "1")` is false, and `[1] = ["1"]` is false. **Changed
-behaviour:** these comparisons answered false, or refused to order.
+A number compared with `=` or `!=` against text that reads as a number (G-SQL's
+reader: trimmed, a number written plainly) warns, naming both sides and the
+remedy, `number()` or `{number}`. The answer does not change: text is never a
+number. Text that is no number (`0 = "stop"`, `x = ""`) stays silent, and so do
+`contains`, `find`, `unique` and `consider`. Said once per site.
 
 ### G-SQL: a comparison reads text as the other side's kind
 

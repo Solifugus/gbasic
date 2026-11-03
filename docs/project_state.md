@@ -62,8 +62,8 @@ document list, with a status column, is `docs/README.md`.
   `if warning then`, `warning(…)` (`docs/warning_model_design.md`)
 - comparison across kinds: equality **answers**, ordering **refuses** — text
   that is no number is never equal to a number (`0 = "stop"` is false,
-  `1 > "stop"` raises), while text that is a number is read as one
-  (`1 = "1"`, `2 < "10"`); numbers and booleans coerce (`0 = false`)
+  `1 > "stop"` raises), and `1 = "1"` is false too but warns (2122);
+  numbers and booleans coerce (`0 = false`)
 - distinct `nothing` and `unknown` values
 - date/time, duration, money, file, and directory values
 - binary-safe, Unicode-aware strings, codepoint operations, and byte builtins

@@ -816,17 +816,17 @@ already governs arrays, records, functions, watchers, regexes, money and
 date/time: `=` and `!=` are questions with answers, ordering is not a question
 at all.
 
-**Text that is a number is read as one** *(after 0.10.0)*. When one side is a
-number and the other text, the text is read the way G-SQL reads it — trimmed of
-spaces, tabs and line ends, then a sign, digits, an optional fraction and
-exponent — and the two compare as numbers: `1 = "1"`, `25 = " 25 "`,
-`1000 = "1e3"` and `2 < "10"` are **true**. Hex (`"0x10"`), `"inf"`, separators
-(`"1,000"`) and blank text are not numbers here. Integer text is exact, as
-`number("...")` makes it. Only the operator reads it: the "same value" routes
-below keep a number and text apart, so `unique([1, "1"])` is two values,
-`contains([1], "1")` is false and `consider "1"` does not take an `if 1`
-branch. `[1] = ["1"]` is false too, since a compound compares its stored
-values. See `docs/number_text_equality_design.md`.
+Text that is a number is no exception: `1 = "1"` is **false**. Because that is
+the usual way a form value fails to match a stored id, it **warns** *(after
+0.10.0)*: warning `2122`, when `=` or `!=` compares a number with text that
+reads as one — trimmed of spaces, tabs and line ends, then a sign, digits, an
+optional fraction and exponent, the reader G-SQL uses — naming both sides and
+the remedy, `number(text)` or `{number}`. Text that is no number (`0 = "stop"`,
+`x = ""`) is silent, and so are the "same value" routes, `contains`, `find`,
+`unique` and `consider`. G-SQL is different on purpose: a query's column
+declares its kind, so `WHERE id = '7'` reads the text
+(`docs/gsql_compare_conversion_design.md`). See
+`docs/number_text_equality_design.md`.
 
 **`unknown` is three-valued** *(after 0.10.0)*. `unknown` is gBASIC's SQL
 `NULL` — a fact nobody has — and it follows SQL's rules:

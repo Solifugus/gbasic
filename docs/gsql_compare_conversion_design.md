@@ -76,7 +76,7 @@ answers each case both ways and requires the same rows.
   order values of one column, which are of one kind already.
 - **Arithmetic** does not convert: `'2' + 3` is still refused, and text is
   joined with `||`.
-- **gBASIC's own `=`** reads text that is a number with the same reader
-  (`include/gb_number_text.h`), but answers false for text that is no number
-  where a query refuses: `docs/number_text_equality_design.md`, ruled
-  2026-11-02.
+- **gBASIC's own `=`** does not convert: `1 = "1"` is false and warns (2122),
+  using this reader (`include/gb_number_text.h`) only to decide when to say so.
+  A query's column declares a kind and a program's variable does not:
+  `docs/number_text_equality_design.md`.

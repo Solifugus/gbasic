@@ -1,7 +1,9 @@
 # gBASIC: a number compared with text that is a number
 
-**Status:** Shipped 2026-11-02, held by `run_equality.sh`'s number-text tier
-(`tests/number_text_equality_test.bas`). Ruled by Matthew the same day (§5).
+**Status:** Shipped 2026-11-03 as a WARNING, held by `run_equality.sh`'s
+number-text tiers (`tests/number_text_equality_test.bas`). §2's conversion was
+built 2026-11-02 and reverted the next day on Matthew's second ruling (§7);
+§2-§6 are kept as the record of what was tried and why it was undone.
 Asked for by gdash (its S4); Matthew: *"reasonable consistencies with gBASIC
 would be good. Should we allow gBASIC to do the same?"*, after ruling that
 G-SQL reads text as the other side's kind (`gsql_compare_conversion_design.md`).
@@ -97,3 +99,37 @@ the same number written as text**. Under the ruling only the two
   (11 mismatches), `values_equal` converting (4: `unique`, `contains`), the
   consider route converting (1), and a reader that takes whatever `strtod`
   takes (2: hex read). Clean under valgrind.
+
+## 7. Reverted, and a warning instead (Matthew, 2026-11-03)
+
+Matthew asked the next morning whether `1 = "1"` was a good idea in gBASIC --
+"my brain was in SQL mode". My answer was no, and the reasons are the record:
+
+- **SQL can afford the conversion because one side declares a kind.** A
+  column says what `'7'` should become; a gBASIC variable says nothing, so the
+  conversion in gBASIC guessed.
+- **Ruling 3 made it half a rule.** `1 = "1"` was true while
+  `contains([1], "1")` and `[1] = ["1"]` were false, and `"1" = 1`, `1 = "1.0"`
+  but `"1" != "1.0"`: equality stopped being transitive. That is more to
+  remember, against `less-to-remember`, and gdash's own trap,
+  `contains(ids, form_value)`, still missed in silence.
+- **What gdash reported was the silence.** Matthew's standing rule for a silent
+  fumble is to make it loud, not to make it succeed.
+
+Ruled: **revert, and warn.** Built:
+
+- `eval_comparison` converts nothing. `=` and `!=` between a number and text
+  that the shared reader (`include/gb_number_text.h`, kept) reads as a number
+  say **warning 2122**, naming both sides and the remedy, `number()` or
+  `{number}`. Once per site. The answer is unchanged: unequal.
+- **Silent**: text that is no number (`x = ""`, `answer = 0` after `input()`),
+  every route (they answer a number against text before asking the operator),
+  and compounds. Ordering refuses as it always did.
+- **G-SQL keeps its conversion** (`gsql_compare_conversion_design.md`), where
+  the column is the declared kind.
+- **Evidence.** `tests/number_text_equality_test.bas`, 42 checks, each warning
+  beside a silent control, plus a stderr tier: a loop of three says it once, at
+  its line, and the program runs on. Three perturbations red: warning on every
+  number-versus-text pair (10 failures: the silent controls), never warning,
+  and the routes warning (`unique`, `contains`, `find`, `remove_value`).
+  `tests/equality_scalar_test.bas`'s `1 = "1"` pair is back as it was.
