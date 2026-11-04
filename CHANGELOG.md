@@ -16,6 +16,14 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Qt: a captioned part in a box moves and drops with its caption
+
+`qt.refresh` on a `column` or `row` holding captioned parts (`field`,
+`choice`) left every caption at the end of the box after a reorder, left a
+dropped part's caption on screen, and `qt.children` listed captions as
+nameless children. A caption now travels with its part (docs/qt_gui_design.md
+§0.27).
+
 ### `finio_rates`: the ECB's exchange reference rates, published and derived
 
 - **`fetch("ecb_fx", { from:, to: })`** fetches the European Central Bank's

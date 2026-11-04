@@ -5909,6 +5909,27 @@ extern "C" void gb_qt_end(void) {
 /* The children a container holds, in the order the user sees them. Asked of
  * QT rather than of any list of ours, for the reason `qt.at` and `qt.pane`
  * are: a remembered order would agree with an order that was never applied. */
+/* A PART'S CAPTION IN A BOX: the QLabel `caption_for` placed before it, found
+ * the one way `qt.label` finds it, by its buddy. A caption is its own layout
+ * item, so everything that walks, moves or drops a box's children has to treat
+ * the pair as one: until 2026-11-03 nothing did, and a reorder left every
+ * caption piled at the end of the box, a drop left the dropped part's caption
+ * on screen, and qt.children listed each caption as a nameless child. */
+static QLabel *box_caption_of(QBoxLayout *b, QWidget *w) {
+    for (int i = 0; b && w && i < b->count(); i++) {
+        QLabel *l = qobject_cast<QLabel *>(b->itemAt(i)->widget());
+        if (l && l->buddy() == w) {
+            return l;
+        }
+    }
+    return nullptr;
+}
+
+static int box_is_caption(QBoxLayout *b, QWidget *w) {
+    QLabel *l = qobject_cast<QLabel *>(w);
+    return l && l->buddy() && b->indexOf(l->buddy()) >= 0;
+}
+
 static QVector<QWidget *> container_children(GbQtNode *c) {
     QVector<QWidget *> out;
     if (!c || !c->widget) {
@@ -5922,7 +5943,8 @@ static QVector<QWidget *> container_children(GbQtNode *c) {
     }
     if (QBoxLayout *b = qobject_cast<QBoxLayout *>(c->layout)) {
         for (int i = 0; i < b->count(); i++) {
-            if (QWidget *w = b->itemAt(i)->widget()) {
+            QWidget *w = b->itemAt(i)->widget();
+            if (w && !box_is_caption(b, w)) {
                 out.append(w);
             }
         }
@@ -6046,12 +6068,38 @@ extern "C" int gb_qt_child_place(void *container, void *child, int position,
         return 1;
     }
     if (QBoxLayout *b = qobject_cast<QBoxLayout *>(c->layout)) {
-        int at = b->indexOf(k->widget);
-        if (at != position) {
-            b->removeWidget(k->widget);
-            b->insertWidget(position, k->widget);
-            k->widget->setVisible(true);
+        /* POSITIONS COUNT PARTS, NOT LAYOUT ITEMS: a captioned part is two
+         * items, its caption and itself, and moves as the pair. */
+        QVector<QWidget *> parts = container_children(c);
+        int at = parts.indexOf(k->widget);
+        if (at < 0) {
+            say(err, err_size, "that child is not in this box");
+            return 0;
         }
+        if (at == position) {
+            return 1;
+        }
+        QLabel *cap = box_caption_of(b, k->widget);
+        if (cap) {
+            b->removeWidget(cap);
+        }
+        b->removeWidget(k->widget);
+        parts.remove(at);
+        int index;
+        if (position >= 0 && position < parts.size()) {
+            QLabel *before = box_caption_of(b, parts[position]);
+            index = b->indexOf(before ? (QWidget *)before : parts[position]);
+        } else if (!parts.isEmpty()) {
+            index = b->indexOf(parts.last()) + 1;
+        } else {
+            index = 0;
+        }
+        if (cap) {
+            b->insertWidget(index++, cap);
+            cap->setVisible(true);
+        }
+        b->insertWidget(index, k->widget);
+        k->widget->setVisible(true);
         return 1;
     }
     say(err, err_size, "that container cannot order its children");
@@ -6188,7 +6236,20 @@ extern "C" int gb_qt_child_drop(void *container, void *child, char *err,
             tw->removeTab(at);
         }
     } else if (QBoxLayout *b = qobject_cast<QBoxLayout *>(c->layout)) {
+        /* the caption goes with its part, or it stays on screen naming nothing */
+        if (QLabel *cap = box_caption_of(b, w)) {
+            b->removeWidget(cap);
+            cap->setParent(nullptr);
+            delete cap;
+        }
         b->removeWidget(w);
+        w->setParent(nullptr);
+        delete w;
+        /* LAID OUT NOW, not at the next event: measured, without this a part
+         * read straight after the refresh still reported the position it had
+         * beside the dropped one (y 97 where a fresh box says 161). */
+        b->activate();
+        return 1;
     }
     w->setParent(nullptr);
     delete w;

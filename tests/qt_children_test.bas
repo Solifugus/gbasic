@@ -246,8 +246,65 @@ program main()
           string(g.three), "1")
     qt.close(deck)
 
+    ' ---- A CAPTIONED PART IN A BOX MOVES AND GOES WITH ITS CAPTION ----------
+    ' A `field` in a column carries its caption as a separate QLabel before it
+    ' in the layout. Until 2026-11-03 a reorder moved the part and left every
+    ' caption piled at the end, a drop left the caption on screen, and
+    ' qt.children listed each caption as a nameless child. THE ORACLE IS A
+    ' FRESH WINDOW built in the final order: the reconciled box must lay out
+    ' exactly as that one does. Asserting the parts' order alone passed on the
+    ' broken version, since the parts WERE in order -- their captions were not.
+    moved = caption_box("moved", [ captioned("fa", "Alpha"), captioned("fb", "Beta"),
+                                   captioned("fc", "Gamma") ])
+    qt.open(moved)
+    check("qt.children lists the parts, not their captions",
+          join(qt.children(moved, "col"), "|"), "fa|fb|fc")
+    n = qt.refresh(moved, "col", [ captioned("fc", "Gamma"), captioned("fa", "Alpha"),
+                                   captioned("fb", "Beta") ])
+    check("a reorder puts the parts in the record's order",
+          join(qt.children(moved, "col"), "|"), "fc|fa|fb")
+    fresh = caption_box("fresh", [ captioned("fc", "Gamma"), captioned("fa", "Alpha"),
+                                   captioned("fb", "Beta") ])
+    qt.open(fresh)
+    check("and each part sits where a fresh build puts it, caption above",
+          box_ys(moved, ["fc", "fa", "fb"]), box_ys(fresh, ["fc", "fa", "fb"]))
+    check("each caption still names its own part",
+          qt.label(moved, "fa") + "|" + qt.label(moved, "fc"), "Alpha|Gamma")
+    qt.close(fresh)
+
+    ' DROPPING THE MIDDLE PART: a caption left behind sits between the other
+    ' two and pushes the last one down, which the fresh build shows.
+    n = qt.refresh(moved, "col", [ captioned("fc", "Gamma"), captioned("fb", "Beta") ])
+    check("a dropped part takes its caption with it",
+          join(qt.children(moved, "col"), "|"), "fc|fb")
+    pair = caption_box("pair", [ captioned("fc", "Gamma"), captioned("fb", "Beta") ])
+    qt.open(pair)
+    check("  and the box lays out as a fresh one with those two",
+          box_ys(moved, ["fc", "fb"]), box_ys(pair, ["fc", "fb"]))
+    qt.close(pair)
+    qt.close(moved)
+
     print "ok   " + string(g.checks) + " checks, " + string(g.bad) + " mismatches"
 end program
+
+function captioned(id, caption)
+    return { kind: "part", word: "field", name: id, options: { label: caption } }
+end function
+
+function caption_box(name, kids)
+    return { kind: "window", name: name,
+             options: { title: "Captions", width: 300, height: 400 },
+             items: [ { kind: "container", word: "column", name: "col", items: kids } ] }
+end function
+
+' Each part's top edge, as Qt laid it out.
+function box_ys(win, parts)
+    out = []
+    for each p in parts
+        append(out, string(qt.read(win, p, "y")))
+    end for
+    return join(out, "|")
+end function
 
 ' A page holding one button, and that button's handler when one is given --
 ' which is the shape Studio reported: the handler travels INSIDE the child.

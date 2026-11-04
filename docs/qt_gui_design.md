@@ -3420,6 +3420,25 @@ its suggestions from the tables.
 A `form` is still refused a name (§0.6: its parts are addressed by their own
 names), and so is `cells`, whose positions are declared.
 
+### A captioned part moves as a pair (fixed 2026-11-03)
+
+A `field` or `choice` in a box carries its caption as a **separate QLabel**
+placed before it, with the part as its buddy (`caption_for`). The reconcile
+walked, moved and dropped layout ITEMS, so for a box it got the pair wrong
+three ways, all measured against a fresh window built in the final order:
+
+- **a reorder moved the parts and left every caption at the end** of the box
+  (parts at y 0/31/62 where the fresh box put them at 97/225/353);
+- **a drop left the dropped part's caption on screen**, naming nothing;
+- **`qt.children` listed each caption as a nameless child** (`["", "fa", "", "fb"]`).
+
+Now a caption is found by its buddy, the way `qt.label` finds it, and treated
+as part of its part: positions count parts, a move carries the caption in front
+of its part, and a drop deletes it. A drop also lays the box out at once,
+because without it a part read straight after the refresh reported its old
+position. Checked in `tests/qt_children_test.bas` with the fresh window as the
+oracle, since the parts' ORDER alone was already right on the broken version.
+
 ## 0.28 A `tree` (2026-10-19)
 
 **The user asked for this by name** — *"a better looking tree view on the
