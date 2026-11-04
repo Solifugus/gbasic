@@ -119,15 +119,30 @@ the differential oracle for any backend.
 
 ## 6. Open questions
 
-1. **Is `integer` a type?** G-SQL already has integer columns that refuse
-   `"2.5"`. Code generation would benefit. Today gBASIC has no integer kind
-   separate from `number`.
+1. **Is `integer` a type?** I recommend yes, as a **lock, not a new value
+   kind**. The value is still a `number`, and the lock adds one rule: the
+   number must be whole. `"42"` converts. `2.5` and `"2.5"` are refused, as in
+   a G-SQL integer column (the "integers stay strict" ruling). Where an
+   unlocked number would degrade to a float on overflow, an integer refuses.
+   No sized types (`i8`, `u16`, and so on): gBASIC is a business language,
+   not a systems one. The reason for the change from "number suffices" (said
+   before G-SQL) is that there was nowhere to say *whole* until a lock
+   existed. Counts, quantities, years and IDs are whole as a business rule,
+   and G-SQL already enforces that. Code generation also gets a real int64.
+   Discussed 2026-11-03; awaiting Matthew's ruling.
 2. **Should a parameter lock refuse or convert?** Assignment converts, so
    `f("42")` into `a:number` would convert too. The alternative is to refuse
    at the call, which is stricter and closer to the languages the spelling
    comes from. I recommend converting, for consistency with rule 1.
-3. **Function return types** (`function f(a:number):number`). The grammar
-   has not been measured for this.
+3. **An optional return type**, `function f(a:number):number`. This gives
+   **0 conflicts**, measured on the scratch grammar for the plain `function
+   NAME(...)` form; the `export` and dotted forms are not measured yet. The
+   same rule as a lock applies: `return` converts into the type or refuses,
+   naming the declaration. With no return type, a function behaves as it does
+   today. I recommend it, for three reasons: it tells the caller (and a model
+   reading the signature) what comes back, Studio can show it on hover, and
+   it carries a type across a call for code generation. Awaiting Matthew's
+   ruling.
 4. **What does `--ast`, `source_outline` and the LSP show for a lock?**
    Studio's hoisting rule and hover are consumers.
 5. **Actors.** A value sent to an actor carries no lock, by rule 4. Confirm.
