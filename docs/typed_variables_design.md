@@ -109,8 +109,9 @@ ways, and it is worth being clear about which:
 - **What it does not buy:**
   - **`number` is not one machine type.** It holds exact integers and also
     floats that degrade on overflow (docs/exact_number_design.md), so a
-    locked number still needs that distinction. An `integer` type (§6 Q1) would
-    give the compiler a real int64.
+    locked number still needs that distinction. Because a number already
+    records whether it is an exact integer, a compiler can still take an int64
+    fast path with an overflow check (§6 Q1).
   - **Rule 3 keeps a tag.** Absence needs one even on a locked variable,
     like a nullable column. It costs a bit, not a dispatch.
 
@@ -119,17 +120,15 @@ the differential oracle for any backend.
 
 ## 6. Open questions
 
-1. **Is `integer` a type?** I recommend yes, as a **lock, not a new value
-   kind**. The value is still a `number`, and the lock adds one rule: the
-   number must be whole. `"42"` converts. `2.5` and `"2.5"` are refused, as in
-   a G-SQL integer column (the "integers stay strict" ruling). Where an
-   unlocked number would degrade to a float on overflow, an integer refuses.
-   No sized types (`i8`, `u16`, and so on): gBASIC is a business language,
-   not a systems one. The reason for the change from "number suffices" (said
-   before G-SQL) is that there was nowhere to say *whole* until a lock
-   existed. Counts, quantities, years and IDs are whole as a business rule,
-   and G-SQL already enforces that. Code generation also gets a real int64.
-   Discussed 2026-11-03; awaiting Matthew's ruling.
+1. **Is `integer` a type? Not in the first version.** This was settled
+   before G-SQL: `number` is exact for integers, so gBASIC needs no integer
+   type. Locks bring one new fact, a place to say *whole*, but the case is
+   modest. It would add input validation that mirrors a G-SQL integer column,
+   and one more name to remember. The code-generation argument is weaker than
+   §5 first put it: a number already records whether it is an exact integer,
+   so a compiler can take an int64 fast path with an overflow check without
+   being told. An `integer` lock is purely additive, so it can be added later
+   if real programs keep checking for whole numbers by hand. (2026-11-03)
 2. **Should a parameter lock refuse or convert?** Assignment converts, so
    `f("42")` into `a:number` would convert too. The alternative is to refuse
    at the call, which is stricter and closer to the languages the spelling
