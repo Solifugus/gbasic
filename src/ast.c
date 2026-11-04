@@ -84,6 +84,10 @@ static AstNameList name_list_push(AstNameList list, char *name, AstExpr *dflt) {
     list.defaults = xrealloc(list.defaults, sizeof(AstExpr *) * (list.count + 1));
     list.items[list.count] = name;
     list.defaults[list.count] = dflt;
+    if (list.locks) {
+        list.locks = xrealloc(list.locks, sizeof(AstTypeLock) * (list.count + 1));
+        list.locks[list.count] = ast_type_lock_none();
+    }
     list.count++;
     if (!dflt) {
         /* `required` is the count of leading parameters with no default. A
@@ -98,6 +102,20 @@ static AstNameList name_list_push(AstNameList list, char *name, AstExpr *dflt) {
 
 AstNameList ast_name_list_append(AstNameList list, char *name) {
     return name_list_push(list, name, NULL);
+}
+
+/* Lock the parameter just appended. The lock array is created on the first
+ * lock, so a list with none -- every list but a typed function's -- carries
+ * NULL and costs nothing. */
+AstNameList ast_name_list_lock_last(AstNameList list, AstTypeLock lock) {
+    if (!list.locks) {
+        list.locks = xmalloc(sizeof(AstTypeLock) * list.count);
+        for (size_t i = 0; i < list.count; i++) {
+            list.locks[i] = ast_type_lock_none();
+        }
+    }
+    list.locks[list.count - 1] = lock;
+    return list;
 }
 
 AstNameList ast_name_list_append_default(AstNameList list, char *name,
@@ -394,6 +412,7 @@ AstStmt *ast_function(char *name, AstNameList params, AstStmtList body) {
     stmt->as.function.field = NULL;
     stmt->as.function.source_path = NULL;   /* stamped at registration, see ast.h */
     stmt->as.function.library = NULL;       /* likewise */
+    stmt->as.function.returns = ast_type_lock_none();
     /* A dotted name (`function obj.method()`) is the define-and-attach sugar: an
      * executable statement, not a hoisted declaration (first_class_functions_design
      * §6-7). Split it now; the internal registered name is generated lazily at
@@ -414,6 +433,12 @@ AstStmt *ast_function(char *name, AstNameList params, AstStmtList body) {
     } else {
         stmt->as.function.name = name;
     }
+    return stmt;
+}
+
+AstStmt *ast_function_returning(char *name, AstNameList params, AstTypeLock returns, AstStmtList body) {
+    AstStmt *stmt = ast_function(name, params, body);
+    stmt->as.function.returns = returns;
     return stmt;
 }
 
@@ -1169,9 +1194,21 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         dump_indent(indent + 1);
         printf("Parameters");
         for (size_t i = 0; i < stmt->as.function.params.count; i++) {
-            printf(" %s", stmt->as.function.params.items[i]);
+            const AstTypeLock *lock = stmt->as.function.params.locks
+                ? &stmt->as.function.params.locks[i] : NULL;
+            if (lock && lock->name) {
+                printf(lock->arg ? " %s:%s(%s)" : " %s:%s", stmt->as.function.params.items[i],
+                       lock->name, lock->arg);
+            } else {
+                printf(" %s", stmt->as.function.params.items[i]);
+            }
         }
         printf("\n");
+        if (stmt->as.function.returns.name) {
+            dump_indent(indent + 1);
+            printf(stmt->as.function.returns.arg ? "Returns %s(%s)\n" : "Returns %s\n",
+                   stmt->as.function.returns.name, stmt->as.function.returns.arg);
+        }
         dump_indent(indent + 1);
         printf("Body\n");
         for (size_t i = 0; i < stmt->as.function.body.count; i++) {
@@ -1525,6 +1562,7 @@ static void free_stmt(AstStmt *stmt) {
         free(stmt->as.function.source_path);
         free(stmt->as.function.library);
         ast_free_name_list(stmt->as.function.params);
+        ast_type_lock_free(stmt->as.function.returns);
         ast_free_program(stmt->as.function.body);
         break;
     case AST_STMT_RETURN:
@@ -1737,8 +1775,14 @@ void ast_free_name_list(AstNameList list) {
             free_expr(list.defaults[i]);
         }
     }
+    if (list.locks) {
+        for (size_t i = 0; i < list.count; i++) {
+            ast_type_lock_free(list.locks[i]);
+        }
+    }
     free(list.items);
     free(list.defaults);
+    free(list.locks);
 }
 
 void ast_free_record_field_list(AstRecordFieldList list) {

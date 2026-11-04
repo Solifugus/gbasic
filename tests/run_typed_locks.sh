@@ -12,6 +12,11 @@
 #      `u += "1"` is 421), so a lock that silently did nothing is a mismatch.
 #      Its stderr must be exactly the one 2122 warning the unlocked control
 #      raises: the locked comparisons beside it must not warn.
+#   1b. PARAMETERS AND RETURN TYPES -- tests/typed_function_test.bas, the same
+#      shape: `function f(a:number)` converts each argument (and default) and
+#      refuses at the call; `function f(...):number` converts every `return`
+#      and refuses at the return. A modifier used inside a typed function
+#      keeps its own return.
 #   2. PARSE-TIME REFUSALS -- a name that is not a data type is refused before
 #      anything runs, and a foreign spelling (int, str, bool, USD) is answered
 #      with the gBASIC one. Exact messages, nonzero exit, no output.
@@ -60,6 +65,23 @@ else
     status=1
 fi
 
+# --- Tier 1b: parameters and return types -----------------------------------
+if timeout 120 ./gbasic tests/typed_function_test.bas >"$work/fout" 2>"$work/ferr" </dev/null; then
+    checks=$(sed -n 's/^checks: //p' "$work/fout")
+    if grep -q '^mismatches: 0$' "$work/fout" && [ "${checks:-0}" -ge 19 ] && [ ! -s "$work/ferr" ]; then
+        printf 'PASS tests/typed_function_test.bas (%s checks)\n' "$checks"
+    else
+        printf 'FAIL tests/typed_function_test.bas -- parameter or return types moved\n'
+        grep -E '^MISMATCH|^checks|^mismatches' "$work/fout"
+        cat "$work/ferr"
+        status=1
+    fi
+else
+    printf 'FAIL tests/typed_function_test.bas (exit)\n'
+    cat "$work/ferr"
+    status=1
+fi
+
 # --- Tier 2: parse-time refusals ----------------------------------------------
 refuse() {
     local src=$1 want=$2
@@ -71,7 +93,7 @@ refuse() {
         printf 'FAIL %s -- refused, but something ran first\n' "$src"
         status=1
     elif grep -qF "$want" "$work/p.err"; then
-        printf 'PASS %-22s refused: %s\n' "$src" "$want"
+        printf 'PASS %-22s refused: %s\n' "${src%%$'\n'*}" "$want"
     else
         printf 'FAIL %s -- wanted "%s", got:\n' "$src" "$want"
         cat "$work/p.err"
@@ -90,6 +112,29 @@ refuse 'x:number(2) = 1'    "syntax error"
 refuse 'x:date(ISO) = 1'    "date takes no argument; only money does, as in money(USD)"
 refuse 'x:array = 1'        "'array' cannot be a lock: a lock is for a data type"
 refuse 'x:trimmed = 1'      "A lens such as {trimmed} is written in braces"
+refuse 'function f(a:int)
+end function'                "p.bas:1:14: 'int' is not a gBASIC type; write a:number"
+refuse 'function f(a, b:bool = true)
+end function'                "'bool' is not a gBASIC type; write b:boolean"
+refuse 'function f():float
+    return 1
+end function'                "'float' is not a gBASIC type; write f(...):number"
+refuse 'function o.m():USD
+    return 1
+end function'                "write o.m(...):money(USD)"
+
+# A parameter lock on anything whose caller is the runtime is refused by name,
+# as a default is: the clause, the command line or the URL supplies the value.
+printf 'modifier shout(n:number) for assign\n    return value\nend modifier\nprint "ran"\n' >"$work/m.bas"
+if ! ./gbasic "$work/m.bas" >"$work/m.out" 2>"$work/m.err" </dev/null \
+   && grep -qF "modifier shout: parameter 'n' cannot be locked to a type -- only function parameters can" "$work/m.err" \
+   && [ ! -s "$work/m.out" ]; then
+    printf 'PASS a modifier parameter cannot be locked, and says why\n'
+else
+    printf 'FAIL a locked modifier parameter should be refused at load:\n'
+    cat "$work/m.out" "$work/m.err"
+    status=1
+fi
 
 # A space after the colon is the same lock (Python's style puts one there), and
 # a label is still a label.
@@ -115,9 +160,10 @@ else
 fi
 
 # --- Tier 4: --ast ------------------------------------------------------------
-printf 'm:money(USD) = 1\nn:number = 2\n' >"$work/a.bas"
+printf 'm:money(USD) = 1\nn:number = 2\nfunction f(a, b:money(EUR)):date\n    return 1\nend function\n' >"$work/a.bas"
 ./gbasic --ast "$work/a.bas" >"$work/a.out" 2>&1
-if grep -q 'Assign lock(money(USD))' "$work/a.out" && grep -q 'Assign lock(number)' "$work/a.out"; then
+if grep -q 'Assign lock(money(USD))' "$work/a.out" && grep -q 'Assign lock(number)' "$work/a.out" \
+   && grep -q 'Parameters a b:money(EUR)$' "$work/a.out" && grep -q 'Returns date$' "$work/a.out"; then
     printf 'PASS --ast shows each lock\n'
 else
     printf 'FAIL --ast does not show the lock:\n'
@@ -133,6 +179,14 @@ if vg_available; then
     else
         printf 'FAIL valgrind tests/typed_lock_test.bas\n'
         tail -30 "$work/vg.err"
+        status=1
+    fi
+    if vg_run ./gbasic tests/typed_function_test.bas >"$work/vgf.out" 2>"$work/vgf.err" </dev/null \
+       && grep -q '^mismatches: 0$' "$work/vgf.out"; then
+        printf 'PASS valgrind tests/typed_function_test.bas\n'
+    else
+        printf 'FAIL valgrind tests/typed_function_test.bas\n'
+        tail -30 "$work/vgf.err"
         status=1
     fi
 else

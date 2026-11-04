@@ -1,7 +1,7 @@
 # Typed variables: `x:number = ...`
 
-Status: **variables shipped 2026-11-03** (tests/run_typed_locks.sh); parameters
-and return types next. Proposed by Matthew 2026-11-03, and every
+Status: **shipped 2026-11-03**: variables, parameters and return types
+(tests/run_typed_locks.sh). Proposed by Matthew 2026-11-03, and every
 question was ruled the same day (§2). §6 keeps the record of how each was
 settled. Build order: plain variables, then parameters, then return types.
 

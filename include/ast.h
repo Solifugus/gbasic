@@ -123,6 +123,18 @@ typedef struct {
     size_t count;
 } AstConsiderBranchList;
 
+/* A TYPE LOCK: the `number` in `x:number = e` (docs/typed_variables_design.md).
+ * `name` is the type as written (`number`, `text`, `money`), `arg` the one
+ * argument `money(USD)` takes, NULL otherwise. The parser has already refused
+ * a name that is not a data type, so every lock that reaches the evaluator
+ * names one. `name` NULL means no lock. */
+typedef struct {
+    char *name;
+    char *arg;
+    int line;
+    int column;
+} AstTypeLock;
+
 /* A parameter list. `defaults[i]` is NULL when the parameter is required, and
  * otherwise a LITERAL expression -- number, string, boolean, `nothing` or
  * `unknown`, optionally signed. Literals only, deliberately: an arbitrary
@@ -135,6 +147,10 @@ typedef struct {
     AstExpr **defaults;      /* NULL entry = required parameter */
     size_t count;
     size_t required;         /* parameters before the first default */
+    /* `function f(a:number)`: a type lock per parameter, or NULL when no
+     * parameter in the list has one (docs/typed_variables_design.md). Only a
+     * function honours them; the other users of a parameter list refuse one. */
+    AstTypeLock *locks;
 } AstNameList;
 
 /* PLAT-WEB-5: one entry in a `server` declarative block. The grammar is
@@ -250,17 +266,7 @@ typedef struct {
     AstNameList params;
 } AstModifierSignature;
 
-/* A TYPE LOCK: the `number` in `x:number = e` (docs/typed_variables_design.md).
- * `name` is the type as written (`number`, `text`, `money`), `arg` the one
- * argument `money(USD)` takes, NULL otherwise. The parser has already refused
- * a name that is not a data type, so every lock that reaches the evaluator
- * names one. `name` NULL means no lock. */
-typedef struct {
-    char *name;
-    char *arg;
-    int line;
-    int column;
-} AstTypeLock;
+
 
 typedef struct {
     int years;
@@ -432,6 +438,10 @@ struct AstStmt {
              * so when the library is declared in the SAME FILE as the program
              * that loads it -- it has no separate path to match on. */
             char *library;
+            /* `function f(...):number`: every `return` with a value converts
+             * into the type or is refused. Unset (name NULL) for a function
+             * with no declared return type. */
+            AstTypeLock returns;
         } function;
         AstExpr *return_expr;
         char *label;
@@ -534,6 +544,7 @@ AstConsiderBranchList ast_consider_branch_list_empty(void);
 AstConsiderBranchList ast_consider_branch_list_append(AstConsiderBranchList list, AstExpr *match, AstStmtList body);
 AstNameList ast_name_list_empty(void);
 AstNameList ast_name_list_append(AstNameList list, char *name);
+AstNameList ast_name_list_lock_last(AstNameList list, AstTypeLock lock);
 AstNameList ast_name_list_append_default(AstNameList list, char *name,
                                          AstExpr *default_value);
 
@@ -618,6 +629,7 @@ AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
                        AstExpr *step, AstStmtList body);
 AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition);
 AstStmt *ast_function(char *name, AstNameList params, AstStmtList body);
+AstStmt *ast_function_returning(char *name, AstNameList params, AstTypeLock returns, AstStmtList body);
 AstStmt *ast_return(AstExpr *expr);
 AstStmt *ast_label(char *name);
 AstStmt *ast_goto(char *name);

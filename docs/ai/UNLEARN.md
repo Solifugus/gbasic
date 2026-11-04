@@ -487,6 +487,8 @@ day — so assume you will hit them too.
   gBASIC's: `number` (not `int`/`float`), `string` or `text` (not `str`),
   `boolean` (not `bool`), `money(USD)`, `date`, `time`, `datetime`,
   `duration`, `file`, `dir`. A lens like `{trimmed}` stays in braces.
+  Parameters and returns take the same types: `function f(a:number):string`
+  converts each argument and every `return`.
 
 - **Text that is no number is never equal to a number** (0.1.0). `0 = "stop"`
   is **false**, and `1 > "stop"` **raises**. Text that IS a number is no

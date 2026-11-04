@@ -1264,6 +1264,27 @@ function_statement
         /* Dotted name: define-and-attach sugar. ast_function splits obj.method. */
         $$ = ast_function($2, $4, $7);
       }
+    /* `function f(...):number`, an optional return type: every `return` with a
+     * value converts into it or is refused (docs/typed_variables_design.md
+     * rule 9). Both function forms; zero conflicts. */
+    | FUNCTION IDENT LPAREN parameter_list_opt RPAREN COLON type_lock NEWLINE statement_list END FUNCTION NEWLINE {
+        char who[160];
+        snprintf(who, sizeof who, "%s(...)", $2);
+        if (!type_lock_check(ctx, who, $7.name, $7.arg, @7.first_line, @7.first_column,
+                             @7.last_line, @7.last_column)) {
+            YYERROR;
+        }
+        $$ = ast_function_returning($2, $4, $7, $9);
+      }
+    | FUNCTION QUALIFIED_IDENT LPAREN parameter_list_opt RPAREN COLON type_lock NEWLINE statement_list END FUNCTION NEWLINE {
+        char who[160];
+        snprintf(who, sizeof who, "%s(...)", $2);
+        if (!type_lock_check(ctx, who, $7.name, $7.arg, @7.first_line, @7.first_column,
+                             @7.last_line, @7.last_column)) {
+            YYERROR;
+        }
+        $$ = ast_function_returning($2, $4, $7, $9);
+      }
     ;
 
 modifier_statement
@@ -2050,6 +2071,37 @@ parameter_list
         $$ = ast_name_list_append_default(ast_name_list_empty(), $1, $3);
       }
     | parameter_list COMMA IDENT { $$ = ast_name_list_append($1, $3); }
+    /* `function f(a:number)`: a parameter's own lock. Measured at zero
+     * conflicts; the evaluator refuses one on a modifier, program block or
+     * server handler, whose caller is the runtime. */
+    | IDENT COLON type_lock {
+        if (!type_lock_check(ctx, $1, $3.name, $3.arg, @3.first_line, @3.first_column,
+                             @3.last_line, @3.last_column)) {
+            YYERROR;
+        }
+        $$ = ast_name_list_lock_last(ast_name_list_append(ast_name_list_empty(), $1), $3);
+      }
+    | IDENT COLON type_lock OP_EQ parameter_default {
+        if (!type_lock_check(ctx, $1, $3.name, $3.arg, @3.first_line, @3.first_column,
+                             @3.last_line, @3.last_column)) {
+            YYERROR;
+        }
+        $$ = ast_name_list_lock_last(ast_name_list_append_default(ast_name_list_empty(), $1, $5), $3);
+      }
+    | parameter_list COMMA IDENT COLON type_lock {
+        if (!type_lock_check(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
+                             @5.last_line, @5.last_column)) {
+            YYERROR;
+        }
+        $$ = ast_name_list_lock_last(ast_name_list_append($1, $3), $5);
+      }
+    | parameter_list COMMA IDENT COLON type_lock OP_EQ parameter_default {
+        if (!type_lock_check(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
+                             @5.last_line, @5.last_column)) {
+            YYERROR;
+        }
+        $$ = ast_name_list_lock_last(ast_name_list_append_default($1, $3, $7), $5);
+      }
     | parameter_list COMMA IDENT OP_EQ parameter_default {
         $$ = ast_name_list_append_default($1, $3, $5);
       }

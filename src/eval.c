@@ -706,6 +706,7 @@ typedef struct {
     unsigned short currency_code;   /* and its numeric one */
     char spelled[24];    /* the type as written: "number", "text", "money(USD)" */
     int line;            /* where the lock was declared */
+    int is_return;       /* a function's return type, not a variable's lock */
 } TypeLock;
 
 typedef struct {
@@ -7217,6 +7218,14 @@ static Value duration_field_value(Duration d, const char *name) {
 static Value eval_expr(AstExpr *expr);
 static Value eval_comparison(AstExpr *expr, Value left, Value right);
 static Value lock_convert(const TypeLock *lock, const char *var, Value value);
+/* The function whose body is running, for a `return` to find its declared
+ * return type. Saved and restored by invoke_function, as current_env is, and
+ * cleared around a modifier body, the other body that can `return` while a
+ * function runs, so a modifier used inside a typed function does not take its
+ * return type. (A watcher body drains only at the top level, where no function
+ * is running.) */
+static AstStmt *current_function_stmt = NULL;
+static int type_lock_resolve(AstTypeLock a, TypeLock *out);
 static EvalResult eval_stmt(AstStmt *stmt);
 static EvalResult eval_stmt_list(AstStmtList statements);
 
@@ -7757,6 +7766,18 @@ static int params_defaults_are_trailing(AstNameList params, const char *what,
  * believes is in effect. */
 static int params_reject_defaults(AstNameList params, const char *what,
                                   const char *name, int line, int column) {
+    for (size_t i = 0; params.locks && i < params.count; i++) {
+        if (params.locks[i].name) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "%s %s: parameter '%s' cannot be locked to a type -- only"
+                     " function parameters can",
+                     what, name ? name : "?", params.items[i]);
+            runtime_error_raise_at(message, 1003, "invalid function call",
+                                   line, column);
+            return 0;
+        }
+    }
     if (!params.defaults) {
         return 1;
     }
@@ -12830,8 +12851,43 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     const char *previous_function_library = current_function_library;
     current_function_library = stmt->as.function.library;
 
+    /* A PARAMETER'S LOCK converts its argument, as an assignment would
+     * (docs/typed_variables_design.md rule 8), and stays with the parameter for
+     * the body: `a = "5"` inside `function f(a:number)` converts too. A refusal
+     * is raised here, before the body's frame exists, so it lands at the CALL,
+     * where the wrong value was passed. */
+    const AstTypeLock *param_locks = stmt->as.function.params.locks;
+    int bind_failed = 0;
     for (size_t i = 0; i < argc; i++) {
+        if (bind_failed) {
+            value_free(args[i]);
+            continue;
+        }
+        if (param_locks && param_locks[i].name) {
+            TypeLock lock;
+            int before_bind = error_generation;
+            Value v = type_lock_resolve(param_locks[i], &lock)
+                ? lock_convert(&lock, stmt->as.function.params.items[i], args[i])
+                : (value_free(args[i]), value_null());
+            if (error_generation != before_bind) {
+                value_free(v);
+                bind_failed = 1;
+                continue;
+            }
+            env_set(stmt->as.function.params.items[i], v);
+            env_find_in_frame(current_env, stmt->as.function.params.items[i])->lock = lock;
+            continue;
+        }
         env_set(stmt->as.function.params.items[i], args[i]);
+    }
+    if (bind_failed) {
+        free(args);
+        current_env = previous_env;
+        current_this = previous_this;
+        current_import_path = previous_import_path;
+        current_function_library = previous_function_library;
+        env_clear(&local_env);
+        return value_null();
     }
 
     /* Fill the optional tail. Doing it HERE, rather than in each caller, is
@@ -12846,8 +12902,30 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     for (size_t i = argc; i < stmt->as.function.params.count; i++) {
         AstExpr *dflt = stmt->as.function.params.defaults
             ? stmt->as.function.params.defaults[i] : NULL;
-        env_set(stmt->as.function.params.items[i],
-                dflt ? eval_expr(dflt) : value_null());
+        Value v = dflt ? eval_expr(dflt) : value_null();
+        if (param_locks && param_locks[i].name) {
+            /* A default converts as an argument does, so `n:number = "10"`
+             * holds the number 10. */
+            TypeLock lock;
+            int before_bind = error_generation;
+            v = type_lock_resolve(param_locks[i], &lock)
+                ? lock_convert(&lock, stmt->as.function.params.items[i], v)
+                : (value_free(v), value_null());
+            if (error_generation != before_bind) {
+                value_free(v);
+                free(args);
+                current_env = previous_env;
+                current_this = previous_this;
+                current_import_path = previous_import_path;
+                current_function_library = previous_function_library;
+                env_clear(&local_env);
+                return value_null();
+            }
+            env_set(stmt->as.function.params.items[i], v);
+            env_find_in_frame(current_env, stmt->as.function.params.items[i])->lock = lock;
+            continue;
+        }
+        env_set(stmt->as.function.params.items[i], v);
     }
     free(args);
 
@@ -12884,6 +12962,8 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     call_stack_depth++;
 
     function_depth++;
+    AstStmt *previous_function_stmt = current_function_stmt;
+    current_function_stmt = stmt;
     size_t pc = 0;
     size_t *gosub_stack = NULL;
     size_t gosub_count = 0;
@@ -12980,6 +13060,7 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     }
     free(gosub_stack);
     function_depth--;
+    current_function_stmt = previous_function_stmt;
 
     /* PLAT-ERR rule 2: pending errors do not survive the frame. Returning with
      * an unacknowledged error converts the return into a re-raise at the call
@@ -37371,7 +37452,10 @@ static Value eval_assign_modifier(AstModifierUse use, Value value) {
     const char *previous_function_library = current_function_library;
     current_function_library = modifier->library;
 
+    AstStmt *modifier_function_stmt = current_function_stmt;
+    current_function_stmt = NULL;
     EvalResult result = eval_stmt_list(modifier->stmt->as.modifier.body);
+    current_function_stmt = modifier_function_stmt;
     current_function_library = previous_function_library;
     current_env = previous_env;
     env_clear(&local_env);
@@ -37420,7 +37504,10 @@ static Value eval_compare_modifier(AstModifierUse use, const char *op, Value lef
     const char *previous_function_library = current_function_library;
     current_function_library = modifier->library;
 
+    AstStmt *modifier_function_stmt = current_function_stmt;
+    current_function_stmt = NULL;
     EvalResult result = eval_stmt_list(modifier->stmt->as.modifier.body);
+    current_function_stmt = modifier_function_stmt;
     current_function_library = previous_function_library;
     current_env = previous_env;
     env_clear(&local_env);
@@ -39578,9 +39665,15 @@ static int type_lock_resolve(AstTypeLock a, TypeLock *out) {
  * cause, when a modifier gave one, follows it. */
 static void lock_refuse(const TypeLock *lock, const char *var, const char *cause) {
     char message[512];
-    snprintf(message, sizeof message,
-             "%s is locked to %s by %s:%s at line %d, and this value does not convert: %s",
-             var, lock_kind_word(lock->kind), var, lock->spelled, lock->line, cause);
+    if (lock->is_return) {
+        snprintf(message, sizeof message,
+                 "%s returns %s, declared by %s(...):%s at line %d, and this value does not convert: %s",
+                 var, lock_kind_word(lock->kind), var, lock->spelled, lock->line, cause);
+    } else {
+        snprintf(message, sizeof message,
+                 "%s is locked to %s by %s:%s at line %d, and this value does not convert: %s",
+                 var, lock_kind_word(lock->kind), var, lock->spelled, lock->line, cause);
+    }
     if (current_error.active && raise_in_flight) {
         /* The modifier raised already; say whose lock refused, then its cause. */
         free(current_error.message);
@@ -43164,6 +43257,27 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
+        }
+        /* A DECLARED RETURN TYPE converts what this `return` hands back, or
+         * refuses it HERE, at the line that says it, rather than three calls
+         * later where the value breaks something. `nothing`, `unknown`, a
+         * bare `return` and falling off the end are all allowed. */
+        if (stmt->as.return_expr && current_function_stmt &&
+            current_function_stmt->as.function.returns.name) {
+            TypeLock lock;
+            if (type_lock_resolve(current_function_stmt->as.function.returns, &lock)) {
+                lock.is_return = 1;
+                value = lock_convert(&lock, current_function_stmt->as.function.name, value);
+            } else {
+                value_free(value);
+                value = value_null();
+            }
+            if (error_generation != before_error) {
+                value_free(value);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
         }
         current_line = previous_line;
         current_column = previous_column;

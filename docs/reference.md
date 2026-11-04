@@ -1410,6 +1410,29 @@ needs a rate.
   `x:int` gives `'int' is not a gBASIC type; write x:number`, and likewise
   `str`, `bool`, `float`, `timestamp` and a bare `x:USD`.
 
+**A parameter can carry its own lock, and a function can declare its return
+type:**
+
+```basic
+function line_total(qty:number, price:money(USD) = "0.00"):money(USD)
+    return price * qty
+end function
+
+print line_total("3", "1.25")     ' 3.75: each argument converts
+```
+
+- **An argument converts into its parameter** as an assignment would, and
+  so does a default. A refusal is raised **at the call**, where the wrong
+  value was passed. The parameter stays locked in the body.
+- **Every `return` with a value converts into the return type**, and a
+  refusal is raised **at that `return`**: `f returns number, declared by
+  f(...):number at line 3, and this value does not convert: ...`. `nothing`,
+  `unknown`, a bare `return` and falling off the end are all allowed. Both
+  `function f(...)` and `function obj.method(...)` take one.
+- **Only a function's parameters can be locked.** A modifier, `program`
+  block or server handler parameter is supplied by the runtime, so a lock
+  there is refused at load, as a default is.
+
 ## Modifiers
 
 Modifier use:

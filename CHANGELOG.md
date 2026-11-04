@@ -32,7 +32,13 @@ naming the lock. `x:text = ...` relocks. The types are `number`, `string`/`text`
 - `x:int`, `x:str`, `x:bool` and `x:USD` are parse errors naming the gBASIC
   spelling.
 
-Nothing changes for a variable without a lock. New suite:
+- **Parameters and return types**: `function f(qty:number):money(USD)`. Each
+  argument and default converts into its parameter, refused at the call; every
+  `return` with a value converts into the return type, refused at the return.
+  `nothing`, `unknown` and falling off the end are allowed. A lock on a
+  modifier, program or server handler parameter is refused at load.
+
+Nothing changes for a variable or function without a type. New suite:
 `tests/run_typed_locks.sh`.
 
 ### `csv`: delimited files read correctly, and told where they went wrong
