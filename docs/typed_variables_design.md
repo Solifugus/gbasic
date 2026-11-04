@@ -1,7 +1,8 @@
 # Typed variables: `x:number = ...`
 
-Status: **proposal, not built.** Proposed by Matthew 2026-11-03. The rulings in
-§2 were made the same day; §6 holds the questions still open.
+Status: **ruled, not built.** Proposed by Matthew 2026-11-03, and every
+question was ruled the same day (§2). §6 keeps the record of how each was
+settled. Build order: plain variables, then parameters, then return types.
 
 ## 1. What it is
 
@@ -56,6 +57,17 @@ would be silent. Locking the type makes the familiar reading the true one.
 6. **Record fields and loop variables are out of the first version**
    (`r.amount:money(USD) = ...`, `for each x:number in ...`). They will be
    decided once plain variables are in use.
+
+7. **No `integer` type** in the first version (§6 Q1). This stands from
+   before G-SQL; an `integer` lock can be added later.
+8. **A parameter lock converts**, as an assignment does (§6 Q2).
+9. **An optional return type**, `function f(a:number):number` (§6 Q3). Every
+   `return` converts into the type or refuses, naming the declaration.
+   `nothing` and `unknown` are allowed, and so is falling off the end (which
+   returns `nothing`). With no return type, a function behaves as it does
+   today.
+10. **An actor receives values, not locks** (§6 Q5), which follows from
+    rule 4.
 
 ## 3. Grammar, measured
 
@@ -118,7 +130,7 @@ ways, and it is worth being clear about which:
 The tree-walker's behaviour stays the specification, and the golden corpus is
 the differential oracle for any backend.
 
-## 6. Open questions
+## 6. Questions, and how they were settled
 
 1. **Is `integer` a type? Not in the first version.** This was settled
    before G-SQL: `number` is exact for integers, so gBASIC needs no integer
@@ -132,16 +144,18 @@ the differential oracle for any backend.
 2. **Should a parameter lock refuse or convert?** Assignment converts, so
    `f("42")` into `a:number` would convert too. The alternative is to refuse
    at the call, which is stricter and closer to the languages the spelling
-   comes from. I recommend converting, for consistency with rule 1.
+   comes from. I recommend converting, for consistency with rule 1. **Ruled: convert,
+   2026-11-03.**
 3. **An optional return type**, `function f(a:number):number`. This gives
    **0 conflicts**, measured on the scratch grammar for the plain `function
-   NAME(...)` form; the `export` and dotted forms are not measured yet. The
+   NAME(...)` form and the dotted `function obj.method(...)` form, the only
+   two function forms the grammar has (`export` applies to modifiers only). The
    same rule as a lock applies: `return` converts into the type or refuses,
    naming the declaration. With no return type, a function behaves as it does
    today. I recommend it, for three reasons: it tells the caller (and a model
    reading the signature) what comes back, Studio can show it on hover, and
-   it carries a type across a call for code generation. Awaiting Matthew's
-   ruling.
+   it carries a type across a call for code generation. **Ruled yes, 2026-11-03.**
 4. **What does `--ast`, `source_outline` and the LSP show for a lock?**
-   Studio's hoisting rule and hover are consumers.
-5. **Actors.** A value sent to an actor carries no lock, by rule 4. Confirm.
+   Studio's hoisting rule and hover are consumers. This is a build detail,
+   decided when the AST node is designed.
+5. **Actors.** A value sent to an actor carries no lock, by rule 4. **Ruled, 2026-11-03.**
