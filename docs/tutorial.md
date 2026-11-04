@@ -139,6 +139,35 @@ due  += 3 days      ' dates and durations
 
 `-=`, `*=` and `/=` follow the same rule.
 
+### Locking a variable to a type
+
+A colon and a type after the name **lock** the variable. The value converts
+into the type now, and on every later assignment:
+
+```basic
+qty:number = "42"     ' text from a form, a file, a command line
+print(qty + 1)        ' 43, not "421"
+qty = "7"
+print(qty * 2)        ' 14: still a number
+```
+
+A value that cannot convert is refused, and the message names the line that
+locked the variable. To change the type, say so with a new lock:
+`qty:text = "many"`. The types are `number`, `string` (or `text`), `boolean`,
+`date`, `time`, `datetime`, `duration`, `money(USD)`, `file` and `dir`, and a
+locked variable may still hold `nothing`. A variable without a lock behaves as
+before. Functions take the same types for their parameters and their result:
+
+```basic
+function line_total(qty:number, price:money(USD)):money(USD)
+    return price * qty
+end function
+
+print(line_total("3", "1.25"))     ' 3.75
+```
+
+See [Typed variables](reference.md#typed-variables) for the full rules.
+
 Identifiers are case-sensitive. Strings use double quotes and may contain literal
 newlines:
 

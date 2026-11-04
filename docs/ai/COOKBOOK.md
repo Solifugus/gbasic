@@ -9,6 +9,15 @@ for error handling, `ERRORS.md`.
 
 ## Language constructs
 
+- **Convert at the boundary with a type lock** *(added 2026-11-03)* — where
+  text comes in (a form field, a CSV cell, a query string, a parameter), write
+  `qty:number = form.qty` rather than `qty = number(form.qty)`. The lock keeps
+  converting on every later `=`, refuses what does not convert (naming the
+  lock), and makes `qty = "3"` compare as numbers. Parameters and returns take
+  the same types: `function line_total(qty:number, price:money(USD)):money(USD)`.
+  The types are gBASIC's (`number`, `string`/`text`, `boolean`, `date`, `time`,
+  `datetime`, `duration`, `money(USD)`, `file`, `dir`), never `int` or `str`.
+  → `tests/typed_lock_test.bas`, `tests/typed_function_test.bas`
 - **Branch** — `if/else` blocks; one inline statement may follow `then`/`else`.
   → `examples/if_else_test.bas`, `examples/inline_if_test.bas`
 - **Chain conditions** — `else if`, closed by a SINGLE `end if` however many

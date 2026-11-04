@@ -133,3 +133,12 @@ Ruled: **revert, and warn.** Built:
   number-versus-text pair (10 failures: the silent controls), never warning,
   and the routes warning (`unique`, `contains`, `find`, `remove_value`).
   `tests/equality_scalar_test.bas`'s `1 = "1"` pair is back as it was.
+
+## 8. Locks give text a kind to be read as (2026-11-03)
+
+§7 kept `1 = "1"` false because a gBASIC value declares no kind for the text
+to be read as. Typed variables (docs/typed_variables_design.md) supply one:
+with `x:number`, `x = "1"` reads the text as a number and is true, as G-SQL does
+for a typed column, and warning 2122 does not fire. A bare value is unchanged:
+`1 = "1"` is still false and still warns.
+
