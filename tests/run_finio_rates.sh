@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # `finio_rates` -- reference and benchmark rates from the institutions that
-# publish them (SOFR, EFFR, OBFR, US Treasury average interest rates).
+# publish them (SOFR, EFFR, OBFR, US Treasury average interest rates, and the
+# ECB's euro foreign exchange reference rates).
 #
 # WHY IT IS IN THE finio FAMILY: finio's subject is that a format is one thing
 # and its INTERPRETATION is another, and that provenance is an axiom because
@@ -33,6 +34,21 @@ if printf '%s' "$out" | grep -q '^mismatches: 0$'; then
     [ "${n:-0}" -ge 20 ] || { printf '  FAIL too few checks ran (%s)\n' "$n"; status=1; }
 else
     printf '  FAIL rates_test\n'
+    printf '%s\n' "$out" | grep -E '^MISMATCH|^runtime error|^parse error' | head -6
+    status=1
+fi
+
+# EXCHANGE RATES (added 2026-11-03): the ECB's euro reference rates, published
+# and derived. Expected rates were computed with Python's decimal module over
+# the same recordings, not by this library.
+printf 'TIER fx\n'
+out="$(timeout 300 ./gbasic tests/finio_rates/fx_test.bas 2>&1)"
+if printf '%s' "$out" | grep -q '^mismatches: 0$'; then
+    n="$(printf '%s' "$out" | sed -n 's/^checks: //p')"
+    printf '  ok   %s checks, 0 mismatches\n' "$n"
+    [ "${n:-0}" -ge 38 ] || { printf '  FAIL too few checks ran (%s)\n' "$n"; status=1; }
+else
+    printf '  FAIL fx_test\n'
     printf '%s\n' "$out" | grep -E '^MISMATCH|^runtime error|^parse error' | head -6
     status=1
 fi

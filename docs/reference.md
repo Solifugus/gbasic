@@ -8260,6 +8260,7 @@ other one is pure gBASIC over the core and works on any build.
 | `finio_camt` | libxml2 |
 | `finio_iso20022` | libxml2 |
 | `finio_pain001` | libxml2 |
+| `finio_rates` | libcurl |
 | `insiders` | libcurl, libsqlite3, libxml2 |
 | `llm` | libcurl |
 | `market` | libcurl |
@@ -10181,8 +10182,9 @@ whole program without needing a call site.
   because a report run for March must see March's rate rather than today's.
   `latest` and `revisions` read a series.
 
-  Four keyless sources: SOFR, EFFR and OBFR from the New York Fed, and US
-  Treasury average interest rates from FiscalData. **Keyless is a promise, not a
+  Five keyless sources: SOFR, EFFR and OBFR from the New York Fed, US
+  Treasury average interest rates from FiscalData, and the ECB's euro exchange
+  reference rates (below). **Keyless is a promise, not a
   coincidence** — a source needing an account stops working when somebody's key
   expires, in a library whose point is that a number can be reproduced years
   later. FRED's 800,000 series need a key and are deliberately absent.
@@ -10198,6 +10200,43 @@ whole program without needing a call site.
   revisions, and `unknown` where it does not — because *"this publisher does not
   say"* and *"this value was not revised"* are different claims, and a consumer
   pricing off the second deserves to know which it has.
+
+  **Exchange rates** *(added 2026-11-03)*: the source `ecb_fx` is the European
+  Central Bank's euro reference rates, about thirty currencies fixed daily at
+  14:15 CET, keyless, with history to 1999. `fetch("ecb_fx", { from: d1, to: d2 })`
+  fetches a **date window** (the last `limit` days without one); never the last
+  N observations, which the ECB answers with each series' last N *whenever they
+  were* (measured: the rouble's March 2022 fix, the drachma's from 2000). The
+  four *indicative* series the ECB stopped in 2020 are left out and named in
+  `excluded`.
+
+  `fx_on(series, from, to, d [, { max_age: 7 days }])` (the options are
+  `default_fx_options()`) gives the rate effective
+  on `d`: the latest fix on or before it that carries both currencies, and no
+  older than `max_age`, so a series that has stopped (the lev, when Bulgaria
+  joined the euro) answers `unknown` within a week rather than for years. The
+  answer is `{ from, to, on, date, age, rate, value, derived, how, via }`.
+
+  **Published and derived rates are labelled.** The ECB publishes euro to a
+  currency (`EUR` to `USD`, 1.1642), and `derived` is `false`. A currency to the
+  euro is the inverse, and between two other currencies it is a cross through
+  the euro; both are `derived: true`, with `how` saying which and `via` holding
+  the published observations, each located in the response. Deriving is sound
+  here because a reference rate is a single middle rate with no buy/sell spread,
+  which is also why `money.rate` still refuses to invert a rate a program records
+  itself. A derived rate is one division written to ten significant figures; the
+  published rates carry four to six.
+
+  `load_fx(series, [{ from: "USD", to: "GBP" }, ...])` records each pair for
+  every publication date with `money.rate`, so `money.convert` can use them, and
+  answers `{ loaded, pairs, skipped }`. A pair is skipped with its reason, never
+  silently, when money does not know a currency (the lev) or the series never
+  carries it. **`money.convert` has no age limit**: a window loaded for January
+  answers for June with January's rate, so load the window the conversions are
+  for, and use `fx_on` where a stale rate must be refused.
+
+  Loading `finio_rates` needs libcurl (its transport, `webclient`), like
+  `market`; the tests replay recorded responses and need no network.
 
   Every observation carries a `finio.location` naming the element it came from.
 

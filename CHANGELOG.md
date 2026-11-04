@@ -16,6 +16,26 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `finio_rates`: the ECB's exchange reference rates, published and derived
+
+- **`fetch("ecb_fx", { from:, to: })`** fetches the European Central Bank's
+  euro reference rates (about thirty currencies, daily, keyless) for a date
+  window. The four "indicative" series the ECB stopped in 2020 are excluded and
+  named.
+- **`fx_on(series, from, to, d)`** gives the rate effective on a date, no
+  older than a week by default (`max_age`), so a series that has stopped
+  answers `unknown` rather than its last value. Published rates (EUR to a
+  currency) are `derived: false`; the inverse and crosses through the euro are
+  `derived: true`, with `how` and the published observations in `via`.
+- **`load_fx(series, pairs)`** records the pairs with `money.rate` so
+  `money.convert` uses them, and reports each pair loaded or skipped with its
+  reason.
+- **Fixed: a live `finio_rates.fetch` had never worked.** The library did not
+  load `webclient`, and called `webclient.get` with a timeout it does not take.
+  The tests replay recordings and never reached the transport; the first run of
+  the live check found both. Loading `finio_rates` now needs libcurl, as
+  `market` does.
+
 ### Typed variables: `x:number = e` locks a variable to a type
 
 Matthew's design, 2026-11-03 (docs/typed_variables_design.md). A name, a colon

@@ -2,8 +2,8 @@
 ' feeds ANSWER, never what they say, since tomorrow's rate is not today's.
 load finio_rates
 program main( args )
-    for each id in [ "nyfed_sofr", "treasury_avg_interest" ]
-        s = finio_rates.fetch(id, { limit: 5 })
+    for each id in [ "nyfed_sofr", "treasury_avg_interest", "ecb_fx" ]
+        s = finio_rates.fetch(id, { limit: 10 })
         if not s.ok then
             error "finio_rates live: " + id + " did not answer"
         end if
