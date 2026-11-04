@@ -281,6 +281,28 @@ AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value) {
     stmt->as.assign.modifier = modifier;
     stmt->as.assign.value = value;
     stmt->as.assign.op = 0;
+    stmt->as.assign.lock = ast_type_lock_none();
+    return stmt;
+}
+
+AstTypeLock ast_type_lock_none(void) {
+    AstTypeLock lock = { NULL, NULL, 0, 0 };
+    return lock;
+}
+
+AstTypeLock ast_type_lock(char *name, char *arg, int line, int column) {
+    AstTypeLock lock = { name, arg, line, column };
+    return lock;
+}
+
+void ast_type_lock_free(AstTypeLock lock) {
+    free(lock.name);
+    free(lock.arg);
+}
+
+AstStmt *ast_assign_locked(AstExpr *target, AstTypeLock lock, AstExpr *value) {
+    AstStmt *stmt = ast_assign(target, ast_modifier_none(), value);
+    stmt->as.assign.lock = lock;
     return stmt;
 }
 
@@ -1043,6 +1065,16 @@ static void dump_stmt(AstStmt *stmt, int indent) {
             for (size_t i = 0; i < stmt->as.assign.modifier.args.count; i++) {
                 dump_expr(stmt->as.assign.modifier.args.items[i], indent + 1);
             }
+        } else if (stmt->as.assign.lock.name) {
+            if (stmt->as.assign.lock.arg) {
+                printf("Assign lock(%s(%s))\n", stmt->as.assign.lock.name,
+                       stmt->as.assign.lock.arg);
+            } else {
+                printf("Assign lock(%s)\n", stmt->as.assign.lock.name);
+            }
+            dump_indent(indent + 1);
+            printf("Target\n");
+            dump_expr(stmt->as.assign.target, indent + 2);
         } else {
             printf("Assign\n");
             dump_indent(indent + 1);
@@ -1447,6 +1479,7 @@ static void free_stmt(AstStmt *stmt) {
     switch (stmt->kind) {
     case AST_STMT_ASSIGN:
         free_expr(stmt->as.assign.target);
+        ast_type_lock_free(stmt->as.assign.lock);
         ast_free_modifier_use(stmt->as.assign.modifier);
         for (size_t i = 0; i < stmt->as.assign.modifier.args.count; i++) {
             free_expr(stmt->as.assign.modifier.args.items[i]);

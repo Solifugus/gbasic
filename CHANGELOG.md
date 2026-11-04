@@ -16,6 +16,25 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Typed variables: `x:number = e` locks a variable to a type
+
+Matthew's design, 2026-11-03 (docs/typed_variables_design.md). A name, a colon
+and a data type lock the variable: every later plain `=` converts into the
+type, as the brace modifier of that name converts, or is refused with a message
+naming the lock. `x:text = ...` relocks. The types are `number`, `string`/`text`,
+`boolean`, `date`, `time`, `datetime`, `duration`, `money(USD)`, `file` and `dir`.
+
+- `nothing` and `unknown` are allowed in a locked variable.
+- `n += "1"` on a locked number is 43: a text operand converts first.
+- A comparison with a locked variable reads text as its type: `x = "1"` is true
+  for `x:number`, with no warning 2122.
+- A loop does not bind a locked variable, except a number lock on a counter.
+- `x:int`, `x:str`, `x:bool` and `x:USD` are parse errors naming the gBASIC
+  spelling.
+
+Nothing changes for a variable without a lock. New suite:
+`tests/run_typed_locks.sh`.
+
 ### `csv`: delimited files read correctly, and told where they went wrong
 
 `frame.read_csv` split each line on `,`, so a quoted comma, a quoted line break

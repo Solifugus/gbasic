@@ -205,8 +205,9 @@ union YYSTYPE
     AstServerItemList server_item_list;
     AstWindowItem *window_item;
     AstWindowItemList window_item_list;
+    AstTypeLock type_lock;
 
-#line 210 "src/parser.tab.h"
+#line 211 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

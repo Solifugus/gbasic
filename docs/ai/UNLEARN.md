@@ -480,10 +480,19 @@ day — so assume you will hit them too.
   calls its own functions with no prefix — in its own file, declared in the same
   file as the program, and inside a `modifier` body.
 
+- **`x: int = 5` is not gBASIC; `x:number = 5` is, and it LOCKS** (added
+  2026-11-03). Unlike a Python annotation, the lock is enforced and converts:
+  `x:number = "42"` is 42, a later `x = "5"` is 5, and `x = "abc"` is refused
+  naming the lock. Relock by redeclaring (`x:text = ...`). The types are
+  gBASIC's: `number` (not `int`/`float`), `string` or `text` (not `str`),
+  `boolean` (not `bool`), `money(USD)`, `date`, `time`, `datetime`,
+  `duration`, `file`, `dir`. A lens like `{trimmed}` stays in braces.
+
 - **Text that is no number is never equal to a number** (0.1.0). `0 = "stop"`
   is **false**, and `1 > "stop"` **raises**. Text that IS a number is no
   exception: `1 = "1"` is false, and warns (2122) — convert at the boundary
-  with `number()` or `{number}`. A G-SQL query does read it (`id = '7'`). It used to be TRUE: every string became `0` in
+  with `number()` or `{number}`, or lock the variable (`id:number = form.id`),
+  after which `id = "7"` reads the text as a number. A G-SQL query does read it (`id = '7'`). It used to be TRUE: every string became `0` in
   the comparison fallthrough, so only the number zero equalled one, while
   `1 = "1"` was false — not a coercion, an omission. Numbers and booleans still
   coerce (`0 = false` is true, 1,472 uses in the suite). Watch for `x = 0` as a

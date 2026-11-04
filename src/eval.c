@@ -682,9 +682,36 @@ struct HttpHandle {
     size_t ref_count;
 };
 
+/* A VARIABLE'S TYPE LOCK (docs/typed_variables_design.md): set by
+ * `x:number = e` and kept with the variable in its own frame. Copied out of
+ * the AST rather than pointing into it, because a prompt frees each line's
+ * AST while the variable lives on. */
+typedef enum {
+    LOCK_NONE = 0,
+    LOCK_NUMBER,
+    LOCK_STRING,
+    LOCK_BOOLEAN,
+    LOCK_DATE,
+    LOCK_TIME,
+    LOCK_DATETIME,
+    LOCK_DURATION,
+    LOCK_MONEY,
+    LOCK_FILE,
+    LOCK_DIR
+} LockKind;
+
+typedef struct {
+    LockKind kind;
+    char currency[4];    /* LOCK_MONEY: the alphabetic code */
+    unsigned short currency_code;   /* and its numeric one */
+    char spelled[24];    /* the type as written: "number", "text", "money(USD)" */
+    int line;            /* where the lock was declared */
+} TypeLock;
+
 typedef struct {
     char *name;
     Value value;
+    TypeLock lock;       /* LOCK_NONE unless declared */
 } Symbol;
 
 typedef struct {
@@ -5464,11 +5491,46 @@ static void env_warn_shadow(const char *name) {
              name);
 }
 
+/* Does a locked variable already hold this value as its type, with nothing to
+ * convert? Absence is always admitted (a lock may hold nothing or unknown). */
+static int lock_admits(const TypeLock *lock, const Value *v) {
+    if (lock->kind == LOCK_NONE || v->kind == VALUE_NULL || v->kind == VALUE_UNKNOWN) {
+        return 1;
+    }
+    switch (lock->kind) {
+    case LOCK_NUMBER: return v->kind == VALUE_NUMBER;
+    case LOCK_STRING: return v->kind == VALUE_STRING;
+    case LOCK_BOOLEAN: return v->kind == VALUE_BOOL;
+    case LOCK_DATE:
+        return v->kind == VALUE_DATETIME && !v->as.datetime.time_only &&
+               v->as.datetime.precision <= PREC_DAY;
+    case LOCK_TIME: return v->kind == VALUE_DATETIME && v->as.datetime.time_only;
+    case LOCK_DATETIME:
+        return v->kind == VALUE_DATETIME && !v->as.datetime.time_only &&
+               v->as.datetime.precision >= PREC_HOUR;
+    case LOCK_DURATION: return v->kind == VALUE_DURATION;
+    case LOCK_MONEY:
+        return v->kind == VALUE_MONEY && v->as.money.currency == lock->currency_code;
+    case LOCK_FILE: return v->kind == VALUE_FILE;
+    case LOCK_DIR: return v->kind == VALUE_DIR;
+    default: return 0;
+    }
+}
+
+/* EVERY WRITE THAT IS NOT AN ASSIGNMENT LEAVES A LOCK ONLY IF IT STILL HOLDS.
+ * An assignment converts before it gets here (lock_convert) and sets the lock
+ * after. The other writers -- a `window`, `database` or `sql` declaration of
+ * the same name -- are declarations themselves, so like `x:text = ...` they
+ * replace the lock rather than being refused by it. Loops refuse a locked
+ * variable before binding it (for_loop_lock_refused). */
 static void env_set(const char *name, Value value) {
     Symbol *symbol = env_find_in_frame(current_env, name);
     if (symbol) {
         value_free(symbol->value);
         symbol->value = value;
+        if (!lock_admits(&symbol->lock, &value)) {
+            memset(&symbol->lock, 0, sizeof(TypeLock));
+        }
         return;
     }
 
@@ -5502,6 +5564,7 @@ static void env_set(const char *name, Value value) {
     current_env->items = items;
     current_env->items[current_env->count].name = copy_string(name);
     current_env->items[current_env->count].value = value;
+    memset(&current_env->items[current_env->count].lock, 0, sizeof(TypeLock));
     current_env->count++;
 }
 
@@ -7153,6 +7216,7 @@ static Value duration_field_value(Duration d, const char *name) {
 
 static Value eval_expr(AstExpr *expr);
 static Value eval_comparison(AstExpr *expr, Value left, Value right);
+static Value lock_convert(const TypeLock *lock, const char *var, Value value);
 static EvalResult eval_stmt(AstStmt *stmt);
 static EvalResult eval_stmt_list(AstStmtList statements);
 
@@ -19651,6 +19715,7 @@ static void http_bind_events_global(void) {
     }
     global_env.items = items;
     global_env.items[global_env.count].name = copy_string("http");
+    memset(&global_env.items[global_env.count].lock, 0, sizeof(TypeLock));
     global_env.items[global_env.count].value = record;
     global_env.count++;
 }
@@ -19926,6 +19991,7 @@ static void inbox_bind_global(void) {
     }
     global_env.items = items;
     global_env.items[global_env.count].name = copy_string("inbox");
+    memset(&global_env.items[global_env.count].lock, 0, sizeof(TypeLock));
     global_env.items[global_env.count].value = record;
     global_env.count++;
 }
@@ -20035,6 +20101,7 @@ static void timer_bind_global(void) {
     }
     global_env.items = items;
     global_env.items[global_env.count].name = copy_string("timer");
+    memset(&global_env.items[global_env.count].lock, 0, sizeof(TypeLock));
     global_env.items[global_env.count].value = record;
     global_env.count++;
 }
@@ -37610,6 +37677,34 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         return value_null();
     }
 
+    /* A LOCKED VARIABLE READS TEXT AS ITS TYPE (docs/typed_variables_design.md
+     * rule 5): with `x:number`, `x = "1"` compares 1 with 1, as G-SQL does for a
+     * typed column. The lock declares the kind the text is read as, which is
+     * what a bare value never could (§7 of number_text_equality_design.md).
+     * Only for a variable written directly as an operand, and only TEXT is
+     * converted; text that does not convert is refused, naming the lock. */
+    if (!expr->as.binary.modifier.name && expr->as.binary.left && expr->as.binary.right) {
+        for (int side = 0; side < 2; side++) {
+            AstExpr *named = side == 0 ? expr->as.binary.left : expr->as.binary.right;
+            Value *other = side == 0 ? &right : &left;
+            if (named->kind != AST_EXPR_IDENT || other->kind != VALUE_STRING) {
+                continue;
+            }
+            /* The variable the operand READ, wherever it resolved. */
+            Symbol *held = env_find(named->as.ident);
+            if (!held || held->lock.kind == LOCK_NONE || held->lock.kind == LOCK_STRING) {
+                continue;
+            }
+            TypeLock lock = held->lock;
+            *other = lock_convert(&lock, named->as.ident, *other);
+            if (error_action_pending()) {
+                value_free(left);
+                value_free(right);
+                return value_null();
+            }
+        }
+    }
+
     /* A NUMBER AGAINST TEXT THAT IS A NUMBER is still unequal, and SAID
      * (warning 2122, docs/number_text_equality_design.md). `1 = "1"` reading
      * the text was built and reverted 2026-11-03 on Matthew's second ruling:
@@ -39414,6 +39509,195 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         stage = stage->next;
     }
     return value;
+}
+
+/* ---- TYPE LOCKS (docs/typed_variables_design.md) ------------------------
+ *
+ * `x:number = e` locks x: every later `x = e` CONVERTS into the type or is
+ * refused, and `x:text = ...` relocks. The conversion IS the brace modifier of
+ * the same name -- `{number}`, `{date}`, `{USD}`, `{file}` -- so a lock and a
+ * modifier cannot disagree about what converting to a number means. Boolean
+ * and duration have no modifier and are written out here. */
+
+static const char *lock_kind_word(LockKind kind) {
+    switch (kind) {
+    case LOCK_NUMBER: return "number";
+    case LOCK_STRING: return "string";
+    case LOCK_BOOLEAN: return "boolean";
+    case LOCK_DATE: return "date";
+    case LOCK_TIME: return "time";
+    case LOCK_DATETIME: return "datetime";
+    case LOCK_DURATION: return "duration";
+    case LOCK_MONEY: return "money";
+    case LOCK_FILE: return "file";
+    case LOCK_DIR: return "dir";
+    default: return "nothing";
+    }
+}
+
+/* The lock an AST names. The parser refused every name that is not a data
+ * type; what is left to check is that money's currency is one gBASIC knows,
+ * which needs the currency table and so happens here. Returns 0 and raises
+ * when it is not. */
+static int type_lock_resolve(AstTypeLock a, TypeLock *out) {
+    static const struct { const char *name; LockKind kind; } words[] = {
+        { "number", LOCK_NUMBER }, { "string", LOCK_STRING }, { "text", LOCK_STRING },
+        { "boolean", LOCK_BOOLEAN }, { "date", LOCK_DATE }, { "time", LOCK_TIME },
+        { "datetime", LOCK_DATETIME }, { "duration", LOCK_DURATION },
+        { "money", LOCK_MONEY }, { "file", LOCK_FILE }, { "dir", LOCK_DIR },
+        { NULL, LOCK_NONE }
+    };
+    memset(out, 0, sizeof *out);
+    for (int i = 0; words[i].name; i++) {
+        if (strcmp(words[i].name, a.name) == 0) {
+            out->kind = words[i].kind;
+            break;
+        }
+    }
+    out->line = a.line;
+    if (out->kind == LOCK_MONEY) {
+        unsigned short numeric = 0;
+        if (!a.arg || !currency_find_alpha(a.arg, &numeric, NULL, NULL)) {
+            char message[160];
+            snprintf(message, sizeof message,
+                     "money(%s): %s is not a currency gBASIC knows (register it with "
+                     "money.register first)", a.arg ? a.arg : "", a.arg ? a.arg : "");
+            runtime_error_raise(message, 1003, "lock");
+            return 0;
+        }
+        snprintf(out->currency, sizeof out->currency, "%s", a.arg);
+        out->currency_code = numeric;
+        snprintf(out->spelled, sizeof out->spelled, "money(%s)", a.arg);
+    } else {
+        snprintf(out->spelled, sizeof out->spelled, "%s", a.name);
+    }
+    return out->kind != LOCK_NONE;
+}
+
+/* A refusal names the lock, so whoever reads it can find the declaration. The
+ * cause, when a modifier gave one, follows it. */
+static void lock_refuse(const TypeLock *lock, const char *var, const char *cause) {
+    char message[512];
+    snprintf(message, sizeof message,
+             "%s is locked to %s by %s:%s at line %d, and this value does not convert: %s",
+             var, lock_kind_word(lock->kind), var, lock->spelled, lock->line, cause);
+    if (current_error.active && raise_in_flight) {
+        /* The modifier raised already; say whose lock refused, then its cause. */
+        free(current_error.message);
+        current_error.message = copy_string(message);
+        free(current_error.source);
+        current_error.source = copy_string("lock");
+        return;
+    }
+    runtime_error_raise(message, 1003, "lock");
+}
+
+static int lock_text_is(const char *text, size_t len, const char *word) {
+    size_t n = strlen(word);
+    if (len != n) {
+        return 0;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (tolower((unsigned char)text[i]) != word[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Convert `value` into the lock's type, or refuse. Takes ownership of value;
+ * on a refusal the error is raised and nothing is returned. */
+static Value lock_convert(const TypeLock *lock, const char *var, Value value) {
+    if (lock_admits(lock, &value)) {
+        return value;
+    }
+    switch (value.kind) {
+    case VALUE_NUMBER: case VALUE_STRING: case VALUE_BOOL: case VALUE_DATETIME:
+    case VALUE_DURATION: case VALUE_MONEY: case VALUE_FILE: case VALUE_DIR:
+        break;
+    default: {
+        char cause[96];
+        const char *got = value_kind_name(value.kind);
+        snprintf(cause, sizeof cause, "a %s lock cannot hold %s %s",
+                 lock_kind_word(lock->kind), strchr("aeiou", got[0]) ? "an" : "a", got);
+        value_free(value);
+        lock_refuse(lock, var, cause);
+        return value_null();
+    }
+    }
+    if (lock->kind == LOCK_BOOLEAN) {
+        if (value.kind == VALUE_STRING) {
+            const char *t = value.as.string;
+            size_t len = string_length(t);
+            while (len > 0 && isspace((unsigned char)*t)) { t++; len--; }
+            while (len > 0 && isspace((unsigned char)t[len - 1])) { len--; }
+            int b = lock_text_is(t, len, "true") ? 1 : lock_text_is(t, len, "false") ? 0 : -1;
+            if (b >= 0) {
+                value_free(value);
+                return value_bool(b);
+            }
+        }
+        value_free(value);
+        lock_refuse(lock, var, "a boolean is true or false, or the text \"true\" or \"false\"");
+        return value_null();
+    }
+    if (lock->kind == LOCK_DURATION) {
+        value_free(value);
+        lock_refuse(lock, var, "only a duration converts to a duration (write 3 days, 90 minutes)");
+        return value_null();
+    }
+    if (lock->kind == LOCK_MONEY && value.kind == VALUE_MONEY) {
+        /* Another currency is a conversion at a RATE, which a lock cannot know. */
+        value_free(value);
+        lock_refuse(lock, var, "this is money in another currency; convert it at a rate first");
+        return value_null();
+    }
+    AstModifierUse use = {0};
+    use.name = (char *)(lock->kind == LOCK_MONEY ? lock->currency : lock_kind_word(lock->kind));
+    use.args = ast_expr_list_empty();
+    int before = error_generation;
+    int recognised = 1;
+    Value out = apply_one_assignment_modifier(use, value, &recognised);
+    if (error_generation != before || !recognised) {
+        value_free(out);
+        lock_refuse(lock, var, current_error.active && current_error.message
+                                   ? current_error.message : "the conversion failed");
+        return value_null();
+    }
+    if (!lock_admits(lock, &out)) {
+        /* A modifier that answered with another kind (a date modifier given
+         * a datetime with no day) has not converted. */
+        char cause[96];
+        snprintf(cause, sizeof cause, "it converts to a %s, not a %s",
+                 value_kind_name(out.kind), lock_kind_word(lock->kind));
+        value_free(out);
+        lock_refuse(lock, var, cause);
+        return value_null();
+    }
+    return out;
+}
+
+/* A LOOP DOES NOT BIND A LOCKED VARIABLE in the first version of locks
+ * (docs/typed_variables_design.md rule 6), except a number lock on a
+ * counter or index, which only ever holds numbers. Refused at the top rather
+ * than per element: the loop never starts, so no element half-converts.
+ * Returns 1 when it refused. */
+static int loop_lock_refused(const char *name, int binds_numbers) {
+    if (!name) {
+        return 0;
+    }
+    Symbol *held = env_find_in_frame(current_env, name);
+    if (!held || held->lock.kind == LOCK_NONE ||
+        (binds_numbers && held->lock.kind == LOCK_NUMBER)) {
+        return 0;
+    }
+    char message[320];
+    snprintf(message, sizeof message,
+             "%s is locked to %s by %s:%s at line %d, and a loop cannot bind a locked "
+             "variable; use another name for the loop",
+             name, lock_kind_word(held->lock.kind), name, held->lock.spelled, held->lock.line);
+    runtime_error_raise(message, 1003, "lock");
+    return 1;
 }
 
 /* ---- A DATE LAYOUT, WRITTEN THE WAY IT READS ---------------------------
@@ -41847,7 +42131,61 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     case AST_STMT_ASSIGN: {
         int before_error = error_generation;
         Value value;
-        if (stmt->as.assign.op) {
+        /* THE LOCK IN FORCE (docs/typed_variables_design.md): the one this
+         * statement declares, or the one the variable already carries in THIS
+         * frame. A function's local of the same name is a different variable
+         * and carries no lock of the caller's. */
+        TypeLock lock = {0};
+        const char *lock_var = NULL;
+        if (stmt->as.assign.lock.name) {
+            lock_var = stmt->as.assign.target->as.ident;
+            if (!type_lock_resolve(stmt->as.assign.lock, &lock)) {
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+        } else if (stmt->as.assign.target->kind == AST_EXPR_IDENT) {
+            Symbol *held = env_find_in_frame(current_env, stmt->as.assign.target->as.ident);
+            if (held && held->lock.kind != LOCK_NONE) {
+                lock = held->lock;
+                lock_var = stmt->as.assign.target->as.ident;
+            }
+        }
+        if (stmt->as.assign.op && lock.kind != LOCK_NONE && lock.kind != LOCK_STRING) {
+            /* A LOCKED compound assignment converts a TEXT operand first.
+             * `42 + "1"` is 421, so `x += "1"` on a locked number would give
+             * 421 and then convert it -- silently. Converted first it is 43.
+             * Other operands go in as written, since `d += 3 days` on a
+             * locked date is date arithmetic, not a conversion. */
+            Value right = eval_expr(stmt->as.assign.value);
+            if (error_generation == before_error && right.kind == VALUE_STRING) {
+                right = lock_convert(&lock, lock_var, right);
+            }
+            if (error_generation != before_error) {
+                value_free(right);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            char op_text[2];
+            AstExpr fold = {0};
+            AstExpr held_right = {0};
+            op_text[0] = stmt->as.assign.op;
+            op_text[1] = '\0';
+            held_right.kind = AST_EXPR_HELD;
+            held_right.as.held.value = &right;
+            held_right.line = stmt->line;
+            held_right.column = stmt->column;
+            fold.kind = AST_EXPR_BINARY;
+            fold.as.binary.op = op_text;
+            fold.as.binary.modifier = ast_modifier_none();
+            fold.as.binary.left = stmt->as.assign.target;
+            fold.as.binary.right = &held_right;
+            fold.line = stmt->line;
+            fold.column = stmt->column;
+            value = eval_binary(&fold);
+            value_free(right);
+        } else if (stmt->as.assign.op) {
             /* `x op= e` is `x = x op e`, and the surest way to mean exactly
              * that is to hand the real operator a real binary node -- the same
              * synthetic-node idiom `values_equal` already uses. Every type
@@ -41886,12 +42224,30 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
+        if (lock.kind != LOCK_NONE) {
+            value = lock_convert(&lock, lock_var, value);
+            if (error_generation != before_error) {
+                value_free(value);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+        }
         LValueAssignResult assign_result = assign_lvalue(stmt->as.assign.target, value);
         if (assign_result == LVALUE_ASSIGN_ERROR) {
             value_free(value);
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
+        }
+        if (lock.kind != LOCK_NONE) {
+            /* After the write, whichever way it went: an unchanged value still
+             * takes a newly declared lock, and env_set may have dropped the old
+             * one before this restores it. */
+            Symbol *held = env_find_in_frame(current_env, lock_var);
+            if (held) {
+                held->lock = lock;
+            }
         }
         if (assign_result == LVALUE_ASSIGN_UNCHANGED) {
             break;
@@ -42111,6 +42467,11 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         break;
     }
     case AST_STMT_FOR_RANGE: {
+        if (loop_lock_refused(stmt->as.for_range.name, 1)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         /* `for i = a to b [step c]`. Bounds and step are evaluated ONCE, at loop
          * entry, which is the classic BASIC rule and the one that makes the loop
          * predictable: changing `b` inside the body does not move the finish
@@ -42213,6 +42574,12 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         break;
     }
     case AST_STMT_FOR_EACH: {
+        if (loop_lock_refused(stmt->as.for_each.name, 0) ||
+            loop_lock_refused(stmt->as.for_each.index_name, 1)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         int before_error = error_generation;
         Value iterable = eval_expr(stmt->as.for_each.iterable);
         if (error_generation != before_error) {

@@ -1368,6 +1368,48 @@ record_proto = {
 
 See [pbi_design.md](pbi_design.md) for the full design and rationale.
 
+## Typed variables
+
+*(added 2026-11-03; [typed_variables_design.md](typed_variables_design.md))*
+A name followed by a colon and a data type **locks** the variable to that type.
+Every later plain `=` converts into the type, or is refused:
+
+```basic
+qty:number = "42"         ' 42, and qty is locked to number
+qty = " 5 "               ' 5: converted, as {number} converts
+cost:money(USD) = "1.25"
+when:date = "2026-01-02"
+qty:text = "many"         ' redeclaring relocks; the change is written out
+```
+
+The types are `number`, `string` (or `text`), `boolean`, `date`, `time`,
+`datetime`, `duration`, `money(USD)` (any currency code), `file` and `dir`.
+One type, no chain: a lens such as `{trimmed}` stays in braces and applies
+once. The conversion **is** the brace modifier of the same name, so `x:number`
+and `{number}` cannot disagree. `boolean` takes `true`, `false`, or the text
+`"true"`/`"false"` in any case; `duration` takes only a duration; a
+`money(USD)` lock refuses money in another currency, since that conversion
+needs a rate.
+
+- **A refusal names the lock:** `qty is locked to number by qty:number at line
+  1, and this value does not convert: ...`. The old value is kept.
+- **`nothing` and `unknown` are allowed**, as in a typed G-SQL column.
+- **A compound assignment converts a text operand first**, because `42 + "1"`
+  is `421`: with `n:number = 42`, `n += "1"` is 43. Other operands go in as
+  written, so `d += 3 days` on a locked date is date arithmetic.
+- **A comparison reads text as the locked type**: with `x:number`, `x = "1"` is
+  true and warning 2122 does not fire. Text that does not convert is refused.
+  This is the case `1 = "1"` stays false for: a bare value declares no kind,
+  and a lock does.
+- **The lock belongs to the variable in its own scope.** A function's local of
+  the same name is a different variable; passing `x` passes its value, not its
+  lock.
+- **A loop does not bind a locked variable**, except a number lock on a
+  `for` counter or a `for each` index, which only ever hold numbers.
+- **A misspelled or foreign type is a parse error with the gBASIC name**:
+  `x:int` gives `'int' is not a gBASIC type; write x:number`, and likewise
+  `str`, `bool`, `float`, `timestamp` and a bare `x:USD`.
+
 ## Modifiers
 
 Modifier use:

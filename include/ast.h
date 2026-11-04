@@ -250,6 +250,18 @@ typedef struct {
     AstNameList params;
 } AstModifierSignature;
 
+/* A TYPE LOCK: the `number` in `x:number = e` (docs/typed_variables_design.md).
+ * `name` is the type as written (`number`, `text`, `money`), `arg` the one
+ * argument `money(USD)` takes, NULL otherwise. The parser has already refused
+ * a name that is not a data type, so every lock that reaches the evaluator
+ * names one. `name` NULL means no lock. */
+typedef struct {
+    char *name;
+    char *arg;
+    int line;
+    int column;
+} AstTypeLock;
+
 typedef struct {
     int years;
     int months;
@@ -339,6 +351,9 @@ struct AstStmt {
              * free to go with them. The evaluator folds it instead, by handing
              * the real operator a synthetic binary node. */
             char op;
+            /* `x:number = e`: lock `x` to a data type. Unset (name NULL) for
+             * every other assignment. */
+            AstTypeLock lock;
         } assign;
         /* PLAT-STDERR: `print` and `print to error` are one node kind with a
          * destination, not two kinds. They differ only in which stream the
@@ -588,6 +603,10 @@ AstExpr *ast_expr_position(AstExpr *expr, int line, int column);
 
 AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value);
 AstStmt *ast_assign_op(AstExpr *target, AstModifierUse modifier, AstExpr *value, char op);
+AstStmt *ast_assign_locked(AstExpr *target, AstTypeLock lock, AstExpr *value);
+AstTypeLock ast_type_lock_none(void);
+AstTypeLock ast_type_lock(char *name, char *arg, int line, int column);
+void ast_type_lock_free(AstTypeLock lock);
 AstStmt *ast_print(AstExpr *expr);
 AstStmt *ast_print_error(AstExpr *expr);
 AstStmt *ast_expr_stmt(AstExpr *expr);

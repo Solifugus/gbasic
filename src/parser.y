@@ -679,6 +679,7 @@ typedef struct {
     AstServerItemList server_item_list;
     AstWindowItem *window_item;
     AstWindowItemList window_item_list;
+    AstTypeLock type_lock;
 }
 
 %token <numlit> NUMBER
@@ -720,6 +721,88 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx);
 static void yyerror(YYLTYPE *llocp, gb_parse_ctx *ctx, const char *message);
 static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                                 int end_line, int end_column, const char *message);
+
+/* THE DATA TYPES A LOCK MAY NAME (docs/typed_variables_design.md): one word,
+ * and `money` takes its currency. Checked HERE, at parse time, so `x:int` is
+ * refused before anything runs -- and with the gBASIC spelling, because a model
+ * writing gBASIC brings Python's and TypeScript's names with it. Returns 1 when
+ * the lock is good; otherwise reports and returns 0. `who` is the variable or
+ * parameter, for the suggested spelling. */
+static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
+                           const char *arg, int line, int column, int end_line,
+                           int end_column) {
+    static const char *const types[] = {
+        "number", "string", "text", "boolean", "date", "time", "datetime",
+        "duration", "money", "file", "dir", NULL
+    };
+    static const struct { const char *foreign; const char *ours; } near[] = {
+        { "int", "number" }, { "integer", "number" }, { "float", "number" },
+        { "double", "number" }, { "decimal", "number" }, { "real", "number" },
+        { "numeric", "number" }, { "long", "number" }, { "bigint", "number" },
+        { "str", "string" }, { "char", "string" }, { "varchar", "string" },
+        { "bool", "boolean" }, { "timestamp", "datetime" },
+        { "directory", "dir" }, { "folder", "dir" },
+        { NULL, NULL }
+    };
+    char message[320];
+    int known = 0;
+    for (int i = 0; types[i]; i++) {
+        if (strcmp(types[i], name) == 0) {
+            known = 1;
+            break;
+        }
+    }
+    if (!known) {
+        for (int i = 0; near[i].foreign; i++) {
+            if (strcmp(near[i].foreign, name) == 0) {
+                snprintf(message, sizeof message,
+                         "'%s' is not a gBASIC type; write %s:%s", name, who, near[i].ours);
+                report_syntax_error(ctx, line, column, end_line, end_column, message);
+                return 0;
+            }
+        }
+        size_t n = strlen(name);
+        if (n == 3 && isupper((unsigned char)name[0]) && isupper((unsigned char)name[1]) &&
+            isupper((unsigned char)name[2]) && !arg) {
+            snprintf(message, sizeof message,
+                     "a lock names a type, and money is one: write %s:money(%s)", who, name);
+        } else if (strcmp(name, "array") == 0 || strcmp(name, "record") == 0 ||
+                   strcmp(name, "list") == 0 || strcmp(name, "dict") == 0 ||
+                   strcmp(name, "map") == 0 || strcmp(name, "object") == 0) {
+            snprintf(message, sizeof message,
+                     "'%s' cannot be a lock: a lock is for a data type (number, string, "
+                     "boolean, date, time, datetime, duration, money(USD), file, dir)", name);
+        } else {
+            snprintf(message, sizeof message,
+                     "'%s' is not a data type a lock can name; the types are number, string "
+                     "(or text), boolean, date, time, datetime, duration, money(USD), file "
+                     "and dir. A lens such as {trimmed} is written in braces", name);
+        }
+        report_syntax_error(ctx, line, column, end_line, end_column, message);
+        return 0;
+    }
+    if (strcmp(name, "money") == 0) {
+        if (!arg) {
+            snprintf(message, sizeof message,
+                     "money needs its currency: write %s:money(USD)", who);
+            report_syntax_error(ctx, line, column, end_line, end_column, message);
+            return 0;
+        }
+        if (strlen(arg) != 3 || !isupper((unsigned char)arg[0]) ||
+            !isupper((unsigned char)arg[1]) || !isupper((unsigned char)arg[2])) {
+            snprintf(message, sizeof message,
+                     "money takes a three-letter currency code, like money(USD), not '%s'", arg);
+            report_syntax_error(ctx, line, column, end_line, end_column, message);
+            return 0;
+        }
+    } else if (arg) {
+        snprintf(message, sizeof message,
+                 "%s takes no argument; only money does, as in money(USD)", name);
+        report_syntax_error(ctx, line, column, end_line, end_column, message);
+        return 0;
+    }
+    return 1;
+}
 }
 
 /* A FAILED PARSE USED TO LEAK THE STATEMENTS IT HAD ALREADY BUILT. Bison drops
@@ -743,6 +826,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
 %type <text> for_end
 %type <op_char> compound_op
+%type <type_lock> type_lock
 %type <window_item> window_item
 %type <window_item_list> window_item_list
 %type <stmt> window_block
@@ -789,6 +873,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %destructor { ast_free_expr($$.reset_expr); }          <field_policy>
 %destructor { AstServerItemList one = ast_server_item_list_append(ast_server_item_list_empty(), $$); ast_free_server_item_list(one); } <server_item>
 %destructor { ast_free_server_item_list($$); }         <server_item_list>
+%destructor { ast_type_lock_free($$); }               <type_lock>
 
 /* Bison also treats THE START SYMBOL AS DISCARDED WHEN THE PARSE SUCCEEDS: on
  * YYACCEPT the cleanup loop pops the whole stack, `program` included. Its value
@@ -875,6 +960,17 @@ assignment
     /* PLAT-BRACE: the assignment clause in braces. A brace cannot open a call,
      * so unlike the paren spelling this needs no lookahead to recognize --
      * which is the whole reason the paren form was retired. */
+    /* `x:number = e` locks x to a data type (docs/typed_variables_design.md).
+     * A label is `name :` and then a NEWLINE, so the token after the colon
+     * decides and the grammar stays at zero conflicts. A variable only: record
+     * fields and loop variables are not locked in the first version. */
+    | variable_name COLON type_lock OP_EQ expression {
+        if (!type_lock_check(ctx, $1, $3.name, $3.arg, @3.first_line, @3.first_column,
+                             @3.last_line, @3.last_column)) {
+            YYERROR;
+        }
+        $$ = ast_assign_locked(expr_at(ast_ident($1), @1.first_line, @1.first_column), $3, $5);
+      }
     | lvalue comparison_lens OP_EQ expression {
         if (!is_modifier_target_expr($1)) {
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
@@ -884,6 +980,13 @@ assignment
         }
         $$ = ast_assign($1, $2, $4);
       }
+    ;
+
+/* The type a lock names. Checked by type_lock_check where the lock is used,
+ * because the suggested spelling names the variable. */
+type_lock
+    : IDENT { $$ = ast_type_lock($1, NULL, @1.first_line, @1.first_column); }
+    | IDENT LPAREN IDENT RPAREN { $$ = ast_type_lock($1, $3, @1.first_line, @1.first_column); }
     ;
 
 compound_op
