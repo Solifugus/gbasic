@@ -354,6 +354,12 @@ static int sql_head_follows(const char *p) {
     after = sql_skip_word(p);
     if (!after) return 0;
     p = after;
+    if (*p == '.') {
+        /* `sql mine on store.shop`: on a library's database (gap G6) */
+        after = sql_skip_word(p + 1);
+        if (!after) return 0;
+        p = after;
+    }
     while (*p == ' ' || *p == '\t' || *p == '\r') p++;
     return *p == '\n' || *p == '\'' || *p == '\0';
 }

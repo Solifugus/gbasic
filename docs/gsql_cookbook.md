@@ -179,7 +179,7 @@ a missing note is unknown: true
 
 ## 3. Transactions
 
-Outside `gsql.begin` … `gsql.commit`, every statement is its own transaction. Inside, they all land or none do. A statement refused before it changed anything leaves the transaction usable.
+Outside `gsql.begin` … `gsql.commit`, every statement is its own transaction. Inside, they all land or none do. A refused statement leaves the transaction usable, even one refused part way, after changing some rows: it runs under a savepoint of its own and is undone alone. A `gsql.begin` inside the transaction is a savepoint too: its `gsql.commit` keeps what it did, and its `gsql.rollback` undoes that and nothing before it.
 
 <!--CODE:03_transactions-->
 
@@ -243,7 +243,8 @@ bank.rollback()                    ' changed our mind: neither happened
 r = first_two.query()
 print "after a rollback: " + string(r[0].bal) + " and " + string(r[1].bal)
 
-' A refused statement that changed nothing leaves the transaction usable.
+' A refused statement leaves the transaction usable: one refused part way is
+' undone alone, under a savepoint of its own.
 function insert_twice()
     on error goto next
     bank.begin()

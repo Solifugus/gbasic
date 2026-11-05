@@ -1479,6 +1479,194 @@ static size_t value_for(unsigned char *vb, uint64_t id, uint64_t ver) {
 typedef struct { GsTxn *t; MState m; int live; } Reader;
 #define NREADERS 3
 
+/* Savepoints (store.h; gap G8 from the gBASIC books) against the model. Each
+ * write transaction runs random puts, deletes, tree creates, drops and
+ * replaces, with savepoints taken, rolled back to and released at random; the
+ * model keeps a copy per open savepoint, and a rollback must leave the view
+ * EXACTLY the copy (every tree, every record, the tree list). The cache is
+ * small and some values are large, so the buffer spills to runs under open
+ * savepoints and a rollback has to shadow records that are already in a run.
+ * Each transaction then commits or aborts, and the committed state is checked
+ * through a fresh snapshot, and once more after reopening: a DROP undone by a
+ * savepoint must not have deleted the tree's data at commit. */
+static void savepoints(const char *base, GsqlIo *io) {
+    char path[600];
+    snprintf(path, sizeof path, "%s.sp", base);
+    GsOptions o = {1, 512, 32 * 1024, io, 4096, 2, 64, 0, NULL};  /* spills past 16 KB */
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the savepoint store answered %s", gs_status_name(rc));
+    if (rc) return;
+    CHECK(E->savepoint && E->rollback_savepoint && E->release_savepoint, "the engine has savepoints");
+    if (!E->savepoint) { E->close(db); return; }
+    MState committed = {0};
+    unsigned char kb[128], *vb = malloc(10000);
+    char nb[16];
+    uint64_t ver = 0;
+    unsigned rollbacks = 0, releases = 0, deep = 0, refused = 0, wrong = 0;
+    for (int round = 0; round < 120; round++) {
+        GsTxn *w;
+        rc = E->begin_write(db, &w);
+        CHECK(rc == GS_OK, "begin_write answered %s", gs_status_name(rc));
+        if (rc) break;
+        CHECK(E->rollback_savepoint(w) == GS_MISUSE && E->release_savepoint(w) == GS_MISUSE,
+              "with no savepoint open, rollback and release are refused with MISUSE");
+        MState work;
+        ms_copy(&work, &committed);
+        MState stack[8];
+        int depth = 0;
+        int ops = 20 + (int)(rnd() % 120);
+        for (int op_i = 0; op_i < ops; op_i++) {
+            uint64_t op = rnd() % 100;
+            GsBytes tn = tname((int)(rnd() % 4), nb);
+            MTree *mt = ms_find(&work, tn);
+            ver++;
+            if (op < 8 && depth < 8) {
+                rc = E->savepoint(w);
+                CHECK(rc == GS_OK, "savepoint answered %s", gs_status_name(rc));
+                ms_copy(&stack[depth++], &work);
+                if (depth > 2) deep++;
+            } else if (op < 13 && depth > 0) {
+                rc = E->rollback_savepoint(w);
+                CHECK(rc == GS_OK, "rollback_savepoint answered %s", gs_status_name(rc));
+                ms_free(&work);
+                work = stack[--depth];
+                rollbacks++;
+                unsigned f0 = failures;
+                compare_view(w, &work, "after a rollback to a savepoint");
+                if (failures != f0) wrong++;
+            } else if (op < 16 && depth > 0) {
+                rc = E->release_savepoint(w);
+                CHECK(rc == GS_OK, "release_savepoint answered %s", gs_status_name(rc));
+                ms_free(&stack[--depth]);
+                releases++;
+            } else if (op < 20) {
+                rc = E->tree_create(w, tn);
+                CHECK(rc == (mt ? GS_EXISTS : GS_OK), "tree_create answered %s", gs_status_name(rc));
+                if (!mt && rc == GS_OK) ms_create(&work, tn);
+            } else if (op < 23) {
+                rc = E->tree_drop(w, tn);
+                CHECK(rc == (mt ? GS_OK : GS_NOT_FOUND), "tree_drop answered %s", gs_status_name(rc));
+                if (mt) ms_drop(&work, tn);
+            } else if (op < 25) {
+                char nb2[16];
+                GsBytes src = tname((int)(rnd() % 4), nb2);
+                MTree *ms = ms_find(&work, src);
+                if (bytes_cmp(src, tn) == 0) continue;
+                rc = E->tree_replace(w, tn, src);
+                CHECK(rc == (ms ? GS_OK : GS_NOT_FOUND), "tree_replace answered %s", gs_status_name(rc));
+                if (ms && rc == GS_OK) {
+                    MTree *tgt = ms_find(&work, tn);
+                    if (tgt) ms_drop(&work, tn);
+                    ms = ms_find(&work, src);
+                    gsbuf_free(&ms->name);
+                    gsbuf_set(&ms->name, tn.p, tn.n);
+                }
+            } else if (mt && op < 75) {
+                uint64_t id = rnd() % 60;
+                size_t kn = key_for(kb, id);
+                size_t vn = value_for(vb, id, ver);
+                rc = E->put(w, tn, gsb(kb, kn), gsb(vb, vn), 0);
+                CHECK(rc == GS_OK, "put answered %s", gs_status_name(rc));
+                if (rc == GS_OK) mt_put(mt, gsb(kb, kn), gsb(vb, vn));
+            } else if (mt) {
+                uint64_t id = rnd() % 60;
+                size_t kn = key_for(kb, id);
+                rc = E->del(w, tn, gsb(kb, kn));
+                int had = mt_del(mt, gsb(kb, kn));
+                CHECK(rc == (had ? GS_OK : GS_NOT_FOUND), "del answered %s", gs_status_name(rc));
+            }
+        }
+        compare_view(w, &work, "the transaction's own view, savepoints open or not");
+        while (depth > 0) ms_free(&stack[--depth]);
+        if (rnd() % 5 == 0) {
+            E->abort(w);
+            ms_free(&work);
+        } else {
+            rc = E->commit(w, 1, NULL);
+            CHECK(rc == GS_OK, "commit answered %s", gs_status_name(rc));
+            ms_free(&committed);
+            committed = work;
+        }
+        GsTxn *r;
+        E->begin_read(db, &r);
+        compare_view(r, &committed, "a snapshot after the transaction ended");
+        E->abort(r);
+    }
+    /* a cursor on a tree the savepoint did not know cannot survive the
+     * rollback, and is refused rather than left pointing at nothing */
+    GsTxn *w;
+    E->begin_write(db, &w);
+    E->savepoint(w);
+    char fresh[] = "fresh-tree";
+    E->tree_create(w, gss(fresh));
+    E->put(w, gss(fresh), gss("k"), gss("v"), 0);
+    GsCursor *c;
+    E->cursor_open(w, gss(fresh), &c);
+    if (E->rollback_savepoint(w) == GS_MISUSE) refused++;
+    E->cursor_close(c);
+    rc = E->rollback_savepoint(w);
+    CHECK(rc == GS_OK, "once the cursor is closed the rollback goes ahead (%s)", gs_status_name(rc));
+    GsBytes got;
+    CHECK(E->get(w, gss(fresh), gss("k"), &got) == GS_NOT_FOUND, "the tree made after the savepoint is gone");
+    E->abort(w);
+    CHECK(refused == 1, "a rollback with a cursor open on a tree made after the savepoint is refused with MISUSE");
+
+    /* the before-images are bounded (4 MiB at this cache): past it a
+     * rollback is refused with TOO_LARGE rather than half done, the
+     * transaction still takes writes, and a release still keeps everything */
+    unsigned char *huge = malloc(9000);
+    memset(huge, 'h', 9000);
+    for (int keep_it = 0; keep_it < 2; keep_it++) {
+        E->begin_write(db, &w);
+        E->tree_create(w, gss("bulk"));
+        E->savepoint(w);
+        int put_rc = GS_OK;
+        for (unsigned i = 0; i < 600 && put_rc == GS_OK; i++) {
+            char k[16];
+            int kn = snprintf(k, sizeof k, "b%05u", i);
+            put_rc = E->put(w, gss("bulk"), gsb(k, (size_t)kn), gsb(huge, 9000), 0);
+            put_rc = E->put(w, gss("bulk"), gsb(k, (size_t)kn), gsb(huge, 8999), 0);
+        }
+        CHECK(put_rc == GS_OK, "5 MB of changes under a savepoint are taken (%s)", gs_status_name(put_rc));
+        if (!keep_it) {
+            rc = E->rollback_savepoint(w);
+            CHECK(rc == GS_TOO_LARGE, "past the bound, a rollback is refused with TOO_LARGE (%s)", gs_status_name(rc));
+            CHECK(E->put(w, gss("bulk"), gss("after"), gss("x"), 0) == GS_OK, "and the transaction still takes a write");
+            E->abort(w);
+        } else {
+            CHECK(E->release_savepoint(w) == GS_OK, "past the bound, a release keeps everything");
+            CHECK(E->commit(w, 1, NULL) == GS_OK, "and the transaction commits");
+            GsTxn *r2;
+            E->begin_read(db, &r2);
+            GsBytes v;
+            CHECK(E->get(r2, gss("bulk"), gss("b00599"), &v) == GS_OK && v.n == 8999, "with its last value");
+            E->abort(r2);
+            E->begin_write(db, &w);   /* gone again, so the model below still holds */
+            E->tree_drop(w, gss("bulk"));
+            E->commit(w, 1, NULL);
+        }
+    }
+    free(huge);
+    CHECK(wrong == 0, "%u of %u rollbacks left a view other than the model's", wrong, rollbacks);
+    CHECK(rollbacks > 100 && releases > 50 && deep > 20, "the run exercised it: %u rollbacks, %u releases, %u savepoints "
+          "three deep", rollbacks, releases, deep);
+    CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the savepoints");
+    E->close(db);
+    rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "reopening the savepoint store answered %s", gs_status_name(rc));
+    if (rc == GS_OK) {
+        GsTxn *r;
+        E->begin_read(db, &r);
+        compare_view(r, &committed, "after reopening: what committed, and no tree an undone DROP retired");
+        E->abort(r);
+        E->close(db);
+    }
+    ms_free(&committed);
+    free(vb);
+    printf("  savepoints: %u rollbacks, %u releases, %u three deep\n", rollbacks, releases, deep);
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: test_store ENGINE SEED [real DIR]\n"); return 2; }
     if (!strcmp(argv[1], "lsm")) E = &gs_engine_lsm;
@@ -1808,6 +1996,7 @@ int main(int argc, char **argv) {
     empty_footprint(path, io);
     sorted_load(path, io);
     estimates(path, io);
+    savepoints(path, io);
     ms_free(&committed);
     ms_free(&durable);
     free(vb);

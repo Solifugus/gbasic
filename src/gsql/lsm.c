@@ -2898,6 +2898,22 @@ typedef struct {
 
 struct GsCursor;
 
+typedef struct {
+    unsigned char *k;
+    size_t kn;
+    int had;             /* the key had a value before the change */
+    unsigned char *v;
+    size_t vn;
+} UndoEnt;
+
+typedef struct SpMark {
+    size_t undo_at;
+    size_t ntrees;
+    uint64_t *ids;       /* trees[i].id for i < ntrees, at the mark */
+    size_t nretired;
+    struct SpMark *prev;
+} SpMark;
+
 struct GsTxn {
     GsStore *db;
     int write;
@@ -2916,6 +2932,12 @@ struct GsTxn {
     FileMeta **runs;
     size_t nruns;
     uint64_t spills;   /* bumped by each spill: cursors rebuild their sources */
+    /* write: savepoints (G8). Before-images are recorded while marks is set. */
+    UndoEnt *undo;
+    size_t nundo, capundo;
+    uint64_t undo_bytes;
+    int undo_lost;     /* the before-images outgrew their bound and were dropped */
+    SpMark *marks;
 };
 
 static int txn_sources(struct GsTxn *t, Src *src, size_t *n) {
@@ -3094,10 +3116,14 @@ static int tree_find(struct GsTxn *t, GsBytes name, size_t *idx) {
     return GS_OK;
 }
 
+static int undo_note(struct GsTxn *t, const unsigned char *k, size_t kn);
+
 static int buf_put(struct GsTxn *t, uint64_t id, GsBytes key, int type, GsBytes value) {
     unsigned char *k = malloc(ID_LEN + key.n);
     if (!k) return GS_IO;
     put_ukey(k, id, key);
+    int urc = undo_note(t, k, ID_LEN + key.n);
+    if (urc) { free(k); return urc; }
     int rc = sk_insert(&t->buf, k, ID_LEN + key.n, UINT64_MAX, type, value.p, value.n, 1);
     free(k);
     return rc;
@@ -3332,6 +3358,158 @@ typedef struct GsCursor {
     unsigned char lo[ID_LEN], hi[ID_LEN];
     struct GsCursor *next;
 } Cur;
+
+/* ---- savepoints (gap G8, the gBASIC books) ---------------------------------------
+ *
+ * A savepoint marks a point inside a write transaction that its later changes
+ * can be undone to, leaving the earlier ones and the transaction itself in
+ * place. The buffer is overwritten in place and may have spilled to runs no
+ * one may change, so a change cannot be "taken out"; instead, while any
+ * savepoint is open, every change first records the key's BEFORE-IMAGE as the
+ * transaction sees it (its value, or that it had none), and undoing writes
+ * those back, newest first. A written-back image shadows whatever the
+ * buffer or a run holds, exactly as the change it undoes did.
+ *
+ * The tree catalog is rows too (catalog_set goes through buf_put), so a
+ * CREATE or DROP is undone the same way. What is not rows is kept by the
+ * mark: the per-name cache of tree ids, and the list of tree ids the commit
+ * will RETIRE, whose length is restored -- without that, a DROP undone by a
+ * savepoint would still delete the table's data at commit. Ids handed out
+ * after the mark are not reused: an id is a number, and a skipped one costs
+ * nothing.
+ *
+ * Nothing is recorded while no savepoint is open, so a transaction that never
+ * takes one pays nothing. One that does pays a lookup per change (measured:
+ * 20 000 single-row inserts in one transaction, no difference; one UPDATE of
+ * 20 000 rows inside one, 30% slower).
+ *
+ * THE BEFORE-IMAGES ARE BOUNDED. They are held in memory, where the buffer
+ * spills, so an UPDATE of ten million rows inside a transaction would hold
+ * every old row. Past UNDO_LIMIT they are dropped and no more are kept; the
+ * transaction carries on, and a rollback to a savepoint answers GS_TOO_LARGE,
+ * so the caller ends the transaction rather than half undoing it. */
+
+static void undo_free_from(struct GsTxn *t, size_t at) {
+    for (size_t i = at; i < t->nundo; i++) {
+        t->undo_bytes -= t->undo[i].kn + t->undo[i].vn + sizeof(UndoEnt);
+        free(t->undo[i].k);
+        free(t->undo[i].v);
+    }
+    t->nundo = at;
+}
+
+/* Four times the cache, and at least 4 MiB: 256 MiB at the default cache. */
+static uint64_t undo_limit(struct GsTxn *t) {
+    uint64_t l = t->db->cache_bytes * 4;
+    return l < (4u << 20) ? (4u << 20) : l;
+}
+
+/* Before a change to internal key k: what it is now, if a savepoint is open. */
+static int undo_note(struct GsTxn *t, const unsigned char *k, size_t kn) {
+    if (!t->marks || t->undo_lost) return GS_OK;
+    Ent e;
+    GsBuf keep = {0};
+    int rc = lookup(t, k, kn, &e, &keep);
+    if (rc != GS_OK && rc != GS_NOT_FOUND) { gsbuf_free(&keep); return rc; }
+    if (t->nundo == t->capundo) {
+        size_t cap = t->capundo ? t->capundo * 2 : 64;
+        UndoEnt *g = realloc(t->undo, cap * sizeof *g);
+        if (!g) { gsbuf_free(&keep); return GS_IO; }
+        t->undo = g;
+        t->capundo = cap;
+    }
+    UndoEnt *u = &t->undo[t->nundo];
+    u->k = malloc(kn ? kn : 1);
+    if (!u->k) { gsbuf_free(&keep); return GS_IO; }
+    memcpy(u->k, k, kn);
+    u->kn = kn;
+    u->had = rc == GS_OK;
+    u->v = NULL;
+    u->vn = 0;
+    if (u->had) {
+        u->v = malloc(keep.n ? keep.n : 1);
+        if (!u->v) { free(u->k); gsbuf_free(&keep); return GS_IO; }
+        if (keep.n) memcpy(u->v, keep.p, keep.n);   /* an empty value's buffer may be NULL */
+        u->vn = keep.n;
+    }
+    gsbuf_free(&keep);
+    t->nundo++;
+    t->undo_bytes += kn + u->vn + sizeof(UndoEnt);
+    if (t->undo_bytes > undo_limit(t)) {
+        undo_free_from(t, 0);
+        t->undo_lost = 1;
+    }
+    return GS_OK;
+}
+
+static int lsm_savepoint(struct GsTxn *t) {
+    WRITABLE(t);
+    SpMark *m = calloc(1, sizeof *m);
+    if (!m) return GS_IO;
+    m->undo_at = t->nundo;
+    m->ntrees = t->ntrees;
+    m->ids = malloc((t->ntrees ? t->ntrees : 1) * sizeof *m->ids);
+    if (!m->ids) { free(m); return GS_IO; }
+    for (size_t i = 0; i < t->ntrees; i++) m->ids[i] = t->trees[i].id;
+    m->nretired = t->retired.n;
+    m->prev = t->marks;
+    t->marks = m;
+    return GS_OK;
+}
+
+static void mark_pop(struct GsTxn *t) {
+    SpMark *m = t->marks;
+    t->marks = m->prev;
+    free(m->ids);
+    free(m);
+    if (!t->marks) {                       /* nothing can be undone to any more */
+        undo_free_from(t, 0);
+        t->undo_lost = 0;
+    }
+}
+
+/* Undo every change since the newest savepoint, and close it. A cursor open
+ * on a tree the mark did not know is refused (GS_MISUSE): its tree may be
+ * gone. Others rebuild their sources, as after a spill. */
+static int lsm_rollback_savepoint(struct GsTxn *t) {
+    WRITABLE(t);
+    SpMark *m = t->marks;
+    if (!m) return GS_MISUSE;
+    if (t->undo_lost) {
+        /* nothing to undo with: the mark goes, and the caller ends the
+         * transaction (an undo of part of it would be worse than none) */
+        mark_pop(t);
+        return GS_TOO_LARGE;
+    }
+    for (Cur *c = t->cursors; c; c = c->next)
+        if (c->tree >= m->ntrees) return GS_MISUSE;
+    for (size_t i = t->nundo; i-- > m->undo_at;) {
+        UndoEnt *u = &t->undo[i];
+        int rc = sk_insert(&t->buf, u->k, u->kn, UINT64_MAX, u->had ? TYPE_PUT : TYPE_DEL,
+                           u->had ? u->v : (const unsigned char *)"", u->had ? u->vn : 0, 1);
+        if (rc) { t->failed = rc; return rc; }
+    }
+    undo_free_from(t, m->undo_at);
+    for (size_t i = m->ntrees; i < t->ntrees; i++) gsbuf_free(&t->trees[i].name);
+    t->ntrees = m->ntrees;
+    for (size_t i = 0; i < t->ntrees; i++) {
+        t->trees[i].id = m->ids[i];
+        t->trees[i].mods++;
+    }
+    t->retired.n = m->nretired;
+    t->spills++;          /* cursors re-read their sources */
+    mark_pop(t);
+    return maybe_spill(t);
+}
+
+/* Keep every change since the newest savepoint, and close it: the changes
+ * now belong to the savepoint before it, or to the transaction. */
+static int lsm_release_savepoint(struct GsTxn *t) {
+    if (!t->marks) return GS_MISUSE;
+    mark_pop(t);
+    return GS_OK;
+}
+
 
 static int visible(const Cur *c, int si, const Ent *e) {
     /* the writer's own buffer and runs are always visible to it */
@@ -3602,6 +3780,7 @@ static int lsm_cursor_put(GsCursor *c, GsBytes value) {
     int rc = cur_live(c);
     if (rc) return rc;
     if (!c->positioned) return GS_NOT_FOUND;
+    if ((rc = undo_note(t, c->key.p, c->key.n))) return rc;
     rc = sk_insert(&t->buf, c->key.p, c->key.n, UINT64_MAX, TYPE_PUT, value.p, value.n, 1);
     if (rc) { t->failed = rc; return rc; }
     t->trees[c->tree].mods++;
@@ -3620,6 +3799,7 @@ static int lsm_cursor_delete(GsCursor *c) {
     int rc = cur_live(c);
     if (rc) return rc;
     if (!c->positioned) return GS_NOT_FOUND;
+    if ((rc = undo_note(t, c->key.p, c->key.n))) return rc;
     rc = sk_insert(&t->buf, c->key.p, c->key.n, UINT64_MAX, TYPE_DEL, (const unsigned char *)"", 0, 1);
     if (rc) { t->failed = rc; return rc; }
     t->trees[c->tree].mods++;
@@ -3745,7 +3925,18 @@ static void txn_free(struct GsTxn *t) {
     free(t->runs);
     snap_del(t->db, t->snap);
     version_unref(t->db, t->v);
-    if (t->write) { sk_free(&t->buf); u64_free(&t->retired); }
+    if (t->write) {
+        sk_free(&t->buf);
+        u64_free(&t->retired);
+        while (t->marks) {
+            SpMark *m = t->marks;
+            t->marks = m->prev;
+            free(m->ids);
+            free(m);
+        }
+        for (size_t i = 0; i < t->nundo; i++) { free(t->undo[i].k); free(t->undo[i].v); }
+        free(t->undo);
+    }
     for (size_t i = 0; i < t->ntrees; i++) gsbuf_free(&t->trees[i].name);
     free(t->trees);
     gsbuf_free(&t->value);
@@ -4532,4 +4723,5 @@ const GsEngine gs_engine_lsm = {
     lsm_cursor_put, lsm_cursor_delete, lsm_cursor_close,
     lsm_backup, lsm_backup_begin, lsm_backup_step, lsm_backup_end, lsm_check, lsm_stats,
     lsm_txn_id, lsm_flush, lsm_backup_progress, lsm_lease_keep, lsm_estimate,
+    lsm_savepoint, lsm_rollback_savepoint, lsm_release_savepoint,
 };

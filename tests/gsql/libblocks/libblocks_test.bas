@@ -25,6 +25,12 @@ end function
 
 database shop( file: "program.gsql", create: true )
 
+' a program's own block on the LIBRARY's database (gap G6): it was a parse
+' error, "expecting LPAREN"
+sql priciest on store.shop
+    select name from item order by price desc limit 1
+end sql
+
 sql make on shop
     create table note (body string)
 end sql
@@ -69,6 +75,13 @@ r = gsql.exec(store.cheaper, { limit: 4 })
 check("and through gsql.exec, with a record of parameters", count(r.rows), 1)
 check("the record's parameter is the one used", r.rows[0].name, "apple")
 check("a qualified block is an sql block", type(store.all_items), "gsql_statement")
+
+' the method spelling from outside is the module spelling (gap G6): it said
+' "undefined variable: store", where gsql.exec(store.cheaper, ...) worked
+r = store.cheaper.exec({ limit: 4 })
+check("a library's block with the method spelling, from outside", r.rows[0].name, "apple")
+check("  and its database's verbs too", count(store.shop.query("select name from item")), 3)
+check("a program's block on a library's database", priciest.exec().rows[0].name, "fig")
 
 ' an alias is the same library, so the same blocks and the same database
 check("an aliased library's functions reach the same blocks", shelf.names(), ["apple", "fig", "pear"])

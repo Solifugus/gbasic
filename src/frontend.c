@@ -846,7 +846,15 @@ static void gsq_check_sql(SrvCheck *chk, const AstStmt *stmt, const GsqDecls *d,
             db = d->decls[i];
         }
     }
-    if (!db) {
+    int qualified = strchr(stmt->as.sql.database, '.') != NULL;
+    if (qualified && in_library) {
+        gsq_error(chk, stmt->line, stmt->column,
+                  "sql '%s' is on `%s`, another library's database: a library's blocks are on its own databases",
+                  stmt->as.sql.name, stmt->as.sql.database);
+    } else if (!db && !qualified) {
+        /* a program's block on a library's database (`store.shop`, gap G6) is
+           found in that library when it runs, since libraries load after
+           this check */
         gsq_error(chk, stmt->line, stmt->column,
                   "sql '%s' is on `%s`, and there is no `database %s( file: ... )` in this %s",
                   stmt->as.sql.name, stmt->as.sql.database, stmt->as.sql.database,

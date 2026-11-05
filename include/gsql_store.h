@@ -191,6 +191,16 @@ typedef struct GsEngine {
      * key until compaction folds it, and leaves out the transaction's own
      * unwritten changes. NULL in an engine that cannot say. */
     int (*estimate)(GsTxn *t, GsBytes tree, uint64_t *entries);
+    /* Savepoints inside a WRITE transaction (gap G8 from the gBASIC books): a
+     * stack of marks. `savepoint` pushes one; `rollback_savepoint` undoes
+     * every change since the newest and pops it; `release_savepoint` keeps
+     * them and pops it. GS_MISUSE with no savepoint open, and for a rollback
+     * while a cursor is open on a tree the savepoint did not know. A
+     * transaction that takes none pays nothing; one that does pays a lookup
+     * per change while any is open. NULL in an engine without them. */
+    int (*savepoint)(GsTxn *t);
+    int (*rollback_savepoint)(GsTxn *t);
+    int (*release_savepoint)(GsTxn *t);
 } GsEngine;
 
 extern const GsEngine gs_engine_lsm;  /* §2.C, the chosen engine */

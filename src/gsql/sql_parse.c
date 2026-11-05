@@ -2348,9 +2348,22 @@ static SqlStmt *query_stmt(P *p) {
     return q;
 }
 
-/* CREATE [OR REPLACE] VIEW name [(cols)] AS select (docs/gsql_view_design.md) */
+/* CREATE [OR REPLACE] VIEW [IF NOT EXISTS] name [(cols)] AS select
+ * (docs/gsql_view_design.md). IF NOT EXISTS as tables take it (gap G9 from
+ * the gBASIC books), so a setup routine writes both the same way. */
 static int view_stmt(P *p, SqlStmt *s) {
     s->kind = SQ_CREATE_VIEW;
+    uint32_t if_pos = p->tok.pos;
+    if (accept_kw(p, "if")) {
+        if (!expect_kw(p, "not") || !expect_kw(p, "exists")) {
+            return 0;
+        }
+        if (s->or_replace) {
+            return fail_at(p, if_pos, GSQL_SYNTAX, "OR REPLACE and IF NOT EXISTS ask opposite things of a view "
+                           "that is already there: write one of them");
+        }
+        s->if_exists = 1;
+    }
     s->table = name(p, "a view name");
     if (!s->table) {
         return 0;
@@ -3784,7 +3797,7 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
         print_coldef(o, &s->coldefs[0]);
         return;
     case SQ_CREATE_VIEW:
-        puts_(o, s->or_replace ? "CREATE OR REPLACE VIEW " : "CREATE VIEW ");
+        puts_(o, s->or_replace ? "CREATE OR REPLACE VIEW " : s->if_exists ? "CREATE VIEW IF NOT EXISTS " : "CREATE VIEW ");
         print_name(o, s->table);
         if (s->view_cols.n) {
             v3_put(o, " ", 1);

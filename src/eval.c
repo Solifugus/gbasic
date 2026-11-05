@@ -29925,8 +29925,17 @@ static Value eval_method_call(AstExpr *expr) {
     Value temp = value_null();
     int have_temp = 0;
 
-    if (recv->kind == AST_EXPR_IDENT || recv->kind == AST_EXPR_FIELD ||
-        recv->kind == AST_EXPR_INDEX) {
+    /* `stages.add.exec(row)`: a block a LIBRARY declared, reached from
+     * outside, is not a variable, so it has no place to resolve as one
+     * ("undefined variable: stages", gap G6 from the gBASIC books, where the
+     * module spelling gsql.exec(stages.add, row) worked). Evaluated as the
+     * value the field expression already answers; a variable of the
+     * library's name still wins, as it does there. */
+    int library_block = recv->kind == AST_EXPR_FIELD && recv->as.field.object->kind == AST_EXPR_IDENT &&
+                        !env_lookup_exists(recv->as.field.object->as.ident) &&
+                        library_frame_find(recv->as.field.object->as.ident);
+    if (!library_block && (recv->kind == AST_EXPR_IDENT || recv->kind == AST_EXPR_FIELD ||
+        recv->kind == AST_EXPR_INDEX)) {
         ref = resolve_lvalue_ref(recv);   /* evaluates index subexprs once; raises on error */
         if (!ref) {
             return value_null();

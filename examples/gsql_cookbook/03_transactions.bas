@@ -57,7 +57,8 @@ bank.rollback()                    ' changed our mind: neither happened
 r = first_two.query()
 print "after a rollback: " + string(r[0].bal) + " and " + string(r[1].bal)
 
-' A refused statement that changed nothing leaves the transaction usable.
+' A refused statement leaves the transaction usable: one refused part way is
+' undone alone, under a savepoint of its own.
 function insert_twice()
     on error goto next
     bank.begin()

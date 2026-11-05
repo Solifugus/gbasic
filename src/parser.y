@@ -1457,6 +1457,20 @@ gsql_block
         free($8);
         $$ = ast_sql($2, $4, $6, @6.first_line, @6.first_column, @1.first_line, @1.first_column);
       }
+    /* on a LIBRARY's database (gap G6): found in that library's frame when
+     * the block runs, kept as the dotted name until then */
+    | SQL_OPEN IDENT ON IDENT DOT IDENT NEWLINE SQL_TEXT END IDENT NEWLINE {
+        free($10);
+        size_t qn = strlen($4) + strlen($6) + 2;
+        char *q = malloc(qn);
+        if (!q) {
+            abort();
+        }
+        snprintf(q, qn, "%s.%s", $4, $6);
+        free($4);
+        free($6);
+        $$ = ast_sql($2, q, $8, @8.first_line, @8.first_column, @1.first_line, @1.first_column);
+      }
     ;
 
 window_block

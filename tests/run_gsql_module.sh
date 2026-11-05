@@ -118,6 +118,27 @@ if [ -s "$work/inttext.err" ]; then
     fail "integer text: the fixture wrote to stderr"
 fi
 
+printf 'TIER savepoints: a BEGIN inside a write transaction nests, and a statement refused part way is undone alone\n'
+# gap G8 from the gBASIC books (volume 3's gap ledger)
+mkdir -p "$work/savepoint"
+(cd "$work/savepoint" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/savepoint_test.bas") \
+    >"$work/savepoint.out" 2>"$work/savepoint.err"
+verdict "savepoints" "$work/savepoint.out" $? 24
+if [ -s "$work/savepoint.err" ]; then
+    sed 's/^/       /' "$work/savepoint.err" | head -5
+    fail "savepoints: the fixture wrote to stderr"
+fi
+
+printf 'TIER ledger gaps: CREATE VIEW IF NOT EXISTS (G9), and a missing folder named (G7)\n'
+mkdir -p "$work/ledger"
+(cd "$work/ledger" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/ledger_gaps_test.bas") \
+    >"$work/ledger.out" 2>"$work/ledger.err"
+verdict "ledger gaps" "$work/ledger.out" $? 8
+if [ -s "$work/ledger.err" ]; then
+    sed 's/^/       /' "$work/ledger.err" | head -5
+    fail "ledger gaps: the fixture wrote to stderr"
+fi
+
 printf 'TIER compare text: a comparison reads text as the other side'"'"'s kind, and a seek agrees with a scan\n'
 # gdash S3/S4, Matthew's ruling 2026-11-02 (docs/gsql_compare_conversion_design.md)
 mkdir -p "$work/cmptext"
@@ -168,7 +189,7 @@ printf 'TIER library: `database` and `sql` blocks inside a library are the libra
 mkdir -p "$work/libblocks"
 (cd "$work/libblocks" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/libblocks/libblocks_test.bas") \
     >"$work/libblocks.out" 2>"$work/libblocks.err"
-verdict library "$work/libblocks.out" $? 16
+verdict library "$work/libblocks.out" $? 19
 if [ -s "$work/libblocks.err" ]; then
     sed 's/^/       /' "$work/libblocks.err" | head -5
     fail "library: the fixture wrote to stderr"

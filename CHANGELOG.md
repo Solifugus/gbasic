@@ -16,6 +16,26 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### G-SQL: savepoints, atomic statements, and three small gaps
+
+Gaps G6-G9 from the gBASIC books (volume 3's gap ledger).
+
+- **Savepoints, as nested transactions (G8).** A `gsql.begin` inside a write
+  transaction is a savepoint: its `commit` keeps what was done since, its
+  `rollback` undoes that and nothing before. A unit of work written as
+  begin/commit is one unit alone or inside a caller's transaction. In the
+  engine: an undo log of before-images while a savepoint is open, bounded at
+  four times the cache.
+- **A statement refused part way inside a transaction is undone alone**,
+  under a savepoint of its own; it used to fail the transaction.
+  *Behaviour changes:* a nested `begin` is no longer refused as `STATE`, and
+  a multi-statement `sql` block inside a program's transaction now owns a
+  savepoint, so a block refused part way undoes its own earlier statements.
+- **`CREATE VIEW IF NOT EXISTS` (G9)**, as tables take it.
+- **A missing folder is named (G7)** where the open said only `IO`.
+- **A library's blocks take the method spelling from outside (G6)**,
+  `store.add.exec(row)`, and a program may declare `sql mine on store.shop`.
+
 ### Text encodings, and duplicate JSON keys
 
 Gaps G10 and G12 from the gBASIC books (volume 3's gap ledger).

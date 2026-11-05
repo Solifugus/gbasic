@@ -266,13 +266,18 @@ int main(int argc, char **argv) {
     check(strncmp(w, "DONE", 4) == 0, "COMMIT: %s", w);
     EXPECT(c, "SELECT n FROM t WHERE id = 1", "ROWS 5");
 
-    /* ... and one that fails part way fails it (§4) */
+    /* ... and so does one that fails part way: it runs under a savepoint of
+     * its own, so its earlier rows are undone with it (gap G8). It used to
+     * fail the transaction (§4's old rule), since nothing smaller could undo
+     * them. */
     w = simple(c, GSQL_M_BEGIN, "write");
     check(strcmp(w, "DONE 0") == 0, "BEGIN WRITE: %s", w);
     EXPECT_PREFIX(c, "UPDATE t SET v = 'z'", "ERROR DUPLICATE");
-    EXPECT_PREFIX(c, "SELECT 1", "ERROR FAILED@0 an earlier statement failed part way");
-    w = simple(c, GSQL_M_ROLLBACK, NULL);
-    check(strcmp(w, "DONE 0") == 0, "ROLLBACK acknowledges it: %s", w);
+    EXPECT(c, "SELECT v FROM t ORDER BY id", "ROWS 'a' | 'b' | 'c'");
+    EXPECT(c, "UPDATE t SET n = 5 WHERE id = 1", "DONE 1");
+    w = simple(c, GSQL_M_COMMIT, NULL);
+    check(strncmp(w, "DONE", 4) == 0, "COMMIT after a part-way refusal: %s", w);
+    EXPECT(c, "SELECT n FROM t WHERE id = 1", "ROWS 5");
     EXPECT(c, "SELECT v FROM t ORDER BY id", "ROWS 'a' | 'b' | 'c'");
 
     /* a write in a BEGIN READ */

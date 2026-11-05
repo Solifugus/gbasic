@@ -907,8 +907,13 @@ static int protocol_main(const char *dir) {
     EXPECT(!strcmp(call(a, GSQL_M_COMMIT, NULL), "ERROR:STATE"), "COMMIT with nothing begun answered %s", last_word);
     EXPECT(!strcmp(call(a, GSQL_M_ROLLBACK, NULL), "ERROR:STATE"), "ROLLBACK with nothing begun answered %s", last_word);
     EXPECT(!strcmp(begin(a, "read"), "DONE"), "BEGIN READ answered %s", last_word);
-    EXPECT(!strcmp(begin(a, "read"), "ERROR:STATE"), "BEGIN inside a transaction answered %s", last_word);
+    /* a BEGIN inside a transaction NESTS (gap G8); a read one cannot start writing */
+    EXPECT(!strcmp(begin(a, "read"), "DONE"), "a BEGIN READ inside a read transaction answered %s", last_word);
+    EXPECT(!strcmp(begin(a, "write"), "ERROR:READ_ONLY"), "a BEGIN WRITE inside a read one answered %s", last_word);
+    EXPECT(!strcmp(call(a, GSQL_M_ROLLBACK, NULL), "DONE"), "the nested ROLLBACK answered %s", last_word);
     EXPECT(!strcmp(call(a, GSQL_M_ROLLBACK, NULL), "DONE"), "ROLLBACK of a read answered %s", last_word);
+    EXPECT(!strcmp(call(a, GSQL_M_ROLLBACK, NULL), "ERROR:STATE"), "a third ROLLBACK, with nothing open, answered %s",
+           last_word);
     EXPECT(!strcmp(begin(a, "sideways"), "ERROR:PROTOCOL") && strstr(last_message, "sideways"),
            "BEGIN with a mode that is not one answered %s: %s", last_word, last_message);
 

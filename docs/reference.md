@@ -2634,6 +2634,51 @@ The module provides:
 - `connection.exec(sql[, parameters])` (`gsql.exec`) — runs anything and answers `{ command, rows_affected }`, as `sqlite`, `pg` and `odbc` answer, plus **`rows`, every row, when the statement returns rows**; `rows_affected` is `nothing` for a statement with no count. `gsql.query` is the shortcut for the rows alone, and `for each` streams a large result
 - `connection.begin(["read" | "write"])` (`gsql.begin`) — `"write"` by default
 - `connection.commit()` (`gsql.commit`), `connection.rollback()` (`gsql.rollback`)
+- **A `begin` inside a transaction nests** *(2026-11-05)*: in a write
+  transaction it is a **savepoint**. Its matching `commit` keeps what was done
+  since, inside the transaction, which goes on; its matching `rollback` undoes
+  that and nothing before it. So a unit of work written as `begin` … `commit`
+  (or `rollback` on failure) is one unit whether it runs alone or inside a
+  caller's transaction:
+
+  ```basic
+  function store_robot(db, robot)
+      db.begin()                      ' a transaction alone, a savepoint inside one
+      on error goto undo
+      for each part in robot.parts
+          db.exec("insert into part values (:serial, :name)", part)
+      end for
+      db.commit()
+      return true
+  undo:
+      error.clear()
+      db.rollback()                   ' this robot's rows, and nothing earlier
+      return false
+  end function
+  ```
+
+  A read transaction nests with nothing to undo, and cannot start writing
+  (`READ_ONLY`). Rolling back to a savepoint closes the transaction's open
+  cursors. A multi-statement `sql` block run inside a transaction takes a
+  savepoint of its own, so one refused part way undoes its earlier statements
+  and nothing of the program's.
+- **A statement refused part way is undone alone.** Inside a transaction a
+  writing statement runs under a savepoint of its own, so row 5 of an `UPDATE`
+  meeting a duplicate after rows 1 to 4 changed leaves no trace and the
+  transaction goes on. (It used to fail the whole transaction.) The cost is
+  measured: none for single-row statements, about 30% on one `UPDATE` of
+  20 000 rows inside a transaction; autocommit pays nothing. The old rows a
+  savepoint keeps are bounded (four times the cache, 256 MiB by default); a
+  transaction past that still works, but rolling back to one of its savepoints
+  ends the whole transaction (`FAILED`) rather than undoing half of it.
+- **A library's blocks from outside** take the method spelling as the module
+  one, `store.add.exec(row)` as `gsql.exec(store.add, row)`, and a program may
+  declare its own block on a library's database: `sql mine on store.shop`.
+- **`CREATE VIEW IF NOT EXISTS`** as tables take it: a view already there is
+  kept as it is. With `OR REPLACE` it is refused, the two asking opposite
+  things.
+- A database in a folder that does not exist is refused naming the folder:
+  G-SQL creates the database, not the folders above it.
 - `connection.close()` (`gsql.close`)
 - `connection.max_recursion` — an **attribute**, set and read like a field: the rounds a `WITH RECURSIVE` query may run on this connection before it is refused, 1 000 000 unless set. `bank.max_recursion = 5000000` holds for every later statement on the connection, through its `sql` blocks and SQL strings alike; `unknown` sets it back. It takes a whole number of one or more, and a connection has no other attribute (`docs/gsql_recursive_design.md` §3)
 - `connection.backup(dir)` (`gsql.backup`) — a consistent copy as of now, made while the

@@ -154,6 +154,7 @@ typedef struct {
     size_t out_pos;
     Req *head, *tail;
     int tx;
+    unsigned depth;     /* BEGINs nested inside the transaction: savepoints in a write one (G8) */
     GsTxn *txn;
     uint64_t tx_ms;     /* the last request inside the transaction */
     char why[300];      /* why a transaction is FAILED or TIMED_OUT */
@@ -386,6 +387,7 @@ static void txn_end(Owner *o, Conn *c) {
         o->writer = NULL;
     }
     c->tx = TX_NONE;
+    c->depth = 0;
     c->why[0] = 0;
 }
 
@@ -613,10 +615,29 @@ static int do_query(Owner *o, Conn *c, Req *r) {
             }
         }
     }
+    /* A STATEMENT IS ATOMIC INSIDE A TRANSACTION TOO (G8): a writing one
+     * runs under a savepoint of its own, so one refused part way -- row 5 of
+     * an UPDATE meeting a duplicate after rows 1 to 4 changed -- is undone
+     * alone and the transaction goes on, as one refused before it wrote
+     * anything always did. Without savepoints the only undo was the whole
+     * transaction, so it FAILED (gsql_sql_design.md §4). */
+    int stmt_mark = 0;
+    if (w && c->tx == TX_WRITE && o->e->savepoint && o->e->savepoint(t) == GS_OK) {
+        stmt_mark = 1;
+    }
     GsqlResult res;
     memset(&res, 0, sizeof res);
     int rc = o->svc->run(o->svc->ctx, o->e, t, &s, &res, &err);
+    if (stmt_mark && rc == GSQL_OK) {
+        o->e->release_savepoint(t);
+    }
     if (rc != GSQL_OK) {
+        int undone = 0;
+        if (stmt_mark && rc != GSQL_STORAGE) {
+            undone = o->e->rollback_savepoint(t) == GS_OK;
+        } else if (stmt_mark) {
+            o->e->release_savepoint(t);
+        }
         if (c->tx == TX_NONE) {
             if (res.cursor && o->svc->close) {
                 o->svc->close(o->svc->ctx, res.cursor);
@@ -624,9 +645,9 @@ static int do_query(Owner *o, Conn *c, Req *r) {
             o->e->abort(t);
         } else if (rc == GSQL_STORAGE) {
             storage_failed(o, c, err.message);
-        } else if (res.failed_part_way) {
-            /* it changed rows before it failed, and there is nothing to undo
-             * them with but the whole transaction (gsql_sql_design.md §4) */
+        } else if (res.failed_part_way && !undone) {
+            /* it changed rows before it failed, and its savepoint could not
+             * undo them: only the whole transaction can */
             char why[sizeof c->why];
             snprintf(why, sizeof why, "an earlier statement failed part way, after changing rows (%.200s)", err.message);
             txn_failed(o, c, why);
@@ -755,10 +776,6 @@ static int do_begin(Owner *o, Conn *c, Req *r) {
     if (txn_refuses(c, r->id)) {
         return DONE_REQ;
     }
-    if (c->tx != TX_NONE) {
-        send_error(c, r->id, GSQL_STATE, "a transaction is already open on this connection");
-        return DONE_REQ;
-    }
     V3Field f[MAX_FIELDS];
     long nf = body_fields(r->body, r->length, f);
     char *mode = nf >= 0 ? field_text(f, nf, "mode") : NULL;
@@ -770,6 +787,30 @@ static int do_begin(Owner *o, Conn *c, Req *r) {
         return DONE_REQ;
     }
     free(mode);
+    if (c->tx != TX_NONE) {
+        /* A BEGIN INSIDE A TRANSACTION NESTS (gap G8): in a write one it is a
+         * savepoint, so the matching COMMIT keeps what was done since and the
+         * matching ROLLBACK undoes only that. A unit of work written as
+         * begin ... commit is then one unit whether it runs alone or inside a
+         * caller's transaction. A read one nests with nothing to undo; it
+         * cannot become a write one. */
+        if (write && c->tx == TX_READ) {
+            send_error(c, r->id, GSQL_READ_ONLY,
+                       "a write BEGIN inside a transaction that began READ; a read transaction cannot start writing");
+            return DONE_REQ;
+        }
+        if (c->tx == TX_WRITE) {
+            int rc = o->e->savepoint ? o->e->savepoint(c->txn) : GS_MISUSE;
+            if (rc) {
+                send_errorf(c, r->id, GSQL_STORAGE, "a nested BEGIN could not take a savepoint: the engine answered %s",
+                            gs_status_name(rc));
+                return DONE_REQ;
+            }
+        }
+        c->depth++;
+        send_done(c, r->id, NULL, 0, 0);
+        return DONE_REQ;
+    }
     int rc;
     if (write) {
         if (!writer_take(o, c)) {
@@ -910,6 +951,19 @@ static int do_commit(Owner *o, Conn *c, Req *r) {
         txn_end(o, c);
         return DONE_REQ;
     }
+    if (c->depth > 0) {
+        /* the matching COMMIT of a nested BEGIN: keep what it did, inside
+         * the transaction, which goes on */
+        int rc = c->tx == TX_WRITE ? o->e->release_savepoint(c->txn) : GS_OK;
+        c->depth--;
+        if (rc) {
+            storage_failed(o, c, gs_status_name(rc));
+            txn_refuses(c, r->id);
+            return DONE_REQ;
+        }
+        send_done(c, r->id, NULL, 0, 0);
+        return DONE_REQ;
+    }
     cursors_of_txn(o, c);
     if (c->tx == TX_READ) {
         txn_end(o, c);
@@ -1017,7 +1071,30 @@ static int handle(Owner *o, Conn *c, Req *r) {
     case GSQL_M_ROLLBACK:
         if (c->tx == TX_NONE) {
             send_error(c, r->id, GSQL_STATE, "ROLLBACK with no transaction open");
+        } else if (c->depth > 0 && c->tx == TX_WRITE) {
+            /* the matching ROLLBACK of a nested BEGIN: undo what it did and
+             * nothing before. The transaction's cursors close, since a
+             * cursor may be reading a table the savepoint did not know */
+            cursors_of_txn(o, c);
+            int rc = o->e->rollback_savepoint(c->txn);
+            c->depth--;
+            if (rc == GS_TOO_LARGE) {
+                txn_failed(o, c, "the work since the nested BEGIN was too large to undo by itself (its old rows "
+                                 "outgrew the bound kept for them), so the whole transaction was rolled back");
+                txn_refuses(c, r->id);
+            } else if (rc) {
+                storage_failed(o, c, gs_status_name(rc));
+                txn_refuses(c, r->id);
+            } else {
+                send_done(c, r->id, NULL, 0, 0);
+            }
+        } else if (c->depth > 0 && c->tx == TX_READ) {
+            c->depth--;
+            send_done(c, r->id, NULL, 0, 0);
         } else {
+            /* the outermost ROLLBACK, or one of a FAILED or TIMED OUT
+             * transaction at any depth: the engine's transaction is gone,
+             * so every level of it goes */
             txn_end(o, c);
             send_done(c, r->id, NULL, 0, 0);
         }
@@ -1703,8 +1780,35 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
         goto out_pipe;
     }
     if (rc) {
+        /* An IO failure is most often the folder above the database (gap G7
+         * from the gBASIC books): "IO" alone named nothing a program could
+         * act on. G-SQL makes the database, never the folders above it. */
+        char why[700] = "";
+        if (rc == GS_NOT_FOUND) {
+            snprintf(why, sizeof why, " (it does not exist, and creating it was not asked for)");
+        } else if (rc == GS_IO) {
+            char parent[600];
+            snprintf(parent, sizeof parent, "%s", db);
+            char *slash = strrchr(parent, '/');
+            if (slash == parent) {
+                slash[1] = '\0';
+            } else if (slash) {
+                *slash = '\0';
+            } else {
+                snprintf(parent, sizeof parent, ".");
+            }
+            struct stat st;
+            if (stat(parent, &st) != 0) {
+                snprintf(why, sizeof why, " (the folder %s does not exist: G-SQL creates the database, not the folders "
+                         "above it)", parent);
+            } else if (!S_ISDIR(st.st_mode)) {
+                snprintf(why, sizeof why, " (%s is not a folder)", parent);
+            } else if (access(parent, W_OK | X_OK) != 0) {
+                snprintf(why, sizeof why, " (the folder %s cannot be written by this user)", parent);
+            }
+        }
         ready_line(o.opt.ready_fd, "error the database %s could not be opened: the engine answered %s%s", db,
-                   gs_status_name(rc), rc == GS_NOT_FOUND ? " (it does not exist, and creating it was not asked for)" : "");
+                   gs_status_name(rc), why);
         fprintf(stderr, "gsql owner: the database %s could not be opened: %s\n", db, gs_status_name(rc));
         goto out_pipe;
     }

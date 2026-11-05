@@ -164,6 +164,10 @@
 = CREATE OR REPLACE VIEW v (a, b) AS WITH w AS (SELECT 1, 2) SELECT * FROM w
 > drop view if exists v
 = DROP VIEW IF EXISTS v
+> create view if not exists v as select 1
+= CREATE VIEW IF NOT EXISTS v AS SELECT 1
+> create or replace view if not exists v as select 1
+! SYNTAX 24 OR REPLACE and IF NOT EXISTS ask opposite things of a view that is already there: write one of them
 > create or view v as select 1
 ! SYNTAX 11 expected REPLACE after CREATE OR
 > create view v select 1

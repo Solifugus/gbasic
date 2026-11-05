@@ -7138,6 +7138,19 @@ static int run_schema_change(X *x, GsqlResult *out) {
     out->affected = 0;
     switch (s->kind) {
     case SQ_CREATE_VIEW: {
+        if (s->if_exists) {
+            /* a view of the name already there is kept as it is; a TABLE of
+               the name is still refused below, since IF NOT EXISTS asks
+               about a view */
+            GsqlBuf had = {0};
+            int got = gsql_view_get(x->e, x->t, s->table, &had, err);
+            gsql_buf_free(&had);
+            if (got == GSQL_OK) {
+                return GSQL_OK;
+            }
+            err->code = GSQL_OK;
+            err->message[0] = 0;
+        }
         GsqlBuf rec = {0};
         const SqlPlan *q = x->p->left;
         int named = s->view_cols.n > 0;

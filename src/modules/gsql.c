@@ -1241,7 +1241,25 @@ static GsqlConnectionValue *gsql_block_connection(const GsqlStatementValue *st, 
     if (st->bound.kind == VALUE_GSQL_CONNECTION) {
         return gsql_connection_of(value_copy(st->bound), who);
     }
-    Symbol *sym = env_find_in_frame(st->home ? st->home : &global_env, st->database);
+    Symbol *sym = NULL;
+    const char *dot = strchr(st->database, '.');
+    if (dot) {
+        /* `sql mine on store.shop`: a program's block on a LIBRARY's
+         * database (gap G6 from the gBASIC books), found in that library's
+         * frame, where its `database` block is bound */
+        char lib[200];
+        snprintf(lib, sizeof lib, "%.*s", (int)(dot - st->database), st->database);
+        Env *frame = library_frame_find(lib);
+        if (!frame) {
+            char msg[400];
+            snprintf(msg, sizeof msg, "it is on `%s`, and no library `%s` is loaded", st->database, lib);
+            gsql_module_raise(who, "STATE", msg, 0, st->sql);
+            return NULL;
+        }
+        sym = env_find_in_frame(frame, dot + 1);
+    } else {
+        sym = env_find_in_frame(st->home ? st->home : &global_env, st->database);
+    }
     if (!sym || sym->value.kind != VALUE_GSQL_CONNECTION) {
         char msg[300];
         snprintf(msg, sizeof msg, "it is on `%s`, which %s", st->database,
