@@ -206,6 +206,8 @@
       <item>now</item>
       <item>number</item>
       <item>overwrite</item>
+      <item>pack</item>
+      <item>pack_size</item>
       <item>password_hash</item>
       <item>password_hash_cost</item>
       <item>password_verify</item>
@@ -284,6 +286,7 @@
       <item>uncompress</item>
       <item>unique</item>
       <item>unlock</item>
+      <item>unpack</item>
       <item>upper</item>
       <item>values</item>
       <item>variance</item>

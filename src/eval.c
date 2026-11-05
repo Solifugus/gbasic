@@ -215,6 +215,7 @@ static void csv_source_retain(CsvSourceValue *source);
 typedef struct ActorHandle ActorHandle;
 typedef struct ProcessHandle ProcessHandle;
 typedef struct HttpHandle HttpHandle;
+typedef struct NetSocket NetSocket;
 typedef struct WebServer WebServer;
 typedef struct WebServerClient WebServerClient;
 
@@ -245,7 +246,8 @@ typedef enum {
     VALUE_WORKBOOK,
     VALUE_GSQL_CONNECTION,
     VALUE_GSQL_STATEMENT,
-    VALUE_CSV_SOURCE
+    VALUE_CSV_SOURCE,
+    VALUE_NET
 } ValueKind;
 
 typedef enum {
@@ -390,6 +392,7 @@ struct Value {
         ActorHandle *actor;
         ProcessHandle *process;
         HttpHandle *http;
+        NetSocket *net;
         /* A first-class function value: a reference to a registered function by
          * name (NOT a capturing closure — see docs/first_class_functions_design.md
          * §2). `library` is the owning library for an imported function, or NULL
@@ -1075,6 +1078,22 @@ static int inbox_events_watched(void);
 static void inbox_bind_global(void);
 static int inbox_loop_active(void);
 static int inbox_loop_service(void);
+static int net_library_loaded = 0;
+static void net_bind_events_global(void);
+static int net_loop_active(void);
+static size_t net_poll_count(void);
+static size_t net_collect_fds(struct pollfd *p, NetSocket **who, size_t max);
+static long net_poll_timeout_ms(long tick_ms);
+static void net_service_io(struct pollfd *p, NetSocket **who, size_t n);
+static void net_service_time(void);
+static int net_deliver(void);
+static void net_shutdown(void);
+static void net_socket_release(NetSocket *s);
+static int net_field(NetSocket *s, const char *field, Value *out);
+static int net_is_listener(NetSocket *s);
+static long net_socket_id(NetSocket *s);
+static void net_socket_retain(NetSocket *s);
+static Value net_eval_call(AstExpr *expr);
 static void timer_bind_global(void);
 static int timer_loop_active(void);
 static int timer_loop_service(void);
@@ -1154,6 +1173,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "process";
     case VALUE_HTTP:
         return "http";
+    case VALUE_NET:
+        return "net";
     case VALUE_FUNCTION:
         return "function";
     case VALUE_REGEX:
@@ -4426,6 +4447,11 @@ static Value value_copy(Value value) {
         value.as.http->ref_count++;
         return value;
     }
+    if (value.kind == VALUE_NET) {
+        /* and every copy names the SAME socket */
+        net_socket_retain(value.as.net);
+        return value;
+    }
     if (value.kind == VALUE_FUNCTION) {
         if (value.as.function.context) {
             return value_function_bound(value.as.function.name,
@@ -4568,6 +4594,8 @@ static void value_free(Value value) {
         process_handle_release(value.as.process);
     } else if (value.kind == VALUE_HTTP) {
         http_handle_release(value.as.http);
+    } else if (value.kind == VALUE_NET) {
+        net_socket_release(value.as.net);
     } else if (value.kind == VALUE_ACTOR) {
         ActorHandle *handle = value.as.actor;
         if (handle && --handle->ref_count == 0) {
@@ -4784,6 +4812,8 @@ static int value_truthy(Value value, int *raised) {
     case VALUE_PROCESS:
         return 1;
     case VALUE_HTTP:
+        return 1;
+    case VALUE_NET:
         return 1;
     case VALUE_FUNCTION:
         return 1;
@@ -6249,6 +6279,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
     case VALUE_HTTP:
         /* Same rule: two requests to one URL are two transfers, never equal. */
         return left->as.http == right->as.http;
+    case VALUE_NET:
+        return left->as.net == right->as.net;
     case VALUE_FUNCTION:
         return function_value_equal(left, right);
     case VALUE_REGEX:
@@ -8989,7 +9021,7 @@ static size_t library_name_count = 0;
  * directions are refused rather than silently not working. */
 static int library_is_native_qualifier(const char *name) {
     static const char *native[] = {
-        "csv", "gsql", "http", "ldap", "money", "odbc", "pg", "process",
+        "csv", "gsql", "http", "ldap", "money", "net", "odbc", "pg", "process",
         "qt", "reflect", "smtp", "sqlite", "this", "timer",
         "webclient", "webserver", "xlsx", "xml", NULL
     };
@@ -9049,6 +9081,7 @@ static const GbCapability gb_capability_table[] = {
     { "http",      "net" },
     { "ldap",      "net" },
     { "money",     "" },
+    { "net",       "net net:listen" },
     { "odbc",      "db" },
     { "pg",        "db" },
     { "process",   "process" },
@@ -9150,7 +9183,7 @@ int eval_is_native_module(const char *name) {
  * not). */
 int eval_module_needs_load(const char *name) {
     static const char *loadable[] = {
-        "gsql", "http", "ldap", "odbc", "pg", "smtp", "sqlite",
+        "gsql", "http", "ldap", "net", "odbc", "pg", "smtp", "sqlite",
         "webclient", "webserver", "xml", NULL
     };
     if (!name) {
@@ -9311,6 +9344,14 @@ static void library_import(const char *name, const char *path, const char *alias
                             2003,
                             "odbc");
 #endif
+        return;
+    }
+
+    if (!path && strcmp(name, "net") == 0) {
+        /* Core: sockets are POSIX and need no library. Binds the global `net`
+         * record holding `events`, as `load http` binds `http`. */
+        net_library_loaded = 1;
+        net_bind_events_global();
         return;
     }
 
@@ -14194,6 +14235,8 @@ static const char *builtin_type_name(Value value) {
         return "process";
     case VALUE_HTTP:
         return "http";
+    case VALUE_NET:
+        return "net";
     case VALUE_FUNCTION:
         return "function";
     case VALUE_REGEX:
@@ -14893,6 +14936,11 @@ static Value builtin_string_value(Value value) {
     case VALUE_HTTP:
         value_free(value);
         return value_string("<http>");
+    case VALUE_NET:
+        snprintf(buffer, sizeof(buffer), "<net %s %ld>",
+                 net_is_listener(value.as.net) ? "listener" : "connection", net_socket_id(value.as.net));
+        value_free(value);
+        return value_string(buffer);
     case VALUE_FUNCTION:
         snprintf(buffer, sizeof(buffer), "<function %s>", value.as.function.name);
         value_free(value);
@@ -15027,6 +15075,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
     case VALUE_ACTOR:
     case VALUE_PROCESS:
     case VALUE_HTTP:
+    case VALUE_NET:
     case VALUE_FUNCTION:
     case VALUE_REGEX:
     case VALUE_WATCHER:
@@ -15461,6 +15510,10 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
          * process's multi. A peer could neither read nor cancel it. */
         runtime_error_raise("serialize: http handles cannot be serialized",
                             1003, "actor");
+        return 0;
+    case VALUE_NET:
+        runtime_error_raise("serialize: a net connection or listener cannot be serialized; "
+                            "it is a socket in this process", 1003, "actor");
         return 0;
     case VALUE_ACTOR:
         /* Handles are a live capability, not data. The user-facing serialize()
@@ -20557,7 +20610,7 @@ static int aux_loop_sources_active(void) {
     if (webserver_term_requested) {
         return 0;
     }
-    return http_loop_active() || inbox_loop_active() || timer_loop_active();
+    return http_loop_active() || inbox_loop_active() || timer_loop_active() || net_loop_active();
 }
 static int webserver_term_installed = 0;
 
@@ -22228,14 +22281,19 @@ static int webserver_loop_iterate(int *idle) {
     /* The clock needs no descriptor -- it rides the poll timeout -- so it
      * joins the break condition and nothing else until service time. */
     int timer_wants_loop = aux_ok && timer_loop_active();
+    /* `net`'s watched sockets (docs/networking_design.md P1): their
+     * descriptors join this same poll, after everything else. */
+    int net_wants_loop = aux_ok && net_loop_active();
     if (descriptor_count == 0 && !http_wants_loop && !inbox_wants_loop &&
-        !timer_wants_loop) {
+        !timer_wants_loop && !net_wants_loop) {
         *idle = 1;
         return 0;
     }
     size_t inbox_fd_count = inbox_wants_loop ? mailbox_poll_count(&root_mailbox) : 0;
-    struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + inbox_fd_count + 2,
+    size_t net_max = net_wants_loop ? net_poll_count() : 0;
+    struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + inbox_fd_count + net_max + 2,
                                     sizeof(struct pollfd));
+    NetSocket **net_who = net_max ? calloc(net_max, sizeof(NetSocket *)) : NULL;
     if (!pollfds) {
         abort();
     }
@@ -22269,9 +22327,18 @@ static int webserver_loop_iterate(int *idle) {
         mailbox_poll_fill(&root_mailbox, &pollfds[inbox_slot]);
         polled += inbox_fd_count;
     }
+    size_t net_slot = polled;
+    size_t net_fd_count = 0;
+    if (net_wants_loop) {
+        net_fd_count = net_collect_fds(&pollfds[net_slot], net_who, net_max);
+        polled += net_fd_count;
+    }
     long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
     if (timer_wants_loop) {
         tick_ms = timer_poll_timeout_ms(tick_ms);
+    }
+    if (net_wants_loop) {
+        tick_ms = net_poll_timeout_ms(tick_ms);
     }
     /* A frame already read off the wire will not wake the poll. */
     int inbox_pending = inbox_wants_loop && mailbox_pending(&root_mailbox);
@@ -22281,11 +22348,13 @@ static int webserver_loop_iterate(int *idle) {
     int ready = poll(pollfds, polled, (int)tick_ms);
     if (ready < 0 && errno != EINTR) {
         free(pollfds);
+        free(net_who);
         webserver_raise("webserver poll failed");
         return 1;
     }
     if (http_wants_loop && !http_loop_service()) {
         free(pollfds);
+        free(net_who);
         return 1;
     }
     if (inbox_wants_loop &&
@@ -22293,6 +22362,7 @@ static int webserver_loop_iterate(int *idle) {
          mailbox_poll_ready(&root_mailbox, &pollfds[inbox_slot], inbox_fd_count))) {
         if (!inbox_loop_service()) {
             free(pollfds);
+        free(net_who);
             return 1;
         }
     }
@@ -22300,8 +22370,20 @@ static int webserver_loop_iterate(int *idle) {
      * descriptor, so what says it is due is the clock and not the poll. */
     if (timer_wants_loop && !timer_loop_service()) {
         free(pollfds);
+        free(net_who);
         return 1;
     }
+    if (net_wants_loop) {
+        net_service_io(&pollfds[net_slot], net_who, net_fd_count);
+        net_service_time();
+        if (!net_deliver()) {
+            free(pollfds);
+            free(net_who);
+            return 1;
+        }
+    }
+    free(net_who);
+    net_who = NULL;
     cursor = 0;
     for (size_t i = 0; i < webserver_count; i++) {
         size_t polled_client_count = webservers[i].client_count;
@@ -22338,6 +22420,7 @@ static int webserver_loop_iterate(int *idle) {
             }
             if (error_action_pending()) {
                 free(pollfds);
+        free(net_who);
                 return 1;
             }
         }
@@ -22345,6 +22428,7 @@ static int webserver_loop_iterate(int *idle) {
         webserver_check_timeouts(&webservers[i]);
     }
     free(pollfds);
+        free(net_who);
     return 0;
 }
 
@@ -29260,6 +29344,7 @@ static const char *reflect_category(Value v) {
     case VALUE_ACTOR:
     case VALUE_PROCESS:
     case VALUE_HTTP:
+    case VALUE_NET:
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
     case VALUE_ODBC_CONNECTION:
@@ -29584,6 +29669,7 @@ static const char *handle_method_module(const Value *v) {
     case VALUE_XML_READER:       return "xml";
     case VALUE_PROCESS:          return "process";
     case VALUE_HTTP:             return "http";
+    case VALUE_NET:              return "net";
     case VALUE_WORKBOOK:         return "xlsx";
     default:                     break;
     }
@@ -30841,6 +30927,339 @@ static Value money_eval_call(AstExpr *expr) {
     return value_null();
 }
 
+/* ---- pack / unpack ----------------------------------------------------- */
+
+typedef struct {
+    char letter;      /* B b H h I i Q q s x */
+    int big;          /* byte order in force for this field */
+    size_t count;     /* repeat count, or the byte length of an `s` */
+} PackField;
+
+static int pack_width(char letter) {
+    switch (letter) {
+    case 'B': case 'b': case 'x': return 1;
+    case 'H': case 'h': return 2;
+    case 'I': case 'i': return 4;
+    case 'Q': case 'q': return 8;
+    default: return 0;
+    }
+}
+
+/* Parse a format into fields. Returns the count, or -1 having raised. The
+ * ORDER must come first and may change later (`>I <H`); spaces are ignored. */
+static long pack_parse(const char *verb, const char *format, PackField *out, size_t max) {
+    char msg[200];
+    int order = -1;
+    size_t n = 0;
+    for (const char *p = format; *p; ) {
+        if (*p == ' ') {
+            p++;
+            continue;
+        }
+        if (*p == '>' || *p == '<') {
+            order = *p == '>';
+            p++;
+            continue;
+        }
+        size_t count = 1;
+        int counted = 0;
+        if (isdigit((unsigned char)*p)) {
+            count = 0;
+            while (isdigit((unsigned char)*p)) {
+                count = count * 10 + (size_t)(*p - '0');
+                if (count > 16777216) {
+                    snprintf(msg, sizeof msg, "%s: a count in the format is too large", verb);
+                    runtime_error_raise(msg, 1003, "invalid argument");
+                    return -1;
+                }
+                p++;
+            }
+            counted = 1;
+        }
+        char letter = *p;
+        if (letter != 's' && !pack_width(letter)) {
+            snprintf(msg, sizeof msg,
+                     "%s: '%c' is not a format letter (B b H h I i Q q are 8 to 64-bit "
+                     "integers, s a string of a stated length, x a pad byte)", verb, letter ? letter : '?');
+            runtime_error_raise(msg, 1003, "invalid argument");
+            return -1;
+        }
+        if (order < 0 && letter != 's' && letter != 'x') {
+            snprintf(msg, sizeof msg,
+                     "%s: the format has no byte order; begin it with > (big-endian, "
+                     "network order) or < (little-endian)", verb);
+            runtime_error_raise(msg, 1003, "invalid argument");
+            return -1;
+        }
+        if (letter == 's' && !counted) {
+            snprintf(msg, sizeof msg, "%s: an s field needs its length, as in 5s", verb);
+            runtime_error_raise(msg, 1003, "invalid argument");
+            return -1;
+        }
+        if (n >= max) {
+            snprintf(msg, sizeof msg, "%s: the format has too many fields", verb);
+            runtime_error_raise(msg, 1003, "invalid argument");
+            return -1;
+        }
+        out[n].letter = letter;
+        out[n].big = order;
+        out[n].count = count;
+        n++;
+        p++;
+    }
+    return (long)n;
+}
+
+/* How many values a field list takes, and how many bytes it occupies. */
+static void pack_measure(const PackField *f, long n, size_t *values, size_t *bytes) {
+    *values = 0;
+    *bytes = 0;
+    for (long i = 0; i < n; i++) {
+        if (f[i].letter == 's') {
+            *values += 1;
+            *bytes += f[i].count;
+        } else if (f[i].letter == 'x') {
+            *bytes += f[i].count;
+        } else {
+            *values += f[i].count;
+            *bytes += f[i].count * (size_t)pack_width(f[i].letter);
+        }
+    }
+}
+
+/* An integer value as an exact int64, or 0 having raised. */
+static int pack_integer(const char *verb, size_t index, Value v, long long *out) {
+    char msg[200];
+    if (v.kind != VALUE_NUMBER) {
+        snprintf(msg, sizeof msg, "%s: value %zu is a %s, and the format wants an integer",
+                 verb, index + 1, value_kind_name(v.kind));
+        runtime_error_raise(msg, 1003, "invalid argument");
+        return 0;
+    }
+    if (v.as.num.is_exact) {
+        *out = v.as.num.exact;
+        return 1;
+    }
+    double d = v.as.num.value;
+    if (d != d || d != floor(d) || fabs(d) > 9007199254740992.0) {
+        snprintf(msg, sizeof msg, "%s: value %zu is not a whole number an integer field can hold",
+                 verb, index + 1);
+        runtime_error_raise(msg, 1003, "invalid argument");
+        return 0;
+    }
+    *out = (long long)d;
+    return 1;
+}
+
+static int pack_fits(char letter, long long v) {
+    switch (letter) {
+    case 'B': return v >= 0 && v <= 255;
+    case 'b': return v >= -128 && v <= 127;
+    case 'H': return v >= 0 && v <= 65535;
+    case 'h': return v >= -32768 && v <= 32767;
+    case 'I': return v >= 0 && v <= 4294967295LL;
+    case 'i': return v >= -2147483648LL && v <= 2147483647LL;
+    case 'Q': return v >= 0;    /* an exact integer tops out at int64's maximum */
+    case 'q': return 1;
+    default: return 0;
+    }
+}
+
+static Value eval_pack_family(AstExpr *expr) {
+    const char *verb = expr->as.call.name;
+    char msg[240];
+    size_t argc = expr->as.call.args.count;
+    int is_pack = strcmp(verb, "pack") == 0;
+    int is_size = strcmp(verb, "pack_size") == 0;
+    if ((is_size && argc != 1) || (is_pack && argc != 2) || (!is_pack && !is_size && (argc < 2 || argc > 3))) {
+        snprintf(msg, sizeof msg, "%s expects %s", verb,
+                 is_size ? "a format" : is_pack ? "a format and an array of values"
+                                                : "a format, the bytes, and an optional byte offset");
+        runtime_error_raise(msg, 1003, "invalid function call");
+        return value_null();
+    }
+    Value format = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(format);
+        return value_null();
+    }
+    if (format.kind != VALUE_STRING) {
+        value_free(format);
+        snprintf(msg, sizeof msg, "%s: the format must be text, such as \">I H\"", verb);
+        runtime_error_raise(msg, 1003, "invalid argument type");
+        return value_null();
+    }
+    PackField fields[256];
+    long nf = pack_parse(verb, format.as.string, fields, 256);
+    value_free(format);
+    if (nf < 0) {
+        return value_null();
+    }
+    size_t nvalues = 0, nbytes = 0;
+    pack_measure(fields, nf, &nvalues, &nbytes);
+    if (is_size) {
+        return value_number_exact((long long)nbytes);
+    }
+
+    if (is_pack) {
+        Value items = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(items);
+            return value_null();
+        }
+        if (items.kind != VALUE_ARRAY) {
+            value_free(items);
+            runtime_error_raise("pack: the values must be an array", 1003, "invalid argument type");
+            return value_null();
+        }
+        size_t have = items.as.array.store ? items.as.array.store->count : 0;
+        if (have != nvalues) {
+            value_free(items);
+            snprintf(msg, sizeof msg, "pack: the format takes %zu value%s, and %zu %s given",
+                     nvalues, nvalues == 1 ? "" : "s", have, have == 1 ? "was" : "were");
+            runtime_error_raise(msg, 1003, "invalid argument");
+            return value_null();
+        }
+        char *out = malloc(nbytes ? nbytes : 1);
+        if (!out) {
+            abort();
+        }
+        size_t at = 0, vi = 0;
+        for (long i = 0; i < nf; i++) {
+            if (fields[i].letter == 'x') {
+                memset(out + at, 0, fields[i].count);
+                at += fields[i].count;
+                continue;
+            }
+            if (fields[i].letter == 's') {
+                Value v = items.as.array.store->items[vi];
+                size_t len = v.kind == VALUE_STRING ? string_length(v.as.string) : 0;
+                if (v.kind != VALUE_STRING || len != fields[i].count) {
+                    snprintf(msg, sizeof msg,
+                             v.kind != VALUE_STRING ? "pack: value %zu is not text, and the field is %zus"
+                                                    : "pack: value %zu is %zu bytes, and the field is %zus",
+                             vi + 1, v.kind != VALUE_STRING ? fields[i].count : len, fields[i].count);
+                    free(out);
+                    value_free(items);
+                    runtime_error_raise(msg, 1003, "invalid argument");
+                    return value_null();
+                }
+                memcpy(out + at, v.as.string, len);
+                at += len;
+                vi++;
+                continue;
+            }
+            int w = pack_width(fields[i].letter);
+            for (size_t k = 0; k < fields[i].count; k++, vi++) {
+                long long n = 0;
+                if (!pack_integer("pack", vi, items.as.array.store->items[vi], &n)) {
+                    free(out);
+                    value_free(items);
+                    return value_null();
+                }
+                if (!pack_fits(fields[i].letter, n)) {
+                    snprintf(msg, sizeof msg, "pack: value %zu (%lld) does not fit a %c field", vi + 1, n,
+                             fields[i].letter);
+                    free(out);
+                    value_free(items);
+                    runtime_error_raise(msg, 1003, "invalid argument");
+                    return value_null();
+                }
+                unsigned long long u = (unsigned long long)n;
+                for (int b = 0; b < w; b++) {
+                    int shift = fields[i].big ? 8 * (w - 1 - b) : 8 * b;
+                    out[at + b] = (char)((u >> shift) & 0xff);
+                }
+                at += (size_t)w;
+            }
+        }
+        value_free(items);
+        Value result = value_string_n(out, nbytes);
+        free(out);
+        return result;
+    }
+
+    Value bytes = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(bytes);
+        return value_null();
+    }
+    if (bytes.kind != VALUE_STRING) {
+        value_free(bytes);
+        runtime_error_raise("unpack: the bytes must be text", 1003, "invalid argument type");
+        return value_null();
+    }
+    long long offset = 0;
+    if (argc == 3) {
+        Value o = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending() || !pack_integer("unpack", 2, o, &offset) || offset < 0) {
+            value_free(o);
+            value_free(bytes);
+            if (!error_action_pending()) {
+                runtime_error_raise("unpack: the offset must be a byte position, 0 or more", 1003,
+                                    "invalid argument");
+            }
+            return value_null();
+        }
+        value_free(o);
+    }
+    size_t len = string_length(bytes.as.string);
+    if ((unsigned long long)offset > len || len - (size_t)offset < nbytes) {
+        snprintf(msg, sizeof msg, "unpack: the format needs %zu bytes at offset %lld, and there %s %zu",
+                 nbytes, offset, len - ((size_t)offset > len ? len : (size_t)offset) == 1 ? "is" : "are",
+                 (size_t)offset > len ? 0 : len - (size_t)offset);
+        value_free(bytes);
+        runtime_error_raise(msg, 1003, "invalid argument");
+        return value_null();
+    }
+    const unsigned char *p = (const unsigned char *)bytes.as.string + offset;
+    Value *items = nvalues ? malloc(sizeof(Value) * nvalues) : NULL;
+    if (nvalues && !items) {
+        abort();
+    }
+    size_t at = 0, vi = 0;
+    for (long i = 0; i < nf; i++) {
+        if (fields[i].letter == 'x') {
+            at += fields[i].count;
+            continue;
+        }
+        if (fields[i].letter == 's') {
+            items[vi++] = value_string_n((const char *)p + at, fields[i].count);
+            at += fields[i].count;
+            continue;
+        }
+        int w = pack_width(fields[i].letter);
+        for (size_t k = 0; k < fields[i].count; k++) {
+            unsigned long long u = 0;
+            for (int b = 0; b < w; b++) {
+                int shift = fields[i].big ? 8 * (w - 1 - b) : 8 * b;
+                u |= (unsigned long long)p[at + b] << shift;
+            }
+            at += (size_t)w;
+            long long v;
+            char letter = fields[i].letter;
+            if (letter == 'b') v = (long long)(signed char)u;
+            else if (letter == 'h') v = (long long)(short)u;
+            else if (letter == 'i') v = (long long)(int)(unsigned)u;
+            else if (letter == 'Q' && u > 9223372036854775807ULL) {
+                for (size_t j = 0; j < vi; j++) {
+                    value_free(items[j]);
+                }
+                free(items);
+                value_free(bytes);
+                runtime_error_raise("unpack: a Q field above 9223372036854775807 cannot be held exactly; "
+                                    "read it as two I fields", 1003, "invalid argument");
+                return value_null();
+            } else v = (long long)u;
+            items[vi++] = value_number_exact(v);
+        }
+    }
+    value_free(bytes);
+    return value_array(items, nvalues);
+}
+
+#include "modules/net.c"
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.receiver) {
         return eval_method_call(expr);
@@ -31038,6 +31457,14 @@ static Value eval_call(AstExpr *expr) {
              * note argues against. The refusal belongs at the call, where the
              * program can ask first with `qt.can_display()`. */
             return qt_eval_call(expr);
+        }
+
+        if (strcmp(expr->as.call.library, "net") == 0) {
+            if (!net_library_loaded) {
+                runtime_error_raise("library not loaded: net (write `load net` first)", 1003, "net");
+                return value_null();
+            }
+            return net_eval_call(expr);
         }
 
         if (strcmp(expr->as.call.library, "http") == 0) {
@@ -33407,6 +33834,19 @@ static Value eval_call(AstExpr *expr) {
         utf8_decode_first(text.as.string, string_length(text.as.string), &cp);
         value_free(text);
         return value_number((double)cp);
+    }
+
+    /* --- pack / unpack: integers at fixed widths (docs/networking_design.md §8)
+     *
+     * Every non-text protocol is integers at fixed widths in a fixed byte order,
+     * and doing it a byte at a time with byte_at and band is the off-by-one
+     * factory. The byte ORDER HAS NO DEFAULT: a default is a silent bug on half
+     * the protocols, so `pack("I", ...)` is refused and says to write > or <.
+     * A value that does not fit its width is refused, never wrapped. */
+    if (strcmp(expr->as.call.name, "pack") == 0 ||
+        strcmp(expr->as.call.name, "unpack") == 0 ||
+        strcmp(expr->as.call.name, "pack_size") == 0) {
+        return eval_pack_family(expr);
     }
 
     if (strcmp(expr->as.call.name, "byte_count") == 0) {
@@ -39323,6 +39763,21 @@ static Value eval_expr(AstExpr *expr) {
          * be routed without asking the value system, and `id` is the identity
          * an event names. Everything else about a transfer is on the status
          * record, which is where a value that CHANGES belongs. */
+        if (object.kind == VALUE_NET) {
+            Value answer;
+            if (net_field(object.as.net, expr->as.field.field, &answer)) {
+                value_free(object);
+                return answer;
+            }
+            char message[200];
+            snprintf(message, sizeof message,
+                     "a net %s has no field '%s' (id, kind, open, watched, peer, local, port, path, "
+                     "peer_credentials, tls%s)", net_is_listener(object.as.net) ? "listener" : "connection",
+                     expr->as.field.field, net_is_listener(object.as.net) ? ", connections" : "");
+            value_free(object);
+            runtime_error_raise(message, 1003, "net");
+            return value_null();
+        }
         if (object.kind == VALUE_HTTP) {
             HttpHandle *h = object.as.http;
             if (strcmp(expr->as.field.field, "id") == 0) {
@@ -43589,6 +44044,7 @@ static void runtime_teardown(void) {
     actor_mailbox_shutdown();
     http_library_loaded = 0;
     http_shutdown();
+    net_shutdown();
     timer_shutdown();
     /* A live QApplication and an open window would otherwise outlive the
      * program that asked for them -- and at a prompt, meet the next `qt.open`

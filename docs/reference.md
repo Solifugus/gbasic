@@ -3500,6 +3500,162 @@ end watch
 request would cancel the first — two handlers run, one answer arrives, and
 nothing is reported.
 
+## Net Module
+
+*(added 2026-11-04; [networking_design.md](networking_design.md))* TCP and
+Unix sockets, client and server: the layer under any protocol that is not HTTP.
+Core, with no library to install. TLS, UDP and WebSockets follow (N2 to N4 in
+the design).
+
+`load net` binds a global record `net` holding `events`, as `load http` binds
+`http`. A **connection** or **listener** is waited or watched, never both,
+decided when it is made: **watched** when a watcher on `net.events` is already
+live, so the event loop drives it; **waited** otherwise, so the program blocks
+on it, with timeouts.
+
+```basic
+load net
+
+c = net.connect({ host: "127.0.0.1", port: 7000, timeout: 10 seconds })
+c.write(pack(">I", [5]) + "hello")
+n = unpack(">I", c.read_exactly(4, 30 seconds))[0]
+reply = c.read_exactly(n, 30 seconds)
+c.close()
+```
+
+```basic
+load net
+
+watch(net.events)
+    while count(net.events) > 0
+        e = take_first(net.events)
+        if e.kind = "data" then
+            line = e.connection.take_line()
+            while not is_unknown(line)
+                e.connection.write("you said " + line + chr(10))
+                line = e.connection.take_line()
+            end while
+        end if
+    end while
+end watch
+
+srv = net.listen({ port: 7000 })     ' 127.0.0.1 unless address: says otherwise
+```
+
+**Lengths are bytes.** A connection carries bytes, NUL included, and every
+count here is bytes. `len` counts codepoints, so framing code uses
+`byte_count`.
+
+### Making connections and listeners
+
+- `net.connect(options) -> connection`: `host` and `port`, or `path` for a Unix
+  socket; `timeout` (connect, default 30 seconds); `idle` (close after this
+  long with no traffic; none by default on a client); `buffer` (the receive
+  ceiling, default 16 MiB). `idle` is enforced by the event loop, so it applies
+  to watched connections. Each resolved address is tried in turn within the
+  one timeout. A **watched** connect returns at once and reports `connected`; a
+  connect to a **name** then resolves on a helper thread, so the loop never
+  stalls on a lookup.
+- `net.listen(options) -> listener`: `port` (0 asks the system; read
+  `listener.port`), or `path` and optionally `mode` (`"0600"`) for a Unix
+  socket; `address` (default `127.0.0.1`; `"0.0.0.0"` or `"::"` to reach the
+  network, numeric only); `backlog`; `max_connections` (default 1024);
+  `idle` (default 5 minutes, for each accepted connection); `buffer`. A Unix
+  path that already exists is refused (`address_in_use`), and closing the
+  listener removes the path it made.
+- `listener.accept([timeout]) -> connection` (waited). Watched, connections
+  arrive as `accepted` events instead.
+- `net.resolve(host) -> [ { address, family } ]`, blocking.
+
+An unknown option is refused by name, as everywhere.
+
+### Reading
+
+The **take** family never blocks, answering `unknown` when what was asked for
+has not fully arrived. Use it in a watcher:
+
+| call | answers |
+|---|---|
+| `c.take([max])` | whatever is buffered (up to `max` bytes), possibly `""` |
+| `c.take_exactly(n)` | exactly `n` bytes, or `unknown` |
+| `c.take_until(delimiter [, { include: true }])` | up to the delimiter, or `unknown` |
+| `c.take_line()` | up to `\n`, a trailing `\r` removed, or `unknown` |
+| `c.peek_exactly(n)` | as `take_exactly`, leaving the bytes buffered (for a length prefix) |
+| `c.buffered()` | how many bytes are waiting |
+
+The **read** family blocks, for waited connections: `c.read([max], [timeout])`,
+`c.read_exactly(n, [timeout])`, `c.read_until(delimiter, [timeout])`,
+`c.read_line([timeout])`. With no timeout a read waits without limit. A timeout raises `timeout` and leaves what arrived
+buffered; the peer closing before the cut is complete raises `closed`, with the
+partial bytes in `error.details.partial`. `read` at end of stream answers `""`.
+A read on a watched connection is refused, naming the take family, and a read
+inside a watcher warns (2105), as `http.wait` does.
+
+A count or delimiter that cannot fit the receive buffer is refused at the call
+(`too_long`), rather than waiting for a frame that can never arrive.
+
+### Writing and closing
+
+- `c.write(bytes) -> count` queues the bytes and sends what the socket will take
+  now; the rest goes as the socket allows, so a partial send is never the
+  program's to handle. Past the send ceiling (16 MiB queued) a write is refused
+  (`backpressure`); a watched connection then reports `writable` when the queue
+  drains below 64 KiB.
+- `c.queued()`: bytes not yet sent. `c.flush([timeout])` (waited) blocks until
+  they are.
+- `c.shutdown_write()` half-closes. `c.close()` closes once the queue drains;
+  `c.abort()` closes now and discards it. `listener.close()` stops accepting.
+
+### Events
+
+Each event in `net.events` is `{ kind, id, connection, listener, code, message }`:
+
+| kind | when |
+|---|---|
+| `accepted` | a listener took a connection (`listener` is set) |
+| `connected` | a watched connect finished |
+| `data` | new bytes arrived since the last `data` event |
+| `writable` | the send queue drained below 64 KiB after being above it |
+| `full` | the receive buffer reached its ceiling, and reading has paused until the program takes |
+| `idle` | the idle timeout passed; `closed` follows |
+| `error` | the connection failed (`code`, `message`); `closed` follows. On a listener, `code` `limit` means a connection was refused at `max_connections` |
+| `closed` | `code` says why: `peer`, `local`, `aborted`, `idle`, or a failure's code |
+
+**A `data` event means new bytes, not unread bytes.** Take everything you can
+use in the handler: bytes left buffered are not reported again until more
+arrive. The loop holds a reference to every watched socket until its `closed`
+event, so rebinding `c` in a handler does not close the previous connection,
+and a program whose sockets have all closed lets the loop end.
+
+### What a connection says about itself
+
+`c.id`, `c.kind` (`"connection"` or `"listener"`), `c.open`, `c.watched`,
+`c.peer` and `c.local` (`{ address, port }` or `{ path }`), `c.port`, `c.path`,
+`c.tls` (`nothing` until N2), `listener.connections` (how many are open), and
+on a Unix connection `c.peer_credentials`: `{ pid, uid, gid }` of the process
+at the other end (`pid` is `unknown` on the BSDs and macOS). That is how a
+local server authenticates a user by who they are.
+
+### Failures
+
+Raised with code 1004 and source `net`, and `error.details.code`:
+
+| `details.code` | meaning |
+|---|---|
+| `refused` | nothing is listening there |
+| `timeout` | the connect, read, flush or accept did not finish in time |
+| `reset` | the peer reset the connection |
+| `closed` | the peer closed before what was asked for arrived, or a write after close |
+| `unreachable` | no route to the host |
+| `name_not_found` | the host name does not resolve |
+| `address_in_use` | the port or Unix path is already held |
+| `permission` | a privileged port, or a path's permissions |
+| `backpressure` | a write past the send ceiling |
+| `too_long` | a count or delimiter past the receive ceiling |
+
+A watched connection reports the same code in its `error` event. Misuse (a
+missing option, a wrong kind of argument) is the ordinary 1003.
+
 ## Timer Module
 
 Periodic work on the event loop. Needs no `load` — there is no optional
@@ -6349,7 +6505,7 @@ cannot keep a paragraph on this page either.
 | core | `number`, `string`, `boolean`, `array`, `record`, `nothing`, `unknown` |
 | typed values | `datetime`, `duration`, `money`, `file`, `directory` |
 | language | `function`, `regex`, `watcher`, `actor`, `process` |
-| handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `gsql_connection`, `gsql_statement`, `csv_source`, `xml_reader`, `http`, `workbook` |
+| handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `gsql_connection`, `gsql_statement`, `csv_source`, `xml_reader`, `http`, `net`, `workbook` |
 <!--/TYPEKINDS-->
 
 **Two answers are not the word you wrote**, and both read as a bug in your own
@@ -7345,6 +7501,32 @@ visible.
 when given an assignable path (and notify watchers, as above); the value they
 return is the resulting array. Taking a copy first (`b = a`) and then appending
 to `a` leaves `b` unchanged, as value semantics require.
+
+### Packing integers into bytes
+
+*(added 2026-11-04; [networking_design.md](networking_design.md) §8)* Binary
+protocols and file formats are integers at fixed widths in a fixed byte order.
+
+```basic
+frame = pack(">B I", [81, 9]) + "select 1"
+fields = unpack(">B I", frame)        ' [81, 9]
+fields = unpack(">I", frame, 1)       ' [9], from byte offset 1
+size = pack_size(">B I")              ' 5
+```
+
+- **Format letters:** `B b` (8-bit unsigned and signed), `H h` (16), `I i`
+  (32), `Q q` (64, exact), `Ns` (a string of exactly N bytes), `x` (a zero pad
+  byte). A count repeats a letter: `3B` is three bytes.
+- **The byte order has no default:** begin with `>` (big-endian, network
+  order) or `<` (little-endian), and it may change mid-format. A format
+  without one is refused, because a default order is a silent bug in half the
+  protocols.
+- **A value that does not fit its field is refused**, never wrapped: 300 in a
+  `B`, -1 in an `H`. An `s` value must be exactly its length.
+- `pack(format, values)` answers the bytes; `pack_size(format)` how many.
+- `unpack(format, bytes [, offset])` reads from a 0-based byte offset and
+  refuses when too few bytes remain. A `Q` above 2^63-1 cannot be held exactly
+  and is refused; read it as two `I` fields.
 
 ### Bitwise
 

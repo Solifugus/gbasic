@@ -16,6 +16,31 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `net`: TCP and Unix sockets, and `pack`/`unpack`
+
+Increment N1 of docs/networking_design.md (Matthew, 2026-11-04), the layer
+under an SSH client/server and a networked RDBMS.
+
+- **`load net`**: `net.connect` and `net.listen`, TCP or Unix, waited (block,
+  with timeouts) or watched (events in `net.events`: `accepted`, `connected`,
+  `data`, `writable`, `full`, `idle`, `error`, `closed`). Watched sockets join
+  the existing event loop, so they are served with a Qt window or a modal
+  dialog up.
+- **Framing in the module**: the take family (`take_exactly`, `take_until`,
+  `take_line`, `peek_exactly`) never blocks; the read family blocks with a
+  timeout and tells a timeout from a close.
+- **Bounded by default**: a receive ceiling at which reading pauses, a send
+  ceiling past which a write is refused, idle and connect timeouts, a
+  connection cap, loopback unless `address:` says otherwise.
+- **Named failures**: code 1004, `error.details.code` (`refused`, `timeout`,
+  `reset`, `closed`, `name_not_found`, `address_in_use`, `too_long`, ...).
+- **Unix peer credentials** (`c.peer_credentials`: pid, uid, gid).
+- **`pack(format, values)`, `unpack(format, bytes [, offset])`,
+  `pack_size(format)`**: integers at fixed widths, with no default byte order
+  and no wrapping.
+
+New suite: `tests/run_net.sh`.
+
 ### Qt: a captioned part in a box moves and drops with its caption
 
 `qt.refresh` on a `column` or `row` holding captioned parts (`field`,

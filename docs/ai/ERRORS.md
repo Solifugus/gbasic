@@ -63,7 +63,7 @@ After a raise, a program reads `error` (truthy), `error.message`, `error.line`,
 | 1001 | Undefined variable | `undefined variable` |
 | 1002 | Division by zero | `division` |
 | 1003 | **Generic invalid operation / bad argument** (the catch-all) | see the domain list below |
-| 1004 | I/O-style operation failure | `file operation`, `path operation`, `actor` |
+| 1004 | I/O-style operation failure | `file operation`, `path operation`, `actor`, `net` (with `error.details.code`: `refused`, `timeout`, `reset`, `closed`, ...) |
 | 1005 | Watcher cascade cap exceeded | `watcher` |
 | 2000 | Explicit `error "…"` statement | `explicit error` |
 | 2001 | PostgreSQL module error | `postgres` |

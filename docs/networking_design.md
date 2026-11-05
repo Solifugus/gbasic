@@ -1,6 +1,7 @@
 # Networking: sockets, TLS, datagrams and WebSockets
 
-Status: **Proposal (2026-11-04). Nothing in it is implemented.** Asked for by
+Status: **Ruled 2026-11-04** (§13: Matthew took every recommendation); **N1 shipped 2026-11-04** (`load net`, `pack`/`unpack`;
+`tests/run_net.sh`). N2 (TLS) is next. Asked for by
 Matthew, to fill the gap beneath two named uses and the ones that will follow:
 
 1. **An SSH server and client for Transward**, which today drives OpenSSH
@@ -273,7 +274,7 @@ a C compiler, and the `net` module stays small.
   `net.connect` with `tls`. Events arrive as `message` (text or binary),
   `ping`/`pong`, `closed` with the close code.
 - **Server:** the webserver hands a request that asks to upgrade over to `net`:
-  `web.upgrade(req) -> connection` writes the 101 response, removes the client
+  an upgrade verb on `web` (to be named in N4) writes the 101 response, removes the client
   from the HTTP side, and the socket becomes an ordinary watched `net`
   connection. `websocket.accept(connection)` then frames it. This is the one
   change inside `webserver`: today an upgrade is refused, by design, because
@@ -395,7 +396,7 @@ peers, with Python's `socket` and `ssl` modules as the independent other end
 | N1 | TCP and Unix sockets | `net.connect`, `net.listen`, accept, both families of reads, the write queue, backpressure, idle and connect timeouts, `max_connections`, events, peer credentials, named errors, `pack`/`unpack`. Loopback default. The resolver thread. |
 | N2 | TLS | client verify on by default, SNI, mTLS, server TLS sharing webserver's loading, `start_tls`, peer certificate. Certificates generated per run, as `run_web_tls.sh` does. |
 | N3 | UDP | `net.datagram`, `send_to`, `receive`, datagram events, truncation reported. |
-| N4 | WebSockets | the `websocket` library (client), `web.upgrade` (server), interop with Python's `websockets` if present. |
+| N4 | WebSockets | the `websocket` library (client), the webserver's upgrade hand-off (server), interop with Python's `websockets` if present. |
 | N5 | handing a connection to a worker | an accepted connection passed to an actor over its mailbox (`SCM_RIGHTS`), for multi-process servers. Designed when a server needs it, not before. |
 
 N1 is the bulk and is useful alone: an SSH transport, a PostgreSQL-protocol
@@ -429,7 +430,7 @@ peer credentials do not, so `peer_credentials` answers `unknown` there. Qt's
 `QSocketNotifier` works on sockets only on Windows, which suits this module,
 since everything it adds is a socket.
 
-## 13. Questions for Matthew
+## 13. Questions, ruled by Matthew 2026-11-04 (every recommendation taken)
 
 1. **The module's name.** `net` (as here), or `socket`/`tcp`? `net` covers TCP,
    Unix and UDP under one word.
