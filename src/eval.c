@@ -9056,7 +9056,7 @@ static int library_is_native_qualifier(const char *name) {
     static const char *native[] = {
         "csv", "gsql", "http", "ldap", "money", "net", "odbc", "pg", "process",
         "qt", "reflect", "smtp", "sqlite", "this", "timer",
-        "webclient", "webserver", "xlsx", "xml", NULL
+        "webclient", "webserver", "xlsx", "xml", "zip", NULL
     };
     for (size_t i = 0; native[i]; i++) {
         if (strcmp(name, native[i]) == 0) {
@@ -9128,6 +9128,8 @@ static const GbCapability gb_capability_table[] = {
     { "webserver", "net:listen" },
     { "xlsx",      "fs:read fs:write" },
     { "xml",       "fs:read" },
+    /* zip.members and zip.read read, zip.extract writes files */
+    { "zip",       "fs:read fs:write" },
     /* unqualified verbs dispatched in eval_file_call / eval_dir_call --
        must match builtins.c dispatch_only[] exactly */
     { "exists",    "fs:read" },
@@ -27244,6 +27246,7 @@ static Value pg_eval_call(AstExpr *expr) {
 
 /* The csv module (docs/csv_design.md): no optional dependency, so no guard. */
 #include "modules/csv.c"
+#include "modules/zip.c"
 
 /* XML module (xml_design.md, WP-XML-1). Translation-unit include so it can use
  * the static Value API above; guarded internally by HAVE_LIBXML2. */
@@ -31978,6 +31981,10 @@ static Value eval_call(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "csv") == 0) {
             return csv_eval_call(expr);
+        }
+
+        if (strcmp(expr->as.call.library, "zip") == 0) {
+            return zip_eval_call(expr);
         }
 
         if (strcmp(expr->as.call.library, "xml") == 0) {

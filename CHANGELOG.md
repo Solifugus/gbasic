@@ -16,6 +16,18 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### ZIP files
+
+Gap G11 from the gBASIC books (volume 3's gap ledger).
+
+- **`zip.members(f)`, `zip.read(f, name)` and `zip.extract(f, folder)`**:
+  the members of a ZIP file, listed from its central directory, read with
+  their CRC-32 checked, and extracted with every name checked first, so a
+  `..`, absolute or link member writes nothing. Store and deflate; ZIP64,
+  encryption and other methods are refused by name. Needs only zlib, and no
+  `load`. `zip` is a native qualifier now, so a library can no longer be
+  loaded under that alias.
+
 ### Spreadsheets into data: merged headers, refused cells, and G-SQL loading
 
 Gaps G19-G23 from the gBASIC books (volume 3's gap ledger).

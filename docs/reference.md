@@ -569,6 +569,45 @@ end for
 The design and its evidence are `docs/csv_design.md`; the suite is
 `tests/run_csv.sh`.
 
+#### The members of a ZIP file — `zip.members(f)`, `zip.read(f, name)`, `zip.extract(f, folder)`
+
+Needs no `load`, and only zlib in the build. Partners often send several files
+in one ZIP:
+
+```basic
+for each m in zip.members({file}"partner.zip")
+    if not m.folder and extension(m.name) = ".csv" then
+        for each item, at in csv.parse(zip.read({file}"partner.zip", m.name))
+            print item
+        end for
+    end if
+end for
+```
+
+- **`zip.members(f)`** lists every member, in archive order, as `{name, size,
+  packed, method, modified, folder, link, encrypted, crc}`: `size` the bytes it
+  holds, `packed` the bytes it takes in the archive, `method` `"store"`,
+  `"deflate"` or the name of another (`"bzip2"`), `modified` a `datetime` (the
+  archive's own local time, to two seconds). A name is UTF-8 when the archive
+  says so and otherwise read as code page 437, which is what the format
+  defines. Only the central directory is read, so listing a large archive costs
+  its directory.
+- **`zip.read(f, name)`** answers a member's bytes as text (NUL included),
+  checked against its recorded size and CRC-32. Refused: no such member, a
+  folder, **two members of that name** (which one is meant cannot be told), an
+  encrypted member, a method but store and deflate, ZIP64 (an archive or member
+  past 4 GB or 65,535 members), a spanned archive, and a member whose bytes do
+  not match its CRC.
+- **`zip.extract(f, folder, options)`** writes every member under `folder`,
+  which must exist, making the folders on the way, and answers the files it
+  wrote. **Every name is checked before anything is written**, so one unsafe
+  member writes nothing: an absolute name, a `..` component, a backslash, a
+  drive letter, an empty component, a symbolic link, and two members of one
+  name are refused, each naming the member. A file already there is refused
+  unless `replace: true`.
+
+The suite is `tests/run_zip.sh`, whose answers come from Python's `zipfile`.
+
 **`for each item, i in list` gives you the index**, and it is what makes a
 write-back expressible. gBASIC has no references, so the loop variable is a
 **copy**: `item.x = 1` mutates that copy and is silently discarded. `list[i]`
