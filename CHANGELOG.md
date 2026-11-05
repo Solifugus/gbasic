@@ -16,6 +16,16 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Capturing a window as a picture
+
+- **`qt.capture(win, file, { part, scale })`**, also `win.capture(...)`, writes a
+  window or one named part of it to a PNG file at a chosen scale, offscreen. It
+  answers `{ file, width, height }`. It was added for the books' figures of
+  Studio (volume 3's ledger, S1), so a figure can be retaken by a build instead
+  of by hand. A focused editor's caret is drawn steady, so two captures of an
+  unchanged window are the same file. (`docs/qt_gui_design.md` §0.37,
+  `tests/run_qt_capture.sh`.)
+
 ### File functions take a path string
 
 - **Every file function takes a path string or a `{file}` reference.**

@@ -6760,6 +6760,136 @@ static Value qt_eval_call(AstExpr *expr) {
         return qt_text_verb(expr, verb, argc);
     }
 
+    /* A WINDOW'S PIXELS, written to a PNG file (§0.37): `qt.capture(win,
+     * file)` for the whole window, `qt.capture(win, file, { part: "results",
+     * scale: 2 })` for one part drawn at twice its size. It answers what was
+     * written, `{ file, width, height }` in pixels, because a figure build
+     * wants to check the size it got and a script wants the file it can
+     * open.
+     *
+     * THE FILE IS A PATH STRING OR A `{file}`, as every file verb takes it, and
+     * it is written by `write`'s own code, so a folder that is not there fails
+     * with the sentence `write` gives. */
+    if (strcmp(verb, "capture") == 0) {
+        if (argc < 2 || argc > 3) {
+            qt_raise("qt.capture expects a window, the file to write the PNG "
+                     "to, and optionally a record of options");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value target = eval_expr(expr->as.call.args.items[1]);
+        Value opts = value_null();
+        if (argc == 3) {
+            opts = eval_expr(expr->as.call.args.items[2]);
+        }
+        if (error_action_pending()) {
+            value_free(win); value_free(target); value_free(opts);
+            return value_null();
+        }
+        if (!qt_window_record(&win, "capture")) {
+            value_free(win); value_free(target); value_free(opts);
+            return value_null();
+        }
+        if (!file_arg_from_path("qt.capture", &target)) {
+            value_free(win); value_free(opts);
+            return value_null();
+        }
+        if (target.kind != VALUE_FILE) {
+            qt_raise("qt.capture expects the file to write as a path string "
+                     "or file reference");
+            value_free(win); value_free(target); value_free(opts);
+            return value_null();
+        }
+        if (argc == 3 && opts.kind != VALUE_RECORD) {
+            qt_raise("qt.capture expects its options as a record -- "
+                     "`qt.capture(app, \"shot.png\", { part: \"results\", "
+                     "scale: 2 })`");
+            value_free(win); value_free(target); value_free(opts);
+            return value_null();
+        }
+        /* CLOSED, AND REFUSED BY NAME: a misspelt `scale` is a figure printed
+         * at half the resolution it was asked for, and nothing would say. */
+        static const char *const capture_opts[] = { "part", "scale", NULL };
+        const char *part = NULL;
+        double scale = 1.0;
+        for (size_t i = 0; argc == 3 && i < opts.as.record.count; i++) {
+            RecordField *f = &opts.as.record.fields[i];
+            const char *fname = f->name ? f->name : "";
+            if (strcmp(fname, "part") == 0) {
+                if (!f->value || f->value->kind != VALUE_STRING) {
+                    qt_raise("qt.capture expects `part` as a part's name, as "
+                             "text");
+                    value_free(win); value_free(target); value_free(opts);
+                    return value_null();
+                }
+                part = f->value->as.string;
+            } else if (strcmp(fname, "scale") == 0) {
+                /* A CAP, because a typo of 20 for 2 asks for an image 400
+                 * times the window's area, which fails slowly, deep in Qt. 8
+                 * is a 1,000-pixel part at 8,000: beyond any page. */
+                if (!f->value || f->value->kind != VALUE_NUMBER ||
+                    !(f->value->as.num.value > 0) ||
+                    f->value->as.num.value > 8) {
+                    qt_raise("qt.capture expects `scale` as a number above 0 "
+                             "and at most 8");
+                    value_free(win); value_free(target); value_free(opts);
+                    return value_null();
+                }
+                scale = f->value->as.num.value;
+            } else {
+                const char *near = gb_nearest_word(fname, capture_opts);
+                if (near) {
+                    snprintf(message, sizeof(message),
+                             "qt.capture does not know the option `%s` -- did "
+                             "you mean `%s`?", fname, near);
+                } else {
+                    snprintf(message, sizeof(message),
+                             "qt.capture does not know the option `%s`. It "
+                             "takes part and scale", fname);
+                }
+                qt_raise(message);
+                value_free(win); value_free(target); value_free(opts);
+                return value_null();
+            }
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(target); value_free(opts);
+            return value_null();
+        }
+        char *png = NULL;
+        long len = 0;
+        int width = 0, height = 0;
+        err[0] = '\0';
+        int ok = gb_qt_capture(root, part, scale, &png, &len, &width, &height,
+                               err, sizeof(err));
+        value_free(win); value_free(opts);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.capture: %s",
+                     err[0] ? err : "the window could not be captured");
+            qt_raise(message);
+            value_free(target);
+            return value_null();
+        }
+        Value bytes = value_string_n(png, (size_t)len);
+        free(png);
+        Value wrote = file_write_text("write", value_copy(target), bytes);
+        value_free(wrote);
+        if (error_action_pending()) {
+            value_free(target);
+            return value_null();
+        }
+        Value answer = value_record(NULL, 0);
+        record_set(&answer, "file", target);
+        record_set(&answer, "width", value_number((double)width));
+        record_set(&answer, "height", value_number((double)height));
+        return answer;
+    }
+
     if (strcmp(verb, "has_icon") == 0) {
         if (argc != 2) {
             qt_raise("qt.has_icon expects a window and a part's name");

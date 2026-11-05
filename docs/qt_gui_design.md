@@ -4351,3 +4351,80 @@ error: column 2 lands inside the emoji) and the readback as units (1).
 **Open:** a box child moved by `qt.refresh` (`gb_qt_child_place`) moves without
 its caption, which stays where it was. Older than this increment, and outside
 Studio's ask.
+
+## 0.37 A window's pixels: `qt.capture` (2026-11-05)
+
+Asked for by the books (gbasic-books, volume 3's gap ledger, S1; the proposal is
+`gbasic-studio/docs/gbasic_studio_book_snapshots.md` §3). Every other verb reads
+or sets something a window *holds*; nothing saved what it *shows*, so a figure
+of Studio could only be a screenshot taken by hand, which nothing checks and
+nobody retakes.
+
+```basic
+shot = app.capture("figures/ch01-results.png", { part: "results", scale: 2 })
+' shot -> { file: {file}..., width: ..., height: ... }   pixels written
+```
+
+- **The file** is a path string or a `{file}`, like every file verb, and the PNG
+  is written by `write`'s own code, so a folder that is not there fails with
+  `write`'s sentence.
+- **`part:`** names a part, as every other verb does; without it, the whole
+  window. An unknown name is refused, and the refusal lists the window's parts in
+  sorted order, because a figure script is written against names. A menu `item`
+  is a QAction and is not drawn on its own, so it is refused. So is a part that
+  is not showing, such as a tab that is not selected, because it has nothing to
+  draw.
+- **`scale:`** is the image's device pixel ratio, so glyphs and lines are drawn
+  at that resolution, not drawn at 1 and stretched. It must be above 0 and at
+  most 8. A fractional scale rounds to whole pixels. A book's 6-inch text block
+  at 300 dpi is about 1,800 pixels, so `scale: 2` fills it with a part about 900
+  pixels wide.
+- **The option set is closed**, `part` and `scale`, and refused by name with a
+  near-miss hint. A misspelt `scale` would otherwise print a figure at half the
+  resolution asked for, and nothing would say so.
+- **The answer is `{ file, width, height }`**, the pixels actually written,
+  because a figure build wants to check the size it got.
+
+### Rendered, not grabbed
+
+`QWidget::render` paints the part and its children into an image, so it works
+under `QT_QPA_PLATFORM=offscreen` and needs no compositor. Grabbing from a screen
+would need a real screen and would include whatever overlapped the window. The
+image is first filled with the window's own background colour and has no alpha
+channel. Most parts do not fill their background, and transparency shows as
+black or as a checkerboard on a page.
+
+### Three measurements decided it
+
+- **The caret blinks into the picture.** With a `source` or a `field` focused
+  and Qt's loop running, twelve captures 0.13 s apart came out as **two**
+  different pictures, one with the caret and one without. During a capture the
+  cursor flash time is set to 0 and then restored. Measured, the twelve then come
+  out as **one** picture, with the caret showing. That is a focused editor at
+  rest, which is what a figure of it should show.
+- **A layout change is a posted event.** After hiding a part, the editor beside
+  it came out at its old height (185 pixels, not 208) until Qt's loop turned. A
+  capture therefore delivers pending *layout requests* first, and only those. The
+  queue can also hold a click whose handler is gBASIC code, and a verb that ran a
+  handler would change the thing it is photographing.
+- **The background colour cannot show whether the scale was used.** Drawn at
+  scale 1 into a doubled image, a styled label's background still filled all of
+  it, so the colour checks passed with the text small in one corner. The runner
+  measures the text's own extent, which must double.
+
+Not promised: byte-identical images **across** machines (fonts and FreeType
+differ). Within one machine, a rerun is byte-identical, and a fixture checks
+that. Hover states were not measured; the offscreen platform has no pointer.
+
+### Evidence
+
+`tests/run_qt_capture.sh` over `tests/qt_capture_test.bas`. The fixture runs 37
+checks, with sizes taken from the PNG header's own bytes and compared against
+Qt's report of the part. A pixel tier decodes every picture with Python's PIL, 11
+checks: colours set by a stylesheet, the window containing its parts' pixels,
+and the text extent doubling at scale 2. A valgrind tier runs as well. Seven
+perturbations, each red: the flash time left alone (two pictures), a transparent
+background (RGBA), the scale ignored (text extent 39x10 at both scales), drawn at
+1 and stretched, the part ignored (the window's size for every part), no layout
+flush (the editor did not grow), and the option set left open (two misspellings
+accepted, and a file written by a call that should have refused).

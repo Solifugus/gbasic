@@ -120,6 +120,9 @@
 #include <QWidget>
 
 #include <QGuiApplication>
+#include <QBuffer>
+#include <QImage>
+#include <QImageWriter>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3629,6 +3632,114 @@ extern "C" int gb_qt_has_icon(void *window, const char *name, int *has,
     if (has) {
         *has = icon.isNull() ? 0 : 1;
     }
+    return 1;
+}
+
+/* A WINDOW'S PIXELS, as PNG bytes (docs/qt_gui_design.md §0.37). The figure
+ * a book prints is the reason: every other verb reads or sets something a
+ * window HOLDS, and nothing could save what it SHOWS, so a figure of Studio
+ * was a screenshot taken by hand that nothing checked and nobody retook.
+ *
+ * RENDERED, NOT GRABBED FROM A SCREEN. `QWidget::render` paints the widget and
+ * its children into an image, so it works offscreen and needs no compositor;
+ * `QScreen::grabWindow` would need a real screen and would capture whatever
+ * overlapped the window.
+ *
+ * THE SCALE IS THE IMAGE'S DEVICE PIXEL RATIO, so text and lines are drawn at
+ * that resolution rather than an image drawn at 1 and stretched -- a figure
+ * printed at 300 dpi needs the glyphs drawn for it.
+ *
+ * THE BACKGROUND IS THE WINDOW'S OWN COLOUR, painted first. A part that does
+ * not fill its background (most of them) would otherwise come out on
+ * transparency, and a book page or a viewer shows that as black or as a
+ * checkerboard -- neither of which is what the window looked like. The PNG
+ * carries no alpha for the same reason.
+ *
+ * THE BYTES COME BACK rather than being written here, so the file is written
+ * by the same code as `write` and fails with the same sentence. */
+extern "C" int gb_qt_capture(void *window, const char *name, double scale,
+                             char **png, long *len, int *width, int *height,
+                             char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    if (!root || !root->widget) {
+        say(err, err_size, "there is no window to capture");
+        return 0;
+    }
+    QWidget *w = root->widget;
+    if (name) {
+        QObject *o = root->parts.value(QString::fromUtf8(name), nullptr);
+        if (!o) {
+            /* NAMES THE PARTS THERE ARE, sorted so the sentence is the same
+             * every run -- a figure script is written against names, and the
+             * one it got wrong is easiest fixed from the list. */
+            QStringList names = root->parts.keys();
+            names.sort();
+            QByteArray text = QByteArray("this window has no `") + name +
+                              "`; its parts are " +
+                              names.join(", ").toUtf8();
+            say(err, err_size, text);
+            return 0;
+        }
+        w = qobject_cast<QWidget *>(o);
+        if (!w) {
+            say(err, err_size,
+                QByteArray("`") + name + "` is a " +
+                    o->metaObject()->className() +
+                    ", which is not drawn on its own; capture the part "
+                    "that shows it");
+            return 0;
+        }
+    }
+    /* A LAYOUT CHANGE IS A POSTED EVENT, so a `qt.set` just before a capture
+     * has not moved anything yet. Only layout requests are delivered here,
+     * never the whole queue, because the queue can hold a click whose handler
+     * is gBASIC code -- and a capture that ran a handler would be a verb that
+     * changes what it is taking a picture of. */
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+    if (!w->isVisible()) {
+        say(err, err_size,
+            QByteArray("`") + (name ? name : "the window") +
+                "` is not showing (a tab that is not selected, a closed "
+                "dock or a hidden part), so it has nothing to draw");
+        return 0;
+    }
+    QSize logical = w->size();
+    QSize px(qRound(logical.width() * scale), qRound(logical.height() * scale));
+    if (px.width() <= 0 || px.height() <= 0) {
+        say(err, err_size,
+            QByteArray("`") + (name ? name : "the window") +
+                "` has no size yet, so it has nothing to draw");
+        return 0;
+    }
+    int flash = QApplication::cursorFlashTime();
+    QApplication::setCursorFlashTime(0);
+    QImage img(px, QImage::Format_RGB32);
+    img.setDevicePixelRatio(scale);
+    img.fill(w->palette().color(QPalette::Window));
+    w->render(&img, QPoint(), QRegion(),
+              QWidget::DrawWindowBackground | QWidget::DrawChildren);
+    QApplication::setCursorFlashTime(flash);
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    QImageWriter writer(&buffer, "png");
+    if (!writer.write(img)) {
+        say(err, err_size,
+            QByteArray("the picture could not be encoded as PNG (") +
+                writer.errorString().toUtf8() + ")");
+        return 0;
+    }
+    char *copy = (char *)malloc((size_t)bytes.size() + 1);
+    if (!copy) {
+        say(err, err_size, "the picture would not fit in memory");
+        return 0;
+    }
+    memcpy(copy, bytes.constData(), (size_t)bytes.size());
+    copy[bytes.size()] = '\0';
+    if (png) { *png = copy; } else { free(copy); }
+    if (len) { *len = (long)bytes.size(); }
+    if (width) { *width = px.width(); }
+    if (height) { *height = px.height(); }
     return 1;
 }
 

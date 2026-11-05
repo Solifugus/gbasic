@@ -591,6 +591,14 @@ int gb_qt_resize_panes(void *window, const char *name, const int *sizes,
 int gb_qt_has_icon(void *window, const char *name, int *has, char *err,
                    size_t err_size);
 
+/* A WINDOW'S PIXELS (§0.37): the whole window when `name` is NULL, else that
+ * part, rendered at `scale` device pixels per logical pixel and encoded as
+ * PNG. 1 with the bytes (caller frees) and the image's size in pixels; 0
+ * refused, with the reason in `err`. */
+int gb_qt_capture(void *window, const char *name, double scale, char **png,
+                  long *len, int *width, int *height, char *err,
+                  size_t err_size);
+
 int gb_qt_scrolled(void *window, const char *name, double *at, char *err,
                    size_t err_size);
 int gb_qt_scroll_to(void *window, const char *name, double at, char *err,
