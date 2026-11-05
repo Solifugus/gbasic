@@ -3,7 +3,9 @@
 Status: **Ruled 2026-11-04** (§13: Matthew took every recommendation); **N1 shipped 2026-11-04** (`load net`, `pack`/`unpack`;
 `tests/run_net.sh`); **N2 shipped 2026-11-04** (TLS: `tls:` on connect and
 listen, `start_tls`, §5 and the note below it); **N3 shipped 2026-11-04**
-(UDP: `net.datagram`, §4 and the note below it). N4 (WebSockets) is next. Asked for by
+(UDP: `net.datagram`, §4 and the note below it); **N4 shipped 2026-11-04**
+(`load websocket`, §6 and the note below it). N5 is designed when a server
+needs it. Asked for by
 Matthew, to fill the gap beneath two named uses and the ones that will follow:
 
 1. **An SSH server and client for Transward**, which today drives OpenSSH
@@ -328,6 +330,36 @@ a C compiler, and the `net` module stays small.
 - **In a worker pool**, an upgraded connection belongs to the worker that
   accepted it. A WebSocket does not migrate between processes, and the design
   says so rather than pretending otherwise.
+
+**As built (N4).** The library is `stdlib/websocket.bas`, about 700 lines, and
+the native part is three small things. Where it differs from the draft:
+
+- **The upgrade is a response, not a verb.** A route returns
+  `websocket.accept(req)`, a response record with `upgrade: true` and status
+  101; the webserver writes the 101 and hands the descriptor, its TLS session
+  and any bytes past the request to `net` (`net_adopt_upgrade`), where it is
+  an `accepted` event carrying the request and no listener. As a response it
+  goes through the same validation and the same two delivery paths (the
+  `server` block's handler and the `responses` queue) as any other, and a
+  route stays a function that returns a response. **The draft's premise was
+  wrong:** "today an upgrade is refused, by design" -- no code in the
+  webserver mentioned an upgrade at all (read, not run), so a request asking
+  for one reached its route as an ordinary GET.
+- **`websocket.events(e)` is a conversion, not a second queue.** A library
+  cannot install a watcher, and the program already watches `net.events`, so
+  one `net` event is turned into the WebSocket events it means. What framing
+  needs between events (the handshake a client awaits, a message's fragments)
+  is kept with the connection by a new generic `net.set_state(c, name,
+  value)`, read as `c.state.name`.
+- **Two core builtins**, `bytes_xor` (masking; a per-byte gBASIC loop over a
+  frame is too slow) and `valid_utf8` (strict RFC 3629, which the RFC's 1007
+  needs and the lenient string builtins do not answer). Both are checked
+  against Python.
+- **No idle timeout on an upgraded connection** unless `idle:` asks: a quiet
+  WebSocket is ordinary. Pings are answered automatically and reported.
+- Interop is measured against Python's `websockets` package both ways, plus
+  raw-socket peers for the violations a conforming library will not send.
+  Extensions (`permessage-deflate`) are not offered.
 
 ## 7. Errors
 

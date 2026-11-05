@@ -13198,3 +13198,23 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   advice is gone (tests/run_qbasic_diagnostics.sh). `endif` needed one more
   step: its error is at the newline ending its line, which the scan had read
   as the start of the next line.
+
+## 2026-11-04 — CC — while: writing stdlib/websocket.bas (networking N4)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** three habits from other languages, each caught by a run rather
+  than by reading, in one library:
+  - `find(s, x)` answers `nothing` on a miss, not -1, so `if find(...) >= 0`
+    compares `nothing` and goes wrong quietly in the URL parser;
+  - `mid(s, at)` with no count is refused (pinned on purpose by
+    `tests/negative_mid_arity`), where `byte_slice(s, at)` runs to the end, so
+    the two families differ in arity as well as in their indexes;
+  - inside an `on error goto` handler, bare `error` is `false` (the jump was
+    the acknowledgment), so `e = error` there snapshots a boolean and
+    `e.details` raises "field access expects a record". The reference says so
+    (Reading `error`); the trap is that `e = error` is the documented
+    snapshot idiom everywhere else.
+- **Workaround:** `not is_nothing(find(...))`; a two-line `_from(s, at)`
+  helper over `mid(s, at, len(s) - at)`; `error.details` and `error.message`
+  read directly in the handler. Not an open item: each is documented
+  behaviour, so there is no ledger row to probe.

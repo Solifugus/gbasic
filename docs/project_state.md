@@ -507,7 +507,8 @@ document list, with a status column, is `docs/README.md`.
   storage), `intake` (what arrived, what was taken, what to keep),
   `dates`/`schedule` (business calendars, appointment slots), `ari`
   (anchor-relative report parsing), `matrix`, `crypto` (JWT, CSRF, signed
-  cookies), and `mail` (RFC 5322 composition, for the native SMTP transport).
+  cookies), `mail` (RFC 5322 composition, for the native SMTP transport), and
+  `websocket` (RFC 6455 client and server over the net module).
   Native windows are the Qt module, not a library.
 
 Loadable names are exactly the filenames in `stdlib/`; `tests/run_docs_gate.sh`

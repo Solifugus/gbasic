@@ -48,6 +48,8 @@ int gbasic_builtin_function(const char *name) {
         "to_bytes",
         "random_bytes",
         "bytes_equal",
+        "bytes_xor",
+        "valid_utf8",
 #if HAVE_LIBCRYPTO
         "sha256",
         "sha512",

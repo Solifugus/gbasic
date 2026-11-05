@@ -20510,6 +20510,9 @@ struct WebServerClient {
 #endif
     char remote_ip[64];
     int remote_port;
+    /* Where the request just parsed ends in `buffer`: an upgrade hands what
+     * follows it to `net` (a client may send its first frame at once). */
+    size_t request_end;
 };
 
 struct WebServer {
@@ -20578,6 +20581,10 @@ static void webserver_raise(const char *message) {
 static int webserver_deliver_response(WebServer *server, Value response,
                                       const char **err_out);
 static int webserver_call_handler(WebServer *server, Value request);
+/* N4: an upgrade response hands the client's socket to `net` (src/modules/net.c). */
+static int net_adopt_upgrade(int fd, void *ssl, const char *head, size_t head_len, const char *rest,
+                             size_t rest_len, Value *request, double idle, const char **err);
+static int net_events_watched(void);
 
 /* PLAT-WEB-2: SIGTERM means DRAIN, not die, once this process is a server.
  *
@@ -20723,7 +20730,9 @@ static void webserver_client_close(WebServer *server, size_t index) {
         server->clients[index].ssl = NULL;
     }
 #endif
-    gb_sock_close(server->clients[index].fd);
+    if (server->clients[index].fd >= 0) {
+        gb_sock_close(server->clients[index].fd);
+    }
     free(server->clients[index].buffer);
     server->clients[index] = server->clients[server->client_count - 1];
     server->client_count--;
@@ -20920,6 +20929,32 @@ static int webserver_validate_response_value(WebServer *server,
     if (file_f && body_f) {
         return webserver_response_invalid(
             err_out, "webserver response cannot carry both body and file");
+    }
+    RecordField *upgrade_f = record_find(&response, "upgrade");
+    if (upgrade_f) {
+        int code = 101;
+        if (upgrade_f->value->kind != VALUE_BOOL) {
+            return webserver_response_invalid(err_out, "webserver response upgrade must be true or false");
+        }
+        if (upgrade_f->value->as.boolean) {
+            if (status) {
+                webserver_integer(*status->value, &code);
+            }
+            if (code != 101) {
+                return webserver_response_invalid(
+                    err_out, "webserver: an upgrade response's status is 101 Switching Protocols");
+            }
+            if (file_f || body_f || (stream_f && stream_f->value->as.boolean)) {
+                return webserver_response_invalid(
+                    err_out, "webserver: an upgrade response hands the connection to net; it has no body, "
+                             "file or stream");
+            }
+            if (!net_events_watched()) {
+                return webserver_response_invalid(
+                    err_out, "webserver: an upgraded connection arrives as an accepted event on net.events, "
+                             "and nothing is watching net.events");
+            }
+        }
     }
     if (stream_f && stream_f->value->as.boolean && (file_f || body_f)) {
         return webserver_response_invalid(
@@ -21385,6 +21420,7 @@ static int webserver_parse_request(WebServer *server, WebServerClient *client) {
 
     client->id = server->next_request_id++;
     client->waiting_response = 1;
+    client->request_end = body_offset + content_length;
     client->deadline = webserver_now() + webserver_effective_timeout(server);
     Value request = webserver_make_request(client, method, target, query,
                                           headers, body, content_length);
@@ -21672,6 +21708,49 @@ static int webserver_deliver_response(WebServer *server, Value response,
     RecordField *body = record_find(&response, "body");
     RecordField *stream_f = record_find(&response, "stream");
     RecordField *file_f = record_find(&response, "file");
+    RecordField *upgrade_f = record_find(&response, "upgrade");
+    if (upgrade_f && upgrade_f->value->as.boolean) {
+        /* The 101 and its headers go out through `net`'s send queue, and the
+         * descriptor (and its TLS session) leaves this server: the slot is
+         * removed without a close. A protocol that switched is not HTTP's to
+         * answer any more, so its deadline and slot must not outlive it. */
+        StringBuilder head;
+        sb_init(&head);
+        sb_append_text(&head, "HTTP/1.1 101 Switching Protocols\r\n");
+        if (headers) {
+            for (size_t i = 0; i < headers->value->as.record.count; i++) {
+                RecordField *h = &headers->value->as.record.fields[i];
+                sb_append_text(&head, h->name);
+                sb_append_text(&head, ": ");
+                sb_append_text(&head, h->value->as.string);
+                sb_append_text(&head, "\r\n");
+            }
+        }
+        sb_append_text(&head, "\r\n");
+        RecordField *req_f = record_find(&response, "request");
+        RecordField *idle_f = record_find(&response, "idle");
+        double idle = 0;
+        if (idle_f && idle_f->value->kind == VALUE_NUMBER && idle_f->value->as.num.value > 0) {
+            idle = idle_f->value->as.num.value;
+        }
+        void *ssl = NULL;
+#if HAVE_LIBSSL
+        ssl = client->ssl;
+#endif
+        size_t rest = client->length > client->request_end ? client->length - client->request_end : 0;
+        if (!net_adopt_upgrade(client->fd, ssl, head.items, head.length, client->buffer + client->request_end,
+                               rest, req_f ? req_f->value : NULL, idle, err_out)) {
+            free(sb_take(&head));
+            return 0;
+        }
+        free(sb_take(&head));
+#if HAVE_LIBSSL
+        client->ssl = NULL;
+#endif
+        client->fd = -1;
+        webserver_client_close(server, client_index);
+        return 1;
+    }
     if (stream_f && stream_f->value->as.boolean) {
         webserver_send_stream_head(client,
                                    status ? (int)status->value->as.num.value : 200,
@@ -32856,6 +32935,77 @@ static Value eval_call(AstExpr *expr) {
         value_free(a);
         value_free(b);
         return value_bool(eq);
+    }
+    if (strcmp(expr->as.call.name, "bytes_xor") == 0) {
+        /* data XOR key, the key repeated: WebSocket masking (RFC 6455 §5.3)
+         * and any cipher-shaped framing, which a per-byte loop in gBASIC
+         * would make quadratic-feeling on a megabyte frame. */
+        Value a, b;
+        if (!crypto_two_strings(expr, "bytes_xor", &a, &b)) return value_null();
+        size_t n = string_length(a.as.string), k = string_length(b.as.string);
+        if (k == 0) {
+            value_free(a);
+            value_free(b);
+            runtime_error_raise("bytes_xor: the key must be at least one byte", 1003, "invalid argument");
+            return value_null();
+        }
+        char *out = malloc(n + 1);
+        if (!out) {
+            abort();
+        }
+        for (size_t i = 0; i < n; i++) {
+            out[i] = (char)(a.as.string[i] ^ b.as.string[i % k]);
+        }
+        Value r = value_string_n(out, n);
+        free(out);
+        value_free(a);
+        value_free(b);
+        return r;
+    }
+    if (strcmp(expr->as.call.name, "valid_utf8") == 0) {
+        /* STRICT, as RFC 3629 defines it: no overlong forms, no surrogates,
+         * nothing past U+10FFFF, no truncated sequence. The string builtins
+         * read malformed bytes leniently (one unit each); this is the answer
+         * a protocol that must REFUSE them needs (WebSocket text, 1007). */
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("valid_utf8 expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value t = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(t);
+            return value_null();
+        }
+        if (t.kind != VALUE_STRING) {
+            value_free(t);
+            runtime_error_raise("valid_utf8 expects text", 1003, "invalid argument type");
+            return value_null();
+        }
+        const unsigned char *u = (const unsigned char *)t.as.string;
+        size_t n = string_length(t.as.string), i = 0;
+        int ok = 1;
+        while (i < n && ok) {
+            unsigned char c = u[i];
+            size_t need;
+            unsigned cp, min;
+            if (c < 0x80) { i++; continue; }
+            else if (c >= 0xc2 && c <= 0xdf) { need = 1; cp = c & 0x1f; min = 0x80; }
+            else if ((c & 0xf0) == 0xe0) { need = 2; cp = c & 0x0f; min = 0x800; }
+            else if (c >= 0xf0 && c <= 0xf4) { need = 3; cp = c & 0x07; min = 0x10000; }
+            else { ok = 0; break; }
+            if (i + need >= n) { ok = 0; break; }       /* truncated at the end */
+            for (size_t j = 1; j <= need; j++) {
+                if ((u[i + j] & 0xc0) != 0x80) { ok = 0; break; }
+                cp = (cp << 6) | (u[i + j] & 0x3f);
+            }
+            if (!ok || cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+                ok = 0;
+                break;
+            }
+            i += need + 1;
+        }
+        value_free(t);
+        return value_bool(ok);
     }
     if (strcmp(expr->as.call.name, "random_bytes") == 0) {
         if (expr->as.call.args.count != 1) {

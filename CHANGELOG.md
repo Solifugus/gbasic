@@ -16,6 +16,32 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### WebSockets: `load websocket`
+
+Increment N4 of docs/networking_design.md: RFC 6455 client and server, as a
+gBASIC library over `net`. Needs libcrypto (the handshake's `sha1`).
+
+- **Server:** a route returns `websocket.accept(req [, { protocols,
+  max_message, idle }])`. For a handshake it is a 101 response with
+  `upgrade: true`; the webserver writes it and hands the socket, with its TLS
+  session, to `net`, where it is an `accepted` event carrying the request.
+  For anything else it is a 400 (426 for another protocol version).
+- **Client:** `websocket.connect("ws://..." | "wss://..." [, options])`,
+  waited (returns once the handshake is answered) or watched (an `open`
+  event).
+- **`websocket.events(e)`** turns a `net` event into WebSocket events: `open`,
+  `message` (`data`, `binary`), `ping`, `pong`, `closed` (`code`, `reason`,
+  `clean`), `error`. Pings are answered and peer closes echoed for you.
+  Waited, `websocket.receive(c [, timeout])`.
+- `send`, `send_binary`, `ping`, `close(c [, code, reason])`, `is_request`.
+- Protocol violations close with the RFC's code: 1002, 1007 (text not
+  UTF-8), 1009 (past `max_message`, default 8 MiB).
+- **New in the webserver:** a response with `upgrade: true` (status 101).
+- **New in `net`:** `c.set_state(name, value)` and `c.state`, per-connection
+  values for a library over `net`.
+- **New builtins:** `bytes_xor(data, key)` and `valid_utf8(text)` (strict RFC
+  3629).
+
 ### `net`: datagrams (UDP)
 
 Increment N3 of docs/networking_design.md. Core; no library needed.

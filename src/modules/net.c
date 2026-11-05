@@ -154,6 +154,9 @@ struct NetSocket {
     size_t max_datagram;     /* a longer datagram is delivered cut, and says so */
     char *dgram_buf;
     Value dgram_pending;     /* records read by the loop, owed as `datagram` events */
+    /* N4 */
+    Value accept_request;    /* an upgraded connection's request, carried by its `accepted` event */
+    Value state;             /* named values a library keeps per connection (net.set_state) */
 #if HAVE_LIBSSL
     SSL *ssl;
     NetTlsServer *tls_server;     /* a TLS listener's contexts, and an accepted connection's */
@@ -399,6 +402,8 @@ static void net_socket_free(NetSocket *s) {
     value_free(s->tls_info);
     free(s->dgram_buf);
     value_free(s->dgram_pending);
+    value_free(s->accept_request);
+    value_free(s->state);
 #if HAVE_LIBSSL
     if (s->tls_server) {
         net_tls_server_release(s->tls_server);
@@ -434,6 +439,8 @@ static NetSocket *net_socket_new(NetKind kind) {
     s->last_activity = net_now();
     s->tls_info = value_null();
     s->dgram_pending = value_null();
+    s->accept_request = value_null();
+    s->state = value_record(NULL, 0);
     net_registry_add(s);
     if (!net_sigpipe_ignored) {
         /* A write to a peer that left must be an ERROR, never a process
@@ -3169,6 +3176,98 @@ static Value net_do_receive(AstExpr *expr) {
     }
 }
 
+/* ---- upgrades and per-connection state (N4) ------------------------------------ *
+ *
+ * docs/networking_design.md §6. A WebSocket server is an HTTP request that
+ * asks to switch protocols, so the webserver answers it with a response
+ * carrying `upgrade: true`, and the socket leaves the webserver for `net`
+ * here: the 101 goes out through this connection's send queue, bytes the
+ * client sent past its request are this connection's first input, and a TLS
+ * session moves with its descriptor. The connection is announced as an
+ * `accepted` event with the request the response carried and no listener. */
+static int net_adopt_upgrade(int fd, void *ssl, const char *head, size_t head_len, const char *rest,
+                             size_t rest_len, Value *request, double idle, const char **err) {
+    (void)err;
+    NetSocket *s = net_socket_new(NET_CONNECTION);
+    s->fd = fd;
+    s->open = 1;
+    s->watched = 1;
+    s->loop_ref = 1;          /* the reference it was made with, as an accepted one */
+    s->idle_s = idle;
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof ss;
+    s->family = getsockname(fd, (struct sockaddr *)&ss, &len) == 0 ? ss.ss_family : AF_INET;
+    if (s->family == AF_INET || s->family == AF_INET6) {
+        s->port = s->family == AF_INET6 ? ntohs(((struct sockaddr_in6 *)&ss)->sin6_port)
+                                        : ntohs(((struct sockaddr_in *)&ss)->sin_port);
+    }
+    net_set_nonblocking(fd);
+    net_socket_options(fd, s->family);
+#if HAVE_LIBSSL
+    if (ssl) {
+        s->ssl = (SSL *)ssl;
+        /* net's own write discipline: the queue moves between a refused
+         * write and its retry (see net_tls_new_ssl) */
+        SSL_set_mode(s->ssl, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+        value_free(s->tls_info);
+        s->tls_info = net_tls_snapshot(s->ssl);
+    }
+#else
+    (void)ssl;
+#endif
+    if (rest_len > 0) {
+        netbuf_append(&s->in, rest, rest_len);
+    }
+    netbuf_append(&s->out, head, head_len);
+    s->accept_request = request ? value_copy(*request) : value_record(NULL, 0);
+    s->connected_pending = 2;     /* owed as `accepted` */
+    s->last_activity = net_now();
+    const char *code = NULL;
+    char msg[300];
+    if (net_flush_some(s, &code, msg, sizeof msg) < 0) {
+        net_fail(s, code, msg);
+    }
+    return 1;
+}
+
+/* set_state(connection, name, value): one named value a library keeps with a
+ * connection (a WebSocket's handshake and fragments), read back as
+ * `c.state.name`. Named, so two libraries over one connection do not collide.
+ * A value that names the connection itself would keep it alive: do not. */
+static Value net_do_set_state(AstExpr *expr) {
+    Value owner;
+    NetSocket *s = net_arg_socket(expr, "net.set_state", -1, &owner);
+    if (!s) {
+        return value_null();
+    }
+    if (expr->as.call.args.count != 3) {
+        value_free(owner);
+        return net_refuse("net.set_state expects a socket, a name and a value");
+    }
+    Value name = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(name);
+        value_free(owner);
+        return value_null();
+    }
+    if (name.kind != VALUE_STRING || string_length(name.as.string) == 0) {
+        value_free(name);
+        value_free(owner);
+        return net_refuse("net.set_state: the name must be text");
+    }
+    Value v = eval_expr(expr->as.call.args.items[2]);
+    if (error_action_pending()) {
+        value_free(v);
+        value_free(name);
+        value_free(owner);
+        return value_null();
+    }
+    record_set(&s->state, name.as.string, v);
+    value_free(name);
+    value_free(owner);
+    return value_null();
+}
+
 static Value net_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     char verb[64];
@@ -3180,6 +3279,7 @@ static Value net_eval_call(AstExpr *expr) {
     if (strcmp(name, "datagram") == 0) return net_do_datagram(expr);
     if (strcmp(name, "send_to") == 0) return net_do_send_to(expr);
     if (strcmp(name, "receive") == 0) return net_do_receive(expr);
+    if (strcmp(name, "set_state") == 0) return net_do_set_state(expr);
     if (strcmp(name, "write") == 0) return net_do_write(expr);
     if (strcmp(name, "take") == 0 || strcmp(name, "take_exactly") == 0 || strcmp(name, "take_until") == 0 ||
         strcmp(name, "take_line") == 0 || strcmp(name, "peek_exactly") == 0) {
@@ -3243,6 +3343,7 @@ static int net_field(NetSocket *s, const char *field, Value *out) {
         return 1;
     }
     if (strcmp(field, "peer_credentials") == 0) { *out = net_peer_credentials(s); return 1; }
+    if (strcmp(field, "state") == 0) { *out = value_copy(s->state); return 1; }
     if (strcmp(field, "max_datagram") == 0 && s->kind == NET_DATAGRAM) {
         *out = value_number_exact((long long)s->max_datagram);
         return 1;
@@ -3565,7 +3666,16 @@ static int net_deliver(void) {
         if (s->connected_pending == 2) {
             s->connected_pending = 0;
             s->announced = 1;
-            ok = net_emit("accepted", s, s->listener, NULL, NULL);
+            if (s->accept_request.kind != VALUE_NULL) {
+                /* an upgrade: no listener of net's, the request instead */
+                Value extra = value_record(NULL, 0);
+                record_set(&extra, "request", s->accept_request);
+                s->accept_request = value_null();
+                ok = net_emit_full("accepted", s, NULL, NULL, NULL, &extra);
+                value_free(extra);
+            } else {
+                ok = net_emit("accepted", s, s->listener, NULL, NULL);
+            }
             if (!ok) break;
         } else if (s->connected_pending == 1) {
             s->connected_pending = 0;

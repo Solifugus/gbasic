@@ -6,14 +6,14 @@ gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
 databases, a hardened web server, spreadsheets, statistics, charts, PDF
-documents, native GUI and an AI stack — and sixty-two pure-gBASIC libraries
+documents, native GUI and an AI stack — and sixty-three pure-gBASIC libraries
 covering double-entry accounting, loan servicing, deposits, credit analytics,
 securities analysis and more. A gBASIC program is meant to be a real
 application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.10.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**215 test suites** gate every change, goldens are byte-exact, and the claims in
+**216 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -222,13 +222,14 @@ Two of these deserve a sentence more than a table row:
 - **WebServer** began as a queue-based toy and is no longer one. It now has
   TLS with SNI, a declarative `server` block with routing and captures, static
   file serving, streaming responses, a process worker pool with rolling reload,
-  and request/idle timeouts with smuggling-resistant framing. It still does not
-  do WebSockets or chunked request bodies, and it binds loopback unless asked
-  otherwise.
+  and request/idle timeouts with smuggling-resistant framing. A route can
+  upgrade to a WebSocket (`websocket.accept`), handing the socket to the `net`
+  module. It still does not do chunked request bodies, and it binds loopback
+  unless asked otherwise.
 
 ### The standard library
 
-Sixty-two pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
+Sixty-three pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
 because they are not at the same maturity and a uniform list would imply they
 are.
 
@@ -439,7 +440,8 @@ are.
   cannot be told from a first heading.
 - **odds and ends** — `web` (routing), `frame` (data frames), `matrix`,
   `persist` (crash-safe versioned storage), `intake` (idempotent file intake —
-  what arrived, what was taken), `filetree`, `crypto`, `mail`.
+  what arrived, what was taken), `filetree`, `crypto`, `mail`, `websocket`
+  (RFC 6455 client and server over the net module).
 
 A worked AI application lives in
 [examples/steward](examples/steward/steward.bas): one route per thing a user
@@ -551,7 +553,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 215 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 216 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite
@@ -672,7 +674,8 @@ Known edges, stated plainly rather than discovered later:
   workloads, not a JIT
 - there are no closures; a function cannot rebind a variable in an enclosing
   scope, and doing so silently creates a local instead (it warns)
-- the WebServer does not do WebSockets or chunked request bodies
+- the WebServer does not do chunked request bodies, and WebSockets offer no
+  extensions (no `permessage-deflate`)
 - the business-automation-reasoning libraries are a design laboratory, and
   every measurement behind them is on generated data
 - `nlq` is a first increment: grounding scores 18 of 19 benchmark questions on a

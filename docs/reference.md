@@ -1090,6 +1090,15 @@ family has its own search rather than sharing `find`.
   on a miss, as `find` answers. An **empty needle is refused**: it matches
   everywhere and answering 0 invites a scan that never advances.
 - `to_bytes(s)` — an array of byte values 0–255, the inverse of `from_bytes`.
+- `bytes_xor(data, key)` — `data` with each byte XORed against `key`, the key
+  repeated; `key` must be at least one byte. WebSocket masking is this with a
+  4-byte key, and it is native because a per-byte loop over a megabyte frame is
+  not.
+- `valid_utf8(text)` — whether the bytes are well-formed UTF-8 as RFC 3629
+  defines it: no overlong forms, no surrogates (`U+D800`–`U+DFFF`), nothing past
+  `U+10FFFF`, no sequence cut short. The other string builtins read malformed
+  bytes leniently; this is the strict answer a protocol that must refuse them
+  needs. Checked against Python's decoder (`tests/run_websocket.sh`).
 
 **Comparison** is by byte sequence (binary-safe, and correct codepoint order for
 valid UTF-8). **Case folding** (`upper`, `lower`, and the `{caseless}` comparison
@@ -3613,7 +3622,7 @@ Each event in `net.events` is `{ kind, id, connection, listener, code, message }
 
 | kind | when |
 |---|---|
-| `accepted` | a listener took a connection (`listener` is set); on a TLS listener, once its handshake is done |
+| `accepted` | a listener took a connection (`listener` is set); on a TLS listener, once its handshake is done. A connection the webserver handed over by an [upgrade](#websockets) has no listener and carries `request` |
 | `connected` | a watched connect finished (with `tls:`, its handshake too) |
 | `tls` | a watched `start_tls` finished its handshake |
 | `data` | new bytes arrived since the last `data` event |
@@ -3634,10 +3643,17 @@ and a program whose sockets have all closed lets the loop end.
 
 `c.id`, `c.kind` (`"connection"`, `"listener"` or `"datagram"`), `c.open`, `c.watched`,
 `c.peer` and `c.local` (`{ address, port }` or `{ path }`), `c.port`, `c.path`,
-`c.tls` (see [TLS](#tls)), `listener.connections` (how many are open), and
+`c.tls` (see [TLS](#tls)), `c.state` (below), `listener.connections` (how many are open), and
 on a Unix connection `c.peer_credentials`: `{ pid, uid, gid }` of the process
 at the other end (`pid` is `unknown` on the BSDs and macOS). That is how a
 local server authenticates a user by who they are.
+
+**`c.set_state(name, value)`** keeps a named value with a connection, read
+back as `c.state.name` (`c.state` is a record, `{}` at first). It is for a
+library over `net` that needs to remember something between events, as
+`websocket` keeps its handshake and a message's fragments under `"websocket"`;
+the name keeps two libraries on one connection apart. A value that names the
+connection itself keeps the connection alive, so do not store one.
 
 ### Failures
 
@@ -3841,6 +3857,82 @@ srv = net.datagram({ port: 5140 })              ' 127.0.0.1 unless address: says
 Multicast and broadcast are not built (a later increment, §4 of the design);
 `broadcast:` is refused as an unknown option. Unix datagram sockets are not
 built either.
+
+### WebSockets
+
+*(added 2026-11-04, N4)* `load websocket`: RFC 6455, client and server, as a
+gBASIC library over `net`. It needs libcrypto in the build (the handshake is
+`sha1`). A watched WebSocket is an ordinary watched connection, and
+**`websocket.events(e)` turns one `net` event into the WebSocket events it
+means**, usually none or one, so a program keeps its one `watch(net.events)`:
+
+```basic
+load websocket
+
+server app( port: 8080 )
+    get "/chat"( req )
+        return websocket.accept(req)            ' the 101, or a 400 if it is not a handshake
+    end get
+end server
+
+program main( args )
+    watch(net.events)
+        while count(net.events) > 0
+            e = take_first(net.events)
+            for each w in websocket.events(e)
+                if w.kind = "message" and not w.binary then
+                    websocket.send(w.connection, "you said " + w.data)
+                end if
+            end for
+        end while
+    end watch
+    h = web.serve(app)
+end program
+```
+
+```basic
+load websocket
+
+c = websocket.connect("wss://example.com/feed")   ' waited: returns once the handshake is answered
+websocket.send(c, "subscribe")
+m = websocket.receive(c, 30 seconds)              ' { kind: "message", data, binary } or { kind: "closed", ... }
+websocket.close(c)
+```
+
+| function | what it does |
+|---|---|
+| `connect(url [, options])` | `ws://` or `wss://`. Options: `headers`, `protocols` (offered), `timeout` (default 10 s), `tls` (as `net.connect`'s, default `true` for `wss`), `max_message`, `idle`. Waited, it returns once the server has answered; watched, the handshake is sent at once and an `open` event says it was answered |
+| `accept(req [, options])` | the response a route returns: the 101 for a WebSocket handshake, a 400 for anything else, a 426 naming version 13 for another version, so `return websocket.accept(req)` is always right. Options: `protocols` (the server's, the first the client offered is chosen), `max_message`, `idle` |
+| `is_request(req)` | whether a request asks to become a WebSocket |
+| `events(e)` | the WebSocket events a `net` event means, as an array |
+| `send(c, text)` | a text message; text that is not UTF-8 is refused here (`not_utf8`), naming `send_binary` |
+| `send_binary(c, bytes)` | a binary message |
+| `ping(c [, data])` | at most 125 bytes; the `pong` comes as an event |
+| `close(c [, code, reason])` | begins the closing handshake (default 1000); the peer's close finishes it. Waited, it waits up to 5 seconds for that |
+| `receive(c [, timeout])` | waited only: the next `message` or `closed`. A ping is answered and skipped, a pong skipped |
+
+Events are `{ kind, connection, ... }`: `open` (`request`, the request the
+route accepted, `nothing` on a client; `protocol`), `message` (`data`,
+`binary`), `ping` and `pong` (`data`), `closed` (`code`, `reason`, `clean`)
+and `error` (`code`, `message`). **A ping is answered for you**, and a close
+from the peer is echoed and the connection closed, as the RFC requires; the
+events report them. A connection that ends without a close frame is `closed`
+with code 1006 and `clean: false`.
+
+**What is refused closes the connection with the code that names it**: a
+reserved bit set (no extension is negotiated), a client frame not masked or a
+server frame masked, a fragmented or over-125-byte control frame, a
+continuation with nothing to continue, a reserved opcode, or a close code no
+endpoint may send (1002); text that is not UTF-8 (1007); a message past
+`max_message`, default 8 MiB (1009). A message sent as fragments arrives whole.
+Raises carry `error.details.reason`: `bad_url`, `bad_option`, `handshake`,
+`not_open`, `not_websocket`, `not_utf8`, `watched`; a failure of the
+connection underneath keeps `net`'s `details.code`.
+
+An upgraded connection has **no idle timeout** unless `idle:` sets one, since
+a quiet WebSocket is ordinary; a program that wants liveness pings. In a worker
+pool a WebSocket belongs to the worker that accepted it. Extensions
+(`permessage-deflate`) are not offered.
 
 ## Timer Module
 
@@ -4082,6 +4174,17 @@ append(server.responses, {
     body:json_encode({saved:true})
 })
 ```
+
+**An upgrade** (*added 2026-11-04, N4*): a response with `upgrade: true` and
+status `101` switches protocols. The webserver writes `101 Switching
+Protocols` with the response's headers and hands the socket, and its TLS
+session, to the `net` module, where it arrives as an `accepted` event carrying
+the response's `request` field (any value) and no listener. Bytes the client
+sent after its request are the connection's first input. It needs a watcher on
+`net.events` to arrive at, and is refused without one; it cannot carry a body,
+file or stream. `idle` (seconds) sets the connection's idle timeout, none by
+default. This is what `websocket.accept` returns; see
+[WebSockets](#websockets).
 
 `webserver.redirect(req, location)` returns a normal response record with
 status `303`, a `location` header, and an empty body. The optional status must
@@ -8656,11 +8759,11 @@ refuses to publish an archive whose unloadable set is not exactly what the
 derivation predicts. So a new library, a new dependency and a change of build
 tier each move all three together.
 
-### And three that load, then fail
+### And some that load, then fail
 
 **A library can `load` perfectly and still not work**, which is the half the
 table above misses and the worse half, because the failure is deferred to the
-call. These 4 call a **builtin** whose availability moves with the build, so
+call. These 5 call a **builtin** whose availability moves with the build, so
 nothing in their `load` lines gives them away:
 
 <!--LIBNEEDS:calls-->
@@ -8670,6 +8773,7 @@ nothing in their `load` lines gives them away:
 | `gpdf` | zlib |
 | `intake` | libcrypto |
 | `otp` | libcrypto |
+| `websocket` | libcrypto |
 <!--LIBNEEDS:end-->
 
 Measured on the 0.7.0 lean archive: `load crypto` and `load otp` both succeed,
