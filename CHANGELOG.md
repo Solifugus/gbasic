@@ -16,6 +16,22 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### SSH's cryptography: X25519, RSA, AES-CTR
+
+- **`x25519_keypair`, `x25519_public`, `x25519_shared`** for
+  `curve25519-sha256`. A peer key giving an all-zero secret raises.
+- **RSA over the six parts SSH carries**: a key is a record of big-endian
+  byte strings, `{ n, e, d, p, q, iqmp }`. `rsa_generate`, `rsa_public`,
+  `rsa_sign`/`rsa_verify` (PKCS#1 v1.5 over SHA-256 and SHA-512; SHA-1
+  verifies only), `rsa_from_pem` (PKCS#1, PKCS#8, encrypted, public) and
+  `rsa_to_pem`. A key whose parts do not belong together is refused.
+- **`aes_ctr(key, counter, data)`** answers `{ data, counter }`, the next
+  counter, so packets chained by it are one keystream.
+- Asked for by Transward's SSH work. Checked against RFC 7748 and NIST
+  SP 800-38A vectors, Python's `cryptography` both ways (signatures equal
+  byte for byte), `ssh-keygen` and `openssl dgst`
+  (`docs/crypto_design.md` §9, `tests/run_crypto_ssh.sh`).
+
 ### One file loaded by two spellings is one library
 
 - **A library file is recognised as one file however its path is spelled.**

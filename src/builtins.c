@@ -85,6 +85,17 @@ int gbasic_builtin_function(const char *name) {
         "ed25519_keypair",
         "ed25519_sign",
         "ed25519_verify",
+        /* SSH's primitives (src/modules/crypto_ssh.c, crypto_design.md §9) */
+        "x25519_keypair",
+        "x25519_public",
+        "x25519_shared",
+        "rsa_generate",
+        "rsa_public",
+        "rsa_sign",
+        "rsa_verify",
+        "rsa_from_pem",
+        "rsa_to_pem",
+        "aes_ctr",
 #endif
         "exit",
         "now",

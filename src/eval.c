@@ -27878,6 +27878,7 @@ static int crypto_ed25519_verify(const unsigned char *pub, size_t publen,
 #endif
 
 
+#include "modules/crypto_ssh.c"
 #include "modules/xlsx.c"
 /* AFTER the event loop, deliberately: the Qt tick calls
  * webserver_run_event_loop_once, which is defined above. */
@@ -33797,6 +33798,12 @@ static Value eval_call(AstExpr *expr) {
                             1003, "unsupported");
         return value_null();
 #endif
+    }
+    {
+        Value crypto_answer;
+        if (crypto_ssh_call(expr, &crypto_answer)) {
+            return crypto_answer;
+        }
     }
     if (strcmp(expr->as.call.name, "ed25519_keypair") == 0) {
         if (expr->as.call.args.count != 0) {

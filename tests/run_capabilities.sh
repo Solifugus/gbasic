@@ -242,6 +242,16 @@ aes_gcm_decrypt:"0123456789abcdef0123456789abcdef","0123456789ab","c","a"
 ed25519_keypair:
 ed25519_sign:"sk","m"
 ed25519_verify:"pk","m","sig"
+x25519_keypair:
+x25519_public:"short"
+x25519_shared:"a","b"
+rsa_generate:1
+rsa_public:"k"
+rsa_sign:"k","m","sha256"
+rsa_verify:"k","m","s","sha256"
+rsa_from_pem:"x"
+rsa_to_pem:"k"
+aes_ctr:"k","c","d"
 pbkdf2_sha256:"p","s",1000,16
 pbkdf2_sha512:"p","s",1000,16
 scrypt:"p","s",16384,8,1,32
@@ -278,7 +288,7 @@ for row in $HB_TABLE; do
         ok "has_builtin($nm) = $says, and the call agrees"
     fi
 done
-if [ "$hb_checked" -lt 18 ]; then
+if [ "$hb_checked" -lt 28 ]; then
     bad "only $hb_checked optional builtins were probed" "the table has shrunk; it is measuring almost nothing"
 fi
 

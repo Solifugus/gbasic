@@ -80,6 +80,7 @@
     <!-- Builtin functions (from src/builtins.c, plus read/write) -->
     <list name="builtins">
       <item>abs</item>
+      <item>aes_ctr</item>
       <item>aes_gcm_decrypt</item>
       <item>aes_gcm_encrypt</item>
       <item>all</item>
@@ -251,6 +252,12 @@
       <item>rotl</item>
       <item>rotr</item>
       <item>round</item>
+      <item>rsa_from_pem</item>
+      <item>rsa_generate</item>
+      <item>rsa_public</item>
+      <item>rsa_sign</item>
+      <item>rsa_to_pem</item>
+      <item>rsa_verify</item>
       <item>scrypt</item>
       <item>secure_token</item>
       <item>seed</item>
@@ -297,6 +304,9 @@
       <item>variance</item>
       <item>warning</item>
       <item>write</item>
+      <item>x25519_keypair</item>
+      <item>x25519_public</item>
+      <item>x25519_shared</item>
       <item>zone_offset</item>
       <item>zone_resolve</item>
     </list>

@@ -6024,6 +6024,37 @@ Authenticated encryption and signatures:
 - `ed25519_sign(private, message)` — a signature.
 - `ed25519_verify(public, message, signature)` — `true` / `false`.
 
+For SSH and other protocols that carry their own key formats (since 0.11.0,
+`docs/crypto_design.md` §9):
+
+- `x25519_keypair()` — a record `{ public, private }`, 32 raw bytes each.
+- `x25519_public(private)` — the 32-byte public key of a private one.
+- `x25519_shared(private, peer_public)` — the 32-byte shared secret
+  (`curve25519-sha256`). A peer key that gives an all-zero secret, a
+  low-order point, **raises** (RFC 7748 §6.1); `on error` is how a server
+  drops that connection.
+- RSA keys are **records of big-endian byte strings**: `{ n, e }` public,
+  `{ n, e, d, p, q, iqmp }` private, the six parts SSH and OpenSSH key files
+  carry (an SSH `mpint` without its sign byte).
+- `rsa_generate(bits)` — a private key; `bits` is a multiple of 8 from 2048 to
+  16384.
+- `rsa_public(key)` — `{ n, e }`.
+- `rsa_sign(private, message, hash)` — PKCS#1 v1.5, `hash` `"sha256"` or
+  `"sha512"` (`rsa-sha2-256`, `rsa-sha2-512`). SHA-1 is **refused** for
+  signing. A key whose parts do not belong together is refused rather than
+  signed with.
+- `rsa_verify(key, message, signature, hash)` — `true` / `false`; `hash` may
+  also be `"sha1"`, so a legacy `ssh-rsa` host key can be checked.
+- `rsa_from_pem(text)` / `rsa_from_pem(text, passphrase)` — reads PKCS#1,
+  PKCS#8 (encrypted too) and public keys as PKCS#1 or SubjectPublicKeyInfo.
+- `rsa_to_pem(key)` — PKCS#8 for a private key, SubjectPublicKeyInfo for a
+  public one, unencrypted.
+- `aes_ctr(key, counter, data)` — AES in counter mode (`aes128-ctr`,
+  `aes256-ctr`); `key` is 16, 24 or 32 bytes and `counter` a 16-byte block.
+  Answers `{ data, counter }`, where `counter` is the next block's, so packets
+  chained by it are one keystream. Encrypting and decrypting are the same call.
+  A partial last block uses up its whole block.
+
 Bad argument types, wrong key/nonce sizes, and failed authentication raise
 structured errors — these builtins pre-validate rather than degrade. So do
 `base64_decode` and `hex_decode` on malformed input.

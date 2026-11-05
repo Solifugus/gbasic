@@ -181,8 +181,71 @@ cross-architecture deterministic. A dedicated runner skips cleanly when
 ## 8. Out of scope (for now)
 
 X.509 / certificate handling, TLS termination (libcurl already covers client
-TLS), key-derivation beyond the existing `password_hash` (PBKDF2/scrypt/Argon2
-could be added later), and RSA. Revisit per demand.
+TLS), and key-derivation beyond the existing `password_hash` (PBKDF2/scrypt/Argon2
+could be added later). RSA came in with §9. Revisit per demand.
+
+## 9. Phase 6 — SSH's primitives — **X25519, RSA, AES-CTR DONE (2026-11-05)**
+
+Asked for by Transward, which is writing an SSH/SFTP client and server in
+gBASIC on the net library (`transward/docs/gbasic-requests-for-revision.md`
+§2). The same rule as §1: **bindings to libcrypto, not implementations**. The
+code is `src/modules/crypto_ssh.c`, included into `eval.c` like the other
+modules, and its suite is `tests/run_crypto_ssh.sh`.
+
+| Builtin | SSH name | Result |
+|---|---|---|
+| `x25519_keypair()` | `curve25519-sha256` | `{ public, private }`, 32 bytes each |
+| `x25519_public(private)` | | 32 bytes |
+| `x25519_shared(private, peer)` | | 32 bytes; an all-zero secret **raises** |
+| `rsa_generate(bits)` | | `{ n, e, d, p, q, iqmp }` |
+| `rsa_public(key)` | | `{ n, e }` |
+| `rsa_sign(key, msg, hash)` | `rsa-sha2-256`/`-512` | signature; SHA-1 refused |
+| `rsa_verify(key, msg, sig, hash)` | also `ssh-rsa` | boolean |
+| `rsa_from_pem(text[, passphrase])` | | key record |
+| `rsa_to_pem(key)` | | PKCS#8 or SubjectPublicKeyInfo |
+| `aes_ctr(key, counter, data)` | `aes128-ctr`/`aes256-ctr` | `{ data, counter }` |
+
+**An RSA key is a record of big-endian byte strings**, the six parts an SSH
+key blob and an `openssh-key-v1` file carry. It is a record rather than PEM
+text or a handle because a protocol reads and writes exactly these fields, and
+because a record crosses to an actor as it is. OpenSSL's other two CRT
+exponents are computed. **A key whose parts do not belong together is
+refused**, which matters because signing uses p, q and iqmp, so a wrong `d`
+or a swapped p and q would produce signatures no verifier accepts, with
+nothing saying why.
+
+**SHA-1 verifies and does not sign.** `ssh-rsa` exists for legacy servers
+under an explicit policy. Nothing new should be made with it, and refusing
+here makes that a rule rather than advice.
+
+**AES-CTR hands back the next counter** instead of keeping a context. SSH's
+CTR is one keystream across packets. Returning the counter keeps the call a
+pure function, which can cross to an actor, while sparing the program
+128-bit arithmetic. Since SSH packets are whole blocks, "a partial block uses
+up its block" never applies to it.
+
+**Failures raise**, as §6's do since 0.1.0-rc9. Transward was the program that
+found `unknown` from a crypto builtin used as a secret, so `x25519_shared`
+raises on the low-order-point case rather than answering `unknown`. Measured,
+OpenSSL 3.5 already refuses an all-zero X25519 result itself. The module's own
+check is a backstop for an older libcrypto, and its perturbation leaves the
+suite green here for that reason.
+
+**Evidence.** RFC 7748 §5.2 and §6.1 and NIST SP 800-38A F.5.1/F.5.5 vectors.
+Python `cryptography` keys and PEM files in every form. PKCS#1 v1.5
+signatures equal to Python's **byte for byte**, since the scheme is
+deterministic. Python then uses what gBASIC made: an exchange with its public
+key, its signatures, its PEM, and its CTR packets chained by the returned
+counter across a 64-bit carry. `ssh-keygen` writes a key gBASIC reads, and
+`openssl dgst` verifies a signature gBASIC made, with a one-letter control.
+A valgrind tier runs as well. Six of seven perturbations are red: PSS padding,
+no pairwise check, SHA-1 signing, public parts only, counter carry dropped,
+and a partial block not consumed (that one was green until a check was added).
+The seventh is the zero check above.
+
+**Not yet:** `bcrypt_pbkdf` (Transward §2.4), which OpenSSL lacks, and the
+Needed items (ChaCha20-Poly1305, ECDSA/ECDH, classic DH, incremental hashing,
+HKDF).
 
 ---
 
