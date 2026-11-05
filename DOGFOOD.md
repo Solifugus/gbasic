@@ -13218,3 +13218,17 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   helper over `mid(s, at, len(s) - at)`; `error.details` and `error.message`
   read directly in the handler. Not an open item: each is documented
   behaviour, so there is no ledger row to probe.
+
+## 2026-11-05 — CC — while: writing the tests for book gaps G21 and G23 (consolidate, dbframe)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** I wrote a money literal as `{money}"1500.25 USD"`, by analogy
+  with `{date}"2026-01-05"`. It is refused at run time with "assign modifier
+  not found: money". The spelling is the currency itself, `{USD}"1500.25"`,
+  and the message doesn't point there, though `money` is the type's own name
+  (`type()` answers it). Second, separate habit: I expected
+  `consolidate.to_money` to answer a money value, and it answers a number.
+- **Workaround:** `{USD}"..."`; the test compares the plain number. Not an
+  open item. Both are documented behaviour, so there is no ledger row to
+  probe. A candidate for Matthew's "fumbles are findings": `{money}` could
+  name `{USD}` in its refusal.

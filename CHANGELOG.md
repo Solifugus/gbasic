@@ -16,6 +16,31 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Spreadsheets into data: merged headers, refused cells, and G-SQL loading
+
+Gaps G19-G23 from the gBASIC books (volume 3's gap ledger).
+
+- **A merged header spans what its merge spans (G19).** `xlsx.grid` answers
+  `merges`, and `grid` takes a parent heading from the merge a cell is in.
+  *Behaviour change:* on a sheet that declares merges, an unmerged parent is
+  no longer carried right across blank cells (South's `Parts` named the
+  `Warranty` column beside it). A sheet without merges keeps the carry;
+  `carry_parents: false` turns it off.
+- **`grid.extract` says what it left out (G20)**: `rows`, `dropped` (`{row,
+  label, why}`), `header` and `notes`. A heading written twice is two
+  columns, the second `"<heading> (2)"`, where the record kept one. The drop
+  checks read `label_col`; they read the first column.
+- **`consolidate.merge` reports refused cells and its mapping (G21)**:
+  `refused` (`{source, row, column, canon, value, why}`) for a cell its kind
+  could not read, `mapping` per source, `exact: true` on a rule, and a source
+  in which two columns match one rule rejected, naming both. *Behaviour
+  change:* that source was merged from whichever column came first.
+- **"<name> subtotal" is a total (G22)**: `total_pattern()` also matches a
+  label ending in *total* or *subtotal*.
+- **`dbframe.to_gsql` (G23)** loads a frame into an existing G-SQL table,
+  binding every value; each refused row is reported with its code and undone
+  alone. `dbframe` now loads `gsql` as well as `sqlite`.
+
 ### Spreadsheets: number formats, creating workbooks, and XML attributes
 
 Gaps G13-G18 from the gBASIC books (volume 3's gap ledger).

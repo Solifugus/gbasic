@@ -1378,6 +1378,10 @@ typedef struct {
     size_t count;
     size_t *slots;      /* position + 1, or 0 for empty */
     size_t mask;        /* capacity - 1; capacity is a power of two */
+    /* <mergeCells>, four numbers each: first row, first col, last row, last
+     * col. What a merged heading spans (gap G19 from the gBASIC books). */
+    long *merges;
+    size_t nmerges;
 } XlsxSnap;
 
 static size_t xlsx_snap_hash(long row, long col) {
@@ -1436,6 +1440,9 @@ static void xlsx_snap_free(XlsxSnap *s) {
     free(s->cells);
     s->cells = NULL;
     s->count = 0;
+    free(s->merges);
+    s->merges = NULL;
+    s->nmerges = 0;
 }
 
 /* A SHEET WITH NO WORKSHEET PART.
@@ -1618,6 +1625,8 @@ static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out
     out->count = 0;
     out->slots = NULL;
     out->mask = 0;
+    out->merges = NULL;     /* callers do not zero the struct: every field is set here */
+    out->nmerges = 0;
     XlsxSheet *sheet = xlsx_find_sheet(wb, sheet_name);
     if (!sheet) {
         return 0;
@@ -1642,6 +1651,27 @@ static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out
     XlsxPending *pend = NULL; size_t pend_n = 0, pend_cap = 0;
     xmlNodePtr root = xmlDocGetRootElement(doc);
     for (xmlNodePtr n = root ? root->children : NULL; n; n = n->next) {
+        if (xlsx_is(n, "mergeCells")) {
+            for (xmlNodePtr m = n->children; m; m = m->next) {
+                if (!xlsx_is(m, "mergeCell")) continue;
+                char *ref = xlsx_prop(m, "ref");
+                char *colon = ref ? strchr(ref, ':') : NULL;
+                long c0, r0, c1, r1;
+                if (colon) {
+                    *colon = '\0';
+                    if (xlsx_parse_ref(ref, &c0, &r0) && xlsx_parse_ref(colon + 1, &c1, &r1)) {
+                        long *g = realloc(out->merges, (out->nmerges + 1) * 4 * sizeof *g);
+                        if (!g) abort();
+                        out->merges = g;
+                        long *q = &out->merges[out->nmerges * 4];
+                        q[0] = r0; q[1] = c0; q[2] = r1; q[3] = c1;
+                        out->nmerges++;
+                    }
+                }
+                free(ref);
+            }
+            continue;
+        }
         if (!xlsx_is(n, "sheetData")) continue;
         for (xmlNodePtr r = n->children; r; r = r->next) {
             if (!xlsx_is(r, "row")) continue;
@@ -6817,9 +6847,21 @@ static Value xlsx_eval_call(AstExpr *expr) {
             }
         }
         int any = snap.count != 0;
+        /* the merge ranges, as rows and columns (0-based columns, as cells) */
+        Value merges = value_array(NULL, 0);
+        for (size_t mi = 0; mi < snap.nmerges; mi++) {
+            long *q = &snap.merges[mi * 4];
+            Value m = value_record(NULL, 0);
+            record_set(&m, "first_row", value_number_exact(q[0]));
+            record_set(&m, "first_col", value_number_exact(q[1]));
+            record_set(&m, "last_row", value_number_exact(q[2]));
+            record_set(&m, "last_col", value_number_exact(q[3]));
+            Value ignored = append_to_array_ref(&merges, m, 0);
+            value_free(ignored);
+        }
         xlsx_snap_free(&snap);
 
-        RecordField *fields = calloc(10, sizeof(RecordField));
+        RecordField *fields = calloc(11, sizeof(RecordField));
         if (!fields) abort();
         fields[0].name = field_name_new("sheet");
         fields[0].value = cell_alloc(); *fields[0].value = value_string(shv.as.string);
@@ -6841,8 +6883,10 @@ static Value xlsx_eval_call(AstExpr *expr) {
         fields[8].value = cell_alloc(); *fields[8].value = value_number_exact((long long)max_c);
         fields[9].name = field_name_new("any");
         fields[9].value = cell_alloc(); *fields[9].value = value_bool(any);
+        fields[10].name = field_name_new("merges");
+        fields[10].value = cell_alloc(); *fields[10].value = merges;
         value_free(wbv); value_free(shv);
-        return value_record(fields, 10);
+        return value_record(fields, 11);
     }
 
     if (strcmp(name, "apply") == 0) {

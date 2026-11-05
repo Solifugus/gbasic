@@ -19,7 +19,13 @@
 #      same identifier (which would silently overwrite each other).
 #   5. APPEND vs REPLACE -- loading twice appends; there is no default that
 #      silently doubles a total.
-#   6. VALGRIND.
+#   6. INTO G-SQL (gap G23 from the gBASIC books) -- tests/dbframe/gsql_test.bas:
+#      dbframe.to_gsql into an EXISTING table, whose declared types refuse rows
+#      (a NULL date, a key twice); each refused row is reported with its code
+#      and undone alone, the rest commit; `atomic: true` loads none; `columns:`
+#      maps names; inside a caller's transaction it is a savepoint. Run from an
+#      empty directory. Self-checking; every answer is written there by hand.
+#   7. VALGRIND, over both.
 #
 # Skips when sqlite3 dev files were absent at build time, per the project's
 # optional-dependency convention.
@@ -98,11 +104,28 @@ case "$a_res" in
     status=1 ;;
 esac
 
+printf -- '-- into an existing G-SQL table, each refused row reported\n'
+root=$(pwd)
+mkdir -p "$tmp/g23"
+g23_res=$(cd "$tmp/g23" && GBASIC_PATH="$root/stdlib" timeout 60 "$root/gbasic" "$root/tests/dbframe/gsql_test.bas" 2>&1)
+if [ "$(printf '%s\n' "$g23_res" | tail -1)" = "mismatches: 0" ]; then
+    printf 'PASS tests/dbframe/gsql_test.bas (%s)\n' "$(printf '%s\n' "$g23_res" | head -1)"
+else
+    printf 'FAIL tests/dbframe/gsql_test.bas\n%s\n' "$g23_res"
+    status=1
+fi
+
 if vg_available; then
     if vg_run ./gbasic examples/xlsx_dbframe_test.bas >/dev/null 2>"$err"; then
         printf 'PASS valgrind examples/xlsx_dbframe_test.bas\n'
     else
         printf 'FAIL valgrind\n'; head -20 "$err"; status=1
+    fi
+    rm -rf "$tmp/g23" && mkdir -p "$tmp/g23"
+    if (cd "$tmp/g23" && GBASIC_PATH="$root/stdlib" vg_run "$root/gbasic" "$root/tests/dbframe/gsql_test.bas" >/dev/null 2>"$err"); then
+        printf 'PASS valgrind tests/dbframe/gsql_test.bas\n'
+    else
+        printf 'FAIL valgrind tests/dbframe/gsql_test.bas\n'; head -20 "$err"; status=1
     fi
 else
     printf 'SKIP valgrind (not installed)\n'

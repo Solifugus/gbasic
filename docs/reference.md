@@ -10591,14 +10591,26 @@ whole program without needing a call site.
   Every spec field is optional. Anchors match by **content**, not row number, so
   inserting rows above a table cannot break a spec: `starts` (text or regex the
   label column must match to begin), `ends` (exclusive), `header_row`,
-  `header_rows` (how many rows the header spans — a parent level is carried
-  across blank cells and joined with a space, which is how Excel stores a merged
-  header), `first_row` / `last_row` (explicit, overriding detection),
+  `header_rows` (how many rows the header spans — a parent heading is joined to
+  its children with a space, and spans exactly what its **merge** spans, read
+  from the sheet's `<mergeCells>`; a sheet that declares no merges carries a
+  parent across blank cells to the next heading, unless `carry_parents: false`),
+  `first_row` / `last_row` (explicit, overriding detection),
   `break_on_blank` (default true), `drop_totals` (drop rows whose label matches
-  `total_pattern()`), `drop_matching` (a regex), `label_col` (default the first)
-  and `columns` (explicit names, overriding the header).
+  `total_pattern()`), `drop_matching` (a regex), `label_col` (default the first;
+  the drop checks read it too) and `columns` (explicit names, overriding the
+  header). `xlsx.grid(sheet)` answers `merges`, a list of `{first_row,
+  first_col, last_row, last_col}`.
 
-  `grid.total_pattern()` returns the regex used to recognise a totals row —
+  The result says what it did with every row: `rows` (the sheet row behind
+  each frame row), `dropped` (each row left out, as `{row, label, why}` with
+  `why` one of `blank`, `total` or `drop_matching`), `header` (`{name, col}`
+  per frame column) and `notes`. A heading written twice is two columns, the
+  second named `"<heading> (2)"`, and a note says so.
+
+  `grid.total_pattern()` returns the regex used to recognise a totals row (a
+  label beginning with *total*, *subtotal* or *grand total*, or ending with
+  *total* or *subtotal*, so `Garza subtotal` is one) —
   exposed rather than hidden precisely so a caller can see and change what is
   being trusted — and `grid.row_is_blank(g, r)` is the emptiness test the
   detector uses. What remains after reading a sheet is **policy** — which row is
@@ -10614,10 +10626,31 @@ whole program without needing a call site.
   cell cannot distinguish 5.25 from 0.0525 and a column can.
   `normalize_name(s)` is the fuzzy header matcher (case, whitespace and
   punctuation removed), exposed so an alias list can be checked by hand.
+
+  `merge(sources, spec)` answers `{ok, frame, accepted, rejected, notes,
+  mapping, refused}`. `mapping` names the source column behind each canonical
+  one, per source (`{CU_A: {balance: "Bal $"}}`), so a fuzzy match is visible.
+  `refused` lists every cell that held something its kind could not read
+  (`"TBD"` as money) as `{source, row, column, canon, value, why}`, `row` from
+  0 in the source frame: its merged value is `unknown`, as an empty cell's is,
+  and this is how the two are told apart. A rule's names are its `from`
+  aliases and then the canonical name, compared under `normalize_name`;
+  `exact: true` compares them as written and drops the canonical name when
+  aliases are declared, so a declared alias is the whole mapping. A source in
+  which **two columns match one rule** is rejected, naming both, rather than
+  resolved by a pick.
 - `dbframe` — a frame becomes a database table (`docs/xlsx_design.md` §7).
   `column_type(values)` decides one column's SQL type from EVERY value, never
   the first, and `safe_name(s)` is the identifier validator — identifiers cannot
   be bound as parameters, so they are **refused rather than escaped**.
+  `to_table(df, db, table, options)` creates and loads a SQLite table.
+  `to_gsql(df, db, table, options)` loads an **existing** G-SQL table, whose
+  declared types and constraints are the contract, and answers `{ok, message,
+  table, rows, refused, columns, sql}`: each row the table refuses is listed
+  as `{row, code, message, values}` and undone alone, and the rest commit.
+  `atomic: true` loads nothing if any row is refused; `columns: {"Frame name":
+  "table_column"}` names the columns, and only those are loaded. Every value is
+  bound. Inside a caller's transaction the load is a savepoint.
 - `ari` — the anchor-relative report parser (`docs/ari_spec_language.md`).
   `ari_parse_spec(spec_text)` parses a spec on its own, and
   `clean_grid(report_text, spec_text)` exposes the page-furniture pass

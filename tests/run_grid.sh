@@ -25,7 +25,13 @@
 #      whole contract.
 #   4. NEGATIVE -- a spec matching nothing reports ok=false rather than
 #      returning an empty frame that reads as "no data".
-#   5. VALGRIND.
+#   5. MERGES, TOTALS AND WHAT WAS LEFT OUT (gaps G19, G20, G22 from the gBASIC
+#      books) -- tests/grid/south_test.bas over examples/fixtures/xlsx/south.xlsx
+#      (tools/make_xlsx_south_fixture.py): a two-row header whose parents are
+#      MERGED cells (and an unmerged one that must not be carried right), a
+#      heading written twice, "<name> subtotal" rows, and every dropped row
+#      reported with why. Self-checking; every answer is written there by hand.
+#   6. VALGRIND, over both.
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
@@ -129,14 +135,25 @@ else
     status=1
 fi
 
+printf -- '-- merged header parents, subtotals, dropped rows\n'
+south_res=$(timeout 60 ./gbasic tests/grid/south_test.bas 2>&1)
+if [ "$(printf '%s\n' "$south_res" | tail -1)" = "mismatches: 0" ]; then
+    printf 'PASS tests/grid/south_test.bas (%s)\n' "$(printf '%s\n' "$south_res" | head -1)"
+else
+    printf 'FAIL tests/grid/south_test.bas\n%s\n' "$south_res"
+    status=1
+fi
+
 if vg_available; then
-    if vg_run ./gbasic examples/xlsx_grid_test.bas >/dev/null 2>"$err"; then
-        printf 'PASS valgrind examples/xlsx_grid_test.bas\n'
-    else
-        printf 'FAIL valgrind\n'
-        head -20 "$err"
-        status=1
-    fi
+    for t in examples/xlsx_grid_test.bas tests/grid/south_test.bas; do
+        if vg_run ./gbasic "$t" >/dev/null 2>"$err"; then
+            printf 'PASS valgrind %s\n' "$t"
+        else
+            printf 'FAIL valgrind %s\n' "$t"
+            head -20 "$err"
+            status=1
+        fi
+    done
 else
     printf 'SKIP valgrind (not installed)\n'
 fi

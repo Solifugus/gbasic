@@ -29,6 +29,7 @@ library dbframe
     ' declaring it in the library block is what puts it in scope for these
     ' functions (see the 2026-08-11 DOGFOOD entry).
     load sqlite
+    load gsql
 
     ' ------------------------------------------------------------ identifiers
 
@@ -218,6 +219,128 @@ library dbframe
         end for
 
         return { ok: true, message: "", table: table, rows: n, schema: sch, sql: ddl }
+    end function
+
+    ' ------------------------------------------------------- loading into G-SQL
+
+    ' Insert every row of a frame into an EXISTING G-SQL table, and say which
+    ' rows the table refused. Returns { ok, message, table, rows, refused,
+    ' columns, sql } (gap G23 from the gBASIC books).
+    '
+    ' The table is not created: G-SQL is a contract-first store, and its
+    ' declared types (a date, money, NOT NULL, a key) are the contract a frame
+    ' inferred from a spreadsheet does not know. Those are what refuse a row,
+    ' and `refused` lists each one as { row, code, message, values }, with `row`
+    ' the frame row from 0 and `values` the record that was offered.
+    '
+    ' The frame's columns go to columns of the same identifier (schema() shows
+    ' the names); `columns: { "Frame name": "table_column" }` names them
+    ' instead, and then only those columns are loaded. Every value is bound.
+    '
+    ' The load is one transaction, or a savepoint inside the caller's own. A
+    ' refused row is undone alone (the statement was) and the rest commit;
+    ' `atomic: true` undoes the whole load if any row is refused, and `rows` is
+    ' then 0.
+    function to_gsql(df, db, table, options)
+        if not safe_name(table) then
+            return { ok: false, message: "unsafe table name: " + table, table: table, rows: 0, refused: [],
+                     columns: [], sql: "" }
+        end if
+        pairs = []
+        if has(options, "columns") then
+            for each name in keys(options.columns)
+                if not contains(frame.columns(df), name) then
+                    return { ok: false, message: "the frame has no column " + name, table: table, rows: 0,
+                             refused: [], columns: [], sql: "" }
+                end if
+                append(pairs, { name: name, column: string(options.columns[name]) })
+            end for
+        else
+            for each c in schema(df)
+                append(pairs, { name: c.name, column: c.column })
+            end for
+        end if
+        seen = { }
+        for each c in pairs
+            if not safe_name(c.column) then
+                return { ok: false, message: "column " + c.name + " has no safe identifier (got \"" + c.column + "\")",
+                         table: table, rows: 0, refused: [], columns: pairs, sql: "" }
+            end if
+            if has(seen, c.column) then
+                return { ok: false,
+                         message: "columns " + seen[c.column] + " and " + c.name + " both become \"" + c.column + "\"",
+                         table: table, rows: 0, refused: [], columns: pairs, sql: "" }
+            end if
+            seen[c.column] = c.name
+        end for
+        if count(pairs) = 0 then
+            return { ok: false, message: "no columns to load", table: table, rows: 0, refused: [], columns: pairs,
+                     sql: "" }
+        end if
+
+        names = []
+        marks = []
+        for each c, i in pairs
+            append(names, "\"" + c.column + "\"")
+            append(marks, "$" + string(i + 1))
+        end for
+        ins = "insert into \"" + table + "\" (" + join(names, ", ") + ") values (" + join(marks, ", ") + ")"
+
+        atomic = false
+        if has(options, "atomic") then
+            atomic = options.atomic
+        end if
+        gsql.begin(db)
+        n = 0
+        refused = []
+        for each row, ri in frame.to_rows(df)
+            vals = []
+            offered = { }
+            for each c in pairs
+                append(vals, row[c.name])
+                offered[c.name] = row[c.name]
+            end for
+            why = _gsql_insert(db, ins, vals)
+            if not is_unknown(why) and why.code = "NOT_FOUND" then
+                ' the table (or a column) is not there: that is the load
+                ' refused, not each row
+                gsql.rollback(db)
+                return { ok: false, message: "no table " + table + ": NOT_FOUND", table: table, rows: 0,
+                         refused: [], columns: pairs, sql: ins, detail: why.message }
+            end if
+            if is_unknown(why) then
+                n = n + 1
+            else
+                append(refused, { row: ri, code: why.code, message: why.message, values: offered })
+            end if
+        end for
+        if atomic and count(refused) > 0 then
+            gsql.rollback(db)
+            return { ok: false, message: string(count(refused)) + " row(s) refused; atomic, so none were loaded",
+                     table: table, rows: 0, refused: refused, columns: pairs, sql: ins }
+        end if
+        gsql.commit(db)
+        msg = ""
+        if count(refused) > 0 then
+            msg = string(count(refused)) + " row(s) refused; the other " + string(n) + " were loaded"
+        end if
+        return { ok: count(refused) = 0, message: msg, table: table, rows: n, refused: refused, columns: pairs,
+                 sql: ins }
+    end function
+
+    ' unknown when the row went in, else { code, message }
+    function _gsql_insert(db, ins, vals)
+        on error goto refused
+        r = gsql.exec(db, ins, vals)
+        return unknown
+    refused:
+        c = "(no code)"
+        if has(error.details, "code") then
+            c = error.details.code
+        end if
+        m = error.message
+        error.clear()
+        return { code: c, message: m }
     end function
 
 end library

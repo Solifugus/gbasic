@@ -23,7 +23,14 @@
 #   5. REJECTION -- a source missing a required column is rejected by name, not
 #      emitted with unknowns, because a tape silently short a balance column
 #      understates the pool.
-#   6. VALGRIND.
+#   6. WHAT IT COULD NOT READ, AND WHAT IT USED (gap G21 from the gBASIC books)
+#      -- tests/consolidate/g21_test.bas: every cell a kind could not read
+#      ("TBD" as money) is listed in `refused`, an empty one is not; `mapping`
+#      names the source column behind each canonical one; `exact: true` makes a
+#      declared alias the whole mapping; and a source in which two columns match
+#      one rule is rejected, naming both, rather than resolved by a pick.
+#      Self-checking; every answer is written there by hand.
+#   7. VALGRIND, over both.
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 cd "$(dirname "$0")/.."
@@ -116,12 +123,23 @@ else
     status=1
 fi
 
+printf -- '-- refused cells, the mapping, exact rules, two columns for one rule\n'
+g21_res=$(timeout 60 ./gbasic tests/consolidate/g21_test.bas 2>&1)
+if [ "$(printf '%s\n' "$g21_res" | tail -1)" = "mismatches: 0" ]; then
+    printf 'PASS tests/consolidate/g21_test.bas (%s)\n' "$(printf '%s\n' "$g21_res" | head -1)"
+else
+    printf 'FAIL tests/consolidate/g21_test.bas\n%s\n' "$g21_res"
+    status=1
+fi
+
 if vg_available; then
-    if vg_run ./gbasic examples/xlsx_consolidate_test.bas >/dev/null 2>"$err"; then
-        printf 'PASS valgrind examples/xlsx_consolidate_test.bas\n'
-    else
-        printf 'FAIL valgrind\n'; head -20 "$err"; status=1
-    fi
+    for t in examples/xlsx_consolidate_test.bas tests/consolidate/g21_test.bas; do
+        if vg_run ./gbasic "$t" >/dev/null 2>"$err"; then
+            printf 'PASS valgrind %s\n' "$t"
+        else
+            printf 'FAIL valgrind %s\n' "$t"; head -20 "$err"; status=1
+        fi
+    done
 else
     printf 'SKIP valgrind (not installed)\n'
 fi

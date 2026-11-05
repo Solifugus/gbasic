@@ -239,8 +239,12 @@ library grid
 
     ' A totals row: the label column matches one of the usual words. Kept as a
     ' regex so a caller can see and change exactly what is being trusted.
+    ' The label may BEGIN with the word ("Total", "Subtotal - East") or END with
+    ' it ("Garza subtotal", "Aisle A total"): a pattern for the first alone
+    ' let "<name> subtotal" rows through drop_totals as data, 21 rows for 18
+    ' visits (gap G22 from the gBASIC books).
     function total_pattern()
-        return regex("^ *(sub[- ]?total|total|grand total)\\b", "i")
+        return regex("^ *(sub[- ]?total|total|grand total)\\b|\\b(sub[- ]?total|total)\\s*:?\\s*$", "i")
     end function
 
     function _is_total_row(g, r, label_col)
@@ -315,10 +319,13 @@ library grid
                 conf = "low"
             end if
 
-            f = _frame_from(g, hdr, 1, hdr + 1, b.last_row, false, [])
+            built = _frame_from(g, hdr, 1, hdr + 1, b.last_row, false, [], g.first_col, true)
+            for each n in built.notes
+                append(notes, n)
+            end for
             append(out, { first_row: b.first_row, last_row: b.last_row,
                           header_row: hdr, confidence: conf, notes: notes,
-                          frame: f })
+                          frame: built.frame })
         end for
         return out
     end function
@@ -339,6 +346,17 @@ library grid
     '   drop_matching a regex; drop rows whose label column matches it
     '   label_col     which column holds the row label (default first)
     '   columns       explicit list of names, overriding the header
+    '   carry_parents a parent heading over blank cells to its right: where
+    '                 the sheet declares merges only across its merge range,
+    '                 and with none, as far as the next heading (default true)
+    '
+    ' The result says where every frame row came from (gap G20 from the gBASIC
+    ' books): `rows`, the sheet row of each frame row in order; `dropped`,
+    ' every row inside the region left out, as { row, label, why } with why
+    ' "blank", "total" or "drop_matching"; and `header`, each column's
+    ' { name, col }. A heading written twice is two columns, the second named
+    ' "<name> (2)" and reported in `notes`; it was one column, the second's
+    ' values winning, without a word.
     function extract(g, spec)
         label_col = g.first_col
         if has(spec, "label_col") then
@@ -425,44 +443,82 @@ library grid
             append(drops, total_pattern())
         end if
 
-        f = _frame_from(g, hdr, hdr_rows, data_first, last, true, drops)
+        carry = true
+        if has(spec, "carry_parents") then
+            carry = spec.carry_parents
+        end if
+        built = _frame_from(g, hdr, hdr_rows, data_first, last, true, drops, label_col, carry)
+        f = built.frame
         if has(spec, "columns") then
             f = _rename_positional(f, spec.columns)
         end if
         return { ok: true, message: "", header_row: hdr,
-                 first_row: data_first, last_row: last, frame: f }
+                 first_row: data_first, last_row: last, frame: f,
+                 rows: built.rows, dropped: built.dropped, header: built.header, notes: built.notes }
     end function
 
     ' ------------------------------------------------------------- the frame
 
-    ' Column names from `hdr_rows` header rows. A parent level is CARRIED
-    ' ACROSS BLANK CELLS: Excel writes a merged "Q1" spanning two columns as
-    ' text in the first and nothing in the second, so without carrying it the
-    ' second column loses its qualifier and two columns end up both named
-    ' "Units".
-    function _names(g, hdr, hdr_rows, use_drops)
+    ' The merge range holding (r, c), or unknown.
+    function _merge_at(g, r, c)
+        if not has(g, "merges") then
+            return unknown
+        end if
+        for each m in g.merges
+            if r >= m.first_row and r <= m.last_row and c >= m.first_col and c <= m.last_col then
+                return m
+            end if
+        end for
+        return unknown
+    end function
+
+    ' Column names from `hdr_rows` header rows. A parent heading spans what
+    ' its MERGE spans: Excel writes "Visit" merged over A-C as text in A and
+    ' nothing in B and C, so B and C take it from the merge. With no merge the
+    ' sheet says nothing, and a sheet that declares merges is believed: South's
+    ' "Parts" over F alone did not name G's "Warranty" (gap G19 from the
+    ' gBASIC books; carrying across every blank cell made it "Parts
+    ' Warranty"). A sheet that declares NO merges (written by a program, or
+    ' saved without them) keeps the old reading, carried to the next heading,
+    ' unless `carry` is false.
+    function _names(g, hdr, hdr_rows, use_drops, carry)
         names = []
         cols = []
+        uses_merges = false
+        if has(g, "merges") then
+            uses_merges = count(g.merges) > 0
+        end if
         c = g.first_col
         while c <= g.last_col
             parts = []
-            carried = ""
             k = 0
             while k < hdr_rows - 1
                 rr = hdr + k
-                cc = g.first_col
-                carried = ""
-                while cc <= c
-                    v = at(g, rr, cc)
-                    if not is_unknown(v) then
-                        if string(v) != "" then
-                            carried = string(v)
+                parent = ""
+                v = at(g, rr, c)
+                if not is_unknown(v) then
+                    parent = string(v)
+                end if
+                if parent = "" and uses_merges then
+                    m = _merge_at(g, rr, c)
+                    if not is_unknown(m) then
+                        tl = at(g, m.first_row, m.first_col)
+                        if not is_unknown(tl) then
+                            parent = string(tl)
                         end if
                     end if
-                    cc = cc + 1
-                end while
-                if carried != "" then
-                    append(parts, carried)
+                else if parent = "" and carry then
+                    cc = c - 1
+                    while cc >= g.first_col and parent = ""
+                        v = at(g, rr, cc)
+                        if not is_unknown(v) then
+                            parent = string(v)
+                        end if
+                        cc = cc - 1
+                    end while
+                end if
+                if parent != "" then
+                    append(parts, parent)
                 end if
                 k = k + 1
             end while
@@ -481,39 +537,70 @@ library grid
         return { names: names, cols: cols }
     end function
 
-    function _frame_from(g, hdr, hdr_rows, first, last, use_drops, drops)
-        h = _names(g, hdr, hdr_rows, use_drops)
+    ' The frame, and where each of its rows came from: { frame, rows, dropped,
+    ' header, notes }. The drop check reads `label_col`, where `starts` and
+    ' `ends` look; it read the first column whatever label_col said.
+    function _frame_from(g, hdr, hdr_rows, first, last, use_drops, drops, label_col, carry)
+        h = _names(g, hdr, hdr_rows, use_drops, carry)
+        notes = []
+        header = []
+        seen = {}
+        names = []
+        i = 0
+        while i < count(h.names)
+            n = h.names[i]
+            if has(seen, n) then
+                seen[n] = seen[n] + 1
+                n2 = n + " (" + string(seen[n]) + ")"
+                append(notes, "the heading \"" + n + "\" is written twice; its column " + string(h.cols[i]) + " is \"" + n2 + "\"")
+                n = n2
+            else
+                seen[n] = 1
+            end if
+            append(names, n)
+            append(header, { name: n, col: h.cols[i] })
+            i = i + 1
+        end while
         rows = []
+        kept = []
+        dropped = []
         r = first
         while r <= last
-            skip = false
+            why = ""
+            lv = at(g, r, label_col)
             if row_is_blank(g, r) then
-                skip = true
+                why = "blank"
             end if
-            if not skip then
-                if count(drops) > 0 then
-                    lv = at(g, r, g.first_col)
-                    if not is_unknown(lv) then
-                        for each d in drops
-                            if contains(string(lv), d) then
-                                skip = true
-                            end if
-                        end for
+            if why = "" and count(drops) > 0 and not is_unknown(lv) then
+                for each d in drops
+                    if why = "" and contains(string(lv), d) then
+                        if string(d) = string(total_pattern()) then
+                            why = "total"
+                        else
+                            why = "drop_matching"
+                        end if
                     end if
-                end if
+                end for
             end if
-            if not skip then
+            if why != "" then
+                label = unknown
+                if not is_unknown(lv) then
+                    label = string(lv)
+                end if
+                append(dropped, { row: r, label: label, why: why })
+            else
                 rec = { }
                 i = 0
-                while i < count(h.names)
-                    rec[h.names[i]] = at(g, r, h.cols[i])
+                while i < count(names)
+                    rec[names[i]] = at(g, r, h.cols[i])
                     i = i + 1
                 end while
                 append(rows, rec)
+                append(kept, r)
             end if
             r = r + 1
         end while
-        return frame.from_rows(rows)
+        return { frame: frame.from_rows(rows), rows: kept, dropped: dropped, header: header, notes: notes }
     end function
 
     function _rename_positional(f, names)

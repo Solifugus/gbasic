@@ -47,20 +47,56 @@ library consolidate
         return out
     end function
 
-    ' Which source column feeds `canon`? The declared aliases are tried first,
-    ' then the canonical name itself, both under normalisation.
-    function _find_column(cols, canon, aliases)
+    ' Which source columns feed `canon`? Every column matching any of the
+    ' rule's names: the declared aliases, then the canonical name, both under
+    ' normalisation. More than one is a refusal in merge, never a pick: "Parts"
+    ' and "Parts $" both reduce to "parts", and which of them is the parts cost
+    ' is the author's to say (gap G21 from the gBASIC books).
+    '
+    ' With `exact` the names are compared as written and the canonical name is
+    ' not tried unless the rule declares no aliases: a declared alias is then
+    ' the whole mapping.
+    function _find_columns(cols, canon, aliases, exact)
         wanted = []
         for each a in aliases
-            append(wanted, normalize_name(a))
+            append(wanted, a)
         end for
-        append(wanted, normalize_name(canon))
-        for each w in wanted
+        if not exact or count(aliases) = 0 then
+            append(wanted, canon)
+        end if
+        found = []
+        for each c in cols
+            for each w in wanted
+                hit = false
+                if exact then
+                    hit = string(c) = string(w)
+                else
+                    hit = normalize_name(c) = normalize_name(w)
+                end if
+                if hit then
+                    append(found, c)
+                    break
+                end if
+            end for
+        end for
+        return found
+    end function
+
+    ' The first match, in the order merge always used: aliases in their
+    ' declared order before the canonical name. Kept for callers of the
+    ' single-answer form; merge itself refuses more than one.
+    function _find_column(cols, canon, aliases)
+        for each a in aliases
             for each c in cols
-                if normalize_name(c) = w then
+                if normalize_name(c) = normalize_name(a) then
                     return c
                 end if
             end for
+        end for
+        for each c in cols
+            if normalize_name(c) = normalize_name(canon) then
+                return c
+            end if
         end for
         return unknown
     end function
@@ -224,11 +260,20 @@ library consolidate
 
     ' ------------------------------------------------------------------ merge
 
-    ' merge(sources, spec) -> { ok, frame, report }
+    ' merge(sources, spec) -> { ok, frame, accepted, rejected, notes, mapping, refused }
     '
     ' `sources` is a list of { name: "CU_A", frame: f }.
     ' `spec.columns` maps a canonical name to { from: [aliases], kind: type,
-    ' required: bool, scale: "whole"|"fraction"|"infer" }.
+    ' required: bool, scale: "whole"|"fraction"|"infer", exact: bool }.
+    '
+    ' `mapping` says which source column fed each canonical one, per source:
+    ' { CU_A: { balance: "Bal $" } }, so a fuzzy match is visible without
+    ' redoing it. `refused` lists every cell that held something a kind could
+    ' not read -- "TBD" in a money column -- as { source, row, column, canon,
+    ' value, why }, with `row` the cell's position in its source frame from 0.
+    ' Its merged value is unknown, the same as an empty cell, and this list is
+    ' how the two are told apart. A source in which two columns match one rule
+    ' is rejected, naming both (gap G21 from the gBASIC books).
     '
     ' `from` was originally spelled `names` because a reserved word could not be
     ' a record key at all. That was fixed on 2026-08-13 (commits 2ebb9f2 and
@@ -253,11 +298,14 @@ library consolidate
         notes = []
         accepted = []
         rejected = []
+        mappings = { }
+        refused = []
 
         for each s in sources
             cols = frame.columns(s.frame)
             mapping = { }
             missing = []
+            twice = []
             for each canon in canon_names
                 rule = spec.columns[canon]
                 aliases = []
@@ -270,20 +318,35 @@ library consolidate
                         aliases = rule.names
                     end if
                 end if
-                found = _find_column(cols, canon, aliases)
-                if is_unknown(found) then
-                    req = false
-                    if has(rule, "required") then
-                        req = rule.required
-                    end if
-                    if req then
-                        append(missing, canon)
-                    end if
+                exact = false
+                if has(rule, "exact") then
+                    exact = rule.exact
+                end if
+                found = _find_columns(cols, canon, aliases, exact)
+                if count(found) > 1 then
+                    append(twice, canon + " (" + join(found, ", ") + ")")
                 else
-                    mapping[canon] = found
+                    if count(found) = 0 then
+                        req = false
+                        if has(rule, "required") then
+                            req = rule.required
+                        end if
+                        if req then
+                            append(missing, canon)
+                        end if
+                    else
+                        mapping[canon] = found[0]
+                    end if
                 end if
             end for
+            mappings[s.name] = mapping
 
+            if count(twice) > 0 then
+                append(rejected, s.name)
+                append(notes, s.name + ": REJECTED, two columns match one rule: " + join(twice, "; ") +
+                       " -- name one in `from` with `exact: true`")
+                continue
+            end if
             if count(missing) > 0 then
                 append(rejected, s.name)
                 append(notes, s.name + ": REJECTED, missing required column(s) " + join(missing, ", "))
@@ -321,7 +384,8 @@ library consolidate
                 end if
             end for
 
-            for each row in frame.to_rows(s.frame)
+            nrefused = 0
+            for each row, ri in frame.to_rows(s.frame)
                 rec = { }
                 rec[src_col] = s.name
                 for each canon in canon_names
@@ -331,8 +395,10 @@ library consolidate
                     end if
                     raw = row[mapping[canon]]
                     rule = spec.columns[canon]
+                    why = ""
                     if rule.kind = "money" then
                         rec[canon] = to_money(raw)
+                        why = "not money"
                     else
                         if rule.kind = "percent" then
                             sc = "fraction"
@@ -340,24 +406,38 @@ library consolidate
                                 sc = scales[canon]
                             end if
                             rec[canon] = to_percent(raw, sc)
+                            why = "not a percent"
                         else
                             if rule.kind = "number" then
                                 rec[canon] = to_number(raw)
+                                why = "not a number"
                             else
                                 rec[canon] = to_text(raw)
                             end if
                         end if
                     end if
+                    if is_unknown(rec[canon]) and not is_unknown(raw) then
+                        if trim(string(raw)) != "" then
+                            append(refused, { source: s.name, row: ri, column: mapping[canon], canon: canon,
+                                              value: raw, why: why })
+                            nrefused = nrefused + 1
+                        end if
+                    end if
                 end for
                 append(rows, rec)
             end for
+            if nrefused > 0 then
+                append(notes, s.name + ": " + string(nrefused) + " value(s) could not be read and are unknown: see refused")
+            end if
         end for
 
         return { ok: count(rejected) = 0,
                  frame: frame.from_rows(rows),
                  accepted: accepted,
                  rejected: rejected,
-                 notes: notes }
+                 notes: notes,
+                 mapping: mappings,
+                 refused: refused }
     end function
 
 end library
