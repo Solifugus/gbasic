@@ -96,6 +96,7 @@ int gbasic_builtin_function(const char *name) {
         "rsa_from_pem",
         "rsa_to_pem",
         "aes_ctr",
+        "bcrypt_pbkdf",
 #endif
         "exit",
         "now",

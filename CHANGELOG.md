@@ -27,6 +27,12 @@ reader sees.
   `rsa_to_pem`. A key whose parts do not belong together is refused.
 - **`aes_ctr(key, counter, data)`** answers `{ data, counter }`, the next
   counter, so packets chained by it are one keystream.
+- **`bcrypt_pbkdf(passphrase, salt, rounds, length)`**, the key derivation
+  of passphrase-protected `openssh-key-v1` files. It is OpenSSH's own code,
+  vendored in `src/vendor/bcrypt_pbkdf.c` under its ISC and BSD-3-Clause
+  notices, which `NOTICE` now carries. These are the first files in the tree
+  not under Apache-2.0, and both licences are permissive. A gBASIC program
+  opens keys `ssh-keygen -a N` encrypted (`tests/crypto_ssh_keyfile_test.bas`).
 - Asked for by Transward's SSH work. Checked against RFC 7748 and NIST
   SP 800-38A vectors, Python's `cryptography` both ways (signatures equal
   byte for byte), `ssh-keygen` and `openssl dgst`

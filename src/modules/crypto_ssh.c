@@ -41,6 +41,8 @@
 #include <openssl/err.h>
 #include <openssl/rand.h>
 
+#include "../vendor/bcrypt_pbkdf.c"
+
 static void crypto_ssh_raise(const char *name, const char *what) {
     char m[512];
     snprintf(m, sizeof(m), "%s: %s", name, what);
@@ -303,7 +305,7 @@ static int crypto_ssh_is(const char *name) {
     static const char *const names[] = {
         "x25519_keypair", "x25519_public", "x25519_shared",
         "rsa_generate", "rsa_public", "rsa_sign", "rsa_verify", "rsa_from_pem", "rsa_to_pem",
-        "aes_ctr", NULL
+        "aes_ctr", "bcrypt_pbkdf", NULL
     };
     for (size_t i = 0; names[i]; i++) {
         if (strcmp(names[i], name) == 0) return 1;
@@ -571,6 +573,45 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         long len = BIO_get_mem_data(bio, &text);
         *out = value_string_n(text, (size_t)len);
         BIO_free(bio);
+        return 1;
+    }
+
+    /* THE KEY DERIVATION OF A PASSPHRASE-PROTECTED `openssh-key-v1` FILE
+     * (Transward §2.4): `bcrypt_pbkdf(passphrase, salt, rounds, length)`, the
+     * salt and rounds read from the file's kdfoptions. OpenSSH's own code,
+     * vendored in src/vendor/bcrypt_pbkdf.c because OpenSSL has none. Its own
+     * limits are checked here first so a refusal says which argument. */
+    if (strcmp(name, "bcrypt_pbkdf") == 0) {
+        if (!crypto_ssh_args(expr, name, 4, 4, a)) return 1;
+        double rounds = a[2].kind == VALUE_NUMBER ? a[2].as.num.value : 0;
+        double length = a[3].kind == VALUE_NUMBER ? a[3].as.num.value : 0;
+        const char *why = NULL;
+        if (a[0].kind != VALUE_STRING || string_length(a[0].as.string) == 0) {
+            why = "expects the passphrase as non-empty text";
+        } else if (a[1].kind != VALUE_STRING || string_length(a[1].as.string) == 0 ||
+                   string_length(a[1].as.string) > (1u << 20)) {
+            why = "expects the salt as bytes, at least 1 and at most 1048576";
+        } else if (!(rounds >= 1 && rounds <= 4294967295.0) || rounds != (double)(unsigned long)rounds) {
+            why = "expects the rounds as a whole number of at least 1";
+        } else if (!(length >= 1 && length <= 1024) || length != (double)(int)length) {
+            why = "expects the length in bytes, a whole number from 1 to 1024";
+        }
+        if (why) {
+            crypto_ssh_free(a, 4);
+            crypto_ssh_raise(name, why);
+            return 1;
+        }
+        unsigned char key[1024];
+        int rc = gb_bcrypt_pbkdf(a[0].as.string, string_length(a[0].as.string),
+                                 (const uint8_t *)a[1].as.string, string_length(a[1].as.string),
+                                 key, (size_t)length, (unsigned int)rounds);
+        crypto_ssh_free(a, 4);
+        if (rc != 0) {
+            crypto_ssh_raise(name, "the derivation was refused");
+            return 1;
+        }
+        *out = crypto_ssh_bytes(key, (size_t)length);
+        OPENSSL_cleanse(key, sizeof(key));
         return 1;
     }
 

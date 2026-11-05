@@ -252,6 +252,7 @@ rsa_verify:"k","m","s","sha256"
 rsa_from_pem:"x"
 rsa_to_pem:"k"
 aes_ctr:"k","c","d"
+bcrypt_pbkdf:"p","s",1,16
 pbkdf2_sha256:"p","s",1000,16
 pbkdf2_sha512:"p","s",1000,16
 scrypt:"p","s",16384,8,1,32

@@ -55,10 +55,20 @@ if [ "$rc" != 0 ]; then
 elif [ "${bad:-1}" != 0 ]; then
     grep '^MISMATCH' "$work/sem.out" | head -5
     fail "$bad mismatches"
-elif [ "${checks:-0}" -lt 56 ]; then
+elif [ "${checks:-0}" -lt 60 ]; then
     fail "only ${checks:-0} checks ran -- the fixture stopped early"
 else
     pass "$checks checks, 0 mismatches"
+fi
+kdf=$(sed -n 's/^kdf vectors: //p' "$work/sem.out")
+if python3 -c 'import bcrypt' 2>/dev/null; then
+    if [ "${kdf:-0}" -ge 5 ]; then
+        pass "bcrypt_pbkdf agreed with Python's bcrypt on $kdf vectors"
+    else
+        fail "python3 bcrypt is here but only ${kdf:-0} bcrypt_pbkdf vectors were compared"
+    fi
+else
+    printf '  SKIP (python3 bcrypt unavailable -- bcrypt_pbkdf was NOT compared with it)\n'
 fi
 
 printf 'TIER peer: Python uses what gBASIC made\n'
@@ -103,6 +113,38 @@ EOF
         fail "the control: openssl accepted the signature over a different message"
     else
         pass "and refuses it over a message one letter different (the control)"
+    fi
+fi
+
+# THE END-TO-END TRANSWARD ASKED FOR: keys ssh-keygen encrypted with a
+# passphrase (`-a N`, bcrypt over aes256-ctr), opened by a gBASIC program
+# with bcrypt_pbkdf and aes_ctr, and found to be the keys in the .pub files
+# ssh-keygen wrote beside them.
+printf 'TIER keyfile: openssh-key-v1 files ssh-keygen encrypted, opened in gBASIC\n'
+if ! command -v ssh-keygen >/dev/null 2>&1; then
+    printf '  SKIP (ssh-keygen unavailable -- encrypted key files were NOT opened)\n'
+else
+    mkdir -p "$work/kf"
+    ssh-keygen -q -t ed25519 -a 16 -N 'correct horse' -C '' -f "$work/kf/ed" </dev/null
+    ssh-keygen -q -t rsa -b 2048 -a 8 -N 'correct horse' -C '' -f "$work/kf/rsa" </dev/null
+    DIR="$work/kf" timeout -k 5 120 ./gbasic tests/crypto_ssh_keyfile_test.bas >"$work/kf.out" 2>"$work/kf.err"
+    kchecks=$(sed -n 's/^checks: //p' "$work/kf.out")
+    if grep -q '^mismatches: 0$' "$work/kf.out" && [ "${kchecks:-0}" -ge 19 ]; then
+        pass "$kchecks checks: both keys opened and are the .pub files' keys"
+    else
+        grep -E '^MISMATCH|error' "$work/kf.out" "$work/kf.err" | head -4
+        fail "the encrypted key files did not open to ssh-keygen's keys"
+    fi
+    if command -v openssl >/dev/null 2>&1 && [ -s "$work/kf/rsa_sig.hex" ]; then
+        ssh-keygen -e -m PKCS8 -f "$work/kf/rsa.pub" >"$work/kf/rsa_pub.pem"
+        python3 -c 'import sys; open(sys.argv[2],"wb").write(bytes.fromhex(open(sys.argv[1]).read()))' \
+            "$work/kf/rsa_sig.hex" "$work/kf/rsa_sig.bin"
+        printf 'a message' >"$work/kf/m"
+        if openssl dgst -sha512 -verify "$work/kf/rsa_pub.pem" -signature "$work/kf/rsa_sig.bin" "$work/kf/m" >/dev/null 2>&1; then
+            pass "openssl verifies a signature made with the RSA key gBASIC recovered"
+        else
+            fail "openssl verifies a signature made with the RSA key gBASIC recovered"
+        fi
     fi
 fi
 

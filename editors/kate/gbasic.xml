@@ -95,6 +95,7 @@
       <item>base64_encode</item>
       <item>base64url_decode</item>
       <item>base64url_encode</item>
+      <item>bcrypt_pbkdf</item>
       <item>bnot</item>
       <item>boolean</item>
       <item>bor</item>

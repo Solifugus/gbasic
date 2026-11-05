@@ -1,11 +1,14 @@
 # Licensing
 
-gBASIC is under **one** license: **Apache-2.0**. Every file says so in its own
-header (`SPDX-License-Identifier: Apache-2.0`), and this page is the map.
+gBASIC is under **one** license: **Apache-2.0**. Every file gBASIC wrote says so
+in its own header (`SPDX-License-Identifier: Apache-2.0`), and this page is the
+map. One file was **not** written here and keeps its authors' permissive
+licences (ISC and BSD-3-Clause): OpenSSH's `bcrypt_pbkdf`, below.
 
 | | License | Text |
 |---|---|---|
 | The language, the interpreter, and the whole standard library | **Apache-2.0** | [`LICENSE`](LICENSE) |
+| OpenSSH's `bcrypt_pbkdf` and Blowfish (`src/vendor/bcrypt_pbkdf.c`) | **ISC** and **BSD-3-Clause** | in the file, and in [`NOTICE`](NOTICE) |
 
 Copyright 2026 Matthew C. Tedder.
 
@@ -21,9 +24,10 @@ part of the standard library that reaches into your program's licensing.
 
 ## What is under Apache-2.0
 
-Everything:
+Everything gBASIC wrote, which is everything but one vendored file:
 
-- The interpreter: `src/`, `include/`, `tools/`, `tests/`, `examples/`
+- The interpreter: `src/` (except `src/vendor/bcrypt_pbkdf.c`, below),
+  `include/`, `tools/`, `tests/`, `examples/`
 - Every C module compiled into the binary, including `src/modules/xlsx.c`
   (the ZIP container, formula evaluator and recalculation engine),
   `src/modules/xml.c`, `src/modules/smtp.c`, `src/modules/ldap.c` and
@@ -41,6 +45,26 @@ Everything:
   `market` `matrix` `mcp` `mdna` `nlq` `notation` `ocr` `otp` `ownership`
   `persist` `reasoning` `retrieval` `rules` `schedule` `scoring` `screener`
   `stats` `tools` `web` `websocket`
+
+## Code from elsewhere: OpenSSH's `bcrypt_pbkdf`
+
+`src/vendor/bcrypt_pbkdf.c` is OpenBSD's `bcrypt_pbkdf` and the Blowfish it is
+built on, as openssh-portable 10.2p1 ships them. It is the key derivation of
+passphrase-protected `openssh-key-v1` files, which OpenSSL does not provide, and
+hand-writing a cipher's key schedule is the thing crypto_design.md §1 says not to
+do. Its header carries `SPDX-License-Identifier: ISC AND BSD-3-Clause`, both
+licences' full text, and the list of the few changes made
+(`tools/vendor_bcrypt_pbkdf.py` makes them).
+
+- `bcrypt_pbkdf.c`: Copyright (c) 2013 Ted Unangst, **ISC**.
+- Blowfish: Copyright 1997 Niels Provos, **BSD-3-Clause** (no advertising
+  clause).
+
+Both are permissive and compatible with Apache-2.0, so nothing above changes for
+a program or a product: no copyleft, and no obligation beyond keeping the
+notices. That one obligation is real for a **binary**: BSD-3-Clause asks that a
+binary distribution reproduce Blowfish's notice, so `NOTICE`, which
+`make install` and the release tarballs ship, carries both.
 
 ## Why there is only one license
 

@@ -76,6 +76,21 @@ def make(d):
     out["ctr_iv"] = H(ctr)
     out["ctr_data"] = H(data)
     out["ctr_ct"] = H(enc.update(data) + enc.finalize())
+    # ---- bcrypt_pbkdf, from the `bcrypt` package (OpenSSH's algorithm,
+    # its own implementation). Lengths across the 32-byte stride, a binary
+    # salt, and the 48 bytes an aes256-ctr key file asks for.
+    try:
+        import bcrypt
+    except ImportError:
+        bcrypt = None
+    if bcrypt is not None:
+        cases = [(b"password", b"salt", 4, 32), (b"password", b"salt", 16, 48),
+                 (b"correct horse", bytes(range(16)), 8, 1),
+                 (b"correct horse", b"\x00\xff" * 8, 2, 33),
+                 (b"\xc3\xa9t\xc3\xa9", os.urandom(16), 3, 64)]
+        out["kdf"] = [{"pass": H(p), "salt": H(s), "rounds": r, "length": n,
+                       "key": H(bcrypt.kdf(p, s, n, r, ignore_few_rounds=True))}
+                      for (p, s, r, n) in cases]
     with open(os.path.join(d, "py.json"), "w") as f:
         json.dump(out, f)
 

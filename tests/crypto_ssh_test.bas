@@ -43,7 +43,19 @@ function refusal(verb, a, b, c)
         r = rsa_generate(a)
     else if verb = "aes_ctr" then
         r = aes_ctr(a, b, c)
+    else if verb = "bcrypt_pbkdf" then
+        r = bcrypt_pbkdf(a, b, c, 48)
     end if
+    return "ACCEPTED"
+handle:
+    m = error.message
+    error.clear()
+    return m
+end function
+
+function long_kdf_refusal()
+    on error goto handle
+    r = bcrypt_pbkdf("pw", "salt", 4, 1025)
     return "ACCEPTED"
 handle:
     m = error.message
@@ -226,7 +238,28 @@ check("a 15-byte key is refused", refusal("aes_ctr", "fifteen bytes!!", c, "x"),
 check("so is a short counter", refusal("aes_ctr", k, "short", "x"),
       "aes_ctr: expects a 16, 24 or 32-byte key, a 16-byte counter block and the data")
 
+print "-- bcrypt_pbkdf: against Python's bcrypt"
+if has(py, "kdf") then
+    for each c in py.kdf
+        check("bcrypt_pbkdf, " + string(c.rounds) + " rounds, " + string(c.length) + " bytes",
+              hx(bcrypt_pbkdf(un(c.pass), un(c.salt), c.rounds, c.length)), c.key)
+    end for
+    g.kdf = count(py.kdf)
+else
+    print "SKIP python3 bcrypt unavailable -- bcrypt_pbkdf was NOT compared"
+    g.kdf = 0
+end if
+check("an empty passphrase is refused", refusal("bcrypt_pbkdf", "", "salt", 4),
+      "bcrypt_pbkdf: expects the passphrase as non-empty text")
+check("an empty salt", refusal("bcrypt_pbkdf", "pw", "", 4),
+      "bcrypt_pbkdf: expects the salt as bytes, at least 1 and at most 1048576")
+check("zero rounds", refusal("bcrypt_pbkdf", "pw", "salt", 0),
+      "bcrypt_pbkdf: expects the rounds as a whole number of at least 1")
+check("a length past 1024", long_kdf_refusal(),
+      "bcrypt_pbkdf: expects the length in bytes, a whole number from 1 to 1024")
+
 write(join_path(dir, "gb.json"), json_encode(gb))
 print ""
 print "checks: " + string(g.checks)
+print "kdf vectors: " + string(g.kdf)
 print "mismatches: " + string(g.bad)

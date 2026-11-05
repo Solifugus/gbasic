@@ -6054,6 +6054,11 @@ For SSH and other protocols that carry their own key formats (since 0.11.0,
   Answers `{ data, counter }`, where `counter` is the next block's, so packets
   chained by it are one keystream. Encrypting and decrypting are the same call.
   A partial last block uses up its whole block.
+- `bcrypt_pbkdf(passphrase, salt, rounds, length)` — the key derivation of a
+  passphrase-protected OpenSSH private key (`openssh-key-v1`, kdf `bcrypt`):
+  `length` bytes, 1 to 1024. For an `aes256-ctr` key file ask for 48, the
+  32-byte key followed by the 16-byte counter. This is OpenSSH's own code (see
+  LICENSING.md).
 
 Bad argument types, wrong key/nonce sizes, and failed authentication raise
 structured errors — these builtins pre-validate rather than degrade. So do

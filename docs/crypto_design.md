@@ -184,7 +184,7 @@ X.509 / certificate handling, TLS termination (libcurl already covers client
 TLS), and key-derivation beyond the existing `password_hash` (PBKDF2/scrypt/Argon2
 could be added later). RSA came in with §9. Revisit per demand.
 
-## 9. Phase 6 — SSH's primitives — **X25519, RSA, AES-CTR DONE (2026-11-05)**
+## 9. Phase 6 — SSH's primitives — **X25519, RSA, AES-CTR, bcrypt_pbkdf DONE (2026-11-05)**
 
 Asked for by Transward, which is writing an SSH/SFTP client and server in
 gBASIC on the net library (`transward/docs/gbasic-requests-for-revision.md`
@@ -204,6 +204,20 @@ modules, and its suite is `tests/run_crypto_ssh.sh`.
 | `rsa_from_pem(text[, passphrase])` | | key record |
 | `rsa_to_pem(key)` | | PKCS#8 or SubjectPublicKeyInfo |
 | `aes_ctr(key, counter, data)` | `aes128-ctr`/`aes256-ctr` | `{ data, counter }` |
+| `bcrypt_pbkdf(pass, salt, rounds, length)` | `openssh-key-v1` kdf | bytes |
+
+**`bcrypt_pbkdf` is the one exception to "bindings, not implementations"**, and it
+is adopted rather than written: OpenSSL has no bcrypt_pbkdf, so
+`src/vendor/bcrypt_pbkdf.c` is the code OpenSSH ships (ISC and BSD-3-Clause, see
+LICENSING.md), with only mechanical changes. Two oracles check it. Python's
+`bcrypt` agrees on five vectors, across the 32-byte stride and with a binary salt.
+The end-to-end test Transward asked for is
+`tests/crypto_ssh_keyfile_test.bas`: it opens Ed25519 and RSA keys that
+`ssh-keygen -a N` encrypted with a passphrase, using only gBASIC (the wire format
+parsed by hand, `bcrypt_pbkdf`, then `aes_ctr`). The keys inside must be the ones
+in the `.pub` files ssh-keygen wrote, and openssl verifies a signature made with
+the recovered RSA key. Two perturbations of the vendored code, one fewer
+expansion round and linear rather than strided output, are both red.
 
 **An RSA key is a record of big-endian byte strings**, the six parts an SSH
 key blob and an `openssh-key-v1` file carry. It is a record rather than PEM
@@ -243,8 +257,7 @@ no pairwise check, SHA-1 signing, public parts only, counter carry dropped,
 and a partial block not consumed (that one was green until a check was added).
 The seventh is the zero check above.
 
-**Not yet:** `bcrypt_pbkdf` (Transward §2.4), which OpenSSL lacks, and the
-Needed items (ChaCha20-Poly1305, ECDSA/ECDH, classic DH, incremental hashing,
+**Not yet:** the Needed items (ChaCha20-Poly1305, ECDSA/ECDH, classic DH, incremental hashing,
 HKDF).
 
 ---
