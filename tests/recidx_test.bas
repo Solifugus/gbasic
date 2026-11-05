@@ -133,12 +133,15 @@ program main(args)
   battery("indexed", 64)
 
   ' --- duplicate names -------------------------------------------------------
-  ' A record CAN hold the same name twice (`select 1 as x, 2 as x`, or JSON with
-  ' a repeated key). A linear walk returns the FIRST match, so the index must
-  ' too -- it inserts in slot order and never overwrites an entry. Checked on
-  ' both sides of the threshold, since only the large one is indexed.
-  dup_small = decode("{\"dup\":1,\"a\":0,\"dup\":2}")
-  dup_large = decode("{\"dup\":1,\"a\":0,\"b\":0,\"c\":0,\"d\":0,\"e\":0,\"f\":0,\"g\":0,\"h\":0,\"i\":0,\"j\":0,\"k\":0,\"l\":0,\"m\":0,\"n\":0,\"o\":0,\"p\":0,\"q\":0,\"r\":0,\"dup\":2}")
+  ' A record CAN hold the same name twice (`select 1 as x, 2 as x` from a SQL
+  ' driver). A linear walk returns the FIRST match, so the index must too -- it
+  ' inserts in slot order and never overwrites an entry. Checked on both sides
+  ' of the threshold, since only the large one is indexed. JSON used to be the
+  ' way to build one, and decode now refuses a repeated key (gap G12), so the
+  ' record is serialized with a second name of the same length, `dux`, renamed
+  ' in the bytes: hermetic, and needing no database driver in the build.
+  dup_small = deserialize(replace(serialize({ dup: 1, a: 0, dux: 2 }), "dux", "dup"))
+  dup_large = deserialize(replace(serialize({ dup: 1, a: 0, b: 0, c: 0, d: 0, e: 0, f: 0, g: 0, h: 0, i: 0, j: 0, k: 0, l: 0, m: 0, n: 0, o: 0, p: 0, q: 0, r: 0, dux: 2 }), "dux", "dup"))
   print(ok("dup-linear", dup_small["dup"], 1))
   print(ok("dup-indexed", dup_large["dup"], 1))
   print(ok("dup-linear-count", count(dup_small), 3))

@@ -1099,6 +1099,30 @@ family has its own search rather than sharing `find`.
   `U+10FFFF`, no sequence cut short. The other string builtins read malformed
   bytes leniently; this is the strict answer a protocol that must refuse them
   needs. Checked against Python's decoder (`tests/run_websocket.sh`).
+- `first_invalid_utf8(text)` — the byte offset of the first sequence that is
+  not valid UTF-8 (by the same strict rule), or `nothing` when the text is
+  valid: what a reject report names. `first_invalid_utf8("ab" +
+  from_bytes([255]))` is 2.
+- `transcode(text, from, to)` — the bytes of `text`, read in encoding `from`,
+  written in encoding `to`. Encodings: `utf-8`, `latin-1` (`iso-8859-1`),
+  `windows-1252` (`cp1252`), `utf-16`, `utf-16le`, `utf-16be`, matched without
+  case, hyphens or underscores. **Strict both ways, and nothing is replaced**:
+  bytes the source encoding does not define raise with `error.details.offset`
+  (the byte), and a character the target cannot hold raises with
+  `error.details.character` (its index); `details.reason` is `invalid`,
+  `truncated` or `unmappable`. `utf-16` read with no byte-order mark is
+  big-endian (RFC 2781; Python reads the machine's order there), and written
+  is `FF FE` then little-endian. Windows-1252's five undefined bytes (`0x81`,
+  `0x8D`, `0x8F`, `0x90`, `0x9D`) are refused, as Python's codec does. Checked
+  against Python's codecs over 4120 conversions (`tests/run_text_encoding.sh`).
+
+```basic
+raw {file}= "supplier.csv"
+text = read(raw)
+if not valid_utf8(text) then
+    text = transcode(text, "windows-1252", "utf-8")   ' or report first_invalid_utf8(text)
+end if
+```
 
 **Comparison** is by byte sequence (binary-safe, and correct codepoint order for
 valid UTF-8). **Case folding** (`upper`, `lower`, and the `{caseless}` comparison
@@ -7165,7 +7189,13 @@ count({})                      ' 0
   *(0.8.1)*, so `decode(encode(x))` is `x`; before that `encode` wrote every
   digit and `decode` read a double, and the round trip lost the value above
   2^53. A fraction and an exponent stay inexact, by the same rules
-  `number("…")` follows
+  `number("…")` follows. **A key written twice in one object is refused**
+  *(2026-11-04)*, at the second key's position (`{"a": 1, "a": 2}` is an error
+  at byte 9). It used to be kept twice, `keys()` listing it twice and `.a`
+  reading the first, where most JSON readers keep the last: one file meant
+  different things to different programs. RFC 8259 leaves it open, so refusing
+  is the answer that cannot disagree with anyone. Keys that differ only after
+  an escaped NUL are different keys
 - `try_decode(text)` - the same parse, reporting failure as a **value** instead of
   raising (see below)
 - `json_encode(value)` - **standards-compliant JSON (RFC 8259)** for external

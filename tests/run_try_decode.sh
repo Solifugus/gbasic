@@ -13,6 +13,7 @@
 #                     bounded deep nesting.
 #   2. PARITY      -- for each malformed input, the error try_decode REPORTS is the
 #                     same text decode RAISES. One parser, two ways of answering.
+#   2b. DUPLICATES -- a key written twice is refused (G12), at every width.
 #   3. RAISE INTACT-- decode still raises, and still exits nonzero, unchanged.
 #   4. VALGRIND    -- including every malformed path.
 #
@@ -78,7 +79,52 @@ run_pair ''                empty-input
 run_pair '{\"a\":1}junk'   trailing-text
 run_pair '{\"a\" 1}'       missing-colon
 run_pair '[,]'             lone-comma
-[ "$parity_ok" = 1 ] && printf 'PASS try_decode_parity (reported error == raised error, 9 classes)\n' || status=1
+run_pair '{\"a\":1,\"a\":2}'  duplicate-key
+[ "$parity_ok" = 1 ] && printf 'PASS try_decode_parity (reported error == raised error, 10 classes)\n' || status=1
+
+# --- Tier 2b: a key written twice is refused (gap G12) --------------------------
+# It was KEPT TWICE: keys() listed it twice and `.a` read the first, where most
+# JSON readers keep the last. Refused at the second key, in a narrow object (a
+# linear scan) and a wide one (hashed past 16 keys, so the table's rebuilds are
+# crossed too), nested, and with keys that differ only after a NUL accepted.
+cat >"$work/dup.bas" <<'GB'
+function wide(n, dup_at)
+    parts = []
+    for i = 0 to n - 1
+        append(parts, "\"k" + string(i) + "\": " + string(i))
+    end for
+    if not is_nothing(dup_at) then
+        append(parts, "\"k" + string(dup_at) + "\": 0")
+    end if
+    return "{" + join(parts, ",") + "}"
+end function
+r = try_decode("{\"a\": 1, \"a\": 2}")
+print [r.ok, r.offset, r.message]
+r = try_decode("{\"x\": [{\"b\": 1, \"c\": 2, \"b\": 3}]}")
+print [r.ok, r.offset]
+print try_decode("{\"a\\u0000b\": 1, \"a\\u0000c\": 2}").ok
+for each n in [16, 17, 64, 65, 1000]
+    clean = try_decode(wide(n, nothing))
+    first = try_decode(wide(n, 0))
+    last = try_decode(wide(n, n - 1))
+    print [n, clean.ok, count(keys(clean.value)), first.ok, last.ok]
+end for
+GB
+want='[false,9,"the key \"a\" is written twice in one object at byte 9"]
+[false,24]
+true
+[16,true,16,false,false]
+[17,true,17,false,false]
+[64,true,64,false,false]
+[65,true,65,false,false]
+[1000,true,1000,false,false]'
+got=$(timeout 60 ./gbasic "$work/dup.bas" 2>&1 </dev/null)
+if [ "$got" = "$want" ]; then
+    printf 'PASS try_decode_duplicate_key (refused at the second key, narrow, wide and nested; NUL-distinct keys kept)\n'
+else
+    printf 'FAIL try_decode_duplicate_key\n%s\n' "$got"
+    status=1
+fi
 
 # --- Tier 3: decode's raising behaviour is untouched ---------------------------
 # try_decode is strictly additive. decode must still raise, still exit nonzero,

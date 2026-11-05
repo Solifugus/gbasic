@@ -146,6 +146,7 @@
       <item>find</item>
       <item>find_by</item>
       <item>first</item>
+      <item>first_invalid_utf8</item>
       <item>floor</item>
       <item>folders</item>
       <item>from_bytes</item>
@@ -281,6 +282,7 @@
       <item>temp_file</item>
       <item>to_bytes</item>
       <item>to_zone</item>
+      <item>transcode</item>
       <item>trim</item>
       <item>try_decode</item>
       <item>type</item>

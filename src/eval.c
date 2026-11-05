@@ -1509,6 +1509,39 @@ static size_t utf8_decode_first(const char *s, size_t len, unsigned *cp) {
     return need + 1;
 }
 
+/* The byte offset of the first sequence that is not well-formed UTF-8 as RFC
+ * 3629 defines it (no overlong form, no surrogate, nothing past U+10FFFF, no
+ * sequence cut short), or `len` when there is none. utf8_decode_first above is
+ * the LENIENT reader the string builtins use; this is the strict answer
+ * valid_utf8, first_invalid_utf8 and transcode share. */
+static size_t utf8_first_invalid(const unsigned char *u, size_t len) {
+    size_t i = 0;
+    while (i < len) {
+        unsigned char c = u[i];
+        size_t need;
+        unsigned cp, min;
+        if (c < 0x80) { i++; continue; }
+        else if (c >= 0xc2 && c <= 0xdf) { need = 1; cp = c & 0x1f; min = 0x80; }
+        else if ((c & 0xf0) == 0xe0) { need = 2; cp = c & 0x0f; min = 0x800; }
+        else if (c >= 0xf0 && c <= 0xf4) { need = 3; cp = c & 0x07; min = 0x10000; }
+        else { return i; }
+        if (i + need >= len) {
+            return i;
+        }
+        for (size_t j = 1; j <= need; j++) {
+            if ((u[i + j] & 0xc0) != 0x80) {
+                return i;
+            }
+            cp = (cp << 6) | (u[i + j] & 0x3f);
+        }
+        if (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+            return i;
+        }
+        i += need + 1;
+    }
+    return len;
+}
+
 /* Count Unicode codepoints in `len` bytes, with the lenient invalid-UTF-8 rule
  * (each malformed byte counts as one unit). Total over arbitrary bytes. */
 static size_t string_codepoint_count(const char *s, size_t len) {
@@ -18001,10 +18034,80 @@ static Value decode_parse_array(DecodeParser *parser) {
     return value_null();
 }
 
+/* A KEY WRITTEN TWICE IS REFUSED (gap G12, the gBASIC books). It was kept
+ * twice: keys() listed it twice and `.a` read the FIRST, where most other
+ * JSON readers keep the last, so one file meant different things to two
+ * programs and nothing said so; and a record with two fields of one name is
+ * unlike any other gBASIC record. RFC 8259 leaves the behaviour open, so the
+ * one answer that cannot be wrong is to refuse it where it is, as any other
+ * malformed input is. Found by a small table of the keys so far: a linear
+ * scan up to 16, then hashed, so a wide object is not quadratic. */
+static size_t decode_key_hash(const char *k, size_t n) {
+    size_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; i++) {
+        h = (h ^ (unsigned char)k[i]) * 1099511628211ULL;
+    }
+    return h;
+}
+
+static int decode_key_seen(RecordField *fields, size_t count, size_t **table, size_t *table_cap,
+                           const char *k, size_t n) {
+    if (count <= 16) {
+        for (size_t i = 0; i < count; i++) {
+            if (string_length(fields[i].name) == n && memcmp(fields[i].name, k, n) == 0) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    if (*table_cap < count * 2) {
+        /* (re)build: slots hold index + 1, 0 is empty */
+        size_t cap = 64;
+        while (cap < count * 4) {
+            cap *= 2;
+        }
+        free(*table);
+        *table = calloc(cap, sizeof(size_t));
+        if (!*table) {
+            abort();
+        }
+        *table_cap = cap;
+        for (size_t i = 0; i < count; i++) {
+            size_t at = decode_key_hash(fields[i].name, string_length(fields[i].name)) & (cap - 1);
+            while ((*table)[at]) {
+                at = (at + 1) & (cap - 1);
+            }
+            (*table)[at] = i + 1;
+        }
+    }
+    size_t at = decode_key_hash(k, n) & (*table_cap - 1);
+    while ((*table)[at]) {
+        RecordField *f = &fields[(*table)[at] - 1];
+        if (string_length(f->name) == n && memcmp(f->name, k, n) == 0) {
+            return 1;
+        }
+        at = (at + 1) & (*table_cap - 1);
+    }
+    return 0;
+}
+
+static void decode_key_note(RecordField *fields, size_t count, size_t *table, size_t table_cap) {
+    if (!table || count == 0) {
+        return;
+    }
+    size_t i = count - 1;
+    size_t at = decode_key_hash(fields[i].name, string_length(fields[i].name)) & (table_cap - 1);
+    while (table[at]) {
+        at = (at + 1) & (table_cap - 1);
+    }
+    table[at] = i + 1;
+}
+
 static Value decode_parse_record(DecodeParser *parser) {
     parser->pos++;
     RecordField *fields = NULL;
     size_t count = 0;
+    size_t *seen = NULL, seen_cap = 0;
     decode_skip_ws(parser);
     if (parser->text[parser->pos] == '}') {
         parser->pos++;
@@ -18012,8 +18115,18 @@ static Value decode_parse_record(DecodeParser *parser) {
     }
 
     while (parser->ok) {
+        size_t key_at = parser->pos;
         Value key = decode_parse_string(parser);
         if (!parser->ok) {
+            value_free(key);
+            break;
+        }
+        if (key.kind == VALUE_STRING &&
+            decode_key_seen(fields, count, &seen, &seen_cap, key.as.string, string_length(key.as.string))) {
+            char m[140];
+            snprintf(m, sizeof m, "the key \"%.60s\" is written twice in one object", key.as.string);
+            parser->pos = key_at;
+            decode_error(parser, m);
             value_free(key);
             break;
         }
@@ -18049,6 +18162,13 @@ static Value decode_parse_record(DecodeParser *parser) {
         fields[count].policy = AST_FIELD_POLICY_COPY;
         fields[count].reset_expr = NULL;
         count++;
+        if (seen && seen_cap >= count * 2) {
+            decode_key_note(fields, count, seen, seen_cap);
+        } else if (seen) {
+            free(seen);          /* outgrown: rebuilt at the next lookup */
+            seen = NULL;
+            seen_cap = 0;
+        }
         value_free(key);
 
         decode_skip_ws(parser);
@@ -18059,12 +18179,14 @@ static Value decode_parse_record(DecodeParser *parser) {
         }
         if (parser->text[parser->pos] == '}') {
             parser->pos++;
+            free(seen);
             return value_record(fields, count);
         }
         decode_error(parser, "expected ',' or '}'");
         break;
     }
 
+    free(seen);
     for (size_t i = 0; i < count; i++) {
         string_free(fields[i].name);
         cell_release(fields[i].value);
@@ -31343,6 +31465,255 @@ static Value eval_pack_family(AstExpr *expr) {
 
 #include "modules/net.c"
 
+/* ---- transcode (gap G10, the gBASIC books, volume 3) ------------------------
+ *
+ * transcode(bytes, from, to): text from one encoding to another, STRICT both
+ * ways. Strings here are counted bytes, so a file read in Latin-1 is its
+ * bytes until something says what they are; this is that something. A byte
+ * sequence the source encoding does not define, or a character the target
+ * cannot hold, raises naming the BYTE OFFSET in the input (decoding) or the
+ * CHARACTER index (encoding), so a reject report can point at it. Nothing is
+ * replaced: a replacement character written silently is the defect the books
+ * found (Latin-1 "Câble" stored as invalid UTF-8 everywhere, with no error).
+ *
+ * Encodings: utf-8, latin-1 (iso-8859-1), windows-1252 (cp1252), utf-16le,
+ * utf-16be, utf-16 (decoding follows a byte-order mark and, with none, reads
+ * big-endian as RFC 2781 says; encoding writes FF FE and little-endian, as
+ * Python does on every common machine). Names are matched without case,
+ * hyphens or underscores. */
+
+typedef enum { TC_UTF8, TC_LATIN1, TC_CP1252, TC_UTF16LE, TC_UTF16BE, TC_UTF16 } TcEncoding;
+
+/* Windows-1252's 0x80-0x9F; 0 where the code page defines nothing (0x81,
+ * 0x8D, 0x8F, 0x90, 0x9D), which decoding refuses as Python's codec does. */
+static const unsigned tc_cp1252_high[32] = {
+    0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+    0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017D, 0,
+    0, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178
+};
+
+static int tc_encoding(const char *name, TcEncoding *out) {
+    char k[32];
+    size_t n = 0;
+    for (const char *p = name; *p && n + 1 < sizeof k; p++) {
+        if (*p == '-' || *p == '_' || *p == ' ') {
+            continue;
+        }
+        k[n++] = (char)tolower((unsigned char)*p);
+    }
+    k[n] = '\0';
+    if (strcmp(k, "utf8") == 0) *out = TC_UTF8;
+    else if (strcmp(k, "latin1") == 0 || strcmp(k, "iso88591") == 0) *out = TC_LATIN1;
+    else if (strcmp(k, "windows1252") == 0 || strcmp(k, "cp1252") == 0) *out = TC_CP1252;
+    else if (strcmp(k, "utf16le") == 0) *out = TC_UTF16LE;
+    else if (strcmp(k, "utf16be") == 0) *out = TC_UTF16BE;
+    else if (strcmp(k, "utf16") == 0) *out = TC_UTF16;
+    else return 0;
+    return 1;
+}
+
+static void tc_raise(const char *message, const char *reason, long long offset, const char *what) {
+    if (raise_in_flight) {
+        return;
+    }
+    Value details = value_record(NULL, 0);
+    record_set(&details, "reason", value_string(reason));
+    record_set(&details, what, value_number_exact(offset));
+    error_set_state_full(message, 1003, "transcode", details, value_null(), 0, 0);
+    error_generation++;
+    raise_in_flight = 1;
+}
+
+static void tc_push(unsigned **cps, size_t *n, size_t *cap, unsigned cp) {
+    if (*n == *cap) {
+        *cap = *cap ? *cap * 2 : 64;
+        unsigned *g = realloc(*cps, sizeof(unsigned) * *cap);
+        if (!g) {
+            abort();
+        }
+        *cps = g;
+    }
+    (*cps)[(*n)++] = cp;
+}
+
+static Value builtin_transcode(AstExpr *expr) {
+    if (expr->as.call.args.count != 3) {
+        runtime_error_raise("transcode expects the text, the encoding it is in, and the encoding wanted, "
+                            "such as transcode(raw, \"latin-1\", \"utf-8\")", 1003, "invalid function call");
+        return value_null();
+    }
+    Value v[3];
+    for (int i = 0; i < 3; i++) {
+        v[i] = eval_expr(expr->as.call.args.items[i]);
+        if (error_action_pending() || v[i].kind != VALUE_STRING) {
+            int pending = error_action_pending();
+            for (int k = 0; k <= i; k++) {
+                value_free(v[k]);
+            }
+            if (!pending) {
+                runtime_error_raise("transcode expects text for all three arguments", 1003, "invalid argument type");
+            }
+            return value_null();
+        }
+    }
+    TcEncoding from, to;
+    char msg[300];
+    for (int i = 1; i <= 2; i++) {
+        if (!tc_encoding(v[i].as.string, i == 1 ? &from : &to)) {
+            snprintf(msg, sizeof msg,
+                     "transcode: unknown encoding '%s' (known: utf-8, latin-1, windows-1252, utf-16, utf-16le, "
+                     "utf-16be)", v[i].as.string);
+            for (int k = 0; k < 3; k++) {
+                value_free(v[k]);
+            }
+            runtime_error_raise(msg, 1003, "invalid argument");
+            return value_null();
+        }
+    }
+    const unsigned char *u = (const unsigned char *)v[0].as.string;
+    size_t n = string_length(v[0].as.string);
+    unsigned *cps = NULL;
+    size_t count = 0, cap = 0;
+    int failed = 0;
+    /* decode to codepoints */
+    if (from == TC_UTF8) {
+        size_t bad = utf8_first_invalid(u, n);
+        if (bad < n) {
+            snprintf(msg, sizeof msg, "transcode: byte %zu is not valid UTF-8", bad);
+            tc_raise(msg, "invalid", (long long)bad, "offset");
+            failed = 1;
+        } else {
+            size_t i = 0;
+            while (i < n) {
+                unsigned cp;
+                i += utf8_decode_first((const char *)u + i, n - i, &cp);
+                tc_push(&cps, &count, &cap, cp);
+            }
+        }
+    } else if (from == TC_LATIN1) {
+        for (size_t i = 0; i < n; i++) {
+            tc_push(&cps, &count, &cap, u[i]);
+        }
+    } else if (from == TC_CP1252) {
+        for (size_t i = 0; i < n && !failed; i++) {
+            unsigned cp = u[i];
+            if (cp >= 0x80 && cp <= 0x9f) {
+                cp = tc_cp1252_high[cp - 0x80];
+                if (!cp) {
+                    snprintf(msg, sizeof msg, "transcode: byte %zu (0x%02X) is not a character in windows-1252", i, u[i]);
+                    tc_raise(msg, "invalid", (long long)i, "offset");
+                    failed = 1;
+                    break;
+                }
+            }
+            tc_push(&cps, &count, &cap, cp);
+        }
+    } else {
+        int le = from == TC_UTF16LE;
+        size_t i = 0;
+        if (from == TC_UTF16) {
+            if (n >= 2 && u[0] == 0xff && u[1] == 0xfe) { le = 1; i = 2; }
+            else if (n >= 2 && u[0] == 0xfe && u[1] == 0xff) { le = 0; i = 2; }
+        }
+        while (!failed && i < n) {
+            if (i + 1 >= n) {
+                snprintf(msg, sizeof msg, "transcode: UTF-16 is two bytes a unit, and byte %zu is left over", i);
+                tc_raise(msg, "truncated", (long long)i, "offset");
+                failed = 1;
+                break;
+            }
+            unsigned w = le ? (unsigned)(u[i] | (u[i + 1] << 8)) : (unsigned)((u[i] << 8) | u[i + 1]);
+            if (w >= 0xd800 && w <= 0xdbff) {
+                unsigned w2 = 0;
+                if (i + 3 < n) {
+                    w2 = le ? (unsigned)(u[i + 2] | (u[i + 3] << 8)) : (unsigned)((u[i + 2] << 8) | u[i + 3]);
+                }
+                if (w2 < 0xdc00 || w2 > 0xdfff) {
+                    snprintf(msg, sizeof msg, "transcode: byte %zu starts a UTF-16 surrogate with no partner", i);
+                    tc_raise(msg, "invalid", (long long)i, "offset");
+                    failed = 1;
+                    break;
+                }
+                tc_push(&cps, &count, &cap, 0x10000 + ((w - 0xd800) << 10) + (w2 - 0xdc00));
+                i += 4;
+            } else if (w >= 0xdc00 && w <= 0xdfff) {
+                snprintf(msg, sizeof msg, "transcode: byte %zu is a UTF-16 surrogate with no partner", i);
+                tc_raise(msg, "invalid", (long long)i, "offset");
+                failed = 1;
+            } else {
+                tc_push(&cps, &count, &cap, w);
+                i += 2;
+            }
+        }
+    }
+    StringBuilder out;
+    sb_init(&out);
+    if (!failed && to == TC_UTF16) {
+        sb_append_char(&out, (char)0xff);
+        sb_append_char(&out, (char)0xfe);
+    }
+    for (size_t k = 0; k < count && !failed; k++) {
+        unsigned cp = cps[k];
+        if (to == TC_UTF8) {
+            char b[4];
+            size_t m = utf8_encode_codepoint(cp, b);
+            for (size_t q = 0; q < m; q++) {
+                sb_append_char(&out, b[q]);
+            }
+        } else if (to == TC_LATIN1 || to == TC_CP1252) {
+            int byte = -1;
+            if (cp < 0x80 || (cp >= 0xa0 && cp <= 0xff) || (to == TC_LATIN1 && cp <= 0xff)) {
+                byte = (int)cp;
+            } else if (to == TC_CP1252) {
+                for (int q = 0; q < 32; q++) {
+                    if (tc_cp1252_high[q] == cp) {
+                        byte = 0x80 + q;
+                        break;
+                    }
+                }
+            }
+            if (byte < 0) {
+                snprintf(msg, sizeof msg, "transcode: character %zu (U+%04X) has no byte in %s", k, cp,
+                         to == TC_LATIN1 ? "latin-1" : "windows-1252");
+                tc_raise(msg, "unmappable", (long long)k, "character");
+                failed = 1;
+                break;
+            }
+            sb_append_char(&out, (char)byte);
+        } else {
+            int le = to != TC_UTF16BE;
+            unsigned units[2];
+            int nu = 1;
+            if (cp >= 0x10000) {
+                units[0] = 0xd800 + ((cp - 0x10000) >> 10);
+                units[1] = 0xdc00 + ((cp - 0x10000) & 0x3ff);
+                nu = 2;
+            } else {
+                units[0] = cp;
+            }
+            for (int q = 0; q < nu; q++) {
+                unsigned char lo = (unsigned char)(units[q] & 0xff), hi = (unsigned char)(units[q] >> 8);
+                sb_append_char(&out, (char)(le ? lo : hi));
+                sb_append_char(&out, (char)(le ? hi : lo));
+            }
+        }
+    }
+    free(cps);
+    for (int k = 0; k < 3; k++) {
+        value_free(v[k]);
+    }
+    size_t len = out.length;
+    char *bytes = sb_take(&out);
+    if (failed) {
+        free(bytes);
+        return value_null();
+    }
+    Value r = value_string_n(bytes ? bytes : "", len);
+    free(bytes);
+    return r;
+}
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.receiver) {
         return eval_method_call(expr);
@@ -32962,13 +33333,17 @@ static Value eval_call(AstExpr *expr) {
         value_free(b);
         return r;
     }
-    if (strcmp(expr->as.call.name, "valid_utf8") == 0) {
-        /* STRICT, as RFC 3629 defines it: no overlong forms, no surrogates,
-         * nothing past U+10FFFF, no truncated sequence. The string builtins
-         * read malformed bytes leniently (one unit each); this is the answer
-         * a protocol that must REFUSE them needs (WebSocket text, 1007). */
+    if (strcmp(expr->as.call.name, "valid_utf8") == 0 ||
+        strcmp(expr->as.call.name, "first_invalid_utf8") == 0) {
+        /* STRICT, as RFC 3629 defines it (utf8_first_invalid). The string
+         * builtins read malformed bytes leniently (one unit each); these are
+         * the answers a protocol that must REFUSE them needs (WebSocket text,
+         * 1007) and a reject report needs (WHERE the bad byte is). */
+        const char *fname = expr->as.call.name;
+        char m[96];
         if (expr->as.call.args.count != 1) {
-            runtime_error_raise("valid_utf8 expects one argument", 1003, "invalid function call");
+            snprintf(m, sizeof m, "%s expects one argument", fname);
+            runtime_error_raise(m, 1003, "invalid function call");
             return value_null();
         }
         Value t = eval_expr(expr->as.call.args.items[0]);
@@ -32978,34 +33353,20 @@ static Value eval_call(AstExpr *expr) {
         }
         if (t.kind != VALUE_STRING) {
             value_free(t);
-            runtime_error_raise("valid_utf8 expects text", 1003, "invalid argument type");
+            snprintf(m, sizeof m, "%s expects text", fname);
+            runtime_error_raise(m, 1003, "invalid argument type");
             return value_null();
         }
-        const unsigned char *u = (const unsigned char *)t.as.string;
-        size_t n = string_length(t.as.string), i = 0;
-        int ok = 1;
-        while (i < n && ok) {
-            unsigned char c = u[i];
-            size_t need;
-            unsigned cp, min;
-            if (c < 0x80) { i++; continue; }
-            else if (c >= 0xc2 && c <= 0xdf) { need = 1; cp = c & 0x1f; min = 0x80; }
-            else if ((c & 0xf0) == 0xe0) { need = 2; cp = c & 0x0f; min = 0x800; }
-            else if (c >= 0xf0 && c <= 0xf4) { need = 3; cp = c & 0x07; min = 0x10000; }
-            else { ok = 0; break; }
-            if (i + need >= n) { ok = 0; break; }       /* truncated at the end */
-            for (size_t j = 1; j <= need; j++) {
-                if ((u[i + j] & 0xc0) != 0x80) { ok = 0; break; }
-                cp = (cp << 6) | (u[i + j] & 0x3f);
-            }
-            if (!ok || cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
-                ok = 0;
-                break;
-            }
-            i += need + 1;
-        }
+        size_t n = string_length(t.as.string);
+        size_t at = utf8_first_invalid((const unsigned char *)t.as.string, n);
         value_free(t);
-        return value_bool(ok);
+        if (fname[0] == 'v') {
+            return value_bool(at == n);
+        }
+        return at == n ? value_null() : value_number_exact((long long)at);
+    }
+    if (strcmp(expr->as.call.name, "transcode") == 0) {
+        return builtin_transcode(expr);
     }
     if (strcmp(expr->as.call.name, "random_bytes") == 0) {
         if (expr->as.call.args.count != 1) {

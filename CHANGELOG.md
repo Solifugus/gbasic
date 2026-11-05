@@ -16,6 +16,20 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Text encodings, and duplicate JSON keys
+
+Gaps G10 and G12 from the gBASIC books (volume 3's gap ledger).
+
+- **`transcode(text, from, to)`** converts between `utf-8`, `latin-1`,
+  `windows-1252`, `utf-16`, `utf-16le` and `utf-16be`, strictly: undefined
+  bytes and unmappable characters raise, naming the byte offset or character
+  index (`error.details.offset` / `.character`). Nothing is replaced.
+- **`first_invalid_utf8(text)`**: the byte offset of the first invalid
+  sequence, or `nothing`.
+- **`decode` and `try_decode` refuse a key written twice in one object**, at
+  the second key. It was kept twice, with `.a` reading the first.
+  *Behaviour change*: a document that decoded before may now be refused.
+
 ### WebSockets: `load websocket`
 
 Increment N4 of docs/networking_design.md: RFC 6455 client and server, as a

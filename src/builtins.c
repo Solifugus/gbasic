@@ -50,6 +50,8 @@ int gbasic_builtin_function(const char *name) {
         "bytes_equal",
         "bytes_xor",
         "valid_utf8",
+        "first_invalid_utf8",
+        "transcode",
 #if HAVE_LIBCRYPTO
         "sha256",
         "sha512",
